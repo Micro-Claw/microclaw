@@ -334,7 +334,7 @@ The ZMQ server embedded in MM 2.0 uses a proprietary JSON-based RPC protocol cal
 
 ### Can it be used without pycro-manager?
 
-**Technically yes, but practically pointless.** The protocol is implemented in the PyJavaZ library (the Python side of pycro-manager). Reimplementing it from scratch would give you exactly what pycro-manager already provides, with significant reverse-engineering effort.
+**Technically yes, but practically pointless.** The protocol is implemented in the PyJavaZ library (a standalone ZMQ Java-Python bridge library that pycro-manager depends on). Reimplementing it from scratch would give you exactly what pycro-manager already provides, with significant reverse-engineering effort.
 
 Importantly, you can use pycro-manager's lower-level layers without using its high-level Acquisition engine. The `Core()` and `Studio()` objects give direct access to the ZMQ-proxied Java API without requiring the acquisition machinery.
 
@@ -478,5 +478,5 @@ The code is identical to the GUI-visible mode. Nothing about the tool functions 
 - [Micro-Manager Programming Guide](https://micro-manager.org/Micro-Manager_Programming_Guide)
 - [CMMCore Javadoc](https://javadoc.scijava.org/Micro-Manager-Core/mmcorej/CMMCore.html)
 - [JPype Documentation](https://jpype.readthedocs.io)
-- [Smart Microscopy Review (npj Imaging 2025)](https://www.nature.com/articles/s44303-026-00145-y)
+- [Smart Microscopy Review (npj Imaging 2026)](https://www.nature.com/articles/s44303-026-00145-y)
 - [Py4J Documentation](https://www.py4j.org)
