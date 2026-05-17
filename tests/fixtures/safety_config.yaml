@@ -1,0 +1,18 @@
+# Safety config used in tests/conftest.py and integration tests.
+stage:
+  x_min: -1000.0
+  x_max:  1000.0
+  y_min: -1000.0
+  y_max:  1000.0
+  z_min:  0.0
+  z_max:  200.0
+
+camera:
+  max_exposure_ms: 2000.0
+
+channels:
+  allowed: [DAPI, FITC, Cy5]
+
+forbidden_properties:
+  - device: Core
+    property: Initialize

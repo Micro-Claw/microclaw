@@ -1,0 +1,23 @@
+# All values are in micrometers unless noted.
+# Omit a field to leave it unconstrained.
+
+stage:
+  x_min: -5000.0
+  x_max:  5000.0
+  y_min: -5000.0
+  y_max:  5000.0
+  z_min:  0.0
+  z_max:  200.0
+
+camera:
+  max_exposure_ms: 5000.0
+
+channels:
+  # If present, only these presets may be set via set_channel.
+  # Remove the list entirely to allow all channels.
+  allowed: [DAPI, FITC, TRITC, Brightfield]
+
+# Device properties the AI may never touch, regardless of prompt.
+forbidden_properties:
+  - device: Core
+    property: Initialize

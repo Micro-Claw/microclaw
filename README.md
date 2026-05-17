@@ -1,0 +1,97 @@
+# Microclaw
+
+An AI agent for [Micro-Manager](https://micro-manager.org) fluorescence microscopy control. Describe your acquisition protocol in plain language; Microclaw translates it into Micro-Manager tool calls while the GUI responds in real time.
+
+## Architecture
+
+```
+User (natural language) → AgentLoop (Anthropic API) → SafetyGuard → ToolRegistry → MicroscopeController → pycro-manager ZMQ → MM GUI
+```
+
+- **Agent**: `claude-opus-4-7` via Anthropic API with tool use and prompt caching.
+- **Safety**: User-defined `safety_config.yaml` enforced as a hard gate before every hardware call. The AI cannot override these limits.
+- **Backend**: pycro-manager (ZMQ on port 4827). Open Micro-Manager normally; Microclaw connects to the running instance.
+
+## Quick start
+
+### Prerequisites
+
+1. Install [Micro-Manager 2.0](https://micro-manager.org/Download_Micro-Manager_Latest_Release).
+2. Enable the ZMQ server: **Tools → Options → Run ZMQ server on port 4827**.
+3. Set your `ANTHROPIC_API_KEY` environment variable.
+
+### Install
+
+```bash
+pip install -e ".[test]"
+```
+
+### Run
+
+```bash
+microclaw --safety-config safety_config.yaml
+```
+
+## Safety configuration
+
+Edit `safety_config.yaml` to set hardware limits. These are enforced before every tool call and cannot be overridden by the AI.
+
+```yaml
+stage:
+  z_min: 0.0
+  z_max: 200.0
+
+camera:
+  max_exposure_ms: 5000.0
+
+channels:
+  allowed: [DAPI, FITC, TRITC, Brightfield]
+
+forbidden_properties:
+  - device: Core
+    property: Initialize
+```
+
+## Testing
+
+Unit and agent tests run without Micro-Manager:
+
+```bash
+pytest
+```
+
+Integration tests require a running MM instance with the Demo configuration:
+
+```bash
+pytest -m integration \
+  --mm-path /path/to/MicroManager \
+  --demo-config /path/to/MMConfig_demo.cfg
+```
+
+## Headless mode
+
+For unattended runs of established protocols, use `launch_headless` from `microclaw.config`:
+
+```python
+from microclaw.config import launch_headless
+launch_headless(mm_app_path="/path/to/MM", config_file="MMConfig_demo.cfg")
+```
+
+The tool functions and agent loop are identical in GUI and headless modes.
+
+## Available tools
+
+| Tool | Description |
+|---|---|
+| `snap_image` | Snap a single image |
+| `start_live_view` / `stop_live_view` | Live camera preview |
+| `set_exposure` / `get_exposure` | Camera exposure |
+| `move_stage_xy` / `get_xy_position` | XY stage |
+| `move_stage_z` / `get_z_position` | Z (focus) stage |
+| `set_channel` / `get_available_channels` | Channel presets |
+| `set_device_property` / `get_device_property` | Raw device properties |
+| `list_devices` | List loaded devices |
+| `get_system_state` | Composite state snapshot |
+| `run_zstack` | Z-stack acquisition |
+| `run_timelapse` | Timelapse acquisition |
+| `export_dataset_as_tiff` | Export NDTiff dataset to ImageJ TIFF |
