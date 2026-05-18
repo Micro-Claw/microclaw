@@ -84,3 +84,18 @@ please add the following:
   However, it should work regardless.
 
 Please write the plan in plan.md.
+
+----
+
+Let's focus on image analysis for adaptive acquisitions. Ideally, it should 
+be possible for the agent to interpret snapped images and other information resulting
+from adaptive acquisition. For example, the user should be able to ask the agent to 
+automatically focus on their sample, and go through a multiposition list and focus
+on each sample at each position. This could be implemented via pycro-manager 
+hooks for adaptive acquistions, or by some other means. Please think deeply about 
+the best approach for this. Please write a detailed plan for extending microclaw 
+to be capable of adaptive acqusitions and store this plan in plan_v2.md. 
+
+ I've left some comments for you in between brackets < and > in plan_v2.md. 
+Please read them carefully. If you have any questions, please ask. If not, 
+please update plan_v2.md. 
