@@ -14,144 +14,175 @@ set channels, snap images, and run structured acquisitions. What it cannot do is
 
 v2 adds:
 
-1. **Vision in the conversation loop** — snapped images are returned to Claude as
-   visual content, not just file paths. Claude can assess focus quality, detect
-   cells, and make semantic judgments about image content. <While this is a good idea,
-   using Claude to assess focus quality, etc. should be a last resort. There are many
-   established tools, such as Cellpose (https://www.cellpose.org/) to detect cells.
-   Claude should pass off as many image analysis tasks as possible to established
-   tools, via pycro-manager hooks, and synthesize the information they provide to 
-   make a suggestion about what to do next in the acquisiton.>
+1. **Image analysis via established tools** — image analysis tasks (cell detection,
+   focus measurement, intensity quantification) are handled by purpose-built
+   Python libraries running in pycro-manager hooks. Claude synthesizes their
+   numerical outputs to decide what to do next. Claude's own vision capability
+   is reserved for tasks no algorithm handles well (e.g. "is this tissue section
+   oriented correctly?") and for interactive confirmation by the biologist.
+
 2. **Software autofocus** — a Python sweep algorithm computes focus metrics across
-   a Z range and moves to the sharpest plane, with Claude reporting the result.
-   <Please see if there is a way to implement autofocus with pycro-manager hooks
-   and run the Python-native version via pycro-manager instead of using a custom
-   implementation here. If so, is this easier or harder to use than the Python-native
-   implementation here?>
-3. **Position list management** — the agent can build, inspect, and navigate a
-   named position list (XY or XYZ), matching the biologist's normal MM workflow.
-4. **Adaptive multiposition acquisition** — visit each position in a list, run a
-   configurable per-position protocol (snap, Z-stack, timelapse), and optionally
-   autofocus at each stop before acquiring.
-5. **Hook-based adaptive acquisition** (advanced) — a library of pre-coded
-   pycro-manager image-processing hooks that the agent can select and configure,
-   enabling real-time feedback loops that run at acquisition speed without Claude
-   in the inner loop. <Can we use Claude to build the code adaptive image-processing 
-   hooks, save them, and then call these hooks for acquisition, rather than have 
-   Claude take care of the adaptive acquisiton? That is, when a user requests a new
-   automated acquistion feature, the agent will build a script that works with
-   pycro-manager, then save this script for current and future use, then call this
-   script as a pycro-manager hook. Claude then only handles using the output of the 
-   hook to suggest what to do next.>
+   a Z range and moves to the sharpest plane. Available in two forms: (a) a
+   standalone `run_autofocus` tool for interactive use, and (b) a
+   `post_hardware_hook_fn` strategy that runs a focus sweep at each position
+   inside a pycro-manager `Acquisition`, ensuring each stored image is already
+   focused. The comparison between these two forms is detailed in section 5.
+
+3. **Position list management** — the agent reads from and writes to Micro-Manager's
+   native position list via the pycro-manager Studio API, so positions are
+   immediately visible in the MM GUI's XY Stage Control window.
+
+4. **Adaptive multiposition acquisition** — visit each position in the MM position
+   list, run a configurable per-position protocol (snap, Z-stack, timelapse), and
+   optionally autofocus at each stop before acquiring.
+
+5. **Hook-based adaptive acquisition** — two tiers of hooks:
+   - **Pre-coded hooks** shipped with microclaw (focus feedback, intensity
+     adaptation, position filtering). Claude selects and configures these by
+     name. The hook architecture is designed so additional analysis plugins
+     (e.g. cell segmentation models) can be added as new hook classes without
+     changing any other code.
+   - **Claude-generated hooks** — when no pre-coded hook covers a biologist's
+     request, Claude writes a new pycro-manager hook script, presents it to the
+     user for review, saves it to disk, and thereafter calls it by name. Claude
+     never executes generated code without user confirmation.
 
 ---
 
 ## 2. Approach and Key Design Decisions
 
-### 2.1 Three tiers of adaptivity
+### 2.1 Revised tiering model: hooks do the work, Claude synthesizes results
 
-Adaptive acquisition in microscopy spans a spectrum of latency requirements:
+The original tier table treated "Claude reasoning" as the primary analysis tier.
+This is revised: Claude's role is to *decide* and *explain*, not to *measure*.
+Established tools run as hooks at acquisition speed; Claude reads their output
+after the fact.
 
-| Tier | Speed requirement | Who is in the loop | Use cases |
-|------|-------------------|-------------------|-----------|
-| **Slow — Claude reasoning** | Seconds to minutes | Claude (API calls) | Semantic analysis, interactive autofocus, quality checks <How much of this can be offloaded to Python/pycro-manager hooks? Claude can focus on interpreting the results,
-rather than handling the work itself. Autofocus, for example, could run independently of Claude as a hook. Claude could
-simply call the autofocus hook when the user asks for it or when Claude decides an autofocus is needed.> |
-| **Medium — Python metrics** | 10–500 ms per frame | Python (NumPy/SciPy) | Sweep autofocus, exposure adaptation, intensity screening |
-| **Fast — C extension** | Sub-millisecond | Native code, pycro hooks | Real-time focus feedback, hardware-triggered events |
+| Tier | Speed requirement | Who runs | What Claude does |
+|------|-------------------|----------|-----------------|
+| **Hook tier** | 10 ms–5 s per image | Pre-coded or generated Python hook | Selects hook + params at setup; reads summary after acquisition |
+| **Metric tier** | 10–500 ms | NumPy/SciPy in hook or tool | Sees numerical result, interprets, suggests next step |
+| **Vision tier** | 1–3 s (API call) | Claude, from a thumbnail in the tool result | Used only when no algorithm gives a suitable answer, or for interactive confirmation |
 
-v2 targets tiers 1 and 2. Tier 3 is partially addressed through pre-coded hooks
-(section 8) but is not designed for AI-in-the-loop operation. <Could Tier 3 be a
-part of the AI-in-the-loop operation, where the AI simply looks at the output of 
-the hook after calling it? Or looks at the image after the hook finishes running?>
+This means even Tier-3-style real-time operations (focus feedback, cell
+detection) are handled by hooks running at acquisition speed. After the
+acquisition, hooks write a summary to a log file; Claude reads the log and
+reports findings to the biologist.
 
-### 2.2 Vision: images as multimodal tool results
+### 2.2 Vision: Claude as fallback synthesizer
 
-The Anthropic Messages API allows tool result content to be a list of blocks
-rather than a plain string. An image block passes a base64-encoded PNG directly
-into Claude's context:
+The Anthropic Messages API allows tool result content to be a list of blocks.
+An image block passes a base64-encoded PNG thumbnail directly into Claude's
+context:
 
 ```python
-# execute_tool returns this list instead of a JSON string for image tools
 [
-    {
-        "type": "text",
-        "text": '{"z_um": 45.0, "focus_metric": 3821.4, "mean_intensity": 112.3}'
-    },
-    {
-        "type": "image",
-        "source": {
-            "type": "base64",
-            "media_type": "image/png",
-            "data": "<base64-encoded PNG thumbnail>"
-        }
-    }
+    {"type": "text",  "text": '{"cell_count": 12, "mean_area_px2": 340, "z_best_um": 48.2}'},
+    {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "..."}}
 ]
 ```
 
-Claude then receives the image as if it were part of the conversation and can
-make visual judgments ("the sample looks in focus", "I can see mitotic cells",
-"the background is too bright"). This is the correct mechanism for vision tasks.
+Claude first reads the quantitative fields (cell count, focus metric, intensity)
+from the text block. The image is included so Claude can do a visual sanity
+check and describe what it sees to the biologist — but the *decisions* are driven
+by the numbers, not by Claude staring at pixels.
 
-**Why not a separate analyze_image tool that calls a vision model?** Claude
-*is* the vision model. Sending the thumbnail directly in the tool result is
-simpler, cheaper, and avoids a second API call.
+For tasks that are genuinely semantic and cannot be reduced to numbers (e.g.
+"is this the right region of the slide?", "do these cells look healthy?"),
+Claude's visual assessment is appropriate and no hook is needed.
 
-**Why a thumbnail rather than the full image?** Raw fluorescence images are
-typically 2048×2048 16-bit (8 MB). Sending that to the API is expensive and
-slow. A 512×512 8-bit PNG is sufficient for Claude's visual assessment (≈ 200 KB
-before base64 overhead). The full-resolution image is always saved to disk for
-subsequent analysis.
+**Image preprocessing** for thumbnails: raw 16-bit images are percentile-
+normalised to 8-bit and resized to ≤512 px before encoding. The full-resolution
+image is always saved to disk.
 
-### 2.3 Autofocus: Python in the inner loop, Claude at the boundary
+### 2.3 Autofocus: two forms, different use cases
 
-Calling the Anthropic API once per Z position during a focus sweep would add
-~1–3 seconds of latency per slice — unacceptably slow. The focus sweep algorithm
-runs entirely in Python (NumPy), with no API calls in the inner loop.
+#### Form A — standalone Python tool (`run_autofocus`)
 
-Claude is involved only at the boundary:
-- **Before**: Claude decides to call `run_autofocus` with the appropriate parameters.
-- **After**: the tool returns the best Z position, the metric curve, and optionally
-  a thumbnail of the in-focus image; Claude reports this to the user.
+Calls `sweep_autofocus()` / `coarse_then_fine_autofocus()` directly, outside any
+`Acquisition` context. Claude calls this when the user says "please focus on my
+sample" interactively.
 
-If the user asks Claude to visually confirm focus ("does this look sharp to you?"),
-Claude can call `snap_and_analyze` after autofocus completes.
+*Pros:* simple, no `Acquisition` overhead, works any time.  
+*Cons:* not integrated with pycro-manager's acquisition engine; if used inside a
+multiposition loop, images at intermediate positions are not guaranteed to land in
+the acquisition dataset at the focused Z.
 
-### 2.4 Multiposition: a Python loop orchestrated by Claude
+#### Form B — autofocus as a pycro-manager hook (`AutofocusHook`)
 
-For multiposition acquisition with per-position autofocus, the options are:
+pycro-manager's `post_hardware_hook_fn` fires *after* hardware moves to the
+event's target position, *before* the camera captures the image. An autofocus
+hook placed here can:
+1. Receive the current event (position, channel, Z).
+2. Run a mini focus sweep centred on the event Z.
+3. Update the event's Z coordinate to the best found.
+4. Return, allowing the acquisition engine to capture the image at the focused Z.
 
-**Option A: Claude iterates manually.** Claude calls `go_to_position`, then
-`run_autofocus`, then `run_zstack`, in a loop. This works but generates many API
-calls and is slow for long position lists.
+The image stored in the dataset is then at the correct focus plane without any
+extra Python loop outside the acquisition.
 
-**Option B: A single high-level Python tool handles the loop.** Claude calls
-`run_multiposition_with_autofocus(names=[...], ...)` once. Python handles the
-loop entirely. Claude receives a summary at the end.
+*Pros:* focus is embedded in the acquisition; all images in the NDTiff dataset
+are at the correct Z; works naturally with pycro-manager's multiposition engine.  
+*Cons:* more complex setup (hook must be created before `Acquisition` starts);
+hook parameters are fixed at setup time; pycro-manager must be ≥1.0.
 
-**Option B is the right choice for most workflows.** It is fast, robust, and
-generates a predictable number of API calls regardless of position list length.
-Claude retains control over setup: it chooses which positions to include, the
-autofocus parameters, and the per-position protocol.
+**Recommendation:** Form A for interactive autofocus. Form B (via
+`run_adaptive_acquisition` with `hook_strategy="autofocus_per_position"`) for
+automated multiposition surveys. Both are implemented; Claude chooses based on
+context.
 
-Option A (manual iteration) remains available for exploratory or interactive
-sessions where the biologist wants to inspect each position before proceeding.
+### 2.4 Multiposition: use MM's native position list
 
-### 2.5 Hooks: pre-coded strategies, not Claude-generated code
+Rather than maintaining a separate Python data structure, v2 reads from and
+writes to MM's native position list via the pycro-manager Studio API:
 
-pycro-manager's `image_process_fn` and event-generation hooks are callback
-functions that execute inside the acquisition loop. Having Claude generate hook
-code at runtime would be unsafe and fragile. <Could Claude generate hook code
-with a warning that it might not work? Could safety.py be augmented to keep
-operation safe even if the hook code is bad?>
+```python
+pos_list_mgr = ctrl.studio.positions()       # PositionListManager
+pos_list     = pos_list_mgr.get_position_list()  # PositionList (Java object)
+```
 
-Instead, a library of pre-coded hook strategies is implemented in `hooks.py`.
-Claude selects and configures a strategy by name; the hook function itself is
-pre-audited Python. This gives biologists access to real-time adaptive acquisition
-without any risk from dynamically generated code. <This is a good idea, and it
-would be great to ship with some simple hooks already written. Do not compromise
-this idea for the other suggestions in this document. Ensure whatever you decide,
-you keep this pre-coded hook strategy.>
+Changes made through this API appear immediately in MM's XY Stage Control window.
+The biologist can also manually edit the position list in the MM GUI, and the
+agent will see the changes on the next `get_position_list` call.
+
+For loading/saving position lists across sessions, MM's native `.pos` XML format
+is used (`core.get_position_list_data()` / `core.set_position_list_data()`).
+
+### 2.5 Hooks: pre-coded strategies and Claude-generated strategies
+
+Two tiers of hooks, both implemented:
+
+**Pre-coded hooks** (shipped with microclaw, in `hooks.py`):
+
+| Hook class | What it does |
+|------------|-------------|
+| `AutofocusHook` | Runs a Z sweep at each position before image capture |
+| `FocusFeedbackHook` | Corrects Z drift per frame during timelapse |
+| `IntensityAdaptiveHook` | Adjusts exposure if mean intensity drifts |
+| `PositionFilterHook` | Skips positions below a minimum mean intensity |
+
+These hooks are always available, require no code generation, and are the
+recommended starting point.
+
+**Claude-generated hooks** (new in v2, optional):
+
+When a biologist requests an adaptive behavior not covered by a pre-coded hook,
+Claude can generate a new hook script. The workflow is:
+
+1. Claude writes a hook module following a standard template.
+2. The generated code is shown to the user in full — Claude does not save or
+   execute it until the user explicitly confirms.
+3. On confirmation, the script is saved to `~/.microclaw/hooks/<name>.py` with
+   metadata in `~/.microclaw/hooks/manifest.json`.
+4. Claude (and future sessions) can call this hook by name via
+   `run_adaptive_acquisition(hook_strategy="<name>", ...)`.
+
+A static-analysis safety pass (AST scan) runs before presenting the code to
+the user, blocking obvious dangerous patterns (subprocess, os.system, exec,
+eval, unrestricted file writes). This reduces but does not eliminate risk —
+user review is mandatory.
+
+The pre-coded hooks are never replaced or compromised by this mechanism.
 
 ---
 
@@ -163,20 +194,25 @@ microclaw/
 ├── controller.py         # Unchanged
 ├── tools.py              # Extended: new tools added
 ├── tools_schema.py       # Extended: schemas for new tools
-├── safety.py             # Extended: autofocus range constraints
+├── safety.py             # Minor extension: no new constraints (section 11)
 ├── config.py             # Unchanged
 ├── errors.py             # Unchanged
 ├── image_analysis.py     # NEW: focus metrics, thumbnail generation
 ├── autofocus.py          # NEW: sweep autofocus algorithm
-├── positions.py          # NEW: in-memory position list
-└── hooks.py              # NEW: pre-coded pycro-manager hook strategies
+├── hooks.py              # NEW: pre-coded pycro-manager hook strategies
+└── hook_manager.py       # NEW: save/load/validate Claude-generated hooks
 ```
+
+Position management no longer requires a separate `positions.py` module — it
+goes through MM's native API via `controller.py`.
 
 ---
 
 ## 4. `image_analysis.py` — Focus Metrics and Thumbnail Generation
 
 This module contains all image analysis that runs in Python (no API calls).
+It is used by both hooks (for acquisition-time analysis) and tools (for
+interactive analysis).
 
 ```python
 # microclaw/image_analysis.py
@@ -190,34 +226,27 @@ from PIL import Image  # pillow
 
 
 class ImageStats(NamedTuple):
-    focus_metric: float     # Laplacian variance (higher = sharper)
+    focus_metric: float       # Laplacian variance (higher = sharper)
     mean_intensity: float
     max_intensity: float
     min_intensity: float
-    saturated_fraction: float  # fraction of pixels at bit-depth max
+    saturated_fraction: float # fraction of pixels at bit-depth max
 
 
 def laplacian_variance(image: np.ndarray) -> float:
-    """Compute Laplacian variance as a focus metric.
-
-    Higher values indicate sharper focus. Works on both 8-bit and 16-bit images.
-    Uses a 3x3 Laplacian kernel.
-    """
+    """Laplacian variance focus metric. Higher = sharper."""
     from scipy.ndimage import laplace
-    img_float = image.astype(np.float64)
-    return float(np.var(laplace(img_float)))
+    return float(np.var(laplace(image.astype(np.float64))))
 
 
 def compute_stats(image: np.ndarray) -> ImageStats:
-    """Compute image statistics including focus metric."""
-    bit_depth_max = float(np.iinfo(image.dtype).max) if np.issubdtype(image.dtype, np.integer) else 1.0
-    saturated = np.sum(image >= bit_depth_max) / image.size
+    bit_max = float(np.iinfo(image.dtype).max) if np.issubdtype(image.dtype, np.integer) else 1.0
     return ImageStats(
         focus_metric=laplacian_variance(image),
         mean_intensity=float(np.mean(image)),
         max_intensity=float(np.max(image)),
         min_intensity=float(np.min(image)),
-        saturated_fraction=float(saturated),
+        saturated_fraction=float(np.sum(image >= bit_max) / image.size),
     )
 
 
@@ -227,53 +256,43 @@ def make_thumbnail(
     percentile_low: float = 2.0,
     percentile_high: float = 99.8,
 ) -> str:
-    """Convert a microscopy image to a base64-encoded PNG thumbnail for Claude.
-
-    Handles 8-bit and 16-bit grayscale images. Applies percentile contrast
-    stretching so dim fluorescence images are visible to the model.
-    Returns a base64-encoded PNG string.
-    """
+    """Percentile-normalised, resized PNG thumbnail, returned as base64."""
     img = image.astype(np.float32)
-    p_low = np.percentile(img, percentile_low)
-    p_high = np.percentile(img, percentile_high)
-    if p_high > p_low:
-        img = (img - p_low) / (p_high - p_low)
-    img = np.clip(img, 0, 1)
-    img_8bit = (img * 255).astype(np.uint8)
-
+    p_lo, p_hi = np.percentile(img, percentile_low), np.percentile(img, percentile_high)
+    if p_hi > p_lo:
+        img = (img - p_lo) / (p_hi - p_lo)
+    img_8bit = (np.clip(img, 0, 1) * 255).astype(np.uint8)
     pil_img = Image.fromarray(img_8bit, mode='L')
-
-    # Resize preserving aspect ratio
     pil_img.thumbnail((max_size, max_size), Image.LANCZOS)
-
     buf = io.BytesIO()
     pil_img.save(buf, format='PNG')
-    buf.seek(0)
-    return base64.standard_b64encode(buf.read()).decode('ascii')
+    return base64.standard_b64encode(buf.getvalue()).decode('ascii')
 
 
 def snap_to_numpy(ctrl) -> np.ndarray:
-    """Snap an image and return it as a NumPy array via pycro-manager."""
+    """Snap and return a NumPy array via pycro-manager's tagged image API."""
     ctrl.core.snap_image()
     ctrl.core.wait_for_image_synced()
     tagged = ctrl.core.get_tagged_image()
-    width = tagged.tags['Width']
-    height = tagged.tags['Height']
-    pixels = np.frombuffer(tagged.pix, dtype=np.uint16)
-    return pixels.reshape(height, width)
+    w, h = tagged.tags['Width'], tagged.tags['Height']
+    return np.frombuffer(tagged.pix, dtype=np.uint16).reshape(h, w)
 ```
 
 **Dependencies added:** `scipy`, `Pillow`.
 
 ---
 
-## 5. `autofocus.py` — Sweep Autofocus
+## 5. `autofocus.py` — Sweep Autofocus (Form A)
+
+This module implements the standalone focus sweep used by the `run_autofocus`
+tool. It is also imported by `AutofocusHook` (Form B) to share the algorithm.
 
 ```python
 # microclaw/autofocus.py
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
+import time
 
 import numpy as np
 
@@ -284,9 +303,9 @@ from microclaw.image_analysis import snap_to_numpy, laplacian_variance
 @dataclass
 class AutofocusResult:
     best_z_um: float
-    metric_values: list[float]   # one per step, in z_positions order
+    metric_values: list[float]
     z_positions: list[float]
-    settled: bool                # True if the peak was unambiguous
+    settled: bool   # True if peak is not at the boundary of the sweep
 
 
 def sweep_autofocus(
@@ -297,15 +316,8 @@ def sweep_autofocus(
     settle_ms: int = 50,
     metric_fn: Callable[[np.ndarray], float] = laplacian_variance,
 ) -> AutofocusResult:
-    """Move through Z positions, measure focus at each step, return best Z.
-
-    Does NOT move back to the starting position; moves to best_z_um.
-    The caller (run_autofocus tool) is responsible for safety checks.
-    """
-    import time
-
+    """Sweep Z, measure focus metric at each step, move to best Z."""
     focus_device = ctrl.core.get_focus_device()
-
     z_positions = list(np.arange(z_start_um, z_end_um + z_step_um / 2, z_step_um))
     metric_values = []
 
@@ -314,24 +326,18 @@ def sweep_autofocus(
         ctrl.core.wait_for_device(focus_device)
         if settle_ms > 0:
             time.sleep(settle_ms / 1000.0)
-        image = snap_to_numpy(ctrl)
-        metric_values.append(metric_fn(image))
+        metric_values.append(metric_fn(snap_to_numpy(ctrl)))
 
     best_idx = int(np.argmax(metric_values))
     best_z = z_positions[best_idx]
-
-    # Move to best position
     ctrl.core.set_position(best_z)
     ctrl.core.wait_for_device(focus_device)
-
-    # "Settled" means the peak is not at the boundary of the sweep
-    settled = 0 < best_idx < len(z_positions) - 1
 
     return AutofocusResult(
         best_z_um=best_z,
         metric_values=metric_values,
         z_positions=z_positions,
-        settled=settled,
+        settled=0 < best_idx < len(z_positions) - 1,
     )
 
 
@@ -342,121 +348,495 @@ def coarse_then_fine_autofocus(
     fine_step_um: float,
     settle_ms: int = 50,
 ) -> AutofocusResult:
-    """Two-pass autofocus: coarse sweep to find approximate peak, then fine.
-
-    Starts from the current Z position. Searches ± z_range_um/2 coarsely,
-    then ± coarse_step_um around the coarse best.
-    """
+    """Two-pass autofocus: coarse sweep then fine sweep around the coarse peak."""
     current_z = ctrl.core.get_position()
-    z_start = current_z - z_range_um / 2
-    z_end = current_z + z_range_um / 2
-
-    coarse = sweep_autofocus(ctrl, z_start, z_end, coarse_step_um, settle_ms)
-    fine_start = coarse.best_z_um - coarse_step_um
-    fine_end = coarse.best_z_um + coarse_step_um
-
-    return sweep_autofocus(ctrl, fine_start, fine_end, fine_step_um, settle_ms)
+    coarse = sweep_autofocus(
+        ctrl,
+        current_z - z_range_um / 2,
+        current_z + z_range_um / 2,
+        coarse_step_um,
+        settle_ms,
+    )
+    return sweep_autofocus(
+        ctrl,
+        coarse.best_z_um - coarse_step_um,
+        coarse.best_z_um + coarse_step_um,
+        fine_step_um,
+        settle_ms,
+    )
 ```
 
 ---
 
-## 6. `positions.py` — Position List Manager
+## 6. Position Management via MM's Native API
 
-Micro-Manager's GUI has a built-in position list (XY Stage Control → Mark/Go
-Position List). v2 implements an in-memory equivalent in Python that the agent
-can build and navigate. A future iteration could read/write MM's native `.pos`
-XML format for interoperability. <Let's not make this a future iteration, but the
-current iteration. Let's have Claude read/write from MM's native position list
-to perform multiposition acquisitions.>
+Positions are stored in MM's native position list and are immediately visible in
+the XY Stage Control window of the MM GUI. The agent interacts with them through
+pycro-manager's Studio bridge.
 
 ```python
-# microclaw/positions.py
-from __future__ import annotations
-from dataclasses import dataclass, field
-from typing import Optional
-
-
-@dataclass
-class Position:
-    name: str
-    x_um: float
-    y_um: float
-    z_um: Optional[float] = None   # None if only XY was recorded
-
-
-class PositionList:
-    def __init__(self) -> None:
-        self._positions: dict[str, Position] = {}
-
-    def add(self, name: str, x_um: float, y_um: float, z_um: Optional[float] = None) -> Position:
-        pos = Position(name=name, x_um=x_um, y_um=y_um, z_um=z_um)
-        self._positions[name] = pos
-        return pos
-
-    def get(self, name: str) -> Position:
-        if name not in self._positions:
-            raise KeyError(f"Position '{name}' not found.")
-        return self._positions[name]
-
-    def all(self) -> list[Position]:
-        return list(self._positions.values())
-
-    def names(self) -> list[str]:
-        return list(self._positions.keys())
-
-    def delete(self, name: str) -> None:
-        if name not in self._positions:
-            raise KeyError(f"Position '{name}' not found.")
-        del self._positions[name]
-
-    def clear(self) -> None:
-        self._positions.clear()
-```
-
-The `PositionList` instance is held by `MicroscopeController` (extended in v2):
-
-```python
-# controller.py addition
-from microclaw.positions import PositionList
+# controller.py — new helpers (no separate positions.py needed)
 
 class MicroscopeController:
-    def __init__(self, port: int = 4827):
-        self._core = Core(port=port)
-        self._studio = Studio(port=port)
-        self.positions = PositionList()   # new in v2
+    # ... existing __init__ ...
+
+    def _pos_list(self):
+        """Return MM's live PositionList Java object via pycro-manager."""
+        return self._studio.positions().get_position_list()
+
+    def add_position(self, label: str, x: float, y: float, z: float | None = None) -> None:
+        """Add a position to MM's native position list."""
+        from pycromanager import MultiStagePosition, StagePosition
+        msp = MultiStagePosition()
+        msp.set_label(label)
+        xy_stage = self._core.get_xy_stage_device()
+        sp_xy = StagePosition()
+        sp_xy.stage_device_label = xy_stage
+        sp_xy.num_axes = 2
+        sp_xy.x = x
+        sp_xy.y = y
+        msp.add(sp_xy)
+        if z is not None:
+            z_stage = self._core.get_focus_device()
+            sp_z = StagePosition()
+            sp_z.stage_device_label = z_stage
+            sp_z.num_axes = 1
+            sp_z.x = z
+            msp.add(sp_z)
+        self._pos_list().add_position(msp)
+
+    def get_positions(self) -> list[dict]:
+        """Return all positions from MM's native list."""
+        pl = self._pos_list()
+        out = []
+        for i in range(pl.get_number_of_positions()):
+            msp = pl.get_position(i)
+            entry = {"name": str(msp.get_label())}
+            for j in range(msp.size()):
+                sp = msp.get(j)
+                if sp.num_axes == 2:
+                    entry["x_um"] = round(sp.x, 3)
+                    entry["y_um"] = round(sp.y, 3)
+                elif sp.num_axes == 1:
+                    entry["z_um"] = round(sp.x, 3)
+            out.append(entry)
+        return out
+
+    def go_to_position(self, label: str) -> None:
+        """Move stage to a named position from MM's native list."""
+        pl = self._pos_list()
+        for i in range(pl.get_number_of_positions()):
+            msp = pl.get_position(i)
+            if str(msp.get_label()) == label:
+                pl.go_to_position(i, self._core)
+                return
+        raise KeyError(f"Position '{label}' not found in MM position list.")
+
+    def remove_position(self, label: str) -> None:
+        pl = self._pos_list()
+        for i in range(pl.get_number_of_positions()):
+            if str(pl.get_position(i).get_label()) == label:
+                pl.remove_position(i)
+                return
+        raise KeyError(f"Position '{label}' not found.")
+
+    def clear_positions(self) -> None:
+        self._pos_list().clear_all_positions()
+
+    def save_position_list(self, path: str) -> None:
+        """Save MM position list to a .pos file."""
+        self._pos_list().save(path)
+
+    def load_position_list(self, path: str) -> None:
+        """Load a .pos file into MM's native position list."""
+        self._pos_list().load(path)
+        self._studio.positions().set_position_list(self._pos_list())
+```
+
+> **Note on API verification:** The exact Java method names exposed by pycro-manager
+> for `PositionList` and `MultiStagePosition` must be confirmed against the installed
+> pycro-manager version. `studio.positions()` returns a `PositionListManager`; the
+> methods `get_position_list()`, `go_to_position()`, `get_number_of_positions()`,
+> etc., mirror the MM 2.0 Java API. A small integration test against the Demo config
+> (Phase 4) validates this before it is relied upon.
+
+---
+
+## 7. `hooks.py` — Pre-coded Adaptive Acquisition Strategies
+
+These hooks implement the analysis strategies that run at acquisition speed.
+Claude selects and configures them at setup time; they never call the Claude API.
+After the acquisition, hooks write a summary to a JSON log file that Claude reads.
+
+```python
+# microclaw/hooks.py
+from __future__ import annotations
+import json
+import time
+from pathlib import Path
+import numpy as np
+from microclaw.image_analysis import laplacian_variance, snap_to_numpy
+
+
+class HookBase:
+    """All hooks write a summary log so Claude can read results afterward."""
+
+    def __init__(self, log_path: str | None = None):
+        self.log_path = log_path
+        self._log: list[dict] = []
+
+    def _write_log(self) -> None:
+        if self.log_path:
+            Path(self.log_path).write_text(json.dumps(self._log, indent=2))
+
+    def get_summary(self) -> list[dict]:
+        return self._log
+
+
+class AutofocusHook(HookBase):
+    """Form B autofocus: runs a Z sweep before each image in the acquisition.
+
+    Used as a post_hardware_hook_fn inside an Acquisition context.
+    After hardware moves to the event's XY (and nominal Z), this hook
+    sweeps Z and updates the focus device to the sharpest plane before
+    the camera fires.
+    """
+
+    def __init__(self, ctrl, guard, z_range_um: float, z_step_um: float,
+                 settle_ms: int = 50, log_path: str | None = None):
+        super().__init__(log_path)
+        from microclaw.autofocus import coarse_then_fine_autofocus
+        self.ctrl = ctrl
+        self.guard = guard
+        self.z_range_um = z_range_um
+        self.z_step_um = z_step_um
+        self.settle_ms = settle_ms
+        self._autofocus_fn = coarse_then_fine_autofocus
+
+    def post_hardware_hook_fn(self, event: dict) -> dict:
+        """Called after hardware moves to event position, before image capture."""
+        current_z = self.ctrl.core.get_position()
+        z_start = current_z - self.z_range_um / 2
+        z_end = current_z + self.z_range_um / 2
+        try:
+            self.guard.check_z(z_start)
+            self.guard.check_z(z_end)
+        except Exception as e:
+            self._log.append({"event": event, "autofocus": "skipped", "reason": str(e)})
+            self._write_log()
+            return event
+
+        coarse_step = max(self.z_step_um * 5, 1.0)
+        result = self._autofocus_fn(
+            self.ctrl, self.z_range_um, coarse_step, self.z_step_um, self.settle_ms
+        )
+        self._log.append({
+            "position": event.get("axes", {}),
+            "best_z_um": round(result.best_z_um, 3),
+            "settled": result.settled,
+        })
+        self._write_log()
+        return event
+
+
+class FocusFeedbackHook(HookBase):
+    """Corrects Z drift per frame during timelapse using Laplacian variance."""
+
+    def __init__(self, ctrl, guard, threshold_fraction: float = 0.85,
+                 z_step_um: float = 0.5, max_jogs: int = 5,
+                 log_path: str | None = None):
+        super().__init__(log_path)
+        self.ctrl = ctrl
+        self.guard = guard
+        self.threshold = threshold_fraction
+        self.z_step = z_step_um
+        self.max_jogs = max_jogs
+        self.reference_metric: float | None = None
+
+    def image_process_fn(self, image: np.ndarray, metadata: dict, event_queue):
+        metric = laplacian_variance(image)
+        if self.reference_metric is None:
+            self.reference_metric = metric
+            return image, metadata
+
+        if metric < self.reference_metric * self.threshold:
+            focus_device = self.ctrl.core.get_focus_device()
+            for _ in range(self.max_jogs):
+                current_z = self.ctrl.core.get_position()
+                try:
+                    self.guard.check_z(current_z + self.z_step)
+                    self.ctrl.core.set_position(current_z + self.z_step)
+                    self.ctrl.core.wait_for_device(focus_device)
+                    new_image = snap_to_numpy(self.ctrl)
+                    new_metric = laplacian_variance(new_image)
+                    if new_metric >= self.reference_metric * self.threshold:
+                        self.reference_metric = new_metric
+                        break
+                except Exception:
+                    break
+            self._log.append({"frame": metadata.get("time"), "focus_correction": True})
+            self._write_log()
+        return image, metadata
+
+
+class IntensityAdaptiveHook(HookBase):
+    """Adjusts exposure per frame to keep mean intensity near a target."""
+
+    def __init__(self, ctrl, guard, target_mean: float, tolerance: float = 0.1,
+                 min_exposure_ms: float = 1.0, max_exposure_ms: float = 1000.0,
+                 log_path: str | None = None):
+        super().__init__(log_path)
+        self.ctrl = ctrl
+        self.guard = guard
+        self.target_mean = target_mean
+        self.tolerance = tolerance
+        self.min_exp = min_exposure_ms
+        self.max_exp = max_exposure_ms
+
+    def image_process_fn(self, image: np.ndarray, metadata: dict, event_queue):
+        mean = float(np.mean(image))
+        if abs(mean - self.target_mean) / self.target_mean > self.tolerance:
+            ratio = self.target_mean / max(mean, 1.0)
+            new_exp = float(np.clip(self.ctrl.core.get_exposure() * ratio,
+                                    self.min_exp, self.max_exp))
+            try:
+                self.guard.check_exposure(new_exp)
+                self.ctrl.core.set_exposure(new_exp)
+                self._log.append({"frame": metadata.get("time"),
+                                  "new_exposure_ms": round(new_exp, 1)})
+                self._write_log()
+            except Exception:
+                pass
+        return image, metadata
+
+
+class PositionFilterHook(HookBase):
+    """Rejects positions where mean intensity is below a threshold.
+
+    Returns None to discard the image; pycro-manager drops the remaining
+    events for that position.
+    """
+
+    def __init__(self, min_mean_intensity: float = 100.0, log_path: str | None = None):
+        super().__init__(log_path)
+        self.min_mean = min_mean_intensity
+        self.rejected: list = []
+
+    def image_process_fn(self, image: np.ndarray, metadata: dict, event_queue):
+        mean = float(np.mean(image))
+        if mean < self.min_mean:
+            pos = metadata.get("position_index", -1)
+            if pos not in self.rejected:
+                self.rejected.append(pos)
+                self._log.append({"position_index": pos, "mean_intensity": round(mean, 1),
+                                  "action": "rejected"})
+                self._write_log()
+            return None
+        return image, metadata
+
+
+PRECODED_HOOK_REGISTRY: dict[str, type] = {
+    "autofocus_per_position": AutofocusHook,
+    "focus_feedback":         FocusFeedbackHook,
+    "intensity_adaptive":     IntensityAdaptiveHook,
+    "position_filter":        PositionFilterHook,
+}
+
+# To add a new analysis plugin (e.g. a cell segmentation hook), define a class
+# that inherits from HookBase and implements image_process_fn, then register it
+# here. No other code needs to change.
 ```
 
 ---
 
-## 7. New Tool Implementations (`tools.py` extensions)
+## 8. `hook_manager.py` — Claude-Generated Hooks
 
-### 7.1 Image capture with visual return (`snap_and_analyze`)
+This module implements the save/load/validate pipeline for hooks written by
+Claude. The pre-coded hooks in `hooks.py` are completely separate and unaffected.
 
-This tool replaces the simple `snap_image` when the agent or user wants Claude
-to see the image. It returns a multimodal content list.
+### 8.1 Hook template
+
+Every Claude-generated hook must follow this structure:
+
+```python
+# MICROCLAW_HOOK
+# name: <hook_name>
+# description: <one sentence>
+# params:
+#   <param>: <type> — <description>
+
+from __future__ import annotations
+import numpy as np
+
+class <HookClassName>:
+    def __init__(self, **params):
+        ...
+
+    def image_process_fn(
+        self, image: np.ndarray, metadata: dict, event_queue
+    ) -> tuple[np.ndarray, dict] | None:
+        ...
+        # Return (image, metadata) to keep, None to discard
+```
+
+The template header comment is machine-readable and used by `hook_manager.py`
+to extract metadata for the manifest.
+
+### 8.2 Safety validation
+
+Before saving, the code goes through `validate_hook_code()`:
+
+```python
+# microclaw/hook_manager.py
+import ast
+import json
+import importlib.util
+from pathlib import Path
+
+HOOKS_DIR = Path.home() / ".microclaw" / "hooks"
+MANIFEST = HOOKS_DIR / "manifest.json"
+
+BANNED_NAMES = {"subprocess", "os.system", "eval", "exec", "__import__"}
+BANNED_OPENS = {"w", "a", "wb", "ab"}  # write-mode file opens outside save_dir
+
+
+def validate_hook_code(code: str) -> list[str]:
+    """Return a list of safety warnings. Empty list means no issues found."""
+    warnings = []
+    try:
+        tree = ast.parse(code)
+    except SyntaxError as e:
+        return [f"Syntax error: {e}"]
+
+    for node in ast.walk(tree):
+        # Block dangerous builtins
+        if isinstance(node, ast.Name) and node.id in {"eval", "exec"}:
+            warnings.append(f"Dangerous call: {node.id}()")
+        # Block subprocess / os.system via attribute access
+        if isinstance(node, ast.Attribute):
+            chain = f"{getattr(node.value, 'id', '?')}.{node.attr}"
+            if chain in BANNED_NAMES:
+                warnings.append(f"Dangerous call: {chain}")
+        # Block __import__
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name) and node.func.id == "__import__":
+                warnings.append("Dangerous call: __import__()")
+
+    return warnings
+
+
+def save_hook(name: str, code: str, description: str) -> None:
+    """Save validated hook code to disk and update manifest."""
+    HOOKS_DIR.mkdir(parents=True, exist_ok=True)
+    hook_path = HOOKS_DIR / f"{name}.py"
+    hook_path.write_text(code)
+
+    manifest = json.loads(MANIFEST.read_text()) if MANIFEST.exists() else {}
+    manifest[name] = {"description": description, "path": str(hook_path)}
+    MANIFEST.write_text(json.dumps(manifest, indent=2))
+
+
+def load_hook_class(name: str):
+    """Dynamically import a saved hook and return its class."""
+    manifest = json.loads(MANIFEST.read_text()) if MANIFEST.exists() else {}
+    if name not in manifest:
+        raise KeyError(f"No generated hook named '{name}'.")
+    spec = importlib.util.spec_from_file_location(name, manifest[name]["path"])
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    # Find the class that has image_process_fn
+    for attr in dir(mod):
+        cls = getattr(mod, attr)
+        if isinstance(cls, type) and hasattr(cls, "image_process_fn"):
+            return cls
+    raise AttributeError(f"No class with image_process_fn found in hook '{name}'.")
+
+
+def list_generated_hooks() -> dict[str, str]:
+    """Return {name: description} for all saved generated hooks."""
+    if not MANIFEST.exists():
+        return {}
+    return {k: v["description"] for k, v in json.loads(MANIFEST.read_text()).items()}
+```
+
+### 8.3 New tools for hook management
 
 ```python
 # tools.py (new)
-from microclaw.image_analysis import snap_to_numpy, compute_stats, make_thumbnail
 
+def generate_and_save_hook(
+    ctrl: MicroscopeController,
+    guard: SafetyGuard,
+    name: str,
+    code: str,
+    description: str,
+) -> dict:
+    """Validate and save a Claude-generated hook script.
+
+    This tool is called ONLY after the user has seen and approved the code.
+    The system prompt instructs Claude to show the code to the user and wait
+    for explicit confirmation before calling this tool.
+    """
+    from microclaw.hook_manager import validate_hook_code, save_hook
+    warnings = validate_hook_code(code)
+    if warnings:
+        return {
+            "error": "Safety validation found issues — hook not saved.",
+            "warnings": warnings,
+        }
+    save_hook(name, code, description)
+    return {"status": f"Hook '{name}' saved successfully.", "path": str(
+        Path.home() / ".microclaw" / "hooks" / f"{name}.py"
+    )}
+
+
+def list_hooks(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
+    """List all available hook strategies (pre-coded and generated)."""
+    from microclaw.hooks import PRECODED_HOOK_REGISTRY
+    from microclaw.hook_manager import list_generated_hooks
+    return {
+        "precoded": list(PRECODED_HOOK_REGISTRY.keys()),
+        "generated": list_generated_hooks(),
+    }
+
+
+def read_hook_log(
+    ctrl: MicroscopeController,
+    guard: SafetyGuard,
+    log_path: str,
+) -> dict:
+    """Read a hook's output log file after an acquisition completes.
+
+    Claude calls this to retrieve per-position cell counts, autofocus results,
+    focus corrections, etc., and synthesize them for the user.
+    """
+    import json
+    path = Path(log_path)
+    if not path.exists():
+        return {"error": f"Log file not found: {log_path}"}
+    entries = json.loads(path.read_text())
+    return {"log_path": log_path, "entry_count": len(entries), "entries": entries}
+```
+
+---
+
+## 9. New Tool Implementations (`tools.py` extensions)
+
+### 9.1 Image capture with visual return (`snap_and_analyze`)
+
+Returns a multimodal content list so Claude can see the image and numerical
+stats simultaneously.
+
+```python
 def snap_and_analyze(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
     thumbnail_size: int = 512,
 ) -> list:
-    """Snap image, compute metrics, return thumbnail for Claude to see.
-
-    Returns a multimodal content list (text + image) rather than a JSON string.
-    The execute_tool dispatcher detects the list return and passes it directly
-    as the tool_result content.
-    """
     image = snap_to_numpy(ctrl)
     stats = compute_stats(image)
-    z_um = round(ctrl.core.get_position(), 3)
-    thumbnail_b64 = make_thumbnail(image, max_size=thumbnail_size)
-
     text_payload = {
-        "z_um": z_um,
+        "z_um": round(ctrl.core.get_position(), 3),
         "focus_metric": round(stats.focus_metric, 2),
         "mean_intensity": round(stats.mean_intensity, 1),
         "max_intensity": round(stats.max_intensity, 1),
@@ -464,23 +844,17 @@ def snap_and_analyze(
     }
     return [
         {"type": "text", "text": json.dumps(text_payload)},
-        {
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": "image/png",
-                "data": thumbnail_b64,
-            },
-        },
+        {"type": "image", "source": {
+            "type": "base64",
+            "media_type": "image/png",
+            "data": make_thumbnail(image, max_size=thumbnail_size),
+        }},
     ]
 ```
 
-### 7.2 Autofocus
+### 9.2 Autofocus (Form A — standalone)
 
 ```python
-# tools.py (new)
-from microclaw.autofocus import coarse_then_fine_autofocus, sweep_autofocus
-
 def run_autofocus(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -490,164 +864,119 @@ def run_autofocus(
     settle_ms: int = 50,
     return_thumbnail: bool = True,
 ) -> list | dict:
-    """Sweep the Z axis and move to the sharpest focal plane.
-
-    method='coarse_then_fine': coarse sweep over z_range_um, then fine
-      sweep of ±z_step_um around the coarse best. z_step_um is the fine step;
-      coarse step is 5× the fine step.
-    method='sweep': single sweep from (current_z - z_range_um/2) to
-      (current_z + z_range_um/2) in z_step_um increments.
-
-    Safety: checks all Z positions in the sweep range before starting.
-    """
     current_z = ctrl.core.get_position()
-    z_start = current_z - z_range_um / 2
-    z_end = current_z + z_range_um / 2
-
-    guard.check_z(z_start)
-    guard.check_z(z_end)
-    guard.check_autofocus_range(z_range_um)
+    guard.check_z(current_z - z_range_um / 2)
+    guard.check_z(current_z + z_range_um / 2)
 
     if method == "coarse_then_fine":
-        coarse_step = max(z_step_um * 5, 1.0)
         result = coarse_then_fine_autofocus(
-            ctrl, z_range_um, coarse_step, z_step_um, settle_ms
+            ctrl, z_range_um, max(z_step_um * 5, 1.0), z_step_um, settle_ms
         )
     else:
-        result = sweep_autofocus(ctrl, z_start, z_end, z_step_um, settle_ms)
+        result = sweep_autofocus(
+            ctrl, current_z - z_range_um / 2, current_z + z_range_um / 2, z_step_um, settle_ms
+        )
 
     payload = {
         "best_z_um": round(result.best_z_um, 3),
         "settled": result.settled,
         "metric_curve": [round(v, 2) for v in result.metric_values],
         "z_positions": [round(z, 3) for z in result.z_positions],
-        "warning": None if result.settled else (
-            "Peak focus was at the edge of the sweep range; consider widening z_range_um."
-        ),
+        "warning": None if result.settled else
+            "Peak focus was at the edge of the sweep range; consider widening z_range_um.",
     }
 
     if not return_thumbnail:
         return payload
 
-    # Snap at best Z and return thumbnail so Claude can visually confirm
     image = snap_to_numpy(ctrl)
-    stats = compute_stats(image)
-    payload["focus_metric_at_best"] = round(stats.focus_metric, 2)
-    thumbnail_b64 = make_thumbnail(image)
-
+    payload["focus_metric_at_best"] = round(compute_stats(image).focus_metric, 2)
     return [
         {"type": "text", "text": json.dumps(payload)},
-        {
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": "image/png",
-                "data": thumbnail_b64,
-            },
-        },
+        {"type": "image", "source": {
+            "type": "base64", "media_type": "image/png",
+            "data": make_thumbnail(image),
+        }},
     ]
 ```
 
-### 7.3 Position management
+### 9.3 Position management
 
 ```python
-# tools.py (new)
-def mark_position(
-    ctrl: MicroscopeController,
-    guard: SafetyGuard,
-    name: str,
-    include_z: bool = True,
-) -> dict:
-    """Record the current stage position under a given name."""
+def mark_position(ctrl, guard, name: str, include_z: bool = True) -> dict:
     x = round(ctrl.core.get_x_position(), 3)
     y = round(ctrl.core.get_y_position(), 3)
     z = round(ctrl.core.get_position(), 3) if include_z else None
-    ctrl.positions.add(name, x, y, z)
-    entry = {"name": name, "x_um": x, "y_um": y}
+    guard.check_xy(x, y)
     if z is not None:
-        entry["z_um"] = z
-    return {"status": f"Position '{name}' saved.", **entry}
+        guard.check_z(z)
+    ctrl.add_position(name, x, y, z)
+    return {"status": f"Position '{name}' saved to MM position list.",
+            "x_um": x, "y_um": y, **({"z_um": z} if z else {})}
 
 
-def get_position_list(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
-    """Return all named positions."""
-    positions = [
-        {"name": p.name, "x_um": p.x_um, "y_um": p.y_um,
-         **({"z_um": p.z_um} if p.z_um is not None else {})}
-        for p in ctrl.positions.all()
-    ]
+def get_position_list(ctrl, guard) -> dict:
+    positions = ctrl.get_positions()
     return {"positions": positions, "count": len(positions)}
 
 
-def go_to_position(
-    ctrl: MicroscopeController,
-    guard: SafetyGuard,
-    name: str,
-) -> dict:
-    """Move to a previously saved named position."""
-    pos = ctrl.positions.get(name)
-    guard.check_xy(pos.x_um, pos.y_um)
-    if pos.z_um is not None:
-        guard.check_z(pos.z_um)
-
-    ctrl.core.set_xy_position(pos.x_um, pos.y_um)
-    _wait(ctrl, ctrl.core.get_xy_stage_device())
-    if pos.z_um is not None:
-        ctrl.core.set_position(pos.z_um)
-        _wait(ctrl, ctrl.core.get_focus_device())
-
-    return {"status": f"Moved to '{name}'.", "x_um": pos.x_um, "y_um": pos.y_um,
-            **({"z_um": pos.z_um} if pos.z_um is not None else {})}
+def go_to_position(ctrl, guard, name: str) -> dict:
+    positions = {p["name"]: p for p in ctrl.get_positions()}
+    if name not in positions:
+        return {"error": f"Position '{name}' not found."}
+    pos = positions[name]
+    guard.check_xy(pos["x_um"], pos["y_um"])
+    if "z_um" in pos:
+        guard.check_z(pos["z_um"])
+    ctrl.go_to_position(name)
+    return {"status": f"Moved to '{name}'.", **pos}
 
 
-def delete_position(ctrl: MicroscopeController, guard: SafetyGuard, name: str) -> dict:
-    ctrl.positions.delete(name)
-    return {"status": f"Position '{name}' deleted."}
+def delete_position(ctrl, guard, name: str) -> dict:
+    ctrl.remove_position(name)
+    return {"status": f"Position '{name}' deleted from MM position list."}
 
 
-def clear_position_list(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
-    ctrl.positions.clear()
+def clear_position_list(ctrl, guard) -> dict:
+    ctrl.clear_positions()
     return {"status": "Position list cleared."}
+
+
+def save_position_list(ctrl, guard, path: str) -> dict:
+    ctrl.save_position_list(path)
+    return {"status": f"Position list saved to {path}."}
+
+
+def load_position_list(ctrl, guard, path: str) -> dict:
+    ctrl.load_position_list(path)
+    positions = ctrl.get_positions()
+    return {"status": f"Loaded {len(positions)} positions from {path}.", "count": len(positions)}
 ```
 
-### 7.4 Multiposition acquisition
+### 9.4 Multiposition acquisition
 
 ```python
-# tools.py (new)
-from pathlib import Path
-from pycromanager import Acquisition, multi_d_acquisition_events
-
 def run_multiposition_acquisition(
-    ctrl: MicroscopeController,
-    guard: SafetyGuard,
+    ctrl, guard,
     position_names: list[str],
     protocol: str,
     save_dir: str,
     name: str = "multipos",
     protocol_params: dict | None = None,
 ) -> dict:
-    """Visit each named position and run a protocol (snap, zstack, timelapse).
-
-    protocol_params are forwarded to the per-position tool function.
-    Returns a summary with per-position status.
-    """
     params = protocol_params or {}
+    all_positions = {p["name"]: p for p in ctrl.get_positions()}
     results = []
 
     for pos_name in position_names:
-        pos = ctrl.positions.get(pos_name)
-        guard.check_xy(pos.x_um, pos.y_um)
-
-        ctrl.core.set_xy_position(pos.x_um, pos.y_um)
-        _wait(ctrl, ctrl.core.get_xy_stage_device())
-        if pos.z_um is not None:
-            guard.check_z(pos.z_um)
-            ctrl.core.set_position(pos.z_um)
-            _wait(ctrl, ctrl.core.get_focus_device())
-
+        if pos_name not in all_positions:
+            results.append({"position": pos_name, "error": "Not found in position list."})
+            continue
+        pos = all_positions[pos_name]
+        guard.check_xy(pos["x_um"], pos["y_um"])
+        ctrl.go_to_position(pos_name)
         pos_save_dir = str(Path(save_dir) / pos_name)
         Path(pos_save_dir).mkdir(parents=True, exist_ok=True)
-
         try:
             if protocol == "snap":
                 ctrl.studio.live().snap(True)
@@ -658,21 +987,15 @@ def run_multiposition_acquisition(
             elif protocol == "timelapse":
                 r = run_timelapse(ctrl, guard, save_dir=pos_save_dir, name=pos_name, **params)
                 results.append({"position": pos_name, **r})
-            else:
-                results.append({"position": pos_name, "error": f"Unknown protocol '{protocol}'."})
         except Exception as e:
             results.append({"position": pos_name, "error": str(e)})
 
     n_ok = sum(1 for r in results if "error" not in r)
-    return {
-        "status": f"{n_ok}/{len(position_names)} positions completed.",
-        "results": results,
-    }
+    return {"status": f"{n_ok}/{len(position_names)} positions completed.", "results": results}
 
 
 def run_multiposition_with_autofocus(
-    ctrl: MicroscopeController,
-    guard: SafetyGuard,
+    ctrl, guard,
     position_names: list[str],
     z_range_um: float,
     z_step_um: float,
@@ -683,199 +1006,56 @@ def run_multiposition_with_autofocus(
     settle_ms: int = 50,
     protocol_params: dict | None = None,
 ) -> dict:
-    """Visit each position, autofocus, then run a protocol.
-
-    At each position:
-      1. Move to saved XY (and Z if recorded).
-      2. Run autofocus sweep centered on current Z.
-      3. Run the specified protocol.
-
-    Returns per-position status including best-Z found.
-    """
     params = protocol_params or {}
+    all_positions = {p["name"]: p for p in ctrl.get_positions()}
     results = []
 
-    # Safety-check the autofocus range once before starting
-    guard.check_autofocus_range(z_range_um)
-
     for pos_name in position_names:
-        pos = ctrl.positions.get(pos_name)
-        guard.check_xy(pos.x_um, pos.y_um)
+        if pos_name not in all_positions:
+            results.append({"position": pos_name, "error": "Not found in position list."})
+            continue
+        pos = all_positions[pos_name]
+        guard.check_xy(pos["x_um"], pos["y_um"])
+        ctrl.go_to_position(pos_name)
 
-        ctrl.core.set_xy_position(pos.x_um, pos.y_um)
-        _wait(ctrl, ctrl.core.get_xy_stage_device())
-        if pos.z_um is not None:
-            guard.check_z(pos.z_um)
-            ctrl.core.set_position(pos.z_um)
-            _wait(ctrl, ctrl.core.get_focus_device())
-
-        # Autofocus
         current_z = ctrl.core.get_position()
-        z_start = current_z - z_range_um / 2
-        z_end = current_z + z_range_um / 2
         try:
-            guard.check_z(z_start)
-            guard.check_z(z_end)
+            guard.check_z(current_z - z_range_um / 2)
+            guard.check_z(current_z + z_range_um / 2)
         except Exception as e:
             results.append({"position": pos_name, "error": f"Autofocus range out of bounds: {e}"})
             continue
 
-        if autofocus_method == "coarse_then_fine":
-            coarse_step = max(z_step_um * 5, 1.0)
-            af_result = coarse_then_fine_autofocus(ctrl, z_range_um, coarse_step, z_step_um, settle_ms)
-        else:
-            af_result = sweep_autofocus(ctrl, z_start, z_end, z_step_um, settle_ms)
+        coarse_step = max(z_step_um * 5, 1.0)
+        af = (coarse_then_fine_autofocus(ctrl, z_range_um, coarse_step, z_step_um, settle_ms)
+              if autofocus_method == "coarse_then_fine"
+              else sweep_autofocus(ctrl, current_z - z_range_um / 2,
+                                   current_z + z_range_um / 2, z_step_um, settle_ms))
 
-        best_z = af_result.best_z_um
-
-        # Acquisition
         pos_save_dir = str(Path(save_dir) / pos_name)
         Path(pos_save_dir).mkdir(parents=True, exist_ok=True)
         try:
             if protocol == "snap":
                 ctrl.studio.live().snap(True)
-                results.append({"position": pos_name, "best_z_um": round(best_z, 3), "status": "snapped"})
+                results.append({"position": pos_name, "best_z_um": round(af.best_z_um, 3), "status": "snapped"})
             elif protocol == "zstack":
                 r = run_zstack(ctrl, guard, save_dir=pos_save_dir, name=pos_name, **params)
-                results.append({"position": pos_name, "best_z_um": round(best_z, 3), **r})
+                results.append({"position": pos_name, "best_z_um": round(af.best_z_um, 3), **r})
             elif protocol == "timelapse":
                 r = run_timelapse(ctrl, guard, save_dir=pos_save_dir, name=pos_name, **params)
-                results.append({"position": pos_name, "best_z_um": round(best_z, 3), **r})
-            else:
-                results.append({"position": pos_name, "error": f"Unknown protocol '{protocol}'."})
+                results.append({"position": pos_name, "best_z_um": round(af.best_z_um, 3), **r})
         except Exception as e:
-            results.append({"position": pos_name, "best_z_um": round(best_z, 3), "error": str(e)})
+            results.append({"position": pos_name, "best_z_um": round(af.best_z_um, 3), "error": str(e)})
 
     n_ok = sum(1 for r in results if "error" not in r)
-    return {
-        "status": f"{n_ok}/{len(position_names)} positions completed with autofocus.",
-        "results": results,
-    }
+    return {"status": f"{n_ok}/{len(position_names)} positions completed with autofocus.", "results": results}
 ```
 
----
-
-## 8. `hooks.py` — Pre-coded Adaptive Acquisition Strategies
-
-These hooks run inside pycro-manager's `Acquisition` context manager. They are
-called per-image at acquisition speed (no API calls). Claude selects and
-configures a strategy at setup time via `run_adaptive_acquisition`.
+### 9.5 Adaptive acquisition (hook-based)
 
 ```python
-# microclaw/hooks.py
-from __future__ import annotations
-from typing import Any
-import numpy as np
-from microclaw.image_analysis import laplacian_variance
-
-
-class FocusFeedbackHook:
-    """Adjusts Z position after each image to maintain focus.
-
-    Uses a proportional controller: if the focus metric drops below
-    `threshold_fraction` of the reference metric, jogs Z and re-acquires.
-    Suitable for drift-correcting timelapses.
-    """
-
-    def __init__(self, ctrl, threshold_fraction: float = 0.85, z_step_um: float = 0.5, max_jogs: int = 5):
-        self.ctrl = ctrl
-        self.threshold = threshold_fraction
-        self.z_step = z_step_um
-        self.max_jogs = max_jogs
-        self.reference_metric: float | None = None
-
-    def image_process_fn(self, image: np.ndarray, metadata: dict, event_queue) -> tuple[np.ndarray, dict]:
-        metric = laplacian_variance(image)
-        if self.reference_metric is None:
-            self.reference_metric = metric
-            return image, metadata
-
-        if metric < self.reference_metric * self.threshold:
-            # Simple jog-and-check to recover focus
-            focus_device = self.ctrl.core.get_focus_device()
-            for _ in range(self.max_jogs):
-                current_z = self.ctrl.core.get_position()
-                self.ctrl.core.set_position(current_z + self.z_step)
-                self.ctrl.core.wait_for_device(focus_device)
-                self.ctrl.core.snap_image()
-                self.ctrl.core.wait_for_image_synced()
-                tagged = self.ctrl.core.get_tagged_image()
-                pixels = np.frombuffer(tagged.pix, dtype=np.uint16).reshape(image.shape)
-                new_metric = laplacian_variance(pixels)
-                if new_metric >= self.reference_metric * self.threshold:
-                    self.reference_metric = new_metric
-                    break
-        return image, metadata
-
-
-class IntensityAdaptiveHook:
-    """Adjusts exposure if mean intensity is outside a target range.
-
-    Useful for timelapses where sample brightness changes over time
-    (e.g., photoactivation, growth).
-    """
-
-    def __init__(self, ctrl, guard, target_mean: float, tolerance: float = 0.1,
-                 min_exposure_ms: float = 1.0, max_exposure_ms: float = 1000.0):
-        self.ctrl = ctrl
-        self.guard = guard
-        self.target_mean = target_mean
-        self.tolerance = tolerance
-        self.min_exp = min_exposure_ms
-        self.max_exp = max_exposure_ms
-
-    def image_process_fn(self, image: np.ndarray, metadata: dict, event_queue) -> tuple[np.ndarray, dict]:
-        mean = float(np.mean(image))
-        if abs(mean - self.target_mean) / self.target_mean > self.tolerance:
-            ratio = self.target_mean / max(mean, 1.0)
-            current_exp = self.ctrl.core.get_exposure()
-            new_exp = float(np.clip(current_exp * ratio, self.min_exp, self.max_exp))
-            try:
-                self.guard.check_exposure(new_exp)
-                self.ctrl.core.set_exposure(new_exp)
-            except Exception:
-                pass
-        return image, metadata
-
-
-class PositionFilterHook:
-    """Rejects positions in a multiposition acquisition where no signal is found.
-
-    Compares mean intensity against a threshold. If the image is too dark
-    (no cell at this position), the remaining events for this position are
-    dropped. Requires pycro-manager's event_queue access.
-
-    NOTE: Event cancellation via the event_queue is pycro-manager ≥1.0 API.
-    Verify the API against the installed pycro-manager version.
-    """
-
-    def __init__(self, min_mean_intensity: float = 100.0):
-        self.min_mean = min_mean_intensity
-        self.rejected_positions: list[int] = []
-
-    def image_process_fn(self, image: np.ndarray, metadata: dict, event_queue) -> tuple[np.ndarray, dict] | None:
-        mean = float(np.mean(image))
-        if mean < self.min_mean:
-            pos_idx = metadata.get("position_index", -1)
-            if pos_idx not in self.rejected_positions:
-                self.rejected_positions.append(pos_idx)
-            return None  # returning None signals pycro-manager to discard this image
-        return image, metadata
-```
-
-### 8.1 The `run_adaptive_acquisition` tool
-
-```python
-# tools.py (new)
-HOOK_REGISTRY = {
-    "focus_feedback": FocusFeedbackHook,
-    "intensity_adaptive": IntensityAdaptiveHook,
-    "position_filter": PositionFilterHook,
-}
-
 def run_adaptive_acquisition(
-    ctrl: MicroscopeController,
-    guard: SafetyGuard,
+    ctrl, guard,
     z_start_um: float,
     z_end_um: float,
     z_step_um: float,
@@ -884,331 +1064,117 @@ def run_adaptive_acquisition(
     hook_params: dict | None = None,
     channel: str | None = None,
     name: str = "adaptive",
+    log_path: str | None = None,
 ) -> dict:
-    """Run a Z-stack acquisition with a real-time adaptive hook strategy.
+    """Run a Z-stack/timelapse acquisition with a hook strategy.
 
-    hook_strategy must be one of: 'focus_feedback', 'intensity_adaptive',
-    'position_filter'.
-    hook_params are forwarded to the hook class constructor.
+    hook_strategy: a key from PRECODED_HOOK_REGISTRY or a generated hook name.
+    log_path: where the hook writes its per-image/per-position log.
+    After the acquisition, call read_hook_log(log_path) to retrieve results.
     """
-    if hook_strategy not in HOOK_REGISTRY:
-        return {"error": f"Unknown strategy '{hook_strategy}'. Valid: {list(HOOK_REGISTRY)}."}
+    from microclaw.hooks import PRECODED_HOOK_REGISTRY
+    from microclaw.hook_manager import load_hook_class, list_generated_hooks
 
     guard.check_z(z_start_um)
     guard.check_z(z_end_um)
     if channel:
         guard.check_channel(channel)
 
-    params = hook_params or {}
-    hook_cls = HOOK_REGISTRY[hook_strategy]
+    params = dict(hook_params or {})
+    if log_path:
+        params["log_path"] = log_path
+
+    if hook_strategy in PRECODED_HOOK_REGISTRY:
+        hook_cls = PRECODED_HOOK_REGISTRY[hook_strategy]
+    elif hook_strategy in list_generated_hooks():
+        hook_cls = load_hook_class(hook_strategy)
+    else:
+        return {"error": f"Unknown hook strategy '{hook_strategy}'. "
+                f"Run list_hooks() to see available strategies."}
 
     # Inject ctrl/guard for hooks that need hardware access
-    if hook_strategy in ("focus_feedback", "intensity_adaptive"):
+    import inspect
+    sig = inspect.signature(hook_cls.__init__)
+    if "ctrl" in sig.parameters:
         params.setdefault("ctrl", ctrl)
-    if hook_strategy == "intensity_adaptive":
+    if "guard" in sig.parameters:
         params.setdefault("guard", guard)
 
     hook = hook_cls(**params)
 
-    kwargs: dict[str, Any] = {
-        "z_start": z_start_um,
-        "z_end": z_end_um,
-        "z_step": z_step_um,
-    }
+    kwargs = {"z_start": z_start_um, "z_end": z_end_um, "z_step": z_step_um}
     if channel:
         kwargs.update(channel_group="Channel", channels=[channel])
-
     events = multi_d_acquisition_events(**kwargs)
 
-    with Acquisition(
-        directory=save_dir,
-        name=name,
-        image_process_fn=hook.image_process_fn,
-        show_display=True,
-    ) as acq:
+    hook_fn_kwargs = {}
+    if hasattr(hook, "post_hardware_hook_fn"):
+        hook_fn_kwargs["post_hardware_hook_fn"] = hook.post_hardware_hook_fn
+    if hasattr(hook, "image_process_fn"):
+        hook_fn_kwargs["image_process_fn"] = hook.image_process_fn
+
+    with Acquisition(directory=save_dir, name=name, show_display=True,
+                     **hook_fn_kwargs) as acq:
         acq.acquire(events)
 
-    return {"status": "Adaptive acquisition complete.", "dataset_path": str(Path(save_dir) / name)}
+    result = {
+        "status": "Adaptive acquisition complete.",
+        "dataset_path": str(Path(save_dir) / name),
+    }
+    if log_path:
+        result["log_path"] = log_path
+        result["hint"] = "Call read_hook_log to retrieve per-image results."
+    return result
 ```
 
 ---
 
-## 9. Modified `execute_tool` — Multimodal Return Handling
+## 10. Modified `execute_tool` — Multimodal Return Handling
 
-`snap_and_analyze` and `run_autofocus` (when `return_thumbnail=True`) return a
-`list` of content blocks rather than a `dict`. The dispatcher must handle both:
+Image-returning tools return a `list` of content blocks; text tools return a
+`dict` (serialised to JSON). The dispatcher handles both:
 
 ```python
-# tools.py (modified execute_tool)
-def execute_tool(
-    name: str,
-    tool_input: dict,
-    ctrl: MicroscopeController,
-    guard: SafetyGuard,
-) -> str | list:
-    """Execute a tool and return either a JSON string or a multimodal content list.
-
-    The agent loop checks the return type and passes it directly as
-    tool_result content (the Messages API accepts both str and list[block]).
-    """
+def execute_tool(name, tool_input, ctrl, guard) -> str | list:
     fn = TOOL_REGISTRY.get(name)
     if fn is None:
         return json.dumps({"error": f"Unknown tool '{name}'."})
     try:
         result = fn(ctrl, guard, **tool_input)
-        # Multimodal tools return a list; text tools return a dict
-        if isinstance(result, list):
-            return result
-        return json.dumps(result)
+        return result if isinstance(result, list) else json.dumps(result)
     except SafetyViolation as e:
         return json.dumps({"error": f"Safety constraint prevented this action: {e}"})
     except Exception as e:
         return json.dumps({
             "error": f"{type(e).__name__}: {e}",
-            "hint": (
-                "This may be a hardware error (device busy, stage at limit, "
-                "device not found) or a connection problem."
-            ),
+            "hint": "Hardware error, connection problem, or invalid parameters.",
         })
 ```
 
-The agent loop in `agent.py` is already compatible: `content` in a tool_result
-block can be either a string or a list of blocks, and the Anthropic SDK and API
-both accept either form. No changes to `agent.py` are required.
+No changes to `agent.py` are required — the Messages API accepts both `str` and
+`list[block]` as `tool_result` content.
 
 ---
 
-## 10. Tool Schema Additions (`tools_schema.py`)
+## 11. Safety
 
-### New entries (abbreviated — full schemas follow the same pattern as v1):
+No new `SafetyConstraints` fields are needed for v2.
 
-```python
-{
-    "name": "snap_and_analyze",
-    "description": (
-        "Snap a single image and return it to you as a thumbnail for visual analysis, "
-        "along with focus metric and intensity statistics. Use this when you need to "
-        "see the image to make a decision (focus assessment, cell detection, quality check). "
-        "For a quick snap without analysis, use snap_image."
-    ),
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "thumbnail_size": {
-                "type": "integer",
-                "description": "Maximum thumbnail dimension in pixels. Default 512.",
-                "default": 512,
-            }
-        },
-        "required": [],
-    },
-},
-{
-    "name": "run_autofocus",
-    "description": (
-        "Sweep the Z axis and move to the focal plane with the highest sharpness. "
-        "Uses Laplacian variance as the focus metric. Call get_system_state first "
-        "if you are unsure of the current Z position. "
-        "'coarse_then_fine' (default) is recommended; it performs a coarse sweep "
-        "over z_range_um then a fine sweep of ±z_step_um around the best coarse "
-        "position. Returns the best Z, the metric curve, and an image thumbnail."
-    ),
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "z_range_um": {"type": "number", "description": "Total range to sweep in µm (centered on current Z)."},
-            "z_step_um": {"type": "number", "description": "Fine step size in µm (coarse step is 5×)."},
-            "method": {
-                "type": "string",
-                "enum": ["coarse_then_fine", "sweep"],
-                "default": "coarse_then_fine",
-            },
-            "settle_ms": {"type": "integer", "description": "Wait time in ms after each Z move. Default 50.", "default": 50},
-            "return_thumbnail": {"type": "boolean", "default": True},
-        },
-        "required": ["z_range_um", "z_step_um"],
-    },
-},
-{
-    "name": "mark_position",
-    "description": (
-        "Save the current stage position under a name for later retrieval. "
-        "Use this to build a position list for multiposition acquisitions. "
-        "If include_z is true (default), the Z position is also recorded."
-    ),
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "name": {"type": "string", "description": "A unique name for this position (e.g. 'cell_1', 'FOV_A')."},
-            "include_z": {"type": "boolean", "default": True},
-        },
-        "required": ["name"],
-    },
-},
-{
-    "name": "get_position_list",
-    "description": "Return all named positions saved in the current session.",
-    "input_schema": {"type": "object", "properties": {}, "required": []},
-},
-{
-    "name": "go_to_position",
-    "description": "Move the stage to a previously saved named position.",
-    "input_schema": {
-        "type": "object",
-        "properties": {"name": {"type": "string"}},
-        "required": ["name"],
-    },
-},
-{
-    "name": "delete_position",
-    "description": "Remove a named position from the position list.",
-    "input_schema": {
-        "type": "object",
-        "properties": {"name": {"type": "string"}},
-        "required": ["name"],
-    },
-},
-{
-    "name": "clear_position_list",
-    "description": "Delete all saved positions.",
-    "input_schema": {"type": "object", "properties": {}, "required": []},
-},
-{
-    "name": "run_multiposition_acquisition",
-    "description": (
-        "Visit each named position in order and run a protocol at each one. "
-        "protocol must be one of: 'snap', 'zstack', 'timelapse'. "
-        "protocol_params are forwarded to the per-position protocol "
-        "(e.g. for 'zstack': z_start_um, z_end_um, z_step_um)."
-    ),
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "position_names": {"type": "array", "items": {"type": "string"}},
-            "protocol": {"type": "string", "enum": ["snap", "zstack", "timelapse"]},
-            "save_dir": {"type": "string"},
-            "name": {"type": "string", "default": "multipos"},
-            "protocol_params": {"type": "object"},
-        },
-        "required": ["position_names", "protocol", "save_dir"],
-    },
-},
-{
-    "name": "run_multiposition_with_autofocus",
-    "description": (
-        "Visit each named position, autofocus at each one, then run a protocol. "
-        "This is the primary tool for automated plate or slide surveys where focus "
-        "varies across positions. Use when the user asks to 'image multiple wells', "
-        "'scan the slide', or 'autofocus at each position'."
-    ),
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "position_names": {"type": "array", "items": {"type": "string"}},
-            "z_range_um": {"type": "number", "description": "Autofocus sweep range in µm."},
-            "z_step_um": {"type": "number", "description": "Autofocus fine step in µm."},
-            "protocol": {"type": "string", "enum": ["snap", "zstack", "timelapse"]},
-            "save_dir": {"type": "string"},
-            "name": {"type": "string", "default": "multipos_af"},
-            "autofocus_method": {"type": "string", "enum": ["coarse_then_fine", "sweep"], "default": "coarse_then_fine"},
-            "settle_ms": {"type": "integer", "default": 50},
-            "protocol_params": {"type": "object"},
-        },
-        "required": ["position_names", "z_range_um", "z_step_um", "protocol", "save_dir"],
-    },
-},
-{
-    "name": "run_adaptive_acquisition",
-    "description": (
-        "Run a Z-stack acquisition with a real-time adaptive image-processing hook. "
-        "hook_strategy options: "
-        "'focus_feedback' — corrects Z drift per frame (timelapse use case); "
-        "'intensity_adaptive' — adjusts exposure if brightness drifts; "
-        "'position_filter' — skips positions where no signal is detected."
-    ),
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "z_start_um": {"type": "number"},
-            "z_end_um": {"type": "number"},
-            "z_step_um": {"type": "number"},
-            "save_dir": {"type": "string"},
-            "hook_strategy": {"type": "string", "enum": ["focus_feedback", "intensity_adaptive", "position_filter"]},
-            "hook_params": {"type": "object", "description": "Parameters forwarded to the hook (strategy-specific)."},
-            "channel": {"type": "string"},
-            "name": {"type": "string", "default": "adaptive"},
-        },
-        "required": ["z_start_um", "z_end_um", "z_step_um", "save_dir", "hook_strategy"],
-    },
-},
-```
+The existing `z_min` / `z_max` stage constraints cover autofocus safety: the
+`run_autofocus` tool and `AutofocusHook` both call `guard.check_z(z_start)` and
+`guard.check_z(z_end)` before the sweep begins. If the requested range would
+exit `z_min`/`z_max`, the action is blocked with a clear error.
 
----
+An `autofocus.max_z_range_um` constraint was considered (to prevent
+excessively wide sweeps) but is not needed: a wide sweep that stays within
+`z_min`/`z_max` is always valid, and the biologist can already constrain the
+stage travel to any desired range via the existing stage limits.
 
-## 11. Safety Extensions
-
-<I think these will be covered by the stage constrains already in place.
-What is the reason for the additional constraints, e.g. in z?>
-
-### 11.1 New constraint: `autofocus.max_z_range_um`
-
-Add to `safety_config.yaml`:
-
-```yaml
-autofocus:
-  max_z_range_um: 100.0   # cannot sweep more than 100 µm in one autofocus call
-```
-
-Add to `SafetyConstraints` and `SafetyGuard`:
-
-```python
-# safety.py additions
-
-@dataclass
-class AutofocusConstraints:
-    max_z_range_um: Optional[float] = None
-
-
-@dataclass
-class SafetyConstraints:
-    stage: StageConstraints = field(default_factory=StageConstraints)
-    camera: CameraConstraints = field(default_factory=CameraConstraints)
-    autofocus: AutofocusConstraints = field(default_factory=AutofocusConstraints)
-    allowed_channels: Optional[list[str]] = None
-    forbidden_properties: list[ForbiddenProperty] = field(default_factory=list)
-
-    @classmethod
-    def from_yaml(cls, path: str) -> SafetyConstraints:
-        with open(path) as f:
-            cfg = yaml.safe_load(f) or {}
-        # ... existing parsing ...
-        af_cfg = cfg.get("autofocus", {})
-        return cls(
-            ...existing...,
-            autofocus=AutofocusConstraints(**af_cfg),
-        )
-
-
-class SafetyGuard:
-    # ... existing methods ...
-
-    def check_autofocus_range(self, z_range_um: float) -> None:
-        limit = self._c.autofocus.max_z_range_um
-        if limit is not None and z_range_um > limit:
-            raise SafetyViolation(
-                f"Autofocus range {z_range_um:.1f} µm exceeds the maximum allowed ({limit:.1f} µm)."
-            )
-```
-
-### 11.2 Autofocus boundary pre-check
-
-<This is a good idea, but perhaps max_z_range_um could instead just be
-the maximum range of the z stage.>
-
-The `run_autofocus` tool computes `z_start = current_z - z_range/2` and
-`z_end = current_z + z_range/2` and calls `guard.check_z` on both before
-starting the sweep. This prevents the sweep from violating stage limits even if
-the autofocus range itself is within the allowed `max_z_range_um`.
+**Hook safety** (generated hooks): the AST validation in `hook_manager.py`
+(section 8.2) provides a first-pass safety check. User confirmation is always
+required before a generated hook is saved or run. Generated hooks that raise
+exceptions are caught by `execute_tool`'s outer `try/except` and returned as
+error tool results; the acquisition is aborted gracefully rather than crashing.
 
 ---
 
@@ -1218,35 +1184,44 @@ Add to `SYSTEM_PROMPT` in `agent.py`:
 
 ```
 Image analysis:
-- Use snap_and_analyze (not snap_image) when you need to see or assess an image.
-- The focus_metric field (Laplacian variance) indicates sharpness: higher is better.
-  Typical in-focus values depend on sample and magnification; relative comparisons
-  are more reliable than absolute thresholds.
-- If an image looks blurry, call run_autofocus before re-imaging. <suggest this to the user, but don't automatically call run_autofocus unless the user explicitly tells you to.>
-- Never estimate focus from metric values alone without visual confirmation for
-  critical acquisitions.
+- Use snap_and_analyze when you need to see or assess an image interactively.
+  The focus_metric (Laplacian variance) and any hook-computed metrics
+  are in the text block; the thumbnail is for visual context and confirmation.
+- Prefer numerical metrics from hooks over your own visual assessment for
+  quantitative decisions (focus quality, cell presence, intensity).
+- If the image appears blurry, suggest run_autofocus to the user — do not call
+  it automatically unless the user has explicitly asked you to.
+- Never over-interpret a single image; recommend re-imaging or a wider survey
+  if you are uncertain.
 
 Position lists:
-- Use mark_position to record interesting locations before starting a survey.
-- Use run_multiposition_with_autofocus for automated multi-site imaging — do not
-  manually loop over go_to_position unless the user specifically asks for it.
+- Position lists are stored in MM's native format and visible in the MM GUI.
+  Use mark_position after the biologist has navigated to a site of interest.
+- Use save_position_list / load_position_list to persist positions across sessions.
+- Use run_multiposition_with_autofocus for automated surveys — do not manually
+  loop over go_to_position unless the user explicitly asks for it.
 
 Autofocus:
-- Start with z_range_um=20 and z_step_um=0.5 as a reasonable default for a 20× objective.
-  Widen the range if the warning says the peak was at the boundary.
-- Always report the best_z_um found and whether focus was settled.
+- run_autofocus (standalone) is for interactive focus requests.
+- run_adaptive_acquisition with hook_strategy='autofocus_per_position' is for
+  automated surveys where each stored image must be in focus.
+- Default parameters for a 20× objective: z_range_um=20, z_step_um=0.5.
+  Widen z_range_um if the warning says the peak was at the boundary.
 
-Adaptive acquisition:
-- run_adaptive_acquisition hooks run at acquisition speed without Claude in the loop.
-  Prefer run_multiposition_with_autofocus for position-level adaptation, and
-  run_adaptive_acquisition for frame-level adaptation during a single acquisition.
+Hook-based adaptive acquisition:
+- Pre-coded hooks: autofocus_per_position, focus_feedback, intensity_adaptive,
+  position_filter.
+- Generated hooks: call list_hooks() to see what has been saved previously.
+- After an adaptive acquisition, call read_hook_log(log_path) to get per-position
+  or per-frame results, then synthesize and report them to the user.
+- To create a new hook: write the code following the template in section 8.1 of
+  plan_v2.md, show it to the user in full, wait for explicit confirmation, then
+  call generate_and_save_hook().
 ```
 
 ---
 
 ## 13. Example Workflows
-
-<These are good examples. Please keep these headings.>
 
 ### 13.1 Interactive autofocus
 
@@ -1257,24 +1232,26 @@ Claude → get_system_state
   Result: {z_um: 45.0, ...}
 
 Claude → run_autofocus(z_range_um=20, z_step_um=0.5)
-  Result: {best_z_um: 48.2, settled: true, ...} + thumbnail image
+  Result: {best_z_um: 48.2, settled: true, metric_curve: [...]} + thumbnail
 
-Claude (sees image): "I ran a focus sweep from 35 to 55 µm and found the sharpest
-  focus at Z = 48.2 µm (focus metric 4231). The image looks sharp — I can see the
-  cell boundaries clearly."
+Claude: "I swept Z from 35 to 55 µm and found the sharpest focus at Z = 48.2 µm
+  (focus metric 4231). The sweep was settled (peak not at boundary). I can see the
+  cell boundaries clearly in the thumbnail."
 ```
 
-### 13.2 Building a position list and imaging
+### 13.2 Building a position list and imaging with autofocus
 
 ```
-User: "I've moved the stage to three interesting cells. Mark each one as I tell you,
-  then run a DAPI z-stack at each with autofocus."
+User: "I've navigated to three cells. Mark each one, then image all three with
+  autofocus and a DAPI z-stack."
 
-Claude → (user moves stage) mark_position(name="cell_1")
-Claude → (user moves stage) mark_position(name="cell_2")
-Claude → (user moves stage) mark_position(name="cell_3")
+Claude → mark_position(name="cell_1")
+User moves stage.
+Claude → mark_position(name="cell_2")
+User moves stage.
+Claude → mark_position(name="cell_3")
 
-User: "Now image all three."
+User: "Good. Image them now."
 
 Claude → run_multiposition_with_autofocus(
     position_names=["cell_1", "cell_2", "cell_3"],
@@ -1283,14 +1260,14 @@ Claude → run_multiposition_with_autofocus(
     save_dir="/data/today",
     protocol_params={"z_start_um": -5, "z_end_um": 5, "z_step_um": 1, "channel": "DAPI"}
   )
-  Result: {status: "3/3 positions completed with autofocus.", results: [...]}
+  Result: {status: "3/3 positions completed with autofocus.",
+           results: [{position: "cell_1", best_z_um: 48.2, ...}, ...]}
 
-Claude: "All three cells were imaged successfully. Best focus was found at Z=48.2 µm
-  (cell_1), Z=51.7 µm (cell_2), and Z=49.1 µm (cell_3). Z-stacks saved to
-  /data/today/{cell_1,cell_2,cell_3}/."
+Claude: "All three positions were imaged. Best focus was at Z=48.2 µm (cell_1),
+  Z=51.7 µm (cell_2), Z=49.1 µm (cell_3). Z-stacks saved to /data/today/{cell_1,...}/."
 ```
 
-### 13.3 Semantic image-guided decision
+### 13.3 Semantic image-guided decision (Claude vision as last resort)
 
 ```
 User: "Snap an image and tell me if there's a cell in frame."
@@ -1298,9 +1275,9 @@ User: "Snap an image and tell me if there's a cell in frame."
 Claude → snap_and_analyze()
   Result: {focus_metric: 1850.3, mean_intensity: 85.2, ...} + thumbnail
 
-Claude (looks at image): "I can see what appears to be a single elongated cell in the
-  center-left of the frame. The nucleus is visible as a brighter oval region. Would you
-  like me to move the stage to center it and acquire a z-stack?"
+Claude: "I can see an elongated cell in the centre-left of the frame. The nucleus
+  is visible as a brighter oval region. Focus metric is 1850 — moderate sharpness.
+  Would you like me to run autofocus and then acquire a z-stack?"
 ```
 
 ### 13.4 Drift-corrected timelapse
@@ -1309,10 +1286,50 @@ Claude (looks at image): "I can see what appears to be a single elongated cell i
 User: "Run a 50-frame timelapse every 30 seconds with Z drift correction."
 
 Claude → run_adaptive_acquisition(
-    z_start_um=45, z_end_um=55, z_step_um=1,
+    z_start_um=45, z_end_um=46, z_step_um=1,
     save_dir="/data/timelapse",
     hook_strategy="focus_feedback",
-    hook_params={"threshold_fraction": 0.85, "z_step_um": 0.5}
+    hook_params={"threshold_fraction": 0.85, "z_step_um": 0.5},
+    log_path="/data/timelapse/focus_log.json"
+  )
+
+Claude → read_hook_log("/data/timelapse/focus_log.json")
+Claude: "The timelapse completed. Focus correction was triggered at frames 12 and
+  31, suggesting ~2 µm of Z drift over 50 frames."
+```
+
+### 13.5 Claude-generated hook for a custom adaptive behaviour
+
+```
+User: "I want to automatically increase exposure at each position if it's too dark,
+  then capture 3 frames at the adjusted exposure."
+
+Claude (thinks: no pre-coded hook does exactly this): "I'll write a new hook for
+  this. Here is the code — please review it before I save it:
+
+  ---
+  # MICROCLAW_HOOK
+  # name: dark_exposure_boost
+  # description: Boost exposure if mean intensity < threshold, then capture 3 frames
+  ...
+  [full code shown]
+  ---
+
+  Does this look correct to you?"
+
+User: "Yes, save it."
+
+Claude → generate_and_save_hook(
+    name="dark_exposure_boost",
+    code="...",
+    description="Boost exposure if mean intensity < threshold"
+  )
+  Result: {status: "Hook 'dark_exposure_boost' saved successfully.", path: "..."}
+
+Claude → run_adaptive_acquisition(
+    ...,
+    hook_strategy="dark_exposure_boost",
+    hook_params={"intensity_threshold": 500, "max_exposure_ms": 2000}
   )
 ```
 
@@ -1327,206 +1344,135 @@ import numpy as np
 from microclaw.image_analysis import laplacian_variance, compute_stats, make_thumbnail
 
 def test_laplacian_variance_sharp_vs_blurry():
-    """Sharp images (high-frequency content) should have higher metric."""
     from scipy.ndimage import gaussian_filter
     sharp = np.random.randint(0, 65535, (256, 256), dtype=np.uint16)
     blurry = gaussian_filter(sharp.astype(np.float32), sigma=5).astype(np.uint16)
     assert laplacian_variance(sharp) > laplacian_variance(blurry)
 
-def test_make_thumbnail_returns_base64_png():
+def test_make_thumbnail_returns_valid_png():
     img = np.random.randint(0, 65535, (512, 512), dtype=np.uint16)
     b64 = make_thumbnail(img, max_size=128)
     import base64, io
     from PIL import Image
-    raw = base64.standard_b64decode(b64)
-    pil = Image.open(io.BytesIO(raw))
-    assert pil.size == (128, 128)
+    pil = Image.open(io.BytesIO(base64.standard_b64decode(b64)))
+    assert max(pil.size) == 128
 
-def test_thumbnail_clips_max_size():
+def test_thumbnail_preserves_aspect_ratio():
     img = np.zeros((1024, 2048), dtype=np.uint16)
     b64 = make_thumbnail(img, max_size=256)
     import base64, io
     from PIL import Image
-    raw = base64.standard_b64decode(b64)
-    pil = Image.open(io.BytesIO(raw))
+    pil = Image.open(io.BytesIO(base64.standard_b64decode(b64)))
     assert max(pil.size) == 256
 
 def test_compute_stats_saturated():
     img = np.full((64, 64), 65535, dtype=np.uint16)
-    stats = compute_stats(img)
-    assert stats.saturated_fraction == 1.0
+    assert compute_stats(img).saturated_fraction == 1.0
 ```
 
 ### 14.2 Unit tests: autofocus (`tests/test_autofocus.py`)
 
 ```python
 import numpy as np
-import pytest
-from unittest.mock import MagicMock, call
-from microclaw.autofocus import sweep_autofocus, AutofocusResult
+from unittest.mock import MagicMock
+from microclaw.autofocus import sweep_autofocus
 
 
 def make_ctrl_with_focus_at(best_z: float, width: int = 64):
-    """Mock controller that returns images with focus metric peaking at best_z."""
     core = MagicMock()
     core.get_focus_device.return_value = "DStage"
-
     current_z = [50.0]
-
-    def set_position(z):
-        current_z[0] = z
-
-    def get_position():
-        return current_z[0]
+    core.set_position.side_effect = lambda z: current_z.__setitem__(0, z)
+    core.get_position.side_effect = lambda: current_z[0]
 
     def get_tagged_image():
         z = current_z[0]
-        # Focus metric peaks sharply at best_z (Gaussian envelope)
-        sigma = 3.0
-        sharpness = np.exp(-((z - best_z) ** 2) / (2 * sigma ** 2))
-        noise = np.random.normal(0, 0.02)
-        # Encode as a 64×64 image whose Laplacian variance reflects sharpness
-        base = (np.random.rand(width, width) * sharpness + noise).astype(np.float32)
-        pixels = (base * 65535).clip(0, 65535).astype(np.uint16)
+        sharpness = np.exp(-((z - best_z) ** 2) / (2 * 3.0 ** 2))
+        pixels = (np.random.rand(width, width) * sharpness * 65535).clip(0, 65535).astype(np.uint16)
         tagged = MagicMock()
         tagged.pix = pixels.tobytes()
         tagged.tags = {"Width": width, "Height": width}
         return tagged
 
-    core.set_position.side_effect = set_position
-    core.get_position.side_effect = get_position
     core.get_tagged_image.side_effect = get_tagged_image
     core.snap_image = MagicMock()
     core.wait_for_image_synced = MagicMock()
     core.wait_for_device = MagicMock()
-
     ctrl = MagicMock()
     ctrl.core = core
     return ctrl
 
 
 def test_sweep_finds_correct_z():
-    """Sweep should move to the Z with the highest focus metric."""
-    best_z = 52.0
-    ctrl = make_ctrl_with_focus_at(best_z)
-    result = sweep_autofocus(ctrl, z_start_um=45.0, z_end_um=55.0, z_step_um=1.0, settle_ms=0)
-    assert abs(result.best_z_um - best_z) <= 1.0  # within one step
+    ctrl = make_ctrl_with_focus_at(52.0)
+    result = sweep_autofocus(ctrl, 45.0, 55.0, 1.0, settle_ms=0)
+    assert abs(result.best_z_um - 52.0) <= 1.0
 
-
-def test_sweep_settled_when_peak_not_at_boundary():
+def test_sweep_settled_when_peak_interior():
     ctrl = make_ctrl_with_focus_at(50.0)
-    result = sweep_autofocus(ctrl, z_start_um=45.0, z_end_um=55.0, z_step_um=1.0, settle_ms=0)
+    result = sweep_autofocus(ctrl, 45.0, 55.0, 1.0, settle_ms=0)
     assert result.settled
 
-
 def test_sweep_not_settled_when_peak_at_boundary():
-    ctrl = make_ctrl_with_focus_at(45.0)  # best is at the sweep start boundary
-    result = sweep_autofocus(ctrl, z_start_um=45.0, z_end_um=55.0, z_step_um=1.0, settle_ms=0)
+    ctrl = make_ctrl_with_focus_at(45.0)
+    result = sweep_autofocus(ctrl, 45.0, 55.0, 1.0, settle_ms=0)
     assert not result.settled
 ```
 
-### 14.3 Unit tests: position list (`tests/test_positions.py`)
+### 14.3 Unit tests: hook safety validation (`tests/test_hook_manager.py`)
 
 ```python
-import pytest
-from microclaw.positions import PositionList
+from microclaw.hook_manager import validate_hook_code
 
-def test_add_and_retrieve():
-    pl = PositionList()
-    pl.add("cell_1", x_um=100.0, y_um=-50.0, z_um=45.0)
-    pos = pl.get("cell_1")
-    assert pos.x_um == 100.0
-    assert pos.z_um == 45.0
+def test_clean_code_passes():
+    code = "import numpy as np\nclass MyHook:\n    def image_process_fn(self, img, meta, q):\n        return img, meta\n"
+    assert validate_hook_code(code) == []
 
-def test_get_missing_raises():
-    pl = PositionList()
-    with pytest.raises(KeyError):
-        pl.get("nonexistent")
+def test_eval_is_blocked():
+    code = "eval('os.system(\"rm -rf /\")')"
+    warnings = validate_hook_code(code)
+    assert any("eval" in w for w in warnings)
 
-def test_delete():
-    pl = PositionList()
-    pl.add("a", 0, 0)
-    pl.delete("a")
-    assert pl.names() == []
+def test_syntax_error_reported():
+    code = "def broken(:"
+    warnings = validate_hook_code(code)
+    assert any("Syntax" in w for w in warnings)
 
-def test_clear():
-    pl = PositionList()
-    pl.add("a", 0, 0)
-    pl.add("b", 1, 1)
-    pl.clear()
-    assert pl.all() == []
+def test_subprocess_blocked():
+    code = "import subprocess\nsubprocess.run(['rm', '-rf', '/'])"
+    warnings = validate_hook_code(code)
+    assert any("subprocess" in w for w in warnings)
 ```
 
 ### 14.4 Unit tests: new tool functions (`tests/test_tools.py` additions)
 
 ```python
-# snap_and_analyze
 def test_snap_and_analyze_returns_multimodal(mock_ctrl, unconstrained_guard, monkeypatch):
     import numpy as np
-    fake_image = np.zeros((64, 64), dtype=np.uint16)
-    monkeypatch.setattr("microclaw.tools.snap_to_numpy", lambda ctrl: fake_image)
+    monkeypatch.setattr("microclaw.tools.snap_to_numpy", lambda ctrl: np.zeros((64, 64), dtype=np.uint16))
     mock_ctrl.core.get_position.return_value = 50.0
     result = snap_and_analyze(mock_ctrl, unconstrained_guard)
     assert isinstance(result, list)
     assert result[0]["type"] == "text"
     assert result[1]["type"] == "image"
-    assert result[1]["source"]["media_type"] == "image/png"
 
+def test_run_autofocus_z_boundary_check(mock_ctrl, default_guard):
+    mock_ctrl.core.get_position.return_value = 5.0
+    # Sweep would go to -5 µm, below z_min=0
+    with pytest.raises(SafetyViolation):
+        run_autofocus(mock_ctrl, default_guard, z_range_um=20.0, z_step_um=1.0)
 
-# run_autofocus - safety
-def test_autofocus_range_blocked_by_guard(mock_ctrl):
-    from microclaw.safety import SafetyConstraints, SafetyGuard, AutofocusConstraints
-    tight_guard = SafetyGuard(SafetyConstraints(
-        autofocus=AutofocusConstraints(max_z_range_um=10.0)
-    ))
-    mock_ctrl.core.get_position.return_value = 50.0
-    with pytest.raises(SafetyViolation, match="Autofocus range"):
-        run_autofocus(mock_ctrl, tight_guard, z_range_um=50.0, z_step_um=1.0)
-
-
-# mark_position
-def test_mark_position_uses_current_stage(mock_ctrl, unconstrained_guard):
-    from microclaw.controller import MicroscopeController
-    from microclaw.positions import PositionList
-    mock_ctrl.positions = PositionList()
-    mock_ctrl.core.get_x_position.return_value = 100.0
-    mock_ctrl.core.get_y_position.return_value = -50.0
-    mock_ctrl.core.get_position.return_value = 45.0
-    result = mark_position(mock_ctrl, unconstrained_guard, name="my_cell")
-    assert result["x_um"] == 100.0
-    assert mock_ctrl.positions.get("my_cell").z_um == 45.0
-
-
-# go_to_position - safety
-def test_go_to_position_blocked_by_xy_limit(mock_ctrl):
-    from microclaw.positions import PositionList
+def test_mark_position_check_xy_safety(mock_ctrl):
     from microclaw.safety import SafetyConstraints, SafetyGuard, StageConstraints
-    mock_ctrl.positions = PositionList()
-    mock_ctrl.positions.add("far", x_um=9999.0, y_um=0.0)
-    tight_guard = SafetyGuard(SafetyConstraints(
-        stage=StageConstraints(x_max=5000.0)
-    ))
+    guard = SafetyGuard(SafetyConstraints(stage=StageConstraints(x_max=100.0)))
+    mock_ctrl.core.get_x_position.return_value = 200.0
+    mock_ctrl.core.get_y_position.return_value = 0.0
+    mock_ctrl.core.get_position.return_value = 50.0
     with pytest.raises(SafetyViolation):
-        go_to_position(mock_ctrl, tight_guard, name="far")
+        mark_position(mock_ctrl, guard, name="out_of_bounds")
 ```
 
-### 14.5 Safety boundary tests (`tests/test_safety.py` additions)
-
-```python
-def test_autofocus_range_constraint():
-    from microclaw.safety import SafetyConstraints, SafetyGuard, AutofocusConstraints
-    guard = SafetyGuard(SafetyConstraints(autofocus=AutofocusConstraints(max_z_range_um=50.0)))
-    guard.check_autofocus_range(50.0)   # at limit — should not raise
-    with pytest.raises(SafetyViolation):
-        guard.check_autofocus_range(50.001)
-
-def test_autofocus_range_unconstrained():
-    from microclaw.safety import SafetyConstraints, SafetyGuard
-    guard = SafetyGuard(SafetyConstraints())
-    guard.check_autofocus_range(10_000.0)  # no constraint, no exception
-```
-
-### 14.6 Agent-level tests: prompt → tool sequence (`tests/test_agent.py` additions)
+### 14.5 Agent-level tests (`tests/test_agent.py` additions)
 
 ```python
 class TestAutofocusPrompt:
@@ -1534,84 +1480,56 @@ class TestAutofocusPrompt:
         scripted = [
             tool_use_response("get_system_state", {}, "c1"),
             tool_use_response("run_autofocus", {"z_range_um": 20, "z_step_um": 0.5}, "c2"),
-            text_response("I found focus at Z=48.2 µm."),
+            text_response("Found focus at Z=48.2 µm."),
         ]
         with patch("microclaw.agent.client", make_mock_client(scripted)):
             reply, _ = run_agent("Please autofocus on my sample", ctrl, guard)
         assert "focus" in reply.lower() or "z" in reply.lower()
 
-
-class TestMultipositionWithAutofocusPrompt:
-    def test_tool_called_with_positions(self, ctrl, guard):
-        scripted = [
-            tool_use_response("get_position_list", {}, "c1"),
-            tool_use_response(
-                "run_multiposition_with_autofocus",
-                {
-                    "position_names": ["cell_1", "cell_2"],
-                    "z_range_um": 20,
-                    "z_step_um": 0.5,
-                    "protocol": "snap",
-                    "save_dir": "/tmp",
-                },
-                "c2",
-            ),
-            text_response("Imaged 2 positions with autofocus."),
-        ]
-        with patch("microclaw.agent.client", make_mock_client(scripted)):
-            reply, _ = run_agent(
-                "Image all positions in my list with autofocus and snap at each", ctrl, guard
-            )
-        assert "position" in reply.lower() or "imaged" in reply.lower()
 ```
 
-### 14.7 Integration tests against Demo config (`tests/test_integration.py` additions)
+### 14.6 Integration tests against Demo config (`tests/test_integration.py` additions)
 
 ```python
 @pytest.mark.integration
-def test_autofocus_demo(headless_mm, unconstrained_guard):
-    from microclaw.tools import run_autofocus
-    result_or_list = run_autofocus(headless_mm, unconstrained_guard, z_range_um=10, z_step_um=1)
-    # Result may be a list (multimodal) or dict
-    if isinstance(result_or_list, list):
-        import json
-        payload = json.loads(result_or_list[0]["text"])
-    else:
-        payload = result_or_list
-    assert "best_z_um" in payload
-    assert isinstance(payload["metric_curve"], list)
-
-
-@pytest.mark.integration
 def test_snap_and_analyze_demo(headless_mm, unconstrained_guard):
-    from microclaw.tools import snap_and_analyze
     result = snap_and_analyze(headless_mm, unconstrained_guard)
     assert isinstance(result, list)
     import json, base64
     payload = json.loads(result[0]["text"])
     assert "focus_metric" in payload
-    assert result[1]["type"] == "image"
-    # Verify the base64 is valid PNG
-    raw = base64.standard_b64decode(result[1]["source"]["data"])
-    assert raw[:4] == b'\x89PNG'
-
+    assert base64.standard_b64decode(result[1]["source"]["data"])[:4] == b'\x89PNG'
 
 @pytest.mark.integration
-def test_multiposition_with_autofocus_demo(headless_mm, unconstrained_guard, tmp_path):
-    from microclaw.tools import mark_position, run_multiposition_with_autofocus
-    from microclaw.positions import PositionList
-    headless_mm.positions = PositionList()
-    mark_position(headless_mm, unconstrained_guard, name="pos_a")
-    mark_position(headless_mm, unconstrained_guard, name="pos_b")
-    result = run_multiposition_with_autofocus(
+def test_autofocus_demo(headless_mm, unconstrained_guard):
+    result = run_autofocus(headless_mm, unconstrained_guard, z_range_um=10, z_step_um=1)
+    payload = json.loads(result[0]["text"]) if isinstance(result, list) else result
+    assert "best_z_um" in payload
+    assert isinstance(payload["metric_curve"], list)
+
+@pytest.mark.integration
+def test_position_list_roundtrip_demo(headless_mm, unconstrained_guard):
+    headless_mm.clear_positions()
+    mark_position(headless_mm, unconstrained_guard, name="test_pos")
+    positions = headless_mm.get_positions()
+    assert any(p["name"] == "test_pos" for p in positions)
+    headless_mm.remove_position("test_pos")
+
+@pytest.mark.integration
+def test_autofocus_hook_demo(headless_mm, unconstrained_guard, tmp_path):
+    log_path = str(tmp_path / "af_log.json")
+    result = run_adaptive_acquisition(
         headless_mm, unconstrained_guard,
-        position_names=["pos_a", "pos_b"],
-        z_range_um=5, z_step_um=1,
-        protocol="snap",
-        save_dir=str(tmp_path),
+        z_start_um=45, z_end_um=55, z_step_um=2,
+        save_dir=str(tmp_path), name="af_hook_test",
+        hook_strategy="autofocus_per_position",
+        hook_params={"z_range_um": 5, "z_step_um": 0.5},
+        log_path=log_path,
     )
-    assert "2/2" in result["status"]
-    assert all("error" not in r for r in result["results"])
+    assert "complete" in result["status"]
+    import json
+    log = json.loads(Path(log_path).read_text())
+    assert len(log) > 0
 ```
 
 ---
@@ -1625,6 +1543,7 @@ dependencies = [
     "scipy>=1.12",
     "Pillow>=10.0",
 ]
+
 ```
 
 ---
@@ -1634,16 +1553,17 @@ dependencies = [
 | Phase | Deliverable | Files changed | Prerequisite |
 |-------|-------------|---------------|--------------|
 | **1** | `image_analysis.py` + unit tests | `image_analysis.py`, `tests/test_image_analysis.py` | None |
-| **2** | `snap_and_analyze` tool (multimodal return), modified `execute_tool` | `tools.py`, `tools_schema.py`, `agent.py` (verify) | Phase 1 |
-| **3** | `autofocus.py` + `run_autofocus` tool + safety extension + unit tests | `autofocus.py`, `safety.py`, `tools.py`, `tools_schema.py`, `safety_config.yaml`, tests | Phase 1 |
-| **4** | `positions.py` + position management tools + unit tests | `positions.py`, `controller.py`, `tools.py`, `tools_schema.py`, tests | None |
-| **5** | `run_multiposition_acquisition` + `run_multiposition_with_autofocus` + unit tests | `tools.py`, `tools_schema.py`, tests | Phases 3, 4 |
-| **6** | System prompt update | `agent.py` | Phase 2 |
-| **7** | Integration tests against Demo config | `tests/test_integration.py` | Phases 1–6 + MM installed |
-| **8** | `hooks.py` + `run_adaptive_acquisition` tool | `hooks.py`, `tools.py`, `tools_schema.py`, tests | Phase 5 |
+| **2** | `snap_and_analyze` tool, modified `execute_tool` | `tools.py`, `tools_schema.py` | Phase 1 |
+| **3** | `autofocus.py` + `run_autofocus` tool + safety boundary pre-check + unit tests | `autofocus.py`, `tools.py`, `tools_schema.py`, tests | Phase 1 |
+| **4** | Position management via MM native API + unit tests | `controller.py`, `tools.py`, `tools_schema.py`, tests | None |
+| **5** | `run_multiposition_acquisition` + `run_multiposition_with_autofocus` | `tools.py`, `tools_schema.py`, tests | Phases 3, 4 |
+| **6** | `hooks.py` + `run_adaptive_acquisition` + `read_hook_log` + unit tests | `hooks.py`, `tools.py`, `tools_schema.py`, tests | Phases 3, 4 |
+| **7** | System prompt update | `agent.py` | Phase 2 |
+| **8** | `hook_manager.py` + `generate_and_save_hook` + `list_hooks` + unit tests | `hook_manager.py`, `tools.py`, `tools_schema.py`, tests | Phase 6 |
+| **9** | Integration tests against Demo config | `tests/test_integration.py` | Phases 1–7 + MM installed |
 
-Phases 1–7 deliver the core adaptive capability. Phase 8 (hooks) is separable and
-can be deferred without affecting the primary workflows.
+Phases 1–7 deliver the core capability. Phase 8 (Claude-generated hooks) is
+separable and can be deferred without affecting the primary workflows.
 
 ---
 
@@ -1651,11 +1571,10 @@ can be deferred without affecting the primary workflows.
 
 | Limitation | Mitigation |
 |---|---|
-| `snap_to_numpy` uses `get_tagged_image()` which may behave differently across camera adapters and pycro-manager versions | Test against Demo config first; wrap with `try/except` and fall back to `core.get_image()` if tagged image fails |
-| Autofocus sweep blocks the agent loop (no progress updates) | Acceptable for v2; a v3 improvement could run the sweep in a thread and stream intermediate metrics |
-| Focus metric (Laplacian variance) is sensitive to noise in low-SNR fluorescence images | Apply Gaussian pre-smoothing (σ = 0.5–1.0 px) before computing metric; expose as a parameter |
-| Position list is in-memory only — lost if agent restarts | v3: serialize to JSON or MM `.pos` format on disk; for now, instruct user to rebuild the list after restart |
-| `run_multiposition_with_autofocus` does not support multi-channel acquisitions per position directly | Workaround: pass protocol='zstack' with channel params; full multi-channel multiposition is a v3 feature |
-| Hook strategies (section 8) use internal pycro-manager `image_process_fn` API that may change | Pin pycro-manager version; add a compatibility test that verifies hook signature |
-| Vision analysis via Claude introduces per-call API latency (~1–3 s) | Acceptable for interactive workflows; not suitable for real-time feedback; document this clearly |
-| Large position lists (>50 positions) will produce long multiposition result payloads | Truncate per-position details in the tool result; always return aggregate counts |
+| pycro-manager's `PositionList` Java API must be confirmed against the installed version | Phase 4 integration test validates the API before it is relied upon; fall back to a Python-side list if unavailable |
+| `snap_to_numpy` via `get_tagged_image()` may behave differently across camera adapters | Wrap with `try/except`; fall back to `core.get_image()` |
+| Autofocus sweep blocks the agent loop with no progress updates | Acceptable for v2; v3 could run in a thread and stream intermediate metrics |
+| Laplacian variance is sensitive to noise in low-SNR fluorescence images | Pre-smooth with Gaussian (σ=0.5–1.0 px); expose as `smooth_sigma` parameter |
+| Claude-generated hook code bypasses AST checks via indirect calls | User review is mandatory; document that the AST check is a first pass, not a guarantee |
+| Hook log files can grow large for long multiposition acquisitions | Cap log entries per position; write summary stats at top of log |
+| Position list changes made in the MM GUI between agent calls are not automatically reflected | `get_position_list` reads from MM on every call, so the agent always sees the current state |

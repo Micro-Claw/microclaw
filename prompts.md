@@ -96,6 +96,9 @@ hooks for adaptive acquistions, or by some other means. Please think deeply abou
 the best approach for this. Please write a detailed plan for extending microclaw 
 to be capable of adaptive acqusitions and store this plan in plan_v2.md. 
 
- I've left some comments for you in between brackets < and > in plan_v2.md. 
+I've left some comments for you in between brackets < and > in plan_v2.md. 
 Please read them carefully. If you have any questions, please ask. If not, 
 please update plan_v2.md. 
+
+Please look at plan_v2.md again. Remove anything related to Cellpose, but     
+keep the architecture that would allow us to call Cellpose in the future.
