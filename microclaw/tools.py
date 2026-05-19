@@ -220,7 +220,7 @@ def run_zstack(
 
     events = multi_d_acquisition_events(**kwargs)
 
-    with Acquisition(directory=save_dir, name=name, show_display=False) as acq:
+    with Acquisition(directory=save_dir, name=name, show_display=True) as acq:
         acq.acquire(events)
 
     actual_path = acq._dataset_disk_location or str(Path(save_dir) / name)
@@ -253,7 +253,7 @@ def run_timelapse(
 
     events = multi_d_acquisition_events(**kwargs)
 
-    with Acquisition(directory=save_dir, name=name, show_display=False) as acq:
+    with Acquisition(directory=save_dir, name=name, show_display=True) as acq:
         acq.acquire(events)
 
     actual_path = acq._dataset_disk_location or str(Path(save_dir) / name)
@@ -650,7 +650,7 @@ def run_adaptive_acquisition(
     if hasattr(hook, "image_process_fn"):
         hook_fn_kwargs["image_process_fn"] = hook.image_process_fn
 
-    with Acquisition(directory=save_dir, name=name, show_display=False, **hook_fn_kwargs) as acq:
+    with Acquisition(directory=save_dir, name=name, show_display=True, **hook_fn_kwargs) as acq:
         acq.acquire(events)
 
     result: dict[str, Any] = {
