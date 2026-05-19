@@ -1,5 +1,6 @@
 from __future__ import annotations
 from typing import Any
+import time
 
 import anthropic
 
@@ -67,20 +68,41 @@ def run_agent(
     messages: list[dict[str, Any]] = list(history or [])
     messages.append({"role": "user", "content": user_message})
 
+    _RETRY_DELAYS = (5, 15, 30)
+
     while True:
-        response = client.messages.create(
-            model=MODEL,
-            max_tokens=4096,
-            system=[
-                {
-                    "type": "text",
-                    "text": SYSTEM_PROMPT,
-                    "cache_control": {"type": "ephemeral"},
-                }
-            ],
-            tools=TOOLS_CACHED,
-            messages=messages,
-        )
+        for attempt, delay in enumerate([0] + list(_RETRY_DELAYS)):
+            if delay:
+                print(
+                    f"Anthropic API overloaded — retrying in {delay}s "
+                    f"(attempt {attempt}/{len(_RETRY_DELAYS)})..."
+                )
+                time.sleep(delay)
+            try:
+                response = client.messages.create(
+                    model=MODEL,
+                    max_tokens=4096,
+                    system=[
+                        {
+                            "type": "text",
+                            "text": SYSTEM_PROMPT,
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ],
+                    tools=TOOLS_CACHED,
+                    messages=messages,
+                )
+                break
+            except anthropic.OverloadedError:
+                if attempt == len(_RETRY_DELAYS):
+                    return (
+                        "The Anthropic API is currently overloaded (HTTP 529). "
+                        "Please try again in a few minutes.",
+                        list(history or []),
+                    )
+        else:
+            # unreachable — satisfied by the return inside the except above
+            raise RuntimeError("unexpected loop exit")
 
         messages.append({"role": "assistant", "content": response.content})
 
