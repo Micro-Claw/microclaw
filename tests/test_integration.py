@@ -1,14 +1,14 @@
 """
 Integration tests against a real Micro-Manager Demo configuration.
-Requires MM_PATH and MM_DEMO_CONFIG environment variables. Skip by default.
 
-Run with (Windows CMD):
-  set MM_PATH=C:\Program Files\Micro-Manager-2.0
-  set MM_DEMO_CONFIG=C:\Program Files\Micro-Manager-2.0\MMConfig_demo.cfg
-  pytest -m integration
+Prerequisites:
+  1. Open Micro-Manager and load MMConfig_demo.cfg.
+  2. Set MM_RUNNING=1 (and optionally MM_PORT if not using the default 4827).
+  3. Run: pytest -m integration
 
-Run with (macOS/Linux):
-  MM_PATH=/path/to/MM MM_DEMO_CONFIG=/path/to/MMConfig_demo.cfg pytest -m integration
+  Windows CMD:        set MM_RUNNING=1 && pytest -m integration
+  Windows PowerShell: $env:MM_RUNNING=1; pytest -m integration
+  macOS/Linux:        MM_RUNNING=1 pytest -m integration
 
 The headless_mm fixture is session-scoped: MM starts once and all tests share
 the same connection. Tests that move hardware restore the original position

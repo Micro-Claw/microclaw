@@ -55,32 +55,24 @@ def unconstrained_guard():
     return SafetyGuard(SafetyConstraints())
 
 
-# ── Headless MM (requires real MM installation) ──────────────────────────────
-# Set MM_PATH and MM_DEMO_CONFIG environment variables before running:
-#   Windows CMD:        set MM_PATH=C:\Program Files\Micro-Manager-2.0
-#                       set MM_DEMO_CONFIG=C:\Program Files\Micro-Manager-2.0\MMConfig_demo.cfg
-#   Windows PowerShell: $env:MM_PATH = "C:\Program Files\Micro-Manager-2.0"
-#                       $env:MM_DEMO_CONFIG = "C:\Program Files\Micro-Manager-2.0\MMConfig_demo.cfg"
-#   macOS/Linux:        export MM_PATH=/path/to/MicroManager
-#                       export MM_DEMO_CONFIG=/path/to/MMConfig_demo.cfg
+# ── Live MM connection (requires Micro-Manager running with demo config) ─────
+# Open Micro-Manager manually with MMConfig_demo.cfg loaded, then set
+# MM_RUNNING=1 before running integration tests.  Optionally set MM_PORT
+# if MM is bridged on a non-default port (default: 4827).
+#
+#   Windows CMD:        set MM_RUNNING=1
+#   Windows PowerShell: $env:MM_RUNNING = "1"
+#   macOS/Linux:        export MM_RUNNING=1
+#
 # Then run: pytest -m integration
 
 @pytest.fixture(scope="session")
-def mm_app_path():
-    return os.environ.get("MM_PATH")
-
-
-@pytest.fixture(scope="session")
-def demo_config_path():
-    return os.environ.get("MM_DEMO_CONFIG")
-
-
-@pytest.fixture(scope="session")
-def headless_mm(mm_app_path, demo_config_path):
-    """Launch MM in headless mode with Demo config. Requires MM_PATH and MM_DEMO_CONFIG env vars."""
-    if mm_app_path is None or demo_config_path is None:
-        pytest.skip("MM_PATH and MM_DEMO_CONFIG environment variables required for integration tests")
-    from pycromanager import start_headless
-    start_headless(mm_app_path=mm_app_path, config_file=demo_config_path)
-    ctrl = MicroscopeController()
-    yield ctrl
+def headless_mm():
+    """Connect to a running Micro-Manager instance. Requires MM_RUNNING=1 env var."""
+    if not os.environ.get("MM_RUNNING"):
+        pytest.skip(
+            "MM_RUNNING is not set. Open Micro-Manager with the demo config, "
+            "then set MM_RUNNING=1 and re-run."
+        )
+    port = int(os.environ.get("MM_PORT", "4827"))
+    yield MicroscopeController(port=port)
