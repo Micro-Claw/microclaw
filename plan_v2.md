@@ -725,26 +725,45 @@ def validate_hook_code(code: str) -> list[str]:
     return warnings
 
 
-def save_hook(name: str, code: str, description: str) -> None:
-    """Save validated hook code to disk and update manifest."""
+def save_hook(name: str, code: str, description: str, source: str) -> None:
+    """Save validated hook code to disk and update manifest.
+
+    source must be 'claude_generated' or 'user_provided'. Stored in the
+    manifest for auditability — useful in shared lab settings where multiple
+    people may add hooks over time.
+    """
     HOOKS_DIR.mkdir(parents=True, exist_ok=True)
     hook_path = HOOKS_DIR / f"{name}.py"
     hook_path.write_text(code)
 
     manifest = json.loads(MANIFEST.read_text()) if MANIFEST.exists() else {}
-    manifest[name] = {"description": description, "path": str(hook_path)}
+    manifest[name] = {
+        "description": description,
+        "path": str(hook_path),
+        "source": source,
+    }
     MANIFEST.write_text(json.dumps(manifest, indent=2))
+
+
+def read_hook_from_file(path: str) -> tuple[str, list[str]]:
+    """Read a user-provided hook file and run the AST safety scan.
+
+    Returns (code, warnings). Does NOT save — the caller presents the code
+    to the user and calls save_hook only after confirmation.
+    """
+    code = Path(path).read_text()
+    warnings = validate_hook_code(code)
+    return code, warnings
 
 
 def load_hook_class(name: str):
     """Dynamically import a saved hook and return its class."""
     manifest = json.loads(MANIFEST.read_text()) if MANIFEST.exists() else {}
     if name not in manifest:
-        raise KeyError(f"No generated hook named '{name}'.")
+        raise KeyError(f"No saved hook named '{name}'.")
     spec = importlib.util.spec_from_file_location(name, manifest[name]["path"])
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    # Find the class that has image_process_fn
     for attr in dir(mod):
         cls = getattr(mod, attr)
         if isinstance(cls, type) and hasattr(cls, "image_process_fn"):
@@ -752,11 +771,18 @@ def load_hook_class(name: str):
     raise AttributeError(f"No class with image_process_fn found in hook '{name}'.")
 
 
-def list_generated_hooks() -> dict[str, str]:
-    """Return {name: description} for all saved generated hooks."""
+def list_saved_hooks() -> dict[str, dict]:
+    """Return manifest entries for all saved hooks.
+
+    Each entry contains 'description' and 'source' ('claude_generated' or
+    'user_provided').
+    """
     if not MANIFEST.exists():
         return {}
-    return {k: v["description"] for k, v in json.loads(MANIFEST.read_text()).items()}
+    return {
+        k: {"description": v["description"], "source": v["source"]}
+        for k, v in json.loads(MANIFEST.read_text()).items()
+    }
 ```
 
 ### 8.3 New tools for hook management
@@ -770,9 +796,11 @@ def generate_and_save_hook(
     name: str,
     code: str,
     description: str,
+    source: str = "claude_generated",
 ) -> dict:
-    """Validate and save a Claude-generated hook script.
+    """Validate and save a hook script (Claude-generated or user-provided).
 
+    source must be 'claude_generated' or 'user_provided'.
     This tool is called ONLY after the user has seen and approved the code.
     The system prompt instructs Claude to show the code to the user and wait
     for explicit confirmation before calling this tool.
@@ -784,19 +812,38 @@ def generate_and_save_hook(
             "error": "Safety validation found issues — hook not saved.",
             "warnings": warnings,
         }
-    save_hook(name, code, description)
+    save_hook(name, code, description, source=source)
     return {"status": f"Hook '{name}' saved successfully.", "path": str(
         Path.home() / ".microclaw" / "hooks" / f"{name}.py"
-    )}
+    ), "source": source}
+
+
+def read_hook_from_file(
+    ctrl: MicroscopeController,
+    guard: SafetyGuard,
+    path: str,
+) -> dict:
+    """Read a user-specified hook file and run the AST safety scan.
+
+    Returns the code and any safety warnings so Claude can display both to the
+    user before asking for confirmation. Does NOT save the hook — call
+    generate_and_save_hook(source='user_provided') after user confirms.
+    """
+    from microclaw.hook_manager import read_hook_from_file as _read
+    try:
+        code, warnings = _read(path)
+    except FileNotFoundError:
+        return {"error": f"File not found: {path}"}
+    return {"code": code, "warnings": warnings, "path": path}
 
 
 def list_hooks(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
-    """List all available hook strategies (pre-coded and generated)."""
+    """List all available hook strategies (pre-coded and saved)."""
     from microclaw.hooks import PRECODED_HOOK_REGISTRY
-    from microclaw.hook_manager import list_generated_hooks
+    from microclaw.hook_manager import list_saved_hooks
     return {
         "precoded": list(PRECODED_HOOK_REGISTRY.keys()),
-        "generated": list_generated_hooks(),
+        "saved": list_saved_hooks(),  # {name: {description, source}}
     }
 
 
@@ -1211,12 +1258,22 @@ Autofocus:
 Hook-based adaptive acquisition:
 - Pre-coded hooks: autofocus_per_position, focus_feedback, intensity_adaptive,
   position_filter.
-- Generated hooks: call list_hooks() to see what has been saved previously.
+- Saved hooks: call list_hooks() to see pre-coded and previously saved hooks.
+  The result shows each saved hook's source ('claude_generated' or 'user_provided').
 - After an adaptive acquisition, call read_hook_log(log_path) to get per-position
   or per-frame results, then synthesize and report them to the user.
-- To create a new hook: write the code following the template in section 8.1 of
-  plan_v2.md, show it to the user in full, wait for explicit confirmation, then
-  call generate_and_save_hook().
+- When no pre-coded hook matches a request:
+  1. Tell the user that no pre-coded hook covers this behaviour.
+  2. Ask: "Do you have an existing hook file you'd like to use, or would you
+     like me to write one?"
+  3a. If the user provides a file path: call read_hook_from_file(path) to read
+      and AST-scan it. Display the full code and any warnings to the user. Ask
+      for explicit confirmation before saving. On confirmation, call
+      generate_and_save_hook(source='user_provided').
+  3b. If the user asks Claude to write one: follow the template in section 8.1,
+      show the full code and any warnings, wait for explicit confirmation, then
+      call generate_and_save_hook(source='claude_generated').
+- Never save or run a hook (generated or provided) without explicit user confirmation.
 ```
 
 ---
@@ -1241,17 +1298,40 @@ Claude: "I swept Z from 35 to 55 µm and found the sharpest focus at Z = 48.2 µ
 
 ### 13.2 Building a position list and imaging with autofocus
 
+Two workflows are supported. Both write to MM's native position list, so they
+compose freely — the biologist can mix GUI-added and Claude-added positions in
+the same list.
+
+#### 13.2a Turn-by-turn marking via Claude
+
+The biologist navigates to each site in the MM GUI and explicitly tells Claude
+when to mark it. Claude cannot detect stage movement on its own; each mark
+requires a user message.
+
 ```
-User: "I've navigated to three cells. Mark each one, then image all three with
-  autofocus and a DAPI z-stack."
+User: "I'm at cell 1, mark it."
 
 Claude → mark_position(name="cell_1")
-User moves stage.
-Claude → mark_position(name="cell_2")
-User moves stage.
-Claude → mark_position(name="cell_3")
+  Result: {status: "Position 'cell_1' saved to MM position list.", x_um: 120.0, y_um: 340.5, z_um: 48.1}
 
-User: "Good. Image them now."
+Claude: "Cell 1 marked at X=120.0, Y=340.5, Z=48.1 µm. Navigate to the next cell
+  and let me know when you're ready."
+
+User: "Ready, this is cell 2."
+
+Claude → mark_position(name="cell_2")
+  Result: {status: "Position 'cell_2' saved.", x_um: 215.3, y_um: 412.0, z_um: 51.7}
+
+Claude: "Cell 2 marked. One more when you're ready."
+
+User: "Done, cell 3."
+
+Claude → mark_position(name="cell_3")
+  Result: {status: "Position 'cell_3' saved.", x_um: 88.7, y_um: 290.2, z_um: 49.1}
+
+Claude: "All three marked. Shall I image them now with autofocus and a DAPI z-stack?"
+
+User: "Yes."
 
 Claude → run_multiposition_with_autofocus(
     position_names=["cell_1", "cell_2", "cell_3"],
@@ -1263,8 +1343,36 @@ Claude → run_multiposition_with_autofocus(
   Result: {status: "3/3 positions completed with autofocus.",
            results: [{position: "cell_1", best_z_um: 48.2, ...}, ...]}
 
-Claude: "All three positions were imaged. Best focus was at Z=48.2 µm (cell_1),
-  Z=51.7 µm (cell_2), Z=49.1 µm (cell_3). Z-stacks saved to /data/today/{cell_1,...}/."
+Claude: "All three positions imaged. Best focus: Z=48.2 µm (cell_1), Z=51.7 µm
+  (cell_2), Z=49.1 µm (cell_3). Z-stacks saved to /data/today/{cell_1,...}/."
+```
+
+#### 13.2b Using MM's native position list built in the GUI
+
+The biologist builds the position list entirely in the MM GUI (Stage Control →
+Mark Position), then hands off to Claude for imaging. No turn-by-turn
+interaction needed.
+
+```
+User: "I've added my positions in MM already. Image all of them with autofocus
+  and a DAPI z-stack."
+
+Claude → get_position_list()
+  Result: {positions: [{name: "Pos1", x_um: 120.0, y_um: 340.5, z_um: 48.1},
+                       {name: "Pos2", x_um: 215.3, y_um: 412.0, z_um: 51.7},
+                       {name: "Pos3", x_um: 88.7,  y_um: 290.2, z_um: 49.1}], count: 3}
+
+Claude → run_multiposition_with_autofocus(
+    position_names=["Pos1", "Pos2", "Pos3"],
+    z_range_um=20, z_step_um=0.5,
+    protocol="zstack",
+    save_dir="/data/today",
+    protocol_params={"z_start_um": -5, "z_end_um": 5, "z_step_um": 1, "channel": "DAPI"}
+  )
+  Result: {status: "3/3 positions completed with autofocus.", ...}
+
+Claude: "All three positions imaged with autofocus. Z-stacks saved to
+  /data/today/{Pos1, Pos2, Pos3}/."
 ```
 
 ### 13.3 Semantic image-guided decision (Claude vision as last resort)
@@ -1298,14 +1406,52 @@ Claude: "The timelapse completed. Focus correction was triggered at frames 12 an
   31, suggesting ~2 µm of Z drift over 50 frames."
 ```
 
-### 13.5 Claude-generated hook for a custom adaptive behaviour
+### 13.5 Hook selection for a custom adaptive behaviour (three-path flow)
 
 ```
 User: "I want to automatically increase exposure at each position if it's too dark,
   then capture 3 frames at the adjusted exposure."
 
-Claude (thinks: no pre-coded hook does exactly this): "I'll write a new hook for
-  this. Here is the code — please review it before I save it:
+Claude → list_hooks()
+  Result: {precoded: ["autofocus_per_position", "focus_feedback",
+                       "intensity_adaptive", "position_filter"], saved: {}}
+
+Claude (no pre-coded hook matches): "None of the built-in hooks cover this exact
+  behaviour — intensity_adaptive adjusts exposure on a running basis, but doesn't
+  enforce a fixed number of frames at the adjusted exposure. Do you have an
+  existing hook file you'd like to use, or would you like me to write one?"
+
+--- Path A: user provides a file ---
+
+User: "I already wrote one, it's at ~/hooks/exposure_boost.py."
+
+Claude → read_hook_from_file(path="~/hooks/exposure_boost.py")
+  Result: {code: "# MICROCLAW_HOOK\n...[full code]...", warnings: [], path: "..."}
+
+Claude: "Here is the code from exposure_boost.py — no safety issues were found:
+
+  ---
+  [full code displayed]
+  ---
+
+  Would you like me to save this as 'exposure_boost' so we can use it?"
+
+User: "Yes."
+
+Claude → generate_and_save_hook(
+    name="exposure_boost",
+    code="...",
+    description="Boost exposure if mean intensity < threshold, capture 3 frames",
+    source="user_provided"
+  )
+  Result: {status: "Hook 'exposure_boost' saved successfully.", source: "user_provided"}
+
+--- Path B: user asks Claude to write one ---
+
+User: "No, please write it."
+
+Claude (thinks: user wants a generated hook): "Here is the code — please review
+  it before I save it:
 
   ---
   # MICROCLAW_HOOK
@@ -1322,13 +1468,16 @@ User: "Yes, save it."
 Claude → generate_and_save_hook(
     name="dark_exposure_boost",
     code="...",
-    description="Boost exposure if mean intensity < threshold"
+    description="Boost exposure if mean intensity < threshold, capture 3 frames",
+    source="claude_generated"
   )
-  Result: {status: "Hook 'dark_exposure_boost' saved successfully.", path: "..."}
+  Result: {status: "Hook 'dark_exposure_boost' saved successfully.", source: "claude_generated"}
+
+--- Both paths converge here ---
 
 Claude → run_adaptive_acquisition(
     ...,
-    hook_strategy="dark_exposure_boost",
+    hook_strategy="dark_exposure_boost",  # or "exposure_boost"
     hook_params={"intensity_threshold": 500, "max_exposure_ms": 2000}
   )
 ```
@@ -1419,10 +1568,12 @@ def test_sweep_not_settled_when_peak_at_boundary():
     assert not result.settled
 ```
 
-### 14.3 Unit tests: hook safety validation (`tests/test_hook_manager.py`)
+### 14.3 Unit tests: hook safety validation and file loading (`tests/test_hook_manager.py`)
 
 ```python
-from microclaw.hook_manager import validate_hook_code
+import json
+import pytest
+from microclaw.hook_manager import validate_hook_code, save_hook, list_saved_hooks, read_hook_from_file
 
 def test_clean_code_passes():
     code = "import numpy as np\nclass MyHook:\n    def image_process_fn(self, img, meta, q):\n        return img, meta\n"
@@ -1442,6 +1593,41 @@ def test_subprocess_blocked():
     code = "import subprocess\nsubprocess.run(['rm', '-rf', '/'])"
     warnings = validate_hook_code(code)
     assert any("subprocess" in w for w in warnings)
+
+def test_save_hook_records_source(tmp_path, monkeypatch):
+    monkeypatch.setattr("microclaw.hook_manager.HOOKS_DIR", tmp_path)
+    monkeypatch.setattr("microclaw.hook_manager.MANIFEST", tmp_path / "manifest.json")
+    code = "class H:\n    def image_process_fn(self, img, meta, q): return img, meta\n"
+    save_hook("my_hook", code, "A test hook", source="user_provided")
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    assert manifest["my_hook"]["source"] == "user_provided"
+
+def test_list_saved_hooks_returns_source(tmp_path, monkeypatch):
+    monkeypatch.setattr("microclaw.hook_manager.HOOKS_DIR", tmp_path)
+    monkeypatch.setattr("microclaw.hook_manager.MANIFEST", tmp_path / "manifest.json")
+    code = "class H:\n    def image_process_fn(self, img, meta, q): return img, meta\n"
+    save_hook("gen_hook", code, "Generated hook", source="claude_generated")
+    hooks = list_saved_hooks()
+    assert hooks["gen_hook"]["source"] == "claude_generated"
+    assert "description" in hooks["gen_hook"]
+
+def test_read_hook_from_file_valid(tmp_path):
+    hook_file = tmp_path / "my_hook.py"
+    code = "class H:\n    def image_process_fn(self, img, meta, q): return img, meta\n"
+    hook_file.write_text(code)
+    returned_code, warnings = read_hook_from_file(str(hook_file))
+    assert returned_code == code
+    assert warnings == []
+
+def test_read_hook_from_file_with_warnings(tmp_path):
+    hook_file = tmp_path / "bad_hook.py"
+    hook_file.write_text("eval('rm -rf /')\n")
+    _, warnings = read_hook_from_file(str(hook_file))
+    assert any("eval" in w for w in warnings)
+
+def test_read_hook_from_file_not_found():
+    with pytest.raises(FileNotFoundError):
+        read_hook_from_file("/nonexistent/path/hook.py")
 ```
 
 ### 14.4 Unit tests: new tool functions (`tests/test_tools.py` additions)
@@ -1559,7 +1745,7 @@ dependencies = [
 | **5** | `run_multiposition_acquisition` + `run_multiposition_with_autofocus` | `tools.py`, `tools_schema.py`, tests | Phases 3, 4 |
 | **6** | `hooks.py` + `run_adaptive_acquisition` + `read_hook_log` + unit tests | `hooks.py`, `tools.py`, `tools_schema.py`, tests | Phases 3, 4 |
 | **7** | System prompt update | `agent.py` | Phase 2 |
-| **8** | `hook_manager.py` + `generate_and_save_hook` + `list_hooks` + unit tests | `hook_manager.py`, `tools.py`, `tools_schema.py`, tests | Phase 6 |
+| **8** | `hook_manager.py` + `generate_and_save_hook` + `read_hook_from_file` + `list_hooks` (with source tagging) + unit tests | `hook_manager.py`, `tools.py`, `tools_schema.py`, tests | Phase 6 |
 | **9** | Integration tests against Demo config | `tests/test_integration.py` | Phases 1–7 + MM installed |
 
 Phases 1–7 deliver the core capability. Phase 8 (Claude-generated hooks) is
