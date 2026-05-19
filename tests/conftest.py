@@ -1,3 +1,5 @@
+import os
+
 import pytest
 from unittest.mock import MagicMock
 from microclaw.controller import MicroscopeController
@@ -54,22 +56,30 @@ def unconstrained_guard():
 
 
 # ── Headless MM (requires real MM installation) ──────────────────────────────
+# Set MM_PATH and MM_DEMO_CONFIG environment variables before running:
+#   Windows CMD:        set MM_PATH=C:\Program Files\Micro-Manager-2.0
+#                       set MM_DEMO_CONFIG=C:\Program Files\Micro-Manager-2.0\MMConfig_demo.cfg
+#   Windows PowerShell: $env:MM_PATH = "C:\Program Files\Micro-Manager-2.0"
+#                       $env:MM_DEMO_CONFIG = "C:\Program Files\Micro-Manager-2.0\MMConfig_demo.cfg"
+#   macOS/Linux:        export MM_PATH=/path/to/MicroManager
+#                       export MM_DEMO_CONFIG=/path/to/MMConfig_demo.cfg
+# Then run: pytest -m integration
 
 @pytest.fixture(scope="session")
-def mm_app_path(request):
-    return request.config.getoption("--mm-path")
+def mm_app_path():
+    return os.environ.get("MM_PATH")
 
 
 @pytest.fixture(scope="session")
-def demo_config_path(request):
-    return request.config.getoption("--demo-config")
+def demo_config_path():
+    return os.environ.get("MM_DEMO_CONFIG")
 
 
 @pytest.fixture(scope="session")
 def headless_mm(mm_app_path, demo_config_path):
-    """Launch MM in headless mode with Demo config. Requires --mm-path and --demo-config."""
+    """Launch MM in headless mode with Demo config. Requires MM_PATH and MM_DEMO_CONFIG env vars."""
     if mm_app_path is None or demo_config_path is None:
-        pytest.skip("--mm-path and --demo-config required for integration tests")
+        pytest.skip("MM_PATH and MM_DEMO_CONFIG environment variables required for integration tests")
     from pycromanager import start_headless
     start_headless(mm_app_path=mm_app_path, config_file=demo_config_path)
     ctrl = MicroscopeController()

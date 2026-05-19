@@ -1,8 +1,14 @@
 """
 Integration tests against a real Micro-Manager Demo configuration.
-Requires --mm-path and --demo-config pytest options.
-Skip by default; run with:
-  pytest -m integration --mm-path /path/to/MM --demo-config /path/to/MMConfig_demo.cfg
+Requires MM_PATH and MM_DEMO_CONFIG environment variables. Skip by default.
+
+Run with (Windows CMD):
+  set MM_PATH=C:\Program Files\Micro-Manager-2.0
+  set MM_DEMO_CONFIG=C:\Program Files\Micro-Manager-2.0\MMConfig_demo.cfg
+  pytest -m integration
+
+Run with (macOS/Linux):
+  MM_PATH=/path/to/MM MM_DEMO_CONFIG=/path/to/MMConfig_demo.cfg pytest -m integration
 
 The headless_mm fixture is session-scoped: MM starts once and all tests share
 the same connection. Tests that move hardware restore the original position

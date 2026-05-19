@@ -1,4 +1,6 @@
-Using the approach described at https://boristane.com/blog/how-i-use-claude-code/
+Using the approach described at https://boristane.com/blog/how-i-use-claude-code/.
+Every `----` indicates a new Claude session. They are kept deliberately short to
+mitigate hallucination.
 
 ---
 
@@ -42,8 +44,12 @@ an API, I think, at https://github.com/kbellve/MMrestServer. Please carefully
 check if I am correct and, if so, update the REST or HTTP API section and    
 any other relevant sections of research.md. 
 
-(new session) Please read research.md carefully. Do you see any factual 
+----
+
+Please read research.md carefully. Do you see any factual 
 inaccuracies? If so, please update the document to correct them.   
+
+Thanks. Please update research.md to fix these inaccuracies.
 
 ---
 
@@ -85,7 +91,17 @@ please add the following:
 
 Please write the plan in plan.md.
 
+I've left a comment for you in plan.md, bracketed by < and >. Please read propose changes.
+
 ----
+
+Plan.md describes how to build an AI agent for controlling Micro-Manager via pycro-manager. Please build this agent by carefully following the plan.
+
+Can you please add a sensible .gitignore to this repository?
+
+----
+
+Please carefully read the code in this repository, which describes an AI agent to control Micro-Manager (https://micro-manager.org/). When you are done, provide a short summary of what this program does and the next steps in development.
 
 Let's focus on image analysis for adaptive acquisitions. Ideally, it should 
 be possible for the agent to interpret snapped images and other information resulting
@@ -102,3 +118,14 @@ please update plan_v2.md.
 
 Please look at plan_v2.md again. Remove anything related to Cellpose, but     
 keep the architecture that would allow us to call Cellpose in the future.
+
+----
+
+Carefully read the code in this directory and plan_v2.md. Implement the plan
+in plan_v2.md.
+
+(Esc) Can you please provide a summary of the plan?  
+
+Go ahead and implement it 
+
+Now write integration tests against the Demo config
