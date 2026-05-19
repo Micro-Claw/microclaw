@@ -1,4 +1,7 @@
 from __future__ import annotations
+import json
+from pathlib import Path
+
 from pycromanager import Core, Studio
 
 
@@ -9,6 +12,9 @@ class MicroscopeController:
     def __init__(self, port: int = 4827):
         self._core = Core(port=port)
         self._studio = Studio(port=port)
+        # Python-native position store. Use import_from_mm_position_list() to
+        # pull in positions the user has marked in MM's GUI.
+        self._positions: list[dict] = []
 
     @property
     def core(self) -> Core:
@@ -25,36 +31,11 @@ class MicroscopeController:
         except Exception:
             return False
 
-    # --- Position list management (MM native API) ---
+    # --- Position list management ---
 
-    def _pos_list(self):
-        """Return MM's live PositionList Java object via pycro-manager."""
-        return self._studio.positions().get_position_list()
-
-    def add_position(self, label: str, x: float, y: float, z: float | None = None) -> None:
-        """Add a position to MM's native position list."""
-        from pycromanager import MultiStagePosition, StagePosition
-        msp = MultiStagePosition()
-        msp.set_label(label)
-        xy_stage = self._core.get_xy_stage_device()
-        sp_xy = StagePosition()
-        sp_xy.stage_device_label = xy_stage
-        sp_xy.num_axes = 2
-        sp_xy.x = x
-        sp_xy.y = y
-        msp.add(sp_xy)
-        if z is not None:
-            z_stage = self._core.get_focus_device()
-            sp_z = StagePosition()
-            sp_z.stage_device_label = z_stage
-            sp_z.num_axes = 1
-            sp_z.x = z
-            msp.add(sp_z)
-        self._pos_list().add_position(msp)
-
-    def get_positions(self) -> list[dict]:
-        """Return all positions from MM's native list."""
-        pl = self._pos_list()
+    def _read_mm_position_list(self) -> list[dict]:
+        """Read positions from MM's GUI position list (read-only Java access)."""
+        pl = self._studio.positions().get_position_list()
         out = []
         for i in range(pl.get_number_of_positions()):
             msp = pl.get_position(i)
@@ -62,42 +43,65 @@ class MicroscopeController:
             for j in range(msp.size()):
                 sp = msp.get(j)
                 if sp.num_axes == 2:
-                    entry["x_um"] = round(sp.x, 3)
-                    entry["y_um"] = round(sp.y, 3)
+                    entry["x_um"] = round(float(sp.x), 3)
+                    entry["y_um"] = round(float(sp.y), 3)
                 elif sp.num_axes == 1:
-                    entry["z_um"] = round(sp.x, 3)
+                    entry["z_um"] = round(float(sp.x), 3)
             out.append(entry)
         return out
 
-    def go_to_position(self, label: str) -> None:
-        """Move stage to a named position from MM's native list."""
-        pl = self._pos_list()
-        for i in range(pl.get_number_of_positions()):
-            msp = pl.get_position(i)
-            if str(msp.get_label()) == label:
-                pl.go_to_position(i, self._core)
-                return
-        raise KeyError(f"Position '{label}' not found in MM position list.")
+    def import_from_mm_position_list(self) -> list[str]:
+        """Copy positions from MM's GUI position list into the internal store.
 
-    def remove_position(self, label: str) -> None:
-        """Remove a named position from MM's native list."""
-        pl = self._pos_list()
-        for i in range(pl.get_number_of_positions()):
-            if str(pl.get_position(i).get_label()) == label:
-                pl.remove_position(i)
+        Existing entries with the same name are replaced. Returns the list of
+        imported position names.
+        """
+        imported = []
+        for pos in self._read_mm_position_list():
+            self._positions = [p for p in self._positions if p["name"] != pos["name"]]
+            self._positions.append(pos)
+            imported.append(pos["name"])
+        return imported
+
+    def add_position(self, label: str, x: float, y: float, z: float | None = None) -> None:
+        """Add or replace a named position in the internal store."""
+        entry: dict = {"name": label, "x_um": round(x, 3), "y_um": round(y, 3)}
+        if z is not None:
+            entry["z_um"] = round(z, 3)
+        self._positions = [p for p in self._positions if p["name"] != label]
+        self._positions.append(entry)
+
+    def get_positions(self) -> list[dict]:
+        """Return all stored positions."""
+        return list(self._positions)
+
+    def go_to_position(self, label: str) -> None:
+        """Move stage to a named position."""
+        for pos in self._positions:
+            if pos["name"] == label:
+                self._core.set_xy_position(pos["x_um"], pos["y_um"])
+                self._core.wait_for_device(self._core.get_xy_stage_device())
+                if "z_um" in pos:
+                    self._core.set_position(pos["z_um"])
+                    self._core.wait_for_device(self._core.get_focus_device())
                 return
         raise KeyError(f"Position '{label}' not found.")
 
+    def remove_position(self, label: str) -> None:
+        """Remove a named position."""
+        before = len(self._positions)
+        self._positions = [p for p in self._positions if p["name"] != label]
+        if len(self._positions) == before:
+            raise KeyError(f"Position '{label}' not found.")
+
     def clear_positions(self) -> None:
-        """Clear all positions from MM's native list."""
-        self._pos_list().clear_all_positions()
+        """Clear all stored positions."""
+        self._positions = []
 
     def save_position_list(self, path: str) -> None:
-        """Save MM position list to a .pos file."""
-        self._pos_list().save(path)
+        """Persist the position list to a JSON file."""
+        Path(path).write_text(json.dumps(self._positions, indent=2))
 
     def load_position_list(self, path: str) -> None:
-        """Load a .pos file into MM's native position list."""
-        pl = self._pos_list()
-        pl.load(path)
-        self._studio.positions().set_position_list(pl)
+        """Load positions from a JSON file written by save_position_list."""
+        self._positions = json.loads(Path(path).read_text())

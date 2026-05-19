@@ -359,14 +359,24 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "load_position_list",
-        "description": "Load a .pos file into MM's native position list.",
+        "description": "Load a previously saved position list file into the agent.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "Path to the .pos file."}
+                "path": {"type": "string", "description": "Path to the position list file."}
             },
             "required": ["path"],
         },
+    },
+    {
+        "name": "import_mm_positions",
+        "description": (
+            "Import positions from Micro-Manager's GUI Position List Manager into the "
+            "agent's internal position store. Call this after the user has set up "
+            "positions in the MM GUI. The imported positions are then available for "
+            "mark_position, get_position_list, go_to_position, and all acquisition tools."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
     },
     {
         "name": "run_multiposition_acquisition",

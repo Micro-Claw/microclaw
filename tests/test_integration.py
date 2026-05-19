@@ -27,7 +27,8 @@ pytestmark = pytest.mark.integration
 # ---------------------------------------------------------------------------
 
 def _first_channel(headless_mm) -> str | None:
-    channels = list(headless_mm.core.get_available_configs("Channel"))
+    from microclaw.tools import _str_vector
+    channels = _str_vector(headless_mm.core.get_available_configs("Channel"))
     return channels[0] if channels else None
 
 
@@ -191,7 +192,7 @@ def test_zstack_creates_dataset(headless_mm, unconstrained_guard, tmp_path):
         save_dir=str(tmp_path), name="test_stack",
     )
     assert result["status"] == "Z-stack complete."
-    assert (tmp_path / "test_stack").exists()
+    assert Path(result["dataset_path"]).exists()
 
 
 def test_zstack_with_channel(headless_mm, unconstrained_guard, tmp_path):
@@ -216,19 +217,19 @@ def test_timelapse_creates_dataset(headless_mm, unconstrained_guard, tmp_path):
         save_dir=str(tmp_path), name="test_timelapse",
     )
     assert result["status"] == "Timelapse complete."
-    assert (tmp_path / "test_timelapse").exists()
+    assert Path(result["dataset_path"]).exists()
 
 
 def test_zstack_export_tiff(headless_mm, unconstrained_guard, tmp_path):
     import tifffile
     from microclaw.tools import export_dataset_as_tiff, run_zstack
-    run_zstack(headless_mm, unconstrained_guard,
-               z_start_um=45.0, z_end_um=50.0, z_step_um=1.0,
-               save_dir=str(tmp_path), name="stack")
+    zstack_result = run_zstack(headless_mm, unconstrained_guard,
+                               z_start_um=45.0, z_end_um=50.0, z_step_um=1.0,
+                               save_dir=str(tmp_path), name="stack")
     out = str(tmp_path / "out.tiff")
     result = export_dataset_as_tiff(
         headless_mm, unconstrained_guard,
-        dataset_path=str(tmp_path / "stack"), output_path=out,
+        dataset_path=zstack_result["dataset_path"], output_path=out,
     )
     assert result["status"] == "Export complete."
     img = tifffile.imread(out)
@@ -238,13 +239,13 @@ def test_zstack_export_tiff(headless_mm, unconstrained_guard, tmp_path):
 def test_timelapse_export_tiff(headless_mm, unconstrained_guard, tmp_path):
     import tifffile
     from microclaw.tools import export_dataset_as_tiff, run_timelapse
-    run_timelapse(headless_mm, unconstrained_guard,
-                  n_frames=3, interval_s=0,
-                  save_dir=str(tmp_path), name="tl")
+    tl_result = run_timelapse(headless_mm, unconstrained_guard,
+                              n_frames=3, interval_s=0,
+                              save_dir=str(tmp_path), name="tl")
     out = str(tmp_path / "timelapse.tiff")
     result = export_dataset_as_tiff(
         headless_mm, unconstrained_guard,
-        dataset_path=str(tmp_path / "tl"), output_path=out,
+        dataset_path=tl_result["dataset_path"], output_path=out,
     )
     assert result["status"] == "Export complete."
     img = tifffile.imread(out)

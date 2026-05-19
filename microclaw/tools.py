@@ -7,6 +7,8 @@ from typing import Any
 
 import numpy as np
 import tifffile
+from pycromanager import Acquisition, multi_d_acquisition_events
+from ndstorage import Dataset
 
 from microclaw.autofocus import coarse_then_fine_autofocus, sweep_autofocus
 from microclaw.controller import MicroscopeController
@@ -15,8 +17,10 @@ from microclaw.safety import SafetyGuard, SafetyViolation
 
 
 def _str_vector(sv) -> list[str]:
-    """Convert a pycro-manager mmcorej_StrVector to a Python list."""
-    return [str(sv.get(i)) for i in range(sv.size())]
+    """Convert a pycro-manager mmcorej_StrVector (or plain iterable) to a Python list."""
+    if hasattr(sv, "size"):
+        return [str(sv.get(i)) for i in range(sv.size())]
+    return [str(x) for x in sv]
 
 
 def _wait(ctrl: MicroscopeController, device: str | None = None) -> None:
@@ -215,12 +219,12 @@ def run_zstack(
         ctrl.core.set_exposure(exposure_ms)
 
     events = multi_d_acquisition_events(**kwargs)
-    save_path = str(Path(save_dir) / name)
 
-    with Acquisition(directory=save_dir, name=name, show_display=True) as acq:
+    with Acquisition(directory=save_dir, name=name, show_display=False) as acq:
         acq.acquire(events)
 
-    return {"status": "Z-stack complete.", "dataset_path": save_path}
+    actual_path = acq._dataset_disk_location or str(Path(save_dir) / name)
+    return {"status": "Z-stack complete.", "dataset_path": actual_path}
 
 
 def run_timelapse(
@@ -248,12 +252,12 @@ def run_timelapse(
             kwargs["channel_exposures_ms"] = [exposure_ms]
 
     events = multi_d_acquisition_events(**kwargs)
-    save_path = str(Path(save_dir) / name)
 
-    with Acquisition(directory=save_dir, name=name, show_display=True) as acq:
+    with Acquisition(directory=save_dir, name=name, show_display=False) as acq:
         acq.acquire(events)
 
-    return {"status": "Timelapse complete.", "dataset_path": save_path}
+    actual_path = acq._dataset_disk_location or str(Path(save_dir) / name)
+    return {"status": "Timelapse complete.", "dataset_path": actual_path}
 
 
 def export_dataset_as_tiff(
@@ -436,6 +440,21 @@ def load_position_list(ctrl: MicroscopeController, guard: SafetyGuard, path: str
     ctrl.load_position_list(path)
     positions = ctrl.get_positions()
     return {"status": f"Loaded {len(positions)} positions from {path}.", "count": len(positions)}
+
+
+def import_mm_positions(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
+    """Import positions from MM's GUI position list into the agent's internal store.
+
+    Use this after the user has set up positions in Micro-Manager's Position List
+    Manager. The imported positions will be available for all acquisition tools.
+    """
+    names = ctrl.import_from_mm_position_list()
+    positions = ctrl.get_positions()
+    return {
+        "status": f"Imported {len(names)} position(s) from MM.",
+        "imported": names,
+        "total": len(positions),
+    }
 
 
 # --- Multiposition acquisition ---
@@ -631,7 +650,7 @@ def run_adaptive_acquisition(
     if hasattr(hook, "image_process_fn"):
         hook_fn_kwargs["image_process_fn"] = hook.image_process_fn
 
-    with Acquisition(directory=save_dir, name=name, show_display=True, **hook_fn_kwargs) as acq:
+    with Acquisition(directory=save_dir, name=name, show_display=False, **hook_fn_kwargs) as acq:
         acq.acquire(events)
 
     result: dict[str, Any] = {
@@ -737,6 +756,7 @@ TOOL_REGISTRY = {
     "clear_position_list": clear_position_list,
     "save_position_list": save_position_list,
     "load_position_list": load_position_list,
+    "import_mm_positions": import_mm_positions,
     "run_multiposition_acquisition": run_multiposition_acquisition,
     "run_multiposition_with_autofocus": run_multiposition_with_autofocus,
     "run_adaptive_acquisition": run_adaptive_acquisition,
