@@ -1,14 +1,36 @@
+import json
+
+import numpy as np
 import pytest
+
+from microclaw.safety import SafetyConstraints, SafetyGuard, SafetyViolation, StageConstraints
 from microclaw.tools import (
-    set_exposure, get_exposure,
-    move_stage_z, get_z_position,
-    move_stage_xy, get_xy_position,
-    set_channel, get_available_channels,
-    set_device_property, get_device_property,
-    list_devices, get_system_state,
-    snap_image, start_live_view, stop_live_view,
+    clear_position_list,
+    delete_position,
+    generate_and_save_hook,
+    get_available_channels,
+    get_device_property,
+    get_exposure,
+    get_position_list,
+    get_system_state,
+    get_xy_position,
+    get_z_position,
+    go_to_position,
+    list_devices,
+    list_hooks,
+    mark_position,
+    move_stage_xy,
+    move_stage_z,
+    read_hook_from_file,
+    run_autofocus,
+    set_channel,
+    set_device_property,
+    set_exposure,
+    snap_and_analyze,
+    snap_image,
+    start_live_view,
+    stop_live_view,
 )
-from microclaw.safety import SafetyViolation
 
 
 class TestSnapImage:
@@ -161,3 +183,163 @@ class TestGetSystemState:
         mock_ctrl.core.get_x_position.side_effect = Exception("Device not found")
         result = get_system_state(mock_ctrl, unconstrained_guard)
         assert result.get("xy_stage") == "unavailable"
+
+
+class TestSnapAndAnalyze:
+    def test_returns_multimodal(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        monkeypatch.setattr(
+            "microclaw.tools.snap_to_numpy",
+            lambda ctrl: np.zeros((64, 64), dtype=np.uint16),
+        )
+        mock_ctrl.core.get_position.return_value = 50.0
+        result = snap_and_analyze(mock_ctrl, unconstrained_guard)
+        assert isinstance(result, list)
+        assert result[0]["type"] == "text"
+        assert result[1]["type"] == "image"
+
+    def test_text_block_has_stats(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        monkeypatch.setattr(
+            "microclaw.tools.snap_to_numpy",
+            lambda ctrl: np.zeros((64, 64), dtype=np.uint16),
+        )
+        mock_ctrl.core.get_position.return_value = 50.0
+        result = snap_and_analyze(mock_ctrl, unconstrained_guard)
+        payload = json.loads(result[0]["text"])
+        assert "focus_metric" in payload
+        assert "mean_intensity" in payload
+        assert "z_um" in payload
+
+
+class TestRunAutofocus:
+    def test_z_boundary_check_below(self, mock_ctrl, default_guard):
+        # current Z=5, range=20 → sweep goes to -5 which is below z_min=0
+        mock_ctrl.core.get_position.return_value = 5.0
+        with pytest.raises(SafetyViolation):
+            run_autofocus(mock_ctrl, default_guard, z_range_um=20.0, z_step_um=1.0)
+
+    def test_z_boundary_check_above(self, mock_ctrl, default_guard):
+        # current Z=195, range=20 → sweep goes to 205 which is above z_max=200
+        mock_ctrl.core.get_position.return_value = 195.0
+        with pytest.raises(SafetyViolation):
+            run_autofocus(mock_ctrl, default_guard, z_range_um=20.0, z_step_um=1.0)
+
+
+class TestMarkPosition:
+    def test_saves_position(self, mock_ctrl, unconstrained_guard):
+        mock_ctrl.core.get_x_position.return_value = 100.0
+        mock_ctrl.core.get_y_position.return_value = 200.0
+        mock_ctrl.core.get_position.return_value = 50.0
+        result = mark_position(mock_ctrl, unconstrained_guard, name="test_pos")
+        mock_ctrl.add_position.assert_called_once_with("test_pos", 100.0, 200.0, 50.0)
+        assert result["x_um"] == 100.0
+        assert result["y_um"] == 200.0
+        assert result["z_um"] == 50.0
+
+    def test_xy_safety_check(self, mock_ctrl):
+        guard = SafetyGuard(SafetyConstraints(stage=StageConstraints(x_max=100.0)))
+        mock_ctrl.core.get_x_position.return_value = 200.0
+        mock_ctrl.core.get_y_position.return_value = 0.0
+        mock_ctrl.core.get_position.return_value = 50.0
+        with pytest.raises(SafetyViolation):
+            mark_position(mock_ctrl, guard, name="out_of_bounds")
+
+    def test_without_z(self, mock_ctrl, unconstrained_guard):
+        mock_ctrl.core.get_x_position.return_value = 10.0
+        mock_ctrl.core.get_y_position.return_value = 20.0
+        result = mark_position(mock_ctrl, unconstrained_guard, name="no_z", include_z=False)
+        assert "z_um" not in result
+        mock_ctrl.add_position.assert_called_once_with("no_z", 10.0, 20.0, None)
+
+
+class TestGetPositionList:
+    def test_returns_positions(self, mock_ctrl, unconstrained_guard):
+        mock_ctrl.get_positions.return_value = [
+            {"name": "Pos1", "x_um": 0.0, "y_um": 0.0}
+        ]
+        result = get_position_list(mock_ctrl, unconstrained_guard)
+        assert result["count"] == 1
+        assert result["positions"][0]["name"] == "Pos1"
+
+
+class TestGoToPosition:
+    def test_moves_to_existing(self, mock_ctrl, unconstrained_guard):
+        mock_ctrl.get_positions.return_value = [
+            {"name": "Pos1", "x_um": 100.0, "y_um": 200.0, "z_um": 50.0}
+        ]
+        result = go_to_position(mock_ctrl, unconstrained_guard, name="Pos1")
+        mock_ctrl.go_to_position.assert_called_once_with("Pos1")
+        assert result["status"] == "Moved to 'Pos1'."
+
+    def test_error_for_missing(self, mock_ctrl, unconstrained_guard):
+        mock_ctrl.get_positions.return_value = []
+        result = go_to_position(mock_ctrl, unconstrained_guard, name="Ghost")
+        assert "error" in result
+
+    def test_safety_check_xy(self, mock_ctrl):
+        guard = SafetyGuard(SafetyConstraints(stage=StageConstraints(x_max=50.0)))
+        mock_ctrl.get_positions.return_value = [
+            {"name": "Far", "x_um": 200.0, "y_um": 0.0}
+        ]
+        with pytest.raises(SafetyViolation):
+            go_to_position(mock_ctrl, guard, name="Far")
+
+
+class TestDeletePosition:
+    def test_calls_remove(self, mock_ctrl, unconstrained_guard):
+        result = delete_position(mock_ctrl, unconstrained_guard, name="Pos1")
+        mock_ctrl.remove_position.assert_called_once_with("Pos1")
+        assert "deleted" in result["status"]
+
+
+class TestClearPositionList:
+    def test_calls_clear(self, mock_ctrl, unconstrained_guard):
+        result = clear_position_list(mock_ctrl, unconstrained_guard)
+        mock_ctrl.clear_positions.assert_called_once()
+        assert "cleared" in result["status"]
+
+
+class TestListHooks:
+    def test_includes_precoded(self, mock_ctrl, unconstrained_guard):
+        result = list_hooks(mock_ctrl, unconstrained_guard)
+        assert "autofocus_per_position" in result["precoded"]
+        assert "focus_feedback" in result["precoded"]
+        assert "intensity_adaptive" in result["precoded"]
+        assert "position_filter" in result["precoded"]
+        assert "saved" in result
+
+
+class TestGenerateAndSaveHook:
+    def test_saves_valid_hook(self, mock_ctrl, unconstrained_guard, tmp_path, monkeypatch):
+        monkeypatch.setattr("microclaw.hook_manager.HOOKS_DIR", tmp_path)
+        monkeypatch.setattr("microclaw.hook_manager.MANIFEST", tmp_path / "manifest.json")
+        code = "class H:\n    def image_process_fn(self, img, meta, q): return img, meta\n"
+        result = generate_and_save_hook(
+            mock_ctrl, unconstrained_guard,
+            name="my_hook", code=code,
+            description="Test hook", source="claude_generated",
+        )
+        assert "saved" in result["status"]
+
+    def test_rejects_unsafe_code(self, mock_ctrl, unconstrained_guard):
+        code = "eval('os.system(\"rm -rf /\")')"
+        result = generate_and_save_hook(
+            mock_ctrl, unconstrained_guard,
+            name="bad_hook", code=code,
+            description="Evil hook", source="claude_generated",
+        )
+        assert "error" in result
+        assert "warnings" in result
+
+
+class TestReadHookFromFile:
+    def test_reads_valid_file(self, mock_ctrl, unconstrained_guard, tmp_path):
+        hook_file = tmp_path / "good.py"
+        code = "class H:\n    def image_process_fn(self, img, meta, q): return img, meta\n"
+        hook_file.write_text(code)
+        result = read_hook_from_file(mock_ctrl, unconstrained_guard, path=str(hook_file))
+        assert result["code"] == code
+        assert result["warnings"] == []
+
+    def test_error_for_missing_file(self, mock_ctrl, unconstrained_guard):
+        result = read_hook_from_file(mock_ctrl, unconstrained_guard, path="/no/such/file.py")
+        assert "error" in result

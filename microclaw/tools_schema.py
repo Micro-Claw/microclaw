@@ -230,6 +230,338 @@ TOOLS: list[dict[str, Any]] = [
             "required": ["dataset_path", "output_path"],
         },
     },
+    {
+        "name": "snap_and_analyze",
+        "description": (
+            "Snap a single image and return numerical stats (focus metric, mean intensity, "
+            "saturation) plus a thumbnail for visual inspection. Prefer this over snap_image "
+            "when you need to assess image quality or see the sample."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "thumbnail_size": {
+                    "type": "integer",
+                    "description": "Max pixel dimension of the thumbnail (default 512).",
+                    "default": 512,
+                }
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "run_autofocus",
+        "description": (
+            "Run a software autofocus sweep to find the sharpest Z plane. "
+            "Sweeps Z from (current_z - z_range_um/2) to (current_z + z_range_um/2) "
+            "in z_step_um steps. Returns best Z, focus metric curve, and a thumbnail. "
+            "Default parameters for a 20× objective: z_range_um=20, z_step_um=0.5. "
+            "Widen z_range_um if the result says the peak was at the boundary."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "z_range_um": {
+                    "type": "number",
+                    "description": "Total Z sweep range in µm, centred on current Z.",
+                },
+                "z_step_um": {
+                    "type": "number",
+                    "description": "Step size in µm for the fine sweep.",
+                },
+                "method": {
+                    "type": "string",
+                    "description": "'coarse_then_fine' (default) or 'sweep'.",
+                    "default": "coarse_then_fine",
+                },
+                "settle_ms": {
+                    "type": "integer",
+                    "description": "Wait time after each Z move in ms (default 50).",
+                    "default": 50,
+                },
+                "return_thumbnail": {
+                    "type": "boolean",
+                    "description": "Include a thumbnail of the focused image (default true).",
+                    "default": True,
+                },
+            },
+            "required": ["z_range_um", "z_step_um"],
+        },
+    },
+    {
+        "name": "mark_position",
+        "description": (
+            "Save the current stage position to MM's native position list. "
+            "The position is immediately visible in the MM GUI's XY Stage Control window. "
+            "Call this after the biologist has navigated to a site of interest."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Label for this position (e.g. 'cell_1', 'Pos001').",
+                },
+                "include_z": {
+                    "type": "boolean",
+                    "description": "Also save the current Z position (default true).",
+                    "default": True,
+                },
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "get_position_list",
+        "description": (
+            "Return all positions currently in MM's native position list, "
+            "including any positions added via the MM GUI."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "go_to_position",
+        "description": "Move the stage to a named position from MM's native position list.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Position label."}
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "delete_position",
+        "description": "Delete a named position from MM's native position list.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Position label to delete."}
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "clear_position_list",
+        "description": "Clear all positions from MM's native position list.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "save_position_list",
+        "description": "Save MM's position list to a .pos file for use in future sessions.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Output .pos file path."}
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "load_position_list",
+        "description": "Load a .pos file into MM's native position list.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Path to the .pos file."}
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "run_multiposition_acquisition",
+        "description": (
+            "Visit each named position in the MM position list and run a per-position "
+            "protocol (snap, zstack, or timelapse). Saves each position's data to a "
+            "subdirectory of save_dir."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "position_names": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of position labels to visit.",
+                },
+                "protocol": {
+                    "type": "string",
+                    "description": "'snap', 'zstack', or 'timelapse'.",
+                },
+                "save_dir": {"type": "string", "description": "Root directory for saved data."},
+                "name": {
+                    "type": "string",
+                    "description": "Dataset name prefix (default 'multipos').",
+                    "default": "multipos",
+                },
+                "protocol_params": {
+                    "type": "object",
+                    "description": (
+                        "Extra parameters forwarded to the per-position protocol. "
+                        "For zstack: z_start_um, z_end_um, z_step_um. "
+                        "For timelapse: n_frames, interval_s."
+                    ),
+                },
+            },
+            "required": ["position_names", "protocol", "save_dir"],
+        },
+    },
+    {
+        "name": "run_multiposition_with_autofocus",
+        "description": (
+            "Visit each named position, run software autofocus, then run a per-position "
+            "protocol (snap, zstack, or timelapse). Use this for automated surveys where "
+            "each stored image must be in focus."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "position_names": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of position labels to visit.",
+                },
+                "z_range_um": {
+                    "type": "number",
+                    "description": "Z sweep range for autofocus in µm.",
+                },
+                "z_step_um": {
+                    "type": "number",
+                    "description": "Fine step size for autofocus in µm.",
+                },
+                "protocol": {
+                    "type": "string",
+                    "description": "'snap', 'zstack', or 'timelapse'.",
+                },
+                "save_dir": {"type": "string", "description": "Root directory for saved data."},
+                "name": {
+                    "type": "string",
+                    "description": "Dataset name prefix (default 'multipos_af').",
+                    "default": "multipos_af",
+                },
+                "autofocus_method": {
+                    "type": "string",
+                    "description": "'coarse_then_fine' (default) or 'sweep'.",
+                    "default": "coarse_then_fine",
+                },
+                "settle_ms": {
+                    "type": "integer",
+                    "description": "Wait time after each Z move in ms (default 50).",
+                    "default": 50,
+                },
+                "protocol_params": {
+                    "type": "object",
+                    "description": "Extra parameters forwarded to the per-position protocol.",
+                },
+            },
+            "required": ["position_names", "z_range_um", "z_step_um", "protocol", "save_dir"],
+        },
+    },
+    {
+        "name": "run_adaptive_acquisition",
+        "description": (
+            "Run a Z-stack acquisition with a hook strategy for adaptive behaviour. "
+            "Pre-coded strategies: autofocus_per_position, focus_feedback, "
+            "intensity_adaptive, position_filter. "
+            "Call list_hooks() to see all available strategies including saved hooks. "
+            "After the acquisition, call read_hook_log(log_path) to retrieve results."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "z_start_um": {"type": "number", "description": "Start Z in µm."},
+                "z_end_um": {"type": "number", "description": "End Z in µm."},
+                "z_step_um": {"type": "number", "description": "Step size in µm."},
+                "save_dir": {"type": "string", "description": "Directory to save the dataset."},
+                "hook_strategy": {
+                    "type": "string",
+                    "description": "Hook strategy name (from list_hooks).",
+                },
+                "hook_params": {
+                    "type": "object",
+                    "description": "Parameters passed to the hook constructor.",
+                },
+                "channel": {
+                    "type": "string",
+                    "description": "Channel preset (optional).",
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Dataset name (default 'adaptive').",
+                    "default": "adaptive",
+                },
+                "log_path": {
+                    "type": "string",
+                    "description": "Path for the hook's output log (optional).",
+                },
+            },
+            "required": ["z_start_um", "z_end_um", "z_step_um", "save_dir", "hook_strategy"],
+        },
+    },
+    {
+        "name": "read_hook_log",
+        "description": (
+            "Read a hook's output log file after an acquisition completes. "
+            "Use this to retrieve per-position autofocus results, focus corrections, "
+            "intensity adjustments, or rejection events, and report them to the user."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "log_path": {"type": "string", "description": "Path to the hook log file."}
+            },
+            "required": ["log_path"],
+        },
+    },
+    {
+        "name": "list_hooks",
+        "description": (
+            "List all available hook strategies: pre-coded hooks and previously saved hooks "
+            "(with their descriptions and source). Call this before run_adaptive_acquisition "
+            "to confirm the strategy name."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "generate_and_save_hook",
+        "description": (
+            "Validate and save a hook script to disk. "
+            "IMPORTANT: Call this ONLY after showing the full code to the user and receiving "
+            "explicit confirmation. Runs an AST safety scan before saving. "
+            "source must be 'claude_generated' or 'user_provided'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Hook name (used as filename)."},
+                "code": {"type": "string", "description": "Full Python source code of the hook."},
+                "description": {
+                    "type": "string",
+                    "description": "One-sentence description of what the hook does.",
+                },
+                "source": {
+                    "type": "string",
+                    "description": "'claude_generated' or 'user_provided'.",
+                    "default": "claude_generated",
+                },
+            },
+            "required": ["name", "code", "description"],
+        },
+    },
+    {
+        "name": "read_hook_from_file",
+        "description": (
+            "Read a user-specified hook file and run the AST safety scan. "
+            "Returns the code and any warnings for review. Does NOT save — "
+            "call generate_and_save_hook(source='user_provided') after user confirms."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Path to the hook Python file."}
+            },
+            "required": ["path"],
+        },
+    },
 ]
 
 # Add cache_control on the last tool so the entire tool list is cached.
