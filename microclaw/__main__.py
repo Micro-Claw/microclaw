@@ -22,7 +22,7 @@ def main():
             "Could not connect to Micro-Manager. "
             "Is the ZMQ server enabled in Tools → Options?"
         )
-    print("Connected. Type your instructions (Ctrl-C to exit).\n")
+    print("Connected. Type your instructions (type 'exit' or press Ctrl-C to quit).\n")
 
     history = []
     while True:
@@ -33,6 +33,9 @@ def main():
             break
         if not user_input:
             continue
+        if user_input.lower() in {"exit", "quit"}:
+            print("Exiting.")
+            break
         reply, history = run_agent(user_input, ctrl, guard, history)
         print(f"\nMicroclaw: {reply}\n")
 
