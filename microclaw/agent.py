@@ -93,7 +93,7 @@ def run_agent(
                     messages=messages,
                 )
                 break
-            except anthropic.OverloadedError:
+            except anthropic._exceptions.OverloadedError:
                 if attempt == len(_RETRY_DELAYS):
                     return (
                         "The Anthropic API is currently overloaded (HTTP 529). "
