@@ -7,13 +7,16 @@ from typing import Any
 
 import numpy as np
 import tifffile
-from pycromanager import Acquisition, multi_d_acquisition_events
-from ndstorage import Dataset
 
 from microclaw.autofocus import coarse_then_fine_autofocus, sweep_autofocus
 from microclaw.controller import MicroscopeController
 from microclaw.image_analysis import compute_stats, make_thumbnail, snap_to_numpy
 from microclaw.safety import SafetyGuard, SafetyViolation
+
+
+def _str_vector(sv) -> list[str]:
+    """Convert a pycro-manager mmcorej_StrVector to a Python list."""
+    return [str(sv.get(i)) for i in range(sv.size())]
 
 
 def _wait(ctrl: MicroscopeController, device: str | None = None) -> None:
@@ -125,7 +128,7 @@ def set_channel(ctrl: MicroscopeController, guard: SafetyGuard, preset: str) -> 
 
 
 def get_available_channels(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
-    channels = list(ctrl.core.get_available_configs("Channel"))
+    channels = _str_vector(ctrl.core.get_available_configs("Channel"))
     return {"channels": channels}
 
 
@@ -151,7 +154,7 @@ def get_device_property(
 
 
 def list_devices(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
-    devices = list(ctrl.core.get_loaded_devices())
+    devices = _str_vector(ctrl.core.get_loaded_devices())
     return {"devices": devices}
 
 

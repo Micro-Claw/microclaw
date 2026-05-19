@@ -54,7 +54,6 @@ def make_thumbnail(
 def snap_to_numpy(ctrl) -> np.ndarray:
     """Snap and return a NumPy array via pycro-manager's tagged image API."""
     ctrl.core.snap_image()
-    ctrl.core.wait_for_image_synced()
     tagged = ctrl.core.get_tagged_image()
     w, h = tagged.tags["Width"], tagged.tags["Height"]
     return np.frombuffer(tagged.pix, dtype=np.uint16).reshape(h, w)
