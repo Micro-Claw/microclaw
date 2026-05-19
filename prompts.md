@@ -129,3 +129,8 @@ in plan_v2.md.
 Go ahead and implement it 
 
 Now write integration tests against the Demo config
+
+I have placed the errors I get when running the integration tests in          
+errors.txt. Please have a look, read them in detail, identify root causes,    
+and propose fixes. 
+
