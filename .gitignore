@@ -35,3 +35,6 @@ envs/
 # Editors
 .idea/
 .vscode/
+
+# data
+*.json

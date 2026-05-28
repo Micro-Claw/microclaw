@@ -1,8 +1,12 @@
 import sys
+import datetime
+
 from microclaw.agent import run_agent
 from microclaw.controller import MicroscopeController
 from microclaw.config import load_safety_config
 from microclaw.safety import SafetyGuard
+
+from anthropic._utils._json import openapi_dumps
 
 
 def main():
@@ -38,6 +42,10 @@ def main():
             break
         reply, history = run_agent(user_input, ctrl, guard, history)
         print(f"\nMicroclaw: {reply}\n")
+
+    # save chat history
+    with open(f"{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}_microclaw_history.json", "wb") as f:
+        f.write(openapi_dumps(history))
 
 
 if __name__ == "__main__":
