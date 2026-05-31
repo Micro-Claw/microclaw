@@ -30,3 +30,6 @@ build-backend = "setuptools.build_meta"
 markers = [
     "integration: requires a running Micro-Manager instance (deselect with -m 'not integration')",
 ]
+
+[tool.setuptools.package-dir]
+microclaw = "microclaw"
