@@ -53,6 +53,58 @@ def test_list_devices_includes_demo_devices(headless_mm, unconstrained_guard):
     assert len(devices) >= 2
 
 
+def test_list_device_properties_camera(headless_mm, unconstrained_guard):
+    from microclaw.tools import list_device_properties
+    result = list_device_properties(headless_mm, unconstrained_guard, device="Camera")
+    assert "properties" in result
+    assert result["count"] > 0
+    assert "Binning" in result["properties"]
+
+
+def test_get_device_property_info_binning(headless_mm, unconstrained_guard):
+    from microclaw.tools import get_device_property_info
+    result = get_device_property_info(
+        headless_mm, unconstrained_guard, device="Camera", property="Binning"
+    )
+    assert result["device"] == "Camera"
+    assert result["property"] == "Binning"
+    assert result["read_only"] is False
+    assert result["allowed_values"] is not None  # Binning is an enum in Demo
+    assert result["current_value"] is not None
+
+
+def test_get_device_property_info_read_only_label(headless_mm, unconstrained_guard):
+    from microclaw.tools import get_device_property_info, list_device_properties
+    props = list_device_properties(headless_mm, unconstrained_guard, device="Camera")["properties"]
+    # Find at least one read-only property (Demo camera exposes several)
+    read_only_found = False
+    for p in props:
+        info = get_device_property_info(headless_mm, unconstrained_guard, device="Camera", property=p)
+        if info["read_only"]:
+            read_only_found = True
+            break
+    # Demo camera always has at least one read-only property (e.g. CCDTemperature)
+    assert read_only_found
+
+
+def test_get_full_device_state_camera(headless_mm, unconstrained_guard):
+    from microclaw.tools import get_full_device_state
+    result = get_full_device_state(headless_mm, unconstrained_guard, device="Camera")
+    assert result["device"] == "Camera"
+    assert "Binning" in result["state"]
+    assert len(result["state"]) > 0
+
+
+def test_full_device_state_values_match_individual_reads(headless_mm, unconstrained_guard):
+    from microclaw.tools import get_device_property, get_full_device_state
+    full = get_full_device_state(headless_mm, unconstrained_guard, device="Camera")
+    binning_full = full["state"]["Binning"]
+    binning_single = get_device_property(
+        headless_mm, unconstrained_guard, device="Camera", property="Binning"
+    )["value"]
+    assert binning_full == binning_single
+
+
 # ---------------------------------------------------------------------------
 # Camera and exposure
 # ---------------------------------------------------------------------------

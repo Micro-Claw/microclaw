@@ -162,6 +162,62 @@ def list_devices(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     return {"devices": devices}
 
 
+def list_device_properties(
+    ctrl: MicroscopeController,
+    guard: SafetyGuard,
+    device: str,
+) -> dict:
+    props = _str_vector(ctrl.core.get_device_property_names(device))
+    return {"device": device, "properties": props, "count": len(props)}
+
+
+def get_device_property_info(
+    ctrl: MicroscopeController,
+    guard: SafetyGuard,
+    device: str,
+    property: str,
+) -> dict:
+    read_only = bool(ctrl.core.is_property_read_only(device, property))
+    pre_init = bool(ctrl.core.is_property_pre_init(device, property))
+    prop_type = str(ctrl.core.get_property_type(device, property)).split(".")[-1]
+
+    allowed_sv = ctrl.core.get_allowed_property_values(device, property)
+    allowed = _str_vector(allowed_sv) if allowed_sv.size() > 0 else None
+
+    has_limits = bool(ctrl.core.has_property_limits(device, property))
+    lower = ctrl.core.get_property_lower_limit(device, property) if has_limits else None
+    upper = ctrl.core.get_property_upper_limit(device, property) if has_limits else None
+
+    current = ctrl.core.get_property(device, property)
+
+    return {
+        "device": device,
+        "property": property,
+        "current_value": current,
+        "type": prop_type,
+        "read_only": read_only,
+        "pre_init": pre_init,
+        "allowed_values": allowed,
+        "lower_limit": lower,
+        "upper_limit": upper,
+    }
+
+
+def get_full_device_state(
+    ctrl: MicroscopeController,
+    guard: SafetyGuard,
+    device: str,
+) -> dict:
+    props = _str_vector(ctrl.core.get_device_property_names(device))
+    state = {}
+    for p in props:
+        try:
+            state[p] = ctrl.core.get_property(device, p)
+        except Exception as exc:
+            state[p] = f"<error: {exc}>"
+    return {"device": device, "state": state}
+
+
 # --- System State ---
 
 def get_system_state(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
@@ -744,6 +800,9 @@ TOOL_REGISTRY = {
     "set_device_property": set_device_property,
     "get_device_property": get_device_property,
     "list_devices": list_devices,
+    "list_device_properties": list_device_properties,
+    "get_device_property_info": get_device_property_info,
+    "get_full_device_state": get_full_device_state,
     "get_system_state": get_system_state,
     "run_zstack": run_zstack,
     "run_timelapse": run_timelapse,

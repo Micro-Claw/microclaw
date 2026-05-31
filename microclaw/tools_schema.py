@@ -572,6 +572,61 @@ TOOLS: list[dict[str, Any]] = [
             "required": ["path"],
         },
     },
+    {
+        "name": "list_device_properties",
+        "description": (
+            "List all property names exposed by a loaded Micro-Manager device. "
+            "Call this when you encounter a device whose properties are not known. "
+            "Follow up with get_device_property_info to learn each property's type "
+            "and valid values before calling set_device_property."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "device": {
+                    "type": "string",
+                    "description": "Device name (from list_devices).",
+                },
+            },
+            "required": ["device"],
+        },
+    },
+    {
+        "name": "get_device_property_info",
+        "description": (
+            "Return metadata for a single Micro-Manager device property: "
+            "its current value, data type (String/Float/Integer), whether it is "
+            "read-only or pre-init only, the list of allowed values for enum "
+            "properties, and numeric limits. Always call this before "
+            "set_device_property on a property you have not used before."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "device": {"type": "string", "description": "Device name."},
+                "property": {"type": "string", "description": "Property name."},
+            },
+            "required": ["device", "property"],
+        },
+    },
+    {
+        "name": "get_full_device_state",
+        "description": (
+            "Return the current value of every property of a Micro-Manager device "
+            "in a single call. Use this to orient yourself about an unknown device "
+            "or to report its complete state to the user."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "device": {
+                    "type": "string",
+                    "description": "Device name (from list_devices).",
+                },
+            },
+            "required": ["device"],
+        },
+    },
 ]
 
 # Add cache_control on the last tool so the entire tool list is cached.

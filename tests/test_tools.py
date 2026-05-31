@@ -10,12 +10,15 @@ from microclaw.tools import (
     generate_and_save_hook,
     get_available_channels,
     get_device_property,
+    get_device_property_info,
     get_exposure,
+    get_full_device_state,
     get_position_list,
     get_system_state,
     get_xy_position,
     get_z_position,
     go_to_position,
+    list_device_properties,
     list_devices,
     list_hooks,
     mark_position,
@@ -343,3 +346,134 @@ class TestReadHookFromFile:
     def test_error_for_missing_file(self, mock_ctrl, unconstrained_guard):
         result = read_hook_from_file(mock_ctrl, unconstrained_guard, path="/no/such/file.py")
         assert "error" in result
+
+
+class TestListDeviceProperties:
+    def _make_sv(self, items):
+        from unittest.mock import MagicMock
+        sv = MagicMock()
+        sv.size.return_value = len(items)
+        sv.get.side_effect = list(items)
+        return sv
+
+    def test_returns_property_names(self, mock_ctrl, unconstrained_guard):
+        mock_ctrl.core.get_device_property_names.return_value = self._make_sv(["State", "Label"])
+        result = list_device_properties(mock_ctrl, unconstrained_guard, device="Arduino-Switch")
+        assert result["device"] == "Arduino-Switch"
+        assert result["properties"] == ["State", "Label"]
+        assert result["count"] == 2
+
+    def test_empty_device(self, mock_ctrl, unconstrained_guard):
+        mock_ctrl.core.get_device_property_names.return_value = self._make_sv([])
+        result = list_device_properties(mock_ctrl, unconstrained_guard, device="Dummy")
+        assert result["properties"] == []
+        assert result["count"] == 0
+
+    def test_calls_core_with_device_name(self, mock_ctrl, unconstrained_guard):
+        mock_ctrl.core.get_device_property_names.return_value = self._make_sv([])
+        list_device_properties(mock_ctrl, unconstrained_guard, device="MyDevice")
+        mock_ctrl.core.get_device_property_names.assert_called_once_with("MyDevice")
+
+
+class TestGetDevicePropertyInfo:
+    def _make_sv(self, items):
+        from unittest.mock import MagicMock
+        sv = MagicMock()
+        sv.size.return_value = len(items)
+        sv.get.side_effect = list(items)
+        return sv
+
+    def _setup_mock(self, mock_ctrl, *, read_only=False, pre_init=False,
+                    prop_type="Integer", allowed=(), has_limits=False,
+                    lower=None, upper=None, current="0"):
+        mock_ctrl.core.is_property_read_only.return_value = read_only
+        mock_ctrl.core.is_property_pre_init.return_value = pre_init
+        mock_ctrl.core.get_property_type.return_value = prop_type
+        mock_ctrl.core.get_allowed_property_values.return_value = self._make_sv(allowed)
+        mock_ctrl.core.has_property_limits.return_value = has_limits
+        mock_ctrl.core.get_property_lower_limit.return_value = lower
+        mock_ctrl.core.get_property_upper_limit.return_value = upper
+        mock_ctrl.core.get_property.return_value = current
+
+    def test_integer_with_limits(self, mock_ctrl, unconstrained_guard):
+        self._setup_mock(mock_ctrl, prop_type="Integer", has_limits=True, lower=0.0, upper=7.0)
+        result = get_device_property_info(
+            mock_ctrl, unconstrained_guard, device="Arduino-Switch", property="State"
+        )
+        assert result["device"] == "Arduino-Switch"
+        assert result["property"] == "State"
+        assert result["type"] == "Integer"
+        assert result["read_only"] is False
+        assert result["pre_init"] is False
+        assert result["allowed_values"] is None
+        assert result["lower_limit"] == 0.0
+        assert result["upper_limit"] == 7.0
+        assert result["current_value"] == "0"
+
+    def test_enum_property(self, mock_ctrl, unconstrained_guard):
+        self._setup_mock(mock_ctrl, prop_type="String", allowed=["On", "Off"], current="On")
+        result = get_device_property_info(
+            mock_ctrl, unconstrained_guard, device="Shutter", property="State"
+        )
+        assert result["allowed_values"] == ["On", "Off"]
+        assert result["lower_limit"] is None
+        assert result["upper_limit"] is None
+
+    def test_read_only_property(self, mock_ctrl, unconstrained_guard):
+        self._setup_mock(mock_ctrl, read_only=True, prop_type="String", current="DemoCam")
+        result = get_device_property_info(
+            mock_ctrl, unconstrained_guard, device="Core", property="Camera"
+        )
+        assert result["read_only"] is True
+
+    def test_pre_init_property(self, mock_ctrl, unconstrained_guard):
+        self._setup_mock(mock_ctrl, pre_init=True, prop_type="String")
+        result = get_device_property_info(
+            mock_ctrl, unconstrained_guard, device="Camera", property="Port"
+        )
+        assert result["pre_init"] is True
+
+    def test_float_no_limits(self, mock_ctrl, unconstrained_guard):
+        self._setup_mock(mock_ctrl, prop_type="Float", current="1.5")
+        result = get_device_property_info(
+            mock_ctrl, unconstrained_guard, device="Camera", property="Gain"
+        )
+        assert result["type"] == "Float"
+        assert result["lower_limit"] is None
+        assert result["upper_limit"] is None
+
+    def test_no_limits_query_when_has_limits_false(self, mock_ctrl, unconstrained_guard):
+        self._setup_mock(mock_ctrl, prop_type="Integer", has_limits=False)
+        get_device_property_info(
+            mock_ctrl, unconstrained_guard, device="Dev", property="Prop"
+        )
+        mock_ctrl.core.get_property_lower_limit.assert_not_called()
+        mock_ctrl.core.get_property_upper_limit.assert_not_called()
+
+
+class TestGetFullDeviceState:
+    def _make_sv(self, items):
+        from unittest.mock import MagicMock
+        sv = MagicMock()
+        sv.size.return_value = len(items)
+        sv.get.side_effect = list(items)
+        return sv
+
+    def test_returns_all_properties(self, mock_ctrl, unconstrained_guard):
+        mock_ctrl.core.get_device_property_names.return_value = self._make_sv(["Gain", "Binning"])
+        mock_ctrl.core.get_property.side_effect = ["1", "1"]
+        result = get_full_device_state(mock_ctrl, unconstrained_guard, device="Camera")
+        assert result["device"] == "Camera"
+        assert result["state"] == {"Gain": "1", "Binning": "1"}
+
+    def test_error_on_one_property_does_not_abort(self, mock_ctrl, unconstrained_guard):
+        mock_ctrl.core.get_device_property_names.return_value = self._make_sv(["Good", "Bad"])
+        mock_ctrl.core.get_property.side_effect = ["ok", RuntimeError("read error")]
+        result = get_full_device_state(mock_ctrl, unconstrained_guard, device="Camera")
+        assert result["state"]["Good"] == "ok"
+        assert "error" in result["state"]["Bad"]
+
+    def test_empty_device_returns_empty_state(self, mock_ctrl, unconstrained_guard):
+        mock_ctrl.core.get_device_property_names.return_value = self._make_sv([])
+        result = get_full_device_state(mock_ctrl, unconstrained_guard, device="Dummy")
+        assert result["state"] == {}

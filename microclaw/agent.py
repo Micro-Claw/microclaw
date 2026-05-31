@@ -25,6 +25,11 @@ Guidelines:
 - Available acquisition outputs are pycro-manager datasets (NDTiff). Use export_dataset_as_tiff to convert to standard TIFF when the user requests it.
 - Never call set_device_property for core operations that have dedicated tools (stage, channel, exposure).
 
+Device property discovery:
+- When the user references a device whose properties you do not know, call list_device_properties(device) to enumerate them, then get_device_property_info(device, property) on the specific property to learn its type, allowed values, and numeric limits before calling set_device_property.
+- Do not attempt to set a property whose get_device_property_info result shows read_only=true or pre_init=true — explain the limitation to the user instead.
+- Use get_full_device_state(device) when the user asks for a complete overview of a device's current settings.
+
 Image analysis:
 - Use snap_and_analyze when you need to see or assess an image interactively. The focus_metric (Laplacian variance) and intensity stats are in the text block; the thumbnail is for visual context and confirmation.
 - Prefer numerical metrics from hooks over your own visual assessment for quantitative decisions (focus quality, cell presence, intensity).
