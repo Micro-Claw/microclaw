@@ -134,3 +134,8 @@ I have placed the errors I get when running the integration tests in
 errors.txt. Please have a look, read them in detail, identify root causes,    
 and propose fixes. 
 
+----
+
+Please read the code in this repository carefully. Make a plan for how to identify unknown properties from custom        
+devices. It should then be possible to call set_device_property on these previously unknown properties. Place the plan   
+in a new markdown file called plan_identify_unknown_properties.md.
