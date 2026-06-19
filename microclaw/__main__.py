@@ -1,5 +1,7 @@
 import sys
 import datetime
+import cProfile, pstats, io
+from pstats import SortKey
 
 from microclaw.agent import run_agent
 from microclaw.controller import MicroscopeController
@@ -14,6 +16,8 @@ def main():
     parser = argparse.ArgumentParser(description="Microclaw: AI agent for Micro-Manager")
     parser.add_argument("--safety-config", default="safety_config.yaml")
     parser.add_argument("--port", type=int, default=4827)
+    parser.add_argument("--profile", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--save-history", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args()
 
     constraints = load_safety_config(args.safety_config)
@@ -40,12 +44,30 @@ def main():
         if user_input.lower() in {"exit", "quit"}:
             print("Exiting.")
             break
-        reply, history = run_agent(user_input, ctrl, guard, history)
-        print(f"\nMicroclaw: {reply}\n")
 
-    # save chat history
-    with open(f"{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}_microclaw_history.json", "wb") as f:
-        f.write(openapi_dumps(history))
+        if args.profile:
+            # enable profiling
+            pr = cProfile.Profile()
+            pr.enable()
+        
+            reply, history = run_agent(user_input, ctrl, guard, history)
+            print(f"\nMicroclaw: {reply}\n")
+            
+            # print profiling
+            pr.disable()
+            s = io.StringIO()
+            sortby = SortKey.TIME
+            ps = pstats.Stats(pr, stream=s).sort_stats(sortby)
+            ps.print_stats(20)
+            print(s.getvalue())
+        else:
+            reply, history = run_agent(user_input, ctrl, guard, history)
+            print(f"\nMicroclaw: {reply}\n")
+
+    if args.save_history:
+        # save chat history
+        with open(f"{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}_microclaw_history.json", "wb") as f:
+            f.write(openapi_dumps(history))
 
 
 if __name__ == "__main__":
