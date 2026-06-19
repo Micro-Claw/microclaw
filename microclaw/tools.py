@@ -515,49 +515,122 @@ def import_mm_positions(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
 
 # --- Multiposition acquisition ---
 
+def _run_protocol_at(
+    ctrl: MicroscopeController,
+    guard: SafetyGuard,
+    pos_label: str,
+    x_um: float,
+    y_um: float,
+    z_um: float | None,
+    protocol: str,
+    pos_save_dir: str,
+    params: dict,
+) -> dict:
+    guard.check_xy(x_um, y_um)
+    ctrl.core.set_xy_position(x_um, y_um)
+    _wait(ctrl, ctrl.core.get_xy_stage_device())
+    if z_um is not None:
+        guard.check_z(z_um)
+        ctrl.core.set_position(z_um)
+        _wait(ctrl, ctrl.core.get_focus_device())
+    Path(pos_save_dir).mkdir(parents=True, exist_ok=True)
+    if protocol == "snap":
+        ctrl.studio.live().snap(True)
+        return {"position": pos_label, "status": "snapped"}
+    elif protocol == "zstack":
+        r = run_zstack(ctrl, guard, save_dir=pos_save_dir, name=pos_label, **params)
+        return {"position": pos_label, **r}
+    elif protocol == "timelapse":
+        r = run_timelapse(ctrl, guard, save_dir=pos_save_dir, name=pos_label, **params)
+        return {"position": pos_label, **r}
+    else:
+        return {"position": pos_label, "error": f"Unknown protocol '{protocol}'."}
+
+
 def run_multiposition_acquisition(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
-    position_names: list[str],
     protocol: str,
     save_dir: str,
+    position_names: list[str] | None = None,
+    positions: list[dict] | None = None,
     name: str = "multipos",
     protocol_params: dict | None = None,
 ) -> dict:
-    """Visit each position in the MM position list and run a per-position protocol."""
+    """Visit each position and run a per-position protocol.
+
+    Supply either position_names (labels in the MM position list) or positions
+    (list of {x_um, y_um, name, z_um?} dicts). Providing both is an error.
+    """
+    if position_names is not None and positions is not None:
+        return {"error": "Provide position_names or positions, not both."}
+    if position_names is None and positions is None:
+        return {"error": "Provide either position_names or positions."}
+
     params = protocol_params or {}
-    all_positions = {p["name"]: p for p in ctrl.get_positions()}
     results = []
 
-    for pos_name in position_names:
-        if pos_name not in all_positions:
-            results.append({"position": pos_name, "error": "Not found in position list."})
-            continue
-        pos = all_positions[pos_name]
-        guard.check_xy(pos["x_um"], pos["y_um"])
-        ctrl.go_to_position(pos_name)
-        pos_save_dir = str(Path(save_dir) / pos_name)
-        Path(pos_save_dir).mkdir(parents=True, exist_ok=True)
-        try:
-            if protocol == "snap":
-                ctrl.studio.live().snap(True)
-                results.append({"position": pos_name, "status": "snapped"})
-            elif protocol == "zstack":
-                r = run_zstack(ctrl, guard, save_dir=pos_save_dir, name=pos_name, **params)
-                results.append({"position": pos_name, **r})
-            elif protocol == "timelapse":
-                r = run_timelapse(ctrl, guard, save_dir=pos_save_dir, name=pos_name, **params)
-                results.append({"position": pos_name, **r})
+    if position_names is not None:
+        all_positions = {p["name"]: p for p in ctrl.get_positions()}
+        resolved = []
+        for pos_name in position_names:
+            if pos_name not in all_positions:
+                results.append({"position": pos_name, "error": "Not found in position list."})
             else:
-                results.append({"position": pos_name, "error": f"Unknown protocol '{protocol}'."})
-        except Exception as e:
-            results.append({"position": pos_name, "error": str(e)})
+                pos = all_positions[pos_name]
+                resolved.append((pos_name, pos["x_um"], pos["y_um"], pos.get("z_um")))
+    else:
+        resolved = [
+            (p["name"], p["x_um"], p["y_um"], p.get("z_um")) for p in positions
+        ]
 
+    for pos_label, x_um, y_um, z_um in resolved:
+        pos_save_dir = str(Path(save_dir) / pos_label)
+        try:
+            result = _run_protocol_at(
+                ctrl, guard, pos_label, x_um, y_um, z_um, protocol, pos_save_dir, params
+            )
+            results.append(result)
+        except Exception as e:
+            results.append({"position": pos_label, "error": str(e)})
+
+    total = len(position_names or positions)
     n_ok = sum(1 for r in results if "error" not in r)
     return {
-        "status": f"{n_ok}/{len(position_names)} positions completed.",
+        "status": f"{n_ok}/{total} positions completed.",
         "results": results,
     }
+
+
+def run_tile_acquisition(
+    ctrl: MicroscopeController,
+    guard: SafetyGuard,
+    rows: int,
+    cols: int,
+    step_um: float,
+    protocol: str,
+    save_dir: str,
+    name: str = "tile",
+    protocol_params: dict | None = None,
+) -> dict:
+    """Acquire a rows×cols tile grid centered on the current stage position."""
+    center_x = ctrl.core.get_x_position()
+    center_y = ctrl.core.get_y_position()
+    x_start = center_x - (cols - 1) / 2 * step_um
+    y_start = center_y - (rows - 1) / 2 * step_um
+    positions = [
+        {"name": f"r{r}_c{c}", "x_um": x_start + c * step_um, "y_um": y_start + r * step_um}
+        for r in range(rows)
+        for c in range(cols)
+    ]
+    return run_multiposition_acquisition(
+        ctrl, guard,
+        protocol=protocol,
+        save_dir=save_dir,
+        positions=positions,
+        name=name,
+        protocol_params=protocol_params,
+    )
 
 
 def run_multiposition_with_autofocus(
@@ -817,6 +890,7 @@ TOOL_REGISTRY = {
     "load_position_list": load_position_list,
     "import_mm_positions": import_mm_positions,
     "run_multiposition_acquisition": run_multiposition_acquisition,
+    "run_tile_acquisition": run_tile_acquisition,
     "run_multiposition_with_autofocus": run_multiposition_with_autofocus,
     "run_adaptive_acquisition": run_adaptive_acquisition,
     "read_hook_log": read_hook_log,

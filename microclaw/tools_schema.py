@@ -381,9 +381,10 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "run_multiposition_acquisition",
         "description": (
-            "Visit each named position in the MM position list and run a per-position "
-            "protocol (snap, zstack, or timelapse). Saves each position's data to a "
-            "subdirectory of save_dir."
+            "Visit each position and run a per-position protocol (snap, zstack, or timelapse). "
+            "Supply either position_names (labels already in the MM position list) OR positions "
+            "(a list of {name, x_um, y_um, z_um?} dicts — no prior mark_position needed). "
+            "Saves each position's data to a subdirectory of save_dir."
         ),
         "input_schema": {
             "type": "object",
@@ -391,7 +392,27 @@ TOOLS: list[dict[str, Any]] = [
                 "position_names": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "List of position labels to visit.",
+                    "description": (
+                        "Labels of positions already in the MM position list. "
+                        "Use this OR positions, not both."
+                    ),
+                },
+                "positions": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "x_um": {"type": "number"},
+                            "y_um": {"type": "number"},
+                            "z_um": {"type": "number"},
+                        },
+                        "required": ["name", "x_um", "y_um"],
+                    },
+                    "description": (
+                        "Raw XY(Z) coordinates to visit in order. "
+                        "Use this OR position_names, not both."
+                    ),
                 },
                 "protocol": {
                     "type": "string",
@@ -412,7 +433,42 @@ TOOLS: list[dict[str, Any]] = [
                     ),
                 },
             },
-            "required": ["position_names", "protocol", "save_dir"],
+            "required": ["protocol", "save_dir"],
+        },
+    },
+    {
+        "name": "run_tile_acquisition",
+        "description": (
+            "Acquire a rows×cols tile grid centered on the current stage position. "
+            "Computes grid coordinates automatically — no prior mark_position needed. "
+            "Runs a per-position protocol (snap, zstack, or timelapse) at each tile."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "rows": {"type": "integer", "description": "Number of rows in the grid."},
+                "cols": {"type": "integer", "description": "Number of columns in the grid."},
+                "step_um": {"type": "number", "description": "Step size between tiles in µm."},
+                "protocol": {
+                    "type": "string",
+                    "description": "'snap', 'zstack', or 'timelapse'.",
+                },
+                "save_dir": {"type": "string", "description": "Root directory for saved data."},
+                "name": {
+                    "type": "string",
+                    "description": "Dataset name prefix (default 'tile').",
+                    "default": "tile",
+                },
+                "protocol_params": {
+                    "type": "object",
+                    "description": (
+                        "Extra parameters forwarded to the per-position protocol. "
+                        "For zstack: z_start_um, z_end_um, z_step_um. "
+                        "For timelapse: n_frames, interval_s."
+                    ),
+                },
+            },
+            "required": ["rows", "cols", "step_um", "protocol", "save_dir"],
         },
     },
     {
