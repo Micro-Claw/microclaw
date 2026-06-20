@@ -139,3 +139,48 @@ and propose fixes.
 Please read the code in this repository carefully. Make a plan for how to identify unknown properties from custom        
 devices. It should then be possible to call set_device_property on these previously unknown properties. Place the plan   
 in a new markdown file called plan_identify_unknown_properties.md.
+
+----
+
+For the session described in 20260619_164417_microclaw_history.json I get the 
+cProfile result in 20260619_164417_microclaw_profile.txt. What is causing     
+this to run so slowly? 
+
+Is it better to add a new run_tile_acquisiton() tool or to make it possible   
+to mark multiple positions at once?
+
+Could we wrap this into run_multiposition_acquisition instead of creating a   
+separate run_tile_acquisition?  
+
+OK. Can we do both things: extend run_multiposition_acquisition with raw      
+coordinate support and add run_tile_acquisition?   
+
+----
+
+Please look at agent.py carefully. Is it possible for the agent to respond to 
+a question and invoke multiple tool use? For example, if the users asks to    
+turn on a laser and then snap an image, can the agent do both of these tasks  
+using tool_use calls without making two API calls?       
+
+Great! Can we adjust the system prompt for this?                              
+
+----
+
+ Please look carefully at run_multiposition_acquisition() in tools.py. Is it   
+possible to save the data from a multiposition acquisition if the protocol is 
+set to "snap"?
+
+Please look at                                                                
+/Users/zachcm/Downloads/20260601_162424_microclaw_history_pretty.json. Here,  
+the agent tried to save data after running with the protocol set to "snap".   
+Why did this happen?  
+
+Definitely, let's make sure it notifies the user if it won't save (e.g. with  
+the "saved": false return). Additionally, let's make sure the function always 
+saves if a file path is passed to it. If the user wants to only save one      
+plane at each position, that could be done with either the zstack or          
+timelapse protocols, right?      
+
+How will the agent know to use protocol=timelapse with n_frames=1 and         
+interval_s=0 if the users requests something like what is in                  
+20260601_162424_microclaw_history_pretty.txt? 
