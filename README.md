@@ -117,5 +117,6 @@ The tool functions and agent loop are identical in GUI and headless modes.
 | `run_adaptive_acquisition` | Z-stack with a hook strategy for adaptive behaviour |
 | `read_hook_log` | Read hook output log after an acquisition |
 | `list_hooks` | List pre-coded and saved hook strategies |
+| `get_hook_documentation` | Return the pycro-manager hook API reference (called automatically before hook generation) |
 | `generate_and_save_hook` | Validate and save a hook script |
 | `read_hook_from_file` | Read and AST-scan a user-provided hook file |
