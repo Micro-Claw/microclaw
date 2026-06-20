@@ -85,15 +85,19 @@ The tool functions and agent loop are identical in GUI and headless modes.
 
 | Tool | Description |
 |---|---|
-| `snap_image` | Snap a single image |
+| `snap_image` | Snap a single image (display only; use `run_timelapse` with `n_frames=1` to save) |
 | `snap_and_analyze` | Snap and return focus metric, intensity stats, and thumbnail |
 | `start_live_view` / `stop_live_view` | Live camera preview |
 | `set_exposure` / `get_exposure` | Camera exposure |
+| `get_roi` / `set_roi` / `clear_roi` | Camera region of interest |
 | `move_stage_xy` / `get_xy_position` | XY stage |
 | `move_stage_z` / `get_z_position` | Z (focus) stage |
 | `set_channel` / `get_available_channels` | Channel presets |
 | `set_device_property` / `get_device_property` | Raw device properties |
 | `list_devices` | List loaded devices |
+| `list_device_properties` | List all property names for a device |
+| `get_device_property_info` | Type, limits, and allowed values for a property |
+| `get_full_device_state` | All property values for a device |
 | `get_system_state` | Composite state snapshot |
 | `run_autofocus` | Software autofocus Z-sweep |
 | `run_zstack` | Z-stack acquisition |
@@ -108,6 +112,7 @@ The tool functions and agent loop are identical in GUI and headless modes.
 | `load_position_list` | Load a `.pos` file into MM position list |
 | `import_mm_positions` | Import positions from the MM GUI position list |
 | `run_multiposition_acquisition` | Visit each position and run snap/zstack/timelapse |
+| `run_tile_acquisition` | Acquire a rows×cols tile grid centered on current stage position |
 | `run_multiposition_with_autofocus` | Same, with software autofocus at each position |
 | `run_adaptive_acquisition` | Z-stack with a hook strategy for adaptive behaviour |
 | `read_hook_log` | Read hook output log after an acquisition |
