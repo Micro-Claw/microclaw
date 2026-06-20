@@ -58,6 +58,57 @@ def get_exposure(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     return {"exposure_ms": ms}
 
 
+# --- ROI ---
+
+def _bounce_live_if_on(ctrl: MicroscopeController) -> bool:
+    """Restart live mode if it was running. Returns True if it was restarted."""
+    live = ctrl.studio.live()
+    if live.is_live_mode_on():
+        live.set_live_mode_on(False)
+        live.set_live_mode_on(True)
+        return True
+    return False
+
+
+def get_roi(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
+    roi = ctrl.core.get_roi()
+    return {
+        "x": int(roi.x),
+        "y": int(roi.y),
+        "width": int(roi.width),
+        "height": int(roi.height),
+    }
+
+
+def set_roi(
+    ctrl: MicroscopeController,
+    guard: SafetyGuard,
+    x: int,
+    y: int,
+    width: int,
+    height: int,
+) -> dict:
+    ctrl.core.set_roi(x, y, width, height)
+    _wait(ctrl, ctrl.core.get_camera_device())
+    live_restarted = _bounce_live_if_on(ctrl)
+    result: dict = {"status": "ROI set.", "x": x, "y": y, "width": width, "height": height}
+    if live_restarted:
+        result["live_view"] = "restarted"
+    return result
+
+
+def clear_roi(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
+    ctrl.core.clear_roi()
+    _wait(ctrl, ctrl.core.get_camera_device())
+    live_restarted = _bounce_live_if_on(ctrl)
+    w = int(ctrl.core.get_image_width())
+    h = int(ctrl.core.get_image_height())
+    result: dict = {"status": "ROI cleared (full frame).", "width": w, "height": h}
+    if live_restarted:
+        result["live_view"] = "restarted"
+    return result
+
+
 # --- XY Stage ---
 
 def get_xy_position(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
@@ -873,6 +924,9 @@ TOOL_REGISTRY = {
     "stop_live_view": stop_live_view,
     "set_exposure": set_exposure,
     "get_exposure": get_exposure,
+    "get_roi": get_roi,
+    "set_roi": set_roi,
+    "clear_roi": clear_roi,
     "get_xy_position": get_xy_position,
     "move_stage_xy": move_stage_xy,
     "get_z_position": get_z_position,

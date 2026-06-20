@@ -43,6 +43,55 @@ TOOLS: list[dict[str, Any]] = [
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
     {
+        "name": "get_roi",
+        "description": (
+            "Get the current camera region of interest (ROI) as pixel coordinates "
+            "(x, y, width, height) measured from the top-left of the sensor."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "set_roi",
+        "description": (
+            "Crop the camera to a rectangular region of interest (ROI). Coordinates "
+            "are in pixels from the top-left corner of the full sensor frame. "
+            "Reducing the ROI increases frame rate and reduces data volume. "
+            "If live view is running it will be restarted so the display updates "
+            "immediately. Use clear_roi to return to the full frame."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "x": {
+                    "type": "integer",
+                    "description": "Left edge of ROI in pixels (0 = left of sensor).",
+                },
+                "y": {
+                    "type": "integer",
+                    "description": "Top edge of ROI in pixels (0 = top of sensor).",
+                },
+                "width": {
+                    "type": "integer",
+                    "description": "Width of ROI in pixels (must be positive).",
+                },
+                "height": {
+                    "type": "integer",
+                    "description": "Height of ROI in pixels (must be positive).",
+                },
+            },
+            "required": ["x", "y", "width", "height"],
+        },
+    },
+    {
+        "name": "clear_roi",
+        "description": (
+            "Reset the camera ROI to the full sensor frame. "
+            "If live view is running it will be restarted so the display updates "
+            "immediately. Returns the full-frame image dimensions."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
         "name": "get_xy_position",
         "description": "Get the current XY stage position in micrometers.",
         "input_schema": {"type": "object", "properties": {}, "required": []},
