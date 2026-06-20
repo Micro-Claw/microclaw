@@ -536,7 +536,7 @@ def _run_protocol_at(
     Path(pos_save_dir).mkdir(parents=True, exist_ok=True)
     if protocol == "snap":
         ctrl.studio.live().snap(True)
-        return {"position": pos_label, "status": "snapped"}
+        return {"position": pos_label, "status": "snapped", "saved": False}
     elif protocol == "zstack":
         r = run_zstack(ctrl, guard, save_dir=pos_save_dir, name=pos_label, **params)
         return {"position": pos_label, **r}
@@ -561,6 +561,15 @@ def run_multiposition_acquisition(
 
     Supply either position_names (labels in the MM position list) or positions
     (list of {x_um, y_um, name, z_um?} dicts). Providing both is an error.
+
+    protocol options:
+      "snap"       — display-only; does NOT save to disk (returns saved=False).
+      "zstack"     — saves a Z-stack at each position to save_dir/<position>.
+      "timelapse"  — saves a timelapse at each position to save_dir/<position>.
+
+    To save a single plane per position (equivalent to snapping but with data
+    written to disk), use protocol="timelapse" with
+    protocol_params={"n_frames": 1, "interval_s": 0}.
     """
     if position_names is not None and positions is not None:
         return {"error": "Provide position_names or positions, not both."}
