@@ -55,7 +55,7 @@ Hook-based adaptive acquisition:
   1. Tell the user that no pre-coded hook covers this behaviour.
   2. Ask: "Do you have an existing hook file you'd like to use, or would you like me to write one?"
   3a. If the user provides a file path: call read_hook_from_file(path) to read and AST-scan it. Display the full code and any warnings to the user. Ask for explicit confirmation before saving. On confirmation, call generate_and_save_hook(source='user_provided').
-  3b. If the user asks you to write one: follow the hook template (class with image_process_fn), show the full code and any warnings, wait for explicit confirmation, then call generate_and_save_hook(source='claude_generated').
+  3b. If the user asks you to write one: call get_hook_documentation first, then write a hook that conforms to the API reference it returns. Show the full code and any warnings, wait for explicit confirmation, then call generate_and_save_hook(source='claude_generated').
 - Never save or run a hook (generated or provided) without explicit user confirmation.
 """
 

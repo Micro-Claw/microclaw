@@ -931,6 +931,11 @@ def list_hooks(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     }
 
 
+def get_hook_documentation(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
+    from microclaw.hook_docs import HOOK_REFERENCE
+    return {"documentation": HOOK_REFERENCE}
+
+
 # --- Tool Registry ---
 
 TOOL_REGISTRY = {
@@ -976,6 +981,7 @@ TOOL_REGISTRY = {
     "generate_and_save_hook": generate_and_save_hook,
     "read_hook_from_file": read_hook_from_file,
     "list_hooks": list_hooks,
+    "get_hook_documentation": get_hook_documentation,
 }
 
 

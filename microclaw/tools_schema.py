@@ -637,6 +637,16 @@ TOOLS: list[dict[str, Any]] = [
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
     {
+        "name": "get_hook_documentation",
+        "description": (
+            "Return the pycro-manager hook API reference: Acquisition hook kwargs, "
+            "hook function signatures, return-value contracts, event dict structure, "
+            "event_queue usage, and the HookBase pattern required by microclaw. "
+            "Call this before writing a new hook."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
         "name": "generate_and_save_hook",
         "description": (
             "Validate and save a hook script to disk. "

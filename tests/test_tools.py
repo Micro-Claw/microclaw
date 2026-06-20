@@ -15,6 +15,7 @@ from microclaw.tools import (
     get_device_property_info,
     get_exposure,
     get_full_device_state,
+    get_hook_documentation,
     get_position_list,
     get_system_state,
     get_xy_position,
@@ -570,6 +571,19 @@ class TestGetDevicePropertyInfo:
         )
         mock_ctrl.core.get_property_lower_limit.assert_not_called()
         mock_ctrl.core.get_property_upper_limit.assert_not_called()
+
+
+class TestGetHookDocumentation:
+    def test_returns_nonempty_string(self, mock_ctrl, unconstrained_guard):
+        result = get_hook_documentation(mock_ctrl, unconstrained_guard)
+        assert isinstance(result["documentation"], str)
+        assert len(result["documentation"]) > 0
+
+    def test_covers_key_concepts(self, mock_ctrl, unconstrained_guard):
+        result = get_hook_documentation(mock_ctrl, unconstrained_guard)
+        doc = result["documentation"]
+        for term in ("image_process_fn", "post_hardware_hook_fn", "HookBase", "event_queue"):
+            assert term in doc
 
 
 class TestGetFullDeviceState:
