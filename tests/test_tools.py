@@ -1,8 +1,10 @@
 import json
+from unittest.mock import MagicMock, call
 
 import numpy as np
 import pytest
 
+from microclaw.autofocus import AutofocusResult
 from microclaw.safety import SafetyConstraints, SafetyGuard, SafetyViolation, StageConstraints
 from microclaw.tools import (
     clear_position_list,
@@ -26,6 +28,7 @@ from microclaw.tools import (
     move_stage_z,
     read_hook_from_file,
     run_autofocus,
+    run_multiposition_with_autofocus,
     set_channel,
     set_device_property,
     set_exposure,
@@ -213,6 +216,22 @@ class TestSnapAndAnalyze:
         assert "z_um" in payload
 
 
+_FAKE_AF_RESULT = AutofocusResult(
+    best_z_um=50.0,
+    metric_values=[0.1, 0.9, 0.1],
+    z_positions=[49.0, 50.0, 51.0],
+    settled=True,
+)
+
+
+def _patch_autofocus(monkeypatch):
+    """Stub out the sweep functions and image helpers used by run_autofocus."""
+    monkeypatch.setattr("microclaw.tools.coarse_then_fine_autofocus", lambda *a, **k: _FAKE_AF_RESULT)
+    monkeypatch.setattr("microclaw.tools.sweep_autofocus", lambda *a, **k: _FAKE_AF_RESULT)
+    monkeypatch.setattr("microclaw.tools.snap_to_numpy", lambda ctrl: np.zeros((64, 64), dtype=np.uint16))
+    monkeypatch.setattr("microclaw.tools.make_thumbnail", lambda img: "")
+
+
 class TestRunAutofocus:
     def test_z_boundary_check_below(self, mock_ctrl, default_guard):
         # current Z=5, range=20 → sweep goes to -5 which is below z_min=0
@@ -225,6 +244,108 @@ class TestRunAutofocus:
         mock_ctrl.core.get_position.return_value = 195.0
         with pytest.raises(SafetyViolation):
             run_autofocus(mock_ctrl, default_guard, z_range_um=20.0, z_step_um=1.0)
+
+    def test_live_stopped_and_restored_when_on(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        _patch_autofocus(monkeypatch)
+        mock_ctrl.studio.live().is_live_mode_on.return_value = True
+        live = mock_ctrl.studio.live()
+        live.set_live_mode_on.reset_mock()
+
+        run_autofocus(mock_ctrl, unconstrained_guard, z_range_um=10.0, z_step_um=1.0)
+
+        calls = live.set_live_mode_on.call_args_list
+        assert calls[0] == call(False), "live mode must be stopped before sweep"
+        assert calls[1] == call(True), "live mode must be restored after sweep"
+
+    def test_live_not_touched_when_off(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        _patch_autofocus(monkeypatch)
+        mock_ctrl.studio.live().is_live_mode_on.return_value = False
+        live = mock_ctrl.studio.live()
+        live.set_live_mode_on.reset_mock()
+
+        run_autofocus(mock_ctrl, unconstrained_guard, z_range_um=10.0, z_step_um=1.0)
+
+        live.set_live_mode_on.assert_not_called()
+
+    def test_live_restored_on_sweep_exception(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        monkeypatch.setattr(
+            "microclaw.tools.coarse_then_fine_autofocus",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("hardware fault")),
+        )
+        mock_ctrl.studio.live().is_live_mode_on.return_value = True
+        live = mock_ctrl.studio.live()
+        live.set_live_mode_on.reset_mock()
+
+        with pytest.raises(RuntimeError):
+            run_autofocus(mock_ctrl, unconstrained_guard, z_range_um=10.0, z_step_um=1.0)
+
+        live.set_live_mode_on.assert_called_with(True)
+
+
+class TestRunMultipositionWithAutofocus:
+    @pytest.fixture
+    def positions(self):
+        return [{"name": "P1", "x_um": 0.0, "y_um": 0.0, "z_um": 50.0}]
+
+    @pytest.fixture
+    def patched_ctrl(self, mock_ctrl, positions, tmp_path):
+        mock_ctrl.get_positions.return_value = positions
+        mock_ctrl.core.get_position.return_value = 50.0
+        return mock_ctrl
+
+    def _run(self, ctrl, guard, tmp_path, monkeypatch):
+        monkeypatch.setattr("microclaw.tools.coarse_then_fine_autofocus", lambda *a, **k: _FAKE_AF_RESULT)
+        monkeypatch.setattr("microclaw.tools.run_timelapse", lambda *a, **k: {"status": "ok"})
+        return run_multiposition_with_autofocus(
+            ctrl, guard,
+            position_names=["P1"],
+            z_range_um=10.0,
+            z_step_um=1.0,
+            protocol="timelapse",
+            save_dir=str(tmp_path),
+            protocol_params={"n_frames": 1, "interval_ms": 0},
+        )
+
+    def test_live_stopped_and_restored_when_on(self, patched_ctrl, unconstrained_guard, tmp_path, monkeypatch):
+        patched_ctrl.studio.live().is_live_mode_on.return_value = True
+        live = patched_ctrl.studio.live()
+        live.set_live_mode_on.reset_mock()
+
+        self._run(patched_ctrl, unconstrained_guard, tmp_path, monkeypatch)
+
+        calls = live.set_live_mode_on.call_args_list
+        assert calls[0] == call(False), "live mode must be stopped before loop"
+        assert calls[-1] == call(True), "live mode must be restored after loop"
+
+    def test_live_not_touched_when_off(self, patched_ctrl, unconstrained_guard, tmp_path, monkeypatch):
+        patched_ctrl.studio.live().is_live_mode_on.return_value = False
+        live = patched_ctrl.studio.live()
+        live.set_live_mode_on.reset_mock()
+
+        self._run(patched_ctrl, unconstrained_guard, tmp_path, monkeypatch)
+
+        live.set_live_mode_on.assert_not_called()
+
+    def test_live_restored_when_autofocus_raises(self, patched_ctrl, unconstrained_guard, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "microclaw.tools.coarse_then_fine_autofocus",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("stage error")),
+        )
+        patched_ctrl.studio.live().is_live_mode_on.return_value = True
+        live = patched_ctrl.studio.live()
+        live.set_live_mode_on.reset_mock()
+
+        with pytest.raises(RuntimeError):
+            run_multiposition_with_autofocus(
+                patched_ctrl, unconstrained_guard,
+                position_names=["P1"],
+                z_range_um=10.0,
+                z_step_um=1.0,
+                protocol="timelapse",
+                save_dir=str(tmp_path),
+            )
+
+        live.set_live_mode_on.assert_called_with(True)
 
 
 class TestMarkPosition:

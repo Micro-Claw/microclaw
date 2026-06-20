@@ -438,18 +438,26 @@ def run_autofocus(
     guard.check_z(current_z - z_range_um / 2)
     guard.check_z(current_z + z_range_um / 2)
 
-    if method == "coarse_then_fine":
-        result = coarse_then_fine_autofocus(
-            ctrl, z_range_um, max(z_step_um * 5, 1.0), z_step_um, settle_ms
-        )
-    else:
-        result = sweep_autofocus(
-            ctrl,
-            current_z - z_range_um / 2,
-            current_z + z_range_um / 2,
-            z_step_um,
-            settle_ms,
-        )
+    live = ctrl.studio.live()
+    was_live = live.is_live_mode_on()
+    if was_live:
+        live.set_live_mode_on(False)
+    try:
+        if method == "coarse_then_fine":
+            result = coarse_then_fine_autofocus(
+                ctrl, z_range_um, max(z_step_um * 5, 1.0), z_step_um, settle_ms
+            )
+        else:
+            result = sweep_autofocus(
+                ctrl,
+                current_z - z_range_um / 2,
+                current_z + z_range_um / 2,
+                z_step_um,
+                settle_ms,
+            )
+    finally:
+        if was_live:
+            live.set_live_mode_on(True)
 
     payload: dict[str, Any] = {
         "best_z_um": round(result.best_z_um, 3),
@@ -711,63 +719,71 @@ def run_multiposition_with_autofocus(
     all_positions = {p["name"]: p for p in ctrl.get_positions()}
     results = []
 
-    for pos_name in position_names:
-        if pos_name not in all_positions:
-            results.append({"position": pos_name, "error": "Not found in position list."})
-            continue
-        pos = all_positions[pos_name]
-        guard.check_xy(pos["x_um"], pos["y_um"])
-        ctrl.go_to_position(pos_name)
+    live = ctrl.studio.live()
+    was_live = live.is_live_mode_on()
+    if was_live:
+        live.set_live_mode_on(False)
+    try:
+        for pos_name in position_names:
+            if pos_name not in all_positions:
+                results.append({"position": pos_name, "error": "Not found in position list."})
+                continue
+            pos = all_positions[pos_name]
+            guard.check_xy(pos["x_um"], pos["y_um"])
+            ctrl.go_to_position(pos_name)
 
-        current_z = ctrl.core.get_position()
-        try:
-            guard.check_z(current_z - z_range_um / 2)
-            guard.check_z(current_z + z_range_um / 2)
-        except Exception as e:
-            results.append(
-                {"position": pos_name, "error": f"Autofocus range out of bounds: {e}"}
-            )
-            continue
-
-        coarse_step = max(z_step_um * 5, 1.0)
-        af = (
-            coarse_then_fine_autofocus(ctrl, z_range_um, coarse_step, z_step_um, settle_ms)
-            if autofocus_method == "coarse_then_fine"
-            else sweep_autofocus(
-                ctrl,
-                current_z - z_range_um / 2,
-                current_z + z_range_um / 2,
-                z_step_um,
-                settle_ms,
-            )
-        )
-
-        pos_save_dir = str(Path(save_dir) / pos_name)
-        Path(pos_save_dir).mkdir(parents=True, exist_ok=True)
-        try:
-            if protocol == "snap":
-                ctrl.studio.live().snap(True)
+            current_z = ctrl.core.get_position()
+            try:
+                guard.check_z(current_z - z_range_um / 2)
+                guard.check_z(current_z + z_range_um / 2)
+            except Exception as e:
                 results.append(
-                    {"position": pos_name, "best_z_um": round(af.best_z_um, 3), "status": "snapped"}
+                    {"position": pos_name, "error": f"Autofocus range out of bounds: {e}"}
                 )
-            elif protocol == "zstack":
-                r = run_zstack(ctrl, guard, save_dir=pos_save_dir, name=pos_name, **params)
-                results.append({"position": pos_name, "best_z_um": round(af.best_z_um, 3), **r})
-            elif protocol == "timelapse":
-                r = run_timelapse(ctrl, guard, save_dir=pos_save_dir, name=pos_name, **params)
-                results.append({"position": pos_name, "best_z_um": round(af.best_z_um, 3), **r})
-            else:
-                results.append(
-                    {
-                        "position": pos_name,
-                        "best_z_um": round(af.best_z_um, 3),
-                        "error": f"Unknown protocol '{protocol}'.",
-                    }
+                continue
+
+            coarse_step = max(z_step_um * 5, 1.0)
+            af = (
+                coarse_then_fine_autofocus(ctrl, z_range_um, coarse_step, z_step_um, settle_ms)
+                if autofocus_method == "coarse_then_fine"
+                else sweep_autofocus(
+                    ctrl,
+                    current_z - z_range_um / 2,
+                    current_z + z_range_um / 2,
+                    z_step_um,
+                    settle_ms,
                 )
-        except Exception as e:
-            results.append(
-                {"position": pos_name, "best_z_um": round(af.best_z_um, 3), "error": str(e)}
             )
+
+            pos_save_dir = str(Path(save_dir) / pos_name)
+            Path(pos_save_dir).mkdir(parents=True, exist_ok=True)
+            try:
+                if protocol == "snap":
+                    ctrl.studio.live().snap(True)
+                    results.append(
+                        {"position": pos_name, "best_z_um": round(af.best_z_um, 3), "status": "snapped"}
+                    )
+                elif protocol == "zstack":
+                    r = run_zstack(ctrl, guard, save_dir=pos_save_dir, name=pos_name, **params)
+                    results.append({"position": pos_name, "best_z_um": round(af.best_z_um, 3), **r})
+                elif protocol == "timelapse":
+                    r = run_timelapse(ctrl, guard, save_dir=pos_save_dir, name=pos_name, **params)
+                    results.append({"position": pos_name, "best_z_um": round(af.best_z_um, 3), **r})
+                else:
+                    results.append(
+                        {
+                            "position": pos_name,
+                            "best_z_um": round(af.best_z_um, 3),
+                            "error": f"Unknown protocol '{protocol}'.",
+                        }
+                    )
+            except Exception as e:
+                results.append(
+                    {"position": pos_name, "best_z_um": round(af.best_z_um, 3), "error": str(e)}
+                )
+    finally:
+        if was_live:
+            live.set_live_mode_on(True)
 
     n_ok = sum(1 for r in results if "error" not in r)
     return {
