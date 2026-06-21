@@ -120,3 +120,7 @@ The tool functions and agent loop are identical in GUI and headless modes.
 | `get_hook_documentation` | Return the pycro-manager hook API reference (called automatically before hook generation) |
 | `generate_and_save_hook` | Validate and save a hook script |
 | `read_hook_from_file` | Read and AST-scan a user-provided hook file |
+| `get_smlm_documentation` | Return the SMLM protocol reference (dSTORM/PALM/PAINT parameters, acquisition protocol, drift correction, post-processing, pitfalls) |
+| `check_emu_installed` | Detect whether EMU and htSMLM are installed by scanning the Micro-Manager plugins directory for their JARs |
+| `get_htsmlm_documentation` | Return the htSMLM/EMU reference (UIProperty inventory, control workflow, panel descriptions) — only called if EMU/htSMLM is detected or user mentions it |
+| `get_emu_configuration` | Read the EMU config file and return the UIProperty→MM device/property mapping for the active htSMLM configuration — only called if EMU is detected or user mentions it |

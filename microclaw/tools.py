@@ -941,6 +941,72 @@ def get_smlm_documentation(ctrl: MicroscopeController, guard: SafetyGuard) -> di
     return {"documentation": SMLM_REFERENCE}
 
 
+def check_emu_installed(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
+    from microclaw.emu_manager import find_mm_app_dir, find_plugin_jars, _emu_config_path
+
+    mm_dir = find_mm_app_dir()
+    if mm_dir is None:
+        return {
+            "emu_installed": False,
+            "htsmlm_installed": False,
+            "mm_app_dir": None,
+            "note": (
+                "Micro-Manager installation directory not found automatically. "
+                "If MM is installed in a non-standard location, call "
+                "get_emu_configuration(mm_app_dir='...') with the correct path."
+            ),
+        }
+
+    jars = find_plugin_jars(mm_dir)
+    config_exists = _emu_config_path(mm_dir).exists()
+    return {
+        "emu_installed": bool(jars["EMU"]) or config_exists,
+        "htsmlm_installed": bool(jars["htSMLM"]),
+        "mm_app_dir": str(mm_dir),
+        "emu_jars": jars["EMU"],
+        "htsmlm_jars": jars["htSMLM"],
+        "emu_config_present": config_exists,
+    }
+
+
+def get_htsmlm_documentation(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
+    from microclaw.htsmlm_docs import HTSMLM_REFERENCE
+    return {"documentation": HTSMLM_REFERENCE}
+
+
+def get_emu_configuration(
+    ctrl: MicroscopeController,
+    guard: SafetyGuard,
+    mm_app_dir: str | None = None,
+) -> dict:
+    from microclaw.emu_manager import find_mm_app_dir, save_mm_app_dir, read_emu_config, _candidate_mm_dirs
+
+    if mm_app_dir is not None:
+        save_mm_app_dir(mm_app_dir)
+        resolved = mm_app_dir
+    else:
+        found = find_mm_app_dir()
+        if found is None:
+            searched = [str(p) for p in _candidate_mm_dirs()]
+            return {
+                "error": (
+                    "Cannot locate the EMU configuration file. "
+                    "The Micro-Manager app directory was not found automatically."
+                ),
+                "action_required": (
+                    "Call get_emu_configuration(mm_app_dir='/path/to/micro-manager') "
+                    "with the path to your Micro-Manager installation directory. "
+                    "The path will be saved for future calls."
+                ),
+                "searched_paths": searched,
+            }
+        resolved = str(found)
+
+    config = read_emu_config(resolved)
+    config["mm_app_dir"] = resolved
+    return config
+
+
 # --- Tool Registry ---
 
 TOOL_REGISTRY = {
@@ -988,6 +1054,9 @@ TOOL_REGISTRY = {
     "list_hooks": list_hooks,
     "get_hook_documentation": get_hook_documentation,
     "get_smlm_documentation": get_smlm_documentation,
+    "check_emu_installed": check_emu_installed,
+    "get_htsmlm_documentation": get_htsmlm_documentation,
+    "get_emu_configuration": get_emu_configuration,
 }
 
 

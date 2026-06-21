@@ -226,3 +226,30 @@ want to use a similar approach if a user askes to do SMLM or localization
 microscopy using Microclaw. Please read /Users/zachcm/Downloads/SMLM          
 Primer.pdf and use the information here to write a runtime skill for          
 localization microscopy. 
+
+----
+
+Please have a look at /Users/zachcm/Downloads/s41596-024-00989-x.pdf. Is      
+there any information in this paper than can be used to augment smlm_docs.py?
+
+Please add these now, but don't include anything specific to htSMLM in        
+smlm_docs. Instead, once the smlm_docs are edited, let's have a discussion    
+about creating an htSMLM/EMU docs file. 
+
+Some setups run htSMLM/EMU. For these setups, we should load a separate skill 
+that is aware of these. It may also be necessary to add some functions to     
+control htSMLM/EMU, if possible. Have a look at the source code at            
+https://github.com/jdeschamps/EMU and https://github.com/jdeschamps/htSMLM    
+for more information. 
+
+Auto-detect from pycro-manager, fall back to asking the user. Is there also
+a way to cache this information in .microclaw for re-use once found, similar
+to how hooks are saved?
+
+Is there any check to see if EMU or htSMLM is installed before calling        
+get_emu_configuration or get_htsmlm_documentation? Most Micro-Manager         
+instances will not have these plugins, and we should only call these          
+functions if these plugins are already installed. 
+
+Thanks. Can you write a summary of these changes along with the design        
+choices and some explicit code examples in plan-htsmlm-emu.md? 

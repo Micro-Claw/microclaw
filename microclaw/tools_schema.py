@@ -659,6 +659,62 @@ TOOLS: list[dict[str, Any]] = [
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
     {
+        "name": "check_emu_installed",
+        "description": (
+            "Detect whether EMU and/or htSMLM are installed by scanning the Micro-Manager "
+            "plugins directory for their JAR files. "
+            "Returns emu_installed, htsmlm_installed, the MM app directory found, and the "
+            "names of any plugin JARs discovered. "
+            "Call this to determine whether get_htsmlm_documentation and get_emu_configuration "
+            "are relevant for the current setup. If neither plugin is detected AND the user has "
+            "not mentioned htSMLM or EMU, do not call those tools."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "get_htsmlm_documentation",
+        "description": (
+            "Return the htSMLM / EMU reference: what EMU and htSMLM are, how to control "
+            "htSMLM hardware via set_device_property, the complete UIProperty name inventory "
+            "(lasers, filters, focus lock, two-state devices, laser triggers, iBeamSmart, QPD), "
+            "the get_emu_configuration workflow, plugin settings, acquisition guidance, and "
+            "key questions to ask the user. "
+            "Only call this if check_emu_installed has confirmed htSMLM is installed, "
+            "OR if the user has explicitly mentioned htSMLM or EMU."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "get_emu_configuration",
+        "description": (
+            "Read the EMU configuration file and return the mapping from htSMLM UIProperty "
+            "names to Micro-Manager device labels and property names. "
+            "Only call this if check_emu_installed has confirmed EMU is installed, "
+            "OR if the user has explicitly mentioned htSMLM or EMU. "
+            "Auto-detects the Micro-Manager installation directory from common platform paths "
+            "and a local cache (~/.microclaw/emu.json). If auto-detection fails, returns an "
+            "error with instructions; call again with mm_app_dir set to the correct path and "
+            "it will be saved for future calls. "
+            "The returned 'properties' dict maps UIProperty names (e.g. 'Laser 0 enable') to "
+            "dicts containing 'device', 'property', and any TwoState (on/off) or Rescaled "
+            "(slope/offset) metadata needed to compute the correct MM property value."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "mm_app_dir": {
+                    "type": "string",
+                    "description": (
+                        "Absolute path to the Micro-Manager installation directory "
+                        "(the one that contains the EMU/ subfolder). "
+                        "Omit to use auto-detection or cached path."
+                    ),
+                },
+            },
+            "required": [],
+        },
+    },
+    {
         "name": "generate_and_save_hook",
         "description": (
             "Validate and save a hook script to disk. "
