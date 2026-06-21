@@ -43,6 +43,17 @@ TOOLS: list[dict[str, Any]] = [
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
     {
+        "name": "get_pixel_size",
+        "description": (
+            "Return the effective pixel size at the sample plane in micrometers, "
+            "as configured in Micro-Manager's pixel size calibration. "
+            "Returns 0.0 with a warning if no calibration is set. "
+            "Call this before any SMLM acquisition or when computing physical distances "
+            "from pixel coordinates."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
         "name": "get_roi",
         "description": (
             "Get the current camera region of interest (ROI) as pixel coordinates "

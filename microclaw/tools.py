@@ -58,6 +58,17 @@ def get_exposure(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     return {"exposure_ms": ms}
 
 
+def get_pixel_size(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
+    um = ctrl.core.get_pixel_size_um()
+    result: dict = {"pixel_size_um": um}
+    if um == 0.0:
+        result["warning"] = (
+            "Pixel size is 0.0 — no pixel size calibration is configured in "
+            "Micro-Manager. Set one up via Tools → Pixel Size Calibration."
+        )
+    return result
+
+
 # --- ROI ---
 
 def _bounce_live_if_on(ctrl: MicroscopeController) -> bool:
@@ -1016,6 +1027,7 @@ TOOL_REGISTRY = {
     "stop_live_view": stop_live_view,
     "set_exposure": set_exposure,
     "get_exposure": get_exposure,
+    "get_pixel_size": get_pixel_size,
     "get_roi": get_roi,
     "set_roi": set_roi,
     "clear_roi": clear_roi,

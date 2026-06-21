@@ -155,6 +155,26 @@ def test_snap_and_analyze_thumbnail_size(headless_mm, unconstrained_guard):
     assert max(pil.size) <= 128
 
 
+def test_get_pixel_size_returns_numeric(headless_mm, unconstrained_guard):
+    from microclaw.tools import get_pixel_size
+    result = get_pixel_size(headless_mm, unconstrained_guard)
+    assert isinstance(result["pixel_size_um"], float)
+    assert result["pixel_size_um"] >= 0.0
+
+
+def test_get_pixel_size_zero_includes_warning(headless_mm, unconstrained_guard):
+    # The Demo config typically has no pixel size calibration, so this verifies
+    # that a 0.0 result is accompanied by an actionable warning. If the demo
+    # does have calibration the test is skipped rather than failing.
+    from microclaw.tools import get_pixel_size
+    result = get_pixel_size(headless_mm, unconstrained_guard)
+    if result["pixel_size_um"] == 0.0:
+        assert "warning" in result
+        assert "calibration" in result["warning"].lower()
+    else:
+        pytest.skip("Demo config has pixel size calibration set; zero-warning path not exercised")
+
+
 # ---------------------------------------------------------------------------
 # Z stage
 # ---------------------------------------------------------------------------

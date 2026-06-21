@@ -16,6 +16,7 @@ from microclaw.tools import (
     get_exposure,
     get_full_device_state,
     get_hook_documentation,
+    get_pixel_size,
     get_position_list,
     get_system_state,
     get_xy_position,
@@ -55,6 +56,26 @@ class TestSnapImage:
         result = stop_live_view(mock_ctrl, unconstrained_guard)
         mock_ctrl.studio.live().set_live_mode_on.assert_called_with(False)
         assert "status" in result
+
+
+class TestGetPixelSize:
+    def test_returns_calibrated_value(self, mock_ctrl, unconstrained_guard):
+        mock_ctrl.core.get_pixel_size_um.return_value = 0.108
+        result = get_pixel_size(mock_ctrl, unconstrained_guard)
+        assert result["pixel_size_um"] == pytest.approx(0.108)
+        assert "warning" not in result
+
+    def test_zero_returns_warning(self, mock_ctrl, unconstrained_guard):
+        mock_ctrl.core.get_pixel_size_um.return_value = 0.0
+        result = get_pixel_size(mock_ctrl, unconstrained_guard)
+        assert result["pixel_size_um"] == 0.0
+        assert "warning" in result
+        assert "calibration" in result["warning"].lower()
+
+    def test_calls_core_with_no_args(self, mock_ctrl, unconstrained_guard):
+        mock_ctrl.core.get_pixel_size_um.return_value = 0.065
+        get_pixel_size(mock_ctrl, unconstrained_guard)
+        mock_ctrl.core.get_pixel_size_um.assert_called_once_with()
 
 
 class TestSetExposure:
