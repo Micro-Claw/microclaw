@@ -253,3 +253,14 @@ functions if these plugins are already installed.
 
 Thanks. Can you write a summary of these changes along with the design        
 choices and some explicit code examples in plan-htsmlm-emu.md? 
+
+----
+
+Is there a way to get the pixel size of the camera from Micro-Manager? 
+
+Thanks! Please add tests, including integration tests, for this function.
+
+----
+
+Look at smlm_docs.py. There is a nice biological validation benchmark there.  
+Can you add DNA origami as a good reference standard for PAINT imaging? 
