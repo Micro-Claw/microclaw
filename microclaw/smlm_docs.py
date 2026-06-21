@@ -298,6 +298,28 @@ its geometry is well-characterised by cryo-EM:
 - At 60% labelling efficiency (typical), most NPCs will display 6–8 visible corners.
   Clearly circular rings with visible eightfold symmetry indicate good resolution.
 
+### Reference standard for PAINT / DNA-PAINT: DNA origami rulers
+DNA origami nanostructures are the gold-standard reference sample for DNA-PAINT
+because they are chemically defined, commercially available (e.g., Massive
+Photonics "GATTA-PAINT" series), and provide absolute distance calibration:
+- Docking strands are placed at prescribed positions with sub-nm stoichiometric
+  precision. Common ruler spacings: 20 nm, 40 nm, 80 nm, 160 nm.
+- Each docking-strand site produces independent binding events; the number of
+  distinct peaks confirms site occupancy and localisation precision.
+- **Localisation precision check**: fit each docking-site cluster with a 2-D
+  Gaussian; the σ of that fit is the experimental localisation precision (target
+  ≤ 5 nm for DNA-PAINT with Cy3B or ATTO 655 imager strands).
+- **Calibration**: measure the centre-to-centre distance between two sites and
+  compare to the design value to detect x/y pixel-size errors.
+- **Imager strand concentration**: 0.1–1 nM in imaging buffer (PBS + 500 mM NaCl
+  or equivalent high-salt buffer); lower concentration reduces background but
+  increases τdark (time between binding events). Optimise for a τb / τdark ratio
+  that keeps <10% of sites occupied simultaneously.
+- Origami passivation: BSA (1 mg/mL) + Pluronic F-127 (0.05%) in the imaging
+  buffer reduces non-specific imager binding to the coverslip.
+- TIRF illumination is strongly preferred to minimise background from free imager
+  strands in solution.
+
 ---
 
 ## Common pitfalls and how to address them
