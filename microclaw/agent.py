@@ -5,6 +5,7 @@ import time
 import anthropic
 
 from microclaw.controller import MicroscopeController
+from microclaw.knowledge_manager import format_for_prompt, load_knowledge
 from microclaw.safety import SafetyGuard
 from microclaw.tools import execute_tool
 from microclaw.tools_schema import TOOLS_CACHED
@@ -58,6 +59,16 @@ Localization microscopy (SMLM):
 - Never skip the pre-acquisition checklist from the reference (buffer, channel,
   TIRF mode, focus lock, fiducials). Ask the user to confirm each point.
 
+User knowledge base:
+- When working with a named sample or an unfamiliar device, call get_knowledge to
+  recall stored profiles and device notes before issuing tool calls.
+- When you learn a non-obvious fact during a session — a device's physical role, a
+  sample's imaging requirements, a preferred parameter set — offer to save it:
+  "Want me to save that to your knowledge base for future sessions?"
+  Only call save_knowledge after the user confirms.
+- Never rely solely on the knowledge base for device state; verify with
+  list_device_properties or get_system_state, as the microscope configuration may differ.
+
 Hook-based adaptive acquisition:
 - Pre-coded hooks: autofocus_per_position, focus_feedback, intensity_adaptive, position_filter.
 - Saved hooks: call list_hooks() to see pre-coded and previously saved hooks. The result shows each saved hook's source ('claude_generated' or 'user_provided').
@@ -85,6 +96,19 @@ def run_agent(
     messages: list[dict[str, Any]] = list(history or [])
     messages.append({"role": "user", "content": user_message})
 
+    system_blocks: list[dict[str, Any]] = [
+        {
+            "type": "text",
+            "text": SYSTEM_PROMPT,
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+    kb_text = format_for_prompt(load_knowledge())
+    if kb_text:
+        system_blocks.append(
+            {"type": "text", "text": kb_text, "cache_control": {"type": "ephemeral"}}
+        )
+
     _RETRY_DELAYS = (5, 15, 30)
 
     while True:
@@ -99,13 +123,7 @@ def run_agent(
                 response = client.messages.create(
                     model=MODEL,
                     max_tokens=4096,
-                    system=[
-                        {
-                            "type": "text",
-                            "text": SYSTEM_PROMPT,
-                            "cache_control": {"type": "ephemeral"},
-                        }
-                    ],
+                    system=system_blocks,
                     tools=TOOLS_CACHED,
                     messages=messages,
                 )

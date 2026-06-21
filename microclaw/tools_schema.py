@@ -821,6 +821,82 @@ TOOLS: list[dict[str, Any]] = [
             "required": ["device"],
         },
     },
+    {
+        "name": "save_knowledge",
+        "description": (
+            "Save a non-standard fact about a sample, device, or imaging strategy to "
+            "the user's persistent knowledge base (~/.microclaw/knowledge.yaml). "
+            "This information is loaded automatically in future sessions. "
+            "Only call after the user has confirmed they want it saved."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "category": {
+                    "type": "string",
+                    "enum": ["samples", "devices", "strategies"],
+                    "description": (
+                        "'samples' for sample/specimen profiles, "
+                        "'devices' for non-standard hardware mappings and roles, "
+                        "'strategies' for named imaging recipes."
+                    ),
+                },
+                "key": {
+                    "type": "string",
+                    "description": (
+                        "Short identifier for the entry, e.g. 'U2OS_actin_Alexa647' "
+                        "or 'Thorlabs-ELL-9'. Use underscores, no spaces."
+                    ),
+                },
+                "value": {
+                    "type": "object",
+                    "description": (
+                        "Structured data for the entry. Use descriptive field names. "
+                        "Always include a 'description' field summarizing the entry."
+                    ),
+                    "additionalProperties": True,
+                },
+            },
+            "required": ["category", "key", "value"],
+        },
+    },
+    {
+        "name": "get_knowledge",
+        "description": (
+            "Retrieve entries from the user's persistent knowledge base "
+            "(~/.microclaw/knowledge.yaml). Use at the start of a session involving "
+            "a named sample or unfamiliar device to recall stored profiles and notes."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "category": {
+                    "type": "string",
+                    "enum": ["samples", "devices", "strategies"],
+                    "description": "Category to retrieve. Omit to return all categories.",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "delete_knowledge",
+        "description": "Remove a single entry from the user's persistent knowledge base.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "category": {
+                    "type": "string",
+                    "enum": ["samples", "devices", "strategies"],
+                },
+                "key": {
+                    "type": "string",
+                    "description": "The key of the entry to remove.",
+                },
+            },
+            "required": ["category", "key"],
+        },
+    },
 ]
 
 # Add cache_control on the last tool so the entire tool list is cached.

@@ -264,3 +264,13 @@ Thanks! Please add tests, including integration tests, for this function.
 
 Look at smlm_docs.py. There is a nice biological validation benchmark there.  
 Can you add DNA origami as a good reference standard for PAINT imaging? 
+
+----
+
+Look at this code base. Some historical artifacts are stored in .microclaw.   
+Is it possible to save non-standard information learned throughout the course 
+of discussion, such as a user's preferred samples, features of those          
+samples, and preferred imaging strategies, and such as non-standard           
+microscope properties, for example that Thorlabs-ELL-9 maps to a 3D           
+cylindrical lens? Ideally this informtion could then be loaded automatically  
+in future sessions. Please write a plan in add-history-plan.md

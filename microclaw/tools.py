@@ -985,6 +985,49 @@ def get_htsmlm_documentation(ctrl: MicroscopeController, guard: SafetyGuard) -> 
     return {"documentation": HTSMLM_REFERENCE}
 
 
+def save_knowledge(
+    ctrl: MicroscopeController,
+    guard: SafetyGuard,
+    category: str,
+    key: str,
+    value: dict,
+) -> dict:
+    """Persist a knowledge base entry. Call only after user confirmation."""
+    from microclaw.knowledge_manager import save_entry
+    try:
+        save_entry(category, key, value)
+    except ValueError as e:
+        return {"error": str(e)}
+    return {"status": f"Saved '{key}' under '{category}'.", "category": category, "key": key, "value": value}
+
+
+def get_knowledge(
+    ctrl: MicroscopeController,
+    guard: SafetyGuard,
+    category: str | None = None,
+) -> dict:
+    """Return knowledge base entries for a category, or all categories if omitted."""
+    from microclaw.knowledge_manager import load_knowledge
+    data = load_knowledge()
+    if category is not None:
+        return {"category": category, "entries": data.get(category, {})}
+    return {"knowledge": data}
+
+
+def delete_knowledge(
+    ctrl: MicroscopeController,
+    guard: SafetyGuard,
+    category: str,
+    key: str,
+) -> dict:
+    """Remove a single entry from the knowledge base."""
+    from microclaw.knowledge_manager import delete_entry
+    found = delete_entry(category, key)
+    if found:
+        return {"status": f"Deleted '{key}' from '{category}'."}
+    return {"error": f"No entry '{key}' in category '{category}'."}
+
+
 def get_emu_configuration(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -1069,6 +1112,9 @@ TOOL_REGISTRY = {
     "check_emu_installed": check_emu_installed,
     "get_htsmlm_documentation": get_htsmlm_documentation,
     "get_emu_configuration": get_emu_configuration,
+    "save_knowledge": save_knowledge,
+    "get_knowledge": get_knowledge,
+    "delete_knowledge": delete_knowledge,
 }
 
 
