@@ -166,7 +166,7 @@ Great! Can we adjust the system prompt for this?
 
 ----
 
- Please look carefully at run_multiposition_acquisition() in tools.py. Is it   
+Please look carefully at run_multiposition_acquisition() in tools.py. Is it   
 possible to save the data from a multiposition acquisition if the protocol is 
 set to "snap"?
 
@@ -184,3 +184,45 @@ timelapse protocols, right?
 How will the agent know to use protocol=timelapse with n_frames=1 and         
 interval_s=0 if the users requests something like what is in                  
 20260601_162424_microclaw_history_pretty.txt? 
+
+----
+
+Please look at the code carefully. Can you add tools to work with the ROI     
+(region of interest) tool in Micro-Manager? 
+
+Should set_roi and clear_roi restart live view automatically if it's 
+already running, so the GUI updates immediately? → Yes, restart live if 
+running
+
+----
+
+Look at _bounce_live_if_on in tools.py. Does it make sense to use this scheme 
+for autofocus? 
+
+Add live-mode stop/restore around the autofocus sweep                         
+
+Do we need to add additional tests to check that the stop/start live mode     
+behavior works correctly?  
+
+----
+
+Is it possible to make the microclaw agent load a skill when it's writing     
+pycro-manager hooks? The skill could be based on the pycro-manager            
+documentation (https://pycro-manager.readthedocs.io/en/latest/) and could     
+help the agent write hooks.  
+
+Is option A better than a standard Claude skill? If so, why?
+
+The priority is on the runtime agent. Please write the implementation plan to 
+runtime-pycromanager-skill.md. 
+
+Following the updated runtime-pycromanager-skill.md, please implement the     
+approach described in this file.  
+
+----
+
+Look at the approach to using get_hook_documentation in tools. Suppose we     
+want to use a similar approach if a user askes to do SMLM or localization     
+microscopy using Microclaw. Please read /Users/zachcm/Downloads/SMLM          
+Primer.pdf and use the information here to write a runtime skill for          
+localization microscopy. 

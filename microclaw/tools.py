@@ -936,6 +936,11 @@ def get_hook_documentation(ctrl: MicroscopeController, guard: SafetyGuard) -> di
     return {"documentation": HOOK_REFERENCE}
 
 
+def get_smlm_documentation(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
+    from microclaw.smlm_docs import SMLM_REFERENCE
+    return {"documentation": SMLM_REFERENCE}
+
+
 # --- Tool Registry ---
 
 TOOL_REGISTRY = {
@@ -982,6 +987,7 @@ TOOL_REGISTRY = {
     "read_hook_from_file": read_hook_from_file,
     "list_hooks": list_hooks,
     "get_hook_documentation": get_hook_documentation,
+    "get_smlm_documentation": get_smlm_documentation,
 }
 
 

@@ -647,6 +647,18 @@ TOOLS: list[dict[str, Any]] = [
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
     {
+        "name": "get_smlm_documentation",
+        "description": (
+            "Return the SMLM (single-molecule localization microscopy) protocol reference: "
+            "technique variants (dSTORM, PALM, PAINT/DNA-PAINT), acquisition parameters "
+            "(exposure, frame count, laser power, channel, TIRF mode), step-by-step "
+            "acquisition protocol, drift-correction guidance, post-processing software "
+            "recommendations, common pitfalls, and key questions to ask the user. "
+            "Call this before planning or starting any SMLM acquisition."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
         "name": "generate_and_save_hook",
         "description": (
             "Validate and save a hook script to disk. "

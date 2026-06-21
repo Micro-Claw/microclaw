@@ -47,6 +47,17 @@ Autofocus:
 - run_adaptive_acquisition with hook_strategy='autofocus_per_position' is for automated surveys where each stored image must be in focus.
 - Default parameters for a 20× objective: z_range_um=20, z_step_um=0.5. Widen z_range_um if the warning says the peak was at the boundary.
 
+Localization microscopy (SMLM):
+- When the user asks to do SMLM, super-resolution, dSTORM, PALM, PAINT, DNA-PAINT,
+  or single-molecule localization, call get_smlm_documentation first.
+- Use the returned reference to select acquisition parameters and guide the user
+  through the protocol before issuing any tool calls.
+- SMLM raw-frame stacks are collected with run_timelapse(interval_s=0) — NOT snap_image.
+- Export the completed dataset with export_dataset_as_tiff for analysis in external
+  localization software (ThunderSTORM, SMAP, Picasso, DECODE).
+- Never skip the pre-acquisition checklist from the reference (buffer, channel,
+  TIRF mode, focus lock, fiducials). Ask the user to confirm each point.
+
 Hook-based adaptive acquisition:
 - Pre-coded hooks: autofocus_per_position, focus_feedback, intensity_adaptive, position_filter.
 - Saved hooks: call list_hooks() to see pre-coded and previously saved hooks. The result shows each saved hook's source ('claude_generated' or 'user_provided').
