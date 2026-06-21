@@ -59,7 +59,7 @@ def get_exposure(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
 
 
 def get_pixel_size(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
-    um = ctrl.core.get_pixel_size_um()
+    um = float(ctrl.core.get_pixel_size_um())
     result: dict = {"pixel_size_um": um}
     if um == 0.0:
         result["warning"] = (
