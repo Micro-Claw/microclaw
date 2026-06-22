@@ -797,11 +797,12 @@ def test_generate_save_and_use_custom_hook(headless_mm, unconstrained_guard, tmp
 # execute_tool return type integration
 # ---------------------------------------------------------------------------
 
-def test_execute_tool_snap_and_analyze_default_returns_dict(headless_mm, unconstrained_guard):
+def test_execute_tool_snap_and_analyze_default_returns_json_string(headless_mm, unconstrained_guard):
     from microclaw.tools import execute_tool
     result = execute_tool("snap_and_analyze", {}, headless_mm, unconstrained_guard)
-    assert isinstance(result, dict)
-    assert "focus_metric" in result
+    assert isinstance(result, str)
+    payload = json.loads(result)
+    assert "focus_metric" in payload
 
 
 def test_execute_tool_snap_and_analyze_with_thumbnail_returns_list(headless_mm, unconstrained_guard):
