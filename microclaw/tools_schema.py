@@ -317,6 +317,7 @@ TOOLS: list[dict[str, Any]] = [
             "in z_step_um steps. Returns best Z, focus metric curve, and a thumbnail. "
             "Default parameters for a 20× objective: z_range_um=20, z_step_um=0.5. "
             "Widen z_range_um if the result says the peak was at the boundary."
+            "If the focus is not converging, check if there are any sharp boundaries in the image. If so, alert the user."
         ),
         "input_schema": {
             "type": "object",
@@ -342,7 +343,7 @@ TOOLS: list[dict[str, Any]] = [
                 "return_thumbnail": {
                     "type": "boolean",
                     "description": "Include a thumbnail of the focused image (default true).",
-                    "default": True,
+                    "default": False,
                 },
             },
             "required": ["z_range_um", "z_step_um"],

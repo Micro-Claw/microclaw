@@ -19,12 +19,14 @@ def _candidate_mm_dirs() -> list[Path]:
             Path("C:/Program Files/Micro-Manager-2.0"),
             Path("C:/Program Files/Micro-Manager-2.0.1"),
             Path("C:/Program Files/Micro-Manager-2.0.2"),
+            Path("C:/Program Files/Micro-Manager-2.0.3"),
         ]
     if system == "Darwin":
         return [
             Path("/Applications/Micro-Manager-2.0"),
             Path("/Applications/Micro-Manager-2.0.1"),
             Path("/Applications/Micro-Manager-2.0.2"),
+            Path("/Applications/Micro-Manager-2.0.3"),
         ]
     # Linux
     return [

@@ -25,8 +25,8 @@ such as ThunderSTORM (FIJI plugin), SMAP, DECODE, or Picasso (see Software secti
 
 ### dSTORM (direct STORM) — most common for fixed cells
 - Fluorophore: photoswitchable synthetic dye (Alexa Fluor 647 or Cy5 recommended
-  for beginners). Requires a thiol-based photoswitching buffer (PBS + 100 mM MEA
-  at pH 7.4 + enzymatic oxygen scavenger such as GLOX or PCA/PCD).
+  for beginners). Requires a thiol-based photoswitching buffer (TRIS-buffered saline + 35 mM MEA
+  + enzymatic oxygen scavenger such as GLOX).
 - Two acquisition regimes — ask the user which they prefer:
 
   A) Slow STORM (preferred — highest data quality):
@@ -184,11 +184,12 @@ such as ThunderSTORM (FIJI plugin), SMAP, DECODE, or Picasso (see Software secti
    In Micro-Manager, check the focus stabilization device in the device list.
 8. (dSTORM only) Ask the user to perform the pre-bleach step manually in
    Micro-Manager or confirm they have already done so:
-   - Slow STORM: reduce laser power to ~0.2 kW/cm², wait until signal is no longer
-     decreasing (~1–2 min), then switch to acquisition power (~6 kW/cm²).
+   - Slow STORM: Start the laser at low power (~0.2 kW/cm²) and watch until the average image 
+    intensity drops to half the initial value. Once this happens, bump the power up again and
+    wait again for intensity to again drop to half of the initial value. Ramp the power from
+    ~0.2 kW/cm² up to the user-defined power value (~6 kW/cm²) for the acquisiton in
+    ~5 of these steps. All the steps together should not take longer than 30 seconds - 2 minutes.
    - Regular STORM: skip pre-bleach; proceed directly at ~20 kW/cm².
-   Do NOT automate pre-bleaching — high-power laser control is outside the
-   safety-guarded parameter range.
 9. (3D only) Confirm the astigmatic lens is inserted (3D mode active) and that
    a PSF calibration file is available for the localization software.
 10. Confirm the number of frames with the user (default suggestions: slow STORM
