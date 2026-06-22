@@ -1,6 +1,8 @@
 import sys
 import datetime
-import cProfile, pstats, io
+import cProfile
+import pstats
+import io
 from pstats import SortKey
 
 from microclaw.agent import run_agent
@@ -10,6 +12,11 @@ from microclaw.safety import SafetyGuard
 
 from anthropic._utils._json import openapi_dumps
 
+def write_history(fn, history, save=True):
+    if save:
+        # save chat history
+        with open(fn, "wb") as f:
+            f.write(openapi_dumps(history))
 
 def main():
     import argparse
@@ -31,6 +38,9 @@ def main():
             "Is the ZMQ server enabled in Tools → Options?"
         )
     print("Connected. Type your instructions (type 'exit' or press Ctrl-C to quit).\n")
+
+    # we will overwrite this
+    history_fn_name = f"{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}_microclaw_history.json"
 
     history = []
     while True:
@@ -64,10 +74,11 @@ def main():
             reply, history = run_agent(user_input, ctrl, guard, history)
             print(f"\nMicroclaw: {reply}\n")
 
-    if args.save_history:
-        # save chat history
-        with open(f"{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}_microclaw_history.json", "wb") as f:
-            f.write(openapi_dumps(history))
+        # Now write once per loop, in case it crashes
+        write_history(history_fn_name, history, args.save_history)
+
+    # final history
+    write_history(history_fn_name, history, args.save_history)
 
 
 if __name__ == "__main__":
