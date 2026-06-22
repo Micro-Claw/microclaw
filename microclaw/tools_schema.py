@@ -294,17 +294,27 @@ TOOLS: list[dict[str, Any]] = [
         "name": "snap_and_analyze",
         "description": (
             "Snap a single image and return numerical stats (focus metric, mean intensity, "
-            "saturation) plus a thumbnail for visual inspection. Prefer this over snap_image "
-            "when you need to assess image quality or see the sample."
+            "saturation). Use this whenever you need quantitative image data. "
+            "Only set return_thumbnail=true when you genuinely need to see the image visually — "
+            "it incurs significant vision token cost."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
+                "return_thumbnail": {
+                    "type": "boolean",
+                    "description": (
+                        "Return a thumbnail image alongside the stats. "
+                        "Only set true when visual inspection is necessary; "
+                        "omit or set false to save vision token cost (default false)."
+                    ),
+                    "default": False,
+                },
                 "thumbnail_size": {
                     "type": "integer",
                     "description": "Max pixel dimension of the thumbnail (default 512).",
                     "default": 512,
-                }
+                },
             },
             "required": [],
         },
@@ -342,7 +352,7 @@ TOOLS: list[dict[str, Any]] = [
                 },
                 "return_thumbnail": {
                     "type": "boolean",
-                    "description": "Include a thumbnail of the focused image (default true).",
+                    "description": "Include a thumbnail of the focused image (default false). Only set to True if absolutely necessary.",
                     "default": False,
                 },
             },

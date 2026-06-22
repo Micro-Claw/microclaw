@@ -117,15 +117,21 @@ def test_set_and_get_exposure(headless_mm, unconstrained_guard):
     set_exposure(headless_mm, unconstrained_guard, ms=original)  # restore
 
 
-def test_snap_and_analyze_returns_valid_png(headless_mm, unconstrained_guard):
+def test_snap_and_analyze_returns_stats(headless_mm, unconstrained_guard):
     from microclaw.tools import snap_and_analyze
     result = snap_and_analyze(headless_mm, unconstrained_guard)
+    assert isinstance(result, dict)
+    for field in ("focus_metric", "mean_intensity", "max_intensity", "saturated_fraction", "z_um"):
+        assert field in result, f"Missing field: {field}"
+
+
+def test_snap_and_analyze_returns_valid_png_when_requested(headless_mm, unconstrained_guard):
+    from microclaw.tools import snap_and_analyze
+    result = snap_and_analyze(headless_mm, unconstrained_guard, return_thumbnail=True)
     assert isinstance(result, list)
-    # First block is JSON text stats
     payload = json.loads(result[0]["text"])
     for field in ("focus_metric", "mean_intensity", "max_intensity", "saturated_fraction", "z_um"):
         assert field in payload, f"Missing field: {field}"
-    # Second block is a valid PNG thumbnail
     png_bytes = base64.standard_b64decode(result[1]["source"]["data"])
     assert png_bytes[:4] == b"\x89PNG", "Thumbnail is not a valid PNG"
 
@@ -133,22 +139,20 @@ def test_snap_and_analyze_returns_valid_png(headless_mm, unconstrained_guard):
 def test_snap_and_analyze_focus_metric_positive(headless_mm, unconstrained_guard):
     from microclaw.tools import snap_and_analyze
     result = snap_and_analyze(headless_mm, unconstrained_guard)
-    payload = json.loads(result[0]["text"])
-    assert payload["focus_metric"] >= 0.0
+    assert result["focus_metric"] >= 0.0
 
 
 def test_snap_and_analyze_intensity_in_range(headless_mm, unconstrained_guard):
     from microclaw.tools import snap_and_analyze
     result = snap_and_analyze(headless_mm, unconstrained_guard)
-    payload = json.loads(result[0]["text"])
-    assert 0.0 <= payload["mean_intensity"] <= 65535.0
-    assert 0.0 <= payload["saturated_fraction"] <= 1.0
+    assert 0.0 <= result["mean_intensity"] <= 65535.0
+    assert 0.0 <= result["saturated_fraction"] <= 1.0
 
 
 def test_snap_and_analyze_thumbnail_size(headless_mm, unconstrained_guard):
     from PIL import Image
     from microclaw.tools import snap_and_analyze
-    result = snap_and_analyze(headless_mm, unconstrained_guard, thumbnail_size=128)
+    result = snap_and_analyze(headless_mm, unconstrained_guard, return_thumbnail=True, thumbnail_size=128)
     png_bytes = base64.standard_b64decode(result[1]["source"]["data"])
     import io
     pil = Image.open(io.BytesIO(png_bytes))
@@ -793,9 +797,16 @@ def test_generate_save_and_use_custom_hook(headless_mm, unconstrained_guard, tmp
 # execute_tool return type integration
 # ---------------------------------------------------------------------------
 
-def test_execute_tool_returns_list_for_image_tool(headless_mm, unconstrained_guard):
+def test_execute_tool_snap_and_analyze_default_returns_dict(headless_mm, unconstrained_guard):
     from microclaw.tools import execute_tool
     result = execute_tool("snap_and_analyze", {}, headless_mm, unconstrained_guard)
+    assert isinstance(result, dict)
+    assert "focus_metric" in result
+
+
+def test_execute_tool_snap_and_analyze_with_thumbnail_returns_list(headless_mm, unconstrained_guard):
+    from microclaw.tools import execute_tool
+    result = execute_tool("snap_and_analyze", {"return_thumbnail": True}, headless_mm, unconstrained_guard)
     assert isinstance(result, list)
     assert result[0]["type"] == "text"
     assert result[1]["type"] == "image"

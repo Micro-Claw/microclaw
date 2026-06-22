@@ -214,24 +214,28 @@ class TestGetSystemState:
 
 
 class TestSnapAndAnalyze:
-    def test_returns_multimodal(self, mock_ctrl, unconstrained_guard, monkeypatch):
+    def test_returns_dict_by_default(self, mock_ctrl, unconstrained_guard, monkeypatch):
         monkeypatch.setattr(
             "microclaw.tools.snap_to_numpy",
             lambda ctrl: np.zeros((64, 64), dtype=np.uint16),
         )
         mock_ctrl.core.get_position.return_value = 50.0
         result = snap_and_analyze(mock_ctrl, unconstrained_guard)
+        assert isinstance(result, dict)
+        assert "focus_metric" in result
+        assert "mean_intensity" in result
+        assert "z_um" in result
+
+    def test_returns_multimodal_when_requested(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        monkeypatch.setattr(
+            "microclaw.tools.snap_to_numpy",
+            lambda ctrl: np.zeros((64, 64), dtype=np.uint16),
+        )
+        mock_ctrl.core.get_position.return_value = 50.0
+        result = snap_and_analyze(mock_ctrl, unconstrained_guard, return_thumbnail=True)
         assert isinstance(result, list)
         assert result[0]["type"] == "text"
         assert result[1]["type"] == "image"
-
-    def test_text_block_has_stats(self, mock_ctrl, unconstrained_guard, monkeypatch):
-        monkeypatch.setattr(
-            "microclaw.tools.snap_to_numpy",
-            lambda ctrl: np.zeros((64, 64), dtype=np.uint16),
-        )
-        mock_ctrl.core.get_position.return_value = 50.0
-        result = snap_and_analyze(mock_ctrl, unconstrained_guard)
         payload = json.loads(result[0]["text"])
         assert "focus_metric" in payload
         assert "mean_intensity" in payload

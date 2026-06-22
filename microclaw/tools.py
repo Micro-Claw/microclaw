@@ -408,9 +408,10 @@ def export_dataset_as_tiff(
 def snap_and_analyze(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
+    return_thumbnail: bool = False,
     thumbnail_size: int = 512,
-) -> list:
-    """Snap an image and return numerical stats plus a thumbnail for Claude's vision."""
+) -> list | dict:
+    """Snap an image and return numerical stats, plus an optional thumbnail."""
     image = snap_to_numpy(ctrl)
     stats = compute_stats(image)
     text_payload = {
@@ -420,6 +421,8 @@ def snap_and_analyze(
         "max_intensity": round(stats.max_intensity, 1),
         "saturated_fraction": round(stats.saturated_fraction, 4),
     }
+    if not return_thumbnail:
+        return text_payload
     return [
         {"type": "text", "text": json.dumps(text_payload)},
         {
