@@ -223,13 +223,13 @@ approach described in this file.
 
 Look at the approach to using get_hook_documentation in tools. Suppose we     
 want to use a similar approach if a user askes to do SMLM or localization     
-microscopy using Microclaw. Please read /Users/zachcm/Downloads/SMLM          
-Primer.pdf and use the information here to write a runtime skill for          
+microscopy using Microclaw. Please read Lelek et al., Nat. Rev. Meth. 
+Primers (2021) and use the information here to write a runtime skill for          
 localization microscopy. 
 
 ----
 
-Please have a look at /Users/zachcm/Downloads/s41596-024-00989-x.pdf. Is      
+Please have a look at Power et al., Nat. Prot. (2024). Is      
 there any information in this paper than can be used to augment smlm_docs.py?
 
 Please add these now, but don't include anything specific to htSMLM in        
@@ -274,3 +274,40 @@ samples, and preferred imaging strategies, and such as non-standard
 microscope properties, for example that Thorlabs-ELL-9 maps to a 3D           
 cylindrical lens? Ideally this informtion could then be loaded automatically  
 in future sessions. Please write a plan in add-history-plan.md
+
+----
+
+Have a look at snap_and_analyze() in tools.py. Is it possible to avoid having 
+this return the thumnail if a user requests only information that is already  
+available in the text_payload? 
+
+Yes, please. I am specifically trying to save the vision token cost. I don't  
+want to return a thumnail unless it is absolutely necessary 
+
+----
+
+Is it possible to rewrite this code base to use a JPype bridge                
+(https://github.com/nicost/jPypeMM/tree/main) instead of Pycro-Manager? Think 
+about this carefully and write a plan that includes all files that need to    
+be modified and code stubs showing how this modification will take place.     
+Include potential issues in the plan as well. The plan should be stored in    
+port-to-jpype.md.
+
+Have a look at AcqEngJ (github.com/micro-manager/AcqEngJ). Is it possible to  
+use this for the acquisition engine? Please update port-to-jpype.md with your 
+response. 
+
+Create a new file port-to-jpype-acqj.md, which includes a more detailed plan  
+for implementing option B (AcqEngJ). Drop the headless version entirely. It's 
+OK if this only works on Windows for now. Let's make the dependencies such    
+that we always install the latest jPypeMM from GitHub.
+
+Have a look at port-to-jpype-acqj.md. I've left comments for you in between < 
+and > brackets. Please update the markdown file to address these comments.    
+
+Can you write a spike.py file to test the remaining spike steps on a Windows  
+machine? The file should dump all important output to a .txt.   
+
+Have a look at spike_output_20260623_135327.txt. This is the result of        
+running spike.py.  
+
