@@ -45,7 +45,7 @@ Position lists:
 
 Autofocus:
 - run_autofocus (standalone) is for interactive focus requests.
-- run_adaptive_acquisition with hook_strategy='autofocus_per_position' is for automated surveys where each stored image must be in focus.
+- run_adaptive_zstack with hook_strategy='autofocus_per_position' is for automated surveys where each stored image must be in focus.
 - Default parameters for a 20× objective: z_range_um=20, z_step_um=0.5. Widen z_range_um if the warning says the peak was at the boundary.
 
 Localization microscopy (SMLM):
@@ -70,6 +70,7 @@ User knowledge base:
   list_device_properties or get_system_state, as the microscope configuration may differ.
 
 Hook-based adaptive acquisition:
+- A hook can drive either a Z-stack (run_adaptive_zstack) or a timelapse (run_adaptive_timelapse); pick the tool matching the acquisition the user wants. focus_feedback corrects Z drift per frame and is intended for timelapses.
 - Pre-coded hooks: autofocus_per_position, focus_feedback, intensity_adaptive, position_filter.
 - Saved hooks: call list_hooks() to see pre-coded and previously saved hooks. The result shows each saved hook's source ('claude_generated' or 'user_provided').
 - After an adaptive acquisition, call read_hook_log(log_path) to get per-position or per-frame results, then synthesize and report them to the user.

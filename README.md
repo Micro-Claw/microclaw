@@ -114,7 +114,8 @@ The tool functions and agent loop are identical in GUI and headless modes.
 | `run_multiposition_acquisition` | Visit each position and run snap/zstack/timelapse |
 | `run_tile_acquisition` | Acquire a rows×cols tile grid centered on current stage position |
 | `run_multiposition_with_autofocus` | Same, with software autofocus at each position |
-| `run_adaptive_acquisition` | Z-stack with a hook strategy for adaptive behaviour |
+| `run_adaptive_zstack` | Z-stack with a hook strategy for adaptive behaviour |
+| `run_adaptive_timelapse` | Timelapse with a hook strategy for adaptive behaviour |
 | `read_hook_log` | Read hook output log after an acquisition |
 | `list_hooks` | List pre-coded and saved hook strategies |
 | `get_hook_documentation` | Return the pycro-manager hook API reference (called automatically before hook generation) |

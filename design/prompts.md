@@ -283,3 +283,14 @@ available in the text_payload?
 
 Yes, please. I am specifically trying to save the vision token cost. I don't  
 want to return a thumnail unless it is absolutely necessary 
+
+----
+
+Look at run_adapative_acquisition in tools.py. Does this have to work only    
+for a z-stack? Is it possible to create a function that can add a hook to     
+either a timelapse or a z-stack?
+
+Please write your proposals for the cleanest approach and the generalization  
+to a markdown file, generalize-hook-calls.md. Include proposed changes with   
+example code stubs. Include a brief discussion of the benefits and drawbacks  
+of each approach.    

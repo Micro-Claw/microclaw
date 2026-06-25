@@ -594,7 +594,7 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "run_adaptive_acquisition",
+        "name": "run_adaptive_zstack",
         "description": (
             "Run a Z-stack acquisition with a hook strategy for adaptive behaviour. "
             "Pre-coded strategies: autofocus_per_position, focus_feedback, "
@@ -635,6 +635,50 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "run_adaptive_timelapse",
+        "description": (
+            "Run a timelapse acquisition with a hook strategy for adaptive behaviour. "
+            "Pre-coded strategies: autofocus_per_position, focus_feedback, "
+            "intensity_adaptive, position_filter. "
+            "focus_feedback corrects Z drift per frame and is well suited to timelapses. "
+            "Call list_hooks() to see all available strategies including saved hooks. "
+            "After the acquisition, call read_hook_log(log_path) to retrieve results."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "n_frames": {"type": "integer", "description": "Number of frames."},
+                "interval_s": {
+                    "type": "number",
+                    "description": "Interval between frames in seconds.",
+                },
+                "save_dir": {"type": "string", "description": "Directory to save the dataset."},
+                "hook_strategy": {
+                    "type": "string",
+                    "description": "Hook strategy name (from list_hooks).",
+                },
+                "hook_params": {
+                    "type": "object",
+                    "description": "Parameters passed to the hook constructor.",
+                },
+                "channel": {
+                    "type": "string",
+                    "description": "Channel preset (optional).",
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Dataset name (default 'adaptive').",
+                    "default": "adaptive",
+                },
+                "log_path": {
+                    "type": "string",
+                    "description": "Path for the hook's output log (optional).",
+                },
+            },
+            "required": ["n_frames", "interval_s", "save_dir", "hook_strategy"],
+        },
+    },
+    {
         "name": "read_hook_log",
         "description": (
             "Read a hook's output log file after an acquisition completes. "
@@ -653,8 +697,8 @@ TOOLS: list[dict[str, Any]] = [
         "name": "list_hooks",
         "description": (
             "List all available hook strategies: pre-coded hooks and previously saved hooks "
-            "(with their descriptions and source). Call this before run_adaptive_acquisition "
-            "to confirm the strategy name."
+            "(with their descriptions and source). Call this before run_adaptive_zstack "
+            "or run_adaptive_timelapse to confirm the strategy name."
         ),
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
