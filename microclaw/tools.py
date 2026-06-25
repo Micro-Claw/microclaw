@@ -306,6 +306,51 @@ def get_system_state(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
 
 # --- Acquisitions ---
 
+def _build_acquisition_events(
+    *,
+    channel: str | None = None,
+    exposure_ms: float | None = None,
+    **acq_kwargs: Any,
+) -> list:
+    """Build an event list via multi_d_acquisition_events with channel handling.
+
+    acq_kwargs carry the event-shape parameters: z_start/z_end/z_step for a
+    Z-stack, or num_time_points/time_interval_s for a timelapse. The hook
+    machinery is agnostic to which shape is used.
+    """
+    if channel:
+        acq_kwargs.update(channel_group="Channel", channels=[channel])
+        if exposure_ms is not None:
+            acq_kwargs["channel_exposures_ms"] = [exposure_ms]
+    return multi_d_acquisition_events(**acq_kwargs)
+
+
+def _acquire_with_hooks(
+    save_dir: str,
+    name: str,
+    events: list,
+    hook: Any | None = None,
+) -> str:
+    """Run one Acquisition, attaching hook callables if a hook is supplied.
+
+    Returns the on-disk dataset path. A hook is any object exposing
+    post_hardware_hook_fn and/or image_process_fn; both are optional and are
+    wired in only if present, so the same runner serves plain and adaptive
+    acquisitions of any event shape.
+    """
+    hook_fn_kwargs: dict[str, Any] = {}
+    if hook is not None:
+        if hasattr(hook, "post_hardware_hook_fn"):
+            hook_fn_kwargs["post_hardware_hook_fn"] = hook.post_hardware_hook_fn
+        if hasattr(hook, "image_process_fn"):
+            hook_fn_kwargs["image_process_fn"] = hook.image_process_fn
+
+    with Acquisition(directory=save_dir, name=name, show_display=True, **hook_fn_kwargs) as acq:
+        acq.acquire(events)
+
+    return acq._dataset_disk_location or str(Path(save_dir) / name)
+
+
 def run_zstack(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -323,26 +368,15 @@ def run_zstack(
         guard.check_channel(channel)
     if exposure_ms is not None:
         guard.check_exposure(exposure_ms)
-
-    kwargs: dict[str, Any] = {
-        "z_start": z_start_um,
-        "z_end": z_end_um,
-        "z_step": z_step_um,
-    }
-    if channel:
-        kwargs.update(channel_group="Channel", channels=[channel])
-        if exposure_ms is not None:
-            kwargs["channel_exposures_ms"] = [exposure_ms]
-    elif exposure_ms is not None:
+    if not channel and exposure_ms is not None:
         ctrl.core.set_exposure(exposure_ms)
 
-    events = multi_d_acquisition_events(**kwargs)
-
-    with Acquisition(directory=save_dir, name=name, show_display=True) as acq:
-        acq.acquire(events)
-
-    actual_path = acq._dataset_disk_location or str(Path(save_dir) / name)
-    return {"status": "Z-stack complete.", "dataset_path": actual_path}
+    events = _build_acquisition_events(
+        channel=channel, exposure_ms=exposure_ms,
+        z_start=z_start_um, z_end=z_end_um, z_step=z_step_um,
+    )
+    dataset_path = _acquire_with_hooks(save_dir, name, events)
+    return {"status": "Z-stack complete.", "dataset_path": dataset_path}
 
 
 def run_timelapse(
@@ -360,22 +394,12 @@ def run_timelapse(
     if exposure_ms is not None:
         guard.check_exposure(exposure_ms)
 
-    kwargs: dict[str, Any] = {
-        "num_time_points": n_frames,
-        "time_interval_s": interval_s,
-    }
-    if channel:
-        kwargs.update(channel_group="Channel", channels=[channel])
-        if exposure_ms is not None:
-            kwargs["channel_exposures_ms"] = [exposure_ms]
-
-    events = multi_d_acquisition_events(**kwargs)
-
-    with Acquisition(directory=save_dir, name=name, show_display=True) as acq:
-        acq.acquire(events)
-
-    actual_path = acq._dataset_disk_location or str(Path(save_dir) / name)
-    return {"status": "Timelapse complete.", "dataset_path": actual_path}
+    events = _build_acquisition_events(
+        channel=channel, exposure_ms=exposure_ms,
+        num_time_points=n_frames, time_interval_s=interval_s,
+    )
+    dataset_path = _acquire_with_hooks(save_dir, name, events)
+    return {"status": "Timelapse complete.", "dataset_path": dataset_path}
 
 
 def export_dataset_as_tiff(
@@ -808,7 +832,56 @@ def run_multiposition_with_autofocus(
 
 # --- Hook-based adaptive acquisition ---
 
-def run_adaptive_acquisition(
+def _resolve_hook(
+    ctrl: MicroscopeController,
+    guard: SafetyGuard,
+    hook_strategy: str,
+    hook_params: dict | None,
+    log_path: str | None,
+) -> Any:
+    """Instantiate a hook by strategy name (pre-coded registry or saved hook).
+
+    Injects ctrl/guard/log_path where the hook constructor accepts them.
+    Raises ValueError if the strategy is unknown.
+    """
+    from microclaw.hooks import PRECODED_HOOK_REGISTRY
+    from microclaw.hook_manager import load_hook_class, list_saved_hooks
+
+    params = dict(hook_params or {})
+    if log_path:
+        params["log_path"] = log_path
+
+    if hook_strategy in PRECODED_HOOK_REGISTRY:
+        hook_cls = PRECODED_HOOK_REGISTRY[hook_strategy]
+    elif hook_strategy in list_saved_hooks():
+        hook_cls = load_hook_class(hook_strategy)
+    else:
+        raise ValueError(
+            f"Unknown hook strategy '{hook_strategy}'. "
+            "Run list_hooks() to see available strategies."
+        )
+
+    sig = inspect.signature(hook_cls.__init__)
+    if "ctrl" in sig.parameters:
+        params.setdefault("ctrl", ctrl)
+    if "guard" in sig.parameters:
+        params.setdefault("guard", guard)
+
+    return hook_cls(**params)
+
+
+def _adaptive_result(dataset_path: str, log_path: str | None) -> dict:
+    result: dict[str, Any] = {
+        "status": "Adaptive acquisition complete.",
+        "dataset_path": dataset_path,
+    }
+    if log_path:
+        result["log_path"] = log_path
+        result["hint"] = "Call read_hook_log to retrieve per-image results."
+    return result
+
+
+def run_adaptive_zstack(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
     z_start_um: float,
@@ -826,60 +899,53 @@ def run_adaptive_acquisition(
     hook_strategy: a key from PRECODED_HOOK_REGISTRY or a saved hook name.
     After the acquisition, call read_hook_log(log_path) to retrieve results.
     """
-    from microclaw.hooks import PRECODED_HOOK_REGISTRY
-    from microclaw.hook_manager import load_hook_class, list_saved_hooks
-
     guard.check_z(z_start_um)
     guard.check_z(z_end_um)
     if channel:
         guard.check_channel(channel)
 
-    params = dict(hook_params or {})
-    if log_path:
-        params["log_path"] = log_path
+    try:
+        hook = _resolve_hook(ctrl, guard, hook_strategy, hook_params, log_path)
+    except ValueError as e:
+        return {"error": str(e)}
 
-    if hook_strategy in PRECODED_HOOK_REGISTRY:
-        hook_cls = PRECODED_HOOK_REGISTRY[hook_strategy]
-    elif hook_strategy in list_saved_hooks():
-        hook_cls = load_hook_class(hook_strategy)
-    else:
-        return {
-            "error": (
-                f"Unknown hook strategy '{hook_strategy}'. "
-                "Run list_hooks() to see available strategies."
-            )
-        }
+    events = _build_acquisition_events(
+        channel=channel, z_start=z_start_um, z_end=z_end_um, z_step=z_step_um,
+    )
+    dataset_path = _acquire_with_hooks(save_dir, name, events, hook)
+    return _adaptive_result(dataset_path, log_path)
 
-    sig = inspect.signature(hook_cls.__init__)
-    if "ctrl" in sig.parameters:
-        params.setdefault("ctrl", ctrl)
-    if "guard" in sig.parameters:
-        params.setdefault("guard", guard)
 
-    hook = hook_cls(**params)
+def run_adaptive_timelapse(
+    ctrl: MicroscopeController,
+    guard: SafetyGuard,
+    n_frames: int,
+    interval_s: float,
+    save_dir: str,
+    hook_strategy: str,
+    hook_params: dict | None = None,
+    channel: str | None = None,
+    name: str = "adaptive",
+    log_path: str | None = None,
+) -> dict:
+    """Run a timelapse acquisition with a hook strategy for adaptive behaviour.
 
-    acq_kwargs: dict[str, Any] = {"z_start": z_start_um, "z_end": z_end_um, "z_step": z_step_um}
+    hook_strategy: a key from PRECODED_HOOK_REGISTRY or a saved hook name.
+    After the acquisition, call read_hook_log(log_path) to retrieve results.
+    """
     if channel:
-        acq_kwargs.update(channel_group="Channel", channels=[channel])
-    events = multi_d_acquisition_events(**acq_kwargs)
+        guard.check_channel(channel)
 
-    hook_fn_kwargs: dict[str, Any] = {}
-    if hasattr(hook, "post_hardware_hook_fn"):
-        hook_fn_kwargs["post_hardware_hook_fn"] = hook.post_hardware_hook_fn
-    if hasattr(hook, "image_process_fn"):
-        hook_fn_kwargs["image_process_fn"] = hook.image_process_fn
+    try:
+        hook = _resolve_hook(ctrl, guard, hook_strategy, hook_params, log_path)
+    except ValueError as e:
+        return {"error": str(e)}
 
-    with Acquisition(directory=save_dir, name=name, show_display=True, **hook_fn_kwargs) as acq:
-        acq.acquire(events)
-
-    result: dict[str, Any] = {
-        "status": "Adaptive acquisition complete.",
-        "dataset_path": str(Path(save_dir) / name),
-    }
-    if log_path:
-        result["log_path"] = log_path
-        result["hint"] = "Call read_hook_log to retrieve per-image results."
-    return result
+    events = _build_acquisition_events(
+        channel=channel, num_time_points=n_frames, time_interval_s=interval_s,
+    )
+    dataset_path = _acquire_with_hooks(save_dir, name, events, hook)
+    return _adaptive_result(dataset_path, log_path)
 
 
 def read_hook_log(ctrl: MicroscopeController, guard: SafetyGuard, log_path: str) -> dict:
@@ -1105,7 +1171,8 @@ TOOL_REGISTRY = {
     "run_multiposition_acquisition": run_multiposition_acquisition,
     "run_tile_acquisition": run_tile_acquisition,
     "run_multiposition_with_autofocus": run_multiposition_with_autofocus,
-    "run_adaptive_acquisition": run_adaptive_acquisition,
+    "run_adaptive_zstack": run_adaptive_zstack,
+    "run_adaptive_timelapse": run_adaptive_timelapse,
     "read_hook_log": read_hook_log,
     "generate_and_save_hook": generate_and_save_hook,
     "read_hook_from_file": read_hook_from_file,
