@@ -209,6 +209,7 @@ def set_device_property(
 ) -> dict:
     guard.check_property(device, property)
     ctrl.core.set_property(device, property, value)
+    ctrl.studio.app().refresh_gui()
     return {"status": f"Set {device}.{property} = {value!r}."}
 
 
