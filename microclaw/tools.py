@@ -1012,6 +1012,24 @@ def list_hooks(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     }
 
 
+def list_mm_plugins(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
+    """List installed MM plugins by role so a human can review/gate them."""
+    try:
+        plugins = ctrl.plugins.list_plugins()
+    except Exception as e:
+        return {"error": f"Could not list MM plugins: {e}"}
+    return {
+        "plugins": plugins,
+        "hint": (
+            "Analyzer plugins run with hook_strategy='mm_plugin_analyzer' "
+            "(allowed unless in plugins.blocked). Autofocus plugins run with "
+            "hook_strategy='autofocus_mm_plugin' and require "
+            "plugins.allow_hardware_motion: true in safety_config.yaml. "
+            "Always confirm the classpath with the user before enabling a plugin hook."
+        ),
+    }
+
+
 def get_hook_documentation(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     from microclaw.hook_docs import HOOK_REFERENCE
     return {"documentation": HOOK_REFERENCE}
@@ -1178,6 +1196,7 @@ TOOL_REGISTRY = {
     "generate_and_save_hook": generate_and_save_hook,
     "read_hook_from_file": read_hook_from_file,
     "list_hooks": list_hooks,
+    "list_mm_plugins": list_mm_plugins,
     "get_hook_documentation": get_hook_documentation,
     "get_smlm_documentation": get_smlm_documentation,
     "check_emu_installed": check_emu_installed,

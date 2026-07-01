@@ -4,7 +4,7 @@ version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
     "anthropic>=0.40.0",
-    "pycromanager>=1.0.0",
+    "pycromanager>=1.0.2",
     "ndstorage>=0.1.0",
     "tifffile>=2024.1.1",
     "numpy>=1.26",

@@ -5,13 +5,100 @@ from pathlib import Path
 from pycromanager import Core, Studio
 
 
+# Micro-Manager plugin access requires the unified SharedPluginClassLoader from
+# micro-manager PR #2401 to be handed to the ZMQ server. That is a Java-side MM
+# build, not a pip dependency, so it can't be version-locked from Python — we
+# probe for it at runtime (PluginAccess._assert_plugin_loader) instead.
+#
+# MANUAL VERIFICATION REQUIRED before relying on plugin hooks: open the merged
+# #2401 commit, confirm the class/method names below, and fill in the SHA + the
+# first MM nightly date that shipped it. Update design/09 if names drift.
+_MM_PLUGIN_LOADER_CLASS = (
+    "org.micromanager.internal.pluginmgmt.SharedPluginClassLoader"
+)
+_MM_PLUGIN_LOADER_SINCE = "20260624"  # TODO: MM nightly that first shipped #2401
+
+
+class PluginAccess:
+    """Resolve and call Micro-Manager plugins over the active backend.
+
+    On the pycro-manager backend this is JavaObject/JavaClass over ZMQ; the
+    classes are only resolvable once micro-manager#2401 lands (unified
+    SharedPluginClassLoader handed to the ZMQ server). On a future jPype backend
+    this becomes a direct in-process JVM lookup with the same surface, so hooks
+    depend on this seam and never import pycromanager directly.
+    """
+
+    def __init__(self, studio, port: int = 4827):
+        self._studio = studio
+        self._port = port
+        self._loader_checked = False
+
+    def _assert_plugin_loader(self) -> None:
+        """Fail fast with a clear message if the MM build predates #2401.
+
+        Without this, a pre-#2401 MM raises a cryptic Java ClassNotFoundException
+        partway through an acquisition instead of a message the user can act on.
+        """
+        if self._loader_checked:
+            return
+        from pycromanager import JavaClass
+        try:
+            JavaClass(_MM_PLUGIN_LOADER_CLASS, port=self._port)
+        except Exception as e:  # only resolves post-#2401
+            raise RuntimeError(
+                "MM plugin access requires a Micro-Manager build with the unified "
+                "plugin classloader (PR #2401, nightly >= "
+                f"{_MM_PLUGIN_LOADER_SINCE}). Update Micro-Manager, or don't use "
+                "plugin hooks."
+            ) from e
+        self._loader_checked = True
+
+    def list_plugins(self) -> dict[str, list[str]]:
+        """Return installed plugins grouped by role (autofocus/processor/menu).
+
+        Reads studio.plugins() (PluginManager) so the list_mm_plugins tool can
+        surface classpaths for a human to review/gate.
+        """
+        pm = self._studio.plugins()
+        out: dict[str, list[str]] = {}
+        for role, getter in (
+            ("autofocus", pm.get_autofocus_plugins),
+            ("processor", pm.get_processor_plugins),
+            ("menu", pm.get_menu_plugins),
+        ):
+            try:
+                out[role] = sorted(str(k) for k in getter().key_set())
+            except Exception:
+                out[role] = []
+        return out
+
+    def get_object(self, classpath: str, args: list | None = None):
+        """Construct an arbitrary plugin object by fully-qualified class name.
+
+        Only reachable post-#2401. Kept here so hooks never import pycromanager.
+        """
+        self._assert_plugin_loader()
+        from pycromanager import JavaObject
+        return JavaObject(classpath, args=args or [], port=self._port)
+
+    def get_autofocus_method(self, plugin_name: str | None = None):
+        """Return the active (or named) MM autofocus plugin."""
+        afm = self._studio.get_autofocus_manager()
+        if plugin_name:
+            afm.set_autofocus_method_by_name(plugin_name)
+        return afm.get_autofocus_method()
+
+
 class MicroscopeController:
     """Thin wrapper around pycro-manager Core and Studio.
     Holds the ZMQ connection; all tool functions go through here."""
 
     def __init__(self, port: int = 4827):
+        self._port = port
         self._core = Core(port=port)
         self._studio = Studio(port=port)
+        self._plugins: PluginAccess | None = None
         # Python-native position store. Use import_from_mm_position_list() to
         # pull in positions the user has marked in MM's GUI.
         self._positions: list[dict] = []
@@ -23,6 +110,13 @@ class MicroscopeController:
     @property
     def studio(self) -> Studio:
         return self._studio
+
+    @property
+    def plugins(self) -> PluginAccess:
+        """Backend seam for Micro-Manager plugin access (see design/09)."""
+        if self._plugins is None:
+            self._plugins = PluginAccess(self._studio, self._port)
+        return self._plugins
 
     def is_connected(self) -> bool:
         try:
