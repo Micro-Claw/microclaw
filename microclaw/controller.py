@@ -10,13 +10,14 @@ from pycromanager import Core, Studio
 # build, not a pip dependency, so it can't be version-locked from Python — we
 # probe for it at runtime (PluginAccess._assert_plugin_loader) instead.
 #
-# MANUAL VERIFICATION REQUIRED before relying on plugin hooks: open the merged
-# #2401 commit, confirm the class/method names below, and fill in the SHA + the
-# first MM nightly date that shipped it. Update design/09 if names drift.
+# Verified against micro-manager PR #2401 ("Studio: load all Micro-Manager
+# plugins on one shared classloader..."), merge commit
+# ad936ced45f6bcc0b55dad7b2f3c1c2436884f6f, merged 2026-06-25. If these names
+# drift, update here + design/09.
 _MM_PLUGIN_LOADER_CLASS = (
-    "org.micromanager.internal.pluginmgmt.SharedPluginClassLoader"
+    "org.micromanager.internal.pluginmanagement.SharedPluginClassLoader"
 )
-_MM_PLUGIN_LOADER_SINCE = "20260624"  # TODO: MM nightly that first shipped #2401
+_MM_PLUGIN_LOADER_SINCE = "20260626"  # first MM nightly after the #2401 merge
 
 
 def _java_map_keys(java_map) -> list[str]:

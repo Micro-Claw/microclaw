@@ -539,9 +539,10 @@ timelapses (see caveat 3).
 
         ```python
         # controller.py / plugin_access.py
-        # Verified against micro-manager commit <SHA> (PR #2401), first in
-        # nightly <YYYYMMDD>. If these names drift, update here + design/09.
-        _MM_PLUGIN_LOADER_SINCE = "<YYYYMMDD>"   # MM nightly that first shipped #2401
+        # Verified against micro-manager merge commit
+        # ad936ced45f6bcc0b55dad7b2f3c1c2436884f6f (PR #2401), merged 2026-06-25.
+        # If these names drift, update here + design/09.
+        _MM_PLUGIN_LOADER_SINCE = "20260626"   # first MM nightly after the #2401 merge
         ```
 
      b. **Probe the capability at runtime** in `PluginAccess`, so a pre-#2401 MM
@@ -553,7 +554,7 @@ timelapses (see caveat 3).
             """Fail fast with a clear message if the MM build predates #2401."""
             try:
                 JavaClass(
-                    "org.micromanager.internal.pluginmgmt.SharedPluginClassLoader",
+                    "org.micromanager.internal.pluginmanagement.SharedPluginClassLoader",
                     port=self._port)          # only resolves post-#2401
             except Exception as e:
                 raise RuntimeError(
