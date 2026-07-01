@@ -63,6 +63,16 @@ channels:
 forbidden_properties:
   - device: Core
     property: Initialize
+
+# Micro-Manager plugin hooks run arbitrary Java that bypasses the checks above,
+# so they have their own two gates.
+plugins:
+  # Fully-qualified classpaths to forbid. Analyzer (read-only) plugins are
+  # allowed by default; list only the ones to block. Normally empty.
+  blocked: []
+  # Hardware-motion plugins (e.g. autofocus) are gated behind this single flag,
+  # not a per-plugin list. Default off; a human flips it to opt in.
+  allow_hardware_motion: false
 ```
 
 ## Testing
@@ -83,17 +93,6 @@ Integration tests require a running MM instance with the Demo configuration:
 MM_RUNNING=1 pytest -m integration
 ```
 
-## Headless mode
-
-For unattended runs of established protocols, use `launch_headless` from `microclaw.config`:
-
-```python
-from microclaw.config import launch_headless
-launch_headless(mm_app_path="/path/to/MM", config_file="MMConfig_demo.cfg")
-```
-
-The tool functions and agent loop are identical in GUI and headless modes.
-
 ## Available tools
 
 | Tool | Description |
@@ -103,6 +102,7 @@ The tool functions and agent loop are identical in GUI and headless modes.
 | `start_live_view` / `stop_live_view` | Live camera preview |
 | `set_exposure` / `get_exposure` | Camera exposure |
 | `get_roi` / `set_roi` / `clear_roi` | Camera region of interest |
+| `get_pixel_size` | Effective pixel size at the sample plane (µm) |
 | `move_stage_xy` / `get_xy_position` | XY stage |
 | `move_stage_z` / `get_z_position` | Z (focus) stage |
 | `set_channel` / `get_available_channels` | Channel presets |
@@ -134,7 +134,11 @@ The tool functions and agent loop are identical in GUI and headless modes.
 | `get_hook_documentation` | Return the pycro-manager hook API reference (called automatically before hook generation) |
 | `generate_and_save_hook` | Validate and save a hook script |
 | `read_hook_from_file` | Read and AST-scan a user-provided hook file |
+| `list_mm_plugins` | List installed MM plugins grouped by role (autofocus, processor, …) for use as hooks |
 | `get_smlm_documentation` | Return the SMLM protocol reference (dSTORM/PALM/PAINT parameters, acquisition protocol, drift correction, post-processing, pitfalls) |
 | `check_emu_installed` | Detect whether EMU and htSMLM are installed by scanning the Micro-Manager plugins directory for their JARs |
 | `get_htsmlm_documentation` | Return the htSMLM/EMU reference (UIProperty inventory, control workflow, panel descriptions) — only called if EMU/htSMLM is detected or user mentions it |
 | `get_emu_configuration` | Read the EMU config file and return the UIProperty→MM device/property mapping for the active htSMLM configuration — only called if EMU is detected or user mentions it |
+| `save_knowledge` | Save a non-standard fact about a sample, device, or strategy to the persistent knowledge base |
+| `get_knowledge` | Retrieve entries from the persistent knowledge base |
+| `delete_knowledge` | Remove a single entry from the persistent knowledge base |
