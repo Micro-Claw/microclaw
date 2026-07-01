@@ -20,27 +20,30 @@ _MM_PLUGIN_LOADER_CLASS = (
 _MM_PLUGIN_LOADER_SINCE = "20260626"  # first MM nightly after the #2401 merge
 
 
-def _java_map_keys(java_map) -> list[str]:
-    """Return the string keys of a Java Map returned over the pycro-manager bridge.
+def _drain_java_iterable(iterable) -> list[str]:
+    """Return the string elements of a Java Iterable returned over the bridge.
 
-    A returned java.util.HashMap comes back as a non-iterable Java proxy, and its
-    keySet() is likewise a Java Set proxy that Python cannot iterate directly
-    unless the bridge was built with iterate=True (it is not, by default). So we
+    Java collections (List, Set, ...) come back as non-iterable Java proxies
+    unless the bridge was built with iterate=True (it is not, by default), so we
     drive the Java iterator ourselves — exactly what pyjavaz does internally —
-    which works regardless of that flag. Both representations are handled: a
-    Python list/dict (already materialised) or a raw Set proxy.
+    which works regardless of that flag. An already-materialised Python
+    list/tuple/set is passed through.
     """
+    if isinstance(iterable, (list, tuple, set)):
+        return [str(x) for x in iterable]
+    iterator = iterable.iterator()
+    has_next = iterator.has_next if hasattr(iterator, "has_next") else iterator.hasNext
+    out: list[str] = []
+    while has_next():
+        out.append(str(iterator.next()))
+    return out
+
+
+def _java_map_keys(java_map) -> list[str]:
+    """Return the string keys of a Java Map returned over the pycro-manager bridge."""
     if isinstance(java_map, dict):
         return [str(k) for k in java_map]
-    key_set = java_map.key_set()
-    if isinstance(key_set, (list, tuple, set)):
-        return [str(k) for k in key_set]
-    iterator = key_set.iterator()
-    has_next = iterator.has_next if hasattr(iterator, "has_next") else iterator.hasNext
-    keys: list[str] = []
-    while has_next():
-        keys.append(str(iterator.next()))
-    return keys
+    return _drain_java_iterable(java_map.key_set())
 
 
 class PluginAccess:
@@ -84,10 +87,17 @@ class PluginAccess:
         Reads studio.plugins() (PluginManager) so the list_mm_plugins tool can
         surface classpaths for a human to review/gate.
         """
-        pm = self._studio.plugins()
         out: dict[str, list[str]] = {}
+        # Autofocus is selected via the AutofocusManager by *method name*
+        # (AutofocusPlugin.getName()), not by the PluginManager's class-name key,
+        # so list the names setAutofocusMethodByName accepts — i.e. exactly what
+        # MMAutofocusPluginHook / get_autofocus_method consume.
+        afm = self._studio.get_autofocus_manager()
+        out["autofocus"] = sorted(_drain_java_iterable(afm.get_all_autofocus_methods()))
+        # Processor/menu plugins are consumed generically by class name via
+        # get_object(classpath), so their class-name keys are the right thing.
+        pm = self._studio.plugins()
         for role, getter in (
-            ("autofocus", pm.get_autofocus_plugins),
             ("processor", pm.get_processor_plugins),
             ("menu", pm.get_menu_plugins),
         ):
@@ -107,9 +117,21 @@ class PluginAccess:
         return JavaObject(classpath, args=args or [], port=self._port)
 
     def get_autofocus_method(self, plugin_name: str | None = None):
-        """Return the active (or named) MM autofocus plugin."""
+        """Return the active (or named) MM autofocus plugin.
+
+        `plugin_name`, when given, must be an autofocus *method name* as reported
+        by list_plugins()['autofocus'] (i.e. AutofocusManager.getAllAutofocusMethods),
+        not a plugin class name — setAutofocusMethodByName rejects class names with
+        a cryptic Java IllegalArgumentException, so validate first.
+        """
         afm = self._studio.get_autofocus_manager()
         if plugin_name:
+            valid = _drain_java_iterable(afm.get_all_autofocus_methods())
+            if plugin_name not in valid:
+                raise ValueError(
+                    f"Unknown autofocus method '{plugin_name}'. Valid names: {valid}. "
+                    "Use a name from list_mm_plugins()['plugins']['autofocus']."
+                )
             afm.set_autofocus_method_by_name(plugin_name)
         return afm.get_autofocus_method()
 

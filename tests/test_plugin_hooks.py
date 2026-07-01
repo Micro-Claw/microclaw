@@ -97,69 +97,110 @@ class TestMMPluginHook:
         assert "plugin_error" in hook.get_summary()[-1]
 
 
+class _JavaIterator:
+    def __init__(self, items):
+        self._buf = list(items)
+
+    def has_next(self):
+        return bool(self._buf)
+
+    def next(self):
+        return self._buf.pop(0)
+
+
+class _JavaCollectionProxy:
+    """Stand-in for a non-iterable Java collection proxy (iterate=False bridge).
+
+    key_set()/iterator() must be driven via the Java iterator, as the real
+    pycro-manager proxy requires.
+    """
+
+    def __init__(self, items):
+        self._items = list(items)
+
+    def key_set(self):
+        return self
+
+    def iterator(self):
+        return _JavaIterator(self._items)
+
+
+def _studio_with_plugins(autofocus_names, processor, menu):
+    """Build a mock Studio whose AF manager and PluginManager behave like MM.
+
+    Autofocus method names come from the AutofocusManager (getAllAutofocusMethods);
+    processor/menu come from the PluginManager keyed by class name.
+    """
+    studio = MagicMock()
+    studio.get_autofocus_manager.return_value.get_all_autofocus_methods.return_value = (
+        list(autofocus_names)
+    )
+    pm = MagicMock()
+    pm.get_processor_plugins.return_value.key_set.return_value = list(processor)
+    pm.get_menu_plugins.return_value.key_set.return_value = list(menu)
+    studio.plugins.return_value = pm
+    return studio, pm
+
+
 class TestPluginAccess:
     def test_list_plugins_groups_by_role(self):
-        pm = MagicMock()
-        pm.get_autofocus_plugins.return_value.key_set.return_value = [
-            "org.mm.OughtaFocus",
-            "org.mm.Autofocus",
-        ]
-        pm.get_processor_plugins.return_value.key_set.return_value = ["org.mm.Proc"]
-        pm.get_menu_plugins.return_value.key_set.return_value = []
-        studio = MagicMock()
-        studio.plugins.return_value = pm
-
-        access = PluginAccess(studio)
-        out = access.list_plugins()
-        assert out["autofocus"] == ["org.mm.Autofocus", "org.mm.OughtaFocus"]  # sorted
+        # Autofocus is listed by method name (from the AutofocusManager), not by
+        # the PluginManager's class-name key — that is what setAutofocusMethodByName
+        # accepts and what the autofocus hook consumes.
+        studio, _ = _studio_with_plugins(
+            autofocus_names=["OughtaFocus", "JAF(H&P)"],
+            processor=["org.mm.Proc"],
+            menu=[],
+        )
+        out = PluginAccess(studio).list_plugins()
+        assert out["autofocus"] == ["JAF(H&P)", "OughtaFocus"]  # sorted method names
         assert out["processor"] == ["org.mm.Proc"]
         assert out["menu"] == []
 
-    def test_list_plugins_iterates_java_set_proxy(self):
-        # Emulate the real bridge (iterate=False): key_set() returns a Java Set
-        # proxy that Python cannot iterate, so _java_map_keys must drive its Java
-        # iterator (has_next/next).
-        class _JavaIterator:
-            def __init__(self, keys):
-                self._buf = list(keys)
-
-            def has_next(self):
-                return bool(self._buf)
-
-            def next(self):
-                return self._buf.pop(0)
-
-        class _JavaSetProxy:
-            def __init__(self, keys):
-                self._keys = list(keys)
-
-            def iterator(self):
-                return _JavaIterator(self._keys)
-
-        pm = MagicMock()
-        pm.get_autofocus_plugins.return_value.key_set.return_value = _JavaSetProxy(
-            ["org.mm.OughtaFocus", "org.mm.Autofocus"]
-        )
-        pm.get_processor_plugins.return_value.key_set.return_value = _JavaSetProxy([])
-        pm.get_menu_plugins.return_value.key_set.return_value = _JavaSetProxy([])
+    def test_list_plugins_iterates_java_collection_proxy(self):
+        # Emulate the real bridge (iterate=False): both the AF-methods List and
+        # the PluginManager Set come back as non-iterable proxies that must be
+        # drained via their Java iterator.
         studio = MagicMock()
+        studio.get_autofocus_manager.return_value.get_all_autofocus_methods.return_value = (
+            _JavaCollectionProxy(["OughtaFocus", "Autofocus"])
+        )
+        pm = MagicMock()
+        pm.get_processor_plugins.return_value = _JavaCollectionProxy([])
+        pm.get_menu_plugins.return_value = _JavaCollectionProxy([])
         studio.plugins.return_value = pm
 
         out = PluginAccess(studio).list_plugins()
-        assert out["autofocus"] == ["org.mm.Autofocus", "org.mm.OughtaFocus"]  # sorted
+        assert out["autofocus"] == ["Autofocus", "OughtaFocus"]  # sorted
         assert out["processor"] == []
 
     def test_list_plugins_propagates_role_failure(self):
         # A real failure must surface (the tool wraps it as an error), not be
         # silently swallowed into an empty list.
-        pm = MagicMock()
-        pm.get_autofocus_plugins.return_value.key_set.return_value = ["a"]
+        studio, pm = _studio_with_plugins(
+            autofocus_names=["OughtaFocus"], processor=[], menu=[]
+        )
         pm.get_processor_plugins.side_effect = RuntimeError("no processors")
-        studio = MagicMock()
-        studio.plugins.return_value = pm
 
         with pytest.raises(RuntimeError):
             PluginAccess(studio).list_plugins()
+
+    def test_get_autofocus_method_rejects_unknown_name(self):
+        # A class-name (or any name not in getAllAutofocusMethods) must raise a
+        # clear ValueError rather than the cryptic Java IllegalArgumentException.
+        studio = MagicMock()
+        studio.get_autofocus_manager.return_value.get_all_autofocus_methods.return_value = [
+            "OughtaFocus",
+        ]
+        with pytest.raises(ValueError, match="Unknown autofocus method"):
+            PluginAccess(studio).get_autofocus_method("org.micromanager.autofocus.Autofocus")
+
+    def test_get_autofocus_method_accepts_valid_name(self):
+        studio = MagicMock()
+        afm = studio.get_autofocus_manager.return_value
+        afm.get_all_autofocus_methods.return_value = ["OughtaFocus"]
+        PluginAccess(studio).get_autofocus_method("OughtaFocus")
+        afm.set_autofocus_method_by_name.assert_called_once_with("OughtaFocus")
 
 
 class TestListMMPluginsTool:
