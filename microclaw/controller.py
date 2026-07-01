@@ -5,13 +5,146 @@ from pathlib import Path
 from pycromanager import Core, Studio
 
 
+# Micro-Manager plugin access requires the unified SharedPluginClassLoader from
+# micro-manager PR #2401 to be handed to the ZMQ server. That is a Java-side MM
+# build, not a pip dependency, so it can't be version-locked from Python — we
+# probe for it at runtime (PluginAccess._assert_plugin_loader) instead.
+#
+# Verified against micro-manager PR #2401 ("Studio: load all Micro-Manager
+# plugins on one shared classloader..."), merge commit
+# ad936ced45f6bcc0b55dad7b2f3c1c2436884f6f, merged 2026-06-25. If these names
+# drift, update here + design/09.
+_MM_PLUGIN_LOADER_CLASS = (
+    "org.micromanager.internal.pluginmanagement.SharedPluginClassLoader"
+)
+_MM_PLUGIN_LOADER_SINCE = "20260626"  # first MM nightly after the #2401 merge
+
+
+def _drain_java_iterable(iterable) -> list[str]:
+    """Return the string elements of a Java Iterable returned over the bridge.
+
+    Java collections (List, Set, ...) come back as non-iterable Java proxies
+    unless the bridge was built with iterate=True (it is not, by default), so we
+    drive the Java iterator ourselves — exactly what pyjavaz does internally —
+    which works regardless of that flag. An already-materialised Python
+    list/tuple/set is passed through.
+    """
+    if isinstance(iterable, (list, tuple, set)):
+        return [str(x) for x in iterable]
+    iterator = iterable.iterator()
+    has_next = iterator.has_next if hasattr(iterator, "has_next") else iterator.hasNext
+    out: list[str] = []
+    while has_next():
+        out.append(str(iterator.next()))
+    return out
+
+
+def _java_map_keys(java_map) -> list[str]:
+    """Return the string keys of a Java Map returned over the pycro-manager bridge."""
+    if isinstance(java_map, dict):
+        return [str(k) for k in java_map]
+    return _drain_java_iterable(java_map.key_set())
+
+
+class PluginAccess:
+    """Resolve and call Micro-Manager plugins over the active backend.
+
+    On the pycro-manager backend this is JavaObject/JavaClass over ZMQ; the
+    classes are only resolvable once micro-manager#2401 lands (unified
+    SharedPluginClassLoader handed to the ZMQ server). On a future jPype backend
+    this becomes a direct in-process JVM lookup with the same surface, so hooks
+    depend on this seam and never import pycromanager directly.
+    """
+
+    def __init__(self, studio, port: int = 4827):
+        self._studio = studio
+        self._port = port
+        self._loader_checked = False
+
+    def _assert_plugin_loader(self) -> None:
+        """Fail fast with a clear message if the MM build predates #2401.
+
+        Without this, a pre-#2401 MM raises a cryptic Java ClassNotFoundException
+        partway through an acquisition instead of a message the user can act on.
+        """
+        if self._loader_checked:
+            return
+        from pycromanager import JavaClass
+        try:
+            JavaClass(_MM_PLUGIN_LOADER_CLASS, port=self._port)
+        except Exception as e:  # only resolves post-#2401
+            raise RuntimeError(
+                "MM plugin access requires a Micro-Manager build with the unified "
+                "plugin classloader (PR #2401, nightly >= "
+                f"{_MM_PLUGIN_LOADER_SINCE}). Update Micro-Manager, or don't use "
+                "plugin hooks."
+            ) from e
+        self._loader_checked = True
+
+    def list_plugins(self) -> dict[str, list[str]]:
+        """Return installed plugins grouped by role (autofocus/processor/menu).
+
+        Reads studio.plugins() (PluginManager) so the list_mm_plugins tool can
+        surface classpaths for a human to review/gate.
+        """
+        out: dict[str, list[str]] = {}
+        # Autofocus is selected via the AutofocusManager by *method name*
+        # (AutofocusPlugin.getName()), not by the PluginManager's class-name key,
+        # so list the names setAutofocusMethodByName accepts — i.e. exactly what
+        # MMAutofocusPluginHook / get_autofocus_method consume.
+        afm = self._studio.get_autofocus_manager()
+        out["autofocus"] = sorted(_drain_java_iterable(afm.get_all_autofocus_methods()))
+        # Processor/menu plugins are consumed generically by class name via
+        # get_object(classpath), so their class-name keys are the right thing.
+        pm = self._studio.plugins()
+        for role, getter in (
+            ("processor", pm.get_processor_plugins),
+            ("menu", pm.get_menu_plugins),
+        ):
+            # Deliberately not swallowing errors here: a genuine failure must
+            # surface as an error (via the list_mm_plugins tool) rather than
+            # masquerade as an empty plugin list.
+            out[role] = sorted(_java_map_keys(getter()))
+        return out
+
+    def get_object(self, classpath: str, args: list | None = None):
+        """Construct an arbitrary plugin object by fully-qualified class name.
+
+        Only reachable post-#2401. Kept here so hooks never import pycromanager.
+        """
+        self._assert_plugin_loader()
+        from pycromanager import JavaObject
+        return JavaObject(classpath, args=args or [], port=self._port)
+
+    def get_autofocus_method(self, plugin_name: str | None = None):
+        """Return the active (or named) MM autofocus plugin.
+
+        `plugin_name`, when given, must be an autofocus *method name* as reported
+        by list_plugins()['autofocus'] (i.e. AutofocusManager.getAllAutofocusMethods),
+        not a plugin class name — setAutofocusMethodByName rejects class names with
+        a cryptic Java IllegalArgumentException, so validate first.
+        """
+        afm = self._studio.get_autofocus_manager()
+        if plugin_name:
+            valid = _drain_java_iterable(afm.get_all_autofocus_methods())
+            if plugin_name not in valid:
+                raise ValueError(
+                    f"Unknown autofocus method '{plugin_name}'. Valid names: {valid}. "
+                    "Use a name from list_mm_plugins()['plugins']['autofocus']."
+                )
+            afm.set_autofocus_method_by_name(plugin_name)
+        return afm.get_autofocus_method()
+
+
 class MicroscopeController:
     """Thin wrapper around pycro-manager Core and Studio.
     Holds the ZMQ connection; all tool functions go through here."""
 
     def __init__(self, port: int = 4827):
+        self._port = port
         self._core = Core(port=port)
         self._studio = Studio(port=port)
+        self._plugins: PluginAccess | None = None
         # Python-native position store. Use import_from_mm_position_list() to
         # pull in positions the user has marked in MM's GUI.
         self._positions: list[dict] = []
@@ -23,6 +156,13 @@ class MicroscopeController:
     @property
     def studio(self) -> Studio:
         return self._studio
+
+    @property
+    def plugins(self) -> PluginAccess:
+        """Backend seam for Micro-Manager plugin access (see design/09)."""
+        if self._plugins is None:
+            self._plugins = PluginAccess(self._studio, self._port)
+        return self._plugins
 
     def is_connected(self) -> bool:
         try:

@@ -598,7 +598,10 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Run a Z-stack acquisition with a hook strategy for adaptive behaviour. "
             "Pre-coded strategies: autofocus_per_position, focus_feedback, "
-            "intensity_adaptive, position_filter. "
+            "intensity_adaptive, position_filter, mm_plugin_analyzer, autofocus_mm_plugin. "
+            "The mm_plugin_analyzer and autofocus_mm_plugin strategies delegate to an "
+            "installed Micro-Manager plugin (see list_mm_plugins); autofocus_mm_plugin "
+            "requires plugins.allow_hardware_motion: true in safety_config.yaml. "
             "Call list_hooks() to see all available strategies including saved hooks. "
             "After the acquisition, call read_hook_log(log_path) to retrieve results."
         ),
@@ -639,8 +642,11 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Run a timelapse acquisition with a hook strategy for adaptive behaviour. "
             "Pre-coded strategies: autofocus_per_position, focus_feedback, "
-            "intensity_adaptive, position_filter. "
+            "intensity_adaptive, position_filter, mm_plugin_analyzer, autofocus_mm_plugin. "
             "focus_feedback corrects Z drift per frame and is well suited to timelapses. "
+            "The mm_plugin_analyzer and autofocus_mm_plugin strategies delegate to an "
+            "installed Micro-Manager plugin (see list_mm_plugins); autofocus_mm_plugin "
+            "requires plugins.allow_hardware_motion: true in safety_config.yaml. "
             "Call list_hooks() to see all available strategies including saved hooks. "
             "After the acquisition, call read_hook_log(log_path) to retrieve results."
         ),
@@ -699,6 +705,20 @@ TOOLS: list[dict[str, Any]] = [
             "List all available hook strategies: pre-coded hooks and previously saved hooks "
             "(with their descriptions and source). Call this before run_adaptive_zstack "
             "or run_adaptive_timelapse to confirm the strategy name."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "list_mm_plugins",
+        "description": (
+            "List installed Micro-Manager plugins grouped by role (autofocus, processor, "
+            "menu) so a human can review classpaths before enabling a plugin-backed hook. "
+            "Analyzer plugins run via hook_strategy='mm_plugin_analyzer' (allowed unless "
+            "listed in plugins.blocked); autofocus plugins run via "
+            "hook_strategy='autofocus_mm_plugin' and require plugins.allow_hardware_motion: "
+            "true in safety_config.yaml. Requires a Micro-Manager build with the unified "
+            "plugin classloader (PR #2401). Always confirm the classpath with the user "
+            "before enabling a plugin hook."
         ),
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },

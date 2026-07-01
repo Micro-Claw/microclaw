@@ -294,3 +294,11 @@ Please write your proposals for the cleanest approach and the generalization
 to a markdown file, generalize-hook-calls.md. Include proposed changes with   
 example code stubs. Include a brief discussion of the benefits and drawbacks  
 of each approach.    
+
+----
+
+Please have a careful look at                                                 
+  https://github.com/micro-manager/micro-manager/pull/2401. Using this change,  
+  can we add the ability to use Micro-Manager plugins as part of hooks in       
+  microclaw? Place your findings and proposals along with code stubs in         
+  design/09-add-micromanager-plugins.md    

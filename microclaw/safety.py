@@ -30,11 +30,29 @@ class ForbiddenProperty:
 
 
 @dataclass
+class PluginConstraints:
+    """Gates for Micro-Manager plugin hooks (see design/09).
+
+    Plugin code is arbitrary Java that bypasses SafetyGuard and the Python AST
+    scanner. Two risk classes, two gates:
+
+      blocked                 read-only analyzer plugins are allowed by default;
+                              list only the fully-qualified classpaths to forbid.
+      allow_hardware_motion   a single global opt-in for plugins that move
+                              hardware (e.g. autofocus). Off by default.
+    """
+
+    blocked: list[str] = field(default_factory=list)
+    allow_hardware_motion: bool = False
+
+
+@dataclass
 class SafetyConstraints:
     stage: StageConstraints = field(default_factory=StageConstraints)
     camera: CameraConstraints = field(default_factory=CameraConstraints)
     allowed_channels: Optional[list[str]] = None  # None means all allowed
     forbidden_properties: list[ForbiddenProperty] = field(default_factory=list)
+    plugins: PluginConstraints = field(default_factory=PluginConstraints)
 
     @classmethod
     def from_yaml(cls, path: str) -> SafetyConstraints:
@@ -44,6 +62,7 @@ class SafetyConstraints:
         stage_cfg = cfg.get("stage", {})
         camera_cfg = cfg.get("camera", {})
         channels_cfg = cfg.get("channels", {})
+        plugins_cfg = cfg.get("plugins", {}) or {}
         forbidden = [
             ForbiddenProperty(**p)
             for p in cfg.get("forbidden_properties", [])
@@ -53,6 +72,10 @@ class SafetyConstraints:
             camera=CameraConstraints(**camera_cfg),
             allowed_channels=channels_cfg.get("allowed"),
             forbidden_properties=forbidden,
+            plugins=PluginConstraints(
+                blocked=plugins_cfg.get("blocked") or [],
+                allow_hardware_motion=bool(plugins_cfg.get("allow_hardware_motion", False)),
+            ),
         )
 
 
@@ -110,3 +133,30 @@ class SafetyGuard:
                 raise SafetyViolation(
                     f"Property '{device}.{prop}' is forbidden by safety config."
                 )
+
+    def check_plugin(self, classpath: str) -> None:
+        """Gate a read-only analyzer plugin: allow by default, deny if blocklisted.
+
+        Enforced at *runtime* (when the plugin object is constructed), because the
+        classpath is just a Python string the AST scanner can't interpret.
+        """
+        if classpath in self._c.plugins.blocked:
+            raise SafetyViolation(
+                f"Plugin '{classpath}' is in safety_config.yaml plugins.blocked."
+            )
+
+    def check_plugin_motion(self, classpath: str) -> None:
+        """Gate a hardware-motion plugin behind the global opt-in flag.
+
+        A blocklist can't protect against a *legitimate* plugin parking a stage
+        somewhere unsafe, so hardware-motion plugins are gated by one global flag
+        rather than a per-plugin allowlist. The blocklist still applies.
+        """
+        self.check_plugin(classpath)  # blocklist still applies
+        if not self._c.plugins.allow_hardware_motion:
+            raise SafetyViolation(
+                f"Plugin '{classpath}' moves hardware; set plugins.allow_hardware_motion: "
+                "true in safety_config.yaml to permit hardware-motion plugin hooks. "
+                "microclaw guards the *result* (see check_z) but does not re-drive the "
+                "axis the plugin controls."
+            )

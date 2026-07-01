@@ -826,6 +826,115 @@ def test_generate_save_and_use_custom_hook(headless_mm, unconstrained_guard, tmp
 
 
 # ---------------------------------------------------------------------------
+# Micro-Manager plugin hooks (design/09)
+# ---------------------------------------------------------------------------
+
+def _require_plugin_loader(headless_mm):
+    """Skip unless the MM build has the #2401 unified plugin classloader.
+
+    The autofocus-manager path technically predates #2401, but plugin hooks are
+    documented as requiring that build, so we gate the live plugin tests on it
+    for consistency (and so they self-skip cleanly on older Micro-Manager).
+    """
+    try:
+        headless_mm.plugins._assert_plugin_loader()
+    except Exception as e:
+        pytest.skip(f"MM build predates PR #2401 (no unified plugin classloader): {e}")
+
+
+def test_list_mm_plugins_returns_roles(headless_mm, unconstrained_guard):
+    # Safe on any MM build: reads studio.plugins() (PluginManager), which does
+    # not depend on the #2401 classloader probe.
+    from microclaw.tools import list_mm_plugins
+    result = list_mm_plugins(headless_mm, unconstrained_guard)
+    assert "error" not in result, result
+    plugins = result["plugins"]
+    for role in ("autofocus", "processor", "menu"):
+        assert role in plugins
+        assert isinstance(plugins[role], list)
+        assert all(isinstance(name, str) for name in plugins[role])  # classpath/name strings
+    assert "hint" in result
+    # Whether any plugins are actually discoverable is environment-dependent
+    # (headless connections and minimal builds legitimately report none), so a
+    # genuinely empty result is a skip, not a failure. The structure/marshalling
+    # is already verified above.
+    all_names = [name for names in plugins.values() for name in names]
+    if not all_names:
+        pytest.skip(
+            "No MM plugins discoverable via studio.plugins() in this instance "
+            "(e.g. headless or a minimal build)."
+        )
+
+
+def test_autofocus_mm_plugin_hook_blocked_without_motion_flag(headless_mm, tmp_path):
+    # The hardware-motion gate is enforced at hook construction, before any
+    # hardware is touched, so this needs neither #2401 nor a working autofocus.
+    from microclaw.safety import SafetyConstraints, SafetyGuard, SafetyViolation
+    from microclaw.tools import run_adaptive_zstack
+
+    default_motion_off = SafetyGuard(SafetyConstraints())  # allow_hardware_motion=False
+    current_z = headless_mm.core.get_position()
+    with pytest.raises(SafetyViolation, match="allow_hardware_motion"):
+        run_adaptive_zstack(
+            headless_mm, default_motion_off,
+            z_start_um=current_z, z_end_um=current_z + 2.0, z_step_um=1.0,
+            save_dir=str(tmp_path), name="af_plugin_blocked",
+            hook_strategy="autofocus_mm_plugin",
+            hook_params={},
+        )
+
+
+def test_autofocus_mm_plugin_hook(headless_mm, tmp_path):
+    _require_plugin_loader(headless_mm)
+    from microclaw.safety import (
+        PluginConstraints,
+        SafetyConstraints,
+        SafetyGuard,
+        StageConstraints,
+    )
+    from microclaw.tools import list_mm_plugins, run_adaptive_zstack
+
+    autofocus_plugins = list_mm_plugins(headless_mm, SafetyGuard(SafetyConstraints()))[
+        "plugins"
+    ]["autofocus"]
+    if not autofocus_plugins:
+        pytest.skip("No MM autofocus plugin installed to delegate to.")
+    plugin_name = autofocus_plugins[0]
+
+    # Hardware-motion plugin: opt in via the flag, and keep Z limits wide enough
+    # that the plugin's chosen focus is in-bounds (the hook guards the result).
+    motion_guard = SafetyGuard(
+        SafetyConstraints(
+            stage=StageConstraints(z_min=-10000, z_max=10000),
+            plugins=PluginConstraints(allow_hardware_motion=True),
+        )
+    )
+
+    log_path = str(tmp_path / "af_plugin_log.json")
+    current_z = headless_mm.core.get_position()
+    try:
+        result = run_adaptive_zstack(
+            headless_mm, motion_guard,
+            z_start_um=current_z, z_end_um=current_z + 2.0, z_step_um=1.0,
+            save_dir=str(tmp_path), name="af_plugin_test",
+            hook_strategy="autofocus_mm_plugin",
+            hook_params={"plugin_name": plugin_name},
+            log_path=log_path,
+        )
+        assert "complete" in result["status"]
+        log = json.loads(Path(log_path).read_text())
+        assert len(log) > 0
+        # Each entry is either a successful focus (best_z_um) or a logged
+        # skip/abort (autofocus key) — the plugin may decline to focus on demo.
+        for entry in log:
+            assert "best_z_um" in entry or "autofocus" in entry
+    finally:
+        # The plugin owns the motion; restore Z so later tests start clean.
+        headless_mm.core.set_position(current_z)
+        headless_mm.core.wait_for_device(headless_mm.core.get_focus_device())
+
+
+# ---------------------------------------------------------------------------
 # execute_tool return type integration
 # ---------------------------------------------------------------------------
 

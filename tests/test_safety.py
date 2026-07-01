@@ -1,5 +1,11 @@
 import pytest
-from microclaw.safety import SafetyConstraints, SafetyGuard, SafetyViolation, StageConstraints
+from microclaw.safety import (
+    PluginConstraints,
+    SafetyConstraints,
+    SafetyGuard,
+    SafetyViolation,
+    StageConstraints,
+)
 
 
 @pytest.fixture
@@ -89,3 +95,57 @@ class TestFromYaml:
         guard.check_channel("DAPI")  # no exception
         with pytest.raises(SafetyViolation):
             guard.check_channel("GFP")
+
+    def test_plugins_loaded(self, tmp_path):
+        cfg = tmp_path / "safety.yaml"
+        cfg.write_text(
+            "plugins:\n"
+            "  blocked:\n"
+            "    - org.example.KnownBadPlugin\n"
+            "  allow_hardware_motion: true\n"
+        )
+        constraints = SafetyConstraints.from_yaml(str(cfg))
+        assert constraints.plugins.blocked == ["org.example.KnownBadPlugin"]
+        assert constraints.plugins.allow_hardware_motion is True
+
+    def test_plugins_default_when_absent(self, tmp_path):
+        cfg = tmp_path / "safety.yaml"
+        cfg.write_text("stage:\n  z_min: 0.0\n")
+        constraints = SafetyConstraints.from_yaml(str(cfg))
+        assert constraints.plugins.blocked == []
+        assert constraints.plugins.allow_hardware_motion is False
+
+
+class TestPluginGates:
+    def test_analyzer_allowed_by_default(self):
+        guard = SafetyGuard(SafetyConstraints())
+        guard.check_plugin("org.lab.QualityScorePlugin")  # no exception
+
+    def test_blocked_analyzer_denied(self):
+        guard = SafetyGuard(
+            SafetyConstraints(plugins=PluginConstraints(blocked=["org.bad.Plugin"]))
+        )
+        with pytest.raises(SafetyViolation, match="blocked"):
+            guard.check_plugin("org.bad.Plugin")
+
+    def test_motion_denied_by_default(self):
+        guard = SafetyGuard(SafetyConstraints())
+        with pytest.raises(SafetyViolation, match="allow_hardware_motion"):
+            guard.check_plugin_motion("autofocus:<active>")
+
+    def test_motion_allowed_when_flag_set(self):
+        guard = SafetyGuard(
+            SafetyConstraints(plugins=PluginConstraints(allow_hardware_motion=True))
+        )
+        guard.check_plugin_motion("autofocus:<active>")  # no exception
+
+    def test_motion_still_respects_blocklist(self):
+        guard = SafetyGuard(
+            SafetyConstraints(
+                plugins=PluginConstraints(
+                    blocked=["org.bad.Focus"], allow_hardware_motion=True
+                )
+            )
+        )
+        with pytest.raises(SafetyViolation, match="blocked"):
+            guard.check_plugin_motion("org.bad.Focus")

@@ -147,4 +147,58 @@ HookBase provides:
   Redirect stage before hardware moves   pre_hardware_hook_fn (modify event["z"] etc.)
   Generate events dynamically at runtime event_generation_hook_fn
   Log metadata after image is saved      image_saved_hook_fn
+
+## Micro-Manager plugin hooks
+
+Two pre-coded strategies delegate hook logic to an installed Micro-Manager
+plugin instead of re-implementing it in Python. Call list_mm_plugins() to see
+installed plugins and their classpaths. These require a Micro-Manager build with
+the unified plugin classloader (PR #2401); on older builds the plugin classes
+are not resolvable over the ZMQ bridge and the hook fails loudly at startup.
+
+MM plugins are arbitrary Java: they bypass SafetyGuard (which only gates
+microclaw's own hardware calls) and the Python AST scanner (which only sees
+Python source). ALWAYS confirm the classpath + method with the user before
+enabling a plugin hook.
+
+### mm_plugin_analyzer  (analyzer — read-only, allowed by default)
+
+Treats the plugin as an ANALYZER: microclaw computes a scalar feature from the
+image (np.mean) in Python, passes only that scalar to the plugin, and uses the
+plugin's returned score for a guarded, Python-side keep/skip decision. The full
+image never crosses the bridge, and the plugin must NOT move hardware here.
+
+  hook_params:
+    classpath      fully-qualified plugin class (e.g. "org.lab.QualityScorePlugin")
+    method         plugin method to call with the scalar feature (default "analyze")
+    reject_below   optional float; discard the image if score < this value
+
+  Safety gate: SafetyGuard.check_plugin — allowed unless the classpath is listed
+  in safety_config.yaml plugins.blocked. Fails open: if the plugin call raises,
+  the image is kept and the error is logged (data is never lost to a plugin bug).
+
+### autofocus_mm_plugin  (hardware motion — off by default)
+
+Drop-in alternative to autofocus_per_position: runs the lab's validated MM
+autofocus plugin (via the autofocus manager) in the post_hardware slot before
+each capture. The PLUGIN owns the Z motion.
+
+  hook_params:
+    plugin_name    optional MM autofocus plugin name; omit to use the active one
+
+  Safety gate: SafetyGuard.check_plugin_motion — requires
+  plugins.allow_hardware_motion: true in safety_config.yaml (blocklist also
+  applies). PASSIVE guard on the result: after the plugin focuses, microclaw
+  reads the new Z and calls check_z; if it is out of bounds the capture is
+  skipped and the acquisition stops (return None). microclaw does NOT re-drive Z
+  — an active correction would fight the plugin's own safety controller.
+
+### The composition rule (one image-processing side per hook)
+
+Per hook, keep the heavy full-image work on ONE side (Python or Java) and let
+only scalars/metadata cross the bridge. If microclaw itself issues the hardware
+move from a plugin's non-image output, SafetyGuard applies normally (guard the
+move as usual) — that differs from autofocus_mm_plugin, where the plugin drives
+the stage and microclaw can only guard passively. Full-image Java processing
+should be an MM processor pipeline, not a hook.
 """

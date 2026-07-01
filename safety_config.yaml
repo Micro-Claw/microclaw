@@ -21,3 +21,14 @@ channels:
 forbidden_properties:
   - device: Core
     property: Initialize
+
+# Micro-Manager plugin hooks (see design/09). Plugin code is arbitrary Java that
+# bypasses the checks above, so it has its own two gates.
+plugins:
+  # Analyzer (read-only) plugins are allowed by default; list only the
+  # fully-qualified classpaths to forbid. Normally empty.
+  blocked: []
+  # Hardware-motion plugins (e.g. autofocus) are gated behind this single flag,
+  # NOT a per-plugin list. Default off; a human flips it to opt in. The AI cannot
+  # edit this file.
+  allow_hardware_motion: false

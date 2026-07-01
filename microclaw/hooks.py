@@ -191,11 +191,94 @@ class PositionFilterHook(HookBase):
         return image, metadata
 
 
+class MMPluginHook(HookBase):
+    """Delegate per-image analysis to an installed Micro-Manager plugin.
+
+    The plugin is treated as an ANALYZER: it receives a scalar/feature derived
+    from the image and returns a value microclaw uses for a guarded, Python-side
+    decision (e.g. keep/skip). The plugin must NOT be relied on to move hardware
+    here — use MMAutofocusPluginHook for that.
+
+    Only a scalar crosses the bridge (np.mean of the image); the full image never
+    leaves Python. See design/09 "Composing plugins in a reusable hook".
+    """
+
+    def __init__(self, ctrl, guard, classpath: str, method: str = "analyze",
+                 reject_below: float | None = None, log_path: str | None = None):
+        super().__init__(log_path)
+        self.ctrl = ctrl
+        self.guard = guard
+        guard.check_plugin(classpath)          # runtime blocklist check
+        self.classpath = classpath
+        self.method = method
+        self.reject_below = reject_below
+        self._plugin = ctrl.plugins.get_object(classpath)
+
+    def image_process_fn(self, image: np.ndarray, metadata: dict, event_queue):
+        feature = float(np.mean(image))        # keep marshalling trivial/scalar
+        try:
+            score = float(getattr(self._plugin, self.method)(feature))
+        except Exception as e:
+            self._log.append({"frame": metadata.get("time"), "plugin_error": str(e)})
+            self._write_log()
+            return image, metadata             # fail open: never lose data on bug
+        keep = self.reject_below is None or score >= self.reject_below
+        self._log.append({"frame": metadata.get("time"),
+                          "plugin": self.classpath, "score": score, "kept": keep})
+        self._write_log()
+        return (image, metadata) if keep else None
+
+
+class MMAutofocusPluginHook(HookBase):
+    """Run an installed MM autofocus plugin before each capture, guarded.
+
+    Drop-in alternative to the pure-Python AutofocusHook: same post_hardware slot,
+    but focusing is delegated to the lab's validated MM autofocus plugin. The
+    plugin owns the motion; microclaw only guards the *result* passively (never
+    re-drives Z, which would fight the plugin's own safety controller).
+    """
+
+    def __init__(self, ctrl, guard, plugin_name: str | None = None,
+                 log_path: str | None = None):
+        super().__init__(log_path)
+        self.ctrl = ctrl
+        self.guard = guard
+        self.plugin_name = plugin_name
+        # Hardware-motion plugin: gate on the global motion flag, not a blocklist.
+        guard.check_plugin_motion(f"autofocus:{plugin_name or '<active>'}")
+        self._af = ctrl.plugins.get_autofocus_method(plugin_name)
+
+    def post_hardware_hook_fn(self, event: dict):
+        try:
+            new_z = float(self._af.full_focus())     # plugin owns the motion
+        except Exception as e:
+            self._log.append({"axes": event.get("axes", {}),
+                              "autofocus": "skipped", "reason": str(e)})
+            self._write_log()
+            return event
+        # PASSIVE guard: assert on the result; if unsafe, skip capture and stop —
+        # do NOT re-drive Z (that would fight the plugin's own safety controller).
+        try:
+            self.guard.check_z(new_z)
+        except Exception as e:
+            self._log.append({"axes": event.get("axes", {}),
+                              "autofocus": "unsafe_abort", "unsafe_z": new_z,
+                              "reason": str(e)})
+            self._write_log()
+            return None                              # skip this capture; signal stop
+        self._log.append({"axes": event.get("axes", {}), "best_z_um": round(new_z, 3),
+                          "plugin": self.plugin_name})
+        self._write_log()
+        return event
+
+
 PRECODED_HOOK_REGISTRY: dict[str, type] = {
     "autofocus_per_position": AutofocusHook,
     "focus_feedback": FocusFeedbackHook,
     "intensity_adaptive": IntensityAdaptiveHook,
     "position_filter": PositionFilterHook,
+    "mm_plugin_analyzer": MMPluginHook,
+    "autofocus_mm_plugin": MMAutofocusPluginHook,
 }
 
 # To add a new analysis plugin, define a class that inherits from HookBase,

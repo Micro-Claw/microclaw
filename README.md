@@ -2,6 +2,9 @@
 
 An AI agent for [Micro-Manager](https://micro-manager.org) fluorescence microscopy control. Describe your acquisition protocol in plain language; Microclaw translates it into Micro-Manager tool calls while the GUI responds in real time.
 
+> [!CAUTION]
+> The hardware safety features are not comprehensive. Always be mindful of what your microscope is doing. Use at your own risk.
+
 ## Architecture
 
 ```
@@ -17,7 +20,7 @@ User (natural language) → AgentLoop (Anthropic API) → ToolRegistry → Safet
 ### Prerequisites
 
 1. Install [Micro-Manager 2.0](https://micro-manager.org/Download_Micro-Manager_Latest_Release).
-2. Enable the ZMQ server: **Tools → Options → Run ZMQ server on port 4827**.
+2. Enable the ZMQ server: **Tools → Options → Run pycro-manager server on port 4827**.
 3. Set your `ANTHROPIC_API_KEY` environment variable.
 
 ### Install
@@ -30,6 +33,16 @@ pip install -e ".[test]"
 
 ```bash
 microclaw --safety-config safety_config.yaml
+```
+
+## Set up a runnable .bat with the environment variables
+
+Create a `.bat` file containing the following lines, updated to your installation path and API key.
+
+```
+set ANTHROPIC_API_KEY=your-key-here
+cd C:\path\to\microclaw
+C:\path\to\miniconda3\Scripts\activate.bat microclaw && microclaw --safety-config safety_config.yaml
 ```
 
 ## Safety configuration
