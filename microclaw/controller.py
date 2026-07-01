@@ -19,6 +19,29 @@ _MM_PLUGIN_LOADER_CLASS = (
 _MM_PLUGIN_LOADER_SINCE = "20260624"  # TODO: MM nightly that first shipped #2401
 
 
+def _java_map_keys(java_map) -> list[str]:
+    """Return the string keys of a Java Map returned over the pycro-manager bridge.
+
+    A returned java.util.HashMap comes back as a non-iterable Java proxy, and its
+    keySet() is likewise a Java Set proxy that Python cannot iterate directly
+    unless the bridge was built with iterate=True (it is not, by default). So we
+    drive the Java iterator ourselves — exactly what pyjavaz does internally —
+    which works regardless of that flag. Both representations are handled: a
+    Python list/dict (already materialised) or a raw Set proxy.
+    """
+    if isinstance(java_map, dict):
+        return [str(k) for k in java_map]
+    key_set = java_map.key_set()
+    if isinstance(key_set, (list, tuple, set)):
+        return [str(k) for k in key_set]
+    iterator = key_set.iterator()
+    has_next = iterator.has_next if hasattr(iterator, "has_next") else iterator.hasNext
+    keys: list[str] = []
+    while has_next():
+        keys.append(str(iterator.next()))
+    return keys
+
+
 class PluginAccess:
     """Resolve and call Micro-Manager plugins over the active backend.
 
@@ -67,10 +90,10 @@ class PluginAccess:
             ("processor", pm.get_processor_plugins),
             ("menu", pm.get_menu_plugins),
         ):
-            try:
-                out[role] = sorted(str(k) for k in getter().key_set())
-            except Exception:
-                out[role] = []
+            # Deliberately not swallowing errors here: a genuine failure must
+            # surface as an error (via the list_mm_plugins tool) rather than
+            # masquerade as an empty plugin list.
+            out[role] = sorted(_java_map_keys(getter()))
         return out
 
     def get_object(self, classpath: str, args: list | None = None):

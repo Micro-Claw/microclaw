@@ -20,7 +20,7 @@ User (natural language) → AgentLoop (Anthropic API) → ToolRegistry → Safet
 ### Prerequisites
 
 1. Install [Micro-Manager 2.0](https://micro-manager.org/Download_Micro-Manager_Latest_Release).
-2. Enable the ZMQ server: **Tools → Options → Run ZMQ server on port 4827**.
+2. Enable the ZMQ server: **Tools → Options → Run pycro-manager server on port 4827**.
 3. Set your `ANTHROPIC_API_KEY` environment variable.
 
 ### Install

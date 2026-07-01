@@ -115,18 +115,51 @@ class TestPluginAccess:
         assert out["processor"] == ["org.mm.Proc"]
         assert out["menu"] == []
 
-    def test_list_plugins_tolerates_role_failure(self):
+    def test_list_plugins_iterates_java_set_proxy(self):
+        # Emulate the real bridge (iterate=False): key_set() returns a Java Set
+        # proxy that Python cannot iterate, so _java_map_keys must drive its Java
+        # iterator (has_next/next).
+        class _JavaIterator:
+            def __init__(self, keys):
+                self._buf = list(keys)
+
+            def has_next(self):
+                return bool(self._buf)
+
+            def next(self):
+                return self._buf.pop(0)
+
+        class _JavaSetProxy:
+            def __init__(self, keys):
+                self._keys = list(keys)
+
+            def iterator(self):
+                return _JavaIterator(self._keys)
+
         pm = MagicMock()
-        pm.get_autofocus_plugins.return_value.key_set.return_value = ["a"]
-        pm.get_processor_plugins.side_effect = RuntimeError("no processors")
-        pm.get_menu_plugins.return_value.key_set.return_value = ["m"]
+        pm.get_autofocus_plugins.return_value.key_set.return_value = _JavaSetProxy(
+            ["org.mm.OughtaFocus", "org.mm.Autofocus"]
+        )
+        pm.get_processor_plugins.return_value.key_set.return_value = _JavaSetProxy([])
+        pm.get_menu_plugins.return_value.key_set.return_value = _JavaSetProxy([])
         studio = MagicMock()
         studio.plugins.return_value = pm
 
         out = PluginAccess(studio).list_plugins()
-        assert out["autofocus"] == ["a"]
-        assert out["processor"] == []  # failure degrades to empty, not raise
-        assert out["menu"] == ["m"]
+        assert out["autofocus"] == ["org.mm.Autofocus", "org.mm.OughtaFocus"]  # sorted
+        assert out["processor"] == []
+
+    def test_list_plugins_propagates_role_failure(self):
+        # A real failure must surface (the tool wraps it as an error), not be
+        # silently swallowed into an empty list.
+        pm = MagicMock()
+        pm.get_autofocus_plugins.return_value.key_set.return_value = ["a"]
+        pm.get_processor_plugins.side_effect = RuntimeError("no processors")
+        studio = MagicMock()
+        studio.plugins.return_value = pm
+
+        with pytest.raises(RuntimeError):
+            PluginAccess(studio).list_plugins()
 
 
 class TestListMMPluginsTool:
