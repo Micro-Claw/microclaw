@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 
 from microclaw.image_analysis import laplacian_variance, snap_to_numpy
+from microclaw.safety import SafetyViolation
 
 
 class HookBase:
@@ -103,20 +104,34 @@ class FocusFeedbackHook(HookBase):
 
         if metric < self.reference_metric * self.threshold:
             focus_device = self.ctrl.core.get_focus_device()
+            jogs, corrected, outcome, reason = 0, False, "no_improvement", None
             for _ in range(self.max_jogs):
                 current_z = self.ctrl.core.get_position()
                 try:
                     self.guard.check_z(current_z + self.z_step)
                     self.ctrl.core.set_position(current_z + self.z_step)
                     self.ctrl.core.wait_for_device(focus_device)
-                    new_image = snap_to_numpy(self.ctrl)
-                    new_metric = laplacian_variance(new_image)
+                    jogs += 1
+                    new_metric = laplacian_variance(snap_to_numpy(self.ctrl))
                     if new_metric >= self.reference_metric * self.threshold:
                         self.reference_metric = new_metric
+                        corrected, outcome = True, "recovered"
                         break
-                except Exception:
+                except SafetyViolation as e:
+                    # A guard rejection means the correction hit a limit — it is
+                    # NOT "corrected". Record it; the operator's only signal is
+                    # this log line (a swallowed violation never reaches
+                    # execute_tool's handler from an acquisition thread).
+                    outcome, reason = "blocked_by_guard", str(e)
                     break
-            self._log.append({"frame": metadata.get("time"), "focus_correction": True})
+                except Exception as e:
+                    outcome, reason = "hardware_error", str(e)
+                    break
+            entry = {"frame": metadata.get("time"), "focus_correction": corrected,
+                     "jogs": jogs, "outcome": outcome}
+            if reason:
+                entry["reason"] = reason
+            self._log.append(entry)      # exactly one entry per triggering frame
             self._write_log()
         return image, metadata
 
@@ -155,9 +170,19 @@ class IntensityAdaptiveHook(HookBase):
                 self._log.append(
                     {"frame": metadata.get("time"), "new_exposure_ms": round(new_exp, 1)}
                 )
-                self._write_log()
-            except Exception:
-                pass
+            except SafetyViolation as e:
+                # Guard rejection: expected, but never silent — this log line is
+                # the operator's only signal from an acquisition thread.
+                self._log.append(
+                    {"frame": metadata.get("time"), "exposure_change": "blocked",
+                     "reason": str(e)}
+                )
+            except Exception as e:
+                self._log.append(
+                    {"frame": metadata.get("time"), "exposure_change": "error",
+                     "reason": str(e)}
+                )
+            self._write_log()
         return image, metadata
 
 
