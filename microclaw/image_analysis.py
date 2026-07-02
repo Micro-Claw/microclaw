@@ -38,8 +38,15 @@ def make_thumbnail(
     percentile_low: float = 2.0,
     percentile_high: float = 99.8,
 ) -> str:
-    """Percentile-normalised, resized PNG thumbnail, returned as base64."""
+    """Percentile-normalised, resized PNG thumbnail, returned as base64.
+
+    A multichannel (H, W, C) image is reduced to luminance (channel mean) so the
+    grayscale thumbnail path works regardless of camera type; the numerical
+    metrics still see the full-resolution colour array upstream.
+    """
     img = image.astype(np.float32)
+    if img.ndim == 3:
+        img = img.mean(axis=-1)
     p_lo, p_hi = np.percentile(img, percentile_low), np.percentile(img, percentile_high)
     if p_hi > p_lo:
         img = (img - p_lo) / (p_hi - p_lo)
@@ -52,8 +59,26 @@ def make_thumbnail(
 
 
 def snap_to_numpy(ctrl) -> np.ndarray:
-    """Snap and return a NumPy array via pycro-manager's tagged image API."""
+    """Snap and return a NumPy array via pycro-manager's tagged image API.
+
+    Derives the dtype from the camera's bytes-per-pixel and component count
+    rather than assuming 16-bit mono. Component count is decisive: an RGB32
+    frame is 4×uint8 (BGRA), not 1×uint32, so multichannel frames return an
+    (H, W, C) array of the per-component dtype.
+    """
     ctrl.core.snap_image()
     tagged = ctrl.core.get_tagged_image()
-    w, h = tagged.tags["Width"], tagged.tags["Height"]
-    return np.frombuffer(tagged.pix, dtype=np.uint16).reshape(h, w)
+    w, h = int(tagged.tags["Width"]), int(tagged.tags["Height"])
+    bpp = int(ctrl.core.get_bytes_per_pixel())
+    n_comp = int(ctrl.core.get_number_of_components())
+    if n_comp > 1:                                   # e.g. RGB32 = 4 × uint8
+        comp_dtype = {1: np.uint8, 2: np.uint16}.get(bpp // n_comp)
+        if comp_dtype is None:
+            raise ValueError(
+                f"Unsupported bytes-per-component: {bpp}/{n_comp}"
+            )
+        return np.frombuffer(tagged.pix, dtype=comp_dtype).reshape(h, w, n_comp)
+    dtype = {1: np.uint8, 2: np.uint16, 4: np.uint32}.get(bpp)
+    if dtype is None:
+        raise ValueError(f"Unsupported bytes-per-pixel: {bpp}")
+    return np.frombuffer(tagged.pix, dtype=dtype).reshape(h, w)
