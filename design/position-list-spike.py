@@ -91,6 +91,21 @@ def proxy_methods(obj) -> list[str]:
     return sorted(m for m in dir(obj) if not m.startswith("_"))
 
 
+def read_field(obj, names: list[str]):
+    """Return (value, name) for the first attribute in `names` that reads without
+    raising. dir() over the bridge lists RAW Java field names (e.g. `numAxes`),
+    but attribute access may honour a translated spelling (`num_axes`); the only
+    reliable test is to actually read it. Returns (None, None) if none work."""
+    for name in names:
+        try:
+            val = getattr(obj, name)
+            _ = int(val)          # force the bridge round-trip; a proxy stub won't cast
+            return val, name
+        except Exception:
+            continue
+    return None, None
+
+
 def find_factory(sp_cls, base: str, candidates: list[str]):
     """Return (name, callable) for the first resolvable factory on sp_cls.
 
@@ -178,17 +193,21 @@ def main() -> None:
             raise SkipSpike("prerequisite check 1/2 did not pass")
         sp_cls = state["sp_cls"]
         create2d = getattr(sp_cls, state["name2d"])
-        sp = create2d(xy_stage, 0.0, 0.0)
-        methods = proxy_methods(sp)
-        # Confirm the READ-path fields the controller relies on are present.
-        for field in ("num_axes", "x", "y"):
-            if field not in methods:
-                raise RuntimeError(
-                    f"StagePosition lacks {field!r} that _read_mm_position_list "
-                    f"uses; surface was {methods}")
-        state["msp"].add(sp)
-        return (f"create2D({xy_stage!r}, 0, 0) OK; "
-                f"num_axes={int(sp.num_axes)}, x={float(sp.x)}, y={float(sp.y)}")
+        sp = create2d(xy_stage, 1.0, 2.0)     # non-zero so the read-back is unambiguous
+        # The bridge lists the raw Java field as `numAxes` in dir(), but the
+        # controller reads it as `sp.num_axes` (controller.py:185). Test the
+        # controller's spelling directly, then fall back, and report which the
+        # bridge actually honours — a mismatch is a latent read-path bug.
+        n_axes, spelling = read_field(sp, ["num_axes", "numAxes"])
+        if n_axes is None:
+            raise RuntimeError(f"cannot read axis count; sp surface={proxy_methods(sp)}")
+        state["num_axes_spelling"] = spelling
+        state["msp"].add(sp)                  # <-- must run so check 4 has coordinates
+        note = "" if spelling == "num_axes" else (
+            f"\n         WARNING: controller.py uses sp.num_axes but the bridge only "
+            f"honours {spelling!r} here — verify _read_mm_position_list.")
+        return (f"create2D({xy_stage!r}, 1, 2) OK and added to MSP; "
+                f"axes={int(n_axes)} via {spelling!r}, x={float(sp.x)}, y={float(sp.y)}{note}")
 
     # 4. Round-trip: add + set_position_list + re-read -----------------------
     @check("4. round-trip: set_position_list then re-read the marked entry")
@@ -205,6 +224,7 @@ def main() -> None:
             raise RuntimeError(f"count did not increment: before={before} after={after}")
 
         # Locate our entry and read it via the num_axes/x/y path.
+        spelling = state.get("num_axes_spelling", "num_axes")
         found = None
         for i in range(after):
             msp = fresh.get_position(i)
@@ -212,14 +232,23 @@ def main() -> None:
                 entry: dict = {"name": SPIKE_LABEL}
                 for j in range(int(msp.size())):
                     sp = msp.get(j)
-                    if int(sp.num_axes) == 2:
+                    n_axes, _ = read_field(sp, [spelling, "num_axes", "numAxes"])
+                    if int(n_axes or 0) == 2:
                         entry["x_um"] = round(float(sp.x), 3)
                         entry["y_um"] = round(float(sp.y), 3)
                 found = entry
                 break
         if found is None:
             raise RuntimeError("entry not found on re-read despite count increment")
-        return f"count {before} -> {after}; read back {found}"
+        # Count alone isn't enough: an empty MSP would also bump the count. The
+        # coordinate round-trip is the real proof the StagePosition attached.
+        if "x_um" not in found:
+            raise RuntimeError(
+                f"entry present but has no XY coordinates on read-back: {found} — the "
+                f"StagePosition did not attach to the MSP (count round-trip only).")
+        if (found["x_um"], found["y_um"]) != (1.0, 2.0):
+            raise RuntimeError(f"coordinates did not round-trip: {found} (expected 1.0, 2.0)")
+        return f"count {before} -> {after}; coordinates round-tripped: {found}"
 
     # 5. GUI repaint — MANUAL observation ------------------------------------
     record(

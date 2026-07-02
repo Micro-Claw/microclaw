@@ -27,6 +27,7 @@ Report the printed PASS/FAIL/INFO summary back for the design doc.
 from __future__ import annotations
 
 import argparse
+import shutil
 import tempfile
 import threading
 import traceback
@@ -127,20 +128,28 @@ def main() -> None:
         return image, metadata
 
     # 2. Run a 1-event acquisition with the probing hook ---------------------
+    #    Use mkdtemp (not `with TemporaryDirectory`) and clean up separately:
+    #    on Windows MM/NDTiff keeps the .tif open briefly after the acquisition
+    #    exits, so an eager rmtree raises PermissionError [WinError 32] and would
+    #    mask the hook result we actually care about. The temp files are the
+    #    spike's own throwaway output; a cleanup failure is not a finding.
     print("\n--- 2. run 1-event acquisition; hook calls core from its thread ---",
           flush=True)
+    tmp = tempfile.mkdtemp(prefix="microclaw_threadspike_")
     try:
-        with tempfile.TemporaryDirectory() as tmp:
-            with Acquisition(directory=tmp, name="microclaw_threadspike",
-                             show_display=False,
-                             image_process_fn=image_process_fn) as acq:
-                acq.acquire(multi_d_acquisition_events(num_time_points=1))
+        with Acquisition(directory=tmp, name="microclaw_threadspike",
+                         show_display=False,
+                         image_process_fn=image_process_fn) as acq:
+            acq.acquire(multi_d_acquisition_events(num_time_points=1))
         # Acquisition context exit waits for the event to be processed.
     except Exception as exc:
         record("FAIL", "2. acquisition ran", f"{type(exc).__name__}: {exc}")
         traceback.print_exc()
         summarize()
         return
+    finally:
+        # Best-effort; the NDTiff handle may still be held on Windows.
+        shutil.rmtree(tmp, ignore_errors=True)
 
     if not result:
         record("FAIL", "2. hook fired",

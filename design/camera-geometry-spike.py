@@ -102,6 +102,11 @@ def main() -> None:
         summarize()
         return
 
+    # Shared state populated by check 2 and read by later checks. Declared BEFORE
+    # the checks: @check runs each function immediately at decoration time, so the
+    # closure must be able to see `state` already bound.
+    state: dict = {}
+
     # 1. get_camera_device exposed over the bridge (issue 1 relies on this) ---
     @check("1. get_camera_device() exposed over the bridge")
     def _c1():
@@ -121,8 +126,6 @@ def main() -> None:
         state.update(w=w, h=h, bpp=bpp, n_comp=n_comp, n_bytes=n_bytes, pix=tagged.pix)
         return (f"w={w} h={h} bytes_per_pixel={bpp} n_components={n_comp} "
                 f"pix_bytes={n_bytes}")
-
-    state: dict = {}
 
     # 3. pix length == w*h*bpp -----------------------------------------------
     @check("3. pix buffer length == w*h*bytes_per_pixel")
