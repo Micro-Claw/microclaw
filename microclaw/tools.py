@@ -536,7 +536,7 @@ def mark_position(
     name: str,
     include_z: bool = True,
 ) -> dict:
-    """Record the current stage position in MM's native position list."""
+    """Record the current stage position in microclaw's list and MM's GUI list."""
     x = round(ctrl.core.get_x_position(), 3)
     y = round(ctrl.core.get_y_position(), 3)
     z = round(ctrl.core.get_position(), 3) if include_z else None
@@ -545,7 +545,7 @@ def mark_position(
         guard.check_z(z)
     ctrl.add_position(name, x, y, z)
     return {
-        "status": f"Position '{name}' saved to MM position list.",
+        "status": f"Position '{name}' marked (visible in MM's Position List Manager).",
         "x_um": x,
         "y_um": y,
         **({"z_um": z} if z is not None else {}),
@@ -584,13 +584,13 @@ def clear_position_list(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
 
 
 def save_position_list(ctrl: MicroscopeController, guard: SafetyGuard, path: str) -> dict:
-    """Save MM's position list to a .pos file."""
+    """Save the position list to a microclaw JSON file (not MM's native .pos)."""
     ctrl.save_position_list(path)
     return {"status": f"Position list saved to {path}."}
 
 
 def load_position_list(ctrl: MicroscopeController, guard: SafetyGuard, path: str) -> dict:
-    """Load a .pos file into MM's native position list."""
+    """Load a microclaw JSON position file (as written by save_position_list)."""
     ctrl.load_position_list(path)
     positions = ctrl.get_positions()
     return {"status": f"Loaded {len(positions)} positions from {path}.", "count": len(positions)}

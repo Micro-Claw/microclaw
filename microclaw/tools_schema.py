@@ -362,9 +362,10 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "mark_position",
         "description": (
-            "Save the current stage position to MM's native position list. "
-            "The position is immediately visible in the MM GUI's XY Stage Control window. "
-            "Call this after the biologist has navigated to a site of interest."
+            "Mark the current stage position. It is stored in microclaw's list and "
+            "mirrored into MM's PositionList, so it appears immediately in the MM "
+            "GUI's Position List Manager. Call this after the biologist has "
+            "navigated to a site of interest."
         ),
         "input_schema": {
             "type": "object",
@@ -419,11 +420,14 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "save_position_list",
-        "description": "Save MM's position list to a .pos file for use in future sessions.",
+        "description": (
+            "Save the position list to a microclaw JSON file for use in future "
+            "sessions. This is microclaw's own format, not MM's native .pos file."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "Output .pos file path."}
+                "path": {"type": "string", "description": "Output JSON file path."}
             },
             "required": ["path"],
         },
