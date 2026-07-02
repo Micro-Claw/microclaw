@@ -23,6 +23,8 @@ def make_ctrl_with_focus_at(best_z: float, width: int = 64):
         return tagged
 
     core.get_tagged_image.side_effect = get_tagged_image
+    core.get_bytes_per_pixel.return_value = 2      # 16-bit mono simulated frames
+    core.get_number_of_components.return_value = 1
     core.snap_image = MagicMock()
     core.wait_for_image_synced = MagicMock()
     core.wait_for_device = MagicMock()
