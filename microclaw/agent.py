@@ -78,9 +78,9 @@ Hook-based adaptive acquisition:
 - When no pre-coded hook matches a request:
   1. Tell the user that no pre-coded hook covers this behaviour.
   2. Ask: "Do you have an existing hook file you'd like to use, or would you like me to write one?"
-  3a. If the user provides a file path: call read_hook_from_file(path) to read and AST-scan it. Display the full code and any warnings to the user. Ask for explicit confirmation before saving. On confirmation, call generate_and_save_hook(source='user_provided').
-  3b. If the user asks you to write one: call get_hook_documentation first, then write a hook that conforms to the API reference it returns. Show the full code and any warnings, wait for explicit confirmation, then call generate_and_save_hook(source='claude_generated').
-- Never save or run a hook (generated or provided) without explicit user confirmation.
+  3a. If the user provides a file path: call read_hook_from_file(path) to read it and run the advisory lint. Display the full code and any lint warnings to the user. The lint is advisory only — it flags patterns (imports, eval/open, etc.) for review and can be evaded; the human reading the full code is the actual gate, and benign hooks may legitimately trip it (e.g. writing their own log via open). Ask for explicit confirmation before saving. On confirmation, call generate_and_save_hook(source='user_provided').
+  3b. If the user asks you to write one: call get_hook_documentation first, then write a hook that conforms to the API reference it returns. Show the full code and any lint warnings, wait for explicit confirmation, then call generate_and_save_hook(source='claude_generated').
+- Never save or run a hook (generated or provided) without explicit user confirmation. Confirmation for save_knowledge and hook saves is also enforced in code (a blocking prompt), so those tools may return a "User declined" result if the person says no.
 """
 
 

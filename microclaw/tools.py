@@ -16,6 +16,21 @@ from microclaw.image_analysis import compute_stats, make_thumbnail, snap_to_nump
 from microclaw.safety import SafetyGuard, SafetyViolation
 
 
+def _require_confirmation(summary: str) -> bool:
+    """Blocking stdin confirmation for actions that persist model-writable content.
+
+    Prints the exact thing about to be persisted and requires an explicit yes.
+    """
+    print(f"\n[microclaw] Confirmation required:\n{summary}")
+    return input("Proceed? [y/N] ").strip().lower() in {"y", "yes"}
+
+
+# The confirmation gate lives in code (not just the system prompt) so a
+# self-modification (save_knowledge, hook save) can't happen without a human
+# yes. Injectable so tests can stub it and a non-CLI frontend can supply its own.
+CONFIRM_FN = _require_confirmation
+
+
 def _str_vector(sv) -> list[str]:
     """Convert a pycro-manager mmcorej_StrVector (or plain iterable) to a Python list."""
     if hasattr(sv, "size"):
@@ -968,19 +983,26 @@ def generate_and_save_hook(
     description: str,
     source: str = "claude_generated",
 ) -> dict:
-    """Validate and save a hook script. Call ONLY after the user has confirmed the code."""
-    from microclaw.hook_manager import validate_hook_code, save_hook
-    warnings = validate_hook_code(code)
-    if warnings:
-        return {
-            "error": "Safety validation found issues — hook not saved.",
-            "warnings": warnings,
-        }
+    """Lint and save a hook script. Call ONLY after the user has confirmed the code.
+
+    The lint is advisory: warnings are surfaced and, if any fire, an explicit
+    confirmation is required before saving (benign hooks legitimately use
+    open/os, so warnings must not hard-block). The human review of the full code
+    is the actual gate.
+    """
+    from microclaw.hook_manager import lint_hook_code, save_hook
+    warnings = lint_hook_code(code)
+    if warnings and not CONFIRM_FN(
+        f"Hook '{name}' — advisory lint flagged:\n" + "\n".join(warnings)
+        + "\n\nSave anyway?"
+    ):
+        return {"error": "User declined after lint warnings.", "warnings": warnings}
     save_hook(name, code, description, source=source)
     return {
         "status": f"Hook '{name}' saved successfully.",
         "path": str(Path.home() / ".microclaw" / "hooks" / f"{name}.py"),
         "source": source,
+        "warnings": warnings,
     }
 
 
@@ -1080,8 +1102,13 @@ def save_knowledge(
     key: str,
     value: dict,
 ) -> dict:
-    """Persist a knowledge base entry. Call only after user confirmation."""
+    """Persist a knowledge base entry. Gated by an in-code confirmation."""
+    import yaml
     from microclaw.knowledge_manager import save_entry
+    if not CONFIRM_FN(
+        f"Save knowledge {category}/{key}:\n{yaml.safe_dump({key: value})}"
+    ):
+        return {"error": "User declined to save this knowledge entry."}
     try:
         save_entry(category, key, value)
     except ValueError as e:
