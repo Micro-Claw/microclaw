@@ -1,0 +1,47 @@
+"""Cross-check the tool JSON schemas against the actual function signatures.
+
+Catches parameter drift: a schema advertising a parameter the function doesn't
+accept, or a required function parameter missing from the schema.
+"""
+import inspect
+
+import pytest
+
+from microclaw.tools import TOOL_REGISTRY
+from microclaw.tools_schema import TOOLS
+
+_SCHEMA_BY_NAME = {t["name"]: t for t in TOOLS}
+_INJECTED = {"ctrl", "guard"}  # supplied by execute_tool, never in the schema
+
+
+def test_registry_and_schema_cover_the_same_tools():
+    assert set(TOOL_REGISTRY) == set(_SCHEMA_BY_NAME)
+
+
+@pytest.mark.parametrize("name", sorted(TOOL_REGISTRY))
+def test_schema_matches_signature(name):
+    fn = TOOL_REGISTRY[name]
+    schema = _SCHEMA_BY_NAME[name]
+    params = {
+        p.name: p
+        for p in inspect.signature(fn).parameters.values()
+        if p.name not in _INJECTED
+        and p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY)
+    }
+    props = set(schema["input_schema"].get("properties", {}))
+    required = set(schema["input_schema"].get("required", []))
+
+    # No phantom schema properties — every advertised param is real.
+    assert props <= set(params), (
+        f"{name}: schema advertises params the function lacks: {props - set(params)}"
+    )
+    # Every function parameter with no default is a mandatory input; it must be
+    # in the schema so the model knows to supply it.
+    mandatory = {n for n, p in params.items() if p.default is inspect.Parameter.empty}
+    assert mandatory <= props, (
+        f"{name}: required params missing from schema: {mandatory - props}"
+    )
+    # schema 'required' must reference real properties.
+    assert required <= props, (
+        f"{name}: 'required' lists non-properties: {required - props}"
+    )

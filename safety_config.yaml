@@ -40,6 +40,12 @@ forbidden_properties:
 #   - device: DCam
 #     property: Binning
 
+# Filesystem sandbox for file-touching tools (read_hook_from_file, read_hook_log,
+# save_position_list, export_dataset_as_tiff). Unset = unrestricted (unchanged
+# behaviour). Set it to confine those tools' reads/writes to one directory;
+# `..` and symlink escapes are rejected.
+# workspace_dir: /data/microclaw
+
 # Micro-Manager plugin hooks (see design/09). Plugin code is arbitrary Java that
 # bypasses the checks above, so it has its own two gates.
 plugins:

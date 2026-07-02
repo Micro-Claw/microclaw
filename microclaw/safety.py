@@ -1,6 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
+import os
 import yaml
 
 
@@ -57,6 +58,9 @@ class SafetyConstraints:
     # is the only mode in which raw property writes have a hard gate (see
     # SafetyGuard.check_property and safety_config.yaml).
     allowed_properties: Optional[list[ForbiddenProperty]] = None
+    # Filesystem sandbox root for file-touching tools. None = unrestricted
+    # (behaviour unchanged); set it to confine reads/writes to one directory.
+    workspace_dir: Optional[str] = None
     plugins: PluginConstraints = field(default_factory=PluginConstraints)
 
     @classmethod
@@ -84,6 +88,7 @@ class SafetyConstraints:
             allowed_channels=channels_cfg.get("allowed"),
             forbidden_properties=forbidden,
             allowed_properties=allowed,
+            workspace_dir=cfg.get("workspace_dir"),
             plugins=PluginConstraints(
                 blocked=plugins_cfg.get("blocked") or [],
                 allow_hardware_motion=bool(plugins_cfg.get("allow_hardware_motion", False)),
@@ -191,6 +196,26 @@ class SafetyGuard:
             x = num if p.startswith("x") else core.get_x_position()
             y = num if p.startswith("y") else core.get_y_position()
             self.check_xy(x, y)
+
+    def resolve_in_workspace(self, path: str) -> str:
+        """Resolve a file path, confining it to workspace_dir if one is set.
+
+        realpath-resolves (so `..` and symlinks can't escape) and raises
+        SafetyViolation if the result leaves the configured root. When
+        workspace_dir is None the path is returned unchanged — behaviour is
+        unchanged unless a lab opts in by configuring a root.
+        """
+        root = self._c.workspace_dir
+        if root is None:
+            return path
+        root = os.path.realpath(root)
+        target = path if os.path.isabs(path) else os.path.join(root, path)
+        resolved = os.path.realpath(target)
+        if resolved != root and not resolved.startswith(root + os.sep):
+            raise SafetyViolation(
+                f"Path '{path}' escapes the configured workspace directory ({root})."
+            )
+        return resolved
 
     def check_plugin(self, classpath: str) -> None:
         """Gate a read-only analyzer plugin: allow by default, deny if blocklisted.

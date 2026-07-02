@@ -219,6 +219,43 @@ class TestAllowlistMode:
             guard.check_property("DStage", "Position")
 
 
+class TestWorkspaceSandbox:
+    def test_unconfigured_returns_path_unchanged(self):
+        guard = SafetyGuard(SafetyConstraints())  # workspace_dir None
+        assert guard.resolve_in_workspace("/anywhere/at/all.json") == "/anywhere/at/all.json"
+
+    def test_path_inside_root_resolves(self, tmp_path):
+        guard = SafetyGuard(SafetyConstraints(workspace_dir=str(tmp_path)))
+        resolved = guard.resolve_in_workspace("sub/data.json")
+        assert resolved == str((tmp_path / "sub" / "data.json").resolve())
+
+    def test_dotdot_escape_refused(self, tmp_path):
+        guard = SafetyGuard(SafetyConstraints(workspace_dir=str(tmp_path)))
+        with pytest.raises(SafetyViolation, match="escapes"):
+            guard.resolve_in_workspace("../secrets.json")
+
+    def test_absolute_outside_refused(self, tmp_path):
+        guard = SafetyGuard(SafetyConstraints(workspace_dir=str(tmp_path)))
+        with pytest.raises(SafetyViolation, match="escapes"):
+            guard.resolve_in_workspace("/etc/passwd")
+
+    def test_symlink_escape_refused(self, tmp_path):
+        import os
+        outside = tmp_path.parent / "outside_target"
+        outside.mkdir(exist_ok=True)
+        link = tmp_path / "link"
+        os.symlink(outside, link)
+        guard = SafetyGuard(SafetyConstraints(workspace_dir=str(tmp_path)))
+        with pytest.raises(SafetyViolation, match="escapes"):
+            guard.resolve_in_workspace("link/data.json")
+
+    def test_from_yaml_loads_workspace_dir(self, tmp_path):
+        cfg = tmp_path / "safety.yaml"
+        cfg.write_text(f"workspace_dir: {tmp_path}\n")
+        constraints = SafetyConstraints.from_yaml(str(cfg))
+        assert constraints.workspace_dir == str(tmp_path)
+
+
 class TestPluginGates:
     def test_analyzer_allowed_by_default(self):
         guard = SafetyGuard(SafetyConstraints())

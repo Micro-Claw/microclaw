@@ -1,5 +1,6 @@
 from __future__ import annotations
 from typing import Any
+import os
 import time
 
 import anthropic
@@ -10,8 +11,29 @@ from microclaw.safety import SafetyGuard
 from microclaw.tools import execute_tool
 from microclaw.tools_schema import TOOLS_CACHED
 
-client = anthropic.Anthropic()
-MODEL = "claude-opus-4-7"
+# Latest available Opus at time of writing (verified against the Claude API
+# model reference). Override per-run with --model or the MICROCLAW_MODEL env var.
+DEFAULT_MODEL = "claude-opus-4-8"
+MODEL_ENV = "MICROCLAW_MODEL"
+
+# Default cap on tool-call rounds per user turn — bounds a runaway loop.
+DEFAULT_MAX_ITERATIONS = 25
+
+_client: anthropic.Anthropic | None = None
+
+
+def _get_client() -> anthropic.Anthropic:
+    """Lazily construct the Anthropic client so importing this module has no
+    side effects and tests can inject their own client."""
+    global _client
+    if _client is None:
+        _client = anthropic.Anthropic()
+    return _client
+
+
+def resolve_model(model: str | None = None) -> str:
+    """Pick the model: explicit arg > MICROCLAW_MODEL env > DEFAULT_MODEL."""
+    return model or os.environ.get(MODEL_ENV) or DEFAULT_MODEL
 
 SYSTEM_PROMPT = """You are Microclaw, an AI assistant that controls a Micro-Manager fluorescence microscope.
 
@@ -89,12 +111,16 @@ def run_agent(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
     history: list[dict] | None = None,
+    model: str | None = None,
+    max_iterations: int = DEFAULT_MAX_ITERATIONS,
 ) -> tuple[str, list[dict]]:
     """Run one user turn through the agent loop.
 
     Returns (assistant_text_reply, updated_history).
-    Pass history on repeated calls for multi-turn conversations.
+    Pass history on repeated calls for multi-turn conversations. `max_iterations`
+    caps the number of model/tool rounds so a runaway loop can't spin forever.
     """
+    model = resolve_model(model)
     messages: list[dict[str, Any]] = list(history or [])
     messages.append({"role": "user", "content": user_message})
 
@@ -113,7 +139,7 @@ def run_agent(
 
     _RETRY_DELAYS = (5, 15, 30)
 
-    while True:
+    for _iteration in range(max_iterations):
         for attempt, delay in enumerate([0] + list(_RETRY_DELAYS)):
             if delay:
                 print(
@@ -122,8 +148,8 @@ def run_agent(
                 )
                 time.sleep(delay)
             try:
-                response = client.messages.create(
-                    model=MODEL,
+                response = _get_client().messages.create(
+                    model=model,
                     max_tokens=4096,
                     system=system_blocks,
                     tools=TOOLS_CACHED,
@@ -167,3 +193,10 @@ def run_agent(
             continue
 
         return f"[Unexpected stop reason: {response.stop_reason}]", messages
+
+    return (
+        f"Stopped after {max_iterations} tool rounds without completing. "
+        "The task may be too large for one turn — try narrowing it or breaking "
+        "it into steps.",
+        messages,
+    )

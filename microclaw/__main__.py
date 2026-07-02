@@ -1,8 +1,10 @@
 import sys
+import json
 import datetime
 import cProfile
 import pstats
 import io
+from pathlib import Path
 from pstats import SortKey
 
 from microclaw.agent import run_agent
@@ -10,19 +12,28 @@ from microclaw.controller import MicroscopeController
 from microclaw.config import load_safety_config
 from microclaw.safety import SafetyGuard
 
-from anthropic._utils._json import openapi_dumps
 
 def write_history(fn, history, save=True):
-    if save:
-        # save chat history
-        with open(fn, "wb") as f:
-            f.write(openapi_dumps(history))
+    if not save:
+        return
+    # History is a list of message dicts whose content blocks may be Anthropic
+    # SDK objects. Serialise via the public model_dump() rather than the private
+    # anthropic._utils._json.openapi_dumps (which can vanish across SDK releases).
+    def default(o):
+        return o.model_dump() if hasattr(o, "model_dump") else str(o)
+
+    Path(fn).write_text(json.dumps(history, default=default, indent=2))
 
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="Microclaw: AI agent for Micro-Manager")
     parser.add_argument("--safety-config", default="safety_config.yaml")
     parser.add_argument("--port", type=int, default=4827)
+    parser.add_argument(
+        "--model",
+        default=None,
+        help="Anthropic model id (default: $MICROCLAW_MODEL or the built-in default).",
+    )
     parser.add_argument("--profile", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--save-history", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args()
@@ -60,9 +71,9 @@ def main():
             pr = cProfile.Profile()
             pr.enable()
         
-            reply, history = run_agent(user_input, ctrl, guard, history)
+            reply, history = run_agent(user_input, ctrl, guard, history, model=args.model)
             print(f"\nMicroclaw: {reply}\n")
-            
+
             # print profiling
             pr.disable()
             s = io.StringIO()
@@ -71,7 +82,7 @@ def main():
             ps.print_stats(20)
             print(s.getvalue())
         else:
-            reply, history = run_agent(user_input, ctrl, guard, history)
+            reply, history = run_agent(user_input, ctrl, guard, history, model=args.model)
             print(f"\nMicroclaw: {reply}\n")
 
         # Now write once per loop, in case it crashes
