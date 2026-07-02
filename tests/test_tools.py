@@ -527,7 +527,8 @@ class TestGenerateAndSaveHook:
         )
         assert "saved" in result["status"]
 
-    def test_rejects_unsafe_code(self, mock_ctrl, unconstrained_guard):
+    def test_declines_when_lint_flags_and_user_says_no(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        monkeypatch.setattr("microclaw.tools.CONFIRM_FN", lambda summary: False)
         code = "eval('os.system(\"rm -rf /\")')"
         result = generate_and_save_hook(
             mock_ctrl, unconstrained_guard,
@@ -535,7 +536,27 @@ class TestGenerateAndSaveHook:
             description="Evil hook", source="claude_generated",
         )
         assert "error" in result
-        assert "warnings" in result
+        assert result["warnings"]
+
+    def test_saves_flagged_hook_after_confirmation(self, mock_ctrl, unconstrained_guard, tmp_path, monkeypatch):
+        # A benign hook that writes its own log via open() trips the lint but is
+        # saveable once the user confirms.
+        monkeypatch.setattr("microclaw.hook_manager.HOOKS_DIR", tmp_path)
+        monkeypatch.setattr("microclaw.hook_manager.MANIFEST", tmp_path / "manifest.json")
+        monkeypatch.setattr("microclaw.tools.CONFIRM_FN", lambda summary: True)
+        code = (
+            "class H:\n"
+            "    def image_process_fn(self, img, meta, q):\n"
+            "        open('/tmp/hooklog', 'a').write('x')\n"
+            "        return img, meta\n"
+        )
+        result = generate_and_save_hook(
+            mock_ctrl, unconstrained_guard,
+            name="logging_hook", code=code,
+            description="Writes a log", source="user_provided",
+        )
+        assert "saved" in result["status"]
+        assert result["warnings"]  # lint still surfaced them
 
 
 class TestReadHookFromFile:
@@ -550,6 +571,38 @@ class TestReadHookFromFile:
     def test_error_for_missing_file(self, mock_ctrl, unconstrained_guard):
         result = read_hook_from_file(mock_ctrl, unconstrained_guard, path="/no/such/file.py")
         assert "error" in result
+
+
+class TestSaveKnowledgeConfirmation:
+    def test_declines_and_does_not_write(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        from microclaw import tools
+        calls = []
+        monkeypatch.setattr(tools, "CONFIRM_FN", lambda summary: False)
+        monkeypatch.setattr(
+            "microclaw.knowledge_manager.save_entry",
+            lambda *a, **k: calls.append(a),
+        )
+        result = tools.save_knowledge(
+            mock_ctrl, unconstrained_guard,
+            category="devices", key="X", value={"description": "y"},
+        )
+        assert "declined" in result["error"].lower()
+        assert calls == []  # save_entry never reached
+
+    def test_saves_after_confirmation(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        from microclaw import tools
+        calls = []
+        monkeypatch.setattr(tools, "CONFIRM_FN", lambda summary: True)
+        monkeypatch.setattr(
+            "microclaw.knowledge_manager.save_entry",
+            lambda *a, **k: calls.append(a),
+        )
+        result = tools.save_knowledge(
+            mock_ctrl, unconstrained_guard,
+            category="devices", key="X", value={"description": "y"},
+        )
+        assert "status" in result
+        assert calls  # save_entry reached
 
 
 class TestListDeviceProperties:
