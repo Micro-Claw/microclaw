@@ -364,7 +364,18 @@ def _acquire_with_hooks(
     with Acquisition(directory=save_dir, name=name, show_display=True, **hook_fn_kwargs) as acq:
         acq.acquire(events)
 
-    return acq._dataset_disk_location or str(Path(save_dir) / name)
+    return _acq_dataset_path(acq, save_dir, name)
+
+
+def _acq_dataset_path(acq, save_dir: str, name: str) -> str:
+    """On-disk path of a completed Acquisition's dataset.
+
+    pycro-manager exposes no public accessor for the dataset directory, so we
+    read the private `_dataset_disk_location`. Verified against pycro-manager
+    1.0.2; if that attribute drifts, the fallback keeps the path deterministic
+    (Acquisition writes to <save_dir>/<name> by default).
+    """
+    return getattr(acq, "_dataset_disk_location", None) or str(Path(save_dir) / name)
 
 
 def run_zstack(
@@ -409,6 +420,11 @@ def run_timelapse(
         guard.check_channel(channel)
     if exposure_ms is not None:
         guard.check_exposure(exposure_ms)
+    # Without a channel, the acquisition events carry no exposure, so set it on
+    # the core directly (mirrors run_zstack). This is the SMLM path —
+    # run_timelapse(interval_s=0) with no channel — where exposure must still apply.
+    if not channel and exposure_ms is not None:
+        ctrl.core.set_exposure(exposure_ms)
 
     events = _build_acquisition_events(
         channel=channel, exposure_ms=exposure_ms,
@@ -424,23 +440,33 @@ def export_dataset_as_tiff(
     dataset_path: str,
     output_path: str,
 ) -> dict:
+    import itertools
+
+    dataset_path = guard.resolve_in_workspace(dataset_path)
+    output_path = guard.resolve_in_workspace(output_path)
     dataset = Dataset(dataset_path)
     axes = dataset.axes
 
-    if "z" in axes:
-        frames = [
-            dataset.read_image(z=z) for z in range(len(axes["z"]))
-        ]
-    elif "time" in axes:
-        frames = [
-            dataset.read_image(time=t) for t in range(len(axes["time"]))
-        ]
-    else:
-        frames = [dataset.read_image()]
+    # Iterate the full product of ALL non-spatial axes rather than only z OR
+    # time — the old branch silently dropped every axis but one. Order axes
+    # ImageJ-first (T, Z, C, position) so the hyperstack metadata lines up, with
+    # any unexpected axis names appended.
+    preferred = [a for a in ("time", "z", "channel", "position") if a in axes]
+    axis_names = preferred + [a for a in axes if a not in preferred]
 
-    stack = np.stack(frames)
+    if axis_names:
+        ranges = [range(len(axes[a])) for a in axis_names]
+        frames = [
+            dataset.read_image(**dict(zip(axis_names, combo)))
+            for combo in itertools.product(*ranges)
+        ]
+        shape = tuple(len(axes[a]) for a in axis_names)
+        stack = np.stack(frames).reshape(*shape, *frames[0].shape)
+    else:
+        stack = dataset.read_image()
+
     tifffile.imwrite(output_path, stack, imagej=True)
-    return {"status": "Export complete.", "output_path": output_path}
+    return {"status": "Export complete.", "output_path": output_path, "axes": axis_names}
 
 
 # --- Image capture with analysis ---
@@ -600,6 +626,7 @@ def clear_position_list(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
 
 def save_position_list(ctrl: MicroscopeController, guard: SafetyGuard, path: str) -> dict:
     """Save the position list to a microclaw JSON file (not MM's native .pos)."""
+    path = guard.resolve_in_workspace(path)
     ctrl.save_position_list(path)
     return {"status": f"Position list saved to {path}."}
 
@@ -1006,6 +1033,7 @@ def run_adaptive_timelapse(
 
 def read_hook_log(ctrl: MicroscopeController, guard: SafetyGuard, log_path: str) -> dict:
     """Read a hook's output log file after an acquisition completes."""
+    log_path = guard.resolve_in_workspace(log_path)
     path = Path(log_path)
     if not path.exists():
         return {"error": f"Log file not found: {log_path}"}
@@ -1058,7 +1086,10 @@ def read_hook_from_file(
     """
     from microclaw.hook_manager import read_hook_from_file as _read
     try:
+        path = guard.resolve_in_workspace(path)
         code, warnings = _read(path)
+    except SafetyViolation as e:
+        return {"error": str(e)}
     except FileNotFoundError:
         return {"error": f"File not found: {path}"}
     return {"code": code, "warnings": warnings, "path": path}

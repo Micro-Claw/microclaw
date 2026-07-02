@@ -405,6 +405,50 @@ class TestRunMultipositionWithAutofocus:
         mock_ctrl.go_to_position.assert_not_called()
 
 
+class TestRunTimelapseExposure:
+    def test_sets_exposure_when_no_channel(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        from microclaw.tools import run_timelapse
+        monkeypatch.setattr("microclaw.tools._acquire_with_hooks", lambda *a, **k: "/tmp/ds")
+        run_timelapse(mock_ctrl, unconstrained_guard, n_frames=1, interval_s=0.0,
+                      save_dir="/tmp", exposure_ms=50.0)
+        mock_ctrl.core.set_exposure.assert_called_once_with(50.0)
+
+    def test_no_exposure_write_when_channel_given(self, mock_ctrl, default_guard, monkeypatch):
+        from microclaw.tools import run_timelapse
+        monkeypatch.setattr("microclaw.tools._acquire_with_hooks", lambda *a, **k: "/tmp/ds")
+        run_timelapse(mock_ctrl, default_guard, n_frames=1, interval_s=0.0,
+                      save_dir="/tmp", channel="DAPI", exposure_ms=50.0)
+        mock_ctrl.core.set_exposure.assert_not_called()
+
+
+class TestExportDatasetAllAxes:
+    def test_iterates_full_axis_product(self, mock_ctrl, unconstrained_guard, monkeypatch, tmp_path):
+        from microclaw import tools
+
+        class FakeDataset:
+            axes = {"z": [0, 1, 2], "channel": [0, 1]}
+
+            def __init__(self, path):
+                pass
+
+            def read_image(self, **kw):
+                return np.zeros((4, 4), dtype=np.uint16)
+
+        captured = {}
+        monkeypatch.setattr("microclaw.tools.Dataset", FakeDataset)
+        monkeypatch.setattr(
+            "microclaw.tools.tifffile.imwrite",
+            lambda p, stack, **k: captured.update(shape=stack.shape),
+        )
+        result = tools.export_dataset_as_tiff(
+            mock_ctrl, unconstrained_guard,
+            dataset_path="ds", output_path=str(tmp_path / "o.tif"),
+        )
+        # z (3) × channel (2) × H (4) × W (4) — no axis silently dropped
+        assert captured["shape"] == (3, 2, 4, 4)
+        assert result["axes"] == ["z", "channel"]
+
+
 class TestMarkPosition:
     def test_saves_position(self, mock_ctrl, unconstrained_guard):
         mock_ctrl.core.get_x_position.return_value = 100.0

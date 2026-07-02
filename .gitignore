@@ -36,5 +36,10 @@ envs/
 .idea/
 .vscode/
 
-# data
-*.json
+# data — scope to microclaw's own outputs, not every *.json (which would hide
+# test fixtures and config files).
+*_microclaw_history.json
+.microclaw/
+
+# Local editor/agent settings
+.claude/settings.local.json

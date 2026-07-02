@@ -53,7 +53,7 @@ class TestSnapAndShowPrompt:
             tool_use_response("snap_image", {}),
             text_response("I snapped an image — it's now showing in the MM viewer."),
         ]
-        with patch("microclaw.agent.client", make_mock_client(scripted)):
+        with patch("microclaw.agent._get_client", return_value=make_mock_client(scripted)):
             reply, _ = run_agent("Take a picture", mock_ctrl, guard)
         assert "snap" in reply.lower() or "image" in reply.lower()
 
@@ -64,7 +64,14 @@ class TestZStackThenExportPrompt:
     Expected tool call sequence: get_system_state → run_zstack → export_dataset_as_tiff
     """
 
-    def test_tool_sequence(self, mock_ctrl, guard):
+    def test_tool_sequence(self, mock_ctrl, guard, monkeypatch):
+        # Stub the acquisition/export internals so this stays a pure prompt-
+        # sequence test — otherwise run_zstack opens a real pycro-manager
+        # Acquisition (a ZMQ bridge), which drives hardware when MM is running
+        # and spawns a timing-out background thread when it isn't.
+        monkeypatch.setattr("microclaw.tools._acquire_with_hooks", lambda *a, **k: "/tmp/zstack")
+        monkeypatch.setattr("microclaw.tools.Dataset", lambda p: MagicMock(axes={}))
+        monkeypatch.setattr("microclaw.tools.tifffile.imwrite", lambda *a, **k: None)
         scripted = [
             tool_use_response("get_system_state", {}, call_id="c1"),
             tool_use_response(
@@ -80,7 +87,7 @@ class TestZStackThenExportPrompt:
             ),
             text_response("Z-stack done and exported to /tmp/out.tiff."),
         ]
-        with patch("microclaw.agent.client", make_mock_client(scripted)):
+        with patch("microclaw.agent._get_client", return_value=make_mock_client(scripted)):
             reply, _ = run_agent(
                 "Run a 5-slice z-stack from 40 to 60 µm, then export to /tmp/out.tiff",
                 mock_ctrl,
@@ -108,7 +115,7 @@ class TestSafetyBlockedInLoop:
                 "The stage cannot move to 500 µm because the maximum allowed Z is 100 µm."
             ),
         ]
-        with patch("microclaw.agent.client", make_mock_client(scripted)):
+        with patch("microclaw.agent._get_client", return_value=make_mock_client(scripted)):
             reply, _ = run_agent("Move Z to 500 µm", mock_ctrl, tight_guard)
         assert "100" in reply or "maximum" in reply.lower() or "limit" in reply.lower()
 
@@ -131,7 +138,51 @@ class TestHistoryPreserved:
         scripted = [
             text_response("Hello, I am Microclaw."),
         ]
-        with patch("microclaw.agent.client", make_mock_client(scripted)):
+        with patch("microclaw.agent._get_client", return_value=make_mock_client(scripted)):
             reply, history = run_agent("Hello", mock_ctrl, guard, history=[])
         assert len(history) >= 2  # user + assistant
         assert history[0]["role"] == "user"
+
+
+class TestModelResolution:
+    def test_explicit_arg_wins(self, monkeypatch):
+        from microclaw.agent import resolve_model, DEFAULT_MODEL
+        monkeypatch.setenv("MICROCLAW_MODEL", "env-model")
+        assert resolve_model("explicit") == "explicit"
+
+    def test_env_var_used(self, monkeypatch):
+        from microclaw.agent import resolve_model
+        monkeypatch.setenv("MICROCLAW_MODEL", "env-model")
+        assert resolve_model() == "env-model"
+
+    def test_default_when_unset(self, monkeypatch):
+        from microclaw.agent import resolve_model, DEFAULT_MODEL
+        monkeypatch.delenv("MICROCLAW_MODEL", raising=False)
+        assert resolve_model() == DEFAULT_MODEL
+
+    def test_model_passed_to_create(self, mock_ctrl, guard):
+        client = make_mock_client([text_response("hi")])
+        with patch("microclaw.agent._get_client", return_value=client):
+            run_agent("Hi", mock_ctrl, guard, model="my-model")
+        assert client.messages.create.call_args.kwargs["model"] == "my-model"
+
+
+class TestTurnCap:
+    def test_stops_after_max_iterations(self, mock_ctrl, guard):
+        client = MagicMock()
+        # Always return a tool_use → the loop would never end without the cap.
+        client.messages.create.return_value = tool_use_response("snap_image", {})
+        with patch("microclaw.agent._get_client", return_value=client):
+            reply, _ = run_agent("loop forever", mock_ctrl, guard, max_iterations=3)
+        assert "Stopped after 3 tool rounds" in reply
+        assert client.messages.create.call_count == 3
+
+
+class TestLazyClient:
+    def test_import_does_not_construct_client(self):
+        import importlib
+        import microclaw.agent as agent
+        with patch("anthropic.Anthropic", side_effect=AssertionError("constructed on import")):
+            importlib.reload(agent)  # reload must not build a client
+        # sanity: module-global stays None until _get_client is called
+        assert agent._client is None
