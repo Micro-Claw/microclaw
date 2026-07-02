@@ -298,7 +298,24 @@ of each approach.
 ----
 
 Please have a careful look at                                                 
-  https://github.com/micro-manager/micro-manager/pull/2401. Using this change,  
-  can we add the ability to use Micro-Manager plugins as part of hooks in       
-  microclaw? Place your findings and proposals along with code stubs in         
-  design/09-add-micromanager-plugins.md    
+https://github.com/micro-manager/micro-manager/pull/2401. Using this change,  
+can we add the ability to use Micro-Manager plugins as part of hooks in       
+microclaw? Place your findings and proposals along with code stubs in         
+design/09-add-micromanager-plugins.md    
+
+----
+
+Using the same or similar approach as for Micro-Manager plugins, is it        
+possible to use ImageJ (ij()) plugins in hooks? Maybe via                     
+studio.get_data_manager().ij()? Please add your findings along with code      
+stubs to 10-add-ij-plugins.md 
+
+Can you write a ij-plugins-spike.py file that is a spike to test the          
+important points in this design file (e.g. verify DataManager.ij()) on a      
+Windows machine running ImageJ with #2401 implemented? I will run this        
+manually on that machine with MM open. As part of the spike, please also      
+include a test of Approach B to see if the IJ2 hook is accessible over ZMQ    
+with #2401 present.  
+
+Have a look at test-failures.txt for the results of the spike. Fold them back 
+into design/10  
