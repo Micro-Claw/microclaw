@@ -64,7 +64,14 @@ class TestZStackThenExportPrompt:
     Expected tool call sequence: get_system_state → run_zstack → export_dataset_as_tiff
     """
 
-    def test_tool_sequence(self, mock_ctrl, guard):
+    def test_tool_sequence(self, mock_ctrl, guard, monkeypatch):
+        # Stub the acquisition/export internals so this stays a pure prompt-
+        # sequence test — otherwise run_zstack opens a real pycro-manager
+        # Acquisition (a ZMQ bridge), which drives hardware when MM is running
+        # and spawns a timing-out background thread when it isn't.
+        monkeypatch.setattr("microclaw.tools._acquire_with_hooks", lambda *a, **k: "/tmp/zstack")
+        monkeypatch.setattr("microclaw.tools.Dataset", lambda p: MagicMock(axes={}))
+        monkeypatch.setattr("microclaw.tools.tifffile.imwrite", lambda *a, **k: None)
         scripted = [
             tool_use_response("get_system_state", {}, call_id="c1"),
             tool_use_response(

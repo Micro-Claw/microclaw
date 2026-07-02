@@ -244,7 +244,13 @@ class TestWorkspaceSandbox:
         outside = tmp_path.parent / "outside_target"
         outside.mkdir(exist_ok=True)
         link = tmp_path / "link"
-        os.symlink(outside, link)
+        try:
+            os.symlink(outside, link)
+        except (OSError, NotImplementedError) as e:
+            # Windows without Developer Mode / admin can't create symlinks
+            # (WinError 1314). The realpath guard still resolves symlinks at
+            # runtime; we just can't set one up to exercise it here.
+            pytest.skip(f"symlink creation not permitted on this platform: {e}")
         guard = SafetyGuard(SafetyConstraints(workspace_dir=str(tmp_path)))
         with pytest.raises(SafetyViolation, match="escapes"):
             guard.resolve_in_workspace("link/data.json")
