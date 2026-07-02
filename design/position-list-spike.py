@@ -251,6 +251,10 @@ def main() -> None:
         return f"count {before} -> {after}; coordinates round-tripped: {found}"
 
     # 5. GUI repaint — MANUAL observation ------------------------------------
+    # IMPORTANT: pause here BEFORE cleanup. The first lab run misreported this as
+    # "never appeared" only because check 7 deleted the entry faster than the
+    # observer could look. Block until the human has actually looked (unless
+    # --keep, which leaves the row in place anyway).
     record(
         "CHECK", "5. GUI repaint (MANUAL)",
         "Look at MM's Position List Manager window NOW. Does an entry labelled "
@@ -258,6 +262,12 @@ def main() -> None:
         "         PASS => fix 5(a) write-through is viable.\n"
         "         FAIL (row absent until refocus/refresh) => same repaint gap as the\n"
         "         Preview canvas; take fix 5(b) (correct the docs) instead.")
+    if not args.keep:
+        try:
+            input("\n         >>> Look at the Position List Manager, then press "
+                  "Enter to continue to cleanup... ")
+        except EOFError:
+            pass  # non-interactive stdin; fall through (use --keep to inspect later)
 
     # 6. PositionList.save -> .pos file --------------------------------------
     @check("6. PositionList.save writes a real .pos file")

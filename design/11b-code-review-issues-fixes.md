@@ -55,8 +55,9 @@ Suggested landing order (severity, and dependency-aware):
 2. `security/confirm-in-code` (issues 2 + 3) — cross-session self-modification.
 3. `fix/snap-dtype` (issue 6) — silently corrupts every downstream metric.
 4. `fix/hook-fail-open` (issue 7) — depends on nothing; small.
-5. `fix/position-list-gui-parity` (issue 5) — **Spike A done → fix (b), correct
-   the docs, and fix the `numAxes` read-path bug** (see issue 5).
+5. `fix/position-list-gui-parity` (issue 5) — **Spike A done → fix (a),
+   write-through to MM's PositionList (the GUI repaints), plus fix the `numAxes`
+   read-path bug** (see issue 5).
 6. `chore/honorable-mentions` — can be split further or batched.
 
 ### Would spikes help first? Yes — three of them.
@@ -104,15 +105,17 @@ in parallel with the fix since the fix is defensible regardless.
 
 All three ran on the Windows lab machine. Verdicts:
 
-- **Spike A → take fix 5(b) (correct the docs).** The write plumbing works over
-  the bridge (`MultiStagePosition` construction; factory names are `create2_d` /
-  `create1_d`; `set_position_list` round-trips, count 0→1 with XY coordinates
-  read back intact; `PositionList.save('.pos')` works; cleanup restores the
-  list). **But the decisive manual check failed: the marked position never
-  appeared in MM's Position List Manager, even after a manual refresh.** So
-  `set_position_list` updates the bridge-side list object without surfacing in
-  the GUI — the same "data model updates, GUI doesn't repaint" gap as the jPypeMM
-  Preview canvas. Do **not** build write-through; fix 5(b) it is.
+- **Spike A → take fix 5(a) (write through to MM's PositionList).** The write
+  plumbing works over the bridge (`MultiStagePosition` construction; factory names
+  are `create2_d` / `create1_d`; `set_position_list` round-trips, count 0→1 with
+  XY coordinates read back intact; `PositionList.save('.pos')` works; cleanup
+  restores the list) **and the decisive manual check passed: the marked position
+  appears in MM's Position List Manager immediately, without a manual refresh.**
+  So `set_position_list` *does* repaint the GUI list over ZMQ — unlike the jPypeMM
+  Preview canvas, this surface updates. Write-through is viable; build fix 5(a).
+  (Caveat that cost us a round-trip: the spike's cleanup step deletes the entry so
+  fast the row vanishes before you can see it — run with `--keep` to observe the
+  repaint. See the spike note below.)
 - **Spike A also surfaced a real read-path bug (new — not in 11a).** The bridge
   exposes the axis-count field only as `numAxes`, but
   `controller._read_mm_position_list` (`controller.py:185`) reads `sp.num_axes`,
@@ -635,15 +638,18 @@ above is the interim hardening behind the human gate.
 
 **Branch:** `fix/position-list-gui-parity`. **Spike A ran — decision resolved.**
 
-**Spike A verdict: take fix (b), correct the docs.** The write plumbing works over
-the bridge (construct `MultiStagePosition`; factories are `create2_d` /
-`create1_d`; `set_position_list` round-trips with coordinates; `.pos` save works),
-but the marked position **never appeared in MM's Position List Manager, even after
-a manual refresh**. `set_position_list` mutates the bridge-side list object
-without surfacing in the GUI — the same repaint gap as the jPypeMM Preview canvas.
-Write-through (former fix (a)) would "succeed" silently and never show the
-biologist anything, so it's off the table. The former fix-(a) sketch is retained
-below only as a record of what was tried.
+**Spike A verdict: take fix (a), write through to MM's PositionList.** The write
+plumbing works over the bridge (construct `MultiStagePosition`; factories are
+`create2_d` / `create1_d`; `set_position_list` round-trips with coordinates; `.pos`
+save works) **and the marked position appears in MM's Position List Manager
+immediately, without a manual refresh** — unlike the jPypeMM Preview canvas, this
+GUI surface repaints over ZMQ. So the docs' "visible in the MM GUI" promise is
+achievable; make `add_position` actually keep it.
+
+(Process note: the first lab run reported this as "never appeared," which was a
+spike artifact, not the truth — the cleanup step (check 7) deleted the entry so
+fast the row vanished before it could be observed. Re-running with `--keep`
+confirmed the repaint. The spike now pauses before cleanup; see the spike note.)
 
 ### Also fix: `_read_mm_position_list` uses the wrong field name (found via Spike A)
 
@@ -668,41 +674,50 @@ Add a test that exercises the read path against a fake StagePosition exposing
 `numAxes` (not `num_axes`) so this can't silently regress if pycro-manager changes
 its attribute translation.
 
-### (Former fix (a), not shipping) write through to MM's PositionList
+### Fix (a) — write through to MM's PositionList (this is the one to ship)
 
-Retained for the record — Spike A showed this round-trips but does **not** repaint
-in the GUI, so it does not meet the "visible to the biologist" goal:
+`add_position` (`controller.py:206`) currently only appends to `self._positions`.
+Make it mirror into MM's `PositionList` so the biologist sees marked positions in
+the GUI. Spike A confirmed every call below round-trips *and* repaints:
 
 ```python
 # controller.py
+def add_position(self, label, x, y, z=None) -> None:
+    entry = {"name": label, "x_um": round(x, 3), "y_um": round(y, 3)}
+    if z is not None:
+        entry["z_um"] = round(z, 3)
+    self._positions = [p for p in self._positions if p["name"] != label]
+    self._positions.append(entry)
+    self._write_position_to_mm(entry)          # mirror into the GUI list
+
 def _write_position_to_mm(self, entry) -> None:
     from pycromanager import JavaClass, JavaObject
     pm = self._studio.positions()
     plist = pm.get_position_list()
     msp = JavaObject("org.micromanager.MultiStagePosition", port=self._port)
     msp.set_label(entry["name"])
+    # StagePosition is a TOP-LEVEL class (org.micromanager.StagePosition) built via
+    # static factories; Spike A confirmed the bridge names them create2_d/create1_d.
     sp_cls = JavaClass("org.micromanager.StagePosition", port=self._port)
-    xy = sp_cls.create2_d(self._core.get_xy_stage_device(),
-                          entry["x_um"], entry["y_um"])   # create2_d confirmed by Spike A
-    msp.add(xy)
+    msp.add(sp_cls.create2_d(self._core.get_xy_stage_device(),
+                             entry["x_um"], entry["y_um"]))
+    if "z_um" in entry:
+        msp.add(sp_cls.create1_d(self._core.get_focus_device(), entry["z_um"]))
     plist.add_position(msp)
-    pm.set_position_list(plist)                 # round-trips over the bridge, but GUI does NOT repaint
+    pm.set_position_list(plist)                 # <-- round-trips AND repaints the GUI (Spike A)
 ```
 
-### Fix (b) — correct the docs (this is the one to ship)
+Open follow-ups the spike didn't cover: the 1-axis Z entry via `create1_d` (the
+spike only exercised `create2_d`), and de-duplication when the same label is
+re-marked (mirror the internal-list replace by removing the matching MSP from
+`plist` before re-adding). Verify both when implementing.
 
-Cheaper and honest. Change:
-- `agent.py:42` — "Position lists are stored in MM's native format and visible in
-  the MM GUI" → "Positions are stored in microclaw's internal list, not shown in
-  the MM GUI. Use `import_mm_positions` to pull in positions the biologist marked
-  in the GUI."
-- `tools_schema.py:366` — drop "immediately visible in the MM GUI's XY Stage
-  Control window."
-- README position-list section — same correction.
-- `mark_position` return string (`tools.py:548`) — "saved to MM position list" →
-  "saved to microclaw's position list."
+Also update the docs so they now match reality rather than overreach — `agent.py`,
+`tools_schema.py`, README, and the `mark_position` return string should describe
+positions as marked in *both* microclaw's list and MM's GUI list, and drop any
+wording implying they were already GUI-visible before this fix.
 
-### The `.pos` file format is wrong either way (fix regardless of Spike A)
+### The `.pos` file format is still wrong (fix alongside)
 
 `save_position_list` / `load_position_list` claim to write MM's native `.pos`
 format but actually do `json.dumps(self._positions)` (`controller.py:241-247`),
@@ -716,17 +731,21 @@ Two honest options:
   over the bridge**, so it's a viable option if labs want microclaw files that open
   in the MM GUI.
 
-Recommend the rename now; the true `.pos` round-trip only matters if labs want to
-open microclaw files in the MM GUI. Since write-through is off the table (fix (b)),
-`PositionList.save` is the only remaining path to real `.pos` interop — defer it
-unless a lab actually asks.
+With write-through shipping (fix (a)), positions already round-trip into the GUI
+live, so the `.pos` file is mostly for offline interchange. Recommend the rename
+now and keep `PositionList.save` in reserve for a lab that actually needs real
+`.pos` files on disk.
 
 ### Tests
 
+- With a fake studio (MagicMock), `add_position` calls `set_position_list` once
+  (fix (a) mirror) — assert the write-through happened, and that re-marking the
+  same label doesn't duplicate the MSP.
 - `_read_mm_position_list` against a fake StagePosition exposing `numAxes` (not
   `num_axes`) reads XY/Z correctly (guards the read-path bug Spike A found).
-- Docstrings/schema no longer contain "visible in the MM GUI" (fix (b)) — a grep
-  test over `agent.py`/`tools_schema.py`/README.
+- Docstrings/schema describe positions as visible in the MM GUI *and* accurate
+  (fix (a) makes the claim true) — a grep test asserting the wording matches the
+  shipped behaviour over `agent.py`/`tools_schema.py`/README.
 - `save`/`load` round-trip preserves positions (already implicitly true for JSON;
   add an explicit test).
 
@@ -1099,12 +1118,12 @@ if __name__ == "__main__":
 - **Branch per issue, severity order**, with `1+4` and `2+3` grouped by shared
   root cause. Six branches total plus the honorable-mentions chore.
 - **Three spikes, all run on the lab machine (MMCore 12.5.0).** Outcomes: **A**
-  flipped issue 5 to "just fix the docs" — write-through round-trips over the
-  bridge but never repaints in the GUI — and additionally found a `numAxes` vs
-  `num_axes` read-path bug in `_read_mm_position_list`; **B** confirmed the
-  16-bit-mono pixel geometry and that `get_camera_device` is on the bridge (8-bit
-  / RGB32 still to run); **C** confirmed the bridge is not thread-affine, so the
-  issue-7 logging fix rests on a valid premise.
+  confirmed issue-5 write-through — `set_position_list` round-trips over the bridge
+  *and* repaints the GUI Position List Manager, so ship fix (a) — and additionally
+  found a `numAxes` vs `num_axes` read-path bug in `_read_mm_position_list`; **B**
+  confirmed the 16-bit-mono pixel geometry and that `get_camera_device` is on the
+  bridge (8-bit / RGB32 still to run); **C** confirmed the bridge is not
+  thread-affine, so the issue-7 logging fix rests on a valid premise.
 - The **durable safety fix** is to centralize the guard at the controller/core
   write boundary so no future tool can skip it — that single refactor closes both
   issue 1 and issue 4 and is worth the extra churn.
