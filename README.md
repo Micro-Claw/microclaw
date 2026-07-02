@@ -11,7 +11,7 @@ An AI agent for [Micro-Manager](https://micro-manager.org) fluorescence microsco
 User (natural language) → AgentLoop (Anthropic API) → ToolRegistry → SafetyGuard → MicroscopeController → pycro-manager ZMQ → MM GUI
 ```
 
-- **Agent**: `claude-opus-4-7` via Anthropic API with tool use and prompt caching.
+- **Agent**: `claude-opus-4-8` via Anthropic API with tool use and prompt caching.
 - **Safety**: User-defined `safety_config.yaml` enforced as a hard gate before every hardware call. The AI cannot override these limits.
 - **Backend**: pycro-manager (ZMQ on port 4827). Open Micro-Manager normally; Microclaw connects to the running instance.
 
@@ -51,8 +51,12 @@ Edit `safety_config.yaml` to set hardware limits. These are enforced before ever
 
 ```yaml
 stage:
-  z_min: 0.0
-  z_max: 200.0
+  x_min: -5000.0
+  x_max:  5000.0
+  y_min: -5000.0
+  y_max:  5000.0
+  z_min:  0.0
+  z_max:  200.0
 
 camera:
   max_exposure_ms: 5000.0
@@ -60,9 +64,24 @@ camera:
 channels:
   allowed: [DAPI, FITC, TRITC, Brightfield]
 
+# Raw device-property writes default to a denylist: named (device, property)
+# pairs are refused and every other property stays writable.
 forbidden_properties:
   - device: Core
     property: Initialize
+
+# For hardware-attached rigs, swap the denylist for an allowlist — ONLY the
+# listed pairs may be written, everything else is refused. This is the only mode
+# in which raw property writes have a hard gate. (forbidden_properties is ignored
+# while allowed_properties is set.)
+# allowed_properties:
+#   - device: DWheel
+#     property: Label
+
+# Optional filesystem sandbox for file-touching tools (hook reads/writes,
+# position-list saves, TIFF export). Unset = unrestricted. When set, those tools
+# are confined to this directory; `..` and symlink escapes are rejected.
+# workspace_dir: /data/microclaw
 
 # Micro-Manager plugin hooks run arbitrary Java that bypasses the checks above,
 # so they have their own two gates.
