@@ -1,11 +1,25 @@
+from unittest.mock import MagicMock
+
 import pytest
 from microclaw.safety import (
+    CameraConstraints,
+    ForbiddenProperty,
     PluginConstraints,
     SafetyConstraints,
     SafetyGuard,
     SafetyViolation,
     StageConstraints,
 )
+
+
+def _core(x=0.0, y=0.0):
+    core = MagicMock()
+    core.get_focus_device.return_value = "DStage"
+    core.get_camera_device.return_value = "DCam"
+    core.get_xy_stage_device.return_value = "DXYStage"
+    core.get_x_position.return_value = x
+    core.get_y_position.return_value = y
+    return core
 
 
 @pytest.fixture
@@ -114,6 +128,95 @@ class TestFromYaml:
         constraints = SafetyConstraints.from_yaml(str(cfg))
         assert constraints.plugins.blocked == []
         assert constraints.plugins.allow_hardware_motion is False
+
+
+class TestCheckDeviceProperty:
+    """Raw set_property writes re-apply the numeric guards on guarded axes."""
+
+    @pytest.fixture
+    def guard(self):
+        c = SafetyConstraints(
+            stage=StageConstraints(x_min=-500, x_max=500, y_min=-500, y_max=500,
+                                   z_min=0, z_max=200),
+            camera=CameraConstraints(max_exposure_ms=5000),
+        )
+        return SafetyGuard(c)
+
+    def test_focus_position_over_max_blocked(self, guard):
+        with pytest.raises(SafetyViolation):
+            guard.check_device_property(_core(), "DStage", "Position", "999999")
+
+    def test_focus_position_in_range_ok(self, guard):
+        guard.check_device_property(_core(), "DStage", "Position", "100")
+
+    def test_camera_exposure_over_max_blocked(self, guard):
+        with pytest.raises(SafetyViolation):
+            guard.check_device_property(_core(), "DCam", "Exposure", "60000")
+
+    def test_xy_axis_over_max_blocked(self, guard):
+        # X write past x_max, other axis read from the core (in range)
+        with pytest.raises(SafetyViolation):
+            guard.check_device_property(_core(), "DXYStage", "X", "9999")
+
+    def test_non_numeric_property_only_denylist(self, guard):
+        # A benign label write on a guarded device is fine (denylist empty).
+        guard.check_device_property(_core(), "DStage", "Label", "State-1")
+
+    def test_unrelated_device_passes_numeric_gate(self, guard):
+        # A numeric write to a device that is not focus/cam/xy isn't re-guarded.
+        guard.check_device_property(_core(), "DWheel", "Position", "999999")
+
+    def test_denylist_still_applies(self):
+        guard = SafetyGuard(
+            SafetyConstraints(
+                forbidden_properties=[ForbiddenProperty("Core", "Initialize")]
+            )
+        )
+        with pytest.raises(SafetyViolation, match="forbidden"):
+            guard.check_device_property(_core(), "Core", "Initialize", "1")
+
+
+class TestAllowlistMode:
+    def test_allowlisted_pair_passes(self):
+        guard = SafetyGuard(
+            SafetyConstraints(
+                allowed_properties=[ForbiddenProperty("DCam", "Binning")]
+            )
+        )
+        guard.check_property("DCam", "Binning")  # no exception
+
+    def test_unlisted_pair_refused(self):
+        guard = SafetyGuard(
+            SafetyConstraints(
+                allowed_properties=[ForbiddenProperty("DCam", "Binning")]
+            )
+        )
+        with pytest.raises(SafetyViolation, match="not in the allowed_properties"):
+            guard.check_property("DStage", "Position")
+
+    def test_allowlist_overrides_denylist(self):
+        # When allowed_properties is set, forbidden_properties is ignored and
+        # only the allowlist decides.
+        guard = SafetyGuard(
+            SafetyConstraints(
+                allowed_properties=[ForbiddenProperty("DCam", "Binning")],
+                forbidden_properties=[ForbiddenProperty("DCam", "Binning")],
+            )
+        )
+        guard.check_property("DCam", "Binning")  # allowed wins
+
+    def test_from_yaml_loads_allowed_properties(self, tmp_path):
+        cfg = tmp_path / "safety.yaml"
+        cfg.write_text(
+            "allowed_properties:\n"
+            "  - device: DCam\n"
+            "    property: Binning\n"
+        )
+        constraints = SafetyConstraints.from_yaml(str(cfg))
+        assert constraints.allowed_properties == [ForbiddenProperty("DCam", "Binning")]
+        guard = SafetyGuard(constraints)
+        with pytest.raises(SafetyViolation):
+            guard.check_property("DStage", "Position")
 
 
 class TestPluginGates:

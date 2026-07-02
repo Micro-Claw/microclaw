@@ -52,6 +52,11 @@ class SafetyConstraints:
     camera: CameraConstraints = field(default_factory=CameraConstraints)
     allowed_channels: Optional[list[str]] = None  # None means all allowed
     forbidden_properties: list[ForbiddenProperty] = field(default_factory=list)
+    # None = denylist mode (forbidden_properties). When set, ONLY these
+    # (device, property) pairs may be written; everything else is refused. This
+    # is the only mode in which raw property writes have a hard gate (see
+    # SafetyGuard.check_property and safety_config.yaml).
+    allowed_properties: Optional[list[ForbiddenProperty]] = None
     plugins: PluginConstraints = field(default_factory=PluginConstraints)
 
     @classmethod
@@ -67,11 +72,18 @@ class SafetyConstraints:
             ForbiddenProperty(**p)
             for p in cfg.get("forbidden_properties", [])
         ]
+        allowed_cfg = cfg.get("allowed_properties")
+        allowed = (
+            [ForbiddenProperty(**p) for p in allowed_cfg]
+            if allowed_cfg is not None
+            else None
+        )
         return cls(
             stage=StageConstraints(**stage_cfg),
             camera=CameraConstraints(**camera_cfg),
             allowed_channels=channels_cfg.get("allowed"),
             forbidden_properties=forbidden,
+            allowed_properties=allowed,
             plugins=PluginConstraints(
                 blocked=plugins_cfg.get("blocked") or [],
                 allow_hardware_motion=bool(plugins_cfg.get("allow_hardware_motion", False)),
@@ -80,6 +92,13 @@ class SafetyConstraints:
 
 
 class SafetyGuard:
+    # Raw property-name aliases that map onto the numeric guards. These are
+    # defence-in-depth only: they narrow the hole for a raw set_property that
+    # targets a guarded axis, they do NOT close it (see check_device_property).
+    _MOTION_PROPS = {"position"}          # focus-device raw position aliases
+    _EXPOSURE_PROPS = {"exposure"}        # camera raw exposure aliases
+    _XY_PROPS = {"x", "y", "xposition", "yposition"}
+
     def __init__(self, constraints: SafetyConstraints):
         self._c = constraints
 
@@ -128,11 +147,50 @@ class SafetyGuard:
             )
 
     def check_property(self, device: str, prop: str) -> None:
+        allow = self._c.allowed_properties
+        if allow is not None:
+            # Allowlist mode: the only hard gate for raw property writes.
+            if not any(a.device == device and a.property == prop for a in allow):
+                raise SafetyViolation(
+                    f"Property '{device}.{prop}' is not in the allowed_properties list."
+                )
+            return
         for fp in self._c.forbidden_properties:
             if fp.device == device and fp.property == prop:
                 raise SafetyViolation(
                     f"Property '{device}.{prop}' is forbidden by safety config."
                 )
+
+    def check_device_property(self, core, device: str, prop: str, value: str) -> None:
+        """Guard a raw `set_property` write on a guarded axis, then apply the
+        denylist/allowlist from check_property.
+
+        HEURISTIC, NOT A GATE. It re-applies the numeric guards only when the
+        target is the *current* focus/camera/XY device and the property name is
+        one of the small alias sets above. It does NOT protect a second Z drive,
+        a driver whose position property is named differently ("Position (um)",
+        "PositionZ", ASI/PI names), or relative-move/offset properties. The only
+        hard gate for raw property writes is allowlist mode (allowed_properties).
+        """
+        self.check_property(device, prop)          # denylist/allowlist first
+        p = prop.lower()
+        try:
+            num = float(value)
+        except (TypeError, ValueError):
+            return                                  # non-numeric; denylist only
+        focus = core.get_focus_device()
+        cam = core.get_camera_device()
+        xy = core.get_xy_stage_device()
+        if device == focus and p in self._MOTION_PROPS:
+            self.check_z(num)
+        elif device == cam and p in self._EXPOSURE_PROPS:
+            self.check_exposure(num)
+        elif device == xy and p in self._XY_PROPS:
+            # Only one axis is known here; read the other from the core so the
+            # known axis is guarded against its own bound.
+            x = num if p.startswith("x") else core.get_x_position()
+            y = num if p.startswith("y") else core.get_y_position()
+            self.check_xy(x, y)
 
     def check_plugin(self, classpath: str) -> None:
         """Gate a read-only analyzer plugin: allow by default, deny if blocklisted.

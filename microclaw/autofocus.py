@@ -56,19 +56,16 @@ def coarse_then_fine_autofocus(
     fine_step_um: float,
     settle_ms: int = 50,
 ) -> AutofocusResult:
-    """Two-pass autofocus: coarse sweep then fine sweep around the coarse peak."""
+    """Two-pass autofocus: coarse sweep then fine sweep around the coarse peak.
+
+    The fine window is clamped to the coarse window (current_z ± z_range/2) so a
+    coarse peak sitting at the boundary can't push the fine sweep past the range
+    the caller guarded with check_z.
+    """
     current_z = ctrl.core.get_position()
-    coarse = sweep_autofocus(
-        ctrl,
-        current_z - z_range_um / 2,
-        current_z + z_range_um / 2,
-        coarse_step_um,
-        settle_ms,
-    )
-    return sweep_autofocus(
-        ctrl,
-        coarse.best_z_um - coarse_step_um,
-        coarse.best_z_um + coarse_step_um,
-        fine_step_um,
-        settle_ms,
-    )
+    lo_bound = current_z - z_range_um / 2
+    hi_bound = current_z + z_range_um / 2
+    coarse = sweep_autofocus(ctrl, lo_bound, hi_bound, coarse_step_um, settle_ms)
+    lo = max(coarse.best_z_um - coarse_step_um, lo_bound)
+    hi = min(coarse.best_z_um + coarse_step_um, hi_bound)
+    return sweep_autofocus(ctrl, lo, hi, fine_step_um, settle_ms)
