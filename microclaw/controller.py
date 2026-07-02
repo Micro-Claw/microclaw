@@ -190,10 +190,14 @@ class MicroscopeController:
             entry: dict = {"name": str(msp.get_label())}
             for j in range(msp.size()):
                 sp = msp.get(j)
-                if sp.num_axes == 2:
+                # The bridge exposes the axis-count as the raw Java field name
+                # `numAxes`; `sp.num_axes` does NOT resolve over pycro-manager and
+                # silently drops XY/Z (found via design/11b Spike A).
+                n_axes = int(sp.numAxes)
+                if n_axes == 2:
                     entry["x_um"] = round(float(sp.x), 3)
                     entry["y_um"] = round(float(sp.y), 3)
-                elif sp.num_axes == 1:
+                elif n_axes == 1:
                     entry["z_um"] = round(float(sp.x), 3)
             out.append(entry)
         return out
@@ -212,12 +216,53 @@ class MicroscopeController:
         return imported
 
     def add_position(self, label: str, x: float, y: float, z: float | None = None) -> None:
-        """Add or replace a named position in the internal store."""
+        """Add or replace a named position in the internal store AND MM's GUI list.
+
+        design/11b Spike A confirmed set_position_list round-trips over the ZMQ
+        bridge and repaints MM's Position List Manager immediately, so a marked
+        position is visible in the GUI (unlike the jPypeMM Preview canvas).
+        """
         entry: dict = {"name": label, "x_um": round(x, 3), "y_um": round(y, 3)}
         if z is not None:
             entry["z_um"] = round(z, 3)
         self._positions = [p for p in self._positions if p["name"] != label]
         self._positions.append(entry)
+        self._write_position_to_mm(entry)          # mirror into the GUI list
+
+    def _write_position_to_mm(self, entry: dict) -> None:
+        """Mirror a stored position into MM's PositionList so it shows in the GUI.
+
+        StagePosition is a top-level MM2 class built via the static factories the
+        bridge names create2_d / create1_d (Spike A). Re-marking a label replaces
+        the matching MSP rather than duplicating it, mirroring the internal store.
+        """
+        from pycromanager import JavaClass, JavaObject
+        pm = self._studio.positions()
+        plist = pm.get_position_list()
+        self._drop_label_from_plist(plist, entry["name"])   # de-dup before re-adding
+        msp = JavaObject("org.micromanager.MultiStagePosition", port=self._port)
+        msp.set_label(entry["name"])
+        sp_cls = JavaClass("org.micromanager.StagePosition", port=self._port)
+        if "x_um" in entry and "y_um" in entry:
+            msp.add(sp_cls.create2_d(
+                self._core.get_xy_stage_device(), entry["x_um"], entry["y_um"]))
+        if "z_um" in entry:
+            msp.add(sp_cls.create1_d(self._core.get_focus_device(), entry["z_um"]))
+        plist.add_position(msp)
+        pm.set_position_list(plist)                 # round-trips AND repaints (Spike A)
+
+    @staticmethod
+    def _drop_label_from_plist(plist, label: str) -> bool:
+        """Remove every MSP with the given label from a Java PositionList in place.
+
+        Returns True if anything was removed. Caller is responsible for the
+        set_position_list write-back (so a batch can do a single round trip)."""
+        removed = False
+        for i in reversed(range(int(plist.get_number_of_positions()))):
+            if str(plist.get_position(i).get_label()) == label:
+                plist.remove_position(i)
+                removed = True
+        return removed
 
     def get_positions(self) -> list[dict]:
         """Return all stored positions."""
@@ -253,15 +298,32 @@ class MicroscopeController:
         raise KeyError(f"Position '{label}' not found.")
 
     def remove_position(self, label: str) -> None:
-        """Remove a named position."""
+        """Remove a named position from the internal store AND MM's GUI list."""
         before = len(self._positions)
         self._positions = [p for p in self._positions if p["name"] != label]
         if len(self._positions) == before:
             raise KeyError(f"Position '{label}' not found.")
+        self._remove_position_from_mm(label)
+
+    def _remove_position_from_mm(self, label: str) -> None:
+        pm = self._studio.positions()
+        plist = pm.get_position_list()
+        if self._drop_label_from_plist(plist, label):
+            pm.set_position_list(plist)             # repaints the GUI list
 
     def clear_positions(self) -> None:
-        """Clear all stored positions."""
+        """Clear all stored positions from the internal store AND MM's GUI list."""
         self._positions = []
+        self._clear_mm_position_list()
+
+    def _clear_mm_position_list(self) -> None:
+        pm = self._studio.positions()
+        plist = pm.get_position_list()
+        n = int(plist.get_number_of_positions())
+        if n > 0:
+            for i in reversed(range(n)):
+                plist.remove_position(i)
+            pm.set_position_list(plist)             # repaints the GUI list
 
     def save_position_list(self, path: str) -> None:
         """Persist the position list to a JSON file."""

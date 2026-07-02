@@ -39,8 +39,8 @@ Image analysis:
 - Never over-interpret a single image; recommend re-imaging or a wider survey if you are uncertain.
 
 Position lists:
-- Position lists are stored in MM's native format and visible in the MM GUI. Use mark_position after the biologist has navigated to a site of interest.
-- Use save_position_list / load_position_list to persist positions across sessions.
+- mark_position stores a position in microclaw's list and mirrors it into MM's PositionList, so it appears in the MM GUI's Position List Manager. Use it after the biologist has navigated to a site of interest.
+- save_position_list / load_position_list persist positions across sessions as a microclaw JSON file (not MM's native .pos format).
 - Use run_multiposition_with_autofocus for automated surveys — do not manually loop over go_to_position unless the user explicitly asks for it.
 
 Autofocus:

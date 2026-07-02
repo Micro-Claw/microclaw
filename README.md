@@ -116,13 +116,13 @@ MM_RUNNING=1 pytest -m integration
 | `run_zstack` | Z-stack acquisition |
 | `run_timelapse` | Timelapse acquisition |
 | `export_dataset_as_tiff` | Export NDTiff dataset to ImageJ TIFF |
-| `mark_position` | Save current stage position to MM position list |
-| `get_position_list` | Return all positions from MM position list |
+| `mark_position` | Mark current stage position (mirrored into MM's Position List Manager) |
+| `get_position_list` | Return all marked positions |
 | `go_to_position` | Move stage to a named position |
 | `delete_position` | Delete a named position |
 | `clear_position_list` | Clear all positions |
-| `save_position_list` | Save position list to a `.pos` file |
-| `load_position_list` | Load a `.pos` file into MM position list |
+| `save_position_list` | Save position list to a microclaw JSON file |
+| `load_position_list` | Load a microclaw JSON position file |
 | `import_mm_positions` | Import positions from the MM GUI position list |
 | `run_multiposition_acquisition` | Visit each position and run snap/zstack/timelapse |
 | `run_tile_acquisition` | Acquire a rows×cols tile grid centered on current stage position |
