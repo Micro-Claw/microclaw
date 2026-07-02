@@ -55,7 +55,8 @@ Suggested landing order (severity, and dependency-aware):
 2. `security/confirm-in-code` (issues 2 + 3) — cross-session self-modification.
 3. `fix/snap-dtype` (issue 6) — silently corrupts every downstream metric.
 4. `fix/hook-fail-open` (issue 7) — depends on nothing; small.
-5. `fix/position-list-gui-parity` (issue 5) — **spike first** (see below).
+5. `fix/position-list-gui-parity` (issue 5) — **Spike A done → fix (b), correct
+   the docs, and fix the `numAxes` read-path bug** (see issue 5).
 6. `chore/honorable-mentions` — can be split further or batched.
 
 ### Would spikes help first? Yes — three of them.
@@ -98,6 +99,37 @@ PASS/FAIL/INFO.
 
 Spikes A and C are worth writing *before* the corresponding fix. Spike B can run
 in parallel with the fix since the fix is defensible regardless.
+
+### Spike results (lab run — MMCore 12.5.0, demo config)
+
+All three ran on the Windows lab machine. Verdicts:
+
+- **Spike A → take fix 5(b) (correct the docs).** The write plumbing works over
+  the bridge (`MultiStagePosition` construction; factory names are `create2_d` /
+  `create1_d`; `set_position_list` round-trips, count 0→1 with XY coordinates
+  read back intact; `PositionList.save('.pos')` works; cleanup restores the
+  list). **But the decisive manual check failed: the marked position never
+  appeared in MM's Position List Manager, even after a manual refresh.** So
+  `set_position_list` updates the bridge-side list object without surfacing in
+  the GUI — the same "data model updates, GUI doesn't repaint" gap as the jPypeMM
+  Preview canvas. Do **not** build write-through; fix 5(b) it is.
+- **Spike A also surfaced a real read-path bug (new — not in 11a).** The bridge
+  exposes the axis-count field only as `numAxes`, but
+  `controller._read_mm_position_list` (`controller.py:185`) reads `sp.num_axes`,
+  which does **not** resolve over this bridge. So `import_from_mm_position_list`
+  is broken on this backend — it raises or silently drops XY/Z, returning
+  name-only entries. Fold the fix into the position-list branch (see issue 5).
+- **Spike B → fix confirmed for 16-bit mono.** `get_camera_device()` resolves
+  over the bridge (`'Camera'`), `pix` length == `w*h*bpp` (512×512, bpp=2), and
+  the issue-6 dtype mapping decodes to `uint16 (512,512)`. Not yet exercised:
+  the **8-bit** path (where the hardcoded-uint16 bug actually bites) and RGB32.
+  The fix is defensible regardless; flip the demo cam to 8-bit and re-run to
+  close it fully.
+- **Spike C → premise holds; the bridge is NOT thread-affine here.** The hook ran
+  on a different thread from the one that built the bridge (`cross_thread=True`)
+  and `get_position()` / `get_exposure()` both succeeded from it. So issue 7's
+  fail-open handlers are swallowing genuine `SafetyViolation`s / errors, not a
+  structural "hooks can't touch core" — the logging fix is valid as written.
 
 ---
 
@@ -157,9 +189,9 @@ def set_device_property(ctrl, guard, device, property, value) -> dict:
     return {"status": f"Set {device}.{property} = {value!r}."}
 ```
 
-Note the review's stub calls `get_camera_device()`; that exists on Core. Confirm
-`get_camera_device` is exposed over the bridge in Spike B (it is used nowhere
-else in the repo yet).
+Note the review's stub calls `get_camera_device()`; that exists on Core. **Spike B
+confirmed `get_camera_device` is exposed over the bridge** (returned `'Camera'`),
+so the role mapping above is usable (it is used nowhere else in the repo yet).
 
 ### Be honest: `check_device_property` is a heuristic, not a gate
 
@@ -601,54 +633,63 @@ above is the interim hardening behind the human gate.
 
 ## Issue 5 — Position list is Python-only and contradicts the docs
 
-**Branch:** `fix/position-list-gui-parity`. **Spike A first.**
+**Branch:** `fix/position-list-gui-parity`. **Spike A ran — decision resolved.**
 
-The decision between fix (a) "make it truly GUI-visible" and fix (b) "correct the
-docs" hinges on Spike A. Don't build (a) until the spike confirms
-`set_position_list` both round-trips and repaints over ZMQ.
+**Spike A verdict: take fix (b), correct the docs.** The write plumbing works over
+the bridge (construct `MultiStagePosition`; factories are `create2_d` /
+`create1_d`; `set_position_list` round-trips with coordinates; `.pos` save works),
+but the marked position **never appeared in MM's Position List Manager, even after
+a manual refresh**. `set_position_list` mutates the bridge-side list object
+without surfacing in the GUI — the same repaint gap as the jPypeMM Preview canvas.
+Write-through (former fix (a)) would "succeed" silently and never show the
+biologist anything, so it's off the table. The former fix-(a) sketch is retained
+below only as a record of what was tried.
 
-### If Spike A passes → write through to MM's PositionList
+### Also fix: `_read_mm_position_list` uses the wrong field name (found via Spike A)
 
-`add_position` (`controller.py:206`) currently only appends to `self._positions`.
-Make it also push to MM. Match the read side already in
-`_read_mm_position_list` (`controller.py:176`), which reads `StagePosition`
-`num_axes`/`x`/`y`. The write is the inverse:
+Independent of the GUI decision, Spike A found that the bridge exposes the
+StagePosition axis-count field only as `numAxes`, but
+`_read_mm_position_list` (`controller.py:185`) reads `sp.num_axes`, which does not
+resolve over the bridge. `import_from_mm_position_list` is therefore broken on this
+backend — it raises or silently drops XY/Z and returns name-only entries. Fix the
+read path (the `x`/`y` fields *do* resolve; only the multi-word name is mangled):
+
+```python
+# controller.py — _read_mm_position_list
+n_axes = int(sp.numAxes)      # bridge exposes the raw Java field name, not num_axes
+if n_axes == 2:
+    entry["x_um"] = round(float(sp.x), 3)
+    entry["y_um"] = round(float(sp.y), 3)
+elif n_axes == 1:
+    entry["z_um"] = round(float(sp.x), 3)
+```
+
+Add a test that exercises the read path against a fake StagePosition exposing
+`numAxes` (not `num_axes`) so this can't silently regress if pycro-manager changes
+its attribute translation.
+
+### (Former fix (a), not shipping) write through to MM's PositionList
+
+Retained for the record — Spike A showed this round-trips but does **not** repaint
+in the GUI, so it does not meet the "visible to the biologist" goal:
 
 ```python
 # controller.py
-def add_position(self, label, x, y, z=None) -> None:
-    entry = {"name": label, "x_um": round(x, 3), "y_um": round(y, 3)}
-    if z is not None:
-        entry["z_um"] = round(z, 3)
-    self._positions = [p for p in self._positions if p["name"] != label]
-    self._positions.append(entry)
-    self._write_position_to_mm(entry)          # mirror into the GUI list
-
 def _write_position_to_mm(self, entry) -> None:
     from pycromanager import JavaClass, JavaObject
     pm = self._studio.positions()
     plist = pm.get_position_list()
     msp = JavaObject("org.micromanager.MultiStagePosition", port=self._port)
     msp.set_label(entry["name"])
-    # StagePosition is a TOP-LEVEL class in MM2 (org.micromanager.StagePosition),
-    # not an inner class of MultiStagePosition, and is built via its static
-    # create1D/create2D factories rather than a bare constructor.
     sp_cls = JavaClass("org.micromanager.StagePosition", port=self._port)
     xy = sp_cls.create2_d(self._core.get_xy_stage_device(),
-                          entry["x_um"], entry["y_um"])
+                          entry["x_um"], entry["y_um"])   # create2_d confirmed by Spike A
     msp.add(xy)
-    ...
     plist.add_position(msp)
-    pm.set_position_list(plist)                 # <-- the call that must repaint
+    pm.set_position_list(plist)                 # round-trips over the bridge, but GUI does NOT repaint
 ```
 
-What Spike A pins down: the exact snake_case mangling of the factory names over
-the bridge (`create2D` → `create2_d` or similar — print `dir()` if the first
-guess misses), the 1-axis Z entry via `create1D`, and whether `msp.add` accepts
-the bridged object directly. The read path uses `sp.x`, `sp.y`, `sp.num_axes`
-(`controller.py:184-189`), so the write path mirrors those fields.
-
-### If Spike A fails (no repaint over ZMQ) → correct the docs
+### Fix (b) — correct the docs (this is the one to ship)
 
 Cheaper and honest. Change:
 - `agent.py:42` — "Position lists are stored in MM's native format and visible in
@@ -671,18 +712,21 @@ Two honest options:
 - Rename the tool params/docs to `.json` and drop the "native format" claim
   (smaller change), or
 - Genuinely serialise MM's `PositionList` to `.pos` via
-  `PositionList.save(path)` over the bridge (verify in Spike A while we're there).
+  `PositionList.save(path)` over the bridge — **Spike A confirmed this call works
+  over the bridge**, so it's a viable option if labs want microclaw files that open
+  in the MM GUI.
 
 Recommend the rename now; the true `.pos` round-trip only matters if labs want to
-open microclaw files in the MM GUI, which the write-through in fix (a) already
-addresses.
+open microclaw files in the MM GUI. Since write-through is off the table (fix (b)),
+`PositionList.save` is the only remaining path to real `.pos` interop — defer it
+unless a lab actually asks.
 
 ### Tests
 
-- With a fake studio (MagicMock), `add_position` calls `set_position_list` once
-  (fix a path) — assert the mirror happened.
-- Docstrings/schema no longer contain "visible in the MM GUI" if we take fix (b)
-  — a grep test over `agent.py`/`tools_schema.py`/README.
+- `_read_mm_position_list` against a fake StagePosition exposing `numAxes` (not
+  `num_axes`) reads XY/Z correctly (guards the read-path bug Spike A found).
+- Docstrings/schema no longer contain "visible in the MM GUI" (fix (b)) — a grep
+  test over `agent.py`/`tools_schema.py`/README.
 - `save`/`load` round-trip preserves positions (already implicitly true for JSON;
   add an explicit test).
 
@@ -690,8 +734,9 @@ addresses.
 
 ## Issue 6 — `snap_to_numpy` assumes 16-bit monochrome
 
-**Branch:** `fix/snap-dtype`. Spike B confirms camera semantics but the fix is
-defensible without it.
+**Branch:** `fix/snap-dtype`. **Spike B confirmed the 16-bit-mono path** (bpp=2,
+n_comp=1, `pix` length == `w*h*bpp`, decodes to `uint16`); the 8-bit and RGB32
+paths weren't exercised yet, but the fix is defensible without them.
 
 `snap_to_numpy` (`image_analysis.py:54`) hardcodes `np.uint16`. Derive the dtype
 from bytes-per-pixel and component count (component count first — RGB32 is 4×uint8,
@@ -741,7 +786,11 @@ Mock `ctrl.core.get_tagged_image` to return objects with `.pix` and `.tags`:
 
 ## Issue 7 — Fail-open error handling swallows safety violations
 
-**Branch:** `fix/hook-fail-open`. Independent; small.
+**Branch:** `fix/hook-fail-open`. Independent; small. **Spike C confirmed the
+premise:** the bridge is not thread-affine here — hooks *can* call `ctrl.core`
+from the acquisition thread (`get_position`/`get_exposure` succeeded cross-thread),
+so the fail-open handlers are swallowing genuine guard rejections, not a structural
+"can't touch core" error. The logging fix below is valid as written.
 
 Two offenders. Distinguish a guard rejection (expected, log it) from an
 unexpected error (log loudly), and never swallow silently.
@@ -1049,10 +1098,13 @@ if __name__ == "__main__":
 
 - **Branch per issue, severity order**, with `1+4` and `2+3` grouped by shared
   root cause. Six branches total plus the honorable-mentions chore.
-- **Three spikes**, run on the lab machine before/alongside the fixes: A
-  (position-list write-back — the one that can flip issue 5 from "implement
-  write-through" to "just fix the docs"), B (camera pixel geometry), C (hook
-  thread-affinity).
+- **Three spikes, all run on the lab machine (MMCore 12.5.0).** Outcomes: **A**
+  flipped issue 5 to "just fix the docs" — write-through round-trips over the
+  bridge but never repaints in the GUI — and additionally found a `numAxes` vs
+  `num_axes` read-path bug in `_read_mm_position_list`; **B** confirmed the
+  16-bit-mono pixel geometry and that `get_camera_device` is on the bridge (8-bit
+  / RGB32 still to run); **C** confirmed the bridge is not thread-affine, so the
+  issue-7 logging fix rests on a valid premise.
 - The **durable safety fix** is to centralize the guard at the controller/core
   write boundary so no future tool can skip it — that single refactor closes both
   issue 1 and issue 4 and is worth the extra churn.
