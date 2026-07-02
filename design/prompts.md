@@ -319,3 +319,41 @@ with #2401 present.
 
 Have a look at test-failures.txt for the results of the spike. Fold them back 
 into design/10  
+
+----
+
+Have a careful look at this repository. Can you please identify the top 5     
+issues with it, whether they are design, security, readability, tech debt,    
+functional, or otherwise. Please write these issues along with code stubs for 
+any proposed fixes in 11-top-5-issues.md
+(file since expanded and moved to design/11a-code-review-issues.md) 
+
+----
+
+How would you implement fixes for everything  
+in design/11-code-review-issues.md? Is it best to fix each issue in a         
+separate commit/branch? Would it help to write any spikes to identify         
+potential issues (e.g. in fixing the position list) before implementing the   
+fixes? Please write your solutions, including code stubs, to                  
+design/11b-code-review-issues-fixes.md   
+
+----
+
+Have a look at design/11b-code-reivew-issues.fixes.md. Is this the correct approach 
+to fixing the issues described in 11a?  
+
+----
+
+Please write the spikes in design/11b 
+
+Look at the outputs of each of the three spikes (txts in this folder)  
+
+I answered the question: "does MICROCLAW_SPIKE repaint in the Position List   
+Manager without a manual refresh?" wrong. MICROCLAW_SPIKE *does* repaint in 
+the Position List Manager without a manual refresh. However, it's not         
+visible without the --keep flag. It gets deleted too fast for me to see       
+otherwise, which is why I didn't notice. Please update 11b in light of this
+
+----
+
+Start implementing the fixes in design/11b severity order
