@@ -465,6 +465,73 @@ def test_position_list_save_and_load(headless_mm, unconstrained_guard, tmp_path)
     clear_position_list(headless_mm, unconstrained_guard)
 
 
+def _clear_mm_native_list(ctrl):
+    """Empty MM's own PositionList (the tool-level clear only clears the internal
+    store). Mirrors the remove/set_position_list path used by the write-through."""
+    pm = ctrl.studio.positions()
+    plist = pm.get_position_list()
+    for i in reversed(range(int(plist.get_number_of_positions()))):
+        plist.remove_position(i)
+    pm.set_position_list(plist)
+
+
+def test_mark_position_writes_through_to_mm_native_list(headless_mm, unconstrained_guard):
+    """mark_position must appear in MM's ACTUAL PositionList, read back over the
+    Java bridge — exercises _write_position_to_mm (create2_d/create1_d) end-to-end
+    and the numAxes read path in one round trip."""
+    from microclaw.tools import clear_position_list, mark_position
+
+    _clear_mm_native_list(headless_mm)
+    clear_position_list(headless_mm, unconstrained_guard)
+    orig = (headless_mm.core.get_x_position(), headless_mm.core.get_y_position())
+    before = int(headless_mm.studio.positions().get_position_list().get_number_of_positions())
+
+    mark_position(headless_mm, unconstrained_guard, name="GuiCheck")     # include_z default
+
+    # Read MM's real PositionList back through the Java MultiStagePositions.
+    native = headless_mm._read_mm_position_list()
+    after = int(headless_mm.studio.positions().get_position_list().get_number_of_positions())
+
+    assert after == before + 1, "position was not added to MM's native list"
+    entry = next((p for p in native if p["name"] == "GuiCheck"), None)
+    assert entry is not None, f"GuiCheck missing from MM native list: {native}"
+    assert abs(entry["x_um"] - orig[0]) < 1.0
+    assert abs(entry["y_um"] - orig[1]) < 1.0
+    # Z was marked too (create1_d 1-axis stage position must round-trip).
+    assert "z_um" in entry, f"Z not written via create1_d: {entry}"
+
+    _clear_mm_native_list(headless_mm)
+    clear_position_list(headless_mm, unconstrained_guard)
+
+
+def test_remark_label_does_not_duplicate_in_mm_native_list(headless_mm, unconstrained_guard):
+    """Re-marking a label replaces the MSP in MM's list rather than duplicating it."""
+    from microclaw.tools import clear_position_list, mark_position
+
+    _clear_mm_native_list(headless_mm)
+    clear_position_list(headless_mm, unconstrained_guard)
+    orig = (headless_mm.core.get_x_position(), headless_mm.core.get_y_position())
+    xy_stage = headless_mm.core.get_xy_stage_device()
+
+    mark_position(headless_mm, unconstrained_guard, name="Dup")
+    # Move a little, then re-mark the SAME label at the new spot.
+    headless_mm.core.set_xy_position(orig[0] + 15.0, orig[1] + 15.0)
+    headless_mm.core.wait_for_device(xy_stage)
+    mark_position(headless_mm, unconstrained_guard, name="Dup")
+
+    native = headless_mm._read_mm_position_list()
+    dup_entries = [p for p in native if p["name"] == "Dup"]
+    assert len(dup_entries) == 1, f"label duplicated in MM native list: {native}"
+    # The surviving entry reflects the second (moved) mark.
+    assert abs(dup_entries[0]["x_um"] - (orig[0] + 15.0)) < 1.0
+
+    # restore stage + lists
+    headless_mm.core.set_xy_position(*orig)
+    headless_mm.core.wait_for_device(xy_stage)
+    _clear_mm_native_list(headless_mm)
+    clear_position_list(headless_mm, unconstrained_guard)
+
+
 # ---------------------------------------------------------------------------
 # Multiposition acquisition
 # ---------------------------------------------------------------------------
