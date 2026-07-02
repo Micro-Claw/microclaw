@@ -1,8 +1,12 @@
 from __future__ import annotations
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pycromanager import Core, Studio
+
+if TYPE_CHECKING:
+    from microclaw.safety import SafetyGuard
 
 
 # Micro-Manager plugin access requires the unified SharedPluginClassLoader from
@@ -140,10 +144,14 @@ class MicroscopeController:
     """Thin wrapper around pycro-manager Core and Studio.
     Holds the ZMQ connection; all tool functions go through here."""
 
-    def __init__(self, port: int = 4827):
+    def __init__(self, port: int = 4827, guard: "SafetyGuard | None" = None):
         self._port = port
         self._core = Core(port=port)
         self._studio = Studio(port=port)
+        # Optional guard so every stage write funnels through one guarded seam
+        # (set_z / set_xy). When present, no caller can skip the numeric guards;
+        # when None the controller behaves as before (tool layer still guards).
+        self._guard = guard
         self._plugins: PluginAccess | None = None
         # Python-native position store. Use import_from_mm_position_list() to
         # pull in positions the user has marked in MM's GUI.
@@ -215,15 +223,32 @@ class MicroscopeController:
         """Return all stored positions."""
         return list(self._positions)
 
+    def set_xy(self, x_um: float, y_um: float) -> None:
+        """Guarded XY stage write — the single seam every XY move should use."""
+        if self._guard is not None:
+            self._guard.check_xy(x_um, y_um)
+        self._core.set_xy_position(x_um, y_um)
+        self._core.wait_for_device(self._core.get_xy_stage_device())
+
+    def set_z(self, z_um: float) -> None:
+        """Guarded focus write — the single seam every Z move should use."""
+        if self._guard is not None:
+            self._guard.check_z(z_um)
+        self._core.set_position(z_um)
+        self._core.wait_for_device(self._core.get_focus_device())
+
     def go_to_position(self, label: str) -> None:
-        """Move stage to a named position."""
+        """Move stage to a named position.
+
+        XY is optional: Z-only entries (from 1-axis MultiStagePositions in MM)
+        set only the focus device and never touch XY.
+        """
         for pos in self._positions:
             if pos["name"] == label:
-                self._core.set_xy_position(pos["x_um"], pos["y_um"])
-                self._core.wait_for_device(self._core.get_xy_stage_device())
+                if "x_um" in pos and "y_um" in pos:
+                    self.set_xy(pos["x_um"], pos["y_um"])
                 if "z_um" in pos:
-                    self._core.set_position(pos["z_um"])
-                    self._core.wait_for_device(self._core.get_focus_device())
+                    self.set_z(pos["z_um"])
                 return
         raise KeyError(f"Position '{label}' not found.")
 
@@ -243,5 +268,20 @@ class MicroscopeController:
         Path(path).write_text(json.dumps(self._positions, indent=2))
 
     def load_position_list(self, path: str) -> None:
-        """Load positions from a JSON file written by save_position_list."""
-        self._positions = json.loads(Path(path).read_text())
+        """Load positions from a JSON file written by save_position_list.
+
+        Rejects a malformed file (hand-edited, wrong schema) up front with a
+        ValueError rather than letting a missing key surface as a KeyError deep
+        in go_to_position. Z-only entries ({"name", "z_um"}) are valid — they
+        come from 1-axis MultiStagePositions in MM.
+        """
+        data = json.loads(Path(path).read_text())
+
+        def _valid(p) -> bool:
+            return isinstance(p, dict) and "name" in p and (
+                {"x_um", "y_um"} <= p.keys() or "z_um" in p
+            )
+
+        if not isinstance(data, list) or not all(_valid(p) for p in data):
+            raise ValueError(f"{path} is not a valid microclaw position list.")
+        self._positions = data

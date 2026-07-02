@@ -207,7 +207,7 @@ def set_device_property(
     property: str,
     value: str,
 ) -> dict:
-    guard.check_property(device, property)
+    guard.check_device_property(ctrl.core, device, property, value)
     ctrl.core.set_property(device, property, value)
     ctrl.studio.app().refresh_gui()
     return {"status": f"Set {device}.{property} = {value!r}."}
@@ -589,11 +589,40 @@ def save_position_list(ctrl: MicroscopeController, guard: SafetyGuard, path: str
     return {"status": f"Position list saved to {path}."}
 
 
+def _validate_stored_positions(
+    ctrl: MicroscopeController, guard: SafetyGuard
+) -> list[dict]:
+    """Drop any stored position that violates the numeric guards.
+
+    Positions enter the store from files or MM's GUI without passing through a
+    guard; validate at ingestion so an out-of-bounds entry can't later drive the
+    stage via go_to_position. Z-only entries (no XY) are legitimate — they come
+    from 1-axis MultiStagePositions in MM — so only guard the axes present.
+    Returns the list of rejected {"name", "reason"} entries (removed from store).
+    """
+    rejected: list[dict] = []
+    for p in list(ctrl.get_positions()):
+        try:
+            if "x_um" in p and "y_um" in p:
+                guard.check_xy(p["x_um"], p["y_um"])
+            if "z_um" in p:
+                guard.check_z(p["z_um"])
+        except SafetyViolation as e:
+            ctrl.remove_position(p["name"])
+            rejected.append({"name": p["name"], "reason": str(e)})
+    return rejected
+
+
 def load_position_list(ctrl: MicroscopeController, guard: SafetyGuard, path: str) -> dict:
     """Load a .pos file into MM's native position list."""
     ctrl.load_position_list(path)
-    positions = ctrl.get_positions()
-    return {"status": f"Loaded {len(positions)} positions from {path}.", "count": len(positions)}
+    rejected = _validate_stored_positions(ctrl, guard)
+    kept = ctrl.get_positions()
+    return {
+        "status": f"Loaded {len(kept)} positions from {path}.",
+        "count": len(kept),
+        "rejected": rejected,
+    }
 
 
 def import_mm_positions(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
@@ -603,10 +632,13 @@ def import_mm_positions(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     Manager. The imported positions will be available for all acquisition tools.
     """
     names = ctrl.import_from_mm_position_list()
+    rejected = _validate_stored_positions(ctrl, guard)
+    kept_names = [n for n in names if n not in {r["name"] for r in rejected}]
     positions = ctrl.get_positions()
     return {
-        "status": f"Imported {len(names)} position(s) from MM.",
-        "imported": names,
+        "status": f"Imported {len(kept_names)} position(s) from MM.",
+        "imported": kept_names,
+        "rejected": rejected,
         "total": len(positions),
     }
 
@@ -768,7 +800,15 @@ def run_multiposition_with_autofocus(
                 results.append({"position": pos_name, "error": "Not found in position list."})
                 continue
             pos = all_positions[pos_name]
-            guard.check_xy(pos["x_um"], pos["y_um"])
+            try:
+                guard.check_xy(pos["x_um"], pos["y_um"])
+                if "z_um" in pos:
+                    guard.check_z(pos["z_um"])
+            except SafetyViolation as e:
+                results.append(
+                    {"position": pos_name, "error": f"Stored position out of bounds: {e}"}
+                )
+                continue
             ctrl.go_to_position(pos_name)
 
             current_z = ctrl.core.get_position()

@@ -17,10 +17,28 @@ channels:
   # Remove the list entirely to allow all channels.
   allowed: [DAPI, FITC, TRITC, Brightfield]
 
-# Device properties the AI may never touch, regardless of prompt.
+# Raw device-property writes (set_device_property) have two modes:
+#
+#   DENYLIST (default, below): named (device, property) pairs are refused; every
+#   OTHER property is writable. This is NOT a complete gate — it can't enumerate
+#   every driver's motion/offset property, so a raw write can still reach an
+#   unlisted property. set_device_property additionally re-applies the numeric
+#   Z/XY/exposure guards when it can recognise the axis, but that too is only a
+#   heuristic (current focus/camera/XY device + known property names).
+#
+#   ALLOWLIST (recommended for hardware-attached rigs): uncomment
+#   allowed_properties below. When present, ONLY the listed pairs may be written
+#   and everything else is refused — the only mode in which raw property writes
+#   have a hard gate. forbidden_properties is ignored while allowed_properties is set.
 forbidden_properties:
   - device: Core
     property: Initialize
+
+# allowed_properties:
+#   - device: DWheel
+#     property: Label
+#   - device: DCam
+#     property: Binning
 
 # Micro-Manager plugin hooks (see design/09). Plugin code is arbitrary Java that
 # bypasses the checks above, so it has its own two gates.

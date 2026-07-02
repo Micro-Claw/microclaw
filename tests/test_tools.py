@@ -191,6 +191,22 @@ class TestSetDeviceProperty:
         assert result["value"] == "42"
         assert result["device"] == "DCam"
 
+    def test_raw_focus_position_over_max_blocked(self, mock_ctrl, default_guard):
+        # A raw Position write to the focus device re-applies check_z, so an
+        # out-of-range value is refused and set_property is never called.
+        mock_ctrl.core.get_camera_device.return_value = "DCam"
+        with pytest.raises(SafetyViolation):
+            set_device_property(mock_ctrl, default_guard,
+                                device="DStage", property="Position", value="999999")
+        mock_ctrl.core.set_property.assert_not_called()
+
+    def test_raw_camera_exposure_over_max_blocked(self, mock_ctrl, default_guard):
+        mock_ctrl.core.get_camera_device.return_value = "DCam"
+        with pytest.raises(SafetyViolation):
+            set_device_property(mock_ctrl, default_guard,
+                                device="DCam", property="Exposure", value="60000")
+        mock_ctrl.core.set_property.assert_not_called()
+
 
 class TestListDevices:
     def test_returns_device_list(self, mock_ctrl, unconstrained_guard):
@@ -373,6 +389,21 @@ class TestRunMultipositionWithAutofocus:
 
         live.set_live_mode_on.assert_called_with(True)
 
+    def test_stored_z_out_of_bounds_refused(self, mock_ctrl, default_guard, tmp_path, monkeypatch):
+        # default_guard z_max=200; a stored Z beyond it must not move the stage.
+        mock_ctrl.get_positions.return_value = [
+            {"name": "P1", "x_um": 0.0, "y_um": 0.0, "z_um": 999.0}
+        ]
+        monkeypatch.setattr("microclaw.tools.coarse_then_fine_autofocus", lambda *a, **k: _FAKE_AF_RESULT)
+        result = run_multiposition_with_autofocus(
+            mock_ctrl, default_guard,
+            position_names=["P1"],
+            z_range_um=10.0, z_step_um=1.0,
+            protocol="timelapse", save_dir=str(tmp_path),
+        )
+        assert "out of bounds" in result["results"][0]["error"]
+        mock_ctrl.go_to_position.assert_not_called()
+
 
 class TestMarkPosition:
     def test_saves_position(self, mock_ctrl, unconstrained_guard):
@@ -399,6 +430,32 @@ class TestMarkPosition:
         result = mark_position(mock_ctrl, unconstrained_guard, name="no_z", include_z=False)
         assert "z_um" not in result
         mock_ctrl.add_position.assert_called_once_with("no_z", 10.0, 20.0, None)
+
+
+class TestLoadPositionListValidation:
+    def test_out_of_bounds_entry_rejected(self, mock_ctrl, default_guard):
+        from microclaw.tools import load_position_list
+        stored = [
+            {"name": "Good", "x_um": 0.0, "y_um": 0.0, "z_um": 50.0},
+            {"name": "BadZ", "x_um": 0.0, "y_um": 0.0, "z_um": 999.0},
+        ]
+        mock_ctrl.get_positions.side_effect = lambda: [
+            p for p in stored if p["name"] not in removed
+        ]
+        removed: set = set()
+        mock_ctrl.remove_position.side_effect = lambda name: removed.add(name)
+
+        result = load_position_list(mock_ctrl, default_guard, path="x.json")
+        assert [r["name"] for r in result["rejected"]] == ["BadZ"]
+        mock_ctrl.remove_position.assert_called_once_with("BadZ")
+        assert result["count"] == 1
+
+    def test_z_only_entry_survives(self, mock_ctrl, default_guard):
+        from microclaw.tools import load_position_list
+        mock_ctrl.get_positions.return_value = [{"name": "Zonly", "z_um": 50.0}]
+        result = load_position_list(mock_ctrl, default_guard, path="x.json")
+        assert result["rejected"] == []
+        mock_ctrl.remove_position.assert_not_called()
 
 
 class TestGetPositionList:

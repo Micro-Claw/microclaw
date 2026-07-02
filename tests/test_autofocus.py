@@ -63,3 +63,15 @@ def test_coarse_then_fine_returns_result():
                                         fine_step_um=0.5, settle_ms=0)
     assert isinstance(result.best_z_um, float)
     assert isinstance(result.settled, bool)
+
+
+def test_fine_sweep_clamped_to_guarded_window():
+    # Coarse peak sits at the top boundary of the range. The fine sweep must not
+    # step past current_z ± z_range/2 (the window the caller guarded).
+    current_z = 50.0
+    z_range = 10.0
+    ctrl = make_ctrl_with_focus_at(best_z=60.0)  # peak above the window → coarse peak clamps to 55
+    result = coarse_then_fine_autofocus(ctrl, z_range_um=z_range, coarse_step_um=2.0,
+                                        fine_step_um=0.5, settle_ms=0)
+    lo, hi = current_z - z_range / 2, current_z + z_range / 2
+    assert all(lo - 1e-9 <= z <= hi + 1e-9 for z in result.z_positions)

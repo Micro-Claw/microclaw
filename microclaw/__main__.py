@@ -31,7 +31,7 @@ def main():
     guard = SafetyGuard(constraints)
 
     print("Connecting to Micro-Manager...")
-    ctrl = MicroscopeController(port=args.port)
+    ctrl = MicroscopeController(port=args.port, guard=guard)
     if not ctrl.is_connected():
         sys.exit(
             "Could not connect to Micro-Manager. "
