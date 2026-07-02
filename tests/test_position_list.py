@@ -159,6 +159,47 @@ class TestWriteThrough:
         assert [p["name"] for p in ctrl.get_positions()] == ["P1"]
 
 
+class TestRemoveAndClearMirror:
+    def test_remove_position_mirrors_to_mm(self, patch_java):
+        ctrl, pm, plist = make_controller()
+        ctrl.add_position("A", 1.0, 2.0)
+        ctrl.add_position("B", 3.0, 4.0)
+        assert plist.get_number_of_positions() == 2
+        pm.set_calls = 0
+
+        ctrl.remove_position("A")
+        assert pm.set_calls == 1                       # MM list rewritten
+        labels = [plist.get_position(i).label for i in range(plist.get_number_of_positions())]
+        assert labels == ["B"]
+        assert [p["name"] for p in ctrl.get_positions()] == ["B"]
+
+    def test_remove_missing_raises_and_does_not_touch_mm(self, patch_java):
+        ctrl, pm, plist = make_controller()
+        ctrl.add_position("A", 1.0, 2.0)
+        pm.set_calls = 0
+        with pytest.raises(KeyError):
+            ctrl.remove_position("ghost")
+        assert pm.set_calls == 0
+        assert plist.get_number_of_positions() == 1
+
+    def test_clear_positions_mirrors_to_mm(self, patch_java):
+        ctrl, pm, plist = make_controller()
+        ctrl.add_position("A", 1.0, 2.0)
+        ctrl.add_position("B", 3.0, 4.0)
+        pm.set_calls = 0
+
+        ctrl.clear_positions()
+        assert pm.set_calls == 1
+        assert plist.get_number_of_positions() == 0
+        assert ctrl.get_positions() == []
+
+    def test_clear_empty_does_not_write(self, patch_java):
+        ctrl, pm, plist = make_controller()
+        pm.set_calls = 0
+        ctrl.clear_positions()                          # nothing in either list
+        assert pm.set_calls == 0
+
+
 # ── Docs parity: shipped wording matches actual behaviour ────────────────────
 
 def test_schema_and_prompt_wording_accurate():

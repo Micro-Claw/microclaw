@@ -231,10 +231,7 @@ class MicroscopeController:
         from pycromanager import JavaClass, JavaObject
         pm = self._studio.positions()
         plist = pm.get_position_list()
-        # De-dup: drop any existing entry with this label before re-adding.
-        for i in reversed(range(int(plist.get_number_of_positions()))):
-            if str(plist.get_position(i).get_label()) == entry["name"]:
-                plist.remove_position(i)
+        self._drop_label_from_plist(plist, entry["name"])   # de-dup before re-adding
         msp = JavaObject("org.micromanager.MultiStagePosition", port=self._port)
         msp.set_label(entry["name"])
         sp_cls = JavaClass("org.micromanager.StagePosition", port=self._port)
@@ -245,6 +242,19 @@ class MicroscopeController:
             msp.add(sp_cls.create1_d(self._core.get_focus_device(), entry["z_um"]))
         plist.add_position(msp)
         pm.set_position_list(plist)                 # round-trips AND repaints (Spike A)
+
+    @staticmethod
+    def _drop_label_from_plist(plist, label: str) -> bool:
+        """Remove every MSP with the given label from a Java PositionList in place.
+
+        Returns True if anything was removed. Caller is responsible for the
+        set_position_list write-back (so a batch can do a single round trip)."""
+        removed = False
+        for i in reversed(range(int(plist.get_number_of_positions()))):
+            if str(plist.get_position(i).get_label()) == label:
+                plist.remove_position(i)
+                removed = True
+        return removed
 
     def get_positions(self) -> list[dict]:
         """Return all stored positions."""
@@ -263,15 +273,32 @@ class MicroscopeController:
         raise KeyError(f"Position '{label}' not found.")
 
     def remove_position(self, label: str) -> None:
-        """Remove a named position."""
+        """Remove a named position from the internal store AND MM's GUI list."""
         before = len(self._positions)
         self._positions = [p for p in self._positions if p["name"] != label]
         if len(self._positions) == before:
             raise KeyError(f"Position '{label}' not found.")
+        self._remove_position_from_mm(label)
+
+    def _remove_position_from_mm(self, label: str) -> None:
+        pm = self._studio.positions()
+        plist = pm.get_position_list()
+        if self._drop_label_from_plist(plist, label):
+            pm.set_position_list(plist)             # repaints the GUI list
 
     def clear_positions(self) -> None:
-        """Clear all stored positions."""
+        """Clear all stored positions from the internal store AND MM's GUI list."""
         self._positions = []
+        self._clear_mm_position_list()
+
+    def _clear_mm_position_list(self) -> None:
+        pm = self._studio.positions()
+        plist = pm.get_position_list()
+        n = int(plist.get_number_of_positions())
+        if n > 0:
+            for i in reversed(range(n)):
+                plist.remove_position(i)
+            pm.set_position_list(plist)             # repaints the GUI list
 
     def save_position_list(self, path: str) -> None:
         """Persist the position list to a JSON file."""

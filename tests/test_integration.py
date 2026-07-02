@@ -532,6 +532,48 @@ def test_remark_label_does_not_duplicate_in_mm_native_list(headless_mm, unconstr
     clear_position_list(headless_mm, unconstrained_guard)
 
 
+def test_delete_position_mirrors_to_mm_native_list(headless_mm, unconstrained_guard):
+    """delete_position removes the entry from MM's actual PositionList too."""
+    from microclaw.tools import clear_position_list, delete_position, mark_position
+
+    _clear_mm_native_list(headless_mm)
+    clear_position_list(headless_mm, unconstrained_guard)
+    orig = (headless_mm.core.get_x_position(), headless_mm.core.get_y_position())
+    xy_stage = headless_mm.core.get_xy_stage_device()
+
+    mark_position(headless_mm, unconstrained_guard, name="Keep")
+    headless_mm.core.set_xy_position(orig[0] + 12.0, orig[1])
+    headless_mm.core.wait_for_device(xy_stage)
+    mark_position(headless_mm, unconstrained_guard, name="Drop")
+
+    delete_position(headless_mm, unconstrained_guard, name="Drop")
+
+    native_names = [p["name"] for p in headless_mm._read_mm_position_list()]
+    assert "Drop" not in native_names, f"Drop still in MM native list: {native_names}"
+    assert "Keep" in native_names
+
+    headless_mm.core.set_xy_position(*orig)
+    headless_mm.core.wait_for_device(xy_stage)
+    _clear_mm_native_list(headless_mm)
+    clear_position_list(headless_mm, unconstrained_guard)
+
+
+def test_clear_position_list_mirrors_to_mm_native_list(headless_mm, unconstrained_guard):
+    """clear_position_list empties MM's actual PositionList, not just the store."""
+    from microclaw.tools import clear_position_list, mark_position
+
+    _clear_mm_native_list(headless_mm)
+    mark_position(headless_mm, unconstrained_guard, name="Tmp1")
+    mark_position(headless_mm, unconstrained_guard, name="Tmp2")
+    assert int(headless_mm.studio.positions().get_position_list().get_number_of_positions()) >= 2
+
+    clear_position_list(headless_mm, unconstrained_guard)
+
+    after = int(headless_mm.studio.positions().get_position_list().get_number_of_positions())
+    assert after == 0, "MM native list not cleared"
+    assert headless_mm._read_mm_position_list() == []
+
+
 # ---------------------------------------------------------------------------
 # Multiposition acquisition
 # ---------------------------------------------------------------------------
