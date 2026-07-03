@@ -179,6 +179,29 @@ class MicroscopeController:
         except Exception:
             return False
 
+    def get_mm_app_dir(self) -> str | None:
+        """Return MM's install root by asking the running ImageJ JVM, or None.
+
+        Micro-Manager is ImageJ1 + plugins under one root; ImageJ knows that
+        root. Uses ij.IJ.getDirectory("imagej"), which resolves on ANY MM build
+        (no #2401 needed — see design/ij-plugins-spike.py check 3). Returns None
+        if not connected or the call fails, so callers can fall back to cache /
+        path guessing.
+        """
+        if not self.is_connected():
+            return None
+        try:
+            from pycromanager import JavaClass
+            ij = JavaClass("ij.IJ", port=self._port)
+            # ImageJ returns a trailing-slash path string; normalise for Path use.
+            raw = ij.get_directory("imagej")
+            if not raw:
+                return None
+            return str(Path(raw))
+        except Exception:
+            # Offline / unexpected JVM state: let the caller fall back.
+            return None
+
     # --- Position list management ---
 
     def _read_mm_position_list(self) -> list[dict]:

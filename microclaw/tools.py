@@ -1136,7 +1136,7 @@ def get_smlm_documentation(ctrl: MicroscopeController, guard: SafetyGuard) -> di
 def check_emu_installed(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     from microclaw.emu_manager import find_mm_app_dir, find_plugin_jars, _emu_config_path
 
-    mm_dir = find_mm_app_dir()
+    mm_dir = find_mm_app_dir(ctrl)
     if mm_dir is None:
         return {
             "emu_installed": False,
@@ -1225,7 +1225,7 @@ def get_emu_configuration(
         save_mm_app_dir(mm_app_dir)
         resolved = mm_app_dir
     else:
-        found = find_mm_app_dir()
+        found = find_mm_app_dir(ctrl)
         if found is None:
             searched = [str(p) for p in _candidate_mm_dirs()]
             return {
