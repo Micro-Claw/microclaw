@@ -357,3 +357,19 @@ otherwise, which is why I didn't notice. Please update 11b in light of this
 ----
 
 Start implementing the fixes in design/11b severity order
+
+----
+
+Have a look at emu_manager.py. Given the new way we communicate with          
+micro-manager since PR #2401, can we identify the MM directory directly via a 
+Java call instead of guessing system paths with _candidate_mm_dirs()? 
+
+This insures us against MM being installed at a strange location, we'll still 
+find EMU. Does this also insure us against any issues with multiple MM        
+installs? 
+
+Does it make sense to check the cache first if it already exists? Or is it 
+always safer to check the live version. If this is the case, is the benefit 
+of the cache then that this will still work offline?
+
+Implement the changes in design/12

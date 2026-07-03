@@ -3,6 +3,10 @@ import glob
 import json
 import platform
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from microclaw.controller import MicroscopeController
 
 _MICROCLAW_DIR = Path.home() / ".microclaw"
 _EMU_CACHE = _MICROCLAW_DIR / "emu.json"
@@ -66,9 +70,34 @@ def _has_emu(mm_app_dir: Path) -> bool:
     )
 
 
-def find_mm_app_dir() -> Path | None:
-    """Return the µManager app directory, checking cache then common paths."""
-    # Check cache first.
+def _looks_like_mm_dir(p: Path) -> bool:
+    """True if p has the shape of an MM install root (has a plugins dir).
+
+    Deliberately weaker than _has_emu(): a valid MM without EMU is still a
+    correct mm_app_dir. Used only to sanity-check the live Java answer before
+    trusting it over the cache.
+    """
+    return (p / "mmplugins").is_dir() or (p / "plugins").is_dir()
+
+
+def find_mm_app_dir(ctrl: "MicroscopeController | None" = None) -> Path | None:
+    """Return the µManager app directory.
+
+    Order: (1) authoritative Java call via ctrl, (2) cache, (3) path guessing.
+    ctrl is optional so offline callers keep working.
+    """
+    # 1. Ask the running MM JVM (authoritative). Validate before trusting it
+    #    over the cache, then write through so offline calls stay fresh.
+    if ctrl is not None:
+        app_dir = ctrl.get_mm_app_dir()
+        if app_dir:
+            p = Path(app_dir)
+            if p.exists() and _looks_like_mm_dir(p):
+                save_mm_app_dir(str(p))
+                return p
+            # Bogus live answer (e.g. user-home ImageJ dir): fall through.
+
+    # 2. Cache.
     if _EMU_CACHE.exists():
         try:
             cached = json.loads(_EMU_CACHE.read_text())
@@ -80,7 +109,7 @@ def find_mm_app_dir() -> Path | None:
         except (json.JSONDecodeError, OSError):
             pass
 
-    # Try common platform paths.
+    # 3. Path guessing (offline fallback).
     for candidate in _candidate_mm_dirs():
         if _has_emu(candidate):
             return candidate

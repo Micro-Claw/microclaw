@@ -1076,3 +1076,113 @@ def test_execute_tool_unknown_returns_error_json(headless_mm, unconstrained_guar
     result = execute_tool("does_not_exist", {}, headless_mm, unconstrained_guard)
     assert isinstance(result, str)
     assert "error" in json.loads(result)
+
+
+# ---------------------------------------------------------------------------
+# MM app-dir resolution via the live ImageJ JVM (design/12 open questions)
+# ---------------------------------------------------------------------------
+
+def _app_dir_probe_report(ctrl) -> str:
+    """Report what each Java probe returns, for when get_mm_app_dir() fails.
+
+    The design/12 lab run traced the failure to a pyjavaz cache collision: all
+    static JavaClass shadows share the 'java.lang.Class' cache key, so the
+    first-wrapped class wins and later ones (ij.IJ, System) expose its methods
+    instead. get_mm_app_dir() now evicts that key via _new_static_java_class and
+    falls back to user.dir. This probes through the same eviction helper (the
+    real code path) so a lingering failure pinpoints which probe broke — plus a
+    raw JavaClass('ij.IJ') to show the un-evicted (collided) proxy for contrast.
+    """
+    from pycromanager import JavaClass
+    from microclaw.controller import _new_static_java_class
+
+    lines = ["get_mm_app_dir() returned no path; probe diagnostics:"]
+    raw_type = None
+    try:
+        raw_type = type(JavaClass("ij.IJ", port=ctrl._port)).__name__
+    except Exception as exc:  # noqa: BLE001
+        raw_type = f"<raise {exc!r}>"
+    lines.append(f"  raw JavaClass('ij.IJ') proxy type (un-evicted): {raw_type}")
+    try:
+        ij = _new_static_java_class(ctrl._port, "ij.IJ")
+        for name in ("get_directory", "getDirectory"):
+            fn = getattr(ij, name, None)
+            if fn is None:
+                lines.append(f"  ij.IJ.{name}: NOT exposed on proxy")
+                continue
+            try:
+                lines.append(f"  ij.IJ.{name}('imagej') -> {fn('imagej')!r}")
+            except Exception as exc:  # noqa: BLE001
+                lines.append(f"  ij.IJ.{name}('imagej') raised {exc!r}")
+    except Exception as exc:  # noqa: BLE001
+        lines.append(f"  _new_static_java_class('ij.IJ') raised {exc!r}")
+    try:
+        system = _new_static_java_class(ctrl._port, "java.lang.System")
+        for name in ("get_property", "getProperty"):
+            fn = getattr(system, name, None)
+            if fn is None:
+                lines.append(f"  System.{name}: NOT exposed on proxy")
+                continue
+            try:
+                lines.append(f"  System.{name}('user.dir') -> {fn('user.dir')!r}")
+            except Exception as exc:  # noqa: BLE001
+                lines.append(f"  System.{name}('user.dir') raised {exc!r}")
+    except Exception as exc:  # noqa: BLE001
+        lines.append(f"  JavaClass('java.lang.System') construction raised {exc!r}")
+    return "\n".join(lines)
+
+
+def test_get_mm_app_dir_returns_mm_root(headless_mm):
+    """Open question 1+2: the JVM reports its install root over the bridge and it
+    is the MM root (has plugins/ or mmplugins/), not a user-home ImageJ dir.
+
+    get_mm_app_dir() works around the pyjavaz static-class cache collision found
+    in the design/12 lab run (all static JavaClass shadows share the
+    'java.lang.Class' key, so the first-wrapped class wins and ij.IJ/System came
+    back with the wrong methods): it evicts that key per call and falls back to
+    System user.dir. On failure this test dumps every probe so one run says which
+    broke.
+    """
+    from microclaw.emu_manager import _looks_like_mm_dir
+
+    assert headless_mm.is_connected(), (
+        "bridge is not connected at the app-dir probe — the shared session "
+        "connection dropped during the suite (not an ImageJ problem)"
+    )
+
+    app_dir = headless_mm.get_mm_app_dir()
+    if not app_dir:
+        pytest.fail(_app_dir_probe_report(headless_mm))
+
+    p = Path(app_dir)
+    assert p.exists(), f"reported MM app dir does not exist: {p}"
+    assert _looks_like_mm_dir(p), (
+        f"reported dir {p} lacks plugins/ and mmplugins/ — likely a user-home "
+        "ImageJ dir rather than the MM root (open question 1)"
+    )
+
+
+def test_find_mm_app_dir_prefers_live_answer_over_cache(headless_mm, tmp_path, monkeypatch):
+    """End-to-end: with a connected scope, find_mm_app_dir resolves the real
+    install root and writes it through to the cache, even when the cache and
+    path-guessing point elsewhere."""
+    from microclaw import emu_manager
+
+    assert headless_mm.is_connected(), "bridge dropped before the app-dir probe"
+
+    # Redirect the cache to a tmp file and neutralise path-guessing so only the
+    # live answer can succeed.
+    cache_dir = tmp_path / ".microclaw"
+    monkeypatch.setattr(emu_manager, "_MICROCLAW_DIR", cache_dir)
+    monkeypatch.setattr(emu_manager, "_EMU_CACHE", cache_dir / "emu.json")
+    monkeypatch.setattr(emu_manager, "_candidate_mm_dirs", lambda: [])
+    # Seed a stale cache pointing at a bogus (nonexistent) dir.
+    emu_manager.save_mm_app_dir(str(tmp_path / "stale-nonexistent"))
+
+    result = emu_manager.find_mm_app_dir(headless_mm)
+
+    assert result is not None
+    assert emu_manager._looks_like_mm_dir(result)
+    # Live answer written through to the cache.
+    cached = json.loads(emu_manager._EMU_CACHE.read_text())
+    assert cached["mm_app_dir"] == str(result)

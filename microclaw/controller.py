@@ -24,6 +24,43 @@ _MM_PLUGIN_LOADER_CLASS = (
 _MM_PLUGIN_LOADER_SINCE = "20260626"  # first MM nightly after the #2401 merge
 
 
+def _new_static_java_class(port: int, classpath: str):
+    """Create a JavaClass for static-method access, around a pyjavaz cache bug.
+
+    pyjavaz caches each generated shadow class by the *serialized* Java class
+    name (`bridge._class_factory.classes`). For every static JavaClass wrapper
+    that name is "java.lang.Class" — pyjavaz marks a call static via
+    `_java_class == "java.lang.Class"` (see pyjavaz/bridge.py). So ALL
+    static-class shadows collide under one cache key: the first classpath
+    wrapped in the process wins, and every later JavaClass(...) returns that
+    first class's static methods.
+
+    Symptom (design/12 lab run): on a long-lived bridge JavaClass("ij.IJ") and
+    JavaClass("java.lang.System") came back with no static methods at all,
+    because another class (StagePosition) had been wrapped first. Isolated, the
+    same call worked — ij.IJ was then the first wrapped.
+
+    Fix: evict the colliding key before creating the shadow, forcing pyjavaz to
+    regenerate it from THIS class's own serialized methods. The get-class
+    round-trip happens on every JavaClass call regardless, so the only added
+    cost is regenerating the Python shadow class. EVERY static JavaClass in
+    microclaw must go through here — evicting for one call would otherwise leave
+    that class cached and break the next site's call.
+    """
+    try:
+        from pyjavaz.bridge import Bridge
+        ref = Bridge._cached_bridges_by_port.get(port)
+        bridge = ref() if ref is not None else None
+        if bridge is not None:
+            bridge._class_factory.classes.pop("java.lang.Class", None)
+    except Exception:
+        # pyjavaz internals moved; fall back to a plain JavaClass. Callers
+        # tolerate a missing/wrong method via getattr / try-except.
+        pass
+    from pycromanager import JavaClass
+    return JavaClass(classpath, port=port)
+
+
 def _drain_java_iterable(iterable) -> list[str]:
     """Return the string elements of a Java Iterable returned over the bridge.
 
@@ -73,9 +110,8 @@ class PluginAccess:
         """
         if self._loader_checked:
             return
-        from pycromanager import JavaClass
         try:
-            JavaClass(_MM_PLUGIN_LOADER_CLASS, port=self._port)
+            _new_static_java_class(self._port, _MM_PLUGIN_LOADER_CLASS)
         except Exception as e:  # only resolves post-#2401
             raise RuntimeError(
                 "MM plugin access requires a Micro-Manager build with the unified "
@@ -179,6 +215,62 @@ class MicroscopeController:
         except Exception:
             return False
 
+    def get_mm_app_dir(self) -> str | None:
+        """Return MM's install root by asking the running ImageJ JVM, or None.
+
+        Micro-Manager is ImageJ1 + plugins under one root; ImageJ knows that
+        root. Primary probe is ij.IJ.getDirectory("imagej"), which resolves on
+        ANY MM build (no #2401 needed — see design/ij-plugins-spike.py check 3).
+        Falls back to the JVM working dir (System user.dir) — MM launches from
+        its install root, so that is usually the same path.
+
+        Both probes go through _new_static_java_class() to dodge the pyjavaz
+        static-class cache collision that otherwise makes them return another
+        class's methods (see that helper). Returns None if not connected or both
+        probes fail, so callers can fall back to cache / path guessing. The raw
+        answer is not validated here; find_mm_app_dir() sanity-checks it with
+        _looks_like_mm_dir(), which also guards the weaker user.dir fallback.
+        """
+        if not self.is_connected():
+            return None
+        raw = self._probe_imagej_dir() or self._probe_user_dir()
+        if not raw:
+            return None
+        # ImageJ returns a trailing-slash path string; normalise for Path use.
+        return str(Path(raw))
+
+    def _probe_imagej_dir(self) -> str | None:
+        """ij.IJ.getDirectory("imagej") — MM's ImageJ install root."""
+        try:
+            ij = _new_static_java_class(self._port, "ij.IJ")
+            getdir = getattr(ij, "get_directory", None) or getattr(
+                ij, "getDirectory", None
+            )
+            if getdir is None:
+                return None
+            return getdir("imagej") or None
+        except Exception:
+            return None
+
+    def _probe_user_dir(self) -> str | None:
+        """Secondary probe: the JVM working directory (System user.dir).
+
+        MM launches from its install root, so user.dir is usually the MM app
+        dir. A weaker guarantee than the ImageJ call, so it is only used when
+        that fails; the _looks_like_mm_dir() check in find_mm_app_dir() rejects
+        it if it is not actually an MM root.
+        """
+        try:
+            system = _new_static_java_class(self._port, "java.lang.System")
+            getprop = getattr(system, "get_property", None) or getattr(
+                system, "getProperty", None
+            )
+            if getprop is None:
+                return None
+            return getprop("user.dir") or None
+        except Exception:
+            return None
+
     # --- Position list management ---
 
     def _read_mm_position_list(self) -> list[dict]:
@@ -236,13 +328,15 @@ class MicroscopeController:
         bridge names create2_d / create1_d (Spike A). Re-marking a label replaces
         the matching MSP rather than duplicating it, mirroring the internal store.
         """
-        from pycromanager import JavaClass, JavaObject
+        from pycromanager import JavaObject
         pm = self._studio.positions()
         plist = pm.get_position_list()
         self._drop_label_from_plist(plist, entry["name"])   # de-dup before re-adding
         msp = JavaObject("org.micromanager.MultiStagePosition", port=self._port)
         msp.set_label(entry["name"])
-        sp_cls = JavaClass("org.micromanager.StagePosition", port=self._port)
+        # Static-class access must go through _new_static_java_class (pyjavaz
+        # cache collision — see that helper).
+        sp_cls = _new_static_java_class(self._port, "org.micromanager.StagePosition")
         if "x_um" in entry and "y_um" in entry:
             msp.add(sp_cls.create2_d(
                 self._core.get_xy_stage_device(), entry["x_um"], entry["y_um"]))
