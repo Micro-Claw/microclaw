@@ -695,8 +695,9 @@ def _run_protocol_at(
     y_um: float,
     z_um: float | None,
     protocol: str,
-    pos_save_dir: str,
+    pos_save_dir: str | None,
     params: dict,
+    mark_position_in_list: bool = False,
 ) -> dict:
     guard.check_xy(x_um, y_um)
     ctrl.core.set_xy_position(x_um, y_um)
@@ -705,16 +706,33 @@ def _run_protocol_at(
         guard.check_z(z_um)
         ctrl.core.set_position(z_um)
         _wait(ctrl, ctrl.core.get_focus_device())
-    Path(pos_save_dir).mkdir(parents=True, exist_ok=True)
+    marked = {}
+    if mark_position_in_list:
+        # Same path as the mark_position tool: mirrors into microclaw's list
+        # and MM's PositionList, so the grid appears in the GUI list.
+        ctrl.add_position(
+            pos_label,
+            round(x_um, 3),
+            round(y_um, 3),
+            round(z_um, 3) if z_um is not None else None,
+        )
+        marked = {"marked": True}
     if protocol == "snap":
         ctrl.studio.live().snap(True)
-        return {"position": pos_label, "status": "snapped", "saved": False}
-    elif protocol == "zstack":
+        return {"position": pos_label, "status": "snapped", "saved": False, **marked}
+    if pos_save_dir is None:
+        return {
+            "position": pos_label,
+            "error": f"save_dir is required for protocol '{protocol}'.",
+            **marked,
+        }
+    Path(pos_save_dir).mkdir(parents=True, exist_ok=True)
+    if protocol == "zstack":
         r = run_zstack(ctrl, guard, save_dir=pos_save_dir, name=pos_label, **params)
-        return {"position": pos_label, **r}
+        return {"position": pos_label, **marked, **r}
     elif protocol == "timelapse":
         r = run_timelapse(ctrl, guard, save_dir=pos_save_dir, name=pos_label, **params)
-        return {"position": pos_label, **r}
+        return {"position": pos_label, **marked, **r}
     else:
         return {"position": pos_label, "error": f"Unknown protocol '{protocol}'."}
 
@@ -723,11 +741,12 @@ def run_multiposition_acquisition(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
     protocol: str,
-    save_dir: str,
+    save_dir: str | None = None,
     position_names: list[str] | None = None,
     positions: list[dict] | None = None,
     name: str = "multipos",
     protocol_params: dict | None = None,
+    mark_positions: bool = False,
 ) -> dict:
     """Visit each position and run a per-position protocol.
 
@@ -736,17 +755,24 @@ def run_multiposition_acquisition(
 
     protocol options:
       "snap"       — display-only; does NOT save to disk (returns saved=False).
+                     save_dir is not needed and may be omitted.
       "zstack"     — saves a Z-stack at each position to save_dir/<position>.
       "timelapse"  — saves a timelapse at each position to save_dir/<position>.
 
     To save a single plane per position (equivalent to snapping but with data
     written to disk), use protocol="timelapse" with
     protocol_params={"n_frames": 1, "interval_s": 0}.
+
+    mark_positions=True additionally records each visited position into the
+    stage position list (microclaw's list + MM's Position List Manager), as
+    the mark_position tool would.
     """
     if position_names is not None and positions is not None:
         return {"error": "Provide position_names or positions, not both."}
     if position_names is None and positions is None:
         return {"error": "Provide either position_names or positions."}
+    if protocol != "snap" and not save_dir:
+        return {"error": f"save_dir is required for protocol '{protocol}'."}
 
     params = protocol_params or {}
     results = []
@@ -766,10 +792,11 @@ def run_multiposition_acquisition(
         ]
 
     for pos_label, x_um, y_um, z_um in resolved:
-        pos_save_dir = str(Path(save_dir) / pos_label)
+        pos_save_dir = str(Path(save_dir) / pos_label) if save_dir else None
         try:
             result = _run_protocol_at(
-                ctrl, guard, pos_label, x_um, y_um, z_um, protocol, pos_save_dir, params
+                ctrl, guard, pos_label, x_um, y_um, z_um, protocol, pos_save_dir,
+                params, mark_position_in_list=mark_positions,
             )
             results.append(result)
         except Exception as e:
@@ -790,9 +817,10 @@ def run_tile_acquisition(
     cols: int,
     step_um: float,
     protocol: str,
-    save_dir: str,
+    save_dir: str | None = None,
     name: str = "tile",
     protocol_params: dict | None = None,
+    mark_positions: bool = False,
 ) -> dict:
     """Acquire a rows×cols tile grid centered on the current stage position."""
     center_x = ctrl.core.get_x_position()
@@ -800,7 +828,11 @@ def run_tile_acquisition(
     x_start = center_x - (cols - 1) / 2 * step_um
     y_start = center_y - (rows - 1) / 2 * step_um
     positions = [
-        {"name": f"r{r}_c{c}", "x_um": x_start + c * step_um, "y_um": y_start + r * step_um}
+        {
+            "name": f"{name}_r{r}_c{c}",
+            "x_um": x_start + c * step_um,
+            "y_um": y_start + r * step_um,
+        }
         for r in range(rows)
         for c in range(cols)
     ]
@@ -811,6 +843,7 @@ def run_tile_acquisition(
         positions=positions,
         name=name,
         protocol_params=protocol_params,
+        mark_positions=mark_positions,
     )
 
 

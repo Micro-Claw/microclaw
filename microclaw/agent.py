@@ -17,7 +17,8 @@ DEFAULT_MODEL = "claude-opus-4-8"
 MODEL_ENV = "MICROCLAW_MODEL"
 
 # Default cap on tool-call rounds per user turn — bounds a runaway loop.
-DEFAULT_MAX_ITERATIONS = 25
+# 50, not 25: a manually-looped 3x3 grid survey already needs ~30 rounds.
+DEFAULT_MAX_ITERATIONS = 50
 
 _client: anthropic.Anthropic | None = None
 
@@ -64,6 +65,7 @@ Position lists:
 - mark_position stores a position in microclaw's list and mirrors it into MM's PositionList, so it appears in the MM GUI's Position List Manager. Use it after the biologist has navigated to a site of interest.
 - save_position_list / load_position_list persist positions across sessions as a microclaw JSON file (not MM's native .pos format).
 - Use run_multiposition_with_autofocus for automated surveys — do not manually loop over go_to_position unless the user explicitly asks for it.
+- For grid or multi-position surveys, use run_tile_acquisition / run_multiposition_acquisition — including when the user wants the visited positions in the position list (pass mark_positions=true). Do not manually loop move_stage_xy / mark_position / snap_image; each manual step costs a full model round trip.
 
 Autofocus:
 - run_autofocus (standalone) is for interactive focus requests.
@@ -104,6 +106,25 @@ Hook-based adaptive acquisition:
   3b. If the user asks you to write one: call get_hook_documentation first, then write a hook that conforms to the API reference it returns. Show the full code and any lint warnings, wait for explicit confirmation, then call generate_and_save_hook(source='claude_generated').
 - Never save or run a hook (generated or provided) without explicit user confirmation. Confirmation for save_knowledge and hook saves is also enforced in code (a blocking prompt), so those tools may return a "User declined" result if the person says no.
 """
+
+
+def _with_cache_breakpoint(messages: list[dict]) -> list[dict]:
+    """Return messages with a cache_control breakpoint on the last content
+    block of the final message, so each round's request caches the
+    conversation prefix up to the previous round (system and tools carry the
+    other two breakpoints). Copies rather than mutates, so cache_control
+    markers never accumulate in the caller's history."""
+    if not messages:
+        return messages
+    last = messages[-1]
+    content = last.get("content") if isinstance(last, dict) else None
+    if isinstance(content, str):
+        content = [{"type": "text", "text": content}]
+    if not (isinstance(content, list) and content and isinstance(content[-1], dict)):
+        # e.g. assistant turns hold SDK model objects, not dicts — skip.
+        return messages
+    content = [*content[:-1], {**content[-1], "cache_control": {"type": "ephemeral"}}]
+    return [*messages[:-1], {**last, "content": content}]
 
 
 def run_agent(
@@ -153,7 +174,7 @@ def run_agent(
                     max_tokens=4096,
                     system=system_blocks,
                     tools=TOOLS_CACHED,
-                    messages=messages,
+                    messages=_with_cache_breakpoint(messages),
                 )
                 break
             except anthropic._exceptions.OverloadedError:
@@ -196,7 +217,7 @@ def run_agent(
 
     return (
         f"Stopped after {max_iterations} tool rounds without completing. "
-        "The task may be too large for one turn — try narrowing it or breaking "
-        "it into steps.",
+        "Progress so far is preserved in the conversation — say 'continue' to "
+        "resume where this left off, or narrow the task.",
         messages,
     )
