@@ -44,8 +44,9 @@ Secondary / rejected alternatives:
   root (MM launches from its install dir), but a weaker guarantee than the
   purpose-built ImageJ call. Originally "keep only if the first returns empty";
   the lab run (see [Lab findings](#lab-findings-2026-07-03)) promoted it to an
-  active fallback because the `ij.IJ` probe proved unreliable over a long-lived
-  bridge. Safe to fall back to because `_looks_like_mm_dir()` still validates it.
+  active fallback as a second independent probe once the `ij.IJ` route proved
+  fragile over the bridge. Safe to fall back to because `_looks_like_mm_dir()`
+  still validates it.
 - `mmcorej.CMMCore` — does **not** expose an install path.
 
 ---
@@ -116,14 +117,37 @@ cache."
 ### `microclaw/controller.py` — new method on `MicroscopeController`
 
 > **Updated after the lab run.** The original stub was a single
-> `ij.IJ.getDirectory("imagej")` call. It resolved on a fresh bridge but
-> raised `AttributeError('java_lang_Class' object has no attribute
-> 'get_directory')` intermittently on a long-lived one — see
-> [Lab findings](#lab-findings-2026-07-03). The shipped version tolerates the
-> method-name alias, retries a freshly-built proxy, and falls back to
-> `user.dir`.
+> `ij.IJ.getDirectory("imagej")` call. On a long-lived bridge it raised
+> `AttributeError('java_lang_Class' object has no attribute 'get_directory')`
+> — traced to a pyjavaz cache collision, not a flaky/aged bridge — see
+> [Lab findings](#lab-findings-2026-07-03). The shipped version routes every
+> static `JavaClass` through `_new_static_java_class()`, which evicts the
+> colliding cache key, and falls back to `user.dir`.
 
 ```python
+def _new_static_java_class(port: int, classpath: str):
+    """Create a JavaClass for static access, around a pyjavaz cache collision.
+
+    pyjavaz caches each shadow class by the serialized Java class name, which
+    for EVERY static JavaClass is "java.lang.Class" (pyjavaz marks a call
+    static via `_java_class == "java.lang.Class"`). So all static-class
+    shadows collide under one cache key: the first classpath wrapped in the
+    process wins, and later JavaClass(...) calls return its static methods.
+    Evict the key so pyjavaz regenerates the shadow from this class's own
+    serialized methods. Every static JavaClass in microclaw must go through
+    here, or evicting for one call breaks the next site's call.
+    """
+    try:
+        from pyjavaz.bridge import Bridge
+        ref = Bridge._cached_bridges_by_port.get(port)
+        bridge = ref() if ref is not None else None
+        if bridge is not None:
+            bridge._class_factory.classes.pop("java.lang.Class", None)
+    except Exception:
+        pass
+    from pycromanager import JavaClass
+    return JavaClass(classpath, port=port)
+
 def get_mm_app_dir(self) -> str | None:
     """Return MM's install root by asking the running JVM, or None.
 
@@ -142,34 +166,21 @@ def get_mm_app_dir(self) -> str | None:
     return str(Path(raw))
 
 def _probe_imagej_dir(self) -> str | None:
-    """ij.IJ.getDirectory("imagej"), tolerant of a flaky JavaClass proxy.
-
-    Over a long-lived, busy bridge JavaClass("ij.IJ") intermittently comes
-    back with an incomplete static-method table — the call raises
-    AttributeError even though it resolves on a fresh bridge. So we accept
-    either the snake_case or camelCase method name and retry with a freshly
-    constructed proxy a few times before giving up.
-    """
-    from pycromanager import JavaClass
-    for _ in range(3):
-        try:
-            ij = JavaClass("ij.IJ", port=self._port)
-            getdir = getattr(ij, "get_directory", None) or getattr(
-                ij, "getDirectory", None)
-            if getdir is None:
-                continue  # method table not populated this attempt; recreate
-            raw = getdir("imagej")
-            if raw:
-                return raw
-        except Exception:
-            continue
-    return None
+    """ij.IJ.getDirectory("imagej") — MM's ImageJ install root."""
+    try:
+        ij = _new_static_java_class(self._port, "ij.IJ")
+        getdir = getattr(ij, "get_directory", None) or getattr(
+            ij, "getDirectory", None)
+        if getdir is None:
+            return None
+        return getdir("imagej") or None
+    except Exception:
+        return None
 
 def _probe_user_dir(self) -> str | None:
     """Secondary probe: the JVM working directory (System user.dir)."""
-    from pycromanager import JavaClass
     try:
-        system = JavaClass("java.lang.System", port=self._port)
+        system = _new_static_java_class(self._port, "java.lang.System")
         getprop = getattr(system, "get_property", None) or getattr(
             system, "getProperty", None)
         if getprop is None:
@@ -285,34 +296,54 @@ what the offline fallback tried.
 ## Lab findings (2026-07-03)
 
 Verified against the live Windows lab bridge. Both original open questions are
-now answered, plus a reliability issue the design had not anticipated:
+answered — **and** a real pyjavaz bug surfaced that took three lab runs plus a
+read of pyjavaz's source to pin down. The dead-ends are recorded here because
+each looked convincing and the next reader should not re-walk them.
 
-- **`get_directory` (snake_case) is correct, and it returns the MM root.** Run
-  in isolation (`pytest -m integration -k mm_app_dir`), both integration tests
-  passed: the snake_case name mapped, and the returned dir passed
-  `_looks_like_mm_dir()` — i.e. the MM root, not a user-home ImageJ dir. So on a
-  fresh bridge the fast route works exactly as designed.
-- **But the `ij.IJ` probe is unreliable over a long-lived bridge.** In the full
-  suite the *same* two tests failed with:
+**Question 1+2 (answered):** run in isolation (`pytest -m integration -k
+mm_app_dir`) both tests passed — `get_directory` (snake_case) maps correctly and
+returns the MM root (passes `_looks_like_mm_dir()`, not a user-home ImageJ dir).
+So the fast route is correct *when it runs first*.
 
-  ```
-  AttributeError: 'java_lang_Class' object has no attribute 'get_directory'
-  ```
+**The failure and the two wrong theories.** In the full suite the same two tests
+failed:
 
-  `headless_mm` is session-scoped, so these last-running tests hit a bridge aged
-  by ~60 prior tests. `JavaClass("ij.IJ")` came back with an **incomplete
-  static-method table** — the method lookup itself failed, not the directory
-  call. `ij.IJ` exposes hundreds of static methods; the tiny sibling
-  `StagePosition.create2_d` (used elsewhere) never tripped this, which is why it
-  went unnoticed until now.
+```
+AttributeError: 'java_lang_Class' object has no attribute 'get_directory'
+```
 
-**Resolution (shipped):** `get_mm_app_dir()` was hardened rather than left as the
-single-call stub — it accepts either method-name alias, retries with a freshly
-built proxy, and falls back to `System.getProperty("user.dir")`. The
-`_looks_like_mm_dir()` guard in `find_mm_app_dir()` still validates whichever
-probe answers, so the weaker `user.dir` fallback cannot cache a non-MM dir. The
-integration test now dumps every raw probe on failure so any future regression
-names the failing probe directly.
+- *Wrong theory 1 — "aged/incomplete method table."* Because `headless_mm` is
+  session-scoped and these tests run last (after ~60 tests), it looked like a
+  bridge that degrades under load / large classes. Fix attempted: retry with a
+  fresh proxy + accept the camelCase alias. **Next lab run still failed** — and
+  the diagnostic dump killed the theory: *all four* probes were missing,
+  including `java.lang.System.getProperty`, a trivial core class. Not a
+  size/load problem.
+
+- *Root cause (confirmed by reading `pyjavaz/bridge.py`).* pyjavaz's
+  `_JavaClassFactory` caches each generated shadow class **keyed by the
+  serialized Java class name**, and for *every* static `JavaClass` that name is
+  `"java.lang.Class"` — pyjavaz literally branches on
+  `static = _java_class == "java.lang.Class"`. So all static-class shadows
+  collide under one cache key: **the first classpath wrapped in the process wins,
+  and every later `JavaClass(...)` returns that first class's static methods.**
+  Isolation passed because `ij.IJ` was wrapped first; the full suite failed
+  because `StagePosition` (position tests) was wrapped first, so `ij.IJ` and
+  `System` inherited *its* methods and had no `get_directory`/`getProperty`.
+  Reproduced deterministically off the bridge by driving two fake `get-class`
+  payloads through `_JavaClassFactory.create`.
+
+**Resolution (shipped):** a `_new_static_java_class(port, classpath)` helper
+evicts the colliding `"java.lang.Class"` cache key before each static
+`JavaClass`, forcing pyjavaz to regenerate the shadow from *that* class's own
+serialized methods (the `get-class` round-trip happens every call anyway, so the
+cost is just regenerating the Python class). **All** static `JavaClass` sites in
+`controller.py` route through it — the plugin-loader probe and `StagePosition`
+factory too, not just the ImageJ probes — because evicting for one call would
+otherwise leave that class cached and break the next site. This also fixes a
+latent, pre-existing ordering bug those two sites had. `get_mm_app_dir()` still
+falls back to `System user.dir`, and `_looks_like_mm_dir()` validates whichever
+probe answers, so the weaker fallback cannot cache a non-MM dir.
 
 ## Testing
 
@@ -323,11 +354,13 @@ names the failing probe directly.
 - Unit: `ctrl.get_mm_app_dir()` returns a real dir that lacks `plugins/` and
   `mmplugins/` → assert `_looks_like_mm_dir()` rejects it, nothing is cached, and
   the chain falls through to cache/guessing (the bogus-live-answer guard).
-- Unit (controller): fake `JavaClass` covering `get_mm_app_dir()`'s resilience —
-  snake_case and camelCase resolution, retry-then-succeed on a proxy that raises
-  the first attempts, `user.dir` fallback when `ij.IJ` never populates, both
-  probes failing → `None`, and disconnected → `None` (never touches `JavaClass`).
+- Unit (controller): fake `JavaClass` covering `get_mm_app_dir()` —
+  snake_case and camelCase resolution, `user.dir` fallback when `ij.IJ` resolves
+  to the wrong (collision) shadow, both probes failing → `None`, and
+  disconnected → `None` (never touches `JavaClass`). Plus a focused test that
+  `_new_static_java_class()` evicts the `"java.lang.Class"` key off the live
+  bridge's class factory.
 - Integration (lab machine): connected scope resolves the real install root with
-  no cache primed. On failure the test dumps every raw probe (`ij.IJ`
-  `get_directory`/`getDirectory`, `System` `user.dir`) so one run names the
-  broken probe.
+  no cache primed. On failure the test dumps each probe through the eviction
+  helper (`ij.IJ` `get_directory`/`getDirectory`, `System` `user.dir`) plus the
+  raw un-evicted proxy type, so one run names the broken probe.

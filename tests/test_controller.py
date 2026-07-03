@@ -117,8 +117,9 @@ class TestLoadPositionListFileValidation:
 
 
 class TestGetMmAppDir:
-    """get_mm_app_dir() resilience (design/12): tolerate the flaky
-    JavaClass('ij.IJ') proxy and fall back to System user.dir."""
+    """get_mm_app_dir() resilience (design/12): evict the pyjavaz static-class
+    cache collision (all static JavaClass shadows share the 'java.lang.Class'
+    key, so the first-wrapped class wins) and fall back to System user.dir."""
 
     def _connected_ctrl(self):
         ctrl = make_controller()
@@ -158,28 +159,41 @@ class TestGetMmAppDir:
         from pathlib import Path
         assert ctrl.get_mm_app_dir() == str(Path("/opt/mm"))
 
-    def test_retries_imagej_then_succeeds(self, monkeypatch):
+    def test_new_static_java_class_evicts_collision_key(self, monkeypatch):
+        """The helper pops the colliding 'java.lang.Class' cache key off the
+        live bridge's class factory so pyjavaz regenerates the right shadow."""
+        import weakref
         import pycromanager
-        good = type("IJ", (), {"get_directory": staticmethod(lambda a: "/opt/mm")})()
-        calls = {"n": 0}
+        from pyjavaz.bridge import Bridge
+        from microclaw import controller as ctrl_mod
 
-        def ij_producer():
-            calls["n"] += 1
-            if calls["n"] < 3:
-                raise RuntimeError("incomplete method table")
-            return good
+        class FakeFactory:
+            def __init__(self):
+                self.classes = {"java.lang.Class": object()}  # poisoned entry
 
+        class FakeBridge:
+            def __init__(self):
+                self._class_factory = FakeFactory()
+
+        fake_bridge = FakeBridge()
+        monkeypatch.setitem(Bridge._cached_bridges_by_port, 4827, weakref.ref(fake_bridge))
+        seen = {}
         monkeypatch.setattr(
-            pycromanager, "JavaClass", self._java_class({"ij.IJ": ij_producer})
+            pycromanager, "JavaClass",
+            lambda cp, port=None: seen.update(cp=cp, port=port) or "SHADOW",
         )
-        ctrl = self._connected_ctrl()
-        from pathlib import Path
-        assert ctrl.get_mm_app_dir() == str(Path("/opt/mm"))
-        assert calls["n"] == 3  # retried until the proxy came back healthy
+
+        out = ctrl_mod._new_static_java_class(4827, "ij.IJ")
+
+        assert out == "SHADOW"
+        assert seen == {"cp": "ij.IJ", "port": 4827}
+        # The colliding key was evicted, forcing a fresh shadow next generation.
+        assert "java.lang.Class" not in fake_bridge._class_factory.classes
 
     def test_falls_back_to_user_dir(self, monkeypatch):
         import pycromanager
-        # ij.IJ proxy never exposes the method (empty table every retry).
+        # ij.IJ resolves to the wrong (collision) shadow with no get_directory;
+        # get_mm_app_dir must fall through to the System user.dir probe.
         bare_ij = object()
         system = type("Sys", (), {"get_property": staticmethod(lambda a: "/opt/mm")})()
         monkeypatch.setattr(

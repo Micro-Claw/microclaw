@@ -1083,18 +1083,28 @@ def test_execute_tool_unknown_returns_error_json(headless_mm, unconstrained_guar
 # ---------------------------------------------------------------------------
 
 def _app_dir_probe_report(ctrl) -> str:
-    """Report what each raw Java probe returns, for when get_mm_app_dir() fails.
+    """Report what each Java probe returns, for when get_mm_app_dir() fails.
 
-    The design/12 lab run showed JavaClass('ij.IJ') intermittently missing its
-    static-method table (AttributeError on get_directory) on a long-lived
-    bridge. get_mm_app_dir() now retries and falls back to user.dir; if it still
-    yields nothing, this pinpoints which probe failed and how.
+    The design/12 lab run traced the failure to a pyjavaz cache collision: all
+    static JavaClass shadows share the 'java.lang.Class' cache key, so the
+    first-wrapped class wins and later ones (ij.IJ, System) expose its methods
+    instead. get_mm_app_dir() now evicts that key via _new_static_java_class and
+    falls back to user.dir. This probes through the same eviction helper (the
+    real code path) so a lingering failure pinpoints which probe broke — plus a
+    raw JavaClass('ij.IJ') to show the un-evicted (collided) proxy for contrast.
     """
     from pycromanager import JavaClass
+    from microclaw.controller import _new_static_java_class
 
-    lines = ["get_mm_app_dir() returned no path; raw probe diagnostics:"]
+    lines = ["get_mm_app_dir() returned no path; probe diagnostics:"]
+    raw_type = None
     try:
-        ij = JavaClass("ij.IJ", port=ctrl._port)
+        raw_type = type(JavaClass("ij.IJ", port=ctrl._port)).__name__
+    except Exception as exc:  # noqa: BLE001
+        raw_type = f"<raise {exc!r}>"
+    lines.append(f"  raw JavaClass('ij.IJ') proxy type (un-evicted): {raw_type}")
+    try:
+        ij = _new_static_java_class(ctrl._port, "ij.IJ")
         for name in ("get_directory", "getDirectory"):
             fn = getattr(ij, name, None)
             if fn is None:
@@ -1105,9 +1115,9 @@ def _app_dir_probe_report(ctrl) -> str:
             except Exception as exc:  # noqa: BLE001
                 lines.append(f"  ij.IJ.{name}('imagej') raised {exc!r}")
     except Exception as exc:  # noqa: BLE001
-        lines.append(f"  JavaClass('ij.IJ') construction raised {exc!r}")
+        lines.append(f"  _new_static_java_class('ij.IJ') raised {exc!r}")
     try:
-        system = JavaClass("java.lang.System", port=ctrl._port)
+        system = _new_static_java_class(ctrl._port, "java.lang.System")
         for name in ("get_property", "getProperty"):
             fn = getattr(system, name, None)
             if fn is None:
@@ -1126,10 +1136,12 @@ def test_get_mm_app_dir_returns_mm_root(headless_mm):
     """Open question 1+2: the JVM reports its install root over the bridge and it
     is the MM root (has plugins/ or mmplugins/), not a user-home ImageJ dir.
 
-    get_mm_app_dir() is hardened against the flaky JavaClass('ij.IJ') proxy seen
-    in the design/12 lab run (incomplete static-method table on a long-lived
-    bridge): it retries the ImageJ probe and falls back to System user.dir. On
-    failure this test dumps every raw probe so a single run says which one broke.
+    get_mm_app_dir() works around the pyjavaz static-class cache collision found
+    in the design/12 lab run (all static JavaClass shadows share the
+    'java.lang.Class' key, so the first-wrapped class wins and ij.IJ/System came
+    back with the wrong methods): it evicts that key per call and falls back to
+    System user.dir. On failure this test dumps every probe so one run says which
+    broke.
     """
     from microclaw.emu_manager import _looks_like_mm_dir
 
