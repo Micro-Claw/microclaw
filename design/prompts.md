@@ -373,3 +373,17 @@ always safer to check the live version. If this is the case, is the benefit
 of the cache then that this will still work offline?
 
 Implement the changes in design/12
+
+----
+
+Have a careful look at the 20260703 json, which is an output of               
+__main__.main() with the save-history flag on. In this case I passed the      
+agent a single prompt. If you also have a careful look at profile-output.txt, 
+you can see the timing of the result of this prompt + tool runs. It takes     
+much longer to run than I would expect. What is causing this delay and how    
+would you recommend fixing it? Please put your findings along with code stubs 
+in design/13   
+
+Why isn't it possible to have the one prompt return the dictionary of all     
+tool calls needed in one round trip to the API? Then the local machine could  
+simply iterate through all of the tools 
