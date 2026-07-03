@@ -35,6 +35,16 @@ pip install -e ".[test]"
 microclaw --safety-config safety_config.yaml
 ```
 
+### CLI options
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--safety-config PATH` | `safety_config.yaml` | Hardware-limits file enforced before every tool call. |
+| `--port N` | `4827` | ZMQ port to reach the running Micro-Manager instance. Match the port set in **Tools → Options**. |
+| `--model ID` | `$MICROCLAW_MODEL` or `claude-opus-4-8` | Anthropic model id. The `MICROCLAW_MODEL` environment variable overrides the built-in default; `--model` overrides both. |
+| `--profile` / `--no-profile` | off | cProfile the session and print stats on exit. |
+| `--save-history` / `--no-save-history` | on | Write the conversation to a timestamped `*_microclaw_history.json` file. |
+
 ## Set up a runnable .bat with the environment variables
 
 Create a `.bat` file containing the following lines, updated to your installation path and API key.
