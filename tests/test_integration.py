@@ -1082,20 +1082,54 @@ def test_execute_tool_unknown_returns_error_json(headless_mm, unconstrained_guar
 # MM app-dir resolution via the live ImageJ JVM (design/12 open questions)
 # ---------------------------------------------------------------------------
 
+def _app_dir_probe_report(ctrl) -> str:
+    """Report what each raw Java probe returns, for when get_mm_app_dir() fails.
+
+    The design/12 lab run showed JavaClass('ij.IJ') intermittently missing its
+    static-method table (AttributeError on get_directory) on a long-lived
+    bridge. get_mm_app_dir() now retries and falls back to user.dir; if it still
+    yields nothing, this pinpoints which probe failed and how.
+    """
+    from pycromanager import JavaClass
+
+    lines = ["get_mm_app_dir() returned no path; raw probe diagnostics:"]
+    try:
+        ij = JavaClass("ij.IJ", port=ctrl._port)
+        for name in ("get_directory", "getDirectory"):
+            fn = getattr(ij, name, None)
+            if fn is None:
+                lines.append(f"  ij.IJ.{name}: NOT exposed on proxy")
+                continue
+            try:
+                lines.append(f"  ij.IJ.{name}('imagej') -> {fn('imagej')!r}")
+            except Exception as exc:  # noqa: BLE001
+                lines.append(f"  ij.IJ.{name}('imagej') raised {exc!r}")
+    except Exception as exc:  # noqa: BLE001
+        lines.append(f"  JavaClass('ij.IJ') construction raised {exc!r}")
+    try:
+        system = JavaClass("java.lang.System", port=ctrl._port)
+        for name in ("get_property", "getProperty"):
+            fn = getattr(system, name, None)
+            if fn is None:
+                lines.append(f"  System.{name}: NOT exposed on proxy")
+                continue
+            try:
+                lines.append(f"  System.{name}('user.dir') -> {fn('user.dir')!r}")
+            except Exception as exc:  # noqa: BLE001
+                lines.append(f"  System.{name}('user.dir') raised {exc!r}")
+    except Exception as exc:  # noqa: BLE001
+        lines.append(f"  JavaClass('java.lang.System') construction raised {exc!r}")
+    return "\n".join(lines)
+
+
 def test_get_mm_app_dir_returns_mm_root(headless_mm):
-    """Open question 1+2: ij.IJ.getDirectory('imagej') resolves over the bridge
-    (get_directory snake_case) and returns the MM install root, not a user-home
-    ImageJ dir.
+    """Open question 1+2: the JVM reports its install root over the bridge and it
+    is the MM root (has plugins/ or mmplugins/), not a user-home ImageJ dir.
 
-    Asserts the returned path exists and looks like an MM root (has plugins/ or
-    mmplugins/) — the same sanity check find_mm_app_dir applies before trusting
-    the live answer. A user-home ImageJ dir would fail this.
-
-    Diagnostic note: the first lab run passed in isolation but returned None in
-    the full suite, where the session-scoped bridge is aged by ~60 preceding
-    tests. get_mm_app_dir() swallows the reason (by design, for its fallback
-    chain), so this test probes the pieces directly to report *why* it is None —
-    disconnected bridge, a raised Java call, or an empty return.
+    get_mm_app_dir() is hardened against the flaky JavaClass('ij.IJ') proxy seen
+    in the design/12 lab run (incomplete static-method table on a long-lived
+    bridge): it retries the ImageJ probe and falls back to System user.dir. On
+    failure this test dumps every raw probe so a single run says which one broke.
     """
     from microclaw.emu_manager import _looks_like_mm_dir
 
@@ -1104,27 +1138,16 @@ def test_get_mm_app_dir_returns_mm_root(headless_mm):
         "connection dropped during the suite (not an ImageJ problem)"
     )
 
-    # Probe the raw ImageJ call so a failure surfaces the exception instead of
-    # the swallowed None. Importing pycromanager here (not through the usual
-    # controller seam) is a deliberate test-only diagnostic.
-    from pycromanager import JavaClass
-    try:
-        ij = JavaClass("ij.IJ", port=headless_mm._port)
-        raw = ij.get_directory("imagej")
-    except Exception as exc:  # noqa: BLE001 - want the type/message in the report
-        pytest.fail(
-            f"ij.IJ.getDirectory('imagej') raised over the aged bridge: {exc!r}"
-        )
+    app_dir = headless_mm.get_mm_app_dir()
+    if not app_dir:
+        pytest.fail(_app_dir_probe_report(headless_mm))
 
-    assert raw, f"ij.IJ.getDirectory('imagej') returned {raw!r} (empty/None)"
-    p = Path(raw)
+    p = Path(app_dir)
     assert p.exists(), f"reported MM app dir does not exist: {p}"
     assert _looks_like_mm_dir(p), (
         f"reported dir {p} lacks plugins/ and mmplugins/ — likely a user-home "
         "ImageJ dir rather than the MM root (open question 1)"
     )
-    # The wrapper must agree with the raw probe.
-    assert headless_mm.get_mm_app_dir() == str(p)
 
 
 def test_find_mm_app_dir_prefers_live_answer_over_cache(headless_mm, tmp_path, monkeypatch):

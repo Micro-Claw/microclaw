@@ -183,23 +183,69 @@ class MicroscopeController:
         """Return MM's install root by asking the running ImageJ JVM, or None.
 
         Micro-Manager is ImageJ1 + plugins under one root; ImageJ knows that
-        root. Uses ij.IJ.getDirectory("imagej"), which resolves on ANY MM build
-        (no #2401 needed — see design/ij-plugins-spike.py check 3). Returns None
-        if not connected or the call fails, so callers can fall back to cache /
-        path guessing.
+        root. Primary probe is ij.IJ.getDirectory("imagej"), which resolves on
+        ANY MM build (no #2401 needed — see design/ij-plugins-spike.py check 3).
+        Falls back to the JVM working dir (System user.dir) — MM launches from
+        its install root, so that is usually the same path — because the ij.IJ
+        probe is not always reliable over the bridge (see _probe_imagej_dir).
+
+        Returns None if not connected or both probes fail, so callers can fall
+        back to cache / path guessing. The raw answer is not validated here;
+        find_mm_app_dir() sanity-checks it with _looks_like_mm_dir() before
+        trusting it, which also guards the weaker user.dir fallback.
         """
         if not self.is_connected():
             return None
+        raw = self._probe_imagej_dir() or self._probe_user_dir()
+        if not raw:
+            return None
+        # ImageJ returns a trailing-slash path string; normalise for Path use.
+        return str(Path(raw))
+
+    def _probe_imagej_dir(self) -> str | None:
+        """ij.IJ.getDirectory("imagej"), tolerant of a flaky JavaClass proxy.
+
+        Over a long-lived, busy bridge JavaClass("ij.IJ") intermittently comes
+        back with an incomplete static-method table — the call raises
+        AttributeError('...has no attribute get_directory') even though it
+        resolves fine on a fresh bridge (observed in the design/12 lab run). So
+        we accept either the snake_case or camelCase method name and retry with
+        a freshly constructed proxy a few times before giving up.
+        """
+        from pycromanager import JavaClass
+        for _ in range(3):
+            try:
+                ij = JavaClass("ij.IJ", port=self._port)
+                getdir = getattr(ij, "get_directory", None) or getattr(
+                    ij, "getDirectory", None
+                )
+                if getdir is None:
+                    continue  # method table not populated this attempt; recreate
+                raw = getdir("imagej")
+                if raw:
+                    return raw
+            except Exception:
+                continue
+        return None
+
+    def _probe_user_dir(self) -> str | None:
+        """Secondary probe: the JVM working directory (System user.dir).
+
+        MM launches from its install root, so user.dir is usually the MM app
+        dir. A weaker guarantee than the ImageJ call, so it is only used when
+        that fails; the _looks_like_mm_dir() check in find_mm_app_dir() rejects
+        it if it is not actually an MM root.
+        """
+        from pycromanager import JavaClass
         try:
-            from pycromanager import JavaClass
-            ij = JavaClass("ij.IJ", port=self._port)
-            # ImageJ returns a trailing-slash path string; normalise for Path use.
-            raw = ij.get_directory("imagej")
-            if not raw:
+            system = JavaClass("java.lang.System", port=self._port)
+            getprop = getattr(system, "get_property", None) or getattr(
+                system, "getProperty", None
+            )
+            if getprop is None:
                 return None
-            return str(Path(raw))
+            return getprop("user.dir") or None
         except Exception:
-            # Offline / unexpected JVM state: let the caller fall back.
             return None
 
     # --- Position list management ---

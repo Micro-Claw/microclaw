@@ -114,3 +114,102 @@ class TestLoadPositionListFileValidation:
         ctrl2 = make_controller()
         ctrl2.load_position_list(str(f))
         assert ctrl2._positions == ctrl._positions
+
+
+class TestGetMmAppDir:
+    """get_mm_app_dir() resilience (design/12): tolerate the flaky
+    JavaClass('ij.IJ') proxy and fall back to System user.dir."""
+
+    def _connected_ctrl(self):
+        ctrl = make_controller()
+        ctrl._core.get_version_info.return_value = "MMCore v"  # is_connected() -> True
+        return ctrl
+
+    @staticmethod
+    def _java_class(mapping):
+        """Return a fake JavaClass factory dispatching on classpath.
+
+        mapping maps classpath -> callable(port) producing the proxy (or a
+        callable that raises to simulate a construction failure).
+        """
+        def factory(classpath, port=None):
+            producer = mapping[classpath]
+            return producer()
+        return factory
+
+    def test_imagej_snake_case(self, monkeypatch):
+        import pycromanager
+        ij = type("IJ", (), {"get_directory": staticmethod(lambda a: "/Applications/MM/")})()
+        monkeypatch.setattr(
+            pycromanager, "JavaClass", self._java_class({"ij.IJ": lambda: ij})
+        )
+        ctrl = self._connected_ctrl()
+        from pathlib import Path
+        assert ctrl.get_mm_app_dir() == str(Path("/Applications/MM"))
+
+    def test_imagej_camelcase_fallback(self, monkeypatch):
+        import pycromanager
+        # Only the camelCase alias is exposed on the proxy this run.
+        ij = type("IJ", (), {"getDirectory": staticmethod(lambda a: "/opt/mm/")})()
+        monkeypatch.setattr(
+            pycromanager, "JavaClass", self._java_class({"ij.IJ": lambda: ij})
+        )
+        ctrl = self._connected_ctrl()
+        from pathlib import Path
+        assert ctrl.get_mm_app_dir() == str(Path("/opt/mm"))
+
+    def test_retries_imagej_then_succeeds(self, monkeypatch):
+        import pycromanager
+        good = type("IJ", (), {"get_directory": staticmethod(lambda a: "/opt/mm")})()
+        calls = {"n": 0}
+
+        def ij_producer():
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise RuntimeError("incomplete method table")
+            return good
+
+        monkeypatch.setattr(
+            pycromanager, "JavaClass", self._java_class({"ij.IJ": ij_producer})
+        )
+        ctrl = self._connected_ctrl()
+        from pathlib import Path
+        assert ctrl.get_mm_app_dir() == str(Path("/opt/mm"))
+        assert calls["n"] == 3  # retried until the proxy came back healthy
+
+    def test_falls_back_to_user_dir(self, monkeypatch):
+        import pycromanager
+        # ij.IJ proxy never exposes the method (empty table every retry).
+        bare_ij = object()
+        system = type("Sys", (), {"get_property": staticmethod(lambda a: "/opt/mm")})()
+        monkeypatch.setattr(
+            pycromanager,
+            "JavaClass",
+            self._java_class({"ij.IJ": lambda: bare_ij, "java.lang.System": lambda: system}),
+        )
+        ctrl = self._connected_ctrl()
+        from pathlib import Path
+        assert ctrl.get_mm_app_dir() == str(Path("/opt/mm"))
+
+    def test_both_probes_fail_returns_none(self, monkeypatch):
+        import pycromanager
+        bare_ij = object()
+        bare_system = object()
+        monkeypatch.setattr(
+            pycromanager,
+            "JavaClass",
+            self._java_class({"ij.IJ": lambda: bare_ij, "java.lang.System": lambda: bare_system}),
+        )
+        ctrl = self._connected_ctrl()
+        assert ctrl.get_mm_app_dir() is None
+
+    def test_not_connected_returns_none(self, monkeypatch):
+        import pycromanager
+        # Should never touch JavaClass when disconnected.
+        monkeypatch.setattr(
+            pycromanager, "JavaClass",
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not be called")),
+        )
+        ctrl = make_controller()
+        ctrl._core.get_version_info.side_effect = RuntimeError("no bridge")
+        assert ctrl.get_mm_app_dir() is None
