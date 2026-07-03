@@ -38,12 +38,14 @@ Two reasons `ij.IJ.getDirectory("imagej")` is the right handle:
   non-standard install locations, unenumerated platforms, and renamed version
   directories for free — no heuristic, no per-OS path list.
 
-Rejected alternatives:
+Secondary / rejected alternatives:
 
 - `System.getProperty("user.dir")` — the JVM working directory. Usually the MM
   root (MM launches from its install dir), but a weaker guarantee than the
-  purpose-built ImageJ call. Keep only as a secondary Java probe if the first
-  ever returns empty.
+  purpose-built ImageJ call. Originally "keep only if the first returns empty";
+  the lab run (see [Lab findings](#lab-findings-2026-07-03)) promoted it to an
+  active fallback because the `ij.IJ` probe proved unreliable over a long-lived
+  bridge. Safe to fall back to because `_looks_like_mm_dir()` still validates it.
 - `mmcorej.CMMCore` — does **not** expose an install path.
 
 ---
@@ -113,28 +115,67 @@ cache."
 
 ### `microclaw/controller.py` — new method on `MicroscopeController`
 
+> **Updated after the lab run.** The original stub was a single
+> `ij.IJ.getDirectory("imagej")` call. It resolved on a fresh bridge but
+> raised `AttributeError('java_lang_Class' object has no attribute
+> 'get_directory')` intermittently on a long-lived one — see
+> [Lab findings](#lab-findings-2026-07-03). The shipped version tolerates the
+> method-name alias, retries a freshly-built proxy, and falls back to
+> `user.dir`.
+
 ```python
 def get_mm_app_dir(self) -> str | None:
-    """Return MM's install root by asking the running ImageJ JVM, or None.
+    """Return MM's install root by asking the running JVM, or None.
 
-    Micro-Manager is ImageJ1 + plugins under one root; ImageJ knows that
-    root. Uses ij.IJ.getDirectory("imagej"), which resolves on ANY MM build
-    (no #2401 needed — see design/ij-plugins-spike.py check 3). Returns None
-    if not connected or the call fails, so callers can fall back to cache /
-    path guessing.
+    Primary probe: ij.IJ.getDirectory("imagej") (resolves on ANY MM build,
+    no #2401 needed — see design/ij-plugins-spike.py check 3). Secondary:
+    the JVM working dir (System user.dir), since MM launches from its
+    install root. Returns None if not connected or both probes fail; the
+    raw answer is validated by find_mm_app_dir()'s _looks_like_mm_dir().
     """
     if not self.is_connected():
         return None
+    raw = self._probe_imagej_dir() or self._probe_user_dir()
+    if not raw:
+        return None
+    # ImageJ returns a trailing-slash path string; normalise for Path use.
+    return str(Path(raw))
+
+def _probe_imagej_dir(self) -> str | None:
+    """ij.IJ.getDirectory("imagej"), tolerant of a flaky JavaClass proxy.
+
+    Over a long-lived, busy bridge JavaClass("ij.IJ") intermittently comes
+    back with an incomplete static-method table — the call raises
+    AttributeError even though it resolves on a fresh bridge. So we accept
+    either the snake_case or camelCase method name and retry with a freshly
+    constructed proxy a few times before giving up.
+    """
+    from pycromanager import JavaClass
+    for _ in range(3):
+        try:
+            ij = JavaClass("ij.IJ", port=self._port)
+            getdir = getattr(ij, "get_directory", None) or getattr(
+                ij, "getDirectory", None)
+            if getdir is None:
+                continue  # method table not populated this attempt; recreate
+            raw = getdir("imagej")
+            if raw:
+                return raw
+        except Exception:
+            continue
+    return None
+
+def _probe_user_dir(self) -> str | None:
+    """Secondary probe: the JVM working directory (System user.dir)."""
+    from pycromanager import JavaClass
     try:
-        from pycromanager import JavaClass
-        ij = JavaClass("ij.IJ", port=self._port)
-        # ImageJ returns a trailing-slash path string; normalise for Path use.
-        raw = ij.get_directory("imagej")
-        if not raw:
+        system = JavaClass("java.lang.System", port=self._port)
+        getprop = getattr(system, "get_property", None) or getattr(
+            system, "getProperty", None)
+        if getprop is None:
             return None
-        return str(Path(raw))
+        return getprop("user.dir") or None
     except Exception:
-        # Offline / unexpected JVM state: let the caller fall back.
         return None
 ```
 
@@ -241,15 +282,37 @@ what the offline fallback tried.
 - **Cache write-through** means the first connected call primes the cache, so a
   later offline `check_emu_installed` finds the right dir without re-guessing.
 
-## Open questions / to verify against a live MM
+## Lab findings (2026-07-03)
 
-- Confirm `ij.IJ.getDirectory("imagej")` returns the MM root (and not a
-  user-home ImageJ dir) on the lab machine — verify on the real bridge before
-  merge, alongside the existing integration tests. The `_looks_like_mm_dir()`
-  guard in step 1 already fails safe if it returns a non-MM dir (we fall through
-  to cache/guessing), but confirming the happy path lets us keep the fast route.
-- Confirm the pyjavaz method name maps as `get_directory` (snake_case) over the
-  bridge; if not, fall back to `getDirectory`.
+Verified against the live Windows lab bridge. Both original open questions are
+now answered, plus a reliability issue the design had not anticipated:
+
+- **`get_directory` (snake_case) is correct, and it returns the MM root.** Run
+  in isolation (`pytest -m integration -k mm_app_dir`), both integration tests
+  passed: the snake_case name mapped, and the returned dir passed
+  `_looks_like_mm_dir()` — i.e. the MM root, not a user-home ImageJ dir. So on a
+  fresh bridge the fast route works exactly as designed.
+- **But the `ij.IJ` probe is unreliable over a long-lived bridge.** In the full
+  suite the *same* two tests failed with:
+
+  ```
+  AttributeError: 'java_lang_Class' object has no attribute 'get_directory'
+  ```
+
+  `headless_mm` is session-scoped, so these last-running tests hit a bridge aged
+  by ~60 prior tests. `JavaClass("ij.IJ")` came back with an **incomplete
+  static-method table** — the method lookup itself failed, not the directory
+  call. `ij.IJ` exposes hundreds of static methods; the tiny sibling
+  `StagePosition.create2_d` (used elsewhere) never tripped this, which is why it
+  went unnoticed until now.
+
+**Resolution (shipped):** `get_mm_app_dir()` was hardened rather than left as the
+single-call stub — it accepts either method-name alias, retries with a freshly
+built proxy, and falls back to `System.getProperty("user.dir")`. The
+`_looks_like_mm_dir()` guard in `find_mm_app_dir()` still validates whichever
+probe answers, so the weaker `user.dir` fallback cannot cache a non-MM dir. The
+integration test now dumps every raw probe on failure so any future regression
+names the failing probe directly.
 
 ## Testing
 
@@ -260,5 +323,11 @@ what the offline fallback tried.
 - Unit: `ctrl.get_mm_app_dir()` returns a real dir that lacks `plugins/` and
   `mmplugins/` → assert `_looks_like_mm_dir()` rejects it, nothing is cached, and
   the chain falls through to cache/guessing (the bogus-live-answer guard).
+- Unit (controller): fake `JavaClass` covering `get_mm_app_dir()`'s resilience —
+  snake_case and camelCase resolution, retry-then-succeed on a proxy that raises
+  the first attempts, `user.dir` fallback when `ij.IJ` never populates, both
+  probes failing → `None`, and disconnected → `None` (never touches `JavaClass`).
 - Integration (lab machine): connected scope resolves the real install root with
-  no cache primed.
+  no cache primed. On failure the test dumps every raw probe (`ij.IJ`
+  `get_directory`/`getDirectory`, `System` `user.dir`) so one run names the
+  broken probe.
