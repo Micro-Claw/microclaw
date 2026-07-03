@@ -1090,17 +1090,41 @@ def test_get_mm_app_dir_returns_mm_root(headless_mm):
     Asserts the returned path exists and looks like an MM root (has plugins/ or
     mmplugins/) — the same sanity check find_mm_app_dir applies before trusting
     the live answer. A user-home ImageJ dir would fail this.
+
+    Diagnostic note: the first lab run passed in isolation but returned None in
+    the full suite, where the session-scoped bridge is aged by ~60 preceding
+    tests. get_mm_app_dir() swallows the reason (by design, for its fallback
+    chain), so this test probes the pieces directly to report *why* it is None —
+    disconnected bridge, a raised Java call, or an empty return.
     """
     from microclaw.emu_manager import _looks_like_mm_dir
 
-    app_dir = headless_mm.get_mm_app_dir()
-    assert app_dir, "ij.IJ.getDirectory('imagej') returned nothing over the bridge"
-    p = Path(app_dir)
+    assert headless_mm.is_connected(), (
+        "bridge is not connected at the app-dir probe — the shared session "
+        "connection dropped during the suite (not an ImageJ problem)"
+    )
+
+    # Probe the raw ImageJ call so a failure surfaces the exception instead of
+    # the swallowed None. Importing pycromanager here (not through the usual
+    # controller seam) is a deliberate test-only diagnostic.
+    from pycromanager import JavaClass
+    try:
+        ij = JavaClass("ij.IJ", port=headless_mm._port)
+        raw = ij.get_directory("imagej")
+    except Exception as exc:  # noqa: BLE001 - want the type/message in the report
+        pytest.fail(
+            f"ij.IJ.getDirectory('imagej') raised over the aged bridge: {exc!r}"
+        )
+
+    assert raw, f"ij.IJ.getDirectory('imagej') returned {raw!r} (empty/None)"
+    p = Path(raw)
     assert p.exists(), f"reported MM app dir does not exist: {p}"
     assert _looks_like_mm_dir(p), (
         f"reported dir {p} lacks plugins/ and mmplugins/ — likely a user-home "
         "ImageJ dir rather than the MM root (open question 1)"
     )
+    # The wrapper must agree with the raw probe.
+    assert headless_mm.get_mm_app_dir() == str(p)
 
 
 def test_find_mm_app_dir_prefers_live_answer_over_cache(headless_mm, tmp_path, monkeypatch):
@@ -1108,6 +1132,8 @@ def test_find_mm_app_dir_prefers_live_answer_over_cache(headless_mm, tmp_path, m
     install root and writes it through to the cache, even when the cache and
     path-guessing point elsewhere."""
     from microclaw import emu_manager
+
+    assert headless_mm.is_connected(), "bridge dropped before the app-dir probe"
 
     # Redirect the cache to a tmp file and neutralise path-guessing so only the
     # live answer can succeed.
