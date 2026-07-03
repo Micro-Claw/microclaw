@@ -177,6 +177,64 @@ class TestTurnCap:
         assert "Stopped after 3 tool rounds" in reply
         assert client.messages.create.call_count == 3
 
+    def test_bailout_says_continue_resumes(self, mock_ctrl, guard):
+        client = MagicMock()
+        client.messages.create.return_value = tool_use_response("snap_image", {})
+        with patch("microclaw.agent._get_client", return_value=client):
+            reply, history = run_agent("loop forever", mock_ctrl, guard, max_iterations=2)
+        assert "continue" in reply.lower()
+        # progress really is preserved: the capped rounds are in the history
+        assert len(history) == 1 + 2 * 2  # user + 2×(assistant, tool_result)
+
+    def test_default_cap_fits_manual_grid_survey(self):
+        # A manually-looped 3x3 grid needs ~30 rounds (see design/13).
+        from microclaw.agent import DEFAULT_MAX_ITERATIONS
+        assert DEFAULT_MAX_ITERATIONS >= 30
+
+
+class TestConversationCacheBreakpoint:
+    def test_request_carries_breakpoint_on_last_block(self, mock_ctrl, guard):
+        client = make_mock_client([text_response("hi")])
+        with patch("microclaw.agent._get_client", return_value=client):
+            run_agent("Hello", mock_ctrl, guard)
+        sent = client.messages.create.call_args.kwargs["messages"]
+        last_block = sent[-1]["content"][-1]
+        assert last_block["cache_control"] == {"type": "ephemeral"}
+
+    def test_breakpoint_moves_to_latest_tool_result(self, mock_ctrl, guard):
+        client = make_mock_client([
+            tool_use_response("snap_image", {}),
+            text_response("done"),
+        ])
+        with patch("microclaw.agent._get_client", return_value=client):
+            run_agent("snap", mock_ctrl, guard)
+        # second request: last message is the tool_result round
+        sent = client.messages.create.call_args_list[1].kwargs["messages"]
+        last_block = sent[-1]["content"][-1]
+        assert last_block["type"] == "tool_result"
+        assert last_block["cache_control"] == {"type": "ephemeral"}
+        # and the first round's user message no longer carries a marker,
+        # so markers never accumulate beyond the API's breakpoint budget
+        assert "cache_control" not in json.dumps(sent[0]["content"])
+
+    def test_returned_history_is_unmarked(self, mock_ctrl, guard):
+        client = make_mock_client([
+            tool_use_response("snap_image", {}),
+            text_response("done"),
+        ])
+        with patch("microclaw.agent._get_client", return_value=client):
+            _, history = run_agent("snap", mock_ctrl, guard)
+        assert history[0]["content"] == "snap"  # untouched user string
+        tool_result_msgs = [
+            m for m in history
+            if isinstance(m.get("content"), list)
+            and m["content"] and isinstance(m["content"][0], dict)
+        ]
+        assert tool_result_msgs, "expected a tool_result round in history"
+        for msg in tool_result_msgs:
+            for block in msg["content"]:
+                assert "cache_control" not in block
+
 
 class TestLazyClient:
     def test_import_does_not_construct_client(self):

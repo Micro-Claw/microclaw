@@ -459,7 +459,9 @@ TOOLS: list[dict[str, Any]] = [
             "Visit each position and run a per-position protocol (snap, zstack, or timelapse). "
             "Supply either position_names (labels already in the MM position list) OR positions "
             "(a list of {name, x_um, y_um, z_um?} dicts — no prior mark_position needed). "
-            "Saves each position's data to a subdirectory of save_dir."
+            "Saves each position's data to a subdirectory of save_dir. "
+            "Pass mark_positions=true to also record every visited position into the "
+            "stage position list."
         ),
         "input_schema": {
             "type": "object",
@@ -493,7 +495,13 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "string",
                     "description": "'snap', 'zstack', or 'timelapse'.",
                 },
-                "save_dir": {"type": "string", "description": "Root directory for saved data."},
+                "save_dir": {
+                    "type": "string",
+                    "description": (
+                        "Root directory for saved data. Required for zstack/timelapse; "
+                        "omit for display-only snap."
+                    ),
+                },
                 "name": {
                     "type": "string",
                     "description": "Dataset name prefix (default 'multipos').",
@@ -507,8 +515,17 @@ TOOLS: list[dict[str, Any]] = [
                         "For timelapse: n_frames, interval_s."
                     ),
                 },
+                "mark_positions": {
+                    "type": "boolean",
+                    "description": (
+                        "Also record every visited position into the stage position list "
+                        "(microclaw's list + MM's Position List Manager), as mark_position "
+                        "would. Default false."
+                    ),
+                    "default": False,
+                },
             },
-            "required": ["protocol", "save_dir"],
+            "required": ["protocol"],
         },
     },
     {
@@ -516,7 +533,9 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Acquire a rows×cols tile grid centered on the current stage position. "
             "Computes grid coordinates automatically — no prior mark_position needed. "
-            "Runs a per-position protocol (snap, zstack, or timelapse) at each tile."
+            "Runs a per-position protocol (snap, zstack, or timelapse) at each tile. "
+            "Pass mark_positions=true to also record every tile into the stage "
+            "position list."
         ),
         "input_schema": {
             "type": "object",
@@ -528,10 +547,19 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "string",
                     "description": "'snap', 'zstack', or 'timelapse'.",
                 },
-                "save_dir": {"type": "string", "description": "Root directory for saved data."},
+                "save_dir": {
+                    "type": "string",
+                    "description": (
+                        "Root directory for saved data. Required for zstack/timelapse; "
+                        "omit for display-only snap."
+                    ),
+                },
                 "name": {
                     "type": "string",
-                    "description": "Dataset name prefix (default 'tile').",
+                    "description": (
+                        "Dataset and position-label prefix (default 'tile'); tiles are "
+                        "labelled <name>_r<row>_c<col>."
+                    ),
                     "default": "tile",
                 },
                 "protocol_params": {
@@ -542,8 +570,17 @@ TOOLS: list[dict[str, Any]] = [
                         "For timelapse: n_frames, interval_s."
                     ),
                 },
+                "mark_positions": {
+                    "type": "boolean",
+                    "description": (
+                        "Also record every tile position into the stage position list "
+                        "(microclaw's list + MM's Position List Manager), as mark_position "
+                        "would. Default false."
+                    ),
+                    "default": False,
+                },
             },
-            "required": ["rows", "cols", "step_um", "protocol", "save_dir"],
+            "required": ["rows", "cols", "step_um", "protocol"],
         },
     },
     {

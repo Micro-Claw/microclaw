@@ -30,7 +30,9 @@ from microclaw.tools import (
     move_stage_z,
     read_hook_from_file,
     run_autofocus,
+    run_multiposition_acquisition,
     run_multiposition_with_autofocus,
+    run_tile_acquisition,
     set_channel,
     set_device_property,
     set_exposure,
@@ -403,6 +405,81 @@ class TestRunMultipositionWithAutofocus:
         )
         assert "out of bounds" in result["results"][0]["error"]
         mock_ctrl.go_to_position.assert_not_called()
+
+
+class TestTileAcquisitionMarkPositions:
+    @pytest.fixture
+    def centered_ctrl(self, mock_ctrl):
+        mock_ctrl.core.get_x_position.return_value = 256.0
+        mock_ctrl.core.get_y_position.return_value = 256.0
+        return mock_ctrl
+
+    def test_snap_grid_marks_positions_without_save_dir(self, centered_ctrl, unconstrained_guard):
+        result = run_tile_acquisition(
+            centered_ctrl, unconstrained_guard,
+            rows=3, cols=3, step_um=256.0,
+            protocol="snap", name="grid", mark_positions=True,
+        )
+        assert result["status"] == "9/9 positions completed."
+        assert centered_ctrl.add_position.call_count == 9
+        assert centered_ctrl.studio.live().snap.call_count == 9
+        assert all(r.get("marked") for r in result["results"])
+
+    def test_tile_labels_are_name_prefixed(self, centered_ctrl, unconstrained_guard):
+        run_tile_acquisition(
+            centered_ctrl, unconstrained_guard,
+            rows=2, cols=2, step_um=100.0,
+            protocol="snap", name="grid", mark_positions=True,
+        )
+        labels = [c.args[0] for c in centered_ctrl.add_position.call_args_list]
+        assert labels == ["grid_r0_c0", "grid_r0_c1", "grid_r1_c0", "grid_r1_c1"]
+
+    def test_no_marking_by_default(self, centered_ctrl, unconstrained_guard):
+        result = run_tile_acquisition(
+            centered_ctrl, unconstrained_guard,
+            rows=2, cols=2, step_um=100.0, protocol="snap",
+        )
+        assert result["status"] == "4/4 positions completed."
+        centered_ctrl.add_position.assert_not_called()
+        assert all("marked" not in r for r in result["results"])
+
+    def test_marked_position_includes_z_when_given(self, mock_ctrl, unconstrained_guard):
+        run_multiposition_acquisition(
+            mock_ctrl, unconstrained_guard,
+            protocol="snap",
+            positions=[{"name": "P1", "x_um": 1.0, "y_um": 2.0, "z_um": 3.0}],
+            mark_positions=True,
+        )
+        mock_ctrl.add_position.assert_called_once_with("P1", 1.0, 2.0, 3.0)
+
+    def test_save_dir_required_for_saving_protocols(self, mock_ctrl, unconstrained_guard):
+        result = run_multiposition_acquisition(
+            mock_ctrl, unconstrained_guard,
+            protocol="zstack",
+            positions=[{"name": "P1", "x_um": 0.0, "y_um": 0.0}],
+        )
+        assert "save_dir is required" in result["error"]
+
+    def test_snap_does_not_create_save_dirs(self, mock_ctrl, unconstrained_guard, tmp_path):
+        save_dir = tmp_path / "snaps"
+        run_multiposition_acquisition(
+            mock_ctrl, unconstrained_guard,
+            protocol="snap",
+            save_dir=str(save_dir),
+            positions=[{"name": "P1", "x_um": 0.0, "y_um": 0.0}],
+        )
+        assert not save_dir.exists()
+
+    def test_out_of_bounds_tile_reported_not_moved(self, centered_ctrl, default_guard):
+        # default_guard: |x|,|y| <= 1000; a 3x3 grid with step 2000 exceeds it.
+        result = run_tile_acquisition(
+            centered_ctrl, default_guard,
+            rows=1, cols=3, step_um=2000.0,
+            protocol="snap", mark_positions=True,
+        )
+        errors = [r for r in result["results"] if "error" in r]
+        assert errors, "out-of-bounds tiles must surface as per-position errors"
+        assert centered_ctrl.add_position.call_count < 3
 
 
 class TestRunTimelapseExposure:
