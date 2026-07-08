@@ -11,6 +11,7 @@ from microclaw.image_analysis import (
     detect_features,
     laplacian_variance,
     make_thumbnail,
+    normalized_laplacian_variance,
     snap_to_numpy,
     snap_to_numpy_displayed,
 )
@@ -138,6 +139,33 @@ def test_laplacian_variance_sharp_vs_blurry():
     sharp = np.random.randint(0, 65535, (256, 256), dtype=np.uint16)
     blurry = gaussian_filter(sharp.astype(np.float32), sigma=5).astype(np.uint16)
     assert laplacian_variance(sharp) > laplacian_variance(blurry)
+
+
+class TestNormalizedLaplacianVariance:
+    def test_invariant_to_illumination_scaling(self):
+        """The amr_test regression (§10): 5× brighter must not read as sharper."""
+        img = synthetic_puncta(bg=400).astype(np.float64)
+        bright = (img - 400) * 5 + 400
+        assert normalized_laplacian_variance(bright) == pytest.approx(
+            normalized_laplacian_variance(img), rel=0.05
+        )
+
+    def test_raw_metric_is_not_invariant(self):
+        # Documents WHY the normalized variant exists.
+        img = synthetic_puncta(bg=400).astype(np.float64)
+        bright = (img - 400) * 5 + 400
+        assert laplacian_variance(bright) > 5 * laplacian_variance(img)
+
+    def test_sharp_beats_blurry(self):
+        from scipy.ndimage import gaussian_filter
+        rng = np.random.default_rng(3)
+        sharp = (rng.random((256, 256)) * 60000).astype(np.float32)
+        blurry = gaussian_filter(sharp, sigma=5)
+        assert normalized_laplacian_variance(sharp) > normalized_laplacian_variance(blurry)
+
+    def test_flat_image_is_zero(self):
+        assert normalized_laplacian_variance(np.zeros((64, 64))) == 0.0
+        assert normalized_laplacian_variance(np.full((64, 64), 400.0)) == 0.0
 
 
 def test_make_thumbnail_returns_valid_png():

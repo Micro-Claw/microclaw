@@ -14,9 +14,18 @@ from microclaw.autofocus import (
 def make_ctrl_with_focus_at(best_z: float, width: int = 64, flat: bool = False):
     """Mock controller whose images are sharpest at best_z.
 
+    Defocus is simulated as gaussian BLUR of a fixed scene (photons get
+    redistributed), not as an amplitude change — the normalized focus metric
+    is deliberately insensitive to brightness (design/14 §10).
+
     flat=True yields pure noise regardless of Z — the amr_test regression
     (design/14 §4), where a faint field produced a structureless metric curve.
     """
+    from scipy.ndimage import gaussian_filter
+
+    rng = np.random.default_rng(7)
+    scene = (rng.random((width, width)) * 60000).astype(np.float32)
+
     core = MagicMock()
     core.get_focus_device.return_value = "DStage"
     current_z = [50.0]
@@ -26,11 +35,11 @@ def make_ctrl_with_focus_at(best_z: float, width: int = 64, flat: bool = False):
     def get_tagged_image():
         z = current_z[0]
         if flat:
-            # Constant-statistics noise: metric ~36000 +/- a few percent.
+            # Constant-statistics noise: the metric varies only by sampling.
             pixels = (np.random.rand(width, width) * 3000 + 30000).astype(np.uint16)
         else:
-            sharpness = np.exp(-((z - best_z) ** 2) / (2 * 3.0 ** 2))
-            pixels = (np.random.rand(width, width) * sharpness * 65535).clip(0, 65535).astype(np.uint16)
+            sigma = 0.5 + abs(z - best_z)      # blur grows away from focus
+            pixels = gaussian_filter(scene, sigma=sigma).astype(np.uint16)
         tagged = MagicMock()
         tagged.pix = pixels.tobytes()
         tagged.tags = {"Width": width, "Height": width}

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import numpy as np
 
-from microclaw.image_analysis import laplacian_variance, snap_to_numpy
+from microclaw.image_analysis import normalized_laplacian_variance, snap_to_numpy
 from microclaw.safety import SafetyViolation
 
 
@@ -98,7 +98,10 @@ class FocusFeedbackHook(HookBase):
         self.reference_metric: float | None = None
 
     def image_process_fn(self, image: np.ndarray, metadata: dict, event_queue):
-        metric = laplacian_variance(image)
+        # Normalized metric (design/14 §10): photobleaching dims the frames
+        # over a timelapse, and a raw Laplacian variance would read that
+        # intensity loss as focus loss and jog Z for no reason.
+        metric = normalized_laplacian_variance(image)
         if self.reference_metric is None:
             self.reference_metric = metric
             return image, metadata
@@ -113,7 +116,7 @@ class FocusFeedbackHook(HookBase):
                     self.ctrl.core.set_position(current_z + self.z_step)
                     self.ctrl.core.wait_for_device(focus_device)
                     jogs += 1
-                    new_metric = laplacian_variance(snap_to_numpy(self.ctrl))
+                    new_metric = normalized_laplacian_variance(snap_to_numpy(self.ctrl))
                     if new_metric >= self.reference_metric * self.threshold:
                         self.reference_metric = new_metric
                         corrected, outcome = True, "recovered"

@@ -24,6 +24,7 @@ from microclaw.image_analysis import (
     compute_stats,
     detect_features,
     make_thumbnail,
+    normalized_laplacian_variance,
     snap_to_numpy,
     snap_to_numpy_displayed,
 )
@@ -686,6 +687,40 @@ def export_dataset_as_tiff(
 
 # --- Image capture with analysis ---
 
+def _focus_metric_payload(ctrl: MicroscopeController, image: np.ndarray) -> dict:
+    """Focus metric stamped with the settings it is only comparable within.
+
+    A bare float invites exactly the cross-setting comparison the amr_test
+    model made — reading a laser-power increase as a focus improvement
+    (design/14 §10). The metric itself is illumination-normalised; the
+    metric_valid_for block guards the residual ROI/exposure/binning
+    dependence.
+    """
+    try:
+        roi = ctrl.core.get_roi()
+        roi_list = [int(roi.x), int(roi.y), int(roi.width), int(roi.height)]
+    except Exception:
+        roi_list = None
+    try:
+        exposure_ms = round(float(ctrl.core.get_exposure()), 1)
+    except Exception:
+        exposure_ms = None
+    try:
+        binning = str(
+            ctrl.core.get_property(ctrl.core.get_camera_device(), "Binning")
+        )
+    except Exception:
+        binning = None
+    return {
+        "focus_metric": round(normalized_laplacian_variance(image), 4),
+        "focus_metric_kind": "normalized_laplacian_variance",
+        "metric_valid_for": {
+            "roi": roi_list,
+            "exposure_ms": exposure_ms,
+            "binning": binning,
+        },
+    }
+
 def snap_and_analyze(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -708,7 +743,7 @@ def snap_and_analyze(
         "z_um": round(ctrl.core.get_position(), 3),
         # Explicit, so the model never has to guess what the user can see.
         "displayed_in_mm_viewer": bool(display),
-        "focus_metric": round(stats.focus_metric, 2),
+        **_focus_metric_payload(ctrl, image),
         "mean_intensity": round(stats.mean_intensity, 1),
         "max_intensity": round(stats.max_intensity, 1),
         "saturated_fraction": round(stats.saturated_fraction, 4),
@@ -988,7 +1023,7 @@ def run_autofocus(
 
     with _pause_live(ctrl):
         image = snap_to_numpy(ctrl)
-    payload["focus_metric_at_final"] = round(compute_stats(image).focus_metric, 2)
+    payload["focus_metric_at_final"] = round(normalized_laplacian_variance(image), 4)
     return [
         {"type": "text", "text": json.dumps(payload)},
         {

@@ -16,9 +16,40 @@ class ImageStats(NamedTuple):
 
 
 def laplacian_variance(image: np.ndarray) -> float:
-    """Laplacian variance focus metric. Higher = sharper."""
+    """Raw Laplacian variance. Higher = sharper — but it also scales with
+    photon count and with whatever happens to be in the crop, so it is NOT
+    comparable across illumination/ROI/exposure changes. Prefer
+    normalized_laplacian_variance for anything the model will compare."""
     from scipy.ndimage import laplace
     return float(np.var(laplace(image.astype(np.float64))))
+
+
+def normalized_laplacian_variance(
+    image: np.ndarray, background: float | None = None
+) -> float:
+    """var(laplace(I - bg)) / mean(|I - bg|)² — scale-free w.r.t. illumination.
+
+    Raw var(laplace(I)) fired both of its failure modes in amr_test at
+    CONSTANT focus (design/14 §10):
+
+        full frame, 1% laser  →  8602
+        full frame, 10% laser → 21142     2.5× from laser power alone
+        200×200 ROI, 5% laser → 29107     3.4× from cropping alone
+
+    and the model read the rising number as improving image quality. The
+    camera offset (background) is subtracted first — the median unless given.
+    """
+    from scipy.ndimage import laplace
+
+    img = image.astype(np.float64)
+    if img.ndim == 3:
+        img = img.mean(axis=-1)
+    bg = float(np.median(img)) if background is None else background
+    sig = img - bg
+    mean = float(np.mean(np.abs(sig)))
+    if mean <= 0:
+        return 0.0
+    return float(np.var(laplace(sig)) / mean ** 2)
 
 
 def compute_stats(image: np.ndarray) -> ImageStats:

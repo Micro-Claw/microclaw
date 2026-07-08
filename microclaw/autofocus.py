@@ -5,7 +5,7 @@ from typing import Callable, Optional
 
 import numpy as np
 
-from microclaw.image_analysis import laplacian_variance, snap_to_numpy
+from microclaw.image_analysis import normalized_laplacian_variance, snap_to_numpy
 
 
 @dataclass
@@ -79,7 +79,7 @@ def sweep_autofocus(
     z_end_um: float,
     z_step_um: float,
     settle_ms: int = 50,
-    metric_fn: Callable[[np.ndarray], float] = laplacian_variance,
+    metric_fn: Callable[[np.ndarray], float] = normalized_laplacian_variance,
     move_to_best: bool = True,
 ) -> SweepResult:
     """Sweep Z and measure the focus metric; move to best Z only if move_to_best."""
@@ -132,7 +132,7 @@ def coarse_then_fine_autofocus(
     coarse_step_um: float,
     fine_step_um: float,
     settle_ms: int = 50,
-    metric_fn: Callable[[np.ndarray], float] = laplacian_variance,
+    metric_fn: Callable[[np.ndarray], float] = normalized_laplacian_variance,
     min_contrast: float = MIN_CONTRAST,
 ) -> AutofocusResult:
     """Two-pass autofocus that reports BOTH passes and restores Z on a flat curve.
@@ -187,7 +187,7 @@ def single_sweep_autofocus(
     z_range_um: float,
     z_step_um: float,
     settle_ms: int = 50,
-    metric_fn: Callable[[np.ndarray], float] = laplacian_variance,
+    metric_fn: Callable[[np.ndarray], float] = normalized_laplacian_variance,
     min_contrast: float = MIN_CONTRAST,
 ) -> AutofocusResult:
     """One-pass autofocus with the same contrast gate and result shape as

@@ -436,6 +436,12 @@ class TestSnapAndAnalyze:
         snap_and_analyze(mock_ctrl, unconstrained_guard)
         live.set_live_mode_on.assert_not_called()
 
+    def test_metric_is_stamped_with_comparability_key(self, mock_ctrl, unconstrained_guard):
+        # A bare float invites cross-setting comparisons (design/14 §10).
+        result = snap_and_analyze(mock_ctrl, unconstrained_guard)
+        assert result["focus_metric_kind"] == "normalized_laplacian_variance"
+        assert set(result["metric_valid_for"]) == {"roi", "exposure_ms", "binning"}
+
     def test_zero_pixel_size_carries_warning(self, mock_ctrl, unconstrained_guard):
         # The model asked about pixel size once and had forgotten 20 messages
         # later — the warning must ride along on every snap (design/14 §8).
