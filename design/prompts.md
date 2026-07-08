@@ -386,4 +386,40 @@ in design/13
 
 Why isn't it possible to have the one prompt return the dictionary of all     
 tool calls needed in one round trip to the API? Then the local machine could  
-simply iterate through all of the tools 
+simply iterate through all of the tools
+
+----
+
+Have a look at
+/Users/zachcm/Library/CloudStorage/OneDrive-Personal/Microclaw/microclaw-json-histories/20260707_143437_microclaw_history_amr_test.json.
+This is a log from the history created by __main__ from a recent micro-claw
+session. Based on this output, where is micro-claw still struggling to
+function well, and how could this be fixed? Write your proposals to design/14.
+
+Can you add proposed code stubs for the fixes to design/14? 
+
+----
+
+Have a look at design/14. Would it be beneficial to test any of these changes
+in a spike on a demo version of micro-manager that includes an EMU plugin
+with a default-ish configuration file? If so, please write this spike and I
+will run it on the micro-manager demo and give you the output. Ideally the
+spike would write all helpful output to a file I can just pass back to you
+
+The output is in design/14-demo-spike-output.txt. The microclaw terminal
+window jammed after this last output. The live view was running at the time
+it jammed.
+
+Jammed in a new spot. See 14-demo-spike-output.txt. This time it started and
+then stopped live mode, moved on to the last test in
+14-demo-spike-output.txt, and then jammed
+
+This time it ran all the way through. Output is in
+14-demo-spike-output.txt. The live window started and stopped several times
+during the test, and too quickly for me to tell if step 4 is the one that
+updated it.
+
+Can you commit this information to a branch? Also add the new prompts from
+this session to prompts.md. We can then start implementing what is in
+design/14 on the same branch, but please wait to start implementing until I
+give you the go ahead.
