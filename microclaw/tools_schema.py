@@ -1019,6 +1019,35 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "get_focus_lock_state",
+        "description": (
+            "Read whether the hardware focus lock (external sensor / QPD) is engaged, "
+            "resolved through the EMU map, plus the current QPD readings. A sharp "
+            "image is NOT evidence that the lock is engaged — always answer the SMLM "
+            "checklist's focus-lock item with this tool. Returns engaged=null on rigs "
+            "with no focus-lock property."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "set_focus_lock",
+        "description": (
+            "Engage or disengage the hardware focus lock. Disengage before running a "
+            "software autofocus sweep (which would otherwise fight the servo loop), "
+            "and re-engage afterwards — run_autofocus refuses to run while it is on."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "enabled": {
+                    "type": "boolean",
+                    "description": "True to engage the lock, False to disengage it.",
+                },
+            },
+            "required": ["enabled"],
+        },
+    },
+    {
         "name": "generate_and_save_hook",
         "description": (
             "Validate and save a hook script to disk. "

@@ -134,6 +134,9 @@ MM_RUNNING=1 pytest -m integration
 | `get_pixel_size` | Effective pixel size at the sample plane (µm) |
 | `move_stage_xy` / `get_xy_position` | XY stage |
 | `move_stage_z` / `get_z_position` | Z (focus) stage |
+| `list_stages` / `get_stage_position` / `move_named_stage` | Any single-axis stage addressed by label (guarded by per-device `named_stages` limits) |
+| `calibrate_stage_to_camera` | Measure the stage↔camera affine (pixel size, rotation, axis flips) in ~4 snaps |
+| `find_features` / `center_feature` | Spot count, centroid, offset from centre; closed-loop centring |
 | `set_channel` / `get_available_channels` | Channel presets |
 | `set_device_property` / `get_device_property` | Raw device properties |
 | `list_devices` | List loaded devices |
@@ -141,7 +144,8 @@ MM_RUNNING=1 pytest -m integration
 | `get_device_property_info` | Type, limits, and allowed values for a property |
 | `get_full_device_state` | All property values for a device |
 | `get_system_state` | Composite state snapshot |
-| `run_autofocus` | Software autofocus Z-sweep |
+| `run_autofocus` | Software autofocus Z-sweep (reports both passes; refuses to move on a flat metric curve) |
+| `get_focus_lock_state` / `set_focus_lock` | Read/drive the hardware focus lock (via the EMU map) |
 | `run_zstack` | Z-stack acquisition |
 | `run_timelapse` | Timelapse acquisition |
 | `export_dataset_as_tiff` | Export NDTiff dataset to ImageJ TIFF |
@@ -167,7 +171,8 @@ MM_RUNNING=1 pytest -m integration
 | `get_smlm_documentation` | Return the SMLM protocol reference (dSTORM/PALM/PAINT parameters, acquisition protocol, drift correction, post-processing, pitfalls) |
 | `check_emu_installed` | Detect whether EMU and htSMLM are installed by scanning the Micro-Manager plugins directory for their JARs |
 | `get_htsmlm_documentation` | Return the htSMLM/EMU reference (UIProperty inventory, control workflow, panel descriptions) — only called if EMU/htSMLM is detected or user mentions it |
-| `get_emu_configuration` | Read the EMU config file and return the UIProperty→MM device/property mapping for the active htSMLM configuration — only called if EMU is detected or user mentions it |
+| `get_emu_configuration` | Read the EMU config and return the structured map (lasers by slot, filter-wheel state table, focus lock) for the active htSMLM configuration — only called if EMU is detected or user mentions it |
+| `get_emu_laser_map` / `resolve_emu_device` | Slot→laser table (each slot's own enable/power/trigger lines); resolve a semantic name to a device-property |
 | `save_knowledge` | Save a non-standard fact about a sample, device, or strategy to the persistent knowledge base |
 | `get_knowledge` | Retrieve entries from the persistent knowledge base |
 | `delete_knowledge` | Remove a single entry from the persistent knowledge base |

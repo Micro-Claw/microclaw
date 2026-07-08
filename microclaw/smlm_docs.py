@@ -166,8 +166,30 @@ such as ThunderSTORM (FIJI plugin), SMAP, DECODE, or Picasso (see Software secti
 
 ---
 
+## Machine-checked pre-acquisition checklist
+
+Every row here is answered by CALLING THE TOOL, not by inspecting an image and
+asserting the answer. A checklist the model can satisfy with vibes is not a
+checklist: in a past session the "focus lock engaged?" item was answered with
+"you confirmed focus looks fine at Z=45.2 µm", which is not the same claim.
+
+| Check                  | Tool                                    | Pass condition                     |
+|------------------------|-----------------------------------------|------------------------------------|
+| Focus lock engaged     | get_focus_lock_state()                  | engaged == true                    |
+| Excitation will fire   | run_timelapse(laser_slot=N)             | pre-flight raises if gated off     |
+| Blinking density       | find_features()                         | spot_density_per_um2 in [0.1, 1.0] |
+| No saturation          | snap_and_analyze()                      | saturated_fraction == 0            |
+| In focus               | run_autofocus() or snap_and_analyze()   | converged == true                  |
+| Pixel size known       | get_pixel_size() / calibrate_stage_to_camera() | pixel_size_um > 0           |
+
+Items a tool CANNOT check (buffer, BFP bubbles, astigmatic lens, pre-bleach)
+must be asked of the user explicitly and confirmed in their reply.
+
+---
+
 ## Recommended acquisition protocol (step-by-step)
 
+0. Run the machine-checked checklist above; report each result to the user.
 1. Confirm sample is in photoswitching buffer (dSTORM) or correct imaging medium.
 2. Call get_system_state() to orient yourself.
 3. Call get_available_channels() to confirm the excitation channel.
@@ -180,8 +202,10 @@ such as ThunderSTORM (FIJI plugin), SMAP, DECODE, or Picasso (see Software secti
    BFP and will cause PSF distortions and poor localization. If bubbles are present,
    clean the objective and replace the oil.
 7. If the microscope has a hardware focus lock (e.g., NIR laser + QPD), confirm it
-   is engaged before starting. This is critical for long acquisitions and 3D SMLM.
-   In Micro-Manager, check the focus stabilization device in the device list.
+   is engaged before starting by calling get_focus_lock_state() — a sharp image is
+   NOT evidence the lock is on. This is critical for long acquisitions and 3D SMLM.
+   Note run_autofocus refuses to sweep while the lock is engaged; disengage with
+   set_focus_lock(false), focus, then re-engage.
 8. (dSTORM only) Ask the user to perform the pre-bleach step manually in
    Micro-Manager or confirm they have already done so:
    - Slow STORM: Start the laser at low power (~0.2 kW/cm²) and watch until the average image 
@@ -195,9 +219,12 @@ such as ThunderSTORM (FIJI plugin), SMAP, DECODE, or Picasso (see Software secti
 10. Confirm the number of frames with the user (default suggestions: slow STORM
     80,000; regular STORM 40,000; unsure → 20,000).
 11. Ask for a save directory and dataset name.
-12. Start acquisition:
+12. Start acquisition (pass laser_slot on an EMU rig so the trigger pre-flight
+    verifies the excitation will actually fire — a gated-off laser yields a
+    silently blank dataset):
       run_timelapse(n_frames=<n>, interval_s=0, save_dir=<dir>,
-                    channel=<ch>, exposure_ms=<ms>, name=<name>)
+                    channel=<ch>, exposure_ms=<ms>, name=<name>,
+                    laser_slot=<slot from get_emu_laser_map>)
 13. After completion, offer to export to TIFF for analysis:
       export_dataset_as_tiff(dataset_path=<path>, output_path=<tiff_path>)
 

@@ -991,6 +991,20 @@ def run_autofocus(
     guard.check_z(entry_z - z_range_um / 2)
     guard.check_z(entry_z + z_range_um / 2)
 
+    # A sweep against an engaged focus lock fights the piezo servo loop — a
+    # candidate cause of the flat, structureless curve in amr_test (§5).
+    lock = get_focus_lock_state(ctrl, guard)
+    if lock.get("engaged"):
+        return {
+            "error": (
+                f"Focus lock is engaged ({lock['property']}); a Z sweep would "
+                f"fight the servo loop and produce a meaningless metric curve. "
+                f"Call set_focus_lock(enabled=false) first, then re-engage it "
+                f"after focusing."
+            ),
+            "focus_lock": lock,
+        }
+
     with _pause_live(ctrl):
         result = _run_autofocus_passes(ctrl, z_range_um, z_step_um, method, settle_ms)
 
@@ -1805,6 +1819,66 @@ def get_emu_configuration(
     }
 
 
+def _read_qpd(ctrl: MicroscopeController, focus_lock: dict) -> dict | None:
+    qpd = focus_lock.get("qpd")
+    if not qpd:
+        return None
+    out = {}
+    for axis, entry in qpd.items():
+        if "device" in entry:
+            try:
+                out[axis] = ctrl.core.get_property(entry["device"], entry["property"])
+            except Exception:
+                pass
+    return out or None
+
+
+def get_focus_lock_state(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
+    """Read the hardware focus lock via the EMU map ('Z stage focus locking').
+
+    In amr_test the model answered its own 'Focus lock engaged?' checklist item
+    with 'You confirmed focus looks fine' — a sharp image is not an engaged
+    lock (design/14 §5). This is the one-call check it lacked.
+    """
+    from microclaw.emu_manager import build_emu_map
+
+    props = _cached_emu_properties(ctrl)
+    if not props:
+        return {"engaged": None, "reason": "No EMU configuration — cannot read a focus lock."}
+    lock = build_emu_map(props)["focus_lock"]
+    if lock is None or "device" not in lock:
+        return {"engaged": None, "reason": "No focus-lock property in the EMU map."}
+    value = str(ctrl.core.get_property(lock["device"], lock["property"]))
+    on_value = str(lock.get("on", "1"))
+    return {
+        "engaged": value == on_value,
+        "raw_value": value,
+        "property": f"{lock['device']}.{lock['property']}",
+        "qpd": _read_qpd(ctrl, lock),
+    }
+
+
+def set_focus_lock(
+    ctrl: MicroscopeController, guard: SafetyGuard, enabled: bool
+) -> dict:
+    """Engage or disengage the hardware focus lock via the EMU map."""
+    from microclaw.emu_manager import build_emu_map
+
+    props = _cached_emu_properties(ctrl)
+    if not props:
+        return {"error": "No EMU configuration — cannot control a focus lock."}
+    lock = build_emu_map(props)["focus_lock"]
+    if lock is None or "device" not in lock:
+        return {"error": "No focus-lock property in the EMU map."}
+    target = str(lock.get("on", "1")) if enabled else str(lock.get("off", "0"))
+    ctrl.core.set_property(lock["device"], lock["property"], target)
+    return {
+        "engaged": enabled,
+        "property": f"{lock['device']}.{lock['property']}",
+        "value": target,
+    }
+
+
 def get_emu_laser_map(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     """The slot → laser table (enable / power / trigger lines) from the EMU map."""
     from microclaw.emu_manager import build_emu_map
@@ -1900,6 +1974,8 @@ TOOL_REGISTRY = {
     "get_emu_configuration": get_emu_configuration,
     "get_emu_laser_map": get_emu_laser_map,
     "resolve_emu_device": resolve_emu_device,
+    "get_focus_lock_state": get_focus_lock_state,
+    "set_focus_lock": set_focus_lock,
     "save_knowledge": save_knowledge,
     "get_knowledge": get_knowledge,
     "delete_knowledge": delete_knowledge,

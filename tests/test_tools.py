@@ -818,6 +818,92 @@ class TestCenterFeature:
         assert "nothing to centre" in result["error"].lower()
 
 
+class TestFocusLock:
+    """design/14 §5: the lock is readable, and a sweep must not fight it."""
+
+    PROPS = {
+        "Z stage focus locking": {
+            "device": "PIZStage", "property": "External sensor",
+            "mm_property_string": "PIZStage-External sensor",
+            "on": "1", "off": "0",
+        },
+        "QPD X": {"device": "Analog Input", "property": "AnalogInput0",
+                  "mm_property_string": "Analog Input-AnalogInput0"},
+    }
+
+    def _emu(self, monkeypatch, props=None):
+        from microclaw import tools
+        monkeypatch.setattr(
+            tools, "_cached_emu_properties",
+            lambda ctrl: self.PROPS if props is None else props,
+        )
+
+    def test_reports_engaged_with_qpd(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        from microclaw.tools import get_focus_lock_state
+        self._emu(monkeypatch)
+        mock_ctrl.core.get_property.return_value = "1"
+        result = get_focus_lock_state(mock_ctrl, unconstrained_guard)
+        assert result["engaged"] is True
+        assert result["property"] == "PIZStage.External sensor"
+        assert result["qpd"] == {"x": "1"}
+
+    def test_reports_disengaged(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        from microclaw.tools import get_focus_lock_state
+        self._emu(monkeypatch)
+        mock_ctrl.core.get_property.return_value = "0"
+        assert get_focus_lock_state(mock_ctrl, unconstrained_guard)["engaged"] is False
+
+    def test_non_emu_rig_returns_null_not_false(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        # engaged=None means "unknown"; False would be a false reassurance.
+        from microclaw.tools import get_focus_lock_state
+        self._emu(monkeypatch, props={})
+        result = get_focus_lock_state(mock_ctrl, unconstrained_guard)
+        assert result["engaged"] is None
+        assert "reason" in result
+
+    def test_set_focus_lock_writes_on_value(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        from microclaw.tools import set_focus_lock
+        self._emu(monkeypatch)
+        result = set_focus_lock(mock_ctrl, unconstrained_guard, enabled=True)
+        mock_ctrl.core.set_property.assert_called_once_with(
+            "PIZStage", "External sensor", "1")
+        assert result["engaged"] is True
+
+    def test_set_focus_lock_writes_off_value(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        from microclaw.tools import set_focus_lock
+        self._emu(monkeypatch)
+        set_focus_lock(mock_ctrl, unconstrained_guard, enabled=False)
+        mock_ctrl.core.set_property.assert_called_once_with(
+            "PIZStage", "External sensor", "0")
+
+    def test_autofocus_refuses_while_lock_engaged(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        # The sweep would be actively opposed by the piezo servo loop.
+        self._emu(monkeypatch)
+        mock_ctrl.core.get_property.return_value = "1"
+        called = []
+        monkeypatch.setattr("microclaw.tools.coarse_then_fine_autofocus",
+                            lambda *a, **k: called.append(1))
+        result = run_autofocus(mock_ctrl, unconstrained_guard,
+                               z_range_um=10.0, z_step_um=1.0)
+        assert "Focus lock is engaged" in result["error"]
+        assert not called, "no sweep may run against an engaged lock"
+
+    def test_autofocus_runs_when_lock_disengaged(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        self._emu(monkeypatch)
+        mock_ctrl.core.get_property.return_value = "0"
+        _patch_autofocus(monkeypatch)
+        result = run_autofocus(mock_ctrl, unconstrained_guard, z_range_um=10.0,
+                               z_step_um=1.0, return_thumbnail=False)
+        assert result["converged"] is True
+
+    def test_autofocus_runs_on_non_emu_rig(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        self._emu(monkeypatch, props={})
+        _patch_autofocus(monkeypatch)
+        result = run_autofocus(mock_ctrl, unconstrained_guard, z_range_um=10.0,
+                               z_step_um=1.0, return_thumbnail=False)
+        assert result["converged"] is True
+
+
 class TestTimelapseTriggerPreflight:
     """design/14 §1: refuse an SMLM acquisition whose excitation is gated off."""
 

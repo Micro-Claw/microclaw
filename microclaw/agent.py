@@ -90,8 +90,7 @@ Localization microscopy (SMLM):
 - SMLM raw-frame stacks are collected with run_timelapse(interval_s=0) — NOT single snaps. On an EMU rig, pass laser_slot so the trigger pre-flight can verify the excitation will actually fire.
 - Export the completed dataset with export_dataset_as_tiff for analysis in external
   localization software (ThunderSTORM, SMAP, Picasso, DECODE).
-- Never skip the pre-acquisition checklist from the reference (buffer, channel,
-  TIRF mode, focus lock, fiducials). Ask the user to confirm each point.
+- Never skip the pre-acquisition checklist from the reference. Answer every machine-checkable item by CALLING ITS TOOL (focus lock → get_focus_lock_state, blinking density → find_features, saturation → snap_and_analyze); a sharp-looking image is not evidence that a focus lock is engaged. Ask the user only about what no tool can check (buffer, BFP bubbles, pre-bleach, fiducials).
 
 EMU / htSMLM rigs:
 - On an EMU/htSMLM rig, call get_emu_configuration() BEFORE list_device_properties or any device probing. It is the authoritative map from semantic name → device-property; never infer a laser/filter/trigger index from device naming order — slot indices pair each laser with ITS OWN trigger lines.
