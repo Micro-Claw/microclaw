@@ -34,3 +34,6 @@ markers = [
 
 [tool.setuptools.package-dir]
 microclaw = "microclaw"
+
+[tool.setuptools.package-data]
+microclaw = ["history_viewer.html"]

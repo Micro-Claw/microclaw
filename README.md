@@ -46,6 +46,20 @@ microclaw --safety-config safety_config.yaml
 | `--profile` / `--no-profile` | off | cProfile the session and print stats on exit. |
 | `--save-history` / `--no-save-history` | on | Write the conversation to a timestamped `*_microclaw_history.json` file. |
 
+### Viewing a saved history
+
+Saved `*_microclaw_history.json` files are raw Anthropic messages — readable but
+noisy. Render one as a browser transcript (user prompts, the agent's replies, and
+every microscope tool call with its result, collapsed by default):
+
+```
+microclaw view-history 20260707_143437_microclaw_history.json
+```
+
+This writes a self-contained HTML file to your temp directory and opens it. Pass
+`--no-browser` to just print the path. The viewer runs entirely locally — nothing
+is uploaded.
+
 ## Set up a runnable .bat with the environment variables
 
 Create a `.bat` file containing the following lines, updated to your installation path and API key.
