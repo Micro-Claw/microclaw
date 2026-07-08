@@ -226,6 +226,99 @@ def move_stage_z(
     return {"z_um": round(target_z, 3), "status": "Moved."}
 
 
+# --- Named stages (design/14 §6) ---
+
+# mmcorej.DeviceType ordinals for the stage types (verified V3).
+_DEVICE_TYPES = {5: "StageDevice", 6: "XYStageDevice"}
+
+
+def _device_type_name(core, label: str) -> str:
+    """Classify a device via core.get_device_type(label).
+
+    Deliberately avoids get_loaded_devices_of_type: that needs a DeviceType
+    enum value, whose static shadow must go through the JavaClass cache
+    workaround and hung once in the design/14 spike (V3). Per-device
+    classification needs no JavaClass at all.
+    """
+    raw = core.get_device_type(label)
+    if hasattr(raw, "to_string"):
+        name = str(raw.to_string())
+        if name and "0x" not in name:
+            return name
+    if hasattr(raw, "swig_value"):
+        try:
+            v = int(raw.swig_value())
+            return _DEVICE_TYPES.get(v, str(v))
+        except (TypeError, ValueError):
+            pass
+    try:
+        v = int(raw)
+        return _DEVICE_TYPES.get(v, str(v))
+    except (TypeError, ValueError):
+        return str(raw)
+
+
+def list_stages(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
+    """Every stage device, and which ones the core's Z/XY tools actually drive.
+
+    move_stage_z/get_z_position address ONLY core.get_focus_device(). In the
+    amr_test session the TIRF beam-steering axis (a second single-axis stage)
+    was unreachable and the task was handed back to the human (design/14 §6).
+    """
+    focus = str(ctrl.core.get_focus_device())
+    xy = str(ctrl.core.get_xy_stage_device())
+    single, xy_stages = [], []
+    for label in _str_vector(ctrl.core.get_loaded_devices()):
+        kind = _device_type_name(ctrl.core, label)
+        if kind in ("StageDevice", "5"):
+            single.append(label)
+        elif kind in ("XYStageDevice", "6"):
+            xy_stages.append(label)
+    return {
+        "focus_device": focus,
+        "xy_device": xy,
+        "single_axis_stages": single,
+        "xy_stages": xy_stages,
+        "other_single_axis": [d for d in single if d != focus],
+        "note": (
+            "move_stage_z targets focus_device only; use move_named_stage "
+            "(with a named_stages safety entry) for the rest."
+        ),
+    }
+
+
+def get_stage_position(
+    ctrl: MicroscopeController, guard: SafetyGuard, device: str
+) -> dict:
+    return {
+        "device": device,
+        "position_um": round(float(ctrl.core.get_position(device)), 4),
+    }
+
+
+def move_named_stage(
+    ctrl: MicroscopeController,
+    guard: SafetyGuard,
+    device: str,
+    um: float,
+    absolute: bool = True,
+) -> dict:
+    """Move a single-axis stage addressed by label, guarded by the PER-DEVICE
+    limits table (named_stages in the safety config — fail-closed)."""
+    current = float(ctrl.core.get_position(device))
+    target = um if absolute else current + um
+    guard.check_named_stage(device, target)
+    ctrl.core.set_position(device, target)
+    ctrl.core.wait_for_device(device)
+    achieved = float(ctrl.core.get_position(device))
+    return {
+        "device": device,
+        "requested_um": round(target, 4),
+        "achieved_um": round(achieved, 4),
+        "error_um": round(achieved - target, 4),
+    }
+
+
 # --- Channel / Config ---
 
 def set_channel(ctrl: MicroscopeController, guard: SafetyGuard, preset: str) -> dict:
@@ -1544,6 +1637,9 @@ TOOL_REGISTRY = {
     "move_stage_xy": move_stage_xy,
     "get_z_position": get_z_position,
     "move_stage_z": move_stage_z,
+    "list_stages": list_stages,
+    "get_stage_position": get_stage_position,
+    "move_named_stage": move_named_stage,
     "set_channel": set_channel,
     "get_available_channels": get_available_channels,
     "set_device_property": set_device_property,

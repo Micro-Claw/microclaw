@@ -148,6 +148,83 @@ class TestMoveStageXY:
         assert result["y_um"] == 0.0
 
 
+class _FakeDeviceType:
+    def __init__(self, name, ordinal):
+        self._name, self._ordinal = name, ordinal
+
+    def to_string(self):
+        return self._name
+
+    def swig_value(self):
+        return self._ordinal
+
+
+class TestNamedStages:
+    """design/14 §6: address any stage by label, guarded per device, fail-closed."""
+
+    _TYPES = {
+        "DCam": _FakeDeviceType("CameraDevice", 2),
+        "DXYStage": _FakeDeviceType("XYStageDevice", 6),
+        "DStage": _FakeDeviceType("StageDevice", 5),
+        "TIRF Stage": _FakeDeviceType("StageDevice", 5),
+    }
+
+    @pytest.fixture
+    def stage_ctrl(self, mock_ctrl):
+        mock_ctrl.core.get_loaded_devices.return_value = list(self._TYPES)
+        mock_ctrl.core.get_device_type.side_effect = lambda d: self._TYPES[d]
+        mock_ctrl.core.get_focus_device.return_value = "DStage"
+        mock_ctrl.core.get_xy_stage_device.return_value = "DXYStage"
+        return mock_ctrl
+
+    @pytest.fixture
+    def stage_guard(self):
+        from microclaw.safety import NamedStageLimits
+        return SafetyGuard(SafetyConstraints(
+            named_stages=[NamedStageLimits("TIRF Stage", -3000.0, 3000.0)]
+        ))
+
+    def test_list_stages_classifies_and_flags_focus(self, stage_ctrl, unconstrained_guard):
+        from microclaw.tools import list_stages
+        result = list_stages(stage_ctrl, unconstrained_guard)
+        assert result["focus_device"] == "DStage"
+        assert result["single_axis_stages"] == ["DStage", "TIRF Stage"]
+        assert result["other_single_axis"] == ["TIRF Stage"]
+        assert result["xy_stages"] == ["DXYStage"]
+
+    def test_get_stage_position(self, stage_ctrl, unconstrained_guard):
+        from microclaw.tools import get_stage_position
+        stage_ctrl.core.get_position.return_value = 123.4567
+        result = get_stage_position(stage_ctrl, unconstrained_guard, device="TIRF Stage")
+        stage_ctrl.core.get_position.assert_called_with("TIRF Stage")
+        assert result["position_um"] == 123.4567
+
+    def test_move_reports_requested_vs_achieved(self, stage_ctrl, stage_guard):
+        from microclaw.tools import move_named_stage
+        # Settling error is real on this rig and was previously invisible.
+        stage_ctrl.core.get_position.side_effect = [100.0, 201.1]  # before, after
+        result = move_named_stage(stage_ctrl, stage_guard, device="TIRF Stage", um=200.0)
+        stage_ctrl.core.set_position.assert_called_once_with("TIRF Stage", 200.0)
+        stage_ctrl.core.wait_for_device.assert_called_with("TIRF Stage")
+        assert result["requested_um"] == 200.0
+        assert result["achieved_um"] == 201.1
+        assert result["error_um"] == pytest.approx(1.1)
+
+    def test_relative_move_resolves_absolute_before_check(self, stage_ctrl, stage_guard):
+        from microclaw.tools import move_named_stage
+        stage_ctrl.core.get_position.side_effect = [2900.0]
+        with pytest.raises(SafetyViolation, match="maximum"):
+            move_named_stage(stage_ctrl, stage_guard, device="TIRF Stage",
+                             um=200.0, absolute=False)
+        stage_ctrl.core.set_position.assert_not_called()
+
+    def test_unconfigured_stage_fails_closed(self, stage_ctrl, stage_guard):
+        from microclaw.tools import move_named_stage
+        with pytest.raises(SafetyViolation, match="No limits configured"):
+            move_named_stage(stage_ctrl, stage_guard, device="DStage", um=10.0)
+        stage_ctrl.core.set_position.assert_not_called()
+
+
 class TestSetChannel:
     def test_allowed_channel(self, mock_ctrl, default_guard):
         set_channel(mock_ctrl, default_guard, preset="DAPI")

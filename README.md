@@ -32,6 +32,7 @@ pip install -e ".[test]"
 ### Run
 
 ```bash
+cp safety_config.example.yaml safety_config.yaml   # then edit for YOUR rig
 microclaw --safety-config safety_config.yaml
 ```
 
@@ -39,7 +40,7 @@ microclaw --safety-config safety_config.yaml
 
 | Flag | Default | Purpose |
 |---|---|---|
-| `--safety-config PATH` | `safety_config.yaml` | Hardware-limits file enforced before every tool call. |
+| `--safety-config PATH` | *(required)* | Hardware-limits file enforced before every tool call. Copy `safety_config.example.yaml` and edit for your rig — the example's limits match no real hardware. |
 | `--port N` | `4827` | ZMQ port to reach the running Micro-Manager instance. Match the port set in **Tools → Options**. |
 | `--model ID` | `$MICROCLAW_MODEL` or `claude-opus-4-8` | Anthropic model id. The `MICROCLAW_MODEL` environment variable overrides the built-in default; `--model` overrides both. |
 | `--profile` / `--no-profile` | off | cProfile the session and print stats on exit. |
@@ -57,7 +58,7 @@ C:\path\to\miniconda3\Scripts\activate.bat microclaw && microclaw --safety-confi
 
 ## Safety configuration
 
-Edit `safety_config.yaml` to set hardware limits. These are enforced before every tool call and cannot be overridden by the AI.
+Copy `safety_config.example.yaml` to `safety_config.yaml` and edit it to set this rig's hardware limits. These are enforced before every tool call and cannot be overridden by the AI.
 
 ```yaml
 stage:

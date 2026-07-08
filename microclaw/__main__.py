@@ -27,7 +27,17 @@ def write_history(fn, history, save=True):
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="Microclaw: AI agent for Micro-Manager")
-    parser.add_argument("--safety-config", default="safety_config.yaml")
+    # Required, with no default (design/14 §6): the repo ships only
+    # safety_config.example.yaml, whose limits match no real rig — a default
+    # that silently doesn't match the hardware is worse than no default.
+    parser.add_argument(
+        "--safety-config",
+        required=True,
+        help=(
+            "Path to THIS RIG's safety-limits YAML "
+            "(copy safety_config.example.yaml and edit)."
+        ),
+    )
     parser.add_argument("--port", type=int, default=4827)
     parser.add_argument(
         "--model",

@@ -140,6 +140,52 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "list_stages",
+        "description": (
+            "List every stage device by type and show which ones the core Z/XY "
+            "tools actually drive. move_stage_z and get_z_position address ONLY "
+            "the core focus device; any other single-axis stage (e.g. a TIRF "
+            "beam-steering axis) must be driven with move_named_stage. Call this "
+            "before assuming an axis is unreachable."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "get_stage_position",
+        "description": "Get the position (µm) of a single-axis stage addressed by device label.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "device": {"type": "string", "description": "Stage device label (from list_stages)."},
+            },
+            "required": ["device"],
+        },
+    },
+    {
+        "name": "move_named_stage",
+        "description": (
+            "Move a single-axis stage addressed by device label (e.g. a TIRF "
+            "steering axis that is not the core focus device). Guarded by the "
+            "per-device named_stages limits in the safety config — a stage with "
+            "no entry there cannot be moved (fail-closed); tell the user to add "
+            "one if refused. Returns requested vs achieved position and the "
+            "settling error."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "device": {"type": "string", "description": "Stage device label (from list_stages)."},
+                "um": {"type": "number", "description": "Target position (absolute) or delta (relative) in µm."},
+                "absolute": {
+                    "type": "boolean",
+                    "description": "True for absolute coordinates, False for relative.",
+                    "default": True,
+                },
+            },
+            "required": ["device", "um"],
+        },
+    },
+    {
         "name": "set_channel",
         "description": (
             "Set the imaging channel by applying a Micro-Manager hardware preset "
