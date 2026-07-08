@@ -209,6 +209,31 @@ class TestSetDeviceProperty:
                                 device="DCam", property="Exposure", value="60000")
         mock_ctrl.core.set_property.assert_not_called()
 
+    def _laser_guard(self):
+        from microclaw.safety import IlluminationConstraints, IlluminationProperty
+        return SafetyGuard(SafetyConstraints(
+            illumination=IlluminationConstraints(
+                shutters=[IlluminationProperty("Luxx638", "Laser Operation Select")]
+            )
+        ))
+
+    def test_illumination_enable_blocked_when_declined(self, mock_ctrl, monkeypatch):
+        # The gate must run through tools.CONFIRM_FN — in code, not the prompt.
+        monkeypatch.setattr("microclaw.tools.CONFIRM_FN", lambda s: False)
+        with pytest.raises(SafetyViolation, match="declined"):
+            set_device_property(mock_ctrl, self._laser_guard(),
+                                device="Luxx638", property="Laser Operation Select",
+                                value="On")
+        mock_ctrl.core.set_property.assert_not_called()
+
+    def test_illumination_enable_passes_when_confirmed(self, mock_ctrl, monkeypatch):
+        monkeypatch.setattr("microclaw.tools.CONFIRM_FN", lambda s: True)
+        set_device_property(mock_ctrl, self._laser_guard(),
+                            device="Luxx638", property="Laser Operation Select",
+                            value="On")
+        mock_ctrl.core.set_property.assert_called_once_with(
+            "Luxx638", "Laser Operation Select", "On")
+
 
 class TestListDevices:
     def test_returns_device_list(self, mock_ctrl, unconstrained_guard):

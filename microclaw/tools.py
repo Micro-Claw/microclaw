@@ -223,6 +223,9 @@ def set_device_property(
     value: str,
 ) -> dict:
     guard.check_device_property(ctrl.core, device, property, value)
+    # Illumination gate (design/14 §3): shutter enables block on a human 'y',
+    # power writes are capped and ratcheted. In code, not just the prompt.
+    guard.check_illumination(ctrl.core, device, property, value, confirm_fn=CONFIRM_FN)
     ctrl.core.set_property(device, property, value)
     ctrl.studio.app().refresh_gui()
     return {"status": f"Set {device}.{property} = {value!r}."}
