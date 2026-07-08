@@ -69,8 +69,9 @@ class AutofocusHook(HookBase):
         )
         self._log.append({
             "position": event.get("axes", {}),
-            "best_z_um": round(result.best_z_um, 3),
-            "settled": result.settled,
+            "best_z_um": round(result.final_z_um, 3),
+            "converged": result.converged,
+            **({"warning": result.reason} if not result.converged else {}),
         })
         self._write_log()
         return event

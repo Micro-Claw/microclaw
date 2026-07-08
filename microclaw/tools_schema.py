@@ -324,9 +324,13 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Run a software autofocus sweep to find the sharpest Z plane. "
             "Sweeps Z from (current_z - z_range_um/2) to (current_z + z_range_um/2) "
-            "in z_step_um steps. Returns best Z, focus metric curve, and a thumbnail. "
+            "in z_step_um steps. Returns BOTH passes (coarse chooses the plane, fine "
+            "refines it) with their metric curves and contrast, plus converged/moved/"
+            "entry_z_um/final_z_um. If the metric curve is structureless (low "
+            "contrast — e.g. faint signal or a too-small ROI), the stage is NOT "
+            "moved: Z is restored to entry_z_um and converged=false explains why. "
             "Default parameters for a 20× objective: z_range_um=20, z_step_um=0.5. "
-            "Widen z_range_um if the result says the peak was at the boundary."
+            "Widen z_range_um if the result says the peak was at the boundary. "
             "If the focus is not converging, check if there are any sharp boundaries in the image. If so, alert the user."
         ),
         "input_schema": {

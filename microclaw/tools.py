@@ -11,7 +11,12 @@ import tifffile
 from pycromanager import Acquisition, multi_d_acquisition_events
 from ndstorage import Dataset
 
-from microclaw.autofocus import coarse_then_fine_autofocus, sweep_autofocus
+from microclaw.autofocus import (
+    AutofocusResult,
+    coarse_then_fine_autofocus,
+    curve_contrast,
+    single_sweep_autofocus,
+)
 from microclaw.controller import MicroscopeController
 from microclaw.errors import humanize_java_error
 from microclaw.image_analysis import (
@@ -551,6 +556,32 @@ def snap_and_analyze(
 
 # --- Autofocus (Form A — standalone) ---
 
+def _run_autofocus_passes(
+    ctrl: MicroscopeController,
+    z_range_um: float,
+    z_step_um: float,
+    method: str,
+    settle_ms: int,
+) -> AutofocusResult:
+    if method == "coarse_then_fine":
+        return coarse_then_fine_autofocus(
+            ctrl, z_range_um, max(z_step_um * 5, 1.0), z_step_um, settle_ms
+        )
+    return single_sweep_autofocus(ctrl, z_range_um, z_step_um, settle_ms)
+
+
+def _sweep_payload(sweep) -> dict | None:
+    if sweep is None:
+        return None
+    return {
+        "z_positions": [round(z, 3) for z in sweep.z_positions],
+        "metric_curve": [round(v, 2) for v in sweep.metric_values],
+        "best_z_um": round(sweep.best_z_um, 3),
+        "peak_interior": sweep.peak_interior,
+        "contrast": round(curve_contrast(sweep.metric_values), 3),
+    }
+
+
 def run_autofocus(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -560,49 +591,50 @@ def run_autofocus(
     settle_ms: int = 50,
     return_thumbnail: bool = True,
 ) -> list | dict:
-    """Sweep Z to find the sharpest focal plane."""
-    current_z = ctrl.core.get_position()
-    guard.check_z(current_z - z_range_um / 2)
-    guard.check_z(current_z + z_range_um / 2)
+    """Sweep Z to find the sharpest focal plane.
 
-    live = ctrl.studio.live()
-    was_live = live.is_live_mode_on()
-    if was_live:
-        live.set_live_mode_on(False)
-    try:
-        if method == "coarse_then_fine":
-            result = coarse_then_fine_autofocus(
-                ctrl, z_range_um, max(z_step_um * 5, 1.0), z_step_um, settle_ms
-            )
-        else:
-            result = sweep_autofocus(
-                ctrl,
-                current_z - z_range_um / 2,
-                current_z + z_range_um / 2,
-                z_step_um,
-                settle_ms,
-            )
-    finally:
-        if was_live:
-            live.set_live_mode_on(True)
+    Reports BOTH passes (the coarse pass chooses the plane; the old payload
+    showed only the fine curve — design/14 §4), refuses to move the stage on a
+    structureless metric curve, and always reports entry_z_um so a bad result
+    is trivially undone.
+    """
+    entry_z = ctrl.core.get_position()
+    guard.check_z(entry_z - z_range_um / 2)
+    guard.check_z(entry_z + z_range_um / 2)
+
+    with _pause_live(ctrl):
+        result = _run_autofocus_passes(ctrl, z_range_um, z_step_um, method, settle_ms)
 
     payload: dict[str, Any] = {
-        "best_z_um": round(result.best_z_um, 3),
-        "settled": result.settled,
-        "metric_curve": [round(v, 2) for v in result.metric_values],
-        "z_positions": [round(z, 3) for z in result.z_positions],
+        "converged": result.converged,
+        "moved": result.moved,
+        "reason": result.reason,
+        "entry_z_um": round(result.entry_z_um, 3),
+        "final_z_um": round(result.final_z_um, 3),
+        "z_range_um": z_range_um,
+        # BOTH passes — the caller can see which one chose the plane.
+        "coarse": _sweep_payload(result.coarse),
+        "fine": _sweep_payload(result.fine),
         "warning": (
-            None
-            if result.settled
-            else "Peak focus was at the edge of the sweep range; consider widening z_range_um."
+            "Peak focus was at the edge of the sweep range; consider widening z_range_um."
+            if result.converged and not result.coarse.peak_interior
+            else None
         ),
     }
+
+    # Invariant that would have surfaced the amr_test bug immediately: the
+    # first pass must span the requested window around the entry Z.
+    zs = result.coarse.z_positions
+    assert min(zs) - 1e-6 <= result.entry_z_um <= max(zs) + 1e-6, (
+        "autofocus sweep window does not contain the entry Z"
+    )
 
     if not return_thumbnail:
         return payload
 
-    image = snap_to_numpy(ctrl)
-    payload["focus_metric_at_best"] = round(compute_stats(image).focus_metric, 2)
+    with _pause_live(ctrl):
+        image = snap_to_numpy(ctrl)
+    payload["focus_metric_at_final"] = round(compute_stats(image).focus_metric, 2)
     return [
         {"type": "text", "text": json.dumps(payload)},
         {
@@ -944,44 +976,43 @@ def run_multiposition_with_autofocus(
                 )
                 continue
 
-            coarse_step = max(z_step_um * 5, 1.0)
-            af = (
-                coarse_then_fine_autofocus(ctrl, z_range_um, coarse_step, z_step_um, settle_ms)
-                if autofocus_method == "coarse_then_fine"
-                else sweep_autofocus(
-                    ctrl,
-                    current_z - z_range_um / 2,
-                    current_z + z_range_um / 2,
-                    z_step_um,
-                    settle_ms,
-                )
+            af = _run_autofocus_passes(
+                ctrl, z_range_um, z_step_um, autofocus_method, settle_ms
             )
+            # Non-convergence restores the entry Z; the protocol still runs
+            # there (same plane as no autofocus), but the result must say so —
+            # a silent {"status": "complete"} on an unfocused position is the
+            # design/14 §4 failure mode.
+            af_info: dict[str, Any] = {
+                "best_z_um": round(af.final_z_um, 3),
+                "autofocus_converged": af.converged,
+            }
+            if not af.converged:
+                af_info["autofocus_warning"] = af.reason
 
             pos_save_dir = str(Path(save_dir) / pos_name)
             Path(pos_save_dir).mkdir(parents=True, exist_ok=True)
             try:
                 if protocol == "snap":
                     ctrl.studio.live().snap(True)
-                    results.append(
-                        {"position": pos_name, "best_z_um": round(af.best_z_um, 3), "status": "snapped"}
-                    )
+                    results.append({"position": pos_name, **af_info, "status": "snapped"})
                 elif protocol == "zstack":
                     r = run_zstack(ctrl, guard, save_dir=pos_save_dir, name=pos_name, **params)
-                    results.append({"position": pos_name, "best_z_um": round(af.best_z_um, 3), **r})
+                    results.append({"position": pos_name, **af_info, **r})
                 elif protocol == "timelapse":
                     r = run_timelapse(ctrl, guard, save_dir=pos_save_dir, name=pos_name, **params)
-                    results.append({"position": pos_name, "best_z_um": round(af.best_z_um, 3), **r})
+                    results.append({"position": pos_name, **af_info, **r})
                 else:
                     results.append(
                         {
                             "position": pos_name,
-                            "best_z_um": round(af.best_z_um, 3),
+                            **af_info,
                             "error": f"Unknown protocol '{protocol}'.",
                         }
                     )
             except Exception as e:
                 results.append(
-                    {"position": pos_name, "best_z_um": round(af.best_z_um, 3), "error": str(e)}
+                    {"position": pos_name, **af_info, "error": str(e)}
                 )
     finally:
         if was_live:

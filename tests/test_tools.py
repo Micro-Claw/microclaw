@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, call
 import numpy as np
 import pytest
 
-from microclaw.autofocus import AutofocusResult
+from microclaw.autofocus import AutofocusResult, SweepResult
 from microclaw.safety import SafetyConstraints, SafetyGuard, SafetyViolation, StageConstraints
 from microclaw.tools import (
     clear_position_list,
@@ -322,18 +322,28 @@ class TestSnapAndAnalyze:
         assert "z_um" in payload
 
 
-_FAKE_AF_RESULT = AutofocusResult(
-    best_z_um=50.0,
-    metric_values=[0.1, 0.9, 0.1],
+_FAKE_SWEEP = SweepResult(
     z_positions=[49.0, 50.0, 51.0],
-    settled=True,
+    metric_values=[0.1, 0.9, 0.1],
+    best_z_um=50.0,
+    peak_interior=True,
+)
+
+_FAKE_AF_RESULT = AutofocusResult(
+    coarse=_FAKE_SWEEP,
+    fine=_FAKE_SWEEP,
+    entry_z_um=50.0,
+    final_z_um=50.0,
+    converged=True,
+    moved=True,
+    reason=None,
 )
 
 
 def _patch_autofocus(monkeypatch):
     """Stub out the sweep functions and image helpers used by run_autofocus."""
     monkeypatch.setattr("microclaw.tools.coarse_then_fine_autofocus", lambda *a, **k: _FAKE_AF_RESULT)
-    monkeypatch.setattr("microclaw.tools.sweep_autofocus", lambda *a, **k: _FAKE_AF_RESULT)
+    monkeypatch.setattr("microclaw.tools.single_sweep_autofocus", lambda *a, **k: _FAKE_AF_RESULT)
     monkeypatch.setattr("microclaw.tools.snap_to_numpy", lambda ctrl: np.zeros((64, 64), dtype=np.uint16))
     monkeypatch.setattr("microclaw.tools.make_thumbnail", lambda img: "")
 
@@ -372,6 +382,30 @@ class TestRunAutofocus:
         run_autofocus(mock_ctrl, unconstrained_guard, z_range_um=10.0, z_step_um=1.0)
 
         live.set_live_mode_on.assert_not_called()
+
+    def test_payload_reports_both_passes(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        _patch_autofocus(monkeypatch)
+        result = run_autofocus(mock_ctrl, unconstrained_guard,
+                               z_range_um=10.0, z_step_um=1.0, return_thumbnail=False)
+        assert result["converged"] is True
+        assert result["moved"] is True
+        assert result["entry_z_um"] == 50.0
+        assert result["coarse"]["metric_curve"] == [0.1, 0.9, 0.1]
+        assert result["fine"]["peak_interior"] is True
+
+    def test_nonconverged_payload_says_stage_not_moved(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        flat = AutofocusResult(
+            coarse=SweepResult([45.0, 50.0, 55.0], [1.0, 1.1, 1.05], 55.0, False),
+            fine=None, entry_z_um=50.0, final_z_um=50.0,
+            converged=False, moved=False, reason="Coarse focus metric is flat",
+        )
+        monkeypatch.setattr("microclaw.tools.coarse_then_fine_autofocus", lambda *a, **k: flat)
+        result = run_autofocus(mock_ctrl, unconstrained_guard,
+                               z_range_um=10.0, z_step_um=1.0, return_thumbnail=False)
+        assert result["converged"] is False
+        assert result["moved"] is False
+        assert "flat" in result["reason"]
+        assert result["fine"] is None
 
     def test_live_restored_on_sweep_exception(self, mock_ctrl, unconstrained_guard, monkeypatch):
         monkeypatch.setattr(
