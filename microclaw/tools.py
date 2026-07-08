@@ -1278,7 +1278,13 @@ def get_emu_configuration(
             }
         resolved = str(found)
 
-    config = read_emu_config(resolved)
+    # Device labels are needed to split "DeviceLabel-PropertyLabel" strings —
+    # labels contain hyphens, so the parse is ambiguous without them (§2a).
+    try:
+        device_labels = _str_vector(ctrl.core.get_loaded_devices())
+    except Exception:
+        device_labels = []
+    config = read_emu_config(resolved, device_labels)
     config["mm_app_dir"] = resolved
     return config
 

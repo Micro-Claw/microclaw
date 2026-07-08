@@ -113,6 +113,97 @@ def test_live_answer_wins_over_stale_cache(tmp_cache, tmp_path):
     assert cached["mm_app_dir"] == str(current)
 
 
+# ── _parse_properties on the REAL config format (design/14 §2a) ─────────────
+# Verbatim shapes from the amr_test rig: "Device-Property" strings (never
+# "Device::Property"), " - On/Off value" and " state N" metadata keys,
+# hyphenated device labels, and one label a prefix of another.
+
+REAL = {
+    "Laser 3 enable": "Luxx638-Laser Operation Select",
+    "Laser 3 enable - On value": "On",
+    "Laser 3 enable - Off value": "Off",
+    "Filter wheel position": "Servos-Position3",
+    "Filter wheel position state 3": "32000",
+    "Filter wheel position state 0": "5000",
+    "Focus-lock enable fine": "Focus-lock-Enable Fine",
+    "Two-state device 1": "Thorlabs ELL9-1-Label",
+    "Laser 3 power percentage": "Luxx638-Laser Power Set-point Select [%]",
+    "Laser 3 power percentage slope": "1.0",
+    "Laser 3 power percentage offset": "0.0",
+    "UV pulse duration": "Unallocated",
+}
+DEVICES = ["Luxx638", "Servos", "Focus-lock", "Thorlabs ELL9", "Thorlabs ELL9-1"]
+
+
+class TestParseProperties:
+    def test_device_and_property_populated(self):
+        p = emu_manager._parse_properties(REAL, DEVICES)
+        assert p["Laser 3 enable"]["device"] == "Luxx638"
+        assert p["Laser 3 enable"]["property"] == "Laser Operation Select"
+        assert p["Filter wheel position"]["device"] == "Servos"
+        assert p["Filter wheel position"]["property"] == "Position3"
+
+    def test_hyphenated_device_labels_split_on_the_longest_match(self):
+        p = emu_manager._parse_properties(REAL, DEVICES)
+        assert p["Focus-lock enable fine"]["device"] == "Focus-lock"  # not "Focus"
+        assert p["Focus-lock enable fine"]["property"] == "Enable Fine"
+        assert p["Two-state device 1"]["device"] == "Thorlabs ELL9-1"  # not "Thorlabs ELL9"
+        assert p["Two-state device 1"]["property"] == "Label"
+
+    def test_metadata_is_folded_into_the_parent_property(self):
+        p = emu_manager._parse_properties(REAL, DEVICES)
+        assert p["Laser 3 enable"]["on"] == "On"
+        assert p["Laser 3 enable"]["off"] == "Off"
+        assert p["Filter wheel position"]["states"] == {0: "5000", 3: "32000"}
+        assert p["Laser 3 power percentage"]["slope"] == "1.0"
+        assert p["Laser 3 power percentage"]["offset"] == "0.0"
+        # 68/120 keys used to leak as top-level pseudo-properties.
+        assert "Laser 3 enable - On value" not in p
+        assert "Filter wheel position state 3" not in p
+        assert "Laser 3 power percentage slope" not in p
+
+    def test_legacy_double_colon_format_still_parses(self):
+        p = emu_manager._parse_properties(
+            {"Laser 0 enable": "Laser::OnOff"}, DEVICES
+        )
+        assert p["Laser 0 enable"]["device"] == "Laser"
+        assert p["Laser 0 enable"]["property"] == "OnOff"
+
+    def test_no_device_list_leaves_split_unpopulated(self):
+        p = emu_manager._parse_properties(REAL)
+        assert "device" not in p["Laser 3 enable"]
+        assert p["Laser 3 enable"]["mm_property_string"] == (
+            "Luxx638-Laser Operation Select"
+        )
+
+    def test_unallocated_placeholder_kept_verbatim(self):
+        p = emu_manager._parse_properties(REAL, DEVICES)
+        assert p["UV pulse duration"] == {"mm_property_string": "Unallocated"}
+
+
+def test_read_emu_config_passes_device_labels(tmp_path):
+    mm = tmp_path / "MM"
+    emu_dir = mm / "EMU"
+    emu_dir.mkdir(parents=True)
+    (emu_dir / "config.uicfg").write_text(json.dumps({
+        "defaultConfigurationName": "conf",
+        "pluginConfigurations": [{
+            "configurationName": "conf",
+            "pluginName": "htSMLM",
+            "properties": {
+                "Laser 3 enable": "Luxx638-Laser Operation Select",
+                "Laser 3 enable - On value": "On",
+            },
+            "settings": {},
+        }],
+    }))
+    cfg = emu_manager.read_emu_config(mm, ["Luxx638"])
+    entry = cfg["properties"]["Laser 3 enable"]
+    assert entry["device"] == "Luxx638"
+    assert entry["on"] == "On"
+    assert cfg["plugin_name"] == "htSMLM"
+
+
 def test_looks_like_mm_dir(tmp_path):
     mm_plugins = tmp_path / "a"
     (mm_plugins / "mmplugins").mkdir(parents=True)
