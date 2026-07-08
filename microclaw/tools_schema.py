@@ -402,6 +402,66 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "find_features",
+        "description": (
+            "Snap and return NUMBERS about the field: spot count (blob detection), "
+            "intensity-weighted centroid, offset of the signal from the field "
+            "centre (pixels, and µm when calibrated), background level, SNR, and "
+            "spot_density_per_um2 (the SMLM blinking-density check). Use this — "
+            "not a thumbnail — whenever you need to answer 'is the feature "
+            "centred?', 'is there anything here?', or 'is the blinking density "
+            "right?'. Deterministic and identical on every call."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "min_sigma": {
+                    "type": "number",
+                    "description": "Smallest blob scale in px (default 1.0).",
+                    "default": 1.0,
+                },
+                "max_sigma": {
+                    "type": "number",
+                    "description": "Largest blob scale in px (default 4.0).",
+                    "default": 4.0,
+                },
+                "threshold_rel": {
+                    "type": "number",
+                    "description": "Relative blob detection threshold, 0-1 (default 0.15).",
+                    "default": 0.15,
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "center_feature",
+        "description": (
+            "Closed loop that centres the brightest feature in the field of view: "
+            "find_features → pixel offset → stage-camera affine → guarded stage "
+            "move → repeat, until the residual is below tol_px or max_iter is "
+            "reached. Requires calibrate_stage_to_camera to have run for the "
+            "current objective/binning. Use this instead of manually nudging the "
+            "stage and re-snapping."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "max_iter": {
+                    "type": "integer",
+                    "description": "Maximum correction moves (default 3).",
+                    "default": 3,
+                },
+                "tol_px": {
+                    "type": "number",
+                    "description": "Acceptable residual offset in pixels (default 5).",
+                    "default": 5.0,
+                },
+            },
+            "required": [],
+        },
+    },
+    {
         "name": "run_autofocus",
         "description": (
             "Run a software autofocus sweep to find the sharpest Z plane. "

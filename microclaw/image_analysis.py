@@ -58,6 +58,53 @@ def make_thumbnail(
     return base64.standard_b64encode(buf.getvalue()).decode("ascii")
 
 
+def detect_features(
+    image: np.ndarray,
+    min_sigma: float = 1.0,
+    max_sigma: float = 4.0,
+    threshold_rel: float = 0.15,
+) -> dict:
+    """Blob-detect puncta and return an intensity-weighted centroid — numbers,
+    not a picture (design/14 §9).
+
+    In amr_test the model read the same field three ways across three snaps
+    ("well-centered" / "just looks like noise" / "biased toward upper-right")
+    because it was doing spatial statistics by eye on a thumbnail. This answers
+    "is the feature centred?" deterministically and identically every time.
+    """
+    from skimage.feature import blob_log
+    from scipy import ndimage
+
+    img = image.astype(np.float32)
+    if img.ndim == 3:
+        img = img.mean(axis=-1)
+    bg = float(np.median(img))                 # camera offset (Evolve512 ≈ 400)
+    sig = np.clip(img - bg, 0, None)
+    peak = float(sig.max())
+    h, w = sig.shape
+    if peak <= 0:
+        return {
+            "n_spots": 0,
+            "centroid_xy_px": None,
+            "offset_from_center_px": None,
+            "background_level": round(bg, 1),
+            "snr": 0.0,
+        }
+
+    blobs = blob_log(
+        sig / peak, min_sigma=min_sigma, max_sigma=max_sigma, threshold=threshold_rel
+    )
+    cy, cx = ndimage.center_of_mass(sig)
+    off_x, off_y = cx - w / 2, cy - h / 2
+    return {
+        "n_spots": int(len(blobs)),
+        "centroid_xy_px": [round(float(cx), 1), round(float(cy), 1)],
+        "offset_from_center_px": [round(float(off_x), 1), round(float(off_y), 1)],
+        "background_level": round(bg, 1),
+        "snr": round(peak / (float(sig.std()) or 1.0), 2),
+    }
+
+
 def _reshape_pixels(pix, w: int, h: int, bpp: int, n_comp: int) -> np.ndarray:
     """Shape raw pixels into (H, W) or (H, W, C) with the correct dtype.
 

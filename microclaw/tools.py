@@ -1,6 +1,7 @@
 from __future__ import annotations
 import inspect
 import json
+import math
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -21,6 +22,7 @@ from microclaw.controller import MicroscopeController
 from microclaw.errors import humanize_java_error
 from microclaw.image_analysis import (
     compute_stats,
+    detect_features,
     make_thumbnail,
     snap_to_numpy,
     snap_to_numpy_displayed,
@@ -816,6 +818,92 @@ def calibrate_stage_to_camera(
         "status": (
             "Calibrated and cached. Image-pixel offsets can now be converted "
             "to stage µm (find_features reports offset_from_center_um)."
+        ),
+    }
+
+
+# --- Feature detection and centring (design/14 §9) ---
+
+def find_features(
+    ctrl: MicroscopeController,
+    guard: SafetyGuard,
+    min_sigma: float = 1.0,
+    max_sigma: float = 4.0,
+    threshold_rel: float = 0.15,
+) -> dict:
+    """Snap and return spot count, intensity-weighted centroid, and its offset
+    from the field centre — in pixels always, in µm when calibrated."""
+    with _pause_live(ctrl):
+        image = snap_to_numpy(ctrl)
+    out = detect_features(image, min_sigma, max_sigma, threshold_rel)
+
+    if out["offset_from_center_px"] is not None:
+        affine = _load_current_affine(ctrl)
+        if affine is not None:
+            off_x, off_y = out["offset_from_center_px"]
+            dx_um, dy_um = affine.px_to_um(off_x, off_y)
+            out["offset_from_center_um"] = [round(dx_um, 2), round(dy_um, 2)]
+        else:
+            out["note"] = (
+                "No stage-camera calibration for the current objective/binning; "
+                "offsets are pixels only. Run calibrate_stage_to_camera()."
+            )
+
+    try:
+        px = float(ctrl.core.get_pixel_size_um())
+    except Exception:
+        px = 0.0
+    if px > 0:
+        h, w = image.shape[:2]
+        # Doubles as the SMLM blinking-density check (spots per µm²).
+        out["spot_density_per_um2"] = round(out["n_spots"] / (h * w * px * px), 4)
+    return out
+
+
+def center_feature(
+    ctrl: MicroscopeController,
+    guard: SafetyGuard,
+    max_iter: int = 3,
+    tol_px: float = 5.0,
+) -> dict:
+    """Closed loop: find_features → pixel offset → affine → stage move → repeat.
+
+    Turns "centre the cell in the ROI" from a guess-shift-resnap conversation
+    into arithmetic. Requires calibrate_stage_to_camera to have run for the
+    current objective/binning; every stage move passes the XY guard.
+    """
+    affine = _load_current_affine(ctrl)
+    if affine is None:
+        return {
+            "error": (
+                "No stage-camera calibration for the current objective/binning. "
+                "Run calibrate_stage_to_camera() first."
+            )
+        }
+
+    residual = None
+    for i in range(max_iter + 1):
+        feats = find_features(ctrl, guard)
+        residual = feats["offset_from_center_px"]
+        if residual is None:
+            return {
+                "error": "No signal above background — nothing to centre.",
+                "iterations": i,
+            }
+        if math.hypot(*residual) <= tol_px:
+            return {"centered": True, "iterations": i, "residual_px": residual}
+        if i == max_iter:
+            break
+        dx_um, dy_um = affine.px_to_um(residual[0], residual[1])
+        move_stage_xy(ctrl, guard, -dx_um, -dy_um, absolute=False)
+
+    return {
+        "centered": False,
+        "iterations": max_iter,
+        "residual_px": residual,
+        "hint": (
+            "Residual did not fall below tol_px. If it GREW between iterations, "
+            "the calibration may be stale — rerun calibrate_stage_to_camera."
         ),
     }
 
@@ -1746,6 +1834,8 @@ TOOL_REGISTRY = {
     "get_full_device_state": get_full_device_state,
     "get_system_state": get_system_state,
     "calibrate_stage_to_camera": calibrate_stage_to_camera,
+    "find_features": find_features,
+    "center_feature": center_feature,
     "run_zstack": run_zstack,
     "run_timelapse": run_timelapse,
     "export_dataset_as_tiff": export_dataset_as_tiff,

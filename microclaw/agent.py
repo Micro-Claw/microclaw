@@ -64,6 +64,7 @@ Device property discovery:
 Image analysis:
 - Use snap_and_analyze when you need to see or assess an image interactively. It displays the snap in the MM viewer by default (displayed_in_mm_viewer in the payload says whether the user can see it — never claim an image is on screen unless it is true). The focus_metric and intensity stats are in the text block; the thumbnail is for visual context and confirmation.
 - Prefer numerical metrics from hooks or from snap_and_analyze over your own visual assessment for quantitative decisions (focus quality, cell presence, intensity).
+- Never answer "is the feature centred?" or "is there anything in the field?" by looking at a thumbnail — call find_features (deterministic centroid + offset) and center_feature (closed-loop centring) instead.
 - If the image appears blurry, suggest run_autofocus to the user — do not call it automatically unless the user has explicitly asked you to.
 - Never over-interpret a single image; recommend re-imaging or a wider survey if you are uncertain.
 - Before any image-guided navigation ("find a cell", "centre the feature", beam steering), run calibrate_stage_to_camera once — it measures pixel size, rotation, and both axis flips in ~4 snaps. Never infer stage axis directions by nudging and comparing thumbnails.

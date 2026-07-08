@@ -1,4 +1,5 @@
 import json
+import math
 from unittest.mock import MagicMock, call
 
 import numpy as np
@@ -724,6 +725,91 @@ class TestRunTimelapseExposure:
         run_timelapse(mock_ctrl, default_guard, n_frames=1, interval_s=0.0,
                       save_dir="/tmp", channel="DAPI", exposure_ms=50.0)
         mock_ctrl.core.set_exposure.assert_not_called()
+
+
+def _puncta_image(spot_yx=(80, 30), shape=(128, 128)):
+    yy, xx = np.mgrid[0:shape[0], 0:shape[1]]
+    img = np.full(shape, 400, dtype=np.float32)
+    img += 5000 * np.exp(-((yy - spot_yx[0]) ** 2 + (xx - spot_yx[1]) ** 2) / 8.0)
+    return img.astype(np.uint16)
+
+
+class TestFindFeatures:
+    def test_reports_um_offsets_when_calibrated(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        from microclaw.calibration import StageCameraAffine
+        from microclaw.tools import find_features
+        monkeypatch.setattr("microclaw.tools.snap_to_numpy", lambda ctrl: _puncta_image())
+        monkeypatch.setattr(
+            "microclaw.tools._load_current_affine",
+            lambda ctrl: StageCameraAffine(0.5, 0.0, 0.0, 0.5, "obj", 1, 0.5),
+        )
+        mock_ctrl.core.get_pixel_size_um.return_value = 0.5
+        result = find_features(mock_ctrl, unconstrained_guard)
+        off_px = result["offset_from_center_px"]
+        assert result["offset_from_center_um"] == [
+            pytest.approx(off_px[0] * 0.5, abs=0.1),
+            pytest.approx(off_px[1] * 0.5, abs=0.1),
+        ]
+        assert "spot_density_per_um2" in result
+
+    def test_notes_missing_calibration(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        from microclaw.tools import find_features
+        monkeypatch.setattr("microclaw.tools.snap_to_numpy", lambda ctrl: _puncta_image())
+        monkeypatch.setattr("microclaw.tools._load_current_affine", lambda ctrl: None)
+        mock_ctrl.core.get_pixel_size_um.return_value = 0.0
+        result = find_features(mock_ctrl, unconstrained_guard)
+        assert "offset_from_center_um" not in result
+        assert "calibrate_stage_to_camera" in result["note"]
+
+
+class TestCenterFeature:
+    def test_refuses_without_calibration(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        from microclaw.tools import center_feature
+        monkeypatch.setattr("microclaw.tools._load_current_affine", lambda ctrl: None)
+        result = center_feature(mock_ctrl, unconstrained_guard)
+        assert "calibrate_stage_to_camera" in result["error"]
+
+    def test_converges_on_synthetic_scene(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        # 0.5 µm/px identity optics: a stage move of +d µm shifts the spot
+        # -d/0.5 px. The loop must land the spot within tol_px of centre.
+        from microclaw.calibration import StageCameraAffine
+        from microclaw.tools import center_feature
+        px = 0.5
+        pos = {"x": 0.0, "y": 0.0}
+        spot0 = (100.0, 20.0)  # (y, x) at stage (0, 0)
+        mock_ctrl.core.get_x_position.side_effect = lambda: pos["x"]
+        mock_ctrl.core.get_y_position.side_effect = lambda: pos["y"]
+        mock_ctrl.core.set_relative_xy_position.side_effect = (
+            lambda dx, dy: (pos.__setitem__("x", pos["x"] + dx),
+                            pos.__setitem__("y", pos["y"] + dy))
+        )
+        monkeypatch.setattr(
+            "microclaw.tools.snap_to_numpy",
+            lambda ctrl: _puncta_image(
+                (spot0[0] - pos["y"] / px, spot0[1] - pos["x"] / px)
+            ),
+        )
+        monkeypatch.setattr(
+            "microclaw.tools._load_current_affine",
+            lambda ctrl: StageCameraAffine(-px, 0.0, 0.0, -px, "obj", 1, px),
+        )
+        result = center_feature(mock_ctrl, unconstrained_guard, max_iter=3, tol_px=5.0)
+        assert result["centered"] is True
+        assert math.hypot(*result["residual_px"]) <= 5.0
+
+    def test_empty_field_errors(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        from microclaw.calibration import StageCameraAffine
+        from microclaw.tools import center_feature
+        monkeypatch.setattr(
+            "microclaw.tools.snap_to_numpy",
+            lambda ctrl: np.full((64, 64), 400, dtype=np.uint16),
+        )
+        monkeypatch.setattr(
+            "microclaw.tools._load_current_affine",
+            lambda ctrl: StageCameraAffine(0.5, 0.0, 0.0, 0.5, "obj", 1, 0.5),
+        )
+        result = center_feature(mock_ctrl, unconstrained_guard)
+        assert "nothing to centre" in result["error"].lower()
 
 
 class TestTimelapseTriggerPreflight:
