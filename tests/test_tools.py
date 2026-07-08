@@ -147,6 +147,61 @@ class TestMoveStageXY:
         assert result["x_um"] == 0.0
         assert result["y_um"] == 0.0
 
+    def test_settling_error_surfaced(self, mock_ctrl, unconstrained_guard):
+        # amr_test carried a 1.1 µm unrequested X excursion nothing surfaced.
+        mock_ctrl.core.get_x_position.return_value = 101.1
+        mock_ctrl.core.get_y_position.return_value = 199.9
+        result = move_stage_xy(mock_ctrl, unconstrained_guard, x_um=100.0, y_um=200.0)
+        assert result["achieved_um"] == [101.1, 199.9]
+        assert result["error_um"] == [pytest.approx(1.1), pytest.approx(-0.1)]
+
+
+class TestCalibrateStageToCamera:
+    def test_recovers_pixel_size_and_restores_stage(
+        self, mock_ctrl, unconstrained_guard, monkeypatch, tmp_path
+    ):
+        from microclaw.tools import calibrate_stage_to_camera
+        monkeypatch.setattr(
+            "microclaw.knowledge_manager.KNOWLEDGE_PATH", tmp_path / "knowledge.yaml"
+        )
+        rng = np.random.default_rng(42)
+        scene = rng.random((128, 128)).astype(np.float32)
+        px = 0.5  # µm per pixel in the simulated optics
+        pos = {"x": 0.0, "y": 0.0}
+        mock_ctrl.core.get_x_position.side_effect = lambda: pos["x"]
+        mock_ctrl.core.get_y_position.side_effect = lambda: pos["y"]
+        mock_ctrl.core.set_relative_xy_position.side_effect = (
+            lambda dx, dy: (pos.__setitem__("x", pos["x"] + dx),
+                            pos.__setitem__("y", pos["y"] + dy))
+        )
+        monkeypatch.setattr(
+            "microclaw.tools.snap_to_numpy",
+            lambda ctrl: np.roll(
+                scene,
+                (int(round(pos["y"] / px)), int(round(pos["x"] / px))),
+                axis=(0, 1),
+            ),
+        )
+        result = calibrate_stage_to_camera(mock_ctrl, unconstrained_guard, step_um=20.0)
+        assert "error" not in result
+        assert result["pixel_size_um"] == pytest.approx(px, rel=0.05)
+        assert result["n_snaps"] == 4
+        assert pos == {"x": 0.0, "y": 0.0}, "stage must return to its start"
+
+    def test_featureless_field_returns_error_not_garbage(
+        self, mock_ctrl, unconstrained_guard, monkeypatch, tmp_path
+    ):
+        from microclaw.tools import calibrate_stage_to_camera
+        monkeypatch.setattr(
+            "microclaw.knowledge_manager.KNOWLEDGE_PATH", tmp_path / "knowledge.yaml"
+        )
+        monkeypatch.setattr(
+            "microclaw.tools.snap_to_numpy",
+            lambda ctrl: np.zeros((64, 64), dtype=np.float32),
+        )
+        result = calibrate_stage_to_camera(mock_ctrl, unconstrained_guard)
+        assert "error" in result
+
 
 class _FakeDeviceType:
     def __init__(self, name, ordinal):

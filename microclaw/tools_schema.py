@@ -116,6 +116,29 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "calibrate_stage_to_camera",
+        "description": (
+            "Measure the stage↔camera affine (pixel size, camera rotation, and both "
+            "axis flips) in ~4 snaps: snap, move a known ΔX, snap, cross-correlate; "
+            "repeat for ΔY; the stage returns to its start. Cached per "
+            "(objective, binning) in the knowledge base. Run this before any "
+            "image-guided navigation — with it, 'move the feature to the centre' is "
+            "arithmetic instead of guessing axis signs from thumbnails. Needs a "
+            "structured field of view (features to track)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "step_um": {
+                    "type": "number",
+                    "description": "Stage step used for the measurement (default 20 µm).",
+                    "default": 20.0,
+                },
+            },
+            "required": [],
+        },
+    },
+    {
         "name": "get_z_position",
         "description": "Get the current Z (focus) stage position in micrometers.",
         "input_schema": {"type": "object", "properties": {}, "required": []},

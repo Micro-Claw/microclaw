@@ -193,7 +193,20 @@ def move_stage_xy(
         ctrl.core.set_relative_xy_position(x_um, y_um)
 
     _wait(ctrl, ctrl.core.get_xy_stage_device())
-    return {"x_um": round(target_x, 3), "y_um": round(target_y, 3), "status": "Moved."}
+    # Report requested vs achieved: in amr_test a Y move carried a 1.1 µm
+    # unrequested X excursion that nothing surfaced (design/14 §8).
+    achieved_x = float(ctrl.core.get_x_position())
+    achieved_y = float(ctrl.core.get_y_position())
+    return {
+        "x_um": round(target_x, 3),
+        "y_um": round(target_y, 3),
+        "achieved_um": [round(achieved_x, 3), round(achieved_y, 3)],
+        "error_um": [
+            round(achieved_x - target_x, 3),
+            round(achieved_y - target_y, 3),
+        ],
+        "status": "Moved.",
+    }
 
 
 # --- Z Stage ---
@@ -722,6 +735,89 @@ def snap_and_analyze(
             },
         },
     ]
+
+
+# --- Stage↔camera calibration (design/14 §8) ---
+
+def _current_objective(ctrl: MicroscopeController) -> str:
+    """Best available label for the current optical path (pixel-size config)."""
+    try:
+        name = str(ctrl.core.get_current_pixel_size_config())
+        if name:
+            return name
+    except Exception:
+        pass
+    return "default"
+
+
+def _current_binning(ctrl: MicroscopeController) -> int:
+    try:
+        raw = str(ctrl.core.get_property(ctrl.core.get_camera_device(), "Binning"))
+        return int(raw.split("x")[0])          # "1" or "1x1"
+    except Exception:
+        return 1
+
+
+def _load_current_affine(ctrl: MicroscopeController):
+    from microclaw.calibration import load_affine
+
+    return load_affine(_current_objective(ctrl), _current_binning(ctrl))
+
+
+def calibrate_stage_to_camera(
+    ctrl: MicroscopeController, guard: SafetyGuard, step_um: float = 20.0
+) -> dict:
+    """Snap, move a known ΔX, snap, cross-correlate; repeat for ΔY. ~4 snaps.
+
+    Solves the 2×2 stage↔camera affine — pixel size, camera rotation, and both
+    axis flips — instead of asking the model to infer sign conventions from
+    thumbnails (design/14 §8). Cached in the knowledge base per
+    (objective, binning); it is a property of the optical path, not the session.
+    """
+    from skimage.registration import phase_cross_correlation
+    from microclaw.calibration import save_affine, solve_affine
+
+    # Guard both excursions before touching the stage.
+    x0, y0 = ctrl.core.get_x_position(), ctrl.core.get_y_position()
+    guard.check_xy(x0 + step_um, y0)
+    guard.check_xy(x0, y0 + step_um)
+
+    with _pause_live(ctrl):
+        ref = snap_to_numpy(ctrl)
+        move_stage_xy(ctrl, guard, step_um, 0, absolute=False)
+        img_x = snap_to_numpy(ctrl)
+        move_stage_xy(ctrl, guard, -step_um, 0, absolute=False)
+
+        move_stage_xy(ctrl, guard, 0, step_um, absolute=False)
+        img_y = snap_to_numpy(ctrl)
+        move_stage_xy(ctrl, guard, 0, -step_um, absolute=False)
+
+    # phase_cross_correlation returns (row, col) = (dy_px, dx_px).
+    shift_x, _, _ = phase_cross_correlation(ref, img_x, upsample_factor=10)
+    shift_y, _, _ = phase_cross_correlation(ref, img_y, upsample_factor=10)
+
+    try:
+        affine = solve_affine(
+            (float(shift_x[0]), float(shift_x[1])),
+            (float(shift_y[0]), float(shift_y[1])),
+            step_um,
+            objective=_current_objective(ctrl),
+            binning=_current_binning(ctrl),
+        )
+    except ValueError as e:
+        return {"error": f"Calibration failed: {e}"}
+
+    key = save_affine(affine)
+    from dataclasses import asdict
+    return {
+        **asdict(affine),
+        "n_snaps": 4,
+        "knowledge_key": key,
+        "status": (
+            "Calibrated and cached. Image-pixel offsets can now be converted "
+            "to stage µm (find_features reports offset_from_center_um)."
+        ),
+    }
 
 
 # --- Autofocus (Form A — standalone) ---
@@ -1649,6 +1745,7 @@ TOOL_REGISTRY = {
     "get_device_property_info": get_device_property_info,
     "get_full_device_state": get_full_device_state,
     "get_system_state": get_system_state,
+    "calibrate_stage_to_camera": calibrate_stage_to_camera,
     "run_zstack": run_zstack,
     "run_timelapse": run_timelapse,
     "export_dataset_as_tiff": export_dataset_as_tiff,
