@@ -181,6 +181,99 @@ class TestParseProperties:
         assert p["UV pulse duration"] == {"mm_property_string": "Unallocated"}
 
 
+# ── build_emu_map / resolve_emu_device (design/14 §1/§2) ─────────────────────
+# Slot layout from the amr_test rig: slot 2 = Cobolt561, slot 3 = Luxx638.
+# The agent once read Mode2 (the 561's line) and declared the 638 verified.
+
+FULL = {
+    "Laser 2 enable": "Cobolt561-Laser",
+    "Laser 3 enable": "Luxx638-Laser Operation Select",
+    "Laser 3 power percentage": "Luxx638-Laser Power Set-point Select [%]",
+    "Laser trigger 2 mode": "Laser Trigger-Mode2",
+    "Laser trigger 3 mode": "Laser Trigger-Mode3",
+    "Laser trigger 3 sequence": "Laser Trigger-Sequence3",
+    "Filter wheel position": "Servos-Position3",
+    "Filter wheel position state 0": "5000",
+    "Filter wheel position state 3": "32000",
+    "Z stage focus locking": "PIZStage-External sensor",
+    "Z stage focus locking - On value": "1",
+    "Z stage focus locking - Off value": "0",
+    "QPD X": "Analog Input-AnalogInput0",
+    "Two-state device 1": "Thorlabs ELL9-1-Label",
+    "UV pulse duration": "Unallocated",
+    "Booster enable fine": "Enter value",
+}
+FULL_DEVICES = [
+    "Cobolt561", "Luxx638", "Laser Trigger", "Servos", "PIZStage",
+    "Analog Input", "Thorlabs ELL9", "Thorlabs ELL9-1",
+]
+
+
+@pytest.fixture
+def emu_map():
+    props = emu_manager._parse_properties(FULL, FULL_DEVICES)
+    return emu_manager.build_emu_map(props)
+
+
+class TestBuildEmuMap:
+    def test_laser_slot_pairs_enable_with_its_own_trigger_line(self, emu_map):
+        """The §1 regression: slot 3 is Luxx638 with Mode3; slot 2 is Cobolt561."""
+        lasers = emu_map["lasers"]
+        assert lasers[3]["enable"]["device"] == "Luxx638"
+        assert lasers[3]["trigger_mode"]["property"] == "Mode3"
+        assert lasers[3]["trigger_sequence"]["property"] == "Sequence3"
+        assert lasers[2]["enable"]["device"] == "Cobolt561"
+        assert lasers[2]["trigger_mode"]["property"] == "Mode2"
+
+    def test_power_property_is_the_writable_select_variant(self, emu_map):
+        assert emu_map["lasers"][3]["power_pct"]["property"] == (
+            "Laser Power Set-point Select [%]"
+        )
+
+    def test_filter_wheel_carries_the_state_table(self, emu_map):
+        fw = emu_map["filter_wheel"]
+        assert fw["device"] == "Servos"
+        assert fw["property"] == "Position3"
+        assert fw["states"] == {0: "5000", 3: "32000"}
+
+    def test_focus_lock_with_on_off_and_qpd(self, emu_map):
+        lock = emu_map["focus_lock"]
+        assert lock["device"] == "PIZStage"
+        assert lock["property"] == "External sensor"
+        assert lock["on"] == "1" and lock["off"] == "0"
+        assert lock["qpd"]["x"]["property"] == "AnalogInput0"
+
+    def test_unallocated_is_names_only(self, emu_map):
+        assert emu_map["unallocated"] == ["Booster enable fine", "UV pulse duration"]
+
+    def test_unmatched_allocated_entries_land_in_other(self, emu_map):
+        assert "Two-state device 1" in emu_map["other"]
+        assert emu_map["other"]["Two-state device 1"]["device"] == "Thorlabs ELL9-1"
+
+    def test_simple_ui_alternate_laser_shape(self):
+        # Plugin-specific names (§2a): the demo "Simple UI" says "Laser0 on/off".
+        props = emu_manager._parse_properties(
+            {"Laser0 on/off": "Laser-OnOff", "Laser0 power": "Laser-Power"},
+            ["Laser"],
+        )
+        lasers = emu_manager.build_emu_map(props)["lasers"]
+        assert lasers[0]["enable"]["property"] == "OnOff"
+        assert lasers[0]["power_pct"]["property"] == "Power"
+
+
+class TestResolveEmuDevice:
+    def test_resolves_allocated_name(self):
+        props = emu_manager._parse_properties(FULL, FULL_DEVICES)
+        assert emu_manager.resolve_emu_device(props, "Laser 3 enable") == {
+            "device": "Luxx638", "property": "Laser Operation Select",
+        }
+
+    def test_unallocated_name_raises(self):
+        props = emu_manager._parse_properties(FULL, FULL_DEVICES)
+        with pytest.raises(KeyError, match="not an allocated"):
+            emu_manager.resolve_emu_device(props, "UV pulse duration")
+
+
 def test_read_emu_config_passes_device_labels(tmp_path):
     mm = tmp_path / "MM"
     emu_dir = mm / "EMU"

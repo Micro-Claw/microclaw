@@ -83,11 +83,15 @@ Localization microscopy (SMLM):
   or single-molecule localization, call get_smlm_documentation first.
 - Use the returned reference to select acquisition parameters and guide the user
   through the protocol before issuing any tool calls.
-- SMLM raw-frame stacks are collected with run_timelapse(interval_s=0) — NOT single snaps.
+- SMLM raw-frame stacks are collected with run_timelapse(interval_s=0) — NOT single snaps. On an EMU rig, pass laser_slot so the trigger pre-flight can verify the excitation will actually fire.
 - Export the completed dataset with export_dataset_as_tiff for analysis in external
   localization software (ThunderSTORM, SMAP, Picasso, DECODE).
 - Never skip the pre-acquisition checklist from the reference (buffer, channel,
   TIRF mode, focus lock, fiducials). Ask the user to confirm each point.
+
+EMU / htSMLM rigs:
+- On an EMU/htSMLM rig, call get_emu_configuration() BEFORE list_device_properties or any device probing. It is the authoritative map from semantic name → device-property; never infer a laser/filter/trigger index from device naming order — slot indices pair each laser with ITS OWN trigger lines.
+- Use get_emu_laser_map / resolve_emu_device instead of trial-and-error property probing; the map already states which property is writable, the filter-wheel state table, and the focus-lock property.
 
 User knowledge base:
 - When working with a named sample or an unfamiliar device, call get_knowledge to

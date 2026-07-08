@@ -215,6 +215,108 @@ def _parse_properties(
     return result
 
 
+# Semantic UIProperty name shapes. htSMLM: "Laser 3 enable",
+# "Laser 3 power percentage", "Laser trigger 3 mode/sequence/pulse duration".
+# UIProperty names are plugin-specific (design/14 §2a: the demo "Simple UI"
+# plugin says "Laser0 on/off"), so an alternate shape is tolerated too.
+_LASER_RE = re.compile(
+    r"^Laser (?P<i>\d+) (?P<field>enable|power percentage)$", re.IGNORECASE
+)
+_TRIG_RE = re.compile(
+    r"^Laser trigger (?P<i>\d+) (?P<field>mode|sequence|pulse duration)$",
+    re.IGNORECASE,
+)
+_LASER_ALT_RE = re.compile(
+    r"^Laser\s?(?P<i>\d+) (?P<field>on/off|power)$", re.IGNORECASE
+)
+
+_FILTER_WHEEL_KEY = "Filter wheel position"
+_FOCUS_LOCK_KEY = "Z stage focus locking"
+
+
+def _slim(entry: dict) -> dict:
+    """Drop the redundant mm_property_string once device/property are known."""
+    if "device" in entry:
+        return {k: v for k, v in entry.items() if k != "mm_property_string"}
+    return dict(entry)
+
+
+def build_emu_map(props: dict[str, dict]) -> dict:
+    """Semantic view over parsed EMU properties: slot → laser, filter wheel,
+    focus lock — placeholder-free and shaped so a laser cannot be mismatched
+    to another laser's trigger line.
+
+    Pairs 'Laser i …' with 'Laser trigger i …' by SLOT INDEX. In the amr_test
+    session (design/14 §1) the agent inferred "Luxx638 = index 2" from device
+    naming order and read the Cobolt561's trigger line (Mode2) instead of the
+    638's (Mode3), then ran a 100-frame acquisition on the unverified line.
+    Nothing may infer a slot index.
+    """
+    allocated = {
+        k: v
+        for k, v in props.items()
+        if v.get("mm_property_string") not in _PLACEHOLDER_VALUES
+        and v.get("mm_property_string")
+    }
+
+    lasers: dict[int, dict] = {}
+    used: set[str] = set()
+    for name, v in allocated.items():
+        if m := _LASER_RE.match(name):
+            key = "enable" if m["field"].lower() == "enable" else "power_pct"
+            lasers.setdefault(int(m["i"]), {})[key] = _slim(v)
+        elif m := _TRIG_RE.match(name):
+            key = "trigger_" + m["field"].lower().replace(" ", "_")
+            lasers.setdefault(int(m["i"]), {})[key] = _slim(v)
+        elif m := _LASER_ALT_RE.match(name):
+            key = "enable" if m["field"].lower() == "on/off" else "power_pct"
+            lasers.setdefault(int(m["i"]), {})[key] = _slim(v)
+        else:
+            continue
+        used.add(name)
+
+    filter_wheel = allocated.get(_FILTER_WHEEL_KEY)
+    if filter_wheel is not None:
+        used.add(_FILTER_WHEEL_KEY)
+
+    focus_lock = allocated.get(_FOCUS_LOCK_KEY)
+    if focus_lock is not None:
+        used.add(_FOCUS_LOCK_KEY)
+        focus_lock = _slim(focus_lock)
+        qpd = {}
+        for name, v in allocated.items():
+            if name.upper().startswith("QPD"):
+                qpd[name.split()[-1].lower()] = _slim(v)
+                used.add(name)
+        if qpd:
+            focus_lock["qpd"] = qpd
+
+    return {
+        "lasers": lasers,
+        "filter_wheel": _slim(filter_wheel) if filter_wheel else None,
+        "focus_lock": focus_lock,
+        "other": {n: _slim(v) for n, v in allocated.items() if n not in used},
+        # Names only — the placeholder noise is what buried the useful 99
+        # entries in ~9 kB of context.
+        "unallocated": sorted(set(props) - set(allocated)),
+    }
+
+
+def resolve_emu_device(props: dict[str, dict], semantic_name: str) -> dict:
+    """'Laser 3 enable' → {'device': 'Luxx638', 'property': 'Laser Operation Select'}."""
+    entry = props.get(semantic_name)
+    if entry is None or "device" not in entry:
+        allocated = sorted(
+            k for k, v in props.items()
+            if v.get("mm_property_string") not in _PLACEHOLDER_VALUES and "device" in v
+        )
+        raise KeyError(
+            f"'{semantic_name}' is not an allocated EMU property. "
+            f"Allocated names: {allocated}"
+        )
+    return {"device": entry["device"], "property": entry["property"]}
+
+
 def read_emu_config(
     mm_app_dir: str | Path, device_labels: Sequence[str] = ()
 ) -> dict:

@@ -468,6 +468,48 @@ def run_zstack(
     return {"status": "Z-stack complete.", "dataset_path": dataset_path}
 
 
+def _assert_excitation_will_fire(ctrl: MicroscopeController, laser_slot: int) -> None:
+    """Refuse an acquisition whose excitation laser is gated off at the trigger.
+
+    In amr_test (design/14 §1) a 100-frame SMLM acquisition ran with the
+    excitation trigger line never verified — had trigger mode been '0 - Off',
+    the dataset would have been 100 blank frames and nothing would have said
+    so. One property read prevents that.
+    """
+    from microclaw.emu_manager import build_emu_map
+
+    props = _cached_emu_properties(ctrl)
+    if not props:
+        return  # non-EMU rig; nothing to assert
+    lasers = build_emu_map(props)["lasers"]
+    laser = lasers.get(laser_slot)
+    if laser is None:
+        raise SafetyViolation(
+            f"No EMU laser at slot {laser_slot}. Configured slots: "
+            f"{sorted(lasers)}. Call get_emu_laser_map() — never infer a slot "
+            f"index from device naming order."
+        )
+    trig = laser.get("trigger_mode")
+    if trig and "device" in trig:
+        mode = str(ctrl.core.get_property(trig["device"], trig["property"]))
+        if mode.strip().startswith("0"):
+            raise SafetyViolation(
+                f"Laser slot {laser_slot} trigger mode is {mode!r}: it will NOT "
+                f"emit during the acquisition — every frame would be blank. Set "
+                f"{trig['device']}.{trig['property']} to a firing mode (e.g. "
+                f"'4 - Follow') first."
+            )
+    seq = laser.get("trigger_sequence")
+    if seq and "device" in seq:
+        value = str(ctrl.core.get_property(seq["device"], seq["property"]))
+        if value.strip() == "0":
+            raise SafetyViolation(
+                f"Laser slot {laser_slot} trigger sequence is 0: the laser is "
+                f"gated off for every frame. Set {seq['device']}."
+                f"{seq['property']} (65535 = always on) first."
+            )
+
+
 def run_timelapse(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -477,7 +519,10 @@ def run_timelapse(
     channel: str | None = None,
     exposure_ms: float | None = None,
     name: str = "timelapse",
+    laser_slot: int | None = None,
 ) -> dict:
+    if laser_slot is not None:
+        _assert_excitation_will_fire(ctrl, laser_slot)
     if channel:
         guard.check_channel(channel)
     if exposure_ms is not None:
@@ -1358,12 +1403,55 @@ def delete_knowledge(
     return {"error": f"No entry '{key}' in category '{category}'."}
 
 
+# Parsed EMU properties for this session, so derived tools (laser map, focus
+# lock, acquisition pre-flight) don't re-read the config file per call.
+_EMU_SESSION_CACHE: dict[str, Any] = {}
+
+
+def _read_emu_properties(ctrl: MicroscopeController, mm_app_dir: str) -> dict:
+    """Read + parse the EMU config and cache the result for this session."""
+    from microclaw.emu_manager import read_emu_config
+
+    # Device labels are needed to split "DeviceLabel-PropertyLabel" strings —
+    # labels contain hyphens, so the parse is ambiguous without them (§2a).
+    try:
+        device_labels = _str_vector(ctrl.core.get_loaded_devices())
+    except Exception:
+        device_labels = []
+    config = read_emu_config(mm_app_dir, device_labels)
+    _EMU_SESSION_CACHE["properties"] = config["properties"]
+    _EMU_SESSION_CACHE["plugin_name"] = config.get("plugin_name", "")
+    return config
+
+
+def _cached_emu_properties(ctrl: MicroscopeController) -> dict | None:
+    """Parsed EMU properties, or None when this is not an EMU rig."""
+    if "properties" in _EMU_SESSION_CACHE:
+        return _EMU_SESSION_CACHE["properties"]
+    from microclaw.emu_manager import find_mm_app_dir
+
+    try:
+        mm_dir = find_mm_app_dir(ctrl)
+        if mm_dir is None:
+            _EMU_SESSION_CACHE["properties"] = None
+            return None
+        return _read_emu_properties(ctrl, str(mm_dir))["properties"]
+    except Exception:
+        _EMU_SESSION_CACHE["properties"] = None
+        return None
+
+
 def get_emu_configuration(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
     mm_app_dir: str | None = None,
 ) -> dict:
-    from microclaw.emu_manager import find_mm_app_dir, save_mm_app_dir, read_emu_config, _candidate_mm_dirs
+    from microclaw.emu_manager import (
+        build_emu_map,
+        find_mm_app_dir,
+        save_mm_app_dir,
+        _candidate_mm_dirs,
+    )
 
     if mm_app_dir is not None:
         save_mm_app_dir(mm_app_dir)
@@ -1386,15 +1474,55 @@ def get_emu_configuration(
             }
         resolved = str(found)
 
-    # Device labels are needed to split "DeviceLabel-PropertyLabel" strings —
-    # labels contain hyphens, so the parse is ambiguous without them (§2a).
+    config = _read_emu_properties(ctrl, resolved)
+    # Structured, placeholder-free view (design/14 §2): same information as
+    # the raw property dict at ~1/3 the tokens, shaped so a laser cannot be
+    # mismatched to another slot's trigger line.
+    emu_map = build_emu_map(config["properties"])
+    return {
+        "config_name": config["config_name"],
+        "plugin_name": config["plugin_name"],
+        "mm_app_dir": resolved,
+        **emu_map,
+        "note": (
+            "Lasers are keyed by EMU slot index; each slot pairs its own "
+            "enable, power and trigger lines. Never infer a slot index from "
+            "device naming order. Use resolve_emu_device(semantic_name) for "
+            "properties under 'other'."
+        ),
+    }
+
+
+def get_emu_laser_map(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
+    """The slot → laser table (enable / power / trigger lines) from the EMU map."""
+    from microclaw.emu_manager import build_emu_map
+
+    props = _cached_emu_properties(ctrl)
+    if not props:
+        return {"error": "No EMU configuration found — this is not an EMU/htSMLM rig."}
+    lasers = build_emu_map(props)["lasers"]
+    return {
+        "lasers": lasers,
+        "note": (
+            "Slot index pairs each laser with ITS OWN trigger lines. "
+            "Verify trigger_mode/trigger_sequence on the SAME slot you enable."
+        ),
+    }
+
+
+def resolve_emu_device(
+    ctrl: MicroscopeController, guard: SafetyGuard, semantic_name: str
+) -> dict:
+    """Resolve an EMU semantic name ('Laser 3 enable') to its MM device/property."""
+    from microclaw.emu_manager import resolve_emu_device as _resolve
+
+    props = _cached_emu_properties(ctrl)
+    if not props:
+        return {"error": "No EMU configuration found — this is not an EMU/htSMLM rig."}
     try:
-        device_labels = _str_vector(ctrl.core.get_loaded_devices())
-    except Exception:
-        device_labels = []
-    config = read_emu_config(resolved, device_labels)
-    config["mm_app_dir"] = resolved
-    return config
+        return {"semantic_name": semantic_name, **_resolve(props, semantic_name)}
+    except KeyError as e:
+        return {"error": str(e).strip("'\"")}
 
 
 # --- Tool Registry ---
@@ -1452,6 +1580,8 @@ TOOL_REGISTRY = {
     "check_emu_installed": check_emu_installed,
     "get_htsmlm_documentation": get_htsmlm_documentation,
     "get_emu_configuration": get_emu_configuration,
+    "get_emu_laser_map": get_emu_laser_map,
+    "resolve_emu_device": resolve_emu_device,
     "save_knowledge": save_knowledge,
     "get_knowledge": get_knowledge,
     "delete_knowledge": delete_knowledge,

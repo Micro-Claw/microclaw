@@ -594,6 +594,70 @@ class TestRunTimelapseExposure:
         mock_ctrl.core.set_exposure.assert_not_called()
 
 
+class TestTimelapseTriggerPreflight:
+    """design/14 §1: refuse an SMLM acquisition whose excitation is gated off."""
+
+    PROPS = {
+        "Laser 3 enable": {"device": "Luxx638", "property": "Laser Operation Select",
+                           "mm_property_string": "Luxx638-Laser Operation Select"},
+        "Laser trigger 3 mode": {"device": "Laser Trigger", "property": "Mode3",
+                                 "mm_property_string": "Laser Trigger-Mode3"},
+        "Laser trigger 3 sequence": {"device": "Laser Trigger", "property": "Sequence3",
+                                     "mm_property_string": "Laser Trigger-Sequence3"},
+    }
+
+    def _setup(self, mock_ctrl, monkeypatch, mode="4 - Follow", sequence="65535"):
+        from microclaw import tools
+        monkeypatch.setattr(tools, "_cached_emu_properties", lambda ctrl: self.PROPS)
+        monkeypatch.setattr("microclaw.tools._acquire_with_hooks", lambda *a, **k: "/tmp/ds")
+        values = {("Laser Trigger", "Mode3"): mode,
+                  ("Laser Trigger", "Sequence3"): sequence}
+        mock_ctrl.core.get_property.side_effect = lambda d, p: values[(d, p)]
+
+    def test_gated_off_trigger_refused(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        from microclaw.tools import run_timelapse
+        self._setup(mock_ctrl, monkeypatch, mode="0 - Off")
+        with pytest.raises(SafetyViolation, match="NOT emit"):
+            run_timelapse(mock_ctrl, unconstrained_guard, n_frames=100, interval_s=0,
+                          save_dir="/tmp", laser_slot=3)
+
+    def test_zero_sequence_refused(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        from microclaw.tools import run_timelapse
+        self._setup(mock_ctrl, monkeypatch, sequence="0")
+        with pytest.raises(SafetyViolation, match="sequence"):
+            run_timelapse(mock_ctrl, unconstrained_guard, n_frames=100, interval_s=0,
+                          save_dir="/tmp", laser_slot=3)
+
+    def test_firing_trigger_passes(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        from microclaw.tools import run_timelapse
+        self._setup(mock_ctrl, monkeypatch)
+        result = run_timelapse(mock_ctrl, unconstrained_guard, n_frames=100, interval_s=0,
+                               save_dir="/tmp", laser_slot=3)
+        assert result["status"] == "Timelapse complete."
+
+    def test_unknown_slot_refused(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        from microclaw.tools import run_timelapse
+        self._setup(mock_ctrl, monkeypatch)
+        with pytest.raises(SafetyViolation, match="slot"):
+            run_timelapse(mock_ctrl, unconstrained_guard, n_frames=1, interval_s=0,
+                          save_dir="/tmp", laser_slot=7)
+
+    def test_non_emu_rig_skips_preflight(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        from microclaw import tools
+        monkeypatch.setattr(tools, "_cached_emu_properties", lambda ctrl: None)
+        monkeypatch.setattr("microclaw.tools._acquire_with_hooks", lambda *a, **k: "/tmp/ds")
+        result = tools.run_timelapse(mock_ctrl, unconstrained_guard, n_frames=1,
+                                     interval_s=0, save_dir="/tmp", laser_slot=3)
+        assert result["status"] == "Timelapse complete."
+
+    def test_no_laser_slot_means_no_preflight(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        monkeypatch.setattr("microclaw.tools._acquire_with_hooks", lambda *a, **k: "/tmp/ds")
+        from microclaw.tools import run_timelapse
+        result = run_timelapse(mock_ctrl, unconstrained_guard, n_frames=1, interval_s=0,
+                               save_dir="/tmp")
+        assert result["status"] == "Timelapse complete."
+
+
 class TestExportDatasetAllAxes:
     def test_iterates_full_axis_product(self, mock_ctrl, unconstrained_guard, monkeypatch, tmp_path):
         from microclaw import tools

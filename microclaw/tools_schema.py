@@ -243,7 +243,12 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "run_timelapse",
-        "description": "Run a timelapse acquisition.",
+        "description": (
+            "Run a timelapse acquisition. On an EMU/htSMLM rig, pass laser_slot "
+            "(the EMU slot of the excitation laser, from get_emu_laser_map) so the "
+            "pre-flight can verify that laser's trigger line will actually fire — "
+            "otherwise a gated-off laser silently produces blank frames."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -253,6 +258,14 @@ TOOLS: list[dict[str, Any]] = [
                 "exposure_ms": {"type": "number", "description": "Exposure in ms (optional)."},
                 "save_dir": {"type": "string"},
                 "name": {"type": "string", "default": "timelapse"},
+                "laser_slot": {
+                    "type": "integer",
+                    "description": (
+                        "EMU slot index of the excitation laser (from "
+                        "get_emu_laser_map). The acquisition is refused if that "
+                        "slot's trigger mode is '0 - Off' or its sequence is 0."
+                    ),
+                },
             },
             "required": ["n_frames", "interval_s", "save_dir"],
         },
@@ -818,17 +831,19 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "get_emu_configuration",
         "description": (
-            "Read the EMU configuration file and return the mapping from htSMLM UIProperty "
-            "names to Micro-Manager device labels and property names. "
+            "Read the EMU configuration and return the AUTHORITATIVE structured map "
+            "from htSMLM semantic names to Micro-Manager devices/properties: 'lasers' "
+            "(slot index → its own enable, power and trigger lines), 'filter_wheel' "
+            "(with the state → value table), 'focus_lock', 'other', and 'unallocated' "
+            "(names only). On an EMU/htSMLM rig, call this BEFORE list_device_properties "
+            "or any device probing — never infer a laser/filter/trigger index from "
+            "device naming order. "
             "Only call this if check_emu_installed has confirmed EMU is installed, "
             "OR if the user has explicitly mentioned htSMLM or EMU. "
             "Auto-detects the Micro-Manager installation directory from common platform paths "
             "and a local cache (~/.microclaw/emu.json). If auto-detection fails, returns an "
             "error with instructions; call again with mm_app_dir set to the correct path and "
-            "it will be saved for future calls. "
-            "The returned 'properties' dict maps UIProperty names (e.g. 'Laser 0 enable') to "
-            "dicts containing 'device', 'property', and any TwoState (on/off) or Rescaled "
-            "(slope/offset) metadata needed to compute the correct MM property value."
+            "it will be saved for future calls."
         ),
         "input_schema": {
             "type": "object",
@@ -843,6 +858,35 @@ TOOLS: list[dict[str, Any]] = [
                 },
             },
             "required": [],
+        },
+    },
+    {
+        "name": "get_emu_laser_map",
+        "description": (
+            "Return the EMU slot → laser table: for each slot index, that laser's "
+            "enable, power and trigger (mode/sequence) device-properties. htSMLM "
+            "indexes 'Laser i …' and 'Laser trigger i …' by the same physical slot, "
+            "so always verify the trigger line on the SAME slot you enable — never "
+            "infer a slot index from device naming order. Errors on non-EMU rigs."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "resolve_emu_device",
+        "description": (
+            "Resolve an EMU semantic UIProperty name (e.g. 'Laser 3 enable', "
+            "'Filter wheel position') to its Micro-Manager {device, property} pair. "
+            "Use this instead of guessing which device backs an htSMLM control."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "semantic_name": {
+                    "type": "string",
+                    "description": "EMU UIProperty name as shown by get_emu_configuration.",
+                },
+            },
+            "required": ["semantic_name"],
         },
     },
     {
