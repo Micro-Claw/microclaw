@@ -62,7 +62,7 @@ Device property discovery:
 - Use get_full_device_state(device) when the user asks for a complete overview of a device's current settings.
 
 Image analysis:
-- Use snap_and_analyze when you need to see or assess an image interactively. The focus_metric (Laplacian variance) and intensity stats are in the text block; the thumbnail is for visual context and confirmation.
+- Use snap_and_analyze when you need to see or assess an image interactively. It displays the snap in the MM viewer by default (displayed_in_mm_viewer in the payload says whether the user can see it — never claim an image is on screen unless it is true). The focus_metric and intensity stats are in the text block; the thumbnail is for visual context and confirmation.
 - Prefer numerical metrics from hooks or from snap_and_analyze over your own visual assessment for quantitative decisions (focus quality, cell presence, intensity).
 - If the image appears blurry, suggest run_autofocus to the user — do not call it automatically unless the user has explicitly asked you to.
 - Never over-interpret a single image; recommend re-imaging or a wider survey if you are uncertain.
@@ -71,7 +71,7 @@ Position lists:
 - mark_position stores a position in microclaw's list and mirrors it into MM's PositionList, so it appears in the MM GUI's Position List Manager. Use it after the biologist has navigated to a site of interest.
 - save_position_list / load_position_list persist positions across sessions as a microclaw JSON file (not MM's native .pos format).
 - Use run_multiposition_with_autofocus for automated surveys — do not manually loop over go_to_position unless the user explicitly asks for it.
-- For grid or multi-position surveys, use run_tile_acquisition / run_multiposition_acquisition — including when the user wants the visited positions in the position list (pass mark_positions=true). Do not manually loop move_stage_xy / mark_position / snap_image; each manual step costs a full model round trip.
+- For grid or multi-position surveys, use run_tile_acquisition / run_multiposition_acquisition — including when the user wants the visited positions in the position list (pass mark_positions=true). Do not manually loop move_stage_xy / mark_position / snap_and_analyze; each manual step costs a full model round trip.
 
 Autofocus:
 - run_autofocus (standalone) is for interactive focus requests.
@@ -83,7 +83,7 @@ Localization microscopy (SMLM):
   or single-molecule localization, call get_smlm_documentation first.
 - Use the returned reference to select acquisition parameters and guide the user
   through the protocol before issuing any tool calls.
-- SMLM raw-frame stacks are collected with run_timelapse(interval_s=0) — NOT snap_image.
+- SMLM raw-frame stacks are collected with run_timelapse(interval_s=0) — NOT single snaps.
 - Export the completed dataset with export_dataset_as_tiff for analysis in external
   localization software (ThunderSTORM, SMAP, Picasso, DECODE).
 - Never skip the pre-acquisition checklist from the reference (buffer, channel,

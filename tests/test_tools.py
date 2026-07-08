@@ -37,18 +37,12 @@ from microclaw.tools import (
     set_device_property,
     set_exposure,
     snap_and_analyze,
-    snap_image,
     start_live_view,
     stop_live_view,
 )
 
 
-class TestSnapImage:
-    def test_calls_snap(self, mock_ctrl, unconstrained_guard):
-        result = snap_image(mock_ctrl, unconstrained_guard)
-        mock_ctrl.studio.live().snap.assert_called_once_with(True)
-        assert "status" in result
-
+class TestLiveView:
     def test_start_live_view(self, mock_ctrl, unconstrained_guard):
         result = start_live_view(mock_ctrl, unconstrained_guard)
         mock_ctrl.studio.live().set_live_mode_on.assert_called_with(True)
@@ -257,11 +251,22 @@ class TestGetSystemState:
 
 
 class TestSnapAndAnalyze:
-    def test_returns_dict_by_default(self, mock_ctrl, unconstrained_guard, monkeypatch):
+    @pytest.fixture(autouse=True)
+    def _patch_snaps(self, monkeypatch):
+        self.displayed_calls = []
+        self.headless_calls = []
+        monkeypatch.setattr(
+            "microclaw.tools.snap_to_numpy_displayed",
+            lambda ctrl: self.displayed_calls.append(1)
+            or np.zeros((64, 64), dtype=np.uint16),
+        )
         monkeypatch.setattr(
             "microclaw.tools.snap_to_numpy",
-            lambda ctrl: np.zeros((64, 64), dtype=np.uint16),
+            lambda ctrl: self.headless_calls.append(1)
+            or np.zeros((64, 64), dtype=np.uint16),
         )
+
+    def test_returns_dict_by_default(self, mock_ctrl, unconstrained_guard):
         mock_ctrl.core.get_position.return_value = 50.0
         result = snap_and_analyze(mock_ctrl, unconstrained_guard)
         assert isinstance(result, dict)
@@ -269,11 +274,43 @@ class TestSnapAndAnalyze:
         assert "mean_intensity" in result
         assert "z_um" in result
 
-    def test_returns_multimodal_when_requested(self, mock_ctrl, unconstrained_guard, monkeypatch):
-        monkeypatch.setattr(
-            "microclaw.tools.snap_to_numpy",
-            lambda ctrl: np.zeros((64, 64), dtype=np.uint16),
-        )
+    def test_displays_by_default(self, mock_ctrl, unconstrained_guard):
+        result = snap_and_analyze(mock_ctrl, unconstrained_guard)
+        assert self.displayed_calls and not self.headless_calls
+        assert result["displayed_in_mm_viewer"] is True
+
+    def test_headless_when_display_false(self, mock_ctrl, unconstrained_guard):
+        result = snap_and_analyze(mock_ctrl, unconstrained_guard, display=False)
+        assert self.headless_calls and not self.displayed_calls
+        assert result["displayed_in_mm_viewer"] is False
+
+    def test_live_paused_and_restored(self, mock_ctrl, unconstrained_guard):
+        # The amr_test crash: snapping under live view. snap(True) under live
+        # wedges the bridge (V1), so live MUST be off before the snap.
+        mock_ctrl.studio.live().is_live_mode_on.return_value = True
+        live = mock_ctrl.studio.live()
+        live.set_live_mode_on.reset_mock()
+        result = snap_and_analyze(mock_ctrl, unconstrained_guard)
+        calls = live.set_live_mode_on.call_args_list
+        assert calls[0] == call(False), "live must be stopped before the snap"
+        assert calls[-1] == call(True), "live must be restored after the snap"
+        assert "live_view" in result
+
+    def test_live_untouched_when_off(self, mock_ctrl, unconstrained_guard):
+        mock_ctrl.studio.live().is_live_mode_on.return_value = False
+        live = mock_ctrl.studio.live()
+        live.set_live_mode_on.reset_mock()
+        snap_and_analyze(mock_ctrl, unconstrained_guard)
+        live.set_live_mode_on.assert_not_called()
+
+    def test_zero_pixel_size_carries_warning(self, mock_ctrl, unconstrained_guard):
+        # The model asked about pixel size once and had forgotten 20 messages
+        # later — the warning must ride along on every snap (design/14 §8).
+        mock_ctrl.core.get_pixel_size_um.return_value = 0.0
+        result = snap_and_analyze(mock_ctrl, unconstrained_guard)
+        assert "pixel-size" in result["warning"].lower() or "pixel size" in result["warning"].lower()
+
+    def test_returns_multimodal_when_requested(self, mock_ctrl, unconstrained_guard):
         mock_ctrl.core.get_position.return_value = 50.0
         result = snap_and_analyze(mock_ctrl, unconstrained_guard, return_thumbnail=True)
         assert isinstance(result, list)

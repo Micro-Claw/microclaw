@@ -58,27 +58,65 @@ def make_thumbnail(
     return base64.standard_b64encode(buf.getvalue()).decode("ascii")
 
 
-def snap_to_numpy(ctrl) -> np.ndarray:
-    """Snap and return a NumPy array via pycro-manager's tagged image API.
+def _reshape_pixels(pix, w: int, h: int, bpp: int, n_comp: int) -> np.ndarray:
+    """Shape raw pixels into (H, W) or (H, W, C) with the correct dtype.
 
-    Derives the dtype from the camera's bytes-per-pixel and component count
-    rather than assuming 16-bit mono. Component count is decisive: an RGB32
-    frame is 4×uint8 (BGRA), not 1×uint32, so multichannel frames return an
-    (H, W, C) array of the per-component dtype.
+    Derives the dtype from bytes-per-pixel and component count rather than
+    assuming 16-bit mono. Component count is decisive: an RGB32 frame is
+    4×uint8 (BGRA), not 1×uint32. Accepts raw bytes (core path) or an
+    already-typed ndarray (studio path — get_raw_pixels() arrives as numpy).
     """
-    ctrl.core.snap_image()
-    tagged = ctrl.core.get_tagged_image()
-    w, h = int(tagged.tags["Width"]), int(tagged.tags["Height"])
-    bpp = int(ctrl.core.get_bytes_per_pixel())
-    n_comp = int(ctrl.core.get_number_of_components())
     if n_comp > 1:                                   # e.g. RGB32 = 4 × uint8
         comp_dtype = {1: np.uint8, 2: np.uint16}.get(bpp // n_comp)
         if comp_dtype is None:
             raise ValueError(
                 f"Unsupported bytes-per-component: {bpp}/{n_comp}"
             )
-        return np.frombuffer(tagged.pix, dtype=comp_dtype).reshape(h, w, n_comp)
+        arr = (
+            np.frombuffer(pix, dtype=comp_dtype)
+            if isinstance(pix, (bytes, bytearray))
+            else np.asarray(pix, dtype=comp_dtype)
+        )
+        return arr.reshape(h, w, n_comp)
     dtype = {1: np.uint8, 2: np.uint16, 4: np.uint32}.get(bpp)
     if dtype is None:
         raise ValueError(f"Unsupported bytes-per-pixel: {bpp}")
-    return np.frombuffer(tagged.pix, dtype=dtype).reshape(h, w)
+    arr = (
+        np.frombuffer(pix, dtype=dtype)
+        if isinstance(pix, (bytes, bytearray))
+        else np.asarray(pix, dtype=dtype)
+    )
+    return arr.reshape(h, w)
+
+
+def snap_to_numpy(ctrl) -> np.ndarray:
+    """Headless snap via the core's tagged image API — does NOT touch the viewer.
+
+    Use this for sweeps (autofocus) where repainting the viewer 20 times is
+    churn. For an image the user should see, use snap_to_numpy_displayed.
+    Throws "sequence acquisition is running" if live view is on; wrap the call
+    in tools._pause_live.
+    """
+    ctrl.core.snap_image()
+    tagged = ctrl.core.get_tagged_image()
+    w, h = int(tagged.tags["Width"]), int(tagged.tags["Height"])
+    bpp = int(ctrl.core.get_bytes_per_pixel())
+    n_comp = int(ctrl.core.get_number_of_components())
+    return _reshape_pixels(tagged.pix, w, h, bpp, n_comp)
+
+
+def snap_to_numpy_displayed(ctrl) -> np.ndarray:
+    """Snap via studio.live().snap(True): displays in the MM viewer AND returns
+    the pixels — one exposure, not two (the sample bleaches).
+
+    WARNING (design/14 V1): live().snap(True) called while live mode is ON does
+    not throw — it never returns, and because pyjavaz holds one communication
+    lock per port, the whole process wedges. The caller MUST stop live mode
+    first (tools._pause_live); never probe by calling.
+    """
+    images = ctrl.studio.live().snap(True)           # java.util.ArrayList
+    img = images.get(0)
+    w, h = int(img.get_width()), int(img.get_height())
+    bpp = int(img.get_bytes_per_pixel())
+    n_comp = int(img.get_num_components())           # NOT get_number_of_components
+    return _reshape_pixels(img.get_raw_pixels(), w, h, bpp, n_comp)

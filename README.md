@@ -126,8 +126,7 @@ MM_RUNNING=1 pytest -m integration
 
 | Tool | Description |
 |---|---|
-| `snap_image` | Snap a single image (display only; use `run_timelapse` with `n_frames=1` to save) |
-| `snap_and_analyze` | Snap and return focus metric, intensity stats, and thumbnail |
+| `snap_and_analyze` | Snap, display in the MM viewer, and return focus metric, intensity stats, and optional thumbnail (display only; use `run_timelapse` with `n_frames=1` to save) |
 | `start_live_view` / `stop_live_view` | Live camera preview |
 | `set_exposure` / `get_exposure` | Camera exposure |
 | `get_roi` / `set_roi` / `clear_roi` | Camera region of interest |

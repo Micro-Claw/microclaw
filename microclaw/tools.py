@@ -2,6 +2,7 @@ from __future__ import annotations
 import inspect
 import json
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +13,13 @@ from ndstorage import Dataset
 
 from microclaw.autofocus import coarse_then_fine_autofocus, sweep_autofocus
 from microclaw.controller import MicroscopeController
-from microclaw.image_analysis import compute_stats, make_thumbnail, snap_to_numpy
+from microclaw.errors import humanize_java_error
+from microclaw.image_analysis import (
+    compute_stats,
+    make_thumbnail,
+    snap_to_numpy,
+    snap_to_numpy_displayed,
+)
 from microclaw.safety import SafetyGuard, SafetyViolation
 
 
@@ -47,9 +54,24 @@ def _wait(ctrl: MicroscopeController, device: str | None = None) -> None:
 
 # --- Camera ---
 
-def snap_image(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
-    ctrl.studio.live().snap(True)
-    return {"status": "Image snapped and displayed in MM viewer."}
+@contextmanager
+def _pause_live(ctrl: MicroscopeController):
+    """Stop live mode for the duration of a camera op, then restore it.
+
+    core.snap_image() throws "sequence acquisition is running" if live mode is
+    on, and studio.live().snap(True) is worse — it never returns and wedges the
+    single-lock ZMQ bridge (design/14 V1). Every snap path must run inside
+    this. Yields whether live mode was on, so callers can report the bounce.
+    """
+    live = ctrl.studio.live()
+    was_on = bool(live.is_live_mode_on())
+    if was_on:
+        live.set_live_mode_on(False)
+    try:
+        yield was_on
+    finally:
+        if was_on:
+            live.set_live_mode_on(True)
 
 
 def start_live_view(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
@@ -479,17 +501,39 @@ def snap_and_analyze(
     guard: SafetyGuard,
     return_thumbnail: bool = False,
     thumbnail_size: int = 512,
+    display: bool = True,
 ) -> list | dict:
-    """Snap an image and return numerical stats, plus an optional thumbnail."""
-    image = snap_to_numpy(ctrl)
+    """Snap an image, display it in the MM viewer, and return numerical stats.
+
+    display=True (default) snaps through studio.live().snap(True) so the
+    biologist sees the same exposure the stats describe — the old core-only
+    path silently never reached the viewer, and the agent told the user
+    otherwise (design/14 §7). display=False keeps the snap headless.
+    Live view is paused around the snap either way (V1: never probe by calling).
+    """
+    with _pause_live(ctrl) as was_live:
+        image = snap_to_numpy_displayed(ctrl) if display else snap_to_numpy(ctrl)
     stats = compute_stats(image)
-    text_payload = {
+    text_payload: dict[str, Any] = {
         "z_um": round(ctrl.core.get_position(), 3),
+        # Explicit, so the model never has to guess what the user can see.
+        "displayed_in_mm_viewer": bool(display),
         "focus_metric": round(stats.focus_metric, 2),
         "mean_intensity": round(stats.mean_intensity, 1),
         "max_intensity": round(stats.max_intensity, 1),
         "saturated_fraction": round(stats.saturated_fraction, 4),
     }
+    if was_live:
+        text_payload["live_view"] = "paused for the snap, then restored"
+    try:
+        pixel_size = float(ctrl.core.get_pixel_size_um())
+    except Exception:
+        pixel_size = None
+    if pixel_size == 0.0:
+        text_payload["warning"] = (
+            "No pixel-size calibration: image-pixel offsets cannot be "
+            "converted to stage µm."
+        )
     if not return_thumbnail:
         return text_payload
     return [
@@ -721,7 +765,8 @@ def _run_protocol_at(
         )
         marked = {"marked": True}
     if protocol == "snap":
-        ctrl.studio.live().snap(True)
+        with _pause_live(ctrl):                     # snap(True) wedges under live (V1)
+            ctrl.studio.live().snap(True)
         return {"position": pos_label, "status": "snapped", "saved": False, **marked}
     if pos_save_dir is None:
         return {
@@ -1291,8 +1336,10 @@ def get_emu_configuration(
 
 # --- Tool Registry ---
 
+# snap_image was removed (design/14 §7): it differed from snap_and_analyze only
+# by an invisible display side-effect, a trap the model fell into. The display
+# now lives in snap_and_analyze itself.
 TOOL_REGISTRY = {
-    "snap_image": snap_image,
     "snap_and_analyze": snap_and_analyze,
     "start_live_view": start_live_view,
     "stop_live_view": stop_live_view,
@@ -1368,8 +1415,10 @@ def execute_tool(
     except SafetyViolation as e:
         return json.dumps({"error": f"Safety constraint prevented this action: {e}"})
     except Exception as e:
+        # Translate rather than forward: a Java stack trace teaches the model
+        # nothing (design/14 §7). Known errors get an actionable one-liner.
         return json.dumps({
-            "error": f"{type(e).__name__}: {e}",
+            "error": f"{type(e).__name__}: {humanize_java_error(e)}",
             "hint": (
                 "This may be a hardware error (device busy, stage at limit, "
                 "device not found) or a connection problem."

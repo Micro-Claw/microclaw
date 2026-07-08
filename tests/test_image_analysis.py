@@ -11,6 +11,7 @@ from microclaw.image_analysis import (
     laplacian_variance,
     make_thumbnail,
     snap_to_numpy,
+    snap_to_numpy_displayed,
 )
 
 
@@ -65,6 +66,59 @@ class TestSnapToNumpy:
         ctrl = _tagged_ctrl(pix, w, h, bpp=1, n_comp=1)
         arr = snap_to_numpy(ctrl)
         assert compute_stats(arr).saturated_fraction == 1.0
+
+
+def _studio_ctrl(pixels: np.ndarray, n_comp: int = 1):
+    """Mock controller whose studio.live().snap(True) yields one image with the
+    (V1-verified) accessors: get_width/get_height/get_bytes_per_pixel/
+    get_num_components/get_raw_pixels — raw pixels arrive as a numpy array."""
+    ctrl = MagicMock()
+    img = MagicMock()
+    h, w = pixels.shape[:2]
+    img.get_width.return_value = w
+    img.get_height.return_value = h
+    img.get_bytes_per_pixel.return_value = pixels.dtype.itemsize * n_comp
+    img.get_num_components.return_value = n_comp
+    img.get_raw_pixels.return_value = pixels.ravel()
+    images = MagicMock()
+    images.get.return_value = img
+    ctrl.studio.live().snap.return_value = images
+    return ctrl
+
+
+class TestSnapToNumpyDisplayed:
+    def test_16bit_mono(self):
+        pixels = np.arange(20, dtype=np.uint16).reshape(4, 5)
+        ctrl = _studio_ctrl(pixels)
+        arr = snap_to_numpy_displayed(ctrl)
+        ctrl.studio.live().snap.assert_called_once_with(True)
+        assert arr.dtype == np.uint16
+        assert arr.shape == (4, 5)
+        np.testing.assert_array_equal(arr, pixels)
+
+    def test_same_shape_as_core_path(self):
+        # The displayed path and the headless path must agree on geometry.
+        pixels = np.random.randint(0, 65535, (8, 8), dtype=np.uint16)
+        displayed = snap_to_numpy_displayed(_studio_ctrl(pixels))
+        assert displayed.shape == pixels.shape
+
+
+def test_humanize_java_error_translates_sequence_acquisition():
+    from microclaw.errors import humanize_java_error
+    exc = Exception(
+        "java.lang.Exception: This operation can not be executed while "
+        "sequence acquisition is running.\n  mmcorej.MMCoreJJNI.CMMCore_snapImage(...)\n"
+        + "\n".join(f"  at frame{i}" for i in range(14))
+    )
+    msg = humanize_java_error(exc)
+    assert "Live view" in msg
+    assert "\n" not in msg  # 16-line stack trace never reaches the model
+
+
+def test_humanize_java_error_trims_unknown_to_first_line():
+    from microclaw.errors import humanize_java_error
+    msg = humanize_java_error(Exception("boom\n  at deep.stack.frame"))
+    assert msg == "boom"
 
 
 def test_laplacian_variance_sharp_vs_blurry():

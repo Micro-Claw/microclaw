@@ -2,18 +2,6 @@ from typing import Any
 
 TOOLS: list[dict[str, Any]] = [
     {
-        "name": "snap_image",
-        "description": (
-            "Snap a single image and display it in the Micro-Manager snap/live window. "
-            "Use this for a quick one-shot image capture."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {},
-            "required": [],
-        },
-    },
-    {
         "name": "start_live_view",
         "description": "Start the Micro-Manager camera live preview stream.",
         "input_schema": {"type": "object", "properties": {}, "required": []},
@@ -293,8 +281,12 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "snap_and_analyze",
         "description": (
-            "Snap a single image and return numerical stats (focus metric, mean intensity, "
-            "saturation). Use this whenever you need quantitative image data. "
+            "Snap a single image, display it in the Micro-Manager viewer, and return "
+            "numerical stats (focus metric, mean intensity, saturation). This is THE "
+            "snap tool — use it both for quantitative image data and for one-shot "
+            "captures the user wants to see. The payload's displayed_in_mm_viewer "
+            "field states whether the image reached the screen. Live view is paused "
+            "around the snap and restored automatically. "
             "Only set return_thumbnail=true when you genuinely need to see the image visually — "
             "it incurs significant vision token cost."
         ),
@@ -314,6 +306,14 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "integer",
                     "description": "Max pixel dimension of the thumbnail (default 512).",
                     "default": 512,
+                },
+                "display": {
+                    "type": "boolean",
+                    "description": (
+                        "Show the snapped image in the MM viewer (default true). "
+                        "Set false for a headless snap when display churn is unwanted."
+                    ),
+                    "default": True,
                 },
             },
             "required": [],
