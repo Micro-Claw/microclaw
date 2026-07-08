@@ -279,6 +279,38 @@ def list_device_properties(
     return {"device": device, "properties": props, "count": len(props)}
 
 
+# mmcorej.PropertyType enum ordinals, verified over the ZMQ bridge (design/14
+# V2: swig_value() → int, to_string() → name).
+_PROP_TYPES = {0: "Undef", 1: "String", 2: "Float", 3: "Integer"}
+
+
+def _property_type_name(core, device: str, prop: str) -> str:
+    """Resolve the MM PropertyType enum to its name.
+
+    Over the ZMQ bridge get_property_type() returns a pyjavaz proxy whose repr
+    is `<pyjavaz...mmcorej_PropertyType object at 0x...>`. The previous
+    `str(...).split(".")[-1]` sliced that repr mid-string and leaked a
+    nondeterministic heap address into the model's context on every property
+    inspection (design/14 §11), poisoning the prompt cache along the way.
+    """
+    raw = core.get_property_type(device, prop)
+    if hasattr(raw, "to_string"):
+        name = str(raw.to_string())
+        if name in _PROP_TYPES.values():
+            return name
+    if hasattr(raw, "swig_value"):
+        try:
+            return _PROP_TYPES.get(int(raw.swig_value()), "Unknown")
+        except (TypeError, ValueError):
+            pass
+    if isinstance(raw, str) and raw in _PROP_TYPES.values():
+        return raw
+    try:
+        return _PROP_TYPES.get(int(raw), "Unknown")
+    except (TypeError, ValueError):
+        return "Unknown"
+
+
 def get_device_property_info(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -287,7 +319,7 @@ def get_device_property_info(
 ) -> dict:
     read_only = bool(ctrl.core.is_property_read_only(device, property))
     pre_init = bool(ctrl.core.is_property_pre_init(device, property))
-    prop_type = str(ctrl.core.get_property_type(device, property)).split(".")[-1]
+    prop_type = _property_type_name(ctrl.core, device, property)
 
     allowed_sv = ctrl.core.get_allowed_property_values(device, property)
     allowed = _str_vector(allowed_sv) if allowed_sv.size() > 0 else None

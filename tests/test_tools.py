@@ -924,6 +924,51 @@ class TestGetDevicePropertyInfo:
         mock_ctrl.core.get_property_lower_limit.assert_not_called()
         mock_ctrl.core.get_property_upper_limit.assert_not_called()
 
+    class _EnumProxy:
+        """pyjavaz-shaped enum shadow: to_string()/swig_value(), useless repr."""
+
+        def __init__(self, name, ordinal):
+            self._name, self._ordinal = name, ordinal
+
+        def to_string(self):
+            return self._name
+
+        def swig_value(self):
+            return self._ordinal
+
+        def __repr__(self):
+            return "<pyjavaz...mmcorej_PropertyType object at 0x000001B6FFB4DFD0>"
+
+    def test_zmq_proxy_type_resolved_by_name(self, mock_ctrl, unconstrained_guard):
+        self._setup_mock(mock_ctrl, prop_type=self._EnumProxy("Float", 2))
+        result = get_device_property_info(
+            mock_ctrl, unconstrained_guard, device="Camera", property="Gain"
+        )
+        assert result["type"] == "Float"
+
+    def test_zmq_proxy_type_resolved_by_ordinal(self, mock_ctrl, unconstrained_guard):
+        class OrdinalOnly:
+            def swig_value(self):
+                return 3
+        self._setup_mock(mock_ctrl, prop_type=OrdinalOnly())
+        result = get_device_property_info(
+            mock_ctrl, unconstrained_guard, device="Dev", property="Prop"
+        )
+        assert result["type"] == "Integer"
+
+    def test_type_never_leaks_a_heap_address(self, mock_ctrl, unconstrained_guard):
+        # The design/14 §11 regression: an opaque proxy must yield an enum name
+        # or "Unknown", never a sliced repr with a memory address.
+        class OpaqueProxy:
+            def __repr__(self):
+                return "<pyjavaz...mmcorej_PropertyType object at 0x000001B6FFB4DFD0>"
+        self._setup_mock(mock_ctrl, prop_type=OpaqueProxy())
+        result = get_device_property_info(
+            mock_ctrl, unconstrained_guard, device="Dev", property="Prop"
+        )
+        assert result["type"] in {"Undef", "String", "Float", "Integer", "Unknown"}
+        assert "0x" not in result["type"]
+
 
 class TestGetHookDocumentation:
     def test_returns_nonempty_string(self, mock_ctrl, unconstrained_guard):
