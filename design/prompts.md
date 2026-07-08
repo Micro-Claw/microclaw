@@ -442,4 +442,8 @@ nicer than using a command line to communicate with the prompt.
 
 Commit the viewer work, then start on microclaw serve. For microclaw server,
 please write a description of your proposed implementation with code stubs to
-design/14. Compare your approach to an approach using the streamlit library
+design/15. Compare your approach to an approach using the streamlit library
+
+This design document focuses heavily on not throwing away our existing work.
+Can you add a section at the end summarizing if streamlit would be a better
+option if we did not already have a viewer?
