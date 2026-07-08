@@ -338,8 +338,10 @@ def test_autofocus_sweep_method(headless_mm, unconstrained_guard):
         headless_mm, unconstrained_guard, z_range_um=10, z_step_um=2, method="sweep"
     )
     payload = json.loads(result[0]["text"]) if isinstance(result, list) else result
-    assert "best_z_um" in payload
-    assert len(payload["metric_curve"]) >= 2
+    # design/14 §4: the payload reports the passes, not a bare best_z_um.
+    assert {"converged", "moved", "entry_z_um", "final_z_um", "coarse"} <= set(payload)
+    assert len(payload["coarse"]["metric_curve"]) >= 2
+    assert payload["fine"] is None, "the 'sweep' method runs a single pass"
 
 
 def test_autofocus_coarse_then_fine_method(headless_mm, unconstrained_guard):
@@ -349,7 +351,11 @@ def test_autofocus_coarse_then_fine_method(headless_mm, unconstrained_guard):
         method="coarse_then_fine",
     )
     payload = json.loads(result[0]["text"]) if isinstance(result, list) else result
-    assert "best_z_um" in payload
+    assert "final_z_um" in payload
+    if payload["converged"]:
+        # Both passes are visible: the coarse one chose the plane.
+        assert payload["coarse"]["metric_curve"]
+        assert payload["fine"]["metric_curve"]
 
 
 def test_autofocus_no_thumbnail(headless_mm, unconstrained_guard):
@@ -359,8 +365,8 @@ def test_autofocus_no_thumbnail(headless_mm, unconstrained_guard):
         return_thumbnail=False,
     )
     assert isinstance(result, dict)
-    assert "best_z_um" in result
-    assert "metric_curve" in result
+    assert "final_z_um" in result
+    assert "metric_curve" in result["coarse"]
 
 
 def test_autofocus_metric_curve_length(headless_mm, unconstrained_guard):
@@ -370,9 +376,55 @@ def test_autofocus_metric_curve_length(headless_mm, unconstrained_guard):
         method="sweep", return_thumbnail=False,
     )
     assert isinstance(result, dict)
+    coarse = result["coarse"]
     # sweep from current-4 to current+4 in steps of 2 → 5 positions
-    assert len(result["metric_curve"]) == len(result["z_positions"])
-    assert all(isinstance(v, float) for v in result["metric_curve"])
+    assert len(coarse["metric_curve"]) == len(coarse["z_positions"])
+    assert all(isinstance(v, float) for v in coarse["metric_curve"])
+
+
+def test_autofocus_sweep_window_contains_entry_z(headless_mm, unconstrained_guard):
+    """The amr_test bug: the reported curve must be the one that made the call."""
+    from microclaw.tools import run_autofocus
+    result = run_autofocus(
+        headless_mm, unconstrained_guard, z_range_um=10, z_step_um=1,
+        return_thumbnail=False,
+    )
+    zs = result["coarse"]["z_positions"]
+    assert min(zs) <= result["entry_z_um"] <= max(zs)
+
+
+def test_autofocus_metric_curve_not_annihilated_by_rounding(headless_mm, unconstrained_guard):
+    """The normalized metric is ~1e-2..1e-4; the curve must not round to zeros.
+
+    On the demo camera a fixed round(v, 2) reported metric_curve=[0.0, 0.0, ...]
+    beside contrast=0.52 — a curve the model could learn nothing from.
+    """
+    from microclaw.tools import run_autofocus
+    result = run_autofocus(
+        headless_mm, unconstrained_guard, z_range_um=8, z_step_um=2,
+        method="sweep", return_thumbnail=False,
+    )
+    curve = result["coarse"]["metric_curve"]
+    if result["coarse"]["contrast"] > 0:
+        assert any(v > 0 for v in curve), f"curve lost to rounding: {curve}"
+
+
+def test_autofocus_restores_z_when_not_converged(headless_mm, unconstrained_guard):
+    """converged=false must mean the stage never moved (design/14 §4)."""
+    from microclaw.tools import get_z_position, run_autofocus
+    entry = get_z_position(headless_mm, unconstrained_guard)["z_um"]
+    result = run_autofocus(
+        headless_mm, unconstrained_guard, z_range_um=6, z_step_um=2,
+        return_thumbnail=False,
+    )
+    if not result["converged"]:
+        assert result["moved"] is False
+        assert result["reason"]
+        assert result["final_z_um"] == pytest.approx(entry, abs=0.05)
+        now = get_z_position(headless_mm, unconstrained_guard)["z_um"]
+        assert now == pytest.approx(entry, abs=0.05)
+    else:
+        assert result["moved"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -1186,3 +1238,201 @@ def test_find_mm_app_dir_prefers_live_answer_over_cache(headless_mm, tmp_path, m
     # Live answer written through to the cache.
     cached = json.loads(emu_manager._EMU_CACHE.read_text())
     assert cached["mm_app_dir"] == str(result)
+
+
+# ---------------------------------------------------------------------------
+# design/14 — new tool surfaces against a real MM bridge
+#
+# V1/V2/V3 in design/14 were verified once by a manual spike script. These lock
+# those findings in: they exercise the real pyjavaz proxies, not mocks.
+# ---------------------------------------------------------------------------
+
+def test_property_type_is_an_enum_name_not_a_heap_address(headless_mm, unconstrained_guard):
+    """§11 (V2): over ZMQ, get_property_type returns a pyjavaz proxy whose repr
+    embeds a memory address. The old str(...).split('.')[-1] leaked it."""
+    from microclaw.tools import get_device_property_info
+    info = get_device_property_info(
+        headless_mm, unconstrained_guard, device="Camera", property="Exposure"
+    )
+    assert info["type"] in {"Undef", "String", "Float", "Integer"}
+    assert "0x" not in info["type"]
+    assert "object at" not in info["type"]
+
+
+def test_every_camera_property_type_resolves(headless_mm, unconstrained_guard):
+    from microclaw.tools import get_device_property_info, list_device_properties
+    props = list_device_properties(headless_mm, unconstrained_guard, device="Camera")["properties"]
+    for p in props:
+        info = get_device_property_info(headless_mm, unconstrained_guard, device="Camera", property=p)
+        assert info["type"] in {"Undef", "String", "Float", "Integer"}, (p, info["type"])
+
+
+def test_snap_and_analyze_displays_and_stamps_metric(headless_mm, unconstrained_guard):
+    """§7 (V1) + §10: one exposure reaches the viewer; the metric is stamped."""
+    from microclaw.tools import snap_and_analyze
+    result = snap_and_analyze(headless_mm, unconstrained_guard)
+    assert result["displayed_in_mm_viewer"] is True
+    assert result["focus_metric_kind"] == "normalized_laplacian_variance"
+    assert set(result["metric_valid_for"]) == {"roi", "exposure_ms", "binning"}
+    assert result["focus_metric"] >= 0.0
+
+
+def test_snap_and_analyze_headless_does_not_claim_display(headless_mm, unconstrained_guard):
+    from microclaw.tools import snap_and_analyze
+    result = snap_and_analyze(headless_mm, unconstrained_guard, display=False)
+    assert result["displayed_in_mm_viewer"] is False
+
+
+def test_snap_and_analyze_survives_live_view(headless_mm, unconstrained_guard):
+    """§7 defect (a): the amr_test session crashed here with a Java stack trace.
+
+    V1 also found live().snap(True) under live mode never returns and wedges the
+    bridge, so _pause_live must stop live BEFORE snapping, never probe by calling.
+    """
+    from microclaw.tools import snap_and_analyze, start_live_view, stop_live_view
+    start_live_view(headless_mm, unconstrained_guard)
+    try:
+        result = snap_and_analyze(headless_mm, unconstrained_guard)
+        assert "focus_metric" in result
+        assert result["live_view"].startswith("paused")
+        # Live mode must be running again afterwards.
+        assert headless_mm.studio.live().is_live_mode_on()
+    finally:
+        stop_live_view(headless_mm, unconstrained_guard)
+
+
+def test_snap_displayed_and_headless_agree_on_geometry(headless_mm, unconstrained_guard):
+    """§7 (V1): studio.live().snap(True) and core.snap_image() see one camera."""
+    from microclaw.image_analysis import snap_to_numpy, snap_to_numpy_displayed
+    from microclaw.tools import _pause_live
+    with _pause_live(headless_mm):
+        headless = snap_to_numpy(headless_mm)
+        displayed = snap_to_numpy_displayed(headless_mm)
+    assert headless.shape == displayed.shape
+    assert headless.dtype == displayed.dtype
+
+
+def test_list_stages_classifies_stages_by_device_type(headless_mm, unconstrained_guard):
+    """§6 (V3): classification via core.get_device_type, no DeviceType JavaClass.
+
+    Labels are read from the core rather than hardcoded, so this holds on the
+    demo config and on a real rig alike.
+    """
+    from microclaw.tools import list_stages
+    focus = str(headless_mm.core.get_focus_device())
+    xy = str(headless_mm.core.get_xy_stage_device())
+    result = list_stages(headless_mm, unconstrained_guard)
+    assert result["focus_device"] == focus
+    assert focus in result["single_axis_stages"]
+    assert xy in result["xy_stages"]
+    # The focus device is driven by move_stage_z, so it is not "other".
+    assert focus not in result["other_single_axis"]
+
+
+def test_get_stage_position_by_label(headless_mm, unconstrained_guard):
+    """§6 (V3): core.get_position(label) dispatches over the bridge."""
+    from microclaw.tools import get_stage_position, get_z_position
+    focus = str(headless_mm.core.get_focus_device())
+    by_label = get_stage_position(headless_mm, unconstrained_guard, device=focus)["position_um"]
+    by_core = get_z_position(headless_mm, unconstrained_guard)["z_um"]
+    assert by_label == pytest.approx(by_core, abs=0.01)
+
+
+def test_move_named_stage_fails_closed_without_limits(headless_mm, unconstrained_guard):
+    """§6: no named_stages entry, no motion — even with an unconstrained guard."""
+    from microclaw.safety import SafetyViolation
+    from microclaw.tools import get_stage_position, move_named_stage
+    focus = str(headless_mm.core.get_focus_device())
+    before = get_stage_position(headless_mm, unconstrained_guard, device=focus)["position_um"]
+    with pytest.raises(SafetyViolation, match="No limits configured"):
+        move_named_stage(headless_mm, unconstrained_guard, device=focus, um=before + 1.0)
+    after = get_stage_position(headless_mm, unconstrained_guard, device=focus)["position_um"]
+    assert after == pytest.approx(before, abs=0.01)
+
+
+def test_move_named_stage_with_limits_reports_achieved(headless_mm):
+    """§6 (V3): core.set_position(label, pos) moves and reports settling error."""
+    from microclaw.safety import NamedStageLimits, SafetyConstraints, SafetyGuard
+    from microclaw.tools import get_stage_position, move_named_stage
+    focus = str(headless_mm.core.get_focus_device())
+    guard = SafetyGuard(SafetyConstraints(
+        named_stages=[NamedStageLimits(focus, -1000.0, 1000.0)]
+    ))
+    before = get_stage_position(headless_mm, guard, device=focus)["position_um"]
+    try:
+        r = move_named_stage(headless_mm, guard, device=focus, um=1.0, absolute=False)
+        assert r["requested_um"] == pytest.approx(before + 1.0, abs=0.01)
+        assert r["achieved_um"] == pytest.approx(before + 1.0, abs=0.5)
+        assert "error_um" in r
+    finally:
+        move_named_stage(headless_mm, guard, device=focus, um=before, absolute=True)
+
+
+def test_move_stage_xy_reports_requested_vs_achieved(headless_mm, unconstrained_guard):
+    """§8: the settling error must be visible, not silently swallowed."""
+    from microclaw.tools import get_xy_position, move_stage_xy
+    orig = get_xy_position(headless_mm, unconstrained_guard)
+    try:
+        r = move_stage_xy(headless_mm, unconstrained_guard,
+                          x_um=orig["x_um"] + 10.0, y_um=orig["y_um"] + 10.0)
+        assert r["achieved_um"] == pytest.approx(
+            [orig["x_um"] + 10.0, orig["y_um"] + 10.0], abs=1.0
+        )
+        assert len(r["error_um"]) == 2
+    finally:
+        move_stage_xy(headless_mm, unconstrained_guard, x_um=orig["x_um"], y_um=orig["y_um"])
+
+
+def test_find_features_returns_numbers(headless_mm, unconstrained_guard):
+    """§9: the field is described by numbers, not by a thumbnail."""
+    from microclaw.tools import find_features
+    result = find_features(headless_mm, unconstrained_guard)
+    assert isinstance(result["n_spots"], int)
+    assert "background_level" in result
+    if result["offset_from_center_px"] is not None:
+        assert len(result["offset_from_center_px"]) == 2
+
+
+def test_find_features_is_deterministic(headless_mm, unconstrained_guard):
+    """The amr_test failure: one field read three different ways."""
+    from microclaw.tools import find_features
+    a = find_features(headless_mm, unconstrained_guard)
+    b = find_features(headless_mm, unconstrained_guard)
+    assert a["n_spots"] == b["n_spots"]
+
+
+def test_center_feature_refuses_without_calibration(headless_mm, unconstrained_guard, monkeypatch):
+    from microclaw.tools import center_feature
+    monkeypatch.setattr("microclaw.tools._load_current_affine", lambda ctrl: None)
+    result = center_feature(headless_mm, unconstrained_guard)
+    assert "calibrate_stage_to_camera" in result["error"]
+
+
+def test_focus_lock_state_is_unknown_on_a_non_emu_rig(headless_mm, unconstrained_guard, monkeypatch):
+    """§5: engaged=None means 'unknown' — never a false reassurance of False."""
+    from microclaw import tools
+    monkeypatch.setattr(tools, "_cached_emu_properties", lambda ctrl: None)
+    result = tools.get_focus_lock_state(headless_mm, unconstrained_guard)
+    assert result["engaged"] is None
+    assert "reason" in result
+
+
+def test_run_timelapse_without_laser_slot_skips_preflight(headless_mm, unconstrained_guard, tmp_path):
+    """§1: the pre-flight is opt-in; a non-EMU timelapse still runs."""
+    from microclaw.tools import run_timelapse
+    result = run_timelapse(
+        headless_mm, unconstrained_guard, n_frames=1, interval_s=0,
+        save_dir=str(tmp_path), name="preflight_off",
+    )
+    assert result["status"] == "Timelapse complete."
+
+
+def test_java_error_is_translated_not_forwarded(headless_mm, unconstrained_guard):
+    """§7: a raw 16-line JVM stack trace must never reach the model."""
+    from microclaw.tools import execute_tool
+    result = json.loads(
+        execute_tool("get_device_property", {"device": "NoSuchDevice", "property": "X"},
+                     headless_mm, unconstrained_guard)
+    )
+    assert "error" in result
+    assert result["error"].count("\n") == 0

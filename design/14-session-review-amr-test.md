@@ -1581,3 +1581,75 @@ a metric that tracks laser power, a thumbnail where a centroid belonged, and a
 display side-effect it could not observe. The fix is not a better prompt. It is
 tools that return the number the model is actually trying to reason about — and
 that refuse to report success when they have not achieved it.
+
+---
+
+# Addendum — what the Windows demo-config test run found (2026-07-08)
+
+The branch implementing §1–§11 was run against Micro-Manager's demo config on
+the lab machine (Windows, Python 3.11, `pytest`). Result: **476 passed, 7
+failed**, from three distinct causes. Two were real defects introduced by the
+fixes themselves; both are the same class of bug this document is about.
+
+### 1. The normalised metric annihilated its own focus curve (§4 × §10)
+
+`_sweep_payload` rounded each metric value with `round(v, 2)` — correct for the
+old raw Laplacian variance (~1e4), catastrophic for the normalised metric,
+which lives at **1e-2 … 1e-4**. On the demo camera the payload read:
+
+```
+"metric_curve": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  "contrast": 0.52
+```
+
+A curve of zeros beside a contrast claiming a real peak. The model could learn
+nothing from it, and would have had no way to audit the autofocus decision —
+*exactly* the §4 failure, reintroduced by the §10 fix. Neither section's tests
+caught it: the unit fixtures use synthetic images whose metric happens to land
+above 0.005, and no test asserted the curve survived serialisation.
+
+**Fix.** `_round_sig(v, sig=4)` — round to significant figures, not decimal
+places — in `_sweep_payload`, `_focus_metric_payload`, and
+`focus_metric_at_final`.
+
+**Lesson.** Changing a metric's *scale* silently invalidates every fixed-decimal
+rounding downstream of it. A payload's numeric formatting is part of the tool
+contract, not presentation.
+
+### 2. The knowledge base was written with the platform default encoding
+
+`knowledge_manager.save_entry` passed `allow_unicode=True` to `yaml.dump` and
+then wrote the result with `Path.write_text()` and **no `encoding=`** — i.e.
+cp1252 on Windows. The §8 affine's description string (`px → µm`) therefore
+crashed `calibrate_stage_to_camera` on the rig with `UnicodeEncodeError`, while
+passing on macOS/Linux where the default already is UTF-8.
+
+This was a latent hazard throughout the package: hook source files, MM config
+reads, position lists, and the history writer all used unencoded text I/O. All
+now pass `encoding="utf-8"` explicitly.
+
+**Testing note, worth remembering.** A regression test that monkeypatches
+`locale.getpreferredencoding` **does not work** — CPython resolves the default
+text encoding below the Python level, so the test passes with *and* without the
+fix. (Verified: reverted the fix, test still green.) The reproduction that does
+work is a subprocess under `LC_ALL=C` with `PYTHONUTF8=0`, which forces an ASCII
+default and reproduces the Windows traceback on any platform.
+
+### 3. Four integration tests asserted the pre-§4 autofocus payload
+
+`best_z_um` / `metric_curve` / `z_positions` moved under `coarse` / `fine` when
+§4 started reporting both passes. Contract change, not a defect — the tests were
+updated, and extended to assert the new guarantees (`converged=false` implies
+`moved=false` and Z restored; the coarse window contains `entry_z`).
+
+### The gap this exposed
+
+**Nothing in `tests/test_integration.py` covered any tool added by §1–§11.** The
+V1/V2/V3 findings — the pyjavaz `PropertyType` proxy, `live().snap(True)`
+wedging under live mode, `core.get_position(label)` dispatch — had been verified
+once by `14-demo-spike.py` and then never again. A spike is not a test.
+
+Twenty integration tests were added for the new surfaces. Both real defects above
+were caught only because the branch was finally run against real hardware: the
+rounding bug needs a camera whose metric lands below 0.005, and the encoding bug
+needs a non-UTF-8 filesystem locale. **Neither was reachable from the 419-test
+unit suite on macOS.**

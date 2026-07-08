@@ -712,7 +712,7 @@ def _focus_metric_payload(ctrl: MicroscopeController, image: np.ndarray) -> dict
     except Exception:
         binning = None
     return {
-        "focus_metric": round(normalized_laplacian_variance(image), 4),
+        "focus_metric": _round_sig(normalized_laplacian_variance(image)),
         "focus_metric_kind": "normalized_laplacian_variance",
         "metric_valid_for": {
             "roi": roi_list,
@@ -959,12 +959,26 @@ def _run_autofocus_passes(
     return single_sweep_autofocus(ctrl, z_range_um, z_step_um, settle_ms)
 
 
+def _round_sig(value: float, sig: int = 4) -> float:
+    """Round to significant figures, not decimal places.
+
+    The normalized focus metric lives at 1e-2..1e-4, where a fixed round(v, 2)
+    collapses an entire focus curve to zeros while `contrast` still reports a
+    real peak — instrumentation lying to the model, which is the whole point of
+    design/14. Fixed-decimal rounding was safe only for the old raw metric's
+    ~1e4 scale.
+    """
+    if not math.isfinite(value) or value == 0.0:
+        return float(value)
+    return float(f"%.{sig}g" % value)
+
+
 def _sweep_payload(sweep) -> dict | None:
     if sweep is None:
         return None
     return {
         "z_positions": [round(z, 3) for z in sweep.z_positions],
-        "metric_curve": [round(v, 2) for v in sweep.metric_values],
+        "metric_curve": [_round_sig(v) for v in sweep.metric_values],
         "best_z_um": round(sweep.best_z_um, 3),
         "peak_interior": sweep.peak_interior,
         "contrast": round(curve_contrast(sweep.metric_values), 3),
@@ -1037,7 +1051,7 @@ def run_autofocus(
 
     with _pause_live(ctrl):
         image = snap_to_numpy(ctrl)
-    payload["focus_metric_at_final"] = round(normalized_laplacian_variance(image), 4)
+    payload["focus_metric_at_final"] = _round_sig(normalized_laplacian_variance(image))
     return [
         {"type": "text", "text": json.dumps(payload)},
         {
@@ -1552,7 +1566,7 @@ def read_hook_log(ctrl: MicroscopeController, guard: SafetyGuard, log_path: str)
     path = Path(log_path)
     if not path.exists():
         return {"error": f"Log file not found: {log_path}"}
-    entries = json.loads(path.read_text())
+    entries = json.loads(path.read_text(encoding="utf-8"))
     return {"log_path": log_path, "entry_count": len(entries), "entries": entries}
 
 

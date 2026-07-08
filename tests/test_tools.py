@@ -522,6 +522,29 @@ class TestRunAutofocus:
 
         live.set_live_mode_on.assert_not_called()
 
+    def test_small_metric_values_survive_rounding(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        """Regression: the normalized metric lives at 1e-2..1e-4.
+
+        A fixed round(v, 2) — carried over from the raw metric's ~1e4 scale —
+        collapsed a real focus curve to [0.0, 0.0, ...] on the demo camera,
+        while `contrast` still reported a peak. Instrumentation must not lie.
+        """
+        tiny = SweepResult(
+            z_positions=[49.0, 50.0, 51.0],
+            metric_values=[0.0031234, 0.0245678, 0.0009876],
+            best_z_um=50.0,
+            peak_interior=True,
+        )
+        monkeypatch.setattr(
+            "microclaw.tools.coarse_then_fine_autofocus",
+            lambda *a, **k: AutofocusResult(tiny, tiny, 50.0, 50.0, True, True, None),
+        )
+        result = run_autofocus(mock_ctrl, unconstrained_guard, z_range_um=10.0,
+                               z_step_um=1.0, return_thumbnail=False)
+        curve = result["coarse"]["metric_curve"]
+        assert all(v > 0 for v in curve), f"curve annihilated by rounding: {curve}"
+        assert curve[1] == pytest.approx(0.02457, rel=1e-3)
+
     def test_payload_reports_both_passes(self, mock_ctrl, unconstrained_guard, monkeypatch):
         _patch_autofocus(monkeypatch)
         result = run_autofocus(mock_ctrl, unconstrained_guard,

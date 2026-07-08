@@ -22,7 +22,7 @@ def write_history(fn, history, save=True):
     def default(o):
         return o.model_dump() if hasattr(o, "model_dump") else str(o)
 
-    Path(fn).write_text(json.dumps(history, default=default, indent=2))
+    Path(fn).write_text(json.dumps(history, default=default, indent=2), encoding="utf-8")
 
 def main():
     import argparse

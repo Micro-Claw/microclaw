@@ -116,3 +116,50 @@ def test_knowledge_file_is_valid_yaml(tmp_path, monkeypatch):
     save_entry("samples", "U2OS", {"description": "U2OS cells", "exposure_ms": 50})
     parsed = yaml.safe_load(kb_path.read_text())
     assert parsed["samples"]["U2OS"]["exposure_ms"] == 50
+
+
+def test_non_ascii_entry_roundtrips_under_a_legacy_locale(tmp_path):
+    """Regression: the knowledge base must be UTF-8 regardless of locale.
+
+    save_entry passes allow_unicode=True to yaml.dump, then wrote the result
+    with Path.write_text's *platform default* encoding -- cp1252 on Windows.
+    A calibration entry describing 'px -> um' (with the real arrow and mu)
+    therefore crashed with UnicodeEncodeError on the lab machine while passing
+    on macOS/Linux, where the default already is UTF-8.
+
+    Run in a subprocess under LC_ALL=C with UTF-8 mode off: that makes the
+    ambient default ASCII, reproducing the Windows failure on any platform.
+    Monkeypatching `locale` cannot do this -- CPython resolves the default
+    encoding below the Python level, so such a test would pass either way.
+    """
+    import os
+    import subprocess
+    import sys
+
+    script = (
+        "import pathlib\n"
+        "import microclaw.knowledge_manager as km\n"
+        f"km.KNOWLEDGE_PATH = pathlib.Path(r'{tmp_path}') / 'knowledge.yaml'\n"
+        "value = {'description': 'affine (px \\u2192 \\u00b5m)', 'pixel_size_um': 0.5}\n"
+        "km.save_entry('devices', 'affine_20x', value)\n"
+        "assert km.load_knowledge()['devices']['affine_20x'] == value\n"
+        "print('OK')\n"
+    )
+    env = {**os.environ, "LC_ALL": "C", "PYTHONUTF8": "0", "PYTHONCOERCECLOCALE": "0"}
+    proc = subprocess.run(
+        [sys.executable, "-c", script], env=env, capture_output=True, text=True
+    )
+    assert proc.returncode == 0, (
+        "knowledge base is not written as UTF-8:\n" + proc.stderr[-1500:]
+    )
+    assert "OK" in proc.stdout
+
+
+def test_knowledge_file_is_utf8_on_disk(tmp_path, monkeypatch):
+    """The bytes on disk decode as UTF-8, not as the platform default."""
+    monkeypatch.setattr(
+        "microclaw.knowledge_manager.KNOWLEDGE_PATH", tmp_path / "knowledge.yaml"
+    )
+    save_entry("devices", "affine", {"description": "px \u2192 \u00b5m"})
+    raw = (tmp_path / "knowledge.yaml").read_bytes()
+    assert "\u2192" in raw.decode("utf-8")

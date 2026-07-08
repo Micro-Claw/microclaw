@@ -18,7 +18,7 @@ class HookBase:
 
     def _write_log(self) -> None:
         if self.log_path:
-            Path(self.log_path).write_text(json.dumps(self._log, indent=2))
+            Path(self.log_path).write_text(json.dumps(self._log, indent=2), encoding="utf-8")
 
     def get_summary(self) -> list[dict]:
         return self._log

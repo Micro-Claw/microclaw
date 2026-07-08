@@ -110,7 +110,7 @@ def find_mm_app_dir(ctrl: "MicroscopeController | None" = None) -> Path | None:
     # 2. Cache.
     if _EMU_CACHE.exists():
         try:
-            cached = json.loads(_EMU_CACHE.read_text())
+            cached = json.loads(_EMU_CACHE.read_text(encoding="utf-8"))
             cached_dir = cached.get("mm_app_dir")
             if cached_dir:
                 p = Path(cached_dir)
@@ -133,11 +133,11 @@ def save_mm_app_dir(mm_app_dir: str) -> None:
     existing = {}
     if _EMU_CACHE.exists():
         try:
-            existing = json.loads(_EMU_CACHE.read_text())
+            existing = json.loads(_EMU_CACHE.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             pass
     existing["mm_app_dir"] = mm_app_dir
-    _EMU_CACHE.write_text(json.dumps(existing, indent=2))
+    _EMU_CACHE.write_text(json.dumps(existing, indent=2), encoding="utf-8")
 
 
 def _split_device_property(
@@ -333,7 +333,7 @@ def read_emu_config(
       plugin_settings — raw plugin-level settings (tab visibility, etc.)
     """
     config_path = _emu_config_path(Path(mm_app_dir))
-    raw = json.loads(config_path.read_text())
+    raw = json.loads(config_path.read_text(encoding="utf-8"))
 
     current_name = raw.get("defaultConfigurationName", "")
     configs = raw.get("pluginConfigurations", [])

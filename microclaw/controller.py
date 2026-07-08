@@ -421,7 +421,7 @@ class MicroscopeController:
 
     def save_position_list(self, path: str) -> None:
         """Persist the position list to a JSON file."""
-        Path(path).write_text(json.dumps(self._positions, indent=2))
+        Path(path).write_text(json.dumps(self._positions, indent=2), encoding="utf-8")
 
     def load_position_list(self, path: str) -> None:
         """Load positions from a JSON file written by save_position_list.
@@ -431,7 +431,7 @@ class MicroscopeController:
         in go_to_position. Z-only entries ({"name", "z_um"}) are valid — they
         come from 1-axis MultiStagePositions in MM.
         """
-        data = json.loads(Path(path).read_text())
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
 
         def _valid(p) -> bool:
             return isinstance(p, dict) and "name" in p and (
