@@ -15,9 +15,18 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# `microclaw serve` only. keyring brokers the API key to the OS credential
+# store; without it serve falls back to a user-level config file.
+serve = [
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
+    "keyring>=24.0",
+]
 test = [
     "pytest>=8.0",
     "pytest-mock",
+    "fastapi>=0.110",
+    "httpx>=0.27",
 ]
 
 [project.scripts]
@@ -36,4 +45,4 @@ markers = [
 microclaw = "microclaw"
 
 [tool.setuptools.package-data]
-microclaw = ["history_viewer.html"]
+microclaw = ["history_viewer.html", "serve.html", "transcript.css", "transcript.js"]

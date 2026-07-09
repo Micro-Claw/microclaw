@@ -2,7 +2,7 @@
 
 Goal: let a user drive Microclaw from a browser chat window instead of the
 terminal REPL, reusing the transcript renderer already built for
-`microclaw view-history` (design/07, `microclaw/history_viewer.html`).
+`microclaw view-history` (`microclaw/history_viewer.html`).
 
 ## TL;DR
 
@@ -283,15 +283,162 @@ control and reuse for speed we don't need.
 
 ## Proposed increments
 
-1. **v1 — turn-at-a-time.** `serve.html` (renderer factored out of the viewer +
-   composer), `webserve.py` (`Session` + two endpoints + lock), `serve`
-   subcommand, `fastapi`/`uvicorn` deps, localhost-only guard. Manual smoke test
-   against a running MM; unit-test `build_app` with a fake session (monkeypatch
-   `run_agent`) via `fastapi.testclient` — no hardware needed.
-2. **v2 — streaming.** `run_agent_iter` generator, SSE endpoint, live block
+1. **v1 — turn-at-a-time, thumbnails, API key.** `serve.html` (renderer factored
+   out of the viewer + composer), `webserve.py` (`Session` + endpoints + lock),
+   `serve` subcommand, `fastapi`/`uvicorn` deps, localhost-only guard. Plus the
+   two additions below, both of which are small and carry no hardware risk.
+   Manual smoke test against a running MM; unit-test `build_app` with a fake
+   session (monkeypatch `run_agent`) via `fastapi.testclient` — no hardware needed.
+2. **v2 — safety-config editor.** Its own increment: it is the one feature here
+   that can *widen* hardware limits from a browser (see below).
+3. **v3 — streaming.** `run_agent_iter` generator, SSE endpoint, live block
    append, busy/typing indicator.
-3. **v3 — polish.** Stop/interrupt a running turn, model picker, show the active
-   safety config, surface `save_position_list` artifacts inline.
+4. **v4 — polish.** Stop/interrupt a running turn, model picker, surface
+   `save_position_list` artifacts inline.
+
+### v1a — render thumbnails in the transcript
+
+This is a **viewer bug fix, not a serve feature**, and it should land with the
+renderer factoring regardless of whether `serve` ships.
+
+`snap_and_analyze(return_thumbnail=True)` already returns a two-block list — a
+text block and an `image` block carrying a base64 PNG (`tools.py`) — and
+`run_agent` drops that list verbatim into the `tool_result` content
+(`agent.py`). **The thumbnail is therefore already in `history` and already in
+every saved history JSON.** Nothing server-side has to change.
+
+What's missing is rendering: `toolCard` pipes `result.content` through
+`fmtJSON`, so an image block currently renders as a screenful of base64 inside a
+`<pre>`. Teach the shared renderer to walk an array `content`:
+
+```js
+// in toolCard(), replacing the single fmtJSON(result.content) call
+function renderResult(content) {
+  if (!Array.isArray(content)) return '<pre class="json result">' + fmtJSON(content) + '</pre>';
+  return content.map(b =>
+    b.type === "image"
+      ? '<img class="thumb" alt="snap thumbnail" src="data:' +
+          esc(b.source.media_type) + ';base64,' + esc(b.source.data) + '">'
+      : '<pre class="json result">' + fmtJSON(b.text) + '</pre>'
+  ).join("");
+}
+```
+
+Benefits `microclaw view-history` immediately, and `serve` inherits it for free.
+
+Caveat worth knowing: base64 PNGs bloat the history JSON (a 512 px thumbnail is
+a few hundred KB of text per snap). That is already true today — this change only
+makes the cost visible. If it bites, strip image blocks in `write_history` and
+keep them in the live session only; that's a separate decision.
+
+### v1b — set and persist the API key from the UI
+
+Possible, and it makes the first-run story *better* than the CLI's: `run_agent`
+builds its client lazily, so `serve` can boot with no key at all, show a banner,
+and collect one.
+
+One refactor is required. `agent._get_client()` caches the client in a module
+global (`_client`), so setting a key must reset that global — putting
+`ANTHROPIC_API_KEY` in `os.environ` after the first call does nothing. Add:
+
+```python
+def set_api_key(key: str) -> None:
+    """Set the key and drop the cached client so the next call rebuilds it."""
+    global _client
+    os.environ["ANTHROPIC_API_KEY"] = key
+    _client = None
+```
+
+Endpoints: `GET /api/key` → `{"has_key": bool, "suffix": "…AA8f"}` and
+`POST /api/key {key}`. Rules:
+
+- **Never echo the key back.** Return a masked suffix only, enough for the user
+  to confirm *which* key is set.
+- **Persist outside the repo**, never in `safety_config.yaml` — that file is
+  meant to be readable and checked in as an example. See storage below.
+- Loading order: explicit env var > keyring > stored file > unset (banner).
+
+#### Where to store it
+
+Prefer **`keyring`**, which brokers to the OS credential store — macOS Keychain,
+Windows Credential Manager, Linux Secret Service. This matters because Microclaw
+runs on a Windows lab machine, and the obvious POSIX answer is wrong there:
+`os.chmod(path, 0o600)` on Windows only toggles the read-only attribute, it does
+not write an ACL, so a `0600` config file remains readable by every account on
+the box. "chmod 600" is a reflex that buys nothing where this actually deploys.
+
+`keyring` can be awkward on a headless or locked-down machine, so keep a fallback
+to a user-level config file (`~/.config/microclaw/config.toml`,
+`%APPDATA%\microclaw\` on Windows) — but describe that file in the UI as
+*convenience, not protection*, and `chmod` it on POSIX where that means something.
+
+#### Why not `python-dotenv`?
+
+It solves the other half of the problem. `load_dotenv()` **reads** an existing
+`.env` into `os.environ` at startup; v1b needs to **write** a secret submitted at
+runtime and have a live process notice. Dotenv does not help with the part that
+actually makes the new key take effect — `_client = None` — because
+`anthropic.Anthropic()` reads the environment exactly once, at construction, and
+`_get_client()` has already cached that client by the time the form is submitted.
+
+Two further mismatches:
+
+- `.env` is resolved **relative to the working directory**. An operator running
+  `microclaw serve` from a different data folder each day would find the key
+  present in one and absent in the next — the opposite of "store it for later".
+  A user-level store follows the user, not the cwd.
+- `dotenv.set_key()` writes with default permissions and never chmods, so the
+  security work is unchanged; we'd carry a dependency and still hand-roll it.
+
+Where it *would* earn its keep is a repo-root `.env` for local development, so
+contributors need not export a variable in every shell. That is a
+developer-workflow convenience, not part of this feature, and it is one line at
+startup if we ever want it.
+
+### v2 — editing `safety_config.yaml` from the viewer
+
+Possible, but it earns its own increment because it is the only feature in this
+document that lets a browser form **widen the limits on real hardware**. The
+value of `safety_config.yaml` is that it is a deliberate, out-of-band artifact
+somebody edited on purpose; a GUI edit box erodes that by default, so the
+guardrails below are the feature, not decoration.
+
+Two mechanical problems, both in the existing code:
+
+- **The guard is aliased and cannot be swapped.** `MicroscopeController` captures
+  it at construction (`ctrl._guard`, used in `check_xy` / `check_z`) *and*
+  `execute_tool` receives it separately. Rebinding `session.guard` would leave
+  the controller enforcing the old limits. So constraints must be replaced **in
+  place**, via a real method rather than poking `guard._c`:
+
+  ```python
+  class SafetyGuard:
+      def replace_constraints(self, c: SafetyConstraints) -> None:
+          self._c = c
+  ```
+
+- **`SafetyConstraints.from_yaml` takes a path, not a string.** Validate a
+  proposed edit by round-tripping it through a temp file, or add a
+  `from_yaml_str` classmethod and have `from_yaml` call it.
+
+Guardrails:
+
+- **Not a tool.** These are UI endpoints. The agent must never be able to call
+  them — it does not get to widen its own limits.
+- **403 when not bound to localhost.** If `--allow-remote` is in effect, config
+  editing is disabled outright. Remote hardware control is already a loud opt-in;
+  remote *limit* editing is not on offer at all.
+- **Validate before apply.** Parse the submitted YAML into `SafetyConstraints`
+  first; reject with the parse error and leave the running guard untouched.
+- **Back up, then confirm.** Write `safety_config.yaml.bak` before saving, and
+  require an explicit confirmation step in the UI showing a diff of what changes.
+- **Take `session.lock`.** Never reload constraints mid-turn, while tool calls
+  are in flight against the old limits.
+
+```
+GET  /api/safety-config   → {"yaml": "...", "path": "...", "editable": bool}
+POST /api/safety-config   → validate → .bak → write → guard.replace_constraints()
+```
 
 ---
 

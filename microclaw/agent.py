@@ -32,6 +32,19 @@ def _get_client() -> anthropic.Anthropic:
     return _client
 
 
+def set_api_key(key: str) -> None:
+    """Set the key and drop the cached client so the next call rebuilds it.
+
+    `anthropic.Anthropic()` reads the environment once, at construction, and
+    `_get_client` caches that client — so putting ANTHROPIC_API_KEY in
+    os.environ after the first call would otherwise have no effect. Used by
+    `microclaw serve`, which can collect a key at runtime.
+    """
+    global _client
+    os.environ["ANTHROPIC_API_KEY"] = key
+    _client = None
+
+
 def resolve_model(model: str | None = None) -> str:
     """Pick the model: explicit arg > MICROCLAW_MODEL env > DEFAULT_MODEL."""
     return model or os.environ.get(MODEL_ENV) or DEFAULT_MODEL

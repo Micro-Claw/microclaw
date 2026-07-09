@@ -6,26 +6,31 @@ import pstats
 import io
 import tempfile
 import webbrowser
-from importlib import resources
 from pathlib import Path
 from pstats import SortKey
 
 from microclaw.agent import run_agent
+from microclaw.assets import load_page
 from microclaw.controller import MicroscopeController
 from microclaw.config import load_safety_config
 from microclaw.safety import SafetyGuard
 
 
+def json_default(o):
+    """Encode the Anthropic SDK content blocks that history holds.
+
+    Via the public model_dump() rather than the private
+    anthropic._utils._json.openapi_dumps (which can vanish across SDK releases).
+    """
+    return o.model_dump() if hasattr(o, "model_dump") else str(o)
+
+
 def write_history(fn, history, save=True):
     if not save:
         return
-    # History is a list of message dicts whose content blocks may be Anthropic
-    # SDK objects. Serialise via the public model_dump() rather than the private
-    # anthropic._utils._json.openapi_dumps (which can vanish across SDK releases).
-    def default(o):
-        return o.model_dump() if hasattr(o, "model_dump") else str(o)
-
-    Path(fn).write_text(json.dumps(history, default=default, indent=2), encoding="utf-8")
+    Path(fn).write_text(
+        json.dumps(history, default=json_default, indent=2), encoding="utf-8"
+    )
 
 
 def view_history(path, open_browser=True):
@@ -40,9 +45,9 @@ def view_history(path, open_browser=True):
     except json.JSONDecodeError as e:
         sys.exit(f"Not valid JSON ({src}): {e}")
 
-    template = resources.files("microclaw").joinpath("history_viewer.html").read_text(
-        encoding="utf-8"
-    )
+    # Inlines transcript.css/transcript.js — the emitted file lives in a temp
+    # directory and can't resolve them as siblings.
+    template = load_page("history_viewer.html")
     # Embed as JSON text inside a <script type="application/json"> block. Escape
     # '<' so a '</script>' hiding in any string can't terminate that block early;
     # JSON.parse turns the < escapes back into '<' browser-side.
@@ -164,7 +169,31 @@ def main():
     parser.add_argument("--profile", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--save-history", action=argparse.BooleanOptionalAction, default=True)
 
+    # Subcommands take no session flags of their own: the agent-session options
+    # above live on the top-level parser, so they must precede the subcommand
+    # (`microclaw --safety-config x.yaml serve`). Repeating them on the
+    # subparser would let its defaults silently clobber what was passed there.
     sub = parser.add_subparsers(dest="command")
+
+    sv = sub.add_parser(
+        "serve",
+        help="Serve the interactive web GUI on localhost.",
+        description=(
+            "Drive Microclaw from a browser. Binds 127.0.0.1 only — this "
+            "endpoint moves real hardware."
+        ),
+    )
+    sv.add_argument("--host", default="127.0.0.1", help="Bind address (default: 127.0.0.1).")
+    sv.add_argument("--web-port", type=int, default=8000, help="HTTP port (default: 8000).")
+    sv.add_argument(
+        "--allow-remote",
+        action="store_true",
+        help=(
+            "Permit binding beyond localhost. Exposes microscope control on the "
+            "network — only on a trusted, isolated LAN."
+        ),
+    )
+
     vh = sub.add_parser(
         "view-history",
         help="Open a saved *_microclaw_history.json in the browser transcript viewer.",
@@ -180,6 +209,17 @@ def main():
 
     if args.command == "view-history":
         view_history(args.path, open_browser=not args.no_browser)
+        return
+
+    if args.command == "serve":
+        # Imported here so `view-history` and the REPL don't need fastapi.
+        try:
+            from microclaw.webserve import serve
+        except ImportError:
+            sys.exit(
+                "`microclaw serve` needs fastapi and uvicorn: pip install 'microclaw[serve]'"
+            )
+        serve(args)
         return
 
     run_session(args)
