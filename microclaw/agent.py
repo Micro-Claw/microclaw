@@ -1,5 +1,7 @@
 from __future__ import annotations
+from collections.abc import Iterator
 from typing import Any
+import json
 import os
 import time
 
@@ -21,6 +23,7 @@ MODEL_ENV = "MICROCLAW_MODEL"
 DEFAULT_MAX_ITERATIONS = 50
 
 _client: anthropic.Anthropic | None = None
+_known_models: list[str] | None = None
 
 
 def _get_client() -> anthropic.Anthropic:
@@ -40,14 +43,31 @@ def set_api_key(key: str) -> None:
     os.environ after the first call would otherwise have no effect. Used by
     `microclaw serve`, which can collect a key at runtime.
     """
-    global _client
+    global _client, _known_models
     os.environ["ANTHROPIC_API_KEY"] = key
     _client = None
+    _known_models = None  # the old key's client answered models.list()
 
 
 def resolve_model(model: str | None = None) -> str:
     """Pick the model: explicit arg > MICROCLAW_MODEL env > DEFAULT_MODEL."""
     return model or os.environ.get(MODEL_ENV) or DEFAULT_MODEL
+
+
+def known_models() -> list[str]:
+    """Model ids this key can see, fetched once per process.
+
+    Only ever a *suggestion* list: a model released after this cache was
+    populated must still be usable, so callers keep the field free-text. An
+    unreachable API is not an error here — it just means no suggestions.
+    """
+    global _known_models
+    if _known_models is None:
+        try:
+            _known_models = [m.id for m in _get_client().models.list(limit=100).data]
+        except Exception:
+            _known_models = []
+    return _known_models
 
 SYSTEM_PROMPT = """You are Microclaw, an AI assistant that controls a Micro-Manager fluorescence microscope.
 
@@ -153,6 +173,218 @@ def _with_cache_breakpoint(messages: list[dict]) -> list[dict]:
     return [*messages[:-1], {**last, "content": content}]
 
 
+_RETRY_DELAYS = (5, 15, 30)
+
+OVERLOADED_MESSAGE = (
+    "The Anthropic API is currently overloaded (HTTP 529). "
+    "Please try again in a few minutes."
+)
+
+
+CANCEL_RESULT = json.dumps({"error": "Cancelled by the operator."})
+
+CANCEL_REASON = (
+    "Stopped by the operator. The last step completed — check illumination and "
+    "stage position; nothing further was run."
+)
+
+
+class _Overloaded(Exception):
+    """The 529 retries are spent. Internal to this module."""
+
+
+class _BadModel(Exception):
+    """The API does not know this model id. Internal to this module."""
+
+
+def _cancelled(cancel) -> bool:
+    return cancel is not None and cancel.is_set()
+
+
+def _unwind_cancel(messages: list[dict]):
+    """Leave `messages` in a state the API will accept on the next turn.
+
+    An assistant turn ending in tool_use blocks is only valid if the next user
+    message answers every one of them. On cancel we answer the unrun ones with an
+    error result rather than dropping them — otherwise the *next* prompt 400s,
+    from a history that looks perfectly fine in the viewer. See design/16 §5.
+    """
+    last = messages[-1] if messages else None
+    if last and last["role"] == "assistant":
+        pending = [
+            b for b in last["content"]
+            if (getattr(b, "type", None) or (isinstance(b, dict) and b.get("type"))) == "tool_use"
+        ]
+        if pending:
+            messages.append({"role": "user", "content": [
+                {"type": "tool_result",
+                 "tool_use_id": b.id if hasattr(b, "id") else b["id"],
+                 "is_error": True, "content": CANCEL_RESULT}
+                for b in pending
+            ]})
+    yield {"type": "cancelled", "reason": CANCEL_REASON}
+
+
+def _system_blocks() -> list[dict[str, Any]]:
+    blocks: list[dict[str, Any]] = [
+        {
+            "type": "text",
+            "text": SYSTEM_PROMPT,
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+    kb_text = format_for_prompt(load_knowledge())
+    if kb_text:
+        blocks.append(
+            {"type": "text", "text": kb_text, "cache_control": {"type": "ephemeral"}}
+        )
+    return blocks
+
+
+def _stream_one_round(messages, system_blocks, model):
+    """One model call, streamed.
+
+    Yields `text_delta` events as the prose arrives; returns the final Message —
+    the same object `messages.create()` used to return, blocks and all. Raises
+    `_Overloaded` once the 529 backoff is spent.
+    """
+    for attempt, delay in enumerate([0, *_RETRY_DELAYS]):
+        if delay:
+            yield {"type": "retry", "delay": delay, "attempt": attempt}
+            time.sleep(delay)
+        try:
+            with _get_client().messages.stream(
+                model=model,
+                max_tokens=4096,
+                system=system_blocks,
+                tools=TOOLS_CACHED,
+                messages=_with_cache_breakpoint(messages),
+            ) as stream:
+                for event in stream:
+                    if (
+                        event.type == "content_block_delta"
+                        and event.delta.type == "text_delta"
+                    ):
+                        yield {"type": "text_delta", "text": event.delta.text}
+                return stream.get_final_message()
+        except anthropic.NotFoundError as e:
+            # A free-text model picker (v4c) can hold an id the API rejects.
+            # Without this it escapes run_agent_iter as a 500 on the SSE stream.
+            raise _BadModel(str(e)) from None
+        except anthropic._exceptions.OverloadedError:
+            if attempt == len(_RETRY_DELAYS):
+                raise _Overloaded from None
+    raise RuntimeError("unexpected loop exit")  # pragma: no cover
+
+
+def run_agent_iter(
+    user_message: str,
+    ctrl: MicroscopeController,
+    guard: SafetyGuard,
+    messages: list[dict],
+    model: str | None = None,
+    max_iterations: int = DEFAULT_MAX_ITERATIONS,
+    cancel=None,
+) -> Iterator[dict]:
+    """Run one user turn, yielding an event per thing that happens.
+
+    APPENDS TO `messages` IN PLACE — the caller keeps ownership. A consumer that
+    disconnects mid-turn still leaves the completed rounds in the caller's list,
+    which is what `serve` needs: the stage has already moved, so the history has
+    to say so whether or not anyone was listening.
+
+    `cancel` is an optional `threading.Event`, polled at round boundaries and
+    before each tool dispatch — never mid-tool. `execute_tool` blocks in Java and
+    there is no interrupting it, so Stop waits for the running tool to return.
+
+    Events are JSON-encodable dicts discriminated on `type`: round_start,
+    text_delta, tool_use, tool_result, retry, cancelled, done, error. The last
+    three are terminal. See design/16 §2.
+    """
+    model = resolve_model(model)
+    start = len(messages)
+    messages.append({"role": "user", "content": user_message})
+    system_blocks = _system_blocks()
+
+    for iteration in range(max_iterations):
+        if _cancelled(cancel):
+            yield from _unwind_cancel(messages)
+            return
+        yield {"type": "round_start", "iteration": iteration}
+
+        try:
+            response = yield from _stream_one_round(messages, system_blocks, model)
+        except _Overloaded:
+            del messages[start:]  # discard the turn, user message and all
+            yield {"type": "error", "message": OVERLOADED_MESSAGE}
+            return
+        except _BadModel as e:
+            del messages[start:]  # nothing ran; don't leave an unanswered prompt
+            yield {"type": "error",
+                   "message": f"The API rejected the model '{model}': {e}"}
+            return
+
+        messages.append({"role": "assistant", "content": response.content})
+
+        if response.stop_reason == "end_turn":
+            text = next((b.text for b in response.content if hasattr(b, "text")), "")
+            yield {"type": "done", "reply": text}
+            return
+
+        if response.stop_reason != "tool_use":
+            yield {
+                "type": "error",
+                "message": f"[Unexpected stop reason: {response.stop_reason}]",
+            }
+            return
+
+        tool_results = []
+        stopped = False
+        for block in response.content:
+            if block.type != "tool_use":
+                continue
+            yield {
+                "type": "tool_use",
+                "id": block.id,
+                "name": block.name,
+                "input": block.input,
+            }
+            # Sticky: once the operator has stopped, the rest of this batch is
+            # skipped. Every tool_use block still needs a matching tool_result or
+            # the next request 400s, so the skipped ones get an error result.
+            stopped = stopped or _cancelled(cancel)
+            if stopped:
+                result_json = CANCEL_RESULT
+                result_block = {"type": "tool_result", "tool_use_id": block.id,
+                                "is_error": True, "content": result_json}
+            else:
+                result_json = execute_tool(block.name, block.input, ctrl, guard)
+                result_block = {"type": "tool_result", "tool_use_id": block.id,
+                                "content": result_json}
+            tool_results.append(result_block)
+            yield {
+                "type": "tool_result",
+                "tool_use_id": block.id,
+                "content": result_json,
+                "is_error": stopped,
+            }
+        messages.append({"role": "user", "content": tool_results})
+        if stopped:
+            # The model sees "Cancelled by the operator" on every skipped tool,
+            # which is exactly what it needs when the operator types "continue".
+            yield {"type": "cancelled", "reason": CANCEL_REASON}
+            return
+
+    yield {
+        "type": "error",
+        "message": (
+            f"Stopped after {max_iterations} tool rounds without completing. "
+            "Progress so far is preserved in the conversation — say 'continue' to "
+            "resume where this left off, or narrow the task."
+        ),
+    }
+
+
 def run_agent(
     user_message: str,
     ctrl: MicroscopeController,
@@ -166,84 +398,25 @@ def run_agent(
     Returns (assistant_text_reply, updated_history).
     Pass history on repeated calls for multi-turn conversations. `max_iterations`
     caps the number of model/tool rounds so a runaway loop can't spin forever.
+
+    A thin drain of `run_agent_iter` — every behaviour lives there, so the CLI,
+    the tests and the streaming endpoint cannot diverge. Copies `history` first,
+    so callers still get a fresh list back.
     """
-    model = resolve_model(model)
     messages: list[dict[str, Any]] = list(history or [])
-    messages.append({"role": "user", "content": user_message})
-
-    system_blocks: list[dict[str, Any]] = [
-        {
-            "type": "text",
-            "text": SYSTEM_PROMPT,
-            "cache_control": {"type": "ephemeral"},
-        }
-    ]
-    kb_text = format_for_prompt(load_knowledge())
-    if kb_text:
-        system_blocks.append(
-            {"type": "text", "text": kb_text, "cache_control": {"type": "ephemeral"}}
-        )
-
-    _RETRY_DELAYS = (5, 15, 30)
-
-    for _iteration in range(max_iterations):
-        for attempt, delay in enumerate([0] + list(_RETRY_DELAYS)):
-            if delay:
-                print(
-                    f"Anthropic API overloaded — retrying in {delay}s "
-                    f"(attempt {attempt}/{len(_RETRY_DELAYS)})..."
-                )
-                time.sleep(delay)
-            try:
-                response = _get_client().messages.create(
-                    model=model,
-                    max_tokens=4096,
-                    system=system_blocks,
-                    tools=TOOLS_CACHED,
-                    messages=_with_cache_breakpoint(messages),
-                )
-                break
-            except anthropic._exceptions.OverloadedError:
-                if attempt == len(_RETRY_DELAYS):
-                    return (
-                        "The Anthropic API is currently overloaded (HTTP 529). "
-                        "Please try again in a few minutes.",
-                        list(history or []),
-                    )
-        else:
-            # unreachable — satisfied by the return inside the except above
-            raise RuntimeError("unexpected loop exit")
-
-        messages.append({"role": "assistant", "content": response.content})
-
-        if response.stop_reason == "end_turn":
-            text = next(
-                (b.text for b in response.content if hasattr(b, "text")), ""
+    reply = ""
+    for event in run_agent_iter(
+        user_message, ctrl, guard, messages, model, max_iterations
+    ):
+        if event["type"] == "done":
+            reply = event["reply"]
+        elif event["type"] == "error":
+            reply = event["message"]
+        elif event["type"] == "cancelled":
+            reply = event["reason"]
+        elif event["type"] == "retry":
+            print(
+                f"Anthropic API overloaded — retrying in {event['delay']}s "
+                f"(attempt {event['attempt']}/{len(_RETRY_DELAYS)})..."
             )
-            return text, messages
-
-        if response.stop_reason == "tool_use":
-            tool_results = []
-            for block in response.content:
-                if block.type == "tool_use":
-                    result_json = execute_tool(
-                        block.name, block.input, ctrl, guard
-                    )
-                    tool_results.append(
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": block.id,
-                            "content": result_json,
-                        }
-                    )
-            messages.append({"role": "user", "content": tool_results})
-            continue
-
-        return f"[Unexpected stop reason: {response.stop_reason}]", messages
-
-    return (
-        f"Stopped after {max_iterations} tool rounds without completing. "
-        "Progress so far is preserved in the conversation — say 'continue' to "
-        "resume where this left off, or narrow the task.",
-        messages,
-    )
+    return reply, messages

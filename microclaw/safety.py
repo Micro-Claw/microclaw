@@ -376,7 +376,10 @@ class SafetyGuard:
         root = os.path.realpath(root)
         target = path if os.path.isabs(path) else os.path.join(root, path)
         resolved = os.path.realpath(target)
-        if resolved != root and not resolved.startswith(root + os.sep):
+        # rstrip: realpath of a drive or filesystem root ("D:\", "/") already
+        # ends in a separator, so `root + os.sep` would be a doubled separator
+        # that nothing starts with — and the sandbox would reject every path.
+        if resolved != root and not resolved.startswith(root.rstrip(os.sep) + os.sep):
             raise SafetyViolation(
                 f"Path '{path}' escapes the configured workspace directory ({root})."
             )

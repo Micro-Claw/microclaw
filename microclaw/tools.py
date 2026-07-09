@@ -513,6 +513,7 @@ def _build_acquisition_events(
 
 
 def _acquire_with_hooks(
+    guard: SafetyGuard,
     save_dir: str,
     name: str,
     events: list,
@@ -524,7 +525,17 @@ def _acquire_with_hooks(
     post_hardware_hook_fn and/or image_process_fn; both are optional and are
     wired in only if present, so the same runner serves plain and adaptive
     acquisitions of any event shape.
+
+    The one place an acquisition touches the filesystem, and so the one place
+    `save_dir` is confined to a configured workspace. Without this the guard is
+    one-sided: `export_dataset_as_tiff` resolves the path it reads, while the
+    acquisition that wrote it could put a dataset anywhere on disk — so a z-stack
+    saved outside the workspace can never be exported, and the refusal arrives
+    only after the objective has already swept the range. Callers resolve
+    `save_dir` up front too, to fail before any hardware moves; resolving twice
+    is idempotent.
     """
+    save_dir = guard.resolve_in_workspace(save_dir)
     hook_fn_kwargs: dict[str, Any] = {}
     if hook is not None:
         if hasattr(hook, "post_hardware_hook_fn"):
@@ -560,6 +571,9 @@ def run_zstack(
     exposure_ms: float | None = None,
     name: str = "zstack",
 ) -> dict:
+    # Before set_exposure and before the sweep: an out-of-workspace save_dir
+    # must not cost an acquisition to discover.
+    save_dir = guard.resolve_in_workspace(save_dir)
     guard.check_z(z_start_um)
     guard.check_z(z_end_um)
     if channel:
@@ -573,7 +587,7 @@ def run_zstack(
         channel=channel, exposure_ms=exposure_ms,
         z_start=z_start_um, z_end=z_end_um, z_step=z_step_um,
     )
-    dataset_path = _acquire_with_hooks(save_dir, name, events)
+    dataset_path = _acquire_with_hooks(guard, save_dir, name, events)
     return {"status": "Z-stack complete.", "dataset_path": dataset_path}
 
 
@@ -630,6 +644,7 @@ def run_timelapse(
     name: str = "timelapse",
     laser_slot: int | None = None,
 ) -> dict:
+    save_dir = guard.resolve_in_workspace(save_dir)   # before any hardware moves
     if laser_slot is not None:
         _assert_excitation_will_fire(ctrl, laser_slot)
     if channel:
@@ -646,7 +661,7 @@ def run_timelapse(
         channel=channel, exposure_ms=exposure_ms,
         num_time_points=n_frames, time_interval_s=interval_s,
     )
-    dataset_path = _acquire_with_hooks(save_dir, name, events)
+    dataset_path = _acquire_with_hooks(guard, save_dir, name, events)
     return {"status": "Timelapse complete.", "dataset_path": dataset_path}
 
 
@@ -682,7 +697,9 @@ def export_dataset_as_tiff(
         stack = dataset.read_image()
 
     tifffile.imwrite(output_path, stack, imagej=True)
-    return {"status": "Export complete.", "output_path": output_path, "axes": axis_names}
+    return {"status": "Export complete.", "output_path": output_path,
+            "axes": axis_names,
+            "artifact": {"kind": "tiff", "path": output_path}}
 
 
 # --- Image capture with analysis ---
@@ -1124,7 +1141,11 @@ def save_position_list(ctrl: MicroscopeController, guard: SafetyGuard, path: str
     """Save the position list to a microclaw JSON file (not MM's native .pos)."""
     path = guard.resolve_in_workspace(path)
     ctrl.save_position_list(path)
-    return {"status": f"Position list saved to {path}."}
+    # The `artifact` key is for the transcript renderer, which draws a download
+    # chip from it. Saying so structurally beats regexing paths out of `status`:
+    # that works for six months and then matches a filename in an error message.
+    return {"status": f"Position list saved to {path}.",
+            "artifact": {"kind": "position_list", "path": path}}
 
 
 def _validate_stored_positions(
@@ -1153,6 +1174,7 @@ def _validate_stored_positions(
 
 def load_position_list(ctrl: MicroscopeController, guard: SafetyGuard, path: str) -> dict:
     """Load a microclaw JSON position file (as written by save_position_list)."""
+    path = guard.resolve_in_workspace(path)   # save_position_list is guarded; be symmetric
     ctrl.load_position_list(path)
     rejected = _validate_stored_positions(ctrl, guard)
     kept = ctrl.get_positions()
@@ -1270,6 +1292,10 @@ def run_multiposition_acquisition(
         return {"error": "Provide either position_names or positions."}
     if protocol != "snap" and not save_dir:
         return {"error": f"save_dir is required for protocol '{protocol}'."}
+    if save_dir:
+        # Resolve the root before the per-position directories are derived from
+        # it, so mkdir never creates a tree outside a configured workspace.
+        save_dir = guard.resolve_in_workspace(save_dir)
 
     params = protocol_params or {}
     results = []
@@ -1358,6 +1384,7 @@ def run_multiposition_with_autofocus(
     protocol_params: dict | None = None,
 ) -> dict:
     """Visit each position, autofocus, then run a per-position protocol."""
+    save_dir = guard.resolve_in_workspace(save_dir)   # before the stage moves
     params = protocol_params or {}
     all_positions = {p["name"]: p for p in ctrl.get_positions()}
     results = []
@@ -1511,6 +1538,12 @@ def run_adaptive_zstack(
     hook_strategy: a key from PRECODED_HOOK_REGISTRY or a saved hook name.
     After the acquisition, call read_hook_log(log_path) to retrieve results.
     """
+    save_dir = guard.resolve_in_workspace(save_dir)
+    # The hook writes this file itself, so it never passed the guard — while
+    # read_hook_log does. Resolve it here or the log lands somewhere microclaw
+    # will then refuse to read back.
+    if log_path:
+        log_path = guard.resolve_in_workspace(log_path)
     guard.check_z(z_start_um)
     guard.check_z(z_end_um)
     if channel:
@@ -1524,7 +1557,7 @@ def run_adaptive_zstack(
     events = _build_acquisition_events(
         channel=channel, z_start=z_start_um, z_end=z_end_um, z_step=z_step_um,
     )
-    dataset_path = _acquire_with_hooks(save_dir, name, events, hook)
+    dataset_path = _acquire_with_hooks(guard, save_dir, name, events, hook)
     return _adaptive_result(dataset_path, log_path)
 
 
@@ -1545,6 +1578,9 @@ def run_adaptive_timelapse(
     hook_strategy: a key from PRECODED_HOOK_REGISTRY or a saved hook name.
     After the acquisition, call read_hook_log(log_path) to retrieve results.
     """
+    save_dir = guard.resolve_in_workspace(save_dir)
+    if log_path:
+        log_path = guard.resolve_in_workspace(log_path)   # see run_adaptive_zstack
     if channel:
         guard.check_channel(channel)
 
@@ -1556,7 +1592,7 @@ def run_adaptive_timelapse(
     events = _build_acquisition_events(
         channel=channel, num_time_points=n_frames, time_interval_s=interval_s,
     )
-    dataset_path = _acquire_with_hooks(save_dir, name, events, hook)
+    dataset_path = _acquire_with_hooks(guard, save_dir, name, events, hook)
     return _adaptive_result(dataset_path, log_path)
 
 
@@ -1567,7 +1603,8 @@ def read_hook_log(ctrl: MicroscopeController, guard: SafetyGuard, log_path: str)
     if not path.exists():
         return {"error": f"Log file not found: {log_path}"}
     entries = json.loads(path.read_text(encoding="utf-8"))
-    return {"log_path": log_path, "entry_count": len(entries), "entries": entries}
+    return {"log_path": log_path, "entry_count": len(entries), "entries": entries,
+            "artifact": {"kind": "hook_log", "path": log_path}}
 
 
 # --- Hook management ---

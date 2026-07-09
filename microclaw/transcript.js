@@ -15,6 +15,10 @@
 
   const esc = (s) => String(s).replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
 
+  // esc() is for text nodes: it leaves quotes alone, so a value landing inside
+  // an HTML attribute needs them escaped too or it breaks out of the attribute.
+  const escAttr = (s) => esc(s).replace(/"/g, "&quot;");
+
   // tiny inline markdown: **bold**, `code`, paragraphs
   function md(text) {
     return esc(text)
@@ -67,11 +71,54 @@
     return '<div class="result-blocks">' + parts.join("") + "</div>";
   }
 
-  // build one collapsible tool card
-  function toolCard(block, result) {
+  /* Pull a tool's `artifact` declaration out of its result, if it made one.
+
+     The tools say so structurally — {"artifact": {"kind": ..., "path": ...}} —
+     rather than the renderer regexing paths out of prose, which would work for
+     six months and then match a filename inside an error message. */
+  function artifactOf(content) {
+    let obj = content;
+    if (Array.isArray(content)) {
+      const text = content.find(b => b && b.type === "text");
+      if (!text) return null;
+      obj = text.text;
+    }
+    if (typeof obj === "string") {
+      try { obj = JSON.parse(obj); } catch { return null; }
+    }
+    const a = obj && obj.artifact;
+    return a && typeof a.path === "string" ? a : null;
+  }
+
+  const basename = (p) => String(p).split(/[\\/]/).pop();
+
+  /* A download chip, but only where there is a server to download from.
+     view-history is a file:// page with no /api/artifact behind it, so there the
+     chip renders as inert text naming the file. */
+  function artifactChip(artifact) {
+    const name = esc(basename(artifact.path));
+    const kind = esc(artifact.kind || "file");
+    const title = escAttr(artifact.path);
+    const served = typeof location !== "undefined" && /^https?:$/.test(location.protocol);
+    if (!served) {
+      return '<div class="artifact inert" title="' + title + '">' +
+        '<span class="artifact-kind">' + kind + "</span>" + name + "</div>";
+    }
+    return '<a class="artifact" download href="/api/artifact?path=' +
+      encodeURIComponent(artifact.path) + '" title="' + title + '">' +
+      '<span class="artifact-kind">' + kind + "</span>" + name + "</a>";
+  }
+
+  /* Build one collapsible tool card.
+
+     A missing result means two different things. In a saved history the tool
+     result was never recorded; in a turn that is streaming right now (`live`)
+     the tool is still running. Same absent value, opposite stories. */
+  function toolCard(block, result, live) {
     const det = document.createElement("details");
     det.className = "tool";
     const isErr = result && result.is_error;
+    const pending = result === undefined && live;
     det.innerHTML =
       "<summary>" +
         '<span class="chev">▶</span>' +
@@ -85,7 +132,13 @@
       body.innerHTML += '<div><div class="kv-label">Input</div><pre class="json">' + fmtJSON(block.input) + "</pre></div>";
     }
     if (result !== undefined) {
-      body.innerHTML += '<div><div class="kv-label">Result</div>' + renderResult(result.content) + "</div>";
+      const artifact = artifactOf(result.content);
+      body.innerHTML += '<div><div class="kv-label">Result</div>' +
+        renderResult(result.content) +
+        (artifact ? artifactChip(artifact) : "") + "</div>";
+    } else if (pending) {
+      body.innerHTML += '<div><div class="kv-label">Result</div>' +
+        '<div class="tool-pending"><span class="spin"></span>running…</div></div>';
     } else {
       body.innerHTML += '<div><div class="kv-label">Result</div><pre class="json">(no result recorded)</pre></div>';
     }
@@ -101,8 +154,12 @@
   }
 
   /* Render `history` into `tx`, replacing its contents.
+     `opts.live` marks the transcript as a turn in flight, which only `serve`
+     ever is: a tool_use with no tool_result is then drawn as still running
+     rather than as a result that was never recorded.
      Returns {userTurns, asstTurns, toolCalls}. */
-  function render(history, tx) {
+  function render(history, tx, opts) {
+    const live = !!(opts && opts.live);
     if (!Array.isArray(history)) throw new Error("Top level is not an array of messages.");
     tx.innerHTML = "";
 
@@ -160,7 +217,7 @@
             wrap.appendChild(el);
           } else if (b.type === "tool_use") {
             toolCalls++;
-            wrap.appendChild(toolCard(b, results[b.id]));
+            wrap.appendChild(toolCard(b, results[b.id], live));
           }
         }
         tx.appendChild(wrap);
@@ -182,7 +239,8 @@
   const setOpen = (tx, open) => tx.querySelectorAll("details.tool").forEach(d => d.open = open);
 
   global.Transcript = {
-    esc, md, fmtJSON, preview, renderResult, toolCard, render, initTheme,
+    esc, escAttr, md, fmtJSON, preview, renderResult, toolCard, render, initTheme,
+    artifactOf, artifactChip,
     expandAll: (tx) => setOpen(tx, true),
     collapseAll: (tx) => setOpen(tx, false),
   };

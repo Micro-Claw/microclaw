@@ -21,16 +21,9 @@
   #empty p { color: var(--ink-soft); font-size: 14px; margin: 6px auto; max-width: 48ch; }
   #empty .hint { font-family: var(--mono); font-size: 12px; color: var(--ink-faint); margin-top: 18px; }
 
-  /* pending indicator while a turn runs */
+  /* pending indicator while a turn runs (.spin lives in transcript.css) */
   #pending { display: flex; align-items: center; gap: 10px; margin: 18px 0 0;
     color: var(--ink-faint); font-size: 13px; }
-  #pending .spin {
-    width: 12px; height: 12px; border-radius: 50%; flex: none;
-    border: 2px solid var(--line); border-top-color: var(--accent);
-    animation: spin .8s linear infinite;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  @media (prefers-reduced-motion: reduce) { #pending .spin { animation-duration: 3s; } }
 
   /* composer */
   #composer {
@@ -51,6 +44,9 @@
   }
   #msg:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   #send { background: var(--accent); color: #04191b; border-color: var(--accent); padding: 10px 18px; }
+  #stop { padding: 10px 16px; border-color: #c0392b; color: #c0392b; }
+  :root[data-theme="dark"] #stop { border-color: #ff8a80; color: #ff8a80; }
+  #stop:disabled { opacity: .55; }
   .composer-hint {
     max-width: 820px; margin: 6px auto 0; font-size: 11px; color: var(--ink-faint);
   }
@@ -68,7 +64,11 @@
     background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
   }
   .banner label.chk { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-soft); }
-  #key-btn { font-family: var(--mono); font-size: 11.5px; color: var(--ink-faint); }
+  .banner input[type=text] {
+    flex: 1; min-width: 240px; font-family: var(--mono); font-size: 13px; color: var(--ink);
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
+  }
+  #key-btn, #model-btn { font-family: var(--mono); font-size: 11.5px; color: var(--ink-faint); }
 
   #toast {
     position: fixed; left: 50%; transform: translateX(-50%); bottom: 108px; z-index: 30;
@@ -89,6 +89,7 @@
     <div class="stat"><b id="s-tools">0</b><span>tool calls</span></div>
   </div>
   <div class="controls">
+    <button id="model-btn" class="hidden"></button>
     <button id="key-btn" class="hidden"></button>
     <button id="expand" class="hidden">Expand all</button>
     <button id="collapse" class="hidden">Collapse all</button>
@@ -110,6 +111,20 @@
     </div>
   </div>
 
+  <div class="banner hidden" id="model-banner">
+    <h2>Model for this session</h2>
+    <p>Switching models re-sends this conversation uncached — prompt caching is
+      scoped per model, so the next turn re-pays the whole conversation at full
+      input price. Session-only: <code>--model</code> and
+      <code>MICROCLAW_MODEL</code> are the durable settings.</p>
+    <div class="row">
+      <input type="text" id="model-input" list="model-list" spellcheck="false" autocomplete="off">
+      <datalist id="model-list"></datalist>
+      <button id="model-save">Use this model</button>
+      <button id="model-cancel" type="button">Cancel</button>
+    </div>
+  </div>
+
   <div id="empty">
     <div class="big">Connected to Micro-Manager</div>
     <p>Tell Microclaw what to image. Every tool call it makes appears below with
@@ -124,9 +139,11 @@
 <form id="composer">
   <div class="row">
     <textarea id="msg" rows="1" placeholder="Tell Microclaw what to image…"></textarea>
+    <button id="stop" type="button" class="hidden" title="Stops at the next step boundary — it cannot interrupt a tool that is already running, and it does not shutter lasers or halt the stage.">Stop after the current step</button>
     <button id="send" type="submit">Send</button>
   </div>
-  <div class="composer-hint">Enter to send · Shift+Enter for a new line. This session drives real hardware.</div>
+  <div class="composer-hint">Enter to send · Shift+Enter for a new line. This session drives real hardware.
+    Stop is not an emergency stop — use the rig's E-stop for that.</div>
 </form>
 
 <script src="transcript.js"></script>
@@ -154,8 +171,13 @@
   }
 
   // ---- rendering ----
-  function paint(history) {
-    const { userTurns, asstTurns, toolCalls } = Transcript.render(history, tx);
+  // The server's history, mirrored. A streaming turn applies its events to a
+  // copy of this and re-renders — rather than incrementally patching the DOM —
+  // so there stays exactly one function that knows how a tool card looks.
+  let history = [];
+
+  function paint(messages, live) {
+    const { userTurns, asstTurns, toolCalls } = Transcript.render(messages, tx, { live });
     const any = userTurns + asstTurns > 0;
     $("empty").classList.toggle("hidden", any);
     $("stats").classList.toggle("hidden", !any);
@@ -165,10 +187,26 @@
     $("s-tools").textContent = toolCalls;
   }
 
+  // Coalesce the repaints a token stream would otherwise trigger per delta.
+  let frame = null, framePayload = null;
+  function schedulePaint(messages) {
+    framePayload = messages;
+    if (frame) return;
+    frame = requestAnimationFrame(() => {
+      frame = null;
+      paint(framePayload, true);
+    });
+  }
+
+  function cancelScheduledPaint() {
+    if (frame) { cancelAnimationFrame(frame); frame = null; }
+  }
+
   async function refresh() {
     const res = await fetch("/api/history");
     if (!res.ok) throw new Error("Could not load history (" + res.status + ").");
-    paint(await res.json());
+    history = await res.json();
+    paint(history, false);
   }
 
   // Read the server's error detail, whatever shape it came back in.
@@ -182,10 +220,28 @@
   function setBusy(on) {
     busy = on;
     $("pending").classList.toggle("hidden", !on);
+    $("stop").classList.toggle("hidden", !on);
+    $("stop").disabled = false;
     send.disabled = on || !hasKey;
     msg.disabled = on;
     if (!on) msg.focus();
   }
+
+  // ---- stop ----
+  // Cooperative and honest about it: the agent checks between rounds and before
+  // each tool, never mid-tool, because execute_tool blocks in Java. This does
+  // not shutter lasers or halt the stage — see design/16 §5 and §6.
+  $("stop").addEventListener("click", async () => {
+    $("stop").disabled = true;
+    try {
+      const res = await fetch("/api/stop", { method: "POST" });
+      if (!res.ok) { toast(await detail(res)); $("stop").disabled = false; return; }
+      toast("Stopping after the current step finishes. Lasers and stage are left as they are.");
+    } catch (err) {
+      toast("Could not send stop: " + err.message);
+      $("stop").disabled = false;
+    }
+  });
 
   // ---- composer ----
   function autogrow() {
@@ -197,6 +253,77 @@
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("composer").requestSubmit(); }
   });
 
+  // ---- streaming a turn ----
+  // Minimal SSE reader over the POST response body: frames are separated by a
+  // blank line, and every frame we emit is a single data: line of JSON.
+  // EventSource can't be used here — it is GET-only, and a GET that drives the
+  // stage is a CSRF hole (an <img src> from any tab, with no Origin to refuse).
+  async function* sseEvents(body) {
+    const reader = body.pipeThrough(new TextDecoderStream()).getReader();
+    let buf = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) return;
+      buf += value;
+      let i;
+      while ((i = buf.indexOf("\n\n")) !== -1) {
+        const frame = buf.slice(0, i);
+        buf = buf.slice(i + 2);
+        for (const line of frame.split("\n")) {
+          if (line.startsWith("data:")) yield JSON.parse(line.slice(5));
+        }
+      }
+    }
+  }
+
+  // Apply one event to the client-side mirror of history.
+  function applyEvent(live, ev, state) {
+    switch (ev.type) {
+      case "round_start":
+        state.asst = { role: "assistant", content: [] };
+        live.push(state.asst);
+        break;
+      case "text_delta": {
+        const last = state.asst.content[state.asst.content.length - 1];
+        if (last && last.type === "text") last.text += ev.text;
+        else state.asst.content.push({ type: "text", text: ev.text });
+        break;
+      }
+      case "tool_use":
+        state.asst.content.push({ type: "tool_use", id: ev.id, name: ev.name, input: ev.input });
+        break;
+      case "tool_result":
+        // A tool_result-only user message: exactly the shape render() folds
+        // into the matching tool card.
+        live.push({ role: "user", content: [{ type: "tool_result",
+          tool_use_id: ev.tool_use_id, content: ev.content, is_error: ev.is_error }] });
+        break;
+      case "retry": toast("API overloaded — retrying in " + ev.delay + "s…"); break;
+      case "cancelled": toast(ev.reason); break;
+      case "error": toast(ev.message); break;
+    }
+  }
+
+  async function runTurn(text) {
+    const res = await fetch("/api/prompt", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: text }),
+    });
+    if (!res.ok) {
+      toast(res.status === 409 ? "A turn is already running." : await detail(res));
+      return false;
+    }
+    const live = history.concat([{ role: "user", content: text }]);
+    const state = { asst: null };
+    paint(live, true);
+    for await (const ev of sseEvents(res.body)) {
+      applyEvent(live, ev, state);
+      schedulePaint(live);
+    }
+    return true;
+  }
+
   $("composer").addEventListener("submit", async (e) => {
     e.preventDefault();
     if (busy) return;
@@ -204,22 +331,16 @@
     if (!text) return;
     msg.value = ""; autogrow();
     setBusy(true);
+    let sent = false;
     try {
-      const res = await fetch("/api/prompt", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text }),
-      });
-      if (!res.ok) {
-        toast(res.status === 409 ? "A turn is already running." : await detail(res));
-        msg.value = text; autogrow();   // give the prompt back
-      }
+      sent = await runTurn(text);
     } catch (err) {
       toast("Request failed: " + err.message);
-      msg.value = text; autogrow();
     }
-    // The server is the source of truth — re-read it either way. A turn that
-    // raised leaves the history untouched, so a failed prompt simply vanishes.
+    if (!sent) { msg.value = text; autogrow(); }   // give the prompt back
+    // The server is the source of truth — re-read it either way. It also holds
+    // the turn's rounds even if this page stopped listening partway through.
+    cancelScheduledPaint();
     try { await refresh(); } catch (err) { toast(err.message); }
     setBusy(false);
     window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
@@ -294,10 +415,54 @@
         : "Key set for this session only.");
   });
 
+  // ---- model ----
+  // Free-text with suggestions, not a closed <select>: a model released after
+  // the server cached models.list() must still be typable.
+  function showModel(state) {
+    const btn = $("model-btn");
+    btn.classList.remove("hidden");
+    btn.textContent = state.model;
+    btn.disabled = !state.editable;
+    btn.title = state.editable
+      ? "Click to change the model for this session"
+      : "Bound beyond localhost — set --model or MICROCLAW_MODEL and restart";
+    $("model-input").value = state.model;
+    if (state.available && state.available.length) {
+      $("model-list").innerHTML = state.available
+        .map(id => '<option value="' + Transcript.esc(id) + '">').join("");
+    }
+  }
+
+  $("model-btn").addEventListener("click", () => {
+    const banner = $("model-banner");
+    banner.classList.toggle("hidden");
+    if (!banner.classList.contains("hidden")) $("model-input").focus();
+  });
+  $("model-cancel").addEventListener("click", () => $("model-banner").classList.add("hidden"));
+
+  $("model-save").addEventListener("click", async () => {
+    const model = $("model-input").value.trim();
+    if (!model) return;
+    const res = await fetch("/api/model", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model }),
+    });
+    if (!res.ok) {
+      toast(res.status === 409 ? "A turn is running — wait for it to finish." : await detail(res));
+      return;
+    }
+    const state = await res.json();
+    $("model-btn").textContent = state.model;
+    $("model-banner").classList.add("hidden");
+    toast("Model set to " + state.model + ". The next turn re-sends this conversation uncached.");
+  });
+
   // ---- boot ----
   (async () => {
     try {
       showKey(await (await fetch("/api/key")).json());
+      showModel(await (await fetch("/api/model")).json());
       await refresh();
     } catch (err) { toast("Could not reach the Microclaw server: " + err.message); }
     msg.focus();

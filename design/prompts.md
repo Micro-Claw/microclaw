@@ -470,3 +470,79 @@ server runs without it
 All right. Please add the relevant prompts to prompts.md and push to this
 branch. After this I will merge it, and then we can branch off main to
 continue working on v3
+
+----
+
+Have a look at design/15. Please write a new design document building on this
+design/16 that implements v3 (and v4, if it makes sense to do this in one go).
+Include code stubs.
+
+Have a look at the document again. I've left comments for you between < and >
+
+  <Does this affect our ability to write history to file (write_history in
+  _repl and run_session)?>
+
+  <It's probably more important to have a stage movement kill switch than an
+  illumination kill switch. The stage can do physical damage to the sample and
+  the objective.>
+
+Add this session's prompts to design/prompts.md, write the spike, and commit
+and push for testing on windows. Do this on a new branch
+
+----
+
+Implement v3 in design/16 in this branch
+
+commit and push this for testing on windows
+
+Works well! Now implement v4
+
+OK. please commit and push so i can test it on a real micro-manager with a
+demo config
+
+The export to TIFF doesn't work because the z-stack was saved in a different
+folder than the workspace
+
+not yet. I exported the history from this last session to
+20260709_145741_microclaw_history.json. Does this change your conclusion at
+all?
+
+Why do we need a workspace_dir at all? I expect users to be able to save data
+wherever they like
+
+yes, implement that
+
+OK--that worked! See 20260709_152134_microclaw_history.json. Now I am going to
+try setting workspace_dir to D:\microtest and see if it refuses to save and/or
+read files outside of this directory
+
+The result is at 20260709_152432_microclaw_history.json
+
+yes, implement it
+
+See 20260709_155200_microclaw_history.json.
+
+How should I test this stop?
+
+I tried option 1 in 20260709_160406_microclaw_history.json. All 60 frames were
+in the image at the end. I tried both 2 and 3 in
+20260709_164816_microclaw_history.json. Seemed to work
+
+I tried the partial batch in 20260709_165408_microclaw_history.json. It stopped
+after it finished collecting all 30 frames, and the resulting file had all of
+them. However, no tool card with an error for changing to DAPI appeared,
+although it was able to pick up from that with a "continue". I also tried the
+curl and didn't receive a 409 (base) C:\Users\rieslab>curl -X POST
+http://127.0.0.1:8000/api/stop {"detail":"No turn is running."}
+
+That looks like it worked 20260709_170112_microclaw_history.json
+
+Can you give me a prompt for the tile acquisiton test?
+
+The results are in 20260709_170639_microclaw_history.json. Let's leave cancel
+out of the multiposition loop for now, but we can add the suggestion and path
+forward to add this (with a code stub) to the design file for later.
+
+Is there anything left to commit or push?
+
+Is prompts.md up to date?

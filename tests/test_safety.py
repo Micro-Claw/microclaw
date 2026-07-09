@@ -1,5 +1,7 @@
 from unittest.mock import MagicMock
 
+import os
+
 import pytest
 from microclaw.safety import (
     CameraConstraints,
@@ -226,6 +228,24 @@ class TestWorkspaceSandbox:
     def test_unconfigured_returns_path_unchanged(self):
         guard = SafetyGuard(SafetyConstraints())  # workspace_dir None
         assert guard.resolve_in_workspace("/anywhere/at/all.json") == "/anywhere/at/all.json"
+
+    def test_a_filesystem_root_workspace_does_not_reject_everything(self):
+        """realpath('/') already ends in a separator, so the containment check
+        must not append another — `//` is a prefix of nothing, and the sandbox
+        would fail closed on every path while reporting a traversal escape."""
+        guard = SafetyGuard(SafetyConstraints(workspace_dir=os.sep))
+        target = os.path.join(os.sep, "tmp", "x.json")
+        # realpath, so /tmp -> /private/tmp on macOS; the point is it resolves.
+        assert guard.resolve_in_workspace(target) == os.path.realpath(target)
+
+    def test_a_sibling_of_the_root_name_is_still_refused(self, tmp_path):
+        """/data must not admit /database."""
+        root = tmp_path / "data"
+        root.mkdir()
+        (tmp_path / "database").mkdir()
+        guard = SafetyGuard(SafetyConstraints(workspace_dir=str(root)))
+        with pytest.raises(SafetyViolation, match="escapes"):
+            guard.resolve_in_workspace(str(tmp_path / "database" / "x.json"))
 
     def test_path_inside_root_resolves(self, tmp_path):
         guard = SafetyGuard(SafetyConstraints(workspace_dir=str(tmp_path)))

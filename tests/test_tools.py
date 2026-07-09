@@ -1017,6 +1017,120 @@ class TestExportDatasetAllAxes:
         # z (3) × channel (2) × H (4) × W (4) — no axis silently dropped
         assert captured["shape"] == (3, 2, 4, 4)
         assert result["axes"] == ["z", "channel"]
+        assert result["artifact"] == {"kind": "tiff", "path": str(tmp_path / "o.tif")}
+
+
+class TestAcquisitionsRespectTheWorkspace:
+    """A configured workspace confines what an acquisition writes, not just what
+    the export tool reads. Without this the guard is one-sided: a z-stack saved
+    outside the workspace can never be exported, and the operator only finds out
+    after the objective has swept the range."""
+
+    @pytest.fixture
+    def ws_guard(self, tmp_path):
+        return SafetyGuard(SafetyConstraints(workspace_dir=str(tmp_path / "ws")))
+
+    def test_zstack_outside_the_workspace_is_refused(self, mock_ctrl, ws_guard, monkeypatch):
+        from microclaw import tools
+
+        monkeypatch.setattr(tools, "_acquire_with_hooks",
+                            lambda *a, **k: pytest.fail("acquisition should not start"))
+        with pytest.raises(SafetyViolation, match="escapes"):
+            tools.run_zstack(mock_ctrl, ws_guard, z_start_um=0, z_end_um=10,
+                             z_step_um=1, save_dir="/somewhere/else")
+
+    def test_the_refusal_lands_before_any_hardware_moves(self, mock_ctrl, ws_guard, monkeypatch):
+        """The whole point: a check that runs after the irreversible part is the
+        wrong check. set_exposure must not have been called."""
+        from microclaw import tools
+
+        monkeypatch.setattr(tools, "_acquire_with_hooks",
+                            lambda *a, **k: pytest.fail("acquisition should not start"))
+        with pytest.raises(SafetyViolation):
+            tools.run_zstack(mock_ctrl, ws_guard, z_start_um=0, z_end_um=10,
+                             z_step_um=1, save_dir="/somewhere/else", exposure_ms=50)
+        mock_ctrl.core.set_exposure.assert_not_called()
+
+    def test_zstack_inside_the_workspace_proceeds(self, mock_ctrl, ws_guard, tmp_path, monkeypatch):
+        from microclaw import tools
+
+        seen = {}
+        monkeypatch.setattr(tools, "_acquire_with_hooks",
+                            lambda guard, save_dir, *a, **k: seen.setdefault("dir", save_dir))
+        tools.run_zstack(mock_ctrl, ws_guard, z_start_um=0, z_end_um=10, z_step_um=1,
+                         save_dir=str(tmp_path / "ws" / "run1"))
+        assert seen["dir"] == str(tmp_path / "ws" / "run1")
+
+    def test_an_unset_workspace_still_saves_anywhere(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        """The default. Confinement is opt-in; nobody is forced into a sandbox
+        to use microclaw."""
+        from microclaw import tools
+
+        seen = {}
+        monkeypatch.setattr(tools, "_acquire_with_hooks",
+                            lambda guard, save_dir, *a, **k: seen.setdefault("dir", save_dir))
+        tools.run_zstack(mock_ctrl, unconstrained_guard, z_start_um=0, z_end_um=10,
+                         z_step_um=1, save_dir="D:\\anywhere")
+        assert seen["dir"] == "D:\\anywhere"
+
+    def test_the_acquisition_runner_enforces_it_even_if_a_caller_forgets(
+        self, mock_ctrl, ws_guard
+    ):
+        """_acquire_with_hooks is the single filesystem choke point, so a future
+        acquisition tool cannot escape by omitting the up-front resolve."""
+        from microclaw import tools
+
+        with pytest.raises(SafetyViolation, match="escapes"):
+            tools._acquire_with_hooks(ws_guard, "/somewhere/else", "n", [])
+
+    def test_an_adaptive_hook_log_is_confined_too(self, mock_ctrl, ws_guard, monkeypatch):
+        """Same bug one layer down: the hook writes the log itself, unguarded,
+        while read_hook_log refuses to read it back."""
+        from microclaw import tools
+
+        monkeypatch.setattr(tools, "_acquire_with_hooks",
+                            lambda *a, **k: pytest.fail("acquisition should not start"))
+        with pytest.raises(SafetyViolation, match="escapes"):
+            tools.run_adaptive_zstack(
+                mock_ctrl, ws_guard, z_start_um=0, z_end_um=10, z_step_um=1,
+                save_dir="/somewhere/else", hook_strategy="autofocus_per_position",
+                log_path="/somewhere/else/log.json",
+            )
+
+    def test_load_position_list_is_confined_like_save(self, mock_ctrl, ws_guard):
+        from microclaw import tools
+
+        with pytest.raises(SafetyViolation, match="escapes"):
+            tools.load_position_list(mock_ctrl, ws_guard, path="/somewhere/else/p.json")
+        mock_ctrl.load_position_list.assert_not_called()
+
+
+class TestArtifactDeclarations:
+    """Tools that write a file say so structurally, so the transcript renderer
+    can offer a download without regexing paths out of prose (design/16 §8)."""
+
+    def test_save_position_list_declares_its_file(self, mock_ctrl, unconstrained_guard, tmp_path):
+        from microclaw import tools
+
+        path = str(tmp_path / "p.json")
+        result = tools.save_position_list(mock_ctrl, unconstrained_guard, path=path)
+        assert result["artifact"] == {"kind": "position_list", "path": path}
+
+    def test_read_hook_log_declares_the_log(self, mock_ctrl, unconstrained_guard, tmp_path):
+        from microclaw import tools
+
+        log = tmp_path / "hook.json"
+        log.write_text('[{"frame": 0}]', encoding="utf-8")
+        result = tools.read_hook_log(mock_ctrl, unconstrained_guard, log_path=str(log))
+        assert result["artifact"] == {"kind": "hook_log", "path": str(log)}
+
+    def test_a_missing_hook_log_declares_nothing(self, mock_ctrl, unconstrained_guard, tmp_path):
+        from microclaw import tools
+
+        result = tools.read_hook_log(
+            mock_ctrl, unconstrained_guard, log_path=str(tmp_path / "gone.json")
+        )
+        assert "error" in result and "artifact" not in result
 
 
 class TestMarkPosition:
