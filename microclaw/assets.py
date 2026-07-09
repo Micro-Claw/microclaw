@@ -32,6 +32,22 @@ def icon_bytes(name: str = ICON) -> bytes:
     return resources.files("microclaw").joinpath(name).read_bytes()
 
 
+def materialize_icon(dest, name: str = ICON):
+    """Copy the packaged icon to a stable path on disk, and return it.
+
+    A .lnk stores an absolute path to its icon and reads it years later, so it
+    cannot point into the package: `resources.files()` may name a zip member with
+    no filesystem path at all, and even a real path under site-packages vanishes
+    on the next `pip uninstall`. The installer copies the icon somewhere it owns.
+    """
+    from pathlib import Path
+
+    dest = Path(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(icon_bytes(name))
+    return dest
+
+
 def load_page(name: str) -> str:
     """Read a bundled HTML page with transcript.css/transcript.js inlined."""
     html = _read(name)

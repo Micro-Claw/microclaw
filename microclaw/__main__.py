@@ -122,6 +122,46 @@ def init(args):
     return dest
 
 
+def install_shortcut(args):
+    """Put a Microclaw launcher on the desktop (Windows), or explain why not."""
+    from microclaw import shortcut
+
+    if not shortcut.supported():
+        # Exit 0, not a traceback: v4's installer runs this unconditionally, and a
+        # developer on macOS has a terminal.
+        print(
+            "Desktop shortcuts are Windows only. "
+            "On this platform, run `microclaw serve` from a terminal."
+        )
+        return
+
+    try:
+        if args.remove:
+            gone = shortcut.remove(args.dest)
+            for p in gone:
+                print(f"Removed {p}")
+            if not gone:
+                print("Nothing to remove.")
+            return
+
+        p = shortcut.install(args.dest, dry_run=args.dry_run)
+    except shortcut.ShortcutError as e:
+        sys.exit(f"Could not install the shortcut: {e}")
+
+    if args.dry_run:
+        print("Would write:")
+        print(f"  shortcut : {p['lnk']}")
+        print(f"  wrapper  : {p['cmd']}")
+        print(f"  icon     : {p['icon']}")
+        print(f"  launching: {p['target']} {' '.join(p['args'])}")
+        print(f"  from     : {p['workdir']}")
+        return
+
+    print(f"Installed {p['lnk']}")
+    print("Double-click it to start Microclaw. Its console window is the server:")
+    print("closing that window stops it.")
+
+
 def run_session(args):
     """Interactive agent loop against a live Micro-Manager instance."""
     # No --safety-config means the per-user default that `microclaw init` writes,
@@ -239,6 +279,20 @@ def main():
     it.add_argument("--force", action="store_true", help="Overwrite an existing file.")
     it.add_argument("--no-edit", action="store_true", help="Don't open an editor.")
 
+    sc = sub.add_parser(
+        "install-shortcut",
+        help="Put a Microclaw launcher on the desktop (Windows).",
+        description=(
+            "Writes a desktop shortcut that runs `microclaw serve` under this "
+            "environment, with the Microclaw icon. It passes no other flags: the "
+            "GUI it opens is loopback-only, under the safety limits in the config "
+            "`microclaw init` wrote."
+        ),
+    )
+    sc.add_argument("--dest", default=None, help="Write to a directory other than the desktop.")
+    sc.add_argument("--dry-run", action="store_true", help="Print what would be written.")
+    sc.add_argument("--remove", action="store_true", help="Delete a previously installed shortcut.")
+
     sv = sub.add_parser(
         "serve",
         help="Serve the interactive web GUI on localhost.",
@@ -276,8 +330,19 @@ def main():
 
     args = parser.parse_args()
 
+    # Before anything that can sys.exit(): a shortcut-spawned console closes the
+    # instant the process does, so a refusal ("safety config unreviewed", "could
+    # not connect") would flash past unread. No-op unless the .cmd wrapper ran.
+    from microclaw.shortcut import pause_on_exit
+
+    pause_on_exit()
+
     if args.command == "init":
         init(args)
+        return
+
+    if args.command == "install-shortcut":
+        install_shortcut(args)
         return
 
     if args.command == "view-history":

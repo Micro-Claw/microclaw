@@ -632,9 +632,9 @@ In code:
 | | Ships | Depends on |
 |---|---|---|
 | v0 | `17-install-spike.py` — **done**, see Spike results | — |
-| v1 | icon in package, browser tab, README header, `derive_icons.py` | — |
-| v2 | `paths.py`, `microclaw init`, `reviewed:` gate, example in package | — |
-| v3 | `microclaw install-shortcut` (Windows only) | v1, **v2**, v0 |
+| v1 | icon in package, browser tab, README header, `derive_icons.py` — **done** | — |
+| v2 | `paths.py`, `microclaw init`, `reviewed:` gate, example in package — **done** | — |
+| v3 | `microclaw install-shortcut` (Windows only) — **done**, unverified on hardware | v1, **v2**, v0 |
 | v4 | `install.bat`, uv dev install, README rewrite | v1–v3 |
 
 v1 and v2 are independent and can land in either order. v3 without v2 ships a

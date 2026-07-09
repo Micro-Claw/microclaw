@@ -97,6 +97,29 @@ parser, so if you pass them they go *before* `serve`:
 
 A browser window opens once the server is accepting connections.
 
+### Desktop shortcut (Windows)
+
+```
+microclaw install-shortcut
+```
+
+Puts a **Microclaw** icon on the desktop that launches the browser GUI — no
+terminal, no flags. The console window it opens *is* the server: it shows the
+connection status and any startup error, and closing it stops Microclaw.
+
+The shortcut runs `serve` and nothing else. It is always loopback-only, and it
+loads the safety limits from the config `microclaw init` wrote — which must say
+`reviewed: true`, or it refuses to start and tells you so.
+
+| Flag | Purpose |
+|---|---|
+| `--dry-run` | Print what would be written, and where, without writing it. |
+| `--remove` | Delete a previously installed shortcut. |
+| `--dest DIR` | Write to a directory other than the desktop. |
+
+Run it again after moving or reinstalling the environment; the shortcut points at
+the `microclaw` it was created from.
+
 The server holds one microscope and one conversation. A turn takes the session
 lock, so a second prompt is refused (HTTP 409) rather than interleaving tool calls
 on the hardware; requests carrying a foreign `Origin` are refused outright, so a
