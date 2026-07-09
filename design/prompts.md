@@ -470,3 +470,21 @@ server runs without it
 All right. Please add the relevant prompts to prompts.md and push to this
 branch. After this I will merge it, and then we can branch off main to
 continue working on v3
+
+----
+
+Have a look at design/15. Please write a new design document building on this
+design/16 that implements v3 (and v4, if it makes sense to do this in one go).
+Include code stubs.
+
+Have a look at the document again. I've left comments for you between < and >
+
+  <Does this affect our ability to write history to file (write_history in
+  _repl and run_session)?>
+
+  <It's probably more important to have a stage movement kill switch than an
+  illumination kill switch. The stage can do physical damage to the sample and
+  the objective.>
+
+Add this session's prompts to design/prompts.md, write the spike, and commit
+and push for testing on windows. Do this on a new branch
