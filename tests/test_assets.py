@@ -37,6 +37,28 @@ def test_icon_carries_every_frame_windows_and_the_readme_need():
     assert not missing, f"{ICON} is missing frames {sorted(missing)}"
 
 
+def test_icon_background_is_transparent():
+    """An opaque background renders as a white card on a dark tab strip.
+
+    Pinned because it is invisible in the source tree and easy to lose in a
+    re-export: check the corners, not just that an alpha channel exists.
+    """
+    with Image.open(io.BytesIO(icon_bytes())) as ico:
+        for size in sorted(ico.ico.sizes()):
+            frame = ico.ico.getimage(size).convert("RGBA")
+            w, h = frame.size
+            corners = [frame.getpixel(p) for p in [(0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)]]
+            assert all(px[3] == 0 for px in corners), f"{size} frame has an opaque corner"
+
+
+def test_readme_png_preserves_transparency():
+    """derive_icons.py must not flatten alpha onto white on the way to PNG."""
+    with Image.open(PNG) as png:
+        rgba = png.convert("RGBA")
+    assert rgba.getpixel((0, 0))[3] == 0
+    assert rgba.getchannel("A").getextrema() == (0, 255)
+
+
 def test_readme_png_is_not_stale():
     """`docs/microclaw-icon.png` must be what derive_icons.py produces today.
 
