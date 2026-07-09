@@ -135,6 +135,18 @@ def test_index_is_self_contained(client):
     assert "--tool-line:" in html               # transcript.css inlined
 
 
+def test_index_links_the_favicon(client):
+    """The icon is binary, so it is a route rather than an inlined asset."""
+    assert '<link rel="icon" href="/favicon.ico"' in client.get("/").text
+
+
+def test_favicon_is_served(client):
+    r = client.get("/favicon.ico")
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "image/x-icon"
+    assert r.content[:4] == b"\x00\x00\x01\x00"      # ICO magic
+
+
 # ---- history ----
 
 def test_history_starts_empty(client):

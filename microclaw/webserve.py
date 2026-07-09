@@ -33,6 +33,7 @@ from fastapi.responses import (
     FileResponse,
     HTMLResponse,
     JSONResponse,
+    Response,
     StreamingResponse,
 )
 from pydantic import BaseModel
@@ -46,7 +47,7 @@ from microclaw.agent import (
     run_agent_iter,
     set_api_key,
 )
-from microclaw.assets import load_page
+from microclaw.assets import icon_bytes, load_page
 from microclaw.config import load_safety_config
 from microclaw.controller import MicroscopeController
 from microclaw.safety import SafetyGuard, SafetyViolation
@@ -172,6 +173,7 @@ def build_app(session) -> FastAPI:
 
     app = FastAPI(title="Microclaw")
     page = load_page("serve.html")
+    icon = icon_bytes()
 
     @app.middleware("http")
     async def block_cross_origin(request: Request, call_next):
@@ -190,6 +192,12 @@ def build_app(session) -> FastAPI:
     @app.get("/", response_class=HTMLResponse)
     async def index():
         return page
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    async def favicon():
+        # Read once at startup, not per request; the file cannot change while
+        # the process lives. `image/x-icon` is what every browser expects here.
+        return Response(icon, media_type="image/x-icon")
 
     @app.get("/api/history")
     async def get_history():

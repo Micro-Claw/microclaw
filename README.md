@@ -1,6 +1,11 @@
+<img src="docs/microclaw-icon.png" alt="" width="120" align="left" hspace="16" vspace="4">
+
 # Microclaw
 
 An AI agent for [Micro-Manager](https://micro-manager.org) fluorescence microscopy control. Describe your acquisition protocol in plain language; Microclaw translates it into Micro-Manager tool calls while the GUI responds in real time.
+
+<br clear="left">
+
 
 > [!CAUTION]
 > The hardware safety features are not comprehensive. Always be mindful of what your microscope is doing. Use at your own risk.
