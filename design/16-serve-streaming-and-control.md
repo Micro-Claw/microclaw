@@ -15,12 +15,12 @@ Server-Sent Events **on the POST**, not on a GET, and renders them as they land.
 
 **v4** is what the generator makes cheap: a **Stop** button (cooperative cancel
 at round and tool boundaries), a **model picker**, and **artifact links** for the
-files tools write. Three of the four v4 items are small. The fourth — an
-always-live **hardware halt** that stops the stage and then shutters
-illumination — is the only thing in either increment that touches hardware from
-outside the agent loop, and I recommend **not shipping it until a spike settles
-whether two threads may have overlapping calls in flight on the ZMQ bridge**
-(§6). Everything else is safe to build now.
+files tools write. A fourth item — an always-live **hardware halt** that stops the
+stage and then shutters illumination — was specified, spiked twice, and is now
+**cancelled**: pyjavaz holds one lock across every bridge round trip, so a halt
+request *queues behind the tool call it means to interrupt* instead of preempting
+it (§6). It would have looked like a working kill switch and done nothing. The
+other three are safe to build now.
 
 Ship v3 and v4 together. They are not independent: you cannot cancel a turn you
 cannot observe, and the interrupt path forces a correctness question — what
@@ -536,7 +536,13 @@ feature with a different risk profile. §6.
 
 ---
 
-## 6. v4b — Hardware kill switch (do not ship yet)
+## 6. v4b — Hardware kill switch (CANCELLED — see "Verdict" below)
+
+> **Resolution.** pyjavaz serializes every bridge call behind one lock, so a halt
+> request queues behind the tool call it is trying to interrupt rather than
+> preempting it. `/api/halt` cannot work. This section is kept in full because
+> the reasoning that got here — and the two spike runs that nearly gave the wrong
+> answer twice — are the useful part.
 
 Stop is cooperative: it waits for the running tool. The tempting companion is an
 always-live button that reaches past the agent loop and halts hardware
@@ -610,6 +616,14 @@ does neither, the failure mode is a silently mismatched reply on a hardware
 call — the worst class of bug this project can have, and a spectacular one to
 introduce in the name of safety.
 
+But run 2 (below) surfaced the *other* horn of that fork, which this section
+originally missed. **If pyjavaz serializes instead — one shared socket behind a
+lock — the halt never desyncs anything, and is equally useless**: it blocks until
+the in-flight tool call finishes, then fires at an idle stage. A button that
+cannot preempt is not a kill switch. Both branches of "how does pyjavaz handle
+concurrency" therefore kill `/api/halt`; only genuinely concurrent, correctly
+demultiplexed calls save it.
+
 **3. Software cannot beat physics, and the UI must not imply it can.** The path
 is browser → uvicorn → threadpool → ZMQ → Java → serial → controller. That is
 tens to hundreds of milliseconds on a good day. A fast stage covers real distance
@@ -657,6 +671,112 @@ One incidental signal from run 1 worth keeping: the readback after a pure-X move
 was `y = 256.005`, i.e. 5 nm of noise. That is real hardware, not the demo
 config. A stage that crosses 200 µm in under 200 ms is simply fast.
 
+### Run 2 — a real signal the spike could not read
+
+Run 2 fixed both bugs and came back `INCONC=2`. The move was 2000 µm in
+**213.8 ms** (9.35 mm/s) — well clear of the 150 ms floor, so this stage *is*
+long enough to halt. And yet `device_busy('XY')` was **never True from the halt
+thread**, across a 427 ms poll window on a 214 ms move. The stage travelled the
+full 1999.99 µm.
+
+That is not nothing. Something consumed the entire window, and there are exactly
+two explanations — which point in opposite directions:
+
+**(A) The bridge serialized the halt thread.** Its first call —
+`get_version_info()`, issued before the poll loop — blocked behind the main
+thread's in-flight `set_xy_position` / `wait_for_device` and did not return until
+the move was over. By the time it polled, the stage was idle.
+
+**(B) `device_busy()` never reports True on this adapter.** The halt thread ran
+concurrently the whole time, polling a signal that is always False.
+
+**If (A), `/api/halt` is dead on arrival** — and not because of a desync risk,
+which is the failure mode §6 was written to worry about. It is worse and duller
+than that: a halt request would *queue behind the very tool call it is trying to
+interrupt*. It could never preempt a move, only be delivered after it. That makes
+it exactly the cooperative Stop of §5 wearing a scarier label, which is the one
+thing this document has said from the start we must not ship.
+
+If (B), the trigger is broken and the concurrency question is still open.
+
+Run 2 recorded nothing that separates them, because it never timed its own calls.
+But we do not need a third run to decide: **the answer is (A), and it is readable
+in pyjavaz's source.**
+
+### Resolved from source: the bridge serializes every call
+
+`pyjavaz/bridge.py`:
+
+```python
+self._communication_lock = threading.Lock()          # Bridge.__init__, ~line 300
+
+def send_and_receive(self, message, timeout=None, give_up_condition=None):
+    """Send a message over the main socket"""
+    with self._communication_lock:                    # ~line 410
+        ...                                           # every return is inside
+```
+
+Every Java method call — `_JavaObjectShadow._send_and_receive` → `Bridge.
+send_and_receive` — takes that lock and holds it for the **entire** request/reply
+exchange. There is one `Bridge` per port (`Bridge._cached_bridges_by_port`, the
+same cache CLAUDE.md and design/12 warn about), so the lock is effectively
+process-wide.
+
+The consequence is decisive. `core.wait_for_device(xy_label)` is a *single Java
+call that blocks in Java until the device stops moving*. For its whole 214 ms it
+holds `_communication_lock`. Any other thread calling anything on the core —
+`get_version_info()`, `device_busy()`, `stop()` — blocks at the `with` statement
+until the move finishes. That is precisely run 2's observation: the halt thread's
+first call did not return until the stage was already parked, so `device_busy()`
+was never going to be True and `stop()` was always going to hit an idle stage.
+
+This also explains why design/11b Spike C passed. A hook calling `ctrl.core` from
+an acquisition worker thread works fine — those calls are *sequential* with the
+main thread's, never overlapping. "Not thread-affine" was true and, exactly as
+§6 suspected, not the property a kill switch needs.
+
+### Verdict: never build `/api/halt`
+
+**A halt request cannot preempt an in-flight tool call on this architecture. It
+queues behind it.** The button would block for the duration of the very move it
+is meant to interrupt, then shutter and stop an idle stage — and it would do this
+*silently*, presenting as a working control. That is the exact failure §6 opened
+by naming: a kill switch the operator reaches for instead of the hardware, that
+does nothing.
+
+There is no fix short of a second bridge on a second port (a whole parallel
+`Core`, with its own connection to the same Java process and no guarantee the
+MMCore device layer tolerates the concurrent access either), or moving the halt
+into the Java side entirely. Neither is worth it for a button whose honest job
+description is "abort a long slow wrong move" — a job the cooperative Stop of §5
+already does, at the next tool boundary, without pretending to be an E-stop.
+
+So: **`/api/halt` is cancelled.** v4b is closed, not deferred. The answer to "the
+stage must halt *now*" is, and remains, the hardware E-stop, the stage
+controller's limit switches, and correct bounds in `safety_config.yaml` checked
+*before* the move by `check_xy` / `check_z`. The `finally` in `serve()` still
+shutters illumination on exit. Ship §5's Stop, and label it Stop.
+
+**A general rule for `serve` falls out of this**, worth writing down before
+someone rediscovers it the hard way: *no HTTP endpoint may touch `ctrl.core`
+while a turn is running.* It will not race — the lock makes that impossible — it
+will simply **block until the turn's current tool call completes**, holding a
+threadpool worker and appearing to hang. Every endpoint in v3/v4 respects this by
+construction: `/api/history`, `/api/prompt`, `/api/stop`, `/api/model`,
+`/api/key` and `/api/artifact` touch the history, a `threading.Event`, the
+filesystem, or the credential store — never the core. The teardown `shutter_all`
+in `serve()` is safe because uvicorn has already stopped. Keep it that way.
+
+### What the spike is still for
+
+The concurrency question is answered, so run 3 is no longer discovery — it is
+confirmation, and it is cheap. Worth running once to (a) see the serialization in
+the timing numbers rather than only in the source, and (b) settle whether
+`core.stop()` on this rig's adapter halts a move *at all*, which is the one fact
+`/api/halt`'s cancellation leaves unresolved and which a future in-loop halt (a
+`cancel` check between the tool's own sub-steps, inside `move_stage_xy`) would
+need. Do not gate anything on it.
+
 ### Proposal
 
 `design/16-halt-concurrency-spike.py` (rewritten after run 1), to be run manually
@@ -673,32 +793,35 @@ on the Windows lab machine with a real stage. It now measures before it acts:
    `named_stages` entry while **idle** — does the adapter even accept the call?
    *Run 1 answered this much: `stop('XY')` and `stop('Z')` both return without
    raising.* That is necessary and nowhere near sufficient; an adapter can accept
-   Stop and ignore it, which is step 2.
-2. Start a long `set_xy_position` + `wait_for_device` on the main thread. From a
-   second thread, **poll `device_busy()` until the stage is confirmed moving**,
-   then call `core.stop(xy_label)` and `guard.shutter_all(core)`. Assert the move
-   was cut short, that `wait_for_device` unblocks, and that both threads got
-   correct, non-interleaved replies. If `device_busy()` never went true, report
-   `INCONC` and demand a longer travel — never `FAIL`.
-3. Repeat with a running acquisition instead of a stage move, which is the case
+   Stop and ignore it, which is step 3b.
+2. **Baseline an idle bridge round trip** (median of 20 `get_version_info()`
+   calls), so a blocked call is recognizable when we see one. And check
+   `device_busy()` *single-threaded* — issue the move, poll from the same thread —
+   before any test is allowed to depend on it.
+3. Start the long move on the main thread. From a second thread:
+   * **3a — time when its first bridge call returns**, relative to the move's
+     start. `≈ baseline` ⇒ concurrent. `≈ move duration` ⇒ serialized, and
+     `/api/halt` is over. This is the decisive test; 3b and 3c are downstream.
+   * **3b — call `core.stop(xy_label)`** on `device_busy()` if step 2 proved it
+     usable, else on a timer at 30 % of the *measured* move. Assert the travel was
+     cut short and `wait_for_device` unblocked.
+   * **3c — assert both threads got correctly-shaped, non-interleaved replies.**
+     Vacuous if 3a says serialized; a serialized bridge cannot cross replies.
+4. Repeat with a running acquisition instead of a stage move, which is the case
    Spike C covered for *reads* but not for concurrent *writes*.
 
-The `device_busy()` poll in step 2 is not incidental: it runs on the halt thread
-while the main thread is blocked in `wait_for_device()`, so it *is* the
-concurrent bridge traffic that step 2's desync check is looking for.
+Every step reports `INCONC` rather than `PASS`/`FAIL` when its premise did not
+hold. Run 2 exists as a reminder of why: it is far easier to build a test that
+cannot fail than one that can answer.
 
 Fold the findings back into this document before writing the endpoint.
 
-**Until the spike passes — and as of run 1 it has not even run** — ship Stop and
-the rest of v4; the physical E-stop and the guard's bounds checks remain the
-answer to "the stage must halt *now*", and the `finally` in `serve()` still
-shutters on Ctrl-C. An `INCONC` run leaves `/api/halt` exactly as unbuilt as a
-`FAIL` does; the only thing that authorizes building it is `PASS` on both tests
-with `busy_at_stop` true. If the spike shows the bridge serializes concurrent
-calls safely, `/api/halt` is straightforward. If it shows it does not, the honest
-fallback is a flag the generator honours at the next tool boundary — which is
-just Stop, does not halt anything mid-move, and should not be dressed up as a
-kill switch.
+*(Written before the source resolved this. Kept because the reasoning stands, and
+because the conclusion it reached — "don't build it on reasoning alone" — is what
+sent us to look.)* Ship Stop and the rest of v4; the physical E-stop and the
+guard's bounds checks remain the answer to "the stage must halt *now*", and the
+`finally` in `serve()` still shutters on Ctrl-C. An `INCONC` run leaves
+`/api/halt` exactly as unbuilt as a `FAIL` does.
 
 One consequence worth noting either way: a stopped move makes `wait_for_device`
 return early, and `move_stage_xy` already reports requested vs. achieved position
@@ -875,9 +998,10 @@ SSE reader.
    orphaned-`tool_use` test lands here.
 4. **v4c + v4d — model picker, artifacts.** Independent of each other and of
    Stop; either can slip.
-5. **v4b — hardware halt.** Gated on the `core.stop()` probe and the concurrency
-   spike (§6). Stage first, illumination second. May never ship, and Stop is a
-   complete feature without it.
+5. ~~**v4b — hardware halt.**~~ **Cancelled** (§6): pyjavaz serializes bridge
+   calls, so the halt can never preempt a running tool call. Stop is a complete
+   feature without it. Run the spike once more if you want the serialization
+   confirmed in timing numbers, but nothing is gated on it.
 
 Out of scope, in rough order of how much I want them: multi-tab fan-out over an
 `asyncio.Queue`; streaming in the terminal REPL (two lines once §2 lands);

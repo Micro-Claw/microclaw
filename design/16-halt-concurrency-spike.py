@@ -1,6 +1,19 @@
 #!/usr/bin/env python
 """Spike: can we halt the stage from a second thread while a move is in flight?
 
+>>> ANSWERED, FROM SOURCE: NO. pyjavaz's Bridge.send_and_receive() holds a single
+    self._communication_lock across the whole request/reply exchange, and there is
+    one Bridge per port. core.wait_for_device() is one Java call that blocks in
+    Java for the move's duration -- holding that lock the entire time. A second
+    thread calling stop() blocks at the `with` until the move finishes, then
+    stops an idle stage. /api/halt is CANCELLED (design/16 §6).
+
+    This spike is now CONFIRMATION, not discovery. Nothing is gated on it. Run it
+    to (a) see the serialization in timing numbers rather than only in source, and
+    (b) settle whether core.stop() halts a live move on this rig's adapter at all
+    -- the one fact the cancellation leaves open, and which a future in-loop halt
+    would need. Expect 3a to FAIL (serialized); that is the confirmation.
+
 Informs design/16 §6 (v4b hardware halt). `microclaw serve` wants an always-live
 "Halt" button that calls core.stop() on the stage devices and then shutters
 illumination, from the web server's threadpool, WHILE a tool call is blocked in
@@ -32,9 +45,23 @@ and reported two FAILs that were both artifacts of the spike itself:
     that the bridge returns for an exact 456.0 position. That reported a reply
     desync where the replies were in fact perfectly correct.
 
-So this version never guesses. It MEASURES the move first, refuses to proceed if
-the move is too short to halt, and fires stop() on device_busy() rather than on a
-timer -- then reports INCONC, not FAIL, when it failed to test the thing.
+So run 2 never guessed: it measured the move (214 ms, comfortably haltable) and
+fired stop() on device_busy(). It came back INCONC on both tests -- device_busy()
+was never True from the halt thread across a 427 ms poll window. That is a real
+signal, and run 2 could not read it, because two very different things produce it:
+
+  (A) The bridge SERIALIZED the halt thread behind the main thread's in-flight
+      call, so its first request didn't return until the move was already over.
+      If so, /api/halt can never preempt anything -- it queues behind the very
+      tool call it is trying to interrupt.
+  (B) device_busy() simply never reports True on this adapter, and the halt
+      thread was running concurrently the whole time, polling a dead signal.
+
+(A) kills the feature. (B) is a broken trigger in the spike. So this version
+baselines an idle round trip, checks device_busy() single-threaded before relying
+on it, and -- the decisive datum -- TIMES when the halt thread's first bridge call
+returns relative to the move. Latency ~= baseline means concurrent; latency ~=
+move duration means serialized.
 
 Run this MANUALLY on the Windows lab machine with Micro-Manager OPEN and the
 pycro-manager ZMQ server enabled:
@@ -109,31 +136,37 @@ def summarize() -> None:
     print("  " + "  ".join(f"{k}={v}" for k, v in sorted(counts.items())))
     print("=" * 68)
     print(
-        "\nInterpretation:\n"
-        "  Test 2 (stop halts the move) and Test 3 (no reply desync) must BOTH\n"
-        "  pass for /api/halt to be worth building. Both are only MEANINGFUL if\n"
-        "  Test 2a confirms the stop() call actually overlapped a live move --\n"
-        "  a move that finishes first tests nothing, in either test.\n"
+        "\nInterpretation: read 3a FIRST. Everything else is downstream of it.\n"
         "\n"
-        "  INCONC -> the run answered nothing. Read the detail line; it says what\n"
-        "            to change. Do not read an INCONC as evidence either way.\n"
-        "  2 FAIL -> this stage's adapter does not implement Stop, or ignores it.\n"
-        "            A Halt button here would return 'stopped' and do nothing.\n"
-        "            Do NOT ship it for this rig; grey it out, say why.\n"
-        "  3 FAIL -> the bridge lets concurrent calls interleave replies. Halting\n"
-        "            mid-move can corrupt the in-flight tool call's result. Do NOT\n"
-        "            ship /api/halt at all; the fallback is the cooperative Stop\n"
-        "            (design/16 §5), which is not a kill switch and must not be\n"
-        "            labelled as one.\n"
-        "  BOTH   -> build /api/halt: stop() the stages, then shutter_all().\n"
+        "  3a FAIL (serialized) -> the halt thread's request queued behind the\n"
+        "            in-flight move instead of preempting it. /api/halt cannot\n"
+        "            interrupt a running tool call on this bridge AT ALL; it is the\n"
+        "            cooperative Stop (design/16 §5) with a scarier label. Do not\n"
+        "            build it. 3b and 3c are moot -- a serialized bridge trivially\n"
+        "            cannot cross replies, and stop() never met a moving stage.\n"
+        "  3a PASS (concurrent) -> the bridge overlaps calls from two threads. Now\n"
+        "            3b and 3c both have to pass:\n"
+        "  3b FAIL -> this stage's adapter accepts Stop and ignores it. A Halt\n"
+        "            button here would report success and do nothing. Worse than\n"
+        "            no button: the operator reaches for it instead of the E-stop.\n"
+        "  3c FAIL -> concurrent calls interleave replies. Halting mid-move can\n"
+        "            corrupt the in-flight tool call's result -- the worst class of\n"
+        "            bug this project can have, introduced in the name of safety.\n"
+        "  ALL PASS -> build /api/halt: stop() the stages, then shutter_all().\n"
         "            Label it 'Halt', never 'Emergency Stop'. Software cannot beat\n"
         "            physics; the E-stop and the guard's bounds checks remain the\n"
         "            real protection.\n"
         "\n"
-        "  Note Test 2a's measured move duration. If a full-travel move completes\n"
-        "  in less time than a browser->uvicorn->ZMQ->Java round trip (~tens of\n"
-        "  ms), then a software Halt cannot catch this stage no matter what the\n"
-        "  other tests say. That is a finding, not a test failure.\n")
+        "  INCONC -> the run answered nothing. Read the detail line; it says what\n"
+        "            to change. Do not read an INCONC as evidence either way.\n"
+        "  2c FAIL -> device_busy() is useless on this adapter, so 3b fired stop()\n"
+        "            on a timer instead. That is sound (the timer is derived from\n"
+        "            the MEASURED move), but 3b's overlap is inferred, not proven.\n"
+        "\n"
+        "  Note 2a's measured move duration and 2b's baseline round trip. If a\n"
+        "  full-travel move completes in less time than a browser->uvicorn->ZMQ->\n"
+        "  Java round trip, a software Halt cannot catch this stage no matter what\n"
+        "  any other test says. That is a finding, not a test failure.\n")
 
 
 def _is_number(v) -> bool:
@@ -259,32 +292,114 @@ def main() -> None:
         summarize()
         return
 
-    # 2b & 3. Halt a move that is verifiably still running --------------------
-    # The halt thread does not sleep a guessed interval. It waits for the move to
-    # start, polls device_busy() until the stage is actually moving, and only
-    # then calls stop(). That poll is itself concurrent bridge traffic against
-    # the main thread's blocking wait_for_device() -- which is exactly the
-    # overlap Test 3 exists to detect.
+    # 2b. BASELINE — what does one idle bridge round trip cost? ---------------
+    # Run 2's halt thread never saw device_busy() go True across a 427 ms window
+    # on a 214 ms move. Two explanations, and it recorded nothing to tell them
+    # apart: either (A) the bridge SERIALIZED the halt thread behind the main
+    # thread's in-flight call, so its first request didn't return until the move
+    # was already over, or (B) device_busy() simply never reports True on this
+    # adapter. Both are decisive, and they point opposite ways. Baseline the
+    # idle round-trip time so we can recognize a blocked call when we see one.
+    try:
+        samples = []
+        for _ in range(20):
+            t = time.perf_counter()
+            core.get_version_info()
+            samples.append(time.perf_counter() - t)
+        samples.sort()
+        rtt_s = samples[len(samples) // 2]
+    except Exception as exc:
+        record("FAIL", "2b. baseline RTT probe raised", f"{type(exc).__name__}: {exc}")
+        summarize()
+        return
+    record("INFO", "2b. baseline bridge round trip (idle)",
+           f"median get_version_info() = {rtt_s * 1e3:.2f} ms over 20 calls")
+
+    # 2c. Is device_busy() usable AT ALL? Single-threaded, no concurrency. -----
+    # Also reveals whether set_xy_position() blocks: if it returns only after the
+    # move is done, then wait_for_device() is a no-op and the call a halt has to
+    # interleave with is set_xy_position() itself.
+    busy_usable = False
+    setpos_blocks = False
+    try:
+        t = time.perf_counter()
+        core.set_xy_position(target_x, y0)
+        setpos_s = time.perf_counter() - t
+        busy_seen, t_busy_end = False, None
+        deadline = time.perf_counter() + move_s * 2
+        while time.perf_counter() < deadline:
+            if core.device_busy(xy_label):
+                busy_seen = True
+            elif busy_seen:
+                t_busy_end = time.perf_counter()
+                break
+            time.sleep(0.002)
+        core.wait_for_device(xy_label)
+        core.set_xy_position(x0, y0)
+        core.wait_for_device(xy_label)
+    except Exception as exc:
+        record("FAIL", "2c. device_busy probe raised", f"{type(exc).__name__}: {exc}")
+        summarize()
+        return
+
+    setpos_blocks = setpos_s > 0.5 * move_s
+    busy_usable = busy_seen
+    if busy_seen:
+        record("PASS", "2c. device_busy() reports a live move (single-threaded)",
+               f"set_xy_position() returned in {setpos_s * 1e3:.1f} ms; "
+               f"device_busy() was True from the SAME thread"
+               + (f" for ~{(t_busy_end - t) * 1e3:.0f} ms" if t_busy_end else ""))
+    else:
+        record("FAIL", "2c. device_busy() NEVER reports a live move",
+               f"set_xy_position() returned in {setpos_s * 1e3:.1f} ms and "
+               f"device_busy({xy_label!r}) stayed False throughout, on ONE thread "
+               f"with no concurrency.\n         This adapter cannot tell us when "
+               f"the stage is moving. The halt trigger falls back to a timer at "
+               f"30% of the measured move.")
+    if setpos_blocks:
+        record("INFO", "2c. set_xy_position() BLOCKS for the move duration",
+               f"{setpos_s * 1e3:.1f} ms of a {move_s * 1e3:.1f} ms move. The call a "
+               f"halt must interleave with is set_xy_position(), not wait_for_device().")
+
+    # 3. Halt a live move, and TIME the halt thread's first call ---------------
+    # The halt thread stamps when its first bridge call RETURNS, relative to the
+    # move's start. That single number separates (A) from (B):
+    #   first-call latency ~= baseline RTT  -> the bridge ran us concurrently
+    #   first-call latency ~= move duration -> the bridge SERIALIZED us behind it
+    # If the bridge serializes, /api/halt cannot preempt anything: the halt
+    # request simply queues behind the tool call it is trying to interrupt, which
+    # makes it precisely the cooperative Stop of design/16 §5, wearing a hat.
     box: dict = {}
     move_started = threading.Event()
+    trigger = "device_busy()" if busy_usable else f"timer at {0.3 * move_s * 1e3:.0f} ms"
 
     def halter() -> None:
         box["halt_tid"] = threading.get_ident()
         move_started.wait(timeout=5.0)
+        t0 = box["t0"]
         try:
-            # A read first, with a reply recognizable by shape. A desynced bridge
-            # hands back the main thread's reply (a number) instead of a string.
+            # First bridge call from this thread. Its RETURN time is the datum.
+            # A desynced bridge would also hand back a number instead of a string.
             box["halt_version"] = core.get_version_info()
+            box["first_call_return_s"] = time.perf_counter() - t0
 
-            deadline = time.perf_counter() + move_s * 2
-            while time.perf_counter() < deadline:
-                if core.device_busy(xy_label):
-                    box["busy_at_stop"] = True
-                    break
-                time.sleep(0.002)
+            if busy_usable:
+                deadline = t0 + move_s * 2
+                while time.perf_counter() < deadline:
+                    if core.device_busy(xy_label):
+                        box["busy_at_stop"] = True
+                        break
+                    time.sleep(0.002)
+                else:
+                    box["busy_at_stop"] = False
             else:
-                box["busy_at_stop"] = False     # never caught it moving
+                # device_busy is useless here; fire on the MEASURED move, not a
+                # guess. Anything left of the travel means we overlapped.
+                while time.perf_counter() - t0 < 0.3 * move_s:
+                    time.sleep(0.002)
+                box["busy_at_stop"] = None      # unknown by construction
 
+            box["t_stop_call"] = time.perf_counter() - t0
             t = time.perf_counter()
             core.stop(xy_label)
             box["stop_wall_s"] = time.perf_counter() - t
@@ -296,11 +411,12 @@ def main() -> None:
 
     thread = threading.Thread(target=halter, name="halt-button", daemon=True)
     try:
-        record("INFO", "2b. starting move to halt",
+        record("INFO", "3a. starting move to halt",
                f"({x0:.2f}, {y0:.2f}) -> ({target_x:.2f}, {y0:.2f}) um; "
-               f"stop() fires as soon as device_busy() is True")
+               f"stop() fires on {trigger}")
         thread.start()
         t_start = time.perf_counter()
+        box["t0"] = t_start
         move_started.set()
         core.set_xy_position(target_x, y0)
         core.wait_for_device(xy_label)          # the blocking call being interrupted
@@ -309,34 +425,67 @@ def main() -> None:
 
         x1, y1 = core.get_x_position(), core.get_y_position()
         travelled = abs(x1 - x0) if _is_number(x1) else float("nan")
-        overlapped = box.get("busy_at_stop") is True
 
-        # ---- Test 2: did stop() halt it? Only askable if we overlapped. -----
+        # ---- Test 3a: did the bridge run us concurrently, or serialize us? --
+        # THE decisive test. Everything else is downstream of it.
+        first_s = box.get("first_call_return_s")
+        serialized = None
         if box.get("halt_exc"):
-            record("FAIL", "2c. stop() from the second thread raised",
-                   box["halt_exc"])
+            record("FAIL", "3a. halt thread raised", box["halt_exc"])
+        elif first_s is None:
+            record("INCONC", "3a. halt thread never completed its first call", "")
+        elif first_s > 0.5 * move_s:
+            serialized = True
+            record("FAIL", "3a. the bridge SERIALIZED the halt thread",
+                   f"its first call returned {first_s * 1e3:.1f} ms after the move "
+                   f"started -- a {move_s * 1e3:.1f} ms move, against a "
+                   f"{rtt_s * 1e3:.2f} ms idle round trip.\n         The halt request "
+                   f"queued behind the in-flight move instead of preempting it. "
+                   f"/api/halt CANNOT interrupt a\n         running tool call on this "
+                   f"bridge; it degrades to the cooperative Stop (design/16 §5). "
+                   f"Do not build it.")
+        else:
+            serialized = False
+            record("PASS", "3a. the bridge ran both threads concurrently",
+                   f"halt thread's first call returned {first_s * 1e3:.1f} ms in "
+                   f"(baseline {rtt_s * 1e3:.2f} ms) while the main thread was still "
+                   f"{move_s * 1e3:.0f} ms deep in its move.")
+
+        # ---- Test 3b: did stop() halt it? Meaningless if we never overlapped.
+        overlapped = (serialized is False) and box.get("busy_at_stop") is not False
+        if box.get("halt_exc"):
+            pass                                 # already reported
+        elif serialized:
+            record("INCONC", "3b. stop() could not overlap a live move",
+                   f"the halt thread was queued behind the move (3a), so stop() "
+                   f"necessarily hit an idle stage.\n         travelled "
+                   f"{travelled:.2f}/{args.distance_um:.2f} um says nothing about "
+                   f"whether this adapter honours Stop. Answer 3a first.")
         elif not overlapped:
-            record("INCONC", "2c. stop() never overlapped a live move",
-                   f"device_busy({xy_label!r}) was never True from the halt thread, "
-                   f"so stop() hit an idle stage.\n         travelled "
-                   f"{travelled:.2f}/{args.distance_um:.2f} um means nothing here. "
-                   f"Increase --distance-um.")
+            record("INCONC", "3b. stop() never overlapped a live move",
+                   f"device_busy({xy_label!r}) was never True from the halt thread. "
+                   f"travelled {travelled:.2f}/{args.distance_um:.2f} um "
+                   f"means nothing here. Increase --distance-um.")
         elif travelled < 0.9 * args.distance_um:
-            record("PASS", "2c. stop() HALTED a verifiably live move",
+            record("PASS", "3b. stop() HALTED a verifiably live move",
                    f"travelled {travelled:.2f} um of {args.distance_um:.2f} um; "
                    f"wait_for_device returned after {halted_move_s * 1e3:.1f} ms "
-                   f"(unhalted: {move_s * 1e3:.1f} ms); "
-                   f"stop() call took {box.get('stop_wall_s', float('nan')) * 1e3:.1f} ms")
+                   f"(unhalted: {move_s * 1e3:.1f} ms); stop() issued at t+"
+                   f"{box.get('t_stop_call', float('nan')) * 1e3:.0f} ms and took "
+                   f"{box.get('stop_wall_s', float('nan')) * 1e3:.1f} ms")
         else:
-            record("FAIL", "2c. stop() did NOT halt a live move",
-                   f"the stage was confirmed busy when stop() was called, and it "
-                   f"still travelled the full {travelled:.2f} um.\n         This "
-                   f"adapter accepts Stop and ignores it. A Halt button on this rig "
-                   f"would report success and do nothing.")
+            record("FAIL", "3b. stop() did NOT halt a live move",
+                   f"stop() was issued at t+{box.get('t_stop_call', 0) * 1e3:.0f} ms "
+                   f"of a {move_s * 1e3:.0f} ms move and the stage still travelled "
+                   f"the full {travelled:.2f} um.\n         This adapter accepts Stop "
+                   f"and ignores it. A Halt button on this rig would report success "
+                   f"and do nothing.")
 
-        # ---- Test 3: did the concurrent calls cross replies? ----------------
+        # ---- Test 3c: did the concurrent calls cross replies? ---------------
         # Every assertion is about SHAPE. A crossed reply is a wrong-typed value,
         # not an exception. See _is_number() for the bug this used to have.
+        # Only meaningful if 3a says the calls actually overlapped: a serialized
+        # bridge trivially cannot cross replies, so a PASS here would be vacuous.
         problems = []
         hv = box.get("halt_version")
         if not isinstance(hv, str) or "MMCore" not in hv:
@@ -345,8 +494,6 @@ def main() -> None:
             problems.append(f"get_x/y_position() -> {x1!r}, {y1!r} (want numbers)")
         elif math.isnan(x1) or math.isnan(y1):
             problems.append("position readback is NaN")
-        if box.get("busy_at_stop") not in (True, False):
-            problems.append(f"device_busy() -> {box.get('busy_at_stop')!r} (want bool)")
         try:
             after = core.get_version_info()      # bridge still sane afterwards?
             if not isinstance(after, str) or "MMCore" not in after:
@@ -355,19 +502,21 @@ def main() -> None:
             problems.append(f"post-halt call raised {type(exc).__name__}: {exc}")
 
         if problems:
-            record("FAIL", "3. concurrent calls desynced the ZMQ bridge",
+            record("FAIL", "3c. concurrent calls desynced the ZMQ bridge",
                    "; ".join(problems) + "\n"
                    "         Replies crossed between threads. Do NOT ship /api/halt.")
-        elif not overlapped:
-            record("INCONC", "3. no concurrency actually occurred",
-                   "the halt thread never caught the stage moving, so its calls did "
-                   "not overlap\n         the main thread's. This says nothing about "
-                   "the bridge. Increase --distance-um.")
+        elif serialized:
+            record("INCONC", "3c. desync untestable: the bridge serialized us",
+                   "a serialized bridge cannot cross replies, so this proves nothing "
+                   "about\n         concurrent safety. It also makes the question "
+                   "moot -- see 3a.")
+        elif serialized is False:
+            record("PASS", "3c. no reply desync under verified concurrency",
+                   f"the halt thread's calls overlapped the main thread's blocking "
+                   f"move;\n         every reply had the right shape and the bridge "
+                   f"was healthy after.")
         else:
-            record("PASS", "3. no reply desync under verified concurrency",
-                   f"halt thread polled device_busy() and called stop() while the "
-                   f"main thread was blocked in wait_for_device();\n         every "
-                   f"reply had the right shape and the bridge was healthy after.")
+            record("INCONC", "3c. desync untestable: no concurrency established", "")
 
         if guard is not None:
             sh = box.get("shuttered")
