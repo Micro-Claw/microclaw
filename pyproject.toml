@@ -51,4 +51,5 @@ microclaw = [
     "transcript.css",
     "transcript.js",
     "favicon.ico",
+    "safety_config.example.yaml",
 ]

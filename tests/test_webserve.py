@@ -16,7 +16,7 @@ import pytest
 
 from fastapi.testclient import TestClient
 
-from microclaw import credentials, webserve
+from microclaw import config, credentials, webserve
 from microclaw.webserve import build_app, serve
 
 
@@ -617,6 +617,21 @@ def test_serve_refuses_a_non_local_bind_without_allow_remote():
         serve(_args())
 
 
-def test_serve_requires_a_safety_config():
-    with pytest.raises(SystemExit, match="--safety-config"):
+def test_serve_without_a_safety_config_falls_back_to_the_per_user_default(tmp_path, monkeypatch):
+    """No --safety-config is what a desktop shortcut passes (design/17 v3).
+
+    It means "the file `microclaw init` wrote", not "no limits". Absent, serve
+    must refuse and point at `microclaw init` rather than start unguarded.
+    """
+    missing = tmp_path / "safety_config.yaml"
+    monkeypatch.setattr(config, "default_safety_config", lambda: missing)
+    with pytest.raises(SystemExit, match="microclaw init"):
         serve(_args(host="127.0.0.1", safety_config=None))
+
+
+def test_serve_refuses_an_unreviewed_safety_config(tmp_path):
+    """The gate a double-click cannot get past without a human editing a line."""
+    cfg = tmp_path / "safety_config.yaml"
+    cfg.write_text("reviewed: false\nstage: {x_min: -1.0, x_max: 1.0}\n", encoding="utf-8")
+    with pytest.raises(SystemExit, match="has not been reviewed"):
+        serve(_args(host="127.0.0.1", safety_config=str(cfg)))

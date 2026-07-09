@@ -21,6 +21,8 @@ import re
 import stat
 from pathlib import Path
 
+from microclaw.paths import user_config_dir
+
 ENV_VAR = "ANTHROPIC_API_KEY"
 
 # keyring service/username pair; arbitrary, but must stay stable across versions
@@ -34,11 +36,7 @@ _TOML_RE = re.compile(r'^\s*anthropic_api_key\s*=\s*"(.*)"\s*$', re.M)
 
 def config_path() -> Path:
     """User-level config file — follows the user, not the working directory."""
-    if os.name == "nt":
-        base = Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming")
-    else:
-        base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
-    return base / "microclaw" / "config.toml"
+    return user_config_dir() / "config.toml"
 
 
 def _keyring():

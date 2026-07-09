@@ -37,15 +37,22 @@ pip install -e ".[test]"          # add ,serve for the browser GUI
 ### Run
 
 ```bash
-cp safety_config.example.yaml safety_config.yaml   # then edit for YOUR rig
-microclaw --safety-config safety_config.yaml
+microclaw init     # writes this machine's safety limits, and opens them for editing
+microclaw          # starts a session once you've reviewed them
 ```
+
+`microclaw init` creates a per-user `safety_config.yaml` (in `~/.config/microclaw/`,
+or `%APPDATA%\microclaw\` on Windows) and opens it. Its limits are the example's —
+fictional, matching no real hardware — so Microclaw **refuses to start** until you
+have edited them for your instrument and changed `reviewed: false` to
+`reviewed: true` at the top. Pass `--safety-config PATH` to use a file somewhere
+else; the same rule applies to it.
 
 ### CLI options
 
 | Flag | Default | Purpose |
 |---|---|---|
-| `--safety-config PATH` | *(required)* | Hardware-limits file enforced before every tool call. Copy `safety_config.example.yaml` and edit for your rig — the example's limits match no real hardware. |
+| `--safety-config PATH` | the file `microclaw init` wrote | Hardware-limits file enforced before every tool call. Must carry `reviewed: true`, whether it's the default or an explicit path. |
 | `--port N` | `4827` | ZMQ port to reach the running Micro-Manager instance. Match the port set in **Tools → Options**. |
 | `--model ID` | `$MICROCLAW_MODEL` or `claude-opus-4-8` | Anthropic model id. The `MICROCLAW_MODEL` environment variable overrides the built-in default; `--model` overrides both. |
 | `--profile` / `--no-profile` | off | cProfile the session and print stats on exit. |
@@ -73,11 +80,13 @@ plus a composer:
 
 ```bash
 pip install -e ".[serve]"
-microclaw --safety-config safety_config.yaml serve      # → http://127.0.0.1:8000
+microclaw serve                                  # → http://127.0.0.1:8000
 ```
 
-The session flags (`--safety-config`, `--port`, `--model`, `--save-history`) belong
-to the top-level parser, so they go *before* `serve`.
+Uses the safety config `microclaw init` wrote. The session flags
+(`--safety-config`, `--port`, `--model`, `--save-history`) belong to the top-level
+parser, so if you pass them they go *before* `serve`:
+`microclaw --safety-config other.yaml serve`.
 
 | Flag | Default | Purpose |
 |---|---|---|
@@ -119,7 +128,17 @@ C:\path\to\miniconda3\Scripts\activate.bat microclaw && microclaw --safety-confi
 
 ## Safety configuration
 
-Copy `safety_config.example.yaml` to `safety_config.yaml` and edit it to set this rig's hardware limits. These are enforced before every tool call and cannot be overridden by the AI.
+Run `microclaw init` to write this rig's `safety_config.yaml`, then edit it to set the real hardware limits. These are enforced before every tool call and cannot be overridden by the AI.
+
+The file starts with a gate. Nothing runs until a human has read the limits and flipped it:
+
+```yaml
+# Microclaw REFUSES TO START until you have gone through this file, set each
+# limit for THIS instrument, and changed the line below to `reviewed: true`.
+reviewed: false
+```
+
+The rest sets the limits themselves (the shipped values are examples, not defaults):
 
 ```yaml
 stage:
