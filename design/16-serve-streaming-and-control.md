@@ -891,6 +891,41 @@ for free.
 
 ---
 
+### Confirmed on the rig
+
+Every branch, against a real EMU stage and camera:
+
+* **A running tool always finishes.** Stop pressed 5 s into a 60-frame and a
+  30-frame timelapse; both datasets held every frame. Stop waits, it does not
+  truncate — which is the entire content of the label "Stop after the current
+  step."
+* **Stop before dispatch skips the whole batch.** A three-tool turn
+  (`set_exposure`, `set_channel`, `get_xy_position`) stopped while the model was
+  still composing: all three answered `is_error`, `set_exposure` never called.
+* **Stop mid-batch skips only the remainder.** `run_timelapse` +
+  `get_z_position` + `get_available_channels` in one turn, stopped 5 s in: the
+  timelapse returned a real success, the two undispatched reads returned
+  "Cancelled by the operator." Set equality on the three ids holds, and so does
+  ordering.
+* **The next turn is a conversation the API accepts**, four times over.
+
+That last point validated an assumption nothing in this repo could have caught,
+because every agent test uses a fake client: after a cancel the history ends with
+a `user` message of `tool_result` blocks, and the next prompt appends *another*
+`user` message. **The Messages API accepts consecutive same-role turns.** Had it
+required strict alternation, this design would have 400'd on precisely the path
+it exists to protect.
+
+One gap the runs exposed. A cancel at a *round boundary* — where no tool_use
+needs answering — leaves **no record in the saved history** that a Stop happened
+at all. `cancelled` is a transient toast; what lands on disk is a turn ending in
+a tool result with no assistant reply, indistinguishable from a crash, a browser
+disconnect, or a killed process. The mid-batch case is self-documenting (the
+`is_error` results say so); the round-boundary case is not. For a file that
+doubles as a lab notebook this is worth fixing, but the obvious fix — append a
+synthetic assistant message — changes what the model sees on the next turn, so it
+is left open rather than reflexively patched.
+
 ### Implementation note: where the cancel check lands
 
 `_unwind_cancel` is defensive, not load-bearing. The round-boundary check runs
@@ -1146,10 +1181,10 @@ SSE reader.
    `messages.create` to `messages.stream`.
 2. ~~**v3b — the stream.**~~ **Shipped**, with the `iterate_in_threadpool`
    correction in §3. Confirmed on a real rig.
-3. ~~**v4a — Stop.**~~ **Shipped.** `cancel` event, `_unwind_cancel`,
-   `/api/stop`, button. The orphaned-`tool_use` invariant is tested both as a
-   unit (three-tool batch, set equality on the ids) and end-to-end (the turn
-   after a Stop is a conversation the API accepts).
+3. ~~**v4a — Stop.**~~ **Shipped and confirmed on hardware** (§5). `cancel`
+   event, `_unwind_cancel`, `/api/stop`, button. The orphaned-`tool_use`
+   invariant is tested as a unit (three-tool batch, set equality on the ids),
+   end-to-end against a fake client, and on the rig.
 4. ~~**v4c + v4d — model picker, artifacts.**~~ **Shipped.** `known_models()` is
    fetched once per process and off the event loop — it is a blocking HTTP call
    and `/api/model` runs on page load. `esc` → `escAttr` for the artifact chip's
