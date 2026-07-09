@@ -117,7 +117,18 @@ An AI agent for Micro-Manager fluorescence microscopy control...
 
 **The shortcut.** Windows reads the `.ico` directly — no derived variant needed.
 It does want 16/32/48px frames inside it (taskbar, desktop, alt-tab); spike Q8
-reports which frames the supplied file actually carries.
+confirms all four frames are present.
+
+> **Known and accepted: the 16px frame is illegible.** `favicon.ico` is a
+> photograph, and 16×16 is 256 pixels with no edges left to hold a shape — in a
+> browser tab it reads as a grey-orange smudge rather than a lobster. Verified
+> this is *not* a serving bug: the route returns 200 with a valid ICO, and neither
+> a tighter crop nor a flat silhouette extracted from the red channel survives the
+> downscale. The 32/48px frames — the ones the desktop shortcut renders, which is
+> the icon the install story actually depends on — are fine. Fixing the tab needs
+> a purpose-drawn mark with no sub-pixel features (a bold claw), which is design
+> work, not scripting. Deliberately deferred; do not "fix" it by re-deriving from
+> the photo.
 
 So the only derived artifact is the README's PNG. Pillow — already a hard
 dependency for `image_analysis` — reads ICO and writes PNG (verified, Pillow
