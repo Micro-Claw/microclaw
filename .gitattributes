@@ -1,0 +1,9 @@
+# Batch files are parsed line by line by cmd.exe; a label or `goto` read with a
+# bare LF can be mis-parsed. Force CRLF in the working tree on every platform,
+# so a checkout on Windows always yields a runnable install.bat.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# The icon and derived PNG are binary; never touch their bytes.
+*.ico binary
+*.png binary

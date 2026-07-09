@@ -20,21 +20,61 @@ User (natural language) → AgentLoop (Anthropic API) → ToolRegistry → Safet
 - **Safety**: User-defined `safety_config.yaml` enforced as a hard gate before every hardware call. The AI cannot override these limits.
 - **Backend**: pycro-manager (ZMQ on port 4827). Open Micro-Manager normally; Microclaw connects to the running instance.
 
-## Quick start
+## Install (Windows)
 
-### Prerequisites
+You do not need Python, or a terminal. The installer brings its own.
 
-1. Install [Micro-Manager 2.0](https://micro-manager.org/Download_Micro-Manager_Latest_Release).
-2. Enable the ZMQ server: **Tools → Options → Run pycro-manager server on port 4827**.
-3. Set your `ANTHROPIC_API_KEY` environment variable.
+**1. Install Micro-Manager and turn on its server.**
+Install [Micro-Manager 2.0](https://micro-manager.org/Download_Micro-Manager_Latest_Release),
+open it, and tick **Tools → Options → Run pycro-manager server on port 4827**.
+Nothing can drive your microscope until you do this, and no installer can do it
+for you.
 
-### Install
+**2. Download Microclaw.**
+On this repository's page, click **Code → Download ZIP**, then right-click the
+downloaded file and choose **Extract All**.
+
+**3. Double-click `install.bat`** inside the extracted folder.
+
+It installs everything into `%LOCALAPPDATA%\microclaw` — no administrator rights,
+nothing else on your machine is touched — and puts a **Microclaw** icon on your
+desktop. It takes a few minutes.
+
+> Windows may show a blue **"Windows protected your PC"** banner, because the file
+> came from the internet. Click **More info → Run anyway**.
+
+**4. Edit your safety limits.**
+The installer opens a `safety_config.yaml` for you. Its limits are **examples that
+match no real microscope**, and they are the last thing standing between the AI and
+your hardware. Set each one for your instrument, then change `reviewed: false` to
+`reviewed: true` at the top of the file. Microclaw refuses to start until you do.
+
+**5. Double-click the Microclaw icon.**
+A console window opens — that is the server; closing it stops Microclaw — and a
+browser window follows. It will ask for an Anthropic API key the first time.
+
+Re-running `install.bat` is safe: it upgrades in place and leaves your safety
+limits alone.
+
+### Running it later
+
+The desktop icon is the whole interface. If you'd rather use a terminal, the
+commands are `microclaw serve` for the browser GUI and `microclaw` for the REPL —
+see [CLI options](#cli-options).
+
+## Install from source (developers)
+
+[`uv`](https://docs.astral.sh/uv/) is the supported toolchain; it downloads a
+CPython for you, so nothing needs to be installed first.
 
 ```bash
-pip install -e ".[test]"          # add ,serve for the browser GUI
+uv venv --python 3.12
+uv pip install -e ".[serve,test]"
+uv run pytest
 ```
 
-### Run
+An existing conda environment works fine too — `pip install -e ".[serve,test]"`
+inside it does the same thing. Then:
 
 ```bash
 microclaw init     # writes this machine's safety limits, and opens them for editing
@@ -47,6 +87,21 @@ fictional, matching no real hardware — so Microclaw **refuses to start** until
 have edited them for your instrument and changed `reviewed: false` to
 `reviewed: true` at the top. Pass `--safety-config PATH` to use a file somewhere
 else; the same rule applies to it.
+
+You will also need an `ANTHROPIC_API_KEY`: set it in the environment, or let the
+browser GUI collect and store it (see [Browser GUI](#browser-gui)).
+
+### Where things live
+
+| What | Where |
+|---|---|
+| Safety limits | `%APPDATA%\microclaw\safety_config.yaml` |
+| API key | your OS credential store, else `%APPDATA%\microclaw\config.toml` |
+| The installed program | `%LOCALAPPDATA%\microclaw\env` |
+| Desktop shortcut + its icon | your desktop, and `%LOCALAPPDATA%\microclaw` |
+| Saved conversations | `*_microclaw_history.json`, in the folder Microclaw ran from |
+
+On macOS and Linux, substitute `~/.config/microclaw` and `~/.local/share/microclaw`.
 
 ### CLI options
 
@@ -138,16 +193,6 @@ To swap keys mid-session, click the `key …AA8f` chip in the header. Saving wit
 *Remember on this machine* applies the key to the running process only, so a key
 already in the credential store comes back on the next start — the UI says so when
 that is the case.
-
-## Set up a runnable .bat with the environment variables
-
-Create a `.bat` file containing the following lines, updated to your installation path and API key.
-
-```
-set ANTHROPIC_API_KEY=your-key-here
-cd C:\path\to\microclaw
-C:\path\to\miniconda3\Scripts\activate.bat microclaw && microclaw --safety-config safety_config.yaml
-```
 
 ## Safety configuration
 

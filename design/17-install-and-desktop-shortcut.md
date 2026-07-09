@@ -472,31 +472,35 @@ depends on how the environment was built. A conda env that already exists keeps
 working; `uv pip install -e .` runs happily inside one. Spike Q7 reports whether
 a conda env is active on the lab machine and whether `uv` is already on PATH.
 
-```bat
-:: install.bat — user downloads this one file and double-clicks it.
-@echo off
-setlocal
-set "MC_HOME=%LOCALAPPDATA%\microclaw"
+### Where the code comes from: the repo is private
 
-echo Installing Microclaw. This takes a few minutes and needs no admin rights.
-powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://astral.sh/uv/install.ps1 | iex" || goto :fail
-set "UV=%USERPROFILE%\.local\bin\uv.exe"
+The "download one file, double-click it" story this document opened with assumed
+`install.bat` could fetch the code itself. It cannot. **The repo is private**
+(`https://github.com/zacsimile/microclaw/archive/refs/heads/main.zip` returns 404
+unauthenticated, as do the web and API URLs), so both `git+https://` and an archive
+URL would need a token — and handing a non-technical user a personal access token
+is worse than the problem being solved. `git+https://` was doubly wrong anyway: it
+requires git on the machine, which a novice's box will not have.
 
-"%UV%" venv --python 3.12 "%MC_HOME%\env"                                  || goto :fail
-"%UV%" pip install --python "%MC_HOME%\env\Scripts\python.exe" "microclaw[serve] @ git+https://github.com/zacsimile/microclaw" || goto :fail
+So `install.bat` ships **inside the repo** and installs from the folder it sits in:
 
-"%MC_HOME%\env\Scripts\microclaw.exe" install-shortcut                     || goto :fail
-"%MC_HOME%\env\Scripts\microclaw.exe" init                                 || goto :fail
+1. `%MICROCLAW_SRC%`, if set — a URL or any pip requirement.
+2. otherwise `%~dp0`, the script's own directory, verified by finding
+   `pyproject.toml` beside it.
 
-echo.
-echo Done. A Microclaw icon is on your desktop.
-echo Edit the safety limits that just opened BEFORE you launch it.
-pause & exit /b 0
+The user downloads the repo ZIP through the browser (where they are already
+authenticated), extracts it, and double-clicks. Three steps instead of one, and
+every one of them is something a lab user already does.
 
-:fail
-echo. & echo Install failed. Copy the messages above and send them to the maintainer.
-pause & exit /b 1
-```
+When the repo goes public this collapses back to the one-file download by setting
+`MICROCLAW_SRC` to the archive URL — the `microclaw[serve] @ <url>` branch is
+already written and tested for. Nothing else in the script changes, and the README
+step 2 becomes "download install.bat".
+
+The real script is `install.bat` at the repo root; `tests/test_installer.py` pins
+the things that can drift away from the package (the `serve` extra, the
+`install-shortcut` and `init` subcommand names, shortcut-before-init ordering, no
+elevation, everything confined to `%LOCALAPPDATA%`).
 
 `install-shortcut` runs *before* `init`, so the editor that `init` opens is the
 last thing on screen and the final instruction is the one the user acts on.
@@ -634,8 +638,9 @@ In code:
 | v0 | `17-install-spike.py` — **done**, see Spike results | — |
 | v1 | icon in package, browser tab, README header, `derive_icons.py` — **done** | — |
 | v2 | `paths.py`, `microclaw init`, `reviewed:` gate, example in package — **done** | — |
-| v3 | `microclaw install-shortcut` (Windows only) — **done**, unverified on hardware | v1, **v2**, v0 |
-| v4 | `install.bat`, uv dev install, README rewrite | v1–v3 |
+| v3 | `microclaw install-shortcut` (Windows only) — **done**, verified on the rig | v1, **v2**, v0 |
+| v4 | `install.bat`, uv dev install, README rewrite — **done**, unverified on hardware | v1–v3 |
+| v5 | flip `MICROCLAW_SRC` to the archive URL when the repo goes public | v4 |
 
 v1 and v2 are independent and can land in either order. v3 without v2 ships a
 one-click hardware launcher with no reviewed-limits gate, which is the one
