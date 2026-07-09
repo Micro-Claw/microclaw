@@ -118,8 +118,10 @@ def q1_desktop():
             ok("Desktop is NOT redirected — `Path.home()/'Desktop'` is correct. "
                "design/17 can drop the registry branch entirely.")
         else:
-            bad("Desktop IS redirected. `Path.home()/'Desktop'` would write to a "
-                "folder Explorer does not show. Keep the shell-folder lookup.")
+            bad("Desktop IS redirected. The shell-folder lookup is MANDATORY: "
+                "`Path.home()/'Desktop'` would write to a folder Explorer never "
+                "shows. (This does not mean Q9's shortcut failed — Q9 uses the "
+                "shell API and works. It means the naive fallback would not.)")
         info(f"'OneDrive' in path: {'OneDrive' in (api or '')}")
         info(f"exists: {Path(api).is_dir()}")
     info(f"%OneDrive% env: {os.environ.get('OneDrive', '(unset)')}")

@@ -186,19 +186,21 @@ def user_data_dir() -> Path:
     """%LOCALAPPDATA%\\microclaw / ~/.local/share/microclaw — icons, shortcuts."""
 
 def desktop_dir() -> Path:
-    """The desktop Explorer actually renders.
+    """The desktop Explorer actually renders. NOT `Path.home() / "Desktop"`.
 
-    Almost certainly `Path.home() / "Desktop"`. It is not that on a machine whose
-    Desktop has been redirected (OneDrive's "Back up your folders" does this),
-    where writing there produces a shortcut nobody ever sees. `17-install-spike.py`
-    Q1 settles which case this rig is; if it reports "not redirected", this
-    function is one line and the shell-folder lookup below is deleted.
+    Measured on the lab rig (spike Q1): the Desktop is redirected to a roaming
+    profile on a network share, `\\\\isis\\roamingdata\\rieslab\\Desktop`, while
+    `Path.home()/"Desktop"` is a local `C:\\Users\\rieslab\\Desktop` that Explorer
+    never shows. Writing the .lnk there would report success and produce no
+    visible icon — the exact silent failure this function exists to prevent.
 
-    The authoritative answer is SHGetKnownFolderPath(FOLDERID_Desktop) via ctypes
-    — it is what Explorer itself calls. Cheap enough (~10 lines, stdlib) that
-    keeping it is defensible even if this machine is plain; it costs nothing and
-    it is the difference between "works" and "silently wrote a file to nowhere"
-    on the next machine.
+    Note the redirect is a roaming profile, not OneDrive (that lives separately at
+    C:\\Users\\rieslab\\OneDrive). Sniffing for "OneDrive" in the path, or reading
+    %OneDrive%, would have missed this. Ask the shell.
+
+    SHGetKnownFolderPath(FOLDERID_Desktop) via ctypes is authoritative — it is
+    what Explorer itself calls. The registry User Shell Folders value agreed with
+    it here, and `~/Desktop` did not.
     """
 
 def default_safety_config() -> Path:
@@ -299,17 +301,25 @@ Resolve the console script *inside the running interpreter's* environment:
 
 ```python
 def _launcher() -> tuple[str, list[str]]:
-    """(target, args) for the current environment's `microclaw serve`."""
-    exe = Path(sys.executable).parent / "microclaw.exe"   # venv: alongside python.exe
-    if exe.exists():
-        return str(exe), ["serve"]
+    """(target, args) for the current environment's `microclaw serve`.
+
+    Two layouts, and they differ (spike Q4). In a Windows venv, python.exe lives
+    *in* Scripts\\, so the console script is its sibling. In a conda env — what
+    the lab machine runs — python.exe is at the env root and the console script is
+    one level down in Scripts\\. Checking only the sibling silently falls through
+    to the `-m` fallback on conda, which works but hardcodes the interpreter path
+    into the shortcut and loses the console script's own error handling.
+    """
+    d = Path(sys.executable).parent
+    for exe in (d / "microclaw.exe", d / "Scripts" / "microclaw.exe"):
+        if exe.exists():
+            return str(exe), ["serve"]
     # No console script (odd, but possible): drive the module directly.
     return sys.executable, ["-m", "microclaw", "serve"]
 ```
 
-Spike Q4 checks both branches resolve on the lab machine, including whether the
-console script lands beside `python.exe` or one level down in `Scripts\`, which
-differs between a `uv venv` and a conda env.
+Measured: `...\envs\microclaw\microclaw.exe` absent, `...\envs\microclaw\Scripts\microclaw.exe`
+present. `python -m microclaw --help` also works, so the fallback is viable.
 
 `serve` and nothing else. Never `--allow-remote`; never a `--host`. The shortcut
 is the loopback GUI, by construction.
@@ -507,6 +517,56 @@ The current Quick Start optimizes for a developer with a terminal. Invert it:
 
 ---
 
+## Spike results
+
+`design/17-install-spike.py`, run on the lab rig: Windows 10.0.26100, PowerShell
+5.1, miniforge conda env `microclaw`, Python 3.11.15, repo at `D:\Code\microclaw`.
+Q9's shortcut was confirmed by eye — the icon appeared on the desktop and `--clean`
+removed it.
+
+**Q1 — the Desktop is redirected.** `SHGetKnownFolderPath` and the registry both
+say `\\isis\roamingdata\rieslab\Desktop`; `Path.home()/"Desktop"` says
+`C:\Users\rieslab\Desktop`. The shell-folder lookup is **mandatory**, not
+optional. The cause is a roaming profile on a network share, not OneDrive — a
+`"OneDrive" in path` heuristic would have missed it. Two consequences:
+
+- The `.lnk` lives on a **UNC path**. It wrote and deleted fine, and Explorer
+  renders it. Do not, however, set the shortcut's `WorkingDirectory` to the
+  desktop: `cmd.exe` refuses UNC working directories ("UNC paths are not
+  supported") and would print a warning before every launch. It is already set to
+  `user_data_dir()` under `%LOCALAPPDATA%`, which is local. Keep it that way.
+- A network desktop can be **unavailable** at install time. `install-shortcut`
+  should catch the write error and say which path it tried, rather than traceback.
+
+**Q4 — the console script is in `Scripts\`, not beside `python.exe`.** Under
+conda, `sys.executable` is at the env root. The single-location `_launcher()` in
+the first draft of this document would have silently used the `-m` fallback.
+Fixed above; both layouts are now probed.
+
+**Q2, Q3, Q5 — the `.lnk` machinery works as designed.** `WScript.Shell`
+instantiates; `powershell -Command` runs without an ExecutionPolicy override
+(this box happens to be `Unrestricted`, but the point stands: policy gates script
+*files*). The env-var form round-trips `TargetPath` and `Arguments` through a
+directory named `it's a lab`, and the naive single-quote interpolation **fails
+there**, as predicted — keep the env-var form. The `.cmd` wrapper propagates
+`MICROCLAW_FROM_SHORTCUT` across a path containing a space.
+
+**Q6 — `.yaml` opens in VS Code here**, so `os.startfile` will not raise on this
+machine. Keep the `notepad.exe` fallback anyway: the association is an artifact of
+this developer box having VS Code installed, and the target audience's machine
+will not.
+
+**Q7 — `uv` is absent and a conda env is active.** Confirms `install.bat` must
+fetch `uv` itself, and that the developer-install migration is a real (if
+optional) change rather than a no-op. No install path on this machine contains a
+space, but `install.bat` should quote regardless.
+
+**Q8 — not answered.** The lab clone predates the `favicon.ico` commit, so the
+probe skipped. Locally the file carries 16/32/48/256px RGBA frames, which is
+everything Windows and the README need; re-run Q8 on the rig after pulling.
+
+---
+
 ## Safety review
 
 This work lowers the activation energy for driving a microscope from a laptop.
@@ -528,20 +588,11 @@ Do not automate it.
 
 ## Test plan
 
-**First: run `design/17-install-spike.py` on the lab machine** (`python
-design/17-install-spike.py`, then `--desktop`, then `--clean`). It answers, in
-order: is the Desktop redirected (Q1); does PowerShell + `WScript.Shell` work
-without an ExecutionPolicy override (Q2); does the `.lnk` round-trip through an
-apostrophe'd path under the env-var form, and does the naive interpolation
-actually break (Q3); where does the `microclaw.exe` console script live (Q4);
-does the `.cmd` wrapper propagate `MICROCLAW_FROM_SHORTCUT` across a path with a
-space (Q5); is `.yaml` associated with an editor or will `os.startfile` raise
-(Q6); is `uv` present and do the install paths contain spaces (Q7); which frames
-does `favicon.ico` carry (Q8). Q9 drops a real shortcut whose target prints a
-simulated startup error and pauses — that is the only way to confirm by eye that
-the icon renders and the console stays open.
+`design/17-install-spike.py` has been **run on the lab rig** (Windows, PowerShell
+5.1, miniforge conda env `microclaw`, Python 3.11) — see "Spike results" above.
+Re-run it on any new machine before trusting `install-shortcut` there.
 
-Then, in code:
+In code:
 
 - `paths.py`: monkeypatch `APPDATA`/`LOCALAPPDATA`/`USERPROFILE`, assert every
   path. Whether `desktop_dir` keeps its shell-folder lookup depends on spike Q1.
@@ -562,7 +613,7 @@ Then, in code:
 
 | | Ships | Depends on |
 |---|---|---|
-| v0 | `17-install-spike.py` run on the lab machine | — |
+| v0 | `17-install-spike.py` — **done**, see Spike results | — |
 | v1 | icon in package, browser tab, README header, `derive_icons.py` | — |
 | v2 | `paths.py`, `microclaw init`, `reviewed:` gate, example in package | — |
 | v3 | `microclaw install-shortcut` (Windows only) | v1, **v2**, v0 |
