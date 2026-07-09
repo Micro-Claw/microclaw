@@ -53,16 +53,20 @@ def test_template_has_exactly_one_substitution_token():
     If a future edit reintroduces the token elsewhere (e.g. a `raw !== TOKEN`
     guard), the blind replace would corrupt it again — fail loudly here instead.
     """
-    template = resources.files("microclaw").joinpath("history_viewer.html").read_text()
+    template = (
+        resources.files("microclaw")
+        .joinpath("history_viewer.html")
+        .read_text(encoding="utf-8")
+    )
     assert template.count(TOKEN) == 1
 
 
 def test_view_history_embeds_parseable_json(tmp_path):
     src = tmp_path / "20990101_000000_microclaw_history.json"
-    src.write_text(json.dumps(SAMPLE_HISTORY))
+    src.write_text(json.dumps(SAMPLE_HISTORY), encoding="utf-8")
 
     out = view_history(src, open_browser=False)
-    html = out.read_text()
+    html = out.read_text(encoding="utf-8")
 
     # Token fully substituted, nothing left behind.
     assert TOKEN not in html

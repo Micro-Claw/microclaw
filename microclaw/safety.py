@@ -116,7 +116,7 @@ class SafetyConstraints:
 
     @classmethod
     def from_yaml(cls, path: str) -> SafetyConstraints:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             cfg = yaml.safe_load(f) or {}
 
         stage_cfg = cfg.get("stage", {})

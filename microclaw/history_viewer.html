@@ -5,6 +5,11 @@
   onto it. Launched via `microclaw view-history <file>`, the CLI substitutes the
   run's JSON into the data script below so it renders immediately.
 -->
+<!-- The file is written as UTF-8 and contains em dashes, ▶, ◉, etc. Without
+     this, a browser opening it over file:// guesses the encoding from the OS
+     locale (cp1252 on Windows) and renders them as mojibake. Must stay within
+     the first 1024 bytes for the sniff to see it. -->
+<meta charset="utf-8">
 <style>
   :root {
     --bg:        #f6f8f9;
