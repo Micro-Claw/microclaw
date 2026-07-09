@@ -1,0 +1,139 @@
+<!--
+  Microclaw history viewer.
+
+  Standalone: open this file in a browser and drop a *_microclaw_history.json
+  onto it. Launched via `microclaw view-history <file>`, the CLI substitutes the
+  run's JSON into the data script below, and inlines transcript.css/transcript.js
+  so the emitted file is self-contained.
+-->
+<!-- The file is written as UTF-8 and contains em dashes, ▶, ◉, etc. Without
+     this, a browser opening it over file:// guesses the encoding from the OS
+     locale (cp1252 on Windows) and renders them as mojibake. Must stay within
+     the first 1024 bytes for the sniff to see it. -->
+<meta charset="utf-8">
+<link rel="stylesheet" href="transcript.css">
+<style>
+  /* drop / empty state — viewer only */
+  #drop {
+    margin-top: 6vh; border: 1.5px dashed var(--line); border-radius: 16px;
+    padding: 56px 32px; text-align: center; background: var(--panel);
+    transition: border-color .15s, background .15s;
+  }
+  #drop.hot { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 7%, var(--panel)); }
+  #drop .big { font-size: 21px; font-weight: 600; letter-spacing: -.01em; margin-bottom: 8px; }
+  #drop p { color: var(--ink-soft); font-size: 14px; margin: 6px auto; max-width: 46ch; }
+  #drop .hint { font-family: var(--mono); font-size: 12px; color: var(--ink-faint); margin-top: 18px; }
+  #drop .filebtn { display: inline-block; margin-top: 20px; }
+</style>
+
+<header>
+  <div class="brand">
+    <span class="glyph">◉</span>
+    <h1>Microclaw Transcript</h1>
+    <span class="sub">history viewer</span>
+  </div>
+  <div class="stats hidden" id="stats">
+    <div class="stat"><b id="s-turns">0</b><span>turns</span></div>
+    <div class="stat"><b id="s-tools">0</b><span>tool calls</span></div>
+  </div>
+  <div class="controls">
+    <label class="filebtn" tabindex="0" role="button" id="openlbl">Open file
+      <input type="file" id="file" accept=".json,application/json">
+    </label>
+    <button id="expand" class="hidden">Expand all</button>
+    <button id="collapse" class="hidden">Collapse all</button>
+    <button id="theme" title="Toggle theme">◐</button>
+  </div>
+</header>
+
+<main>
+  <div id="drop">
+    <div class="big">Drop a history JSON here</div>
+    <p>Renders a <code>*_microclaw_history.json</code> run as a readable conversation — user prompts, the agent's replies, and every microscope tool call with its result.</p>
+    <p class="hint">Everything stays in your browser. No upload.</p>
+    <label class="filebtn primary" tabindex="0" role="button">Choose file
+      <input type="file" accept=".json,application/json" onchange="window.__load(this.files[0])">
+    </label>
+  </div>
+  <div id="transcript"></div>
+</main>
+
+<footer id="foot" class="hidden"></footer>
+
+<!-- The CLI substitutes the run's JSON for the token below. Left as-is when opened standalone. -->
+<script id="history-data" type="application/json">__MICROCLAW_HISTORY_DATA__</script>
+
+<script src="transcript.js"></script>
+<script>
+(function () {
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+  const drop = $("drop"), tx = $("transcript");
+
+  Transcript.initTheme($("theme"));
+
+  function render(history) {
+    const { userTurns, asstTurns, toolCalls } = Transcript.render(history, tx);
+    $("s-turns").textContent = userTurns + asstTurns;
+    $("s-tools").textContent = toolCalls;
+    $("stats").classList.remove("hidden");
+    $("expand").classList.remove("hidden");
+    $("collapse").classList.remove("hidden");
+    drop.classList.add("hidden");
+    $("openlbl").firstChild.textContent = "Open another ";
+    $("foot").classList.remove("hidden");
+    $("foot").textContent = `${userTurns} user · ${asstTurns} assistant messages · ${toolCalls} tool calls`;
+  }
+
+  function showError(msg) {
+    drop.classList.remove("hidden", "hot");
+    drop.innerHTML = '<div class="big">Couldn\'t read that file</div>' +
+      '<p>' + Transcript.esc(msg) + '</p>' +
+      '<p class="hint">Expected a microclaw history JSON — an array of chat messages.</p>' +
+      '<label class="filebtn primary" tabindex="0" role="button">Try another file' +
+      '<input type="file" accept=".json,application/json" onchange="window.__load(this.files[0])"></label>';
+  }
+
+  // ---- file loading ----
+  function load(file) {
+    if (!file) return;
+    const r = new FileReader();
+    r.onload = () => {
+      try { render(JSON.parse(r.result)); window.scrollTo({ top: 0 }); }
+      catch (e) { showError(e.message); }
+    };
+    r.readAsText(file);
+  }
+  window.__load = load;
+  $("file").addEventListener("change", (e) => load(e.target.files[0]));
+
+  // drag & drop
+  ["dragenter", "dragover"].forEach(ev =>
+    document.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("hot"); }));
+  ["dragleave", "drop"].forEach(ev =>
+    document.addEventListener(ev, (e) => { e.preventDefault(); if (ev === "drop" || e.target === drop) drop.classList.remove("hot"); }));
+  document.addEventListener("drop", (e) => {
+    e.preventDefault(); drop.classList.remove("hot");
+    if (e.dataTransfer.files.length) load(e.dataTransfer.files[0]);
+  });
+
+  // expand / collapse all
+  $("expand").addEventListener("click", () => Transcript.expandAll(tx));
+  $("collapse").addEventListener("click", () => Transcript.collapseAll(tx));
+
+  // ---- embedded data (populated by `microclaw view-history`) ----
+  // The standalone template still holds the substitution token, which isn't
+  // valid JSON — so parse-and-render, and only surface an error when the content
+  // actually looks like history (starts with '[' / '{'), otherwise keep the drop
+  // zone. This deliberately avoids comparing against the token string, so the
+  // CLI's blind text substitution can't clobber this guard.
+  const embed = $("history-data");
+  const raw = embed ? embed.textContent.trim() : "";
+  if (raw) {
+    try { render(JSON.parse(raw)); }
+    catch (e) {
+      if (raw[0] === "[" || raw[0] === "{") showError("Embedded history was malformed: " + e.message);
+    }
+  }
+})();
+</script>

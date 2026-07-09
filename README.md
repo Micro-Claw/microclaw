@@ -26,7 +26,7 @@ User (natural language) → AgentLoop (Anthropic API) → ToolRegistry → Safet
 ### Install
 
 ```bash
-pip install -e ".[test]"
+pip install -e ".[test]"          # add ,serve for the browser GUI
 ```
 
 ### Run
@@ -45,6 +45,62 @@ microclaw --safety-config safety_config.yaml
 | `--model ID` | `$MICROCLAW_MODEL` or `claude-opus-4-8` | Anthropic model id. The `MICROCLAW_MODEL` environment variable overrides the built-in default; `--model` overrides both. |
 | `--profile` / `--no-profile` | off | cProfile the session and print stats on exit. |
 | `--save-history` / `--no-save-history` | on | Write the conversation to a timestamped `*_microclaw_history.json` file. |
+
+### Viewing a saved history
+
+Saved `*_microclaw_history.json` files are raw Anthropic messages — readable but
+noisy. Render one as a browser transcript (user prompts, the agent's replies, and
+every microscope tool call with its result, collapsed by default):
+
+```
+microclaw view-history 20260707_143437_microclaw_history.json
+```
+
+This writes a self-contained HTML file to your temp directory and opens it. Pass
+`--no-browser` to just print the path. The viewer runs entirely locally — nothing
+is uploaded. Snap thumbnails are rendered inline; tool calls are collapsed by
+default.
+
+### Browser GUI
+
+Drive a session from a chat window instead of the terminal REPL. Same transcript,
+plus a composer:
+
+```bash
+pip install -e ".[serve]"
+microclaw --safety-config safety_config.yaml serve      # → http://127.0.0.1:8000
+```
+
+The session flags (`--safety-config`, `--port`, `--model`, `--save-history`) belong
+to the top-level parser, so they go *before* `serve`.
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--host ADDR` | `127.0.0.1` | Bind address. Anything but loopback needs `--allow-remote`. |
+| `--web-port N` | `8000` | HTTP port for the GUI. |
+| `--no-browser` | off | Print the URL instead of opening a browser window. |
+| `--allow-remote` | off | Permit a non-loopback bind. **Anyone who can reach the port can drive the microscope** — trusted, isolated LAN only. |
+
+A browser window opens once the server is accepting connections.
+
+The server holds one microscope and one conversation. A turn takes the session
+lock, so a second prompt is refused (HTTP 409) rather than interleaving tool calls
+on the hardware; requests carrying a foreign `Origin` are refused outright, so a
+stray browser tab cannot drive the stage. History is written after every turn, and
+illumination is shuttered on shutdown, exactly as in the REPL.
+
+If `ANTHROPIC_API_KEY` is unset, the page collects a key and (optionally) stores it
+in your OS credential store via `keyring`, falling back to
+`~/.config/microclaw/config.toml` (`%APPDATA%\microclaw\` on Windows). The key is
+never echoed back — only a four-character suffix, to confirm which one is set — and
+it is never written to `safety_config.yaml`. Resolution order is environment
+variable, then keyring, then that file. Under `--allow-remote` the key cannot be
+set from the browser at all.
+
+To swap keys mid-session, click the `key …AA8f` chip in the header. Saving without
+*Remember on this machine* applies the key to the running process only, so a key
+already in the credential store comes back on the next start — the UI says so when
+that is the case.
 
 ## Set up a runnable .bat with the environment variables
 

@@ -114,7 +114,7 @@ def test_knowledge_file_is_valid_yaml(tmp_path, monkeypatch):
     kb_path = tmp_path / "knowledge.yaml"
     monkeypatch.setattr("microclaw.knowledge_manager.KNOWLEDGE_PATH", kb_path)
     save_entry("samples", "U2OS", {"description": "U2OS cells", "exposure_ms": 50})
-    parsed = yaml.safe_load(kb_path.read_text())
+    parsed = yaml.safe_load(kb_path.read_text(encoding="utf-8"))
     assert parsed["samples"]["U2OS"]["exposure_ms"] == 50
 
 

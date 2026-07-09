@@ -396,7 +396,7 @@ This is a log from the history created by __main__ from a recent micro-claw
 session. Based on this output, where is micro-claw still struggling to
 function well, and how could this be fixed? Write your proposals to design/14.
 
-Can you add proposed code stubs for the fixes to design/14? 
+Can you add proposed code stubs for the fixes to design/14?
 
 ----
 
@@ -423,3 +423,50 @@ Can you commit this information to a branch? Also add the new prompts from
 this session to prompts.md. We can then start implementing what is in
 design/14 on the same branch, but please wait to start implementing until I
 give you the go ahead.
+
+----
+
+I have a json history file in here from a run of microclaw, written to file
+as described in __main__.py. Is there a user-friendly way to view this
+history?
+
+wire it into the repo as a subcommand
+
+Not just yet. When I pass <path-to-history.json> the web viewer indeed opens
+up, but I still have to drag and drop the file to get it to display. Is there
+a way for it to automatically open if the file path is passed?
+
+Please add the regression test. Is there a way to use this viewer not only to
+view history but also to interact with microclaw? The web-based GUI may be
+nicer than using a command line to communicate with the prompt.
+
+Commit the viewer work, then start on microclaw serve. For microclaw server,
+please write a description of your proposed implementation with code stubs to
+design/15. Compare your approach to an approach using the streamlit library
+
+This design document focuses heavily on not throwing away our existing work.
+Can you add a section at the end summarizing if streamlit would be a better
+option if we did not already have a viewer?
+
+----
+
+Look at design/15 and implement v1 in this branch
+
+Commit and push this to this branch
+
+I gave it a try. Very cool! Two slight changes: Can microclaw
+--safety-config safety_config.yaml serve automatically pop up the browser
+window? And, is it possible to change the API key from within the web GUI
+once it's been set?
+
+Why are all the test_transcript_js.py tests skipped when I run pytest on
+Windows?
+
+But then what do I have to do to make the test not skip?
+
+Wait why do I need node? It's not a requirement in pyproject.toml and the web
+server runs without it
+
+All right. Please add the relevant prompts to prompts.md and push to this
+branch. After this I will merge it, and then we can branch off main to
+continue working on v3
