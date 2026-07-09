@@ -70,10 +70,19 @@ named_stages: []
 #   - {device: PIZStage,   min_um: 0.0,     max_um: 200.0}
 #   - {device: TIRF Stage, min_um: -3000.0, max_um: 3000.0}
 
-# Filesystem sandbox for file-touching tools (read_hook_from_file, read_hook_log,
-# save_position_list, export_dataset_as_tiff). Unset = unrestricted (unchanged
-# behaviour). Set it to confine those tools' reads/writes to one directory;
-# `..` and symlink escapes are rejected.
+# OPTIONAL filesystem sandbox for the tools that take a path from the model
+# (read_hook_from_file, read_hook_log, save_position_list,
+# export_dataset_as_tiff). Unset — the default — means unrestricted: save data
+# wherever you like. Set it only if you want the agent confined to one tree;
+# `..` and symlink escapes are then rejected.
+#
+# It does NOT gate acquisitions (run_zstack's save_dir and friends), so a
+# workspace narrower than your data drive will let a z-stack land somewhere the
+# export tool then refuses to read. If you set this, make it the directory your
+# data actually lives in — not ~/.microclaw, which is microclaw's own state.
+#
+# `microclaw serve`'s artifact downloads do NOT need this. They are authorised
+# per-file, against the paths tools declared during the session.
 # workspace_dir: /data/microclaw
 
 # Micro-Manager plugin hooks (see design/09). Plugin code is arbitrary Java that

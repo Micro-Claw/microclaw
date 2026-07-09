@@ -44,25 +44,29 @@ class _FakeLock:
         self.release()
 
 
-class _FakeGuard:
-    """Only the two things /api/artifact touches."""
+def _guard(workspace_dir=None):
+    from microclaw.safety import SafetyConstraints, SafetyGuard
 
-    def __init__(self, workspace_dir=None):
-        self.workspace_dir = workspace_dir
+    return SafetyGuard(SafetyConstraints(workspace_dir=workspace_dir))
 
-    def resolve_in_workspace(self, path):
-        from microclaw.safety import SafetyConstraints, SafetyGuard
 
-        return SafetyGuard(
-            SafetyConstraints(workspace_dir=self.workspace_dir)
-        ).resolve_in_workspace(path)
+def _history_declaring(*paths, kind="tiff"):
+    """A history in which a tool declared each `path` as an artifact."""
+    return [
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": f"t{i}",
+             "content": json.dumps({"status": "done",
+                                    "artifact": {"kind": kind, "path": p}})}
+            for i, p in enumerate(paths)
+        ]}
+    ]
 
 
 @pytest.fixture
 def session():
     return types.SimpleNamespace(
         ctrl=object(),
-        guard=_FakeGuard(),
+        guard=_guard(),
         model=None,
         history=[],
         history_fn="unused.json",
@@ -348,49 +352,103 @@ def test_post_model_is_refused_when_bound_beyond_localhost(session, no_model_fet
 
 # ---- artifacts (v4d) ----
 
-def test_artifact_is_refused_when_no_workspace_is_configured(client):
-    """resolve_in_workspace is a no-op with no root set, which would turn this
-    endpoint into an arbitrary file read on request from any tab."""
-    res = client.get("/api/artifact", params={"path": "/etc/passwd"})
+def test_a_file_no_tool_declared_is_refused(session, client, tmp_path):
+    """Capability, not location: the allowlist is what this session's tools
+    wrote, so an undeclared file is refused even though it plainly exists and no
+    workspace is configured."""
+    secret = tmp_path / "id_rsa"
+    secret.write_text("PRIVATE KEY", encoding="utf-8")
+
+    res = client.get("/api/artifact", params={"path": str(secret)})
     assert res.status_code == 403
-    assert "workspace_dir" in res.json()["detail"]
+    assert "Not an artifact" in res.json()["detail"]
 
 
-def test_artifact_downloads_a_file_inside_the_workspace(session, client, tmp_path):
-    session.guard = _FakeGuard(str(tmp_path))
-    (tmp_path / "positions.json").write_text('{"positions": []}', encoding="utf-8")
+def test_a_declared_artifact_downloads_with_no_workspace_configured(session, client, tmp_path):
+    """The operator saves data wherever they like; the download still works."""
+    data = tmp_path / "zstack_1.tiff"
+    data.write_text("II*\0fake tiff", encoding="utf-8")
+    session.history = _history_declaring(str(data))   # session.guard has no workspace root
 
-    res = client.get("/api/artifact", params={"path": "positions.json"})
+    res = client.get("/api/artifact", params={"path": str(data)})
     assert res.status_code == 200
-    assert res.text == '{"positions": []}'
+    assert res.text == "II*\0fake tiff"
     # Never a sniffed type: an artifact that happens to be HTML, served inline
     # from this origin, is script execution against the endpoint driving the stage.
     assert res.headers["content-type"] == "application/octet-stream"
-    assert res.headers["content-disposition"] == 'attachment; filename="positions.json"'
+    assert res.headers["content-disposition"] == 'attachment; filename="zstack_1.tiff"'
 
 
-def test_artifact_refuses_a_traversal_path(session, client, tmp_path):
-    session.guard = _FakeGuard(str(tmp_path / "ws"))
-    (tmp_path / "ws").mkdir()
+def test_a_sibling_of_a_declared_artifact_is_still_refused(session, client, tmp_path):
+    """A directory sandbox would have served this. An exact match does not."""
+    (tmp_path / "ok.json").write_text("{}", encoding="utf-8")
     (tmp_path / "secret.txt").write_text("nope", encoding="utf-8")
+    session.history = _history_declaring(str(tmp_path / "ok.json"))
 
-    res = client.get("/api/artifact", params={"path": "../secret.txt"})
+    assert client.get("/api/artifact",
+                      params={"path": str(tmp_path / "secret.txt")}).status_code == 403
+
+
+def test_a_configured_workspace_still_applies_to_a_declared_artifact(session, client, tmp_path):
+    """The endpoint may not become a way around a workspace a lab did configure."""
+    (tmp_path / "ws").mkdir()
+    outside = tmp_path / "outside.json"
+    outside.write_text("{}", encoding="utf-8")
+    session.guard = _guard(str(tmp_path / "ws"))
+    session.history = _history_declaring(str(outside))
+
+    res = client.get("/api/artifact", params={"path": str(outside)})
     assert res.status_code == 403
     assert "escapes" in res.json()["detail"]
 
 
-def test_artifact_that_does_not_exist_is_a_404(session, client, tmp_path):
-    session.guard = _FakeGuard(str(tmp_path))
-    assert client.get("/api/artifact", params={"path": "gone.json"}).status_code == 404
+def test_a_declared_artifact_that_was_deleted_is_a_404(session, client, tmp_path):
+    session.history = _history_declaring(str(tmp_path / "gone.json"))
+    assert client.get("/api/artifact",
+                      params={"path": str(tmp_path / "gone.json")}).status_code == 404
 
 
 def test_artifact_is_refused_when_bound_beyond_localhost(session, tmp_path, monkeypatch):
     monkeypatch.setattr(credentials, "load_api_key", lambda: ("k", "env"))
-    session.guard = _FakeGuard(str(tmp_path))
+    path = tmp_path / "x.json"
+    path.write_text("{}", encoding="utf-8")
+    session.history = _history_declaring(str(path))
     session.editable = False
-    (tmp_path / "x.json").write_text("{}", encoding="utf-8")
-    res = TestClient(build_app(session)).get("/api/artifact", params={"path": "x.json"})
+    res = TestClient(build_app(session)).get("/api/artifact", params={"path": str(path)})
     assert res.status_code == 403
+
+
+class TestDeclaredArtifacts:
+    def test_it_reads_the_paths_tools_declared(self):
+        assert webserve._declared_artifacts(
+            _history_declaring("/a/x.tif", "/b/y.json")
+        ) == {"/a/x.tif", "/b/y.json"}
+
+    def test_a_path_merely_mentioned_in_a_result_is_not_an_artifact(self):
+        history = [{"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t0",
+             "content": json.dumps({"status": "Saved to /etc/passwd."})}]}]
+        assert webserve._declared_artifacts(history) == set()
+
+    def test_it_survives_non_json_and_image_block_results(self):
+        history = [{"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t0", "content": "not json"},
+            {"type": "tool_result", "tool_use_id": "t1", "content": [
+                {"type": "text", "text": json.dumps(
+                    {"artifact": {"kind": "tiff", "path": "/a/x.tif"}})},
+                {"type": "image", "source": {"type": "base64", "data": "AA"}},
+            ]},
+        ]}]
+        assert webserve._declared_artifacts(history) == {"/a/x.tif"}
+
+    def test_assistant_turns_holding_sdk_blocks_do_not_crash_it(self):
+        class Block:  # an SDK content block, not a dict
+            type = "tool_use"
+
+        assert webserve._declared_artifacts(
+            [{"role": "assistant", "content": [Block()]},
+             {"role": "user", "content": "a plain string"}]
+        ) == set()
 
 
 # ---- origin ----

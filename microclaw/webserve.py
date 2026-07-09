@@ -82,6 +82,43 @@ def _jsonable(history: list[dict]) -> list[dict]:
     return json.loads(json.dumps(history, default=json_default))
 
 
+def _declared_artifacts(history: list[dict]) -> set[str]:
+    """Every path a tool in this session declared as an artifact.
+
+    The allowlist behind `/api/artifact`. Tools that write a file return
+    `{"artifact": {"kind": ..., "path": ...}}`; those dicts are built by
+    microclaw's own code from the path the tool actually wrote, so the model
+    cannot name a file here that no tool produced.
+    """
+    paths: set[str] = set()
+    for message in history:
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not (isinstance(block, dict) and block.get("type") == "tool_result"):
+                continue
+            payload = block.get("content")
+            if isinstance(payload, list):
+                # Image-returning tools send [text block, image block]; the JSON
+                # payload, if any, is in the text block.
+                payload = next(
+                    (b.get("text") for b in payload
+                     if isinstance(b, dict) and b.get("type") == "text"),
+                    None,
+                )
+            if not isinstance(payload, str):
+                continue
+            try:
+                result = json.loads(payload)
+            except ValueError:
+                continue
+            artifact = result.get("artifact") if isinstance(result, dict) else None
+            if isinstance(artifact, dict) and isinstance(artifact.get("path"), str):
+                paths.add(artifact["path"])
+    return paths
+
+
 def _sse(event: dict) -> str:
     """One agent event as an SSE frame.
 
@@ -280,22 +317,26 @@ def build_app(session) -> FastAPI:
 
     @app.get("/api/artifact")
     async def get_artifact(path: str):
-        """Download a file a tool wrote. Narrow by construction.
+        """Download a file a tool wrote, and nothing else.
 
-        Fails closed when no workspace root is configured: `resolve_in_workspace`
-        returns the path unchanged in that case (by design, for back-compat),
-        which would turn this into an arbitrary file read on request from any tab
-        on this machine.
+        The allowlist is *capability-based, not location-based*: a path is
+        servable iff some tool in this session declared it as an artifact. Those
+        declarations are built by our own code from the path the tool actually
+        wrote, live in `session.history`, and the model cannot forge one.
+
+        This is tighter than the directory sandbox it replaces. A workspace root
+        would let the browser fetch any file beneath it, including ones no tool
+        ever touched; an exact match lets it fetch only what microclaw just
+        wrote. And it needs no configuration, so downloading an artifact never
+        constrains where the operator may save data.
         """
         if not session.editable:  # loopback only
             raise HTTPException(403, "Not available when bound beyond localhost.")
-        if session.guard.workspace_dir is None:
-            raise HTTPException(
-                403,
-                "Set workspace_dir in the safety config to download artifacts "
-                "from the browser.",
-            )
+        if path not in _declared_artifacts(session.history):
+            raise HTTPException(403, "Not an artifact produced by this session.")
         try:
+            # A configured workspace still applies — this endpoint may not be a
+            # way around it — but it is no longer what authorises the download.
             resolved = session.guard.resolve_in_workspace(path)
         except SafetyViolation as e:
             raise HTTPException(403, str(e))

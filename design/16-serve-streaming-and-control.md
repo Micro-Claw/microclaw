@@ -986,47 +986,75 @@ sidesteps for `media_type`, rediscovered. `href` is safe via
 from anywhere, including a file dropped on the viewer.
 
 Serving files from the browser is new attack surface, so the endpoint is narrow.
-It needs one thing the guard does not expose today — whether a workspace root is
-configured at all. `SafetyGuard` keeps its constraints on `guard._c`; add a real
-accessor rather than reaching into it, the same call design/15 §v2 makes for
-`replace_constraints`:
+
+### Authorise per-file, not per-directory
+
+The first version of this gated the endpoint on `workspace_dir`, reasoning that
+without *some* configured root `resolve_in_workspace` is a no-op and the endpoint
+becomes an arbitrary file read for anything that can reach loopback. The
+reasoning was right; the instrument was wrong, and it shipped. A directory
+sandbox authorises **every file beneath the root**, including ones no tool ever
+touched — and it forced a lab to opt into a filesystem sandbox purely in order to
+click a download link.
+
+That coupling had teeth. A rig configured `workspace_dir: C:\Users\rieslab\
+.microclaw` (microclaw's own state directory — hooks, `knowledge.yaml`) to get
+artifact chips, then acquired a z-stack to `D:\`. `run_zstack` does **not** pass
+`save_dir` through the guard, so the write succeeded; `export_dataset_as_tiff`
+does, so it refused to read the dataset it had just been handed. The guard is
+one-sided, and requiring `workspace_dir` for artifacts is what made anyone
+notice.
+
+The tools already say what they produced. That declaration *is* the capability:
 
 ```python
-class SafetyGuard:
-    @property
-    def workspace_dir(self) -> str | None:
-        return self._c.workspace_dir
-```
-
-```python
-from microclaw.safety import SafetyViolation
-
 @app.get("/api/artifact")
 async def get_artifact(path: str):
     if not session.editable:                       # loopback only
         raise HTTPException(403, "Not available when bound beyond localhost.")
-    if session.guard.workspace_dir is None:
-        # resolve_in_workspace is a no-op with no root configured — that turns
-        # this endpoint into arbitrary file read from any page on this machine.
-        raise HTTPException(403, "Set workspace_dir in the safety config to "
-                                 "download artifacts from the browser.")
+    if path not in _declared_artifacts(session.history):
+        raise HTTPException(403, "Not an artifact produced by this session.")
     try:
+        # A configured workspace still applies; it is no longer what authorises.
         resolved = session.guard.resolve_in_workspace(path)
     except SafetyViolation as e:
         raise HTTPException(403, str(e))
-    return FileResponse(resolved, media_type="application/octet-stream",
-                        filename=Path(resolved).name,
-                        headers={"Content-Disposition":
-                                 f'attachment; filename="{Path(resolved).name}"'})
+    if not Path(resolved).is_file():
+        raise HTTPException(404, "No such artifact.")
+    return FileResponse(resolved, media_type="application/octet-stream", ...)
 ```
 
-Two deliberate choices. **Fail closed when `workspace_dir` is unset** —
-`resolve_in_workspace` returns the path unchanged in that case (by design, for
-back-compat), which would make this endpoint read any file the user can read, on
-request from any tab. And **always `application/octet-stream` + `attachment`**,
-never a sniffed type: an artifact that happens to be HTML, served inline from
-`http://127.0.0.1:8000`, is same-origin script execution against the endpoint
-that drives the microscope.
+`_declared_artifacts` walks `session.history` and collects every
+`artifact.path` from the tool results. Those dicts are built by microclaw's own
+code from the path the tool actually wrote — the model cannot name a file here
+that no tool produced. Exact match, so there is no traversal question: a path
+either matches a declaration or it does not. Strictly tighter than the root it
+replaces, and it needs no configuration, so **downloading an artifact never
+constrains where the operator may save data.**
+
+Two further deliberate choices. **Always `application/octet-stream` +
+`attachment`**, never a sniffed type: an artifact that happens to be HTML, served
+inline from `http://127.0.0.1:8000`, is same-origin script execution against the
+endpoint that drives the microscope. And the endpoint **still** calls
+`resolve_in_workspace`, so a lab that did configure a sandbox does not find this
+route around it.
+
+Exfiltration is bounded by what the tools already do. `read_hook_log(log_path)`
+takes a model-chosen path and returns the file's contents in the transcript
+regardless; the artifact chip adds no reach. `export_dataset_as_tiff` writes to
+its `output_path`, so a hostile `output_path` clobbers a file rather than
+exposing one. `workspace_dir` remains the answer for a lab that wants those two
+bounded — it is simply no longer mandatory.
+
+### `workspace_dir` at a filesystem root rejects everything
+
+Found while working out what to tell that rig to configure instead. The
+containment check was `resolved.startswith(root + os.sep)`, and `os.path.realpath`
+of `/` or `D:\` already ends in a separator — so the prefix became `//`, which is
+a prefix of nothing. `workspace_dir: /` refused `/tmp/x.json` with a message
+reading "escapes the configured workspace directory (/)". Fixed with
+`root.rstrip(os.sep) + os.sep`, which still refuses `/database` under a `/data`
+root.
 
 ---
 

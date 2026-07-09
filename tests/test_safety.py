@@ -1,5 +1,7 @@
 from unittest.mock import MagicMock
 
+import os
+
 import pytest
 from microclaw.safety import (
     CameraConstraints,
@@ -227,12 +229,23 @@ class TestWorkspaceSandbox:
         guard = SafetyGuard(SafetyConstraints())  # workspace_dir None
         assert guard.resolve_in_workspace("/anywhere/at/all.json") == "/anywhere/at/all.json"
 
-    def test_workspace_dir_is_readable_without_reaching_into_the_guard(self, tmp_path):
-        """`serve`'s /api/artifact must fail closed when no root is set, and it
-        can only know that if the guard says so."""
-        assert SafetyGuard(SafetyConstraints()).workspace_dir is None
-        guard = SafetyGuard(SafetyConstraints(workspace_dir=str(tmp_path)))
-        assert guard.workspace_dir == str(tmp_path)
+    def test_a_filesystem_root_workspace_does_not_reject_everything(self):
+        """realpath('/') already ends in a separator, so the containment check
+        must not append another — `//` is a prefix of nothing, and the sandbox
+        would fail closed on every path while reporting a traversal escape."""
+        guard = SafetyGuard(SafetyConstraints(workspace_dir=os.sep))
+        target = os.path.join(os.sep, "tmp", "x.json")
+        # realpath, so /tmp -> /private/tmp on macOS; the point is it resolves.
+        assert guard.resolve_in_workspace(target) == os.path.realpath(target)
+
+    def test_a_sibling_of_the_root_name_is_still_refused(self, tmp_path):
+        """/data must not admit /database."""
+        root = tmp_path / "data"
+        root.mkdir()
+        (tmp_path / "database").mkdir()
+        guard = SafetyGuard(SafetyConstraints(workspace_dir=str(root)))
+        with pytest.raises(SafetyViolation, match="escapes"):
+            guard.resolve_in_workspace(str(tmp_path / "database" / "x.json"))
 
     def test_path_inside_root_resolves(self, tmp_path):
         guard = SafetyGuard(SafetyConstraints(workspace_dir=str(tmp_path)))
