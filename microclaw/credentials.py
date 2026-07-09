@@ -73,12 +73,13 @@ def _read_config_key() -> str | None:
         return None
 
 
-def load_api_key() -> tuple[str | None, str | None]:
-    """Return (key, source) where source is 'env', 'keyring', 'file' or None."""
-    env = os.environ.get(ENV_VAR)
-    if env:
-        return env, "env"
+def load_stored_key() -> tuple[str | None, str | None]:
+    """The persisted key, ignoring the environment: (key, source) or (None, None).
 
+    Separate from `load_api_key` because a key set for this process only still
+    leaves whatever was persisted earlier in place, to be picked up on the next
+    start. Callers that need to say so have to look past os.environ.
+    """
     kr = _keyring()
     if kr is not None:
         try:
@@ -92,6 +93,14 @@ def load_api_key() -> tuple[str | None, str | None]:
     if key:
         return key, "file"
     return None, None
+
+
+def load_api_key() -> tuple[str | None, str | None]:
+    """Return (key, source) where source is 'env', 'keyring', 'file' or None."""
+    env = os.environ.get(ENV_VAR)
+    if env:
+        return env, "env"
+    return load_stored_key()
 
 
 def store_api_key(key: str) -> tuple[str, str | None]:

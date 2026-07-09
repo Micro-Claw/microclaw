@@ -186,6 +186,11 @@ def main():
     sv.add_argument("--host", default="127.0.0.1", help="Bind address (default: 127.0.0.1).")
     sv.add_argument("--web-port", type=int, default=8000, help="HTTP port (default: 8000).")
     sv.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="Print the URL instead of opening a browser window.",
+    )
+    sv.add_argument(
         "--allow-remote",
         action="store_true",
         help=(

@@ -15,7 +15,11 @@ Two properties are load-bearing, because this endpoint moves real hardware:
 import asyncio
 import datetime
 import json
+import socket
 import sys
+import threading
+import time
+import webbrowser
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -157,10 +161,17 @@ def build_app(session) -> FastAPI:
         key = k.key.strip()
         if not key:
             raise HTTPException(400, "Empty key.")
+        # Overwrites whatever was set, so a key can be swapped mid-session.
         set_api_key(key)
         stored_in = stored_at = None
+        stale_store = False
         if k.persist:
             stored_in, stored_at = credentials.store_api_key(key)
+        else:
+            # A key held for this process only doesn't displace an older one in
+            # the credential store — that one comes back on the next start.
+            stored, _ = credentials.load_stored_key()
+            stale_store = stored is not None and stored != key
         # Never echo the key: a suffix is enough to confirm which one is set.
         return JSONResponse(
             {
@@ -170,10 +181,38 @@ def build_app(session) -> FastAPI:
                 "editable": True,
                 "stored_in": stored_in,
                 "stored_at": stored_at,
+                "stale_store": stale_store,
             }
         )
 
     return app
+
+
+def _open_when_ready(host: str, port: int, url: str, timeout: float = 15.0) -> None:
+    """Open `url` in a browser once the server is accepting connections.
+
+    uvicorn.run() blocks, and a browser fired before the socket is listening
+    lands on a connection-refused page. Poll the port from a daemon thread
+    instead of hooking the ASGI lifespan, so a browser that never opens (headless
+    box, no BROWSER) can't wedge the server.
+    """
+
+    def wait():
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                with socket.create_connection((host, port), timeout=0.5):
+                    break
+            except OSError:
+                time.sleep(0.1)
+        else:
+            return  # never came up; the traceback uvicorn prints is the real story
+        try:
+            webbrowser.open(url)
+        except Exception:
+            pass  # no browser here — the URL is already printed
+
+    threading.Thread(target=wait, daemon=True).start()
 
 
 def serve(args):
@@ -201,7 +240,13 @@ def serve(args):
             f"\n!! Microclaw is reachable at http://{args.host}:{args.web_port} — "
             "anyone who can reach this port can drive the microscope.\n"
         )
-    print(f"Microclaw GUI: http://{args.host}:{args.web_port}  (Ctrl-C to stop)")
+    url = f"http://{args.host}:{args.web_port}"
+    print(f"Microclaw GUI: {url}  (Ctrl-C to stop)")
+    if not args.no_browser:
+        # A wildcard bind is not an address a browser (or Windows' connect())
+        # can reach; the loopback the server is also listening on is.
+        visit = "127.0.0.1" if args.host == "0.0.0.0" else args.host
+        _open_when_ready(visit, args.web_port, f"http://{visit}:{args.web_port}")
 
     # Mirrors run_session: every exit path — Ctrl-C, a crash in a turn — writes
     # the history and shutters known illumination (design/14 §3).

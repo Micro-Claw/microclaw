@@ -68,7 +68,7 @@
     background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
   }
   .banner label.chk { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-soft); }
-  .key-state { font-family: var(--mono); font-size: 11.5px; color: var(--ink-faint); }
+  #key-btn { font-family: var(--mono); font-size: 11.5px; color: var(--ink-faint); }
 
   #toast {
     position: fixed; left: 50%; transform: translateX(-50%); bottom: 108px; z-index: 30;
@@ -89,7 +89,7 @@
     <div class="stat"><b id="s-tools">0</b><span>tool calls</span></div>
   </div>
   <div class="controls">
-    <span class="key-state" id="key-state"></span>
+    <button id="key-btn" class="hidden"></button>
     <button id="expand" class="hidden">Expand all</button>
     <button id="collapse" class="hidden">Collapse all</button>
     <button id="theme" title="Toggle theme">◐</button>
@@ -98,14 +98,15 @@
 
 <main>
   <div class="banner hidden" id="key-banner">
-    <h2>No Anthropic API key</h2>
+    <h2 id="key-title">No Anthropic API key</h2>
     <p id="key-help">Microclaw needs a key before it can run a turn. It is sent to this
       local server only, never echoed back, and never written to
       <code>safety_config.yaml</code>.</p>
-    <div class="row">
+    <div class="row" id="key-form">
       <input type="password" id="key-input" placeholder="sk-ant-..." autocomplete="off" spellcheck="false">
       <label class="chk"><input type="checkbox" id="key-persist" checked> Remember on this machine</label>
       <button id="key-save">Save key</button>
+      <button id="key-cancel" type="button" class="hidden">Cancel</button>
     </div>
   </div>
 
@@ -228,18 +229,52 @@
   $("collapse").addEventListener("click", () => Transcript.collapseAll(tx));
 
   // ---- API key ----
+  let editable = true;
+
+  function openKeyBanner(replacing) {
+    $("key-title").textContent = replacing
+      ? "Replace the Anthropic API key" : "No Anthropic API key";
+    $("key-cancel").classList.toggle("hidden", !replacing);
+    $("key-banner").classList.remove("hidden");
+    $("key-input").focus();
+  }
+
+  function closeKeyBanner() {
+    $("key-input").value = "";
+    $("key-banner").classList.add("hidden");
+  }
+
   function showKey(state) {
     hasKey = !!state.has_key;
-    $("key-banner").classList.toggle("hidden", hasKey);
-    $("key-state").textContent = hasKey ? "key " + state.suffix : "";
+    editable = !!state.editable;
     send.disabled = busy || !hasKey;
-    if (!hasKey && !state.editable) {
+
+    // The chip doubles as the entry point for swapping a key mid-session:
+    // POST /api/key overwrites whatever is set, so no restart is needed.
+    const btn = $("key-btn");
+    btn.classList.toggle("hidden", !hasKey);
+    btn.textContent = hasKey ? "key " + state.suffix : "";
+    btn.disabled = !editable;
+    btn.title = editable
+      ? "Click to replace the Anthropic API key"
+      : "Bound beyond localhost — set ANTHROPIC_API_KEY and restart";
+
+    if (hasKey) closeKeyBanner();
+    else openKeyBanner(false);
+
+    if (!hasKey && !editable) {
       $("key-help").textContent =
         "Microclaw needs a key. This server is bound beyond localhost, so the key " +
         "cannot be set from the browser — set ANTHROPIC_API_KEY and restart.";
-      $("key-banner").querySelector(".row").classList.add("hidden");
+      $("key-form").classList.add("hidden");
     }
   }
+
+  $("key-btn").addEventListener("click", () => {
+    if ($("key-banner").classList.contains("hidden")) openKeyBanner(true);
+    else closeKeyBanner();
+  });
+  $("key-cancel").addEventListener("click", closeKeyBanner);
 
   $("key-save").addEventListener("click", async () => {
     const key = $("key-input").value.trim();
@@ -251,10 +286,11 @@
     });
     if (!res.ok) { toast(await detail(res)); return; }
     const state = await res.json();
-    $("key-input").value = "";
-    showKey(state);
+    showKey(state);   // closes the banner and clears the input
     toast(state.stored_in === "keyring" ? "Key saved to the OS credential store."
         : state.stored_in === "file" ? "Key saved to " + state.stored_at + " (convenience, not protection)."
+        : state.stale_store ? "Key set for this session. A different key is still saved "
+            + "on this machine and will be used the next time Microclaw starts."
         : "Key set for this session only.");
   });
 

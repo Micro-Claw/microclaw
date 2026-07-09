@@ -78,7 +78,10 @@ to the top-level parser, so they go *before* `serve`.
 |---|---|---|
 | `--host ADDR` | `127.0.0.1` | Bind address. Anything but loopback needs `--allow-remote`. |
 | `--web-port N` | `8000` | HTTP port for the GUI. |
+| `--no-browser` | off | Print the URL instead of opening a browser window. |
 | `--allow-remote` | off | Permit a non-loopback bind. **Anyone who can reach the port can drive the microscope** — trusted, isolated LAN only. |
+
+A browser window opens once the server is accepting connections.
 
 The server holds one microscope and one conversation. A turn takes the session
 lock, so a second prompt is refused (HTTP 409) rather than interleaving tool calls
@@ -93,6 +96,11 @@ never echoed back — only a four-character suffix, to confirm which one is set 
 it is never written to `safety_config.yaml`. Resolution order is environment
 variable, then keyring, then that file. Under `--allow-remote` the key cannot be
 set from the browser at all.
+
+To swap keys mid-session, click the `key …AA8f` chip in the header. Saving without
+*Remember on this machine* applies the key to the running process only, so a key
+already in the credential store comes back on the next start — the UI says so when
+that is the case.
 
 ## Set up a runnable .bat with the environment variables
 

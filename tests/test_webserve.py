@@ -5,7 +5,10 @@ call — so these cover the properties that actually matter for a browser endpoi
 wired to real hardware: one turn at a time, no cross-origin driving, no key
 echoed back, and a refusal to bind beyond localhost without an opt-in.
 """
+import contextlib
 import json
+import socket
+import time
 import types
 
 import pytest
@@ -196,12 +199,43 @@ def test_post_key_sets_and_persists(client, monkeypatch):
     assert "sk-ant-xyzXYZW" not in json.dumps(body)
 
 
+def test_post_key_can_replace_a_key_already_set(client, monkeypatch):
+    """The chip in the header reopens the banner; the endpoint overwrites."""
+    stored = {}
+    monkeypatch.setattr(webserve, "set_api_key", lambda k: stored.update(live=k))
+    monkeypatch.setattr(credentials, "store_api_key", lambda k: ("keyring", None))
+
+    body = client.post("/api/key", json={"key": "sk-ant-NEWKEY9", "persist": True}).json()
+    assert stored["live"] == "sk-ant-NEWKEY9"
+    assert body["suffix"] == "…KEY9"
+
+
 def test_post_key_without_persist_does_not_store(client, monkeypatch):
     monkeypatch.setattr(webserve, "set_api_key", lambda k: None)
     monkeypatch.setattr(credentials, "store_api_key", lambda k: pytest.fail("persisted"))
+    monkeypatch.setattr(credentials, "load_stored_key", lambda: (None, None))
 
     body = client.post("/api/key", json={"key": "sk-ant-1234", "persist": False}).json()
     assert body["stored_in"] is None
+    assert body["stale_store"] is False
+
+
+def test_a_session_only_key_reports_the_stale_store(client, monkeypatch):
+    """Setting a key for this process doesn't displace an older persisted one,
+    which would silently come back on the next start. Say so."""
+    monkeypatch.setattr(webserve, "set_api_key", lambda k: None)
+    monkeypatch.setattr(credentials, "load_stored_key", lambda: ("sk-ant-OLD", "keyring"))
+
+    body = client.post("/api/key", json={"key": "sk-ant-1234", "persist": False}).json()
+    assert body["stale_store"] is True
+
+
+def test_no_stale_warning_when_the_store_already_holds_this_key(client, monkeypatch):
+    monkeypatch.setattr(webserve, "set_api_key", lambda k: None)
+    monkeypatch.setattr(credentials, "load_stored_key", lambda: ("sk-ant-1234", "keyring"))
+
+    body = client.post("/api/key", json={"key": "sk-ant-1234", "persist": False}).json()
+    assert body["stale_store"] is False
 
 
 def test_post_key_is_refused_when_bound_beyond_localhost(session, monkeypatch):
@@ -216,10 +250,53 @@ def test_post_key_is_refused_when_bound_beyond_localhost(session, monkeypatch):
 # ---- binding ----
 
 def _args(**kw):
-    base = dict(host="0.0.0.0", web_port=8000, allow_remote=False,
+    base = dict(host="0.0.0.0", web_port=8000, allow_remote=False, no_browser=True,
                 safety_config="x.yaml", port=4827, model=None, save_history=False)
     base.update(kw)
     return types.SimpleNamespace(**base)
+
+
+@contextlib.contextmanager
+def _free_port():
+    """A port nothing is listening on."""
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    yield port
+
+
+def test_browser_opens_only_once_the_port_accepts(monkeypatch):
+    """A browser fired before uvicorn is listening lands on connection-refused."""
+    opened = []
+    monkeypatch.setattr(webserve.webbrowser, "open", opened.append)
+
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    try:
+        webserve._open_when_ready("127.0.0.1", port, f"http://127.0.0.1:{port}")
+        time.sleep(0.3)
+        assert opened == []          # bound, but not accepting yet
+
+        sock.listen(1)
+        for _ in range(50):
+            if opened:
+                break
+            time.sleep(0.05)
+    finally:
+        sock.close()
+    assert opened == [f"http://127.0.0.1:{port}"]
+
+
+def test_browser_opener_gives_up_instead_of_hanging(monkeypatch):
+    """A server that never comes up must not leave a thread spinning forever."""
+    opened = []
+    monkeypatch.setattr(webserve.webbrowser, "open", opened.append)
+    with _free_port() as port:
+        webserve._open_when_ready("127.0.0.1", port, "http://unused", timeout=0.2)
+    time.sleep(0.6)
+    assert opened == []
 
 
 def test_serve_refuses_a_non_local_bind_without_allow_remote():
