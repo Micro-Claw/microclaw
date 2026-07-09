@@ -4,6 +4,7 @@ sequence of tool calls. Uses a mock Anthropic client so no real API key needed.
 The mock pre-scripts the sequence of Claude responses (tool_use blocks).
 """
 import json
+import threading
 import types
 import anthropic
 import httpx
@@ -355,6 +356,147 @@ class TestRunAgentIter:
         response.content = []
         events = self._drain([response], [], mock_ctrl, guard)
         assert events[-1] == {"type": "error", "message": "[Unexpected stop reason: max_tokens]"}
+
+
+def multi_tool_response(names, call_ids):
+    """One assistant turn requesting several tools in parallel."""
+    blocks = []
+    for name, cid in zip(names, call_ids):
+        b = MagicMock()
+        b.type, b.name, b.input, b.id = "tool_use", name, {}, cid
+        blocks.append(b)
+    response = MagicMock()
+    response.stop_reason = "tool_use"
+    response.content = blocks
+    return response
+
+
+class TestCancellation:
+    """v4a Stop: cooperative, at round and tool boundaries only (design/16 §5)."""
+
+    def test_cancel_before_the_first_round_makes_no_api_call(self, mock_ctrl, guard):
+        cancel = threading.Event()
+        cancel.set()
+        client = make_mock_client([text_response("never sent")])
+        messages = []
+        with patch("microclaw.agent._get_client", return_value=client):
+            events = list(run_agent_iter("go", mock_ctrl, guard, messages, cancel=cancel))
+        assert [e["type"] for e in events] == ["cancelled"]
+        assert client.messages.stream.call_count == 0
+
+    def test_every_tool_use_gets_a_tool_result_when_stopped_mid_batch(self, mock_ctrl, guard):
+        """The invariant that keeps the NEXT turn from 400ing.
+
+        The model asked for three tools; the operator stopped after the first.
+        The Messages API requires the following user message to answer every
+        tool_use block in the assistant turn — so the two unrun ones get an
+        is_error result rather than being dropped.
+        """
+        cancel = threading.Event()
+        ids = ["c1", "c2", "c3"]
+        scripted = [multi_tool_response(["get_system_state"] * 3, ids)]
+        messages = []
+        events = []
+        with patch("microclaw.agent._get_client", return_value=make_mock_client(scripted)):
+            for event in run_agent_iter("go", mock_ctrl, guard, messages, cancel=cancel):
+                events.append(event)
+                if event["type"] == "tool_result":
+                    cancel.set()          # stop after the first tool returns
+
+        assert events[-1]["type"] == "cancelled"
+
+        asst, results = messages[-2], messages[-1]
+        assert asst["role"] == "assistant" and results["role"] == "user"
+        assert {b.id for b in asst["content"]} == set(ids)
+        assert {b["tool_use_id"] for b in results["content"]} == set(ids)
+
+        errored = [b for b in results["content"] if b.get("is_error")]
+        assert {b["tool_use_id"] for b in errored} == {"c2", "c3"}
+        for b in errored:
+            assert "Cancelled by the operator" in b["content"]
+
+    def test_the_first_tool_still_ran(self, mock_ctrl, guard):
+        """Stop waits for the running tool; it does not unwind what it did."""
+        cancel = threading.Event()
+        scripted = [multi_tool_response(["get_system_state"] * 2, ["c1", "c2"])]
+        messages = []
+        with patch("microclaw.agent._get_client", return_value=make_mock_client(scripted)):
+            for event in run_agent_iter("go", mock_ctrl, guard, messages, cancel=cancel):
+                if event["type"] == "tool_result":
+                    cancel.set()
+        first = messages[-1]["content"][0]
+        assert not first.get("is_error")
+        assert "Cancelled" not in first["content"]
+
+    def test_cancel_between_rounds_ends_the_turn_cleanly(self, mock_ctrl, guard):
+        cancel = threading.Event()
+        scripted = [tool_use_response("get_system_state", {}, call_id="c1"),
+                    text_response("never reached")]
+        messages = []
+        events = []
+        with patch("microclaw.agent._get_client", return_value=make_mock_client(scripted)):
+            for event in run_agent_iter("go", mock_ctrl, guard, messages, cancel=cancel):
+                events.append(event)
+                if event["type"] == "tool_result":
+                    cancel.set()   # set after round 0 completed its batch
+        assert events[-1]["type"] == "cancelled"
+        # round 0 completed in full: nothing to unwind, no synthesized errors
+        assert [m["role"] for m in messages] == ["user", "assistant", "user"]
+        assert not any(b.get("is_error") for b in messages[-1]["content"])
+
+    def test_a_turn_with_no_cancel_event_is_unaffected(self, mock_ctrl, guard):
+        events = list(_drain_iter([text_response("hi")], [], mock_ctrl, guard))
+        assert [e["type"] for e in events] == ["round_start", "text_delta", "done"]
+
+
+def _drain_iter(scripted, messages, ctrl, guard, **kw):
+    with patch("microclaw.agent._get_client", return_value=make_mock_client(scripted)):
+        return list(run_agent_iter("go", ctrl, guard, messages, **kw))
+
+
+class TestBadModel:
+    def test_a_rejected_model_is_an_error_event_not_a_500(self, mock_ctrl, guard):
+        """A free-text picker can hold an id the API doesn't know."""
+        client = MagicMock()
+        client.messages.stream.side_effect = anthropic.NotFoundError(
+            "model: nope", response=httpx.Response(404, request=httpx.Request("POST", "/")),
+            body=None,
+        )
+        messages = [{"role": "user", "content": "earlier"}]
+        with patch("microclaw.agent._get_client", return_value=client):
+            events = list(run_agent_iter("go", mock_ctrl, guard, messages, model="nope"))
+        assert events[-1]["type"] == "error"
+        assert "nope" in events[-1]["message"]
+        # nothing ran, so the prompt is not left sitting unanswered in history
+        assert messages == [{"role": "user", "content": "earlier"}]
+
+
+class TestKnownModels:
+    def test_ids_are_fetched_once_and_cached(self, monkeypatch):
+        import microclaw.agent as agent
+        monkeypatch.setattr(agent, "_known_models", None)
+        client = MagicMock()
+        client.models.list.return_value.data = [
+            types.SimpleNamespace(id="claude-opus-4-8"),
+            types.SimpleNamespace(id="claude-haiku-4-5-20251001"),
+        ]
+        with patch("microclaw.agent._get_client", return_value=client):
+            assert agent.known_models() == ["claude-opus-4-8", "claude-haiku-4-5-20251001"]
+            agent.known_models()
+        assert client.models.list.call_count == 1
+
+    def test_an_unreachable_api_means_no_suggestions_not_an_error(self, monkeypatch):
+        import microclaw.agent as agent
+        monkeypatch.setattr(agent, "_known_models", None)
+        with patch("microclaw.agent._get_client", side_effect=RuntimeError("no key")):
+            assert agent.known_models() == []
+
+    def test_setting_a_key_drops_the_cache(self, monkeypatch):
+        import microclaw.agent as agent
+        monkeypatch.setattr(agent, "_known_models", ["stale"])
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "old")
+        agent.set_api_key("sk-ant-new")
+        assert agent._known_models is None
 
 
 class TestLazyClient:

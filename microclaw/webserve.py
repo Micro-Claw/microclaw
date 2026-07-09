@@ -26,17 +26,30 @@ import sys
 import threading
 import time
 import webbrowser
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    StreamingResponse,
+)
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 from microclaw import credentials
-from microclaw.agent import run_agent_iter, set_api_key
+from microclaw.agent import (
+    DEFAULT_MODEL,
+    known_models,
+    resolve_model,
+    run_agent_iter,
+    set_api_key,
+)
 from microclaw.assets import load_page
 from microclaw.config import load_safety_config
 from microclaw.controller import MicroscopeController
-from microclaw.safety import SafetyGuard
+from microclaw.safety import SafetyGuard, SafetyViolation
 
 # Loopback names. Anything else needs --allow-remote.
 LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
@@ -52,6 +65,10 @@ class Prompt(BaseModel):
 class Key(BaseModel):
     key: str
     persist: bool = True
+
+
+class Model(BaseModel):
+    model: str
 
 
 def _jsonable(history: list[dict]) -> list[dict]:
@@ -99,6 +116,9 @@ class Session:
         # same rule design/15 sets for the safety-config editor (v2).
         self.editable = args.host in LOCAL_HOSTS
         self.lock = asyncio.Lock()  # one operator at a time
+        # Set by POST /api/stop, polled by run_agent_iter at round and tool
+        # boundaries. threading.Event, not asyncio: the turn runs on a thread.
+        self.cancel = threading.Event()
 
         # env > keyring > file; a key found in a store is pushed into the
         # environment now so the first turn doesn't have to look for it.
@@ -151,6 +171,7 @@ def build_app(session) -> FastAPI:
         # until after this handler returns, so a lock taken there would leave a
         # window in which a second prompt passes the check above.
         await session.lock.acquire()
+        session.cancel.clear()
 
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue = asyncio.Queue()
@@ -176,7 +197,8 @@ def build_app(session) -> FastAPI:
             """
             try:
                 for event in run_agent_iter(
-                    msg, session.ctrl, session.guard, session.history, session.model
+                    msg, session.ctrl, session.guard, session.history, session.model,
+                    cancel=session.cancel,
                 ):
                     emit(event)
             except Exception as e:  # noqa: BLE001 — the stream is the only channel
@@ -208,6 +230,86 @@ def build_app(session) -> FastAPI:
             events(),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+        )
+
+    @app.post("/api/stop")
+    async def post_stop():
+        """Ask the running turn to stop at the next round or tool boundary.
+
+        Cooperative, and honest about it: `execute_tool` blocks in Java and there
+        is no interrupting `run_timelapse` halfway. The button says "Stop after
+        the current step" for that reason.
+
+        A UI endpoint, never a tool — the agent must not be able to call it, and
+        it is not in TOOL_REGISTRY. There is deliberately no hardware-halt
+        companion: pyjavaz serializes every bridge call, so a halt would queue
+        behind the tool call it means to interrupt (design/16 §6).
+        """
+        if not session.lock.locked():
+            raise HTTPException(409, "No turn is running.")
+        session.cancel.set()
+        return JSONResponse({"stopping": True})
+
+    @app.get("/api/model")
+    async def get_model():
+        # known_models() is a blocking HTTP call the first time it is asked, and
+        # this endpoint runs on page load — off the event loop.
+        return JSONResponse({
+            "model": resolve_model(session.model),
+            "default": DEFAULT_MODEL,
+            "available": await run_in_threadpool(known_models),
+            "editable": session.editable,
+        })
+
+    @app.post("/api/model")
+    async def post_model(m: Model):
+        if not session.editable:
+            raise HTTPException(
+                403, "Bound beyond localhost: set --model or MICROCLAW_MODEL and restart."
+            )
+        name = m.model.strip()
+        if not name:
+            raise HTTPException(400, "Empty model id.")
+        if session.lock.locked():
+            raise HTTPException(409, "A turn is in progress.")
+        # Never swap models mid-turn. Session-only: --model and MICROCLAW_MODEL
+        # stay the durable knobs.
+        async with session.lock:
+            session.model = name
+        return JSONResponse({"model": resolve_model(session.model)})
+
+    @app.get("/api/artifact")
+    async def get_artifact(path: str):
+        """Download a file a tool wrote. Narrow by construction.
+
+        Fails closed when no workspace root is configured: `resolve_in_workspace`
+        returns the path unchanged in that case (by design, for back-compat),
+        which would turn this into an arbitrary file read on request from any tab
+        on this machine.
+        """
+        if not session.editable:  # loopback only
+            raise HTTPException(403, "Not available when bound beyond localhost.")
+        if session.guard.workspace_dir is None:
+            raise HTTPException(
+                403,
+                "Set workspace_dir in the safety config to download artifacts "
+                "from the browser.",
+            )
+        try:
+            resolved = session.guard.resolve_in_workspace(path)
+        except SafetyViolation as e:
+            raise HTTPException(403, str(e))
+        if not Path(resolved).is_file():
+            raise HTTPException(404, "No such artifact.")
+        name = Path(resolved).name
+        # Always octet-stream + attachment, never a sniffed type: an artifact
+        # that happens to be HTML, served inline from http://127.0.0.1:8000, is
+        # same-origin script execution against the endpoint driving the stage.
+        return FileResponse(
+            resolved,
+            media_type="application/octet-stream",
+            filename=name,
+            headers={"Content-Disposition": f'attachment; filename="{name}"'},
         )
 
     @app.get("/api/key")

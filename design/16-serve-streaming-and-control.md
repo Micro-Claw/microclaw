@@ -891,6 +891,24 @@ for free.
 
 ---
 
+### Implementation note: where the cancel check lands
+
+`_unwind_cancel` is defensive, not load-bearing. The round-boundary check runs
+immediately after a `tool_results` user message was appended, so there is never a
+pending assistant turn to answer there. The synthesis that matters is the inline
+one: a batch is stopped between tools, and the *sticky* `stopped` flag makes every
+remaining block in that batch take the error branch. Both paths keep the
+`tool_use` / `tool_result` sets equal.
+
+Worth being precise about what the operator gets, because the button's promise
+depends on it. The check sits **before each tool dispatch**, so a tool already
+running when Stop is pressed always finishes. Press Stop while tool 1 of 3 is
+mid-move and tools 2 and 3 are answered with the cancel error. Press it while
+tool 2 is *already* dispatched and tool 2 finishes too, and only tool 3 is
+skipped. There is no arrangement in which a running tool is abandoned, which is
+the whole point — and it means the toast must say "the last step completed",
+not "stopped".
+
 ## 7. v4c — Model picker
 
 `resolve_model` already implements `explicit > $MICROCLAW_MODEL > DEFAULT_MODEL`,
@@ -943,7 +961,10 @@ a bad idea that will work for six months and then match a filename in an error
 message.
 
 Instead, have the tools say so structurally. A key the model ignores and the
-renderer picks up:
+renderer picks up. Shipped on `save_position_list` (`kind: position_list`),
+`export_dataset_as_tiff` (`kind: tiff`) and `read_hook_log` (`kind: hook_log`).
+The acquisition tools' `dataset_path` is deliberately *not* an artifact: an
+NDTiff dataset is a directory, and `FileResponse` cannot serve one.
 
 ```python
 def save_position_list(ctrl, guard, path: str) -> dict:
@@ -956,6 +977,13 @@ def save_position_list(ctrl, guard, path: str) -> dict:
 The renderer draws a chip under the tool card linking to
 `/api/artifact?path=...`. In `view-history` (a `file://` page with no server)
 the chip renders as inert text — check for `location.protocol === "http:"`.
+
+**The path reaches an HTML attribute, and `esc()` is not enough for that.** It
+escapes `< > &` and leaves quotes alone, so a path ending `" onclick="alert(1)`
+hangs an event handler on the anchor — the same trap `dataURL` already
+sidesteps for `media_type`, rediscovered. `href` is safe via
+`encodeURIComponent`; `title` needed a new `escAttr`. A history JSON can come
+from anywhere, including a file dropped on the viewer.
 
 Serving files from the browser is new attack surface, so the endpoint is narrow.
 It needs one thing the guard does not expose today — whether a workspace root is
@@ -1048,15 +1076,19 @@ SSE reader.
 
 ## 10. Increments
 
-1. **v3a — the generator.** `run_agent_iter` + `run_agent` as a drain. No
-   endpoint changes, no frontend changes. The full existing test suite must pass
-   untouched; that is the acceptance criterion.
-2. **v3b — the stream.** `POST /api/prompt` → SSE, `sseEvents` reader, live
-   `paint`, `toolCard` pending state. Manual smoke against a running MM.
-3. **v4a — Stop.** `cancel` event, `_unwind_cancel`, `/api/stop`, button. The
-   orphaned-`tool_use` test lands here.
-4. **v4c + v4d — model picker, artifacts.** Independent of each other and of
-   Stop; either can slip.
+1. ~~**v3a — the generator.**~~ **Shipped.** `run_agent_iter` + `run_agent` as a
+   drain. The existing suite passed with only the mock swapped from
+   `messages.create` to `messages.stream`.
+2. ~~**v3b — the stream.**~~ **Shipped**, with the `iterate_in_threadpool`
+   correction in §3. Confirmed on a real rig.
+3. ~~**v4a — Stop.**~~ **Shipped.** `cancel` event, `_unwind_cancel`,
+   `/api/stop`, button. The orphaned-`tool_use` invariant is tested both as a
+   unit (three-tool batch, set equality on the ids) and end-to-end (the turn
+   after a Stop is a conversation the API accepts).
+4. ~~**v4c + v4d — model picker, artifacts.**~~ **Shipped.** `known_models()` is
+   fetched once per process and off the event loop — it is a blocking HTTP call
+   and `/api/model` runs on page load. `esc` → `escAttr` for the artifact chip's
+   `title` (§8).
 5. ~~**v4b — hardware halt.**~~ **Cancelled** (§6): pyjavaz serializes bridge
    calls, so the halt can never preempt a running tool call. Stop is a complete
    feature without it. Run the spike once more if you want the serialization

@@ -362,6 +362,16 @@ class SafetyGuard:
                 f"{device}={pos:.2f} µm exceeds the maximum allowed ({lim.max_um:.2f} µm)."
             )
 
+    @property
+    def workspace_dir(self) -> Optional[str]:
+        """The configured workspace root, or None if the lab has not set one.
+
+        A real accessor rather than a reach-in to `guard._c`: `/api/artifact`
+        must fail closed when this is None, because `resolve_in_workspace` is
+        then a no-op and the endpoint would serve any file the user can read.
+        """
+        return self._c.workspace_dir
+
     def resolve_in_workspace(self, path: str) -> str:
         """Resolve a file path, confining it to workspace_dir if one is set.
 

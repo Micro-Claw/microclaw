@@ -8,6 +8,7 @@ echoed back, and a refusal to bind beyond localhost without an opt-in.
 import contextlib
 import json
 import socket
+import threading
 import time
 import types
 
@@ -43,17 +44,32 @@ class _FakeLock:
         self.release()
 
 
+class _FakeGuard:
+    """Only the two things /api/artifact touches."""
+
+    def __init__(self, workspace_dir=None):
+        self.workspace_dir = workspace_dir
+
+    def resolve_in_workspace(self, path):
+        from microclaw.safety import SafetyConstraints, SafetyGuard
+
+        return SafetyGuard(
+            SafetyConstraints(workspace_dir=self.workspace_dir)
+        ).resolve_in_workspace(path)
+
+
 @pytest.fixture
 def session():
     return types.SimpleNamespace(
         ctrl=object(),
-        guard=object(),
+        guard=_FakeGuard(),
         model=None,
         history=[],
         history_fn="unused.json",
         save=False,          # never write a history file from a test
         editable=True,
         lock=_FakeLock(),
+        cancel=threading.Event(),
     )
 
 
@@ -246,6 +262,135 @@ def test_history_is_written_after_a_turn(session, monkeypatch, tmp_path):
     TestClient(build_app(session)).post("/api/prompt", json={"message": "snap"})
     assert _settle(session)
     assert json.loads((tmp_path / "h.json").read_text(encoding="utf-8"))[0]["content"] == "snap"
+
+
+# ---- stop (v4a) ----
+
+def test_stop_with_no_turn_running_is_a_409(client, session):
+    assert client.post("/api/stop").status_code == 409
+    assert not session.cancel.is_set()
+
+
+def test_stop_sets_the_cancel_event_the_agent_polls(session, client):
+    session.lock = _FakeLock(locked=True)
+    assert client.post("/api/stop").json() == {"stopping": True}
+    assert session.cancel.is_set()
+
+
+def test_a_prompt_clears_a_stale_cancel_flag(session, client, monkeypatch):
+    """A Stop from the previous turn must not kill the next one before it starts."""
+    monkeypatch.setattr(webserve, "run_agent_iter", _agent_iter())
+    session.cancel.set()
+    assert client.post("/api/prompt", json={"message": "snap"}).status_code == 200
+    assert not session.cancel.is_set()
+
+
+def test_the_cancel_event_is_handed_to_the_agent(session, client, monkeypatch):
+    seen = {}
+
+    def fake(msg, ctrl, guard, messages, model=None, cancel=None, **kw):
+        seen["cancel"] = cancel
+        yield {"type": "done", "reply": "ok"}
+
+    monkeypatch.setattr(webserve, "run_agent_iter", fake)
+    client.post("/api/prompt", json={"message": "hi"})
+    assert seen["cancel"] is session.cancel
+
+
+def test_stop_is_not_a_tool_the_agent_can_call():
+    """A UI endpoint, not a tool — the same rule the safety-config editor sets.
+    The agent must not be able to stop itself, or to reach any /api endpoint."""
+    from microclaw.tools import TOOL_REGISTRY
+
+    assert not any("stop" == name or name.startswith("api_") for name in TOOL_REGISTRY)
+    assert "halt" not in TOOL_REGISTRY   # v4b is cancelled, not deferred
+
+
+# ---- model (v4c) ----
+
+@pytest.fixture
+def no_model_fetch(monkeypatch):
+    """GET /api/model calls known_models(), which would hit the real API."""
+    monkeypatch.setattr(webserve, "known_models", lambda: ["claude-opus-4-8", "claude-haiku-4-5-20251001"])
+
+
+def test_get_model_reports_the_resolved_model_and_suggestions(client, no_model_fetch, monkeypatch):
+    monkeypatch.delenv("MICROCLAW_MODEL", raising=False)
+    body = client.get("/api/model").json()
+    assert body["model"] == body["default"]        # session.model is None
+    assert "claude-opus-4-8" in body["available"]
+    assert body["editable"] is True
+
+
+def test_post_model_sets_it_for_the_session(session, client, no_model_fetch):
+    assert client.post("/api/model", json={"model": " my-model "}).json() == {"model": "my-model"}
+    assert session.model == "my-model"
+
+
+def test_model_cannot_be_swapped_mid_turn(session, client, no_model_fetch):
+    """Prompt caching is scoped per model; swapping mid-turn is also a different
+    model answering half a conversation."""
+    session.lock = _FakeLock(locked=True)
+    assert client.post("/api/model", json={"model": "other"}).status_code == 409
+    assert session.model is None
+
+
+def test_empty_model_is_rejected(client, no_model_fetch):
+    assert client.post("/api/model", json={"model": "  "}).status_code == 400
+
+
+def test_post_model_is_refused_when_bound_beyond_localhost(session, no_model_fetch, monkeypatch):
+    monkeypatch.setattr(credentials, "load_api_key", lambda: ("k", "env"))
+    session.editable = False
+    res = TestClient(build_app(session)).post("/api/model", json={"model": "x"})
+    assert res.status_code == 403
+
+
+# ---- artifacts (v4d) ----
+
+def test_artifact_is_refused_when_no_workspace_is_configured(client):
+    """resolve_in_workspace is a no-op with no root set, which would turn this
+    endpoint into an arbitrary file read on request from any tab."""
+    res = client.get("/api/artifact", params={"path": "/etc/passwd"})
+    assert res.status_code == 403
+    assert "workspace_dir" in res.json()["detail"]
+
+
+def test_artifact_downloads_a_file_inside_the_workspace(session, client, tmp_path):
+    session.guard = _FakeGuard(str(tmp_path))
+    (tmp_path / "positions.json").write_text('{"positions": []}', encoding="utf-8")
+
+    res = client.get("/api/artifact", params={"path": "positions.json"})
+    assert res.status_code == 200
+    assert res.text == '{"positions": []}'
+    # Never a sniffed type: an artifact that happens to be HTML, served inline
+    # from this origin, is script execution against the endpoint driving the stage.
+    assert res.headers["content-type"] == "application/octet-stream"
+    assert res.headers["content-disposition"] == 'attachment; filename="positions.json"'
+
+
+def test_artifact_refuses_a_traversal_path(session, client, tmp_path):
+    session.guard = _FakeGuard(str(tmp_path / "ws"))
+    (tmp_path / "ws").mkdir()
+    (tmp_path / "secret.txt").write_text("nope", encoding="utf-8")
+
+    res = client.get("/api/artifact", params={"path": "../secret.txt"})
+    assert res.status_code == 403
+    assert "escapes" in res.json()["detail"]
+
+
+def test_artifact_that_does_not_exist_is_a_404(session, client, tmp_path):
+    session.guard = _FakeGuard(str(tmp_path))
+    assert client.get("/api/artifact", params={"path": "gone.json"}).status_code == 404
+
+
+def test_artifact_is_refused_when_bound_beyond_localhost(session, tmp_path, monkeypatch):
+    monkeypatch.setattr(credentials, "load_api_key", lambda: ("k", "env"))
+    session.guard = _FakeGuard(str(tmp_path))
+    session.editable = False
+    (tmp_path / "x.json").write_text("{}", encoding="utf-8")
+    res = TestClient(build_app(session)).get("/api/artifact", params={"path": "x.json"})
+    assert res.status_code == 403
 
 
 # ---- origin ----

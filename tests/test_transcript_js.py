@@ -122,3 +122,64 @@ def test_a_saved_history_still_says_no_result_recorded():
     body = tool_card_body(BLOCK, None, False)
     assert "(no result recorded)" in body
     assert "tool-pending" not in body
+
+
+# ---- artifacts (design/16 v4d) ----
+
+def in_node(expr, protocol=None):
+    """Evaluate `expr` against Transcript, optionally with a location shim."""
+    path = resources.files("microclaw").joinpath("transcript.js")
+    loc = f"global.location = {{ protocol: {json.dumps(protocol)} }};\n" if protocol else ""
+    script = (
+        "global.window = {};\n" + loc
+        + f"require({json.dumps(str(path))});\n"
+        + f"process.stdout.write(String({expr}));\n"
+    )
+    out = subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True)
+    return out.stdout
+
+
+SAVED = json.dumps('{"status": "saved", "artifact": {"kind": "position_list", "path": "/ws/p.json"}}')
+
+
+def test_an_artifact_is_read_from_the_result_not_regexed_out_of_prose():
+    assert in_node(f"window.Transcript.artifactOf({SAVED}).path") == "/ws/p.json"
+    # a path mentioned in prose is not an artifact
+    prose = json.dumps('{"status": "Position list saved to /ws/p.json."}')
+    assert in_node(f"window.Transcript.artifactOf({prose})") == "null"
+
+
+def test_an_artifact_is_found_inside_a_block_list_result():
+    blocks = json.dumps([{"type": "text", "text": json.loads(SAVED)}, THUMB])
+    assert in_node(f"window.Transcript.artifactOf({blocks}).kind") == "position_list"
+
+
+def test_a_served_page_links_the_artifact_to_the_download_endpoint():
+    html = in_node(
+        'window.Transcript.artifactChip({kind: "tiff", path: "/ws/a b.tif"})',
+        protocol="http:",
+    )
+    assert 'href="/api/artifact?path=%2Fws%2Fa%20b.tif"' in html
+    assert "download" in html and ">a b.tif<" in html
+
+
+def test_view_history_renders_the_chip_inert():
+    """A file:// page has no server behind it — an <a href> would 404 silently."""
+    html = in_node(
+        'window.Transcript.artifactChip({kind: "tiff", path: "/ws/a.tif"})',
+        protocol="file:",
+    )
+    assert "<a" not in html and "artifact inert" in html and "a.tif" in html
+
+
+def test_a_hostile_artifact_path_cannot_break_out_of_an_attribute():
+    """The path reaches both href= and title=. esc() escapes < > &, not quotes,
+    so title= needs escAttr — a path ending `" onclick="alert(1)` would otherwise
+    hang an event handler on the anchor."""
+    html = in_node(
+        'window.Transcript.artifactChip({kind: "x", path: "a\\" onclick=\\"alert(1)"})',
+        protocol="http:",
+    )
+    tag = html[: html.index(">") + 1]
+    assert '" onclick="' not in tag          # never escapes into an attribute
+    assert 'title="a&quot; onclick=&quot;alert(1)"' in tag

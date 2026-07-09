@@ -166,6 +166,22 @@ pre.json.result { border-left: 3px solid var(--accent); }
 .err-badge { color: #c0392b; }
 :root[data-theme="dark"] .err-badge { color: #ff8a80; }
 
+/* a file a tool wrote. A link under `serve`, inert text under view-history. */
+.artifact {
+  display: inline-flex; align-items: center; gap: 8px; margin-top: 8px;
+  font-family: var(--mono); font-size: 12px; color: var(--ink);
+  background: var(--result-bg); border: 1px solid var(--line-soft);
+  border-radius: 8px; padding: 6px 10px; text-decoration: none; max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+a.artifact:hover { border-color: var(--accent); }
+.artifact.inert { color: var(--ink-faint); }
+.artifact-kind {
+  font-size: 10px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase;
+  color: var(--tool-ink); border: 1px solid var(--tool-line); border-radius: 5px;
+  padding: 1px 6px; flex: none;
+}
+
 /* a tool whose result hasn't landed yet — only ever seen in a live `serve` turn */
 .tool-pending { display: flex; align-items: center; gap: 8px;
   font-size: 12.5px; color: var(--ink-faint); font-family: var(--mono); }

@@ -682,7 +682,9 @@ def export_dataset_as_tiff(
         stack = dataset.read_image()
 
     tifffile.imwrite(output_path, stack, imagej=True)
-    return {"status": "Export complete.", "output_path": output_path, "axes": axis_names}
+    return {"status": "Export complete.", "output_path": output_path,
+            "axes": axis_names,
+            "artifact": {"kind": "tiff", "path": output_path}}
 
 
 # --- Image capture with analysis ---
@@ -1124,7 +1126,11 @@ def save_position_list(ctrl: MicroscopeController, guard: SafetyGuard, path: str
     """Save the position list to a microclaw JSON file (not MM's native .pos)."""
     path = guard.resolve_in_workspace(path)
     ctrl.save_position_list(path)
-    return {"status": f"Position list saved to {path}."}
+    # The `artifact` key is for the transcript renderer, which draws a download
+    # chip from it. Saying so structurally beats regexing paths out of `status`:
+    # that works for six months and then matches a filename in an error message.
+    return {"status": f"Position list saved to {path}.",
+            "artifact": {"kind": "position_list", "path": path}}
 
 
 def _validate_stored_positions(
@@ -1567,7 +1573,8 @@ def read_hook_log(ctrl: MicroscopeController, guard: SafetyGuard, log_path: str)
     if not path.exists():
         return {"error": f"Log file not found: {log_path}"}
     entries = json.loads(path.read_text(encoding="utf-8"))
-    return {"log_path": log_path, "entry_count": len(entries), "entries": entries}
+    return {"log_path": log_path, "entry_count": len(entries), "entries": entries,
+            "artifact": {"kind": "hook_log", "path": log_path}}
 
 
 # --- Hook management ---

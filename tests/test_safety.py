@@ -227,6 +227,13 @@ class TestWorkspaceSandbox:
         guard = SafetyGuard(SafetyConstraints())  # workspace_dir None
         assert guard.resolve_in_workspace("/anywhere/at/all.json") == "/anywhere/at/all.json"
 
+    def test_workspace_dir_is_readable_without_reaching_into_the_guard(self, tmp_path):
+        """`serve`'s /api/artifact must fail closed when no root is set, and it
+        can only know that if the guard says so."""
+        assert SafetyGuard(SafetyConstraints()).workspace_dir is None
+        guard = SafetyGuard(SafetyConstraints(workspace_dir=str(tmp_path)))
+        assert guard.workspace_dir == str(tmp_path)
+
     def test_path_inside_root_resolves(self, tmp_path):
         guard = SafetyGuard(SafetyConstraints(workspace_dir=str(tmp_path)))
         resolved = guard.resolve_in_workspace("sub/data.json")

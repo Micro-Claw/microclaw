@@ -1017,6 +1017,35 @@ class TestExportDatasetAllAxes:
         # z (3) × channel (2) × H (4) × W (4) — no axis silently dropped
         assert captured["shape"] == (3, 2, 4, 4)
         assert result["axes"] == ["z", "channel"]
+        assert result["artifact"] == {"kind": "tiff", "path": str(tmp_path / "o.tif")}
+
+
+class TestArtifactDeclarations:
+    """Tools that write a file say so structurally, so the transcript renderer
+    can offer a download without regexing paths out of prose (design/16 §8)."""
+
+    def test_save_position_list_declares_its_file(self, mock_ctrl, unconstrained_guard, tmp_path):
+        from microclaw import tools
+
+        path = str(tmp_path / "p.json")
+        result = tools.save_position_list(mock_ctrl, unconstrained_guard, path=path)
+        assert result["artifact"] == {"kind": "position_list", "path": path}
+
+    def test_read_hook_log_declares_the_log(self, mock_ctrl, unconstrained_guard, tmp_path):
+        from microclaw import tools
+
+        log = tmp_path / "hook.json"
+        log.write_text('[{"frame": 0}]', encoding="utf-8")
+        result = tools.read_hook_log(mock_ctrl, unconstrained_guard, log_path=str(log))
+        assert result["artifact"] == {"kind": "hook_log", "path": str(log)}
+
+    def test_a_missing_hook_log_declares_nothing(self, mock_ctrl, unconstrained_guard, tmp_path):
+        from microclaw import tools
+
+        result = tools.read_hook_log(
+            mock_ctrl, unconstrained_guard, log_path=str(tmp_path / "gone.json")
+        )
+        assert "error" in result and "artifact" not in result
 
 
 class TestMarkPosition:
