@@ -585,7 +585,10 @@ documented as stopping the XY or focus stage motors, with the caveat that *not
 all stages support it*. A device adapter that doesn't implement Stop may throw,
 or may return successfully having done nothing. **A kill switch that silently
 does nothing is worse than no kill switch**, because the operator will reach for
-it instead of the hardware. Before this button is enabled for a given rig,
+it instead of the hardware. Run 1 established only that `stop('XY')` and
+`stop('Z')` do not *raise* on this rig — which distinguishes "no Stop at all"
+from "Stop that might work", and nothing more. Before this button is enabled for
+a given rig,
 `core.stop()` must be probed against every device in that list and the result
 recorded — and the UI must grey out, with an explanation, any device that failed
 the probe. That probe belongs in `safety_config.yaml` territory, not in a
@@ -610,7 +613,10 @@ introduce in the name of safety.
 **3. Software cannot beat physics, and the UI must not imply it can.** The path
 is browser → uvicorn → threadpool → ZMQ → Java → serial → controller. That is
 tens to hundreds of milliseconds on a good day. A fast stage covers real distance
-in that time. The actual protections against a crash, in the order they matter:
+in that time — run 1 measured this rig crossing 200 µm in under 200 ms, fast
+enough that a 0.2 s software delay missed the entire move. The rewritten spike
+therefore times the travel first and refuses to proceed below ~150 ms, because a
+move shorter than the halt's own latency cannot be halted by anything we build. The actual protections against a crash, in the order they matter:
 correct `z_min`/`z_max` and XY bounds in `safety_config.yaml` (checked *before*
 every move by `check_xy` / `check_z`, which is why an in-bounds move that hits the
 objective means the config is wrong, not that the button was too slow); the stage
@@ -620,32 +626,79 @@ slow, wrong move — not a safety device.** Label it "Halt", never "Emergency
 Stop", and say so in the tooltip. Do not let its existence become an argument for
 loosening anything in the guard.
 
+### Run 1 — voided, and why
+
+The first spike run reported `FAIL=2 PASS=3`. **Both failures were bugs in the
+spike, not facts about the rig, and the run answered neither question.** Recording
+it because the failure mode is instructive and easy to repeat.
+
+* **Test 3's "reply desync" was a bad assertion.** The check was
+  `isinstance(v, float)`. The bridge JSON-encodes an exact 456.0 µm position as
+  the *integer* `456`, so a correct reply was reported as a crossed one. The halt
+  thread's `get_version_info()` came back a proper version string and the
+  post-halt call was healthy — there was never any evidence of a desync.
+* **Test 2's "stop() did not halt the move" measured nothing.** The spike slept a
+  guessed 0.2 s before calling `stop()`. The stage covered 200 µm in less than
+  that, so `stop()` hit an *idle* stage. The spike's own error text flagged the
+  ambiguity, but it printed the two numbers that would have resolved it
+  (`move_wall_s`, `device_busy` before the stop) only on the success paths.
+* **Therefore Test 3 was void too, and silently.** If the move finished before the
+  halt thread fired, the two threads never had calls in flight at once. The
+  overlap the spike exists to test never happened, and nothing in the output said
+  so.
+
+Two lessons, both now enforced in the spike. **Never trigger on a guessed
+delay** — measure the move, then fire on `device_busy()`. And **a test that
+failed to test the thing must report `INCONC`, not `PASS` or `FAIL`**: a green
+Test 3 on that run would have been worse than the red one, because we would have
+believed it.
+
+One incidental signal from run 1 worth keeping: the readback after a pure-X move
+was `y = 256.005`, i.e. 5 nm of noise. That is real hardware, not the demo
+config. A stage that crosses 200 µm in under 200 ms is simply fast.
+
 ### Proposal
 
-Write `design/16-halt-concurrency-spike.py`, in the pattern of
-`hook-thread-affinity-spike.py`, to be run manually on the Windows lab machine
-with a real stage:
+`design/16-halt-concurrency-spike.py` (rewritten after run 1), to be run manually
+on the Windows lab machine with a real stage. It now measures before it acts:
+
+0. **Time the move.** Run the travel once, unhalted, and report its duration.
+   If a full-travel move completes in less than ~150 ms, stop: a halt has to
+   cross browser → uvicorn → threadpool → ZMQ → Java → serial, and it cannot
+   catch this stage. **That is a finding, not a test failure** — it says a
+   software halt on this rig is theatre, and it settles §6 without any further
+   testing.
 
 1. Probe `core.stop(label)` on the XY device, the focus device, and each
-   `named_stages` entry. Record which raise, and — the interesting one — which
-   return cleanly while the stage keeps moving. (Compare position before/after
-   against a still-running move.)
+   `named_stages` entry while **idle** — does the adapter even accept the call?
+   *Run 1 answered this much: `stop('XY')` and `stop('Z')` both return without
+   raising.* That is necessary and nowhere near sufficient; an adapter can accept
+   Stop and ignore it, which is step 2.
 2. Start a long `set_xy_position` + `wait_for_device` on the main thread. From a
-   second thread, mid-move, call `core.stop(xy_label)` and then
-   `guard.shutter_all(core)`. Assert both threads return correct, non-interleaved
-   results, and that `wait_for_device` unblocks.
+   second thread, **poll `device_busy()` until the stage is confirmed moving**,
+   then call `core.stop(xy_label)` and `guard.shutter_all(core)`. Assert the move
+   was cut short, that `wait_for_device` unblocks, and that both threads got
+   correct, non-interleaved replies. If `device_busy()` never went true, report
+   `INCONC` and demand a longer travel — never `FAIL`.
 3. Repeat with a running acquisition instead of a stage move, which is the case
    Spike C covered for *reads* but not for concurrent *writes*.
 
+The `device_busy()` poll in step 2 is not incidental: it runs on the halt thread
+while the main thread is blocked in `wait_for_device()`, so it *is* the
+concurrent bridge traffic that step 2's desync check is looking for.
+
 Fold the findings back into this document before writing the endpoint.
 
-**Until the spike passes**, ship Stop and the rest of v4; the physical E-stop and
-the guard's bounds checks remain the answer to "the stage must halt *now*", and
-the `finally` in `serve()` still shutters on Ctrl-C. If the spike shows the bridge
-serializes concurrent calls safely, `/api/halt` is straightforward. If it shows
-it does not, the honest fallback is a flag the generator honours at the next tool
-boundary — which is just Stop, does not halt anything mid-move, and should not be
-dressed up as a kill switch.
+**Until the spike passes — and as of run 1 it has not even run** — ship Stop and
+the rest of v4; the physical E-stop and the guard's bounds checks remain the
+answer to "the stage must halt *now*", and the `finally` in `serve()` still
+shutters on Ctrl-C. An `INCONC` run leaves `/api/halt` exactly as unbuilt as a
+`FAIL` does; the only thing that authorizes building it is `PASS` on both tests
+with `busy_at_stop` true. If the spike shows the bridge serializes concurrent
+calls safely, `/api/halt` is straightforward. If it shows it does not, the honest
+fallback is a flag the generator honours at the next tool boundary — which is
+just Stop, does not halt anything mid-move, and should not be dressed up as a
+kill switch.
 
 One consequence worth noting either way: a stopped move makes `wait_for_device`
 return early, and `move_stage_xy` already reports requested vs. achieved position
