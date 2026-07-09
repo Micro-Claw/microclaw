@@ -1,6 +1,8 @@
-<img src="docs/microclaw-icon.png" alt="" width="120" align="left" hspace="16" vspace="4">
-
 # Microclaw
+
+<!-- The icon floats beside the description, never beside the <h1>: GitHub gives
+     h1/h2 a full-width bottom border, and that rule would cut across the image. -->
+<img src="docs/microclaw-icon.png" alt="" width="120" align="left" hspace="16" vspace="4">
 
 An AI agent for [Micro-Manager](https://micro-manager.org) fluorescence microscopy control. Describe your acquisition protocol in plain language; Microclaw translates it into Micro-Manager tool calls while the GUI responds in real time.
 
