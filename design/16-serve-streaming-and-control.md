@@ -999,11 +999,12 @@ click a download link.
 
 That coupling had teeth. A rig configured `workspace_dir: C:\Users\rieslab\
 .microclaw` (microclaw's own state directory — hooks, `knowledge.yaml`) to get
-artifact chips, then acquired a z-stack to `D:\`. `run_zstack` does **not** pass
+artifact chips, then acquired a z-stack to `D:\`. `run_zstack` did **not** pass
 `save_dir` through the guard, so the write succeeded; `export_dataset_as_tiff`
-does, so it refused to read the dataset it had just been handed. The guard is
+does, so it refused to read the dataset it had just been handed. The guard was
 one-sided, and requiring `workspace_dir` for artifacts is what made anyone
-notice.
+notice. (That asymmetry is now closed — see below — but the fix here is the
+decoupling, not the confinement.)
 
 The tools already say what they produced. That declaration *is* the capability:
 
@@ -1045,6 +1046,42 @@ regardless; the artifact chip adds no reach. `export_dataset_as_tiff` writes to
 its `output_path`, so a hostile `output_path` clobbers a file rather than
 exposing one. `workspace_dir` remains the answer for a lab that wants those two
 bounded — it is simply no longer mandatory.
+
+### The guard was one-sided: acquisitions wrote outside the workspace
+
+Confirmed on the rig once `workspace_dir` stopped being mandatory, so the test
+could be run for its own sake. With `workspace_dir: D:\microtest`:
+
+```
+run_zstack(save_dir="D:\")        -> {"status": "Z-stack complete.",
+                                      "dataset_path": "D:\zstack_3"}
+export_dataset_as_tiff("D:\zstack_3")
+                                  -> {"error": "... Path 'D:\zstack_3' escapes
+                                      the configured workspace (D:\microtest)."}
+```
+
+The write escaped; the read did not. Recovery cost a **second full acquisition** —
+eleven planes, another sweep of the focus drive — because the first had already
+committed data where the export could never reach it. *A check that runs after
+the irreversible part is the wrong check.*
+
+So `save_dir` now goes through `resolve_in_workspace`, at two points with
+different jobs:
+
+* **`_acquire_with_hooks`** is the single place an acquisition touches the
+  filesystem, so resolving there means no dataset can escape a configured
+  workspace even if a future acquisition tool forgets. It has a test.
+* **The top of each public acquisition tool**, so the refusal lands before
+  `set_exposure` and before the stage moves. Resolving twice is idempotent.
+
+Two more instances of the same shape, fixed with it. `run_adaptive_*` passes
+`log_path` to a hook that writes the file itself, unguarded, while
+`read_hook_log` is guarded — an adaptive run could write a log microclaw would
+then refuse to read back. And `load_position_list` was an unguarded read sitting
+next to a guarded `save_position_list`.
+
+**With `workspace_dir` unset — the default — none of this changes anything.**
+Confinement is opt-in, and a lab that opted in did not mean "except acquisitions."
 
 ### `workspace_dir` at a filesystem root rejects everything
 
