@@ -1,10 +1,11 @@
 import json
+import math
 from unittest.mock import MagicMock, call
 
 import numpy as np
 import pytest
 
-from microclaw.autofocus import AutofocusResult
+from microclaw.autofocus import AutofocusResult, SweepResult
 from microclaw.safety import SafetyConstraints, SafetyGuard, SafetyViolation, StageConstraints
 from microclaw.tools import (
     clear_position_list,
@@ -37,18 +38,12 @@ from microclaw.tools import (
     set_device_property,
     set_exposure,
     snap_and_analyze,
-    snap_image,
     start_live_view,
     stop_live_view,
 )
 
 
-class TestSnapImage:
-    def test_calls_snap(self, mock_ctrl, unconstrained_guard):
-        result = snap_image(mock_ctrl, unconstrained_guard)
-        mock_ctrl.studio.live().snap.assert_called_once_with(True)
-        assert "status" in result
-
+class TestLiveView:
     def test_start_live_view(self, mock_ctrl, unconstrained_guard):
         result = start_live_view(mock_ctrl, unconstrained_guard)
         mock_ctrl.studio.live().set_live_mode_on.assert_called_with(True)
@@ -153,6 +148,138 @@ class TestMoveStageXY:
         assert result["x_um"] == 0.0
         assert result["y_um"] == 0.0
 
+    def test_settling_error_surfaced(self, mock_ctrl, unconstrained_guard):
+        # amr_test carried a 1.1 µm unrequested X excursion nothing surfaced.
+        mock_ctrl.core.get_x_position.return_value = 101.1
+        mock_ctrl.core.get_y_position.return_value = 199.9
+        result = move_stage_xy(mock_ctrl, unconstrained_guard, x_um=100.0, y_um=200.0)
+        assert result["achieved_um"] == [101.1, 199.9]
+        assert result["error_um"] == [pytest.approx(1.1), pytest.approx(-0.1)]
+
+
+class TestCalibrateStageToCamera:
+    def test_recovers_pixel_size_and_restores_stage(
+        self, mock_ctrl, unconstrained_guard, monkeypatch, tmp_path
+    ):
+        from microclaw.tools import calibrate_stage_to_camera
+        monkeypatch.setattr(
+            "microclaw.knowledge_manager.KNOWLEDGE_PATH", tmp_path / "knowledge.yaml"
+        )
+        rng = np.random.default_rng(42)
+        scene = rng.random((128, 128)).astype(np.float32)
+        px = 0.5  # µm per pixel in the simulated optics
+        pos = {"x": 0.0, "y": 0.0}
+        mock_ctrl.core.get_x_position.side_effect = lambda: pos["x"]
+        mock_ctrl.core.get_y_position.side_effect = lambda: pos["y"]
+        mock_ctrl.core.set_relative_xy_position.side_effect = (
+            lambda dx, dy: (pos.__setitem__("x", pos["x"] + dx),
+                            pos.__setitem__("y", pos["y"] + dy))
+        )
+        monkeypatch.setattr(
+            "microclaw.tools.snap_to_numpy",
+            lambda ctrl: np.roll(
+                scene,
+                (int(round(pos["y"] / px)), int(round(pos["x"] / px))),
+                axis=(0, 1),
+            ),
+        )
+        result = calibrate_stage_to_camera(mock_ctrl, unconstrained_guard, step_um=20.0)
+        assert "error" not in result
+        assert result["pixel_size_um"] == pytest.approx(px, rel=0.05)
+        assert result["n_snaps"] == 4
+        assert pos == {"x": 0.0, "y": 0.0}, "stage must return to its start"
+
+    def test_featureless_field_returns_error_not_garbage(
+        self, mock_ctrl, unconstrained_guard, monkeypatch, tmp_path
+    ):
+        from microclaw.tools import calibrate_stage_to_camera
+        monkeypatch.setattr(
+            "microclaw.knowledge_manager.KNOWLEDGE_PATH", tmp_path / "knowledge.yaml"
+        )
+        monkeypatch.setattr(
+            "microclaw.tools.snap_to_numpy",
+            lambda ctrl: np.zeros((64, 64), dtype=np.float32),
+        )
+        result = calibrate_stage_to_camera(mock_ctrl, unconstrained_guard)
+        assert "error" in result
+
+
+class _FakeDeviceType:
+    def __init__(self, name, ordinal):
+        self._name, self._ordinal = name, ordinal
+
+    def to_string(self):
+        return self._name
+
+    def swig_value(self):
+        return self._ordinal
+
+
+class TestNamedStages:
+    """design/14 §6: address any stage by label, guarded per device, fail-closed."""
+
+    _TYPES = {
+        "DCam": _FakeDeviceType("CameraDevice", 2),
+        "DXYStage": _FakeDeviceType("XYStageDevice", 6),
+        "DStage": _FakeDeviceType("StageDevice", 5),
+        "TIRF Stage": _FakeDeviceType("StageDevice", 5),
+    }
+
+    @pytest.fixture
+    def stage_ctrl(self, mock_ctrl):
+        mock_ctrl.core.get_loaded_devices.return_value = list(self._TYPES)
+        mock_ctrl.core.get_device_type.side_effect = lambda d: self._TYPES[d]
+        mock_ctrl.core.get_focus_device.return_value = "DStage"
+        mock_ctrl.core.get_xy_stage_device.return_value = "DXYStage"
+        return mock_ctrl
+
+    @pytest.fixture
+    def stage_guard(self):
+        from microclaw.safety import NamedStageLimits
+        return SafetyGuard(SafetyConstraints(
+            named_stages=[NamedStageLimits("TIRF Stage", -3000.0, 3000.0)]
+        ))
+
+    def test_list_stages_classifies_and_flags_focus(self, stage_ctrl, unconstrained_guard):
+        from microclaw.tools import list_stages
+        result = list_stages(stage_ctrl, unconstrained_guard)
+        assert result["focus_device"] == "DStage"
+        assert result["single_axis_stages"] == ["DStage", "TIRF Stage"]
+        assert result["other_single_axis"] == ["TIRF Stage"]
+        assert result["xy_stages"] == ["DXYStage"]
+
+    def test_get_stage_position(self, stage_ctrl, unconstrained_guard):
+        from microclaw.tools import get_stage_position
+        stage_ctrl.core.get_position.return_value = 123.4567
+        result = get_stage_position(stage_ctrl, unconstrained_guard, device="TIRF Stage")
+        stage_ctrl.core.get_position.assert_called_with("TIRF Stage")
+        assert result["position_um"] == 123.4567
+
+    def test_move_reports_requested_vs_achieved(self, stage_ctrl, stage_guard):
+        from microclaw.tools import move_named_stage
+        # Settling error is real on this rig and was previously invisible.
+        stage_ctrl.core.get_position.side_effect = [100.0, 201.1]  # before, after
+        result = move_named_stage(stage_ctrl, stage_guard, device="TIRF Stage", um=200.0)
+        stage_ctrl.core.set_position.assert_called_once_with("TIRF Stage", 200.0)
+        stage_ctrl.core.wait_for_device.assert_called_with("TIRF Stage")
+        assert result["requested_um"] == 200.0
+        assert result["achieved_um"] == 201.1
+        assert result["error_um"] == pytest.approx(1.1)
+
+    def test_relative_move_resolves_absolute_before_check(self, stage_ctrl, stage_guard):
+        from microclaw.tools import move_named_stage
+        stage_ctrl.core.get_position.side_effect = [2900.0]
+        with pytest.raises(SafetyViolation, match="maximum"):
+            move_named_stage(stage_ctrl, stage_guard, device="TIRF Stage",
+                             um=200.0, absolute=False)
+        stage_ctrl.core.set_position.assert_not_called()
+
+    def test_unconfigured_stage_fails_closed(self, stage_ctrl, stage_guard):
+        from microclaw.tools import move_named_stage
+        with pytest.raises(SafetyViolation, match="No limits configured"):
+            move_named_stage(stage_ctrl, stage_guard, device="DStage", um=10.0)
+        stage_ctrl.core.set_position.assert_not_called()
+
 
 class TestSetChannel:
     def test_allowed_channel(self, mock_ctrl, default_guard):
@@ -209,6 +336,31 @@ class TestSetDeviceProperty:
                                 device="DCam", property="Exposure", value="60000")
         mock_ctrl.core.set_property.assert_not_called()
 
+    def _laser_guard(self):
+        from microclaw.safety import IlluminationConstraints, IlluminationProperty
+        return SafetyGuard(SafetyConstraints(
+            illumination=IlluminationConstraints(
+                shutters=[IlluminationProperty("Luxx638", "Laser Operation Select")]
+            )
+        ))
+
+    def test_illumination_enable_blocked_when_declined(self, mock_ctrl, monkeypatch):
+        # The gate must run through tools.CONFIRM_FN — in code, not the prompt.
+        monkeypatch.setattr("microclaw.tools.CONFIRM_FN", lambda s: False)
+        with pytest.raises(SafetyViolation, match="declined"):
+            set_device_property(mock_ctrl, self._laser_guard(),
+                                device="Luxx638", property="Laser Operation Select",
+                                value="On")
+        mock_ctrl.core.set_property.assert_not_called()
+
+    def test_illumination_enable_passes_when_confirmed(self, mock_ctrl, monkeypatch):
+        monkeypatch.setattr("microclaw.tools.CONFIRM_FN", lambda s: True)
+        set_device_property(mock_ctrl, self._laser_guard(),
+                            device="Luxx638", property="Laser Operation Select",
+                            value="On")
+        mock_ctrl.core.set_property.assert_called_once_with(
+            "Luxx638", "Laser Operation Select", "On")
+
 
 class TestListDevices:
     def test_returns_device_list(self, mock_ctrl, unconstrained_guard):
@@ -232,11 +384,22 @@ class TestGetSystemState:
 
 
 class TestSnapAndAnalyze:
-    def test_returns_dict_by_default(self, mock_ctrl, unconstrained_guard, monkeypatch):
+    @pytest.fixture(autouse=True)
+    def _patch_snaps(self, monkeypatch):
+        self.displayed_calls = []
+        self.headless_calls = []
+        monkeypatch.setattr(
+            "microclaw.tools.snap_to_numpy_displayed",
+            lambda ctrl: self.displayed_calls.append(1)
+            or np.zeros((64, 64), dtype=np.uint16),
+        )
         monkeypatch.setattr(
             "microclaw.tools.snap_to_numpy",
-            lambda ctrl: np.zeros((64, 64), dtype=np.uint16),
+            lambda ctrl: self.headless_calls.append(1)
+            or np.zeros((64, 64), dtype=np.uint16),
         )
+
+    def test_returns_dict_by_default(self, mock_ctrl, unconstrained_guard):
         mock_ctrl.core.get_position.return_value = 50.0
         result = snap_and_analyze(mock_ctrl, unconstrained_guard)
         assert isinstance(result, dict)
@@ -244,11 +407,49 @@ class TestSnapAndAnalyze:
         assert "mean_intensity" in result
         assert "z_um" in result
 
-    def test_returns_multimodal_when_requested(self, mock_ctrl, unconstrained_guard, monkeypatch):
-        monkeypatch.setattr(
-            "microclaw.tools.snap_to_numpy",
-            lambda ctrl: np.zeros((64, 64), dtype=np.uint16),
-        )
+    def test_displays_by_default(self, mock_ctrl, unconstrained_guard):
+        result = snap_and_analyze(mock_ctrl, unconstrained_guard)
+        assert self.displayed_calls and not self.headless_calls
+        assert result["displayed_in_mm_viewer"] is True
+
+    def test_headless_when_display_false(self, mock_ctrl, unconstrained_guard):
+        result = snap_and_analyze(mock_ctrl, unconstrained_guard, display=False)
+        assert self.headless_calls and not self.displayed_calls
+        assert result["displayed_in_mm_viewer"] is False
+
+    def test_live_paused_and_restored(self, mock_ctrl, unconstrained_guard):
+        # The amr_test crash: snapping under live view. snap(True) under live
+        # wedges the bridge (V1), so live MUST be off before the snap.
+        mock_ctrl.studio.live().is_live_mode_on.return_value = True
+        live = mock_ctrl.studio.live()
+        live.set_live_mode_on.reset_mock()
+        result = snap_and_analyze(mock_ctrl, unconstrained_guard)
+        calls = live.set_live_mode_on.call_args_list
+        assert calls[0] == call(False), "live must be stopped before the snap"
+        assert calls[-1] == call(True), "live must be restored after the snap"
+        assert "live_view" in result
+
+    def test_live_untouched_when_off(self, mock_ctrl, unconstrained_guard):
+        mock_ctrl.studio.live().is_live_mode_on.return_value = False
+        live = mock_ctrl.studio.live()
+        live.set_live_mode_on.reset_mock()
+        snap_and_analyze(mock_ctrl, unconstrained_guard)
+        live.set_live_mode_on.assert_not_called()
+
+    def test_metric_is_stamped_with_comparability_key(self, mock_ctrl, unconstrained_guard):
+        # A bare float invites cross-setting comparisons (design/14 §10).
+        result = snap_and_analyze(mock_ctrl, unconstrained_guard)
+        assert result["focus_metric_kind"] == "normalized_laplacian_variance"
+        assert set(result["metric_valid_for"]) == {"roi", "exposure_ms", "binning"}
+
+    def test_zero_pixel_size_carries_warning(self, mock_ctrl, unconstrained_guard):
+        # The model asked about pixel size once and had forgotten 20 messages
+        # later — the warning must ride along on every snap (design/14 §8).
+        mock_ctrl.core.get_pixel_size_um.return_value = 0.0
+        result = snap_and_analyze(mock_ctrl, unconstrained_guard)
+        assert "pixel-size" in result["warning"].lower() or "pixel size" in result["warning"].lower()
+
+    def test_returns_multimodal_when_requested(self, mock_ctrl, unconstrained_guard):
         mock_ctrl.core.get_position.return_value = 50.0
         result = snap_and_analyze(mock_ctrl, unconstrained_guard, return_thumbnail=True)
         assert isinstance(result, list)
@@ -260,18 +461,28 @@ class TestSnapAndAnalyze:
         assert "z_um" in payload
 
 
-_FAKE_AF_RESULT = AutofocusResult(
-    best_z_um=50.0,
-    metric_values=[0.1, 0.9, 0.1],
+_FAKE_SWEEP = SweepResult(
     z_positions=[49.0, 50.0, 51.0],
-    settled=True,
+    metric_values=[0.1, 0.9, 0.1],
+    best_z_um=50.0,
+    peak_interior=True,
+)
+
+_FAKE_AF_RESULT = AutofocusResult(
+    coarse=_FAKE_SWEEP,
+    fine=_FAKE_SWEEP,
+    entry_z_um=50.0,
+    final_z_um=50.0,
+    converged=True,
+    moved=True,
+    reason=None,
 )
 
 
 def _patch_autofocus(monkeypatch):
     """Stub out the sweep functions and image helpers used by run_autofocus."""
     monkeypatch.setattr("microclaw.tools.coarse_then_fine_autofocus", lambda *a, **k: _FAKE_AF_RESULT)
-    monkeypatch.setattr("microclaw.tools.sweep_autofocus", lambda *a, **k: _FAKE_AF_RESULT)
+    monkeypatch.setattr("microclaw.tools.single_sweep_autofocus", lambda *a, **k: _FAKE_AF_RESULT)
     monkeypatch.setattr("microclaw.tools.snap_to_numpy", lambda ctrl: np.zeros((64, 64), dtype=np.uint16))
     monkeypatch.setattr("microclaw.tools.make_thumbnail", lambda img: "")
 
@@ -310,6 +521,53 @@ class TestRunAutofocus:
         run_autofocus(mock_ctrl, unconstrained_guard, z_range_um=10.0, z_step_um=1.0)
 
         live.set_live_mode_on.assert_not_called()
+
+    def test_small_metric_values_survive_rounding(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        """Regression: the normalized metric lives at 1e-2..1e-4.
+
+        A fixed round(v, 2) — carried over from the raw metric's ~1e4 scale —
+        collapsed a real focus curve to [0.0, 0.0, ...] on the demo camera,
+        while `contrast` still reported a peak. Instrumentation must not lie.
+        """
+        tiny = SweepResult(
+            z_positions=[49.0, 50.0, 51.0],
+            metric_values=[0.0031234, 0.0245678, 0.0009876],
+            best_z_um=50.0,
+            peak_interior=True,
+        )
+        monkeypatch.setattr(
+            "microclaw.tools.coarse_then_fine_autofocus",
+            lambda *a, **k: AutofocusResult(tiny, tiny, 50.0, 50.0, True, True, None),
+        )
+        result = run_autofocus(mock_ctrl, unconstrained_guard, z_range_um=10.0,
+                               z_step_um=1.0, return_thumbnail=False)
+        curve = result["coarse"]["metric_curve"]
+        assert all(v > 0 for v in curve), f"curve annihilated by rounding: {curve}"
+        assert curve[1] == pytest.approx(0.02457, rel=1e-3)
+
+    def test_payload_reports_both_passes(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        _patch_autofocus(monkeypatch)
+        result = run_autofocus(mock_ctrl, unconstrained_guard,
+                               z_range_um=10.0, z_step_um=1.0, return_thumbnail=False)
+        assert result["converged"] is True
+        assert result["moved"] is True
+        assert result["entry_z_um"] == 50.0
+        assert result["coarse"]["metric_curve"] == [0.1, 0.9, 0.1]
+        assert result["fine"]["peak_interior"] is True
+
+    def test_nonconverged_payload_says_stage_not_moved(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        flat = AutofocusResult(
+            coarse=SweepResult([45.0, 50.0, 55.0], [1.0, 1.1, 1.05], 55.0, False),
+            fine=None, entry_z_um=50.0, final_z_um=50.0,
+            converged=False, moved=False, reason="Coarse focus metric is flat",
+        )
+        monkeypatch.setattr("microclaw.tools.coarse_then_fine_autofocus", lambda *a, **k: flat)
+        result = run_autofocus(mock_ctrl, unconstrained_guard,
+                               z_range_um=10.0, z_step_um=1.0, return_thumbnail=False)
+        assert result["converged"] is False
+        assert result["moved"] is False
+        assert "flat" in result["reason"]
+        assert result["fine"] is None
 
     def test_live_restored_on_sweep_exception(self, mock_ctrl, unconstrained_guard, monkeypatch):
         monkeypatch.setattr(
@@ -496,6 +754,241 @@ class TestRunTimelapseExposure:
         run_timelapse(mock_ctrl, default_guard, n_frames=1, interval_s=0.0,
                       save_dir="/tmp", channel="DAPI", exposure_ms=50.0)
         mock_ctrl.core.set_exposure.assert_not_called()
+
+
+def _puncta_image(spot_yx=(80, 30), shape=(128, 128)):
+    yy, xx = np.mgrid[0:shape[0], 0:shape[1]]
+    img = np.full(shape, 400, dtype=np.float32)
+    img += 5000 * np.exp(-((yy - spot_yx[0]) ** 2 + (xx - spot_yx[1]) ** 2) / 8.0)
+    return img.astype(np.uint16)
+
+
+class TestFindFeatures:
+    def test_reports_um_offsets_when_calibrated(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        from microclaw.calibration import StageCameraAffine
+        from microclaw.tools import find_features
+        monkeypatch.setattr("microclaw.tools.snap_to_numpy", lambda ctrl: _puncta_image())
+        monkeypatch.setattr(
+            "microclaw.tools._load_current_affine",
+            lambda ctrl: StageCameraAffine(0.5, 0.0, 0.0, 0.5, "obj", 1, 0.5),
+        )
+        mock_ctrl.core.get_pixel_size_um.return_value = 0.5
+        result = find_features(mock_ctrl, unconstrained_guard)
+        off_px = result["offset_from_center_px"]
+        assert result["offset_from_center_um"] == [
+            pytest.approx(off_px[0] * 0.5, abs=0.1),
+            pytest.approx(off_px[1] * 0.5, abs=0.1),
+        ]
+        assert "spot_density_per_um2" in result
+
+    def test_notes_missing_calibration(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        from microclaw.tools import find_features
+        monkeypatch.setattr("microclaw.tools.snap_to_numpy", lambda ctrl: _puncta_image())
+        monkeypatch.setattr("microclaw.tools._load_current_affine", lambda ctrl: None)
+        mock_ctrl.core.get_pixel_size_um.return_value = 0.0
+        result = find_features(mock_ctrl, unconstrained_guard)
+        assert "offset_from_center_um" not in result
+        assert "calibrate_stage_to_camera" in result["note"]
+
+
+class TestCenterFeature:
+    def test_refuses_without_calibration(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        from microclaw.tools import center_feature
+        monkeypatch.setattr("microclaw.tools._load_current_affine", lambda ctrl: None)
+        result = center_feature(mock_ctrl, unconstrained_guard)
+        assert "calibrate_stage_to_camera" in result["error"]
+
+    def test_converges_on_synthetic_scene(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        # 0.5 µm/px identity optics: a stage move of +d µm shifts the spot
+        # -d/0.5 px. The loop must land the spot within tol_px of centre.
+        from microclaw.calibration import StageCameraAffine
+        from microclaw.tools import center_feature
+        px = 0.5
+        pos = {"x": 0.0, "y": 0.0}
+        spot0 = (100.0, 20.0)  # (y, x) at stage (0, 0)
+        mock_ctrl.core.get_x_position.side_effect = lambda: pos["x"]
+        mock_ctrl.core.get_y_position.side_effect = lambda: pos["y"]
+        mock_ctrl.core.set_relative_xy_position.side_effect = (
+            lambda dx, dy: (pos.__setitem__("x", pos["x"] + dx),
+                            pos.__setitem__("y", pos["y"] + dy))
+        )
+        monkeypatch.setattr(
+            "microclaw.tools.snap_to_numpy",
+            lambda ctrl: _puncta_image(
+                (spot0[0] - pos["y"] / px, spot0[1] - pos["x"] / px)
+            ),
+        )
+        monkeypatch.setattr(
+            "microclaw.tools._load_current_affine",
+            lambda ctrl: StageCameraAffine(-px, 0.0, 0.0, -px, "obj", 1, px),
+        )
+        result = center_feature(mock_ctrl, unconstrained_guard, max_iter=3, tol_px=5.0)
+        assert result["centered"] is True
+        assert math.hypot(*result["residual_px"]) <= 5.0
+
+    def test_empty_field_errors(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        from microclaw.calibration import StageCameraAffine
+        from microclaw.tools import center_feature
+        monkeypatch.setattr(
+            "microclaw.tools.snap_to_numpy",
+            lambda ctrl: np.full((64, 64), 400, dtype=np.uint16),
+        )
+        monkeypatch.setattr(
+            "microclaw.tools._load_current_affine",
+            lambda ctrl: StageCameraAffine(0.5, 0.0, 0.0, 0.5, "obj", 1, 0.5),
+        )
+        result = center_feature(mock_ctrl, unconstrained_guard)
+        assert "nothing to centre" in result["error"].lower()
+
+
+class TestFocusLock:
+    """design/14 §5: the lock is readable, and a sweep must not fight it."""
+
+    PROPS = {
+        "Z stage focus locking": {
+            "device": "PIZStage", "property": "External sensor",
+            "mm_property_string": "PIZStage-External sensor",
+            "on": "1", "off": "0",
+        },
+        "QPD X": {"device": "Analog Input", "property": "AnalogInput0",
+                  "mm_property_string": "Analog Input-AnalogInput0"},
+    }
+
+    def _emu(self, monkeypatch, props=None):
+        from microclaw import tools
+        monkeypatch.setattr(
+            tools, "_cached_emu_properties",
+            lambda ctrl: self.PROPS if props is None else props,
+        )
+
+    def test_reports_engaged_with_qpd(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        from microclaw.tools import get_focus_lock_state
+        self._emu(monkeypatch)
+        mock_ctrl.core.get_property.return_value = "1"
+        result = get_focus_lock_state(mock_ctrl, unconstrained_guard)
+        assert result["engaged"] is True
+        assert result["property"] == "PIZStage.External sensor"
+        assert result["qpd"] == {"x": "1"}
+
+    def test_reports_disengaged(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        from microclaw.tools import get_focus_lock_state
+        self._emu(monkeypatch)
+        mock_ctrl.core.get_property.return_value = "0"
+        assert get_focus_lock_state(mock_ctrl, unconstrained_guard)["engaged"] is False
+
+    def test_non_emu_rig_returns_null_not_false(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        # engaged=None means "unknown"; False would be a false reassurance.
+        from microclaw.tools import get_focus_lock_state
+        self._emu(monkeypatch, props={})
+        result = get_focus_lock_state(mock_ctrl, unconstrained_guard)
+        assert result["engaged"] is None
+        assert "reason" in result
+
+    def test_set_focus_lock_writes_on_value(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        from microclaw.tools import set_focus_lock
+        self._emu(monkeypatch)
+        result = set_focus_lock(mock_ctrl, unconstrained_guard, enabled=True)
+        mock_ctrl.core.set_property.assert_called_once_with(
+            "PIZStage", "External sensor", "1")
+        assert result["engaged"] is True
+
+    def test_set_focus_lock_writes_off_value(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        from microclaw.tools import set_focus_lock
+        self._emu(monkeypatch)
+        set_focus_lock(mock_ctrl, unconstrained_guard, enabled=False)
+        mock_ctrl.core.set_property.assert_called_once_with(
+            "PIZStage", "External sensor", "0")
+
+    def test_autofocus_refuses_while_lock_engaged(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        # The sweep would be actively opposed by the piezo servo loop.
+        self._emu(monkeypatch)
+        mock_ctrl.core.get_property.return_value = "1"
+        called = []
+        monkeypatch.setattr("microclaw.tools.coarse_then_fine_autofocus",
+                            lambda *a, **k: called.append(1))
+        result = run_autofocus(mock_ctrl, unconstrained_guard,
+                               z_range_um=10.0, z_step_um=1.0)
+        assert "Focus lock is engaged" in result["error"]
+        assert not called, "no sweep may run against an engaged lock"
+
+    def test_autofocus_runs_when_lock_disengaged(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        self._emu(monkeypatch)
+        mock_ctrl.core.get_property.return_value = "0"
+        _patch_autofocus(monkeypatch)
+        result = run_autofocus(mock_ctrl, unconstrained_guard, z_range_um=10.0,
+                               z_step_um=1.0, return_thumbnail=False)
+        assert result["converged"] is True
+
+    def test_autofocus_runs_on_non_emu_rig(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        self._emu(monkeypatch, props={})
+        _patch_autofocus(monkeypatch)
+        result = run_autofocus(mock_ctrl, unconstrained_guard, z_range_um=10.0,
+                               z_step_um=1.0, return_thumbnail=False)
+        assert result["converged"] is True
+
+
+class TestTimelapseTriggerPreflight:
+    """design/14 §1: refuse an SMLM acquisition whose excitation is gated off."""
+
+    PROPS = {
+        "Laser 3 enable": {"device": "Luxx638", "property": "Laser Operation Select",
+                           "mm_property_string": "Luxx638-Laser Operation Select"},
+        "Laser trigger 3 mode": {"device": "Laser Trigger", "property": "Mode3",
+                                 "mm_property_string": "Laser Trigger-Mode3"},
+        "Laser trigger 3 sequence": {"device": "Laser Trigger", "property": "Sequence3",
+                                     "mm_property_string": "Laser Trigger-Sequence3"},
+    }
+
+    def _setup(self, mock_ctrl, monkeypatch, mode="4 - Follow", sequence="65535"):
+        from microclaw import tools
+        monkeypatch.setattr(tools, "_cached_emu_properties", lambda ctrl: self.PROPS)
+        monkeypatch.setattr("microclaw.tools._acquire_with_hooks", lambda *a, **k: "/tmp/ds")
+        values = {("Laser Trigger", "Mode3"): mode,
+                  ("Laser Trigger", "Sequence3"): sequence}
+        mock_ctrl.core.get_property.side_effect = lambda d, p: values[(d, p)]
+
+    def test_gated_off_trigger_refused(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        from microclaw.tools import run_timelapse
+        self._setup(mock_ctrl, monkeypatch, mode="0 - Off")
+        with pytest.raises(SafetyViolation, match="NOT emit"):
+            run_timelapse(mock_ctrl, unconstrained_guard, n_frames=100, interval_s=0,
+                          save_dir="/tmp", laser_slot=3)
+
+    def test_zero_sequence_refused(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        from microclaw.tools import run_timelapse
+        self._setup(mock_ctrl, monkeypatch, sequence="0")
+        with pytest.raises(SafetyViolation, match="sequence"):
+            run_timelapse(mock_ctrl, unconstrained_guard, n_frames=100, interval_s=0,
+                          save_dir="/tmp", laser_slot=3)
+
+    def test_firing_trigger_passes(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        from microclaw.tools import run_timelapse
+        self._setup(mock_ctrl, monkeypatch)
+        result = run_timelapse(mock_ctrl, unconstrained_guard, n_frames=100, interval_s=0,
+                               save_dir="/tmp", laser_slot=3)
+        assert result["status"] == "Timelapse complete."
+
+    def test_unknown_slot_refused(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        from microclaw.tools import run_timelapse
+        self._setup(mock_ctrl, monkeypatch)
+        with pytest.raises(SafetyViolation, match="slot"):
+            run_timelapse(mock_ctrl, unconstrained_guard, n_frames=1, interval_s=0,
+                          save_dir="/tmp", laser_slot=7)
+
+    def test_non_emu_rig_skips_preflight(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        from microclaw import tools
+        monkeypatch.setattr(tools, "_cached_emu_properties", lambda ctrl: None)
+        monkeypatch.setattr("microclaw.tools._acquire_with_hooks", lambda *a, **k: "/tmp/ds")
+        result = tools.run_timelapse(mock_ctrl, unconstrained_guard, n_frames=1,
+                                     interval_s=0, save_dir="/tmp", laser_slot=3)
+        assert result["status"] == "Timelapse complete."
+
+    def test_no_laser_slot_means_no_preflight(self, mock_ctrl, unconstrained_guard, monkeypatch):
+        monkeypatch.setattr("microclaw.tools._acquire_with_hooks", lambda *a, **k: "/tmp/ds")
+        from microclaw.tools import run_timelapse
+        result = run_timelapse(mock_ctrl, unconstrained_guard, n_frames=1, interval_s=0,
+                               save_dir="/tmp")
+        assert result["status"] == "Timelapse complete."
 
 
 class TestExportDatasetAllAxes:
@@ -827,6 +1320,51 @@ class TestGetDevicePropertyInfo:
         )
         mock_ctrl.core.get_property_lower_limit.assert_not_called()
         mock_ctrl.core.get_property_upper_limit.assert_not_called()
+
+    class _EnumProxy:
+        """pyjavaz-shaped enum shadow: to_string()/swig_value(), useless repr."""
+
+        def __init__(self, name, ordinal):
+            self._name, self._ordinal = name, ordinal
+
+        def to_string(self):
+            return self._name
+
+        def swig_value(self):
+            return self._ordinal
+
+        def __repr__(self):
+            return "<pyjavaz...mmcorej_PropertyType object at 0x000001B6FFB4DFD0>"
+
+    def test_zmq_proxy_type_resolved_by_name(self, mock_ctrl, unconstrained_guard):
+        self._setup_mock(mock_ctrl, prop_type=self._EnumProxy("Float", 2))
+        result = get_device_property_info(
+            mock_ctrl, unconstrained_guard, device="Camera", property="Gain"
+        )
+        assert result["type"] == "Float"
+
+    def test_zmq_proxy_type_resolved_by_ordinal(self, mock_ctrl, unconstrained_guard):
+        class OrdinalOnly:
+            def swig_value(self):
+                return 3
+        self._setup_mock(mock_ctrl, prop_type=OrdinalOnly())
+        result = get_device_property_info(
+            mock_ctrl, unconstrained_guard, device="Dev", property="Prop"
+        )
+        assert result["type"] == "Integer"
+
+    def test_type_never_leaks_a_heap_address(self, mock_ctrl, unconstrained_guard):
+        # The design/14 §11 regression: an opaque proxy must yield an enum name
+        # or "Unknown", never a sliced repr with a memory address.
+        class OpaqueProxy:
+            def __repr__(self):
+                return "<pyjavaz...mmcorej_PropertyType object at 0x000001B6FFB4DFD0>"
+        self._setup_mock(mock_ctrl, prop_type=OpaqueProxy())
+        result = get_device_property_info(
+            mock_ctrl, unconstrained_guard, device="Dev", property="Prop"
+        )
+        assert result["type"] in {"Undef", "String", "Float", "Integer", "Unknown"}
+        assert "0x" not in result["type"]
 
 
 class TestGetHookDocumentation:

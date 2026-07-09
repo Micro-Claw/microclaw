@@ -1,7 +1,9 @@
 from __future__ import annotations
 import inspect
 import json
+import math
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -10,9 +12,22 @@ import tifffile
 from pycromanager import Acquisition, multi_d_acquisition_events
 from ndstorage import Dataset
 
-from microclaw.autofocus import coarse_then_fine_autofocus, sweep_autofocus
+from microclaw.autofocus import (
+    AutofocusResult,
+    coarse_then_fine_autofocus,
+    curve_contrast,
+    single_sweep_autofocus,
+)
 from microclaw.controller import MicroscopeController
-from microclaw.image_analysis import compute_stats, make_thumbnail, snap_to_numpy
+from microclaw.errors import humanize_java_error
+from microclaw.image_analysis import (
+    compute_stats,
+    detect_features,
+    make_thumbnail,
+    normalized_laplacian_variance,
+    snap_to_numpy,
+    snap_to_numpy_displayed,
+)
 from microclaw.safety import SafetyGuard, SafetyViolation
 
 
@@ -47,9 +62,24 @@ def _wait(ctrl: MicroscopeController, device: str | None = None) -> None:
 
 # --- Camera ---
 
-def snap_image(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
-    ctrl.studio.live().snap(True)
-    return {"status": "Image snapped and displayed in MM viewer."}
+@contextmanager
+def _pause_live(ctrl: MicroscopeController):
+    """Stop live mode for the duration of a camera op, then restore it.
+
+    core.snap_image() throws "sequence acquisition is running" if live mode is
+    on, and studio.live().snap(True) is worse — it never returns and wedges the
+    single-lock ZMQ bridge (design/14 V1). Every snap path must run inside
+    this. Yields whether live mode was on, so callers can report the bounce.
+    """
+    live = ctrl.studio.live()
+    was_on = bool(live.is_live_mode_on())
+    if was_on:
+        live.set_live_mode_on(False)
+    try:
+        yield was_on
+    finally:
+        if was_on:
+            live.set_live_mode_on(True)
 
 
 def start_live_view(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
@@ -166,7 +196,20 @@ def move_stage_xy(
         ctrl.core.set_relative_xy_position(x_um, y_um)
 
     _wait(ctrl, ctrl.core.get_xy_stage_device())
-    return {"x_um": round(target_x, 3), "y_um": round(target_y, 3), "status": "Moved."}
+    # Report requested vs achieved: in amr_test a Y move carried a 1.1 µm
+    # unrequested X excursion that nothing surfaced (design/14 §8).
+    achieved_x = float(ctrl.core.get_x_position())
+    achieved_y = float(ctrl.core.get_y_position())
+    return {
+        "x_um": round(target_x, 3),
+        "y_um": round(target_y, 3),
+        "achieved_um": [round(achieved_x, 3), round(achieved_y, 3)],
+        "error_um": [
+            round(achieved_x - target_x, 3),
+            round(achieved_y - target_y, 3),
+        ],
+        "status": "Moved.",
+    }
 
 
 # --- Z Stage ---
@@ -199,6 +242,99 @@ def move_stage_z(
     return {"z_um": round(target_z, 3), "status": "Moved."}
 
 
+# --- Named stages (design/14 §6) ---
+
+# mmcorej.DeviceType ordinals for the stage types (verified V3).
+_DEVICE_TYPES = {5: "StageDevice", 6: "XYStageDevice"}
+
+
+def _device_type_name(core, label: str) -> str:
+    """Classify a device via core.get_device_type(label).
+
+    Deliberately avoids get_loaded_devices_of_type: that needs a DeviceType
+    enum value, whose static shadow must go through the JavaClass cache
+    workaround and hung once in the design/14 spike (V3). Per-device
+    classification needs no JavaClass at all.
+    """
+    raw = core.get_device_type(label)
+    if hasattr(raw, "to_string"):
+        name = str(raw.to_string())
+        if name and "0x" not in name:
+            return name
+    if hasattr(raw, "swig_value"):
+        try:
+            v = int(raw.swig_value())
+            return _DEVICE_TYPES.get(v, str(v))
+        except (TypeError, ValueError):
+            pass
+    try:
+        v = int(raw)
+        return _DEVICE_TYPES.get(v, str(v))
+    except (TypeError, ValueError):
+        return str(raw)
+
+
+def list_stages(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
+    """Every stage device, and which ones the core's Z/XY tools actually drive.
+
+    move_stage_z/get_z_position address ONLY core.get_focus_device(). In the
+    amr_test session the TIRF beam-steering axis (a second single-axis stage)
+    was unreachable and the task was handed back to the human (design/14 §6).
+    """
+    focus = str(ctrl.core.get_focus_device())
+    xy = str(ctrl.core.get_xy_stage_device())
+    single, xy_stages = [], []
+    for label in _str_vector(ctrl.core.get_loaded_devices()):
+        kind = _device_type_name(ctrl.core, label)
+        if kind in ("StageDevice", "5"):
+            single.append(label)
+        elif kind in ("XYStageDevice", "6"):
+            xy_stages.append(label)
+    return {
+        "focus_device": focus,
+        "xy_device": xy,
+        "single_axis_stages": single,
+        "xy_stages": xy_stages,
+        "other_single_axis": [d for d in single if d != focus],
+        "note": (
+            "move_stage_z targets focus_device only; use move_named_stage "
+            "(with a named_stages safety entry) for the rest."
+        ),
+    }
+
+
+def get_stage_position(
+    ctrl: MicroscopeController, guard: SafetyGuard, device: str
+) -> dict:
+    return {
+        "device": device,
+        "position_um": round(float(ctrl.core.get_position(device)), 4),
+    }
+
+
+def move_named_stage(
+    ctrl: MicroscopeController,
+    guard: SafetyGuard,
+    device: str,
+    um: float,
+    absolute: bool = True,
+) -> dict:
+    """Move a single-axis stage addressed by label, guarded by the PER-DEVICE
+    limits table (named_stages in the safety config — fail-closed)."""
+    current = float(ctrl.core.get_position(device))
+    target = um if absolute else current + um
+    guard.check_named_stage(device, target)
+    ctrl.core.set_position(device, target)
+    ctrl.core.wait_for_device(device)
+    achieved = float(ctrl.core.get_position(device))
+    return {
+        "device": device,
+        "requested_um": round(target, 4),
+        "achieved_um": round(achieved, 4),
+        "error_um": round(achieved - target, 4),
+    }
+
+
 # --- Channel / Config ---
 
 def set_channel(ctrl: MicroscopeController, guard: SafetyGuard, preset: str) -> dict:
@@ -223,6 +359,9 @@ def set_device_property(
     value: str,
 ) -> dict:
     guard.check_device_property(ctrl.core, device, property, value)
+    # Illumination gate (design/14 §3): shutter enables block on a human 'y',
+    # power writes are capped and ratcheted. In code, not just the prompt.
+    guard.check_illumination(ctrl.core, device, property, value, confirm_fn=CONFIRM_FN)
     ctrl.core.set_property(device, property, value)
     ctrl.studio.app().refresh_gui()
     return {"status": f"Set {device}.{property} = {value!r}."}
@@ -249,6 +388,38 @@ def list_device_properties(
     return {"device": device, "properties": props, "count": len(props)}
 
 
+# mmcorej.PropertyType enum ordinals, verified over the ZMQ bridge (design/14
+# V2: swig_value() → int, to_string() → name).
+_PROP_TYPES = {0: "Undef", 1: "String", 2: "Float", 3: "Integer"}
+
+
+def _property_type_name(core, device: str, prop: str) -> str:
+    """Resolve the MM PropertyType enum to its name.
+
+    Over the ZMQ bridge get_property_type() returns a pyjavaz proxy whose repr
+    is `<pyjavaz...mmcorej_PropertyType object at 0x...>`. The previous
+    `str(...).split(".")[-1]` sliced that repr mid-string and leaked a
+    nondeterministic heap address into the model's context on every property
+    inspection (design/14 §11), poisoning the prompt cache along the way.
+    """
+    raw = core.get_property_type(device, prop)
+    if hasattr(raw, "to_string"):
+        name = str(raw.to_string())
+        if name in _PROP_TYPES.values():
+            return name
+    if hasattr(raw, "swig_value"):
+        try:
+            return _PROP_TYPES.get(int(raw.swig_value()), "Unknown")
+        except (TypeError, ValueError):
+            pass
+    if isinstance(raw, str) and raw in _PROP_TYPES.values():
+        return raw
+    try:
+        return _PROP_TYPES.get(int(raw), "Unknown")
+    except (TypeError, ValueError):
+        return "Unknown"
+
+
 def get_device_property_info(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -257,7 +428,7 @@ def get_device_property_info(
 ) -> dict:
     read_only = bool(ctrl.core.is_property_read_only(device, property))
     pre_init = bool(ctrl.core.is_property_pre_init(device, property))
-    prop_type = str(ctrl.core.get_property_type(device, property)).split(".")[-1]
+    prop_type = _property_type_name(ctrl.core, device, property)
 
     allowed_sv = ctrl.core.get_allowed_property_values(device, property)
     allowed = _str_vector(allowed_sv) if allowed_sv.size() > 0 else None
@@ -406,6 +577,48 @@ def run_zstack(
     return {"status": "Z-stack complete.", "dataset_path": dataset_path}
 
 
+def _assert_excitation_will_fire(ctrl: MicroscopeController, laser_slot: int) -> None:
+    """Refuse an acquisition whose excitation laser is gated off at the trigger.
+
+    In amr_test (design/14 §1) a 100-frame SMLM acquisition ran with the
+    excitation trigger line never verified — had trigger mode been '0 - Off',
+    the dataset would have been 100 blank frames and nothing would have said
+    so. One property read prevents that.
+    """
+    from microclaw.emu_manager import build_emu_map
+
+    props = _cached_emu_properties(ctrl)
+    if not props:
+        return  # non-EMU rig; nothing to assert
+    lasers = build_emu_map(props)["lasers"]
+    laser = lasers.get(laser_slot)
+    if laser is None:
+        raise SafetyViolation(
+            f"No EMU laser at slot {laser_slot}. Configured slots: "
+            f"{sorted(lasers)}. Call get_emu_laser_map() — never infer a slot "
+            f"index from device naming order."
+        )
+    trig = laser.get("trigger_mode")
+    if trig and "device" in trig:
+        mode = str(ctrl.core.get_property(trig["device"], trig["property"]))
+        if mode.strip().startswith("0"):
+            raise SafetyViolation(
+                f"Laser slot {laser_slot} trigger mode is {mode!r}: it will NOT "
+                f"emit during the acquisition — every frame would be blank. Set "
+                f"{trig['device']}.{trig['property']} to a firing mode (e.g. "
+                f"'4 - Follow') first."
+            )
+    seq = laser.get("trigger_sequence")
+    if seq and "device" in seq:
+        value = str(ctrl.core.get_property(seq["device"], seq["property"]))
+        if value.strip() == "0":
+            raise SafetyViolation(
+                f"Laser slot {laser_slot} trigger sequence is 0: the laser is "
+                f"gated off for every frame. Set {seq['device']}."
+                f"{seq['property']} (65535 = always on) first."
+            )
+
+
 def run_timelapse(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -415,7 +628,10 @@ def run_timelapse(
     channel: str | None = None,
     exposure_ms: float | None = None,
     name: str = "timelapse",
+    laser_slot: int | None = None,
 ) -> dict:
+    if laser_slot is not None:
+        _assert_excitation_will_fire(ctrl, laser_slot)
     if channel:
         guard.check_channel(channel)
     if exposure_ms is not None:
@@ -471,22 +687,78 @@ def export_dataset_as_tiff(
 
 # --- Image capture with analysis ---
 
+def _focus_metric_payload(ctrl: MicroscopeController, image: np.ndarray) -> dict:
+    """Focus metric stamped with the settings it is only comparable within.
+
+    A bare float invites exactly the cross-setting comparison the amr_test
+    model made — reading a laser-power increase as a focus improvement
+    (design/14 §10). The metric itself is illumination-normalised; the
+    metric_valid_for block guards the residual ROI/exposure/binning
+    dependence.
+    """
+    try:
+        roi = ctrl.core.get_roi()
+        roi_list = [int(roi.x), int(roi.y), int(roi.width), int(roi.height)]
+    except Exception:
+        roi_list = None
+    try:
+        exposure_ms = round(float(ctrl.core.get_exposure()), 1)
+    except Exception:
+        exposure_ms = None
+    try:
+        binning = str(
+            ctrl.core.get_property(ctrl.core.get_camera_device(), "Binning")
+        )
+    except Exception:
+        binning = None
+    return {
+        "focus_metric": _round_sig(normalized_laplacian_variance(image)),
+        "focus_metric_kind": "normalized_laplacian_variance",
+        "metric_valid_for": {
+            "roi": roi_list,
+            "exposure_ms": exposure_ms,
+            "binning": binning,
+        },
+    }
+
 def snap_and_analyze(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
     return_thumbnail: bool = False,
     thumbnail_size: int = 512,
+    display: bool = True,
 ) -> list | dict:
-    """Snap an image and return numerical stats, plus an optional thumbnail."""
-    image = snap_to_numpy(ctrl)
+    """Snap an image, display it in the MM viewer, and return numerical stats.
+
+    display=True (default) snaps through studio.live().snap(True) so the
+    biologist sees the same exposure the stats describe — the old core-only
+    path silently never reached the viewer, and the agent told the user
+    otherwise (design/14 §7). display=False keeps the snap headless.
+    Live view is paused around the snap either way (V1: never probe by calling).
+    """
+    with _pause_live(ctrl) as was_live:
+        image = snap_to_numpy_displayed(ctrl) if display else snap_to_numpy(ctrl)
     stats = compute_stats(image)
-    text_payload = {
+    text_payload: dict[str, Any] = {
         "z_um": round(ctrl.core.get_position(), 3),
-        "focus_metric": round(stats.focus_metric, 2),
+        # Explicit, so the model never has to guess what the user can see.
+        "displayed_in_mm_viewer": bool(display),
+        **_focus_metric_payload(ctrl, image),
         "mean_intensity": round(stats.mean_intensity, 1),
         "max_intensity": round(stats.max_intensity, 1),
         "saturated_fraction": round(stats.saturated_fraction, 4),
     }
+    if was_live:
+        text_payload["live_view"] = "paused for the snap, then restored"
+    try:
+        pixel_size = float(ctrl.core.get_pixel_size_um())
+    except Exception:
+        pixel_size = None
+    if pixel_size == 0.0:
+        text_payload["warning"] = (
+            "No pixel-size calibration: image-pixel offsets cannot be "
+            "converted to stage µm."
+        )
     if not return_thumbnail:
         return text_payload
     return [
@@ -502,7 +774,216 @@ def snap_and_analyze(
     ]
 
 
+# --- Stage↔camera calibration (design/14 §8) ---
+
+def _current_objective(ctrl: MicroscopeController) -> str:
+    """Best available label for the current optical path (pixel-size config)."""
+    try:
+        name = str(ctrl.core.get_current_pixel_size_config())
+        if name:
+            return name
+    except Exception:
+        pass
+    return "default"
+
+
+def _current_binning(ctrl: MicroscopeController) -> int:
+    try:
+        raw = str(ctrl.core.get_property(ctrl.core.get_camera_device(), "Binning"))
+        return int(raw.split("x")[0])          # "1" or "1x1"
+    except Exception:
+        return 1
+
+
+def _load_current_affine(ctrl: MicroscopeController):
+    from microclaw.calibration import load_affine
+
+    return load_affine(_current_objective(ctrl), _current_binning(ctrl))
+
+
+def calibrate_stage_to_camera(
+    ctrl: MicroscopeController, guard: SafetyGuard, step_um: float = 20.0
+) -> dict:
+    """Snap, move a known ΔX, snap, cross-correlate; repeat for ΔY. ~4 snaps.
+
+    Solves the 2×2 stage↔camera affine — pixel size, camera rotation, and both
+    axis flips — instead of asking the model to infer sign conventions from
+    thumbnails (design/14 §8). Cached in the knowledge base per
+    (objective, binning); it is a property of the optical path, not the session.
+    """
+    from skimage.registration import phase_cross_correlation
+    from microclaw.calibration import save_affine, solve_affine
+
+    # Guard both excursions before touching the stage.
+    x0, y0 = ctrl.core.get_x_position(), ctrl.core.get_y_position()
+    guard.check_xy(x0 + step_um, y0)
+    guard.check_xy(x0, y0 + step_um)
+
+    with _pause_live(ctrl):
+        ref = snap_to_numpy(ctrl)
+        move_stage_xy(ctrl, guard, step_um, 0, absolute=False)
+        img_x = snap_to_numpy(ctrl)
+        move_stage_xy(ctrl, guard, -step_um, 0, absolute=False)
+
+        move_stage_xy(ctrl, guard, 0, step_um, absolute=False)
+        img_y = snap_to_numpy(ctrl)
+        move_stage_xy(ctrl, guard, 0, -step_um, absolute=False)
+
+    # phase_cross_correlation returns (row, col) = (dy_px, dx_px).
+    shift_x, _, _ = phase_cross_correlation(ref, img_x, upsample_factor=10)
+    shift_y, _, _ = phase_cross_correlation(ref, img_y, upsample_factor=10)
+
+    try:
+        affine = solve_affine(
+            (float(shift_x[0]), float(shift_x[1])),
+            (float(shift_y[0]), float(shift_y[1])),
+            step_um,
+            objective=_current_objective(ctrl),
+            binning=_current_binning(ctrl),
+        )
+    except ValueError as e:
+        return {"error": f"Calibration failed: {e}"}
+
+    key = save_affine(affine)
+    from dataclasses import asdict
+    return {
+        **asdict(affine),
+        "n_snaps": 4,
+        "knowledge_key": key,
+        "status": (
+            "Calibrated and cached. Image-pixel offsets can now be converted "
+            "to stage µm (find_features reports offset_from_center_um)."
+        ),
+    }
+
+
+# --- Feature detection and centring (design/14 §9) ---
+
+def find_features(
+    ctrl: MicroscopeController,
+    guard: SafetyGuard,
+    min_sigma: float = 1.0,
+    max_sigma: float = 4.0,
+    threshold_rel: float = 0.15,
+) -> dict:
+    """Snap and return spot count, intensity-weighted centroid, and its offset
+    from the field centre — in pixels always, in µm when calibrated."""
+    with _pause_live(ctrl):
+        image = snap_to_numpy(ctrl)
+    out = detect_features(image, min_sigma, max_sigma, threshold_rel)
+
+    if out["offset_from_center_px"] is not None:
+        affine = _load_current_affine(ctrl)
+        if affine is not None:
+            off_x, off_y = out["offset_from_center_px"]
+            dx_um, dy_um = affine.px_to_um(off_x, off_y)
+            out["offset_from_center_um"] = [round(dx_um, 2), round(dy_um, 2)]
+        else:
+            out["note"] = (
+                "No stage-camera calibration for the current objective/binning; "
+                "offsets are pixels only. Run calibrate_stage_to_camera()."
+            )
+
+    try:
+        px = float(ctrl.core.get_pixel_size_um())
+    except Exception:
+        px = 0.0
+    if px > 0:
+        h, w = image.shape[:2]
+        # Doubles as the SMLM blinking-density check (spots per µm²).
+        out["spot_density_per_um2"] = round(out["n_spots"] / (h * w * px * px), 4)
+    return out
+
+
+def center_feature(
+    ctrl: MicroscopeController,
+    guard: SafetyGuard,
+    max_iter: int = 3,
+    tol_px: float = 5.0,
+) -> dict:
+    """Closed loop: find_features → pixel offset → affine → stage move → repeat.
+
+    Turns "centre the cell in the ROI" from a guess-shift-resnap conversation
+    into arithmetic. Requires calibrate_stage_to_camera to have run for the
+    current objective/binning; every stage move passes the XY guard.
+    """
+    affine = _load_current_affine(ctrl)
+    if affine is None:
+        return {
+            "error": (
+                "No stage-camera calibration for the current objective/binning. "
+                "Run calibrate_stage_to_camera() first."
+            )
+        }
+
+    residual = None
+    for i in range(max_iter + 1):
+        feats = find_features(ctrl, guard)
+        residual = feats["offset_from_center_px"]
+        if residual is None:
+            return {
+                "error": "No signal above background — nothing to centre.",
+                "iterations": i,
+            }
+        if math.hypot(*residual) <= tol_px:
+            return {"centered": True, "iterations": i, "residual_px": residual}
+        if i == max_iter:
+            break
+        dx_um, dy_um = affine.px_to_um(residual[0], residual[1])
+        move_stage_xy(ctrl, guard, -dx_um, -dy_um, absolute=False)
+
+    return {
+        "centered": False,
+        "iterations": max_iter,
+        "residual_px": residual,
+        "hint": (
+            "Residual did not fall below tol_px. If it GREW between iterations, "
+            "the calibration may be stale — rerun calibrate_stage_to_camera."
+        ),
+    }
+
+
 # --- Autofocus (Form A — standalone) ---
+
+def _run_autofocus_passes(
+    ctrl: MicroscopeController,
+    z_range_um: float,
+    z_step_um: float,
+    method: str,
+    settle_ms: int,
+) -> AutofocusResult:
+    if method == "coarse_then_fine":
+        return coarse_then_fine_autofocus(
+            ctrl, z_range_um, max(z_step_um * 5, 1.0), z_step_um, settle_ms
+        )
+    return single_sweep_autofocus(ctrl, z_range_um, z_step_um, settle_ms)
+
+
+def _round_sig(value: float, sig: int = 4) -> float:
+    """Round to significant figures, not decimal places.
+
+    The normalized focus metric lives at 1e-2..1e-4, where a fixed round(v, 2)
+    collapses an entire focus curve to zeros while `contrast` still reports a
+    real peak — instrumentation lying to the model, which is the whole point of
+    design/14. Fixed-decimal rounding was safe only for the old raw metric's
+    ~1e4 scale.
+    """
+    if not math.isfinite(value) or value == 0.0:
+        return float(value)
+    return float(f"%.{sig}g" % value)
+
+
+def _sweep_payload(sweep) -> dict | None:
+    if sweep is None:
+        return None
+    return {
+        "z_positions": [round(z, 3) for z in sweep.z_positions],
+        "metric_curve": [_round_sig(v) for v in sweep.metric_values],
+        "best_z_um": round(sweep.best_z_um, 3),
+        "peak_interior": sweep.peak_interior,
+        "contrast": round(curve_contrast(sweep.metric_values), 3),
+    }
+
 
 def run_autofocus(
     ctrl: MicroscopeController,
@@ -513,49 +994,64 @@ def run_autofocus(
     settle_ms: int = 50,
     return_thumbnail: bool = True,
 ) -> list | dict:
-    """Sweep Z to find the sharpest focal plane."""
-    current_z = ctrl.core.get_position()
-    guard.check_z(current_z - z_range_um / 2)
-    guard.check_z(current_z + z_range_um / 2)
+    """Sweep Z to find the sharpest focal plane.
 
-    live = ctrl.studio.live()
-    was_live = live.is_live_mode_on()
-    if was_live:
-        live.set_live_mode_on(False)
-    try:
-        if method == "coarse_then_fine":
-            result = coarse_then_fine_autofocus(
-                ctrl, z_range_um, max(z_step_um * 5, 1.0), z_step_um, settle_ms
-            )
-        else:
-            result = sweep_autofocus(
-                ctrl,
-                current_z - z_range_um / 2,
-                current_z + z_range_um / 2,
-                z_step_um,
-                settle_ms,
-            )
-    finally:
-        if was_live:
-            live.set_live_mode_on(True)
+    Reports BOTH passes (the coarse pass chooses the plane; the old payload
+    showed only the fine curve — design/14 §4), refuses to move the stage on a
+    structureless metric curve, and always reports entry_z_um so a bad result
+    is trivially undone.
+    """
+    entry_z = ctrl.core.get_position()
+    guard.check_z(entry_z - z_range_um / 2)
+    guard.check_z(entry_z + z_range_um / 2)
+
+    # A sweep against an engaged focus lock fights the piezo servo loop — a
+    # candidate cause of the flat, structureless curve in amr_test (§5).
+    lock = get_focus_lock_state(ctrl, guard)
+    if lock.get("engaged"):
+        return {
+            "error": (
+                f"Focus lock is engaged ({lock['property']}); a Z sweep would "
+                f"fight the servo loop and produce a meaningless metric curve. "
+                f"Call set_focus_lock(enabled=false) first, then re-engage it "
+                f"after focusing."
+            ),
+            "focus_lock": lock,
+        }
+
+    with _pause_live(ctrl):
+        result = _run_autofocus_passes(ctrl, z_range_um, z_step_um, method, settle_ms)
 
     payload: dict[str, Any] = {
-        "best_z_um": round(result.best_z_um, 3),
-        "settled": result.settled,
-        "metric_curve": [round(v, 2) for v in result.metric_values],
-        "z_positions": [round(z, 3) for z in result.z_positions],
+        "converged": result.converged,
+        "moved": result.moved,
+        "reason": result.reason,
+        "entry_z_um": round(result.entry_z_um, 3),
+        "final_z_um": round(result.final_z_um, 3),
+        "z_range_um": z_range_um,
+        # BOTH passes — the caller can see which one chose the plane.
+        "coarse": _sweep_payload(result.coarse),
+        "fine": _sweep_payload(result.fine),
         "warning": (
-            None
-            if result.settled
-            else "Peak focus was at the edge of the sweep range; consider widening z_range_um."
+            "Peak focus was at the edge of the sweep range; consider widening z_range_um."
+            if result.converged and not result.coarse.peak_interior
+            else None
         ),
     }
+
+    # Invariant that would have surfaced the amr_test bug immediately: the
+    # first pass must span the requested window around the entry Z.
+    zs = result.coarse.z_positions
+    assert min(zs) - 1e-6 <= result.entry_z_um <= max(zs) + 1e-6, (
+        "autofocus sweep window does not contain the entry Z"
+    )
 
     if not return_thumbnail:
         return payload
 
-    image = snap_to_numpy(ctrl)
-    payload["focus_metric_at_best"] = round(compute_stats(image).focus_metric, 2)
+    with _pause_live(ctrl):
+        image = snap_to_numpy(ctrl)
+    payload["focus_metric_at_final"] = _round_sig(normalized_laplacian_variance(image))
     return [
         {"type": "text", "text": json.dumps(payload)},
         {
@@ -718,7 +1214,8 @@ def _run_protocol_at(
         )
         marked = {"marked": True}
     if protocol == "snap":
-        ctrl.studio.live().snap(True)
+        with _pause_live(ctrl):                     # snap(True) wedges under live (V1)
+            ctrl.studio.live().snap(True)
         return {"position": pos_label, "status": "snapped", "saved": False, **marked}
     if pos_save_dir is None:
         return {
@@ -896,44 +1393,43 @@ def run_multiposition_with_autofocus(
                 )
                 continue
 
-            coarse_step = max(z_step_um * 5, 1.0)
-            af = (
-                coarse_then_fine_autofocus(ctrl, z_range_um, coarse_step, z_step_um, settle_ms)
-                if autofocus_method == "coarse_then_fine"
-                else sweep_autofocus(
-                    ctrl,
-                    current_z - z_range_um / 2,
-                    current_z + z_range_um / 2,
-                    z_step_um,
-                    settle_ms,
-                )
+            af = _run_autofocus_passes(
+                ctrl, z_range_um, z_step_um, autofocus_method, settle_ms
             )
+            # Non-convergence restores the entry Z; the protocol still runs
+            # there (same plane as no autofocus), but the result must say so —
+            # a silent {"status": "complete"} on an unfocused position is the
+            # design/14 §4 failure mode.
+            af_info: dict[str, Any] = {
+                "best_z_um": round(af.final_z_um, 3),
+                "autofocus_converged": af.converged,
+            }
+            if not af.converged:
+                af_info["autofocus_warning"] = af.reason
 
             pos_save_dir = str(Path(save_dir) / pos_name)
             Path(pos_save_dir).mkdir(parents=True, exist_ok=True)
             try:
                 if protocol == "snap":
                     ctrl.studio.live().snap(True)
-                    results.append(
-                        {"position": pos_name, "best_z_um": round(af.best_z_um, 3), "status": "snapped"}
-                    )
+                    results.append({"position": pos_name, **af_info, "status": "snapped"})
                 elif protocol == "zstack":
                     r = run_zstack(ctrl, guard, save_dir=pos_save_dir, name=pos_name, **params)
-                    results.append({"position": pos_name, "best_z_um": round(af.best_z_um, 3), **r})
+                    results.append({"position": pos_name, **af_info, **r})
                 elif protocol == "timelapse":
                     r = run_timelapse(ctrl, guard, save_dir=pos_save_dir, name=pos_name, **params)
-                    results.append({"position": pos_name, "best_z_um": round(af.best_z_um, 3), **r})
+                    results.append({"position": pos_name, **af_info, **r})
                 else:
                     results.append(
                         {
                             "position": pos_name,
-                            "best_z_um": round(af.best_z_um, 3),
+                            **af_info,
                             "error": f"Unknown protocol '{protocol}'.",
                         }
                     )
             except Exception as e:
                 results.append(
-                    {"position": pos_name, "best_z_um": round(af.best_z_um, 3), "error": str(e)}
+                    {"position": pos_name, **af_info, "error": str(e)}
                 )
     finally:
         if was_live:
@@ -1070,7 +1566,7 @@ def read_hook_log(ctrl: MicroscopeController, guard: SafetyGuard, log_path: str)
     path = Path(log_path)
     if not path.exists():
         return {"error": f"Log file not found: {log_path}"}
-    entries = json.loads(path.read_text())
+    entries = json.loads(path.read_text(encoding="utf-8"))
     return {"log_path": log_path, "entry_count": len(entries), "entries": entries}
 
 
@@ -1247,12 +1743,55 @@ def delete_knowledge(
     return {"error": f"No entry '{key}' in category '{category}'."}
 
 
+# Parsed EMU properties for this session, so derived tools (laser map, focus
+# lock, acquisition pre-flight) don't re-read the config file per call.
+_EMU_SESSION_CACHE: dict[str, Any] = {}
+
+
+def _read_emu_properties(ctrl: MicroscopeController, mm_app_dir: str) -> dict:
+    """Read + parse the EMU config and cache the result for this session."""
+    from microclaw.emu_manager import read_emu_config
+
+    # Device labels are needed to split "DeviceLabel-PropertyLabel" strings —
+    # labels contain hyphens, so the parse is ambiguous without them (§2a).
+    try:
+        device_labels = _str_vector(ctrl.core.get_loaded_devices())
+    except Exception:
+        device_labels = []
+    config = read_emu_config(mm_app_dir, device_labels)
+    _EMU_SESSION_CACHE["properties"] = config["properties"]
+    _EMU_SESSION_CACHE["plugin_name"] = config.get("plugin_name", "")
+    return config
+
+
+def _cached_emu_properties(ctrl: MicroscopeController) -> dict | None:
+    """Parsed EMU properties, or None when this is not an EMU rig."""
+    if "properties" in _EMU_SESSION_CACHE:
+        return _EMU_SESSION_CACHE["properties"]
+    from microclaw.emu_manager import find_mm_app_dir
+
+    try:
+        mm_dir = find_mm_app_dir(ctrl)
+        if mm_dir is None:
+            _EMU_SESSION_CACHE["properties"] = None
+            return None
+        return _read_emu_properties(ctrl, str(mm_dir))["properties"]
+    except Exception:
+        _EMU_SESSION_CACHE["properties"] = None
+        return None
+
+
 def get_emu_configuration(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
     mm_app_dir: str | None = None,
 ) -> dict:
-    from microclaw.emu_manager import find_mm_app_dir, save_mm_app_dir, read_emu_config, _candidate_mm_dirs
+    from microclaw.emu_manager import (
+        build_emu_map,
+        find_mm_app_dir,
+        save_mm_app_dir,
+        _candidate_mm_dirs,
+    )
 
     if mm_app_dir is not None:
         save_mm_app_dir(mm_app_dir)
@@ -1275,15 +1814,123 @@ def get_emu_configuration(
             }
         resolved = str(found)
 
-    config = read_emu_config(resolved)
-    config["mm_app_dir"] = resolved
-    return config
+    config = _read_emu_properties(ctrl, resolved)
+    # Structured, placeholder-free view (design/14 §2): same information as
+    # the raw property dict at ~1/3 the tokens, shaped so a laser cannot be
+    # mismatched to another slot's trigger line.
+    emu_map = build_emu_map(config["properties"])
+    return {
+        "config_name": config["config_name"],
+        "plugin_name": config["plugin_name"],
+        "mm_app_dir": resolved,
+        **emu_map,
+        "note": (
+            "Lasers are keyed by EMU slot index; each slot pairs its own "
+            "enable, power and trigger lines. Never infer a slot index from "
+            "device naming order. Use resolve_emu_device(semantic_name) for "
+            "properties under 'other'."
+        ),
+    }
+
+
+def _read_qpd(ctrl: MicroscopeController, focus_lock: dict) -> dict | None:
+    qpd = focus_lock.get("qpd")
+    if not qpd:
+        return None
+    out = {}
+    for axis, entry in qpd.items():
+        if "device" in entry:
+            try:
+                out[axis] = ctrl.core.get_property(entry["device"], entry["property"])
+            except Exception:
+                pass
+    return out or None
+
+
+def get_focus_lock_state(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
+    """Read the hardware focus lock via the EMU map ('Z stage focus locking').
+
+    In amr_test the model answered its own 'Focus lock engaged?' checklist item
+    with 'You confirmed focus looks fine' — a sharp image is not an engaged
+    lock (design/14 §5). This is the one-call check it lacked.
+    """
+    from microclaw.emu_manager import build_emu_map
+
+    props = _cached_emu_properties(ctrl)
+    if not props:
+        return {"engaged": None, "reason": "No EMU configuration — cannot read a focus lock."}
+    lock = build_emu_map(props)["focus_lock"]
+    if lock is None or "device" not in lock:
+        return {"engaged": None, "reason": "No focus-lock property in the EMU map."}
+    value = str(ctrl.core.get_property(lock["device"], lock["property"]))
+    on_value = str(lock.get("on", "1"))
+    return {
+        "engaged": value == on_value,
+        "raw_value": value,
+        "property": f"{lock['device']}.{lock['property']}",
+        "qpd": _read_qpd(ctrl, lock),
+    }
+
+
+def set_focus_lock(
+    ctrl: MicroscopeController, guard: SafetyGuard, enabled: bool
+) -> dict:
+    """Engage or disengage the hardware focus lock via the EMU map."""
+    from microclaw.emu_manager import build_emu_map
+
+    props = _cached_emu_properties(ctrl)
+    if not props:
+        return {"error": "No EMU configuration — cannot control a focus lock."}
+    lock = build_emu_map(props)["focus_lock"]
+    if lock is None or "device" not in lock:
+        return {"error": "No focus-lock property in the EMU map."}
+    target = str(lock.get("on", "1")) if enabled else str(lock.get("off", "0"))
+    ctrl.core.set_property(lock["device"], lock["property"], target)
+    return {
+        "engaged": enabled,
+        "property": f"{lock['device']}.{lock['property']}",
+        "value": target,
+    }
+
+
+def get_emu_laser_map(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
+    """The slot → laser table (enable / power / trigger lines) from the EMU map."""
+    from microclaw.emu_manager import build_emu_map
+
+    props = _cached_emu_properties(ctrl)
+    if not props:
+        return {"error": "No EMU configuration found — this is not an EMU/htSMLM rig."}
+    lasers = build_emu_map(props)["lasers"]
+    return {
+        "lasers": lasers,
+        "note": (
+            "Slot index pairs each laser with ITS OWN trigger lines. "
+            "Verify trigger_mode/trigger_sequence on the SAME slot you enable."
+        ),
+    }
+
+
+def resolve_emu_device(
+    ctrl: MicroscopeController, guard: SafetyGuard, semantic_name: str
+) -> dict:
+    """Resolve an EMU semantic name ('Laser 3 enable') to its MM device/property."""
+    from microclaw.emu_manager import resolve_emu_device as _resolve
+
+    props = _cached_emu_properties(ctrl)
+    if not props:
+        return {"error": "No EMU configuration found — this is not an EMU/htSMLM rig."}
+    try:
+        return {"semantic_name": semantic_name, **_resolve(props, semantic_name)}
+    except KeyError as e:
+        return {"error": str(e).strip("'\"")}
 
 
 # --- Tool Registry ---
 
+# snap_image was removed (design/14 §7): it differed from snap_and_analyze only
+# by an invisible display side-effect, a trap the model fell into. The display
+# now lives in snap_and_analyze itself.
 TOOL_REGISTRY = {
-    "snap_image": snap_image,
     "snap_and_analyze": snap_and_analyze,
     "start_live_view": start_live_view,
     "stop_live_view": stop_live_view,
@@ -1297,6 +1944,9 @@ TOOL_REGISTRY = {
     "move_stage_xy": move_stage_xy,
     "get_z_position": get_z_position,
     "move_stage_z": move_stage_z,
+    "list_stages": list_stages,
+    "get_stage_position": get_stage_position,
+    "move_named_stage": move_named_stage,
     "set_channel": set_channel,
     "get_available_channels": get_available_channels,
     "set_device_property": set_device_property,
@@ -1306,6 +1956,9 @@ TOOL_REGISTRY = {
     "get_device_property_info": get_device_property_info,
     "get_full_device_state": get_full_device_state,
     "get_system_state": get_system_state,
+    "calibrate_stage_to_camera": calibrate_stage_to_camera,
+    "find_features": find_features,
+    "center_feature": center_feature,
     "run_zstack": run_zstack,
     "run_timelapse": run_timelapse,
     "export_dataset_as_tiff": export_dataset_as_tiff,
@@ -1333,6 +1986,10 @@ TOOL_REGISTRY = {
     "check_emu_installed": check_emu_installed,
     "get_htsmlm_documentation": get_htsmlm_documentation,
     "get_emu_configuration": get_emu_configuration,
+    "get_emu_laser_map": get_emu_laser_map,
+    "resolve_emu_device": resolve_emu_device,
+    "get_focus_lock_state": get_focus_lock_state,
+    "set_focus_lock": set_focus_lock,
     "save_knowledge": save_knowledge,
     "get_knowledge": get_knowledge,
     "delete_knowledge": delete_knowledge,
@@ -1359,8 +2016,10 @@ def execute_tool(
     except SafetyViolation as e:
         return json.dumps({"error": f"Safety constraint prevented this action: {e}"})
     except Exception as e:
+        # Translate rather than forward: a Java stack trace teaches the model
+        # nothing (design/14 §7). Known errors get an actionable one-liner.
         return json.dumps({
-            "error": f"{type(e).__name__}: {e}",
+            "error": f"{type(e).__name__}: {humanize_java_error(e)}",
             "hint": (
                 "This may be a hardware error (device busy, stage at limit, "
                 "device not found) or a connection problem."

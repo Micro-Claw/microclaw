@@ -2,18 +2,6 @@ from typing import Any
 
 TOOLS: list[dict[str, Any]] = [
     {
-        "name": "snap_image",
-        "description": (
-            "Snap a single image and display it in the Micro-Manager snap/live window. "
-            "Use this for a quick one-shot image capture."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {},
-            "required": [],
-        },
-    },
-    {
         "name": "start_live_view",
         "description": "Start the Micro-Manager camera live preview stream.",
         "input_schema": {"type": "object", "properties": {}, "required": []},
@@ -128,6 +116,29 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "calibrate_stage_to_camera",
+        "description": (
+            "Measure the stage↔camera affine (pixel size, camera rotation, and both "
+            "axis flips) in ~4 snaps: snap, move a known ΔX, snap, cross-correlate; "
+            "repeat for ΔY; the stage returns to its start. Cached per "
+            "(objective, binning) in the knowledge base. Run this before any "
+            "image-guided navigation — with it, 'move the feature to the centre' is "
+            "arithmetic instead of guessing axis signs from thumbnails. Needs a "
+            "structured field of view (features to track)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "step_um": {
+                    "type": "number",
+                    "description": "Stage step used for the measurement (default 20 µm).",
+                    "default": 20.0,
+                },
+            },
+            "required": [],
+        },
+    },
+    {
         "name": "get_z_position",
         "description": "Get the current Z (focus) stage position in micrometers.",
         "input_schema": {"type": "object", "properties": {}, "required": []},
@@ -149,6 +160,52 @@ TOOLS: list[dict[str, Any]] = [
                 },
             },
             "required": ["z_um"],
+        },
+    },
+    {
+        "name": "list_stages",
+        "description": (
+            "List every stage device by type and show which ones the core Z/XY "
+            "tools actually drive. move_stage_z and get_z_position address ONLY "
+            "the core focus device; any other single-axis stage (e.g. a TIRF "
+            "beam-steering axis) must be driven with move_named_stage. Call this "
+            "before assuming an axis is unreachable."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "get_stage_position",
+        "description": "Get the position (µm) of a single-axis stage addressed by device label.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "device": {"type": "string", "description": "Stage device label (from list_stages)."},
+            },
+            "required": ["device"],
+        },
+    },
+    {
+        "name": "move_named_stage",
+        "description": (
+            "Move a single-axis stage addressed by device label (e.g. a TIRF "
+            "steering axis that is not the core focus device). Guarded by the "
+            "per-device named_stages limits in the safety config — a stage with "
+            "no entry there cannot be moved (fail-closed); tell the user to add "
+            "one if refused. Returns requested vs achieved position and the "
+            "settling error."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "device": {"type": "string", "description": "Stage device label (from list_stages)."},
+                "um": {"type": "number", "description": "Target position (absolute) or delta (relative) in µm."},
+                "absolute": {
+                    "type": "boolean",
+                    "description": "True for absolute coordinates, False for relative.",
+                    "default": True,
+                },
+            },
+            "required": ["device", "um"],
         },
     },
     {
@@ -255,7 +312,12 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "run_timelapse",
-        "description": "Run a timelapse acquisition.",
+        "description": (
+            "Run a timelapse acquisition. On an EMU/htSMLM rig, pass laser_slot "
+            "(the EMU slot of the excitation laser, from get_emu_laser_map) so the "
+            "pre-flight can verify that laser's trigger line will actually fire — "
+            "otherwise a gated-off laser silently produces blank frames."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -265,6 +327,14 @@ TOOLS: list[dict[str, Any]] = [
                 "exposure_ms": {"type": "number", "description": "Exposure in ms (optional)."},
                 "save_dir": {"type": "string"},
                 "name": {"type": "string", "default": "timelapse"},
+                "laser_slot": {
+                    "type": "integer",
+                    "description": (
+                        "EMU slot index of the excitation laser (from "
+                        "get_emu_laser_map). The acquisition is refused if that "
+                        "slot's trigger mode is '0 - Off' or its sequence is 0."
+                    ),
+                },
             },
             "required": ["n_frames", "interval_s", "save_dir"],
         },
@@ -293,8 +363,12 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "snap_and_analyze",
         "description": (
-            "Snap a single image and return numerical stats (focus metric, mean intensity, "
-            "saturation). Use this whenever you need quantitative image data. "
+            "Snap a single image, display it in the Micro-Manager viewer, and return "
+            "numerical stats (focus metric, mean intensity, saturation). This is THE "
+            "snap tool — use it both for quantitative image data and for one-shot "
+            "captures the user wants to see. The payload's displayed_in_mm_viewer "
+            "field states whether the image reached the screen. Live view is paused "
+            "around the snap and restored automatically. "
             "Only set return_thumbnail=true when you genuinely need to see the image visually — "
             "it incurs significant vision token cost."
         ),
@@ -315,6 +389,74 @@ TOOLS: list[dict[str, Any]] = [
                     "description": "Max pixel dimension of the thumbnail (default 512).",
                     "default": 512,
                 },
+                "display": {
+                    "type": "boolean",
+                    "description": (
+                        "Show the snapped image in the MM viewer (default true). "
+                        "Set false for a headless snap when display churn is unwanted."
+                    ),
+                    "default": True,
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "find_features",
+        "description": (
+            "Snap and return NUMBERS about the field: spot count (blob detection), "
+            "intensity-weighted centroid, offset of the signal from the field "
+            "centre (pixels, and µm when calibrated), background level, SNR, and "
+            "spot_density_per_um2 (the SMLM blinking-density check). Use this — "
+            "not a thumbnail — whenever you need to answer 'is the feature "
+            "centred?', 'is there anything here?', or 'is the blinking density "
+            "right?'. Deterministic and identical on every call."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "min_sigma": {
+                    "type": "number",
+                    "description": "Smallest blob scale in px (default 1.0).",
+                    "default": 1.0,
+                },
+                "max_sigma": {
+                    "type": "number",
+                    "description": "Largest blob scale in px (default 4.0).",
+                    "default": 4.0,
+                },
+                "threshold_rel": {
+                    "type": "number",
+                    "description": "Relative blob detection threshold, 0-1 (default 0.15).",
+                    "default": 0.15,
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "center_feature",
+        "description": (
+            "Closed loop that centres the brightest feature in the field of view: "
+            "find_features → pixel offset → stage-camera affine → guarded stage "
+            "move → repeat, until the residual is below tol_px or max_iter is "
+            "reached. Requires calibrate_stage_to_camera to have run for the "
+            "current objective/binning. Use this instead of manually nudging the "
+            "stage and re-snapping."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "max_iter": {
+                    "type": "integer",
+                    "description": "Maximum correction moves (default 3).",
+                    "default": 3,
+                },
+                "tol_px": {
+                    "type": "number",
+                    "description": "Acceptable residual offset in pixels (default 5).",
+                    "default": 5.0,
+                },
             },
             "required": [],
         },
@@ -324,9 +466,13 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Run a software autofocus sweep to find the sharpest Z plane. "
             "Sweeps Z from (current_z - z_range_um/2) to (current_z + z_range_um/2) "
-            "in z_step_um steps. Returns best Z, focus metric curve, and a thumbnail. "
+            "in z_step_um steps. Returns BOTH passes (coarse chooses the plane, fine "
+            "refines it) with their metric curves and contrast, plus converged/moved/"
+            "entry_z_um/final_z_um. If the metric curve is structureless (low "
+            "contrast — e.g. faint signal or a too-small ROI), the stage is NOT "
+            "moved: Z is restored to entry_z_um and converged=false explains why. "
             "Default parameters for a 20× objective: z_range_um=20, z_step_um=0.5. "
-            "Widen z_range_um if the result says the peak was at the boundary."
+            "Widen z_range_um if the result says the peak was at the boundary. "
             "If the focus is not converging, check if there are any sharp boundaries in the image. If so, alert the user."
         ),
         "input_schema": {
@@ -814,17 +960,19 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "get_emu_configuration",
         "description": (
-            "Read the EMU configuration file and return the mapping from htSMLM UIProperty "
-            "names to Micro-Manager device labels and property names. "
+            "Read the EMU configuration and return the AUTHORITATIVE structured map "
+            "from htSMLM semantic names to Micro-Manager devices/properties: 'lasers' "
+            "(slot index → its own enable, power and trigger lines), 'filter_wheel' "
+            "(with the state → value table), 'focus_lock', 'other', and 'unallocated' "
+            "(names only). On an EMU/htSMLM rig, call this BEFORE list_device_properties "
+            "or any device probing — never infer a laser/filter/trigger index from "
+            "device naming order. "
             "Only call this if check_emu_installed has confirmed EMU is installed, "
             "OR if the user has explicitly mentioned htSMLM or EMU. "
             "Auto-detects the Micro-Manager installation directory from common platform paths "
             "and a local cache (~/.microclaw/emu.json). If auto-detection fails, returns an "
             "error with instructions; call again with mm_app_dir set to the correct path and "
-            "it will be saved for future calls. "
-            "The returned 'properties' dict maps UIProperty names (e.g. 'Laser 0 enable') to "
-            "dicts containing 'device', 'property', and any TwoState (on/off) or Rescaled "
-            "(slope/offset) metadata needed to compute the correct MM property value."
+            "it will be saved for future calls."
         ),
         "input_schema": {
             "type": "object",
@@ -839,6 +987,64 @@ TOOLS: list[dict[str, Any]] = [
                 },
             },
             "required": [],
+        },
+    },
+    {
+        "name": "get_emu_laser_map",
+        "description": (
+            "Return the EMU slot → laser table: for each slot index, that laser's "
+            "enable, power and trigger (mode/sequence) device-properties. htSMLM "
+            "indexes 'Laser i …' and 'Laser trigger i …' by the same physical slot, "
+            "so always verify the trigger line on the SAME slot you enable — never "
+            "infer a slot index from device naming order. Errors on non-EMU rigs."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "resolve_emu_device",
+        "description": (
+            "Resolve an EMU semantic UIProperty name (e.g. 'Laser 3 enable', "
+            "'Filter wheel position') to its Micro-Manager {device, property} pair. "
+            "Use this instead of guessing which device backs an htSMLM control."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "semantic_name": {
+                    "type": "string",
+                    "description": "EMU UIProperty name as shown by get_emu_configuration.",
+                },
+            },
+            "required": ["semantic_name"],
+        },
+    },
+    {
+        "name": "get_focus_lock_state",
+        "description": (
+            "Read whether the hardware focus lock (external sensor / QPD) is engaged, "
+            "resolved through the EMU map, plus the current QPD readings. A sharp "
+            "image is NOT evidence that the lock is engaged — always answer the SMLM "
+            "checklist's focus-lock item with this tool. Returns engaged=null on rigs "
+            "with no focus-lock property."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "set_focus_lock",
+        "description": (
+            "Engage or disengage the hardware focus lock. Disengage before running a "
+            "software autofocus sweep (which would otherwise fight the servo loop), "
+            "and re-engage afterwards — run_autofocus refuses to run while it is on."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "enabled": {
+                    "type": "boolean",
+                    "description": "True to engage the lock, False to disengage it.",
+                },
+            },
+            "required": ["enabled"],
         },
     },
     {

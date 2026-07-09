@@ -43,3 +43,6 @@ envs/
 
 # Local editor/agent settings
 .claude/settings.local.json
+# Per-rig safety limits (copy of safety_config.example.yaml) — never commit a
+# lab machine's real limits as if they were repo defaults (design/14 §6).
+safety_config.yaml

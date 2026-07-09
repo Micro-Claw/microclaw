@@ -9,7 +9,7 @@ CATEGORIES = ("samples", "devices", "strategies")
 def load_knowledge() -> dict:
     if not KNOWLEDGE_PATH.exists():
         return {}
-    return yaml.safe_load(KNOWLEDGE_PATH.read_text()) or {}
+    return yaml.safe_load(KNOWLEDGE_PATH.read_text(encoding="utf-8")) or {}
 
 
 def save_entry(category: str, key: str, value: dict) -> None:
@@ -18,7 +18,10 @@ def save_entry(category: str, key: str, value: dict) -> None:
     data = load_knowledge()
     data.setdefault(category, {})[key] = value
     KNOWLEDGE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    KNOWLEDGE_PATH.write_text(yaml.dump(data, default_flow_style=False, allow_unicode=True))
+    KNOWLEDGE_PATH.write_text(
+        yaml.dump(data, default_flow_style=False, allow_unicode=True),
+        encoding="utf-8",
+    )
 
 
 def delete_entry(category: str, key: str) -> bool:
@@ -28,7 +31,10 @@ def delete_entry(category: str, key: str) -> bool:
     del data[category][key]
     if not data[category]:
         del data[category]
-    KNOWLEDGE_PATH.write_text(yaml.dump(data, default_flow_style=False, allow_unicode=True))
+    KNOWLEDGE_PATH.write_text(
+        yaml.dump(data, default_flow_style=False, allow_unicode=True),
+        encoding="utf-8",
+    )
     return True
 
 

@@ -40,6 +40,36 @@ forbidden_properties:
 #   - device: DCam
 #     property: Binning
 
+# Illumination gate (design/14 §3). Anything that emits light at the sample.
+# Shutter enables listed here block on a human confirmation before turning on,
+# and are driven to off_value when the session exits (any exit path).
+# Power writes are capped (max_power_percent) and ratcheted
+# (max_power_step_factor: refuse >N× increase in a single write).
+illumination:
+  require_confirm_on_enable: true
+  # max_power_percent: 30.0
+  # max_power_step_factor: 3.0        # 1% -> 25% is 25x: refused
+  shutters: []
+  # shutters:
+  #   - {device: Luxx405,   property: Laser Operation Select, on_value: "On", off_value: "Off"}
+  #   - {device: Luxx488,   property: Laser Operation Select, on_value: "On", off_value: "Off"}
+  #   - {device: Luxx638,   property: Laser Operation Select, on_value: "On", off_value: "Off"}
+  #   - {device: Cobolt561, property: Laser,                  on_value: "On", off_value: "Off"}
+  power_properties: []
+  # power_properties:
+  #   - {device: Luxx405, property: "Laser Power Set-point Select [%]"}
+  #   - {device: Luxx488, property: "Laser Power Set-point Select [%]"}
+  #   - {device: Luxx638, property: "Laser Power Set-point Select [%]"}
+
+# Per-device travel limits for stages addressed by label via move_named_stage
+# (design/14 §6). FAIL-CLOSED: a stage with no entry here cannot be moved by
+# name at all. The global stage.z_min/z_max above applies only to the core
+# focus device.
+named_stages: []
+# named_stages:
+#   - {device: PIZStage,   min_um: 0.0,     max_um: 200.0}
+#   - {device: TIRF Stage, min_um: -3000.0, max_um: 3000.0}
+
 # Filesystem sandbox for file-touching tools (read_hook_from_file, read_hook_log,
 # save_position_list, export_dataset_as_tiff). Unset = unrestricted (unchanged
 # behaviour). Set it to confine those tools' reads/writes to one directory;

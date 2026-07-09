@@ -4,6 +4,9 @@ import pytest
 from microclaw.safety import (
     CameraConstraints,
     ForbiddenProperty,
+    IlluminationConstraints,
+    IlluminationProperty,
+    NamedStageLimits,
     PluginConstraints,
     SafetyConstraints,
     SafetyGuard,
@@ -260,6 +263,179 @@ class TestWorkspaceSandbox:
         cfg.write_text(f"workspace_dir: {tmp_path}\n")
         constraints = SafetyConstraints.from_yaml(str(cfg))
         assert constraints.workspace_dir == str(tmp_path)
+
+
+def _laser_guard(**overrides) -> SafetyGuard:
+    ill = IlluminationConstraints(
+        shutters=[
+            IlluminationProperty(
+                device="Luxx638", property="Laser Operation Select",
+                on_value="On", off_value="Off",
+            )
+        ],
+        power_properties=[
+            ForbiddenProperty("Luxx638", "Laser Power Set-point Select [%]")
+        ],
+        max_power_percent=30.0,
+        max_power_step_factor=3.0,
+        **overrides,
+    )
+    return SafetyGuard(SafetyConstraints(illumination=ill))
+
+
+class TestIlluminationGate:
+    """design/14 §3: a Class-3B laser must not enable without a human 'y'."""
+
+    def test_enable_without_confirm_fn_refused(self):
+        guard = _laser_guard()
+        with pytest.raises(SafetyViolation, match="declined"):
+            guard.check_illumination(
+                _core(), "Luxx638", "Laser Operation Select", "On"
+            )
+
+    def test_enable_declined_by_user_refused(self):
+        guard = _laser_guard()
+        with pytest.raises(SafetyViolation, match="declined"):
+            guard.check_illumination(
+                _core(), "Luxx638", "Laser Operation Select", "On",
+                confirm_fn=lambda s: False,
+            )
+
+    def test_enable_confirmed_passes(self):
+        guard = _laser_guard()
+        guard.check_illumination(
+            _core(), "Luxx638", "Laser Operation Select", "On",
+            confirm_fn=lambda s: True,
+        )
+
+    def test_disable_never_needs_confirmation(self):
+        guard = _laser_guard()
+        guard.check_illumination(
+            _core(), "Luxx638", "Laser Operation Select", "Off"
+        )  # no confirm_fn supplied, still fine
+
+    def test_confirm_not_required_when_flag_off(self):
+        guard = _laser_guard(require_confirm_on_enable=False)
+        guard.check_illumination(
+            _core(), "Luxx638", "Laser Operation Select", "On"
+        )
+
+    def test_unrelated_property_untouched(self):
+        guard = _laser_guard()
+        guard.check_illumination(_core(), "DCam", "Gain", "5")
+
+    def test_power_above_cap_refused(self):
+        guard = _laser_guard()
+        core = _core()
+        core.get_property.return_value = "10.0"
+        with pytest.raises(SafetyViolation, match="max_power_percent"):
+            guard.check_illumination(
+                core, "Luxx638", "Laser Power Set-point Select [%]", "50.0"
+            )
+
+    def test_power_ratchet_refuses_25x_jump(self):
+        # The amr_test escalation: 1% -> 25% in one write is 25x > 3x.
+        guard = _laser_guard()
+        core = _core()
+        core.get_property.return_value = "1.0"
+        with pytest.raises(SafetyViolation, match="ratchet"):
+            guard.check_illumination(
+                core, "Luxx638", "Laser Power Set-point Select [%]", "25.0"
+            )
+
+    def test_power_gradual_increase_allowed(self):
+        guard = _laser_guard()
+        core = _core()
+        core.get_property.return_value = "5.0"
+        guard.check_illumination(
+            core, "Luxx638", "Laser Power Set-point Select [%]", "10.0"
+        )
+
+    def test_power_decrease_always_allowed(self):
+        guard = _laser_guard()
+        core = _core()
+        core.get_property.return_value = "25.0"
+        guard.check_illumination(
+            core, "Luxx638", "Laser Power Set-point Select [%]", "1.0"
+        )
+
+    def test_shutter_all_drives_off_values(self):
+        guard = _laser_guard()
+        core = _core()
+        done = guard.shutter_all(core)
+        core.set_property.assert_called_once_with(
+            "Luxx638", "Laser Operation Select", "Off"
+        )
+        assert done == ["Luxx638.Laser Operation Select"]
+
+    def test_shutter_all_swallows_hardware_errors(self):
+        guard = _laser_guard()
+        core = _core()
+        core.set_property.side_effect = RuntimeError("device unplugged")
+        assert guard.shutter_all(core) == []  # must not raise
+
+    def test_from_yaml_loads_illumination(self, tmp_path):
+        cfg = tmp_path / "safety.yaml"
+        cfg.write_text(
+            "illumination:\n"
+            "  require_confirm_on_enable: true\n"
+            "  max_power_percent: 30.0\n"
+            "  max_power_step_factor: 3.0\n"
+            "  shutters:\n"
+            "    - {device: Luxx638, property: Laser Operation Select}\n"
+            "  power_properties:\n"
+            "    - {device: Luxx638, property: 'Laser Power Set-point Select [%]'}\n"
+        )
+        c = SafetyConstraints.from_yaml(str(cfg))
+        assert c.illumination.max_power_percent == 30.0
+        assert c.illumination.shutters[0].device == "Luxx638"
+        assert c.illumination.shutters[0].on_value == "On"  # default
+        assert c.illumination.power_properties[0].property == (
+            "Laser Power Set-point Select [%]"
+        )
+
+    def test_defaults_when_absent(self, tmp_path):
+        cfg = tmp_path / "safety.yaml"
+        cfg.write_text("stage:\n  z_min: 0.0\n")
+        c = SafetyConstraints.from_yaml(str(cfg))
+        assert c.illumination.shutters == []
+        assert c.illumination.require_confirm_on_enable is True
+
+
+class TestNamedStageLimits:
+    def test_no_entry_fails_closed(self):
+        guard = SafetyGuard(SafetyConstraints())
+        with pytest.raises(SafetyViolation, match="No limits configured"):
+            guard.check_named_stage("TIRF Stage", 100.0)
+
+    def test_within_limits_passes(self):
+        guard = SafetyGuard(SafetyConstraints(
+            named_stages=[NamedStageLimits("TIRF Stage", -3000.0, 3000.0)]
+        ))
+        guard.check_named_stage("TIRF Stage", 2999.0)
+
+    def test_beyond_max_refused(self):
+        guard = SafetyGuard(SafetyConstraints(
+            named_stages=[NamedStageLimits("TIRF Stage", -3000.0, 3000.0)]
+        ))
+        with pytest.raises(SafetyViolation, match="maximum"):
+            guard.check_named_stage("TIRF Stage", 3000.5)
+
+    def test_below_min_refused(self):
+        guard = SafetyGuard(SafetyConstraints(
+            named_stages=[NamedStageLimits("PIZStage", 0.0, 200.0)]
+        ))
+        with pytest.raises(SafetyViolation, match="below"):
+            guard.check_named_stage("PIZStage", -1.0)
+
+    def test_from_yaml_loads_named_stages(self, tmp_path):
+        cfg = tmp_path / "safety.yaml"
+        cfg.write_text(
+            "named_stages:\n"
+            "  - {device: PIZStage, min_um: 0.0, max_um: 200.0}\n"
+        )
+        c = SafetyConstraints.from_yaml(str(cfg))
+        assert c.named_stages == [NamedStageLimits("PIZStage", 0.0, 200.0)]
 
 
 class TestPluginGates:

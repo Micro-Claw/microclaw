@@ -22,12 +22,22 @@ def write_history(fn, history, save=True):
     def default(o):
         return o.model_dump() if hasattr(o, "model_dump") else str(o)
 
-    Path(fn).write_text(json.dumps(history, default=default, indent=2))
+    Path(fn).write_text(json.dumps(history, default=default, indent=2), encoding="utf-8")
 
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="Microclaw: AI agent for Micro-Manager")
-    parser.add_argument("--safety-config", default="safety_config.yaml")
+    # Required, with no default (design/14 §6): the repo ships only
+    # safety_config.example.yaml, whose limits match no real rig — a default
+    # that silently doesn't match the hardware is worse than no default.
+    parser.add_argument(
+        "--safety-config",
+        required=True,
+        help=(
+            "Path to THIS RIG's safety-limits YAML "
+            "(copy safety_config.example.yaml and edit)."
+        ),
+    )
     parser.add_argument("--port", type=int, default=4827)
     parser.add_argument(
         "--model",
@@ -53,7 +63,22 @@ def main():
     # we will overwrite this
     history_fn_name = f"{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}_microclaw_history.json"
 
+    # run_agent returns a fresh list each turn; _repl mutates this one in place
+    # (history[:] = ...) so the finally block always sees the latest turns.
     history = []
+    # try/finally so EVERY exit path — 'exit', Ctrl-C, or a crash inside
+    # run_agent — writes the history AND shutters known illumination
+    # (design/14 §3: a session once ended with a 638 nm laser left at 25%).
+    try:
+        _repl(args, ctrl, guard, history, history_fn_name)
+    finally:
+        write_history(history_fn_name, history, args.save_history)
+        shuttered = guard.shutter_all(ctrl.core)
+        if shuttered:
+            print(f"[microclaw] Illumination off: {', '.join(shuttered)}")
+
+
+def _repl(args, ctrl, guard, history, history_fn_name):
     while True:
         try:
             user_input = input("You: ").strip()
@@ -70,8 +95,8 @@ def main():
             # enable profiling
             pr = cProfile.Profile()
             pr.enable()
-        
-            reply, history = run_agent(user_input, ctrl, guard, history, model=args.model)
+
+            reply, new_history = run_agent(user_input, ctrl, guard, history, model=args.model)
             print(f"\nMicroclaw: {reply}\n")
 
             # print profiling
@@ -82,14 +107,14 @@ def main():
             ps.print_stats(20)
             print(s.getvalue())
         else:
-            reply, history = run_agent(user_input, ctrl, guard, history, model=args.model)
+            reply, new_history = run_agent(user_input, ctrl, guard, history, model=args.model)
             print(f"\nMicroclaw: {reply}\n")
+
+        # In-place so main()'s finally block sees the same list.
+        history[:] = new_history
 
         # Now write once per loop, in case it crashes
         write_history(history_fn_name, history, args.save_history)
-
-    # final history
-    write_history(history_fn_name, history, args.save_history)
 
 
 if __name__ == "__main__":

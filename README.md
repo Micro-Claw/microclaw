@@ -32,6 +32,7 @@ pip install -e ".[test]"
 ### Run
 
 ```bash
+cp safety_config.example.yaml safety_config.yaml   # then edit for YOUR rig
 microclaw --safety-config safety_config.yaml
 ```
 
@@ -39,7 +40,7 @@ microclaw --safety-config safety_config.yaml
 
 | Flag | Default | Purpose |
 |---|---|---|
-| `--safety-config PATH` | `safety_config.yaml` | Hardware-limits file enforced before every tool call. |
+| `--safety-config PATH` | *(required)* | Hardware-limits file enforced before every tool call. Copy `safety_config.example.yaml` and edit for your rig — the example's limits match no real hardware. |
 | `--port N` | `4827` | ZMQ port to reach the running Micro-Manager instance. Match the port set in **Tools → Options**. |
 | `--model ID` | `$MICROCLAW_MODEL` or `claude-opus-4-8` | Anthropic model id. The `MICROCLAW_MODEL` environment variable overrides the built-in default; `--model` overrides both. |
 | `--profile` / `--no-profile` | off | cProfile the session and print stats on exit. |
@@ -57,7 +58,7 @@ C:\path\to\miniconda3\Scripts\activate.bat microclaw && microclaw --safety-confi
 
 ## Safety configuration
 
-Edit `safety_config.yaml` to set hardware limits. These are enforced before every tool call and cannot be overridden by the AI.
+Copy `safety_config.example.yaml` to `safety_config.yaml` and edit it to set this rig's hardware limits. These are enforced before every tool call and cannot be overridden by the AI.
 
 ```yaml
 stage:
@@ -126,14 +127,16 @@ MM_RUNNING=1 pytest -m integration
 
 | Tool | Description |
 |---|---|
-| `snap_image` | Snap a single image (display only; use `run_timelapse` with `n_frames=1` to save) |
-| `snap_and_analyze` | Snap and return focus metric, intensity stats, and thumbnail |
+| `snap_and_analyze` | Snap, display in the MM viewer, and return focus metric, intensity stats, and optional thumbnail (display only; use `run_timelapse` with `n_frames=1` to save) |
 | `start_live_view` / `stop_live_view` | Live camera preview |
 | `set_exposure` / `get_exposure` | Camera exposure |
 | `get_roi` / `set_roi` / `clear_roi` | Camera region of interest |
 | `get_pixel_size` | Effective pixel size at the sample plane (µm) |
 | `move_stage_xy` / `get_xy_position` | XY stage |
 | `move_stage_z` / `get_z_position` | Z (focus) stage |
+| `list_stages` / `get_stage_position` / `move_named_stage` | Any single-axis stage addressed by label (guarded by per-device `named_stages` limits) |
+| `calibrate_stage_to_camera` | Measure the stage↔camera affine (pixel size, rotation, axis flips) in ~4 snaps |
+| `find_features` / `center_feature` | Spot count, centroid, offset from centre; closed-loop centring |
 | `set_channel` / `get_available_channels` | Channel presets |
 | `set_device_property` / `get_device_property` | Raw device properties |
 | `list_devices` | List loaded devices |
@@ -141,7 +144,8 @@ MM_RUNNING=1 pytest -m integration
 | `get_device_property_info` | Type, limits, and allowed values for a property |
 | `get_full_device_state` | All property values for a device |
 | `get_system_state` | Composite state snapshot |
-| `run_autofocus` | Software autofocus Z-sweep |
+| `run_autofocus` | Software autofocus Z-sweep (reports both passes; refuses to move on a flat metric curve) |
+| `get_focus_lock_state` / `set_focus_lock` | Read/drive the hardware focus lock (via the EMU map) |
 | `run_zstack` | Z-stack acquisition |
 | `run_timelapse` | Timelapse acquisition |
 | `export_dataset_as_tiff` | Export NDTiff dataset to ImageJ TIFF |
@@ -167,7 +171,8 @@ MM_RUNNING=1 pytest -m integration
 | `get_smlm_documentation` | Return the SMLM protocol reference (dSTORM/PALM/PAINT parameters, acquisition protocol, drift correction, post-processing, pitfalls) |
 | `check_emu_installed` | Detect whether EMU and htSMLM are installed by scanning the Micro-Manager plugins directory for their JARs |
 | `get_htsmlm_documentation` | Return the htSMLM/EMU reference (UIProperty inventory, control workflow, panel descriptions) — only called if EMU/htSMLM is detected or user mentions it |
-| `get_emu_configuration` | Read the EMU config file and return the UIProperty→MM device/property mapping for the active htSMLM configuration — only called if EMU is detected or user mentions it |
+| `get_emu_configuration` | Read the EMU config and return the structured map (lasers by slot, filter-wheel state table, focus lock) for the active htSMLM configuration — only called if EMU is detected or user mentions it |
+| `get_emu_laser_map` / `resolve_emu_device` | Slot→laser table (each slot's own enable/power/trigger lines); resolve a semantic name to a device-property |
 | `save_knowledge` | Save a non-standard fact about a sample, device, or strategy to the persistent knowledge base |
 | `get_knowledge` | Retrieve entries from the persistent knowledge base |
 | `delete_knowledge` | Remove a single entry from the persistent knowledge base |

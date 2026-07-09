@@ -37,6 +37,16 @@ def mock_ctrl(mock_core, mock_studio):
     return ctrl
 
 
+@pytest.fixture(autouse=True)
+def _clear_emu_session_cache():
+    """tools._EMU_SESSION_CACHE is module-global and would otherwise carry a
+    parsed config (or a cached 'not an EMU rig') between tests."""
+    from microclaw import tools
+    tools._EMU_SESSION_CACHE.clear()
+    yield
+    tools._EMU_SESSION_CACHE.clear()
+
+
 # ── Safety fixtures ─────────────────────────────────────────────────────────
 
 @pytest.fixture

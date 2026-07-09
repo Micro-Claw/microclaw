@@ -63,9 +63,9 @@ def save_hook(name: str, code: str, description: str, source: str) -> None:
     """
     HOOKS_DIR.mkdir(parents=True, exist_ok=True)
     hook_path = HOOKS_DIR / f"{name}.py"
-    hook_path.write_text(code)
+    hook_path.write_text(code, encoding="utf-8")
 
-    manifest = json.loads(MANIFEST.read_text()) if MANIFEST.exists() else {}
+    manifest = json.loads(MANIFEST.read_text(encoding="utf-8")) if MANIFEST.exists() else {}
     manifest[name] = {
         "description": description,
         "path": str(hook_path),
@@ -76,7 +76,7 @@ def save_hook(name: str, code: str, description: str, source: str) -> None:
         "sha256": hashlib.sha256(code.encode()).hexdigest(),
         "accepted_warnings": sorted(lint_hook_code(code)),
     }
-    MANIFEST.write_text(json.dumps(manifest, indent=2))
+    MANIFEST.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
 
 def read_hook_from_file(path: str) -> tuple[str, list[str]]:
@@ -85,7 +85,7 @@ def read_hook_from_file(path: str) -> tuple[str, list[str]]:
     Returns (code, warnings). Does NOT save — caller must call save_hook after
     user confirmation.
     """
-    code = Path(path).read_text()
+    code = Path(path).read_text(encoding="utf-8")
     warnings = lint_hook_code(code)
     return code, warnings
 
@@ -96,11 +96,11 @@ def load_hook_class(name: str):
     Verifies the on-disk bytes against the hash pinned at save time (refusing a
     hook edited after the user confirmed it) and refuses legacy unpinned entries.
     """
-    manifest = json.loads(MANIFEST.read_text()) if MANIFEST.exists() else {}
+    manifest = json.loads(MANIFEST.read_text(encoding="utf-8")) if MANIFEST.exists() else {}
     if name not in manifest:
         raise KeyError(f"No saved hook named '{name}'.")
     entry = manifest[name]
-    code = Path(entry["path"]).read_text()
+    code = Path(entry["path"]).read_text(encoding="utf-8")
     if "sha256" not in entry:
         raise RuntimeError(
             f"Hook '{name}' predates hash-pinning; re-save it via "
@@ -132,5 +132,5 @@ def list_saved_hooks() -> dict[str, dict]:
         return {}
     return {
         k: {"description": v["description"], "source": v["source"]}
-        for k, v in json.loads(MANIFEST.read_text()).items()
+        for k, v in json.loads(MANIFEST.read_text(encoding="utf-8")).items()
     }

@@ -46,11 +46,11 @@ def guard():
 
 
 class TestSnapAndShowPrompt:
-    """'Take a picture' → snap_image → text reply."""
+    """'Take a picture' → snap tool → text reply."""
 
-    def test_snap_image_called(self, mock_ctrl, guard):
+    def test_tool_called_then_reply(self, mock_ctrl, guard):
         scripted = [
-            tool_use_response("snap_image", {}),
+            tool_use_response("get_system_state", {}),
             text_response("I snapped an image — it's now showing in the MM viewer."),
         ]
         with patch("microclaw.agent._get_client", return_value=make_mock_client(scripted)):
@@ -171,7 +171,7 @@ class TestTurnCap:
     def test_stops_after_max_iterations(self, mock_ctrl, guard):
         client = MagicMock()
         # Always return a tool_use → the loop would never end without the cap.
-        client.messages.create.return_value = tool_use_response("snap_image", {})
+        client.messages.create.return_value = tool_use_response("get_system_state", {})
         with patch("microclaw.agent._get_client", return_value=client):
             reply, _ = run_agent("loop forever", mock_ctrl, guard, max_iterations=3)
         assert "Stopped after 3 tool rounds" in reply
@@ -179,7 +179,7 @@ class TestTurnCap:
 
     def test_bailout_says_continue_resumes(self, mock_ctrl, guard):
         client = MagicMock()
-        client.messages.create.return_value = tool_use_response("snap_image", {})
+        client.messages.create.return_value = tool_use_response("get_system_state", {})
         with patch("microclaw.agent._get_client", return_value=client):
             reply, history = run_agent("loop forever", mock_ctrl, guard, max_iterations=2)
         assert "continue" in reply.lower()
@@ -203,7 +203,7 @@ class TestConversationCacheBreakpoint:
 
     def test_breakpoint_moves_to_latest_tool_result(self, mock_ctrl, guard):
         client = make_mock_client([
-            tool_use_response("snap_image", {}),
+            tool_use_response("get_system_state", {}),
             text_response("done"),
         ])
         with patch("microclaw.agent._get_client", return_value=client):
@@ -219,7 +219,7 @@ class TestConversationCacheBreakpoint:
 
     def test_returned_history_is_unmarked(self, mock_ctrl, guard):
         client = make_mock_client([
-            tool_use_response("snap_image", {}),
+            tool_use_response("get_system_state", {}),
             text_response("done"),
         ])
         with patch("microclaw.agent._get_client", return_value=client):

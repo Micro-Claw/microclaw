@@ -31,6 +31,38 @@ class ForbiddenProperty:
 
 
 @dataclass
+class IlluminationProperty:
+    device: str
+    property: str
+    on_value: str = "On"
+    off_value: str = "Off"
+
+
+@dataclass
+class IlluminationConstraints:
+    """Gate for anything that emits light at the sample (design/14 §3).
+
+    Illumination is the only irreversible thing microclaw controls: it bleaches
+    sample and endangers eyes. Before this class existed a Class-3B laser was
+    one unconfirmed set_device_property away.
+
+      shutters                  properties that gate light; turning one to its
+                                on_value requires a blocking human confirmation.
+      power_properties          properties that set emission power (percent).
+      max_power_percent         refuse writes above this value.
+      max_power_step_factor     refuse a power increase of more than N× in one
+                                write (1% → 25% must take deliberate steps).
+      require_confirm_on_enable confirm-gate shutter enables (default on).
+    """
+
+    shutters: list[IlluminationProperty] = field(default_factory=list)
+    power_properties: list[ForbiddenProperty] = field(default_factory=list)
+    max_power_percent: Optional[float] = None
+    max_power_step_factor: Optional[float] = None
+    require_confirm_on_enable: bool = True
+
+
+@dataclass
 class PluginConstraints:
     """Gates for Micro-Manager plugin hooks (see design/09).
 
@@ -48,6 +80,18 @@ class PluginConstraints:
 
 
 @dataclass
+class NamedStageLimits:
+    """Travel limits for a single-axis stage addressed by device label.
+
+    A single global stage.z_min/z_max cannot express 'PIZStage: 0–200 µm,
+    TIRF Stage: ±3000 µm' (design/14 §6)."""
+
+    device: str
+    min_um: Optional[float] = None
+    max_um: Optional[float] = None
+
+
+@dataclass
 class SafetyConstraints:
     stage: StageConstraints = field(default_factory=StageConstraints)
     camera: CameraConstraints = field(default_factory=CameraConstraints)
@@ -62,6 +106,13 @@ class SafetyConstraints:
     # (behaviour unchanged); set it to confine reads/writes to one directory.
     workspace_dir: Optional[str] = None
     plugins: PluginConstraints = field(default_factory=PluginConstraints)
+    illumination: IlluminationConstraints = field(
+        default_factory=IlluminationConstraints
+    )
+    # Per-device limits for stages addressed by label (move_named_stage). The
+    # global stage.z_min/z_max applies only to the core focus device; named
+    # stages fail closed — no entry here means the stage may not be moved.
+    named_stages: list[NamedStageLimits] = field(default_factory=list)
 
     @classmethod
     def from_yaml(cls, path: str) -> SafetyConstraints:
@@ -72,6 +123,7 @@ class SafetyConstraints:
         camera_cfg = cfg.get("camera", {})
         channels_cfg = cfg.get("channels", {})
         plugins_cfg = cfg.get("plugins", {}) or {}
+        ill_cfg = cfg.get("illumination", {}) or {}
         forbidden = [
             ForbiddenProperty(**p)
             for p in cfg.get("forbidden_properties", [])
@@ -93,6 +145,23 @@ class SafetyConstraints:
                 blocked=plugins_cfg.get("blocked") or [],
                 allow_hardware_motion=bool(plugins_cfg.get("allow_hardware_motion", False)),
             ),
+            illumination=IlluminationConstraints(
+                shutters=[
+                    IlluminationProperty(**s) for s in ill_cfg.get("shutters") or []
+                ],
+                power_properties=[
+                    ForbiddenProperty(**p)
+                    for p in ill_cfg.get("power_properties") or []
+                ],
+                max_power_percent=ill_cfg.get("max_power_percent"),
+                max_power_step_factor=ill_cfg.get("max_power_step_factor"),
+                require_confirm_on_enable=bool(
+                    ill_cfg.get("require_confirm_on_enable", True)
+                ),
+            ),
+            named_stages=[
+                NamedStageLimits(**s) for s in cfg.get("named_stages") or []
+            ],
         )
 
 
@@ -196,6 +265,102 @@ class SafetyGuard:
             x = num if p.startswith("x") else core.get_x_position()
             y = num if p.startswith("y") else core.get_y_position()
             self.check_xy(x, y)
+
+    def is_illumination_enable(
+        self, device: str, prop: str
+    ) -> Optional[IlluminationProperty]:
+        return next(
+            (
+                s
+                for s in self._c.illumination.shutters
+                if s.device == device and s.property == prop
+            ),
+            None,
+        )
+
+    def check_illumination(
+        self, core, device: str, prop: str, value: str, confirm_fn=None
+    ) -> None:
+        """Confirm-gate a shutter enable, and ratchet-gate a power increase.
+
+        Enforced in code, not just the prompt — same reasoning as
+        save_knowledge's blocking confirmation: a confused model or an injected
+        instruction must not be able to lase without a human 'y'.
+        """
+        ill = self._c.illumination
+        shutter = self.is_illumination_enable(device, prop)
+        if shutter and value == shutter.on_value and ill.require_confirm_on_enable:
+            if confirm_fn is None or not confirm_fn(
+                f"ENABLE ILLUMINATION: {device}.{prop} = {value!r}\n"
+                f"This will emit light at the sample."
+            ):
+                raise SafetyViolation(
+                    f"User declined to enable illumination {device}.{prop}."
+                )
+
+        if not any(
+            p.device == device and p.property == prop for p in ill.power_properties
+        ):
+            return
+        try:
+            new = float(value)
+        except (TypeError, ValueError):
+            return
+        if ill.max_power_percent is not None and new > ill.max_power_percent:
+            raise SafetyViolation(
+                f"{new:.1f}% exceeds illumination.max_power_percent "
+                f"({ill.max_power_percent:.1f}%)."
+            )
+        if ill.max_power_step_factor is not None:
+            try:
+                old = float(core.get_property(device, prop))
+            except (TypeError, ValueError):
+                old = 0.0
+            if old > 0 and new / old > ill.max_power_step_factor:
+                raise SafetyViolation(
+                    f"Power increase {old:.1f}% → {new:.1f}% exceeds the "
+                    f"{ill.max_power_step_factor}× per-write ratchet. "
+                    f"Step up gradually."
+                )
+
+    def shutter_all(self, core) -> list[str]:
+        """Best-effort: drive every known illumination shutter to its off value.
+
+        Called on session teardown so no exit path leaves a laser on. Must not
+        raise — a failed shutter on one device should not stop the others."""
+        done = []
+        for s in self._c.illumination.shutters:
+            try:
+                core.set_property(s.device, s.property, s.off_value)
+                done.append(f"{s.device}.{s.property}")
+            except Exception:
+                pass
+        return done
+
+    def check_named_stage(self, device: str, pos: float) -> None:
+        """Guard a stage addressed by label against its per-device travel limits.
+
+        Fails closed: a stage with no named_stages entry may not be moved at
+        all. The global stage.z_min/z_max cannot stand in — it describes only
+        the core focus device, and applying it to (say) a ±3 mm TIRF steering
+        axis would be wrong in both directions.
+        """
+        lim = next(
+            (l for l in self._c.named_stages if l.device == device), None
+        )
+        if lim is None:
+            raise SafetyViolation(
+                f"No limits configured for stage '{device}'. Add a named_stages "
+                f"entry to the safety config before microclaw may move it."
+            )
+        if lim.min_um is not None and pos < lim.min_um:
+            raise SafetyViolation(
+                f"{device}={pos:.2f} µm is below the minimum allowed ({lim.min_um:.2f} µm)."
+            )
+        if lim.max_um is not None and pos > lim.max_um:
+            raise SafetyViolation(
+                f"{device}={pos:.2f} µm exceeds the maximum allowed ({lim.max_um:.2f} µm)."
+            )
 
     def resolve_in_workspace(self, path: str) -> str:
         """Resolve a file path, confining it to workspace_dir if one is set.
