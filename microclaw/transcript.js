@@ -67,11 +67,16 @@
     return '<div class="result-blocks">' + parts.join("") + "</div>";
   }
 
-  // build one collapsible tool card
-  function toolCard(block, result) {
+  /* Build one collapsible tool card.
+
+     A missing result means two different things. In a saved history the tool
+     result was never recorded; in a turn that is streaming right now (`live`)
+     the tool is still running. Same absent value, opposite stories. */
+  function toolCard(block, result, live) {
     const det = document.createElement("details");
     det.className = "tool";
     const isErr = result && result.is_error;
+    const pending = result === undefined && live;
     det.innerHTML =
       "<summary>" +
         '<span class="chev">▶</span>' +
@@ -86,6 +91,9 @@
     }
     if (result !== undefined) {
       body.innerHTML += '<div><div class="kv-label">Result</div>' + renderResult(result.content) + "</div>";
+    } else if (pending) {
+      body.innerHTML += '<div><div class="kv-label">Result</div>' +
+        '<div class="tool-pending"><span class="spin"></span>running…</div></div>';
     } else {
       body.innerHTML += '<div><div class="kv-label">Result</div><pre class="json">(no result recorded)</pre></div>';
     }
@@ -101,8 +109,12 @@
   }
 
   /* Render `history` into `tx`, replacing its contents.
+     `opts.live` marks the transcript as a turn in flight, which only `serve`
+     ever is: a tool_use with no tool_result is then drawn as still running
+     rather than as a result that was never recorded.
      Returns {userTurns, asstTurns, toolCalls}. */
-  function render(history, tx) {
+  function render(history, tx, opts) {
+    const live = !!(opts && opts.live);
     if (!Array.isArray(history)) throw new Error("Top level is not an array of messages.");
     tx.innerHTML = "";
 
@@ -160,7 +172,7 @@
             wrap.appendChild(el);
           } else if (b.type === "tool_use") {
             toolCalls++;
-            wrap.appendChild(toolCard(b, results[b.id]));
+            wrap.appendChild(toolCard(b, results[b.id], live));
           }
         }
         tx.appendChild(wrap);

@@ -29,11 +29,18 @@ class _FakeLock:
     def locked(self):
         return self._locked
 
-    async def __aenter__(self):
+    async def acquire(self):
         self._locked = True
+        return True
+
+    def release(self):
+        self._locked = False
+
+    async def __aenter__(self):
+        await self.acquire()
 
     async def __aexit__(self, *exc):
-        self._locked = False
+        self.release()
 
 
 @pytest.fixture
@@ -57,12 +64,44 @@ def client(session, monkeypatch):
     return TestClient(build_app(session))
 
 
-def _run_agent(reply="ok", tool_calls=()):
-    def fake(msg, ctrl, guard, history, model=None, **kw):
-        new = list(history) + [{"role": "user", "content": msg}]
-        new.append({"role": "assistant", "content": [{"type": "text", "text": reply}]})
-        return reply, new
+def _agent_iter(reply="ok", tool_calls=()):
+    """A stand-in for run_agent_iter: appends to `messages` in place, as the
+    real one does, and yields the event sequence a turn produces."""
+
+    def fake(msg, ctrl, guard, messages, model=None, **kw):
+        messages.append({"role": "user", "content": msg})
+        yield {"type": "round_start", "iteration": 0}
+        for i, (name, tool_input) in enumerate(tool_calls):
+            tid = f"t{i}"
+            messages.append({"role": "assistant", "content": [
+                {"type": "tool_use", "id": tid, "name": name, "input": tool_input}]})
+            yield {"type": "tool_use", "id": tid, "name": name, "input": tool_input}
+            messages.append({"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": tid, "content": "{}"}]})
+            yield {"type": "tool_result", "tool_use_id": tid, "content": "{}",
+                   "is_error": False}
+        messages.append({"role": "assistant", "content": [{"type": "text", "text": reply}]})
+        yield {"type": "done", "reply": reply}
+
     return fake
+
+
+def _events(res):
+    """Parse an SSE response body into the list of event dicts it carried."""
+    out = []
+    for frame in res.text.split("\n\n"):
+        for line in frame.split("\n"):
+            if line.startswith("data:"):
+                out.append(json.loads(line[5:]))
+    return out
+
+
+def _settle(session, timeout=2.0):
+    """Wait for the turn thread to finish and drop the lock."""
+    deadline = time.monotonic() + timeout
+    while session.lock.locked() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    return not session.lock.locked()
 
 
 # ---- the page ----
@@ -96,29 +135,87 @@ def test_history_serialises_sdk_content_blocks(session, client):
 
 # ---- prompts ----
 
-def test_prompt_runs_a_turn_and_appends_to_history(session, client, monkeypatch):
-    monkeypatch.setattr(webserve, "run_agent", _run_agent("channel set to DAPI"))
+def test_prompt_streams_events_and_appends_to_history(session, client, monkeypatch):
+    monkeypatch.setattr(webserve, "run_agent_iter", _agent_iter("channel set to DAPI"))
 
     res = client.post("/api/prompt", json={"message": "  set DAPI  "})
     assert res.status_code == 200
-    assert res.json() == {"reply": "channel set to DAPI"}
+    assert res.headers["content-type"].startswith("text/event-stream")
+    assert _events(res) == [
+        {"type": "round_start", "iteration": 0},
+        {"type": "done", "reply": "channel set to DAPI"},
+    ]
 
     # The stripped prompt is what reached the agent, and history is the server's.
     assert session.history[0] == {"role": "user", "content": "set DAPI"}
     assert client.get("/api/history").json() == session.history
 
 
+def test_tool_lifecycle_reaches_the_browser_one_event_at_a_time(session, client, monkeypatch):
+    """The point of the stream: tool cards land as the tools run, not in a lump
+    at the end of a 52-second survey (design/16 §1)."""
+    monkeypatch.setattr(webserve, "run_agent_iter",
+                        _agent_iter("done", tool_calls=[("move_stage_xy", {"x_um": 10})]))
+
+    types_ = [e["type"] for e in _events(client.post("/api/prompt", json={"message": "go"}))]
+    assert types_ == ["round_start", "tool_use", "tool_result", "done"]
+
+
 def test_prompt_passes_the_session_model_through(session, client, monkeypatch):
     seen = {}
 
-    def fake(msg, ctrl, guard, history, model=None, **kw):
-        seen.update(ctrl=ctrl, guard=guard, model=model)
-        return "ok", list(history)
+    def fake(msg, ctrl, guard, messages, model=None, **kw):
+        seen.update(ctrl=ctrl, guard=guard, model=model, messages=messages)
+        yield {"type": "done", "reply": "ok"}
 
     session.model = "claude-opus-4-8"
-    monkeypatch.setattr(webserve, "run_agent", fake)
+    monkeypatch.setattr(webserve, "run_agent_iter", fake)
     client.post("/api/prompt", json={"message": "hi"})
-    assert seen == {"ctrl": session.ctrl, "guard": session.guard, "model": "claude-opus-4-8"}
+    assert seen["ctrl"] is session.ctrl
+    assert seen["guard"] is session.guard
+    assert seen["model"] == "claude-opus-4-8"
+    # The generator gets the session's own list, not a copy — a turn abandoned
+    # mid-flight must still leave its completed rounds in the history.
+    assert seen["messages"] is session.history
+
+
+def test_the_lock_is_released_once_the_stream_ends(session, client, monkeypatch):
+    monkeypatch.setattr(webserve, "run_agent_iter", _agent_iter())
+    client.post("/api/prompt", json={"message": "snap"})
+    assert _settle(session), "a finished turn left the session locked"
+    assert client.post("/api/prompt", json={"message": "again"}).status_code == 200
+
+
+def test_an_abandoned_stream_still_finishes_the_turn_and_frees_the_session(
+    session, client, monkeypatch
+):
+    """The stage has already moved. A closed tab must not abort the turn, wedge
+    the session at 409, or lose the rounds that already ran."""
+    monkeypatch.setattr(webserve, "run_agent_iter",
+                        _agent_iter("done", tool_calls=[("snap_image", {})]))
+
+    with client.stream("POST", "/api/prompt", json={"message": "snap"}) as res:
+        assert res.status_code == 200
+        next(res.iter_lines())          # read one frame, then walk away
+
+    assert _settle(session), "an abandoned stream left the session locked"
+    # the whole turn ran, not just the round the client saw
+    assert [m["role"] for m in session.history] == ["user", "assistant", "user", "assistant"]
+    assert client.post("/api/prompt", json={"message": "again"}).status_code == 200
+
+
+def test_an_agent_crash_surfaces_as_an_error_event_not_a_dead_stream(
+    session, client, monkeypatch
+):
+    def boom(msg, ctrl, guard, messages, model=None, **kw):
+        yield {"type": "round_start", "iteration": 0}
+        raise RuntimeError("bridge went away")
+
+    monkeypatch.setattr(webserve, "run_agent_iter", boom)
+    events = _events(client.post("/api/prompt", json={"message": "snap"}))
+    assert events[-1]["type"] == "error"
+    assert "bridge went away" in events[-1]["message"]
+    assert _settle(session), "a crashed turn left the session locked"
 
 
 def test_empty_prompt_is_rejected(client):
@@ -141,12 +238,13 @@ def test_second_turn_is_refused_while_one_runs(session, client):
 
 
 def test_history_is_written_after_a_turn(session, monkeypatch, tmp_path):
-    monkeypatch.setattr(webserve, "run_agent", _run_agent())
+    monkeypatch.setattr(webserve, "run_agent_iter", _agent_iter())
     monkeypatch.setattr(credentials, "load_api_key", lambda: ("k", "env"))
     session.save = True
     session.history_fn = str(tmp_path / "h.json")
 
     TestClient(build_app(session)).post("/api/prompt", json={"message": "snap"})
+    assert _settle(session)
     assert json.loads((tmp_path / "h.json").read_text(encoding="utf-8"))[0]["content"] == "snap"
 
 
@@ -163,7 +261,7 @@ def test_cross_origin_prompt_is_refused(client):
 
 
 def test_same_origin_prompt_is_allowed(client, monkeypatch):
-    monkeypatch.setattr(webserve, "run_agent", _run_agent())
+    monkeypatch.setattr(webserve, "run_agent_iter", _agent_iter())
     res = client.post(
         "/api/prompt",
         json={"message": "snap"},

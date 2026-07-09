@@ -21,16 +21,9 @@
   #empty p { color: var(--ink-soft); font-size: 14px; margin: 6px auto; max-width: 48ch; }
   #empty .hint { font-family: var(--mono); font-size: 12px; color: var(--ink-faint); margin-top: 18px; }
 
-  /* pending indicator while a turn runs */
+  /* pending indicator while a turn runs (.spin lives in transcript.css) */
   #pending { display: flex; align-items: center; gap: 10px; margin: 18px 0 0;
     color: var(--ink-faint); font-size: 13px; }
-  #pending .spin {
-    width: 12px; height: 12px; border-radius: 50%; flex: none;
-    border: 2px solid var(--line); border-top-color: var(--accent);
-    animation: spin .8s linear infinite;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  @media (prefers-reduced-motion: reduce) { #pending .spin { animation-duration: 3s; } }
 
   /* composer */
   #composer {
@@ -154,8 +147,13 @@
   }
 
   // ---- rendering ----
-  function paint(history) {
-    const { userTurns, asstTurns, toolCalls } = Transcript.render(history, tx);
+  // The server's history, mirrored. A streaming turn applies its events to a
+  // copy of this and re-renders — rather than incrementally patching the DOM —
+  // so there stays exactly one function that knows how a tool card looks.
+  let history = [];
+
+  function paint(messages, live) {
+    const { userTurns, asstTurns, toolCalls } = Transcript.render(messages, tx, { live });
     const any = userTurns + asstTurns > 0;
     $("empty").classList.toggle("hidden", any);
     $("stats").classList.toggle("hidden", !any);
@@ -165,10 +163,26 @@
     $("s-tools").textContent = toolCalls;
   }
 
+  // Coalesce the repaints a token stream would otherwise trigger per delta.
+  let frame = null, framePayload = null;
+  function schedulePaint(messages) {
+    framePayload = messages;
+    if (frame) return;
+    frame = requestAnimationFrame(() => {
+      frame = null;
+      paint(framePayload, true);
+    });
+  }
+
+  function cancelScheduledPaint() {
+    if (frame) { cancelAnimationFrame(frame); frame = null; }
+  }
+
   async function refresh() {
     const res = await fetch("/api/history");
     if (!res.ok) throw new Error("Could not load history (" + res.status + ").");
-    paint(await res.json());
+    history = await res.json();
+    paint(history, false);
   }
 
   // Read the server's error detail, whatever shape it came back in.
@@ -197,6 +211,76 @@
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("composer").requestSubmit(); }
   });
 
+  // ---- streaming a turn ----
+  // Minimal SSE reader over the POST response body: frames are separated by a
+  // blank line, and every frame we emit is a single data: line of JSON.
+  // EventSource can't be used here — it is GET-only, and a GET that drives the
+  // stage is a CSRF hole (an <img src> from any tab, with no Origin to refuse).
+  async function* sseEvents(body) {
+    const reader = body.pipeThrough(new TextDecoderStream()).getReader();
+    let buf = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) return;
+      buf += value;
+      let i;
+      while ((i = buf.indexOf("\n\n")) !== -1) {
+        const frame = buf.slice(0, i);
+        buf = buf.slice(i + 2);
+        for (const line of frame.split("\n")) {
+          if (line.startsWith("data:")) yield JSON.parse(line.slice(5));
+        }
+      }
+    }
+  }
+
+  // Apply one event to the client-side mirror of history.
+  function applyEvent(live, ev, state) {
+    switch (ev.type) {
+      case "round_start":
+        state.asst = { role: "assistant", content: [] };
+        live.push(state.asst);
+        break;
+      case "text_delta": {
+        const last = state.asst.content[state.asst.content.length - 1];
+        if (last && last.type === "text") last.text += ev.text;
+        else state.asst.content.push({ type: "text", text: ev.text });
+        break;
+      }
+      case "tool_use":
+        state.asst.content.push({ type: "tool_use", id: ev.id, name: ev.name, input: ev.input });
+        break;
+      case "tool_result":
+        // A tool_result-only user message: exactly the shape render() folds
+        // into the matching tool card.
+        live.push({ role: "user", content: [{ type: "tool_result",
+          tool_use_id: ev.tool_use_id, content: ev.content, is_error: ev.is_error }] });
+        break;
+      case "retry": toast("API overloaded — retrying in " + ev.delay + "s…"); break;
+      case "error": toast(ev.message); break;
+    }
+  }
+
+  async function runTurn(text) {
+    const res = await fetch("/api/prompt", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: text }),
+    });
+    if (!res.ok) {
+      toast(res.status === 409 ? "A turn is already running." : await detail(res));
+      return false;
+    }
+    const live = history.concat([{ role: "user", content: text }]);
+    const state = { asst: null };
+    paint(live, true);
+    for await (const ev of sseEvents(res.body)) {
+      applyEvent(live, ev, state);
+      schedulePaint(live);
+    }
+    return true;
+  }
+
   $("composer").addEventListener("submit", async (e) => {
     e.preventDefault();
     if (busy) return;
@@ -204,22 +288,16 @@
     if (!text) return;
     msg.value = ""; autogrow();
     setBusy(true);
+    let sent = false;
     try {
-      const res = await fetch("/api/prompt", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text }),
-      });
-      if (!res.ok) {
-        toast(res.status === 409 ? "A turn is already running." : await detail(res));
-        msg.value = text; autogrow();   // give the prompt back
-      }
+      sent = await runTurn(text);
     } catch (err) {
       toast("Request failed: " + err.message);
-      msg.value = text; autogrow();
     }
-    // The server is the source of truth — re-read it either way. A turn that
-    // raised leaves the history untouched, so a failed prompt simply vanishes.
+    if (!sent) { msg.value = text; autogrow(); }   // give the prompt back
+    // The server is the source of truth — re-read it either way. It also holds
+    // the turn's rounds even if this page stopped listening partway through.
+    cancelScheduledPaint();
     try { await refresh(); } catch (err) { toast(err.message); }
     setBusy(false);
     window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });

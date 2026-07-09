@@ -1,16 +1,22 @@
 """`microclaw serve` — the interactive web GUI (design/15).
 
 One process owns one live `MicroscopeController` + `SafetyGuard` + history, the
-same three objects the terminal REPL builds. The browser POSTs a prompt, the
-server runs `run_agent` for that turn, and the page re-reads `/api/history`.
+same three objects the terminal REPL builds. The browser POSTs a prompt and the
+server streams that turn's events back on the POST response as Server-Sent
+Events (design/16 §3); `/api/history` stays the source of truth and reconciles
+the page once the stream ends.
 
-Two properties are load-bearing, because this endpoint moves real hardware:
+Three properties are load-bearing, because this endpoint moves real hardware:
 
 * **Localhost only.** Binding beyond 127.0.0.1 requires `--allow-remote`; on a
   lab network a stray bind means anyone can drive the stage.
 * **One operator.** The controller and history are shared mutable state and the
   microscope is physically single-user, so a turn holds `session.lock` and a
   second prompt is refused (409) rather than interleaved.
+* **State-changing endpoints stay on POST.** Streaming a turn from a GET would
+  let any page the operator has open drive the stage with an `<img src=...>`:
+  a GET is not preflighted and carries no `Origin` for the middleware to refuse.
+  That is why this is POST-SSE rather than an `EventSource`.
 """
 import asyncio
 import datetime
@@ -22,12 +28,11 @@ import time
 import webbrowser
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
-from starlette.concurrency import run_in_threadpool
 
 from microclaw import credentials
-from microclaw.agent import run_agent, set_api_key
+from microclaw.agent import run_agent_iter, set_api_key
 from microclaw.assets import load_page
 from microclaw.config import load_safety_config
 from microclaw.controller import MicroscopeController
@@ -35,6 +40,9 @@ from microclaw.safety import SafetyGuard
 
 # Loopback names. Anything else needs --allow-remote.
 LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+# Sentinel: the turn thread is finished and the SSE stream should end.
+_TURN_DONE = object()
 
 
 class Prompt(BaseModel):
@@ -55,6 +63,16 @@ def _jsonable(history: list[dict]) -> list[dict]:
     from microclaw.__main__ import json_default
 
     return json.loads(json.dumps(history, default=json_default))
+
+
+def _sse(event: dict) -> str:
+    """One agent event as an SSE frame.
+
+    `json.dumps` never emits a raw newline, so a single `data:` line is safe.
+    """
+    from microclaw.__main__ import json_default
+
+    return f"data: {json.dumps(event, default=json_default)}\n\n"
 
 
 class Session:
@@ -129,16 +147,68 @@ def build_app(session) -> FastAPI:
             raise HTTPException(400, "No Anthropic API key is set.")
         if session.lock.locked():
             raise HTTPException(409, "A turn is already in progress.")
-        async with session.lock:
-            # run_agent is synchronous and spends its time in Anthropic HTTP and
-            # ZMQ round-trips — off the event loop, or uvicorn stops answering.
-            reply, history = await run_in_threadpool(
-                run_agent, msg, session.ctrl, session.guard, session.history,
-                session.model,
-            )
-            session.history = history
-            write_history(session.history_fn, history, session.save)
-            return JSONResponse({"reply": reply})
+        # Acquired here, not inside events(): the response body is not iterated
+        # until after this handler returns, so a lock taken there would leave a
+        # window in which a second prompt passes the check above.
+        await session.lock.acquire()
+
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue = asyncio.Queue()
+
+        def emit(event):
+            try:
+                loop.call_soon_threadsafe(queue.put_nowait, event)
+            except RuntimeError:
+                pass  # Ctrl-C closed the loop mid-turn; serve()'s finally saves.
+
+        def run_turn():
+            """The whole turn, on a thread of its own.
+
+            Deliberately NOT `iterate_in_threadpool`: that closes the generator
+            when the client disconnects, raising GeneratorExit at whichever yield
+            the turn had reached. Stop there mid-round and the history keeps an
+            assistant message whose tool_use block has no tool_result — which the
+            Messages API rejects on the *next* prompt, from a history that looks
+            fine in the viewer. The stage has already moved; finish the turn.
+
+            run_agent_iter is synchronous and blocks on Anthropic HTTP and ZMQ
+            round-trips, so it must stay off the event loop regardless.
+            """
+            try:
+                for event in run_agent_iter(
+                    msg, session.ctrl, session.guard, session.history, session.model
+                ):
+                    emit(event)
+            except Exception as e:  # noqa: BLE001 — the stream is the only channel
+                emit({"type": "error", "message": f"{type(e).__name__}: {e}"})
+            finally:
+                # session.history holds the completed rounds either way —
+                # run_agent_iter appends to it in place.
+                try:
+                    write_history(session.history_fn, session.history, session.save)
+                except Exception as e:  # noqa: BLE001
+                    print(f"[microclaw] Could not write history: {e}", file=sys.stderr)
+                emit(_TURN_DONE)
+                loop.call_soon_threadsafe(session.lock.release)
+
+        threading.Thread(target=run_turn, name="microclaw-turn", daemon=True).start()
+
+        async def events():
+            # A client that vanishes leaves this generator closed and the worker
+            # thread running; it finishes the turn, saves, and releases the lock.
+            while True:
+                event = await queue.get()
+                if event is _TURN_DONE:
+                    return
+                yield _sse(event)
+
+        # No compression middleware on this app: GZipMiddleware buffers the
+        # stream and the events all arrive at the end, in one lump.
+        return StreamingResponse(
+            events(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+        )
 
     @app.get("/api/key")
     async def get_key():

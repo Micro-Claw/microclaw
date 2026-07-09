@@ -72,3 +72,53 @@ def test_hostile_base64_payload_cannot_escape_the_src_attribute():
 
 def test_unknown_block_types_still_render():
     assert "<pre" in render_result([{"type": "thinking", "thinking": "hmm"}])
+
+
+def tool_card_body(block, result, live):
+    """Call Transcript.toolCard under a document shim and return the card body.
+
+    toolCard touches the DOM only through createElement/className/innerHTML/
+    appendChild, so a four-line stand-in exercises it without a headless browser.
+    """
+    path = resources.files("microclaw").joinpath("transcript.js")
+    shim = (
+        "global.window = {};\n"
+        "global.document = { createElement: (t) => ({ tag: t, className: '',"
+        " innerHTML: '', kids: [], appendChild(c) { this.kids.push(c); } }) };\n"
+    )
+    # `undefined`, not `null`: toolCard's "no result" branch tests for undefined,
+    # which is what `results[block.id]` yields for an unanswered tool_use.
+    args = ", ".join(
+        "undefined" if a is None else json.dumps(a) for a in (block, result, live)
+    )
+    script = (
+        shim
+        + f"require({json.dumps(str(path))});\n"
+        + f"const card = window.Transcript.toolCard({args});\n"
+        "process.stdout.write(card.kids[0].innerHTML);\n"
+    )
+    out = subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True)
+    return out.stdout
+
+
+BLOCK = {"type": "tool_use", "id": "c1", "name": "move_stage_xy", "input": {"x_um": 10}}
+
+
+def test_a_tool_with_a_result_renders_it():
+    body = tool_card_body(BLOCK, {"content": '{"ok": true}'}, False)
+    assert '"ok": true' in body
+    assert "tool-pending" not in body
+
+
+def test_a_running_tool_renders_as_pending_not_as_missing():
+    """The same absent result means two things: in a saved history the result
+    was never recorded; in a live `serve` turn the tool is still running."""
+    body = tool_card_body(BLOCK, None, True)
+    assert "tool-pending" in body and "running…" in body
+    assert "(no result recorded)" not in body
+
+
+def test_a_saved_history_still_says_no_result_recorded():
+    body = tool_card_body(BLOCK, None, False)
+    assert "(no result recorded)" in body
+    assert "tool-pending" not in body

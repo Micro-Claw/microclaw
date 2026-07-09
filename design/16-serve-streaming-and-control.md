@@ -332,6 +332,65 @@ Three details that will otherwise bite:
   history, and the next `GET /api/history` reconciles the page. Stopping a turn
   is an explicit act — §6 — not a side effect of closing a laptop lid.
 
+### Correction, found while implementing: `iterate_in_threadpool` *does* stop the turn
+
+The third bullet is wrong about the mechanism, and the sketch above would ship
+the bug §5 spends a page warning about. `iterate_in_threadpool` holds the
+synchronous generator in a local; when the client disconnects, `StreamingResponse`
+closes the async generator, that frame unwinds, the last reference to the sync
+generator drops, and CPython closes it — raising `GeneratorExit` **inside
+`run_agent_iter`, at whichever `yield` the turn had reached.**
+
+If that yield is the `tool_use` event, the turn dies between the model asking for
+a tool and the `tool_results` message being appended. `session.history` keeps an
+assistant turn whose `tool_use` block has no matching `tool_result` — a
+conversation the Messages API rejects with a 400 on the *next* prompt, from a
+history that looks perfectly fine in the viewer. Exactly the orphaned-`tool_use`
+trap of §5, arrived at from the other direction, and triggered by closing a tab
+rather than by pressing Stop.
+
+So the turn runs on **a thread of its own**, not on the threadpool, and the
+events reach the event loop through an `asyncio.Queue`:
+
+```python
+loop, queue = asyncio.get_running_loop(), asyncio.Queue()
+emit = lambda ev: loop.call_soon_threadsafe(queue.put_nowait, ev)
+
+def run_turn():
+    try:
+        for event in run_agent_iter(msg, session.ctrl, session.guard,
+                                    session.history, session.model):
+            emit(event)
+    except Exception as e:
+        emit({"type": "error", "message": f"{type(e).__name__}: {e}"})
+    finally:
+        write_history(session.history_fn, session.history, session.save)
+        emit(_TURN_DONE)
+        loop.call_soon_threadsafe(session.lock.release)
+
+threading.Thread(target=run_turn, name="microclaw-turn", daemon=True).start()
+
+async def events():
+    while (event := await queue.get()) is not _TURN_DONE:
+        yield _sse(event)
+```
+
+Now a vanished client leaves `events()` closed and the worker untouched: it
+finishes the turn, writes the history, and releases the lock. Which is what the
+bullet promised. Two knock-on points:
+
+* **The lock is acquired in the handler, before `StreamingResponse` is
+  returned** — not inside `events()`. The response body is not iterated until
+  after the handler returns, so a lock taken there leaves a window in which a
+  second `POST /api/prompt` sails past the `locked()` check and a second turn
+  starts on the same microscope. It must also be released via
+  `call_soon_threadsafe`: `asyncio.Lock` is not thread-safe.
+* **Nothing may close `run_agent_iter` early.** That is now an invariant of the
+  module, and it has a test (`test_closing_the_generator_mid_round_orphans_a_tool_use`)
+  that pins the failure so the next person meets it as a red assertion rather
+  than as a 400 on a real rig. When v4a lands, `_unwind_cancel` is what makes an
+  early exit legal — via the `cancel` event, not via `close()`.
+
 Do not add compression middleware to this app; a `GZipMiddleware` will buffer the
 stream and the events arrive in one lump at the end.
 
