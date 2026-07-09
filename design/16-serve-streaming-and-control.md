@@ -593,6 +593,93 @@ transcript makes the last executed tool obvious.
 Halting hardware *now*, without waiting for the tool to return, is a different
 feature with a different risk profile. §6.
 
+### Deferred: a `cancel` check inside the multiposition loop
+
+**The observed limit.** On the rig, a 3×3 tile with a 20-frame timelapse per
+position — about three minutes — was stopped fifteen seconds in, during the first
+position. Nothing happened. The stage stepped through all nine positions, wrote
+nine datasets, and the tool returned `{"status": "9/9 positions completed."}`.
+Only then did the round-boundary check fire and the turn end.
+
+This is correct, and it is the honest limit of a between-tools check.
+`run_tile_acquisition` is *one* `tool_use` block; the nine-position loop lives
+inside `_run_protocol_at`, below the layer `cancel` can see. Stop's temporal
+resolution is "one tool," and a tool can be three minutes long.
+
+**The fix, deferred rather than dismissed.** The same cooperative contract, one
+level down: check `cancel` between positions, never inside one. A position's
+timelapse is a single pycro-manager `Acquisition` blocking in Java, so it stays
+uninterruptible — the resolution improves from *one tile grid* to *one position*
+(~3 min → ~20 s in the run above), and no further. Say that, don't oversell it.
+
+Only the Python-level position loops qualify: `run_multiposition_acquisition`,
+`run_multiposition_with_autofocus`, and `run_tile_acquisition` (which delegates
+to the first). `run_adaptive_*` cannot: its inner loop is pycro-manager's event
+driver, not ours.
+
+Three things this has to get right, and they are the reason it is not a five-line
+change:
+
+1. **Plumbing `cancel` to a tool without exposing it to the model.** Tools are
+   called `fn(ctrl, guard, **tool_input)` and `tool_input` comes from the model.
+   `cancel` must reach the tool *without* appearing in `tools_schema`, or the
+   agent acquires a parameter that lets it pretend it was stopped. Dispatch it
+   only to tools that declare it, and guard that with a `test_schema_parity`-style
+   assertion that no schema mentions `cancel`.
+
+2. **A partial result must announce itself.** `4/9 positions completed` returned
+   under a plain `"status"` key reads, to a model skimming a tool result, exactly
+   like success. It needs `"cancelled": true` and a sentence the model will
+   surface. It is *not* an `is_error` result — four positions really were
+   acquired, and the data is on disk.
+
+3. **The hardware is left where the abort found it.** A grid stopped at position
+   4 leaves the stage at tile 4, not at the centre it started from. The result
+   must say so; the operator's next move depends on it.
+
+```python
+# tools.py — sketch, not tested.
+
+def execute_tool(name, tool_input, ctrl, guard, cancel=None) -> str | list:
+    fn = TOOL_REGISTRY.get(name)
+    ...
+    kwargs = dict(tool_input)
+    if name in _CANCELLABLE:          # explicit set, not signature sniffing:
+        kwargs["cancel"] = cancel     # `cancel` must never be model-supplied
+    result = fn(ctrl, guard, **kwargs)
+
+
+_CANCELLABLE = frozenset({
+    "run_multiposition_acquisition",
+    "run_multiposition_with_autofocus",
+    "run_tile_acquisition",
+})
+
+
+def run_multiposition_acquisition(ctrl, guard, ..., cancel=None) -> dict:
+    ...
+    for pos_label, x_um, y_um, z_um in resolved:
+        if cancel is not None and cancel.is_set():
+            # Between positions, never inside one. The position that was running
+            # when Stop was pressed has completed and its data is on disk.
+            return {
+                "status": f"{len(results)}/{len(resolved)} positions completed, "
+                          "then cancelled by the operator.",
+                "cancelled": True,
+                "stage_left_at": results[-1]["position"] if results else None,
+                "results": results,
+            }
+        ...
+```
+
+The outer loop needs no change: the tool returns normally, `run_agent_iter`
+appends its `tool_result`, and the round-boundary check then unwinds the turn and
+emits `cancelled`. The synthesis path in §5 is untouched, because every
+`tool_use` in that assistant turn still got a real result.
+
+Not built. Stop is a complete feature without it, and the button's label is
+already accurate: it stops after the current step, and a tile grid is one step.
+
 ---
 
 ## 6. v4b — Hardware kill switch (CANCELLED — see "Verdict" below)
@@ -907,7 +994,12 @@ Every branch, against a real EMU stage and camera:
   timelapse returned a real success, the two undispatched reads returned
   "Cancelled by the operator." Set equality on the three ids holds, and so does
   ordering.
-* **The next turn is a conversation the API accepts**, four times over.
+* **The next turn is a conversation the API accepts**, five times over.
+* **A single long tool is uninterruptible, as designed.** A 3×3 tile with a
+  20-frame timelapse per position, stopped 15 s in, ran all nine positions
+  (~3 min) and returned `9/9 positions completed`. That is the honest limit of a
+  between-tools check — see "Deferred: a `cancel` check inside the multiposition
+  loop" below.
 
 That last point validated an assumption nothing in this repo could have caught,
 because every agent test uses a fake client: after a cancel the history ends with
@@ -1194,7 +1286,10 @@ SSE reader.
    feature without it. Run the spike once more if you want the serialization
    confirmed in timing numbers, but nothing is gated on it.
 
-Out of scope, in rough order of how much I want them: multi-tab fan-out over an
+Out of scope, in rough order of how much I want them: a `cancel` check between
+positions in the multiposition loop, which takes Stop's resolution from one tile
+grid to one position (§5, with a stub); recording a round-boundary Stop in the
+saved history, which today leaves no trace (§5); multi-tab fan-out over an
 `asyncio.Queue`; streaming in the terminal REPL (two lines once §2 lands);
 `--effort` / adaptive thinking, which is a change to what we ask the model for
 rather than how we watch it answer; and design/15's v2 safety-config editor,
