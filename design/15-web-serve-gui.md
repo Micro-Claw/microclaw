@@ -1,4 +1,4 @@
-# 14 — `microclaw serve`: an interactive web GUI
+# 15 — `microclaw serve`: an interactive web GUI
 
 Goal: let a user drive Microclaw from a browser chat window instead of the
 terminal REPL, reusing the transcript renderer already built for
