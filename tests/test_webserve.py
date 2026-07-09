@@ -137,7 +137,7 @@ def test_index_is_self_contained(client):
 
 def test_index_links_the_favicon(client):
     """The icon is binary, so it is a route rather than an inlined asset."""
-    assert '<link rel="icon" href="/favicon.ico"' in client.get("/").text
+    assert '<link rel="icon" type="image/x-icon" href="/favicon.ico">' in client.get("/").text
 
 
 def test_favicon_is_served(client):

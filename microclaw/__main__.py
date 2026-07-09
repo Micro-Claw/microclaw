@@ -100,8 +100,12 @@ def init(args):
     dest = Path(args.path) if args.path else default_safety_config()
     if dest.exists() and not args.force:
         print(f"Already present: {dest}")
-        print("Pass --force to overwrite it with a fresh copy of the example.")
+        print("Left as it is — `--force` overwrites it with a fresh copy of the example.")
         if not args.no_edit:
+            # Re-running `init` is how you get back to the limits file; opening it
+            # is the point. Say so, or the editor appearing looks like an
+            # overwrite just happened.
+            print("Opening it for editing.")
             _open_in_editor(dest)
         return dest
 
