@@ -21,10 +21,12 @@ Three properties are load-bearing, because this endpoint moves real hardware:
 import asyncio
 import datetime
 import json
+import queue
 import socket
 import sys
 import threading
 import time
+import uuid
 import webbrowser
 from pathlib import Path
 
@@ -58,9 +60,33 @@ LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 # Sentinel: the turn thread is finished and the SSE stream should end.
 _TURN_DONE = object()
 
+# A confirmation nobody answers must never become a yes. Module attributes,
+# read at call time, so tests can exercise the deadline with an injected clock
+# and a short poll rather than a sleep.
+CONFIRM_TIMEOUT_S = 300.0
+CONFIRM_POLL_S = 0.5
+_monotonic = time.monotonic
+
+
+class _Pending:
+    """One confirmation waiting on the operator, readable by /api/confirm."""
+
+    def __init__(self, id: str, summary: str, kind: str):
+        self.id = id
+        self.summary = summary
+        self.kind = kind
+        # threading queue, not asyncio: confirm() blocks on the turn thread
+        # while /api/confirm answers from the event loop.
+        self.reply: queue.Queue = queue.Queue(maxsize=1)
+
 
 class Prompt(BaseModel):
     message: str
+
+
+class Confirm(BaseModel):
+    id: str
+    approve: bool
 
 
 class Key(BaseModel):
@@ -157,6 +183,11 @@ class Session:
         # Set by POST /api/stop, polled by run_agent_iter at round and tool
         # boundaries. threading.Event, not asyncio: the turn runs on a thread.
         self.cancel = threading.Event()
+        # The browser confirmation gate (design/21 F1). _emit is set per turn
+        # by run_turn; pending is read by GET /api/confirm so a page reload can
+        # re-surface a banner the one-shot stream already delivered.
+        self._emit = None
+        self.pending: _Pending | None = None
 
         # env > keyring > file; a key found in a store is pushed into the
         # environment now so the first turn doesn't have to look for it.
@@ -166,6 +197,44 @@ class Session:
             print(f"Anthropic API key: {credentials.mask(key)} (from {source})")
         else:
             print("No Anthropic API key found — set one from the browser.")
+
+    def confirm(self, summary: str, kind: str = "action") -> bool:
+        """Route a confirmation to the browser. Runs on the turn thread.
+
+        Installed as tools.CONFIRM_FN by serve(), because the operator of a
+        browser session is looking at the browser — a blocking input() on the
+        serve process's stdin waits on a console nobody is watching
+        (design/21 F1). Default deny, three ways: no stream bound, the Stop
+        button, or the deadline. stdout keeps the summary and the decision —
+        under --allow-remote it is the only record the person standing at the
+        microscope can see.
+        """
+        emit = self._emit
+        if emit is None:
+            return False                                   # no stream: deny
+        p = _Pending(uuid.uuid4().hex, summary, kind)
+        self.pending = p
+        print(f"\n[microclaw] Confirmation required ({kind}):\n{summary}")
+        emit({"type": "confirm_request", "id": p.id,
+              "summary": summary, "kind": kind})
+        try:
+            deadline = _monotonic() + CONFIRM_TIMEOUT_S
+            while _monotonic() < deadline:
+                if self.cancel.is_set():
+                    print("[microclaw] Turn stopped; confirmation declined.")
+                    return False                           # Stop button: deny
+                try:
+                    answer = bool(p.reply.get(timeout=CONFIRM_POLL_S))
+                except queue.Empty:
+                    continue
+                print(f"[microclaw] {'Approved' if answer else 'Declined'}"
+                      f" from browser.")
+                return answer
+            print("[microclaw] Confirmation timed out; declined.")
+            return False                                   # deadline: deny
+        finally:
+            self.pending = None
+            emit({"type": "confirm_resolved", "id": p.id})
 
 
 def build_app(session) -> FastAPI:
@@ -240,6 +309,10 @@ def build_app(session) -> FastAPI:
             run_agent_iter is synchronous and blocks on Anthropic HTTP and ZMQ
             round-trips, so it must stay off the event loop regardless.
             """
+            # Session.confirm routes through whichever stream the running turn
+            # owns; only one turn runs at a time (session.lock), so there is no
+            # second emit to confuse.
+            session._emit = emit
             try:
                 for event in run_agent_iter(
                     msg, session.ctrl, session.guard, session.history, session.model,
@@ -249,6 +322,7 @@ def build_app(session) -> FastAPI:
             except Exception as e:  # noqa: BLE001 — the stream is the only channel
                 emit({"type": "error", "message": f"{type(e).__name__}: {e}"})
             finally:
+                session._emit = None
                 # session.history holds the completed rounds either way —
                 # run_agent_iter appends to it in place.
                 try:
@@ -294,6 +368,33 @@ def build_app(session) -> FastAPI:
             raise HTTPException(409, "No turn is running.")
         session.cancel.set()
         return JSONResponse({"stopping": True})
+
+    @app.get("/api/confirm")
+    async def get_confirm():
+        """The pending confirmation, if any — or {}.
+
+        Not optional: confirm_request is delivered exactly once, over a stream
+        a page reload destroys. Without this, a refresh at the wrong moment
+        strands the turn until the deadline. serve.html fetches it on load.
+        """
+        p = session.pending
+        if p is None:
+            return JSONResponse({})
+        return JSONResponse({"id": p.id, "summary": p.summary, "kind": p.kind})
+
+    @app.post("/api/confirm")
+    async def post_confirm(c: Confirm):
+        """Answer the pending confirmation.
+
+        Runs on the event loop, so it cannot be blocked by the turn thread that
+        is waiting on it. Matches on id: a stale banner from a previous confirm
+        must not answer the current one.
+        """
+        p = session.pending
+        if p is None or p.id != c.id:
+            raise HTTPException(409, "No confirmation with this id is pending.")
+        p.reply.put(c.approve)
+        return JSONResponse({"resolved": True})
 
     @app.get("/api/model")
     async def get_model():
@@ -453,9 +554,16 @@ def serve(args):
         )
     import uvicorn
 
+    from microclaw import tools
     from microclaw.__main__ import write_history
 
     session = Session(args)
+    # Route every in-code confirmation gate (save_knowledge, hook save, the
+    # illumination enable) to the browser, where the operator is. Installed
+    # once, not per turn: all three callsites read the module global at call
+    # time, so a single assignment covers them (design/21 F1). The CLI keeps
+    # the stdin default — a terminal is present there by definition.
+    tools.CONFIRM_FN = session.confirm
     app = build_app(session)
 
     if args.allow_remote and args.host not in LOCAL_HOSTS:

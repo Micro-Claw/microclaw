@@ -290,9 +290,12 @@ class SafetyGuard:
         ill = self._c.illumination
         shutter = self.is_illumination_enable(device, prop)
         if shutter and value == shutter.on_value and ill.require_confirm_on_enable:
+            # kind as an argument, not a prose prefix the frontend would have to
+            # string-match: safety.py stays free to reword the summary.
             if confirm_fn is None or not confirm_fn(
                 f"ENABLE ILLUMINATION: {device}.{prop} = {value!r}\n"
-                f"This will emit light at the sample."
+                f"This will emit light at the sample.",
+                kind="illumination",
             ):
                 raise SafetyViolation(
                     f"User declined to enable illumination {device}.{prop}."
@@ -367,19 +370,18 @@ class SafetyGuard:
 
         realpath-resolves (so `..` and symlinks can't escape) and raises
         SafetyViolation if the result leaves the configured root. When
-        workspace_dir is None the path is only normalised — confinement is
+        workspace_dir is None the path is absolutised — confinement is
         unchanged unless a lab opts in by configuring a root.
-
-        The normalisation is not cosmetic. A model that over-escapes a Windows
-        path hands us 'C:\\\\Users\\\\...'; the acquisition's own dataset_path
-        comes back normalised while a hook's log_path did not, so one payload
-        carried the same directory spelled two ways (design/19, 2026-07-10 run).
-        Windows collapses repeated separators and POSIX does not, which is the
-        kind of difference that works in the lab and fails in a test.
         """
         root = self._c.workspace_dir
         if root is None:
-            return os.path.normpath(path)
+            # abspath, not normpath. normpath is lexical: it respells separators
+            # and leaves '/tmp/x' as the drive-relative '\tmp\x'. dataset_path
+            # does not come through here at all — it comes back from
+            # pycro-manager's Java side already anchored ('C:\tmp\...', with
+            # AcqEngJ's _1 rename); matching a filesystem-resolved string takes
+            # filesystem resolution, not respelling (design/21 F6).
+            return os.path.abspath(path)
         root = os.path.realpath(root)
         target = path if os.path.isabs(path) else os.path.join(root, path)
         resolved = os.path.realpath(target)

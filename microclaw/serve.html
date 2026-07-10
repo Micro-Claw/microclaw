@@ -73,6 +73,22 @@
   }
   #key-btn, #model-btn { font-family: var(--mono); font-size: 11.5px; color: var(--ink-faint); }
 
+  /* confirmation banner (design/21 F1) */
+  #confirm-summary {
+    font-family: var(--mono); font-size: 12.5px; color: var(--ink);
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 10px 12px; margin: 0 0 10px; white-space: pre-wrap; overflow-x: auto;
+    max-height: 40vh; overflow-y: auto;
+  }
+  /* "This will emit light at the sample" does not belong on the same yes/no
+     banner as a YAML blob. */
+  #confirm-banner.illumination { border-color: #c0392b; border-width: 2px; }
+  #confirm-banner.illumination h2 { color: #c0392b; }
+  :root[data-theme="dark"] #confirm-banner.illumination { border-color: #ff8a80; }
+  :root[data-theme="dark"] #confirm-banner.illumination h2 { color: #ff8a80; }
+  #confirm-approve { background: var(--accent); color: #04191b; border-color: var(--accent); }
+  #confirm-banner.illumination #confirm-approve { background: #c0392b; color: #fff; border-color: #c0392b; }
+
   #toast {
     position: fixed; left: 50%; transform: translateX(-50%); bottom: 108px; z-index: 30;
     background: var(--panel); border: 1px solid var(--line); border-left: 3px solid #c0392b;
@@ -125,6 +141,16 @@
       <datalist id="model-list"></datalist>
       <button id="model-save">Use this model</button>
       <button id="model-cancel" type="button">Cancel</button>
+    </div>
+  </div>
+
+  <div class="banner hidden" id="confirm-banner">
+    <h2 id="confirm-title">Confirmation required</h2>
+    <p id="confirm-help"></p>
+    <pre id="confirm-summary"></pre>
+    <div class="row">
+      <button id="confirm-approve">Approve</button>
+      <button id="confirm-decline">Decline</button>
     </div>
   </div>
 
@@ -304,8 +330,51 @@
       case "retry": toast("API overloaded — retrying in " + ev.delay + "s…"); break;
       case "cancelled": toast(ev.reason); break;
       case "error": toast(ev.message); break;
+      // Confirmations are banner state, not transcript content.
+      case "confirm_request": showConfirm(ev); break;
+      case "confirm_resolved": hideConfirm(ev.id); break;
     }
   }
+
+  // ---- confirmations (design/21 F1) ----
+  // The turn thread is blocked on this answer; an unanswered banner denies at
+  // the server's deadline. A page reload re-surfaces it via GET /api/confirm.
+  let confirmId = null;
+
+  function showConfirm(p) {
+    confirmId = p.id;
+    const ill = p.kind === "illumination";
+    $("confirm-banner").classList.toggle("illumination", ill);
+    $("confirm-title").textContent = ill
+      ? "⚠ Enable illumination?" : "Confirmation required";
+    $("confirm-help").textContent = ill
+      ? "Approving emits light at the sample — the same authority as typing y at the console."
+      : "Microclaw wants to persist model-written content. Read it before approving; declining is safe.";
+    $("confirm-summary").textContent = p.summary;
+    $("confirm-approve").textContent = ill ? "Enable illumination" : "Approve";
+    $("confirm-banner").classList.remove("hidden");
+  }
+
+  function hideConfirm(id) {
+    if (id && confirmId && id !== confirmId) return;
+    confirmId = null;
+    $("confirm-banner").classList.add("hidden");
+  }
+
+  async function answerConfirm(approve) {
+    if (!confirmId) return;
+    const res = await fetch("/api/confirm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: confirmId, approve }),
+    });
+    // A 409 is a stale banner — the server already resolved it. Hide either way.
+    if (!res.ok && res.status !== 409) { toast(await detail(res)); return; }
+    hideConfirm(confirmId);
+  }
+
+  $("confirm-approve").addEventListener("click", () => answerConfirm(true));
+  $("confirm-decline").addEventListener("click", () => answerConfirm(false));
 
   async function runTurn(text) {
     const res = await fetch("/api/prompt", {
@@ -467,6 +536,10 @@
       showKey(await (await fetch("/api/key")).json());
       showModel(await (await fetch("/api/model")).json());
       await refresh();
+      // A reload mid-turn destroyed the stream that carried confirm_request;
+      // without this fetch the turn would sit stranded until the deadline.
+      const pending = await (await fetch("/api/confirm")).json();
+      if (pending.id) showConfirm(pending);
     } catch (err) { toast("Could not reach the Microclaw server: " + err.message); }
     msg.focus();
   })();

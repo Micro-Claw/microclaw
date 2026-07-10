@@ -32,10 +32,13 @@ from microclaw.image_analysis import (
 from microclaw.safety import SafetyGuard, SafetyViolation
 
 
-def _require_confirmation(summary: str) -> bool:
+def _require_confirmation(summary: str, kind: str = "action") -> bool:
     """Blocking stdin confirmation for actions that persist model-writable content.
 
     Prints the exact thing about to be persisted and requires an explicit yes.
+    `kind` ("knowledge", "hook", "illumination") is for frontends that render
+    kinds differently; a terminal already reads the summary, so it is unused
+    here.
     """
     print(f"\n[microclaw] Confirmation required:\n{summary}")
     return input("Proceed? [y/N] ").strip().lower() in {"y", "yes"}
@@ -43,7 +46,11 @@ def _require_confirmation(summary: str) -> bool:
 
 # The confirmation gate lives in code (not just the system prompt) so a
 # self-modification (save_knowledge, hook save) can't happen without a human
-# yes. Injectable so tests can stub it and a non-CLI frontend can supply its own.
+# yes. Injectable so tests can stub it and a non-CLI frontend can supply its
+# own — `microclaw serve` installs Session.confirm here so the gate reaches the
+# browser the operator is actually looking at (design/21 F1). Every callsite
+# must read this module global at call time; importing it by value into another
+# module would silently disconnect the browser gate.
 CONFIRM_FN = _require_confirmation
 
 
@@ -496,6 +503,18 @@ def _shutter_state(ctrl: MicroscopeController) -> Any:
             entry[key] = bool(read())
         except Exception:
             entry[key] = "unknown"
+    # "Closed right now" is not "closed during your last exposure" (design/21
+    # S2). A manual shutter's resting state is its exposure state; under
+    # autoshutter the resting read says nothing — refuse to let `open` answer a
+    # question about the past.
+    if entry.get("auto") is True:
+        entry["open_during_exposure"] = (
+            "unknown (autoshutter opens the shutter for each exposure)"
+        )
+    elif entry.get("auto") is False and isinstance(entry.get("open"), bool):
+        entry["open_during_exposure"] = entry["open"]
+    else:
+        entry["open_during_exposure"] = "unknown"
     return entry
 
 
@@ -557,6 +576,16 @@ def get_system_state(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     # enabled" has to be sourced from here or not made at all (design/20 F2).
     state["shutter"] = _shutter_state(ctrl)
     state["lasers"] = _laser_state(ctrl)
+    try:
+        label = str(ctrl.core.get_camera_device())
+        state["camera"] = {
+            "label": label or "unknown",
+            # The label is whatever the config author typed; the adapter is the
+            # hardware. F4 keys knowledge entries on the adapter for that reason.
+            "adapter": str(ctrl.core.get_device_name(label)) if label else "unknown",
+        }
+    except Exception:
+        state["camera"] = "unknown"
     return state
 
 
@@ -1936,7 +1965,8 @@ def generate_and_save_hook(
     warnings = lint_hook_code(code)
     if warnings and not CONFIRM_FN(
         f"Hook '{name}' — advisory lint flagged:\n" + "\n".join(warnings)
-        + "\n\nSave anyway?"
+        + "\n\nSave anyway?",
+        kind="hook",
     ):
         return {"error": "User declined after lint warnings.", "warnings": warnings}
     save_hook(name, code, description, source=source)
@@ -2050,8 +2080,18 @@ def save_knowledge(
     """Persist a knowledge base entry. Gated by an in-code confirmation."""
     import yaml
     from microclaw.knowledge_manager import save_entry
+    # A devices/ entry can suppress an alarm (design/21 S4); it must name the
+    # hardware it was observed on, or it detaches from its trigger and applies
+    # to whatever camera is loaded next.
+    if category == "devices" and "observed_on" not in value:
+        return {"error":
+                "A devices/ entry must carry observed_on: the camera adapter it "
+                "was observed with (the 'adapter' field of get_system_state's "
+                "camera block, e.g. 'DCam'). An entry that suppresses an alarm "
+                "must name the condition it holds under."}
     if not CONFIRM_FN(
-        f"Save knowledge {category}/{key}:\n{yaml.safe_dump({key: value})}"
+        f"Save knowledge {category}/{key}:\n{yaml.safe_dump({key: value})}",
+        kind="knowledge",
     ):
         return {"error": "User declined to save this knowledge entry."}
     try:
