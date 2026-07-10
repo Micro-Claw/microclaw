@@ -273,6 +273,74 @@ than on the behaviour. That is the same defect as a table column sourced from th
 author's expectations rather than from a measurement, one layer down. It is worth
 being embarrassed about, in a document about exactly this.
 
+## The sweep
+
+Two rig failures in two branches, both host-dependent: design/19's hardcoded
+path separator (passed on macOS, failed on Windows) and design/20's EMU config
+(passed on a laptop, failed on the microscope). So the suite was swept.
+
+Method — no reading, only measurement. Three axes, and a control for each:
+
+* **`$HOME`.** The constants bind at import, so `$HOME` was set in a subprocess
+  and the suite re-run against a fabricated lab machine: `~/.microclaw/emu.json`
+  pointing at an MM tree with a real `EMU/config.uicfg`, a hooks manifest, a
+  knowledge base.
+* **Path guessing.** `find_mm_app_dir` falls through the cache to
+  `C:/Program Files/Micro-Manager-2.0`. A pytest plugin pointed
+  `_candidate_mm_dirs` at a fake install, emulating a machine with MM in a
+  standard location and no cache at all.
+* **Environment.** `ANTHROPIC_API_KEY`, `MICROCLAW_MODEL`,
+  `MICROCLAW_FROM_SHORTCUT` set and unset. Clean; nothing to fix.
+
+A second pytest plugin wrapped every function that reads host state
+(`find_mm_app_dir`, `_candidate_mm_dirs`, `read_emu_config`, `list_saved_hooks`,
+`load_hook_class`, `load_knowledge`, `Path.home`, the `paths` helpers) and
+recorded which tests called them. That is what turned a hunch into a list.
+
+### What it found
+
+**F2 doubled the blast radius, and nobody noticed.** Before F2, 12 tests reached
+`find_mm_app_dir`. After, 24 — the twelve new ones all in `test_agent.py`, which
+merely *executes* `get_system_state`. On the rig those tests were reading the
+lab's real EMU config to check a mocked tool-call sequence.
+
+**A second host-dependent test, this one adversarial.** With a hooks manifest
+naming `no_such_hook`, `test_unknown_hook_strategy_returns_an_error` fails: it
+called the real `list_saved_hooks()`. Contrived as a filename, but not as a
+mechanism — the rig's manifest *does* now contain `pixel_std`, saved by the agent
+mid-run. A unit test was reading data an agent wrote.
+
+**False positives worth naming.** `TestGenerateAndSaveHook` and the
+`test_emu_manager` discovery tests show up in the probe but redirect their
+constants; they were never at risk. The probe records the *call*, not whether it
+escaped.
+
+### The fix
+
+One autouse fixture in `conftest.py` redirecting `HOOKS_DIR`, `MANIFEST` and
+`KNOWLEDGE_PATH` under `tmp_path`, and one line priming
+`tools._EMU_SESSION_CACHE["properties"] = None`. The existing fixture *cleared*
+that cache, which is worse than useless: an empty cache is what sends
+`_cached_emu_properties` out to the host in the first place. Priming it makes
+"not an EMU rig" the suite's default; a test that wants a map patches
+`_cached_emu_properties`, and a function-scoped patch in the test body wins.
+
+`tests/test_host_isolation.py` pins all of it. Removing either half of the guard
+turns three of its five tests red.
+
+The class-level fixture added to `TestGetSystemState` for the first rig failure
+is gone — it fixed one class, and the same hole was open in `test_agent.py`.
+
+### Result
+
+|  | empty home | lab home | + MM at a guessable path |
+|---|---|---|---|
+| before | pass | **2 fail** | **1 fail** |
+| after | pass | pass | pass |
+
+The suite passed on an empty home in every configuration, which is exactly why
+this went unnoticed on a laptop for two branches running.
+
 The snap-protocol tests needed a `fake_snap` fixture that still calls
 `live().snap(True)` — patching `snap_to_numpy_displayed` outright would have let
 the exposure-count assertion pass while measuring nothing. The old tests failed

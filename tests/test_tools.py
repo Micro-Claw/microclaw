@@ -372,18 +372,9 @@ class TestListDevices:
 
 
 class TestGetSystemState:
-    @pytest.fixture(autouse=True)
-    def _no_emu_rig(self, monkeypatch):
-        """Default these tests to a rig with no EMU laser map.
-
-        Without this they read whatever EMU config the *host* has. MagicMock
-        implements __fspath__, so Path(ctrl.get_mm_app_dir()) yields a plausible
-        non-existent path rather than raising; find_mm_app_dir shrugs and falls
-        through to its on-disk cache, and a lab machine has one. The suite then
-        passes on a laptop and fails on the microscope, which is the same
-        host-dependent assertion this whole design doc is about.
-        """
-        monkeypatch.setattr(tools, "_cached_emu_properties", lambda ctrl: None)
+    # "no EMU rig" is the suite-wide default: conftest primes the session cache
+    # to None so nothing here reaches the host's MM install. The laser tests
+    # below opt in by patching _cached_emu_properties themselves.
 
     def test_returns_state(self, mock_ctrl, unconstrained_guard):
         result = get_system_state(mock_ctrl, unconstrained_guard)
