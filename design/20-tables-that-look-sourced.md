@@ -128,7 +128,7 @@ every patch, because the patches addressed the *occasions* rather than the rule.
 Two of the four also have a tool-surface component, and those are worth fixing on
 their own merits.
 
-## F1 — no tool reports per-tile stats
+## F1 — no tool reports per-tile stats ✅
 
 `run_tile_acquisition(protocol="snap")` returns `{"position": ..., "status":
 "snapped", "saved": false}` per tile. No intensities. So "scan a grid and tell me
@@ -165,7 +165,36 @@ one-line-drop shape as design/19's F1, one tool up.
 Watch the volume: nine tiles × the full `snap_and_analyze` payload is a lot of
 context. Return the intensity stats and the focus metric; leave thumbnails out.
 
-## F2 — `get_system_state` cannot answer the question it is asked
+**Implemented**, with two things the draft did not anticipate:
+
+1. **The metric stamp had to move, not be dropped.** `metric_valid_for` guards
+   the cross-setting comparison of design/14 §10, so a bare per-tile
+   `focus_metric` cannot ship without it — but a grid shares one ROI, exposure
+   and binning, so nine copies of the block would be nine copies of one fact.
+   `_metric_stamp(ctrl)` is now split out of `_focus_metric_payload` and the grid
+   result carries exactly one, at the top level. It is omitted entirely when no
+   tile succeeded: a stamp beside zero measurements describes nothing.
+2. **The rows needed coordinates.** The stats alone still leave the agent to fill
+   its table's X and Y columns from its own grid math — the very habit S1 is
+   about. `run_multiposition_acquisition` now stamps `x_um`/`y_um` (and `z_um`
+   when given) onto every result row, error rows included. An error row without
+   coordinates is a row the agent will complete from memory.
+
+The payload for the original prompt is now one call:
+
+```json
+{"status": "9/9 positions completed.",
+ "results": [{"position": "grid_r0_c0", "x_um": 562.0, "y_um": 562.0,
+              "focus_metric": 1.974e-05, "mean_intensity": 662.1,
+              "min_intensity": 142.0, "max_intensity": 1182.0,
+              "saturated_fraction": 0.0, "status": "snapped", "saved": false}, ...],
+ "focus_metric_kind": "normalized_laplacian_variance",
+ "metric_valid_for": {"roi": [0, 0, 512, 512], "exposure_ms": 10.0, "binning": "1"}}
+```
+
+Every column of the table the user asked for is now a field some tool returned.
+
+## F2 — `get_system_state` cannot answer the question it is asked ✅
 
 Add shutter and illumination state, so that "no lasers were involved" is either
 sourced or unavailable. The EMU laser map already exists (`build_emu_map`,
@@ -176,7 +205,27 @@ Design the *absent* case deliberately. On a rig with no shutter device the field
 should read `"unknown"`, not be omitted — an omitted key is what let the agent
 fill the gap from imagination in the first place.
 
-## F3 — state the general rule in `agent.py`
+**Implemented** as `_shutter_state` and `_laser_state`, both always present on
+`get_system_state`. The absent case turned out to need three values, not one:
+
+| reading | meaning |
+|---|---|
+| `{"device": "DShutter", "open": false, "auto": true}` | measured |
+| `"no shutter device configured"` | measured: there is no shutter |
+| `"unknown"` | the read failed, or this rig has no EMU laser map |
+
+The middle one is the trap. "There is no shutter device" is a *fact*, and it is
+not the fact "the light is off" — a rig can be lit by a laser with no shutter in
+the path at all. Collapsing it into `"unknown"` would have thrown away real
+information; collapsing it into `false`/"closed" would have re-armed exactly the
+sign-off this fix exists to prevent. Partial reads degrade per-field, so a
+shutter whose `auto` cannot be read still reports its `open`.
+
+Laser slots are keyed by slot index through `build_emu_map`, never by device
+order (design/14 §1), and an unreadable line reports `"unknown"` for that slot
+rather than dropping it.
+
+## F3 — state the general rule in `agent.py` ✅
 
 Generalise line 98. Something with teeth, because the current phrasing invites
 being read as advice about one field:
@@ -191,6 +240,32 @@ being read as advice about one field:
 Explicitly cover the three ways it went wrong here: values carried across turns,
 properties of raw data inferred from summary statistics, and hardware state with
 no tool behind it.
+
+**Implemented** as a `Reporting — say only what a tool told you` section, placed
+above `Illumination safety` so it governs the sections under it. Line 98 stays
+where it is: it is now an instance of a stated rule rather than the only place
+the rule appears. Five bullets, one per observed failure — carried-forward rows,
+announced-but-not-taken measurements, pixel claims from moments, illumination
+state, and a final one telling the agent to read its own payloads before writing
+prose about the instrument (S3).
+
+## Tests
+
+`tests/test_tools.py`, 601 → 613. Both new behaviours mutation-checked: deleting
+the hoisted stamp fails `test_the_metric_stamp_is_hoisted_to_the_grid_not_repeated`,
+and returning `None` instead of `"unknown"` from `_shutter_state` fails
+`test_illumination_fields_are_present_even_when_unknowable`.
+
+The snap-protocol tests needed a `fake_snap` fixture that still calls
+`live().snap(True)` — patching `snap_to_numpy_displayed` outright would have let
+the exposure-count assertion pass while measuring nothing. The old tests failed
+first with `0/4 positions completed.`, because the per-position `except` swallows
+a `MagicMock` reaching `np.mean`. Worth knowing that this loop converts any
+programming error inside a tile into a per-tile error string.
+
+No test asserts the text of the system prompt. Prompt-content assertions are
+brittle and would not have caught any of S1–S4 anyway; what they'd catch is a
+typo, at the cost of failing on every rewording.
 
 ## Not in scope
 
