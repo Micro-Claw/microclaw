@@ -344,8 +344,13 @@ def _start_confirm(session, summary="Save knowledge devices/X:\nX: {a: 1}",
         target=lambda: box.update(answer=session.confirm(summary, kind))
     )
     thread.start()
+    # Wait for the confirm_request *event*, not for session.pending: confirm()
+    # sets pending first and emits second (so a browser can never see an event
+    # whose id is not yet answerable), which leaves a window where pending is
+    # set and `events` is still empty. Waiting on pending lost that race on the
+    # lab machine (2026-07-10 run); event-emitted implies pending-set.
     deadline = time.monotonic() + 5
-    while session.pending is None and thread.is_alive() and time.monotonic() < deadline:
+    while not events and thread.is_alive() and time.monotonic() < deadline:
         time.sleep(0.005)
     return thread, events, box
 
