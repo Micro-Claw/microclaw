@@ -45,4 +45,11 @@ markers = [
 microclaw = "microclaw"
 
 [tool.setuptools.package-data]
-microclaw = ["history_viewer.html", "serve.html", "transcript.css", "transcript.js"]
+microclaw = [
+    "history_viewer.html",
+    "serve.html",
+    "transcript.css",
+    "transcript.js",
+    "favicon.ico",
+    "safety_config.example.yaml",
+]

@@ -546,3 +546,65 @@ forward to add this (with a code stub) to the design file for later.
 Is there anything left to commit or push?
 
 Is prompts.md up to date?
+
+----
+
+I would like to make microclaw easier to install and launch. How can we set up
+the most user-friendly instructions to install this and generate a desktop
+shortcut to launch microclaw serve? Ideally someone with very limited
+computational experience would be able to install this program. I'd like to
+include a favicon.ico (that I have already generated) file in the repo and use
+this as the desktop shortcut icon. I'd also like to display this icon at the top
+of README. Please write your proposal for how to do all of this, with code
+stubs, to design/17.
+
+OK, the plan looks solid. I agree that we should use uv. We could even consider
+using uv for the default development installs instead of conda. We don't need to
+include shortcuts for Mac or Linux as no one ever really uses Micro-Manager on
+anything besides Windows. The OneDrive concern I think can similarly be dropped:
+I am not using OneDrive except to store some .json files here and there. The
+Desktop on my Windows machine is a normal desktop, I believe. If you're
+concerned, please write a spike I can run to convince yourself. If you decide to
+write a spike, try to address as many option questions from the document as you
+can.
+
+I did put favicon.ico in the folder. We could add it to the repo
+
+I ran the spike. The output is in 17-install-spike-out.txt. Despite what it
+says, I did the icon appear on the desktop when I ran the spike with --desktop
+and it was removed when I ran the spike with --clean
+
+Let's do v1, then v2
+
+Ok. Please push this so I can run it on the lab machine, then. What would you
+like me to try?
+
+I reinstalled. All tests passed. My safety_config.yaml was refused until I added
+reviewed: true. The second time I ran microclaw init --path %TEMP%\sc.yaml, it
+did tell me the file was "Already present" AND it opened VSCode for a second
+time to edit the file. When I ran microclaw init bare, it did go to the roaming
+profile: (microclaw) D:\Code\microclaw>microclaw init Wrote
+C:\Users\rieslab\AppData\Roaming\microclaw\safety_config.yaml. Microclaw serve
+then looks to this file. It did save the API key. Even with a hard refresh, I
+didn't see a lobster in the browser tab. But it could still be cached. The
+latest output from the spike is in 17-install-spike-out.txt
+
+Before you do v3, I just replaced favicon.ico with a version that has a
+transparent background. Can we use this new version to update the png and
+whatever else is needed?
+
+Now let's do v3
+
+All of that worked! Now let's do v4
+
+[in response to a question about how install.bat should fetch the code, given
+the repo is private]
+
+The repo will be made public eventually, but not yet. I guess at the moment we
+do a local download and then we update the instructions when it goes public?
+
+OK. I will try this soon. I have a machine in mind. In the meantime, I noticed
+that the horizontal rule on the README intersects with the floating PNG. Is
+there a way to fix that?
+
+Can you update prompts.md?

@@ -1,6 +1,13 @@
 # Microclaw
 
+<!-- The icon floats beside the description, never beside the <h1>: GitHub gives
+     h1/h2 a full-width bottom border, and that rule would cut across the image. -->
+<img src="docs/microclaw-icon.png" alt="" width="120" align="left" hspace="16" vspace="4">
+
 An AI agent for [Micro-Manager](https://micro-manager.org) fluorescence microscopy control. Describe your acquisition protocol in plain language; Microclaw translates it into Micro-Manager tool calls while the GUI responds in real time.
+
+<br clear="left">
+
 
 > [!CAUTION]
 > The hardware safety features are not comprehensive. Always be mindful of what your microscope is doing. Use at your own risk.
@@ -15,32 +22,94 @@ User (natural language) → AgentLoop (Anthropic API) → ToolRegistry → Safet
 - **Safety**: User-defined `safety_config.yaml` enforced as a hard gate before every hardware call. The AI cannot override these limits.
 - **Backend**: pycro-manager (ZMQ on port 4827). Open Micro-Manager normally; Microclaw connects to the running instance.
 
-## Quick start
+## Install (Windows)
 
-### Prerequisites
+You do not need Python, or a terminal. The installer brings its own.
 
-1. Install [Micro-Manager 2.0](https://micro-manager.org/Download_Micro-Manager_Latest_Release).
-2. Enable the ZMQ server: **Tools → Options → Run pycro-manager server on port 4827**.
-3. Set your `ANTHROPIC_API_KEY` environment variable.
+**1. Install Micro-Manager and turn on its server.**
+Install [Micro-Manager 2.0](https://micro-manager.org/Download_Micro-Manager_Latest_Release),
+open it, and tick **Tools → Options → Run pycro-manager server on port 4827**.
+Nothing can drive your microscope until you do this, and no installer can do it
+for you.
 
-### Install
+**2. Download Microclaw.**
+On this repository's page, click **Code → Download ZIP**, then right-click the
+downloaded file and choose **Extract All**.
+
+**3. Double-click `install.bat`** inside the extracted folder.
+
+It installs everything into `%LOCALAPPDATA%\microclaw` — no administrator rights,
+nothing else on your machine is touched — and puts a **Microclaw** icon on your
+desktop. It takes a few minutes.
+
+> Windows may show a blue **"Windows protected your PC"** banner, because the file
+> came from the internet. Click **More info → Run anyway**.
+
+**4. Edit your safety limits.**
+The installer opens a `safety_config.yaml` for you. Its limits are **examples that
+match no real microscope**, and they are the last thing standing between the AI and
+your hardware. Set each one for your instrument, then change `reviewed: false` to
+`reviewed: true` at the top of the file. Microclaw refuses to start until you do.
+
+**5. Double-click the Microclaw icon.**
+A console window opens — that is the server; closing it stops Microclaw — and a
+browser window follows. It will ask for an Anthropic API key the first time.
+
+Re-running `install.bat` is safe: it upgrades in place and leaves your safety
+limits alone.
+
+### Running it later
+
+The desktop icon is the whole interface. If you'd rather use a terminal, the
+commands are `microclaw serve` for the browser GUI and `microclaw` for the REPL —
+see [CLI options](#cli-options).
+
+## Install from source (developers)
+
+[`uv`](https://docs.astral.sh/uv/) is the supported toolchain; it downloads a
+CPython for you, so nothing needs to be installed first.
 
 ```bash
-pip install -e ".[test]"          # add ,serve for the browser GUI
+uv venv --python 3.12
+uv pip install -e ".[serve,test]"
+uv run pytest
 ```
 
-### Run
+An existing conda environment works fine too — `pip install -e ".[serve,test]"`
+inside it does the same thing. Then:
 
 ```bash
-cp safety_config.example.yaml safety_config.yaml   # then edit for YOUR rig
-microclaw --safety-config safety_config.yaml
+microclaw init     # writes this machine's safety limits, and opens them for editing
+microclaw          # starts a session once you've reviewed them
 ```
+
+`microclaw init` creates a per-user `safety_config.yaml` (in `~/.config/microclaw/`,
+or `%APPDATA%\microclaw\` on Windows) and opens it. Its limits are the example's —
+fictional, matching no real hardware — so Microclaw **refuses to start** until you
+have edited them for your instrument and changed `reviewed: false` to
+`reviewed: true` at the top. Pass `--safety-config PATH` to use a file somewhere
+else; the same rule applies to it.
+
+You will also need an `ANTHROPIC_API_KEY`: set it in the environment, or let the
+browser GUI collect and store it (see [Browser GUI](#browser-gui)).
+
+### Where things live
+
+| What | Where |
+|---|---|
+| Safety limits | `%APPDATA%\microclaw\safety_config.yaml` |
+| API key | your OS credential store, else `%APPDATA%\microclaw\config.toml` |
+| The installed program | `%LOCALAPPDATA%\microclaw\env` |
+| Desktop shortcut + its icon | your desktop, and `%LOCALAPPDATA%\microclaw` |
+| Saved conversations | `*_microclaw_history.json`, in the folder Microclaw ran from |
+
+On macOS and Linux, substitute `~/.config/microclaw` and `~/.local/share/microclaw`.
 
 ### CLI options
 
 | Flag | Default | Purpose |
 |---|---|---|
-| `--safety-config PATH` | *(required)* | Hardware-limits file enforced before every tool call. Copy `safety_config.example.yaml` and edit for your rig — the example's limits match no real hardware. |
+| `--safety-config PATH` | the file `microclaw init` wrote | Hardware-limits file enforced before every tool call. Must carry `reviewed: true`, whether it's the default or an explicit path. |
 | `--port N` | `4827` | ZMQ port to reach the running Micro-Manager instance. Match the port set in **Tools → Options**. |
 | `--model ID` | `$MICROCLAW_MODEL` or `claude-opus-4-8` | Anthropic model id. The `MICROCLAW_MODEL` environment variable overrides the built-in default; `--model` overrides both. |
 | `--profile` / `--no-profile` | off | cProfile the session and print stats on exit. |
@@ -68,11 +137,13 @@ plus a composer:
 
 ```bash
 pip install -e ".[serve]"
-microclaw --safety-config safety_config.yaml serve      # → http://127.0.0.1:8000
+microclaw serve                                  # → http://127.0.0.1:8000
 ```
 
-The session flags (`--safety-config`, `--port`, `--model`, `--save-history`) belong
-to the top-level parser, so they go *before* `serve`.
+Uses the safety config `microclaw init` wrote. The session flags
+(`--safety-config`, `--port`, `--model`, `--save-history`) belong to the top-level
+parser, so if you pass them they go *before* `serve`:
+`microclaw --safety-config other.yaml serve`.
 
 | Flag | Default | Purpose |
 |---|---|---|
@@ -82,6 +153,29 @@ to the top-level parser, so they go *before* `serve`.
 | `--allow-remote` | off | Permit a non-loopback bind. **Anyone who can reach the port can drive the microscope** — trusted, isolated LAN only. |
 
 A browser window opens once the server is accepting connections.
+
+### Desktop shortcut (Windows)
+
+```
+microclaw install-shortcut
+```
+
+Puts a **Microclaw** icon on the desktop that launches the browser GUI — no
+terminal, no flags. The console window it opens *is* the server: it shows the
+connection status and any startup error, and closing it stops Microclaw.
+
+The shortcut runs `serve` and nothing else. It is always loopback-only, and it
+loads the safety limits from the config `microclaw init` wrote — which must say
+`reviewed: true`, or it refuses to start and tells you so.
+
+| Flag | Purpose |
+|---|---|
+| `--dry-run` | Print what would be written, and where, without writing it. |
+| `--remove` | Delete a previously installed shortcut. |
+| `--dest DIR` | Write to a directory other than the desktop. |
+
+Run it again after moving or reinstalling the environment; the shortcut points at
+the `microclaw` it was created from.
 
 The server holds one microscope and one conversation. A turn takes the session
 lock, so a second prompt is refused (HTTP 409) rather than interleaving tool calls
@@ -102,19 +196,19 @@ To swap keys mid-session, click the `key …AA8f` chip in the header. Saving wit
 already in the credential store comes back on the next start — the UI says so when
 that is the case.
 
-## Set up a runnable .bat with the environment variables
-
-Create a `.bat` file containing the following lines, updated to your installation path and API key.
-
-```
-set ANTHROPIC_API_KEY=your-key-here
-cd C:\path\to\microclaw
-C:\path\to\miniconda3\Scripts\activate.bat microclaw && microclaw --safety-config safety_config.yaml
-```
-
 ## Safety configuration
 
-Copy `safety_config.example.yaml` to `safety_config.yaml` and edit it to set this rig's hardware limits. These are enforced before every tool call and cannot be overridden by the AI.
+Run `microclaw init` to write this rig's `safety_config.yaml`, then edit it to set the real hardware limits. These are enforced before every tool call and cannot be overridden by the AI.
+
+The file starts with a gate. Nothing runs until a human has read the limits and flipped it:
+
+```yaml
+# Microclaw REFUSES TO START until you have gone through this file, set each
+# limit for THIS instrument, and changed the line below to `reviewed: true`.
+reviewed: false
+```
+
+The rest sets the limits themselves (the shipped values are examples, not defaults):
 
 ```yaml
 stage:

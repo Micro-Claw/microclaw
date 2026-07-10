@@ -2,17 +2,21 @@ import sys
 import json
 import datetime
 import cProfile
+import os
 import pstats
 import io
+import subprocess
 import tempfile
 import webbrowser
+from importlib import resources
 from pathlib import Path
 from pstats import SortKey
 
 from microclaw.agent import run_agent
 from microclaw.assets import load_page
 from microclaw.controller import MicroscopeController
-from microclaw.config import load_safety_config
+from microclaw.config import load_safety_config_or_exit
+from microclaw.paths import default_safety_config
 from microclaw.safety import SafetyGuard
 
 
@@ -64,21 +68,107 @@ def view_history(path, open_browser=True):
     return out
 
 
+def _open_in_editor(path):
+    """Show `path` to the user in whatever edits text on this machine.
+
+    os.startfile raises if the extension has no registered handler, and nothing
+    in a base Windows install claims .yaml (design/17 spike Q6 found VS Code
+    only because that box has it). An unhandled OSError here would abort `init`
+    at exactly the moment the user needs the file in front of them.
+    """
+    try:
+        if sys.platform == "win32":
+            os.startfile(path)  # noqa: S606 — the path is ours, not user input
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", "-t", str(path)])
+        else:
+            subprocess.Popen([os.environ.get("EDITOR") or "xdg-open", str(path)])
+    except (OSError, AttributeError):
+        if sys.platform == "win32":
+            subprocess.Popen(["notepad.exe", str(path)])
+        else:
+            print(f"Open this file in an editor: {path}")
+
+
+def init(args):
+    """Create the per-user safety config, and put it in front of the user.
+
+    Deliberately copies the example *unedited*, `reviewed: false` and all: the
+    limits it ships are fictional, and the only way past the gate in
+    `load_safety_config` is for a human to read the file and change that line.
+    """
+    dest = Path(args.path) if args.path else default_safety_config()
+    if dest.exists() and not args.force:
+        print(f"Already present: {dest}")
+        print("Left as it is — `--force` overwrites it with a fresh copy of the example.")
+        if not args.no_edit:
+            # Re-running `init` is how you get back to the limits file; opening it
+            # is the point. Say so, or the editor appearing looks like an
+            # overwrite just happened.
+            print("Opening it for editing.")
+            _open_in_editor(dest)
+        return dest
+
+    example = resources.files("microclaw").joinpath("safety_config.example.yaml")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(example.read_text(encoding="utf-8"), encoding="utf-8")
+
+    print(f"Wrote {dest}\n")
+    print("These limits are the example's. They match no real microscope, and")
+    print("Microclaw will refuse to start until you have edited them for this")
+    print("instrument and set `reviewed: true` at the top of the file.")
+    if not args.no_edit:
+        _open_in_editor(dest)
+    return dest
+
+
+def install_shortcut(args):
+    """Put a Microclaw launcher on the desktop (Windows), or explain why not."""
+    from microclaw import shortcut
+
+    if not shortcut.supported():
+        # Exit 0, not a traceback: v4's installer runs this unconditionally, and a
+        # developer on macOS has a terminal.
+        print(
+            "Desktop shortcuts are Windows only. "
+            "On this platform, run `microclaw serve` from a terminal."
+        )
+        return
+
+    try:
+        if args.remove:
+            gone = shortcut.remove(args.dest)
+            for p in gone:
+                print(f"Removed {p}")
+            if not gone:
+                print("Nothing to remove.")
+            return
+
+        p = shortcut.install(args.dest, dry_run=args.dry_run)
+    except shortcut.ShortcutError as e:
+        sys.exit(f"Could not install the shortcut: {e}")
+
+    if args.dry_run:
+        print("Would write:")
+        print(f"  shortcut : {p['lnk']}")
+        print(f"  wrapper  : {p['cmd']}")
+        print(f"  icon     : {p['icon']}")
+        print(f"  launching: {p['target']} {' '.join(p['args'])}")
+        print(f"  from     : {p['workdir']}")
+        return
+
+    print(f"Installed {p['lnk']}")
+    print("Double-click it to start Microclaw. Its console window is the server:")
+    print("closing that window stops it.")
+
+
 def run_session(args):
     """Interactive agent loop against a live Micro-Manager instance."""
-    # Enforced here rather than as an argparse `required` flag: --safety-config
-    # lives on the top-level parser (so `microclaw --port ...` still launches a
-    # session), but making it required there would also force it on the
-    # `view-history` subcommand, which touches no hardware. A session still
-    # refuses to start without an explicit config — the repo ships only
-    # safety_config.example.yaml, whose limits match no real rig (design/14 §6).
-    if not args.safety_config:
-        sys.exit(
-            "A session requires --safety-config PATH. Copy "
-            "safety_config.example.yaml and edit it for THIS rig; the example's "
-            "limits match no real hardware."
-        )
-    constraints = load_safety_config(args.safety_config)
+    # No --safety-config means the per-user default that `microclaw init` writes,
+    # which is what a desktop shortcut loads. Either way the file must carry
+    # `reviewed: true`, so a session still cannot start under the example's
+    # fictional limits (design/14 §6, design/17 v2).
+    constraints = load_safety_config_or_exit(args.safety_config)
     guard = SafetyGuard(constraints)
 
     print("Connecting to Micro-Manager...")
@@ -156,8 +246,9 @@ def main():
         "--safety-config",
         default=None,
         help=(
-            "Path to THIS RIG's safety-limits YAML (copy safety_config.example.yaml "
-            "and edit). Required to launch a session; not needed for view-history."
+            "Path to THIS RIG's safety-limits YAML. Defaults to the per-user file "
+            f"`microclaw init` writes ({default_safety_config()}). Either way it "
+            "must carry `reviewed: true`."
         ),
     )
     parser.add_argument("--port", type=int, default=4827)
@@ -174,6 +265,33 @@ def main():
     # (`microclaw --safety-config x.yaml serve`). Repeating them on the
     # subparser would let its defaults silently clobber what was passed there.
     sub = parser.add_subparsers(dest="command")
+
+    it = sub.add_parser(
+        "init",
+        help="Create this machine's safety-limits file and open it for editing.",
+        description=(
+            "Copies the example safety config to a per-user location and opens it. "
+            "Its limits are fictional: edit them for this microscope and set "
+            "`reviewed: true`, or Microclaw will refuse to start."
+        ),
+    )
+    it.add_argument("--path", default=None, help="Write somewhere other than the default.")
+    it.add_argument("--force", action="store_true", help="Overwrite an existing file.")
+    it.add_argument("--no-edit", action="store_true", help="Don't open an editor.")
+
+    sc = sub.add_parser(
+        "install-shortcut",
+        help="Put a Microclaw launcher on the desktop (Windows).",
+        description=(
+            "Writes a desktop shortcut that runs `microclaw serve` under this "
+            "environment, with the Microclaw icon. It passes no other flags: the "
+            "GUI it opens is loopback-only, under the safety limits in the config "
+            "`microclaw init` wrote."
+        ),
+    )
+    sc.add_argument("--dest", default=None, help="Write to a directory other than the desktop.")
+    sc.add_argument("--dry-run", action="store_true", help="Print what would be written.")
+    sc.add_argument("--remove", action="store_true", help="Delete a previously installed shortcut.")
 
     sv = sub.add_parser(
         "serve",
@@ -211,6 +329,21 @@ def main():
     )
 
     args = parser.parse_args()
+
+    # Before anything that can sys.exit(): a shortcut-spawned console closes the
+    # instant the process does, so a refusal ("safety config unreviewed", "could
+    # not connect") would flash past unread. No-op unless the .cmd wrapper ran.
+    from microclaw.shortcut import pause_on_exit
+
+    pause_on_exit()
+
+    if args.command == "init":
+        init(args)
+        return
+
+    if args.command == "install-shortcut":
+        install_shortcut(args)
+        return
 
     if args.command == "view-history":
         view_history(args.path, open_browser=not args.no_browser)

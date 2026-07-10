@@ -33,6 +33,7 @@ from fastapi.responses import (
     FileResponse,
     HTMLResponse,
     JSONResponse,
+    Response,
     StreamingResponse,
 )
 from pydantic import BaseModel
@@ -46,8 +47,8 @@ from microclaw.agent import (
     run_agent_iter,
     set_api_key,
 )
-from microclaw.assets import load_page
-from microclaw.config import load_safety_config
+from microclaw.assets import icon_bytes, load_page
+from microclaw.config import load_safety_config_or_exit
 from microclaw.controller import MicroscopeController
 from microclaw.safety import SafetyGuard, SafetyViolation
 
@@ -133,7 +134,7 @@ class Session:
     """One live microscope + conversation, shared across requests."""
 
     def __init__(self, args):
-        guard = SafetyGuard(load_safety_config(args.safety_config))
+        guard = SafetyGuard(load_safety_config_or_exit(args.safety_config))
         print("Connecting to Micro-Manager...")
         ctrl = MicroscopeController(port=args.port, guard=guard)
         if not ctrl.is_connected():
@@ -172,6 +173,7 @@ def build_app(session) -> FastAPI:
 
     app = FastAPI(title="Microclaw")
     page = load_page("serve.html")
+    icon = icon_bytes()
 
     @app.middleware("http")
     async def block_cross_origin(request: Request, call_next):
@@ -190,6 +192,12 @@ def build_app(session) -> FastAPI:
     @app.get("/", response_class=HTMLResponse)
     async def index():
         return page
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    async def favicon():
+        # Read once at startup, not per request; the file cannot change while
+        # the process lives. `image/x-icon` is what every browser expects here.
+        return Response(icon, media_type="image/x-icon")
 
     @app.get("/api/history")
     async def get_history():
@@ -434,12 +442,6 @@ def serve(args):
         sys.exit(
             f"Refusing to bind {args.host}: this endpoint moves real hardware. "
             "Pass --allow-remote if you truly mean to expose it."
-        )
-    if not args.safety_config:
-        sys.exit(
-            "A session requires --safety-config PATH. Copy "
-            "safety_config.example.yaml and edit it for THIS rig; the example's "
-            "limits match no real hardware."
         )
     import uvicorn
 
