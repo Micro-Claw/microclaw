@@ -269,8 +269,12 @@ TOOLS: list[dict[str, Any]] = [
         "name": "get_system_state",
         "description": (
             "Return a summary of the current microscope state: stage positions, "
-            "active channel, exposure time, and whether live view is running. "
-            "Call this first when you need context before executing a protocol."
+            "active channel, exposure time, whether live view is running, and the "
+            "shutter and per-slot laser state. "
+            "Call this first when you need context before executing a protocol. "
+            "The shutter and lasers fields are always present, and read 'unknown' "
+            "when this rig cannot report them — never tell the user illumination "
+            "was off unless this tool said so."
         ),
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },

@@ -470,6 +470,70 @@ def get_full_device_state(
 
 # --- System State ---
 
+_NO_LASER_MAP = (
+    "unknown — no EMU laser map on this rig, so microclaw cannot read laser state"
+)
+
+
+def _shutter_state(ctrl: MicroscopeController) -> Any:
+    """Shutter device, and whether it is open. Never silently absent.
+
+    An omitted key is what let the agent sign off "no lasers were involved"
+    with nothing behind it (design/20 S4). "unknown" is a fact; a missing field
+    is an invitation.
+    """
+    try:
+        device = str(ctrl.core.get_shutter_device())
+    except Exception:
+        return "unknown"
+    if not device:
+        # Knowing there is no shutter is not knowing the light is off.
+        return "no shutter device configured"
+    entry: dict[str, Any] = {"device": device}
+    for key, read in (("open", ctrl.core.get_shutter_open),
+                      ("auto", ctrl.core.get_auto_shutter)):
+        try:
+            entry[key] = bool(read())
+        except Exception:
+            entry[key] = "unknown"
+    return entry
+
+
+def _laser_state(ctrl: MicroscopeController) -> Any:
+    """Per-slot laser enable/power, read through the EMU map.
+
+    Slot index pairs each laser with its own lines; nothing here infers a slot
+    from device order (design/14 §1).
+    """
+    from microclaw.emu_manager import build_emu_map
+
+    props = _cached_emu_properties(ctrl)
+    if not props:
+        return _NO_LASER_MAP
+    try:
+        lasers = build_emu_map(props)["lasers"]
+    except Exception:
+        return "unknown"
+    if not lasers:
+        return _NO_LASER_MAP
+
+    out: dict[int, Any] = {}
+    for slot, laser in sorted(lasers.items()):
+        readings: dict[str, Any] = {}
+        for key, field in (("enabled", "enable"), ("power_pct", "power_pct")):
+            line = laser.get(field)
+            if not line or "device" not in line:
+                continue
+            try:
+                readings[key] = str(
+                    ctrl.core.get_property(line["device"], line["property"])
+                )
+            except Exception:
+                readings[key] = "unknown"
+        out[slot] = readings or "unknown"
+    return out
+
+
 def get_system_state(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     state: dict[str, Any] = {}
     try:
@@ -489,6 +553,10 @@ def get_system_state(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
         state["live_view"] = ctrl.studio.live().is_live_mode_on()
     except Exception:
         pass
+    # Always present, even as "unknown": a sign-off like "no lasers were
+    # enabled" has to be sourced from here or not made at all (design/20 F2).
+    state["shutter"] = _shutter_state(ctrl)
+    state["lasers"] = _laser_state(ctrl)
     return state
 
 

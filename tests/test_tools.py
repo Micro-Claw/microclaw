@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, call
 import numpy as np
 import pytest
 
+from microclaw import tools
 from microclaw.autofocus import AutofocusResult, SweepResult
 from microclaw.safety import SafetyConstraints, SafetyGuard, SafetyViolation, StageConstraints
 from microclaw.tools import (
@@ -382,6 +383,76 @@ class TestGetSystemState:
         mock_ctrl.core.get_x_position.side_effect = Exception("Device not found")
         result = get_system_state(mock_ctrl, unconstrained_guard)
         assert result.get("xy_stage") == "unavailable"
+
+    def test_reports_shutter_and_lasers(self, mock_ctrl, unconstrained_guard):
+        # design/20 S4: the agent signed off "no lasers were involved" from a
+        # payload with no illumination field at all.
+        mock_ctrl.core.get_shutter_device.return_value = "DShutter"
+        mock_ctrl.core.get_shutter_open.return_value = False
+        mock_ctrl.core.get_auto_shutter.return_value = True
+        result = get_system_state(mock_ctrl, unconstrained_guard)
+        assert result["shutter"] == {"device": "DShutter", "open": False, "auto": True}
+        assert "lasers" in result
+
+    def test_illumination_fields_are_present_even_when_unknowable(
+        self, mock_ctrl, unconstrained_guard
+    ):
+        # An omitted key is what the agent filled from imagination. "unknown" is
+        # a fact it can report; a missing field is an invitation.
+        mock_ctrl.core.get_shutter_device.side_effect = Exception("no such device")
+        result = get_system_state(mock_ctrl, unconstrained_guard)
+        assert result["shutter"] == "unknown"
+        assert result["lasers"] == tools._NO_LASER_MAP
+
+    def test_no_shutter_device_is_not_the_same_as_shutter_closed(
+        self, mock_ctrl, unconstrained_guard
+    ):
+        # Knowing there is no shutter is not knowing the light is off.
+        mock_ctrl.core.get_shutter_device.return_value = ""
+        result = get_system_state(mock_ctrl, unconstrained_guard)
+        assert result["shutter"] == "no shutter device configured"
+        assert result["shutter"] is not False
+
+    def test_a_partly_readable_shutter_marks_only_the_unreadable_part(
+        self, mock_ctrl, unconstrained_guard
+    ):
+        mock_ctrl.core.get_shutter_device.return_value = "DShutter"
+        mock_ctrl.core.get_shutter_open.return_value = True
+        mock_ctrl.core.get_auto_shutter.side_effect = Exception("unsupported")
+        result = get_system_state(mock_ctrl, unconstrained_guard)
+        assert result["shutter"] == {"device": "DShutter", "open": True, "auto": "unknown"}
+
+    def test_laser_slots_are_read_through_the_emu_map(self, mock_ctrl,
+                                                      unconstrained_guard, monkeypatch):
+        monkeypatch.setattr(tools, "_cached_emu_properties", lambda ctrl: {"stub": {}})
+        monkeypatch.setattr(
+            "microclaw.emu_manager.build_emu_map",
+            lambda props: {"lasers": {
+                3: {"enable": {"device": "Laser3", "property": "On"},
+                    "power_pct": {"device": "Laser3", "property": "Power"}},
+                1: {"enable": {"device": "Laser1", "property": "On"}},
+            }},
+        )
+        mock_ctrl.core.get_property.side_effect = lambda dev, prop: {
+            ("Laser3", "On"): "1", ("Laser3", "Power"): "40", ("Laser1", "On"): "0",
+        }[(dev, prop)]
+        result = get_system_state(mock_ctrl, unconstrained_guard)
+        # Keyed by slot index, never by device order (design/14 §1).
+        assert result["lasers"] == {
+            1: {"enabled": "0"},
+            3: {"enabled": "1", "power_pct": "40"},
+        }
+
+    def test_an_unreadable_laser_line_says_so(self, mock_ctrl, unconstrained_guard,
+                                              monkeypatch):
+        monkeypatch.setattr(tools, "_cached_emu_properties", lambda ctrl: {"stub": {}})
+        monkeypatch.setattr(
+            "microclaw.emu_manager.build_emu_map",
+            lambda props: {"lasers": {2: {"enable": {"device": "L2", "property": "On"}}}},
+        )
+        mock_ctrl.core.get_property.side_effect = Exception("bridge error")
+        result = get_system_state(mock_ctrl, unconstrained_guard)
+        assert result["lasers"] == {2: {"enabled": "unknown"}}
 
 
 class TestSnapAndAnalyze:
