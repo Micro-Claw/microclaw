@@ -38,11 +38,45 @@ def mock_ctrl(mock_core, mock_studio):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_microclaw_home(tmp_path, monkeypatch):
+    """No test may read or write the developer's ~/.microclaw.
+
+    These module-level constants bind at import, so setting $HOME does not move
+    them; they must be redirected by name. Without this a unit test reads
+    whatever the *host* has, and the suite passes on a laptop while failing on
+    the microscope — or worse, passes on both while asserting the lab's data.
+    Both have happened (design/19, design/20): a hook the agent saved on the rig
+    turned up inside `list_saved_hooks()` during unit tests.
+
+    A test that wants a saved hook, a knowledge base or an EMU map monkeypatches
+    over this; function-scoped patches applied in the test body win.
+    """
+    from microclaw import hook_manager, knowledge_manager
+
+    hooks = tmp_path / "microclaw_home" / "hooks"
+    hooks.mkdir(parents=True)
+    monkeypatch.setattr(hook_manager, "HOOKS_DIR", hooks)
+    monkeypatch.setattr(hook_manager, "MANIFEST", hooks / "manifest.json")
+    monkeypatch.setattr(
+        knowledge_manager, "KNOWLEDGE_PATH", tmp_path / "microclaw_home" / "knowledge.yaml"
+    )
+
+
+@pytest.fixture(autouse=True)
 def _clear_emu_session_cache():
     """tools._EMU_SESSION_CACHE is module-global and would otherwise carry a
-    parsed config (or a cached 'not an EMU rig') between tests."""
+    parsed config (or a cached 'not an EMU rig') between tests.
+
+    Primed to None rather than merely cleared: an empty cache sends
+    _cached_emu_properties out to find_mm_app_dir, which asks the (mock) bridge,
+    then falls through to ~/.microclaw/emu.json and to guessing at
+    C:/Program Files/Micro-Manager-2.0. On a lab machine every one of those can
+    hit. Default the suite to "not an EMU rig"; tests that want a map patch
+    tools._cached_emu_properties directly.
+    """
     from microclaw import tools
     tools._EMU_SESSION_CACHE.clear()
+    tools._EMU_SESSION_CACHE["properties"] = None
     yield
     tools._EMU_SESSION_CACHE.clear()
 

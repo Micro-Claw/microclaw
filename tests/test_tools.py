@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, call
 import numpy as np
 import pytest
 
+from microclaw import tools
 from microclaw.autofocus import AutofocusResult, SweepResult
 from microclaw.safety import SafetyConstraints, SafetyGuard, SafetyViolation, StageConstraints
 from microclaw.tools import (
@@ -371,6 +372,10 @@ class TestListDevices:
 
 
 class TestGetSystemState:
+    # "no EMU rig" is the suite-wide default: conftest primes the session cache
+    # to None so nothing here reaches the host's MM install. The laser tests
+    # below opt in by patching _cached_emu_properties themselves.
+
     def test_returns_state(self, mock_ctrl, unconstrained_guard):
         result = get_system_state(mock_ctrl, unconstrained_guard)
         assert "x_um" in result
@@ -382,6 +387,91 @@ class TestGetSystemState:
         mock_ctrl.core.get_x_position.side_effect = Exception("Device not found")
         result = get_system_state(mock_ctrl, unconstrained_guard)
         assert result.get("xy_stage") == "unavailable"
+
+    def test_reports_shutter_and_lasers(self, mock_ctrl, unconstrained_guard):
+        # design/20 S4: the agent signed off "no lasers were involved" from a
+        # payload with no illumination field at all.
+        mock_ctrl.core.get_shutter_device.return_value = "DShutter"
+        mock_ctrl.core.get_shutter_open.return_value = False
+        mock_ctrl.core.get_auto_shutter.return_value = True
+        result = get_system_state(mock_ctrl, unconstrained_guard)
+        assert result["shutter"] == {"device": "DShutter", "open": False, "auto": True}
+        assert "lasers" in result
+
+    def test_illumination_fields_are_present_even_when_unknowable(
+        self, mock_ctrl, unconstrained_guard
+    ):
+        # An omitted key is what the agent filled from imagination. "unknown" is
+        # a fact it can report; a missing field is an invitation.
+        mock_ctrl.core.get_shutter_device.side_effect = Exception("no such device")
+        result = get_system_state(mock_ctrl, unconstrained_guard)
+        assert result["shutter"] == "unknown"
+        assert result["lasers"] == tools._NO_LASER_MAP
+
+    def test_no_shutter_device_is_not_the_same_as_shutter_closed(
+        self, mock_ctrl, unconstrained_guard
+    ):
+        # Knowing there is no shutter is not knowing the light is off.
+        mock_ctrl.core.get_shutter_device.return_value = ""
+        result = get_system_state(mock_ctrl, unconstrained_guard)
+        assert result["shutter"] == "no shutter device configured"
+        assert result["shutter"] is not False
+
+    def test_a_partly_readable_shutter_marks_only_the_unreadable_part(
+        self, mock_ctrl, unconstrained_guard
+    ):
+        mock_ctrl.core.get_shutter_device.return_value = "DShutter"
+        mock_ctrl.core.get_shutter_open.return_value = True
+        mock_ctrl.core.get_auto_shutter.side_effect = Exception("unsupported")
+        result = get_system_state(mock_ctrl, unconstrained_guard)
+        assert result["shutter"] == {"device": "DShutter", "open": True, "auto": "unknown"}
+
+    def test_laser_slots_are_read_through_the_emu_map(self, mock_ctrl,
+                                                      unconstrained_guard, monkeypatch):
+        monkeypatch.setattr(tools, "_cached_emu_properties", lambda ctrl: {"stub": {}})
+        monkeypatch.setattr(
+            "microclaw.emu_manager.build_emu_map",
+            lambda props: {"lasers": {
+                3: {"enable": {"device": "Laser3", "property": "On"},
+                    "power_pct": {"device": "Laser3", "property": "Power"}},
+                1: {"enable": {"device": "Laser1", "property": "On"}},
+            }},
+        )
+        mock_ctrl.core.get_property.side_effect = lambda dev, prop: {
+            ("Laser3", "On"): "1", ("Laser3", "Power"): "40", ("Laser1", "On"): "0",
+        }[(dev, prop)]
+        result = get_system_state(mock_ctrl, unconstrained_guard)
+        # Keyed by slot index, never by device order (design/14 §1).
+        assert result["lasers"] == {
+            1: {"enabled": "0"},
+            3: {"enabled": "1", "power_pct": "40"},
+        }
+
+    def test_a_slot_with_no_enable_or_power_line_is_unknown_not_absent(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        # Seen on the rig: build_emu_map yields a slot carrying only trigger
+        # lines. There is nothing to read for it, and saying nothing about a
+        # laser slot is the failure this fix exists to prevent.
+        monkeypatch.setattr(tools, "_cached_emu_properties", lambda ctrl: {"stub": {}})
+        monkeypatch.setattr(
+            "microclaw.emu_manager.build_emu_map",
+            lambda props: {"lasers": {0: {"trigger_mode": {"device": "T", "property": "M"}}}},
+        )
+        result = get_system_state(mock_ctrl, unconstrained_guard)
+        assert result["lasers"] == {0: "unknown"}
+        mock_ctrl.core.get_property.assert_not_called()
+
+    def test_an_unreadable_laser_line_says_so(self, mock_ctrl, unconstrained_guard,
+                                              monkeypatch):
+        monkeypatch.setattr(tools, "_cached_emu_properties", lambda ctrl: {"stub": {}})
+        monkeypatch.setattr(
+            "microclaw.emu_manager.build_emu_map",
+            lambda props: {"lasers": {2: {"enable": {"device": "L2", "property": "On"}}}},
+        )
+        mock_ctrl.core.get_property.side_effect = Exception("bridge error")
+        result = get_system_state(mock_ctrl, unconstrained_guard)
+        assert result["lasers"] == {2: {"enabled": "unknown"}}
 
 
 class TestSnapAndAnalyze:
@@ -699,7 +789,122 @@ class TestRunMultipositionWithAutofocus:
         mock_ctrl.go_to_position.assert_not_called()
 
 
+_TILE_IMAGE = np.full((16, 16), 700, dtype=np.uint16)
+_TILE_IMAGE[0, 0] = 142      # a floor well below the mean, as on the rig
+_TILE_IMAGE[8, 8] = 1182
+
+
+@pytest.fixture
+def fake_snap(monkeypatch):
+    """Stand in for the camera, but still fire live().snap(True).
+
+    The snap protocol reads its pixels through snap_to_numpy_displayed, which
+    wraps that call — so the fake must make it too, or the exposure-count
+    assertions below would pass while measuring nothing.
+    """
+    def _snap(ctrl):
+        ctrl.studio.live().snap(True)
+        return _TILE_IMAGE
+    monkeypatch.setattr("microclaw.tools.snap_to_numpy_displayed", _snap)
+    return _TILE_IMAGE
+
+
+class TestTileGridCenter:
+    """The grid used to center on wherever the stage happened to be, and to end
+    on its last tile. Two "do the same thing again" runs therefore surveyed two
+    different regions, offset by half a grid — invisible on a uniform sample, and
+    completely invisible on the demo camera, which returns one frame regardless
+    of position. A 2026-07-10 run scanned three disjoint regions and tabulated
+    them as one repeated measurement."""
+
+    @pytest.fixture(autouse=True)
+    def _snap(self, fake_snap):
+        pass
+
+    @pytest.fixture
+    def tracking_ctrl(self, mock_ctrl):
+        """A stage that remembers where it was driven, as a real one does."""
+        pos = {"x": 256.0, "y": 256.0}
+        mock_ctrl.core.get_x_position.side_effect = lambda: pos["x"]
+        mock_ctrl.core.get_y_position.side_effect = lambda: pos["y"]
+
+        def _move(x, y):
+            pos["x"], pos["y"] = x, y
+
+        mock_ctrl.core.set_xy_position.side_effect = _move   # per-tile moves
+        mock_ctrl.set_xy.side_effect = _move                 # the return move
+        return mock_ctrl
+
+    def _tiles(self, result):
+        return [(r["x_um"], r["y_um"]) for r in result["results"]]
+
+    def test_repeating_a_default_centered_grid_scans_the_same_tiles(
+        self, tracking_ctrl, unconstrained_guard
+    ):
+        kwargs = dict(rows=3, cols=3, step_um=256.0, protocol="snap", name="grid")
+        first = run_tile_acquisition(tracking_ctrl, unconstrained_guard, **kwargs)
+        second = run_tile_acquisition(tracking_ctrl, unconstrained_guard, **kwargs)
+        assert self._tiles(first) == self._tiles(second), (
+            "the second grid walked off the first — this is the drift bug"
+        )
+        assert first["grid_center_x_um"] == second["grid_center_x_um"] == 256.0
+
+    def test_the_stage_ends_on_the_center_not_the_last_tile(
+        self, tracking_ctrl, unconstrained_guard
+    ):
+        run_tile_acquisition(
+            tracking_ctrl, unconstrained_guard,
+            rows=3, cols=3, step_um=256.0, protocol="snap",
+        )
+        tracking_ctrl.set_xy.assert_called_once_with(256.0, 256.0)
+        assert tracking_ctrl.core.get_x_position() == 256.0
+        assert tracking_ctrl.core.get_y_position() == 256.0
+
+    def test_an_explicit_center_pins_the_grid_regardless_of_stage_position(
+        self, tracking_ctrl, unconstrained_guard
+    ):
+        # Reproducing an earlier scan: the stage is parked somewhere else entirely.
+        tracking_ctrl.core.set_xy_position(9000.0, 9000.0)
+        result = run_tile_acquisition(
+            tracking_ctrl, unconstrained_guard,
+            rows=3, cols=3, step_um=100.0, protocol="snap",
+            center_x_um=500.0, center_y_um=600.0,
+        )
+        assert result["grid_center_x_um"] == 500.0
+        assert result["grid_center_y_um"] == 600.0
+        assert (500.0, 600.0) in self._tiles(result), "center tile of an odd grid"
+        assert self._tiles(result)[0] == (400.0, 500.0)
+        tracking_ctrl.set_xy.assert_called_once_with(500.0, 600.0)
+
+    def test_an_out_of_bounds_supplied_center_is_refused_before_any_motion(
+        self, tracking_ctrl, default_guard
+    ):
+        # An even-sided grid puts the center between tiles, so checking the tiles
+        # does not check it. Refuse before the first move, not on the way home.
+        with pytest.raises(SafetyViolation):
+            run_tile_acquisition(
+                tracking_ctrl, default_guard,
+                rows=2, cols=2, step_um=10.0, protocol="snap",
+                center_x_um=1e9, center_y_um=1e9,
+            )
+        tracking_ctrl.core.set_xy_position.assert_not_called()
+        tracking_ctrl.set_xy.assert_not_called()
+
+    def test_return_to_center_can_be_declined(self, tracking_ctrl, unconstrained_guard):
+        run_tile_acquisition(
+            tracking_ctrl, unconstrained_guard,
+            rows=2, cols=2, step_um=100.0, protocol="snap",
+            return_to_center=False,
+        )
+        tracking_ctrl.set_xy.assert_not_called()
+        assert tracking_ctrl.core.get_x_position() == 306.0, "left on the last tile"
+
+
 class TestTileAcquisitionMarkPositions:
+    @pytest.fixture(autouse=True)
+    def _snap(self, fake_snap):
+        pass
+
     @pytest.fixture
     def centered_ctrl(self, mock_ctrl):
         mock_ctrl.core.get_x_position.return_value = 256.0
@@ -762,6 +967,83 @@ class TestTileAcquisitionMarkPositions:
         )
         assert not save_dir.exists()
 
+    def test_snap_grid_returns_stats_per_tile(self, centered_ctrl, unconstrained_guard):
+        # design/20 F1. The snap branch fired the camera and dropped the pixels,
+        # so "scan a grid and tell me the max and min at each point" — the
+        # literal prompt, twice — had no tool that answered it.
+        result = run_tile_acquisition(
+            centered_ctrl, unconstrained_guard, rows=2, cols=2, step_um=100.0,
+            protocol="snap",
+        )
+        assert len(result["results"]) == 4
+        for tile in result["results"]:
+            assert tile["min_intensity"] == 142.0
+            assert tile["max_intensity"] == 1182.0
+            assert tile["mean_intensity"] == pytest.approx(700, abs=5)
+            assert tile["focus_metric"] >= 0.0
+            assert tile["saved"] is False
+
+    def test_every_row_carries_its_own_coordinates(self, centered_ctrl,
+                                                   unconstrained_guard):
+        # The agent filled X/Y columns from its own call ordering rather than
+        # from any tool result (design/19 F3, design/20 S1). Now the row has them.
+        result = run_tile_acquisition(
+            centered_ctrl, unconstrained_guard, rows=1, cols=2, step_um=100.0,
+            protocol="snap", name="grid",
+        )
+        assert [(r["position"], r["x_um"], r["y_um"]) for r in result["results"]] == [
+            ("grid_r0_c0", 206.0, 256.0),
+            ("grid_r0_c1", 306.0, 256.0),
+        ]
+
+    def test_error_rows_carry_coordinates_too(self, centered_ctrl, default_guard):
+        # An error row without coordinates is a row the agent will fill in itself.
+        result = run_tile_acquisition(
+            centered_ctrl, default_guard, rows=1, cols=3, step_um=2000.0,
+            protocol="snap",
+        )
+        errors = [r for r in result["results"] if "error" in r]
+        assert errors
+        assert all("x_um" in r and "y_um" in r for r in errors)
+
+    def test_the_stats_cost_no_extra_exposure(self, centered_ctrl, unconstrained_guard):
+        # snap(True) already returns the pixels; reading them must not re-fire.
+        run_tile_acquisition(
+            centered_ctrl, unconstrained_guard, rows=2, cols=2, step_um=100.0,
+            protocol="snap",
+        )
+        assert centered_ctrl.studio.live().snap.call_count == 4
+
+    def test_the_metric_stamp_is_hoisted_to_the_grid_not_repeated(
+        self, centered_ctrl, unconstrained_guard
+    ):
+        # Every tile shares one ROI/exposure/binning. Per-tile stamps would be
+        # four copies of one fact; a bare metric with no stamp anywhere invites
+        # the cross-setting comparison design/14 §10 warns about.
+        result = run_tile_acquisition(
+            centered_ctrl, unconstrained_guard, rows=2, cols=2, step_um=100.0,
+            protocol="snap",
+        )
+        assert result["focus_metric_kind"] == "normalized_laplacian_variance"
+        assert "metric_valid_for" in result
+        for tile in result["results"]:
+            assert "metric_valid_for" not in tile
+            assert "focus_metric" in tile
+
+    def test_a_failed_snap_grid_carries_no_stamp(self, centered_ctrl, unconstrained_guard,
+                                                 monkeypatch):
+        # The stamp describes measurements. With none taken it would describe
+        # nothing, and a stamp beside zero results reads as if it did.
+        def _boom(ctrl):
+            raise RuntimeError("camera offline")
+        monkeypatch.setattr("microclaw.tools.snap_to_numpy_displayed", _boom)
+        result = run_tile_acquisition(
+            centered_ctrl, unconstrained_guard, rows=1, cols=2, step_um=100.0,
+            protocol="snap",
+        )
+        assert result["status"] == "0/2 positions completed."
+        assert "metric_valid_for" not in result
+
     def test_out_of_bounds_tile_reported_not_moved(self, centered_ctrl, default_guard):
         # default_guard: |x|,|y| <= 1000; a 3x3 grid with step 2000 exceeds it.
         result = run_tile_acquisition(
@@ -823,11 +1105,13 @@ class TestHookedGridAcquisition:
         return calls
 
     def test_one_acquisition_spans_the_whole_grid(self, centered_ctrl,
-                                                  unconstrained_guard, captured):
-        # os.sep, not "/": the guard normalises the path it echoes back, and on
-        # Windows that means backslashes. A hardcoded "/ws/log.json" asserts the
-        # platform, not the round trip.
-        log_path = os.path.join(os.sep, "ws", "log.json")
+                                                  unconstrained_guard, captured,
+                                                  tmp_path):
+        # A real directory, because run_tile_acquisition now creates the log's
+        # parent. os.path.join over its parts, not "/": the guard normalises the
+        # path it echoes back, and on Windows that means backslashes. A
+        # hardcoded "/ws/log.json" asserts the platform, not the round trip.
+        log_path = os.path.join(str(tmp_path), "logs", "log.json")
         result = run_tile_acquisition(
             centered_ctrl, unconstrained_guard, rows=3, cols=3, step_um=256.0,
             protocol="timelapse", save_dir="/ws", name="grid",
@@ -844,6 +1128,23 @@ class TestHookedGridAcquisition:
         # confirm every tile fired without opening the log.
         assert result["positions"] == 9
         assert "9 position(s)" in result["status"]
+
+    def test_a_log_path_in_a_missing_directory_is_created_not_raised(
+        self, centered_ctrl, unconstrained_guard, captured, tmp_path
+    ):
+        # The hook opens its log on the FIRST FRAME, so a missing parent used to
+        # surface as FileNotFoundError inside the image processor — after the
+        # stage had walked the grid and a dataset was on disk. The run was spent
+        # by the time the error arrived. save_dir is created up front; so is this.
+        log_path = os.path.join(str(tmp_path), "nope", "deeper", "log.json")
+        result = run_tile_acquisition(
+            centered_ctrl, unconstrained_guard, rows=2, cols=2, step_um=100.0,
+            protocol="timelapse", save_dir="/ws", name="grid",
+            protocol_params={"n_frames": 1, "interval_s": 0},
+            hook_strategy="recording", log_path=log_path,
+        )
+        assert os.path.isdir(os.path.dirname(log_path))
+        assert result["log_path"] == log_path
 
     def test_the_hook_log_keys_to_positions_across_the_grid(
         self, centered_ctrl, unconstrained_guard, captured
@@ -968,7 +1269,8 @@ class TestHookedGridAcquisition:
         assert not captured
 
     def test_unhooked_tiles_keep_the_per_position_loop(self, centered_ctrl,
-                                                       unconstrained_guard, captured):
+                                                       unconstrained_guard, captured,
+                                                       fake_snap):
         # Option A's behaviour is what today's users have; only hook_strategy
         # switches to the single-Acquisition path.
         result = run_tile_acquisition(

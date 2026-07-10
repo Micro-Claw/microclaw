@@ -608,3 +608,122 @@ that the horizontal rule on the README intersects with the floating PNG. Is
 there a way to fix that?
 
 Can you update prompts.md?
+
+----
+
+In the version that launched from double-clicking the desktop icon (appeared
+after running microclaw install-shortcut for the first time), on the first
+prompt, even though it snapped an image, and the Micro-Manager Preview window
+popped up, an image was never displayed. It simply said, "waiting for image."
+When I asked it to snap an image again, this worked normally and an image
+appeared. The history is in 20260709_183409_microclaw_history.json.
+
+yes, write the spike
+
+commit and push the spike
+
+Outputs are in 18-*.txt
+
+I tried 5 more times each with none, immediate, and after-display. none and
+immediate occasionally returned the waiting for image... message, although
+rarely. I could not get immediate to show me the waiting for image... message,
+although perhaps I did not do it enough.
+
+commit and push
+
+Stuff worked. Merged 17 and 18. Let's go back to main
+
+----
+
+Look at the Install (Windows) route in README.md. This is very easy. Suppose
+someone wants to upgrade microclaw. Can they just re-download the package and
+double-click install.bat again and it will upgrade? Or is it more complicated?
+
+Add the line to README
+
+Can you push this to main? It's a small change, should be fine
+
+----
+
+Have a look at 20260710_115106_microclaw_history.json. This is from a run with
+the most recent code base. What are your thoughts on this run?
+
+This was using the MM demo camera, so no worries there. Please write a document
+with the proposed fixes and code stubs to design/19. Yes, run_tile_acquisiton
+should accept hook strategy. Is there a way to leverage what's already in
+_acquire_with_hooks() to do this? Or is there a better strategy? Include your
+thinking in the design document.
+
+----
+
+Look at design/19. Please implement the fixes on a new branch. Implement option
+B for Fix 2.
+
+update the design doc to mark the fixes as implemented
+
+Have a look at the performance of this updated code in
+20260710_122755_microclaw_history.json.
+
+Fold the small fixes into design/19 and open design/20 for the rest
+
+Now implement the design/20 fixes
+
+[interrupting the first attempt at the design/20 fixes]
+
+sorry, table this for now. I just ran pytest with the latest design/19 changes
+on the rig and there were some failures. See 19-output.txt. Let's fix these
+first and then go back to implementing design/20
+
+now implement the design/20 fixes
+
+There was one test failure on this branch on the rig. See 20-output.txt
+
+[in response to an offer to sweep the suite for other tests that read the host]
+
+Yes, sweep the suite for other host-dependent tests
+
+I ran this on the rig. Please have a look at 20-output.txt for the errors
+
+Please update prompts.md. Also note that I've now merged design/19 into main. If
+there are any issues with merging design/20 into main now, please rebase this
+branch to solve that
+
+----
+
+Have a look at 20260710_135547_microclaw_history.json, which is a history run
+from the latest version of the code, which includes the recent changes made in
+design/19 and design/20. Evaluate the performance
+
+yes, fix the drift and the log_path mkdir. also make sure the program
+automatically checks .microclaw/hooks (where it saves hooks by default) when
+looking for hooks
+
+[rejecting an edit that made list_saved_hooks() scan the hooks directory for
+unregistered .py files]
+
+we don't need to list the unregistered hooks. If a user drops them in, they are
+responsible for alerting the program to its location
+
+fix the error hint too. also update prompts.md. also include the change I made
+to readme in the commit and push
+
+----
+
+Have a look at 20260710_143832_microclaw_history.json in the root directory. How
+did this run go? One issue I noticed is that when it went to save the knowledge
+from the session, I had to go to the terminal where microclaw serve was running
+and approve the write to file from there. Ideally I should be able to do it from
+within the web GUI.
+
+[choosing, from a question about which of the three CONFIRM_FN gates the web GUI
+should be allowed to approve, the option that routes all three to the browser on
+every host — over the recommended one that kept illumination on the terminal
+under --allow-remote]
+
+[choosing to write the design document only, with no code changes yet]
+
+Commit the doc on this same branch. i will merge 20- to main. then we continue
+from there with a branch to implement 21-
+
+Stage the deletion of 20-output.txt. It is a mistake that this got tracked.
+Please update design/prompts.md and commit this as well

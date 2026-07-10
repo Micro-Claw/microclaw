@@ -588,15 +588,19 @@ def test_browser_opens_only_once_the_port_accepts(monkeypatch):
     sock.bind(("127.0.0.1", 0))
     port = sock.getsockname()[1]
     try:
-        webserve._open_when_ready("127.0.0.1", port, f"http://127.0.0.1:{port}")
+        thread = webserve._open_when_ready(
+            "127.0.0.1", port, f"http://127.0.0.1:{port}"
+        )
         time.sleep(0.3)
         assert opened == []          # bound, but not accepting yet
 
         sock.listen(1)
-        for _ in range(50):
-            if opened:
-                break
-            time.sleep(0.05)
+        # join, not a fixed poll budget: a refused connect costs a retransmit
+        # timeout on Windows, so one in-flight attempt can outlast a couple of
+        # seconds of sleeping. This deadlocked nothing — it just made the test
+        # a race against the scheduler, which it lost on a loaded rig.
+        thread.join(timeout=20)
+        assert not thread.is_alive(), "the poll thread never noticed the listen()"
     finally:
         sock.close()
     assert opened == [f"http://127.0.0.1:{port}"]
@@ -607,8 +611,11 @@ def test_browser_opener_gives_up_instead_of_hanging(monkeypatch):
     opened = []
     monkeypatch.setattr(webserve.webbrowser, "open", opened.append)
     with _free_port() as port:
-        webserve._open_when_ready("127.0.0.1", port, "http://unused", timeout=0.2)
-    time.sleep(0.6)
+        thread = webserve._open_when_ready(
+            "127.0.0.1", port, "http://unused", timeout=0.2
+        )
+    thread.join(timeout=10)
+    assert not thread.is_alive(), "the opener outlived its own timeout"
     assert opened == []
 
 

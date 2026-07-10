@@ -19,7 +19,7 @@ from microclaw.autofocus import (
     single_sweep_autofocus,
 )
 from microclaw.controller import MicroscopeController
-from microclaw.errors import humanize_java_error
+from microclaw.errors import hint_for_error, humanize_java_error
 from microclaw.image_analysis import (
     compute_stats,
     detect_features,
@@ -470,6 +470,70 @@ def get_full_device_state(
 
 # --- System State ---
 
+_NO_LASER_MAP = (
+    "unknown — no EMU laser map on this rig, so microclaw cannot read laser state"
+)
+
+
+def _shutter_state(ctrl: MicroscopeController) -> Any:
+    """Shutter device, and whether it is open. Never silently absent.
+
+    An omitted key is what let the agent sign off "no lasers were involved"
+    with nothing behind it (design/20 S4). "unknown" is a fact; a missing field
+    is an invitation.
+    """
+    try:
+        device = str(ctrl.core.get_shutter_device())
+    except Exception:
+        return "unknown"
+    if not device:
+        # Knowing there is no shutter is not knowing the light is off.
+        return "no shutter device configured"
+    entry: dict[str, Any] = {"device": device}
+    for key, read in (("open", ctrl.core.get_shutter_open),
+                      ("auto", ctrl.core.get_auto_shutter)):
+        try:
+            entry[key] = bool(read())
+        except Exception:
+            entry[key] = "unknown"
+    return entry
+
+
+def _laser_state(ctrl: MicroscopeController) -> Any:
+    """Per-slot laser enable/power, read through the EMU map.
+
+    Slot index pairs each laser with its own lines; nothing here infers a slot
+    from device order (design/14 §1).
+    """
+    from microclaw.emu_manager import build_emu_map
+
+    props = _cached_emu_properties(ctrl)
+    if not props:
+        return _NO_LASER_MAP
+    try:
+        lasers = build_emu_map(props)["lasers"]
+    except Exception:
+        return "unknown"
+    if not lasers:
+        return _NO_LASER_MAP
+
+    out: dict[int, Any] = {}
+    for slot, laser in sorted(lasers.items()):
+        readings: dict[str, Any] = {}
+        for key, field in (("enabled", "enable"), ("power_pct", "power_pct")):
+            line = laser.get(field)
+            if not line or "device" not in line:
+                continue
+            try:
+                readings[key] = str(
+                    ctrl.core.get_property(line["device"], line["property"])
+                )
+            except Exception:
+                readings[key] = "unknown"
+        out[slot] = readings or "unknown"
+    return out
+
+
 def get_system_state(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     state: dict[str, Any] = {}
     try:
@@ -489,6 +553,10 @@ def get_system_state(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
         state["live_view"] = ctrl.studio.live().is_live_mode_on()
     except Exception:
         pass
+    # Always present, even as "unknown": a sign-off like "no lasers were
+    # enabled" has to be sourced from here or not made at all (design/20 F2).
+    state["shutter"] = _shutter_state(ctrl)
+    state["lasers"] = _laser_state(ctrl)
     return state
 
 
@@ -705,14 +773,12 @@ def export_dataset_as_tiff(
 
 # --- Image capture with analysis ---
 
-def _focus_metric_payload(ctrl: MicroscopeController, image: np.ndarray) -> dict:
-    """Focus metric stamped with the settings it is only comparable within.
+def _metric_stamp(ctrl: MicroscopeController) -> dict:
+    """The settings a focus metric is only comparable within (design/14 §10).
 
-    A bare float invites exactly the cross-setting comparison the amr_test
-    model made — reading a laser-power increase as a focus improvement
-    (design/14 §10). The metric itself is illumination-normalised; the
-    metric_valid_for block guards the residual ROI/exposure/binning
-    dependence.
+    Split from _focus_metric_payload so a multi-tile result can carry one stamp
+    over many metrics: every tile of a grid shares the ROI, exposure and binning,
+    so repeating the block per tile would be N copies of one fact.
     """
     try:
         roi = ctrl.core.get_roi()
@@ -730,7 +796,6 @@ def _focus_metric_payload(ctrl: MicroscopeController, image: np.ndarray) -> dict
     except Exception:
         binning = None
     return {
-        "focus_metric": _round_sig(normalized_laplacian_variance(image)),
         "focus_metric_kind": "normalized_laplacian_variance",
         "metric_valid_for": {
             "roi": roi_list,
@@ -738,6 +803,22 @@ def _focus_metric_payload(ctrl: MicroscopeController, image: np.ndarray) -> dict
             "binning": binning,
         },
     }
+
+
+def _focus_metric_payload(ctrl: MicroscopeController, image: np.ndarray) -> dict:
+    """Focus metric stamped with the settings it is only comparable within.
+
+    A bare float invites exactly the cross-setting comparison the amr_test
+    model made — reading a laser-power increase as a focus improvement
+    (design/14 §10). The metric itself is illumination-normalised; the
+    metric_valid_for block guards the residual ROI/exposure/binning
+    dependence.
+    """
+    return {
+        "focus_metric": _round_sig(normalized_laplacian_variance(image)),
+        **_metric_stamp(ctrl),
+    }
+
 
 def snap_and_analyze(
     ctrl: MicroscopeController,
@@ -1253,9 +1334,28 @@ def _run_protocol_at(
         )
         marked = {"marked": True}
     if protocol == "snap":
+        # snap(True) hands the pixels back for the one exposure it fires; this
+        # branch used to drop them, so "scan a grid and tell me the max and min
+        # at each point" had no tool that answered it and the agent hand-rolled
+        # an 18-call move+snap loop instead (design/20 F1). Costs no exposure.
         with _pause_live(ctrl):                     # snap(True) wedges under live (V1)
-            ctrl.studio.live().snap(True)
-        return {"position": pos_label, "status": "snapped", "saved": False, **marked}
+            image = snap_to_numpy_displayed(ctrl)
+        stats = compute_stats(image)
+        return {
+            "position": pos_label,
+            "status": "snapped",
+            "saved": False,
+            **marked,
+            # No metric_valid_for stamp per tile: the grid shares one
+            # ROI/exposure/binning, so the caller stamps it once. A bare float
+            # would otherwise invite the cross-setting comparison design/14 §10
+            # warns about — here the comparison across tiles is the point.
+            "focus_metric": _round_sig(normalized_laplacian_variance(image)),
+            "mean_intensity": round(stats.mean_intensity, 1),
+            "min_intensity": round(stats.min_intensity, 1),
+            "max_intensity": round(stats.max_intensity, 1),
+            "saturated_fraction": round(stats.saturated_fraction, 4),
+        }
     if pos_save_dir is None:
         return {
             "position": pos_label,
@@ -1294,7 +1394,10 @@ def run_multiposition_acquisition(
 
     protocol options:
       "snap"       — display-only; does NOT save to disk (returns saved=False).
-                     save_dir is not needed and may be omitted.
+                     save_dir is not needed and may be omitted. Returns
+                     focus_metric and mean/min/max intensity per position, so a
+                     grid survey needs neither a hook nor a manual loop; the
+                     metric's comparability stamp is on the top-level result.
       "zstack"     — saves a Z-stack at each position to save_dir/<position>.
       "timelapse"  — saves a timelapse at each position to save_dir/<position>.
 
@@ -1372,21 +1475,32 @@ def run_multiposition_acquisition(
 
     for pos_label, x_um, y_um, z_um in resolved:
         pos_save_dir = str(Path(save_dir) / pos_label) if save_dir else None
+        # Coordinates on every row, including the error rows. The agent used to
+        # publish X/Y columns filled from its own call ordering rather than from
+        # anything a tool returned (design/19 F3, design/20 S1).
+        where = {"x_um": round(x_um, 3), "y_um": round(y_um, 3)}
+        if z_um is not None:
+            where["z_um"] = round(z_um, 3)
         try:
             result = _run_protocol_at(
                 ctrl, guard, pos_label, x_um, y_um, z_um, protocol, pos_save_dir,
                 params, mark_position_in_list=mark_positions,
             )
-            results.append(result)
+            results.append({**where, **result})
         except Exception as e:
-            results.append({"position": pos_label, "error": str(e)})
+            results.append({"position": pos_label, **where, "error": str(e)})
 
     total = len(position_names or positions)
     n_ok = sum(1 for r in results if "error" not in r)
-    return {
+    payload = {
         "status": f"{n_ok}/{total} positions completed.",
         "results": results,
     }
+    if protocol == "snap" and n_ok:
+        # One stamp for the whole grid: the per-tile focus_metric values are
+        # comparable to each other under these settings and to nothing else.
+        payload.update(_metric_stamp(ctrl))
+    return payload
 
 
 def run_tile_acquisition(
@@ -1403,14 +1517,31 @@ def run_tile_acquisition(
     hook_strategy: str | None = None,
     hook_params: dict | None = None,
     log_path: str | None = None,
+    center_x_um: float | None = None,
+    center_y_um: float | None = None,
+    return_to_center: bool = True,
 ) -> dict:
-    """Acquire a rows×cols tile grid centered on the current stage position.
+    """Acquire a rows×cols tile grid centered on center_x_um/center_y_um.
+
+    The center defaults to the current stage position, and the stage is driven
+    back there afterwards. Both halves matter: the grid ends on its last tile,
+    so without the return move a default-centered scan run twice would walk
+    diagonally forward by half a grid each time — three "do it again" runs
+    surveying three different regions, which a uniform sample (or the demo
+    camera, which returns one frame regardless of position) hides completely.
+    Pass center_* to pin a grid to absolute coordinates and reproduce an earlier
+    scan exactly.
 
     hook_strategy runs one hooked Acquisition across the whole grid; see
     run_multiposition_acquisition.
     """
-    center_x = ctrl.core.get_x_position()
-    center_y = ctrl.core.get_y_position()
+    center_x = ctrl.core.get_x_position() if center_x_um is None else center_x_um
+    center_y = ctrl.core.get_y_position() if center_y_um is None else center_y_um
+    if center_x_um is not None or center_y_um is not None:
+        # A supplied center is unvalidated caller input, and an even-sided grid
+        # puts it between tiles — so the per-tile bounds check never covers it.
+        # Refuse here, before the first move, not on the way home.
+        guard.check_xy(center_x, center_y)
     x_start = center_x - (cols - 1) / 2 * step_um
     y_start = center_y - (rows - 1) / 2 * step_um
     positions = [
@@ -1422,7 +1553,7 @@ def run_tile_acquisition(
         for r in range(rows)
         for c in range(cols)
     ]
-    return run_multiposition_acquisition(
+    result = run_multiposition_acquisition(
         ctrl, guard,
         protocol=protocol,
         save_dir=save_dir,
@@ -1434,6 +1565,15 @@ def run_tile_acquisition(
         hook_params=hook_params,
         log_path=log_path,
     )
+    if return_to_center:
+        # Deliberately unguarded: the center was cleared up front (supplied) or
+        # is where the stage already sat (default). Re-checking could only refuse
+        # the move *home*, stranding the objective out over the sample on the
+        # last tile — the opposite of what the guard is for.
+        ctrl.set_xy(center_x, center_y)
+    # Report where the grid actually sat, so a caller comparing two runs can see
+    # they measured the same ground rather than assuming it.
+    return {**result, "grid_center_x_um": center_x, "grid_center_y_um": center_y}
 
 
 def run_multiposition_with_autofocus(
@@ -1537,6 +1677,25 @@ def run_multiposition_with_autofocus(
 
 # --- Hook-based adaptive acquisition ---
 
+def _prepare_log_path(guard: SafetyGuard, log_path: str | None) -> str | None:
+    """Resolve a hook's log path in the workspace and create its parent directory.
+
+    The hook writes this file itself, so it never passed the guard — while
+    read_hook_log does. Resolve it here or the log lands somewhere microclaw
+    will then refuse to read back.
+
+    The mkdir matters as much as the resolve: the hook only opens the file on
+    its first frame, so a missing parent surfaces as FileNotFoundError *inside
+    the image processor*, after the acquisition has already moved the stage and
+    written a dataset. save_dir is created up front; log_path must be too.
+    """
+    if not log_path:
+        return None
+    log_path = guard.resolve_in_workspace(log_path)
+    Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+    return log_path
+
+
 def _resolve_hook(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -1611,11 +1770,7 @@ def run_adaptive_zstack(
     After the acquisition, call read_hook_log(log_path) to retrieve results.
     """
     save_dir = guard.resolve_in_workspace(save_dir)
-    # The hook writes this file itself, so it never passed the guard — while
-    # read_hook_log does. Resolve it here or the log lands somewhere microclaw
-    # will then refuse to read back.
-    if log_path:
-        log_path = guard.resolve_in_workspace(log_path)
+    log_path = _prepare_log_path(guard, log_path)
     guard.check_z(z_start_um)
     guard.check_z(z_end_um)
     if channel:
@@ -1651,8 +1806,7 @@ def run_adaptive_timelapse(
     After the acquisition, call read_hook_log(log_path) to retrieve results.
     """
     save_dir = guard.resolve_in_workspace(save_dir)
-    if log_path:
-        log_path = guard.resolve_in_workspace(log_path)   # see run_adaptive_zstack
+    log_path = _prepare_log_path(guard, log_path)
     if channel:
         guard.check_channel(channel)
 
@@ -1693,8 +1847,7 @@ def _acquire_positions_with_hook(
     a fresh hook per position truncates a shared log (see HookBase._write_log).
     """
     save_dir = guard.resolve_in_workspace(save_dir)
-    if log_path:
-        log_path = guard.resolve_in_workspace(log_path)   # see run_adaptive_zstack
+    log_path = _prepare_log_path(guard, log_path)
 
     # A Z range makes the event list sweep Z itself, and multi_d_acquisition_events
     # reads z_start/z_end as ABSOLUTE alongside xy_positions but as offsets
@@ -2209,11 +2362,10 @@ def execute_tool(
         return json.dumps({"error": f"Safety constraint prevented this action: {e}"})
     except Exception as e:
         # Translate rather than forward: a Java stack trace teaches the model
-        # nothing (design/14 §7). Known errors get an actionable one-liner.
+        # nothing (design/14 §7). Known errors get an actionable one-liner, and
+        # the hint names the subsystem that actually failed — a blanket "may be
+        # a hardware error" on a FileNotFoundError sends the model to the stage.
         return json.dumps({
             "error": f"{type(e).__name__}: {humanize_java_error(e)}",
-            "hint": (
-                "This may be a hardware error (device busy, stage at limit, "
-                "device not found) or a connection problem."
-            ),
+            "hint": hint_for_error(e),
         })

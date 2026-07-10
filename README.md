@@ -27,7 +27,8 @@ User (natural language) → AgentLoop (Anthropic API) → ToolRegistry → Safet
 You do not need Python, or a terminal. The installer brings its own.
 
 **1. Install Micro-Manager and turn on its server.**
-Install [Micro-Manager 2.0](https://micro-manager.org/Download_Micro-Manager_Latest_Release),
+Install [Micro-Manager 2.0](https://micro-manager.org/Download_Micro-Manager_Latest_Release)
+(a build later than 2026.06.26, for full functionality),
 open it, and tick **Tools → Options → Run pycro-manager server on port 4827**.
 Nothing can drive your microscope until you do this, and no installer can do it
 for you.

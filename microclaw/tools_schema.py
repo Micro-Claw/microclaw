@@ -269,8 +269,12 @@ TOOLS: list[dict[str, Any]] = [
         "name": "get_system_state",
         "description": (
             "Return a summary of the current microscope state: stage positions, "
-            "active channel, exposure time, and whether live view is running. "
-            "Call this first when you need context before executing a protocol."
+            "active channel, exposure time, whether live view is running, and the "
+            "shutter and per-slot laser state. "
+            "Call this first when you need context before executing a protocol. "
+            "The shutter and lasers fields are always present, and read 'unknown' "
+            "when this rig cannot report them — never tell the user illumination "
+            "was off unless this tool said so."
         ),
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
@@ -644,7 +648,12 @@ TOOLS: list[dict[str, Any]] = [
                 },
                 "protocol": {
                     "type": "string",
-                    "description": "'snap', 'zstack', or 'timelapse'.",
+                    "description": (
+                        "'snap', 'zstack', or 'timelapse'. 'snap' is display-only "
+                        "(nothing written to disk) but returns focus_metric and "
+                        "mean/min/max intensity for every position — use it to "
+                        "report per-position image statistics."
+                    ),
                 },
                 "save_dir": {
                     "type": "string",
@@ -701,8 +710,13 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "run_tile_acquisition",
         "description": (
-            "Acquire a rows×cols tile grid centered on the current stage position. "
+            "Acquire a rows×cols tile grid centered on center_x_um/center_y_um, "
+            "defaulting to the current stage position. "
             "Computes grid coordinates automatically — no prior mark_position needed. "
+            "To re-scan a grid you already ran, pass the center_x_um/center_y_um "
+            "returned by that run (grid_center_x_um/grid_center_y_um); relying on "
+            "the default center twice does NOT reproduce the same tiles unless the "
+            "stage is back where it started. "
             "Runs a per-position protocol (snap, zstack, or timelapse) at each tile. "
             "Pass mark_positions=true to also record every tile into the stage "
             "position list. "
@@ -722,7 +736,12 @@ TOOLS: list[dict[str, Any]] = [
                 "step_um": {"type": "number", "description": "Step size between tiles in µm."},
                 "protocol": {
                     "type": "string",
-                    "description": "'snap', 'zstack', or 'timelapse'.",
+                    "description": (
+                        "'snap', 'zstack', or 'timelapse'. 'snap' is display-only "
+                        "(nothing written to disk) but returns focus_metric and "
+                        "mean/min/max intensity for every position — use it to "
+                        "report per-position image statistics."
+                    ),
                 },
                 "save_dir": {
                     "type": "string",
@@ -774,6 +793,29 @@ TOOLS: list[dict[str, Any]] = [
                         "Path for the hook's output log, covering every tile "
                         "(optional). Read it back with read_hook_log."
                     ),
+                },
+                "center_x_um": {
+                    "type": "number",
+                    "description": (
+                        "Absolute X of the grid center. Defaults to the current stage X. "
+                        "Pass it to pin the grid to fixed coordinates — e.g. to re-measure "
+                        "the exact tiles of an earlier scan."
+                    ),
+                },
+                "center_y_um": {
+                    "type": "number",
+                    "description": (
+                        "Absolute Y of the grid center. Defaults to the current stage Y."
+                    ),
+                },
+                "return_to_center": {
+                    "type": "boolean",
+                    "description": (
+                        "Drive the stage back to the grid center when the scan finishes, "
+                        "so the grid does not walk forward across repeated runs. "
+                        "Default true; set false to leave the stage on the last tile."
+                    ),
+                    "default": True,
                 },
             },
             "required": ["rows", "cols", "step_um", "protocol"],
