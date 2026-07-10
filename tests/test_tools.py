@@ -773,6 +773,204 @@ class TestTileAcquisitionMarkPositions:
         assert centered_ctrl.add_position.call_count < 3
 
 
+class _RecordingHook:
+    """Stands in for a generated per-image hook: logs whatever axes it's given."""
+
+    instances: list = []
+
+    def __init__(self, log_path=None):
+        self.log_path = log_path
+        self._log = []
+        _RecordingHook.instances.append(self)
+
+    def image_process_fn(self, image, metadata, event_queue):
+        self._log.append({"position": metadata["Axes"].get("position")})
+        return image, metadata
+
+    def get_summary(self):
+        return self._log
+
+
+class TestHookedGridAcquisition:
+    """design/19 F2/F3: a grid with a hook is ONE acquisition over all positions,
+    not N degenerate single-plane z-stacks. The agent spelled a 3x3 grid as nine
+    run_adaptive_zstack calls with z_start == z_end, because no grid tool took a
+    hook — nine datasets and nine logs to recover nine numbers."""
+
+    @pytest.fixture
+    def centered_ctrl(self, mock_ctrl):
+        mock_ctrl.core.get_x_position.return_value = 0.0
+        mock_ctrl.core.get_y_position.return_value = 0.0
+        return mock_ctrl
+
+    @pytest.fixture
+    def captured(self, monkeypatch):
+        from microclaw import tools
+        from microclaw.hooks import PRECODED_HOOK_REGISTRY
+
+        _RecordingHook.instances = []
+        monkeypatch.setitem(PRECODED_HOOK_REGISTRY, "recording", _RecordingHook)
+        calls = []
+        monkeypatch.setattr(
+            tools, "_acquire_with_hooks",
+            lambda guard, save_dir, name, events, hook=None: (
+                calls.append({"save_dir": save_dir, "name": name,
+                              "events": events, "hook": hook}),
+                "/ws/ds",
+            )[1],
+        )
+        return calls
+
+    def test_one_acquisition_spans_the_whole_grid(self, centered_ctrl,
+                                                  unconstrained_guard, captured):
+        result = run_tile_acquisition(
+            centered_ctrl, unconstrained_guard, rows=3, cols=3, step_um=256.0,
+            protocol="timelapse", save_dir="/ws", name="grid",
+            protocol_params={"n_frames": 1, "interval_s": 0},
+            hook_strategy="recording", log_path="/ws/log.json",
+        )
+        assert len(captured) == 1, "a grid is one Acquisition, not nine"
+        assert len(_RecordingHook.instances) == 1, "one hook instance, one log"
+        labels = [e["axes"]["position"] for e in captured[0]["events"]]
+        assert len(labels) == 9 and len(set(labels)) == 9
+        assert labels[0] == "grid_r0_c0" and labels[-1] == "grid_r2_c2"
+        assert result["log_path"] == "/ws/log.json"
+
+    def test_the_hook_log_keys_to_positions_across_the_grid(
+        self, centered_ctrl, unconstrained_guard, captured
+    ):
+        # F3: every entry in the agent's nine logs read position_index: null,
+        # x_um: null, y_um: null — it guessed "XPosition_um_Intended", a key
+        # that was never there. A real multi-position event carries the label.
+        run_tile_acquisition(
+            centered_ctrl, unconstrained_guard, rows=2, cols=2, step_um=100.0,
+            protocol="timelapse", save_dir="/ws", name="grid",
+            protocol_params={"n_frames": 1, "interval_s": 0},
+            hook_strategy="recording",
+        )
+        hook = captured[0]["hook"]
+        for event in captured[0]["events"]:
+            hook.image_process_fn(np.zeros((4, 4)), {"Axes": event["axes"]}, None)
+        logged = [entry["position"] for entry in hook.get_summary()]
+        assert logged == ["grid_r0_c0", "grid_r0_c1", "grid_r1_c0", "grid_r1_c1"]
+        assert not any(p is None for p in logged)
+
+    def test_zstack_shape_composes_with_positions(self, centered_ctrl,
+                                                  unconstrained_guard, captured):
+        run_tile_acquisition(
+            centered_ctrl, unconstrained_guard, rows=1, cols=2, step_um=100.0,
+            protocol="zstack", save_dir="/ws",
+            protocol_params={"z_start_um": 10.0, "z_end_um": 12.0, "z_step_um": 1.0},
+            hook_strategy="recording",
+        )
+        events = captured[0]["events"]
+        assert len(events) == 6, "2 positions x 3 z planes in one event list"
+        assert {e["z"] for e in events} == {10, 11, 12}, "z_start_um is absolute"
+
+    def test_a_zstack_range_stays_absolute_when_positions_carry_z(
+        self, mock_ctrl, unconstrained_guard, captured
+    ):
+        # multi_d_acquisition_events reads z_start/z_end as offsets RELATIVE to
+        # each point when handed xyz_positions. The unhooked loop sweeps the
+        # absolute range, so the hooked path must too — otherwise the same
+        # protocol_params mean different planes depending on hook_strategy.
+        run_multiposition_acquisition(
+            mock_ctrl, unconstrained_guard, protocol="zstack", save_dir="/ws",
+            positions=[{"name": "P1", "x_um": 0.0, "y_um": 0.0, "z_um": 80.0}],
+            protocol_params={"z_start_um": 10.0, "z_end_um": 12.0, "z_step_um": 1.0},
+            hook_strategy="recording",
+        )
+        assert {e["z"] for e in captured[0]["events"]} == {10, 11, 12}
+
+    def test_an_out_of_bounds_z_range_refuses_before_the_acquisition(
+        self, mock_ctrl, default_guard, captured
+    ):
+        # default_guard: 0 <= z <= 200. run_zstack guards its range; so must this.
+        with pytest.raises(SafetyViolation):
+            run_multiposition_acquisition(
+                mock_ctrl, default_guard, protocol="zstack", save_dir="/ws",
+                positions=[{"name": "P1", "x_um": 0.0, "y_um": 0.0}],
+                protocol_params={"z_start_um": 0.0, "z_end_um": 900.0,
+                                 "z_step_um": 1.0},
+                hook_strategy="recording",
+            )
+        assert not captured
+
+    def test_out_of_bounds_tile_refuses_before_the_acquisition(
+        self, centered_ctrl, default_guard, captured
+    ):
+        # pycro-manager drives the stage, so there is no per-move guard call.
+        # Every point is checked up front: the refusal must not arrive on tile
+        # 7 of 9 with the objective already out over the sample.
+        with pytest.raises(SafetyViolation):
+            run_tile_acquisition(
+                centered_ctrl, default_guard, rows=1, cols=3, step_um=2000.0,
+                protocol="timelapse", save_dir="/ws",
+                protocol_params={"n_frames": 1, "interval_s": 0},
+                hook_strategy="recording",
+            )
+        assert not captured, "no Acquisition may be constructed after a refusal"
+
+    def test_hooked_snap_is_a_hard_error_not_a_stack_trace(
+        self, centered_ctrl, unconstrained_guard, captured
+    ):
+        result = run_tile_acquisition(
+            centered_ctrl, unconstrained_guard, rows=2, cols=2, step_um=100.0,
+            protocol="snap", hook_strategy="recording",
+        )
+        assert "display-only" in result["error"]
+        assert "n_frames" in result["error"], "the error must name the fix"
+        assert not captured
+        centered_ctrl.studio.live().snap.assert_not_called()
+
+    def test_positions_are_marked_before_the_acquisition(
+        self, centered_ctrl, unconstrained_guard, captured
+    ):
+        # The visit loop is gone, so marking can no longer ride along with it.
+        run_tile_acquisition(
+            centered_ctrl, unconstrained_guard, rows=2, cols=2, step_um=100.0,
+            protocol="timelapse", save_dir="/ws", name="grid",
+            protocol_params={"n_frames": 1, "interval_s": 0},
+            hook_strategy="recording", mark_positions=True,
+        )
+        labels = [c.args[0] for c in centered_ctrl.add_position.call_args_list]
+        assert labels == ["grid_r0_c0", "grid_r0_c1", "grid_r1_c0", "grid_r1_c1"]
+
+    def test_explicit_z_becomes_an_xyz_position(self, mock_ctrl,
+                                                unconstrained_guard, captured):
+        run_multiposition_acquisition(
+            mock_ctrl, unconstrained_guard, protocol="timelapse", save_dir="/ws",
+            positions=[{"name": "P1", "x_um": 1.0, "y_um": 2.0, "z_um": 3.0}],
+            protocol_params={"n_frames": 1, "interval_s": 0},
+            hook_strategy="recording",
+        )
+        event = captured[0]["events"][0]
+        assert (event["x"], event["y"], event["z"]) == (1.0, 2.0, 3.0)
+
+    def test_unknown_hook_strategy_returns_an_error(self, centered_ctrl,
+                                                    unconstrained_guard, captured):
+        result = run_tile_acquisition(
+            centered_ctrl, unconstrained_guard, rows=1, cols=1, step_um=1.0,
+            protocol="timelapse", save_dir="/ws",
+            protocol_params={"n_frames": 1, "interval_s": 0},
+            hook_strategy="no_such_hook",
+        )
+        assert "Unknown hook strategy" in result["error"]
+        assert not captured
+
+    def test_unhooked_tiles_keep_the_per_position_loop(self, centered_ctrl,
+                                                       unconstrained_guard, captured):
+        # Option A's behaviour is what today's users have; only hook_strategy
+        # switches to the single-Acquisition path.
+        result = run_tile_acquisition(
+            centered_ctrl, unconstrained_guard, rows=2, cols=2, step_um=100.0,
+            protocol="snap",
+        )
+        assert result["status"] == "4/4 positions completed."
+        assert centered_ctrl.studio.live().snap.call_count == 4
+        assert not captured
+
+
 class TestRunTimelapseExposure:
     def test_sets_exposure_when_no_channel(self, mock_ctrl, unconstrained_guard, monkeypatch):
         from microclaw.tools import run_timelapse

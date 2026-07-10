@@ -608,7 +608,11 @@ TOOLS: list[dict[str, Any]] = [
             "(a list of {name, x_um, y_um, z_um?} dicts — no prior mark_position needed). "
             "Saves each position's data to a subdirectory of save_dir. "
             "Pass mark_positions=true to also record every visited position into the "
-            "stage position list."
+            "stage position list. "
+            "Pass hook_strategy to run one hooked acquisition across every position: a "
+            "single dataset with a `position` axis and one hook log covering every "
+            "point. Not compatible with protocol='snap' (display-only, no acquisition "
+            "images) — use protocol='timelapse' with n_frames=1 instead."
         ),
         "input_schema": {
             "type": "object",
@@ -671,6 +675,25 @@ TOOLS: list[dict[str, Any]] = [
                     ),
                     "default": False,
                 },
+                "hook_strategy": {
+                    "type": "string",
+                    "description": (
+                        "Hook strategy name (from list_hooks). Runs ONE acquisition "
+                        "across all positions with a single hook instance. Cannot be "
+                        "combined with protocol='snap'."
+                    ),
+                },
+                "hook_params": {
+                    "type": "object",
+                    "description": "Parameters passed to the hook constructor.",
+                },
+                "log_path": {
+                    "type": "string",
+                    "description": (
+                        "Path for the hook's output log, covering every position "
+                        "(optional). Read it back with read_hook_log."
+                    ),
+                },
             },
             "required": ["protocol"],
         },
@@ -682,7 +705,14 @@ TOOLS: list[dict[str, Any]] = [
             "Computes grid coordinates automatically — no prior mark_position needed. "
             "Runs a per-position protocol (snap, zstack, or timelapse) at each tile. "
             "Pass mark_positions=true to also record every tile into the stage "
-            "position list."
+            "position list. "
+            "Pass hook_strategy to run one hooked acquisition across the whole grid: a "
+            "single dataset with a `position` axis and one hook log covering every "
+            "tile. This is how you compute a custom per-tile quantity — never spell a "
+            "grid as N single-plane z-stacks. Not compatible with protocol='snap' "
+            "(display-only, no acquisition images) — use protocol='timelapse' with "
+            "protocol_params={'n_frames': 1, 'interval_s': 0} for one hooked frame "
+            "per tile."
         ),
         "input_schema": {
             "type": "object",
@@ -725,6 +755,25 @@ TOOLS: list[dict[str, Any]] = [
                         "would. Default false."
                     ),
                     "default": False,
+                },
+                "hook_strategy": {
+                    "type": "string",
+                    "description": (
+                        "Hook strategy name (from list_hooks). Runs ONE acquisition "
+                        "across the whole grid with a single hook instance. Cannot be "
+                        "combined with protocol='snap'."
+                    ),
+                },
+                "hook_params": {
+                    "type": "object",
+                    "description": "Parameters passed to the hook constructor.",
+                },
+                "log_path": {
+                    "type": "string",
+                    "description": (
+                        "Path for the hook's output log, covering every tile "
+                        "(optional). Read it back with read_hook_log."
+                    ),
                 },
             },
             "required": ["rows", "cols", "step_um", "protocol"],
