@@ -55,8 +55,10 @@ your hardware. Set each one for your instrument, then change `reviewed: false` t
 A console window opens — that is the server; closing it stops Microclaw — and a
 browser window follows. It will ask for an Anthropic API key the first time.
 
-Re-running `install.bat` is safe: it upgrades in place and leaves your safety
-limits alone.
+To upgrade, download the ZIP again and double-click `install.bat` again. It is
+safe to re-run: it upgrades in place, and leaves your safety limits and API key
+alone. **Close Microclaw first** — while its console window is open, Windows
+holds the installed files locked and the upgrade will fail.
 
 ### Running it later
 
