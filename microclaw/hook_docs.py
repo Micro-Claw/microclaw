@@ -27,6 +27,11 @@ Called after every image arrives from the camera, before it is saved.
   - Signal that the acquisition should end early:
       event_queue.put(None)
 
+To key a log entry to the image's place in the acquisition, read the axes —
+`metadata["Axes"]` holds e.g. {"position": "tile_r0_c1", "time": 0, "z": 3}.
+Do not guess stage-coordinate metadata names (there is no
+"XPosition_um_Intended"); a multi-position acquisition names its positions.
+
 ### post_hardware_hook_fn(event: dict) -> dict | None
 
 Called after the hardware has moved to the event's position (XY, Z, channel)

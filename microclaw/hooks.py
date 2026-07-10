@@ -17,6 +17,14 @@ class HookBase:
         self._log: list[dict] = []
 
     def _write_log(self) -> None:
+        """Rewrite the whole file from `self._log`: one hook instance per log_path.
+
+        A caller that constructs a fresh hook per position and points them all at
+        one log_path gets the last position's results only — each instance starts
+        with an empty `_log` and truncates its predecessor (design/19 Fix 3).
+        Hand multi-position events to a single hook instead; see
+        `tools._acquire_positions_with_hook`.
+        """
         if self.log_path:
             Path(self.log_path).write_text(json.dumps(self._log, indent=2), encoding="utf-8")
 

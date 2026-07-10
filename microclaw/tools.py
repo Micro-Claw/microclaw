@@ -767,6 +767,7 @@ def snap_and_analyze(
         "displayed_in_mm_viewer": bool(display) and preview_window_open(ctrl),
         **_focus_metric_payload(ctrl, image),
         "mean_intensity": round(stats.mean_intensity, 1),
+        "min_intensity": round(stats.min_intensity, 1),
         "max_intensity": round(stats.max_intensity, 1),
         "saturated_fraction": round(stats.saturated_fraction, 4),
     }
@@ -1210,6 +1211,17 @@ def import_mm_positions(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
 
 # --- Multiposition acquisition ---
 
+def _protocol_shape_kwargs(protocol: str, params: dict) -> dict:
+    """protocol_params (tool-facing) -> multi_d_acquisition_events kwargs."""
+    if protocol == "zstack":
+        return {"z_start": params["z_start_um"], "z_end": params["z_end_um"],
+                "z_step": params["z_step_um"]}
+    if protocol == "timelapse":
+        return {"num_time_points": params["n_frames"],
+                "time_interval_s": params.get("interval_s", 0)}
+    raise ValueError(f"Unknown protocol '{protocol}'.")
+
+
 def _run_protocol_at(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -1271,6 +1283,9 @@ def run_multiposition_acquisition(
     name: str = "multipos",
     protocol_params: dict | None = None,
     mark_positions: bool = False,
+    hook_strategy: str | None = None,
+    hook_params: dict | None = None,
+    log_path: str | None = None,
 ) -> dict:
     """Visit each position and run a per-position protocol.
 
@@ -1290,6 +1305,11 @@ def run_multiposition_acquisition(
     mark_positions=True additionally records each visited position into the
     stage position list (microclaw's list + MM's Position List Manager), as
     the mark_position tool would.
+
+    hook_strategy switches to a single Acquisition spanning every position: one
+    dataset with a `position` axis and one hook log covering every point, rather
+    than the per-position loop's N datasets and N logs (design/19 F2). Not
+    compatible with protocol="snap", which takes no acquisition images.
     """
     if position_names is not None and positions is not None:
         return {"error": "Provide position_names or positions, not both."}
@@ -1318,6 +1338,37 @@ def run_multiposition_acquisition(
         resolved = [
             (p["name"], p["x_um"], p["y_um"], p.get("z_um")) for p in positions
         ]
+
+    if hook_strategy:
+        if protocol == "snap":
+            return {"error":
+                    "hook_strategy needs acquisition images; 'snap' is display-only. "
+                    "Use protocol='timelapse' with protocol_params={'n_frames': 1, "
+                    "'interval_s': 0} to capture one hooked frame per position."}
+        if results:
+            return {"error": "Positions not found in position list: "
+                             f"{[r['position'] for r in results]}"}
+        try:
+            shape = _protocol_shape_kwargs(protocol, params)
+        except ValueError as e:
+            return {"error": str(e)}
+        except KeyError as e:
+            return {"error": f"protocol_params for '{protocol}' is missing {e}."}
+        if mark_positions:
+            # The grid coordinates are known up front, so marking needs no stage
+            # reads and no visit loop — mark before the Acquisition takes over.
+            for pos_label, x_um, y_um, z_um in resolved:
+                ctrl.add_position(pos_label, round(x_um, 3), round(y_um, 3),
+                                  round(z_um, 3) if z_um is not None else None)
+        return _acquire_positions_with_hook(
+            ctrl, guard,
+            positions=[{"name": n, "x_um": x, "y_um": y, "z_um": z}
+                       for n, x, y, z in resolved],
+            save_dir=save_dir, name=name, hook_strategy=hook_strategy,
+            hook_params=hook_params, log_path=log_path,
+            channel=params.get("channel"), exposure_ms=params.get("exposure_ms"),
+            **shape,
+        )
 
     for pos_label, x_um, y_um, z_um in resolved:
         pos_save_dir = str(Path(save_dir) / pos_label) if save_dir else None
@@ -1349,8 +1400,15 @@ def run_tile_acquisition(
     name: str = "tile",
     protocol_params: dict | None = None,
     mark_positions: bool = False,
+    hook_strategy: str | None = None,
+    hook_params: dict | None = None,
+    log_path: str | None = None,
 ) -> dict:
-    """Acquire a rows×cols tile grid centered on the current stage position."""
+    """Acquire a rows×cols tile grid centered on the current stage position.
+
+    hook_strategy runs one hooked Acquisition across the whole grid; see
+    run_multiposition_acquisition.
+    """
     center_x = ctrl.core.get_x_position()
     center_y = ctrl.core.get_y_position()
     x_start = center_x - (cols - 1) / 2 * step_um
@@ -1372,6 +1430,9 @@ def run_tile_acquisition(
         name=name,
         protocol_params=protocol_params,
         mark_positions=mark_positions,
+        hook_strategy=hook_strategy,
+        hook_params=hook_params,
+        log_path=log_path,
     )
 
 
@@ -1514,10 +1575,16 @@ def _resolve_hook(
     return hook_cls(**params)
 
 
-def _adaptive_result(dataset_path: str, log_path: str | None) -> dict:
+def _adaptive_result(
+    dataset_path: str,
+    log_path: str | None,
+    status: str = "Adaptive acquisition complete.",
+    **extra: Any,
+) -> dict:
     result: dict[str, Any] = {
-        "status": "Adaptive acquisition complete.",
+        "status": status,
         "dataset_path": dataset_path,
+        **extra,
     }
     if log_path:
         result["log_path"] = log_path
@@ -1599,6 +1666,89 @@ def run_adaptive_timelapse(
     )
     dataset_path = _acquire_with_hooks(guard, save_dir, name, events, hook)
     return _adaptive_result(dataset_path, log_path)
+
+
+def _acquire_positions_with_hook(
+    ctrl: MicroscopeController,
+    guard: SafetyGuard,
+    positions: list[dict],
+    save_dir: str,
+    name: str,
+    hook_strategy: str,
+    hook_params: dict | None = None,
+    log_path: str | None = None,
+    channel: str | None = None,
+    exposure_ms: float | None = None,
+    **shape_kwargs: Any,
+) -> dict:
+    """One Acquisition across every position, with a single hook instance.
+
+    positions are {name, x_um, y_um, z_um?} dicts; shape_kwargs carry the
+    per-position event shape (z_start/z_end/z_step or num_time_points/
+    time_interval_s), exactly as the adaptive pair passes them.
+
+    pycro-manager moves the stage here, so each image's metadata carries
+    axes["position"] — the hook keys its log to the grid point instead of
+    guessing metadata names (design/19 F3). Contrast a per-position loop, where
+    a fresh hook per position truncates a shared log (see HookBase._write_log).
+    """
+    save_dir = guard.resolve_in_workspace(save_dir)
+    if log_path:
+        log_path = guard.resolve_in_workspace(log_path)   # see run_adaptive_zstack
+
+    # A Z range makes the event list sweep Z itself, and multi_d_acquisition_events
+    # reads z_start/z_end as ABSOLUTE alongside xy_positions but as offsets
+    # RELATIVE to each point's Z alongside xyz_positions. The per-position z_um is
+    # therefore dropped when a range is present — which loses nothing, because the
+    # unhooked loop's run_zstack sweeps the same absolute range after its move to
+    # z_um. Swapping in xyz_positions here would silently reinterpret z_start_um.
+    sweeps_z = "z_start" in shape_kwargs
+
+    # The stage is driven by the Acquisition, not by us, so there is no
+    # per-move guard call. Check every point up front: the refusal must not
+    # arrive on tile 7 of 9, with the objective already out over the sample.
+    for p in positions:
+        guard.check_xy(p["x_um"], p["y_um"])
+        if not sweeps_z and p.get("z_um") is not None:
+            guard.check_z(p["z_um"])
+    if sweeps_z:
+        guard.check_z(shape_kwargs["z_start"])     # the planes actually visited
+        guard.check_z(shape_kwargs["z_end"])
+    if channel:
+        guard.check_channel(channel)
+    if exposure_ms is not None:
+        guard.check_exposure(exposure_ms)
+        if not channel:
+            ctrl.core.set_exposure(exposure_ms)   # eventless exposure; see run_zstack
+
+    try:
+        hook = _resolve_hook(ctrl, guard, hook_strategy, hook_params, log_path)
+    except ValueError as e:
+        return {"error": str(e)}
+
+    if not sweeps_z and any(p.get("z_um") is not None for p in positions):
+        # xyz_positions is all-or-nothing: a point without a Z holds the current
+        # focus plane rather than dropping out of the event list.
+        current_z = ctrl.core.get_position()
+        shape_kwargs["xyz_positions"] = [
+            (p["x_um"], p["y_um"], p["z_um"] if p.get("z_um") is not None else current_z)
+            for p in positions
+        ]
+    else:
+        shape_kwargs["xy_positions"] = [(p["x_um"], p["y_um"]) for p in positions]
+
+    events = _build_acquisition_events(
+        channel=channel, exposure_ms=exposure_ms,
+        position_labels=[p["name"] for p in positions], **shape_kwargs,
+    )
+    dataset_path = _acquire_with_hooks(guard, save_dir, name, events, hook)
+    # Say how many positions ran. "Adaptive acquisition complete." over a grid
+    # left no way to confirm every tile fired without opening the log.
+    return _adaptive_result(
+        dataset_path, log_path,
+        status=f"Hooked acquisition complete across {len(positions)} position(s).",
+        positions=len(positions),
+    )
 
 
 def read_hook_log(ctrl: MicroscopeController, guard: SafetyGuard, log_path: str) -> dict:

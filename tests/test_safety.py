@@ -225,9 +225,28 @@ class TestAllowlistMode:
 
 
 class TestWorkspaceSandbox:
-    def test_unconfigured_returns_path_unchanged(self):
+    def test_unconfigured_confines_nothing(self):
         guard = SafetyGuard(SafetyConstraints())  # workspace_dir None
-        assert guard.resolve_in_workspace("/anywhere/at/all.json") == "/anywhere/at/all.json"
+        # Build with os.sep: a literal "/anywhere/..." is already-normalised on
+        # POSIX and normalises to backslashes on Windows, so hardcoding it would
+        # assert the platform rather than the confinement.
+        outside = os.path.join(os.sep, "anywhere", "at", "all.json")
+        assert guard.resolve_in_workspace(outside) == outside
+
+    def test_an_unconfined_path_is_still_normalised(self):
+        # A model that over-escapes a Windows path hands us doubled separators.
+        # The acquisition normalises its own dataset_path, so without this one
+        # payload spells the same directory two ways (design/19, 2026-07-10 run).
+        # Windows collapses the repeats; POSIX does not — so normalise here.
+        # Not a *leading* double separator: POSIX gives that one a meaning of
+        # its own and normpath rightly preserves it.
+        guard = SafetyGuard(SafetyConstraints())
+        assert guard.resolve_in_workspace(f"{os.sep}ws{os.sep*2}log.json") == (
+            f"{os.sep}ws{os.sep}log.json"
+        )
+        assert guard.resolve_in_workspace(f"{os.sep}ws{os.sep}.{os.sep}log.json") == (
+            f"{os.sep}ws{os.sep}log.json"
+        )
 
     def test_a_filesystem_root_workspace_does_not_reject_everything(self):
         """realpath('/') already ends in a separator, so the containment check
