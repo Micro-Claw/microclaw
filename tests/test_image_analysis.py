@@ -1,17 +1,20 @@
 import base64
 import io
+import time
 from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
 from PIL import Image
 
+from microclaw import image_analysis
 from microclaw.image_analysis import (
     compute_stats,
     detect_features,
     laplacian_variance,
     make_thumbnail,
     normalized_laplacian_variance,
+    preview_window_open,
     snap_to_numpy,
     snap_to_numpy_displayed,
 )
@@ -80,10 +83,20 @@ class TestSnapToNumpy:
         assert compute_stats(arr).saturated_fraction == 1.0
 
 
-def _studio_ctrl(pixels: np.ndarray, n_comp: int = 1):
+#: Sentinel for a non-null DisplayWindow. get_display() returns None for Java
+#: null, so anything else at all means "a Preview window exists".
+_WINDOW = object()
+
+
+def _studio_ctrl(pixels: np.ndarray, n_comp: int = 1, displays=(_WINDOW,)):
     """Mock controller whose studio.live().snap(True) yields one image with the
     (V1-verified) accessors: get_width/get_height/get_bytes_per_pixel/
-    get_num_components/get_raw_pixels — raw pixels arrive as a numpy array."""
+    get_num_components/get_raw_pixels — raw pixels arrive as a numpy array.
+
+    `displays` is the sequence get_display() returns, one per call, the last
+    value repeating. Default is a warm rig (a Preview window already exists).
+    Pass (None, ..., _WINDOW) for the design/18 cold snap.
+    """
     ctrl = MagicMock()
     img = MagicMock()
     h, w = pixels.shape[:2]
@@ -94,7 +107,21 @@ def _studio_ctrl(pixels: np.ndarray, n_comp: int = 1):
     img.get_raw_pixels.return_value = pixels.ravel()
     images = MagicMock()
     images.get.return_value = img
-    ctrl.studio.live().snap.return_value = images
+    live = ctrl.studio.live()
+    live.snap.return_value = images
+
+    remaining = list(displays)
+    calls: list[str] = []          # interleaved log, so ordering is assertable
+
+    def _get_display():
+        value = remaining.pop(0) if len(remaining) > 1 else remaining[0]
+        calls.append("get_display->" + ("None" if value is None else "window"))
+        return value
+
+    live.get_display.side_effect = _get_display
+    live.display_image.side_effect = lambda im: calls.append("display_image")
+    ctrl._img = img
+    ctrl._calls = calls
     return ctrl
 
 
@@ -113,6 +140,73 @@ class TestSnapToNumpyDisplayed:
         pixels = np.random.randint(0, 65535, (8, 8), dtype=np.uint16)
         displayed = snap_to_numpy_displayed(_studio_ctrl(pixels))
         assert displayed.shape == pixels.shape
+
+
+class TestFirstSnapRepush:
+    """design/18: a cold snap(True) intermittently leaves MM's brand-new Preview
+    window on its "Waiting for Image..." placeholder. Re-pushing the image we
+    already hold repaints it, at no exposure."""
+
+    PIXELS = np.arange(20, dtype=np.uint16).reshape(4, 5)
+
+    def test_warm_snap_does_not_repush(self):
+        # A window already exists: snap(True) paints it, as it always has.
+        # Re-pushing every snap would be pointless bridge traffic.
+        ctrl = _studio_ctrl(self.PIXELS, displays=(_WINDOW,))
+        snap_to_numpy_displayed(ctrl)
+        ctrl.studio.live().display_image.assert_not_called()
+
+    def test_cold_snap_repushes_the_held_image(self):
+        ctrl = _studio_ctrl(self.PIXELS, displays=(None, _WINDOW))
+        snap_to_numpy_displayed(ctrl)
+        # The SAME image object — a second snap() would be a second exposure.
+        ctrl.studio.live().display_image.assert_called_once_with(ctrl._img)
+        ctrl.studio.live().snap.assert_called_once_with(True)
+
+    def test_cold_snap_waits_for_the_window_before_repushing(self):
+        # The one variant with rig evidence behind it: push AFTER the window
+        # exists. Pushing immediately was never tested against a stuck window.
+        ctrl = _studio_ctrl(self.PIXELS, displays=(None, None, None, _WINDOW))
+        snap_to_numpy_displayed(ctrl)
+        assert ctrl._calls == [
+            "get_display->None",        # the pre-snap cold read
+            "get_display->None",        # polling: window not up yet
+            "get_display->None",
+            "get_display->window",      # window appeared
+            "display_image",            # ...only now do we push
+        ]
+
+    def test_cold_snap_repushes_even_if_the_window_never_appears(self, monkeypatch):
+        # Bounded wait: a window that never arrives must not hang a snap. We
+        # push anyway — displayImage() creates the display if there is none,
+        # which is exactly what snap(True) would have done.
+        monkeypatch.setattr(image_analysis, "_DISPLAY_WAIT_S", 0.05)
+        monkeypatch.setattr(image_analysis, "_DISPLAY_POLL_S", 0.01)
+        ctrl = _studio_ctrl(self.PIXELS, displays=(None,))
+        started = time.monotonic()
+        arr = snap_to_numpy_displayed(ctrl)
+        elapsed = time.monotonic() - started
+        ctrl.studio.live().display_image.assert_called_once_with(ctrl._img)
+        assert elapsed < 1.0, "the wait must be bounded"
+        np.testing.assert_array_equal(arr, self.PIXELS)
+
+    def test_pixels_survive_the_repush(self):
+        # The re-push must not disturb what we return to the caller.
+        ctrl = _studio_ctrl(self.PIXELS, displays=(None, _WINDOW))
+        np.testing.assert_array_equal(snap_to_numpy_displayed(ctrl), self.PIXELS)
+
+
+class TestPreviewWindowOpen:
+    def test_true_when_a_window_exists(self):
+        ctrl = MagicMock()
+        ctrl.studio.live().get_display.return_value = _WINDOW
+        assert preview_window_open(ctrl) is True
+
+    def test_false_on_java_null(self):
+        # pyjavaz maps Java null to None (verified on the rig, design/18).
+        ctrl = MagicMock()
+        ctrl.studio.live().get_display.return_value = None
+        assert preview_window_open(ctrl) is False
 
 
 def test_humanize_java_error_translates_sequence_acquisition():

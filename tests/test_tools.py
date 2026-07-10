@@ -417,6 +417,23 @@ class TestSnapAndAnalyze:
         assert self.headless_calls and not self.displayed_calls
         assert result["displayed_in_mm_viewer"] is False
 
+    def test_display_false_never_asks_mm_for_a_window(self, mock_ctrl,
+                                                      unconstrained_guard):
+        # display=False is headless by definition; probing the viewer would be
+        # a pointless bridge round trip.
+        snap_and_analyze(mock_ctrl, unconstrained_guard, display=False)
+        mock_ctrl.studio.live().get_display.assert_not_called()
+
+    def test_reports_not_displayed_when_mm_has_no_viewer(self, mock_ctrl,
+                                                         unconstrained_guard):
+        # design/18 regression. This field used to echo the `display` parameter,
+        # so it read True while MM's Preview window sat on "Waiting for
+        # Image..." — and agent.py tells the model to trust it ("never claim an
+        # image is on screen unless it is true"). It must observe, not assume.
+        mock_ctrl.studio.live().get_display.return_value = None
+        result = snap_and_analyze(mock_ctrl, unconstrained_guard)
+        assert result["displayed_in_mm_viewer"] is False
+
     def test_live_paused_and_restored(self, mock_ctrl, unconstrained_guard):
         # The amr_test crash: snapping under live view. snap(True) under live
         # wedges the bridge (V1), so live MUST be off before the snap.
