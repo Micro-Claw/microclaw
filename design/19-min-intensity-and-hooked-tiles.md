@@ -446,6 +446,63 @@ Plus one holding the line under the fix: unhooked tiles still take the
 per-position loop. It is the only new test that passes against the pre-fix
 source — the other nine fail, which is what makes them regression tests.
 
+## Verified on the rig
+
+Same prompt, same demo camera, 2026-07-10 12:27
+(`20260710_122755_microclaw_history.json`). All three fixes held.
+
+| | 11:51 run | 12:27 run |
+|---|---|---|
+| reported min | 662 (modal background) | **142** (true minimum) |
+| exposures | ~28 | 19 |
+| datasets / hook logs | 9 / 9 | **1 / 1** |
+| hook position keys | all `null` | 9 labels, all correct |
+
+F1: every `snap_and_analyze` returned `min_intensity: 142.0`, and at message 53
+the agent describes the payload as "mean/min/max/saturation" — reading the field
+set, not guessing at it.
+
+F2: message 61 is one `run_multiposition_acquisition` with
+`hook_strategy='pixel_std'`, `protocol='timelapse'`, `n_frames=1` — the shape
+the schema text recommends. One `Acquisition`, one dataset, one log.
+
+F3: the generated hook opens `axes = metadata.get("Axes", {})` and keys on
+`axes.get("position")`. The `hook_docs.py` line did that, not the position axis
+alone — last time it invented `metadata["XPosition_um_Intended"]` with the same
+axis available. Fix 3's single-instance property held too: nine entries
+accumulated in one file rather than the last tile truncating the other eight.
+
+### Two papercuts the run exposed, fixed here
+
+Both visible in message 62's payload:
+
+```json
+{"dataset_path": "C:\\Users\\rieslab\\data\\grid_std\\grid_std_1",
+ "log_path":     "C:\\\\Users\\\\rieslab\\\\data\\\\grid_std\\\\pixel_std_log.json"}
+```
+
+1. **One payload, one directory, two spellings.** The agent over-escaped
+   `log_path`; `Acquisition` normalised `dataset_path` and nothing normalised
+   the log. `resolve_in_workspace` returned unconfined paths verbatim, so
+   `os.path.normpath` now runs on both branches. It worked in the lab only
+   because Windows collapses repeated separators and POSIX does not — precisely
+   the difference that passes on the rig and fails everywhere else.
+2. **`"Adaptive acquisition complete."` over a nine-tile grid**, with no count.
+   Nothing in the result let the agent confirm every tile fired without opening
+   the log. `_acquire_positions_with_hook` now reports
+   `"Hooked acquisition complete across 9 position(s)."` and a `positions` field.
+
+### What the fixes did not touch
+
+Carried to design/20: the agent published a nine-row table after measuring one
+row (messages 47–51); it claimed the frames were "byte-for-byte identical" from
+summary statistics alone, having claimed the opposite six messages earlier; and
+it missed that `focus_metric` cycles with period **four** across the nine snaps
+(1.974, 2.153, 2.342, 2.163, repeat) — a re-snap of `grid_r0_c0` at message 50
+returns a different metric than its first visit. The metric is a function of the
+snap ordinal, not the stage position. That is the "stage isn't moving" signature
+this doc filed under *Not in scope*, sitting in the payloads, unnoticed.
+
 ## Loose ends from the same run
 
 Neither is worth a code change on its own; noting them so they aren't rediscovered.
@@ -457,3 +514,5 @@ Neither is worth a code change on its own; noting them so they aren't rediscover
   task." `get_system_state` returns x/y/z/exposure/live_view — it has no
   illumination field, so that claim had nothing behind it. If we want the agent
   to be able to say this, `get_system_state` has to report shutter/laser state.
+  **Recurred verbatim** in the 12:27 run (message 67, "no lasers were
+  involved"), so it is a habit and not a one-off. Now design/20.

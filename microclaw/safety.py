@@ -367,12 +367,19 @@ class SafetyGuard:
 
         realpath-resolves (so `..` and symlinks can't escape) and raises
         SafetyViolation if the result leaves the configured root. When
-        workspace_dir is None the path is returned unchanged — behaviour is
+        workspace_dir is None the path is only normalised — confinement is
         unchanged unless a lab opts in by configuring a root.
+
+        The normalisation is not cosmetic. A model that over-escapes a Windows
+        path hands us 'C:\\\\Users\\\\...'; the acquisition's own dataset_path
+        comes back normalised while a hook's log_path did not, so one payload
+        carried the same directory spelled two ways (design/19, 2026-07-10 run).
+        Windows collapses repeated separators and POSIX does not, which is the
+        kind of difference that works in the lab and fails in a test.
         """
         root = self._c.workspace_dir
         if root is None:
-            return path
+            return os.path.normpath(path)
         root = os.path.realpath(root)
         target = path if os.path.isabs(path) else os.path.join(root, path)
         resolved = os.path.realpath(target)

@@ -835,6 +835,10 @@ class TestHookedGridAcquisition:
         assert len(labels) == 9 and len(set(labels)) == 9
         assert labels[0] == "grid_r0_c0" and labels[-1] == "grid_r2_c2"
         assert result["log_path"] == "/ws/log.json"
+        # "Adaptive acquisition complete." over a grid gave the agent no way to
+        # confirm every tile fired without opening the log.
+        assert result["positions"] == 9
+        assert "9 position(s)" in result["status"]
 
     def test_the_hook_log_keys_to_positions_across_the_grid(
         self, centered_ctrl, unconstrained_guard, captured

@@ -1575,10 +1575,16 @@ def _resolve_hook(
     return hook_cls(**params)
 
 
-def _adaptive_result(dataset_path: str, log_path: str | None) -> dict:
+def _adaptive_result(
+    dataset_path: str,
+    log_path: str | None,
+    status: str = "Adaptive acquisition complete.",
+    **extra: Any,
+) -> dict:
     result: dict[str, Any] = {
-        "status": "Adaptive acquisition complete.",
+        "status": status,
         "dataset_path": dataset_path,
+        **extra,
     }
     if log_path:
         result["log_path"] = log_path
@@ -1736,7 +1742,13 @@ def _acquire_positions_with_hook(
         position_labels=[p["name"] for p in positions], **shape_kwargs,
     )
     dataset_path = _acquire_with_hooks(guard, save_dir, name, events, hook)
-    return _adaptive_result(dataset_path, log_path)
+    # Say how many positions ran. "Adaptive acquisition complete." over a grid
+    # left no way to confirm every tile fired without opening the log.
+    return _adaptive_result(
+        dataset_path, log_path,
+        status=f"Hooked acquisition complete across {len(positions)} position(s).",
+        positions=len(positions),
+    )
 
 
 def read_hook_log(ctrl: MicroscopeController, guard: SafetyGuard, log_path: str) -> dict:
