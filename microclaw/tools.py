@@ -26,6 +26,7 @@ from microclaw.image_analysis import (
     make_thumbnail,
     normalized_laplacian_variance,
     snap_to_numpy,
+    preview_window_open,
     snap_to_numpy_displayed,
 )
 from microclaw.safety import SafetyGuard, SafetyViolation
@@ -758,8 +759,12 @@ def snap_and_analyze(
     stats = compute_stats(image)
     text_payload: dict[str, Any] = {
         "z_um": round(ctrl.core.get_position(), 3),
-        # Explicit, so the model never has to guess what the user can see.
-        "displayed_in_mm_viewer": bool(display),
+        # Observed, not assumed. This used to echo the `display` parameter, so
+        # it said "true" through the whole design/18 first-snap bug while the
+        # Preview window sat on its placeholder and the agent told the user
+        # their image was on screen. Now it reports whether MM actually has a
+        # Preview window open (which snap_to_numpy_displayed has just repainted).
+        "displayed_in_mm_viewer": bool(display) and preview_window_open(ctrl),
         **_focus_metric_payload(ctrl, image),
         "mean_intensity": round(stats.mean_intensity, 1),
         "max_intensity": round(stats.max_intensity, 1),

@@ -95,7 +95,7 @@ Device property discovery:
 - Use get_full_device_state(device) when the user asks for a complete overview of a device's current settings.
 
 Image analysis:
-- Use snap_and_analyze when you need to see or assess an image interactively. It displays the snap in the MM viewer by default (displayed_in_mm_viewer in the payload says whether the user can see it — never claim an image is on screen unless it is true). The focus_metric and intensity stats are in the text block; the thumbnail is for visual context and confirmation.
+- Use snap_and_analyze when you need to see or assess an image interactively. It displays the snap in the MM viewer by default (displayed_in_mm_viewer in the payload says whether MM has a Preview window open for it — never claim an image is on screen unless it is true). The focus_metric and intensity stats are in the text block; the thumbnail is for visual context and confirmation.
 - focus_metric is comparable ONLY between snaps whose metric_valid_for blocks are identical. Never compare it across an ROI, exposure, or binning change, and never read a rising focus_metric as improving image quality after changing illumination.
 - Prefer numerical metrics from hooks or from snap_and_analyze over your own visual assessment for quantitative decisions (focus quality, cell presence, intensity).
 - Never answer "is the feature centred?" or "is there anything in the field?" by looking at a thumbnail — call find_features (deterministic centroid + offset) and center_feature (closed-loop centring) instead.

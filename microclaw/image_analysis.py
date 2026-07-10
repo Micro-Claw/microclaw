@@ -1,6 +1,7 @@
 from __future__ import annotations
 import base64
 import io
+import time
 from typing import NamedTuple
 
 import numpy as np
@@ -183,6 +184,27 @@ def snap_to_numpy(ctrl) -> np.ndarray:
     return _reshape_pixels(tagged.pix, w, h, bpp, n_comp)
 
 
+#: How long to wait for MM to construct the Preview window after a cold snap,
+#: and how often to ask. Measured on the rig: it appeared within 1-30 ms
+#: (design/18), so 2 s is pure headroom for a loaded EDT.
+_DISPLAY_WAIT_S = 2.0
+_DISPLAY_POLL_S = 0.02
+
+
+def preview_window_open(ctrl) -> bool:
+    """Whether MM currently has a snap/live Preview window.
+
+    SnapLiveManager.getDisplay() is a pure accessor — it returns the window, or
+    null if there is none or it has been closed, and never creates one. Java
+    null arrives as None.
+
+    This says a window EXISTS. It does not say your image is painted into it:
+    design/18 caught a run with a non-null display still showing the "Waiting
+    for Image..." placeholder. No MM API reports the canvas swap.
+    """
+    return ctrl.studio.live().get_display() is not None
+
+
 def snap_to_numpy_displayed(ctrl) -> np.ndarray:
     """Snap via studio.live().snap(True): displays in the MM viewer AND returns
     the pixels — one exposure, not two (the sample bleaches).
@@ -191,9 +213,34 @@ def snap_to_numpy_displayed(ctrl) -> np.ndarray:
     not throw — it never returns, and because pyjavaz holds one communication
     lock per port, the whole process wedges. The caller MUST stop live mode
     first (tools._pause_live); never probe by calling.
+
+    The re-push (design/18): when no Preview window exists yet, snap(True)
+    intermittently leaves MM's brand-new window on its "Waiting for Image..."
+    placeholder — the biologist sees no image, and the agent used to claim they
+    did. SnapLiveManager.displayImage() only queues work onto the Swing thread,
+    so snap(True) can hand the pixels back before the window has finished
+    constructing, and that window can miss the one new-image event it was sent.
+    Pushing the image we ALREADY HOLD into the finished window repaints it and
+    costs no exposure. Observed on the rig in roughly one cold snap in six; a
+    wait-then-push repaired every stuck window it was tried on.
     """
-    images = ctrl.studio.live().snap(True)           # java.util.ArrayList
+    live = ctrl.studio.live()
+    # Only the first snap of a session races. Read this BEFORE snapping: after
+    # snap(True) the window exists either way, and the tell is gone.
+    was_cold = live.get_display() is None
+
+    images = live.snap(True)                         # java.util.ArrayList
     img = images.get(0)
+
+    if was_cold:
+        deadline = time.monotonic() + _DISPLAY_WAIT_S
+        while live.get_display() is None and time.monotonic() < deadline:
+            time.sleep(_DISPLAY_POLL_S)
+        # Harmless if the window painted on its own; the fix when it did not.
+        # (Re-pushing without the wait was never tested against a stuck window
+        # — the bug refused to reproduce in six tries — so we do not rely on it.)
+        live.display_image(img)
+
     w, h = int(img.get_width()), int(img.get_height())
     bpp = int(img.get_bytes_per_pixel())
     n_comp = int(img.get_num_components())           # NOT get_number_of_components
