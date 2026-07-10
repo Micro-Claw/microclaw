@@ -611,6 +611,51 @@ Can you update prompts.md?
 
 ----
 
+In the version that launched from double-clicking the desktop icon (appeared
+after running microclaw install-shortcut for the first time), on the first
+prompt, even though it snapped an image, and the Micro-Manager Preview window
+popped up, an image was never displayed. It simply said, "waiting for image."
+When I asked it to snap an image again, this worked normally and an image
+appeared. The history is in 20260709_183409_microclaw_history.json.
+
+yes, write the spike
+
+commit and push the spike
+
+Outputs are in 18-*.txt
+
+I tried 5 more times each with none, immediate, and after-display. none and
+immediate occasionally returned the waiting for image... message, although
+rarely. I could not get immediate to show me the waiting for image... message,
+although perhaps I did not do it enough.
+
+commit and push
+
+Stuff worked. Merged 17 and 18. Let's go back to main
+
+----
+
+Look at the Install (Windows) route in README.md. This is very easy. Suppose
+someone wants to upgrade microclaw. Can they just re-download the package and
+double-click install.bat again and it will upgrade? Or is it more complicated?
+
+Add the line to README
+
+Can you push this to main? It's a small change, should be fine
+
+----
+
+Have a look at 20260710_115106_microclaw_history.json. This is from a run with
+the most recent code base. What are your thoughts on this run?
+
+This was using the MM demo camera, so no worries there. Please write a document
+with the proposed fixes and code stubs to design/19. Yes, run_tile_acquisiton
+should accept hook strategy. Is there a way to leverage what's already in
+_acquire_with_hooks() to do this? Or is there a better strategy? Include your
+thinking in the design document.
+
+----
+
 Look at design/19. Please implement the fixes on a new branch. Implement option
 B for Fix 2.
 
