@@ -608,3 +608,37 @@ that the horizontal rule on the README intersects with the floating PNG. Is
 there a way to fix that?
 
 Can you update prompts.md?
+
+----
+
+Look at design/19. Please implement the fixes on a new branch. Implement option
+B for Fix 2.
+
+update the design doc to mark the fixes as implemented
+
+Have a look at the performance of this updated code in
+20260710_122755_microclaw_history.json.
+
+Fold the small fixes into design/19 and open design/20 for the rest
+
+Now implement the design/20 fixes
+
+[interrupting the first attempt at the design/20 fixes]
+
+sorry, table this for now. I just ran pytest with the latest design/19 changes
+on the rig and there were some failures. See 19-output.txt. Let's fix these
+first and then go back to implementing design/20
+
+now implement the design/20 fixes
+
+There was one test failure on this branch on the rig. See 20-output.txt
+
+[in response to an offer to sweep the suite for other tests that read the host]
+
+Yes, sweep the suite for other host-dependent tests
+
+I ran this on the rig. Please have a look at 20-output.txt for the errors
+
+Please update prompts.md. Also note that I've now merged design/19 into main. If
+there are any issues with merging design/20 into main now, please rebase this
+branch to solve that
