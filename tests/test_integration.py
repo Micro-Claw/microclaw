@@ -121,7 +121,8 @@ def test_snap_and_analyze_returns_stats(headless_mm, unconstrained_guard):
     from microclaw.tools import snap_and_analyze
     result = snap_and_analyze(headless_mm, unconstrained_guard)
     assert isinstance(result, dict)
-    for field in ("focus_metric", "mean_intensity", "max_intensity", "saturated_fraction", "z_um"):
+    for field in ("focus_metric", "mean_intensity", "min_intensity", "max_intensity",
+                  "saturated_fraction", "z_um"):
         assert field in result, f"Missing field: {field}"
 
 
@@ -130,7 +131,8 @@ def test_snap_and_analyze_returns_valid_png_when_requested(headless_mm, unconstr
     result = snap_and_analyze(headless_mm, unconstrained_guard, return_thumbnail=True)
     assert isinstance(result, list)
     payload = json.loads(result[0]["text"])
-    for field in ("focus_metric", "mean_intensity", "max_intensity", "saturated_fraction", "z_um"):
+    for field in ("focus_metric", "mean_intensity", "min_intensity", "max_intensity",
+                  "saturated_fraction", "z_um"):
         assert field in payload, f"Missing field: {field}"
     png_bytes = base64.standard_b64decode(result[1]["source"]["data"])
     assert png_bytes[:4] == b"\x89PNG", "Thumbnail is not a valid PNG"

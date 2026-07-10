@@ -767,6 +767,7 @@ def snap_and_analyze(
         "displayed_in_mm_viewer": bool(display) and preview_window_open(ctrl),
         **_focus_metric_payload(ctrl, image),
         "mean_intensity": round(stats.mean_intensity, 1),
+        "min_intensity": round(stats.min_intensity, 1),
         "max_intensity": round(stats.max_intensity, 1),
         "saturated_fraction": round(stats.saturated_fraction, 4),
     }

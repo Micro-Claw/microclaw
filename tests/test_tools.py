@@ -477,6 +477,22 @@ class TestSnapAndAnalyze:
         assert "mean_intensity" in payload
         assert "z_um" in payload
 
+    def test_reports_the_true_pixel_minimum(self, mock_ctrl, unconstrained_guard,
+                                            monkeypatch):
+        # design/19 F1. compute_stats has always had min_intensity; the payload
+        # dropped it, so the agent reported find_features' modal background
+        # (662) in a column headed "Min" when the real floor was 142. A frame
+        # whose minimum, mean and background estimate all differ is the only
+        # kind that catches this.
+        image = np.full((64, 64), 700, dtype=np.uint16)
+        image[0, 0] = 142
+        image[32, 32] = 1182
+        monkeypatch.setattr("microclaw.tools.snap_to_numpy_displayed", lambda ctrl: image)
+        result = snap_and_analyze(mock_ctrl, unconstrained_guard)
+        assert result["min_intensity"] == 142.0
+        assert result["max_intensity"] == 1182.0
+        assert result["min_intensity"] != result["mean_intensity"]
+
 
 _FAKE_SWEEP = SweepResult(
     z_positions=[49.0, 50.0, 51.0],

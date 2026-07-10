@@ -364,7 +364,7 @@ TOOLS: list[dict[str, Any]] = [
         "name": "snap_and_analyze",
         "description": (
             "Snap a single image, display it in the Micro-Manager viewer, and return "
-            "numerical stats (focus metric, mean intensity, saturation). This is THE "
+            "numerical stats (focus metric, mean/min/max intensity, saturation). This is THE "
             "snap tool — use it both for quantitative image data and for one-shot "
             "captures the user wants to see. The payload's displayed_in_mm_viewer "
             "field reports whether Micro-Manager has a Preview window open for it. "
