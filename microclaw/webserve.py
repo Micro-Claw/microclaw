@@ -409,13 +409,19 @@ def build_app(session) -> FastAPI:
     return app
 
 
-def _open_when_ready(host: str, port: int, url: str, timeout: float = 15.0) -> None:
+def _open_when_ready(
+    host: str, port: int, url: str, timeout: float = 15.0
+) -> threading.Thread:
     """Open `url` in a browser once the server is accepting connections.
 
     uvicorn.run() blocks, and a browser fired before the socket is listening
     lands on a connection-refused page. Poll the port from a daemon thread
     instead of hooking the ASGI lifespan, so a browser that never opens (headless
     box, no BROWSER) can't wedge the server.
+
+    Returns the daemon thread. serve() ignores it; tests join it, because a
+    poll thread cannot be observed by sleeping for a fixed interval and hoping
+    it was scheduled — under load on a busy box, it is not.
     """
 
     def wait():
@@ -433,7 +439,9 @@ def _open_when_ready(host: str, port: int, url: str, timeout: float = 15.0) -> N
         except Exception:
             pass  # no browser here — the URL is already printed
 
-    threading.Thread(target=wait, daemon=True).start()
+    thread = threading.Thread(target=wait, daemon=True)
+    thread.start()
+    return thread
 
 
 def serve(args):
