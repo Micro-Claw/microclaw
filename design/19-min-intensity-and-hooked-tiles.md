@@ -109,9 +109,22 @@ so.
 
 ---
 
-# Proposed fixes
+# Fixes — implemented
 
-## Fix 1 — surface `min_intensity` (one line)
+All three landed on `design/19-min-intensity-and-hooked-tiles`, Option B for
+Fix 2 as recommended below:
+
+| | commit | |
+|---|---|---|
+| F1 | `458a888` | `min_intensity` in the `snap_and_analyze` payload |
+| F2, F3 | `3168661` | `hook_strategy` on both grid tools; one Acquisition wide |
+
+Implementation notes that differ from what is written below are marked
+**Implemented:** in place. The design was otherwise followed as drafted —
+notably, `_acquire_with_hooks` and `_build_acquisition_events` needed no change,
+exactly as Option B predicted.
+
+## Fix 1 — surface `min_intensity` (one line) ✅
 
 ```python
 # tools.py, snap_and_analyze payload
@@ -132,7 +145,11 @@ intensity, saturation)". Make it say what it returns:
 
 Do this first and independently. It closes the reported bug on its own.
 
-## Fix 2 — `hook_strategy` on the grid tools
+**Implemented** in `458a888`, as its own commit, verified to pass standalone
+with Fix 2/3 stashed. The unit test builds a frame whose minimum (142), mean
+and modal background all differ, so a mean-shaped assertion cannot pass it.
+
+## Fix 2 — `hook_strategy` on the grid tools ✅ *(Option B)*
 
 The user asked whether `_acquire_with_hooks()` can be leveraged here. It can —
 completely, without modification. But the interesting question is *which loop
@@ -245,6 +262,13 @@ Keep the Option A loop for `hook_strategy=None` so today's tile behaviour
 (especially display-only `snap`) is untouched.
 
 ### Stubs
+
+Implemented close to these, with two departures forced by point 5 above:
+`_acquire_positions_with_hook` takes an `exposure_ms` (guarded, and written to
+the core when no channel carries it, mirroring `run_zstack`), and it branches on
+whether the event shape sweeps Z — `xyz_positions` only for the rangeless
+shapes, `xy_positions` plus a guarded absolute range otherwise. The `z_um`
+fallback to `ctrl.core.get_position()` survives, but only on the rangeless path.
 
 New, in `tools.py`, next to the adaptive pair:
 
@@ -379,7 +403,7 @@ Schema (`tools_schema.py`, both tools) — reuse the `hook_strategy` /
 > single dataset with a `position` axis and one hook log covering every tile.
 > Not compatible with `protocol='snap'` (display-only, no acquisition images).
 
-## Fix 3 — stop the shared-log truncation trap regardless
+## Fix 3 — stop the shared-log truncation trap regardless ✅
 
 Even with Option B, `HookBase._write_log` rewrites the file from `self._log`.
 That is correct for one hook instance and silently lossy for many. Today nothing
@@ -390,18 +414,37 @@ what a future looping caller will step in. Cheapest guard: a docstring line on
 `_write_log` reading "rewrites the whole file from `self._log`; one hook
 instance per `log_path`."
 
-## Tests
+**Implemented** as that docstring line. `hook_docs.py` gained the other half of
+the same lesson: generated hooks are told to key their log to
+`metadata["Axes"]`, and told that there is no `"XPosition_um_Intended"` to guess
+at — the key the run's hook invented, which produced the all-`null` logs of F3.
 
-* `min_intensity` present in `snap_and_analyze` (extend the two existing tuples).
-* `min_intensity` correct on a synthetic frame with a known floor — the run's
+## Tests ✅
+
+All written, in `tests/test_tools.py::TestHookedGridAcquisition` unless noted.
+Suite goes 589 → 600.
+
+* ✅ `min_intensity` present in `snap_and_analyze` (extend the two existing tuples).
+* ✅ `min_intensity` correct on a synthetic frame with a known floor — the run's
   142-vs-662 gap is exactly what a mean-shaped assertion would have missed.
-* `_acquire_positions_with_hook` builds one event list with `len(positions)`
+* ✅ `_acquire_positions_with_hook` builds one event list with `len(positions)`
   distinct `position_labels`, and `_acquire_with_hooks` is called **once**.
-* An out-of-bounds tile raises before `Acquisition` is constructed (guard runs
+* ✅ An out-of-bounds tile raises before `Acquisition` is constructed (guard runs
   ahead of motion).
-* `hook_strategy` + `protocol="snap"` returns the error, not a stack trace.
-* A fake hook accumulating `metadata["Axes"]["position"]` across a 2×2 grid
+* ✅ `hook_strategy` + `protocol="snap"` returns the error, not a stack trace.
+* ✅ A fake hook accumulating `metadata["Axes"]["position"]` across a 2×2 grid
   yields four entries with four distinct indices in one log — the F3 regression.
+
+Added beyond the list, both covering point 5's trap and both mutation-checked
+(flipping the `sweeps_z` branch to `False` fails exactly these two):
+
+* A `zstack` range stays **absolute** when the positions carry `z_um`.
+* An out-of-bounds *Z range* refuses before the `Acquisition`, as `run_zstack`
+  already does for the same range.
+
+Plus one holding the line under the fix: unhooked tiles still take the
+per-position loop. It is the only new test that passes against the pre-fix
+source — the other nine fail, which is what makes them regression tests.
 
 ## Loose ends from the same run
 
