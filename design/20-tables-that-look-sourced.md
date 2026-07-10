@@ -331,15 +331,37 @@ turns three of its five tests red.
 The class-level fixture added to `TestGetSystemState` for the first rig failure
 is gone — it fixed one class, and the same hole was open in `test_agent.py`.
 
+### Third time
+
+`test_host_isolation.py` failed on the rig. It asserted that `HOOKS_DIR` was not
+under `Path.home()` — and on Windows pytest's `tmp_path` is
+`C:/Users/<you>/AppData/Local/Temp/pytest-of-<you>/...`, which *is* under the
+home directory. The test was correct about the isolation and wrong about how to
+check it, on the one platform that matters.
+
+"Not under `$HOME`" was a proxy. The property wanted is "redirected into this
+test's `tmp_path`", which is what it now asserts, plus an explicit
+`!= Path.home() / ".microclaw" / "hooks"`. Reproduced by pointing `TMPDIR` inside
+`$HOME` to imitate the Windows layout: the old assertion passes with a macOS
+tmpdir and fails with a Windows-shaped one.
+
+So the test written to catch host-dependent assertions contained a
+host-dependent assertion. Three for three, in three different disguises —
+a path separator, a home directory's contents, a temp directory's *location*.
+The pattern is not carelessness about any one of those; it is that a green suite
+on the author's laptop reads as evidence, and it is not. The suite is now run
+against four fabricated environments before it is believed.
+
 ### Result
 
-|  | empty home | lab home | + MM at a guessable path |
-|---|---|---|---|
-| before | pass | **2 fail** | **1 fail** |
-| after | pass | pass | pass |
+|  | empty home | lab home | + MM at a guessable path | tmp inside `$HOME` (Windows) |
+|---|---|---|---|---|
+| before | pass | **2 fail** | **1 fail** | **1 fail** |
+| after | pass | pass | pass | pass |
 
 The suite passed on an empty home in every configuration, which is exactly why
-this went unnoticed on a laptop for two branches running.
+this went unnoticed on a laptop for two branches running. The last column is the
+one that only the rig could see, until it was fabricated with `TMPDIR`.
 
 The snap-protocol tests needed a `fake_snap` fixture that still calls
 `live().snap(True)` — patching `snap_to_numpy_displayed` outright would have let

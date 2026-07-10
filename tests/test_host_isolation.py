@@ -16,23 +16,31 @@ import pytest
 from microclaw import emu_manager, hook_manager, knowledge_manager, tools
 
 
-def _under_home(p: Path) -> bool:
-    try:
-        Path(p).resolve().relative_to(Path.home().resolve())
-        return True
-    except ValueError:
-        return False
+_REAL_HOME = Path.home() / ".microclaw"
 
 
-def test_saved_hooks_do_not_come_from_the_developers_home():
+def _redirected_into(p: Path, tmp_path: Path) -> bool:
+    """Is p inside this test's tmp_path?
+
+    NOT "is p outside Path.home()" — on Windows pytest's tmp_path lives under
+    C:/Users/<you>/AppData/Local/Temp, i.e. inside the home directory. That
+    proxy failed on the rig and passed on macOS, which is the exact defect
+    these tests exist to catch, committed inside the test that catches it.
+    """
+    return Path(p).resolve().is_relative_to(Path(tmp_path).resolve())
+
+
+def test_saved_hooks_do_not_come_from_the_developers_home(tmp_path):
     # On the rig this manifest holds a hook the agent saved mid-session.
-    assert not _under_home(hook_manager.HOOKS_DIR)
-    assert not _under_home(hook_manager.MANIFEST)
+    assert _redirected_into(hook_manager.HOOKS_DIR, tmp_path)
+    assert _redirected_into(hook_manager.MANIFEST, tmp_path)
+    assert hook_manager.HOOKS_DIR != _REAL_HOME / "hooks"
     assert hook_manager.list_saved_hooks() == {}
 
 
-def test_the_knowledge_base_does_not_come_from_the_developers_home():
-    assert not _under_home(knowledge_manager.KNOWLEDGE_PATH)
+def test_the_knowledge_base_does_not_come_from_the_developers_home(tmp_path):
+    assert _redirected_into(knowledge_manager.KNOWLEDGE_PATH, tmp_path)
+    assert knowledge_manager.KNOWLEDGE_PATH != _REAL_HOME / "knowledge.yaml"
     assert knowledge_manager.load_knowledge() == {}
 
 
