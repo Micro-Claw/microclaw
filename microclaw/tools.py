@@ -19,7 +19,7 @@ from microclaw.autofocus import (
     single_sweep_autofocus,
 )
 from microclaw.controller import MicroscopeController
-from microclaw.errors import humanize_java_error
+from microclaw.errors import hint_for_error, humanize_java_error
 from microclaw.image_analysis import (
     compute_stats,
     detect_features,
@@ -1517,14 +1517,31 @@ def run_tile_acquisition(
     hook_strategy: str | None = None,
     hook_params: dict | None = None,
     log_path: str | None = None,
+    center_x_um: float | None = None,
+    center_y_um: float | None = None,
+    return_to_center: bool = True,
 ) -> dict:
-    """Acquire a rows×cols tile grid centered on the current stage position.
+    """Acquire a rows×cols tile grid centered on center_x_um/center_y_um.
+
+    The center defaults to the current stage position, and the stage is driven
+    back there afterwards. Both halves matter: the grid ends on its last tile,
+    so without the return move a default-centered scan run twice would walk
+    diagonally forward by half a grid each time — three "do it again" runs
+    surveying three different regions, which a uniform sample (or the demo
+    camera, which returns one frame regardless of position) hides completely.
+    Pass center_* to pin a grid to absolute coordinates and reproduce an earlier
+    scan exactly.
 
     hook_strategy runs one hooked Acquisition across the whole grid; see
     run_multiposition_acquisition.
     """
-    center_x = ctrl.core.get_x_position()
-    center_y = ctrl.core.get_y_position()
+    center_x = ctrl.core.get_x_position() if center_x_um is None else center_x_um
+    center_y = ctrl.core.get_y_position() if center_y_um is None else center_y_um
+    if center_x_um is not None or center_y_um is not None:
+        # A supplied center is unvalidated caller input, and an even-sided grid
+        # puts it between tiles — so the per-tile bounds check never covers it.
+        # Refuse here, before the first move, not on the way home.
+        guard.check_xy(center_x, center_y)
     x_start = center_x - (cols - 1) / 2 * step_um
     y_start = center_y - (rows - 1) / 2 * step_um
     positions = [
@@ -1536,7 +1553,7 @@ def run_tile_acquisition(
         for r in range(rows)
         for c in range(cols)
     ]
-    return run_multiposition_acquisition(
+    result = run_multiposition_acquisition(
         ctrl, guard,
         protocol=protocol,
         save_dir=save_dir,
@@ -1548,6 +1565,15 @@ def run_tile_acquisition(
         hook_params=hook_params,
         log_path=log_path,
     )
+    if return_to_center:
+        # Deliberately unguarded: the center was cleared up front (supplied) or
+        # is where the stage already sat (default). Re-checking could only refuse
+        # the move *home*, stranding the objective out over the sample on the
+        # last tile — the opposite of what the guard is for.
+        ctrl.set_xy(center_x, center_y)
+    # Report where the grid actually sat, so a caller comparing two runs can see
+    # they measured the same ground rather than assuming it.
+    return {**result, "grid_center_x_um": center_x, "grid_center_y_um": center_y}
 
 
 def run_multiposition_with_autofocus(
@@ -1651,6 +1677,25 @@ def run_multiposition_with_autofocus(
 
 # --- Hook-based adaptive acquisition ---
 
+def _prepare_log_path(guard: SafetyGuard, log_path: str | None) -> str | None:
+    """Resolve a hook's log path in the workspace and create its parent directory.
+
+    The hook writes this file itself, so it never passed the guard — while
+    read_hook_log does. Resolve it here or the log lands somewhere microclaw
+    will then refuse to read back.
+
+    The mkdir matters as much as the resolve: the hook only opens the file on
+    its first frame, so a missing parent surfaces as FileNotFoundError *inside
+    the image processor*, after the acquisition has already moved the stage and
+    written a dataset. save_dir is created up front; log_path must be too.
+    """
+    if not log_path:
+        return None
+    log_path = guard.resolve_in_workspace(log_path)
+    Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+    return log_path
+
+
 def _resolve_hook(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -1725,11 +1770,7 @@ def run_adaptive_zstack(
     After the acquisition, call read_hook_log(log_path) to retrieve results.
     """
     save_dir = guard.resolve_in_workspace(save_dir)
-    # The hook writes this file itself, so it never passed the guard — while
-    # read_hook_log does. Resolve it here or the log lands somewhere microclaw
-    # will then refuse to read back.
-    if log_path:
-        log_path = guard.resolve_in_workspace(log_path)
+    log_path = _prepare_log_path(guard, log_path)
     guard.check_z(z_start_um)
     guard.check_z(z_end_um)
     if channel:
@@ -1765,8 +1806,7 @@ def run_adaptive_timelapse(
     After the acquisition, call read_hook_log(log_path) to retrieve results.
     """
     save_dir = guard.resolve_in_workspace(save_dir)
-    if log_path:
-        log_path = guard.resolve_in_workspace(log_path)   # see run_adaptive_zstack
+    log_path = _prepare_log_path(guard, log_path)
     if channel:
         guard.check_channel(channel)
 
@@ -1807,8 +1847,7 @@ def _acquire_positions_with_hook(
     a fresh hook per position truncates a shared log (see HookBase._write_log).
     """
     save_dir = guard.resolve_in_workspace(save_dir)
-    if log_path:
-        log_path = guard.resolve_in_workspace(log_path)   # see run_adaptive_zstack
+    log_path = _prepare_log_path(guard, log_path)
 
     # A Z range makes the event list sweep Z itself, and multi_d_acquisition_events
     # reads z_start/z_end as ABSOLUTE alongside xy_positions but as offsets
@@ -2323,11 +2362,10 @@ def execute_tool(
         return json.dumps({"error": f"Safety constraint prevented this action: {e}"})
     except Exception as e:
         # Translate rather than forward: a Java stack trace teaches the model
-        # nothing (design/14 §7). Known errors get an actionable one-liner.
+        # nothing (design/14 §7). Known errors get an actionable one-liner, and
+        # the hint names the subsystem that actually failed — a blanket "may be
+        # a hardware error" on a FileNotFoundError sends the model to the stage.
         return json.dumps({
             "error": f"{type(e).__name__}: {humanize_java_error(e)}",
-            "hint": (
-                "This may be a hardware error (device busy, stage at limit, "
-                "device not found) or a connection problem."
-            ),
+            "hint": hint_for_error(e),
         })

@@ -227,6 +227,47 @@ def test_humanize_java_error_trims_unknown_to_first_line():
     assert msg == "boom"
 
 
+class TestHintForError:
+    """Every non-safety error used to carry the same "may be a hardware error"
+    hint. On the 2026-07-10 run that hint decorated a missing log directory,
+    pointing the model at the stage while the fault was a filesystem path."""
+
+    def test_a_hook_writing_to_a_missing_directory_is_not_called_hardware(self):
+        # Verbatim from the run: pycro-manager re-raises the hook's
+        # FileNotFoundError as a bare Exception, so the class is gone.
+        from microclaw.errors import hint_for_error
+        exc = Exception(
+            "exception in image processor: [Errno 2] No such file or "
+            r"directory: 'C:\Users\rieslab\.microclaw\logs\pixel_std_grid.json'"
+        )
+        hint = hint_for_error(exc)
+        assert "hardware" not in hint
+        assert "path" in hint
+        # The acquisition already ran; the model must not read this as a no-op.
+        assert "partial dataset" in hint
+
+    def test_a_real_filenotfounderror_is_recognised_by_type(self):
+        from microclaw.errors import hint_for_error
+        hint = hint_for_error(FileNotFoundError(2, "No such file or directory"))
+        assert "path does not exist" in hint
+        assert "hardware" not in hint
+
+    def test_bad_tool_arguments_say_so(self):
+        from microclaw.errors import hint_for_error
+        hint = hint_for_error(TypeError("unexpected keyword argument 'centre_x_um'"))
+        assert "argument error" in hint
+        assert "not a hardware fault" in hint
+
+    def test_a_dead_bridge_points_at_micro_manager(self):
+        from microclaw.errors import hint_for_error
+        assert "port 4827" in hint_for_error(ConnectionError("connection refused"))
+
+    def test_an_unrecognised_error_still_gets_the_hardware_hint(self):
+        from microclaw.errors import hint_for_error
+        hint = hint_for_error(Exception("Stage XY reported an unknown fault"))
+        assert "hardware error" in hint
+
+
 def test_laplacian_variance_sharp_vs_blurry():
     from scipy.ndimage import gaussian_filter
 

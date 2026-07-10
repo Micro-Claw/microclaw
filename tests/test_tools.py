@@ -809,6 +809,97 @@ def fake_snap(monkeypatch):
     return _TILE_IMAGE
 
 
+class TestTileGridCenter:
+    """The grid used to center on wherever the stage happened to be, and to end
+    on its last tile. Two "do the same thing again" runs therefore surveyed two
+    different regions, offset by half a grid — invisible on a uniform sample, and
+    completely invisible on the demo camera, which returns one frame regardless
+    of position. A 2026-07-10 run scanned three disjoint regions and tabulated
+    them as one repeated measurement."""
+
+    @pytest.fixture(autouse=True)
+    def _snap(self, fake_snap):
+        pass
+
+    @pytest.fixture
+    def tracking_ctrl(self, mock_ctrl):
+        """A stage that remembers where it was driven, as a real one does."""
+        pos = {"x": 256.0, "y": 256.0}
+        mock_ctrl.core.get_x_position.side_effect = lambda: pos["x"]
+        mock_ctrl.core.get_y_position.side_effect = lambda: pos["y"]
+
+        def _move(x, y):
+            pos["x"], pos["y"] = x, y
+
+        mock_ctrl.core.set_xy_position.side_effect = _move   # per-tile moves
+        mock_ctrl.set_xy.side_effect = _move                 # the return move
+        return mock_ctrl
+
+    def _tiles(self, result):
+        return [(r["x_um"], r["y_um"]) for r in result["results"]]
+
+    def test_repeating_a_default_centered_grid_scans_the_same_tiles(
+        self, tracking_ctrl, unconstrained_guard
+    ):
+        kwargs = dict(rows=3, cols=3, step_um=256.0, protocol="snap", name="grid")
+        first = run_tile_acquisition(tracking_ctrl, unconstrained_guard, **kwargs)
+        second = run_tile_acquisition(tracking_ctrl, unconstrained_guard, **kwargs)
+        assert self._tiles(first) == self._tiles(second), (
+            "the second grid walked off the first — this is the drift bug"
+        )
+        assert first["grid_center_x_um"] == second["grid_center_x_um"] == 256.0
+
+    def test_the_stage_ends_on_the_center_not_the_last_tile(
+        self, tracking_ctrl, unconstrained_guard
+    ):
+        run_tile_acquisition(
+            tracking_ctrl, unconstrained_guard,
+            rows=3, cols=3, step_um=256.0, protocol="snap",
+        )
+        tracking_ctrl.set_xy.assert_called_once_with(256.0, 256.0)
+        assert tracking_ctrl.core.get_x_position() == 256.0
+        assert tracking_ctrl.core.get_y_position() == 256.0
+
+    def test_an_explicit_center_pins_the_grid_regardless_of_stage_position(
+        self, tracking_ctrl, unconstrained_guard
+    ):
+        # Reproducing an earlier scan: the stage is parked somewhere else entirely.
+        tracking_ctrl.core.set_xy_position(9000.0, 9000.0)
+        result = run_tile_acquisition(
+            tracking_ctrl, unconstrained_guard,
+            rows=3, cols=3, step_um=100.0, protocol="snap",
+            center_x_um=500.0, center_y_um=600.0,
+        )
+        assert result["grid_center_x_um"] == 500.0
+        assert result["grid_center_y_um"] == 600.0
+        assert (500.0, 600.0) in self._tiles(result), "center tile of an odd grid"
+        assert self._tiles(result)[0] == (400.0, 500.0)
+        tracking_ctrl.set_xy.assert_called_once_with(500.0, 600.0)
+
+    def test_an_out_of_bounds_supplied_center_is_refused_before_any_motion(
+        self, tracking_ctrl, default_guard
+    ):
+        # An even-sided grid puts the center between tiles, so checking the tiles
+        # does not check it. Refuse before the first move, not on the way home.
+        with pytest.raises(SafetyViolation):
+            run_tile_acquisition(
+                tracking_ctrl, default_guard,
+                rows=2, cols=2, step_um=10.0, protocol="snap",
+                center_x_um=1e9, center_y_um=1e9,
+            )
+        tracking_ctrl.core.set_xy_position.assert_not_called()
+        tracking_ctrl.set_xy.assert_not_called()
+
+    def test_return_to_center_can_be_declined(self, tracking_ctrl, unconstrained_guard):
+        run_tile_acquisition(
+            tracking_ctrl, unconstrained_guard,
+            rows=2, cols=2, step_um=100.0, protocol="snap",
+            return_to_center=False,
+        )
+        tracking_ctrl.set_xy.assert_not_called()
+        assert tracking_ctrl.core.get_x_position() == 306.0, "left on the last tile"
+
+
 class TestTileAcquisitionMarkPositions:
     @pytest.fixture(autouse=True)
     def _snap(self, fake_snap):
@@ -1014,11 +1105,13 @@ class TestHookedGridAcquisition:
         return calls
 
     def test_one_acquisition_spans_the_whole_grid(self, centered_ctrl,
-                                                  unconstrained_guard, captured):
-        # os.sep, not "/": the guard normalises the path it echoes back, and on
-        # Windows that means backslashes. A hardcoded "/ws/log.json" asserts the
-        # platform, not the round trip.
-        log_path = os.path.join(os.sep, "ws", "log.json")
+                                                  unconstrained_guard, captured,
+                                                  tmp_path):
+        # A real directory, because run_tile_acquisition now creates the log's
+        # parent. os.path.join over its parts, not "/": the guard normalises the
+        # path it echoes back, and on Windows that means backslashes. A
+        # hardcoded "/ws/log.json" asserts the platform, not the round trip.
+        log_path = os.path.join(str(tmp_path), "logs", "log.json")
         result = run_tile_acquisition(
             centered_ctrl, unconstrained_guard, rows=3, cols=3, step_um=256.0,
             protocol="timelapse", save_dir="/ws", name="grid",
@@ -1035,6 +1128,23 @@ class TestHookedGridAcquisition:
         # confirm every tile fired without opening the log.
         assert result["positions"] == 9
         assert "9 position(s)" in result["status"]
+
+    def test_a_log_path_in_a_missing_directory_is_created_not_raised(
+        self, centered_ctrl, unconstrained_guard, captured, tmp_path
+    ):
+        # The hook opens its log on the FIRST FRAME, so a missing parent used to
+        # surface as FileNotFoundError inside the image processor — after the
+        # stage had walked the grid and a dataset was on disk. The run was spent
+        # by the time the error arrived. save_dir is created up front; so is this.
+        log_path = os.path.join(str(tmp_path), "nope", "deeper", "log.json")
+        result = run_tile_acquisition(
+            centered_ctrl, unconstrained_guard, rows=2, cols=2, step_um=100.0,
+            protocol="timelapse", save_dir="/ws", name="grid",
+            protocol_params={"n_frames": 1, "interval_s": 0},
+            hook_strategy="recording", log_path=log_path,
+        )
+        assert os.path.isdir(os.path.dirname(log_path))
+        assert result["log_path"] == log_path
 
     def test_the_hook_log_keys_to_positions_across_the_grid(
         self, centered_ctrl, unconstrained_guard, captured

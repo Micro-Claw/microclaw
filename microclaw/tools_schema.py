@@ -710,8 +710,13 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "run_tile_acquisition",
         "description": (
-            "Acquire a rows×cols tile grid centered on the current stage position. "
+            "Acquire a rows×cols tile grid centered on center_x_um/center_y_um, "
+            "defaulting to the current stage position. "
             "Computes grid coordinates automatically — no prior mark_position needed. "
+            "To re-scan a grid you already ran, pass the center_x_um/center_y_um "
+            "returned by that run (grid_center_x_um/grid_center_y_um); relying on "
+            "the default center twice does NOT reproduce the same tiles unless the "
+            "stage is back where it started. "
             "Runs a per-position protocol (snap, zstack, or timelapse) at each tile. "
             "Pass mark_positions=true to also record every tile into the stage "
             "position list. "
@@ -788,6 +793,29 @@ TOOLS: list[dict[str, Any]] = [
                         "Path for the hook's output log, covering every tile "
                         "(optional). Read it back with read_hook_log."
                     ),
+                },
+                "center_x_um": {
+                    "type": "number",
+                    "description": (
+                        "Absolute X of the grid center. Defaults to the current stage X. "
+                        "Pass it to pin the grid to fixed coordinates — e.g. to re-measure "
+                        "the exact tiles of an earlier scan."
+                    ),
+                },
+                "center_y_um": {
+                    "type": "number",
+                    "description": (
+                        "Absolute Y of the grid center. Defaults to the current stage Y."
+                    ),
+                },
+                "return_to_center": {
+                    "type": "boolean",
+                    "description": (
+                        "Drive the stage back to the grid center when the scan finishes, "
+                        "so the grid does not walk forward across repeated runs. "
+                        "Default true; set false to leave the stage on the last tile."
+                    ),
+                    "default": True,
                 },
             },
             "required": ["rows", "cols", "step_um", "protocol"],

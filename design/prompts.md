@@ -687,3 +687,22 @@ I ran this on the rig. Please have a look at 20-output.txt for the errors
 Please update prompts.md. Also note that I've now merged design/19 into main. If
 there are any issues with merging design/20 into main now, please rebase this
 branch to solve that
+
+----
+
+Have a look at 20260710_135547_microclaw_history.json, which is a history run
+from the latest version of the code, which includes the recent changes made in
+design/19 and design/20. Evaluate the performance
+
+yes, fix the drift and the log_path mkdir. also make sure the program
+automatically checks .microclaw/hooks (where it saves hooks by default) when
+looking for hooks
+
+[rejecting an edit that made list_saved_hooks() scan the hooks directory for
+unregistered .py files]
+
+we don't need to list the unregistered hooks. If a user drops them in, they are
+responsible for alerting the program to its location
+
+fix the error hint too. also update prompts.md. also include the change I made
+to readme in the commit and push
