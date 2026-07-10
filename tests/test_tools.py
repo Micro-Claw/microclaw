@@ -372,6 +372,19 @@ class TestListDevices:
 
 
 class TestGetSystemState:
+    @pytest.fixture(autouse=True)
+    def _no_emu_rig(self, monkeypatch):
+        """Default these tests to a rig with no EMU laser map.
+
+        Without this they read whatever EMU config the *host* has. MagicMock
+        implements __fspath__, so Path(ctrl.get_mm_app_dir()) yields a plausible
+        non-existent path rather than raising; find_mm_app_dir shrugs and falls
+        through to its on-disk cache, and a lab machine has one. The suite then
+        passes on a laptop and fails on the microscope, which is the same
+        host-dependent assertion this whole design doc is about.
+        """
+        monkeypatch.setattr(tools, "_cached_emu_properties", lambda ctrl: None)
+
     def test_returns_state(self, mock_ctrl, unconstrained_guard):
         result = get_system_state(mock_ctrl, unconstrained_guard)
         assert "x_um" in result
@@ -442,6 +455,21 @@ class TestGetSystemState:
             1: {"enabled": "0"},
             3: {"enabled": "1", "power_pct": "40"},
         }
+
+    def test_a_slot_with_no_enable_or_power_line_is_unknown_not_absent(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        # Seen on the rig: build_emu_map yields a slot carrying only trigger
+        # lines. There is nothing to read for it, and saying nothing about a
+        # laser slot is the failure this fix exists to prevent.
+        monkeypatch.setattr(tools, "_cached_emu_properties", lambda ctrl: {"stub": {}})
+        monkeypatch.setattr(
+            "microclaw.emu_manager.build_emu_map",
+            lambda props: {"lasers": {0: {"trigger_mode": {"device": "T", "property": "M"}}}},
+        )
+        result = get_system_state(mock_ctrl, unconstrained_guard)
+        assert result["lasers"] == {0: "unknown"}
+        mock_ctrl.core.get_property.assert_not_called()
 
     def test_an_unreadable_laser_line_says_so(self, mock_ctrl, unconstrained_guard,
                                               monkeypatch):

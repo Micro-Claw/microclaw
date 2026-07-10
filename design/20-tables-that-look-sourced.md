@@ -251,10 +251,27 @@ prose about the instrument (S3).
 
 ## Tests
 
-`tests/test_tools.py`, 601 → 613. Both new behaviours mutation-checked: deleting
+`tests/test_tools.py`, 601 → 614. Both new behaviours mutation-checked: deleting
 the hoisted stamp fails `test_the_metric_stamp_is_hoisted_to_the_grid_not_repeated`,
 and returning `None` instead of `"unknown"` from `_shutter_state` fails
 `test_illumination_fields_are_present_even_when_unknowable`.
+
+**The laser tests read the host, and only the rig noticed.** They passed on a
+laptop and failed on the microscope with `lasers == {0: "unknown"}`. `MagicMock`
+implements `__fspath__`, so `Path(ctrl.get_mm_app_dir())` yields a plausible
+non-existent path instead of raising; `find_mm_app_dir` shrugs, falls through to
+its on-disk cache at `~/.microclaw/emu.json`, and a lab machine *has* one. A mock
+controller was therefore reading the lab's real EMU config. `TestGetSystemState`
+now defaults `_cached_emu_properties` to `None` in an autouse fixture, and the
+tests that want lasers say so.
+
+Two things worth keeping. `{0: "unknown"}` was not a bug — the rig's map carries
+a slot with only trigger lines, nothing to read, and a slot we say nothing about
+is the failure this fix exists to prevent; there is now a test for that shape.
+And note what the failure *was*: an assertion that depended on the host rather
+than on the behaviour. That is the same defect as a table column sourced from the
+author's expectations rather than from a measurement, one layer down. It is worth
+being embarrassed about, in a document about exactly this.
 
 The snap-protocol tests needed a `fake_snap` fixture that still calls
 `live().snap(True)` — patching `snap_to_numpy_displayed` outright would have let
