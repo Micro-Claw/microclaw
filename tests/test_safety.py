@@ -227,7 +227,11 @@ class TestAllowlistMode:
 class TestWorkspaceSandbox:
     def test_unconfigured_confines_nothing(self):
         guard = SafetyGuard(SafetyConstraints())  # workspace_dir None
-        assert guard.resolve_in_workspace("/anywhere/at/all.json") == "/anywhere/at/all.json"
+        # Build with os.sep: a literal "/anywhere/..." is already-normalised on
+        # POSIX and normalises to backslashes on Windows, so hardcoding it would
+        # assert the platform rather than the confinement.
+        outside = os.path.join(os.sep, "anywhere", "at", "all.json")
+        assert guard.resolve_in_workspace(outside) == outside
 
     def test_an_unconfined_path_is_still_normalised(self):
         # A model that over-escapes a Windows path hands us doubled separators.

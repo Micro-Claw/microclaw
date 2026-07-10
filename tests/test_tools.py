@@ -1,5 +1,6 @@
 import json
 import math
+import os
 from unittest.mock import MagicMock, call
 
 import numpy as np
@@ -823,18 +824,22 @@ class TestHookedGridAcquisition:
 
     def test_one_acquisition_spans_the_whole_grid(self, centered_ctrl,
                                                   unconstrained_guard, captured):
+        # os.sep, not "/": the guard normalises the path it echoes back, and on
+        # Windows that means backslashes. A hardcoded "/ws/log.json" asserts the
+        # platform, not the round trip.
+        log_path = os.path.join(os.sep, "ws", "log.json")
         result = run_tile_acquisition(
             centered_ctrl, unconstrained_guard, rows=3, cols=3, step_um=256.0,
             protocol="timelapse", save_dir="/ws", name="grid",
             protocol_params={"n_frames": 1, "interval_s": 0},
-            hook_strategy="recording", log_path="/ws/log.json",
+            hook_strategy="recording", log_path=log_path,
         )
         assert len(captured) == 1, "a grid is one Acquisition, not nine"
         assert len(_RecordingHook.instances) == 1, "one hook instance, one log"
         labels = [e["axes"]["position"] for e in captured[0]["events"]]
         assert len(labels) == 9 and len(set(labels)) == 9
         assert labels[0] == "grid_r0_c0" and labels[-1] == "grid_r2_c2"
-        assert result["log_path"] == "/ws/log.json"
+        assert result["log_path"] == log_path
         # "Adaptive acquisition complete." over a grid gave the agent no way to
         # confirm every tile fired without opening the log.
         assert result["positions"] == 9

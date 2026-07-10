@@ -487,6 +487,14 @@ Both visible in message 62's payload:
    `os.path.normpath` now runs on both branches. It worked in the lab only
    because Windows collapses repeated separators and POSIX does not — precisely
    the difference that passes on the rig and fails everywhere else.
+
+   The first two tests written for this then failed **on the rig** and passed on
+   macOS, for the mirror-image reason: they asserted `"/ws/log.json"`, and
+   `normpath` on Windows returns `\ws\log.json`. That is the fix working — a
+   normalised `log_path` now matches the backslashed `dataset_path` that
+   `Acquisition` returns — but any test that names a separator is asserting the
+   platform. Build paths with `os.sep`/`os.path.join` and compare against the
+   same, so the assertion is about the round trip.
 2. **`"Adaptive acquisition complete."` over a nine-tile grid**, with no count.
    Nothing in the result let the agent confirm every tile fired without opening
    the log. `_acquire_positions_with_hook` now reports
