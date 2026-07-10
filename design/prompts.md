@@ -706,3 +706,24 @@ responsible for alerting the program to its location
 
 fix the error hint too. also update prompts.md. also include the change I made
 to readme in the commit and push
+
+----
+
+Have a look at 20260710_143832_microclaw_history.json in the root directory. How
+did this run go? One issue I noticed is that when it went to save the knowledge
+from the session, I had to go to the terminal where microclaw serve was running
+and approve the write to file from there. Ideally I should be able to do it from
+within the web GUI.
+
+[choosing, from a question about which of the three CONFIRM_FN gates the web GUI
+should be allowed to approve, the option that routes all three to the browser on
+every host — over the recommended one that kept illumination on the terminal
+under --allow-remote]
+
+[choosing to write the design document only, with no code changes yet]
+
+Commit the doc on this same branch. i will merge 20- to main. then we continue
+from there with a branch to implement 21-
+
+Stage the deletion of 20-output.txt. It is a mistake that this got tracked.
+Please update design/prompts.md and commit this as well
