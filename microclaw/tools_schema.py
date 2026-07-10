@@ -644,7 +644,12 @@ TOOLS: list[dict[str, Any]] = [
                 },
                 "protocol": {
                     "type": "string",
-                    "description": "'snap', 'zstack', or 'timelapse'.",
+                    "description": (
+                        "'snap', 'zstack', or 'timelapse'. 'snap' is display-only "
+                        "(nothing written to disk) but returns focus_metric and "
+                        "mean/min/max intensity for every position — use it to "
+                        "report per-position image statistics."
+                    ),
                 },
                 "save_dir": {
                     "type": "string",
@@ -722,7 +727,12 @@ TOOLS: list[dict[str, Any]] = [
                 "step_um": {"type": "number", "description": "Step size between tiles in µm."},
                 "protocol": {
                     "type": "string",
-                    "description": "'snap', 'zstack', or 'timelapse'.",
+                    "description": (
+                        "'snap', 'zstack', or 'timelapse'. 'snap' is display-only "
+                        "(nothing written to disk) but returns focus_metric and "
+                        "mean/min/max intensity for every position — use it to "
+                        "report per-position image statistics."
+                    ),
                 },
                 "save_dir": {
                     "type": "string",

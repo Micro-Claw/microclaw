@@ -705,14 +705,12 @@ def export_dataset_as_tiff(
 
 # --- Image capture with analysis ---
 
-def _focus_metric_payload(ctrl: MicroscopeController, image: np.ndarray) -> dict:
-    """Focus metric stamped with the settings it is only comparable within.
+def _metric_stamp(ctrl: MicroscopeController) -> dict:
+    """The settings a focus metric is only comparable within (design/14 §10).
 
-    A bare float invites exactly the cross-setting comparison the amr_test
-    model made — reading a laser-power increase as a focus improvement
-    (design/14 §10). The metric itself is illumination-normalised; the
-    metric_valid_for block guards the residual ROI/exposure/binning
-    dependence.
+    Split from _focus_metric_payload so a multi-tile result can carry one stamp
+    over many metrics: every tile of a grid shares the ROI, exposure and binning,
+    so repeating the block per tile would be N copies of one fact.
     """
     try:
         roi = ctrl.core.get_roi()
@@ -730,7 +728,6 @@ def _focus_metric_payload(ctrl: MicroscopeController, image: np.ndarray) -> dict
     except Exception:
         binning = None
     return {
-        "focus_metric": _round_sig(normalized_laplacian_variance(image)),
         "focus_metric_kind": "normalized_laplacian_variance",
         "metric_valid_for": {
             "roi": roi_list,
@@ -738,6 +735,22 @@ def _focus_metric_payload(ctrl: MicroscopeController, image: np.ndarray) -> dict
             "binning": binning,
         },
     }
+
+
+def _focus_metric_payload(ctrl: MicroscopeController, image: np.ndarray) -> dict:
+    """Focus metric stamped with the settings it is only comparable within.
+
+    A bare float invites exactly the cross-setting comparison the amr_test
+    model made — reading a laser-power increase as a focus improvement
+    (design/14 §10). The metric itself is illumination-normalised; the
+    metric_valid_for block guards the residual ROI/exposure/binning
+    dependence.
+    """
+    return {
+        "focus_metric": _round_sig(normalized_laplacian_variance(image)),
+        **_metric_stamp(ctrl),
+    }
+
 
 def snap_and_analyze(
     ctrl: MicroscopeController,
@@ -1253,9 +1266,28 @@ def _run_protocol_at(
         )
         marked = {"marked": True}
     if protocol == "snap":
+        # snap(True) hands the pixels back for the one exposure it fires; this
+        # branch used to drop them, so "scan a grid and tell me the max and min
+        # at each point" had no tool that answered it and the agent hand-rolled
+        # an 18-call move+snap loop instead (design/20 F1). Costs no exposure.
         with _pause_live(ctrl):                     # snap(True) wedges under live (V1)
-            ctrl.studio.live().snap(True)
-        return {"position": pos_label, "status": "snapped", "saved": False, **marked}
+            image = snap_to_numpy_displayed(ctrl)
+        stats = compute_stats(image)
+        return {
+            "position": pos_label,
+            "status": "snapped",
+            "saved": False,
+            **marked,
+            # No metric_valid_for stamp per tile: the grid shares one
+            # ROI/exposure/binning, so the caller stamps it once. A bare float
+            # would otherwise invite the cross-setting comparison design/14 §10
+            # warns about — here the comparison across tiles is the point.
+            "focus_metric": _round_sig(normalized_laplacian_variance(image)),
+            "mean_intensity": round(stats.mean_intensity, 1),
+            "min_intensity": round(stats.min_intensity, 1),
+            "max_intensity": round(stats.max_intensity, 1),
+            "saturated_fraction": round(stats.saturated_fraction, 4),
+        }
     if pos_save_dir is None:
         return {
             "position": pos_label,
@@ -1294,7 +1326,10 @@ def run_multiposition_acquisition(
 
     protocol options:
       "snap"       — display-only; does NOT save to disk (returns saved=False).
-                     save_dir is not needed and may be omitted.
+                     save_dir is not needed and may be omitted. Returns
+                     focus_metric and mean/min/max intensity per position, so a
+                     grid survey needs neither a hook nor a manual loop; the
+                     metric's comparability stamp is on the top-level result.
       "zstack"     — saves a Z-stack at each position to save_dir/<position>.
       "timelapse"  — saves a timelapse at each position to save_dir/<position>.
 
@@ -1372,21 +1407,32 @@ def run_multiposition_acquisition(
 
     for pos_label, x_um, y_um, z_um in resolved:
         pos_save_dir = str(Path(save_dir) / pos_label) if save_dir else None
+        # Coordinates on every row, including the error rows. The agent used to
+        # publish X/Y columns filled from its own call ordering rather than from
+        # anything a tool returned (design/19 F3, design/20 S1).
+        where = {"x_um": round(x_um, 3), "y_um": round(y_um, 3)}
+        if z_um is not None:
+            where["z_um"] = round(z_um, 3)
         try:
             result = _run_protocol_at(
                 ctrl, guard, pos_label, x_um, y_um, z_um, protocol, pos_save_dir,
                 params, mark_position_in_list=mark_positions,
             )
-            results.append(result)
+            results.append({**where, **result})
         except Exception as e:
-            results.append({"position": pos_label, "error": str(e)})
+            results.append({"position": pos_label, **where, "error": str(e)})
 
     total = len(position_names or positions)
     n_ok = sum(1 for r in results if "error" not in r)
-    return {
+    payload = {
         "status": f"{n_ok}/{total} positions completed.",
         "results": results,
     }
+    if protocol == "snap" and n_ok:
+        # One stamp for the whole grid: the per-tile focus_metric values are
+        # comparable to each other under these settings and to nothing else.
+        payload.update(_metric_stamp(ctrl))
+    return payload
 
 
 def run_tile_acquisition(

@@ -699,7 +699,31 @@ class TestRunMultipositionWithAutofocus:
         mock_ctrl.go_to_position.assert_not_called()
 
 
+_TILE_IMAGE = np.full((16, 16), 700, dtype=np.uint16)
+_TILE_IMAGE[0, 0] = 142      # a floor well below the mean, as on the rig
+_TILE_IMAGE[8, 8] = 1182
+
+
+@pytest.fixture
+def fake_snap(monkeypatch):
+    """Stand in for the camera, but still fire live().snap(True).
+
+    The snap protocol reads its pixels through snap_to_numpy_displayed, which
+    wraps that call — so the fake must make it too, or the exposure-count
+    assertions below would pass while measuring nothing.
+    """
+    def _snap(ctrl):
+        ctrl.studio.live().snap(True)
+        return _TILE_IMAGE
+    monkeypatch.setattr("microclaw.tools.snap_to_numpy_displayed", _snap)
+    return _TILE_IMAGE
+
+
 class TestTileAcquisitionMarkPositions:
+    @pytest.fixture(autouse=True)
+    def _snap(self, fake_snap):
+        pass
+
     @pytest.fixture
     def centered_ctrl(self, mock_ctrl):
         mock_ctrl.core.get_x_position.return_value = 256.0
@@ -761,6 +785,83 @@ class TestTileAcquisitionMarkPositions:
             positions=[{"name": "P1", "x_um": 0.0, "y_um": 0.0}],
         )
         assert not save_dir.exists()
+
+    def test_snap_grid_returns_stats_per_tile(self, centered_ctrl, unconstrained_guard):
+        # design/20 F1. The snap branch fired the camera and dropped the pixels,
+        # so "scan a grid and tell me the max and min at each point" — the
+        # literal prompt, twice — had no tool that answered it.
+        result = run_tile_acquisition(
+            centered_ctrl, unconstrained_guard, rows=2, cols=2, step_um=100.0,
+            protocol="snap",
+        )
+        assert len(result["results"]) == 4
+        for tile in result["results"]:
+            assert tile["min_intensity"] == 142.0
+            assert tile["max_intensity"] == 1182.0
+            assert tile["mean_intensity"] == pytest.approx(700, abs=5)
+            assert tile["focus_metric"] >= 0.0
+            assert tile["saved"] is False
+
+    def test_every_row_carries_its_own_coordinates(self, centered_ctrl,
+                                                   unconstrained_guard):
+        # The agent filled X/Y columns from its own call ordering rather than
+        # from any tool result (design/19 F3, design/20 S1). Now the row has them.
+        result = run_tile_acquisition(
+            centered_ctrl, unconstrained_guard, rows=1, cols=2, step_um=100.0,
+            protocol="snap", name="grid",
+        )
+        assert [(r["position"], r["x_um"], r["y_um"]) for r in result["results"]] == [
+            ("grid_r0_c0", 206.0, 256.0),
+            ("grid_r0_c1", 306.0, 256.0),
+        ]
+
+    def test_error_rows_carry_coordinates_too(self, centered_ctrl, default_guard):
+        # An error row without coordinates is a row the agent will fill in itself.
+        result = run_tile_acquisition(
+            centered_ctrl, default_guard, rows=1, cols=3, step_um=2000.0,
+            protocol="snap",
+        )
+        errors = [r for r in result["results"] if "error" in r]
+        assert errors
+        assert all("x_um" in r and "y_um" in r for r in errors)
+
+    def test_the_stats_cost_no_extra_exposure(self, centered_ctrl, unconstrained_guard):
+        # snap(True) already returns the pixels; reading them must not re-fire.
+        run_tile_acquisition(
+            centered_ctrl, unconstrained_guard, rows=2, cols=2, step_um=100.0,
+            protocol="snap",
+        )
+        assert centered_ctrl.studio.live().snap.call_count == 4
+
+    def test_the_metric_stamp_is_hoisted_to_the_grid_not_repeated(
+        self, centered_ctrl, unconstrained_guard
+    ):
+        # Every tile shares one ROI/exposure/binning. Per-tile stamps would be
+        # four copies of one fact; a bare metric with no stamp anywhere invites
+        # the cross-setting comparison design/14 §10 warns about.
+        result = run_tile_acquisition(
+            centered_ctrl, unconstrained_guard, rows=2, cols=2, step_um=100.0,
+            protocol="snap",
+        )
+        assert result["focus_metric_kind"] == "normalized_laplacian_variance"
+        assert "metric_valid_for" in result
+        for tile in result["results"]:
+            assert "metric_valid_for" not in tile
+            assert "focus_metric" in tile
+
+    def test_a_failed_snap_grid_carries_no_stamp(self, centered_ctrl, unconstrained_guard,
+                                                 monkeypatch):
+        # The stamp describes measurements. With none taken it would describe
+        # nothing, and a stamp beside zero results reads as if it did.
+        def _boom(ctrl):
+            raise RuntimeError("camera offline")
+        monkeypatch.setattr("microclaw.tools.snap_to_numpy_displayed", _boom)
+        result = run_tile_acquisition(
+            centered_ctrl, unconstrained_guard, rows=1, cols=2, step_um=100.0,
+            protocol="snap",
+        )
+        assert result["status"] == "0/2 positions completed."
+        assert "metric_valid_for" not in result
 
     def test_out_of_bounds_tile_reported_not_moved(self, centered_ctrl, default_guard):
         # default_guard: |x|,|y| <= 1000; a 3x3 grid with step 2000 exceeds it.
@@ -968,7 +1069,8 @@ class TestHookedGridAcquisition:
         assert not captured
 
     def test_unhooked_tiles_keep_the_per_position_loop(self, centered_ctrl,
-                                                       unconstrained_guard, captured):
+                                                       unconstrained_guard, captured,
+                                                       fake_snap):
         # Option A's behaviour is what today's users have; only hook_strategy
         # switches to the single-Acquisition path.
         result = run_tile_acquisition(
