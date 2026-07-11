@@ -73,6 +73,23 @@
   }
   #key-btn, #model-btn { font-family: var(--mono); font-size: 11.5px; color: var(--ink-faint); }
 
+  /* confirmation banner (design/21 F1) */
+  #confirm-banner { margin-top: 18px; }
+  #confirm-summary {
+    font-family: var(--mono); font-size: 12.5px; color: var(--ink);
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 10px 12px; margin: 0 0 10px; white-space: pre-wrap; overflow-x: auto;
+    max-height: 40vh; overflow-y: auto;
+  }
+  /* "This will emit light at the sample" does not belong on the same yes/no
+     banner as a YAML blob. */
+  #confirm-banner.illumination { border-color: #c0392b; border-width: 2px; }
+  #confirm-banner.illumination h2 { color: #c0392b; }
+  :root[data-theme="dark"] #confirm-banner.illumination { border-color: #ff8a80; }
+  :root[data-theme="dark"] #confirm-banner.illumination h2 { color: #ff8a80; }
+  #confirm-approve { background: var(--accent); color: #04191b; border-color: var(--accent); }
+  #confirm-banner.illumination #confirm-approve { background: #c0392b; color: #fff; border-color: #c0392b; }
+
   #toast {
     position: fixed; left: 50%; transform: translateX(-50%); bottom: 108px; z-index: 30;
     background: var(--panel); border: 1px solid var(--line); border-left: 3px solid #c0392b;
@@ -136,7 +153,23 @@
   </div>
 
   <div id="transcript"></div>
-  <div id="pending" class="hidden"><span class="spin"></span><span>Microclaw is working…</span></div>
+
+  <!-- Below the transcript, not above it (design/21 F1 field report): the turn
+       thread is blocked inside the tool being confirmed, so the tool card
+       awaiting approval is always the last card — this banner sits directly
+       under it, in conversation flow. Outside #transcript so render() never
+       wipes it. -->
+  <div class="banner hidden" id="confirm-banner">
+    <h2 id="confirm-title">Confirmation required</h2>
+    <p id="confirm-help"></p>
+    <pre id="confirm-summary"></pre>
+    <div class="row">
+      <button id="confirm-approve">Approve</button>
+      <button id="confirm-decline">Decline</button>
+    </div>
+  </div>
+
+  <div id="pending" class="hidden"><span class="spin"></span><span id="pending-text">Microclaw is working…</span></div>
 </main>
 
 <form id="composer">
@@ -179,7 +212,20 @@
   // so there stays exactly one function that knows how a tool card looks.
   let history = [];
 
+  // ---- autoscroll ----
+  // Stick to the bottom: the operator reads the newest message, so each repaint
+  // keeps it in view — unless they have scrolled up to read something older,
+  // in which case never yank them. The slack covers the fixed composer.
+  const SCROLL_SLACK = 160;
+  function atBottom() {
+    return window.innerHeight + window.scrollY >= document.body.scrollHeight - SCROLL_SLACK;
+  }
+  function scrollToBottom(smooth) {
+    window.scrollTo({ top: document.body.scrollHeight, behavior: smooth ? "smooth" : "auto" });
+  }
+
   function paint(messages, live) {
+    const follow = atBottom();   // measured before render changes the height
     const { userTurns, asstTurns, toolCalls } = Transcript.render(messages, tx, { live });
     const any = userTurns + asstTurns > 0;
     $("empty").classList.toggle("hidden", any);
@@ -188,6 +234,7 @@
     $("collapse").classList.toggle("hidden", !any);
     $("s-turns").textContent = userTurns + asstTurns;
     $("s-tools").textContent = toolCalls;
+    if (follow) scrollToBottom(false);   // instant: smooth fights streaming repaints
   }
 
   // Coalesce the repaints a token stream would otherwise trigger per delta.
@@ -304,8 +351,58 @@
       case "retry": toast("API overloaded — retrying in " + ev.delay + "s…"); break;
       case "cancelled": toast(ev.reason); break;
       case "error": toast(ev.message); break;
+      // Confirmations are banner state, not transcript content.
+      case "confirm_request": showConfirm(ev); break;
+      case "confirm_resolved": hideConfirm(ev.id); break;
     }
   }
+
+  // ---- confirmations (design/21 F1) ----
+  // The turn thread is blocked on this answer; an unanswered banner denies at
+  // the server's deadline. A page reload re-surfaces it via GET /api/confirm.
+  let confirmId = null;
+
+  function showConfirm(p) {
+    confirmId = p.id;
+    const ill = p.kind === "illumination";
+    $("confirm-banner").classList.toggle("illumination", ill);
+    $("confirm-title").textContent = ill
+      ? "⚠ Enable illumination?" : "Confirmation required";
+    $("confirm-help").textContent = ill
+      ? "Approving emits light at the sample — the same authority as typing y at the console."
+      : "Microclaw wants to persist model-written content. Read it before approving; declining is safe.";
+    $("confirm-summary").textContent = p.summary;
+    $("confirm-approve").textContent = ill ? "Enable illumination" : "Approve";
+    $("confirm-banner").classList.remove("hidden");
+    // The turn is waiting on the operator, and the spinner must not claim
+    // otherwise — "working…" is how a pending confirm reads as a hang.
+    $("pending-text").textContent = "Waiting for your confirmation.";
+    // Unconditional, unlike the stick-to-bottom follow: an approval request is
+    // allowed to interrupt reading.
+    scrollToBottom(true);
+  }
+
+  function hideConfirm(id) {
+    if (id && confirmId && id !== confirmId) return;
+    confirmId = null;
+    $("confirm-banner").classList.add("hidden");
+    $("pending-text").textContent = "Microclaw is working…";
+  }
+
+  async function answerConfirm(approve) {
+    if (!confirmId) return;
+    const res = await fetch("/api/confirm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: confirmId, approve }),
+    });
+    // A 409 is a stale banner — the server already resolved it. Hide either way.
+    if (!res.ok && res.status !== 409) { toast(await detail(res)); return; }
+    hideConfirm(confirmId);
+  }
+
+  $("confirm-approve").addEventListener("click", () => answerConfirm(true));
+  $("confirm-decline").addEventListener("click", () => answerConfirm(false));
 
   async function runTurn(text) {
     const res = await fetch("/api/prompt", {
@@ -344,9 +441,10 @@
     // The server is the source of truth — re-read it either way. It also holds
     // the turn's rounds even if this page stopped listening partway through.
     cancelScheduledPaint();
+    // No forced scroll here: refresh() → paint() already follows the bottom,
+    // and an operator who scrolled up to read stays where they are.
     try { await refresh(); } catch (err) { toast(err.message); }
     setBusy(false);
-    window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
   });
 
   $("expand").addEventListener("click", () => Transcript.expandAll(tx));
@@ -467,6 +565,10 @@
       showKey(await (await fetch("/api/key")).json());
       showModel(await (await fetch("/api/model")).json());
       await refresh();
+      // A reload mid-turn destroyed the stream that carried confirm_request;
+      // without this fetch the turn would sit stranded until the deadline.
+      const pending = await (await fetch("/api/confirm")).json();
+      if (pending.id) showConfirm(pending);
     } catch (err) { toast("Could not reach the Microclaw server: " + err.message); }
     msg.focus();
   })();

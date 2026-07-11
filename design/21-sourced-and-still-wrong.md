@@ -77,8 +77,18 @@ This is design/20 S3 again: same four values, different phase (raster this run,
 serpentine last). Note what changed. Last time the agent never read
 `focus_metric` at all. F3's fifth bullet told it to read its own payloads before
 writing prose about the instrument. It read them, and then wrote a spatial
-explanation for an ordinal sequence — a failure the previous phrasing had no
-reason to anticipate, and does not cover.
+explanation for an ordinal sequence.
+
+**Correction (review, 2026-07-10).** An earlier draft called that "a failure
+the previous phrasing had no reason to anticipate, and does not cover." That is
+wrong, and the truth is worse. The bullet that shipped with design/20 F3 names
+this exact fingerprint — *"A metric that cycles with the call count rather than
+with the stage position means the frame is not coming from where you think"*
+(`agent.py:91`, landed in 153ccfc, in the system prompt throughout this run).
+The prompt anticipated the failure, described it precisely, and the agent —
+holding both the sentence and the numbers — matched the cycle to the wrong axis
+anyway. The gap is not coverage. Naming a pattern does not make the model
+recognise an instance of it. Weigh F5 accordingly.
 
 The fingerprint *is* the diagnosis. A frame that is a function of how many times
 you have snapped, and not of where the stage is, is the demo camera's rotating
@@ -281,11 +291,90 @@ The CLI keeps `_require_confirmation`. `__main__.py:204` already reads
 change.
 
 On the `kind` argument: `check_illumination` (`safety.py:282`) passes one
-positional summary today, and five test stubs are `lambda s: ...` /
-`lambda summary: ...` (`test_tools.py:351, 359, 1801, 1816, 1850`). Adding `kind`
-means updating those five. The alternative — string-matching `"ENABLE
-ILLUMINATION"` in the frontend — puts a safety-relevant branch on a prose prefix
-that safety.py is free to reword. Pay the five lines.
+positional summary today, and six test stubs are `lambda s: ...` /
+`lambda summary: ...` (`test_tools.py:351, 359, 1801, 1816, 1850, 1865` — an
+earlier draft counted five and missed 1865). Adding `kind` means updating all
+six. The alternative — string-matching `"ENABLE ILLUMINATION"` in the frontend —
+puts a safety-relevant branch on a prose prefix that safety.py is free to
+reword. Pay the six lines.
+
+Two requirements the sketch hides, found on review. `CONFIRM_TIMEOUT_S` and the
+clock must be reachable by tests (module attributes on `webserve`, read at call
+time), or the "deadline denies" test in §Tests cannot exist without a `sleep`.
+And the seam itself is sound only because every callsite reads the module
+global at call time — verified: `CONFIRM_FN` appears exactly at `tools.py:47,
+365, 1937, 2053`, never imported by value into another module. A future
+`from microclaw.tools import CONFIRM_FN` would silently disconnect the browser
+gate; the `tools.CONFIRM_FN is session.confirm` assertion in §Tests is what
+notices.
+
+### F1 in the field (2026-07-10 evening run) — shown is not seen
+
+First real run of F1, on the demo rig
+(`20260710_204516_microclaw_history.json`). The operator approved saving a
+`devices/MM_demo_camera` entry; `save_knowledge` blocked on the confirmation;
+nothing appeared to happen; the operator pressed Stop after a few minutes. The
+serve terminal shows the flow the server ran: the summary printed (record, not
+prompt — F1 as designed), then "Turn stopped; confirmation declined."
+
+The server side is not the defect. `confirm()` emitted `confirm_request` over
+the same stream that had just delivered the `save_knowledge` tool cards, and
+the Stop button — same page, same server — worked, so the stream and the page
+were both live. The browser received the event and `applyEvent` unhid
+`#confirm-banner` (`serve.html:334`, `344`). The defect is where that banner
+is: the first child of `<main>` (`serve.html:147`), in normal document flow,
+above the entire transcript. This section told the frontend to build "a banner
+it can copy from the key and model banners" — banners that only ever appear on
+a fresh, empty page, where the top of the document *is* the viewport. Mid-turn,
+after two nine-row tables and a dozen tool cards, the top of the page is
+several screens above the fixed composer where the operator is watching.
+`showConfirm` neither scrolls it into view nor toasts, and `setBusy` keeps
+"Microclaw is working…" (`serve.html:165`) on screen — the visible UI asserts
+the turn is working at the exact moment it is waiting on the operator.
+
+So the gate reached the operator's *machine* and not the operator. F1's title
+names the requirement — "where the operator is" — and the implementation read
+that as "in the browser" when the operator is not at a browser, they are at a
+scroll position.
+
+Default deny held throughout: the 300 s deadline would have declined it, the
+operator declined it sooner via Stop, and nothing persisted. The gate failed
+closed — correct, and still a failure, because the cost was the save the
+operator had just said yes to.
+
+**Fix (2026-07-11): inline at the end of the transcript, plus stick-to-bottom
+autoscroll.** Frontend-only, `serve.html`; no server change, no new tests — the
+Python suite has no surface here.
+
+The operator's first instinct was right: the approval should appear in
+conversation flow, right before the tool that requires it. The strict version —
+anchoring the card to a specific tool card — would mean threading `tool_use_id`
+through `CONFIRM_FN`, whose three callsites deliberately know nothing about the
+transcript. It is also unnecessary: the turn thread is *blocked inside the tool
+being confirmed*, so the tool card awaiting approval is always the last card in
+the transcript, and "at the end of the conversation" is the same place, every
+time. So the fix is to move `#confirm-banner` below `#transcript` (above the
+spinner) — same element, same illumination styling, and it survives repaints
+because `render` clears only `#transcript`'s children (`transcript.js:164`).
+
+Three companions, each doing a distinct job:
+
+* **Stick-to-bottom autoscroll.** Each repaint keeps the newest message in view
+  *iff* the operator was already at the bottom; one who scrolled up to read is
+  never yanked. This is its own fix, not just support for the banner: the
+  operator was chasing the stream by scrolling manually, which is exactly how a
+  top-of-page banner went unseen. (The unconditional turn-end scroll this
+  replaces had the opposite politeness bug — it yanked readers.)
+* **`showConfirm` scrolls unconditionally.** The follow rule respects a reader;
+  an approval request is allowed to interrupt one.
+* **The spinner tells the truth.** While a confirm is pending, `#pending` reads
+  "Waiting for your confirmation." — "Microclaw is working…" under a blocked
+  turn is how this defect got diagnosed as a hang.
+
+The fixed-overlay alternative (position the banner like the toast, above the
+composer) was rejected: its one advantage — visible regardless of scroll
+position — is covered by the unconditional scroll in `showConfirm`, and inline
+placement reads in conversation flow where an approval belongs.
 
 ## F2 — `_shutter_state` must not offer `open` as an answer to a question it cannot answer
 
@@ -295,23 +384,74 @@ device"* is a fact and is not *"the light is off."* The same distinction applies
 one level in. **"The shutter is closed right now" is a fact, and it is not "the
 shutter was closed during your last exposure."**
 
-Keep `open` — it is a true reading — and add the thing the agent actually wanted:
+Keep `open` — it is a true reading — and add the thing the agent actually
+wanted. The rule has one hinge: a **manual** shutter's resting state is its
+exposure state, because nothing toggles it between the read and the snap; under
+**autoshutter** the resting read carries no information at all, because MM
+toggles it per exposure. Which means four cases, not the two an earlier draft
+tabled:
 
-| reading | meaning |
-|---|---|
-| `{"open": false, "auto": true, "open_during_exposure": "unknown (autoshutter opens it per exposure)"}` | resting read; MM manages the shutter |
-| `{"open": false, "auto": false, "open_during_exposure": false}` | manual, and closed — the light path really is shut |
+| `auto` | `open` | `open_during_exposure` |
+|---|---|---|
+| `true` | anything | `"unknown (autoshutter opens the shutter for each exposure)"` |
+| `false` | `false` | `false` — the light path really is shut |
+| `false` | `true` | `true` — held open |
+| `"unknown"` | — | `"unknown"` |
 
-An agent reading the first row has nothing on which to build a closed-shutter
-theory. That is the entire point of the field.
+Note the first row stays `"unknown"` rather than `true`. The tempting reading —
+autoshutter is on, therefore the shutter *did* open during the last exposure —
+is a present read standing in for a past event, which is the exact move S2 is
+about, pointed the other way. Microclaw can attest what MM is configured to do,
+not what the hardware did; the parenthetical carries the configuration, the
+value refuses the claim.
+
+```python
+# tools.py, _shutter_state, after the open/auto loop
+# "Closed right now" is not "closed during your last exposure" (S2). A manual
+# shutter's resting state is its exposure state; under autoshutter the resting
+# read says nothing — refuse to let `open` answer a question about the past.
+if entry.get("auto") is True:
+    entry["open_during_exposure"] = (
+        "unknown (autoshutter opens the shutter for each exposure)"
+    )
+elif entry.get("auto") is False and isinstance(entry.get("open"), bool):
+    entry["open_during_exposure"] = entry["open"]
+else:
+    entry["open_during_exposure"] = "unknown"
+```
+
+An agent reading the autoshutter row has nothing on which to build a
+closed-shutter theory. That is the entire point of the field.
 
 ## F3 — `get_system_state` should name the camera
 
 `tools.py:537`. The session was about a camera. The state block reports stage,
-exposure, live view, shutter and lasers. `core.get_camera_device()` is one line
-in the same `try`/`except` shape as its neighbours, reporting `"unknown"` rather
-than dropping the key — design/20 F2's rule, which exists so an omitted field
-cannot be filled from imagination.
+exposure, live view, shutter and lasers.
+
+One line is not enough, though — an earlier draft said "one line" and review
+says two. `core.get_camera_device()` returns the config's **label**, a
+user-chosen string that is `"Camera"` in the stock demo config and anything at
+all on a real rig. A label cannot verify "this is the demo camera", and it
+cannot anchor F4's condition — rename the device and the condition detaches,
+which is F4's defect reproduced one layer down. The hardware's identity is the
+**adapter** name, `core.get_device_name(label)` — `"DCam"` for the demo camera —
+which no rename touches. Report both, in the same `try`/`except` shape as the
+neighbours, `"unknown"` rather than a dropped key — design/20 F2's rule, which
+exists so an omitted field cannot be filled from imagination.
+
+```python
+# tools.py, get_system_state, beside shutter/lasers
+try:
+    label = str(ctrl.core.get_camera_device())
+    state["camera"] = {
+        "label": label or "unknown",
+        # The label is whatever the config author typed; the adapter is the
+        # hardware. F4 keys knowledge entries on the adapter for that reason.
+        "adapter": str(ctrl.core.get_device_name(label)) if label else "unknown",
+    }
+except Exception:
+    state["camera"] = "unknown"
+```
 
 It would have let the agent check the user's claim instead of accepting it, and
 it is the precondition for F4.
@@ -329,7 +469,38 @@ Proposed: `save_knowledge` under `devices` should require the entry to carry the
 device name it was observed on, and `format_for_prompt` should render device
 entries conditionally — *"when the camera is `DCam`: …"* — so the instruction
 cannot detach from its trigger. With F3 landed, the agent can then check whether
-the condition holds rather than trusting the prompt.
+the condition holds rather than trusting the prompt. "Device name" means the
+**adapter**, not the label, for the reason F3 gives: a label is a rename away
+from detaching the condition again.
+
+```python
+# tools.py, save_knowledge, before the confirmation
+if category == "devices" and "observed_on" not in value:
+    return {"error":
+            "A devices/ entry must carry observed_on: the camera adapter it "
+            "was observed with (the 'adapter' field of get_system_state's "
+            "camera block, e.g. 'DCam'). An entry that suppresses an alarm "
+            "must name the condition it holds under."}
+```
+
+```python
+# knowledge_manager.py, format_for_prompt — one header per devices/ entry,
+# rendered above the YAML, so the condition travels with the instruction
+cond = entry.get("observed_on") if isinstance(entry, dict) else None
+header = (
+    f"applies ONLY while get_system_state reports camera.adapter == {cond!r}; "
+    f"verify before relying on it"
+    if cond else
+    "recorded without a device condition — verify the hardware before "
+    "relying on this entry"
+)
+```
+
+The `else` branch is not decoration: entries already on disk have no
+`observed_on`, and they must render with the second header rather than silently
+as today — the user's `MM_demo_camera` entry is one of them. Rejecting legacy
+entries outright would be wrong (they are the user's data); rendering them as
+unconditioned-and-say-so keeps them useful while stripping their authority.
 
 If that is too much machinery for now, the smaller true statement is this:
 nothing currently stops a *model* from writing a permanent instruction that
@@ -342,22 +513,112 @@ base. It should be rewritten or deleted before the next run on real hardware.
 ## F5 — extend the rule from the cells to the sentence after the table
 
 `agent.py`, the `Reporting — say only what a tool told you` section. It has five
-bullets and every one is about a *value*. Add the missing kind:
+bullets and every one is about a *value*. Two corrections from review, before
+the text, because they change what F5 is worth:
+
+* The ordinal clause as first drafted — "if a quantity varies with the order in
+  which you called the tool rather than with the thing you changed, say so" —
+  is not missing from the prompt. It is **in** the prompt (`agent.py:91`), it
+  was in the prompt during this run, and the agent explained an ordinal cycle
+  spatially anyway (see the S1 correction). Restating it costs nothing and is
+  worth doing for precision, but it is a sentence with a measured failure rate
+  of one for one. Nothing may be counted on it.
+* S3 has no fix anywhere in this document unless F5 carries one. The
+  falsification clause does not carry it: "name the cells that would falsify
+  your explanation" governs a pattern claim, and S3's defect was an
+  *independence* claim.
+
+So the bullet gains three clauses, one per S:
 
 > When you explain a pattern in a result, name the cells that would falsify your
-> explanation, and check them. A story that fits most of the data is not a
+> explanation, and check them — a story that fits most of the data is not a
 > finding. If a quantity varies with the order in which you called the tool
-> rather than with the thing you changed, say so — that is a fact about the
-> instrument, not noise.
+> rather than with the thing you changed, say so: that is a fact about the
+> instrument, not noise. And call two measurements independent only if they
+> could have disagreed — different tools reading one camera through one frame
+> source are one measurement, repeated; say what the readings share before
+> saying what they confirm.
 
-Both clauses are load-bearing. The first is S1 exactly: seven of nine cells fit.
-The second names the specific fingerprint the agent has now missed twice.
+Whether prompt text can carry this is no longer genuinely open — it has now
+been tested once, and it failed: the ordinal-cycle sentence was in-context
+while the agent wrote the radial story. The honest position has hardened. F5
+is cheap, and the only clauses that might pay are the two that are new
+(falsification, independence). F2 and F3 are the ones that change what the
+agent is *able* to conclude, and they should not wait on it; the reconsidered
+`detect_static_field` below is the fix that does not depend on the model
+noticing anything.
 
-Whether prompt text can carry this is genuinely open. design/20 observes that no
-test asserts the text of the system prompt, and that prompt-content assertions
-would not have caught S1–S4 anyway. The honest position: F5 is cheap and
-unproven. F2 and F3 are the ones that change what the agent is *able* to
-conclude, and they should not wait on it.
+## F6 — why the design/19 log_path fix did not work
+
+The loose end at the bottom of this document, promoted on review: it is not
+loose, it is a fifth instance of the document's theme — a fix built on a stated
+belief nobody checked.
+
+What the payload showed (message 10 of the history, verified):
+
+```
+"dataset_path": "C:\\tmp\\grid_scan_2\\tile_1",
+"log_path":     "\\tmp\\grid_pixel_std.json"
+```
+
+design/19's fix routed `log_path` through `resolve_in_workspace`, whose
+unconfined branch is `os.path.normpath` (`safety.py:382`). The fix **ran**, and
+did everything it says on the tin: the model's `/tmp/grid_pixel_std.json` came
+out as `\tmp\grid_pixel_std.json`, separators respelled, doubles collapsed. It
+could not have worked anyway, for two stacked reasons.
+
+**normpath is lexical.** It rewrites the string and never consults the
+filesystem, the CWD, or the current drive. On Windows it turns a POSIX-absolute
+`/tmp/x` into `\tmp\x` — a *drive-relative* path, anchored to whatever the
+process's current drive happens to be at each use. It cannot add `C:` because
+it does not know there is a `C:`.
+
+**dataset_path never passes through the normaliser at all.** The string in the
+payload is read back from pycro-manager after the acquisition —
+`_acq_dataset_path` returns `acq._dataset_disk_location` (`tools.py:629`) — a
+path the Java side has already resolved against the process's current drive.
+The payload itself proves the provenance: no microclaw code ever produced the
+substring `tile_1`; the `_1` is AcqEngJ's dedup rename, reported back from
+disk. (The fallback branch of `_acq_dataset_path` would have said
+`\tmp\grid_scan_2\tile` — drive-relative and unsuffixed — so the drive is
+positive evidence of the Java round trip, not an ambiguity.)
+
+So design/19 normalised one side of an equation whose other side is produced by
+a different resolver in a different process. The belief that made that look
+sufficient is written down verbatim in `test_safety.py:237-240`: *"The
+acquisition normalises its own dataset_path."* It does not — the OS resolves
+it. A lexical fix can never converge with a filesystem-resolved string; the
+only spelling that matches the OS's resolution is the OS's resolution:
+
+```python
+# safety.py, resolve_in_workspace, the unconfined branch
+if root is None:
+    # abspath, not normpath. normpath is lexical: it respells separators and
+    # leaves '/tmp/x' as the drive-relative '\tmp\x'. dataset_path does not
+    # come through here at all — it comes back from pycro-manager's Java side
+    # already anchored ('C:\tmp\...', with AcqEngJ's _1 rename); matching a
+    # filesystem-resolved string takes filesystem resolution, not respelling.
+    return os.path.abspath(path)
+```
+
+`abspath` is `normpath` plus anchoring, so everything the design/19 fix bought
+is kept, and the workspace-configured branch already `realpath`s and needs
+nothing. The change also makes a *relative* `log_path` ("results/log.json")
+report the file actually written — the CWD-anchored one — rather than a string
+whose meaning floats with the CWD of whoever resolves it later.
+
+Cost: the two tests that encode the old belief change with it.
+`test_unconfigured_confines_nothing` (`test_safety.py:228`) becomes an
+assertion against `os.path.abspath`, and
+`test_an_unconfined_path_is_still_normalised` keeps its separator cases with
+anchored expectations — and loses the comment this section corrects.
+
+The original loose-end judgement — "nothing broke and nothing will, until
+something compares them as strings" — also needs a correction: something
+already does. The artifact allowlist is an exact string match against the
+payload's own spelling (`_declared_artifacts`, `webserve.py:343`). It holds
+today only because both sides of that comparison quote the same payload string;
+it is not a comparison the current spelling regime is entitled to survive.
 
 ## Not in scope, reconsidered — `detect_static_field`
 
@@ -374,10 +635,29 @@ correct, and the period-four cycle is why it matters less than it looked:
 Two tests in that order do separate the faults. The ordering is the insight; a
 single two-snap test does not, which is what design/20 correctly objected to.
 
+One word in step 1 is doing too much work, though: "differ". On real hardware
+two snaps of a static scene *always* differ — shot noise — and a naive pixel
+comparison would call every working camera a synthesiser. The discriminator is
+the summary statistics, and this run hands us the exact signature: the demo
+camera's per-frame std is **byte-for-byte identical** across snaps
+(367.4638333527376, all nine tiles) while its focus_metric cycles; a real
+camera is the mirror image — statistics that wobble at the noise floor, nothing
+cycling. So the decision table for the no-move pair is three-way, not two:
+
+| statistics | focus_metric | verdict |
+|---|---|---|
+| byte-identical | cycles | synthesiser (demo camera's rotating pattern) |
+| byte-identical | constant | the same buffer re-served — stale frame |
+| differ within noise | — | proceed to step 2; the no-move pair's own difference is the noise floor the moved pair must exceed |
+
+A `detect_static_field` that snaps twice and diffs pixels is the wrong tool
+wearing the right name.
+
 The signature has now appeared in two consecutive runs and the agent has failed
 it both times, once by not reading the numbers and once by reading them and
-inventing a story. On that evidence it is not the kind of thing a prompt bullet
-fixes.
+inventing a story — and the second failure happened with a prompt sentence
+describing the fingerprint in-context (see the S1 correction). On that evidence
+it is not the kind of thing a prompt bullet fixes.
 
 ## Tests
 
@@ -393,8 +673,17 @@ fixes.
 * **`_shutter_state`.** `auto: true` must not yield a bare
   `open_during_exposure: false`. Mutation-check it by returning `false` and
   watching the test fail.
-* **`get_system_state`** names the camera, and reports `"unknown"` rather than
-  dropping the key when the read raises.
+* **`get_system_state`** names the camera — label *and* adapter — and reports
+  `"unknown"` rather than dropping the key when the read raises, including the
+  half-failure where the label reads but `get_device_name` raises.
+* **`resolve_in_workspace`**, unconfined, returns `os.path.abspath` of its
+  input — asserted with an `os.sep`-rooted input so the test measures
+  anchoring rather than the platform. The two existing sandbox tests that
+  encode "normalisation is enough" change with F6, comment included.
+* **`save_knowledge`** refuses a `devices/` entry without `observed_on`, and
+  `format_for_prompt` renders a legacy entry (no `observed_on`) under the
+  verify-first header rather than bare — mutation-check by dropping the header
+  and watching the test fail.
 * **Host isolation.** F3 adds a `core.get_camera_device()` read to a function
   that twelve `test_agent.py` tests already execute. design/20's sweep found F2
   doubling `find_mm_app_dir`'s blast radius in exactly this way — twelve new
@@ -403,12 +692,9 @@ fixes.
 
 ## Loose ends
 
-* `log_path` comes back as `\tmp\grid_pixel_std.json` while `dataset_path` in the
-  same payload is `C:\tmp\grid_scan_2\tile_1`. One directory, two spellings —
-  the thing `safety.py:373-378` says it fixed. `os.path.normpath` normalises
-  separators; it does not add a drive. Both resolve against the same current
-  drive, so nothing broke and nothing will, until something compares them as
-  strings or a `workspace_dir` is configured on another volume.
+* The `log_path` spelling mismatch was first filed here as a loose end. Review
+  promoted it to F6: the design/19 fix ran and could not have worked, and the
+  "nothing will break" judgement was wrong — see F6.
 * The agent again ends replies by asking the user to choose an approach rather
   than committing. design/20 filed stalling as a prompt-shape question,
   orthogonal to everything else. It is still both of those things.

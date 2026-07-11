@@ -229,24 +229,40 @@ class TestWorkspaceSandbox:
         guard = SafetyGuard(SafetyConstraints())  # workspace_dir None
         # Build with os.sep: a literal "/anywhere/..." is already-normalised on
         # POSIX and normalises to backslashes on Windows, so hardcoding it would
-        # assert the platform rather than the confinement.
+        # assert the platform rather than the confinement. abspath, not the
+        # input itself: on Windows an os.sep-rooted path is drive-relative and
+        # anchoring it IS the fix (design/21 F6) — this asserts no confinement,
+        # not no resolution.
         outside = os.path.join(os.sep, "anywhere", "at", "all.json")
-        assert guard.resolve_in_workspace(outside) == outside
+        assert guard.resolve_in_workspace(outside) == os.path.abspath(outside)
 
     def test_an_unconfined_path_is_still_normalised(self):
         # A model that over-escapes a Windows path hands us doubled separators.
-        # The acquisition normalises its own dataset_path, so without this one
-        # payload spells the same directory two ways (design/19, 2026-07-10 run).
-        # Windows collapses the repeats; POSIX does not — so normalise here.
+        # Windows collapses the repeats; POSIX does not. abspath keeps all of
+        # normpath's respelling, so the design/19 separator cases still hold —
+        # with anchored expectations (design/21 F6).
         # Not a *leading* double separator: POSIX gives that one a meaning of
         # its own and normpath rightly preserves it.
         guard = SafetyGuard(SafetyConstraints())
         assert guard.resolve_in_workspace(f"{os.sep}ws{os.sep*2}log.json") == (
-            f"{os.sep}ws{os.sep}log.json"
+            os.path.abspath(f"{os.sep}ws{os.sep}log.json")
         )
         assert guard.resolve_in_workspace(f"{os.sep}ws{os.sep}.{os.sep}log.json") == (
-            f"{os.sep}ws{os.sep}log.json"
+            os.path.abspath(f"{os.sep}ws{os.sep}log.json")
         )
+
+    def test_an_unconfined_path_is_anchored_not_just_respelled(self):
+        # normpath was lexical: it left '/tmp/x' drive-relative on Windows and a
+        # relative path floating with whoever resolves it later, so the fix
+        # design/19 built on it ran and could not have worked (design/21 F6).
+        # The only spelling that matches the OS's resolution is the OS's
+        # resolution.
+        guard = SafetyGuard(SafetyConstraints())
+        rooted = os.path.join(os.sep, "tmp", "grid_pixel_std.json")
+        assert guard.resolve_in_workspace(rooted) == os.path.abspath(rooted)
+        relative = os.path.join("results", "log.json")
+        assert guard.resolve_in_workspace(relative) == os.path.abspath(relative)
+        assert os.path.isabs(guard.resolve_in_workspace(relative))
 
     def test_a_filesystem_root_workspace_does_not_reject_everything(self):
         """realpath('/') already ends in a separator, so the containment check
@@ -337,15 +353,27 @@ class TestIlluminationGate:
         with pytest.raises(SafetyViolation, match="declined"):
             guard.check_illumination(
                 _core(), "Luxx638", "Laser Operation Select", "On",
-                confirm_fn=lambda s: False,
+                confirm_fn=lambda s, kind="action": False,
             )
 
     def test_enable_confirmed_passes(self):
         guard = _laser_guard()
         guard.check_illumination(
             _core(), "Luxx638", "Laser Operation Select", "On",
-            confirm_fn=lambda s: True,
+            confirm_fn=lambda s, kind="action": True,
         )
+
+    def test_confirm_receives_the_illumination_kind(self):
+        # design/21 F1: illumination renders differently in the browser. The
+        # kind travels as an argument, not a prose prefix the frontend would
+        # have to string-match against text safety.py is free to reword.
+        guard = _laser_guard()
+        seen = {}
+        guard.check_illumination(
+            _core(), "Luxx638", "Laser Operation Select", "On",
+            confirm_fn=lambda s, kind="action": seen.update(kind=kind) or True,
+        )
+        assert seen["kind"] == "illumination"
 
     def test_disable_never_needs_confirmation(self):
         guard = _laser_guard()

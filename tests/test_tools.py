@@ -348,7 +348,7 @@ class TestSetDeviceProperty:
 
     def test_illumination_enable_blocked_when_declined(self, mock_ctrl, monkeypatch):
         # The gate must run through tools.CONFIRM_FN — in code, not the prompt.
-        monkeypatch.setattr("microclaw.tools.CONFIRM_FN", lambda s: False)
+        monkeypatch.setattr("microclaw.tools.CONFIRM_FN", lambda s, kind="action": False)
         with pytest.raises(SafetyViolation, match="declined"):
             set_device_property(mock_ctrl, self._laser_guard(),
                                 device="Luxx638", property="Laser Operation Select",
@@ -356,7 +356,7 @@ class TestSetDeviceProperty:
         mock_ctrl.core.set_property.assert_not_called()
 
     def test_illumination_enable_passes_when_confirmed(self, mock_ctrl, monkeypatch):
-        monkeypatch.setattr("microclaw.tools.CONFIRM_FN", lambda s: True)
+        monkeypatch.setattr("microclaw.tools.CONFIRM_FN", lambda s, kind="action": True)
         set_device_property(mock_ctrl, self._laser_guard(),
                             device="Luxx638", property="Laser Operation Select",
                             value="On")
@@ -395,8 +395,41 @@ class TestGetSystemState:
         mock_ctrl.core.get_shutter_open.return_value = False
         mock_ctrl.core.get_auto_shutter.return_value = True
         result = get_system_state(mock_ctrl, unconstrained_guard)
-        assert result["shutter"] == {"device": "DShutter", "open": False, "auto": True}
+        assert result["shutter"] == {
+            "device": "DShutter", "open": False, "auto": True,
+            "open_during_exposure":
+                "unknown (autoshutter opens the shutter for each exposure)",
+        }
         assert "lasers" in result
+
+    def test_autoshutter_must_not_yield_a_bare_closed_during_exposure(
+        self, mock_ctrl, unconstrained_guard
+    ):
+        # design/21 S2: with autoshutter on, MM opens the shutter per exposure,
+        # so the resting open:false says nothing about the light path during
+        # the snap — and the agent built a closed-shutter theory on it twice.
+        # Not `False` (a fact it wasn't) and not `True` either (a present read
+        # standing in for a past event, the same move pointed the other way).
+        mock_ctrl.core.get_shutter_device.return_value = "DShutter"
+        mock_ctrl.core.get_shutter_open.return_value = False
+        mock_ctrl.core.get_auto_shutter.return_value = True
+        shutter = get_system_state(mock_ctrl, unconstrained_guard)["shutter"]
+        assert shutter["open_during_exposure"] is not False
+        assert shutter["open_during_exposure"] is not True
+        assert "autoshutter" in shutter["open_during_exposure"]
+
+    def test_a_manual_shutters_resting_state_is_its_exposure_state(
+        self, mock_ctrl, unconstrained_guard
+    ):
+        mock_ctrl.core.get_shutter_device.return_value = "DShutter"
+        mock_ctrl.core.get_auto_shutter.return_value = False
+        mock_ctrl.core.get_shutter_open.return_value = False
+        shutter = get_system_state(mock_ctrl, unconstrained_guard)["shutter"]
+        assert shutter["open_during_exposure"] is False  # really shut
+
+        mock_ctrl.core.get_shutter_open.return_value = True
+        shutter = get_system_state(mock_ctrl, unconstrained_guard)["shutter"]
+        assert shutter["open_during_exposure"] is True   # held open
 
     def test_illumination_fields_are_present_even_when_unknowable(
         self, mock_ctrl, unconstrained_guard
@@ -424,7 +457,48 @@ class TestGetSystemState:
         mock_ctrl.core.get_shutter_open.return_value = True
         mock_ctrl.core.get_auto_shutter.side_effect = Exception("unsupported")
         result = get_system_state(mock_ctrl, unconstrained_guard)
-        assert result["shutter"] == {"device": "DShutter", "open": True, "auto": "unknown"}
+        assert result["shutter"] == {
+            "device": "DShutter", "open": True, "auto": "unknown",
+            # auto unreadable: whether the resting read means anything is
+            # unknowable, so the exposure answer is too — never inferred from
+            # `open` alone.
+            "open_during_exposure": "unknown",
+        }
+
+    def test_names_the_camera_label_and_adapter(self, mock_ctrl, unconstrained_guard):
+        # design/21 F3: the session was about a camera and the state block
+        # never named it, so the agent took the user's word for the hardware.
+        # The label is whatever the config author typed; the adapter is the
+        # hardware, and what F4's observed_on condition keys on.
+        mock_ctrl.core.get_camera_device.return_value = "Camera"
+        mock_ctrl.core.get_device_name.return_value = "DCam"
+        result = get_system_state(mock_ctrl, unconstrained_guard)
+        assert result["camera"] == {"label": "Camera", "adapter": "DCam"}
+        mock_ctrl.core.get_device_name.assert_called_once_with("Camera")
+
+    def test_an_unreadable_camera_is_unknown_not_absent(
+        self, mock_ctrl, unconstrained_guard
+    ):
+        mock_ctrl.core.get_camera_device.side_effect = Exception("no core camera")
+        result = get_system_state(mock_ctrl, unconstrained_guard)
+        assert result["camera"] == "unknown"
+
+    def test_a_camera_whose_adapter_read_fails_is_unknown_not_half_reported(
+        self, mock_ctrl, unconstrained_guard
+    ):
+        # The half-failure: the label reads, get_device_name raises. A bare
+        # label could still be mistaken for a verified identity; "unknown" says
+        # plainly that nothing here can anchor an observed_on condition.
+        mock_ctrl.core.get_camera_device.return_value = "Camera"
+        mock_ctrl.core.get_device_name.side_effect = Exception("bridge error")
+        result = get_system_state(mock_ctrl, unconstrained_guard)
+        assert result["camera"] == "unknown"
+
+    def test_an_empty_camera_label_reads_unknown(self, mock_ctrl, unconstrained_guard):
+        mock_ctrl.core.get_camera_device.return_value = ""
+        result = get_system_state(mock_ctrl, unconstrained_guard)
+        assert result["camera"] == {"label": "unknown", "adapter": "unknown"}
+        mock_ctrl.core.get_device_name.assert_not_called()
 
     def test_laser_slots_are_read_through_the_emu_map(self, mock_ctrl,
                                                       unconstrained_guard, monkeypatch):
@@ -1605,15 +1679,17 @@ class TestAcquisitionsRespectTheWorkspace:
 
     def test_an_unset_workspace_still_saves_anywhere(self, mock_ctrl, unconstrained_guard, monkeypatch):
         """The default. Confinement is opt-in; nobody is forced into a sandbox
-        to use microclaw."""
+        to use microclaw. Resolved (abspath, design/21 F6), never refused —
+        built with os.sep so the test measures confinement, not the platform."""
         from microclaw import tools
 
         seen = {}
         monkeypatch.setattr(tools, "_acquire_with_hooks",
                             lambda guard, save_dir, *a, **k: seen.setdefault("dir", save_dir))
+        anywhere = os.path.join(os.sep, "anywhere", "at", "all")
         tools.run_zstack(mock_ctrl, unconstrained_guard, z_start_um=0, z_end_um=10,
-                         z_step_um=1, save_dir="D:\\anywhere")
-        assert seen["dir"] == "D:\\anywhere"
+                         z_step_um=1, save_dir=anywhere)
+        assert seen["dir"] == os.path.abspath(anywhere)
 
     def test_the_acquisition_runner_enforces_it_even_if_a_caller_forgets(
         self, mock_ctrl, ws_guard
@@ -1798,7 +1874,7 @@ class TestGenerateAndSaveHook:
         assert "saved" in result["status"]
 
     def test_declines_when_lint_flags_and_user_says_no(self, mock_ctrl, unconstrained_guard, monkeypatch):
-        monkeypatch.setattr("microclaw.tools.CONFIRM_FN", lambda summary: False)
+        monkeypatch.setattr("microclaw.tools.CONFIRM_FN", lambda summary, kind="action": False)
         code = "eval('os.system(\"rm -rf /\")')"
         result = generate_and_save_hook(
             mock_ctrl, unconstrained_guard,
@@ -1813,7 +1889,7 @@ class TestGenerateAndSaveHook:
         # saveable once the user confirms.
         monkeypatch.setattr("microclaw.hook_manager.HOOKS_DIR", tmp_path)
         monkeypatch.setattr("microclaw.hook_manager.MANIFEST", tmp_path / "manifest.json")
-        monkeypatch.setattr("microclaw.tools.CONFIRM_FN", lambda summary: True)
+        monkeypatch.setattr("microclaw.tools.CONFIRM_FN", lambda summary, kind="action": True)
         code = (
             "class H:\n"
             "    def image_process_fn(self, img, meta, q):\n"
@@ -1847,14 +1923,15 @@ class TestSaveKnowledgeConfirmation:
     def test_declines_and_does_not_write(self, mock_ctrl, unconstrained_guard, monkeypatch):
         from microclaw import tools
         calls = []
-        monkeypatch.setattr(tools, "CONFIRM_FN", lambda summary: False)
+        monkeypatch.setattr(tools, "CONFIRM_FN", lambda summary, kind="action": False)
         monkeypatch.setattr(
             "microclaw.knowledge_manager.save_entry",
             lambda *a, **k: calls.append(a),
         )
         result = tools.save_knowledge(
             mock_ctrl, unconstrained_guard,
-            category="devices", key="X", value={"description": "y"},
+            category="devices", key="X",
+            value={"description": "y", "observed_on": "DCam"},
         )
         assert "declined" in result["error"].lower()
         assert calls == []  # save_entry never reached
@@ -1862,17 +1939,66 @@ class TestSaveKnowledgeConfirmation:
     def test_saves_after_confirmation(self, mock_ctrl, unconstrained_guard, monkeypatch):
         from microclaw import tools
         calls = []
-        monkeypatch.setattr(tools, "CONFIRM_FN", lambda summary: True)
+        monkeypatch.setattr(tools, "CONFIRM_FN", lambda summary, kind="action": True)
         monkeypatch.setattr(
             "microclaw.knowledge_manager.save_entry",
             lambda *a, **k: calls.append(a),
         )
         result = tools.save_knowledge(
             mock_ctrl, unconstrained_guard,
-            category="devices", key="X", value={"description": "y"},
+            category="devices", key="X",
+            value={"description": "y", "observed_on": "DCam"},
         )
         assert "status" in result
         assert calls  # save_entry reached
+
+    def test_a_devices_entry_without_observed_on_is_refused(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        # design/21 F4: an entry that can suppress an alarm must name the
+        # hardware it was observed on. Refused before the human gate — there is
+        # nothing worth confirming.
+        from microclaw import tools
+        monkeypatch.setattr(
+            tools, "CONFIRM_FN",
+            lambda s, kind="action": pytest.fail("the gate ran on a refused entry"),
+        )
+        result = tools.save_knowledge(
+            mock_ctrl, unconstrained_guard,
+            category="devices", key="MM_demo_camera", value={"description": "y"},
+        )
+        assert "observed_on" in result["error"]
+        assert "adapter" in result["error"]  # says where to get it
+
+    def test_other_categories_do_not_require_observed_on(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        from microclaw import tools
+        monkeypatch.setattr(tools, "CONFIRM_FN", lambda s, kind="action": True)
+        monkeypatch.setattr(
+            "microclaw.knowledge_manager.save_entry", lambda *a, **k: None
+        )
+        result = tools.save_knowledge(
+            mock_ctrl, unconstrained_guard,
+            category="samples", key="HeLa", value={"description": "y"},
+        )
+        assert "status" in result
+
+    def test_the_gate_receives_the_knowledge_kind(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        # The frontend branches on `kind`, never on a prose prefix (design/21 F1).
+        from microclaw import tools
+        seen = {}
+        monkeypatch.setattr(
+            tools, "CONFIRM_FN",
+            lambda s, kind="action": seen.update(kind=kind) or False,
+        )
+        tools.save_knowledge(
+            mock_ctrl, unconstrained_guard,
+            category="samples", key="X", value={"description": "y"},
+        )
+        assert seen["kind"] == "knowledge"
 
 
 class TestListDeviceProperties:

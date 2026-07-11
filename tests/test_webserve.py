@@ -64,7 +64,7 @@ def _history_declaring(*paths, kind="tiff"):
 
 @pytest.fixture
 def session():
-    return types.SimpleNamespace(
+    s = types.SimpleNamespace(
         ctrl=object(),
         guard=_guard(),
         model=None,
@@ -74,7 +74,13 @@ def session():
         editable=True,
         lock=_FakeLock(),
         cancel=threading.Event(),
+        _emit=None,
+        pending=None,
     )
+    # Session.confirm only reads _emit/pending/cancel, so binding the real
+    # method makes the fake route confirmations exactly as the real one does.
+    s.confirm = webserve.Session.confirm.__get__(s)
+    return s
 
 
 @pytest.fixture
@@ -320,6 +326,161 @@ def test_stop_is_not_a_tool_the_agent_can_call():
 
     assert not any("stop" == name or name.startswith("api_") for name in TOOL_REGISTRY)
     assert "halt" not in TOOL_REGISTRY   # v4b is cancelled, not deferred
+
+
+# ---- confirmations (design/21 F1) ----
+
+def _start_confirm(session, summary="Save knowledge devices/X:\nX: {a: 1}",
+                   kind="knowledge"):
+    """Run session.confirm on a thread, as a tool on the turn thread would.
+
+    Returns once the confirm is pending (or the thread already returned), with
+    the thread, the events it emitted, and a box the answer lands in.
+    """
+    events = []
+    session._emit = events.append
+    box = {}
+    thread = threading.Thread(
+        target=lambda: box.update(answer=session.confirm(summary, kind))
+    )
+    thread.start()
+    # Wait for the confirm_request *event*, not for session.pending: confirm()
+    # sets pending first and emits second (so a browser can never see an event
+    # whose id is not yet answerable), which leaves a window where pending is
+    # set and `events` is still empty. Waiting on pending lost that race on the
+    # lab machine (2026-07-10 run); event-emitted implies pending-set.
+    deadline = time.monotonic() + 5
+    while not events and thread.is_alive() and time.monotonic() < deadline:
+        time.sleep(0.005)
+    return thread, events, box
+
+
+@pytest.fixture
+def fast_confirm_poll(monkeypatch):
+    """test_webserve has no slow tests and should keep none."""
+    monkeypatch.setattr(webserve, "CONFIRM_POLL_S", 0.01)
+
+
+def test_a_confirm_with_no_stream_bound_denies(session):
+    # A confirmation that cannot reach the operator must never become a yes.
+    assert session._emit is None
+    assert session.confirm("Save knowledge x") is False
+
+
+def test_the_browser_can_approve_a_pending_confirm(session, client, fast_confirm_poll):
+    thread, events, box = _start_confirm(session)
+    pid = session.pending.id
+    assert events[0] == {"type": "confirm_request", "id": pid,
+                         "summary": "Save knowledge devices/X:\nX: {a: 1}",
+                         "kind": "knowledge"}
+
+    assert client.post("/api/confirm",
+                       json={"id": pid, "approve": True}).status_code == 200
+    thread.join(timeout=5)
+    assert box["answer"] is True
+    assert session.pending is None
+    assert events[-1] == {"type": "confirm_resolved", "id": pid}
+
+
+def test_the_browser_can_decline_a_pending_confirm(session, client, fast_confirm_poll):
+    thread, _, box = _start_confirm(session)
+    client.post("/api/confirm", json={"id": session.pending.id, "approve": False})
+    thread.join(timeout=5)
+    assert box["answer"] is False
+
+
+def test_a_stale_confirm_id_is_a_409(session, client, fast_confirm_poll):
+    # A banner left over from a previous confirm must not answer this one.
+    thread, _, box = _start_confirm(session)
+    pid = session.pending.id
+    res = client.post("/api/confirm", json={"id": "stale-id", "approve": True})
+    assert res.status_code == 409
+    assert session.pending is not None      # still waiting on the right answer
+
+    client.post("/api/confirm", json={"id": pid, "approve": False})
+    thread.join(timeout=5)
+    assert box["answer"] is False
+
+
+def test_confirm_with_nothing_pending_is_a_409(client):
+    assert client.post("/api/confirm",
+                       json={"id": "anything", "approve": True}).status_code == 409
+
+
+def test_get_confirm_resurfaces_a_pending_banner(session, client, fast_confirm_poll):
+    """confirm_request is delivered exactly once, on a stream a page reload
+    destroys. GET /api/confirm is how the reloaded page finds the banner
+    again instead of stranding the turn until the deadline."""
+    thread, _, box = _start_confirm(session, kind="illumination")
+    pid = session.pending.id
+
+    body = client.get("/api/confirm").json()
+    assert body == {"id": pid, "summary": "Save knowledge devices/X:\nX: {a: 1}",
+                    "kind": "illumination"}
+
+    client.post("/api/confirm", json={"id": pid, "approve": False})
+    thread.join(timeout=5)
+    assert box["answer"] is False
+    assert client.get("/api/confirm").json() == {}
+
+
+def test_stop_during_a_pending_confirm_denies(session, client, fast_confirm_poll):
+    session.lock = _FakeLock(locked=True)   # a turn is running
+    thread, events, box = _start_confirm(session)
+
+    assert client.post("/api/stop").json() == {"stopping": True}
+    thread.join(timeout=5)
+    assert box["answer"] is False
+    assert session.pending is None
+    assert events[-1]["type"] == "confirm_resolved"
+
+
+def test_an_unanswered_confirm_denies_at_the_deadline(session, monkeypatch):
+    # An injected clock, not a sleep: the first read anchors the deadline, every
+    # later read is already past it.
+    ticks = iter([0.0])
+    monkeypatch.setattr(webserve, "_monotonic", lambda: next(ticks, 1e9))
+    session._emit = lambda event: None
+    assert session.confirm("Save knowledge x") is False
+    assert session.pending is None
+
+
+def test_run_turn_binds_the_emit_channel_for_confirmations(session, client, monkeypatch):
+    """session.confirm routes through whichever stream the running turn owns;
+    outside a turn there is no stream and confirm() must default-deny."""
+    seen = {}
+
+    def fake(msg, ctrl, guard, messages, model=None, **kw):
+        seen["emit_bound"] = session._emit is not None
+        yield {"type": "done", "reply": "ok"}
+
+    monkeypatch.setattr(webserve, "run_agent_iter", fake)
+    client.post("/api/prompt", json={"message": "hi"})
+    assert seen["emit_bound"] is True
+    assert _settle(session)
+    assert session._emit is None            # cleared in run_turn's finally
+
+
+def test_serve_wires_the_confirm_seam_to_the_session(monkeypatch):
+    """Assert the connection, not a stub: the injection point existed, was
+    documented, and was never connected to anything (design/21 F1). A test
+    that only stubs CONFIRM_FN cannot notice that."""
+    import uvicorn
+
+    from microclaw import tools
+
+    # Register restoration of the module global serve() is about to overwrite.
+    monkeypatch.setattr(tools, "CONFIRM_FN", tools.CONFIRM_FN)
+    fake = types.SimpleNamespace(
+        confirm=lambda summary, kind="action": False,
+        history_fn="unused.json", history=[], save=False,
+        guard=_guard(), ctrl=types.SimpleNamespace(core=None),
+    )
+    monkeypatch.setattr(webserve, "Session", lambda args: fake)
+    monkeypatch.setattr(uvicorn, "run", lambda *a, **k: None)
+
+    serve(_args(host="127.0.0.1"))
+    assert tools.CONFIRM_FN is fake.confirm
 
 
 # ---- model (v4c) ----
