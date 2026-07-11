@@ -74,6 +74,7 @@
   #key-btn, #model-btn { font-family: var(--mono); font-size: 11.5px; color: var(--ink-faint); }
 
   /* confirmation banner (design/21 F1) */
+  #confirm-banner { margin-top: 18px; }
   #confirm-summary {
     font-family: var(--mono); font-size: 12.5px; color: var(--ink);
     background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
@@ -144,6 +145,20 @@
     </div>
   </div>
 
+  <div id="empty">
+    <div class="big">Connected to Micro-Manager</div>
+    <p>Tell Microclaw what to image. Every tool call it makes appears below with
+      its result, and is mirrored live in the Micro-Manager GUI.</p>
+    <p class="hint">One operator at a time — a second prompt is refused while a turn runs.</p>
+  </div>
+
+  <div id="transcript"></div>
+
+  <!-- Below the transcript, not above it (design/21 F1 field report): the turn
+       thread is blocked inside the tool being confirmed, so the tool card
+       awaiting approval is always the last card — this banner sits directly
+       under it, in conversation flow. Outside #transcript so render() never
+       wipes it. -->
   <div class="banner hidden" id="confirm-banner">
     <h2 id="confirm-title">Confirmation required</h2>
     <p id="confirm-help"></p>
@@ -154,15 +169,7 @@
     </div>
   </div>
 
-  <div id="empty">
-    <div class="big">Connected to Micro-Manager</div>
-    <p>Tell Microclaw what to image. Every tool call it makes appears below with
-      its result, and is mirrored live in the Micro-Manager GUI.</p>
-    <p class="hint">One operator at a time — a second prompt is refused while a turn runs.</p>
-  </div>
-
-  <div id="transcript"></div>
-  <div id="pending" class="hidden"><span class="spin"></span><span>Microclaw is working…</span></div>
+  <div id="pending" class="hidden"><span class="spin"></span><span id="pending-text">Microclaw is working…</span></div>
 </main>
 
 <form id="composer">
@@ -205,7 +212,20 @@
   // so there stays exactly one function that knows how a tool card looks.
   let history = [];
 
+  // ---- autoscroll ----
+  // Stick to the bottom: the operator reads the newest message, so each repaint
+  // keeps it in view — unless they have scrolled up to read something older,
+  // in which case never yank them. The slack covers the fixed composer.
+  const SCROLL_SLACK = 160;
+  function atBottom() {
+    return window.innerHeight + window.scrollY >= document.body.scrollHeight - SCROLL_SLACK;
+  }
+  function scrollToBottom(smooth) {
+    window.scrollTo({ top: document.body.scrollHeight, behavior: smooth ? "smooth" : "auto" });
+  }
+
   function paint(messages, live) {
+    const follow = atBottom();   // measured before render changes the height
     const { userTurns, asstTurns, toolCalls } = Transcript.render(messages, tx, { live });
     const any = userTurns + asstTurns > 0;
     $("empty").classList.toggle("hidden", any);
@@ -214,6 +234,7 @@
     $("collapse").classList.toggle("hidden", !any);
     $("s-turns").textContent = userTurns + asstTurns;
     $("s-tools").textContent = toolCalls;
+    if (follow) scrollToBottom(false);   // instant: smooth fights streaming repaints
   }
 
   // Coalesce the repaints a token stream would otherwise trigger per delta.
@@ -353,12 +374,19 @@
     $("confirm-summary").textContent = p.summary;
     $("confirm-approve").textContent = ill ? "Enable illumination" : "Approve";
     $("confirm-banner").classList.remove("hidden");
+    // The turn is waiting on the operator, and the spinner must not claim
+    // otherwise — "working…" is how a pending confirm reads as a hang.
+    $("pending-text").textContent = "Waiting for your confirmation.";
+    // Unconditional, unlike the stick-to-bottom follow: an approval request is
+    // allowed to interrupt reading.
+    scrollToBottom(true);
   }
 
   function hideConfirm(id) {
     if (id && confirmId && id !== confirmId) return;
     confirmId = null;
     $("confirm-banner").classList.add("hidden");
+    $("pending-text").textContent = "Microclaw is working…";
   }
 
   async function answerConfirm(approve) {
@@ -413,9 +441,10 @@
     // The server is the source of truth — re-read it either way. It also holds
     // the turn's rounds even if this page stopped listening partway through.
     cancelScheduledPaint();
+    // No forced scroll here: refresh() → paint() already follows the bottom,
+    // and an operator who scrolled up to read stays where they are.
     try { await refresh(); } catch (err) { toast(err.message); }
     setBusy(false);
-    window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
   });
 
   $("expand").addEventListener("click", () => Transcript.expandAll(tx));

@@ -308,6 +308,74 @@ global at call time — verified: `CONFIRM_FN` appears exactly at `tools.py:47,
 gate; the `tools.CONFIRM_FN is session.confirm` assertion in §Tests is what
 notices.
 
+### F1 in the field (2026-07-10 evening run) — shown is not seen
+
+First real run of F1, on the demo rig
+(`20260710_204516_microclaw_history.json`). The operator approved saving a
+`devices/MM_demo_camera` entry; `save_knowledge` blocked on the confirmation;
+nothing appeared to happen; the operator pressed Stop after a few minutes. The
+serve terminal shows the flow the server ran: the summary printed (record, not
+prompt — F1 as designed), then "Turn stopped; confirmation declined."
+
+The server side is not the defect. `confirm()` emitted `confirm_request` over
+the same stream that had just delivered the `save_knowledge` tool cards, and
+the Stop button — same page, same server — worked, so the stream and the page
+were both live. The browser received the event and `applyEvent` unhid
+`#confirm-banner` (`serve.html:334`, `344`). The defect is where that banner
+is: the first child of `<main>` (`serve.html:147`), in normal document flow,
+above the entire transcript. This section told the frontend to build "a banner
+it can copy from the key and model banners" — banners that only ever appear on
+a fresh, empty page, where the top of the document *is* the viewport. Mid-turn,
+after two nine-row tables and a dozen tool cards, the top of the page is
+several screens above the fixed composer where the operator is watching.
+`showConfirm` neither scrolls it into view nor toasts, and `setBusy` keeps
+"Microclaw is working…" (`serve.html:165`) on screen — the visible UI asserts
+the turn is working at the exact moment it is waiting on the operator.
+
+So the gate reached the operator's *machine* and not the operator. F1's title
+names the requirement — "where the operator is" — and the implementation read
+that as "in the browser" when the operator is not at a browser, they are at a
+scroll position.
+
+Default deny held throughout: the 300 s deadline would have declined it, the
+operator declined it sooner via Stop, and nothing persisted. The gate failed
+closed — correct, and still a failure, because the cost was the save the
+operator had just said yes to.
+
+**Fix (2026-07-11): inline at the end of the transcript, plus stick-to-bottom
+autoscroll.** Frontend-only, `serve.html`; no server change, no new tests — the
+Python suite has no surface here.
+
+The operator's first instinct was right: the approval should appear in
+conversation flow, right before the tool that requires it. The strict version —
+anchoring the card to a specific tool card — would mean threading `tool_use_id`
+through `CONFIRM_FN`, whose three callsites deliberately know nothing about the
+transcript. It is also unnecessary: the turn thread is *blocked inside the tool
+being confirmed*, so the tool card awaiting approval is always the last card in
+the transcript, and "at the end of the conversation" is the same place, every
+time. So the fix is to move `#confirm-banner` below `#transcript` (above the
+spinner) — same element, same illumination styling, and it survives repaints
+because `render` clears only `#transcript`'s children (`transcript.js:164`).
+
+Three companions, each doing a distinct job:
+
+* **Stick-to-bottom autoscroll.** Each repaint keeps the newest message in view
+  *iff* the operator was already at the bottom; one who scrolled up to read is
+  never yanked. This is its own fix, not just support for the banner: the
+  operator was chasing the stream by scrolling manually, which is exactly how a
+  top-of-page banner went unseen. (The unconditional turn-end scroll this
+  replaces had the opposite politeness bug — it yanked readers.)
+* **`showConfirm` scrolls unconditionally.** The follow rule respects a reader;
+  an approval request is allowed to interrupt one.
+* **The spinner tells the truth.** While a confirm is pending, `#pending` reads
+  "Waiting for your confirmation." — "Microclaw is working…" under a blocked
+  turn is how this defect got diagnosed as a hang.
+
+The fixed-overlay alternative (position the banner like the toast, above the
+composer) was rejected: its one advantage — visible regardless of scroll
+position — is covered by the unconditional scroll in `showConfirm`, and inline
+placement reads in conversation flow where an approval belongs.
+
 ## F2 — `_shutter_state` must not offer `open` as an answer to a question it cannot answer
 
 `tools.py:478`. design/20 F2 already decided the shape of this problem one level

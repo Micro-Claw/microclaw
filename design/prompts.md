@@ -727,3 +727,28 @@ from there with a branch to implement 21-
 
 Stage the deletion of 20-output.txt. It is a mistake that this got tracked.
 Please update design/prompts.md and commit this as well
+
+----
+
+Have a look at the history, 20260710_204516_microclaw_history.json, and the
+output from microclaw serve, 21-output.txt. Both are in the root. The saving to
+knowledge base hung indefinitely until I pressed "stop after the current step".
+It did not prompt me to save in the microclaw serve window, which is good, but
+it never finished executing and saved, which is bad.
+
+[the diagnosis: the design/21 F1 confirmation banner rendered at the top of the
+page, off-screen above a long transcript, while the operator watched the bottom]
+
+Log the finding in the doc
+
+Yeah, the banner fixed above is a good idea. It's also possible that having
+approval in line with the rest of the conversation is a good idea. That is, the
+approval message appears right before the tool that requires approval. Would
+this also work? Or is it more complicated? Btw, autoscroll with the messages is
+also a good idea. I am often scrolling down the page manually to see the latest
+message, which is actually how I missed the safety banner at the top of the
+page.
+
+Update the doc and implement it
+
+Can you update prompts.md and commit and push so I can test on the windows rig?
