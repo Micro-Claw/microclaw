@@ -752,3 +752,15 @@ page.
 Update the doc and implement it
 
 Can you update prompts.md and commit and push so I can test on the windows rig?
+
+Have a look at 20260711_141600_microclaw_history.json in the root folder. I
+think everything worked as expected, and the prompt showed up in the chat as it
+was supposed to. Please verify there were no unexpected issues
+
+[the verdict: the confirmation fix worked end-to-end; two recurring
+inefficiencies observed — the grid acquired twice after a wrong protocol
+choice, and the observed_on requirement learned by rejection in both sessions]
+
+File both in a design note
+
+Please commit and push it here, for later
