@@ -59,7 +59,7 @@ def focus_invalid_warning(snr_value: float, min_snr: float = MIN_SNR) -> str:
     tells the agent, in the payload it reads, that the number is not comparable.
     """
     return (
-        f"SNR {snr_value:.1f} < {min_snr} — no signal in this field, so it has no "
+        f"SNR {snr_value:.2f} < {min_snr} — no signal in this field, so it has no "
         f"sharpness to measure. Do NOT compare this focus_metric against other "
         f"fields; an empty field inflates the metric rather than deflating it."
     )
