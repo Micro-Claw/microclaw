@@ -621,7 +621,8 @@ class TestSnapAndAnalyze:
     def test_metric_is_stamped_with_comparability_key(self, mock_ctrl, unconstrained_guard):
         # A bare float invites cross-setting comparisons (design/14 §10).
         result = snap_and_analyze(mock_ctrl, unconstrained_guard)
-        assert result["focus_metric_kind"] == "normalized_laplacian_variance"
+        # "_gated": focus_metric now travels with focus_metric_valid + snr (design/25).
+        assert result["focus_metric_kind"] == "normalized_laplacian_variance_gated"
         assert set(result["metric_valid_for"]) == {"roi", "exposure_ms", "binning"}
 
     def test_zero_pixel_size_carries_warning(self, mock_ctrl, unconstrained_guard):
@@ -1057,6 +1058,24 @@ class TestTileAcquisitionMarkPositions:
             assert tile["focus_metric"] >= 0.0
             assert tile["saved"] is False
 
+    def test_snap_grid_gates_focus_metric_on_signal(self, centered_ctrl,
+                                                    unconstrained_guard, monkeypatch):
+        # design/25: this per-tile branch is the one that broke the Nestor run —
+        # ranking these focus_metric floats against each other walked the stage to
+        # the emptiest field on the grid. An empty tile must carry
+        # focus_metric_valid False and a warning, so the number can't be ranked
+        # out of context. Empty (no signal) vs a punctate cell, same grid call.
+        rng = np.random.default_rng(0)
+        empty = (400 + rng.normal(0, 10, (64, 64))).astype(np.uint16)
+        monkeypatch.setattr("microclaw.tools.snap_to_numpy_displayed", lambda ctrl: empty)
+        tile = run_tile_acquisition(
+            centered_ctrl, unconstrained_guard, rows=1, cols=1, step_um=1.0,
+            protocol="snap",
+        )["results"][0]
+        assert tile["focus_metric_valid"] is False
+        assert "warning" in tile and "inflate" in tile["warning"]
+        assert "snr" in tile
+
     def test_every_row_carries_its_own_coordinates(self, centered_ctrl,
                                                    unconstrained_guard):
         # The agent filled X/Y columns from its own call ordering rather than
@@ -1098,7 +1117,7 @@ class TestTileAcquisitionMarkPositions:
             centered_ctrl, unconstrained_guard, rows=2, cols=2, step_um=100.0,
             protocol="snap",
         )
-        assert result["focus_metric_kind"] == "normalized_laplacian_variance"
+        assert result["focus_metric_kind"] == "normalized_laplacian_variance_gated"
         assert "metric_valid_for" in result
         for tile in result["results"]:
             assert "metric_valid_for" not in tile
@@ -1341,6 +1360,43 @@ class TestHookedGridAcquisition:
         )
         assert "Unknown hook strategy" in result["error"]
         assert not captured
+
+    def test_hooked_branch_echoes_per_tile_coordinates(
+        self, centered_ctrl, unconstrained_guard, captured
+    ):
+        # design/23 F1 / Episode A: the hooked branch used to drop the exact
+        # per-tile coordinates it computed, so "where was tile r2_c1?" had no
+        # answer short of re-imaging the grid. Now it echoes a `tiles` key.
+        result = run_tile_acquisition(
+            centered_ctrl, unconstrained_guard, rows=3, cols=3, step_um=100.0,
+            protocol="timelapse", save_dir="/ws", name="grid",
+            protocol_params={"n_frames": 1, "interval_s": 0},
+            hook_strategy="recording",
+        )
+        tiles = result["tiles"]
+        assert len(tiles) == 9
+        assert [t["position"] for t in tiles][:2] == ["grid_r0_c0", "grid_r0_c1"]
+        # Center is (0, 0), 3x3 at 100 µm → corners at ±100.
+        corner = tiles[0]
+        assert (corner["x_um"], corner["y_um"]) == (-100.0, -100.0)
+
+    def test_hooked_and_unhooked_agree_on_where_they_went(
+        self, centered_ctrl, unconstrained_guard, captured, fake_snap
+    ):
+        # The assertion worth having (design/23 F1): the hooked `tiles` and the
+        # unhooked per-row coordinates describe the SAME ground for one grid.
+        grid = dict(rows=2, cols=3, step_um=100.0, name="grid")
+        hooked = run_tile_acquisition(
+            centered_ctrl, unconstrained_guard, protocol="timelapse", save_dir="/ws",
+            protocol_params={"n_frames": 1, "interval_s": 0},
+            hook_strategy="recording", **grid,
+        )
+        unhooked = run_tile_acquisition(
+            centered_ctrl, unconstrained_guard, protocol="snap", **grid,
+        )
+        hooked_xy = {(t["position"], t["x_um"], t["y_um"]) for t in hooked["tiles"]}
+        unhooked_xy = {(r["position"], r["x_um"], r["y_um"]) for r in unhooked["results"]}
+        assert hooked_xy == unhooked_xy
 
     def test_unhooked_tiles_keep_the_per_position_loop(self, centered_ctrl,
                                                        unconstrained_guard, captured,
@@ -1776,6 +1832,47 @@ class TestMarkPosition:
         result = mark_position(mock_ctrl, unconstrained_guard, name="no_z", include_z=False)
         assert "z_um" not in result
         mock_ctrl.add_position.assert_called_once_with("no_z", 10.0, 20.0, None)
+
+    def test_supplied_coordinates_record_without_moving_or_imaging(
+        self, mock_ctrl, unconstrained_guard
+    ):
+        # design/23 F3 / Episode B: a known coordinate goes into the list with no
+        # stage read, no move, no exposure. The stage accessors must not be touched.
+        result = mark_position(
+            mock_ctrl, unconstrained_guard, name="cell_07",
+            x_um=1234.5, y_um=-678.9, z_um=42.0,
+        )
+        mock_ctrl.add_position.assert_called_once_with("cell_07", 1234.5, -678.9, 42.0)
+        mock_ctrl.core.get_x_position.assert_not_called()
+        mock_ctrl.core.get_y_position.assert_not_called()
+        mock_ctrl.studio.live().snap.assert_not_called()
+        assert result["imaged"] is False
+        assert result["stage_moved"] is False
+        assert (result["x_um"], result["y_um"], result["z_um"]) == (1234.5, -678.9, 42.0)
+
+    def test_current_position_reports_stage_moved_false_but_read(
+        self, mock_ctrl, unconstrained_guard
+    ):
+        # Marking the current position still images nothing (stage_moved is about
+        # whether a supplied coord bypassed a move; the current-pos form never moves
+        # either, but it does READ the stage).
+        mock_ctrl.core.get_x_position.return_value = 5.0
+        mock_ctrl.core.get_y_position.return_value = 6.0
+        mock_ctrl.core.get_position.return_value = 7.0
+        result = mark_position(mock_ctrl, unconstrained_guard, name="here")
+        assert result["imaged"] is False
+        assert result["stage_moved"] is True
+
+    def test_supplied_coordinates_are_guarded_before_writing(self, mock_ctrl):
+        guard = SafetyGuard(SafetyConstraints(stage=StageConstraints(x_max=100.0)))
+        with pytest.raises(SafetyViolation):
+            mark_position(mock_ctrl, guard, name="too_far", x_um=999.0, y_um=0.0)
+        mock_ctrl.add_position.assert_not_called()
+
+    def test_x_without_y_is_an_error(self, mock_ctrl, unconstrained_guard):
+        result = mark_position(mock_ctrl, unconstrained_guard, name="half", x_um=1.0)
+        assert "error" in result
+        mock_ctrl.add_position.assert_not_called()
 
 
 class TestLoadPositionListValidation:

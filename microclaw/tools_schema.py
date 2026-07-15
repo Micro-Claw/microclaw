@@ -513,9 +513,12 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "mark_position",
         "description": (
-            "Mark the current stage position. It is stored in microclaw's list and "
-            "mirrored into MM's PositionList, so it appears immediately in the MM "
-            "GUI's Position List Manager. Call this after the biologist has "
+            "Mark a stage position. It is stored in microclaw's list and mirrored "
+            "into MM's PositionList, so it appears immediately in the MM GUI's "
+            "Position List Manager. Pass x_um/y_um to record a KNOWN coordinate "
+            "WITHOUT moving there and WITHOUT imaging it — never re-run an "
+            "acquisition just to get positions into the list. Omit them to mark "
+            "wherever the stage currently sits, e.g. after the biologist has "
             "navigated to a site of interest."
         ),
         "input_schema": {
@@ -527,8 +530,29 @@ TOOLS: list[dict[str, Any]] = [
                 },
                 "include_z": {
                     "type": "boolean",
-                    "description": "Also save the current Z position (default true).",
+                    "description": (
+                        "Also save the current Z position (default true). Ignored "
+                        "when x_um/y_um are supplied; pass z_um to set Z explicitly."
+                    ),
                     "default": True,
+                },
+                "x_um": {
+                    "type": "number",
+                    "description": (
+                        "Known X (µm) to record without moving or imaging. Requires "
+                        "y_um. Omit both to use the current stage position."
+                    ),
+                },
+                "y_um": {
+                    "type": "number",
+                    "description": "Known Y (µm) to record without moving or imaging. Requires x_um.",
+                },
+                "z_um": {
+                    "type": "number",
+                    "description": (
+                        "Optional known Z (µm) to record alongside x_um/y_um, again "
+                        "without moving there."
+                    ),
                 },
             },
             "required": ["name"],

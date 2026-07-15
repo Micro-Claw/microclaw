@@ -9,7 +9,12 @@ import numpy as np
 import pytest
 from unittest.mock import MagicMock
 
-from microclaw.hooks import FocusFeedbackHook, IntensityAdaptiveHook
+from microclaw.hooks import (
+    FocusFeedbackHook,
+    HookBase,
+    IntensityAdaptiveHook,
+    PositionFilterHook,
+)
 from microclaw.safety import (
     CameraConstraints,
     SafetyConstraints,
@@ -125,3 +130,72 @@ class TestIntensityAdaptiveHook:
         entry = hook.get_summary()[-1]
         assert "new_exposure_ms" in entry
         ctrl.core.set_exposure.assert_called_once()
+
+
+class TestHookBaseWhere:
+    """design/23 F2: the coordinates were always in the metadata. where() reads
+    them (falling back through .get()), so every hook log is self-describing and
+    no hook has to guess key names — the mistake that cost Episode A a re-scan."""
+
+    def test_multiposition_metadata_carries_xy(self):
+        meta = {
+            "PositionName": "grid_r2_c1",
+            "XPosition_um_Intended": -1034.2,
+            "YPosition_um_Intended": 512.0,
+            "Axes": {"position": "grid_r2_c1"},
+        }
+        assert HookBase.where(meta) == {
+            "position": "grid_r2_c1", "x_um": -1034.2, "y_um": 512.0,
+        }
+
+    def test_zstack_metadata_carries_only_z(self):
+        # A single-position Z-stack (what design/19 examined) has no XY keys, and
+        # a missing key means "no such axis", read with .get() — not a wrong name.
+        meta = {"ZPosition_um_Intended": 30.5, "Axes": {"position": "P0", "z": 3}}
+        where = HookBase.where(meta)
+        assert where == {"position": "P0", "z_um": 30.5}
+        assert "x_um" not in where
+
+    def test_position_falls_back_to_axes(self):
+        # No PositionName, but Axes carries the label — the documented fallback.
+        assert HookBase.where({"Axes": {"position": "P7"}})["position"] == "P7"
+
+    def test_where_never_raises_on_empty_metadata(self):
+        assert HookBase.where({}) == {"position": None}
+
+    def test_log_stamps_position_onto_every_entry(self, tmp_path):
+        hook = HookBase(log_path=str(tmp_path / "log.json"))
+        meta = {"PositionName": "cell_03", "XPosition_um_Intended": 1.0,
+                "YPosition_um_Intended": 2.0}
+        hook.log(meta, snr=73.1)
+        entry = hook.get_summary()[-1]
+        # The Episode A fix: "cell_03, SNR 73" can never again omit where cell_03 was.
+        assert entry == {"position": "cell_03", "x_um": 1.0, "y_um": 2.0, "snr": 73.1}
+
+    def test_where_event_reads_absolute_coords(self):
+        event = {"axes": {"position": "P1"}, "x": 10.0, "y": 20.0, "z": 5.0}
+        assert HookBase.where_event(event) == {
+            "position": "P1", "x_um": 10.0, "y_um": 20.0, "z_um": 5.0,
+        }
+
+
+class TestPositionFilterHookIdentity:
+    """design/23 F2 latent bug: the live rig has no metadata["position_index"], so
+    the old read collapsed every rejection under -1 and logged only the first. The
+    hook now dedups on the stamped position identity from where()."""
+
+    def test_rejections_keyed_to_distinct_positions(self, tmp_path):
+        hook = PositionFilterHook(min_mean_intensity=100.0,
+                                  log_path=str(tmp_path / "log.json"))
+        dim = np.full((8, 8), 10.0)          # mean 10 < 100 → rejected
+        hook.image_process_fn(dim, {"PositionName": "P0"}, None)
+        hook.image_process_fn(dim, {"PositionName": "P1"}, None)
+        hook.image_process_fn(dim, {"PositionName": "P1"}, None)   # dup, not re-logged
+        logged = [e["position"] for e in hook.get_summary()]
+        assert logged == ["P0", "P1"]        # two distinct, not collapsed under -1
+
+    def test_dim_image_still_discarded(self, tmp_path):
+        hook = PositionFilterHook(min_mean_intensity=100.0)
+        assert hook.image_process_fn(np.full((8, 8), 10.0), {"PositionName": "P0"}, None) is None
+        img = np.full((8, 8), 500.0)
+        assert hook.image_process_fn(img, {"PositionName": "P1"}, None) is not None
