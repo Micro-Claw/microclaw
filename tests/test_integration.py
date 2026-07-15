@@ -558,6 +558,44 @@ def test_mark_position_writes_through_to_mm_native_list(headless_mm, unconstrain
     clear_position_list(headless_mm, unconstrained_guard)
 
 
+def test_mark_position_with_supplied_coords_writes_through_without_moving(
+    headless_mm, unconstrained_guard
+):
+    """design/23 F3: mark_position(x_um, y_um) records a KNOWN coordinate into MM's
+    native list without moving the stage and without imaging — the whole point of
+    the change (Episode B re-imaged keepers just to get them into the list). This
+    asserts the write-through path against the real PositionList AND that the stage
+    stayed put."""
+    from microclaw.tools import clear_position_list, mark_position
+
+    _clear_mm_native_list(headless_mm)
+    clear_position_list(headless_mm, unconstrained_guard)
+    orig = (headless_mm.core.get_x_position(), headless_mm.core.get_y_position())
+    # A coordinate deliberately offset from where the stage sits.
+    target_x, target_y = orig[0] + 37.0, orig[1] - 24.0
+
+    result = mark_position(
+        headless_mm, unconstrained_guard, name="Known",
+        x_um=target_x, y_um=target_y, include_z=False,
+    )
+    assert result["imaged"] is False
+    assert result["stage_moved"] is False
+
+    # The stage must NOT have moved to the supplied coordinate.
+    now = (headless_mm.core.get_x_position(), headless_mm.core.get_y_position())
+    assert abs(now[0] - orig[0]) < 1.0 and abs(now[1] - orig[1]) < 1.0
+
+    # ...but the supplied coordinate is in MM's real PositionList.
+    native = headless_mm._read_mm_position_list()
+    entry = next((p for p in native if p["name"] == "Known"), None)
+    assert entry is not None, f"Known missing from MM native list: {native}"
+    assert abs(entry["x_um"] - target_x) < 1.0
+    assert abs(entry["y_um"] - target_y) < 1.0
+
+    _clear_mm_native_list(headless_mm)
+    clear_position_list(headless_mm, unconstrained_guard)
+
+
 def test_remark_label_does_not_duplicate_in_mm_native_list(headless_mm, unconstrained_guard):
     """Re-marking a label replaces the MSP in MM's list rather than duplicating it."""
     from microclaw.tools import clear_position_list, mark_position
@@ -917,6 +955,51 @@ def test_read_hook_log_after_acquisition(headless_mm, unconstrained_guard, tmp_p
     assert result["entry_count"] == len(result["entries"])
 
 
+def test_hooked_grid_log_carries_real_stamped_xy(headless_mm, unconstrained_guard, tmp_path):
+    """design/23 F1+F2, the empirical claim the whole fix rests on: a REAL
+    multi-position acquisition's metadata carries XPosition_um_Intended /
+    YPosition_um_Intended, so HookBase.where() can stamp per-image XY without a
+    position-list join. design/19 wrongly concluded these keys never exist (it
+    examined a single-position z-stack). This drives a hooked 1x2 grid on the demo
+    config and asserts the hook log carries non-null x_um/y_um — if this fails on
+    the rig, F1/F2's premise is wrong and Episode A cannot be closed by stamping.
+
+    position_filter with an unreachable threshold forces a log entry at every tile
+    (it logs on rejection), and each entry routes through self.log(metadata, ...).
+    """
+    from microclaw.tools import run_tile_acquisition
+
+    log_path = str(tmp_path / "grid_xy_log.json")
+    orig = (headless_mm.core.get_x_position(), headless_mm.core.get_y_position())
+    result = run_tile_acquisition(
+        headless_mm, unconstrained_guard, rows=1, cols=2, step_um=25.0,
+        protocol="timelapse", save_dir=str(tmp_path), name="xygrid",
+        protocol_params={"n_frames": 1, "interval_s": 0},
+        hook_strategy="position_filter", hook_params={"min_mean_intensity": 1e12},
+        log_path=log_path,
+    )
+
+    # F1: the result echoes exact per-tile coordinates without a re-scan.
+    assert len(result["tiles"]) == 2
+    assert all(t["x_um"] is not None for t in result["tiles"])
+
+    # F2: the hook log, stamped from REAL metadata, carries position + stage XY.
+    log = json.loads(Path(log_path).read_text())
+    assert len(log) == 2, f"expected one entry per tile, got: {log}"
+    labels = {e["position"] for e in log}
+    assert labels == {"xygrid_r0_c0", "xygrid_r0_c1"}, f"positions not stamped: {log}"
+    for entry in log:
+        # THE assertion: XPosition_um_Intended was present on real metadata.
+        assert entry.get("x_um") is not None, f"no stamped x_um (F2 premise fails): {entry}"
+        assert entry.get("y_um") is not None, f"no stamped y_um (F2 premise fails): {entry}"
+    # The two tiles are one step_um apart in X, from the metadata, not our arithmetic.
+    xs = sorted(e["x_um"] for e in log)
+    assert abs((xs[1] - xs[0]) - 25.0) < 2.0
+
+    headless_mm.core.set_xy_position(*orig)
+    headless_mm.core.wait_for_device(headless_mm.core.get_xy_stage_device())
+
+
 def test_read_hook_log_missing_file(headless_mm, unconstrained_guard):
     from microclaw.tools import read_hook_log
     result = read_hook_log(headless_mm, unconstrained_guard, log_path="/no/such/file.json")
@@ -1274,9 +1357,12 @@ def test_snap_and_analyze_displays_and_stamps_metric(headless_mm, unconstrained_
     from microclaw.tools import snap_and_analyze
     result = snap_and_analyze(headless_mm, unconstrained_guard)
     assert result["displayed_in_mm_viewer"] is True
-    assert result["focus_metric_kind"] == "normalized_laplacian_variance"
+    # "_gated": focus_metric now travels with focus_metric_valid + snr (design/25).
+    assert result["focus_metric_kind"] == "normalized_laplacian_variance_gated"
     assert set(result["metric_valid_for"]) == {"roi", "exposure_ms", "binning"}
     assert result["focus_metric"] >= 0.0
+    assert "focus_metric_valid" in result
+    assert "snr" in result
 
 
 def test_snap_and_analyze_headless_does_not_claim_display(headless_mm, unconstrained_guard):

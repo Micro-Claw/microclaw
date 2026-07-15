@@ -9,6 +9,24 @@ from microclaw.image_analysis import normalized_laplacian_variance, snap_to_nump
 from microclaw.safety import SafetyViolation
 
 
+def _frame_index(metadata: dict):
+    """Frame/time index for a per-frame log entry.
+
+    The live rig stamps FrameIndex/Frame (design/23 F2 metadata dump), NOT a
+    "time" key; the acq-engine port carries the same index at Axes["time"]. Read
+    the real keys first and fall back to the legacy "time" so the port/offline
+    paths keep working. metadata.get("time") alone silently returned None on the
+    rig — the wrong-key-name failure class F2 is closing.
+    """
+    for key in ("FrameIndex", "Frame"):
+        if metadata.get(key) is not None:
+            return metadata[key]
+    axes = metadata.get("Axes") or {}
+    if axes.get("time") is not None:
+        return axes["time"]
+    return metadata.get("time")
+
+
 class HookBase:
     """All hooks write a summary log so Claude can read results afterward."""
 
@@ -27,6 +45,61 @@ class HookBase:
         """
         if self.log_path:
             Path(self.log_path).write_text(json.dumps(self._log, indent=2), encoding="utf-8")
+
+    @staticmethod
+    def where(metadata: dict) -> dict:
+        """Where this image was taken, from its own metadata. Never raises.
+
+        A multi-position acquisition stamps PositionName / XPosition_um_Intended /
+        YPosition_um_Intended; a Z-stack stamps ZPosition_um_Intended. Neither
+        stamps the other's keys (the acq-engine gates each on the event carrying
+        that coordinate), so every read is a .get() and a missing key means "this
+        acquisition has no such axis", not "wrong name". This is the fix for the
+        design/23 F2 bug where hook_docs claimed XPosition_um_Intended did not
+        exist; it does, for every multi-position grid. Verified without hardware in
+        design/23-hook-metadata-coords-spike.py and on the live bridge.
+        """
+        axes = metadata.get("Axes") or {}
+        out: dict = {"position": metadata.get("PositionName", axes.get("position"))}
+        for key, field in (("XPosition_um_Intended", "x_um"),
+                           ("YPosition_um_Intended", "y_um"),
+                           ("ZPosition_um_Intended", "z_um")):
+            value = metadata.get(key)
+            if value is not None:
+                out[field] = round(float(value), 3)
+        return out
+
+    @staticmethod
+    def where_event(event: dict) -> dict:
+        """Same shape as where(), for pre/post-hardware hooks that get an event
+        (which carries absolute x/y/z and an axes dict) rather than image metadata.
+
+        Keeps "where was this" to a single spelling across the two hook shapes —
+        the thing design/23 F2 was written to prevent a third of.
+        """
+        axes = event.get("axes") or {}
+        out: dict = {"position": axes.get("position")}
+        for key, field in (("x", "x_um"), ("y", "y_um"), ("z", "z_um")):
+            value = event.get(key)
+            if value is not None:
+                out[field] = round(float(value), 3)
+        return out
+
+    def log(self, metadata: dict, **fields) -> None:
+        """Append ONE self-describing entry: where the image was + what the hook
+        measured, then persist.
+
+        Every hook routes its per-image record through here instead of appending
+        to self._log directly, so no hook log can ever again say "filament_r2_c2,
+        SNR 73" without saying where r2_c2 was (design/23 Episode A).
+        """
+        self._log.append({**self.where(metadata), **fields})
+        self._write_log()
+
+    def log_event(self, event: dict, **fields) -> None:
+        """log() for the pre/post-hardware hook shape (see where_event)."""
+        self._log.append({**self.where_event(event), **fields})
+        self._write_log()
 
     def get_summary(self) -> list[dict]:
         return self._log
@@ -67,21 +140,19 @@ class AutofocusHook(HookBase):
             self.guard.check_z(z_start)
             self.guard.check_z(z_end)
         except Exception as e:
-            self._log.append({"event": event, "autofocus": "skipped", "reason": str(e)})
-            self._write_log()
+            self.log_event(event, autofocus="skipped", reason=str(e))
             return event
 
         coarse_step = max(self.z_step_um * 5, 1.0)
         result = self._autofocus_fn(
             self.ctrl, self.z_range_um, coarse_step, self.z_step_um, self.settle_ms
         )
-        self._log.append({
-            "position": event.get("axes", {}),
-            "best_z_um": round(result.final_z_um, 3),
-            "converged": result.converged,
+        self.log_event(
+            event,
+            best_z_um=round(result.final_z_um, 3),
+            converged=result.converged,
             **({"warning": result.reason} if not result.converged else {}),
-        })
-        self._write_log()
+        )
         return event
 
 
@@ -139,12 +210,11 @@ class FocusFeedbackHook(HookBase):
                 except Exception as e:
                     outcome, reason = "hardware_error", str(e)
                     break
-            entry = {"frame": metadata.get("time"), "focus_correction": corrected,
-                     "jogs": jogs, "outcome": outcome}
+            fields = {"frame": _frame_index(metadata), "focus_correction": corrected,
+                      "jogs": jogs, "outcome": outcome}
             if reason:
-                entry["reason"] = reason
-            self._log.append(entry)      # exactly one entry per triggering frame
-            self._write_log()
+                fields["reason"] = reason
+            self.log(metadata, **fields)   # exactly one entry per triggering frame
         return image, metadata
 
 
@@ -176,25 +246,17 @@ class IntensityAdaptiveHook(HookBase):
             new_exp = float(
                 np.clip(self.ctrl.core.get_exposure() * ratio, self.min_exp, self.max_exp)
             )
+            frame = _frame_index(metadata)
             try:
                 self.guard.check_exposure(new_exp)
                 self.ctrl.core.set_exposure(new_exp)
-                self._log.append(
-                    {"frame": metadata.get("time"), "new_exposure_ms": round(new_exp, 1)}
-                )
+                self.log(metadata, frame=frame, new_exposure_ms=round(new_exp, 1))
             except SafetyViolation as e:
                 # Guard rejection: expected, but never silent — this log line is
                 # the operator's only signal from an acquisition thread.
-                self._log.append(
-                    {"frame": metadata.get("time"), "exposure_change": "blocked",
-                     "reason": str(e)}
-                )
+                self.log(metadata, frame=frame, exposure_change="blocked", reason=str(e))
             except Exception as e:
-                self._log.append(
-                    {"frame": metadata.get("time"), "exposure_change": "error",
-                     "reason": str(e)}
-                )
-            self._write_log()
+                self.log(metadata, frame=frame, exposure_change="error", reason=str(e))
         return image, metadata
 
 
@@ -213,17 +275,14 @@ class PositionFilterHook(HookBase):
     def image_process_fn(self, image: np.ndarray, metadata: dict, event_queue):
         mean = float(np.mean(image))
         if mean < self.min_mean:
-            pos = metadata.get("position_index", -1)
+            # Dedup on the stamped position identity, not metadata["position_index"]:
+            # the live rig has no such key, so the old read collapsed every
+            # rejection under -1 and stopped logging which positions it dropped
+            # after the first (design/23 F2). self.where() reads PositionName.
+            pos = self.where(metadata).get("position")
             if pos not in self.rejected:
                 self.rejected.append(pos)
-                self._log.append(
-                    {
-                        "position_index": pos,
-                        "mean_intensity": round(mean, 1),
-                        "action": "rejected",
-                    }
-                )
-                self._write_log()
+                self.log(metadata, mean_intensity=round(mean, 1), action="rejected")
             return None
         return image, metadata
 
@@ -256,13 +315,11 @@ class MMPluginHook(HookBase):
         try:
             score = float(getattr(self._plugin, self.method)(feature))
         except Exception as e:
-            self._log.append({"frame": metadata.get("time"), "plugin_error": str(e)})
-            self._write_log()
+            self.log(metadata, frame=_frame_index(metadata), plugin_error=str(e))
             return image, metadata             # fail open: never lose data on bug
         keep = self.reject_below is None or score >= self.reject_below
-        self._log.append({"frame": metadata.get("time"),
-                          "plugin": self.classpath, "score": score, "kept": keep})
-        self._write_log()
+        self.log(metadata, frame=_frame_index(metadata),
+                 plugin=self.classpath, score=score, kept=keep)
         return (image, metadata) if keep else None
 
 
@@ -289,23 +346,17 @@ class MMAutofocusPluginHook(HookBase):
         try:
             new_z = float(self._af.full_focus())     # plugin owns the motion
         except Exception as e:
-            self._log.append({"axes": event.get("axes", {}),
-                              "autofocus": "skipped", "reason": str(e)})
-            self._write_log()
+            self.log_event(event, autofocus="skipped", reason=str(e))
             return event
         # PASSIVE guard: assert on the result; if unsafe, skip capture and stop —
         # do NOT re-drive Z (that would fight the plugin's own safety controller).
         try:
             self.guard.check_z(new_z)
         except Exception as e:
-            self._log.append({"axes": event.get("axes", {}),
-                              "autofocus": "unsafe_abort", "unsafe_z": new_z,
-                              "reason": str(e)})
-            self._write_log()
+            self.log_event(event, autofocus="unsafe_abort", unsafe_z=new_z,
+                           reason=str(e))
             return None                              # skip this capture; signal stop
-        self._log.append({"axes": event.get("axes", {}), "best_z_um": round(new_z, 3),
-                          "plugin": self.plugin_name})
-        self._write_log()
+        self.log_event(event, best_z_um=round(new_z, 3), plugin=self.plugin_name)
         return event
 
 

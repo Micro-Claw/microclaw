@@ -21,8 +21,10 @@ from microclaw.autofocus import (
 from microclaw.controller import MicroscopeController
 from microclaw.errors import hint_for_error, humanize_java_error
 from microclaw.image_analysis import (
+    ImageStats,
     compute_stats,
     detect_features,
+    focus_invalid_warning,
     make_thumbnail,
     normalized_laplacian_variance,
     snap_to_numpy,
@@ -825,7 +827,10 @@ def _metric_stamp(ctrl: MicroscopeController) -> dict:
     except Exception:
         binning = None
     return {
-        "focus_metric_kind": "normalized_laplacian_variance",
+        # "_gated" records that focus_metric now travels with focus_metric_valid
+        # and snr (design/25): the presence of a gate is self-describing in a saved
+        # history, not silently inferred from whether the extra keys happen to be there.
+        "focus_metric_kind": "normalized_laplacian_variance_gated",
         "metric_valid_for": {
             "roi": roi_list,
             "exposure_ms": exposure_ms,
@@ -834,19 +839,27 @@ def _metric_stamp(ctrl: MicroscopeController) -> dict:
     }
 
 
-def _focus_metric_payload(ctrl: MicroscopeController, image: np.ndarray) -> dict:
-    """Focus metric stamped with the settings it is only comparable within.
+def _focus_metric_payload(ctrl: MicroscopeController, stats: ImageStats) -> dict:
+    """Focus metric stamped with the settings it is only comparable within, and
+    with the SNR gate that says whether it is a measurement at all (design/25).
 
-    A bare float invites exactly the cross-setting comparison the amr_test
-    model made — reading a laser-power increase as a focus improvement
-    (design/14 §10). The metric itself is illumination-normalised; the
-    metric_valid_for block guards the residual ROI/exposure/binning
-    dependence.
+    A bare float invites exactly the cross-setting comparison the amr_test model
+    made — reading a laser-power increase as a focus improvement (design/14 §10);
+    a bare float on an EMPTY field invites ranking it as the sharpest tile on the
+    grid (design/25). The metric is illumination-normalised, metric_valid_for
+    guards the residual ROI/exposure/binning dependence, and focus_metric_valid
+    guards "is there any signal to be sharp about at all?".
     """
-    return {
-        "focus_metric": _round_sig(normalized_laplacian_variance(image)),
+    payload = {
+        "focus_metric": _round_sig(stats.focus_metric),
+        "focus_metric_valid": stats.focus_metric_valid,
+        "background_level": stats.background_level,
+        "snr": stats.snr,
         **_metric_stamp(ctrl),
     }
+    if not stats.focus_metric_valid:
+        payload["warning"] = focus_invalid_warning(stats.snr)
+    return payload
 
 
 def snap_and_analyze(
@@ -875,7 +888,7 @@ def snap_and_analyze(
         # their image was on screen. Now it reports whether MM actually has a
         # Preview window open (which snap_to_numpy_displayed has just repainted).
         "displayed_in_mm_viewer": bool(display) and preview_window_open(ctrl),
-        **_focus_metric_payload(ctrl, image),
+        **_focus_metric_payload(ctrl, stats),
         "mean_intensity": round(stats.mean_intensity, 1),
         "min_intensity": round(stats.min_intensity, 1),
         "max_intensity": round(stats.max_intensity, 1),
@@ -888,10 +901,16 @@ def snap_and_analyze(
     except Exception:
         pixel_size = None
     if pixel_size == 0.0:
-        text_payload["warning"] = (
+        # Compose, don't clobber: _focus_metric_payload may already have set a
+        # focus-invalid warning (design/25), and dropping it silently to report
+        # the pixel-size one would re-open the very "bare number out of context"
+        # gap the gate closes.
+        pixel_warning = (
             "No pixel-size calibration: image-pixel offsets cannot be "
             "converted to stage µm."
         )
+        existing = text_payload.get("warning")
+        text_payload["warning"] = f"{existing} {pixel_warning}" if existing else pixel_warning
     if not return_thumbnail:
         return text_payload
     return [
@@ -1205,11 +1224,30 @@ def mark_position(
     guard: SafetyGuard,
     name: str,
     include_z: bool = True,
+    x_um: float | None = None,
+    y_um: float | None = None,
+    z_um: float | None = None,
 ) -> dict:
-    """Record the current stage position in microclaw's list and MM's GUI list."""
-    x = round(ctrl.core.get_x_position(), 3)
-    y = round(ctrl.core.get_y_position(), 3)
-    z = round(ctrl.core.get_position(), 3) if include_z else None
+    """Record a position in microclaw's list and MM's GUI list.
+
+    With x_um/y_um: records that KNOWN coordinate WITHOUT moving the stage and
+    WITHOUT imaging. Without them: the current stage position, as before. The
+    second form is why Episode B cost 16 exposures (design/23) — the only zero-move
+    way to write a known coordinate into the list was an acquisition tool's
+    mark_positions=True flag, and that flag images.
+    """
+    if (x_um is None) != (y_um is None):
+        return {"error": "Provide both x_um and y_um, or neither."}
+    supplied = x_um is not None
+    if supplied:
+        x, y = round(x_um, 3), round(y_um, 3)
+        z = round(z_um, 3) if z_um is not None else None
+    else:
+        x = round(ctrl.core.get_x_position(), 3)
+        y = round(ctrl.core.get_y_position(), 3)
+        z = round(ctrl.core.get_position(), 3) if include_z else None
+    # Supplied coordinates are unvalidated caller input, unlike the current stage
+    # position, which is reachable by definition. Guard BEFORE anything is written.
     guard.check_xy(x, y)
     if z is not None:
         guard.check_z(z)
@@ -1219,6 +1257,9 @@ def mark_position(
         "x_um": x,
         "y_um": y,
         **({"z_um": z} if z is not None else {}),
+        # In the payload the agent actually reads: marking is free.
+        "imaged": False,
+        "stage_moved": not supplied,
     }
 
 
@@ -1370,7 +1411,7 @@ def _run_protocol_at(
         with _pause_live(ctrl):                     # snap(True) wedges under live (V1)
             image = snap_to_numpy_displayed(ctrl)
         stats = compute_stats(image)
-        return {
+        tile = {
             "position": pos_label,
             "status": "snapped",
             "saved": False,
@@ -1379,12 +1420,21 @@ def _run_protocol_at(
             # ROI/exposure/binning, so the caller stamps it once. A bare float
             # would otherwise invite the cross-setting comparison design/14 §10
             # warns about — here the comparison across tiles is the point.
-            "focus_metric": _round_sig(normalized_laplacian_variance(image)),
+            "focus_metric": _round_sig(stats.focus_metric),
+            # THE tile-ranking fix (design/25): ranking these floats against each
+            # other is what walked the stage to the emptiest field on the grid.
+            # focus_metric_valid is False where there is no signal to be sharp about.
+            "focus_metric_valid": stats.focus_metric_valid,
+            "snr": stats.snr,
+            "background_level": stats.background_level,
             "mean_intensity": round(stats.mean_intensity, 1),
             "min_intensity": round(stats.min_intensity, 1),
             "max_intensity": round(stats.max_intensity, 1),
             "saturated_fraction": round(stats.saturated_fraction, 4),
         }
+        if not stats.focus_metric_valid:
+            tile["warning"] = focus_invalid_warning(stats.snr)
+        return tile
     if pos_save_dir is None:
         return {
             "position": pos_label,
@@ -1492,7 +1542,7 @@ def run_multiposition_acquisition(
             for pos_label, x_um, y_um, z_um in resolved:
                 ctrl.add_position(pos_label, round(x_um, 3), round(y_um, 3),
                                   round(z_um, 3) if z_um is not None else None)
-        return _acquire_positions_with_hook(
+        hooked = _acquire_positions_with_hook(
             ctrl, guard,
             positions=[{"name": n, "x_um": x, "y_um": y, "z_um": z}
                        for n, x, y, z in resolved],
@@ -1501,6 +1551,18 @@ def run_multiposition_acquisition(
             channel=params.get("channel"), exposure_ms=params.get("exposure_ms"),
             **shape,
         )
+        if "error" in hooked:
+            return hooked
+        # The coordinates are known exactly, right here — the hooked branch used
+        # to drop them, so "where was tile r2_c1?" had no answer short of
+        # re-imaging the grid (design/23 Episode A). The non-hooked branch has
+        # attached them since design/19 F3; this is the same fix on the path every
+        # survey actually takes. read_hook_log joins to this on `position`.
+        return {**hooked, "tiles": [
+            {"position": n, "x_um": round(x, 3), "y_um": round(y, 3),
+             **({"z_um": round(z, 3)} if z is not None else {})}
+            for n, x, y, z in resolved
+        ]}
 
     for pos_label, x_um, y_um, z_um in resolved:
         pos_save_dir = str(Path(save_dir) / pos_label) if save_dir else None

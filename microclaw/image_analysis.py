@@ -9,11 +9,60 @@ from PIL import Image
 
 
 class ImageStats(NamedTuple):
-    focus_metric: float
+    focus_metric: float          # normalized_laplacian_variance — the number tools report
+    focus_metric_valid: bool     # False when snr < min_snr: no signal to be sharp about
+    background_level: float      # robust: median (the camera offset, Evolve512 ≈ 400)
+    snr: float                   # the shared snr() definition below
     mean_intensity: float
     max_intensity: float
     min_intensity: float
     saturated_fraction: float
+
+
+#: Below this SNR, "how sharp is this field?" has no answer, because there is
+#: nothing in the field to be sharp (design/25). An empty field is pinned at
+#: SNR ≈ 2.58 by snr() below, and synthetic cells read 11–84, so 3.0 sits just
+#: above the empty floor with room. STILL A PLACEHOLDER: design/23 F7 is explicit
+#: that it must be measured on real frames against snr(), and it plausibly varies
+#: by objective and by sample. If it needs per-rig values it belongs in
+#: safety_config.yaml alongside the other rig facts.
+MIN_SNR = 3.0  # TODO(rig): calibrate. See design/23 F7 / design/25.
+
+
+def snr(image: np.ndarray, background: float | None = None) -> float:
+    """Signal over the noise floor: (p99.5 - bg) / (1.4826 * MAD).
+
+    Robust at both ends: a percentile rather than max() so one hot pixel is not
+    "signal", and MAD rather than std() so the noise estimate is not inflated by
+    the signal it is meant to be measuring against.
+
+    The ONE definition (design/23 F7). detect_features calls this rather than
+    keeping its own peak/std — two different quantities both named `snr`, returned
+    by different tools, is the design/20 failure class exactly.
+    """
+    img = image.astype(np.float64)
+    if img.ndim == 3:
+        img = img.mean(axis=-1)
+    bg = float(np.median(img)) if background is None else background
+    mad = float(np.median(np.abs(img - np.median(img))))
+    noise = 1.4826 * mad
+    if noise <= 0:                  # flat frame (all-zero, or saturated everywhere)
+        return 0.0
+    return float((np.percentile(img, 99.5) - bg) / noise)
+
+
+def focus_invalid_warning(snr_value: float, min_snr: float = MIN_SNR) -> str:
+    """The words a tool surfaces when the focus metric is not a measurement.
+
+    Returning a bare focus_metric float on an empty field is what let the Nestor
+    agent rank the emptiest tile on the grid as the sharpest (design/25). This
+    tells the agent, in the payload it reads, that the number is not comparable.
+    """
+    return (
+        f"SNR {snr_value:.2f} < {min_snr} — no signal in this field, so it has no "
+        f"sharpness to measure. Do NOT compare this focus_metric against other "
+        f"fields; an empty field inflates the metric rather than deflating it."
+    )
 
 
 def laplacian_variance(image: np.ndarray) -> float:
@@ -53,10 +102,30 @@ def normalized_laplacian_variance(
     return float(np.var(laplace(sig)) / mean ** 2)
 
 
-def compute_stats(image: np.ndarray) -> ImageStats:
+def compute_stats(image: np.ndarray, min_snr: float = MIN_SNR) -> ImageStats:
+    """Per-image statistics, including the NORMALIZED focus metric and its gate.
+
+    focus_metric is now normalized_laplacian_variance, not the raw
+    laplacian_variance — both tool payload sites already overrode the old raw
+    value with the normalized one (design/14 §10) because the raw number was not
+    comparable, so computing it here means one computation, one validity flag, and
+    no dead field to mistake for the live one (design/23 F7). The raw
+    laplacian_variance stays exported for anyone who wants it.
+
+    focus_metric_valid is False below min_snr: an empty field inflates the metric
+    rather than deflating it (design/25), so its "sharpness" is not a measurement.
+    """
     bit_max = float(np.iinfo(image.dtype).max) if np.issubdtype(image.dtype, np.integer) else 1.0
+    img = image.astype(np.float64)
+    if img.ndim == 3:
+        img = img.mean(axis=-1)
+    bg = float(np.median(img))           # computed once, shared by snr and the metric
+    s = snr(image, background=bg)
     return ImageStats(
-        focus_metric=laplacian_variance(image),
+        focus_metric=normalized_laplacian_variance(image, background=bg),
+        focus_metric_valid=s >= min_snr,
+        background_level=round(bg, 1),
+        snr=round(s, 2),
         mean_intensity=float(np.mean(image)),
         max_intensity=float(np.max(image)),
         min_intensity=float(np.min(image)),
@@ -133,7 +202,10 @@ def detect_features(
         "centroid_xy_px": [round(float(cx), 1), round(float(cy), 1)],
         "offset_from_center_px": [round(float(off_x), 1), round(float(off_y), 1)],
         "background_level": round(bg, 1),
-        "snr": round(peak / (float(sig.std()) or 1.0), 2),
+        # The ONE snr definition (design/23 F7): (p99.5-bg)/(1.4826·MAD), NOT the
+        # old peak/std. peak/std and this are different scales — leaving two
+        # functions both named `snr` is the design/20 comparability failure.
+        "snr": round(snr(img, background=bg), 2),
     }
 
 

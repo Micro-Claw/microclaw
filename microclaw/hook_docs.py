@@ -27,10 +27,16 @@ Called after every image arrives from the camera, before it is saved.
   - Signal that the acquisition should end early:
       event_queue.put(None)
 
-To key a log entry to the image's place in the acquisition, read the axes —
-`metadata["Axes"]` holds e.g. {"position": "tile_r0_c1", "time": 0, "z": 3}.
-Do not guess stage-coordinate metadata names (there is no
-"XPosition_um_Intended"); a multi-position acquisition names its positions.
+To key a log entry to the image's place in the acquisition, call
+self.log(metadata, ...) on HookBase: it stamps position/x_um/y_um/z_um for you
+from the image metadata, so every entry is self-describing.
+
+If you read the metadata yourself: a multi-position acquisition carries
+"PositionName", "XPosition_um_Intended" and "YPosition_um_Intended"; a Z-stack
+carries "ZPosition_um_Intended". An acquisition without a given axis does not
+carry its keys, so read every one with .get() and fall back to
+`metadata["Axes"]["position"]` for identity. (metadata["Axes"] holds e.g.
+{"position": "tile_r0_c1", "time": 0, "z": 3}.)
 
 ### post_hardware_hook_fn(event: dict) -> dict | None
 
@@ -138,7 +144,13 @@ If the hook needs hardware access, accept `ctrl` and `guard` in __init__:
 ```
 
 HookBase provides:
-  self._log        list[dict]  — append your per-image/per-event records here
+  self.log(metadata, **fields) — append ONE entry stamped with position + stage
+                                 XY/Z from the image metadata, then persist.
+                                 Prefer this over appending to self._log by hand.
+  self.log_event(event, **fields) — same, for pre/post-hardware hooks that get an
+                                 event dict instead of image metadata.
+  HookBase.where(metadata)     — just the {position, x_um, y_um, z_um} dict.
+  self._log        list[dict]  — the raw record list (log()/log_event() append here)
   self._write_log()            — writes self._log as JSON to self.log_path
   self.log_path    str | None  — path supplied at construction time
 

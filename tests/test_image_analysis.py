@@ -9,25 +9,37 @@ from PIL import Image
 
 from microclaw import image_analysis
 from microclaw.image_analysis import (
+    MIN_SNR,
     compute_stats,
     detect_features,
+    focus_invalid_warning,
     laplacian_variance,
     make_thumbnail,
     normalized_laplacian_variance,
     preview_window_open,
     snap_to_numpy,
     snap_to_numpy_displayed,
+    snr,
 )
 
 
 def synthetic_puncta(shape=(128, 128), spots=((40, 50), (80, 90), (20, 100)),
-                     amp=5000.0, sigma=2.0, bg=400.0):
-    """Sparse gaussian puncta on a camera-offset background (Evolve512-like)."""
+                     amp=5000.0, sigma=2.0, bg=400.0, read_noise=0.0, seed=0):
+    """Sparse gaussian puncta on a camera-offset background (Evolve512-like).
+
+    read_noise defaults to 0 (a perfectly flat background) for the deterministic
+    detection tests. Pass read_noise>0 for anything that measures SNR: the shared
+    snr() estimates the noise floor from the median absolute deviation, and a
+    noiseless background has MAD 0 (a degenerate case that never occurs on a real
+    detector), which pins SNR at 0 regardless of signal.
+    """
     yy, xx = np.mgrid[0:shape[0], 0:shape[1]]
     img = np.full(shape, bg, dtype=np.float32)
     for y, x in spots:
         img += amp * np.exp(-((yy - y) ** 2 + (xx - x) ** 2) / (2 * sigma ** 2))
-    return img.astype(np.uint16)
+    if read_noise > 0:
+        img = img + np.random.default_rng(seed).normal(0, read_noise, shape).astype(np.float32)
+    return np.clip(img, 0, None).astype(np.uint16)
 
 
 def _tagged_ctrl(pix: bytes, w: int, h: int, bpp: int, n_comp: int):
@@ -303,6 +315,79 @@ class TestNormalizedLaplacianVariance:
         assert normalized_laplacian_variance(np.full((64, 64), 400.0)) == 0.0
 
 
+class TestSnr:
+    """design/23 F7: one robust snr() definition, shared by compute_stats and
+    detect_features. (p99.5 - bg) / (1.4826 * MAD)."""
+
+    def test_empty_field_is_pinned_low(self):
+        # Pure read noise: SNR is an amplitude-independent constant near 2.58
+        # (design/25 check 4), well below MIN_SNR so the gate catches it.
+        rng = np.random.default_rng(0)
+        empty = (400 + rng.normal(0, 10, (256, 256))).astype(np.uint16)
+        assert snr(empty) < MIN_SNR
+        # Amplitude-independent: doubling the noise does not change the ratio.
+        louder = (400 + rng.normal(0, 40, (256, 256))).astype(np.uint16)
+        assert snr(louder) == pytest.approx(snr(empty), abs=0.6)
+
+    def test_cell_is_well_above_the_floor(self):
+        img = synthetic_puncta(read_noise=8.0)
+        assert snr(img) > MIN_SNR
+
+    def test_flat_frame_is_zero_not_infinite(self):
+        # MAD 0 (a degenerate synthetic case): guarded, not a divide-by-zero.
+        assert snr(np.full((64, 64), 400.0)) == 0.0
+
+    def test_one_hot_pixel_is_not_signal(self):
+        # A percentile, not max(): a single hot pixel must not read as signal.
+        rng = np.random.default_rng(1)
+        frame = (400 + rng.normal(0, 10, (256, 256))).astype(np.float64)
+        frame[100, 100] = 60000
+        assert snr(frame) < MIN_SNR
+
+    def test_detect_features_uses_the_shared_definition(self):
+        img = synthetic_puncta(read_noise=8.0)
+        bg = float(np.median(img.astype(np.float64)))
+        assert detect_features(img)["snr"] == pytest.approx(
+            round(snr(img.astype(np.float32), background=bg), 2), abs=0.1
+        )
+
+
+class TestFocusMetricGate:
+    """design/25: on an empty field the focus metric inflates, so it is gated on
+    SNR. compute_stats reports focus_metric_valid False when there is no signal."""
+
+    def test_empty_field_is_invalid(self):
+        rng = np.random.default_rng(0)
+        empty = (400 + rng.normal(0, 10, (256, 256))).astype(np.uint16)
+        stats = compute_stats(empty)
+        assert stats.focus_metric_valid is False
+        assert stats.snr < MIN_SNR
+
+    def test_cell_is_valid(self):
+        stats = compute_stats(synthetic_puncta(read_noise=8.0))
+        assert stats.focus_metric_valid is True
+        assert stats.snr >= MIN_SNR
+
+    def test_empty_field_outranks_a_cell_on_the_raw_metric(self):
+        # The bug (design/25): the empty field's normalized metric is HIGHER than
+        # the cell's, so ranking by focus_metric alone picks the empty tile. The
+        # validity flag is the only thing that distinguishes them.
+        rng = np.random.default_rng(0)
+        empty = (400 + rng.normal(0, 10, (256, 256))).astype(np.uint16)
+        cell = synthetic_puncta(shape=(256, 256), read_noise=8.0)
+        assert compute_stats(empty).focus_metric > compute_stats(cell).focus_metric
+        assert compute_stats(empty).focus_metric_valid is False
+        assert compute_stats(cell).focus_metric_valid is True
+
+    def test_background_level_is_reported(self):
+        stats = compute_stats(np.full((64, 64), 400, dtype=np.uint16))
+        assert stats.background_level == pytest.approx(400.0, abs=1)
+
+    def test_warning_names_the_snr_and_the_hazard(self):
+        msg = focus_invalid_warning(2.4)
+        assert "2.4" in msg and "inflate" in msg
+
+
 def test_make_thumbnail_returns_valid_png():
     img = np.random.randint(0, 65535, (512, 512), dtype=np.uint16)
     b64 = make_thumbnail(img, max_size=128)
@@ -338,7 +423,8 @@ def test_make_thumbnail_flat_image():
 
 class TestDetectFeatures:
     def test_counts_sparse_puncta(self):
-        img = synthetic_puncta()
+        # read_noise>0 so the noise floor (MAD) is well-defined — SNR needs it.
+        img = synthetic_puncta(read_noise=8.0)
         result = detect_features(img)
         assert result["n_spots"] == 3
         assert result["background_level"] == pytest.approx(400.0, abs=5)
