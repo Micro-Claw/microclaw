@@ -713,7 +713,10 @@ TOOLS: list[dict[str, Any]] = [
                     "description": (
                         "Hook strategy name (from list_hooks). Runs ONE acquisition "
                         "across all positions with a single hook instance. Cannot be "
-                        "combined with protocol='snap'."
+                        "combined with protocol='snap'. BATCHED: every position's "
+                        "event is submitted before the first frame arrives, so the "
+                        "hook can measure and log but can never stop the scan early "
+                        "— for stop-on-condition use run_adaptive_survey."
                     ),
                 },
                 "hook_params": {
@@ -804,7 +807,10 @@ TOOLS: list[dict[str, Any]] = [
                     "description": (
                         "Hook strategy name (from list_hooks). Runs ONE acquisition "
                         "across the whole grid with a single hook instance. Cannot be "
-                        "combined with protocol='snap'."
+                        "combined with protocol='snap'. BATCHED: every tile's event "
+                        "is submitted before the first frame arrives, so the hook "
+                        "can measure and log but can never stop the grid early — "
+                        "for stop-on-condition use run_adaptive_survey."
                     ),
                 },
                 "hook_params": {
@@ -899,7 +905,10 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "run_adaptive_zstack",
         "description": (
-            "Run a Z-stack acquisition with a hook strategy for adaptive behaviour. "
+            "Run a Z-stack acquisition with a hook strategy for adaptive behaviour "
+            "— the hook adapts settings (exposure, focus) between frames of a FIXED "
+            "plane sequence at the current position; it cannot skip planes or stop "
+            "early (for stop-on-condition use run_adaptive_survey). "
             "Pre-coded strategies: autofocus_per_position, focus_feedback, "
             "intensity_adaptive, position_filter, mm_plugin_analyzer, autofocus_mm_plugin. "
             "The mm_plugin_analyzer and autofocus_mm_plugin strategies delegate to an "
@@ -943,7 +952,10 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "run_adaptive_timelapse",
         "description": (
-            "Run a timelapse acquisition with a hook strategy for adaptive behaviour. "
+            "Run a timelapse acquisition with a hook strategy for adaptive behaviour "
+            "— the hook adapts settings (exposure, focus) between frames of a FIXED "
+            "frame sequence at the current position; it cannot skip frames or stop "
+            "early (for stop-on-condition use run_adaptive_survey). "
             "Pre-coded strategies: autofocus_per_position, focus_feedback, "
             "intensity_adaptive, position_filter, mm_plugin_analyzer, autofocus_mm_plugin. "
             "focus_feedback corrects Z drift per frame and is well suited to timelapses. "
@@ -985,6 +997,109 @@ TOOLS: list[dict[str, Any]] = [
                 },
             },
             "required": ["n_frames", "interval_s", "save_dir", "hook_strategy"],
+        },
+    },
+    {
+        "name": "run_adaptive_survey",
+        "description": (
+            "Acquire positions ONE AT A TIME, letting the hook decide after each "
+            "frame whether the next position is acquired at all — the only tool "
+            "that can stop an acquisition early based on the images (stop-on-"
+            "condition, refine-where-interesting). Positions are visited in the "
+            "order given; pass the list reversed for a reverse scan. Requires an "
+            "ADAPTIVE hook: the runner sets hook.survey_events (the full planned "
+            "tile list, seed included), hook.candidates and hook.progress; after "
+            "each frame the hook must candidates.put() the next tile OR call "
+            "progress.done_early(), then progress.image_done() — see "
+            "get_hook_documentation ('Skipping and stopping'). Serializes the "
+            "scan (each tile waits on the previous frame's scoring), so for a "
+            "fixed survey that only reports per-tile numbers use "
+            "run_tile_acquisition or run_multiposition_acquisition instead. "
+            "The result reports frames_acquired and stopped_early; read the "
+            "hook's own numbers back with read_hook_log(log_path)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "protocol": {
+                    "type": "string",
+                    "description": (
+                        "'zstack' or 'timelapse' — the shape acquired at each "
+                        "position. 'snap' is not valid (no acquisition images); "
+                        "use 'timelapse' with n_frames=1 for one frame per tile."
+                    ),
+                },
+                "save_dir": {
+                    "type": "string",
+                    "description": "Directory to save the dataset.",
+                },
+                "hook_strategy": {
+                    "type": "string",
+                    "description": (
+                        "Hook strategy name (from list_hooks). Must implement "
+                        "the adaptive contract; a hook that never calls "
+                        "candidates.put() acquires only the first tile."
+                    ),
+                },
+                "position_names": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Labels of positions already in the MM position list. "
+                        "Use this OR positions, not both."
+                    ),
+                },
+                "positions": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "x_um": {"type": "number"},
+                            "y_um": {"type": "number"},
+                        },
+                        "required": ["name", "x_um", "y_um"],
+                    },
+                    "description": (
+                        "Raw XY coordinates to visit in order. "
+                        "Use this OR position_names, not both."
+                    ),
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Dataset name prefix (default 'survey').",
+                    "default": "survey",
+                },
+                "protocol_params": {
+                    "type": "object",
+                    "description": (
+                        "Per-position protocol parameters. "
+                        "For zstack: z_start_um, z_end_um, z_step_um. "
+                        "For timelapse: n_frames, interval_s. "
+                        "Optionally channel and exposure_ms for either."
+                    ),
+                },
+                "hook_params": {
+                    "type": "object",
+                    "description": "Parameters passed to the hook constructor.",
+                },
+                "log_path": {
+                    "type": "string",
+                    "description": (
+                        "Path for the hook's output log (optional). "
+                        "Read it back with read_hook_log."
+                    ),
+                },
+                "max_idle_s": {
+                    "type": "number",
+                    "description": (
+                        "Watchdog: end the survey if no frame arrives and no "
+                        "event is submitted for this many seconds (default 60)."
+                    ),
+                    "default": 60.0,
+                },
+            },
+            "required": ["protocol", "save_dir", "hook_strategy"],
         },
     },
     {

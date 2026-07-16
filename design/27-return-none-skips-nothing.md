@@ -423,3 +423,51 @@ config, 2026-07-16):
   silent, not a wedge, still not a cancel. B_8: **Fix 4 holds** — zero
   ghosts, clean end, dataset exactly the submitted tiles, 30–90 ms per-tile
   serialization gap across the two demo runs.
+
+## Addendum (2026-07-16) — Fix 4 shipped an engine with no ignition
+
+Rig run `20260716_140329` (demo camera, this branch) found the gap the tests
+could not: Fix 1's corrected docs steered the agent perfectly — it refused to
+write a return-None stop hook, cited the adaptive pattern, and wrote a correct
+adaptive `HookBase` hook with a loud guard — and then there was **no tool to
+drive it**. `run_multiposition_acquisition` and `run_tile_acquisition`
+dispatch the batched runner; `_acquire_survey_with_detector` had no caller
+outside the test suite, where the tests themselves played the missing
+assembler (constructing `SurveyProgress` + `candidates` and closing over
+them). The hook raised at frame 1: the safe failure, but one wasted exposure,
+a stranded stage, and a capability the docs advertised by its private
+function name.
+
+The missing caller is now `run_adaptive_survey`: builds the position list
+(caller's order — a reverse scan is a reversed list), resolves the
+`hook_strategy`, constructs the progress/candidates pair, and calls
+`_acquire_survey_with_detector(adaptive=True)`. Three consequences of the
+same run folded in:
+
+- **The runner hands the hook its wiring as attributes** —
+  `hook.candidates`, `hook.progress` (both runners), `hook.survey_events`
+  (adaptive) — because a `hook_strategy`-loaded class has no test-local
+  objects to close over. `HookBase` initializes all three to `None`, which
+  is the documented "wrong runner" check: a hook that needs them and finds
+  `None` must raise.
+- **The result says what ran, not what was planned.** "Hooked acquisition
+  complete across 9 position(s)." is the sentence that let 5 ghost exposures
+  read as a clean early stop in the founding trace *and* let the 20260716 run
+  report ghost-exposed tiles as "not acquired". `run_adaptive_survey` reports
+  `frames_acquired` (from the counter the hook itself drove), `stopped_early`,
+  and `tiles_planned`, and drops the ambiguous `positions` count.
+- **The docs and schemas name tools, not internals.** hook_docs now points
+  "stop acquiring based on the images" at `run_adaptive_survey`; the batched
+  tools' schemas say plainly that their hooks can measure but never stop the
+  scan; the `run_adaptive_zstack`/`run_adaptive_timelapse` schemas now say
+  what "adaptive" means there (settings within a fixed sequence) so the name
+  collision stops luring stop-on-condition requests to the wrong pair.
+
+MM-gated sibling test: `test_run_adaptive_survey_tool_reaches_the_adaptive_
+runner` — the stop-at-2 reverse scan through `execute_tool`, asserting zero
+ghosts, the injected attributes, the honest counts, and a dataset holding
+exactly the two submitted tiles. The rig also holds a saved knowledge-base
+note (`devices/adaptive_survey_runner_not_exposed`) from the run that found
+the gap; it should be deleted once this lands on the rig, and the saved
+`SNRMatchStop` hook — still a live return-None ghost-firer with an innocent
+description — retired or rewritten against the adaptive contract.

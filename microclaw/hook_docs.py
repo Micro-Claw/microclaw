@@ -99,7 +99,7 @@ The levers that DO work:
     discards the pixels and nothing else — the hardware activity it came from
     already happened, and future events are unaffected.
   - Decide per frame whether the next exposure happens at all: the ADAPTIVE
-    survey runner (tools._acquire_survey_with_detector with adaptive=True).
+    survey runner, exposed as the run_adaptive_survey tool.
     Only the first tile is pre-dispatched; the hook scores each frame as it
     arrives and either candidates.put()s the next tile or calls
     progress.done_early(). An event that was never submitted needs no skip
@@ -147,9 +147,10 @@ was silently dropped (design/24).
     early — the terminator it would duplicate is already queued, and the
     hook's None is discarded the same way.
 
-A hook that needs to ADD work must run under the survey-with-detector runner
-(tools._acquire_survey_with_detector), which injects a `candidates` queue and
-a `progress` counter alongside the hook. There the supported pattern is:
+A hook that needs to ADD work must run under the survey-with-detector runner,
+which hands the hook a `candidates` queue and a `progress` counter as
+attributes: self.candidates and self.progress (None under every batched
+runner — check them and RAISE if missing). There the supported pattern is:
 
   1. Never analyze a frame whose position label is not in the survey set —
      otherwise the hook re-detects its own follow-up frames, forever.
@@ -159,15 +160,19 @@ a `progress` counter alongside the hook. There the supported pattern is:
   3. candidates.put(event) BEFORE progress.image_done(), always — reversed, a
      hit on the last survey tile can be silently lost.
 
-The same runner with adaptive=True is the one-event-at-a-time variant (see
-"Skipping and stopping"): the runner sets hook.survey_events (the full built
-tile list, seed included) and pre-dispatches only survey_events[0]; every
-later tile exists only if the hook submits it. The ordering contract extends
-naturally: decide from the frame that just arrived; then candidates.put() the
-next tile OR call progress.done_early(); then progress.image_done().
+The adaptive variant of the same runner is the one-event-at-a-time mode (see
+"Skipping and stopping"), reachable through the run_adaptive_survey tool: the
+runner additionally sets hook.survey_events (the full built tile list, seed
+included) and pre-dispatches only survey_events[0]; every later tile exists
+only if the hook submits it. The ordering contract extends naturally: decide
+from the frame that just arrived; then candidates.put() the next tile OR call
+progress.done_early(); then progress.image_done(). Positions run in the order
+the tool was given — hand run_adaptive_survey a reversed list for a reverse
+scan.
 
-A hook that needs to add work and has no candidates queue must FAIL LOUDLY
-(raise at construction time), not quietly log a success.
+A hook that needs to add work and finds self.candidates is None must FAIL
+LOUDLY (raise), not quietly log a success — it is running under a batched
+runner that can never honor its decisions.
 
 ## HookBase pattern (required for all microclaw-generated hooks)
 
@@ -230,8 +235,8 @@ HookBase provides:
   Adjust exposure or settings per frame  image_process_fn → ctrl.core.set_*
   Autofocus before each image capture    post_hardware_hook_fn (stage already at XY)
   Redirect stage before hardware moves   pre_hardware_hook_fn (modify event["z"] etc.)
-  Stop acquiring based on the images     adaptive survey runner (stop = don't
-    (stop-on-condition, refine)            submit; NEVER return None)
+  Stop acquiring based on the images     run_adaptive_survey + adaptive hook
+    (stop-on-condition, refine)            (stop = don't submit; NEVER return None)
   Abort everything on a safety limit     raise from any hook (loud, surfaces)
   Generate events dynamically at runtime event_generation_hook_fn
   Log metadata after image is saved      image_saved_hook_fn

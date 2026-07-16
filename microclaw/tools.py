@@ -2040,6 +2040,14 @@ class SurveyProgress:
         with self._lock:
             return self._done
 
+    @property
+    def stopped_early(self) -> bool:
+        """Whether done_early() ever fired — the result payload reads this so
+        "complete across 9 position(s)" can never again describe a run that
+        acquired 4 (the 20260716_140329 misreport)."""
+        with self._lock:
+            return self._done_early
+
     def survey_complete(self) -> bool:
         with self._lock:
             return self._done_early or self._done >= self._n_survey
@@ -2223,6 +2231,12 @@ def _acquire_survey_with_detector(
         **shape_kwargs,
     )
 
+    # Hand the queue and counter to the hook as attributes. The inline
+    # detectors in the tests close over test-local objects; a saved hook
+    # class loaded by _resolve_hook has nothing to close over, so this is
+    # the only way a hook_strategy hook ever reaches them.
+    hook.candidates = candidates
+    hook.progress = progress
     if adaptive:
         # The tile list becomes state the hook walks, one candidates.put()
         # per decision; the stream pre-dispatches only survey_events[0].
@@ -2235,6 +2249,111 @@ def _acquire_survey_with_detector(
         status=f"Survey acquisition complete across {len(positions)} position(s).",
         positions=len(positions),
     )
+
+
+def run_adaptive_survey(
+    ctrl: MicroscopeController,
+    guard: SafetyGuard,
+    protocol: str,
+    save_dir: str,
+    hook_strategy: str,
+    position_names: list[str] | None = None,
+    positions: list[dict] | None = None,
+    name: str = "survey",
+    protocol_params: dict | None = None,
+    hook_params: dict | None = None,
+    log_path: str | None = None,
+    max_idle_s: float = 60.0,
+) -> dict:
+    """Acquire positions one at a time; the hook decides whether the next
+    position is acquired at all.
+
+    The tool surface for _acquire_survey_with_detector(adaptive=True) — the
+    design/27 Fix 4 runner. Before this existed the adaptive stack was
+    reachable only from tests: rig run 20260716_140329 wrote a correct
+    adaptive hook and had no tool to drive it (a raise at frame 1 was the
+    best available outcome). This is that missing caller: it builds the
+    position list, constructs the SurveyProgress/candidates pair, resolves
+    the hook, and hands all three to the runner.
+
+    Positions are visited in the order given — pass the list reversed for a
+    reverse scan. Supply either position_names (labels in the MM position
+    list) or positions ({name, x_um, y_um} dicts), not both. Per-position Z
+    is not supported (the survey runner drives XY; a zstack protocol sweeps
+    the same absolute Z range at every tile).
+
+    The hook must implement the adaptive contract (see hook_docs "Skipping
+    and stopping"): the runner sets hook.survey_events / hook.candidates /
+    hook.progress; after each frame the hook submits the next tile with
+    candidates.put() OR calls progress.done_early(), then image_done().
+    A batched hook that only logs runs fine here too, but serialized —
+    prefer run_tile_acquisition / run_multiposition_acquisition for fixed
+    surveys that just report.
+    """
+    if position_names is not None and positions is not None:
+        return {"error": "Provide position_names or positions, not both."}
+    if position_names is None and positions is None:
+        return {"error": "Provide either position_names or positions."}
+    if protocol == "snap":
+        return {"error":
+                "The adaptive survey needs acquisition images; 'snap' is "
+                "display-only. Use protocol='timelapse' with protocol_params="
+                "{'n_frames': 1, 'interval_s': 0} for one frame per tile."}
+
+    params = protocol_params or {}
+    try:
+        shape = _protocol_shape_kwargs(protocol, params)
+    except ValueError as e:
+        return {"error": str(e)}
+    except KeyError as e:
+        return {"error": f"protocol_params for '{protocol}' is missing {e}."}
+
+    if position_names is not None:
+        all_positions = {p["name"]: p for p in ctrl.get_positions()}
+        missing = [n for n in position_names if n not in all_positions]
+        if missing:
+            return {"error": f"Positions not found in position list: {missing}"}
+        resolved = [{"name": n,
+                     "x_um": all_positions[n]["x_um"],
+                     "y_um": all_positions[n]["y_um"]} for n in position_names]
+    else:
+        resolved = [{"name": p["name"], "x_um": p["x_um"], "y_um": p["y_um"]}
+                    for p in positions]
+
+    log_path = _prepare_log_path(guard, log_path)
+    try:
+        hook = _resolve_hook(ctrl, guard, hook_strategy, hook_params, log_path)
+    except ValueError as e:
+        return {"error": str(e)}
+
+    progress = SurveyProgress(len(resolved))
+    candidates: queue.Queue = queue.Queue()
+    result = _acquire_survey_with_detector(
+        ctrl, guard, resolved, save_dir, name,
+        hook=hook, progress=progress, candidates=candidates,
+        max_idle_s=max_idle_s,
+        channel=params.get("channel"), exposure_ms=params.get("exposure_ms"),
+        adaptive=True, **shape,
+    )
+    # The batched status ("complete across 9 position(s)") is exactly the
+    # sentence that made 5 ghost exposures read as a clean early stop
+    # (20260716_140329). Say what actually ran, from the counter the hook
+    # itself drove — and attach the planned coordinates so the hook log
+    # joins on `position` without re-imaging (design/23 Episode A).
+    stopped = progress.stopped_early
+    result.pop("positions", None)   # "positions: 9" is the ambiguity this tool retires
+    result["status"] = (
+        f"Adaptive survey: {progress.n_done} frame(s) acquired of "
+        f"{len(resolved)} planned tile(s)"
+        + (", stopped early by the hook." if stopped else ".")
+    )
+    result["frames_acquired"] = progress.n_done
+    result["stopped_early"] = stopped
+    result["tiles_planned"] = [
+        {"position": p["name"], "x_um": round(p["x_um"], 3),
+         "y_um": round(p["y_um"], 3)} for p in resolved
+    ]
+    return result
 
 
 def read_hook_log(ctrl: MicroscopeController, guard: SafetyGuard, log_path: str) -> dict:
@@ -2665,6 +2784,7 @@ TOOL_REGISTRY = {
     "run_multiposition_with_autofocus": run_multiposition_with_autofocus,
     "run_adaptive_zstack": run_adaptive_zstack,
     "run_adaptive_timelapse": run_adaptive_timelapse,
+    "run_adaptive_survey": run_adaptive_survey,
     "read_hook_log": read_hook_log,
     "generate_and_save_hook": generate_and_save_hook,
     "read_hook_from_file": read_hook_from_file,

@@ -509,7 +509,10 @@ class TestHookDocsStopPromisingEventQueuePut:
 
     def test_the_docs_point_at_the_supported_path(self):
         from microclaw.hook_docs import HOOK_REFERENCE
-        assert "_acquire_survey_with_detector" in HOOK_REFERENCE
+        # The path must be named by its TOOL: rig run 20260716_140329 read the
+        # private function's name here and had no way to call it.
+        assert "run_adaptive_survey" in HOOK_REFERENCE
+        assert "_acquire_survey_with_detector" not in HOOK_REFERENCE
         assert "candidates" in HOOK_REFERENCE
         # The load-bearing hook-side protocol is spelled out where the agent
         # will read it: label guard, guarded derived events, put-before-done.
@@ -555,8 +558,9 @@ class TestHookDocsReturnNoneIsNotASkip:
         flat = " ".join(HOOK_REFERENCE.split())
         # Raise = abort everything, loudly:
         assert "acquisition.abort(e)" in flat
-        # ...and the skip use case's real answer, stop = don't submit:
-        assert "adaptive=True" in flat
+        # ...and the skip use case's real answer, stop = don't submit,
+        # named by the tool that drives it, not the private flag behind it:
+        assert "run_adaptive_survey" in flat
         assert "progress.done_early()" in flat
         assert "stopping is simply NOT SUBMITTING" in flat
 
@@ -774,3 +778,152 @@ class TestAcquireSurveyWithDetectorAdaptive:
         )
         assert hook.survey_events is None, \
             "pre-dispatch mode must not imply the hook walks the tile list"
+
+
+# ── design/27: run_adaptive_survey — the tool that drives the adaptive runner ─
+
+class _ProbeHook(HookBase):
+    """Stands in for a hook_strategy-loaded adaptive hook: records nothing,
+    exists so the tests can inspect what the runner handed the instance."""
+
+    instances: list = []
+
+    def __init__(self, log_path=None):
+        super().__init__(log_path)
+        _ProbeHook.instances.append(self)
+
+
+class TestRunAdaptiveSurvey:
+    """Rig run 20260716_140329: a correct adaptive hook had no tool to drive
+    it — run_multiposition_acquisition dispatches the batched runner, and
+    _acquire_survey_with_detector had no caller outside this test suite. The
+    hook raised at frame 1 (the built-in safe failure), one wasted exposure
+    and a stranded stage later. run_adaptive_survey is the missing caller."""
+
+    def _positions(self, n=3):
+        # Decreasing x: the reverse-scan case the rig run needed — order must
+        # be the caller's list order, never re-sorted into raster order.
+        return [{"name": f"tile_{i}", "x_um": 50.0 * (n - i), "y_um": 0.0}
+                for i in range(n)]
+
+    @pytest.fixture
+    def captured(self, monkeypatch):
+        from microclaw import tools
+        from microclaw.hooks import PRECODED_HOOK_REGISTRY
+
+        _ProbeHook.instances = []
+        monkeypatch.setitem(PRECODED_HOOK_REGISTRY, "probe", _ProbeHook)
+        calls = []
+        monkeypatch.setattr(
+            tools, "_acquire_with_hooks",
+            lambda guard, save_dir, name, events, hook=None: (
+                calls.append({"save_dir": save_dir, "name": name,
+                              "events": events, "hook": hook}),
+                "/ws/ds",
+            )[1],
+        )
+        return calls
+
+    def test_the_hook_receives_the_full_adaptive_contract(
+        self, mock_ctrl, unconstrained_guard, captured, tmp_path
+    ):
+        from microclaw.tools import run_adaptive_survey
+
+        assert HookBase().candidates is None and HookBase().progress is None, \
+            "the attributes must read as 'wrong runner' everywhere else"
+
+        result = run_adaptive_survey(
+            mock_ctrl, unconstrained_guard, protocol="timelapse",
+            save_dir=str(tmp_path), hook_strategy="probe",
+            positions=self._positions(),
+            protocol_params={"n_frames": 1, "interval_s": 0},
+        )
+        assert "error" not in result
+        assert len(_ProbeHook.instances) == 1
+        hook = _ProbeHook.instances[0]
+        # The three objects a saved hook cannot close over, as attributes:
+        assert isinstance(hook.candidates, queue.Queue)
+        assert isinstance(hook.progress, SurveyProgress)
+        labels = [e["axes"]["position"] for e in hook.survey_events]
+        assert labels == ["tile_0", "tile_1", "tile_2"], \
+            "survey order is the caller's list order (reverse scans depend on it)"
+        # The runner got a generator factory, not a pre-built batch:
+        assert callable(captured[0]["events"])
+
+    def test_the_result_reports_what_ran_not_what_was_planned(
+        self, mock_ctrl, unconstrained_guard, captured, tmp_path
+    ):
+        """'Hooked acquisition complete across 9 position(s).' is the sentence
+        that made 5 ghost exposures read as a clean early stop. The counter
+        the hook itself drove is the only honest source."""
+        from microclaw.tools import run_adaptive_survey
+
+        result = run_adaptive_survey(
+            mock_ctrl, unconstrained_guard, protocol="timelapse",
+            save_dir=str(tmp_path), hook_strategy="probe",
+            positions=self._positions(),
+            protocol_params={"n_frames": 1, "interval_s": 0},
+        )
+        # The mocked acquisition processed no frames — the report must say so.
+        assert result["frames_acquired"] == 0
+        assert result["stopped_early"] is False
+        assert "0 frame(s) acquired of 3 planned" in result["status"]
+        assert "positions" not in result, "the ambiguous count is retired"
+        assert [t["position"] for t in result["tiles_planned"]] == \
+            ["tile_0", "tile_1", "tile_2"]
+        assert result["tiles_planned"][0]["x_um"] == 150.0
+
+    def test_position_names_resolve_from_the_mm_list(
+        self, mock_ctrl, unconstrained_guard, captured, tmp_path
+    ):
+        from microclaw.tools import run_adaptive_survey
+
+        mock_ctrl.get_positions.return_value = [
+            {"name": "a", "x_um": 1.0, "y_um": 2.0},
+            {"name": "b", "x_um": 3.0, "y_um": 4.0},
+        ]
+        result = run_adaptive_survey(
+            mock_ctrl, unconstrained_guard, protocol="timelapse",
+            save_dir=str(tmp_path), hook_strategy="probe",
+            position_names=["b", "a"],
+            protocol_params={"n_frames": 1, "interval_s": 0},
+        )
+        hook = _ProbeHook.instances[0]
+        labels = [e["axes"]["position"] for e in hook.survey_events]
+        assert labels == ["b", "a"], "named positions keep the caller's order too"
+        assert "error" not in result
+
+        missing = run_adaptive_survey(
+            mock_ctrl, unconstrained_guard, protocol="timelapse",
+            save_dir=str(tmp_path), hook_strategy="probe",
+            position_names=["a", "nope"],
+            protocol_params={"n_frames": 1, "interval_s": 0},
+        )
+        assert "nope" in missing["error"]
+
+    def test_the_error_paths_refuse_before_any_hardware_shape_is_built(
+        self, mock_ctrl, unconstrained_guard, captured, tmp_path
+    ):
+        from microclaw.tools import run_adaptive_survey
+
+        common = dict(save_dir=str(tmp_path), hook_strategy="probe",
+                      protocol_params={"n_frames": 1, "interval_s": 0})
+        both = run_adaptive_survey(
+            mock_ctrl, unconstrained_guard, protocol="timelapse",
+            positions=self._positions(), position_names=["a"], **common)
+        assert "not both" in both["error"]
+        neither = run_adaptive_survey(
+            mock_ctrl, unconstrained_guard, protocol="timelapse", **common)
+        assert "error" in neither
+        snap = run_adaptive_survey(
+            mock_ctrl, unconstrained_guard, protocol="snap",
+            positions=self._positions(), save_dir=str(tmp_path),
+            hook_strategy="probe")
+        assert "display-only" in snap["error"]
+        unknown = run_adaptive_survey(
+            mock_ctrl, unconstrained_guard, protocol="timelapse",
+            positions=self._positions(), save_dir=str(tmp_path),
+            hook_strategy="no_such_hook",
+            protocol_params={"n_frames": 1, "interval_s": 0})
+        assert "list_hooks" in unknown["error"]
+        assert not captured, "every refusal above must precede the acquisition"

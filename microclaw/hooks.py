@@ -38,6 +38,14 @@ class HookBase:
         # the hook walks the rest — candidates.put(the next tile) to continue,
         # progress.done_early() to stop. None under every other runner.
         self.survey_events: list | None = None
+        # Set by the survey-with-detector runner (adaptive or not): the queue
+        # follow-up/next events are submitted on, and the SurveyProgress
+        # counter. A saved hook class cannot close over these the way an
+        # inline detector can, so the runner hands them over as attributes.
+        # None under the batched runners — a hook that needs them must check
+        # and RAISE (fail loudly), never log a quiet success (design/24).
+        self.candidates = None
+        self.progress = None
 
     def _write_log(self) -> None:
         """Rewrite the whole file from `self._log`: one hook instance per log_path.
