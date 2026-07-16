@@ -254,6 +254,56 @@ with the B_1–B_4 measurements attached; not worth blocking Fix 1 or Fix 2 on,
 and microclaw cannot ship it (design/26's F1 note applies: our pin is 1.0.2,
 and even a fixed pin leaves every installed MM jar in the field unfixed).
 
+## Fix 4 — the skip nobody needed: don't submit
+
+The `SNRMatchStop` use case has a real answer; it just isn't a cancel. Instead
+of dispatching the whole grid and trying to unsend the tail, submit **one
+event at a time and decide, per frame, whether the next one exists** — the
+adaptive-acquisition pattern
+(https://pycro-manager.readthedocs.io/en/latest/adaptive_acq.html). An event
+that was never submitted needs no skip mechanism: nothing crosses the bridge,
+there is nothing to cancel, and the lever sits entirely on the side of the
+bridge we own.
+
+The machinery is design/24's runner tilted the other way. `_survey_event_stream`
+already holds the event source open while the hook feeds it through
+`candidates`; today it yields the whole survey up front and stays open only
+for *derived* events. The adaptive variant yields nothing (or only the first
+tile) up front, and every subsequent tile comes through `candidates`, put
+there by the hook after it scores the frame that just arrived. Stopping is
+*not putting* the next tile: the stream drains, the generator's `finally`
+puts the terminator, and the acquisition ends cleanly — no abort, no raise,
+no `None` ever leaves the process. Two runner changes make it real, both
+small:
+
+1. **The grid must not be pre-dispatched.** `yield from survey_events` puts
+   the whole grid into the engine's queue in microseconds, at which point it
+   is exactly as unstoppable as before — the founding trace, restated. The
+   tile list becomes state the hook walks, one `candidates.put()` per
+   decision.
+2. **Termination needs a hook-side "done early".** `progress.survey_complete()`
+   counts toward a fixed `n_survey`; an early stop never reaches it.
+   `SurveyProgress` grows an explicit done signal the hook can set, and the
+   ordering contract extends naturally: decide; then put the next tile *or*
+   mark done; then `image_done()`.
+
+**Scope: smart microscopy only — where what we see must change what we do.**
+One event in flight at a time serializes everything: each tile waits for the
+previous frame to cross ZMQ and be scored before the next stage move is even
+dispatched. That latency is inherent to the *decision*, not the mechanism —
+tile N+1 depends on tile N's pixels no matter how it's plumbed — so it is
+only worth paying when acquisition behavior genuinely branches on the images
+(stop-on-condition, refine-where-interesting, design/26's mode="acquire").
+A survey that just walks a fixed set of tiles and reports what's there —
+detection, annotation, per-tile metrics — keeps the batched runners
+(`run_multiposition_acquisition` / `run_tile_acquisition`) with an
+image-processing hook: pre-dispatched events pipeline at hardware speed, and
+the hook sees every frame either way.
+
+(Real-camera footnote: the founding trace's stop condition — "≥4 tiles with
+the same SNR" — matched on exact float equality only because the demo camera
+returns a static image; the real hook needs a tolerance.)
+
 ## The spike
 
 `design/27-return-none-spike.py`. B_1 and B_2 run anywhere pycro-manager and
@@ -303,10 +353,13 @@ Once Fix 1 and Fix 2 land:
 
 ## What this does not do
 
-- **It does not fix the skip.** There is nothing to fix it *with* on our side
-  of the bridge; Fix 1 replaces a dead lever with the honest one (raise =
-  abort everything, loudly). If a future design needs true per-event skipping,
-  that is the upstream Fix 3 conversation, not a microclaw workaround.
+- **It does not fix the skip.** Cancelling an already-dispatched event from a
+  hook's return value stays impossible on our side of the bridge; Fix 1
+  replaces that dead lever with the honest one (raise = abort everything,
+  loudly), and Fix 4 answers the use case that *wanted* the skip by never
+  dispatching the event at all. If a future design needs true
+  cancel-after-dispatch, that is the upstream Fix 3 conversation, not a
+  microclaw workaround.
 - **It does not re-litigate design/24.** The candidates-queue runner is
   unaffected — it adds events; it never promised to remove any. The one
   interaction is B_6's abort race, and design/24's terminator ownership
