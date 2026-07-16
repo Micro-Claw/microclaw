@@ -1491,6 +1491,11 @@ def run_multiposition_acquisition(
                      metric's comparability stamp is on the top-level result.
       "zstack"     — saves a Z-stack at each position to save_dir/<position>.
       "timelapse"  — saves a timelapse at each position to save_dir/<position>.
+                     Neither returns image statistics: a "per-position numbers"
+                     request answered with timelapse n_frames=1 produces
+                     datasets and none of the numbers (rig runs 20260716_140329
+                     and _144714 both took that detour; the schema now leads
+                     with the protocol-choice rule).
 
     To save a single plane per position (equivalent to snapping but with data
     written to disk), use protocol="timelapse" with

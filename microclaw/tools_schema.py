@@ -632,6 +632,11 @@ TOOLS: list[dict[str, Any]] = [
         "name": "run_multiposition_acquisition",
         "description": (
             "Visit each position and run a per-position protocol (snap, zstack, or timelapse). "
+            "PROTOCOL CHOICE: when the deliverable is per-position NUMBERS (max/min/"
+            "mean intensity, focus metric), protocol='snap' already returns them for "
+            "every position — writing nothing to disk is correct when nothing was "
+            "asked to be saved. zstack/timelapse write datasets and return NO image "
+            "statistics; reach for them only when data must land on disk. "
             "Supply either position_names (labels already in the MM position list) OR positions "
             "(a list of {name, x_um, y_um, z_um?} dicts — no prior mark_position needed). "
             "Saves each position's data to a subdirectory of save_dir. "
@@ -673,10 +678,12 @@ TOOLS: list[dict[str, Any]] = [
                 "protocol": {
                     "type": "string",
                     "description": (
-                        "'snap', 'zstack', or 'timelapse'. 'snap' is display-only "
-                        "(nothing written to disk) but returns focus_metric and "
-                        "mean/min/max intensity for every position — use it to "
-                        "report per-position image statistics."
+                        "'snap', 'zstack', or 'timelapse'. 'snap' returns focus_metric "
+                        "and mean/min/max intensity for every position — the right "
+                        "choice whenever the request is per-position statistics; it "
+                        "writes nothing to disk, which is the point, not a limitation, "
+                        "when no saved data was requested. 'zstack'/'timelapse' write "
+                        "datasets and return NO image statistics."
                     ),
                 },
                 "save_dir": {
@@ -745,11 +752,17 @@ TOOLS: list[dict[str, Any]] = [
             "the default center twice does NOT reproduce the same tiles unless the "
             "stage is back where it started. "
             "Runs a per-position protocol (snap, zstack, or timelapse) at each tile. "
+            "PROTOCOL CHOICE: when the deliverable is per-tile NUMBERS (max/min/mean "
+            "intensity, focus metric), protocol='snap' already returns them for every "
+            "tile — writing nothing to disk is correct when nothing was asked to be "
+            "saved. zstack/timelapse write datasets and return NO image statistics; "
+            "reach for them only when data must land on disk. "
             "Pass mark_positions=true to also record every tile into the stage "
             "position list. "
             "Pass hook_strategy to run one hooked acquisition across the whole grid: a "
             "single dataset with a `position` axis and one hook log covering every "
-            "tile. This is how you compute a custom per-tile quantity — never spell a "
+            "tile. This is how you compute a custom per-tile quantity that snap does "
+            "not already return — never spell a "
             "grid as N single-plane z-stacks. Not compatible with protocol='snap' "
             "(display-only, no acquisition images) — use protocol='timelapse' with "
             "protocol_params={'n_frames': 1, 'interval_s': 0} for one hooked frame "
@@ -764,10 +777,12 @@ TOOLS: list[dict[str, Any]] = [
                 "protocol": {
                     "type": "string",
                     "description": (
-                        "'snap', 'zstack', or 'timelapse'. 'snap' is display-only "
-                        "(nothing written to disk) but returns focus_metric and "
-                        "mean/min/max intensity for every position — use it to "
-                        "report per-position image statistics."
+                        "'snap', 'zstack', or 'timelapse'. 'snap' returns focus_metric "
+                        "and mean/min/max intensity for every tile — the right choice "
+                        "whenever the request is per-tile statistics; it writes "
+                        "nothing to disk, which is the point, not a limitation, when "
+                        "no saved data was requested. 'zstack'/'timelapse' write "
+                        "datasets and return NO image statistics."
                     ),
                 },
                 "save_dir": {
