@@ -22,8 +22,10 @@ B_3–B_8 are gated on a Micro-Manager at localhost:4827 (demo config is
 enough) and measure the engine's half for real:
 
   B_3  post_hardware returns None mid-run: the "skipped" events still fire
-       the camera (unlabeled ghost frames), the stage does not move for them,
-       and the run completes without error — the rig trace, deterministic.
+       the camera (unlabeled ghost frames) — each ON its own tile, because
+       the hardware phase runs BEFORE a post-hardware hook — the colliding
+       empty-keyed ghosts collapse to one stored frame, and the run completes
+       without error. The rig trace, deterministic.
   B_4  pre_hardware returns None: "hardware never moves" is the true half;
        the fired capture is the false half.
   B_5  image_process_fn returns None for one position: the camera still fires
@@ -266,7 +268,15 @@ def _wait_processed(record: list, n: int, timeout_s: float = 10.0) -> None:
 
 
 def b3_post_hardware_none(core, save_dir: str) -> bool:
-    """The rig trace, deterministic: skip t3..t5 from post_hardware."""
+    """The rig trace, deterministic: skip t3..t5 from post_hardware.
+
+    The first demo run (2026-07-16) corrected two expectations. The engine
+    runs the hardware phase BEFORE a post-hardware hook, so by the time the
+    hook returns None the stage is already AT the skipped tile — each ghost
+    exposes exactly the tile the hook meant to protect, and the run ends at
+    t5's X, not parked at t2's. And the ghosts' identical empty axes are one
+    NDTiff coordinate key, so the stored dataset collapses them 3 -> 1: it
+    undercounts the wasted exposures."""
     print("\nB_3  post_hardware returns None for t3..t5 — the founding trace, replayed")
     from pycromanager import Acquisition
 
@@ -289,14 +299,17 @@ def b3_post_hardware_none(core, save_dir: str) -> bool:
     ds_labels, ds_frames, ds_ghosts = _dataset_positions(acq)
     print(f"     labeled frames processed  : {labels}")
     print(f"     GHOST frames processed    : {ghosts}   (skipped events that still exposed)")
-    print(f"     stage X after run         : {x_after:.1f} um   (t2's X is 20.0 —"
-          f" ghosts carry no coords, so no move)")
+    print(f"     stage X after run         : {x_after:.1f} um   (t5's X is 50.0 — hardware"
+          f" runs BEFORE a post-hardware hook,"
+          f"\n                                 so every skipped tile was moved to, then exposed)")
     print(f"     dataset                   : {ds_frames} frames, labels {sorted(ds_labels)},"
-          f" ghost frames stored: {ds_ghosts}")
+          f" ghost frames stored: {ds_ghosts}   (identical empty keys: 3 -> 1)")
     ok = (labels == ["t0", "t1", "t2"] and ghosts == 3
-          and abs(x_after - 20.0) < 1.0 and ds_labels == {"t0", "t1", "t2"})
-    print("     VERDICT: 'skip image capture entirely' fires the camera anyway —"
-          "\n              one unlabeled ghost exposure per skipped event, no error."
+          and abs(x_after - 50.0) < 1.0 and ds_labels == {"t0", "t1", "t2"}
+          and ds_frames == 4 and ds_ghosts == 1)
+    print("     VERDICT: 'skip image capture entirely' fires the camera anyway — one"
+          "\n              unlabeled ghost exposure ON EACH skipped tile, no error, and the"
+          "\n              dataset stores the collided ghosts as a single frame."
           if ok else "     VERDICT: engine behaved differently — see numbers above.")
     return ok
 

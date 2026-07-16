@@ -53,8 +53,8 @@ captures should have produced zero frames. The static demo image explains the
 identical SNR; it does not explain why the frames exist, nor why they are
 unlabeled. The agent flagged the anomaly but attributed all of it to the demo
 camera — the real mechanism is below, and on a real sample with autoshutter
-those five ghost exposures are five doses of bleaching the hook had just
-promised not to spend.
+those five ghost exposures are five doses of bleaching delivered onto the
+very tiles the hook had just promised to spare.
 
 ## Why `None` never reaches the engine
 
@@ -120,25 +120,33 @@ rig trace above is the same chain observed live on MM 2.0.3):
    ```
 
    `axisPositions_` is an empty `HashMap`, which is non-null — **true**. The
-   engine calls `acquireImages(event)`: no coordinates means no stage move, so
-   the camera fires wherever the stage already is (autoshutter opening the
-   shutter for it), and the frame comes back through `image_process_fn` with
-   no position axes. One ghost exposure per "skipped" event — five on the rig,
-   at tile 4's position.
+   engine calls `acquireImages(event)`: the ghost event carries no
+   coordinates, but for a *post-hardware* hook the original event's hardware
+   phase has **already run** — the stage is already at the skipped tile — so
+   each ghost fires exactly on the tile the hook meant to protect
+   (autoshutter opening the shutter for it), and the frame comes back through
+   `image_process_fn` with no position axes. One ghost exposure per "skipped"
+   event — five on the rig, one on each remaining tile. (B_3 measured this
+   the hard way: the spike's first run expected the stage parked at the last
+   real tile and found it at the last *skipped* one.) The ghosts' identical
+   empty axes are one NDTiff coordinate key, so the stored dataset collapses
+   them to a single frame — it undercounts the wasted exposures.
 
 The same chain applies verbatim to `pre_hardware_hook_fn` (same
 `RemoteAcqHook` class, registered at `BEFORE_HARDWARE_HOOK`,
-`java_backend_acquisitions.py:463`) — with one difference worth measuring
-(spike B_4): the original event is replaced *before* the hardware stage, so
-the promise's parenthetical "(hardware never moves)" is accidentally true
-while the capture still fires.
+`java_backend_acquisitions.py:463`) — with one difference, measured (spike
+B_4): the original event is replaced *before* the hardware stage, so the
+promise's parenthetical "(hardware never moves)" is accidentally true — the
+stage parks at the last real tile and the ghosts all expose there — while
+the capture still fires.
 
 **And there is no wire value that reaches the cancel path.** The hook's return
 is marshalled as: `None` → `{}`; a dict → that event; a list → `{"events":
 [...]}`. `fromJSON` of any dict yields a non-null event. An empty list reaches
 the sequence constructor, whose first line is `sequence.get(0)` —
-`IndexOutOfBoundsException`, not a skip (spike B_7 measures which failure mode
-that actually produces end to end). Skip-by-return-value is not misdocumented
+`IndexOutOfBoundsException`, not a skip (spike B_7 measured the end-to-end
+failure mode: the exception surfaces to Python and aborts the run — loud, no
+ghosts, and still not a cancel). Skip-by-return-value is not misdocumented
 so much as **unreachable over the bridge**; no microclaw-side wrapper can
 translate `None` into anything that works.
 
@@ -212,8 +220,11 @@ skeleton comments:
 
 - `post_hardware_hook_fn` / `pre_hardware_hook_fn`: **never return `None`.**
   Over the ZMQ bridge there is no way to cancel an event from a hook's return
-  value: `None` becomes an empty event that still fires the camera, unlabeled,
-  at the current stage position. Return the event, modified or not.
+  value: `None` becomes an empty event that still fires the camera, unlabeled
+  — from a post-hardware hook at the skipped event's **own** position (the
+  hardware phase has already run: the exposure lands exactly where you tried
+  not to expose), from a pre-hardware hook wherever the stage last was.
+  Return the event, modified or not.
 - `image_process_fn`: returning `None` **discards the image and nothing
   else**. No event is dropped; the position keeps being exposed. Say "keeps
   the frame out of the dataset", never "skip this position".
@@ -221,10 +232,11 @@ skeleton comments:
   catches the exception and calls `acquisition.abort(e)`
   (`java_backend_acquisitions.py:90`), which aborts the whole acquisition and
   surfaces the error to the caller. "Skip the rest" from inside a hook is not
-  available; "stop everything, loudly" is. (One caveat the spike must
-  measure, B_6: after `abort(e)` the hook thread still sends the `None` as
-  `{}` (`java_backend_acquisitions.py:92`), so the abort may race one final
-  ghost exposure out the door. Promptness, not correctness.)
+  available; "stop everything, loudly" is. (One caveat, measured in B_6:
+  after `abort(e)` the hook thread still sends the `None` as `{}`
+  (`java_backend_acquisitions.py:92`), so the abort can race one final ghost
+  exposure out the door — the demo run let zero out, `__exit__` back in
+  0.5 s. Promptness, not correctness.)
 
 As in design/24 Fix 1: the correction must be total. No "under some backends";
 microclaw has exactly one backend and on it the promise is dead.
@@ -233,13 +245,14 @@ microclaw has exactly one backend and on it the promise is dead.
 
 The current `return None` intends "skip this capture and stop the
 acquisition". Raising is the only mechanism that actually does either — it
-does both: no capture at the unsafe Z (the abort kills the event before...
-no: **measure it**, B_6 — the abort is asynchronous, and the ghost `{}` is
-already in flight; if the race lets the unsafe exposure fire, the raise still
-stops everything *after* it, which is strictly better than today's fire-and-
-continue-forever), and the run ends with an error naming the Z and the guard
-limit instead of a log line nobody reads until later. Keep the log entry
-(`unsafe_abort`, now truthful), then raise `SafetyViolation`.
+does both: the run ends with an error naming the Z and the guard limit
+instead of a log line nobody reads until later, and B_6 measured the abort
+race (the ghost `{}` is already in flight when `abort(e)` lands) letting
+**zero** ghost exposures out on the demo config. Even if rig timing ever
+lets the in-flight ghost fire at the unsafe Z, the raise still stops
+everything *after* it — strictly better than today's fire-and-continue-
+forever. Keep the log entry (`unsafe_abort`, now truthful), then raise
+`SafetyViolation`.
 
 `PositionFilterHook` keeps returning `None` — the discard half is real and is
 its purpose — with the docstring corrected to stop claiming event drops, and
@@ -287,8 +300,9 @@ small:
    ordering contract extends naturally: decide; then put the next tile *or*
    mark done; then `image_done()`.
 
-Spike B_8 prototypes exactly this generator against the real engine before
-either change ships: the founding scenario rerun, zero ghosts expected.
+Spike B_8 prototypes exactly this generator against the real engine —
+confirmed on the demo config (2026-07-16): the founding scenario rerun,
+zero ghosts, clean end.
 
 **Scope: smart microscopy only — where what we see must change what we do.**
 One event in flight at a time serializes everything: each tile waits for the
@@ -318,16 +332,19 @@ gated on a Micro-Manager at localhost:4827 (demo config suffices) and measure
 the engine's half for real:
 
 - **B_3** `post_hardware` returns `None` mid-run: ghost frames exist, are
-  unlabeled, the stage does not move for them, the dataset's shape around
-  five identically-keyed ghost frames, and the run completes without error.
-  (The rig trace, made deterministic and assertable.)
+  unlabeled, each fires on its own skipped tile (the hardware phase runs
+  before a post-hardware hook), the identically-keyed ghosts collapse to a
+  single stored frame, and the run completes without error. (The rig trace,
+  made deterministic and assertable; the first demo run corrected the
+  stage-motion expectation.)
 - **B_4** `pre_hardware` the same: "hardware never moves" is the true half,
   the fired capture is the false half.
 - **B_5** `image_process_fn` returns `None` for one position: the processor
   still sees every frame of that position (nothing dropped), the dataset
   contains none of them (discard works).
 - **B_6** the raise path: the acquisition aborts, the error surfaces to the
-  caller (loud), and how many ghost exposures the abort race lets out.
+  caller (loud), and how many ghost exposures the abort race lets out
+  (measured: zero).
 - **B_8** Fix 4's pattern, prototyped against the real engine before the
   runner change ships: a miniature of the respecified `_survey_event_stream`
   (only the first tile pre-dispatched, every later tile submitted by the
@@ -363,8 +380,8 @@ Once Fix 1 and Fix 2 land:
   the gated spike stages on the demo-config machine — the same standing
   arrangement as design/24's A_9.
 
-Once Fix 4 lands (the runner changes, after B_8 confirms the mechanism on the
-demo-config machine):
+Once Fix 4 lands (the runner changes; B_8 confirmed the mechanism on the demo
+config, 2026-07-16):
 
 - `SurveyProgress`'s done-early signal — thread-free unit tests: set early,
   `survey_complete()` goes true below `n_survey`; the stream exits on it with
@@ -393,10 +410,16 @@ demo-config machine):
   unaffected — it adds events; it never promised to remove any. The one
   interaction is B_6's abort race, and design/24's terminator ownership
   already made aborts deadlock-safe under the generator runner.
-- **The engine-side numbers await the demo-config run.** B_1/B_2 pass locally
-  (macOS, no MM). The rig trace already demonstrates B_3's core claim on real
-  hardware — five ghost frames are in the founding history — but B_3–B_8's
-  specific measurements (dataset shape under colliding ghost keys, the
-  pre-hardware variant, the abort race count, the Fix 4 prototype's zero-ghost
-  run, the empty-list failure mode) need the machine with MM open, like
-  design/24's A_9 before them.
+- **The engine-side numbers are in** (Windows demo config, 2026-07-16;
+  B_1/B_2 also pass locally on macOS without MM). B_3 confirmed the ghosts
+  and corrected the model: a post-hardware skip exposes each skipped tile at
+  its *own* position (the spike expected a parked stage and measured t5's X),
+  and the identically-keyed ghosts collapse to one stored frame — the dataset
+  undercounts the wasted exposures 3→1. B_4: pre-hardware parks the stage at
+  the last real tile and still fires. B_5: the discard is real, the drop is
+  fiction. B_6: the raise aborts loudly, zero ghosts out the race, `__exit__`
+  back in 0.5 s. B_7: the empty list dies loud — `IndexOutOfBoundsException`
+  from `AcquisitionEvent.<init>` surfaces to Python and aborts the run; not
+  silent, not a wedge, still not a cancel. B_8: **Fix 4 holds** — zero
+  ghosts, clean end, dataset exactly the submitted tiles, 30–50 ms per-tile
+  serialization gap.
