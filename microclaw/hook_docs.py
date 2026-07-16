@@ -6,8 +6,8 @@ HOOK_REFERENCE = """
 Pass these as keyword arguments to Acquisition(...):
 
   image_process_fn       callable(image, metadata, event_queue) -> tuple | None
-  post_hardware_hook_fn  callable(event) -> dict | None
-  pre_hardware_hook_fn   callable(event) -> dict | None
+  post_hardware_hook_fn  callable(event) -> dict   (ALWAYS return the event)
+  pre_hardware_hook_fn   callable(event) -> dict   (ALWAYS return the event)
   event_generation_hook_fn  callable(event) -> list[dict] | None
   image_saved_hook_fn    callable(dataset_path, axes, image, metadata) -> None
 
@@ -20,8 +20,11 @@ Only pass the hook kwargs you actually implement — unused ones are omitted.
 Called after every image arrives from the camera, before it is saved.
 
   - Return (image, metadata) to keep the image (you may modify either).
-  - Return None to discard this image and drop all remaining events for that
-    position (pycro-manager interprets None as "skip this position").
+  - Returning None discards the image and NOTHING else: it keeps the frame out
+    of the dataset. No event is dropped — every remaining event for that
+    position still moves the stage, opens the shutter, and exposes the sample;
+    only the pixels are thrown away afterward (design/27). This is a dataset
+    filter, never a way to stop a position from being exposed.
   - NEVER call event_queue.put(...) — see the event_queue section below. Every
     microclaw runner silently discards anything a hook puts there: it adds no
     event, and event_queue.put(None) does NOT end the acquisition early.
@@ -42,8 +45,12 @@ carry its keys, so read every one with .get() and fall back to
 Called after the hardware has moved to the event's position (XY, Z, channel)
 but before the camera fires.
 
-  - Return the (optionally modified) event dict to proceed with image capture.
-  - Return None to skip image capture for this event entirely.
+  - Return the (optionally modified) event dict, ALWAYS. NEVER return None:
+    over the ZMQ bridge there is no way to cancel an event from a hook's
+    return value — None becomes an empty event that STILL FIRES THE CAMERA,
+    unlabeled, at the skipped event's OWN position (the hardware phase has
+    already run: the ghost exposure lands exactly where you tried not to
+    expose). See "Skipping and stopping" below for what actually works.
   - Use this for autofocus: the stage is already at the nominal XY, so you can
     do a Z sweep here and update the focus device before the shutter opens.
 
@@ -51,9 +58,11 @@ but before the camera fires.
 
 Called before the hardware moves for this event.
 
-  - Return the (optionally modified) event dict to proceed.
+  - Return the (optionally modified) event dict, ALWAYS. NEVER return None:
+    as with post_hardware_hook_fn there is no cancel over the bridge — None
+    becomes an empty event that still fires the camera, unlabeled, wherever
+    the stage last was. See "Skipping and stopping" below.
   - You may change event["z"], event["x"], event["y"] to redirect hardware.
-  - Return None to skip this event entirely (hardware never moves).
 
 ### event_generation_hook_fn(event: dict) -> list[dict] | None
 
@@ -68,6 +77,38 @@ Called to dynamically generate or replace the events for an acquisition.
 
 Called after each image has been written to the NDTiff dataset on disk.
 Return value is ignored. Use for side-channel logging, copying, or notification.
+
+## Skipping and stopping — what a hook can actually do (design/27)
+
+"Skip this event" via a return value DOES NOT EXIST over the ZMQ bridge, on
+any hook, under any microclaw runner. pyjavaz sends a hook's None return as an
+empty JSON object; the Java side deserializes that into a real event that
+still fires the camera — one unlabeled ghost exposure per "skipped" event, and
+the run completes looking successful. There is no return value that cancels an
+event; no wrapper can fix this on our side of the bridge.
+
+The levers that DO work:
+
+  - Stop everything, loudly: RAISE from the hook. pycro-manager's hook thread
+    catches the exception and calls acquisition.abort(e) — the whole
+    acquisition aborts and the error surfaces to the caller. "Skip the rest"
+    from inside a hook is not available; "stop everything, loudly" is.
+    (The abort can race at most one final ghost exposure out the door —
+    promptness, not correctness.)
+  - Keep a frame out of the dataset: return None from image_process_fn. That
+    discards the pixels and nothing else — the hardware activity it came from
+    already happened, and future events are unaffected.
+  - Decide per frame whether the next exposure happens at all: the ADAPTIVE
+    survey runner (tools._acquire_survey_with_detector with adaptive=True).
+    Only the first tile is pre-dispatched; the hook scores each frame as it
+    arrives and either candidates.put()s the next tile or calls
+    progress.done_early(). An event that was never submitted needs no skip
+    mechanism — nothing crosses the bridge, so stopping is simply NOT
+    SUBMITTING. This is the pattern for stop-on-condition ("stop bleaching
+    once N tiles match") and refine-where-interesting. It serializes the
+    acquisition (each tile waits for the previous frame to be scored), so use
+    it only when acquisition behavior genuinely branches on the images; a
+    fixed survey that just reports what it sees keeps the batched runners.
 
 ## Event dict structure
 
@@ -118,6 +159,13 @@ a `progress` counter alongside the hook. There the supported pattern is:
   3. candidates.put(event) BEFORE progress.image_done(), always — reversed, a
      hit on the last survey tile can be silently lost.
 
+The same runner with adaptive=True is the one-event-at-a-time variant (see
+"Skipping and stopping"): the runner sets hook.survey_events (the full built
+tile list, seed included) and pre-dispatches only survey_events[0]; every
+later tile exists only if the hook submits it. The ordering contract extends
+naturally: decide from the frame that just arrived; then candidates.put() the
+next tile OR call progress.done_early(); then progress.image_done().
+
 A hook that needs to add work and has no candidates queue must FAIL LOUDLY
 (raise at construction time), not quietly log a success.
 
@@ -141,13 +189,15 @@ class MyHook(HookBase):
         # ... your logic ...
         self._log.append({"frame": metadata.get("time"), "key": "value"})
         self._write_log()            # persists self._log to self.log_path
-        return image, metadata       # or: return None  (to discard)
+        return image, metadata       # or: return None  (discards THIS image
+                                     # only; no event is skipped or dropped)
 
     def post_hardware_hook_fn(self, event: dict) -> dict:
         # ... your logic ...
         self._log.append({...})
         self._write_log()
-        return event                 # or: return None  (to skip)
+        return event                 # ALWAYS return the event — return None
+                                     # fires an unlabeled ghost exposure
 ```
 
 If the hook needs hardware access, accept `ctrl` and `guard` in __init__:
@@ -174,10 +224,15 @@ HookBase provides:
 
   Task                                   Hook to implement
   -------------------------------------  --------------------------------
-  Skip/filter positions by intensity     image_process_fn → return None
+  Keep low-quality frames out of the     image_process_fn → return None
+    dataset (discard only — the            (the position is still exposed)
+    position keeps being exposed)
   Adjust exposure or settings per frame  image_process_fn → ctrl.core.set_*
   Autofocus before each image capture    post_hardware_hook_fn (stage already at XY)
   Redirect stage before hardware moves   pre_hardware_hook_fn (modify event["z"] etc.)
+  Stop acquiring based on the images     adaptive survey runner (stop = don't
+    (stop-on-condition, refine)            submit; NEVER return None)
+  Abort everything on a safety limit     raise from any hook (loud, surfaces)
   Generate events dynamically at runtime event_generation_hook_fn
   Log metadata after image is saved      image_saved_hook_fn
 
@@ -222,9 +277,12 @@ each capture. The PLUGIN owns the Z motion.
   Safety gate: SafetyGuard.check_plugin_motion — requires
   plugins.allow_hardware_motion: true in safety_config.yaml (blocklist also
   applies). PASSIVE guard on the result: after the plugin focuses, microclaw
-  reads the new Z and calls check_z; if it is out of bounds the capture is
-  skipped and the acquisition stops (return None). microclaw does NOT re-drive Z
-  — an active correction would fight the plugin's own safety controller.
+  reads the new Z and calls check_z; if it is out of bounds the hook logs
+  autofocus="unsafe_abort" and RAISES SafetyViolation — the whole acquisition
+  aborts loudly, naming the Z and the limit ("skip this capture" does not
+  exist over the bridge; see "Skipping and stopping"). microclaw does NOT
+  re-drive Z — an active correction would fight the plugin's own safety
+  controller.
 
 ### The composition rule (one image-processing side per hook)
 

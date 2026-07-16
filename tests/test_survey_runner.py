@@ -515,3 +515,262 @@ class TestHookDocsStopPromisingEventQueuePut:
         # will read it: label guard, guarded derived events, put-before-done.
         assert "guard.check_xy" in HOOK_REFERENCE
         assert "BEFORE progress.image_done()" in HOOK_REFERENCE
+
+
+# ── design/27 Fix 1: return-None is NEVER a skip, and the docs must say so ───
+
+class TestHookDocsReturnNoneIsNotASkip:
+    """hook_docs.py is the agent's spec and it is what was wrong (the founding
+    rig trace: an agent-written hook, following the docs, promised "no
+    bleaching past the trigger" and delivered five ghost exposures). The
+    correction must be total — one backend, and on it the promise is dead."""
+
+    def test_the_old_skip_promises_are_gone(self):
+        from microclaw.hook_docs import HOOK_REFERENCE
+        flat = " ".join(HOOK_REFERENCE.split())   # a line wrap must not hide a promise
+        assert "Return None to skip" not in flat
+        assert "skip image capture for this event" not in flat
+        assert "skip this event entirely" not in flat
+        assert "hardware never moves" not in flat
+        # The processor's half-truth: the discard is real, the drop is fiction.
+        assert "drop all remaining events" not in flat
+        assert "skip this position" not in flat
+        # The autofocus plugin's fictional enforcement arm:
+        assert "the capture is skipped and the acquisition stops" not in flat
+
+    def test_return_none_is_documented_as_a_ghost_exposure(self):
+        from microclaw.hook_docs import HOOK_REFERENCE
+        assert "NEVER return None" in HOOK_REFERENCE
+        assert "ghost exposure" in HOOK_REFERENCE
+        assert "STILL FIRES THE CAMERA" in HOOK_REFERENCE
+
+    def test_the_processor_discard_is_documented_as_discard_only(self):
+        from microclaw.hook_docs import HOOK_REFERENCE
+        flat = " ".join(HOOK_REFERENCE.split())   # line wraps must not hide text
+        assert "discards the image and NOTHING else" in flat
+        assert "keeps the frame out of the dataset" in flat
+
+    def test_the_honest_levers_are_documented(self):
+        from microclaw.hook_docs import HOOK_REFERENCE
+        flat = " ".join(HOOK_REFERENCE.split())
+        # Raise = abort everything, loudly:
+        assert "acquisition.abort(e)" in flat
+        # ...and the skip use case's real answer, stop = don't submit:
+        assert "adaptive=True" in flat
+        assert "progress.done_early()" in flat
+        assert "stopping is simply NOT SUBMITTING" in flat
+
+    def test_the_autofocus_plugin_section_now_promises_the_raise(self):
+        from microclaw.hook_docs import HOOK_REFERENCE
+        assert "RAISES SafetyViolation" in HOOK_REFERENCE
+
+
+# ── design/27 Fix 4: SurveyProgress.done_early() ─────────────────────────────
+
+class TestSurveyProgressDoneEarly:
+    """An early stop never reaches n_survey by counting — the remaining tiles
+    were never submitted — so the hook needs an explicit done signal."""
+
+    def test_done_early_completes_the_survey_below_n_survey(self):
+        progress = SurveyProgress(9)
+        for _ in range(4):
+            progress.image_done()
+        assert not progress.survey_complete()
+        progress.done_early()
+        assert progress.survey_complete()
+        assert progress.n_done == 4          # the count is untouched — 4 of 9
+
+    def test_counting_to_n_survey_still_completes_without_the_signal(self):
+        progress = SurveyProgress(2)
+        progress.image_done()
+        progress.image_done()
+        assert progress.survey_complete()
+
+    def test_the_stream_drains_candidates_before_exiting_on_done_early(self):
+        """The exit condition is survey_complete() AND candidates.empty(): a
+        candidate put before the done signal must still be delivered, exactly
+        as a last-tile hit must (design/24 A_8, inherited)."""
+        acq = _FakeAcq()
+        candidates: queue.Queue = queue.Queue()
+        progress = SurveyProgress(5)
+        factory = _survey_event_stream(
+            _survey(5), candidates, progress, 2.0, HookBase(), adaptive=True
+        )
+        gen = factory(acq)
+        assert next(gen)["axes"]["position"] == "tile_0"   # the seed, and ONLY it
+        candidates.put(_survey(5)[1])
+        progress.done_early()
+        progress.image_done()
+        assert next(gen)["axes"]["position"] == "tile_1", \
+            "a candidate already queued at the stop must not be dropped"
+        with pytest.raises(StopIteration):
+            next(gen)
+
+
+# ── design/27 Fix 4: the adaptive stream — stop by NOT submitting ────────────
+
+class _AdaptiveRig:
+    """B_8's closed loop against the SHIPPED stream: the camera returns one
+    frame per event actually sent, the hook walks the tile list one
+    candidates.put() per decision, and stopping is not submitting."""
+
+    def __init__(self, n_tiles: int, max_idle_s: float, stop_after: int | None = None):
+        self.tiles = _survey(n_tiles)
+        self.stop_after = stop_after
+        self.acq = _FakeAcq()
+        self.sent: list = []
+        self.left_get_loop = threading.Event()
+        self.candidates: queue.Queue = queue.Queue()
+        self.progress = SurveyProgress(n_tiles)
+        self.hook = HookBase()
+        self.dispatched_when_processed: list[int] = []
+        self.factory = _survey_event_stream(
+            self.tiles, self.candidates, self.progress, max_idle_s, self.hook,
+            adaptive=True,
+        )
+
+    def per_frame(self, event):
+        # Recorded BEFORE the decision: how many events had been dispatched
+        # when this frame was scored. Under one-at-a-time submission that is
+        # exactly the frame's own ordinal — tile N+1 must not exist yet.
+        self.dispatched_when_processed.append(len(self.sent))
+        n = len(self.dispatched_when_processed)   # frames processed so far
+        if self.stop_after is not None and n >= self.stop_after:
+            self.progress.done_early()             # the next tile never exists
+        elif n < len(self.tiles):
+            self.candidates.put(self.tiles[n])     # decide, THEN submit
+        self.progress.image_done()
+
+    def run(self, dwell_s: float = 0.01, camera_stalls_at: int | None = None,
+            abort_after_s: float | None = None) -> "_AdaptiveRig":
+        gen = self.factory(self.acq)
+        t_src = threading.Thread(
+            target=_event_source_replica,
+            args=(self.acq._event_queue, self.sent, self.left_get_loop),
+            daemon=True,
+        )
+
+        def camera():
+            idx = 0
+            while True:
+                if camera_stalls_at is not None and idx == camera_stalls_at:
+                    return
+                if idx < len(self.sent):
+                    event = self.sent[idx]
+                    idx += 1
+                    time.sleep(dwell_s)
+                    self.per_frame(event)
+                elif not t_src.is_alive():
+                    return
+                else:
+                    time.sleep(0.002)
+
+        t_cam = threading.Thread(target=camera, daemon=True)
+        t_src.start()
+        self.acq._event_queue.put(gen)    # acq.acquire(generator)
+        self.acq._event_queue.put(None)   # __exit__ -> mark_finished()
+        t_cam.start()
+
+        if abort_after_s is not None:
+            def abort():
+                self.acq._event_queue.clear()
+                self.acq._acq._finished.set()
+            threading.Timer(abort_after_s, abort).start()
+
+        t_src.join(timeout=15.0)
+        assert not t_src.is_alive(), \
+            "event source never exited — Acquisition.__exit__ would hang forever"
+        t_cam.join(timeout=5.0)
+        return self
+
+    @property
+    def sent_labels(self) -> list:
+        return [e["axes"]["position"] for e in self.sent]
+
+    @property
+    def stalled(self) -> bool:
+        return any(e.get("event") == "stalled" for e in self.hook._log)
+
+    @property
+    def aborted(self) -> bool:
+        return any(e.get("event") == "aborted" for e in self.hook._log)
+
+
+class TestAdaptiveStream:
+    def test_tile_n_plus_1_is_never_dispatched_before_frame_n_is_scored(self):
+        """Nothing beyond the seed is pre-dispatched; every dispatch is a
+        per-frame decision. dispatched_when_processed[N] == N+1 says frame N
+        was scored while tiles 0..N were the ONLY events in existence."""
+        rig = _AdaptiveRig(n_tiles=5, max_idle_s=2.0).run()
+        assert rig.sent_labels == [f"tile_{i}" for i in range(5)]
+        assert rig.dispatched_when_processed == [1, 2, 3, 4, 5], \
+            "a tile was dispatched before the previous frame was scored"
+        assert rig.left_get_loop.is_set() and not rig.stalled
+
+    def test_stop_by_not_submitting_ends_cleanly_with_exactly_the_submitted_tiles(self):
+        """The founding scenario (stop at tile 4 of a 9-tile grid) through the
+        shipped stream: no cancel, no None, no abort — the remaining five
+        tiles simply never exist, so nothing can expose them."""
+        rig = _AdaptiveRig(n_tiles=9, max_idle_s=2.0, stop_after=4).run()
+        assert rig.sent_labels == ["tile_0", "tile_1", "tile_2", "tile_3"], \
+            "an event past the stop was dispatched — the ghost-exposure surface, reopened"
+        assert rig.left_get_loop.is_set(), "the terminator must land on an early stop"
+        assert not rig.stalled and not rig.aborted
+        assert rig.progress.survey_complete() and rig.progress.n_done == 4
+
+    def test_the_terminator_lands_when_the_camera_stalls_mid_walk(self):
+        rig = _AdaptiveRig(n_tiles=6, max_idle_s=0.3).run(camera_stalls_at=2)
+        assert rig.left_get_loop.is_set() and rig.stalled
+
+    def test_the_terminator_lands_on_an_abort_mid_walk(self):
+        rig = _AdaptiveRig(n_tiles=6, max_idle_s=10.0).run(
+            camera_stalls_at=0, abort_after_s=0.3
+        )
+        assert rig.left_get_loop.is_set()
+        assert rig.aborted and not rig.stalled
+
+
+class TestAcquireSurveyWithDetectorAdaptive:
+    def _positions(self, n=3):
+        return [{"name": f"tile_{i}", "x_um": 10.0 * i, "y_um": 0.0} for i in range(n)]
+
+    def test_the_adaptive_runner_hands_the_hook_the_tile_list(
+        self, mock_ctrl, unconstrained_guard, tmp_path, monkeypatch
+    ):
+        """The tile list becomes state the hook walks: the runner builds the
+        events (channel/exposure shape included) and shares them through
+        hook.survey_events; the stream pre-dispatches only the seed."""
+        from microclaw import tools
+
+        captured = {}
+        monkeypatch.setattr(
+            tools, "_acquire_with_hooks",
+            lambda guard, save_dir, name, events, hook=None: (
+                captured.update(events=events, hook=hook), "/ws/ds")[1],
+        )
+        hook = HookBase()
+        _acquire_survey_with_detector(
+            mock_ctrl, unconstrained_guard, self._positions(), str(tmp_path), "survey",
+            hook=hook, progress=SurveyProgress(3), candidates=queue.Queue(),
+            adaptive=True, num_time_points=1, time_interval_s=0,
+        )
+        assert hook.survey_events is not None and len(hook.survey_events) == 3
+        assert hook.survey_events[0]["axes"]["position"] == "tile_0"
+
+        gen = captured["events"](_FakeAcq())
+        assert next(gen)["axes"]["position"] == "tile_0"   # the seed
+        gen.close()
+
+    def test_the_batched_runner_does_not_set_survey_events(
+        self, mock_ctrl, unconstrained_guard, tmp_path, monkeypatch
+    ):
+        from microclaw import tools
+        monkeypatch.setattr(tools, "_acquire_with_hooks", lambda *a, **k: "/ws/ds")
+        hook = HookBase()
+        _acquire_survey_with_detector(
+            mock_ctrl, unconstrained_guard, self._positions(), str(tmp_path), "survey",
+            hook=hook, progress=SurveyProgress(3), candidates=queue.Queue(),
+            num_time_points=1, time_interval_s=0,
+        )
+        assert hook.survey_events is None, \
+            "pre-dispatch mode must not imply the hook walks the tile list"

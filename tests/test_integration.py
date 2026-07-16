@@ -1601,3 +1601,88 @@ def test_survey_runner_images_a_mid_scan_detection(headless_mm, unconstrained_gu
     assert hook.fired
     runner_events = {e.get("event") for e in hook._log}
     assert not ({"stalled", "aborted"} & runner_events), f"runner logged: {hook._log}"
+
+
+# ---------------------------------------------------------------------------
+# design/27: the adaptive runner against the real engine
+# ---------------------------------------------------------------------------
+
+def test_adaptive_survey_stops_early_with_zero_ghost_exposures(
+    headless_mm, unconstrained_guard, tmp_path
+):
+    """design/27 Fix 4 end-to-end through the SHIPPED runner (spike B_8 drove
+    its own miniature generator; this drives _acquire_survey_with_detector
+    with adaptive=True): the founding scenario — stop at tile 4 of a 9-tile
+    grid — resolved by NOT SUBMITTING instead of returning None. A returned
+    None becomes an unlabeled ghost exposure on the very tile it meant to
+    spare (the rig trace, 2026-07-15); an event that was never submitted fires
+    nothing. Asserts zero ghost frames, the dataset holding exactly the
+    submitted tiles, the stage never past the stop, the watchdog quiet, and
+    __exit__ returning without error.
+    """
+    import queue as _queue
+
+    from ndstorage import Dataset
+
+    from microclaw.hooks import HookBase
+    from microclaw.tools import SurveyProgress, _acquire_survey_with_detector
+
+    positions = [{"name": f"tile_{i}", "x_um": 50.0 * i, "y_um": 0.0} for i in range(9)]
+    stop_after = 4
+    candidates: _queue.Queue = _queue.Queue()
+    progress = SurveyProgress(len(positions))
+
+    class StopAtFour(HookBase):
+        frames = 0
+        ghosts = 0
+
+        def image_process_fn(self, image, metadata, event_queue):
+            label = (metadata.get("Axes") or {}).get("position")
+            if label is None:
+                # An exposure no submitted event asked for — the design/27
+                # defect. Recorded, never analyzed; the assert below fails.
+                self.ghosts += 1
+                return image, metadata
+            self.frames += 1                       # single processor thread
+            self.log(metadata, frame=self.frames)
+            if self.frames >= stop_after:
+                progress.done_early()              # the next tile never exists
+            else:
+                candidates.put(self.survey_events[self.frames])
+            progress.image_done()                  # decide/submit, THEN mark
+            return image, metadata
+
+    hook = StopAtFour(log_path=str(tmp_path / "survey27_log.json"))
+
+    orig = (headless_mm.core.get_x_position(), headless_mm.core.get_y_position())
+    try:
+        result = _acquire_survey_with_detector(
+            headless_mm, unconstrained_guard, positions, str(tmp_path), "survey27",
+            hook=hook, progress=progress, candidates=candidates, max_idle_s=15.0,
+            adaptive=True, num_time_points=1, time_interval_s=0,
+        )
+        x_after = headless_mm.core.get_x_position()
+    finally:
+        headless_mm.core.set_xy_position(*orig)
+        headless_mm.core.wait_for_device(headless_mm.core.get_xy_stage_device())
+
+    assert hook.ghosts == 0, \
+        f"{hook.ghosts} ghost exposure(s) fired — the design/27 defect, through Fix 4"
+    assert hook.frames == stop_after
+
+    submitted = {f"tile_{i}" for i in range(stop_after)}
+    dataset = Dataset(result["dataset_path"])
+    try:
+        coords = dataset.get_image_coordinates_list()
+    finally:
+        dataset.close()
+    assert {c.get("position") for c in coords} == submitted, \
+        "the dataset must hold exactly the submitted tiles, nothing else"
+    assert len(coords) == stop_after
+
+    # tile_3 is the last submitted tile; the stage must never move past it.
+    assert abs(x_after - 150.0) < 1.0, \
+        f"stage at x={x_after} — moved past the stop (tile_3 is at 150.0)"
+
+    runner_events = {e.get("event") for e in hook._log}
+    assert not ({"stalled", "aborted"} & runner_events), f"runner logged: {hook._log}"

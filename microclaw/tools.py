@@ -2018,10 +2018,22 @@ class SurveyProgress:
 
     def __init__(self, n_survey: int) -> None:
         self._n_survey, self._lock, self._done = n_survey, threading.Lock(), 0
+        self._done_early = False
 
     def image_done(self) -> None:
         with self._lock:
             self._done += 1
+
+    def done_early(self) -> None:
+        """The hook decided the survey is over before n_survey images came
+        back — the adaptive runner's stop signal (design/27 Fix 4). Counting
+        alone can never get there: an early stop means the remaining tiles
+        were never submitted, so n_done never reaches n_survey. Ordering
+        contract: decide; then put the next tile OR call this; then
+        image_done().
+        """
+        with self._lock:
+            self._done_early = True
 
     @property
     def n_done(self) -> int:
@@ -2030,7 +2042,7 @@ class SurveyProgress:
 
     def survey_complete(self) -> bool:
         with self._lock:
-            return self._done >= self._n_survey
+            return self._done_early or self._done >= self._n_survey
 
 
 # How often the survey generator polls its candidates queue while idle. Each
@@ -2045,9 +2057,20 @@ def _survey_event_stream(
     progress: SurveyProgress,
     max_idle_s: float,
     hook: Any,
+    adaptive: bool = False,
 ) -> Callable[[Any], Any]:
     """The events-factory for _acquire_with_hooks: a survey whose event stream
     stays OPEN, so a hook can extend it (design/24 Fix 2/2a).
+
+    adaptive=True is design/24's runner tilted the other way (design/27 Fix
+    4): only survey_events[0] is pre-dispatched, and every later tile exists
+    only if the hook submits it through `candidates` after scoring the frame
+    that just arrived. A pre-dispatched grid is unstoppable — it sits in the
+    engine's queue within microseconds and no hook return value can cancel it
+    (a returned None becomes a ghost exposure, design/27) — whereas an event
+    that was never submitted needs no skip mechanism. Stopping is NOT PUTTING
+    the next tile and calling progress.done_early(); the stream drains, the
+    finally puts the terminator, and the acquisition ends cleanly.
 
     EventQueue.get() expands a generator in place and only reads the next queue
     item — mark_finished()'s None — once the generator raises StopIteration. So
@@ -2082,7 +2105,11 @@ def _survey_event_stream(
 
         def event_stream():
             try:
-                yield from survey_events          # dispatched in microseconds...
+                if adaptive:
+                    yield from survey_events[:1]  # the ONLY pre-dispatched event;
+                                                  # the hook walks the rest
+                else:
+                    yield from survey_events      # dispatched in microseconds...
                 last_activity = time.monotonic()  # ...executed over the next minutes
                 last_count = progress.n_done
 
@@ -2143,6 +2170,7 @@ def _acquire_survey_with_detector(
     max_idle_s: float = 60.0,
     channel: str | None = None,
     exposure_ms: float | None = None,
+    adaptive: bool = False,
     **shape_kwargs: Any,
 ) -> dict:
     """One survey acquisition whose event stream a detector hook can EXTEND.
@@ -2157,6 +2185,16 @@ def _acquire_survey_with_detector(
     Fix 2a, spikes A_7/A_8): analyze survey-labelled frames only, guard every
     derived event (check_xy/check_z) before enqueueing, and put() the
     candidate BEFORE calling progress.image_done().
+
+    adaptive=True (design/27 Fix 4) submits ONE EVENT AT A TIME instead: the
+    built tile list is handed to the hook as hook.survey_events (seed at index
+    0), only survey_events[0] is pre-dispatched, and the hook decides per
+    frame whether the next tile exists — candidates.put(the next tile) to
+    continue, progress.done_early() to stop. Use it only where what we see
+    must change what we do (stop-on-condition, refine-where-interesting):
+    one event in flight serializes each tile behind the previous frame's
+    scoring, a cost inherent to the decision, not the mechanism. A fixed
+    survey that just reports keeps the batched pre-dispatch above.
 
     positions are {name, x_um, y_um} dicts; shape_kwargs carry the
     per-position event shape, as in _acquire_positions_with_hook.
@@ -2185,7 +2223,12 @@ def _acquire_survey_with_detector(
         **shape_kwargs,
     )
 
-    events = _survey_event_stream(survey_events, candidates, progress, max_idle_s, hook)
+    if adaptive:
+        # The tile list becomes state the hook walks, one candidates.put()
+        # per decision; the stream pre-dispatches only survey_events[0].
+        hook.survey_events = survey_events
+    events = _survey_event_stream(survey_events, candidates, progress, max_idle_s, hook,
+                                  adaptive=adaptive)
     dataset_path = _acquire_with_hooks(guard, save_dir, name, events, hook)
     return _adaptive_result(
         dataset_path, hook.log_path,

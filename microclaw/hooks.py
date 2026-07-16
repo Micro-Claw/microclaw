@@ -33,6 +33,11 @@ class HookBase:
     def __init__(self, log_path: str | None = None):
         self.log_path = log_path
         self._log: list[dict] = []
+        # Set by the ADAPTIVE survey runner (design/27 Fix 4): the full built
+        # tile list, seed at index 0. Only survey_events[0] is pre-dispatched;
+        # the hook walks the rest — candidates.put(the next tile) to continue,
+        # progress.done_early() to stop. None under every other runner.
+        self.survey_events: list | None = None
 
     def _write_log(self) -> None:
         """Rewrite the whole file from `self._log`: one hook instance per log_path.
@@ -278,10 +283,13 @@ class IntensityAdaptiveHook(HookBase):
 
 
 class PositionFilterHook(HookBase):
-    """Rejects positions where mean intensity is below a threshold.
+    """Keeps images from low-intensity positions out of the dataset.
 
-    Returns None to discard the image; pycro-manager drops the remaining
-    events for that position.
+    Returns None to discard the image — and NOTHING else happens: no event is
+    dropped, and a rejected position keeps being moved to and exposed for the
+    rest of the acquisition; each of its frames is discarded one by one as it
+    arrives (design/27). To stop exposures from happening at all, use the
+    adaptive survey runner (stop = don't submit), not this hook.
     """
 
     def __init__(self, min_mean_intensity: float = 100.0, log_path: str | None = None):
@@ -365,14 +373,23 @@ class MMAutofocusPluginHook(HookBase):
         except Exception as e:
             self.log_event(event, autofocus="skipped", reason=str(e))
             return event
-        # PASSIVE guard: assert on the result; if unsafe, skip capture and stop —
-        # do NOT re-drive Z (that would fight the plugin's own safety controller).
+        # PASSIVE guard: assert on the result; if unsafe, abort the whole
+        # acquisition by raising — do NOT re-drive Z (that would fight the
+        # plugin's own safety controller), and do NOT return None ("skip this
+        # capture" does not exist over the bridge: None becomes an empty event
+        # that fires the camera at the unsafe Z, and the acquisition keeps
+        # going — design/27). Raising is the one lever that stops anything:
+        # pycro-manager's hook thread calls acquisition.abort(e) and the error
+        # surfaces to the caller. Log first — the raise ends the run.
         try:
             self.guard.check_z(new_z)
         except Exception as e:
             self.log_event(event, autofocus="unsafe_abort", unsafe_z=new_z,
                            reason=str(e))
-            return None                              # skip this capture; signal stop
+            raise SafetyViolation(
+                f"Autofocus plugin left Z at {new_z:.3f} um, outside the "
+                f"guard limit ({e}); aborting the acquisition."
+            ) from e
         self.log_event(event, best_z_um=round(new_z, 3), plugin=self.plugin_name)
         return event
 
