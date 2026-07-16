@@ -1491,6 +1491,11 @@ def run_multiposition_acquisition(
                      metric's comparability stamp is on the top-level result.
       "zstack"     — saves a Z-stack at each position to save_dir/<position>.
       "timelapse"  — saves a timelapse at each position to save_dir/<position>.
+                     Neither returns image statistics: a "per-position numbers"
+                     request answered with timelapse n_frames=1 produces
+                     datasets and none of the numbers (rig runs 20260716_140329
+                     and _144714 both took that detour; the schema now leads
+                     with the protocol-choice rule).
 
     To save a single plane per position (equivalent to snapping but with data
     written to disk), use protocol="timelapse" with
@@ -2018,19 +2023,39 @@ class SurveyProgress:
 
     def __init__(self, n_survey: int) -> None:
         self._n_survey, self._lock, self._done = n_survey, threading.Lock(), 0
+        self._done_early = False
 
     def image_done(self) -> None:
         with self._lock:
             self._done += 1
+
+    def done_early(self) -> None:
+        """The hook decided the survey is over before n_survey images came
+        back — the adaptive runner's stop signal (design/27 Fix 4). Counting
+        alone can never get there: an early stop means the remaining tiles
+        were never submitted, so n_done never reaches n_survey. Ordering
+        contract: decide; then put the next tile OR call this; then
+        image_done().
+        """
+        with self._lock:
+            self._done_early = True
 
     @property
     def n_done(self) -> int:
         with self._lock:
             return self._done
 
+    @property
+    def stopped_early(self) -> bool:
+        """Whether done_early() ever fired — the result payload reads this so
+        "complete across 9 position(s)" can never again describe a run that
+        acquired 4 (the 20260716_140329 misreport)."""
+        with self._lock:
+            return self._done_early
+
     def survey_complete(self) -> bool:
         with self._lock:
-            return self._done >= self._n_survey
+            return self._done_early or self._done >= self._n_survey
 
 
 # How often the survey generator polls its candidates queue while idle. Each
@@ -2045,9 +2070,20 @@ def _survey_event_stream(
     progress: SurveyProgress,
     max_idle_s: float,
     hook: Any,
+    adaptive: bool = False,
 ) -> Callable[[Any], Any]:
     """The events-factory for _acquire_with_hooks: a survey whose event stream
     stays OPEN, so a hook can extend it (design/24 Fix 2/2a).
+
+    adaptive=True is design/24's runner tilted the other way (design/27 Fix
+    4): only survey_events[0] is pre-dispatched, and every later tile exists
+    only if the hook submits it through `candidates` after scoring the frame
+    that just arrived. A pre-dispatched grid is unstoppable — it sits in the
+    engine's queue within microseconds and no hook return value can cancel it
+    (a returned None becomes a ghost exposure, design/27) — whereas an event
+    that was never submitted needs no skip mechanism. Stopping is NOT PUTTING
+    the next tile and calling progress.done_early(); the stream drains, the
+    finally puts the terminator, and the acquisition ends cleanly.
 
     EventQueue.get() expands a generator in place and only reads the next queue
     item — mark_finished()'s None — once the generator raises StopIteration. So
@@ -2082,7 +2118,11 @@ def _survey_event_stream(
 
         def event_stream():
             try:
-                yield from survey_events          # dispatched in microseconds...
+                if adaptive:
+                    yield from survey_events[:1]  # the ONLY pre-dispatched event;
+                                                  # the hook walks the rest
+                else:
+                    yield from survey_events      # dispatched in microseconds...
                 last_activity = time.monotonic()  # ...executed over the next minutes
                 last_count = progress.n_done
 
@@ -2143,6 +2183,7 @@ def _acquire_survey_with_detector(
     max_idle_s: float = 60.0,
     channel: str | None = None,
     exposure_ms: float | None = None,
+    adaptive: bool = False,
     **shape_kwargs: Any,
 ) -> dict:
     """One survey acquisition whose event stream a detector hook can EXTEND.
@@ -2157,6 +2198,16 @@ def _acquire_survey_with_detector(
     Fix 2a, spikes A_7/A_8): analyze survey-labelled frames only, guard every
     derived event (check_xy/check_z) before enqueueing, and put() the
     candidate BEFORE calling progress.image_done().
+
+    adaptive=True (design/27 Fix 4) submits ONE EVENT AT A TIME instead: the
+    built tile list is handed to the hook as hook.survey_events (seed at index
+    0), only survey_events[0] is pre-dispatched, and the hook decides per
+    frame whether the next tile exists — candidates.put(the next tile) to
+    continue, progress.done_early() to stop. Use it only where what we see
+    must change what we do (stop-on-condition, refine-where-interesting):
+    one event in flight serializes each tile behind the previous frame's
+    scoring, a cost inherent to the decision, not the mechanism. A fixed
+    survey that just reports keeps the batched pre-dispatch above.
 
     positions are {name, x_um, y_um} dicts; shape_kwargs carry the
     per-position event shape, as in _acquire_positions_with_hook.
@@ -2185,13 +2236,129 @@ def _acquire_survey_with_detector(
         **shape_kwargs,
     )
 
-    events = _survey_event_stream(survey_events, candidates, progress, max_idle_s, hook)
+    # Hand the queue and counter to the hook as attributes. The inline
+    # detectors in the tests close over test-local objects; a saved hook
+    # class loaded by _resolve_hook has nothing to close over, so this is
+    # the only way a hook_strategy hook ever reaches them.
+    hook.candidates = candidates
+    hook.progress = progress
+    if adaptive:
+        # The tile list becomes state the hook walks, one candidates.put()
+        # per decision; the stream pre-dispatches only survey_events[0].
+        hook.survey_events = survey_events
+    events = _survey_event_stream(survey_events, candidates, progress, max_idle_s, hook,
+                                  adaptive=adaptive)
     dataset_path = _acquire_with_hooks(guard, save_dir, name, events, hook)
     return _adaptive_result(
         dataset_path, hook.log_path,
         status=f"Survey acquisition complete across {len(positions)} position(s).",
         positions=len(positions),
     )
+
+
+def run_adaptive_survey(
+    ctrl: MicroscopeController,
+    guard: SafetyGuard,
+    protocol: str,
+    save_dir: str,
+    hook_strategy: str,
+    position_names: list[str] | None = None,
+    positions: list[dict] | None = None,
+    name: str = "survey",
+    protocol_params: dict | None = None,
+    hook_params: dict | None = None,
+    log_path: str | None = None,
+    max_idle_s: float = 60.0,
+) -> dict:
+    """Acquire positions one at a time; the hook decides whether the next
+    position is acquired at all.
+
+    The tool surface for _acquire_survey_with_detector(adaptive=True) — the
+    design/27 Fix 4 runner. Before this existed the adaptive stack was
+    reachable only from tests: rig run 20260716_140329 wrote a correct
+    adaptive hook and had no tool to drive it (a raise at frame 1 was the
+    best available outcome). This is that missing caller: it builds the
+    position list, constructs the SurveyProgress/candidates pair, resolves
+    the hook, and hands all three to the runner.
+
+    Positions are visited in the order given — pass the list reversed for a
+    reverse scan. Supply either position_names (labels in the MM position
+    list) or positions ({name, x_um, y_um} dicts), not both. Per-position Z
+    is not supported (the survey runner drives XY; a zstack protocol sweeps
+    the same absolute Z range at every tile).
+
+    The hook must implement the adaptive contract (see hook_docs "Skipping
+    and stopping"): the runner sets hook.survey_events / hook.candidates /
+    hook.progress; after each frame the hook submits the next tile with
+    candidates.put() OR calls progress.done_early(), then image_done().
+    A batched hook that only logs runs fine here too, but serialized —
+    prefer run_tile_acquisition / run_multiposition_acquisition for fixed
+    surveys that just report.
+    """
+    if position_names is not None and positions is not None:
+        return {"error": "Provide position_names or positions, not both."}
+    if position_names is None and positions is None:
+        return {"error": "Provide either position_names or positions."}
+    if protocol == "snap":
+        return {"error":
+                "The adaptive survey needs acquisition images; 'snap' is "
+                "display-only. Use protocol='timelapse' with protocol_params="
+                "{'n_frames': 1, 'interval_s': 0} for one frame per tile."}
+
+    params = protocol_params or {}
+    try:
+        shape = _protocol_shape_kwargs(protocol, params)
+    except ValueError as e:
+        return {"error": str(e)}
+    except KeyError as e:
+        return {"error": f"protocol_params for '{protocol}' is missing {e}."}
+
+    if position_names is not None:
+        all_positions = {p["name"]: p for p in ctrl.get_positions()}
+        missing = [n for n in position_names if n not in all_positions]
+        if missing:
+            return {"error": f"Positions not found in position list: {missing}"}
+        resolved = [{"name": n,
+                     "x_um": all_positions[n]["x_um"],
+                     "y_um": all_positions[n]["y_um"]} for n in position_names]
+    else:
+        resolved = [{"name": p["name"], "x_um": p["x_um"], "y_um": p["y_um"]}
+                    for p in positions]
+
+    log_path = _prepare_log_path(guard, log_path)
+    try:
+        hook = _resolve_hook(ctrl, guard, hook_strategy, hook_params, log_path)
+    except ValueError as e:
+        return {"error": str(e)}
+
+    progress = SurveyProgress(len(resolved))
+    candidates: queue.Queue = queue.Queue()
+    result = _acquire_survey_with_detector(
+        ctrl, guard, resolved, save_dir, name,
+        hook=hook, progress=progress, candidates=candidates,
+        max_idle_s=max_idle_s,
+        channel=params.get("channel"), exposure_ms=params.get("exposure_ms"),
+        adaptive=True, **shape,
+    )
+    # The batched status ("complete across 9 position(s)") is exactly the
+    # sentence that made 5 ghost exposures read as a clean early stop
+    # (20260716_140329). Say what actually ran, from the counter the hook
+    # itself drove — and attach the planned coordinates so the hook log
+    # joins on `position` without re-imaging (design/23 Episode A).
+    stopped = progress.stopped_early
+    result.pop("positions", None)   # "positions: 9" is the ambiguity this tool retires
+    result["status"] = (
+        f"Adaptive survey: {progress.n_done} frame(s) acquired of "
+        f"{len(resolved)} planned tile(s)"
+        + (", stopped early by the hook." if stopped else ".")
+    )
+    result["frames_acquired"] = progress.n_done
+    result["stopped_early"] = stopped
+    result["tiles_planned"] = [
+        {"position": p["name"], "x_um": round(p["x_um"], 3),
+         "y_um": round(p["y_um"], 3)} for p in resolved
+    ]
+    return result
 
 
 def read_hook_log(ctrl: MicroscopeController, guard: SafetyGuard, log_path: str) -> dict:
@@ -2622,6 +2789,7 @@ TOOL_REGISTRY = {
     "run_multiposition_with_autofocus": run_multiposition_with_autofocus,
     "run_adaptive_zstack": run_adaptive_zstack,
     "run_adaptive_timelapse": run_adaptive_timelapse,
+    "run_adaptive_survey": run_adaptive_survey,
     "read_hook_log": read_hook_log,
     "generate_and_save_hook": generate_and_save_hook,
     "read_hook_from_file": read_hook_from_file,

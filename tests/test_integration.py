@@ -1601,3 +1601,177 @@ def test_survey_runner_images_a_mid_scan_detection(headless_mm, unconstrained_gu
     assert hook.fired
     runner_events = {e.get("event") for e in hook._log}
     assert not ({"stalled", "aborted"} & runner_events), f"runner logged: {hook._log}"
+
+
+# ---------------------------------------------------------------------------
+# design/27: the adaptive runner against the real engine
+# ---------------------------------------------------------------------------
+
+def test_adaptive_survey_stops_early_with_zero_ghost_exposures(
+    headless_mm, unconstrained_guard, tmp_path
+):
+    """design/27 Fix 4 end-to-end through the SHIPPED runner (spike B_8 drove
+    its own miniature generator; this drives _acquire_survey_with_detector
+    with adaptive=True): the founding scenario — stop at tile 4 of a 9-tile
+    grid — resolved by NOT SUBMITTING instead of returning None. A returned
+    None becomes an unlabeled ghost exposure on the very tile it meant to
+    spare (the rig trace, 2026-07-15); an event that was never submitted fires
+    nothing. Asserts zero ghost frames, the dataset holding exactly the
+    submitted tiles, the stage never past the stop, the watchdog quiet, and
+    __exit__ returning without error.
+    """
+    import queue as _queue
+
+    from ndstorage import Dataset
+
+    from microclaw.hooks import HookBase
+    from microclaw.tools import SurveyProgress, _acquire_survey_with_detector
+
+    positions = [{"name": f"tile_{i}", "x_um": 50.0 * i, "y_um": 0.0} for i in range(9)]
+    stop_after = 4
+    candidates: _queue.Queue = _queue.Queue()
+    progress = SurveyProgress(len(positions))
+
+    class StopAtFour(HookBase):
+        frames = 0
+        ghosts = 0
+
+        def image_process_fn(self, image, metadata, event_queue):
+            label = (metadata.get("Axes") or {}).get("position")
+            if label is None:
+                # An exposure no submitted event asked for — the design/27
+                # defect. Recorded, never analyzed; the assert below fails.
+                self.ghosts += 1
+                return image, metadata
+            self.frames += 1                       # single processor thread
+            self.log(metadata, frame=self.frames)
+            if self.frames >= stop_after:
+                progress.done_early()              # the next tile never exists
+            else:
+                candidates.put(self.survey_events[self.frames])
+            progress.image_done()                  # decide/submit, THEN mark
+            return image, metadata
+
+    hook = StopAtFour(log_path=str(tmp_path / "survey27_log.json"))
+
+    orig = (headless_mm.core.get_x_position(), headless_mm.core.get_y_position())
+    try:
+        result = _acquire_survey_with_detector(
+            headless_mm, unconstrained_guard, positions, str(tmp_path), "survey27",
+            hook=hook, progress=progress, candidates=candidates, max_idle_s=15.0,
+            adaptive=True, num_time_points=1, time_interval_s=0,
+        )
+        x_after = headless_mm.core.get_x_position()
+    finally:
+        headless_mm.core.set_xy_position(*orig)
+        headless_mm.core.wait_for_device(headless_mm.core.get_xy_stage_device())
+
+    assert hook.ghosts == 0, \
+        f"{hook.ghosts} ghost exposure(s) fired — the design/27 defect, through Fix 4"
+    assert hook.frames == stop_after
+
+    submitted = {f"tile_{i}" for i in range(stop_after)}
+    dataset = Dataset(result["dataset_path"])
+    try:
+        coords = dataset.get_image_coordinates_list()
+    finally:
+        dataset.close()
+    assert {c.get("position") for c in coords} == submitted, \
+        "the dataset must hold exactly the submitted tiles, nothing else"
+    assert len(coords) == stop_after
+
+    # tile_3 is the last submitted tile; the stage must never move past it.
+    assert abs(x_after - 150.0) < 1.0, \
+        f"stage at x={x_after} — moved past the stop (tile_3 is at 150.0)"
+
+    runner_events = {e.get("event") for e in hook._log}
+    assert not ({"stalled", "aborted"} & runner_events), f"runner logged: {hook._log}"
+
+
+def test_run_adaptive_survey_tool_reaches_the_adaptive_runner(
+    headless_mm, unconstrained_guard, tmp_path, monkeypatch
+):
+    """The tool-surface sibling of the test above. Rig run 20260716_140329
+    proved the adaptive runner unreachable from TOOL_REGISTRY: a correct
+    adaptive hook raised at frame 1 under run_multiposition_acquisition (the
+    batched runner), one wasted exposure and a stranded stage later. This
+    drives the same stop-early scenario through execute_tool("run_adaptive_
+    survey") with a hook_strategy-loaded hook that reads the injected
+    attributes (self.survey_events / self.candidates / self.progress) — a
+    loaded hook class has no test-local objects to close over, so the
+    attribute injection is itself under test. Positions are given in
+    DECREASING x (the rig run's reverse scan): order must be the caller's.
+    """
+    from ndstorage import Dataset
+
+    from microclaw.hooks import HookBase, PRECODED_HOOK_REGISTRY
+    from microclaw.tools import execute_tool
+
+    stop_after = 2
+
+    class StopAtTwo(HookBase):
+        instances: list = []
+
+        def __init__(self, log_path=None):
+            super().__init__(log_path)
+            self.frames = 0
+            self.ghosts = 0
+            StopAtTwo.instances.append(self)
+
+        def image_process_fn(self, image, metadata, event_queue):
+            if self.candidates is None or self.progress is None:
+                raise RuntimeError("adaptive attributes were not injected")
+            label = (metadata.get("Axes") or {}).get("position")
+            if label is None:
+                self.ghosts += 1          # the design/27 defect, if it fires
+                return image, metadata
+            self.frames += 1
+            self.log(metadata, frame=self.frames)
+            if self.frames >= stop_after:
+                self.progress.done_early()
+            else:
+                self.candidates.put(self.survey_events[self.frames])
+            self.progress.image_done()
+            return image, metadata
+
+    StopAtTwo.instances = []
+    monkeypatch.setitem(PRECODED_HOOK_REGISTRY, "stop_at_two", StopAtTwo)
+
+    n_tiles = 5
+    positions = [{"name": f"tile_{i}", "x_um": 50.0 * (n_tiles - i), "y_um": 0.0}
+                 for i in range(n_tiles)]
+
+    orig = (headless_mm.core.get_x_position(), headless_mm.core.get_y_position())
+    try:
+        result = json.loads(execute_tool(
+            "run_adaptive_survey",
+            {"protocol": "timelapse", "save_dir": str(tmp_path),
+             "hook_strategy": "stop_at_two", "positions": positions,
+             "name": "survey27tool",
+             "protocol_params": {"n_frames": 1, "interval_s": 0},
+             "log_path": str(tmp_path / "survey27tool_log.json"),
+             "max_idle_s": 15.0},
+            headless_mm, unconstrained_guard,
+        ))
+    finally:
+        headless_mm.core.set_xy_position(*orig)
+        headless_mm.core.wait_for_device(headless_mm.core.get_xy_stage_device())
+
+    assert "error" not in result, result
+    hook = StopAtTwo.instances[0]
+    assert hook.ghosts == 0, f"{hook.ghosts} ghost exposure(s) through the tool"
+    assert hook.frames == stop_after
+
+    # The result says what ran, not what was planned — the 20260716_140329
+    # transcript reported "complete across 9 position(s)" over a 4-tile stop.
+    assert result["frames_acquired"] == stop_after
+    assert result["stopped_early"] is True
+    assert f"{stop_after} frame(s) acquired of {n_tiles} planned" in result["status"]
+
+    dataset = Dataset(result["dataset_path"])
+    try:
+        coords = dataset.get_image_coordinates_list()
+    finally:
+        dataset.close()
+    assert {c.get("position") for c in coords} == {"tile_0", "tile_1"}, \
+        "the dataset must hold exactly the first two tiles IN THE GIVEN ORDER"

@@ -233,16 +233,24 @@ class TestMMAutofocusPluginHook:
         assert hook.post_hardware_hook_fn(event) is event
         assert hook.get_summary()[-1]["best_z_um"] == 100.0
 
-    def test_passive_guard_aborts_without_redriving(self):
+    def test_passive_guard_logs_then_raises_without_redriving(self):
+        """design/27 Fix 2: `return None` never skipped anything — over the
+        bridge it fired an unlabeled ghost exposure AT the unsafe Z and the
+        acquisition kept going. Raising is the only lever that stops the run;
+        pycro-manager's hook thread turns it into acquisition.abort(e)."""
         af = MagicMock()
         af.full_focus.return_value = 9999.0  # out of z_max=200 bounds
         ctrl = _ctrl_with_autofocus(af)
         hook = MMAutofocusPluginHook(ctrl, _guard(allow_hardware_motion=True))
-        result = hook.post_hardware_hook_fn({"axes": {}})
-        assert result is None  # capture skipped, acquisition signalled to stop
+        with pytest.raises(SafetyViolation, match="9999"):
+            hook.post_hardware_hook_fn({"axes": {}})
         # PASSIVE: microclaw must NOT re-drive Z after an unsafe result.
         ctrl.core.set_position.assert_not_called()
-        assert hook.get_summary()[-1]["autofocus"] == "unsafe_abort"
+        # The log entry landed BEFORE the raise — the raise ends the run, so a
+        # log-after-raise would never be written.
+        entry = hook.get_summary()[-1]
+        assert entry["autofocus"] == "unsafe_abort"
+        assert entry["unsafe_z"] == 9999.0
 
     def test_skips_on_plugin_error_without_aborting(self):
         af = MagicMock()

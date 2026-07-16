@@ -199,3 +199,12 @@ class TestPositionFilterHookIdentity:
         assert hook.image_process_fn(np.full((8, 8), 10.0), {"PositionName": "P0"}, None) is None
         img = np.full((8, 8), 500.0)
         assert hook.image_process_fn(img, {"PositionName": "P1"}, None) is not None
+
+    def test_docstring_no_longer_claims_event_drops(self):
+        """design/27: the discard half is real; the "drops the remaining
+        events" half was fiction — a rejected position keeps being exposed for
+        the rest of the acquisition, and the docstring must say so."""
+        flat = " ".join(PositionFilterHook.__doc__.split())
+        assert "drops the remaining" not in flat
+        assert "no event is dropped" in flat
+        assert "keeps being moved to and exposed" in flat
