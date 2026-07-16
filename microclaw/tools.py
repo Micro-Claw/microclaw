@@ -2,10 +2,12 @@ from __future__ import annotations
 import inspect
 import json
 import math
+import queue
+import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import tifffile
@@ -616,7 +618,7 @@ def _acquire_with_hooks(
     guard: SafetyGuard,
     save_dir: str,
     name: str,
-    events: list,
+    events: list | Callable[[Any], Any],
     hook: Any | None = None,
 ) -> str:
     """Run one Acquisition, attaching hook callables if a hook is supplied.
@@ -625,6 +627,14 @@ def _acquire_with_hooks(
     post_hardware_hook_fn and/or image_process_fn; both are optional and are
     wired in only if present, so the same runner serves plain and adaptive
     acquisitions of any event shape.
+
+    `events` is a list, or a factory called with the live Acquisition that
+    returns what acquire() should be handed (design/24 Fix 2 — in practice a
+    generator that holds the event source open so a detector hook can extend
+    the scan). A factory, not a pre-built generator, because the generator
+    must hold the acquisition's REAL event queue to own its terminator
+    (abort() clears the queue, mark_finished()'s None included — Fix 2a), and
+    that queue does not exist until the Acquisition is constructed here.
 
     The one place an acquisition touches the filesystem, and so the one place
     `save_dir` is confined to a configured workspace. Without this the guard is
@@ -644,6 +654,8 @@ def _acquire_with_hooks(
             hook_fn_kwargs["image_process_fn"] = hook.image_process_fn
 
     with Acquisition(directory=save_dir, name=name, show_display=True, **hook_fn_kwargs) as acq:
+        if callable(events):
+            events = events(acq)
         acq.acquire(events)
 
     return _acq_dataset_path(acq, save_dir, name)
@@ -1991,6 +2003,193 @@ def _acquire_positions_with_hook(
     return _adaptive_result(
         dataset_path, log_path,
         status=f"Hooked acquisition complete across {len(positions)} position(s).",
+        positions=len(positions),
+    )
+
+
+class SurveyProgress:
+    """How many survey images have come back.
+
+    Written by the processor thread (the hook), read by the event thread (the
+    generator in _acquire_survey_with_detector) — so it is a real cross-thread
+    object, not a counter. Nothing else in microclaw tracks acquisition
+    progress; this is the one genuinely new primitive design/24 introduces.
+    """
+
+    def __init__(self, n_survey: int) -> None:
+        self._n_survey, self._lock, self._done = n_survey, threading.Lock(), 0
+
+    def image_done(self) -> None:
+        with self._lock:
+            self._done += 1
+
+    @property
+    def n_done(self) -> int:
+        with self._lock:
+            return self._done
+
+    def survey_complete(self) -> bool:
+        with self._lock:
+            return self._done >= self._n_survey
+
+
+# How often the survey generator polls its candidates queue while idle. Each
+# empty pass also costs one is_finished() bridge round trip (measured ~<0.1 ms
+# on localhost, design/24), so at 0.05 s the poll's bridge duty cycle is ~0.1%.
+_CANDIDATE_POLL_S = 0.05
+
+
+def _survey_event_stream(
+    survey_events: list,
+    candidates: "queue.Queue",
+    progress: SurveyProgress,
+    max_idle_s: float,
+    hook: Any,
+) -> Callable[[Any], Any]:
+    """The events-factory for _acquire_with_hooks: a survey whose event stream
+    stays OPEN, so a hook can extend it (design/24 Fix 2/2a).
+
+    EventQueue.get() expands a generator in place and only reads the next queue
+    item — mark_finished()'s None — once the generator raises StopIteration. So
+    a generator that yields the survey and then blocks, feeding follow-up
+    events as the hook finds them, holds pycro-manager's event source open for
+    the whole scan. The hook must NOT put() to pycro-manager's own event queue
+    — that is a silent no-op under this runner too (the terminator is queued
+    ahead of it); it puts to `candidates`, which this generator drains.
+
+    The watchdog measures IDLENESS, not elapsed time: the survey is DISPATCHED
+    at socket speed and EXECUTED at camera speed, so a deadline started at
+    submission is a cap on the whole scan and silently drops every late
+    detection once it blows — the very bug this runner exists to remove
+    (design/24 Fix 2a; spike A_3 is its regression test). max_idle_s is a
+    stall detector, sized against the slowest thing ONE tile can legitimately
+    do (hardware autofocus included), never against the length of the scan.
+    """
+
+    def factory(acq):
+        # The acquisition's REAL event queue: the generator owns the
+        # terminator (see the finally). And the same abort observable the real
+        # event source polls before every send (java_backend_acquisitions.py),
+        # so an abort is seen promptly with the right log word instead of
+        # max_idle_s late as a "stall".
+        event_queue = acq._event_queue
+
+        def acq_finished() -> bool:
+            try:
+                return bool(acq._acq.is_finished())
+            except Exception:
+                return False
+
+        def event_stream():
+            try:
+                yield from survey_events          # dispatched in microseconds...
+                last_activity = time.monotonic()  # ...executed over the next minutes
+                last_count = progress.n_done
+
+                while True:
+                    try:
+                        event = candidates.get(timeout=_CANDIDATE_POLL_S)
+                    except queue.Empty:
+                        pass
+                    else:
+                        last_activity = time.monotonic()
+                        yield event
+                        continue
+
+                    # BOTH conditions: the hook put()s a candidate before it
+                    # marks the image done, so an empty queue over a complete
+                    # survey is the only state in which no detection can still
+                    # be in flight.
+                    if progress.survey_complete() and candidates.empty():
+                        return
+
+                    if acq_finished():
+                        hook.note_aborted()
+                        return
+
+                    # Images still arriving means the rig is alive; reset the
+                    # watchdog. It fires only on a genuine stall — an image
+                    # that never comes back — never because the survey is long.
+                    n = progress.n_done
+                    if n != last_count:
+                        last_count, last_activity = n, time.monotonic()
+
+                    if time.monotonic() - last_activity > max_idle_s:
+                        hook.note_stalled(max_idle_s)   # loud in the log, not silent
+                        return
+            finally:
+                # The generator OWNS the terminator (design/24 Fix 2a, spike
+                # A_10): Acquisition.abort() clears the queue, mark_finished()'s
+                # None included, and a generator that trusts that None leaves
+                # the event source blocked forever in get() and __exit__ joined
+                # to it forever, uninterruptibly. Runs on every exit path; an
+                # extra None on the normal path is read by nobody.
+                event_queue.put(None)
+
+        return event_stream()
+
+    return factory
+
+
+def _acquire_survey_with_detector(
+    ctrl: MicroscopeController,
+    guard: SafetyGuard,
+    positions: list[dict],
+    save_dir: str,
+    name: str,
+    hook: Any,
+    progress: SurveyProgress,
+    candidates: "queue.Queue",
+    max_idle_s: float = 60.0,
+    channel: str | None = None,
+    exposure_ms: float | None = None,
+    **shape_kwargs: Any,
+) -> dict:
+    """One survey acquisition whose event stream a detector hook can EXTEND.
+
+    The generator-backed runner design/24 specifies and design/26's
+    mode="acquire" needs: the survey events are yielded up front, then the
+    stream stays open draining `candidates` — derived events the hook enqueues
+    from image_process_fn — until the survey is complete with nothing in
+    flight, the acquisition is aborted, or nothing has happened for
+    max_idle_s. The caller constructs `progress` and `candidates` and hands
+    the same objects to the hook, whose contract is load-bearing (design/24
+    Fix 2a, spikes A_7/A_8): analyze survey-labelled frames only, guard every
+    derived event (check_xy/check_z) before enqueueing, and put() the
+    candidate BEFORE calling progress.image_done().
+
+    positions are {name, x_um, y_um} dicts; shape_kwargs carry the
+    per-position event shape, as in _acquire_positions_with_hook.
+    """
+    save_dir = guard.resolve_in_workspace(save_dir)
+
+    # The stage is driven by the Acquisition, so check every survey point up
+    # front — the refusal must not arrive mid-scan. Derived events are guarded
+    # by the hook at enqueue time; nothing else ever sees them.
+    for p in positions:
+        guard.check_xy(p["x_um"], p["y_um"])
+    if "z_start" in shape_kwargs:
+        guard.check_z(shape_kwargs["z_start"])
+        guard.check_z(shape_kwargs["z_end"])
+    if channel:
+        guard.check_channel(channel)
+    if exposure_ms is not None:
+        guard.check_exposure(exposure_ms)
+        if not channel:
+            ctrl.core.set_exposure(exposure_ms)   # eventless exposure; see run_zstack
+
+    survey_events = _build_acquisition_events(
+        channel=channel, exposure_ms=exposure_ms,
+        position_labels=[p["name"] for p in positions],
+        xy_positions=[(p["x_um"], p["y_um"]) for p in positions],
+        **shape_kwargs,
+    )
+
+    events = _survey_event_stream(survey_events, candidates, progress, max_idle_s, hook)
+    dataset_path = _acquire_with_hooks(guard, save_dir, name, events, hook)
+    return _adaptive_result(
+        dataset_path, hook.log_path,
+        status=f"Survey acquisition complete across {len(positions)} position(s).",
         positions=len(positions),
     )
 

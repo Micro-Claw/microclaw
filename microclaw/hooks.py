@@ -101,6 +101,23 @@ class HookBase:
         self._log.append({**self.where_event(event), **fields})
         self._write_log()
 
+    def note_stalled(self, max_idle_s: float) -> None:
+        """The survey runner's idle watchdog fired: no image came back and no
+        candidate arrived for max_idle_s. Called by the event-stream generator
+        (tools._acquire_survey_with_detector), not by hook code — loud in the
+        log, never silent (design/24 Fix 2a).
+        """
+        self._log.append({"event": "stalled", "max_idle_s": max_idle_s})
+        self._write_log()
+
+    def note_aborted(self) -> None:
+        """The acquisition was aborted from outside mid-survey. Same caller as
+        note_stalled; keeps the log word "aborted" distinct from "stalled"
+        (design/24 Fix 2a).
+        """
+        self._log.append({"event": "aborted"})
+        self._write_log()
+
     def get_summary(self) -> list[dict]:
         return self._log
 

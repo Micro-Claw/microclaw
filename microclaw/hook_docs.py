@@ -22,10 +22,9 @@ Called after every image arrives from the camera, before it is saved.
   - Return (image, metadata) to keep the image (you may modify either).
   - Return None to discard this image and drop all remaining events for that
     position (pycro-manager interprets None as "skip this position").
-  - Push new events from within the function:
-      event_queue.put({"axes": {"time": t}, "exposure": 50})
-  - Signal that the acquisition should end early:
-      event_queue.put(None)
+  - NEVER call event_queue.put(...) — see the event_queue section below. Every
+    microclaw runner silently discards anything a hook puts there: it adds no
+    event, and event_queue.put(None) does NOT end the acquisition early.
 
 To key a log entry to the image's place in the acquisition, call
 self.log(metadata, ...) on HookBase: it stamps position/x_um/y_um/z_um for you
@@ -92,18 +91,35 @@ Return value is ignored. Use for side-channel logging, copying, or notification.
 Only keys relevant to the current axis configuration are present. The "axes"
 indices are sequence numbers (0, 1, 2, …), not physical values.
 
-## event_queue usage (inside image_process_fn)
+## event_queue (inside image_process_fn) — NEVER call event_queue.put()
 
-```python
-# Add a new event dynamically:
-event_queue.put({
-    "axes": {"time": next_t, "z": 0},
-    "exposure": 50,
-})
+image_process_fn receives pycro-manager's real event queue as its third
+argument, but a put() on it is a SILENT NO-OP under every microclaw runner:
+by the time any image is processed, the acquisition's terminator is already
+queued ahead of (or the event source has already consumed) anything the hook
+adds, so the hook's event is orphaned and never executed. Nothing raises and
+nothing warns — the run completes looking successful while the added event
+was silently dropped (design/24).
 
-# End the acquisition early:
-event_queue.put(None)
-```
+  - Never push new events:  event_queue.put({...}) is silently discarded.
+  - Never push None:        event_queue.put(None) does NOT end the acquisition
+    early — the terminator it would duplicate is already queued, and the
+    hook's None is discarded the same way.
+
+A hook that needs to ADD work must run under the survey-with-detector runner
+(tools._acquire_survey_with_detector), which injects a `candidates` queue and
+a `progress` counter alongside the hook. There the supported pattern is:
+
+  1. Never analyze a frame whose position label is not in the survey set —
+     otherwise the hook re-detects its own follow-up frames, forever.
+  2. Check every derived event with guard.check_xy / guard.check_z BEFORE
+     enqueueing it — derived events bypass the normal per-move guards, and
+     enforce a max_events cap, logged when it is hit.
+  3. candidates.put(event) BEFORE progress.image_done(), always — reversed, a
+     hit on the last survey tile can be silently lost.
+
+A hook that needs to add work and has no candidates queue must FAIL LOUDLY
+(raise at construction time), not quietly log a success.
 
 ## HookBase pattern (required for all microclaw-generated hooks)
 

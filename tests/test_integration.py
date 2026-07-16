@@ -1524,3 +1524,80 @@ def test_java_error_is_translated_not_forwarded(headless_mm, unconstrained_guard
     )
     assert "error" in result
     assert result["error"].count("\n") == 0
+
+# ---------------------------------------------------------------------------
+# design/24: the survey runner against the real engine
+# ---------------------------------------------------------------------------
+
+def test_survey_runner_images_a_mid_scan_detection(headless_mm, unconstrained_guard, tmp_path):
+    """design/24 end-to-end through the SHIPPED runner (the spike's A_9 drives
+    its own replica generator; this drives tools._acquire_survey_with_detector):
+    the generator holds the real event source open, a follow-up with a label
+    AcqEngJ has never seen is accepted mid-acquisition and lands in the same
+    NDTiff dataset, event_queue.put() stays a no-op on the real queue, the
+    watchdog stays quiet, and __exit__ returns.
+
+    The inline hook is a minimal design/24 detector wired the way hook_docs
+    demands: on tile_1 it enqueues a follow-up at a NEW position label
+    ("roi_0") on the injected candidates queue — guarded first, and put()
+    BEFORE image_done() (spike A_8) — and also drops an event on
+    pycro-manager's own event_queue under a "poison" label, which must NOT
+    reach the dataset (spike A_5, confirmed on the real queue by A_9).
+    Non-survey labels are returned unanalyzed (spike A_7).
+    """
+    import queue as _queue
+
+    from ndstorage import Dataset
+
+    from microclaw.hooks import HookBase
+    from microclaw.tools import SurveyProgress, _acquire_survey_with_detector
+
+    positions = [{"name": f"tile_{i}", "x_um": 50.0 * i, "y_um": 0.0} for i in range(4)]
+    survey_labels = {p["name"] for p in positions}
+    candidates: _queue.Queue = _queue.Queue()
+    progress = SurveyProgress(len(positions))
+
+    class OneHitDetector(HookBase):
+        fired = False
+
+        def image_process_fn(self, image, metadata, event_queue):
+            label = (metadata.get("Axes") or {}).get("position")
+            if label not in survey_labels:
+                return image, metadata          # never re-analyze a follow-up (A_7)
+            if label == "tile_1" and not self.fired:
+                self.fired = True
+                followup = {"axes": {"position": "roi_0"}, "x": 75.0, "y": 25.0}
+                unconstrained_guard.check_xy(followup["x"], followup["y"])
+                candidates.put(followup)        # BEFORE image_done() (A_8)
+                event_queue.put({"axes": {"position": "poison"}, "x": 0.0, "y": 0.0})
+            progress.image_done()
+            return image, metadata
+
+    hook = OneHitDetector(log_path=str(tmp_path / "survey24_log.json"))
+
+    orig = (headless_mm.core.get_x_position(), headless_mm.core.get_y_position())
+    try:
+        result = _acquire_survey_with_detector(
+            headless_mm, unconstrained_guard, positions, str(tmp_path), "survey24",
+            hook=hook, progress=progress, candidates=candidates, max_idle_s=15.0,
+            num_time_points=1, time_interval_s=0,
+        )
+    finally:
+        headless_mm.core.set_xy_position(*orig)
+        headless_mm.core.wait_for_device(headless_mm.core.get_xy_stage_device())
+
+    assert result["positions"] == 4
+    dataset = Dataset(result["dataset_path"])
+    try:
+        seen = {c.get("position") for c in dataset.get_image_coordinates_list()}
+    finally:
+        dataset.close()
+
+    assert {f"tile_{i}" for i in range(4)} <= seen, f"survey tiles missing: {seen}"
+    assert "roi_0" in seen, \
+        "the mid-scan detection was never imaged — the design/24 defect, live"
+    assert "poison" not in seen, \
+        "event_queue.put() must remain a silent no-op on the real queue (Fix 1)"
+    assert hook.fired
+    runner_events = {e.get("event") for e in hook._log}
+    assert not ({"stalled", "aborted"} & runner_events), f"runner logged: {hook._log}"
