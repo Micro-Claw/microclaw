@@ -287,6 +287,9 @@ small:
    ordering contract extends naturally: decide; then put the next tile *or*
    mark done; then `image_done()`.
 
+Spike B_8 prototypes exactly this generator against the real engine before
+either change ships: the founding scenario rerun, zero ghosts expected.
+
 **Scope: smart microscopy only — where what we see must change what we do.**
 One event in flight at a time serializes everything: each tile waits for the
 previous frame to cross ZMQ and be scored before the next stage move is even
@@ -310,7 +313,7 @@ returns a static image; the real hook needs a tolerance.)
 pyjavaz import — no MM, no hardware: B_1 reads pyjavaz's wire encoding of
 `None` off a real socket; B_2 drives pycro-manager's real `_run_acq_hook`
 thread over real ZMQ sockets, playing the Java side, and measures all three
-return paths (passthrough, `None`→`{}`, raise→`abort(e)`+`{}`). B_3–B_7 are
+return paths (passthrough, `None`→`{}`, raise→`abort(e)`+`{}`). B_3–B_8 are
 gated on a Micro-Manager at localhost:4827 (demo config suffices) and measure
 the engine's half for real:
 
@@ -325,6 +328,15 @@ the engine's half for real:
   contains none of them (discard works).
 - **B_6** the raise path: the acquisition aborts, the error surfaces to the
   caller (loud), and how many ghost exposures the abort race lets out.
+- **B_8** Fix 4's pattern, prototyped against the real engine before the
+  runner change ships: a miniature of the respecified `_survey_event_stream`
+  (only the first tile pre-dispatched, every later tile submitted by the
+  processor after scoring the previous frame, exit on a done flag) replays
+  the founding scenario — stop at tile 4 of a 9-tile grid — by *not
+  submitting*. Asserts zero ghost exposures, all frames labeled, the dataset
+  exactly the four submitted tiles, the stage never past the stop, and a
+  clean error-free end; prints the per-tile serialization gap (the pattern's
+  inherent cost, for the record). Runs before B_7.
 - **B_7** the empty-list probe, last and watchdog-wrapped because its
   expected failure is Java-side (`sequence.get(0)` on an empty list): measures
   whether that failure is loud, silent, or a wedge. Informational — it fails
@@ -351,6 +363,23 @@ Once Fix 1 and Fix 2 land:
   the gated spike stages on the demo-config machine — the same standing
   arrangement as design/24's A_9.
 
+Once Fix 4 lands (the runner changes, after B_8 confirms the mechanism on the
+demo-config machine):
+
+- `SurveyProgress`'s done-early signal — thread-free unit tests: set early,
+  `survey_complete()` goes true below `n_survey`; the stream exits on it with
+  the candidates queue drained first.
+- The adaptive stream against `test_survey_runner.py`'s fake-acquisition rig:
+  nothing is pre-dispatched beyond the seed event(s); tile N+1 is never
+  yielded before frame N is processed; stop-by-not-submitting ends the
+  generator and the terminator still lands on every exit path (the design/24
+  A_10 contract, inherited).
+- An MM-gated integration test through the **shipped** runner — the sibling
+  of design/24's `test_survey_runner_images_a_mid_scan_detection`: a grid the
+  hook stops early, asserting zero ghost frames, the dataset holding exactly
+  the submitted tiles, the watchdog quiet, and `__exit__` returning. B_8's
+  prototype promoted to the shipped code path.
+
 ## What this does not do
 
 - **It does not fix the skip.** Cancelling an already-dispatched event from a
@@ -366,7 +395,8 @@ Once Fix 1 and Fix 2 land:
   already made aborts deadlock-safe under the generator runner.
 - **The engine-side numbers await the demo-config run.** B_1/B_2 pass locally
   (macOS, no MM). The rig trace already demonstrates B_3's core claim on real
-  hardware — five ghost frames are in the founding history — but B_3–B_7's
+  hardware — five ghost frames are in the founding history — but B_3–B_8's
   specific measurements (dataset shape under colliding ghost keys, the
-  pre-hardware variant, the abort race count, the empty-list failure mode)
-  need the machine with MM open, like design/24's A_9 before them.
+  pre-hardware variant, the abort race count, the Fix 4 prototype's zero-ghost
+  run, the empty-list failure mode) need the machine with MM open, like
+  design/24's A_9 before them.

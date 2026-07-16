@@ -18,7 +18,7 @@ sockets, playing the Java side: a passthrough return arrives intact, a None
 return arrives as {}, and a RAISING hook calls acquisition.abort(e) and STILL
 sends {} — so even the loud path may race one ghost event out the door.
 
-B_3–B_7 are gated on a Micro-Manager at localhost:4827 (demo config is
+B_3–B_8 are gated on a Micro-Manager at localhost:4827 (demo config is
 enough) and measure the engine's half for real:
 
   B_3  post_hardware returns None mid-run: the "skipped" events still fire
@@ -32,13 +32,20 @@ enough) and measure the engine's half for real:
   B_6  the honest lever: a hook that RAISES aborts the whole acquisition and
        the error surfaces to the caller. Measures how many ghost exposures
        the abort race lets out.
+  B_8  Fix 4's replacement pattern, prototyped: one event at a time — only
+       the first tile is pre-dispatched, every later tile is submitted by the
+       image processor after it scores the previous frame, and stopping is
+       NOT SUBMITTING. The founding trace inverted: same stop-at-tile-4 on a
+       9-tile grid, but the correct result is ZERO ghost exposures and a
+       clean, error-free end. Also measures the per-tile serialization gap
+       (the pattern's inherent cost). Runs before B_7.
   B_7  the empty-list probe ([] -> {"events": []} -> Java sequence.get(0) on
        an empty list): measures whether that fails loud, silent, or wedges.
        Runs LAST and watchdog-wrapped; informational — it fails the spike
        only by being silent.
 
 B_1/B_2 need only pycro-manager + pyjavaz importable: no hardware, no MM.
-B_3–B_7 write datasets to temp dirs they delete, and restore the stage XY
+B_3–B_8 write datasets to temp dirs they delete, and restore the stage XY
 they found. Exits non-zero if any stage that ran fails its verdict (skipped
 gated stages are not failures).
 
@@ -396,6 +403,98 @@ def b6_raise_aborts_loudly(core, save_dir: str) -> bool:
     return ok
 
 
+def b8_adaptive_one_event_at_a_time(core, save_dir: str) -> bool:
+    """Fix 4's pattern, measured end to end BEFORE the runner change ships:
+    submit one event, score its frame, decide whether the next event exists.
+    The founding trace inverted — same scenario, stop at tile 4 of a 9-tile
+    grid — but the stop is NOT SUBMITTING instead of returning None, so the
+    correct result is zero ghost exposures and a clean, error-free end. An
+    event that was never submitted needs no cancel mechanism.
+
+    The generator below is _survey_event_stream as Fix 4 respecifies it, in
+    miniature: only the first tile pre-dispatched, every later tile drained
+    from a candidates queue the processor feeds, exit on a done flag the
+    processor sets. The stop-after-4 gate is unconditional here — the SNR
+    scoring is the hook's business; the mechanism under test is submission.
+    """
+    print("\nB_8  Fix 4: one event at a time — stop by NOT submitting (zero ghosts expected)")
+    from pycromanager import Acquisition
+
+    tiles = _labeled_events(9)          # the founding trace's grid, flattened
+    stop_after = 4
+    record: list = []
+    arrivals: list = []
+    candidates: queue.Queue = queue.Queue()
+    done = threading.Event()
+    stalled = threading.Event()
+
+    def proc(image, metadata):
+        axes = dict(metadata.get("Axes") or {})
+        record.append(axes)
+        arrivals.append(time.monotonic())
+        n = len(record)                 # single processor thread: no race
+        if n >= stop_after:
+            done.set()                  # decided: the next tile never exists
+        else:
+            candidates.put(tiles[n])    # decide, THEN submit (Fix 4's ordering)
+        return image, metadata
+
+    caught = None
+    held: dict = {}
+    try:
+        with Acquisition(directory=save_dir, name="b8", show_display=False,
+                         image_process_fn=proc) as acq:
+            held["acq"] = acq
+            event_queue = acq._event_queue
+
+            def stream():
+                try:
+                    yield tiles[0]      # the ONLY pre-dispatched event
+                    last_activity = time.monotonic()
+                    while not done.is_set():
+                        try:
+                            event = candidates.get(timeout=0.05)
+                        except queue.Empty:
+                            if time.monotonic() - last_activity > 20.0:
+                                stalled.set()
+                                return
+                        else:
+                            last_activity = time.monotonic()
+                            yield event
+                finally:
+                    # The generator owns the terminator (design/24, A_10).
+                    event_queue.put(None)
+
+            acq.acquire(stream())
+    except Exception as e:
+        caught = e
+    _wait_processed(record, stop_after)
+    x_after = core.get_x_position()
+
+    labels, ghosts = _split_ghosts(record)
+    gaps = [f"{b - a:.2f}" for a, b in zip(arrivals, arrivals[1:])]
+    print(f"     frames processed          : {labels}   ghosts: {ghosts}")
+    if caught is None and "acq" in held:
+        ds_labels, ds_frames, ds_ghosts = _dataset_positions(held["acq"])
+        print(f"     dataset                   : {ds_frames} frames, labels {sorted(ds_labels)},"
+              f" ghost frames stored: {ds_ghosts}")
+    else:
+        ds_labels, ds_frames, ds_ghosts = set(), -1, -1
+        print(f"     acquisition FAILED        : {type(caught).__name__}: {caught}")
+    print(f"     stage X after run         : {x_after:.1f} um   (t3's X is 30.0 —"
+          f" the stage never moves past the stop)")
+    print(f"     per-tile serialization gap: {gaps} s   (the pattern's inherent cost)")
+    print(f"     completed without error   : {caught is None}   stalled: {stalled.is_set()}")
+    ok = (labels == ["t0", "t1", "t2", "t3"] and ghosts == 0
+          and ds_labels == {"t0", "t1", "t2", "t3"} and ds_frames == 4
+          and ds_ghosts == 0 and abs(x_after - 30.0) < 1.0
+          and caught is None and not stalled.is_set())
+    print("     VERDICT: the skip nobody needed — never-submitted events fire nothing."
+          "\n              Zero ghosts, clean end, no None on the wire. Fix 4 holds."
+          if ok else "     VERDICT: the adaptive pattern misbehaved — see numbers above.")
+    return ok
+
+
 def b7_empty_list_probe(core, save_dir: str) -> bool:
     """A hook returning [] reaches Java as {"events": []}; the deserializer
     builds AcquisitionEvent(new empty list), whose first line is
@@ -452,7 +551,7 @@ def b7_empty_list_probe(core, save_dir: str) -> bool:
 
 
 def run_gated_stages() -> dict[str, bool] | None:
-    print("\nB_3..B_7  the real engine (Micro-Manager, demo config is enough) — gated")
+    print("\nB_3..B_8  the real engine (Micro-Manager, demo config is enough) — gated")
     if not _mm_reachable():
         print("     SKIPPED — no Micro-Manager on localhost:4827."
               "\n     Run this spike on a machine with MM open (demo config suffices)"
@@ -470,6 +569,7 @@ def run_gated_stages() -> dict[str, bool] | None:
         results["B_4"] = b4_pre_hardware_none(core, save_dir)
         results["B_5"] = b5_image_process_none(core, save_dir)
         results["B_6"] = b6_raise_aborts_loudly(core, save_dir)
+        results["B_8"] = b8_adaptive_one_event_at_a_time(core, save_dir)
         results["B_7"] = b7_empty_list_probe(core, save_dir)   # last: may wedge
     except Exception:
         traceback.print_exc()
@@ -504,7 +604,7 @@ def main() -> int:
     print(f"\n  SUMMARY  None on the wire: {'{} (no null exists)' if passed['B_1'] else 'DIFFERS'};"
           f"  hook thread: {'None and raise both deliver {}' if passed['B_2'] else 'DIFFERS'}")
     if gated is None:
-        print("           engine half (B_3..B_7): SKIPPED — no MM on localhost:4827;"
+        print("           engine half (B_3..B_8): SKIPPED — no MM on localhost:4827;"
               "\n           the ghost-exposure verdicts still need the demo-config machine"
               "\n           (the founding rig trace already shows B_3's core claim live).")
     else:
@@ -515,6 +615,8 @@ def main() -> int:
         print(f"           raise is the working stop: "
               f"{'CONFIRMED' if gated.get('B_6') else 'NOT CONFIRMED'};  empty-list probe:"
               f" {'answered' if gated.get('B_7') else 'CONTRADICTS SOURCE'}")
+        print(f"           Fix 4 (one event at a time, stop = don't submit): "
+              f"{'ZERO GHOSTS, clean end' if gated.get('B_8') else 'NOT CONFIRMED'}")
 
     failed = [name for name, p in passed.items() if not p]
     if failed:
