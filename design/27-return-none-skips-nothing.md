@@ -421,5 +421,5 @@ config, 2026-07-16):
   back in 0.5 s. B_7: the empty list dies loud — `IndexOutOfBoundsException`
   from `AcquisitionEvent.<init>` surfaces to Python and aborts the run; not
   silent, not a wedge, still not a cancel. B_8: **Fix 4 holds** — zero
-  ghosts, clean end, dataset exactly the submitted tiles, 30–50 ms per-tile
-  serialization gap.
+  ghosts, clean end, dataset exactly the submitted tiles, 30–90 ms per-tile
+  serialization gap across the two demo runs.
