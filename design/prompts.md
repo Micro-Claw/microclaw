@@ -764,3 +764,298 @@ choice, and the observed_on requirement learned by rejection in both sessions]
 File both in a design note
 
 Please commit and push it here, for later
+
+----
+
+Please read design/23-ml-roi-detection.md. I have left a few comments there for
+you in between < and >
+
+  <Let's also make sure, in the event we are dealing with a particularly
+  difficult to detect object within images, to tell the user they can train an
+  ilastik model on example images and pass it back to microclaw when they are
+  done.>
+
+  <Why do we create a new detectors section, separate from hooks? What is the
+  separation from image_analysis.py? Can and should we stash some of the
+  boilerplate detector code in there?>
+
+  <Is it possible that the advantage is this model is that it is fixed in time?
+  So, we could in theory do this detection repeatably with YOLOE, as opposed to a
+  moving language model?>
+
+[the answers, in order. (1) ilastik becomes the ESCAPE HATCH, not an afterthought
+— the one rung on the ladder needing no GPU and no fine-tune — and writing it up
+turned out to force two structural consequences: it is a mode="score"-only backend
+(a multi-second subprocess cannot live inside a 100–500 ms tile dwell, so it runs
+batched between passes), and it collides with hook_manager's existing subprocess
+ban, which is the design telling the truth — an ilastik detector does not compile
+to a self-contained hook. (2) the detectors/ package was wrong twice: microclaw has
+no subpackages, and the classical descriptor was a reimplementation of
+image_analysis.py's detect_features/compute_stats. store.py was deleted outright —
+it is hook_manager with the nouns changed, and forking a security mechanism is how
+one copy misses a fix. (3) the YOLOE observation is right but is an argument about
+the COMPILER, and the design already keeps the compiler out of the scan. The real
+gap it exposes is that the compile step is not reproducible — a moving adjudicator
+turns the same five examples into different labels. The fix is a lockfile, not a
+licence: persist the verdicts, replay them on refit. Freeze the judgements, not the
+judge.]
+
+yes, fold all three into the doc
+
+Please update prompts.md
+
+----
+
+Have a careful look at 20260714_131941_microclaw_history_nestor_stage_scan.json.
+This is a very long history file from a run with this version of the code. If it's
+helpful, please break parsing it into multiple sections and record the results of
+your findings in an .md in stages. Two things that jumps out at me from this
+session are that the agent 1) imaged the same points on a grid multiple times when
+it should have done so only once and 2) did not offer to write code when I expected
+it to, even though this was a better solution than snap_and_analyze.
+
+[both complaints confirmed by replaying all 491 exposures in the transcript. 149
+redundant, but only 39 are the agent's fault — 100 were a repeat the operator asked
+for, 10 a legitimate second channel. The grid SEARCH was clean: the non-overlapping
+expansions share zero tile coordinates. The waste is entirely in bookkeeping passes,
+and each of the 10 keeper cells was imaged 4x where 2 was the floor. Three episodes:
+(A) re-ran an identical 9-tile grid purely to learn where the first one was, because
+the hooked branch drops the per-tile coordinates it computed; (B) re-imaged keepers
+twice to re-mark the position list, because mark_position cannot take a coordinate;
+(C) re-measured all 10 cells because snap returns intensity and it wanted SNR. On
+complaint 2: at msg 56 "can you recognize microtubules" it answered no, listing what
+its tools DON'T return, and never mentioned it could write the missing capability —
+the moment the operator asked directly it produced an excellent Sato ridge filter.
+Cause is agent.py:150: the code-writing ladder only fires on requests already shaped
+like hook requests, so a capability question never enters it]
+
+please rename all 23- design files to 24- and make this 23-
+
+[the ml-roi-detection doc and its spike became 24-, with their 40 internal
+design/23 self-references rewritten; the redundant-imaging analysis took 23-]
+
+Have a look at the comments I left for you between < and >
+
+  <Is it worth writing a new or better focus metric (e.g. using intensity only) to
+  be batteries-included with microclaw? Can we and should we Micro-Manager's
+  autofocus plugin instead of our code?>
+
+  <Should SNR be returned as part of the standard statistics?>
+
+  <Please include a code stub for this.>
+
+  <Are you sure there are no hook cordinates in the log? Maybe write a spike to
+  check this.>
+
+  <Write code stubs. Is there any reason to favor a batch mark_positions tool, as
+  opposed to just allowing mark_position to take coordinates?>
+
+["are you sure" was the one that mattered, and the answer was NO. The spike
+(design/23-hook-metadata-coords-spike.py, no hardware — it drives pycro-manager's
+own event builder and metadata assembler) proves XPosition_um_Intended IS present
+for every multi-position acquisition; pycro-manager asserts it against real hardware
+in its own test suite. The gate is acq_eng_metadata.py:73 — the key is absent only
+when the event carries no XY, which is the single-position z-stack design/19
+examined before generalising to "never". That over-generalisation is now written
+into hook_docs.py:32 as a flat prohibition, so the generated hook obeyed its
+documentation, logged labels only, and the agent re-imaged a grid to recover
+coordinates it already had. A doc error cost real photobleaching. F2 was rewritten
+from "add coordinates to the log" to "fix the lie, and stamp them in HookBase".
+On the others: SNR yes — ImageStats omits it while find_features computes it twenty
+lines away, which is the direct cause of episode C. Batch mark_positions no — the
+stage move is the real cost and coordinates remove it, the leftover round trips are
+serialised by pyjavaz anyway; but flagged that controller.py:310 rewrites MM's
+ENTIRE PositionList per call, so marking 100 tiles is 100 rebuilds]
+
+Thanks! I left a couple more comments for you in between < and >
+
+  <What? Are you sure these are same?>
+
+  <Have a look at Supplementary Figure 3 in 41587_2016_BFnbt3708_MOESM19_ESM.pdf,
+  which is the supplement of https://www.nature.com/articles/nbt.3708. This suggests
+  the DCTS metric is best. How does max intensity compare to Laplacian for a metric
+  in this supplement?>
+
+[both landed, and both overturned a conclusion. (1) "the same bug wearing two hats"
+was too tidy and is retracted: complaint 1 is a set of TOOL-SURFACE defects (F1, F2,
+F3, F7) and complaint 2 is a PROMPT defect (F4) — the decisive test being that
+fixing the prompt would not have prevented episodes A or B. What they share is a
+disposition, not a cause: the agent treats its tool surface as the boundary of the
+possible. Tool gaps set the traps; code-blindness is why it walked into them carrying
+the microscope instead of a calculator. (2) Royer settles the metric question with
+numbers: MAXIMUM is one of only five metrics out of thirty that fail even a median
+focus error of zero — the statistical class is the WORST class, bottoming out at
+10 µm on real data, while Laplacian (differential) sits mid-tier at 250–810 nm. So
+intensity-only would have been a catastrophic swap, killed by published data rather
+than my hand-waving. But the supplement also supplies the fix I'd missed: "noise is
+the challenge" — nearly every metric is accurate on NOISELESS stacks, and the remedy
+is not a new metric but a cheap low-pass/downscale pre-filter matched to the PSF,
+which "restored the performance of most non-spectral metrics in noisy data sets".
+Ours has no such pre-filter. DCTS is still the best published metric (median error 0,
+27 ns/px) and worth adopting; Royer's speed fallback is Tenengrad, not Laplacian.
+CAVEAT kept explicit in the doc: that benchmark measures focus error WITHIN a stack
+("which z-plane is sharpest"), not "which field has a cell" — the question that
+actually broke the run — so DCTS would improve run_autofocus but would NOT by itself
+stop an empty field outranking a cell. The SNR gate is still required, and the same
+DCT hands it to us: pure noise has a uniform DCT spectrum, so F6 and F7 fall out of
+one transform]
+
+Can you update prompts.md?
+
+----
+
+Please evaluate design/24 for accuracy and clarity. Can it be shortened while still
+retaining the necessary information? For example, there are two mentions of
+`store.py`, despite a decision not to write such a file. Can these sections be
+removed? Or is there still important information in them?
+
+[NOTE: "design/24" here is the ML ROI doc, which this session renumbered to
+design/26 — see the renumbering entry at the end. Every "design/24" in this prompt
+and the next is now design/26.]
+
+[three accuracy defects found, all of them the doc committing its own thesis. (1) the
+survey table's "(measured: 966 ms featurising 5 examples + 20 mined negatives, 30 ms
+to fit)" was measured by NOTHING — the spike never timed the fit. Fixed at the source:
+added the measurement it was pretending to be, and the real number is 0.55 s. (2)
+"~90 ms/tile", quoted four times as measured-on-this-laptop, does not reproduce on
+this laptop — two runs give 56-80 ms. Now a range, and the spike itself prints a
+warning that it moves tens of percent run to run. (3) the A_1 output block was stale,
+and the doc spent a five-line parenthetical walking back wording the spike had already
+fixed. Also: the invariant claimed "every hook in hooks.py" and listed five of six.
+
+On store.py: NOT removable outright, but three full statements collapse to one. It is
+a decision AGAINST something a reader would otherwise propose — the first draft DID
+propose it — so deleting it silently invites the next reader to reinvent store.py and
+fork the security manifest, which is the exact failure the argument exists to prevent.
+Stated once now, in F7a where the layout table lives; the detectors.py docstring and
+the hook_manager section that each re-derived it from scratch became pointers. Same for
+its twin ("the shipped backend has no weights at all", verbatim in two places).
+
+On length: the compressible mass was the ~530-line Stubs section, where every docstring
+re-derived its finding from scratch as if the reader would never reach Findings — the
+idle-watchdog argument made four times, "a budget not a threshold" seven. Defensible for
+shipping code, pure duplication in a design doc. 1642 -> 1257 lines. I predicted ~950
+and did not get there; said so rather than claim it.]
+
+yes, do the edit pass. then split out F1 and its fix as its own design doc
+
+[F1 was a bug report trapped inside a feature proposal: hook_docs.py:89 tells every
+Claude-generated hook it can call event_queue.put(), and under _acquire_with_hooks that
+is a silent no-op — true TODAY, for every generated hook, independent of ROI detection.
+Split into its own doc + its own spike (section A lifted out wholesale). The reframing
+that mattered: it now has TWO fixes, not one. Fix 1 is "stop promising it" — a
+hook_docs.py correction landable on its own, because right now we hand the agent an API
+that fails silently. Fix 2 is the generator runner, with the idleness-watchdog bug kept
+as its own finding since it is the trap anyone implementing it walks into.]
+
+Almost ready to put them on a branch. The design files are a bit out of order. I think
+design/24 is the only one implementing a new feature rather than a bugfix, and should
+therefore go last after we've fixed everything. Am I correct?
+
+If you look at prompts.md, I already flipped 23 and 24. I've not committed any of
+these yet, so they are more or less getting designed at the same time. You sure
+there's a problem with renumbering?
+
+[correct on the classification — 23, 24(-was-26) and 25 are all defect docs, the ML ROI
+doc is the only new capability. WRONG on my objection to renumbering, and the operator
+was right to push. I argued the design/ numbers were chronological IDs that should not
+be reordered; prompts.md itself refutes that — the ML ROI doc was WRITTEN first, as
+design/23, and had already been renumbered once to 24. The numbers were never a
+write-order record; they were already a deliberate ordering. And `git log -S` plus a
+grep of every tracked file turn up ZERO committed references to design/24/25/26, so
+nothing was pinned. Every cost I cited (spike filenames, cross-refs) was mine to pay and
+I had to touch them anyway.
+
+Renumbered so the numbers ARE the landing order:
+  23  redundant imaging / tool-bounded thinking   (bugfix — unchanged)
+  24  event_queue.put() is a silent no-op          (bugfix — was 26)
+  25  focus metric inverted on empty fields        (bugfix — unchanged)
+  26  finding the ROI the user can only describe   (FEATURE — was 24)
+
+The one judgment call: the event-queue doc went to 24, adjacent to 23, because they are
+the hook_docs.py PAIR — 23 F2 is "the docs deny the stage coordinates exist" and 24
+Fix 1 is "the docs promise event_queue.put() works." Same file, same species: hook_docs
+tells the agent something false about the hook API, and the agent's faithful compliance
+produces a silent, plausible-looking success. They want to land as one pass over that
+file. That also meant only two docs moved; 25 stayed put.]
+
+Are prompts.md up to date?
+
+[no — this whole session was missing. Appended. The historical prompt above still says
+"design/23-ml-roi-detection.md" and is left verbatim on purpose: this file is a record
+of what was actually asked, not a description of the tree as it stands, so the fix is
+the note at the top of the entry rather than a rewrite of the prompt.]
+
+----
+
+Have a look at design/23[/24/25]. Is there anything missing in the spike that would 
+help with implementing design/25? Keep in mind that it is possible to run the spike 
+on a Windows machine running Micro-Manager with a demo config. 
+----
+
+Have a look at 20260716_140329_microclaw_history.json, which is a run using the
+latest changes on this branch. What happened?
+
+[the branch's first rig contact. Fix 1's docs steered perfectly — the agent refused
+to write a return-None stop hook, wrote a correct adaptive MaxMatchStop with a loud
+guard — and then raised at frame 1, because nothing in TOOL_REGISTRY calls
+_acquire_survey_with_detector: the tests had been playing the missing assembler
+themselves. Fix 4 shipped an engine with no ignition. Also caught: the pre-branch
+saved SNRMatchStop hook fired 5 ghosts (position: null log entries) and the agent
+reported them as "not acquired" — ghosts misread as skips, again.]
+
+Is this piece missing? We have run_multiposition_acquisition, which accepts a hook.
+We have run_adaptive_zstack and run_adapative_timelapse. Do none of these cover this
+exact case?
+
+[none do — all three build the complete event list up front and hand it to
+_acquire_with_hooks; none constructs SurveyProgress/candidates/survey_events. The
+run_adaptive_* pair predates design/27 and its "adaptive" means settings-within-a-
+fixed-sequence (exposure, focus), not whether later events exist; they also take no
+positions at all. Two meanings of "adaptive" in one tool surface is part of the trap.]
+
+Is SurveyProgress not designed for this?
+
+[it is exactly designed for this — done_early() is Fix 4's stop signal. The gap is
+assembly, not design: SurveyProgress is instantiated 12 times in the test suite and
+zero times in production. The tests were the missing caller.]
+
+Add it
+
+[run_adaptive_survey (commit ff883a6): builds the position list in the CALLER'S order
+(a reverse scan is a reversed list), resolves hook_strategy, constructs the
+progress/candidates pair, calls _acquire_survey_with_detector(adaptive=True). The
+runner now hands the hook its wiring as attributes (hook.candidates, hook.progress,
+hook.survey_events) since a loaded hook class has nothing to close over; HookBase
+defaults them None as the fail-loud wrong-runner check. The result reports
+frames_acquired / stopped_early / tiles_planned and retires the ambiguous positions
+count — the sentence that let ghosts read as a clean early stop. hook_docs now name
+the tool, not the private function; the batched tools' schemas say their hooks can
+never stop the scan.]
+
+Have a look at 20260716_144714_microclaw_history.json, which is from a run with this
+latest code
+
+[validation. Same operator tasks, zero ghosts everywhere (log entry counts ==
+frames_acquired: 4/9, 2/9 reversed, 6/9), three agent-written adaptive hooks loaded
+clean, truthful reporting against the honest counts. The finding: asked "5 matching
+SNRs, then skip to the LAST tile and report its max," the agent's hook did
+candidates.put(survey_events[-1]) instead of done_early() — a skip-ahead no test
+anticipated, honored for free because adaptive mode is just a drained candidates
+queue. Stop, refine, and jump are the same primitive. Residue: both runs answered
+"min/max per tile" with timelapse n_frames=1 before snap.]
+
+The tests ll worked. I think the recurring nit about "min/max per tile" has happened
+often enough that I'd like to fix it. Please treat it as a schema wording problem and
+fix it
+
+[commit 15311cd. Diagnosis from both transcripts: the model read "display-only
+(nothing written to disk)" as a deficiency ("I want RELIABLE per-tile max/min"), the
+descriptions prescribed timelapse-n_frames=1 twice each, and nothing anywhere said
+that zstack/timelapse return NO image statistics — the model itself supplied that
+missing sentence when corrected. The grid-tool schemas now lead with the protocol-
+choice rule: per-position NUMBERS → snap already returns them; writing nothing to
+disk is the point when nothing was asked to be saved; the hooked path is for "a
+custom per-tile quantity that snap does not already return."]
+
+OK. Please update the design doc, update prompts.md, commit and push

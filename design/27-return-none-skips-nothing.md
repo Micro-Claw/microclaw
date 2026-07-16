@@ -471,3 +471,34 @@ note (`devices/adaptive_survey_runner_not_exposed`) from the run that found
 the gap; it should be deleted once this lands on the rig, and the saved
 `SNRMatchStop` hook — still a live return-None ghost-firer with an innocent
 description — retired or rewritten against the adaptive contract.
+
+### Validated (2026-07-16) — rig run `20260716_144714`
+
+The same operator tasks that broke the morning session, rerun against this
+branch, all landed — zero ghost exposures anywhere (hook-log entry counts
+equal `frames_acquired`: 4 of 9 on the SNR stop, 2 of 9 on the reverse
+max-match, 6 of 9 on the composed task), honest status lines throughout,
+and truthful agent reporting against them ("never submitted or exposed" is
+now physically true). Three agent-written adaptive hooks loaded via
+`hook_strategy` and read the injected attributes without incident. The
+rig's saved-hooks dir was empty at session start, so the old ghost-firing
+`SNRMatchStop` is already gone; the knowledge-base note was not visible in
+the transcript and still needs a `get_knowledge` check on the rig.
+
+The composed task is the finding: "5 matching SNRs, then skip to the last
+tile and report its max." The agent's hook, on the 5th match, did
+`candidates.put(survey_events[-1])` instead of `done_early()` — a
+skip-ahead no test anticipated, and the runner honored it for free, because
+adaptive mode is just a drained candidates queue; the three middle tiles
+were never exposed. Stop-on-condition, refine-where-interesting, and
+arbitrary jumps are all the same primitive.
+
+One recurrence outside design/27's scope, now also fixed: both rig runs
+answered "min/max per tile" with `timelapse n_frames=1` — datasets on disk,
+none of the requested numbers — because the schemas framed snap's
+"display-only" as a deficiency and prescribed the timelapse pattern twice,
+while never stating that zstack/timelapse return no image statistics. The
+grid-tool schemas now lead with the protocol-choice rule (per-position
+NUMBERS → snap already returns them; writing nothing to disk is the point
+when nothing was asked to be saved), and the hooked path reads "a custom
+per-tile quantity that snap does not already return."
