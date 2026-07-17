@@ -205,6 +205,61 @@ class TestCalibrateStageToCamera:
         result = calibrate_stage_to_camera(mock_ctrl, unconstrained_guard)
         assert "error" in result
 
+    def test_step_larger_than_fov_names_the_real_cause(
+        self, mock_ctrl, unconstrained_guard, monkeypatch, tmp_path
+    ):
+        """design/28 F4: a 20 µm step on a small ROI translated the scene out of
+        frame. The error must say the step is too LARGE for the FOV, not blame a
+        featureless field / too-small step."""
+        from microclaw.tools import calibrate_stage_to_camera
+        monkeypatch.setattr(
+            "microclaw.knowledge_manager.KNOWLEDGE_PATH", tmp_path / "knowledge.yaml"
+        )
+        rng = np.random.default_rng(3)
+        scene = rng.random((64, 64)).astype(np.float32)   # 64 px, contrasty
+        monkeypatch.setattr("microclaw.tools.snap_to_numpy", lambda ctrl: scene)
+        # 20 µm at 0.5 µm/px = 40 px, > 1/3 of a 64 px frame → no overlap.
+        result = calibrate_stage_to_camera(
+            mock_ctrl, unconstrained_guard, step_um=20.0, pixel_size_hint_um=0.5
+        )
+        assert "error" in result
+        assert "too large" in result["error"]
+
+    def test_step_auto_scales_to_fov_and_succeeds(
+        self, mock_ctrl, unconstrained_guard, monkeypatch, tmp_path
+    ):
+        """With a pixel-size hint and no explicit step, the step is scaled to ¼
+        of the FOV so the two snaps overlap and calibration succeeds."""
+        from microclaw.tools import calibrate_stage_to_camera
+        monkeypatch.setattr(
+            "microclaw.knowledge_manager.KNOWLEDGE_PATH", tmp_path / "knowledge.yaml"
+        )
+        rng = np.random.default_rng(4)
+        scene = rng.random((64, 64)).astype(np.float32)
+        px = 0.5
+        pos = {"x": 0.0, "y": 0.0}
+        mock_ctrl.core.get_x_position.side_effect = lambda: pos["x"]
+        mock_ctrl.core.get_y_position.side_effect = lambda: pos["y"]
+        mock_ctrl.core.set_relative_xy_position.side_effect = (
+            lambda dx, dy: (pos.__setitem__("x", pos["x"] + dx),
+                            pos.__setitem__("y", pos["y"] + dy))
+        )
+        monkeypatch.setattr(
+            "microclaw.tools.snap_to_numpy",
+            lambda ctrl: np.roll(
+                scene,
+                (int(round(pos["y"] / px)), int(round(pos["x"] / px))),
+                axis=(0, 1),
+            ),
+        )
+        result = calibrate_stage_to_camera(
+            mock_ctrl, unconstrained_guard, pixel_size_hint_um=px
+        )
+        assert "error" not in result
+        assert result["step_um"] == pytest.approx(0.25 * px * 64)   # 8 µm
+        assert result["pixel_size_um"] == pytest.approx(px, rel=0.05)
+        assert pos == {"x": 0.0, "y": 0.0}
+
 
 class _FakeDeviceType:
     def __init__(self, name, ordinal):
@@ -1673,6 +1728,9 @@ class TestExportDatasetAllAxes:
             def __init__(self, path):
                 pass
 
+            def has_image(self, **kw):
+                return True
+
             def read_image(self, **kw):
                 return np.zeros((4, 4), dtype=np.uint16)
 
@@ -1690,6 +1748,86 @@ class TestExportDatasetAllAxes:
         assert captured["shape"] == (3, 2, 4, 4)
         assert result["axes"] == ["z", "channel"]
         assert result["artifact"] == {"kind": "tiff", "path": str(tmp_path / "o.tif")}
+
+    def test_sparse_multiposition_uses_real_coords(
+        self, mock_ctrl, unconstrained_guard, monkeypatch, tmp_path
+    ):
+        """design/28 F3: a one-frame-per-position grid has non-contiguous
+        `position` coordinates and is NOT a dense hypercube. The old range(len)
+        exporter did read_image(position=0..len-1) and raised KeyError; the fix
+        must iterate the ACTUAL coords and skip absent cells via has_image."""
+        from microclaw import tools
+
+        # Positions labelled 5 and 9 (not 0,1) — one frame each, no z/channel.
+        stored = {(5,): np.full((4, 4), 5, np.uint16),
+                  (9,): np.full((4, 4), 9, np.uint16)}
+
+        class FakeDataset:
+            axes = {"position": [5, 9]}
+
+            def __init__(self, path):
+                pass
+
+            def has_image(self, **kw):
+                return (kw["position"],) in stored
+
+            def read_image(self, **kw):
+                key = (kw["position"],)
+                if key not in stored:                 # the old bug: KeyError here
+                    raise KeyError("position")
+                return stored[key]
+
+        captured = {}
+        monkeypatch.setattr("microclaw.tools.Dataset", FakeDataset)
+        monkeypatch.setattr(
+            "microclaw.tools.tifffile.imwrite",
+            lambda p, stack, **k: captured.update(shape=stack.shape, stack=stack),
+        )
+        result = tools.export_dataset_as_tiff(
+            mock_ctrl, unconstrained_guard,
+            dataset_path="ds", output_path=str(tmp_path / "o.tif"),
+        )
+        assert "error" not in result
+        assert captured["shape"] == (2, 4, 4)         # position (2) × H × W
+        # Real coordinates were read, not indices 0/1.
+        assert captured["stack"][0].max() == 5
+        assert captured["stack"][1].max() == 9
+
+    def test_sparse_hypercube_fills_missing_with_zeros(
+        self, mock_ctrl, unconstrained_guard, monkeypatch, tmp_path
+    ):
+        """A (position × channel) grid where one cell was never acquired must
+        still export as a rectangular hyperstack, the gap zero-filled."""
+        from microclaw import tools
+
+        present = {(0, 0), (0, 1), (1, 0)}            # (1, 1) is missing
+
+        class FakeDataset:
+            axes = {"position": [0, 1], "channel": [0, 1]}
+
+            def __init__(self, path):
+                pass
+
+            def has_image(self, **kw):
+                return (kw["position"], kw["channel"]) in present
+
+            def read_image(self, **kw):
+                return np.ones((4, 4), np.uint16)
+
+        captured = {}
+        monkeypatch.setattr("microclaw.tools.Dataset", FakeDataset)
+        monkeypatch.setattr(
+            "microclaw.tools.tifffile.imwrite",
+            lambda p, stack, **k: captured.update(shape=stack.shape, stack=stack),
+        )
+        result = tools.export_dataset_as_tiff(
+            mock_ctrl, unconstrained_guard,
+            dataset_path="ds", output_path=str(tmp_path / "o.tif"),
+        )
+        assert "error" not in result
+        assert captured["shape"] == (2, 2, 4, 4)
+        assert captured["stack"][1, 1].sum() == 0     # missing cell zero-filled
+        assert captured["stack"][0, 0].sum() == 16    # present cell intact
 
 
 class TestAcquisitionsRespectTheWorkspace:

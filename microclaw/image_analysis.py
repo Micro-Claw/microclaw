@@ -102,6 +102,73 @@ def normalized_laplacian_variance(
     return float(np.var(laplace(sig)) / mean ** 2)
 
 
+def puncta_sharpness(image: np.ndarray, background: float | None = None) -> float:
+    """A sharpness proxy that peaks AT focus for point emitters (design/28 F2).
+
+    normalized_laplacian_variance assumes edge-rich, brightfield-like content
+    where sharpness peaks at focus. On sparse fluorescent puncta on a dark field
+    the Nestor session saw a U-shaped Laplacian curve — highest at both defocused
+    ends, lowest at true focus — so autofocus maximised a metric pointing AWAY
+    from focus. In-focus PSFs instead concentrate photons into a few bright
+    pixels: the bright tail climbs while the signal's spatial spread shrinks, and
+    a peakedness statistic (brightest pixels ÷ mean signal) moves the right way.
+    """
+    img = image.astype(np.float64)
+    if img.ndim == 3:
+        img = img.mean(axis=-1)
+    bg = float(np.median(img)) if background is None else background
+    sig = np.clip(img - bg, 0, None)
+    total = float(sig.sum())
+    if total <= 0:
+        return 0.0
+    # Fraction of signal carried by the brightest pixels — rises as the PSF
+    # tightens. (Brenner gradient or normalized-DCT are alternatives.)
+    p999 = float(np.percentile(sig, 99.9))
+    return p999 * p999 / (total / sig.size)
+
+
+def choose_focus_metric(
+    image: np.ndarray, k: float = 5.0, dark_median_threshold: float = 0.2
+):
+    """Pick a focus metric from the field's content rather than assuming one.
+
+        sparse bright spots on a dark background -> puncta_sharpness
+        edge-rich / textured / filled field      -> normalized_laplacian_variance
+
+    Both are maximised at focus, so the autofocus argmax logic is unchanged; the
+    choice only fixes WHICH curve is maximised (design/28 F2). The discriminator
+    is where the TYPICAL pixel sits in the dynamic range: on a puncta field the
+    median pixel is background (dark), near the bottom of the range, while a
+    textured or filled field has its median up in the signal. Comparing the
+    median's position to a fixed occupancy threshold fails because the median's
+    own MAD is inflated by signal on filled fields; its position in [min, max] is
+    not (design/28 F2).
+
+    First a signal guard: if no bright tail clears the background noise floor,
+    there is nothing sparse to be sure about, so fall back to the laplacian metric
+    (whose flat-curve gate refuses to move anyway). Then, if the median sits in
+    the dark bottom fraction of the range, the field is background-dominated —
+    puncta.
+    """
+    img = image.astype(np.float64)
+    if img.ndim == 3:
+        img = img.mean(axis=-1)
+
+    lo = float(np.percentile(img, 1))
+    hi = float(np.percentile(img, 99.9))
+    med = float(np.median(img))
+    noise = 1.4826 * float(np.median(np.abs(img - med)))
+
+    # No bright signal above the noise floor: not confidently a puncta field.
+    if hi <= med + k * max(noise, 1.0):
+        return normalized_laplacian_variance
+    median_position = (med - lo) / (hi - lo)
+    return (
+        puncta_sharpness if median_position < dark_median_threshold
+        else normalized_laplacian_variance
+    )
+
+
 def compute_stats(image: np.ndarray, min_snr: float = MIN_SNR) -> ImageStats:
     """Per-image statistics, including the NORMALIZED focus metric and its gate.
 

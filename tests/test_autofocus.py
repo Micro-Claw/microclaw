@@ -141,6 +141,20 @@ class TestCoarseThenFine:
         assert result.final_z_um == pytest.approx(50.0)
         assert ctrl.core.get_position() == pytest.approx(50.0)  # restored
 
+    def test_edge_peak_does_not_converge_or_move(self):
+        """design/28 F1: a peak pinned at the sweep boundary means the true focus
+        is OUTSIDE the window. That is NOT convergence — the stage must not move,
+        even though the (monotonic) curve has plenty of contrast."""
+        ctrl = make_ctrl_with_focus_at(best_z=62.0)   # focus well above 50±5
+        result = coarse_then_fine_autofocus(ctrl, z_range_um=10.0, coarse_step_um=2.0,
+                                            fine_step_um=0.5, settle_ms=0)
+        assert result.converged is False
+        assert result.moved is False
+        assert not result.fine.peak_interior
+        assert "edge" in result.reason
+        assert result.final_z_um == pytest.approx(50.0)
+        assert ctrl.core.get_position() == pytest.approx(50.0)  # restored
+
     def test_fine_sweep_clamped_to_guarded_window(self):
         # Coarse peak sits at the top boundary of the range. The fine sweep must not
         # step past current_z ± z_range/2 (the window the caller guarded).
@@ -168,3 +182,36 @@ class TestSingleSweepAutofocus:
         result = single_sweep_autofocus(ctrl, z_range_um=10.0, z_step_um=1.0, settle_ms=0)
         assert result.converged is False
         assert ctrl.core.get_position() == pytest.approx(50.0)
+
+    def test_edge_peak_does_not_converge_or_move(self):
+        # design/28 F1: peak at the boundary is not convergence for the one-pass
+        # variant either.
+        ctrl = make_ctrl_with_focus_at(best_z=62.0)
+        result = single_sweep_autofocus(ctrl, z_range_um=10.0, z_step_um=1.0, settle_ms=0)
+        assert result.converged is False
+        assert result.moved is False
+        assert "edge" in result.reason
+        assert ctrl.core.get_position() == pytest.approx(50.0)
+
+
+class TestAutoMetricSelection:
+    def test_auto_metric_resolves_to_a_callable(self):
+        # AUTO_METRIC snaps the entry field and picks a concrete metric; a
+        # textured mock scene resolves to normalized_laplacian_variance and
+        # focuses normally.
+        from microclaw.autofocus import AUTO_METRIC
+        from microclaw.image_analysis import normalized_laplacian_variance
+
+        ctrl = make_ctrl_with_focus_at(52.0)
+        result = single_sweep_autofocus(
+            ctrl, z_range_um=10.0, z_step_um=1.0, settle_ms=0, metric_fn=AUTO_METRIC
+        )
+        assert result.converged
+        assert abs(result.final_z_um - 52.0) <= 1.0
+
+    def test_invalid_metric_fn_raises(self):
+        ctrl = make_ctrl_with_focus_at(50.0)
+        with pytest.raises(ValueError, match="metric_fn"):
+            single_sweep_autofocus(
+                ctrl, z_range_um=10.0, z_step_um=1.0, settle_ms=0, metric_fn="nope"
+            )

@@ -124,15 +124,32 @@ TOOLS: list[dict[str, Any]] = [
             "(objective, binning) in the knowledge base. Run this before any "
             "image-guided navigation — with it, 'move the feature to the centre' is "
             "arithmetic instead of guessing axis signs from thumbnails. Needs a "
-            "structured field of view (features to track)."
+            "structured field of view (features to track). The step is scaled to "
+            "the field of view by default (≈¼ of the smaller FOV dimension) so the "
+            "two snaps overlap; a fixed step larger than the FOV — common on a "
+            "cropped ROI — pushes the scene out of frame and fails to register. "
+            "On failure the error names the cause: step too large for the FOV, "
+            "step too small, or no trackable structure."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "step_um": {
                     "type": "number",
-                    "description": "Stage step used for the measurement (default 20 µm).",
-                    "default": 20.0,
+                    "description": (
+                        "Stage step for the measurement. Omit to auto-scale to ¼ of "
+                        "the smaller FOV dimension when a pixel size is known "
+                        "(falls back to 20 µm otherwise). Set explicitly only to "
+                        "override."
+                    ),
+                },
+                "pixel_size_hint_um": {
+                    "type": "number",
+                    "description": (
+                        "Known camera pixel size (µm/px) used to scale the step when "
+                        "MM has no pixel-size calibration configured. Omit if MM "
+                        "already knows the pixel size."
+                    ),
                 },
             },
             "required": [],
@@ -476,6 +493,14 @@ TOOLS: list[dict[str, Any]] = [
             "entry_z_um/final_z_um. If the metric curve is structureless (low "
             "contrast — e.g. faint signal or a too-small ROI), the stage is NOT "
             "moved: Z is restored to entry_z_um and converged=false explains why. "
+            "A peak pinned at the sweep boundary is also NOT convergence — the "
+            "true focus is outside the window, so Z is restored and the reason "
+            "says to widen z_range_um. "
+            "metric='auto' (default) picks the sharpness metric from the field's "
+            "content: sparse fluorescent puncta on a dark field are focused with a "
+            "peakedness metric, textured/brightfield fields with the Laplacian "
+            "variance. Force one with metric='puncta' or metric='laplacian' when a "
+            "sample's focus curve looks inverted. "
             "Default parameters for a 20× objective: z_range_um=20, z_step_um=0.5. "
             "Widen z_range_um if the result says the peak was at the boundary. "
             "If the focus is not converging, check if there are any sharp boundaries in the image. If so, alert the user."
@@ -505,6 +530,16 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "boolean",
                     "description": "Include a thumbnail of the focused image (default false). Only set to True if absolutely necessary.",
                     "default": False,
+                },
+                "metric": {
+                    "type": "string",
+                    "enum": ["auto", "laplacian", "puncta"],
+                    "description": (
+                        "Focus sharpness metric. 'auto' (default) chooses from the "
+                        "field's content; 'puncta' for sparse fluorescent spots on a "
+                        "dark field; 'laplacian' for edge-rich/brightfield fields."
+                    ),
+                    "default": "auto",
                 },
             },
             "required": ["z_range_um", "z_step_um"],
@@ -912,6 +947,16 @@ TOOLS: list[dict[str, Any]] = [
                 "protocol_params": {
                     "type": "object",
                     "description": "Extra parameters forwarded to the per-position protocol.",
+                },
+                "metric": {
+                    "type": "string",
+                    "enum": ["auto", "laplacian", "puncta"],
+                    "description": (
+                        "Autofocus sharpness metric per position. 'auto' (default) "
+                        "picks it from each field's content; 'puncta' for sparse "
+                        "fluorescent spots; 'laplacian' for edge-rich fields."
+                    ),
+                    "default": "auto",
                 },
             },
             "required": ["position_names", "z_range_um", "z_step_um", "protocol", "save_dir"],

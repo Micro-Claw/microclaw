@@ -5,7 +5,18 @@ from typing import Callable, Optional
 
 import numpy as np
 
-from microclaw.image_analysis import normalized_laplacian_variance, snap_to_numpy
+from microclaw.image_analysis import (
+    choose_focus_metric,
+    normalized_laplacian_variance,
+    snap_to_numpy,
+)
+
+#: metric_fn value that means "pick the metric from the field's content"
+#: (normalized_laplacian_variance for textured fields, puncta_sharpness for
+#: sparse emitters — design/28 F2). Resolved once per autofocus from a snap of
+#: the entry field, before the sweep, so a single metric governs the whole
+#: curve (switching metrics mid-sweep would make the curve meaningless).
+AUTO_METRIC = "auto"
 
 
 @dataclass
@@ -126,13 +137,49 @@ def _flat_reason(which: str, contrast: float, entry_z: float) -> str:
     )
 
 
+def _edge_reason(which: str, sweep: SweepResult, entry_z: float) -> str:
+    """Mirror of _flat_reason for a peak pinned at a sweep boundary (design/28 F1).
+
+    A monotonic curve that climbs to the edge of the searched window has high
+    contrast — it passes the flat-curve gate — but its argmax is at the boundary,
+    which means the true focus lies OUTSIDE the window. Moving onto the boundary
+    is a confident-wrong move; the honest answer is "not converged, widen the
+    range." Reports that Z was NOT moved, same as the flat case.
+    """
+    return (
+        f"{which} focus peak is at the edge of the searched Z range "
+        f"(best {sweep.best_z_um:.3f} µm sits at a sweep boundary) — the true "
+        f"peak lies beyond the window, so this is NOT convergence. Z was NOT "
+        f"moved (restored to {entry_z:.3f} µm). Widen z_range_um, or recentre "
+        f"the sweep on the expected focus and retry."
+    )
+
+
+def _resolve_metric(ctrl, metric_fn):
+    """Turn the AUTO_METRIC sentinel into a concrete metric from a snap.
+
+    A callable passes straight through (existing callers and tests are
+    unaffected). AUTO_METRIC snaps the current field once and lets
+    choose_focus_metric pick — one extra exposure, negligible against the dozen
+    a sweep already costs, and it prevents autofocus from maximising a metric
+    that is anti-correlated with focus on this sample type (design/28 F2).
+    """
+    if callable(metric_fn):
+        return metric_fn
+    if metric_fn == AUTO_METRIC:
+        return choose_focus_metric(snap_to_numpy(ctrl))
+    raise ValueError(
+        f"metric_fn must be a callable or {AUTO_METRIC!r}, got {metric_fn!r}"
+    )
+
+
 def coarse_then_fine_autofocus(
     ctrl,
     z_range_um: float,
     coarse_step_um: float,
     fine_step_um: float,
     settle_ms: int = 50,
-    metric_fn: Callable[[np.ndarray], float] = normalized_laplacian_variance,
+    metric_fn: Callable[[np.ndarray], float] | str = normalized_laplacian_variance,
     min_contrast: float = MIN_CONTRAST,
 ) -> AutofocusResult:
     """Two-pass autofocus that reports BOTH passes and restores Z on a flat curve.
@@ -141,8 +188,13 @@ def coarse_then_fine_autofocus(
     coarse peak sitting at the boundary can't push the fine sweep past the
     range the caller guarded with check_z. A pass whose metric curve has no
     structure (see curve_contrast) aborts the autofocus WITHOUT moving Z —
-    moving hardware onto the argmax of noise is worse than doing nothing.
+    moving hardware onto the argmax of noise is worse than doing nothing. A fine
+    peak pinned at a sweep boundary is likewise NOT convergence (design/28 F1):
+    the true focus is outside the window, so the stage is left where it was.
+
+    metric_fn may be AUTO_METRIC to pick the metric from the field's content.
     """
+    metric_fn = _resolve_metric(ctrl, metric_fn)
     entry_z = float(ctrl.core.get_position())
     lo_bound = entry_z - z_range_um / 2
     hi_bound = entry_z + z_range_um / 2
@@ -175,6 +227,14 @@ def coarse_then_fine_autofocus(
             reason=_flat_reason("Fine", fine_contrast, entry_z),
         )
 
+    if not fine.peak_interior:
+        _restore(ctrl, entry_z)
+        return AutofocusResult(
+            coarse=coarse, fine=fine, entry_z_um=entry_z, final_z_um=entry_z,
+            converged=False, moved=False,
+            reason=_edge_reason("Fine", fine, entry_z),
+        )
+
     _restore(ctrl, fine.best_z_um)
     return AutofocusResult(
         coarse=coarse, fine=fine, entry_z_um=entry_z,
@@ -187,11 +247,16 @@ def single_sweep_autofocus(
     z_range_um: float,
     z_step_um: float,
     settle_ms: int = 50,
-    metric_fn: Callable[[np.ndarray], float] = normalized_laplacian_variance,
+    metric_fn: Callable[[np.ndarray], float] | str = normalized_laplacian_variance,
     min_contrast: float = MIN_CONTRAST,
 ) -> AutofocusResult:
     """One-pass autofocus with the same contrast gate and result shape as
-    coarse_then_fine_autofocus (the single pass is reported as `coarse`)."""
+    coarse_then_fine_autofocus (the single pass is reported as `coarse`).
+
+    Like the two-pass variant it refuses to move on a flat curve OR on a peak
+    pinned at a sweep boundary (design/28 F1), and accepts AUTO_METRIC.
+    """
+    metric_fn = _resolve_metric(ctrl, metric_fn)
     entry_z = float(ctrl.core.get_position())
     sweep = sweep_autofocus(
         ctrl, entry_z - z_range_um / 2, entry_z + z_range_um / 2, z_step_um,
@@ -204,6 +269,13 @@ def single_sweep_autofocus(
             coarse=sweep, fine=None, entry_z_um=entry_z, final_z_um=entry_z,
             converged=False, moved=False,
             reason=_flat_reason("Sweep", contrast, entry_z),
+        )
+    if not sweep.peak_interior:
+        _restore(ctrl, entry_z)
+        return AutofocusResult(
+            coarse=sweep, fine=None, entry_z_um=entry_z, final_z_um=entry_z,
+            converged=False, moved=False,
+            reason=_edge_reason("Sweep", sweep, entry_z),
         )
     _restore(ctrl, sweep.best_z_um)
     return AutofocusResult(
