@@ -15,7 +15,6 @@ from pycromanager import Acquisition, multi_d_acquisition_events
 from ndstorage import Dataset
 
 from microclaw.autofocus import (
-    AUTO_METRIC,
     AutofocusResult,
     coarse_then_fine_autofocus,
     curve_contrast,
@@ -30,7 +29,6 @@ from microclaw.image_analysis import (
     focus_invalid_warning,
     make_thumbnail,
     normalized_laplacian_variance,
-    puncta_sharpness,
     snap_to_numpy,
     preview_window_open,
     snap_to_numpy_displayed,
@@ -1214,42 +1212,18 @@ def center_feature(
 
 # --- Autofocus (Form A — standalone) ---
 
-#: Maps the run_autofocus `metric` argument to the metric_fn the sweep uses.
-#: "auto" defers to the field's content (design/28 F2) — puncta_sharpness on
-#: sparse emitters, normalized_laplacian_variance on textured fields.
-_METRIC_CHOICES = {
-    "auto": AUTO_METRIC,
-    "laplacian": normalized_laplacian_variance,
-    "puncta": puncta_sharpness,
-}
-
-
-def _resolve_metric_choice(metric: str):
-    try:
-        return _METRIC_CHOICES[metric]
-    except KeyError:
-        raise ValueError(
-            f"metric must be one of {sorted(_METRIC_CHOICES)}, got {metric!r}"
-        )
-
-
 def _run_autofocus_passes(
     ctrl: MicroscopeController,
     z_range_um: float,
     z_step_um: float,
     method: str,
     settle_ms: int,
-    metric: str = "auto",
 ) -> AutofocusResult:
-    metric_fn = _resolve_metric_choice(metric)
     if method == "coarse_then_fine":
         return coarse_then_fine_autofocus(
             ctrl, z_range_um, max(z_step_um * 5, 1.0), z_step_um, settle_ms,
-            metric_fn=metric_fn,
         )
-    return single_sweep_autofocus(
-        ctrl, z_range_um, z_step_um, settle_ms, metric_fn=metric_fn
-    )
+    return single_sweep_autofocus(ctrl, z_range_um, z_step_um, settle_ms)
 
 
 def _round_sig(value: float, sig: int = 4) -> float:
@@ -1286,7 +1260,6 @@ def run_autofocus(
     method: str = "coarse_then_fine",
     settle_ms: int = 50,
     return_thumbnail: bool = True,
-    metric: str = "auto",
 ) -> list | dict:
     """Sweep Z to find the sharpest focal plane.
 
@@ -1295,10 +1268,8 @@ def run_autofocus(
     structureless metric curve OR a peak pinned at the sweep edge (design/28 F1),
     and always reports entry_z_um so a bad result is trivially undone.
 
-    metric="auto" (default) picks the sharpness metric from the field's content
-    (design/28 F2): sparse fluorescent puncta on a dark field are focused with
-    puncta_sharpness, textured fields with normalized_laplacian_variance. Force
-    one with metric="puncta" or metric="laplacian".
+    The normalized Laplacian metric is polarity-insensitive: bright puncta on a
+    dark field do not require an inverted or separately selected metric.
     """
     entry_z = ctrl.core.get_position()
     guard.check_z(entry_z - z_range_um / 2)
@@ -1319,9 +1290,7 @@ def run_autofocus(
         }
 
     with _pause_live(ctrl):
-        result = _run_autofocus_passes(
-            ctrl, z_range_um, z_step_um, method, settle_ms, metric
-        )
+        result = _run_autofocus_passes(ctrl, z_range_um, z_step_um, method, settle_ms)
 
     payload: dict[str, Any] = {
         "converged": result.converged,
@@ -1833,12 +1802,9 @@ def run_multiposition_with_autofocus(
     autofocus_method: str = "coarse_then_fine",
     settle_ms: int = 50,
     protocol_params: dict | None = None,
-    metric: str = "auto",
 ) -> dict:
     """Visit each position, autofocus, then run a per-position protocol.
 
-    metric selects the autofocus sharpness metric per position (design/28 F2);
-    "auto" (default) picks it from each field's content.
     """
     save_dir = guard.resolve_in_workspace(save_dir)   # before the stage moves
     params = protocol_params or {}
@@ -1877,7 +1843,7 @@ def run_multiposition_with_autofocus(
                 continue
 
             af = _run_autofocus_passes(
-                ctrl, z_range_um, z_step_um, autofocus_method, settle_ms, metric
+                ctrl, z_range_um, z_step_um, autofocus_method, settle_ms
             )
             # Non-convergence restores the entry Z; the protocol still runs
             # there (same plane as no autofocus), but the result must say so —

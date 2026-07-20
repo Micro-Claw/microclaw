@@ -45,76 +45,74 @@ return AutofocusResult(
     final_z_um=fine.best_z_um, converged=True, moved=True, reason=None,
 )
 
-# AFTER: an edge peak is NOT convergence — the true peak is outside the window.
+# AFTER: an edge peak is not enough evidence of convergence.
 if not fine.peak_interior:
     _restore(ctrl, entry_z)                     # don't move onto a boundary
     return AutofocusResult(
         coarse=coarse, fine=fine, entry_z_um=entry_z, final_z_um=entry_z,
         converged=False, moved=False,
-        reason=_edge_reason(fine, entry_z),     # "peak at edge; widen z_range_um"
+        reason=_edge_reason(fine, entry_z),     # report ambiguity; inspect curve
     )
 _restore(ctrl, fine.best_z_um)
 return AutofocusResult(..., converged=True, moved=True, reason=None)
 ```
 
-`_edge_reason` mirrors `_flat_reason`: state that Z was NOT moved, that the true
-peak lies beyond the searched range, and to widen `z_range_um` or recentre. The
-existing `warning` field can stay for the interior case, but the *contract* the
-model keys on (`converged`, `moved`) must reflect the edge failure.
+`_edge_reason` mirrors `_flat_reason`: state that Z was NOT moved and that the
+curve has no interior maximum. The reason must not claim a unique cause: focus
+may be outside the searched range, but a U-shaped or noise-dominated curve can
+also put its maximum at an edge. The *contract* the model keys on (`converged`,
+`moved`) must reflect the failure either way.
 
 ---
 
-## Finding 2 — focus metric has the wrong sign for sparse fluorescent puncta
+## Finding 2 — anomalous U-shaped focus curve; cause not established
 
-**Severity: high (silent — produces confident wrong focus).**
+**Severity: high for this session, but not a demonstrated metric-sign bug.**
 
-`normalized_laplacian_variance` (the metric behind `focus_metric` and all
-autofocus) assumes edge-rich, brightfield-like content where sharpness peaks
-*at* focus. On this sample (point-like fluorescent signal on a dark field) the
-sweep curve was **U-shaped**: highest at both defocused ends, lowest at true
-focus. The user's by-eye focus (60.62 µm) sat at the metric **minimum**. So
-autofocus didn't merely fail to converge — the objective it was maximising
-pointed *away* from focus, straight at the noisiest defocused edge (which also
-explains why Finding 1 kept firing on this sample).
+The recorded `normalized_laplacian_variance` sweep was genuinely U-shaped:
+highest at both ends and lowest near the user's by-eye focus of 60.62 µm. The
+autofocus therefore selected a boundary rather than the visual focal plane. That
+observation is valid; the original conclusion that Laplacian variance has the
+wrong sign for sparse fluorescent puncta is not.
 
-The metric is `var(laplace(I - bg)) / mean(|I - bg|)²`. For sparse emitters the
-denominator collapses as signal concentrates at focus, and defocus spreads dim
-haze whose Laplacian/noise variance the normalisation amplifies — the ratio ends
-up anti-correlated with true sharpness. The exact mechanism deserves a spike;
-the *observed* behaviour is not in dispute.
+Laplacian variance is polarity-insensitive. Reversing a bright-on-dark edge to a
+dark-on-bright edge reverses the Laplacian's sign, but variance removes that sign.
+For a flux-conserving point-spread function, concentrating the same photons into
+a tighter spot increases its high-frequency/Laplacian energy. The normalization
+denominator, `mean(abs(I - bg))²`, is approximately total signal per image area
+and does not collapse merely because the signal becomes spatially concentrated.
+A synthetic, flux-conserving bright punctum on a dark background confirms that
+the existing normalized Laplacian score decreases monotonically with defocus.
 
-Proposed direction — add a puncta-appropriate metric and select by content,
-rather than hard-coding one metric for all samples:
+The U-curve must therefore be treated as an acquisition- or normalization-specific
+failure until raw frames establish its cause. Plausible causes include signal
+falling toward the noise floor at the sweep ends, Z-dependent background or
+illumination, clipping/saturation, different axial sample structure, drift or
+bleaching, and other acquisition artifacts. The transcript retained metric
+values and only the final thumbnail, not every raw sweep frame, so it cannot
+distinguish these explanations.
 
-```python
-# image_analysis.py — a sharpness proxy that peaks AT focus for point emitters.
-# In-focus PSFs concentrate photons into few bright pixels: the bright tail
-# climbs and the signal's spatial spread shrinks. Both move the right way.
-def puncta_sharpness(image, background=None):
-    img = image.astype(np.float64)
-    if img.ndim == 3:
-        img = img.mean(axis=-1)
-    bg = float(np.median(img)) if background is None else background
-    sig = np.clip(img - bg, 0, None)
-    total = float(sig.sum())
-    if total <= 0:
-        return 0.0
-    # Peakedness: fraction of signal carried by the brightest pixels. Rises as
-    # the PSF tightens. (Brenner gradient or normalized-DCT are alternatives.)
-    p999 = float(np.percentile(sig, 99.9))
-    return p999 * p999 / (total / sig.size)
-```
+### Fix
 
-and let the autofocus/stats path choose:
+- Keep normalized Laplacian variance as the single default autofocus objective.
+  Do not infer metric choice from one entry image.
+- Treat a boundary argmax as non-convergence and restore the entry Z (Finding 1),
+  without claiming that the true peak necessarily lies beyond the window: a
+  U-shaped or noise-dominated curve can produce the same result.
+- Preserve the full metric curve and inspect signal, saturation, and intensity
+  stability across the sweep. A future diagnostic acquisition should retain raw
+  frames at every Z so the anomalous curve can be reproduced and explained.
+- Evaluate any alternative metric (for example Tenengrad, Brenner, or a puncta
+  peakedness score) only against the same saved real Z-stacks with visual ground
+  truth. Do not ship a content classifier or make an alternative the default
+  until that comparison demonstrates an advantage.
 
-```python
-# Pick the metric from the field's content, not a global assumption.
-#   sparse bright spots on dark bg  -> puncta_sharpness  (maximise)
-#   edge-rich / textured field      -> normalized_laplacian_variance
-# A cheap discriminator: fraction of area above (bg + k*noise). Low  -> puncta.
-def choose_focus_metric(image):
-    ...
-```
+The implementation briefly added `puncta_sharpness`, a one-frame
+`choose_focus_metric` heuristic, and public `metric="auto"|"puncta"|"laplacian"`
+arguments. Those changes were removed: their tests showed only that the new
+metric itself peaked on a synthetic PSF, while failing to test—and in fact being
+contradicted by—the premise that normalized Laplacian variance inverted on that
+same PSF.
 
 ---
 
@@ -270,7 +268,7 @@ existing `mosaic_cell_counter` / stitch logic offline. Worth its own design doc.
 1. **Finding 1** (autofocus edge = false convergence) and **Finding 4**
    (calibration misdiagnosis) — both cause confident-wrong hardware moves and
    both cascaded through the whole session. Small, self-contained fixes.
-2. **Finding 2** (focus metric sign for puncta) — highest scientific impact but
-   the largest change.
+2. **Finding 2** (anomalous autofocus curve) — retain the safe boundary rejection
+   and collect raw Z-stack evidence before changing the focus objective.
 3. **Finding 3** (exporter KeyError) — small, unblocks the saved-data workflow.
 4. **Finding 5** (offline dataset analysis) — larger; **design/29**; builds on #3.

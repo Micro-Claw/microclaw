@@ -10,7 +10,6 @@ from PIL import Image
 from microclaw import image_analysis
 from microclaw.image_analysis import (
     MIN_SNR,
-    choose_focus_metric,
     compute_stats,
     detect_features,
     focus_invalid_warning,
@@ -18,7 +17,6 @@ from microclaw.image_analysis import (
     make_thumbnail,
     normalized_laplacian_variance,
     preview_window_open,
-    puncta_sharpness,
     snap_to_numpy,
     snap_to_numpy_displayed,
     snr,
@@ -312,6 +310,24 @@ class TestNormalizedLaplacianVariance:
         blurry = gaussian_filter(sharp, sigma=5)
         assert normalized_laplacian_variance(sharp) > normalized_laplacian_variance(blurry)
 
+    def test_bright_punctum_on_dark_background_peaks_at_focus(self):
+        """design/28 F2 correction: Laplacian variance is polarity-insensitive.
+
+        A flux-conserving fluorescent PSF must score highest when it is tightest,
+        not invert merely because the emitter is bright on a dark background.
+        """
+        sigmas = [1.5, 2.0, 3.0, 4.0, 6.0]
+        images = [
+            synthetic_puncta(
+                spots=((64, 64),), amp=8000.0 / sigma**2, sigma=sigma,
+                bg=400.0, read_noise=0.0,
+            )
+            for sigma in sigmas
+        ]
+        scores = [normalized_laplacian_variance(image) for image in images]
+        assert scores[0] == max(scores)
+        assert scores == sorted(scores, reverse=True)
+
     def test_flat_image_is_zero(self):
         assert normalized_laplacian_variance(np.zeros((64, 64))) == 0.0
         assert normalized_laplacian_variance(np.full((64, 64), 400.0)) == 0.0
@@ -463,54 +479,6 @@ class TestDetectFeatures:
         # (amr_test read one field three contradictory ways).
         img = synthetic_puncta()
         assert detect_features(img) == detect_features(img)
-
-
-class TestPunctaSharpness:
-    """design/28 F2: a sharpness metric that peaks AT focus for point emitters,
-    where normalized_laplacian_variance is anti-correlated with focus."""
-
-    def _defocus(self, sigma):
-        # A single emitter whose PSF width is `sigma`: in focus = tight/bright,
-        # defocused = wide/dim, conserving integrated photons (a real defocus
-        # spreads the same photons). A gaussian integral ∝ amp·σ², so amp ∝ 1/σ².
-        amp = 8000.0 / (sigma ** 2)
-        return synthetic_puncta(
-            spots=((64, 64),), amp=amp, sigma=sigma, bg=400.0
-        )
-
-    def test_peaks_at_focus_across_a_defocus_sweep(self):
-        # Well-sampled defocus (sigma >= Nyquist ~1.5 px); sigma=1.5 is the
-        # tightest/most in-focus frame.
-        sigmas = [1.5, 2.0, 3.0, 4.0, 6.0]
-        scores = [puncta_sharpness(self._defocus(s)) for s in sigmas]
-        # Monotonically decreasing as the PSF widens — the argmax is the sharpest
-        # frame, the opposite of the U-shaped laplacian curve that misled the
-        # Nestor session (design/28 F2).
-        assert scores[0] == max(scores)
-        assert scores == sorted(scores, reverse=True)
-
-    def test_zero_on_empty_field(self):
-        assert puncta_sharpness(np.full((64, 64), 400, np.uint16)) == 0.0
-
-
-class TestChooseFocusMetric:
-    def test_sparse_puncta_selects_puncta_metric(self):
-        img = synthetic_puncta(amp=8000.0, sigma=2.0, bg=400.0, read_noise=5.0)
-        assert choose_focus_metric(img) is puncta_sharpness
-
-    def test_textured_field_selects_laplacian(self):
-        from scipy.ndimage import gaussian_filter
-        rng = np.random.default_rng(1)
-        # A filled, edge-rich field: dense structure over a dark background that
-        # occupies most of the frame (cells/tissue, not sparse dots).
-        struct = gaussian_filter(rng.random((128, 128)).astype(np.float32), 2.0)
-        struct = (struct - struct.min()) / np.ptp(struct)
-        img = (400 + 30000 * struct).astype(np.uint16)
-        assert choose_focus_metric(img) is normalized_laplacian_variance
-
-    def test_flat_field_falls_back_to_laplacian(self):
-        img = np.full((64, 64), 400, np.uint16)
-        assert choose_focus_metric(img) is normalized_laplacian_variance
 
 
 def test_make_thumbnail_multichannel():

@@ -493,14 +493,11 @@ TOOLS: list[dict[str, Any]] = [
             "entry_z_um/final_z_um. If the metric curve is structureless (low "
             "contrast — e.g. faint signal or a too-small ROI), the stage is NOT "
             "moved: Z is restored to entry_z_um and converged=false explains why. "
-            "A peak pinned at the sweep boundary is also NOT convergence — the "
-            "true focus is outside the window, so Z is restored and the reason "
-            "says to widen z_range_um. "
-            "metric='auto' (default) picks the sharpness metric from the field's "
-            "content: sparse fluorescent puncta on a dark field are focused with a "
-            "peakedness metric, textured/brightfield fields with the Laplacian "
-            "variance. Force one with metric='puncta' or metric='laplacian' when a "
-            "sample's focus curve looks inverted. "
+            "A peak pinned at the sweep boundary is also NOT convergence — it "
+            "may mean focus is outside the window or that the curve is invalid, "
+            "so Z is restored for inspection. The normalized Laplacian metric is "
+            "polarity-insensitive and applies to bright-on-dark puncta as well as "
+            "dark-on-bright structure. "
             "Default parameters for a 20× objective: z_range_um=20, z_step_um=0.5. "
             "Widen z_range_um if the result says the peak was at the boundary. "
             "If the focus is not converging, check if there are any sharp boundaries in the image. If so, alert the user."
@@ -530,16 +527,6 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "boolean",
                     "description": "Include a thumbnail of the focused image (default false). Only set to True if absolutely necessary.",
                     "default": False,
-                },
-                "metric": {
-                    "type": "string",
-                    "enum": ["auto", "laplacian", "puncta"],
-                    "description": (
-                        "Focus sharpness metric. 'auto' (default) chooses from the "
-                        "field's content; 'puncta' for sparse fluorescent spots on a "
-                        "dark field; 'laplacian' for edge-rich/brightfield fields."
-                    ),
-                    "default": "auto",
                 },
             },
             "required": ["z_range_um", "z_step_um"],
@@ -947,16 +934,6 @@ TOOLS: list[dict[str, Any]] = [
                 "protocol_params": {
                     "type": "object",
                     "description": "Extra parameters forwarded to the per-position protocol.",
-                },
-                "metric": {
-                    "type": "string",
-                    "enum": ["auto", "laplacian", "puncta"],
-                    "description": (
-                        "Autofocus sharpness metric per position. 'auto' (default) "
-                        "picks it from each field's content; 'puncta' for sparse "
-                        "fluorescent spots; 'laplacian' for edge-rich fields."
-                    ),
-                    "default": "auto",
                 },
             },
             "required": ["position_names", "z_range_um", "z_step_um", "protocol", "save_dir"],

@@ -192,26 +192,3 @@ class TestSingleSweepAutofocus:
         assert result.moved is False
         assert "edge" in result.reason
         assert ctrl.core.get_position() == pytest.approx(50.0)
-
-
-class TestAutoMetricSelection:
-    def test_auto_metric_resolves_to_a_callable(self):
-        # AUTO_METRIC snaps the entry field and picks a concrete metric; a
-        # textured mock scene resolves to normalized_laplacian_variance and
-        # focuses normally.
-        from microclaw.autofocus import AUTO_METRIC
-        from microclaw.image_analysis import normalized_laplacian_variance
-
-        ctrl = make_ctrl_with_focus_at(52.0)
-        result = single_sweep_autofocus(
-            ctrl, z_range_um=10.0, z_step_um=1.0, settle_ms=0, metric_fn=AUTO_METRIC
-        )
-        assert result.converged
-        assert abs(result.final_z_um - 52.0) <= 1.0
-
-    def test_invalid_metric_fn_raises(self):
-        ctrl = make_ctrl_with_focus_at(50.0)
-        with pytest.raises(ValueError, match="metric_fn"):
-            single_sweep_autofocus(
-                ctrl, z_range_um=10.0, z_step_um=1.0, settle_ms=0, metric_fn="nope"
-            )
