@@ -14,6 +14,7 @@ from microclaw.hooks import (
     HookBase,
     IntensityAdaptiveHook,
     PositionFilterHook,
+    SNRObservationHook,
 )
 from microclaw.safety import (
     CameraConstraints,
@@ -177,6 +178,71 @@ class TestHookBaseWhere:
         assert HookBase.where_event(event) == {
             "position": "P1", "x_um": 10.0, "y_um": 20.0, "z_um": 5.0,
         }
+
+    def test_analysis_observation_is_versioned_and_provenance_bearing(self, tmp_path):
+        hook = HookBase(log_path=str(tmp_path / "analysis.json"))
+        hook.log_analysis(
+            {"PositionName": "P2", "XPosition_um_Intended": 3.0},
+            analyzer="fixture.segment",
+            analyzer_version="1.2.3",
+            artifact_sha256="a" * 64,
+            parameters={"channel": "DAPI"},
+            result={"score": 0.75, "objects": [{"x_px": 4, "y_px": 5}]},
+            status="unverified",
+        )
+        entry = hook.get_summary()[-1]
+        assert entry["schema"] == "microclaw.analysis-observation/v1"
+        assert entry["position"] == "P2" and entry["x_um"] == 3.0
+        assert entry["analyzer_version"] == "1.2.3"
+        assert entry["artifact_sha256"] == "a" * 64
+        assert entry["status"] == "unverified"
+
+    def test_analysis_observation_rejects_non_json_results_before_logging(self):
+        hook = HookBase()
+        with pytest.raises(TypeError):
+            hook.log_analysis(
+                {}, analyzer="fixture", analyzer_version="1",
+                result={"mask": np.zeros((2, 2))},
+            )
+        assert hook.get_summary() == []
+
+    def test_analysis_observation_rejects_nan_for_replay_portability(self):
+        hook = HookBase()
+        with pytest.raises(ValueError):
+            hook.log_analysis(
+                {}, analyzer="fixture", analyzer_version="1",
+                result={"score": float("nan")},
+            )
+        assert hook.get_summary() == []
+
+
+class TestSNRObservationHook:
+    def test_logs_versioned_stats_and_never_changes_the_image(self):
+        image = np.full((32, 32), 400, dtype=np.uint16)
+        image[15:17, 15:17] = 1200
+        metadata = {"PositionName": "tile_r0_c0", "XPosition_um_Intended": 10.0}
+        hook = SNRObservationHook(min_snr=3.0)
+
+        returned = hook.image_process_fn(image, metadata, None)
+
+        assert returned[0] is image and returned[1] is metadata
+        entry = hook.get_summary()[-1]
+        assert entry["schema"] == "microclaw.analysis-observation/v1"
+        assert entry["analyzer"] == "microclaw.image_analysis.compute_stats"
+        assert entry["parameters"] == {"min_snr": 3.0}
+        assert entry["position"] == "tile_r0_c0"
+        assert set(entry["result"]) == {
+            "focus_metric", "focus_metric_valid", "background_level", "snr",
+            "mean_intensity", "max_intensity", "min_intensity",
+            "saturated_fraction", "analysis_ms",
+        }
+
+    def test_flat_field_is_logged_without_filtering(self):
+        image = np.zeros((8, 8), dtype=np.uint16)
+        hook = SNRObservationHook()
+        returned = hook.image_process_fn(image, {}, None)
+        assert returned is not None
+        assert hook.get_summary()[-1]["result"]["snr"] == 0.0
 
 
 class TestPositionFilterHookIdentity:

@@ -2093,6 +2093,7 @@ class TestListHooks:
         assert "focus_feedback" in result["precoded"]
         assert "intensity_adaptive" in result["precoded"]
         assert "position_filter" in result["precoded"]
+        assert "snr_observer" in result["precoded"]
         assert "saved" in result
 
 

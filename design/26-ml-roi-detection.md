@@ -1,5 +1,12 @@
 # design/26 — Finding the ROI the user can only describe
 
+> **Implementation note (2026-07-20):** The normative milestone is now
+> `design/26-implementation.md`, and the real-system validation procedure is
+> `design/26-field-spike-prompts.md`. This file is the research record. Where an older
+> package-specific API sketch or milestone below conflicts with the hook-only brief,
+> the brief wins; do not implement the old `train_roi_detector` / `run_roi_survey`
+> tool family from this document.
+
 ## The ask
 
 > Sometimes the requirements are so complex that an ML image model is needed to
@@ -217,7 +224,7 @@ the adapter, and lets the user review and save it without knowing how to code.
 
 ---
 
-# Superseded milestone sketch — retained for its constraints and test gates
+# Archived package-specific milestone sketch — non-normative
 
 The following classical-detector milestone predates the hook-only decision. Its ordering,
 attribution, two-artifact argument, and verification gates remain requirements for any

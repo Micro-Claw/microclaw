@@ -1059,3 +1059,152 @@ disk is the point when nothing was asked to be saved; the hooked path is for "a
 custom per-tile quantity that snap does not already return."]
 
 OK. Please update the design doc, update prompts.md, commit and push
+
+----
+
+Have a look at design/28 and what's been implemented so far in this Git branch. I
+don't agree with the assessment of the Laplacian not working for bright spots on a
+dark background. Can you tell me if this is correct and either way how you would fix
+it?
+
+[the objection was correct. Laplacian variance is polarity-insensitive, and the
+branch's own flux-conserving synthetic punctum scored highest at focus and decreased
+monotonically with blur. The real rig's U-shaped sweep was evidence of an anomalous
+acquisition or normalization, not evidence that sparse fluorescence universally
+inverts Laplacian focus. Recommended keeping the boundary-convergence fix, removing
+the unvalidated automatic puncta metric, restoring normalized Laplacian as the
+default, validating signal/saturation and peak shape across the sweep, saving raw
+planes and diagnostics, and benchmarking alternatives only on labelled real stacks.]
+
+Great! Can you implement those changes and update the design document?
+
+[removed `puncta_sharpness`, automatic metric selection, and the public metric modes;
+restored normalized Laplacian as the autofocus contract; made boundary peaks report
+ambiguity rather than claim focus lies outside the sweep; added the bright-on-dark
+punctum regression; and rewrote design/28 Finding 2 around the unproven U-curve cause.
+725 tests passed and 92 skipped; the two sandbox-blocked localhost tests passed when
+run with socket permission.]
+
+Commit and push this to this branch
+
+[committed and pushed `eaf9e2b` (`design/28: correct Laplacian autofocus assessment`)
+to `design/28-tiling-fixes-1-4`.]
+
+Remove design/29 from the most recent commit. That shouldn't go up yet
+
+[`design/29-offline-dataset-analysis.md` had entered through an earlier commit rather
+than the immediately preceding one, so it was removed in the follow-up commit
+`5a4cc3d` (`design: hold back offline dataset analysis`) and pushed without rewriting
+the already-published branch history.]
+
+Merged to main and deleted the branch on remote
+
+[acknowledged; no repository action taken.]
+
+----
+
+Have a look at design/26 and its associated spike files. Is this a good plan? What is
+still left to verify?
+
+[the architecture was sound but the milestone was not implementation-ready. Three
+gaps were load-bearing: its first fit depended circularly on negatives from a survey
+that happened later; whole-tile scores could not identify which object centroid caused
+the score; and a streaming hook could not choose final top-k before seeing future
+tiles. Recommended blind-survey-first training with reviewed negatives, object-crop
+attribution or an explicit whole-field result, and separate standalone scorer and
+post-survey ranking artifacts. Real-sample precision, complete two-pass rig timing,
+negative contamination, object localization, review ergonomics, refit stability, and
+replay remained unverified; ImJoy, ilastik benefit, learned descriptors, and online
+mode could wait.]
+
+OK. Please make these updates, but don't lose the research that's been done on the
+options we are not implementing. Just move them to the bottom of the file
+
+[reordered design/26 around blind survey -> reviewed negatives -> fit -> stored-image
+scoring -> review/refit -> explicit top-k acquisition; made object attribution and the
+two artifacts explicit; added real-sample gates; and retained the ilastik, ImJoy,
+learned-backend, licensing, and online-runner research in a deferred appendix. No code
+or spike was changed.]
+
+----
+
+Look at design/26. I've decided I want to change the approach a little. Instead of
+including tools for LDA, Ilastik, Cellpose, etc. Let's make access to these tools all
+go via hooks. So, we should just write a hook for each element we want to implement in
+design/26 and add it to hooks.py. Then, what we need is to build a way for microclaw
+to guide users through setting up a hook that accesses their own custom analysis. So,
+let's say someone has a plugin that works great on their own data (like ilastik or
+cellpose or a custom piece of software) and then says I want to run this on each tile
+or on multiple tiles to identify something I'm interested in. Microclaw should be able
+to walk the user through what information they need to give microclaw to add this to a
+hook. Then microclaw should write and save the hook.
+
+[made custom analysis hook-first: package-specific analysis remains behind `HookBase`
+adapters, stable adapters belong in hooks.py, and lab-specific adapters use the
+existing reviewed/hash-pinned saved-hook lifecycle. Added the integration workflow to
+agent guidance and hook docs, required fixture testing and observation-only behavior
+when output is unverified, broadened acquisition-time network linting, and marked the
+old detector-tool milestone as superseded rather than deleting its research. 724 tests
+passed and 92 skipped; the two socket tests passed outside the sandbox.]
+
+The set of questions for custom analysis are a bit intense for a biologist. I don't
+believe someone who doesn't know how to code already will be able to answer these
+questions. The goal is that someone who has an existing workflow could just plug it
+into microclaw without knowing how to code. Most likely they are using a package that
+someone else coded. Is there a minimal set of questions you could ask, and after this
+you could go read the code base or scour the web for it to help write the hook?
+
+[reduced the user intake to three questions: point to the existing workflow, show one
+successful input/result, and say what the microscope should do. APIs, environments,
+axes, dtypes, coordinate conventions, latency, failure behavior, and provenance moved
+to an agent-owned verification checklist derived from installed files, official docs,
+upstream source, and a safe dry run. Follow-ups are reserved for unresolved scientific
+meaning, authorization, or hardware action.]
+
+Very cool! Let's commit this
+
+[committed `eb540f4` (`Make custom analysis integrations hook-first`); the working tree
+was clean.]
+
+----
+
+Have a look at design/26. Are we ready to implement this, or should we test anything
+else with spikes?
+
+[ready to implement the narrow observation-only hook seam, but not ready to call the
+scientific detector validated. The hook-first architecture, offline invariant,
+hash-pinned lifecycle, adaptive runner, and synthetic timing/classifier spike are in
+place. The remaining load-bearing unknown is a real-sample vertical slice: blind
+survey, reviewed object labels, offline top-k ranking, calibrated and guarded coordinate
+conversion, revisit, and deterministic replay. ImJoy, learned backends, ilastik benefit,
+and online detector-triggered acquisition do not block that milestone. The full test
+run had 722 passes and 92 skips; its two failures were sandbox-denied localhost binds.
+The detector spike reproduced: logistic/SVM AUC 1.0 across five synthetic seeds and
+roughly 73-77 ms per tile, explicitly not evidence of biological usefulness.]
+
+OK. Please do the cleanup and the rest of your recommendation. Keep in mind that the
+spike you propose will probably have to be run on an actual system with a sample on it.
+Do you see a way around this? If not, please give me a set of prompts to run to perform
+the spike. I will return to you a history .json file
+
+[extracted `design/26-implementation.md` as the normative implementation authority and
+marked the long design/26 document and its old package-specific tool sketch as research/
+non-normative. Added `design/26-field-spike-prompts.md`: an observation-first sequence
+covering contract derivation, fixture testing, fixed blind survey, human adjudication,
+offline ranking, coordinate verification, explicitly confirmed revisit, measurement,
+and replay. There is no honest substitute for a real sample for biological precision,
+revisit error, drift, photobleaching, or slide/day generalization; archived images can
+exercise the analyzer seam and most offline processing. Added
+`HookBase.log_analysis`, a versioned `microclaw.analysis-observation/v1` record carrying
+position, analyzer/version, parameters, optional artifact hash, status, and JSON output;
+non-JSON values and NaN are rejected before the log mutates. Updated hook-writing docs
+and tests. 667 tests passed, 92 hardware-gated tests skipped when excluding the two
+sandbox-only webserver bind tests.]
+
+Can you update design/prompts.md with all of the missing prompts?
+
+[added the three prompts from the active design/26 readiness/cleanup session and
+summarized the resulting implementation brief, field-spike runbook, observation log
+schema, and verification results.]
+
+Can you also update with prompts from previous gpt sessions from earlier today?
