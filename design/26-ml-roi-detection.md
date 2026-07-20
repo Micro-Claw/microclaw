@@ -113,7 +113,236 @@ to actually walk through that door, and the door turns out to open only halfway.
 
 ---
 
-# Findings
+# Revised implementation decision — analysis integrations are hooks
+
+The option survey below names classical LDA/logistic scoring, ilastik, Cellpose,
+learned descriptors, and lab-specific software. Those names must **not** become a
+parallel family of microclaw tools (`train_*`, `score_*`, `run_ilastik`, and so on).
+They are alternative implementations of one extension point: a pycro-manager hook.
+
+The boundary is now:
+
+* microclaw owns acquisition tools, hook lifecycle, safety, logging, review, and the
+  conversation that specifies an integration;
+* `hooks.py` owns any stable adapters we ship for the design/26 building blocks;
+* a user's existing Python package, executable, model, project, or plugin remains the
+  analysis engine and is called by a generated adapter hook;
+* `hook_manager.py` validates, hash-pins, saves, loads, and records consent for both
+  generated and user-provided hooks;
+* no analysis-package-specific tool schema is added.
+
+For example, an ilastik project and a Cellpose model may eventually have different hook
+classes because their invocation and output contracts differ, but the agent sees both as
+hook strategies. A lab's private classifier uses the same path and requires no microclaw
+release. The classes we choose to ship for design/26 are added to `hooks.py` and
+`PRECODED_HOOK_REGISTRY`; user-specific adapters are saved under the existing hook store.
+
+This preserves the compiler invariant: the conversation produces reviewed Python source,
+and image-time execution needs neither the language model nor a network. A local process
+or heavyweight environment is permitted when explicitly reviewed and pinned; it is a hook
+dependency, not a reason to hide the dependency behind a new tool.
+
+## The custom-analysis setup conversation is part of the feature
+
+“Write me a hook” is not enough guidance, but the operator should not have to reverse
+engineer software somebody else wrote. Microclaw normally asks only three questions, in
+the language of the user's existing workflow:
+
+1. **What workflow do you use, and can you point me to it?** A package name or web page is
+   sufficient; an app, notebook, script, project, model, environment, or repository is
+   better. “I open this ilastik project and press Run” is a valid answer.
+2. **Can you show me one example that works?** The user supplies a representative input
+   and result and may explain it biologically: “the outlined cells are the ones I want.”
+   They are not asked for arrays, dtypes, axes, APIs, or coordinate conventions.
+3. **What should the microscope do with the result?** Record or map it, keep matching
+   images, revisit objects, analyze tiles together, or stop after enough targets are found.
+   A threshold or acquisition budget is requested only when that action needs one.
+
+Microclaw owns the technical investigation. It inspects local files and installed
+environments, reads `--help`, official documentation, and upstream source (searching the
+web when needed), and runs the supplied example safely. From evidence, not the package
+name, it derives the entry point, image/channel contract, raw output and coordinates,
+processing unit and latency, state and failure behavior, offline/process/hardware boundary,
+and provenance. It records where those facts came from. The agent asks a follow-up only
+when investigation leaves an ambiguity that changes scientific meaning, authorization, or
+hardware action.
+
+Microclaw summarizes the derived contract back in plain language before writing code. It
+then selects the hook slot, writes a `HookBase` adapter, and tests the boundary without
+hardware against the example. If no working example is available, a screenshot, tutorial
+dataset, or dry run on a copied image can substitute; until raw output is verified, the
+first hook is observation-only and cannot drive the stage or acquisition.
+
+The full generated source and advisory lint warnings are shown to the user. Saving still
+requires explicit confirmation; the accepted bytes and warnings are hash-pinned by the
+existing hook manager. Running a newly saved hook requires the existing run confirmation.
+
+## Hook shapes needed by design/26
+
+The design should implement behaviors as hooks, not backend tools:
+
+| behavior | hook shape |
+|---|---|
+| score or classify every tile | `image_process_fn`; log score/class and provenance |
+| return masks/boxes/centroids | `image_process_fn`; normalize coordinates and log objects |
+| inspect multiple tiles before deciding | stateful hook, or a two-pass survey; never pretend one callback receives a batch |
+| analyze a completed on-disk group | `image_saved_hook_fn` plus explicit completion/two-pass orchestration |
+| stop a serial survey when a condition is met | adaptive-survey hook using `candidates` / `progress` |
+| acquire guarded follow-ups around a detected object | survey-with-detector hook; check XY/Z and enforce an event cap |
+| rank all tiles and take top-*k* | two pass: score/log first, then deterministically select positions; streaming callbacks cannot know future ranks |
+
+Classical LDA/logistic logic, ilastik, and Cellpose are examples used to validate these
+shapes. They do not define public microclaw tool APIs. The research record remains useful
+for choosing and testing shipped hooks, especially its findings about attribution,
+multi-tile ranking, latency, portability, and review.
+
+## Milestone 1
+
+1. Extend the hook authoring reference and agent policy with the three-question intake
+   and the separate agent-owned verification checklist.
+2. Treat common acquisition-time network clients as advisory lint findings and state the
+   offline invariant in the generated-hook workflow.
+3. Use the guided flow to produce and fixture-test one adapter for a real user analysis;
+   save it through `hook_manager` and run it observation-only on stored images first.
+4. Promote only stable, generally useful design/26 adapters into `hooks.py` and the
+   registry. Keep model paths, project files, thresholds, channel mappings, and other
+   lab-specific facts as constructor parameters or saved custom hooks.
+5. Demonstrate the selected hook in a two-pass real-sample survey, preserving object
+   attribution, guarded positions, an explicit acquisition budget, and replayable logs.
+
+Success means a user can bring an analysis microclaw has never heard of, point to the
+workflow, show what a successful result looks like, and say what the microscope should do.
+Microclaw derives the technical contract, presents it in plain language, writes and tests
+the adapter, and lets the user review and save it without knowing how to code.
+
+---
+
+# Superseded milestone sketch — retained for its constraints and test gates
+
+The following classical-detector milestone predates the hook-only decision. Its ordering,
+attribution, two-artifact argument, and verification gates remain requirements for any
+corresponding hook, but its proposed package-specific workflow functions are not public
+tools and are not the implementation boundary.
+
+The first implementation is deliberately smaller than the option survey below. It ships
+one end-to-end workflow and keeps the other work as researched upgrade paths rather than
+half-implemented backends.
+
+**Milestone 1 is a two-pass, classical, score-only workflow on a real sample.** It has no
+torch dependency, no ilastik dependency, no ImJoy dependency, and no online
+`mode="acquire"`. The deliverables are:
+
+1. a blind survey that saves tiles and stage coordinates;
+2. reviewed positive examples and reviewed/sample-derived negatives;
+3. a fitted classical descriptor + logistic probe that scores the stored survey;
+4. an adjudicated ranking and an explicit acquisition budget;
+5. an object-attributed list of guarded stage positions for the existing
+   `run_multiposition_acquisition` tool;
+6. a standalone scorer artifact plus a separate, deterministic ranked-position artifact.
+
+The milestone is successful only when this entire path has run on a real sample and its
+precision at the chosen budget is useful to the operator. Synthetic AUC is a regression
+test, not an acceptance criterion.
+
+## The actual default flow
+
+The survey must precede the first binary fit. The earlier flow fitted a probe and only
+then mined its negatives from a survey that had not happened yet. That was circular.
+
+```
+run_roi_survey(..., detector=None)                 # blind overview; save pixels + coords
+        |
+        v
+prepare_roi_training_set(description, examples, survey)
+        |   positives: user examples / boxes
+        |   negatives: sampled survey crops, REVIEWED before they become labels
+        v
+train_roi_detector(..., backend="classical")      # first valid binary fit
+        |
+        v
+score_roi_survey(detector, saved_survey)           # no second exposure; rank stored tiles/objects
+        |
+        v
+review_roi_candidates(..., surface="blocks")      # persist verdicts + adjudicator
+        |
+        v
+refine_roi_detector(...)                           # refit and report precision@candidate k
+        |
+        v
+choose acquisition_budget(k)                       # the operator's resource decision
+        |
+        +--> export_detector_scorer(...)            # image -> score; standalone and offline
+        +--> export_ranked_positions(...)           # scores -> top-k guarded positions
+        v
+run_multiposition_acquisition(confirmed_positions, ...)
+```
+
+Unlabelled survey crops are **candidate negatives, not free ground truth**. The desired
+state may be common, spatially clustered, or absent; blindly labelling sampled tiles as
+negative creates asymmetric label noise exactly where five-shot fitting is most fragile.
+For milestone 1 the sampled negatives are shown during review. A later implementation may
+use positive-unlabelled learning, but it may not silently convert "unlabelled" to
+"negative".
+
+## The unit of detection: score objects, not tiles
+
+A high-scoring tile does not identify which cell inside it caused the score. The previous
+plan jumped from a tile score to the generic centroid returned by `find_features`; on a
+tile containing several cells or debris, there is no reason that centroid belongs to the
+learned concept.
+
+Milestone 1 therefore makes attribution explicit:
+
+* `detect_features` proposes objects in each tile;
+* each proposal produces a crop in the same coordinate frame as the source image;
+* the descriptor/probe scores each object crop;
+* the ranked record stores the proposal bounds, centroid, tile identity, score, and stage
+  transform used;
+* only the selected object's centroid is converted through the calibrated affine and
+  passed through XY/Z guards.
+
+Whole-tile scoring may remain as a cheap prefilter, but it cannot supply the final ROI
+coordinate. If object proposals do not cover the user's concept, milestone 1 must acquire
+the whole field or stop and request boxes; it must not invent object attribution.
+
+## Two artifacts, because top-k is not a streaming hook operation
+
+The compiled detector is a **standalone scorer**: pixels in, deterministic score out. A
+streaming `image_process_fn` cannot select the final top-k because it has not seen future
+tiles. Budget selection belongs to a second deterministic artifact produced after the
+survey:
+
+* `detector.py` / detector manifest — descriptor and fitted probe, usable without
+  microclaw or a network;
+* `ranked_positions.json` — hashes of the survey inputs and detector, all scores and
+  object coordinates, the chosen `k`, selected positions, calibration identity, and
+  adjudication provenance.
+
+Together they answer both audit questions: *what scored this image?* and *why were these
+positions acquired?* Neither artifact claims that an absolute logistic score is a
+calibrated probability.
+
+## Verification gates before milestone 1 is called shipped
+
+* Run the complete workflow on multiple real slides/days, splitting evaluation by slide,
+  and report precision at the operator's acquisition budget and useful-ROI yield.
+* Measure sensitivity to contaminated mined negatives, duplicated examples, one wrong
+  verdict, constant descriptor terms, common targets, and slides with no target.
+* Compare selected object centroids with human boxes on multi-object tiles and non-square
+  frames; verify crop axes, affine conversion, revisit error, and guard rejection.
+* Measure survey time, offline scoring time, review time, refit time, revisit drift, and
+  survey photobleaching on the intended sample.
+* Replay `verdicts.json`, the scorer manifest, and `ranked_positions.json` and reproduce
+  the same weights, ranking, and selected positions without calling an adjudicator.
+
+Everything after this section is the research record. It is retained intentionally so
+the measured ilastik seam, learned-descriptor comparisons, review-surface work, licensing
+analysis, and online runner findings are not lost. Those are **deferred options, not part
+of milestone 1**, unless a subsection explicitly supports the classical two-pass path.
+
+---
+
+# Research record and deferred options (preserved)
 
 F1 reported the defect that blocked the requirement's second half — *act on a hit,
 in-scan*: a hook's `event_queue.put()` was silently dropped, so nothing could enqueue
@@ -208,12 +437,17 @@ Keep it anyway, and move it: **augmentation is a property of the DESCRIPTOR, not
 of the probe.** It is a no-op for this rotation-invariant descriptor and genuinely
 load-bearing for a CNN/ViT embedding, which is invariant to nothing.
 
-### F2c — negatives are still free
+### F2c — the survey supplies negative candidates, not negative labels
 
-The user supplies positives; a survey scan is a bucket of unlabelled tiles that
-are overwhelmingly negative. Sampling from it gives the probe the other half of
-its training set without asking the user for anything. That part of the first
-draft holds.
+The user supplies positives; a survey supplies a bucket of unlabelled tiles. The first
+draft called those negatives "free" and assumed the bucket was overwhelmingly negative.
+That may hold for a rare target, but it fails when the desired state is common, clustered,
+or poorly represented by the user's examples. Contamination is especially costly with
+five positives because a confident false negative can rotate the fitted direction.
+
+Milestone 1 samples **candidate negatives only after the blind survey and shows them for
+review before fitting**. Positive-unlabelled learning is a possible later improvement.
+Neither path is allowed to silently treat absence of a positive label as a negative label.
 
 ### The caveat, loudly
 
@@ -265,8 +499,10 @@ The number stops **moving**; it does not thereby start **meaning** anything. A
 default threshold is still unshippable, and it will still move with every sample,
 stain and objective.
 
-**What survives a refit, for every head, is the RANKING** — the top-k set is
-preserved 100 % by both margin heads. So the operating point that compiles is a
+**What survived these synthetic refits was the RANKING** — the top-k set was
+preserved 100 % by both margin heads on this spike. That is evidence for the interface,
+not a general guarantee: noisy labels, a new slide, or a changed descriptor can reorder
+the candidates. The operating point that compiles is nevertheless a
 **budget**, not a threshold:
 
 > **Image the top *k* tiles**, not "image everything above 0.2."
@@ -277,8 +513,9 @@ user, is in a position to answer that in advance. A *budget* is a claim about th
 user's afternoon — "I can afford 20 z-stacks, and I need at least 10 good cells" —
 and the user is the only one who *can* answer it, needs no model to do so, and
 would have had to answer it anyway. **We were asking the wrong party for the wrong
-number.** A budget also survives a rescale, a refit, a new sample and a new
-objective, because a rank is invariant to all of them.
+number.** The meaning of a budget survives a rescale, refit, or new sample—it still caps
+the user's acquisition cost—but the membership of the selected top-k may change. That
+change must be reported after every refit rather than hidden behind a claim of invariance.
 
 This is not a lonely conclusion, and it is the one place in this document where an
 argument from first principles turned out to have been settled by somebody else's
@@ -485,7 +722,7 @@ a stage position, not a pixel — the same argument `ClassicalDescriptor` alread
 
 ### F5b — what the command line actually has to say [spike F_0/F_0b/F_3]
 
-`export_detector_hook` would have to emit an ilastik command line, and this doc used to
+`export_detector_scorer` would have to emit an ilastik command line, and this doc used to
 contain none — the flags are now quoted from ilastik.org's headless docs (read
 2026-07-16) *and* exercised against the binary (1.4.2, 2026-07-17). Four things only the
 run could teach, each of which would have cost a rig session:
@@ -519,7 +756,7 @@ noise on the crash path, not a broken install, and not a clue.)
 
 **It does not compile to a self-contained hook, and `hook_manager` already says so.**
 An ilastik-backed detector must shell out — and `hook_manager.py:14` bans `subprocess`
-in hook source. So `export_detector_hook` would emit a module microclaw's own linter
+in hook source. So `export_detector_scorer` would emit a module microclaw's own linter
 flags. That collision is not a bug in either one; it is the design telling the truth.
 The classical detector compiles to *numpy and a dozen floats*. An ilastik detector
 compiles to *a hook plus an ilastik install plus a `.ilp`*. Both run offline, both are
@@ -673,7 +910,7 @@ So **the fitted probe is the compiled hook.** What falls out of a microclaw sess
 is a directory under `~/.microclaw/detectors/<name>/` holding a description, some
 example thumbnails, the adjudicated verdicts and who gave them (F6a), and ~12 floats.
 That artifact runs on the rig forever, offline, with no API key — and
-`export_detector_hook` emits it as a standalone pycro-manager `image_process_fn` that
+`export_detector_scorer` emits it as a standalone pycro-manager `image_process_fn` that
 does not import microclaw at all. **That is the deliverable. The conversation was the
 build step.**
 
@@ -732,7 +969,7 @@ The boundary that actually holds is **stateless vs. fitted**:
 | | what it is | where it goes |
 |---|---|---|
 | `ClassicalDescriptor` | pure functions, image → vector, no state, no persistence | **`image_analysis.py`** — built *on* `detect_features` / `compute_stats` |
-| `FewShotProbe`, `augment`, `DESCRIPTOR_REGISTRY`, `export_detector_hook` | fitted, learned, serialised | **`detectors.py`** (new, flat) |
+| `FewShotProbe`, `augment`, `DESCRIPTOR_REGISTRY`, `export_detector_scorer`, `export_ranked_positions` | fitted, learned, serialised | **`detectors.py`** (new, flat) |
 | `ROIDetectorHook` | a hook | **`hooks.py`**, with the other hooks |
 | the detector store | consent, hashes, a manifest | **`hook_manager.py`** — see below |
 
@@ -1156,7 +1393,11 @@ window, which is a *rendering* of this seam and not a change to it.
 
 ---
 
-# Proposal — the agent compiles a detector; the detector runs the microscope
+# Deferred full proposal — retained option research
+
+This was the broader proposal before milestone 1 was narrowed. Its backend, UI, and
+online-mode research is retained here for later milestones. Where its flow or stubs differ
+from **Implementation decision — milestone 1**, the milestone section is normative.
 
 > A conversation produces a **file**. The user's description and five example images
 > are compiled — by the agent, with a human or a model adjudicating a dozen borderline
@@ -1168,7 +1409,7 @@ window, which is a *rendering* of this seam and not a change to it.
 Why this shape:
 
 1. **It meets the bar.** The scan runs with no model in the loop, so the acquisition is
-   reproducible, offline-capable, auditable, and free per tile. `export_detector_hook`
+   reproducible, offline-capable, auditable, and free per tile. `export_detector_scorer`
    emits the artifact as standalone pycro-manager source that never imports microclaw.
 2. **It uses the description correctly.** The description is a spec for a language model,
    not a feature vector. The adjudicator reads it; the probe never sees it. (Which
@@ -1184,7 +1425,11 @@ Why this shape:
    and the safety gates are all backend-agnostic — the *only* thing a backend supplies is
    `image -> np.ndarray`.
 
-## The default flow — two passes
+## The earlier two-pass sketch (superseded ordering)
+
+This sketch incorrectly trains before the survey from which it intends to mine negatives.
+The canonical flow above replaces it with blind survey → reviewed negatives → fit → score
+stored survey. It remains here to preserve the downstream option branches.
 
 ```
 train_roi_detector(name, description, example_images)      # fits on 5 examples
@@ -1200,8 +1445,8 @@ review_roi_candidates(name, top_k=12, surface=...)          # crops -> adjudicat
         ▼
 refine_roi_detector(name, verdicts, adjudicator)            # re-fit, propose a BUDGET
         │
-        ├──▶ export_detector_hook(name)                      # the compiled artifact
-        │                                                    # standalone; no microclaw
+        ├──▶ export_detector_scorer(name)                    # standalone scoring artifact
+        ├──▶ export_ranked_positions(name, budget_k)         # post-survey top-k artifact
         │
         ├──▶ ranking not worth acting on?  ─────────────────┐  the floor does not span
         │                                                    │  the user's concept (F5)
@@ -1235,12 +1480,18 @@ The cost of two passes is a **revisit**: the stage goes back to the ROI. For a f
 sample that is cheap, and the survey exposure (low power, coarse) has not meaningfully
 bleached the thing we came for.
 
-Where the ROI's coordinates come from is already solved: the probe scores a *tile*, the
-offset *within* the tile comes from the same centroid machinery `find_features` uses, and
-`calibration.py`'s affine turns pixels into µm — `center_feature` already closes that
-loop. "Image the cell, not the tile" costs no new geometry.
+The affine pixel-to-stage geometry is already solved by `calibration.py` and
+`center_feature`, but object attribution is not. A score on a tile does not say which of
+several `find_features` centroids caused that score. Milestone 1 scores proposal crops and
+records the selected object's bounds and centroid before applying the affine. A backend
+that cannot attribute its score must return the whole field or ask for a box; it cannot
+silently choose a generic centroid.
 
-## The online mode — opt-in, confirm-gated, and it does not compile
+## Deferred option: online mode — opt-in, confirm-gated, and it does not compile
+
+This mode is explicitly outside milestone 1. The findings below are preserved because
+they define the safety and runner work required if revisit-free acquisition later becomes
+necessary.
 
 `mode="acquire"` uses `_acquire_survey_with_detector` — **shipped, in `tools.py`**: the
 moment a tile scores above threshold, the hook pushes a z-stack event onto `candidates`
@@ -1373,8 +1624,8 @@ def load_descriptor(name: str, **params):
     """Resolve a backend, or return a tool-shaped error naming the missing extra."""
 
 
-def export_detector_hook(name: str, out_path: str, budget_k: int) -> dict:
-    """Emit a trained detector as a STANDALONE pycro-manager hook. THE DELIVERABLE (F7).
+def export_detector_scorer(name: str, out_path: str) -> dict:
+    """Emit a trained detector as a STANDALONE pycro-manager scoring hook.
 
     The emitted module:
       * imports numpy/scipy/skimage and NOTHING ELSE — no microclaw, no anthropic;
@@ -1383,8 +1634,8 @@ def export_detector_hook(name: str, out_path: str, budget_k: int) -> dict:
       * carries, in a header comment, the user's DESCRIPTION, the example thumbnails'
         hashes, the adjudicated verdicts and who gave them (F6/F6a), and the microclaw
         version — a score whose origin got lost is design/20;
-      * selects by BUDGET (top-k over the survey's own scores), never by a threshold
-        carried over from a fit that no longer exists (F3).
+      * emits a score and object evidence for every input; it does NOT select top-k while
+        streaming, because the final ranking does not exist until the survey is complete.
 
     NOT EVERY BACKEND EXPORTS THIS WAY, and the tool grades what it emits. The classical
     probe inlines to numpy and a dozen floats. An ilastik-backed detector must shell out,
@@ -1394,6 +1645,17 @@ def export_detector_hook(name: str, out_path: str, budget_k: int) -> dict:
 
     Round-trips through hook_manager: the emitted source is linted, hashed and pinned
     exactly like a Claude-generated hook, because that is exactly what it is.
+    """
+
+
+def export_ranked_positions(name: str, survey: str, budget_k: int, out_path: str) -> dict:
+    """Persist the post-survey decision artifact.
+
+    Hash the scorer and survey inputs; record every object score and source coordinate;
+    apply top-k only now; convert selected centroids through the recorded calibration;
+    guard every resulting position; and persist the chosen budget, adjudications, rejected
+    positions and final acquisition list. Replaying the same inputs must reproduce the
+    same selected positions without running an adjudicator.
     """
 ```
 
@@ -1530,15 +1792,26 @@ runner's *adaptive* mode (design/27). `run_roi_survey` is the caller the *derive
 mode still lacks.
 
 ```python
+def prepare_roi_training_set(ctrl, guard, description, example_image_paths,
+                             survey_dir, example_boxes=None) -> dict:
+    """Build reviewable positive and candidate-negative object crops.
+
+    This runs after a blind survey. Survey samples are unlabelled and therefore only
+    candidate negatives; milestone 1 requires their verdicts before binary fitting.
+    Persist crop bounds, source-tile hashes and proposal identities so training labels are
+    replayable and object attribution can be audited.
+    """
+
+
 def train_roi_detector(ctrl, guard, name, description, example_image_paths,
-                       example_boxes=None, negative_image_paths=None,
+                       negative_image_paths, example_boxes=None,
                        backend="classical") -> dict:
     """Fit a detector from a handful of examples. ~0.55 s, measured.
 
     `description` is STORED, NOT FEATURISED — it is the spec the adjudicator judges
-    against later. Negatives are optional; without them they are MINED from the survey
-    (F2c). Returns the fit, the backend used, and a refusal to name a default threshold
-    (F3).
+    against later. For milestone 1 negatives are required and must carry review verdicts;
+    unlabelled survey tiles are not silently promoted to negative labels. Returns the fit,
+    the backend used, and a refusal to name a default threshold (F3).
 
     `example_boxes` — optional per-image (x, y, w, h) — describes the CROP rather than the
     whole tile, a strictly better fit from the same five examples, and makes everything
@@ -1554,22 +1827,33 @@ def train_roi_detector(ctrl, guard, name, description, example_image_paths,
     """
 
 
-def run_roi_survey(ctrl, guard, rows, cols, step_um, detector, save_dir,
-                   mode="score", budget_k=None, threshold=None, max_rois=10, ...) -> dict:
-    """Tile-scan, score every tile, rank the candidates.
+def run_roi_survey(ctrl, guard, rows, cols, step_um, save_dir, detector=None, ...) -> dict:
+    """Blind tile survey for milestone 1; save pixels, metadata and stage coordinates.
 
-    mode='score' (default) enqueues nothing — a tile scan plus a number per tile, plus a
-    RANKING. The operating point is applied afterwards, as a budget over the whole survey
-    (`budget_k`): the only form that survives a refit and the only form that compiles (F3, F7).
+    With detector=None this is the first step and makes no classification claim. A fitted
+    detector may score during later surveys, but top-k is always applied after all scores
+    exist. Online acquisition is deferred.
+    """
 
-    mode='acquire' images each hit in-scan, on the shipped survey runner
+
+def score_roi_survey(ctrl, guard, detector, survey_dir) -> dict:
+    """Score stored object proposals and return a complete, deterministic ranking.
+
+    `detect_features` proposes objects; the scorer consumes their crops. Each result keeps
+    proposal bounds, centroid, tile identity and score. Whole-tile scoring may prefilter
+    but cannot choose a within-tile centroid.
+
+    The acquisition budget is applied only after this function has produced the complete
+    ranking. It is never implemented inside streaming image_process_fn.
+
+    DEFERRED: mode='acquire' would image each hit in-scan, on the shipped survey runner
     (_acquire_survey_with_detector, derived-event mode: the survey pre-dispatched, the
     stream held open to drain follow-ups). It cannot use a budget — a rank does not exist
     at tile 7 of 400 — so it requires an explicit `threshold` AND a blocking confirmation
     naming that threshold, the candidate count a prior scoring pass on THIS sample
     produced, and the exposure budget it may spend.
 
-    This tool is the runner's missing ignition, and the reason it must not lag the hook:
+    A future online tool would be the runner's missing ignition:
     _acquire_survey_with_detector's derived-event mode has no public caller today, so
     until this ships, mode='acquire' is a capability documented by a private function
     name — the exact gap design/27's rig run walked into.
@@ -1692,13 +1976,16 @@ siblings in `tests/test_integration.py`.)
   invariant the whole design rests on, it is currently true by accident, and this test is
   what makes it true on purpose.
 * **Nothing on the score path imports the `review` extra** — `imjoy`, `umap`. Same AST
-  scan, extended to `image_analysis` and to `export_detector_hook`'s output. The review
+  scan, extended to `image_analysis` and to `export_detector_scorer`'s output. The review
   surface is a browser UI for a parked stage; if it ever appears in a hook, the invariant
   has been broken by a convenience.
 * `hook_manager.lint_hook_code` flags all five of those, not just `socket`.
-* `export_detector_hook` emits a module that imports neither `microclaw` nor `anthropic`,
+* `export_detector_scorer` emits a module that imports neither `microclaw` nor `anthropic`,
   and whose `image_process_fn` scores a tile correctly **with microclaw not on `sys.path`.**
   Assert on the import, not just the output.
+* `export_ranked_positions` applies top-k only after every score exists. Replaying the
+  scorer, survey, calibration and verdict artifacts reproduces the ranking and selected
+  guarded positions exactly.
 
 **The probe (F2, F3):**
 
@@ -1707,11 +1994,13 @@ siblings in `tests/test_integration.py`.)
   this test is what let F2's first draft ship a lucky number (spike B_1).
 * `augment()` is a **no-op for a descriptor with `augment_helps = False`**, and returns 8
   images for one with `augment_helps = True` (spike B_3).
-* A refit **preserves the top-k set** and does **not** preserve an absolute threshold's
-  candidate count (spike B_2). This is the test that pins F3's whole argument.
+* Record how much a refit changes the top-k set; do not assert universal preservation from
+  the synthetic spike. Separately assert that rescaling scores leaves ranks unchanged and
+  that an absolute threshold's candidate count is not a stable contract (spike B_2).
 * `refine_roi_detector` returns a **budget** proposal and **refuses to return a threshold**;
   a caller that passes a stale threshold to `run_roi_survey` after a refit is refused.
 * `run_roi_survey(mode="acquire")` without an explicit `threshold` raises, naming F3.
+  This is a deferred-online regression test, not a milestone-1 API requirement.
 * `refine_roi_detector` **records the adjudicator** against every verdict and refuses a
   verdict set with no adjudicator named — an unattributed label is the design/20 failure
   with a new coat on (F6). The exported hook carries it.
@@ -1734,7 +2023,7 @@ siblings in `tests/test_integration.py`.)
   matches the manifest. **Same manifest, same code path as hooks** — assert that a detector
   and a hook are refused by the *same* function, because a second copy of this mechanism is
   a second thing to forget to fix.
-* `lint_hook_code` still bans `subprocess` — and an ilastik-backed `export_detector_hook` is
+* `lint_hook_code` still bans `subprocess` — and an ilastik-backed `export_detector_scorer` is
   therefore **flagged, and grades itself as non-self-contained** rather than silently
   emitting a hook that trips the linter (F5).
 * `safe_load_weights` refuses `weights_only=False` — assert on the call, not the outcome.
@@ -1753,6 +2042,11 @@ siblings in `tests/test_integration.py`.)
   unchanged behaviour. Boxes are plain `(x, y, w, h)` in image pixels — the test does not
   care that Kaibu drew them, which is the point of taking them as coordinates rather than
   reaching into a GUI.
+* Training without reviewed negatives is refused. Candidate negatives sampled from a
+  blind survey remain unlabelled until an adjudicator verdict is persisted.
+* On a tile containing multiple proposals, the exported ranked position uses the centroid
+  of the scored proposal, not an unrelated whole-tile `find_features` centroid. If no
+  proposal supports attribution, the result is explicitly whole-field or unresolved.
 * `review_roi_candidates(surface="imjoy")` **returns the same verdict contract** as
   `surface="blocks"` — crops out, labels in — and `refine_roi_detector` cannot tell which
   one produced the verdicts, beyond the `adjudicator` string it is told. A rendering must

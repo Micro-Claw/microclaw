@@ -2393,7 +2393,11 @@ class TestGetHookDocumentation:
     def test_covers_key_concepts(self, mock_ctrl, unconstrained_guard):
         result = get_hook_documentation(mock_ctrl, unconstrained_guard)
         doc = result["documentation"]
-        for term in ("image_process_fn", "post_hardware_hook_fn", "HookBase", "event_queue"):
+        for term in (
+            "image_process_fn", "post_hardware_hook_fn", "HookBase", "event_queue",
+            "What existing workflow", "show me one example",
+            "What should the microscope do", "NOT a questionnaire",
+        ):
             assert term in doc
 
 

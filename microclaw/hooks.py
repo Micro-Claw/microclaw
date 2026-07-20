@@ -411,5 +411,8 @@ PRECODED_HOOK_REGISTRY: dict[str, type] = {
     "autofocus_mm_plugin": MMAutofocusPluginHook,
 }
 
-# To add a new analysis plugin, define a class that inherits from HookBase,
-# implement image_process_fn, and register it here. No other code changes needed.
+# Stable analysis integrations belong here as HookBase adapters, including
+# ilastik, Cellpose, learned scorers, and lab software. Register the adapter
+# here; do not add a package-specific agent tool. User-specific invocations are
+# generated and saved through hook_manager instead. Acquisition-time adapters
+# must be offline and log analyzer/model versions, parameters, and provenance.

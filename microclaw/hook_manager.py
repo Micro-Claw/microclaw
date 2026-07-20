@@ -11,7 +11,10 @@ MANIFEST = HOOKS_DIR / "manifest.json"
 # Modules whose import or use is worth flagging for a human to review. Broad on
 # purpose (os/open catch benign log-writing hooks too), because this is an
 # ADVISORY lint, not a gate — see lint_hook_code.
-_BANNED_MODULES = {"subprocess", "socket", "shutil", "ctypes", "importlib", "os"}
+_BANNED_MODULES = {
+    "anthropic", "ctypes", "httpx", "importlib", "os", "requests",
+    "shutil", "socket", "subprocess", "urllib",
+}
 _BANNED_NAMES = {"eval", "exec", "compile", "__import__", "open"}
 
 

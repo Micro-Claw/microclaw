@@ -1182,8 +1182,9 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Return the pycro-manager hook API reference: Acquisition hook kwargs, "
             "hook function signatures, return-value contracts, event dict structure, "
-            "event_queue usage, and the HookBase pattern required by microclaw. "
-            "Call this before writing a new hook."
+            "event_queue usage, the HookBase pattern required by microclaw, and the "
+            "integration interview for adapting a user's Python package, executable, "
+            "plugin, or other custom analysis. Call this before writing a new hook."
         ),
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
