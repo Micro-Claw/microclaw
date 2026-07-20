@@ -1155,6 +1155,119 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "rank_hook_log",
+        "description": (
+            "Deterministically rank completed observation records offline. No image "
+            "analysis, acquisition, motion, thresholding, network, or adjudicator is "
+            "used. The key is descending result metric with ascending position label "
+            "as the tie-break. Returns the full ordering and requested budget views."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "log_path": {"type": "string"},
+                "metric": {"type": "string", "default": "snr"},
+                "budgets": {"type": "array", "items": {"type": "integer"}},
+                "position_list_path": {
+                    "type": "string",
+                    "description": "Optional saved list to verify against the ranking prefix."
+                },
+            },
+            "required": ["log_path"],
+        },
+    },
+    {
+        "name": "validate_positions",
+        "description": (
+            "Check proposed XY/Z coordinates against the current safety guards without "
+            "moving hardware. Returns accepted and rejected positions and never clips."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "positions": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "x_um": {"type": "number"},
+                            "y_um": {"type": "number"},
+                            "z_um": {"type": "number"},
+                        },
+                        "required": ["name", "x_um", "y_um"],
+                    },
+                }
+            },
+            "required": ["positions"],
+        },
+    },
+    {
+        "name": "inspect_artifacts",
+        "description": (
+            "Recursively enumerate files under workspace artifact paths and compute "
+            "their size and SHA-256. Optionally save a deterministic JSON manifest."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "paths": {"type": "array", "items": {"type": "string"}},
+                "manifest_path": {"type": "string"},
+            },
+            "required": ["paths"],
+        },
+    },
+    {
+        "name": "compare_revisit_frames",
+        "description": (
+            "Offline subpixel registration of corresponding pages in source and "
+            "revisit TIFF stacks. Reports pixel translation, registration quality, "
+            "and micrometres only when a current stage-camera affine exists."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "source_tiff": {"type": "string"},
+                "revisit_tiff": {"type": "string"},
+                "comparisons": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "position": {"type": "string"},
+                            "source_index": {"type": "integer"},
+                            "revisit_index": {"type": "integer"},
+                        },
+                        "required": ["position", "source_index", "revisit_index"],
+                    },
+                },
+                "min_correlation": {"type": "number", "default": 0.5},
+            },
+            "required": ["source_tiff", "revisit_tiff", "comparisons"],
+        },
+    },
+    {
+        "name": "calibrate_snr_threshold",
+        "description": (
+            "Create a provisional SNR validity-gate artifact from multiple confirmed "
+            "dark and illuminated hook logs. Requires separated distributions and "
+            "records the optical/acquisition context supplied by the operator."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "dark_log_paths": {"type": "array", "items": {"type": "string"}},
+                "illuminated_log_paths": {"type": "array", "items": {"type": "string"}},
+                "output_path": {"type": "string"},
+                "context": {
+                    "type": "object",
+                    "description": "Objective, camera, ROI, binning, exposure, and channel identity."
+                },
+            },
+            "required": ["dark_log_paths", "illuminated_log_paths", "output_path", "context"],
+        },
+    },
+    {
         "name": "list_hooks",
         "description": (
             "List all available hook strategies: pre-coded hooks and previously saved hooks "

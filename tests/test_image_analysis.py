@@ -9,7 +9,7 @@ from PIL import Image
 
 from microclaw import image_analysis
 from microclaw.image_analysis import (
-    MIN_SNR,
+    UNCALIBRATED_MIN_SNR_FALLBACK,
     compute_stats,
     detect_features,
     focus_invalid_warning,
@@ -17,6 +17,7 @@ from microclaw.image_analysis import (
     make_thumbnail,
     normalized_laplacian_variance,
     preview_window_open,
+    resolve_min_snr,
     snap_to_numpy,
     snap_to_numpy_displayed,
     snr,
@@ -339,17 +340,17 @@ class TestSnr:
 
     def test_empty_field_is_pinned_low(self):
         # Pure read noise: SNR is an amplitude-independent constant near 2.58
-        # (design/25 check 4), well below MIN_SNR so the gate catches it.
+        # (design/25 check 4), well below the fallback so the gate catches it.
         rng = np.random.default_rng(0)
         empty = (400 + rng.normal(0, 10, (256, 256))).astype(np.uint16)
-        assert snr(empty) < MIN_SNR
+        assert snr(empty) < UNCALIBRATED_MIN_SNR_FALLBACK
         # Amplitude-independent: doubling the noise does not change the ratio.
         louder = (400 + rng.normal(0, 40, (256, 256))).astype(np.uint16)
         assert snr(louder) == pytest.approx(snr(empty), abs=0.6)
 
     def test_cell_is_well_above_the_floor(self):
         img = synthetic_puncta(read_noise=8.0)
-        assert snr(img) > MIN_SNR
+        assert snr(img) > UNCALIBRATED_MIN_SNR_FALLBACK
 
     def test_flat_frame_is_zero_not_infinite(self):
         # MAD 0 (a degenerate synthetic case): guarded, not a divide-by-zero.
@@ -360,13 +361,20 @@ class TestSnr:
         rng = np.random.default_rng(1)
         frame = (400 + rng.normal(0, 10, (256, 256))).astype(np.float64)
         frame[100, 100] = 60000
-        assert snr(frame) < MIN_SNR
+        assert snr(frame) < UNCALIBRATED_MIN_SNR_FALLBACK
 
     def test_detect_features_uses_the_shared_definition(self):
         img = synthetic_puncta(read_noise=8.0)
         bg = float(np.median(img.astype(np.float64)))
         assert detect_features(img)["snr"] == pytest.approx(
             round(snr(img.astype(np.float32), background=bg), 2), abs=0.1
+        )
+
+    def test_gate_resolution_is_pure_and_has_explicit_precedence(self):
+        assert resolve_min_snr(explicit=8, configured=7) == (8.0, "explicit")
+        assert resolve_min_snr(configured=7) == (7.0, "rig_config")
+        assert resolve_min_snr() == (
+            UNCALIBRATED_MIN_SNR_FALLBACK, "package_default_uncalibrated"
         )
 
 
@@ -379,12 +387,12 @@ class TestFocusMetricGate:
         empty = (400 + rng.normal(0, 10, (256, 256))).astype(np.uint16)
         stats = compute_stats(empty)
         assert stats.focus_metric_valid is False
-        assert stats.snr < MIN_SNR
+        assert stats.snr < UNCALIBRATED_MIN_SNR_FALLBACK
 
     def test_cell_is_valid(self):
         stats = compute_stats(synthetic_puncta(read_noise=8.0))
         assert stats.focus_metric_valid is True
-        assert stats.snr >= MIN_SNR
+        assert stats.snr >= UNCALIBRATED_MIN_SNR_FALLBACK
 
     def test_empty_field_outranks_a_cell_on_the_raw_metric(self):
         # The bug (design/25): the empty field's normalized metric is HIGHER than

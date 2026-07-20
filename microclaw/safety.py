@@ -25,6 +25,12 @@ class CameraConstraints:
 
 
 @dataclass
+class AnalysisConstraints:
+    """Rig-measured analysis settings; these do not authorize hardware actions."""
+    min_snr: Optional[float] = None
+
+
+@dataclass
 class ForbiddenProperty:
     device: str
     property: str
@@ -95,6 +101,7 @@ class NamedStageLimits:
 class SafetyConstraints:
     stage: StageConstraints = field(default_factory=StageConstraints)
     camera: CameraConstraints = field(default_factory=CameraConstraints)
+    analysis: AnalysisConstraints = field(default_factory=AnalysisConstraints)
     allowed_channels: Optional[list[str]] = None  # None means all allowed
     forbidden_properties: list[ForbiddenProperty] = field(default_factory=list)
     # None = denylist mode (forbidden_properties). When set, ONLY these
@@ -121,6 +128,7 @@ class SafetyConstraints:
 
         stage_cfg = cfg.get("stage", {})
         camera_cfg = cfg.get("camera", {})
+        analysis_cfg = cfg.get("analysis", {}) or {}
         channels_cfg = cfg.get("channels", {})
         plugins_cfg = cfg.get("plugins", {}) or {}
         ill_cfg = cfg.get("illumination", {}) or {}
@@ -137,6 +145,7 @@ class SafetyConstraints:
         return cls(
             stage=StageConstraints(**stage_cfg),
             camera=CameraConstraints(**camera_cfg),
+            analysis=AnalysisConstraints(**analysis_cfg),
             allowed_channels=channels_cfg.get("allowed"),
             forbidden_properties=forbidden,
             allowed_properties=allowed,
@@ -175,6 +184,11 @@ class SafetyGuard:
 
     def __init__(self, constraints: SafetyConstraints):
         self._c = constraints
+
+    @property
+    def analysis_min_snr(self) -> float | None:
+        """Configured analysis gate for internal hook injection, not a tool payload."""
+        return self._c.analysis.min_snr
 
     def check_xy(self, x: float, y: float) -> None:
         s = self._c.stage

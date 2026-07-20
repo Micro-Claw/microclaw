@@ -17,6 +17,7 @@ from microclaw.hooks import (
     SNRObservationHook,
 )
 from microclaw.safety import (
+    AnalysisConstraints,
     CameraConstraints,
     SafetyConstraints,
     SafetyGuard,
@@ -229,7 +230,8 @@ class TestSNRObservationHook:
         entry = hook.get_summary()[-1]
         assert entry["schema"] == "microclaw.analysis-observation/v1"
         assert entry["analyzer"] == "microclaw.image_analysis.compute_stats"
-        assert entry["parameters"] == {"min_snr": 3.0}
+        assert entry["parameters"] == {"min_snr": 3.0, "min_snr_source": "explicit"}
+        assert entry["observed_at"].endswith("+00:00")
         assert entry["position"] == "tile_r0_c0"
         assert set(entry["result"]) == {
             "focus_metric", "focus_metric_valid", "background_level", "snr",
@@ -243,6 +245,21 @@ class TestSNRObservationHook:
         returned = hook.image_process_fn(image, {}, None)
         assert returned is not None
         assert hook.get_summary()[-1]["result"]["snr"] == 0.0
+
+    def test_uses_rig_config_and_records_its_source(self):
+        guard = SafetyGuard(SafetyConstraints(analysis=AnalysisConstraints(min_snr=7.5)))
+        hook = SNRObservationHook(guard=guard)
+        hook.image_process_fn(np.zeros((8, 8), dtype=np.uint16), {}, None)
+        assert hook.get_summary()[-1]["parameters"] == {
+            "min_snr": 7.5, "min_snr_source": "rig_config"
+        }
+
+    def test_package_fallback_is_visibly_uncalibrated(self):
+        hook = SNRObservationHook()
+        hook.image_process_fn(np.zeros((8, 8), dtype=np.uint16), {}, None)
+        assert hook.get_summary()[-1]["parameters"]["min_snr_source"] == (
+            "package_default_uncalibrated"
+        )
 
 
 class TestPositionFilterHookIdentity:

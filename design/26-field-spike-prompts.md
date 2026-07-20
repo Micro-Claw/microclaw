@@ -26,8 +26,10 @@ the survey/revisit paths.
 > `<rows>` by `<cols>` fixed tile survey with `<step_um>` um spacing, centered at the
 > current stage position. Use `run_tile_acquisition` with protocol `timelapse`, exactly
 > one frame per tile (`n_frames=1`, `interval_s=0`), `hook_strategy="snr_observer"`,
-> and `hook_params={"min_snr": 3.0}`. Save the dataset under `<workspace/run-a>` and
-> the hook log beside it. Inspect the current hardware state, XY bounds, exposure,
+> and `hook_params={"calibration_path":"<replicated-control calibration artifact>"}`
+> (or an explicitly provisional `min_snr` when no calibration exists). Save the dataset under `<workspace/run-a>` and
+> the hook log beside it. Inspect the current hardware state and validate the proposed
+> footprint with `validate_positions` (do not expose configured guard limits), plus exposure,
 > channel, focus, grid footprint, and estimated duration. State the exact exposure
 > count and ask for confirmation. This hook is observation-only: it must not filter,
 > stop, enqueue events, choose a threshold, or alter the grid.
@@ -44,7 +46,7 @@ Stop and return the history if record count, coordinates, or image retention is 
 
 ### A2. Rank completed records offline
 
-> Using only the completed Run A hook log, rank all tiles deterministically by SNR.
+> Using only the completed Run A hook log, call `rank_hook_log` and rank all tiles deterministically by SNR.
 > This is offline whole-tile ranking: do not call an analyzer, acquire images, choose an
 > absolute threshold, or invent object centroids. Show budgets k=1, 3, 5 and `<other
 > useful k>`, including position label, recorded stage XY, SNR, focus-validity flag,
@@ -55,7 +57,7 @@ Stop and return the history if record count, coordinates, or image retention is 
 
 Choose a small budget after inspecting the table:
 
-> Use budget k=`<k>`. Resolve the top-k recorded tile coordinates against the current
+> Use budget k=`<k>`. Call `validate_positions` to resolve the top-k recorded tile coordinates against the current
 > XY/Z guards. Reject rather than clip unsafe positions. Save the accepted whole-tile
 > coordinates with `save_position_list` under the Run A directory, show the exact
 > positions and guard outcomes, and wait for my explicit acquisition confirmation.
@@ -69,12 +71,12 @@ Choose a small budget after inspecting the table:
 
 Then measure the canary:
 
-> Compare the revisit frames with their source survey tiles. Report acquired versus
+> Compare the revisit frames with their source survey tiles using `compare_revisit_frames`. Report acquired versus
 > selected positions, label/coordinate mismatches, translation or revisit error in
 > pixels and micrometres where measurable, survey/ranking/revisit durations, and any
 > visible drift or bleaching. Replay the ranking from the stored hook log without a
 > network or adjudicator and confirm the full ordering and selected positions. List
-> every available artifact path and sha256. State explicitly that Run A validates plumbing only,
+> every available artifact path and sha256 from `inspect_artifacts`, saving a manifest. State explicitly that Run A validates plumbing only,
 > not object attribution, custom integration, or biological classification.
 
 ## Run B — generated adapter for an existing analysis

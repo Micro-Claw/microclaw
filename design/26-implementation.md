@@ -129,6 +129,23 @@ when their outputs can drive object-level scientific decisions.
 Replay is a requirement: stored inputs and verdicts must reproduce the same fitted
 state, ranking, and selected positions without consulting an adjudicator or network.
 
+## 2026-07-20 Run A field findings
+
+The Windows bead-sample run established the plumbing seam and falsified several
+tooling assumptions. A confirmed dark survey scored SNR 3.00–3.07 while the
+illuminated rerun scored 23.76–123.57, so the package `min_snr=3.0` placeholder is
+not a valid gate for that rig. Calibrate from multiple confirmed dark and illuminated
+logs, record objective/camera/ROI/binning/exposure/channel context, and carry the
+threshold source in every observation.
+
+Ranking and replay must use `rank_hook_log`, not conversational arithmetic. Candidate
+coordinates must pass the non-moving `validate_positions` tool before they are saved;
+the result reports accepted/rejected records and never exposes guard limits or clips.
+Acquisitions return UTC start/completion timestamps, wall duration, and planned/acquired
+counts. `inspect_artifacts` supplies recursive SHA-256 evidence, and
+`compare_revisit_frames` supplies quality-gated pixel registration with micrometre
+conversion only when a stage-camera affine exists.
+
 ## Acceptance gates
 
 The architecture is ready to implement, but the scientific feature is not shipped

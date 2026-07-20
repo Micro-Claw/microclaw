@@ -8,7 +8,10 @@ import pytest
 
 from microclaw import tools
 from microclaw.autofocus import AutofocusResult, SweepResult
-from microclaw.safety import SafetyConstraints, SafetyGuard, SafetyViolation, StageConstraints
+from microclaw.safety import (
+    AnalysisConstraints, SafetyConstraints, SafetyGuard, SafetyViolation,
+    StageConstraints,
+)
 from microclaw.tools import (
     clear_position_list,
     delete_position,
@@ -680,6 +683,16 @@ class TestSnapAndAnalyze:
         assert result["focus_metric_kind"] == "normalized_laplacian_variance_gated"
         assert set(result["metric_valid_for"]) == {"roi", "exposure_ms", "binning"}
 
+    def test_metric_gate_comes_from_rig_config(self, mock_ctrl):
+        guard = SafetyGuard(SafetyConstraints(
+            analysis=AnalysisConstraints(min_snr=999.0)
+        ))
+        result = snap_and_analyze(mock_ctrl, guard)
+        assert result["min_snr"] == 999.0
+        assert result["min_snr_source"] == "rig_config"
+        assert result["focus_metric_valid"] is False
+        assert "999" in result["warning"]
+
     def test_zero_pixel_size_carries_warning(self, mock_ctrl, unconstrained_guard):
         # The model asked about pixel size once and had forgotten 20 messages
         # later — the warning must ride along on every snap (design/14 §8).
@@ -1130,6 +1143,20 @@ class TestTileAcquisitionMarkPositions:
         assert tile["focus_metric_valid"] is False
         assert "warning" in tile and "inflate" in tile["warning"]
         assert "snr" in tile
+
+    def test_snap_grid_uses_the_same_rig_gate(self, centered_ctrl, monkeypatch):
+        guard = SafetyGuard(SafetyConstraints(
+            analysis=AnalysisConstraints(min_snr=999.0)
+        ))
+        monkeypatch.setattr(
+            "microclaw.tools.snap_to_numpy_displayed",
+            lambda ctrl: np.full((32, 32), 400, dtype=np.uint16),
+        )
+        tile = run_tile_acquisition(
+            centered_ctrl, guard, rows=1, cols=1, step_um=1.0, protocol="snap"
+        )["results"][0]
+        assert tile["min_snr"] == 999.0
+        assert tile["min_snr_source"] == "rig_config"
 
     def test_every_row_carries_its_own_coordinates(self, centered_ctrl,
                                                    unconstrained_guard):
@@ -1943,6 +1970,130 @@ class TestArtifactDeclarations:
             mock_ctrl, unconstrained_guard, log_path=str(tmp_path / "gone.json")
         )
         assert "error" in result and "artifact" not in result
+
+
+class TestRunAOfflineTools:
+    def _log(self, tmp_path, entries):
+        path = tmp_path / "hook.json"
+        path.write_text(json.dumps(entries), encoding="utf-8")
+        return str(path)
+
+    def test_rank_hook_log_sorts_metric_then_label(self, mock_ctrl, unconstrained_guard,
+                                                   tmp_path):
+        records = [
+            {"position": "b", "x_um": 2, "y_um": 0,
+             "result": {"snr": 4, "focus_metric_valid": True,
+                        "saturated_fraction": 0}},
+            {"position": "c", "x_um": 3, "y_um": 0,
+             "result": {"snr": 9, "focus_metric_valid": True,
+                        "saturated_fraction": 0}},
+            {"position": "a", "x_um": 1, "y_um": 0,
+             "result": {"snr": 4, "focus_metric_valid": True,
+                        "saturated_fraction": 0}},
+        ]
+        result = tools.rank_hook_log(mock_ctrl, unconstrained_guard,
+                                     self._log(tmp_path, records), budgets=[1, 3])
+        assert [r["position"] for r in result["ranking"]] == ["c", "a", "b"]
+        assert [r["rank"] for r in result["budget_views"]["3"]] == [1, 2, 3]
+
+    def test_rank_hook_log_rejects_duplicates(self, mock_ctrl, unconstrained_guard,
+                                               tmp_path):
+        record = {"position": "a", "x_um": 1, "y_um": 2,
+                  "result": {"snr": 1}}
+        result = tools.rank_hook_log(mock_ctrl, unconstrained_guard,
+                                     self._log(tmp_path, [record, record]))
+        assert "Duplicate position" in result["error"]
+
+    def test_rank_hook_log_verifies_saved_labels_and_coordinates(
+        self, mock_ctrl, unconstrained_guard, tmp_path
+    ):
+        records = [
+            {"position": "top", "x_um": 1, "y_um": 2,
+             "result": {"snr": 9}},
+            {"position": "low", "x_um": 3, "y_um": 4,
+             "result": {"snr": 2}},
+        ]
+        positions = tmp_path / "positions.json"
+        positions.write_text(json.dumps([{"name": "top", "x_um": 99, "y_um": 2}]))
+        result = tools.rank_hook_log(
+            mock_ctrl, unconstrained_guard, self._log(tmp_path, records),
+            position_list_path=str(positions),
+        )
+        verification = result["position_list_verification"]
+        assert verification["label_match"] is True
+        assert verification["coordinate_matches"] == [False]
+        assert verification["matches_ranking_prefix"] is False
+
+    def test_validate_positions_does_not_move_or_expose(self, mock_ctrl):
+        guard = SafetyGuard(SafetyConstraints(
+            stage=StageConstraints(x_min=0, x_max=10, y_min=0, y_max=10,
+                                   z_min=0, z_max=5)))
+        result = tools.validate_positions(mock_ctrl, guard, [
+            {"name": "ok", "x_um": 2, "y_um": 3, "z_um": 4},
+            {"name": "bad", "x_um": 20, "y_um": 3, "z_um": 4},
+        ])
+        assert [p["name"] for p in result["accepted"]] == ["ok"]
+        assert [p["name"] for p in result["rejected"]] == ["bad"]
+        assert result["rejected"][0]["reason"] == (
+            "Rejected by the current XY safety guard."
+        )
+        assert "10" not in json.dumps(result)
+        assert result["clipped"] == 0
+        assert "limits" not in result
+        mock_ctrl.set_xy.assert_not_called()
+        mock_ctrl.studio.live().snap.assert_not_called()
+
+    def test_inspect_artifacts_hashes_recursively(self, mock_ctrl, unconstrained_guard,
+                                                  tmp_path):
+        (tmp_path / "d").mkdir()
+        (tmp_path / "d" / "a.txt").write_text("abc", encoding="utf-8")
+        result = tools.inspect_artifacts(mock_ctrl, unconstrained_guard,
+                                         [str(tmp_path / "d")])
+        assert result["artifact_count"] == 1
+        assert result["artifacts"][0]["sha256"] == (
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        )
+
+    def test_compare_revisit_frames_recovers_translation(self, mock_ctrl,
+                                                          unconstrained_guard,
+                                                          tmp_path, monkeypatch):
+        from scipy.ndimage import shift
+        rng = np.random.default_rng(7)
+        source = rng.normal(size=(64, 64)).astype(np.float32)
+        revisit = shift(source, (2.25, -1.5), mode="constant", cval=0)
+        a, b = tmp_path / "a.tif", tmp_path / "b.tif"
+        tools.tifffile.imwrite(a, source)
+        tools.tifffile.imwrite(b, revisit)
+        monkeypatch.setattr(tools, "_load_current_affine", lambda ctrl: None)
+        result = tools.compare_revisit_frames(
+            mock_ctrl, unconstrained_guard, str(a), str(b),
+            [{"position": "p", "source_index": 0, "revisit_index": 0}],
+            min_correlation=0.8,
+        )
+        row = result["comparisons"][0]
+        assert row["shift_to_apply_to_revisit_dy_dx_px"] == pytest.approx(
+            [-2.25, 1.5], abs=0.15
+        )
+        assert row["registration_valid"] is True
+        assert row["translation_um"] is None
+
+    def test_calibrate_snr_requires_replicates_and_writes_artifact(
+        self, mock_ctrl, unconstrained_guard, tmp_path
+    ):
+        def log(name, values):
+            path = tmp_path / name
+            path.write_text(json.dumps([{"result": {"snr": v}} for v in values]))
+            return str(path)
+        dark = [log("d1.json", [3.0]), log("d2.json", [3.1])]
+        lit = [log("l1.json", [20.0]), log("l2.json", [25.0])]
+        out = tmp_path / "cal.json"
+        result = tools.calibrate_snr_threshold(
+            mock_ctrl, unconstrained_guard, dark, lit, str(out),
+            {"objective": "20x", "camera": "Andor", "roi": [0, 0, 64, 64],
+             "binning": 1, "exposure_ms": 100, "channel": "561"},
+        )
+        assert result["recommended_min_snr"] == pytest.approx(11.55)
+        assert result["artifact"]["path"] == str(out)
 
 
 class TestMarkPosition:

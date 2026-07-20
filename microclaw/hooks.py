@@ -1,12 +1,15 @@
 from __future__ import annotations
 import json
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
 
 from microclaw import __version__
-from microclaw.image_analysis import compute_stats, normalized_laplacian_variance, snap_to_numpy
+from microclaw.image_analysis import (
+    compute_stats, normalized_laplacian_variance, resolve_min_snr, snap_to_numpy,
+)
 from microclaw.safety import SafetyViolation
 
 
@@ -139,6 +142,7 @@ class HookBase:
         """
         record = {
             "schema": "microclaw.analysis-observation/v1",
+            "observed_at": datetime.now(timezone.utc).isoformat(),
             "status": status,
             "analyzer": analyzer,
             "analyzer_version": analyzer_version,
@@ -367,9 +371,24 @@ class SNRObservationHook(HookBase):
     fixed survey has completed.
     """
 
-    def __init__(self, min_snr: float = 3.0, log_path: str | None = None):
+    def __init__(self, min_snr: float | None = None, log_path: str | None = None,
+                 guard=None, calibration_path: str | None = None):
         super().__init__(log_path)
-        self.min_snr = min_snr
+        source = "explicit"
+        if calibration_path:
+            if guard is None:
+                raise ValueError("calibration_path requires an injected safety guard")
+            calibration_path = guard.resolve_in_workspace(calibration_path)
+            calibration = json.loads(Path(calibration_path).read_text(encoding="utf-8"))
+            min_snr = float(calibration["recommended_min_snr"])
+            source = "calibration_artifact"
+        else:
+            min_snr, source = resolve_min_snr(
+                explicit=min_snr,
+                configured=guard.analysis_min_snr if guard is not None else None,
+            )
+        self.min_snr = float(min_snr)
+        self.threshold_source = source
 
     def image_process_fn(self, image: np.ndarray, metadata: dict, event_queue):
         started = time.perf_counter()
@@ -379,7 +398,8 @@ class SNRObservationHook(HookBase):
             metadata,
             analyzer="microclaw.image_analysis.compute_stats",
             analyzer_version=__version__,
-            parameters={"min_snr": self.min_snr},
+            parameters={"min_snr": self.min_snr,
+                        "min_snr_source": self.threshold_source},
             result=stats,
         )
         return image, metadata
