@@ -26,6 +26,51 @@ score. Run B validates the central custom-hook promise. Run C should use the mea
 classical descriptor with a logistic probe; LDA is not preferred without real held-out
 evidence that it improves precision at the chosen budget.
 
+## Run B has one workflow, not one invocation mechanism
+
+Every custom integration follows the same lifecycle:
+
+1. locate the workflow and one known input/result;
+2. discover its installed execution boundary from files, environments, help, source,
+   and primary documentation;
+3. reproduce the known result safely on a copied input;
+4. measure startup and marginal/batch latency;
+5. write and fixture-test an observation-only adapter;
+6. normalize verified output into `microclaw.analysis-observation/v1`;
+7. record the executable environment and artifact provenance;
+8. select per-image, persistent-worker, or completed-survey batch execution from the
+   measurements and requested action.
+
+The adapter selects one of several local execution boundaries:
+
+| existing workflow | preferred boundary |
+|---|---|
+| package in Microclaw's environment | direct Python import |
+| package in another Python environment | that environment's interpreter, preferably one persistent worker or one batch |
+| installed executable with a documented CLI | local subprocess, normally one completed-survey batch when startup is heavy |
+| GUI-only application | explicit export/import or completed-dataset workflow; no acquisition-time GUI automation |
+| remote service | never at image time; obtain and pin a local artifact or use it only while the stage is parked between passes |
+
+Do not force every analyzer into Microclaw's environment. Python, CUDA, Java, native
+library, and model dependencies may conflict. Conversely, do not pay `conda run`,
+environment activation, JVM/application startup, or model loading once per tile without
+a measurement showing that it meets the dwell and failure budget. Prefer one persistent
+local worker for measured online use or one invocation over the saved survey.
+
+Installation and adaptation are separate decisions. If the package, executable, model,
+or environment is missing, Microclaw presents a pinned installation plan—including
+downloads, licenses, environment location, hardware requirements, and executable/model
+identity—and waits for explicit authorization. It must not silently install software or
+models while writing a hook.
+
+The ilastik adapter is the established executable/batch case: the user trains the `.ilp`
+in the GUI; Microclaw verifies its hash before opening it, pins the ilastik version and
+headless command, and runs the saved survey through one local subprocess between passes.
+The spike's approximately 7.6 s startup rules out launching it per tile; its measured
+marginal cost does not by itself rule out batching. Probability-map pooling, channel/
+axis mapping, decimation, and export semantics remain ilastik-specific contract facts.
+The spike validates this seam, not an accuracy gain over the classical baseline.
+
 The first scientific workflow remains two-pass:
 
 1. acquire and save a fixed blind survey with an observation-only hook;

@@ -88,15 +88,49 @@ sound.
 > `<path or biological description>`. The biological target is `<plain-language
 > target>`. The microscope should initially only save a fixed survey and log raw
 > results. Follow the custom-analysis flow in `get_hook_documentation`: investigate the
-> installed workflow and primary sources, reproduce the example, summarize the exact
-> input/output/provenance contract, and fixture-test an observation-only HookBase
-> adapter using `self.log_analysis`. Mark unresolved semantics `unverified`. Show the
-> complete source and lint findings; do not save until I explicitly approve.
+> installed workflow and primary sources. First identify which local execution boundary
+> applies: direct import in Microclaw's environment, another Python interpreter, a
+> persistent local worker, an installed CLI/executable, or completed-survey batch
+> processing. Reproduce the example on a copied input and measure process/environment
+> startup separately from marginal per-image and batch latency. Then summarize the exact
+> input/output/provenance contract and recommend per-image, worker, or two-pass batch
+> execution from those measurements. Fixture-test an observation-only HookBase adapter
+> using `self.log_analysis`. Mark unresolved semantics `unverified`. Show the complete
+> source and lint findings; do not save until I explicitly approve.
+
+Review the proposed boundary before approving it. Require the exact interpreter or
+executable path, environment identity, installed version, invocation/arguments, working
+directory, model/project/config paths and sha256, axes/channel/dtype preprocessing,
+raw-output semantics, startup and marginal/batch latency, CPU/GPU needs, cleanup,
+timeouts, concurrency/thread behavior, and bounded failure policy. A direct import is
+the simplest case, not the required one. Do not accept per-tile `conda run`, environment
+activation, application/JVM startup, or heavyweight model loading unless the measured
+cost fits the acquisition budget. Prefer one persistent local worker for justified
+online use or one invocation over the saved survey.
+
+If any package, executable, environment, model, or project is missing, stop adapter
+generation and present a separate pinned installation plan. It must identify downloads,
+licenses, environment location, hardware requirements, versions and artifact hashes,
+and require explicit authorization. Do not silently install or download anything as
+part of writing the hook.
+
+For ilastik specifically, use the already measured contract rather than rediscovering a
+generic one: a user-trained and hash-verified `.ilp`, pinned ilastik version and headless
+CLI, and one batched subprocess over the saved survey between passes. Do not launch
+ilastik per tile. Verify this project's channel/axis mapping, decimation, probability-map
+export and pooling against the supplied example; the prior spike established plumbing,
+not biological accuracy.
 
 After approving the exact source, repeat Run A's fixed-survey and artifact checks with
 the saved adapter. Object-level ranking/revisit is permitted only if the verified raw
 output attributes a box, mask, or centroid to the score. Otherwise rank/revisit whole
 fields or report the output unresolved.
+
+The Run B evidence must include the selected execution-boundary rationale, measured
+startup and marginal/batch timings, exact environment/executable and artifact identities,
+the fixture input/result, adapter source/hash, normalized hook log, and every observed
+failure or cleanup event. A common observation schema is not evidence that all analyzers
+share one safe invocation mechanism.
 
 ## Run C — optional reviewed few-shot classifier
 
