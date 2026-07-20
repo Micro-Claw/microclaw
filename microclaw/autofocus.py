@@ -126,6 +126,23 @@ def _flat_reason(which: str, contrast: float, entry_z: float) -> str:
     )
 
 
+def _edge_reason(which: str, sweep: SweepResult, entry_z: float) -> str:
+    """Mirror of _flat_reason for a peak pinned at a sweep boundary (design/28 F1).
+
+    A boundary argmax can mean that focus is outside the window, but can also
+    come from a U-shaped or noise-dominated curve. It is insufficient evidence
+    for convergence in every case, so do not diagnose a specific cause here.
+    """
+    return (
+        f"{which} focus peak is at the edge of the searched Z range "
+        f"(best {sweep.best_z_um:.3f} µm sits at a sweep boundary), so there is "
+        f"no interior focus maximum and this is NOT convergence. Z was NOT "
+        f"moved (restored to {entry_z:.3f} µm). Focus may be outside the window, "
+        f"or the curve may be noise-dominated/non-unimodal; inspect the curve "
+        f"and signal before widening or retrying."
+    )
+
+
 def coarse_then_fine_autofocus(
     ctrl,
     z_range_um: float,
@@ -141,7 +158,13 @@ def coarse_then_fine_autofocus(
     coarse peak sitting at the boundary can't push the fine sweep past the
     range the caller guarded with check_z. A pass whose metric curve has no
     structure (see curve_contrast) aborts the autofocus WITHOUT moving Z —
-    moving hardware onto the argmax of noise is worse than doing nothing.
+    moving hardware onto the argmax of noise is worse than doing nothing. A fine
+    peak pinned at a sweep boundary is likewise NOT convergence (design/28 F1),
+    so the stage is left where it was without guessing why the curve failed.
+
+    The normalized Laplacian metric is polarity-insensitive and works for both
+    bright-on-dark and dark-on-bright structure. Callers may inject a different
+    callable for controlled experiments; autofocus does not guess from one frame.
     """
     entry_z = float(ctrl.core.get_position())
     lo_bound = entry_z - z_range_um / 2
@@ -175,6 +198,14 @@ def coarse_then_fine_autofocus(
             reason=_flat_reason("Fine", fine_contrast, entry_z),
         )
 
+    if not fine.peak_interior:
+        _restore(ctrl, entry_z)
+        return AutofocusResult(
+            coarse=coarse, fine=fine, entry_z_um=entry_z, final_z_um=entry_z,
+            converged=False, moved=False,
+            reason=_edge_reason("Fine", fine, entry_z),
+        )
+
     _restore(ctrl, fine.best_z_um)
     return AutofocusResult(
         coarse=coarse, fine=fine, entry_z_um=entry_z,
@@ -191,7 +222,11 @@ def single_sweep_autofocus(
     min_contrast: float = MIN_CONTRAST,
 ) -> AutofocusResult:
     """One-pass autofocus with the same contrast gate and result shape as
-    coarse_then_fine_autofocus (the single pass is reported as `coarse`)."""
+    coarse_then_fine_autofocus (the single pass is reported as `coarse`).
+
+    Like the two-pass variant it refuses to move on a flat curve OR on a peak
+    pinned at a sweep boundary (design/28 F1).
+    """
     entry_z = float(ctrl.core.get_position())
     sweep = sweep_autofocus(
         ctrl, entry_z - z_range_um / 2, entry_z + z_range_um / 2, z_step_um,
@@ -204,6 +239,13 @@ def single_sweep_autofocus(
             coarse=sweep, fine=None, entry_z_um=entry_z, final_z_um=entry_z,
             converged=False, moved=False,
             reason=_flat_reason("Sweep", contrast, entry_z),
+        )
+    if not sweep.peak_interior:
+        _restore(ctrl, entry_z)
+        return AutofocusResult(
+            coarse=sweep, fine=None, entry_z_um=entry_z, final_z_um=entry_z,
+            converged=False, moved=False,
+            reason=_edge_reason("Sweep", sweep, entry_z),
         )
     _restore(ctrl, sweep.best_z_um)
     return AutofocusResult(

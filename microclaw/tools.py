@@ -798,13 +798,32 @@ def export_dataset_as_tiff(
     axis_names = preferred + [a for a in axes if a not in preferred]
 
     if axis_names:
-        ranges = [range(len(axes[a])) for a in axis_names]
+        # Iterate the ACTUAL coordinate values NDTiff reports, not range(len)
+        # (design/28 F3). Two wrong assumptions broke multi-position export:
+        #   (a) each axis's coords are 0..len-1 — false for `position`, whose
+        #       coordinates are not guaranteed contiguous/zero-based, so
+        #       read_image(position=k) raised KeyError: 'position';
+        #   (b) every combo in the Cartesian product exists — false for a
+        #       one-frame-per-position grid, which is a sparse hypercube.
+        # has_image guards each read; missing cells become zero frames so the
+        # ImageJ hyperstack stays rectangular.
+        coord_values = {a: sorted(axes[a]) for a in axis_names}
+        combos = list(itertools.product(*(coord_values[a] for a in axis_names)))
+        present = {}
+        for combo in combos:
+            coords = dict(zip(axis_names, combo))
+            if dataset.has_image(**coords):
+                present[combo] = dataset.read_image(**coords)
+        if not present:
+            return {"error": f"No images found in dataset: {dataset_path}"}
+        sample = next(iter(present.values()))
+        frame_shape, frame_dtype = sample.shape, sample.dtype
         frames = [
-            dataset.read_image(**dict(zip(axis_names, combo)))
-            for combo in itertools.product(*ranges)
+            present.get(combo, np.zeros(frame_shape, dtype=frame_dtype))
+            for combo in combos
         ]
-        shape = tuple(len(axes[a]) for a in axis_names)
-        stack = np.stack(frames).reshape(*shape, *frames[0].shape)
+        shape = tuple(len(coord_values[a]) for a in axis_names)
+        stack = np.stack(frames).reshape(*shape, *frame_shape)
     else:
         stack = dataset.read_image()
 
@@ -965,8 +984,69 @@ def _load_current_affine(ctrl: MicroscopeController):
     return load_affine(_current_objective(ctrl), _current_binning(ctrl))
 
 
+def _calibration_pixel_size_hint(
+    ctrl: MicroscopeController, pixel_size_hint_um: float | None
+) -> float | None:
+    """The pixel size to scale the calibration step against: the caller's hint,
+    else MM's configured value, else None (no scaling possible)."""
+    if pixel_size_hint_um:
+        return float(pixel_size_hint_um)
+    try:
+        mm_px = float(ctrl.core.get_pixel_size_um())
+    except Exception:
+        return None
+    return mm_px if mm_px > 0 else None
+
+
+def _diagnose_calibration_shift(
+    shift, frame_hw: tuple[int, int], step_um: float, px_hint: float | None,
+) -> str | None:
+    """Name WHY one axis failed to register, or None if it registered cleanly.
+
+    Splits the single "degenerate" verdict (design/28 F4) into actionable cases
+    the model can key on: the move overran the FOV (reduce step), or it moved the
+    image too little to measure (increase step). The diagnosis is GEOMETRIC — the
+    RMS `error` phase_cross_correlation returns was empirically ~1.0 even for a
+    clean registration on these fields, so it is not a usable reliability signal;
+    the commanded step vs the known FOV, and the measured shift magnitude, are.
+    The residual "featureless / periodic field" case (shifts present but
+    linearly dependent) is caught by solve_affine's determinant backstop.
+    """
+    h, w = frame_hw
+    frame = min(h, w)
+    mag = float(np.hypot(shift[1], shift[0]))
+    expected_px = (step_um / px_hint) if px_hint else None
+
+    # Overlap too small: geometry says the commanded move exceeds ~a third of
+    # the frame, or the measured shift is already half a frame. On truly
+    # non-overlapping frames phase_cross_correlation aliases to a small shift,
+    # so the geometric expectation is the more reliable tell when px is known.
+    if (expected_px is not None and expected_px >= frame / 3) or mag >= frame / 2:
+        detail = (
+            "expected ~%.0f px shift" % expected_px
+            if expected_px is not None else "no pixel size to scale against"
+        )
+        return (
+            f"step_um={step_um:g} is too large for this FOV (~{frame} px, "
+            f"{detail}): the move left too little overlap to register. Reduce "
+            f"step_um (≈¼ of the smaller FOV dimension) or clear the ROI to image "
+            f"the full sensor."
+        )
+    if not np.isfinite(mag) or mag < 1.0:
+        return (
+            f"the stage move produced no measurable image shift (|shift| "
+            f"{mag:.2f} px) — step_um={step_um:g} is too small to move the image, "
+            f"or the field is featureless. Increase step_um or snap a contrasty "
+            f"field."
+        )
+    return None
+
+
 def calibrate_stage_to_camera(
-    ctrl: MicroscopeController, guard: SafetyGuard, step_um: float = 20.0
+    ctrl: MicroscopeController,
+    guard: SafetyGuard,
+    step_um: float | None = None,
+    pixel_size_hint_um: float | None = None,
 ) -> dict:
     """Snap, move a known ΔX, snap, cross-correlate; repeat for ΔY. ~4 snaps.
 
@@ -974,17 +1054,32 @@ def calibrate_stage_to_camera(
     axis flips — instead of asking the model to infer sign conventions from
     thumbnails (design/14 §8). Cached in the knowledge base per
     (objective, binning); it is a property of the optical path, not the session.
+
+    step_um defaults to ¼ of the smaller FOV dimension when a pixel size is known
+    (the caller's pixel_size_hint_um, else MM's configured value), keeping ~75%
+    overlap between the two snaps. A fixed 20 µm step on a ~19 µm cropped ROI
+    translated the scene entirely out of frame — zero overlap — and the aliased
+    near-zero shift was misread as a "degenerate/featureless" field (design/28
+    F4). With no pixel size to scale against, step_um falls back to 20 µm.
     """
     from skimage.registration import phase_cross_correlation
     from microclaw.calibration import save_affine, solve_affine
 
-    # Guard both excursions before touching the stage.
+    px_hint = _calibration_pixel_size_hint(ctrl, pixel_size_hint_um)
     x0, y0 = ctrl.core.get_x_position(), ctrl.core.get_y_position()
-    guard.check_xy(x0 + step_um, y0)
-    guard.check_xy(x0, y0 + step_um)
 
     with _pause_live(ctrl):
+        # Snap the reference first so the step can be scaled to the ACTUAL frame
+        # (ROI-cropped or full sensor); no stage move has happened yet.
         ref = snap_to_numpy(ctrl)
+        frame_hw = (int(ref.shape[0]), int(ref.shape[1]))
+        if step_um is None:
+            step_um = round(0.25 * px_hint * min(frame_hw), 3) if px_hint else 20.0
+
+        # Guard both excursions before the first move.
+        guard.check_xy(x0 + step_um, y0)
+        guard.check_xy(x0, y0 + step_um)
+
         move_stage_xy(ctrl, guard, step_um, 0, absolute=False)
         img_x = snap_to_numpy(ctrl)
         move_stage_xy(ctrl, guard, -step_um, 0, absolute=False)
@@ -996,6 +1091,12 @@ def calibrate_stage_to_camera(
     # phase_cross_correlation returns (row, col) = (dy_px, dx_px).
     shift_x, _, _ = phase_cross_correlation(ref, img_x, upsample_factor=10)
     shift_y, _, _ = phase_cross_correlation(ref, img_y, upsample_factor=10)
+
+    for axis, shift in (("X", shift_x), ("Y", shift_y)):
+        why = _diagnose_calibration_shift(shift, frame_hw, step_um, px_hint)
+        if why is not None:
+            return {"error": f"Calibration failed on the {axis} move: {why}",
+                    "step_um": step_um, "frame_px": list(frame_hw)}
 
     try:
         affine = solve_affine(
@@ -1013,6 +1114,8 @@ def calibrate_stage_to_camera(
     return {
         **asdict(affine),
         "n_snaps": 4,
+        "step_um": step_um,
+        "frame_px": list(frame_hw),
         "knowledge_key": key,
         "status": (
             "Calibrated and cached. Image-pixel offsets can now be converted "
@@ -1118,7 +1221,7 @@ def _run_autofocus_passes(
 ) -> AutofocusResult:
     if method == "coarse_then_fine":
         return coarse_then_fine_autofocus(
-            ctrl, z_range_um, max(z_step_um * 5, 1.0), z_step_um, settle_ms
+            ctrl, z_range_um, max(z_step_um * 5, 1.0), z_step_um, settle_ms,
         )
     return single_sweep_autofocus(ctrl, z_range_um, z_step_um, settle_ms)
 
@@ -1162,8 +1265,11 @@ def run_autofocus(
 
     Reports BOTH passes (the coarse pass chooses the plane; the old payload
     showed only the fine curve — design/14 §4), refuses to move the stage on a
-    structureless metric curve, and always reports entry_z_um so a bad result
-    is trivially undone.
+    structureless metric curve OR a peak pinned at the sweep edge (design/28 F1),
+    and always reports entry_z_um so a bad result is trivially undone.
+
+    The normalized Laplacian metric is polarity-insensitive: bright puncta on a
+    dark field do not require an inverted or separately selected metric.
     """
     entry_z = ctrl.core.get_position()
     guard.check_z(entry_z - z_range_um / 2)
@@ -1697,7 +1803,9 @@ def run_multiposition_with_autofocus(
     settle_ms: int = 50,
     protocol_params: dict | None = None,
 ) -> dict:
-    """Visit each position, autofocus, then run a per-position protocol."""
+    """Visit each position, autofocus, then run a per-position protocol.
+
+    """
     save_dir = guard.resolve_in_workspace(save_dir)   # before the stage moves
     params = protocol_params or {}
     all_positions = {p["name"]: p for p in ctrl.get_positions()}

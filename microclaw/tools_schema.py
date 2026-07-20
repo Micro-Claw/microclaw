@@ -124,15 +124,32 @@ TOOLS: list[dict[str, Any]] = [
             "(objective, binning) in the knowledge base. Run this before any "
             "image-guided navigation — with it, 'move the feature to the centre' is "
             "arithmetic instead of guessing axis signs from thumbnails. Needs a "
-            "structured field of view (features to track)."
+            "structured field of view (features to track). The step is scaled to "
+            "the field of view by default (≈¼ of the smaller FOV dimension) so the "
+            "two snaps overlap; a fixed step larger than the FOV — common on a "
+            "cropped ROI — pushes the scene out of frame and fails to register. "
+            "On failure the error names the cause: step too large for the FOV, "
+            "step too small, or no trackable structure."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "step_um": {
                     "type": "number",
-                    "description": "Stage step used for the measurement (default 20 µm).",
-                    "default": 20.0,
+                    "description": (
+                        "Stage step for the measurement. Omit to auto-scale to ¼ of "
+                        "the smaller FOV dimension when a pixel size is known "
+                        "(falls back to 20 µm otherwise). Set explicitly only to "
+                        "override."
+                    ),
+                },
+                "pixel_size_hint_um": {
+                    "type": "number",
+                    "description": (
+                        "Known camera pixel size (µm/px) used to scale the step when "
+                        "MM has no pixel-size calibration configured. Omit if MM "
+                        "already knows the pixel size."
+                    ),
                 },
             },
             "required": [],
@@ -476,6 +493,11 @@ TOOLS: list[dict[str, Any]] = [
             "entry_z_um/final_z_um. If the metric curve is structureless (low "
             "contrast — e.g. faint signal or a too-small ROI), the stage is NOT "
             "moved: Z is restored to entry_z_um and converged=false explains why. "
+            "A peak pinned at the sweep boundary is also NOT convergence — it "
+            "may mean focus is outside the window or that the curve is invalid, "
+            "so Z is restored for inspection. The normalized Laplacian metric is "
+            "polarity-insensitive and applies to bright-on-dark puncta as well as "
+            "dark-on-bright structure. "
             "Default parameters for a 20× objective: z_range_um=20, z_step_um=0.5. "
             "Widen z_range_um if the result says the peak was at the boundary. "
             "If the focus is not converging, check if there are any sharp boundaries in the image. If so, alert the user."

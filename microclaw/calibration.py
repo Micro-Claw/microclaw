@@ -54,8 +54,12 @@ def solve_affine(
     +step_um stage move along stage-X and stage-Y respectively (the output
     convention of skimage.registration.phase_cross_correlation).
 
-    Raises ValueError when the shifts are degenerate (featureless field, or a
-    step too small to measure) — a garbage affine is worse than none.
+    Raises ValueError when the shifts are degenerate — a garbage affine is worse
+    than none. This is a geometric backstop; calibrate_stage_to_camera diagnoses
+    the specific cause (step too large for the FOV / too small / no structure —
+    design/28 F4) before reaching here, so the message here only lists the
+    possibilities rather than naming one, which the old text got backwards
+    ("step too small" when the real cause was a step LARGER than the FOV).
     """
     m_px_per_um = np.array(
         [
@@ -66,9 +70,13 @@ def solve_affine(
     det = float(np.linalg.det(m_px_per_um))
     if abs(det) < 1e-9:
         raise ValueError(
-            "Measured image shifts are degenerate — the field may lack "
-            "trackable features, or step_um is too small to move the image. "
-            "Snap a structured field and/or increase step_um."
+            "Measured image shifts are degenerate (near-zero determinant): the "
+            "two stage moves did not produce two independent, measurable image "
+            "shifts. Causes, most common first on a cropped ROI: step_um too "
+            "LARGE for the field of view (the move pushed the scene out of frame, "
+            "leaving no overlap to register), step_um too small to move the "
+            "image, or a featureless/periodic field. A good step is about a "
+            "quarter of the smaller FOV dimension."
         )
     m = np.linalg.inv(m_px_per_um)
     return StageCameraAffine(

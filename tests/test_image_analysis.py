@@ -310,6 +310,24 @@ class TestNormalizedLaplacianVariance:
         blurry = gaussian_filter(sharp, sigma=5)
         assert normalized_laplacian_variance(sharp) > normalized_laplacian_variance(blurry)
 
+    def test_bright_punctum_on_dark_background_peaks_at_focus(self):
+        """design/28 F2 correction: Laplacian variance is polarity-insensitive.
+
+        A flux-conserving fluorescent PSF must score highest when it is tightest,
+        not invert merely because the emitter is bright on a dark background.
+        """
+        sigmas = [1.5, 2.0, 3.0, 4.0, 6.0]
+        images = [
+            synthetic_puncta(
+                spots=((64, 64),), amp=8000.0 / sigma**2, sigma=sigma,
+                bg=400.0, read_noise=0.0,
+            )
+            for sigma in sigmas
+        ]
+        scores = [normalized_laplacian_variance(image) for image in images]
+        assert scores[0] == max(scores)
+        assert scores == sorted(scores, reverse=True)
+
     def test_flat_image_is_zero(self):
         assert normalized_laplacian_variance(np.zeros((64, 64))) == 0.0
         assert normalized_laplacian_variance(np.full((64, 64), 400.0)) == 0.0
