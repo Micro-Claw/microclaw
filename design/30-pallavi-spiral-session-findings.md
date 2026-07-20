@@ -212,6 +212,22 @@ designed. Record the exact proxy method names, accepted argument encodings,
 return types, and whether returned Java proxies remain usable on subsequent
 calls. The same spike should cover Finding 4's MDA questions below.
 
+The spike is `design/30-album-mda-spike.py`. Its default mode is read-only and
+discovers both surfaces; the mutating checks are separately gated:
+
+```text
+python design/30-album-mda-spike.py                  # reachability/state only
+python design/30-album-mda-spike.py --album-snap     # one camera snap + Album add
+python design/30-album-mda-spike.py --mda-roundtrip  # unchanged settings -> GUI
+python design/30-album-mda-spike.py --run-mda        # typed confirmation required
+```
+
+Each run writes a timestamped output file beside the spike. `--run-mda` prints
+the resolved current settings and requires the operator to type `RUN CURRENT
+MDA`; the command-line flag alone is deliberately insufficient because this
+path can move hardware, enable illumination, autofocus, and save data exactly
+as configured in the GUI.
+
 ### Required tool surface
 
 Add Java/MMStudio-backed tools rather than attempting to emulate Album in a
