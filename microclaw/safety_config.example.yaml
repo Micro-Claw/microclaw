@@ -25,6 +25,13 @@ stage:
 camera:
   max_exposure_ms: 5000.0
 
+# Optional rig-measured validity gate for focus metrics. Do not copy a value
+# from another microscope; produce a calibration artifact from confirmed dark
+# and illuminated controls first. Omit to retain the visibly uncalibrated
+# package fallback.
+analysis:
+  # min_snr: 5.0
+
 channels:
   # If present, only these presets may be set via set_channel.
   # Remove the list entirely to allow all channels.

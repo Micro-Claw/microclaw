@@ -473,6 +473,17 @@ nothing, so this is no longer an assumption. Three options, in preference order:
 which changes the metric, which is the class of quiet miscalibration this whole
 document is about. Do (1).
 
+## Field calibration correction (2026-07-20)
+
+The first Windows bead-rig control showed that the synthetic empty-field estimate
+does not transfer unchanged: confirmed dark frames scored SNR 3.00–3.07, so the
+package value 3.0 marked them focus-valid. Treat `MIN_SNR` as an uncalibrated fallback,
+not a scientific default. A usable gate requires multiple confirmed dark and
+illuminated logs under matching objective, camera, ROI, binning, exposure, and channel
+conditions. If those distributions overlap, calibration fails rather than choosing a
+threshold. The observation record must state whether its gate came from an explicit
+parameter, rig configuration, a calibration artifact, or the package fallback.
+
 ## On MM's autofocus plugin
 
 Already reachable (`autofocus_mm_plugin`, a pre-coded hook), and where a lab has a

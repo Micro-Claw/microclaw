@@ -1,11 +1,15 @@
 from __future__ import annotations
 import json
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
 
-from microclaw.image_analysis import normalized_laplacian_variance, snap_to_numpy
+from microclaw import __version__
+from microclaw.image_analysis import (
+    compute_stats, normalized_laplacian_variance, resolve_min_snr, snap_to_numpy,
+)
 from microclaw.safety import SafetyViolation
 
 
@@ -113,6 +117,44 @@ class HookBase:
         """log() for the pre/post-hardware hook shape (see where_event)."""
         self._log.append({**self.where_event(event), **fields})
         self._write_log()
+
+    def log_analysis(
+        self,
+        metadata: dict,
+        *,
+        analyzer: str,
+        analyzer_version: str,
+        result,
+        parameters: dict | None = None,
+        artifact_sha256: str | None = None,
+        status: str = "observed",
+    ) -> None:
+        """Persist one provenance-bearing, observation-only analysis result.
+
+        This is the stable design/26 boundary for a newly generated analysis
+        adapter. ``result`` and ``parameters`` must already be JSON values: the
+        adapter owns conversion from package-specific arrays, masks, boxes, or
+        scalar types. Keeping that conversion explicit prevents a log from
+        silently stringifying an output whose axes or units were never checked.
+
+        Logging has no acquisition side effect. A later, separately reviewed
+        hook may use a verified result to make a guarded decision.
+        """
+        record = {
+            "schema": "microclaw.analysis-observation/v1",
+            "observed_at": datetime.now(timezone.utc).isoformat(),
+            "status": status,
+            "analyzer": analyzer,
+            "analyzer_version": analyzer_version,
+            "parameters": parameters or {},
+            "result": result,
+        }
+        if artifact_sha256 is not None:
+            record["artifact_sha256"] = artifact_sha256
+        # Validate before mutating _log so a bad adapter cannot leave memory and
+        # disk disagreeing. allow_nan=False keeps replay artifacts portable.
+        json.dumps(record, allow_nan=False)
+        self.log(metadata, **record)
 
     def note_stalled(self, max_idle_s: float) -> None:
         """The survey runner's idle watchdog fired: no image came back and no
@@ -320,6 +362,49 @@ class PositionFilterHook(HookBase):
         return image, metadata
 
 
+class SNRObservationHook(HookBase):
+    """Record deterministic per-tile image statistics without changing the run.
+
+    This is design/26 Run A's positive-control analyzer. It deliberately has no
+    threshold action: every image is returned unchanged, no events are submitted,
+    and no hardware is touched. Offline code may rank its records by SNR after the
+    fixed survey has completed.
+    """
+
+    def __init__(self, min_snr: float | None = None, log_path: str | None = None,
+                 guard=None, calibration_path: str | None = None):
+        super().__init__(log_path)
+        source = "explicit"
+        if calibration_path:
+            if guard is None:
+                raise ValueError("calibration_path requires an injected safety guard")
+            calibration_path = guard.resolve_in_workspace(calibration_path)
+            calibration = json.loads(Path(calibration_path).read_text(encoding="utf-8"))
+            min_snr = float(calibration["recommended_min_snr"])
+            source = "calibration_artifact"
+        else:
+            min_snr, source = resolve_min_snr(
+                explicit=min_snr,
+                configured=guard.analysis_min_snr if guard is not None else None,
+            )
+        self.min_snr = float(min_snr)
+        self.threshold_source = source
+
+    def image_process_fn(self, image: np.ndarray, metadata: dict, event_queue):
+        started = time.perf_counter()
+        stats = compute_stats(image, min_snr=self.min_snr)._asdict()
+        stats["analysis_ms"] = round((time.perf_counter() - started) * 1000, 3)
+        self.log_analysis(
+            metadata,
+            analyzer="microclaw.image_analysis.compute_stats",
+            analyzer_version=__version__,
+            parameters={"min_snr": self.min_snr,
+                        "min_snr_source": self.threshold_source},
+            result=stats,
+        )
+        return image, metadata
+
+
 class MMPluginHook(HookBase):
     """Delegate per-image analysis to an installed Micro-Manager plugin.
 
@@ -407,9 +492,13 @@ PRECODED_HOOK_REGISTRY: dict[str, type] = {
     "focus_feedback": FocusFeedbackHook,
     "intensity_adaptive": IntensityAdaptiveHook,
     "position_filter": PositionFilterHook,
+    "snr_observer": SNRObservationHook,
     "mm_plugin_analyzer": MMPluginHook,
     "autofocus_mm_plugin": MMAutofocusPluginHook,
 }
 
-# To add a new analysis plugin, define a class that inherits from HookBase,
-# implement image_process_fn, and register it here. No other code changes needed.
+# Stable analysis integrations belong here as HookBase adapters, including
+# ilastik, Cellpose, learned scorers, and lab software. Register the adapter
+# here; do not add a package-specific agent tool. User-specific invocations are
+# generated and saved through hook_manager instead. Acquisition-time adapters
+# must be offline and log analyzer/model versions, parameters, and provenance.

@@ -41,6 +41,12 @@ envs/
 *_microclaw_history.json
 .microclaw/
 
+# Spike scratch. Spikes are committed as source; what they WRITE never is —
+# tiles, probability maps, .ilp projects and captured stdout are outputs, and a
+# finding belongs in the design doc, not in a 6 MB directory nobody rereads.
+d26_tiles/
+design-*-out.txt
+
 # Local editor/agent settings
 .claude/settings.local.json
 # Per-rig safety limits. `microclaw init` writes these to a per-user directory,

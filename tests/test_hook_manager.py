@@ -66,6 +66,11 @@ def test_evasions_produce_a_warning(code):
     assert lint_hook_code(code), f"expected ≥1 warning for: {code!r}"
 
 
+@pytest.mark.parametrize("module", ["requests", "urllib.request", "httpx", "anthropic"])
+def test_acquisition_time_network_clients_produce_a_warning(module):
+    assert lint_hook_code(f"import {module}\n"), module
+
+
 def test_save_hook_records_source(tmp_path, monkeypatch):
     monkeypatch.setattr("microclaw.hook_manager.HOOKS_DIR", tmp_path)
     monkeypatch.setattr("microclaw.hook_manager.MANIFEST", tmp_path / "manifest.json")

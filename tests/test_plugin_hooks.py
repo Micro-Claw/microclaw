@@ -7,6 +7,7 @@ from microclaw.hooks import (
     MMAutofocusPluginHook,
     MMPluginHook,
     PRECODED_HOOK_REGISTRY,
+    SNRObservationHook,
 )
 from microclaw.tools import list_mm_plugins
 from microclaw.safety import (
@@ -44,6 +45,7 @@ class TestRegistry:
     def test_strategies_registered(self):
         assert PRECODED_HOOK_REGISTRY["mm_plugin_analyzer"] is MMPluginHook
         assert PRECODED_HOOK_REGISTRY["autofocus_mm_plugin"] is MMAutofocusPluginHook
+        assert PRECODED_HOOK_REGISTRY["snr_observer"] is SNRObservationHook
 
 
 class TestMMPluginHook:

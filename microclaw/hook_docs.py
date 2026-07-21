@@ -1,6 +1,81 @@
 HOOK_REFERENCE = """
 # pycro-manager hook API reference (microclaw)
 
+## Integrating the user's own analysis
+
+External analysis packages are integrated by writing an adapter hook, not by
+adding a microclaw tool for each package. The adapter translates pycro-manager's
+image/event contract into the package's existing interface and translates its
+result into logging, filtering, acquisition branching, or guarded follow-up
+events.
+
+### What to ask the user
+
+Start in biological/workflow language. Usually ask only these three questions,
+one at a time if that is easier:
+
+1. **What existing workflow do you use, and can you point me to it?** A package
+   name or web page is enough; even better is the app, notebook, script, project,
+   model, environment, or repository they currently run. Ask them to describe
+   how they start it today (for example, “open this project and press Run”).
+2. **Can you show me one example that works?** Ask for a representative input
+   and its result. The user may explain the result biologically (“these outlined
+   cells are the ones I want”); do not require them to name arrays, dtypes,
+   coordinate systems, APIs, or command-line arguments.
+3. **What should the microscope do with the result?** Examples: record a score,
+   make a map, keep images containing the target, revisit detected objects for a
+   z-stack, analyze several tiles together, or stop after enough targets are found.
+   Ask for a threshold or acquisition budget only if their desired action needs one.
+
+If they cannot provide a working example, ask for the smallest available substitute:
+a screenshot of the expected result, a tutorial dataset, or permission to run the
+workflow on a copy of one image. Ask follow-up questions only when investigation
+cannot resolve an ambiguity that changes the biological meaning or hardware action.
+
+### What microclaw must investigate
+
+The following is an agent verification checklist, NOT a questionnaire for the
+user. Derive it by inspecting supplied local files and environments, reading the
+package's official documentation and source code (search the web when needed),
+running `--help` or a documented example, and observing a safe dry run:
+
+- entry point, installed version/environment, and model/project/config artifacts;
+- processing unit (frame, tile group, time window, or completed dataset), latency,
+  startup cost, and CPU/GPU needs;
+- image axes/order, shape, dtype/range, channel mapping, pixel size, and preprocessing;
+- exact raw output, coordinate convention and units, origin, and score semantics;
+- the hook method/state/two-pass design needed for the requested microscope action;
+- cleanup, thread safety, determinism, bounded failure behavior, and event limits;
+- all files, processes, network behavior, and hardware boundaries;
+- analyzer/model/project/version and parameters to record as provenance.
+
+Prefer primary sources: the installed code and version, the package's official
+documentation, and its upstream repository. Record where every inferred contract
+fact came from. Never silently infer coordinates, channels, or confidence semantics
+from a package name. Multi-tile or completed-dataset analyses need hook instance
+state, `image_saved_hook_fn`, or a two-pass acquisition; `image_process_fn` does
+not receive a batch.
+
+No network call may occur while images are acquired. A local subprocess is allowed
+only after its lint warning and full source are explicitly reviewed; derived XY/Z
+events must pass the guard.
+
+Once the technical contract is complete, summarize it in plain language and call
+out only unresolved assumptions that affect scientific meaning or safety. Choose
+the hook method below, write a `HookBase` adapter, and test it without hardware
+against the example. If the output cannot yet be verified, make the first version
+observation-only: log raw output and do not drive acquisition. Show the full source
+and lint warnings, and save it only after explicit confirmation. Package setup
+belongs in the hook's documented local environment, not in a package-specific
+microclaw analysis tool.
+
+For that first observation-only version, normalize the verified part of the raw
+output to JSON values and call `self.log_analysis(...)`. Record the analyzer name
+and installed version, parameters affecting the result, and the sha256 of any
+model/project/config artifact. Use `status="unverified"` when axes, units, score
+semantics, or coordinates remain unresolved. Do not turn an unverified record into
+filtering, stage movement, early stopping, or follow-up acquisition.
+
 ## Acquisition constructor hook kwargs
 
 Pass these as keyword arguments to Acquisition(...):
@@ -192,8 +267,7 @@ class MyHook(HookBase):
 
     def image_process_fn(self, image: np.ndarray, metadata: dict, event_queue):
         # ... your logic ...
-        self._log.append({"frame": metadata.get("time"), "key": "value"})
-        self._write_log()            # persists self._log to self.log_path
+        self.log(metadata, key="value")
         return image, metadata       # or: return None  (discards THIS image
                                      # only; no event is skipped or dropped)
 
@@ -221,6 +295,8 @@ HookBase provides:
   self.log_event(event, **fields) — same, for pre/post-hardware hooks that get an
                                  event dict instead of image metadata.
   HookBase.where(metadata)     — just the {position, x_um, y_um, z_um} dict.
+  HookBase.log_analysis(...)   — a versioned observation record with analyzer,
+                                 parameters, artifact hash, status, and JSON result.
   self._log        list[dict]  — the raw record list (log()/log_event() append here)
   self._write_log()            — writes self._log as JSON to self.log_path
   self.log_path    str | None  — path supplied at construction time
@@ -240,6 +316,24 @@ HookBase provides:
   Abort everything on a safety limit     raise from any hook (loud, surfaces)
   Generate events dynamically at runtime event_generation_hook_fn
   Log metadata after image is saved      image_saved_hook_fn
+
+## Observation-only SNR hook
+
+`snr_observer` is the pre-coded positive-control hook for design/26 Run A. It
+calls the shared `compute_stats` implementation and writes one
+`microclaw.analysis-observation/v1` record per image, including SNR, focus metric
+and validity, intensity statistics, saturation, analysis time, and acquisition
+coordinates. It always returns the original image and metadata. It has no score
+threshold, filtering, queue submission, early-stop, or hardware behavior.
+
+  hook_params:
+    min_snr       validity gate for the reported focus metric (default 3.0);
+                  this does not filter or select images
+
+Use it with a fixed one-frame-per-tile acquisition and a log path. Rank the
+completed log offline; a streaming hook cannot know final top-k. Its SNR is a
+whole-field measurement, so any revisit targets the recorded tile coordinate,
+not an invented object centroid.
 
 ## Micro-Manager plugin hooks
 

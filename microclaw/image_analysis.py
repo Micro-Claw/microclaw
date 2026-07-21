@@ -26,7 +26,23 @@ class ImageStats(NamedTuple):
 #: that it must be measured on real frames against snr(), and it plausibly varies
 #: by objective and by sample. If it needs per-rig values it belongs in
 #: safety_config.yaml alongside the other rig facts.
-MIN_SNR = 3.0  # TODO(rig): calibrate. See design/23 F7 / design/25.
+UNCALIBRATED_MIN_SNR_FALLBACK = 3.1
+
+
+def resolve_min_snr(
+    *, explicit: float | None = None, configured: float | None = None
+) -> tuple[float, str]:
+    """Resolve the gate without reading configuration or global process state.
+
+    Tool/hook boundaries supply the current rig setting. Keeping this function
+    pure lets offline analysis choose and record the same precedence explicitly.
+    Calibration artifacts are resolved by their caller and passed as ``explicit``.
+    """
+    if explicit is not None:
+        return float(explicit), "explicit"
+    if configured is not None:
+        return float(configured), "rig_config"
+    return UNCALIBRATED_MIN_SNR_FALLBACK, "package_default_uncalibrated"
 
 
 def snr(image: np.ndarray, background: float | None = None) -> float:
@@ -51,7 +67,9 @@ def snr(image: np.ndarray, background: float | None = None) -> float:
     return float((np.percentile(img, 99.5) - bg) / noise)
 
 
-def focus_invalid_warning(snr_value: float, min_snr: float = MIN_SNR) -> str:
+def focus_invalid_warning(
+    snr_value: float, min_snr: float = UNCALIBRATED_MIN_SNR_FALLBACK
+) -> str:
     """The words a tool surfaces when the focus metric is not a measurement.
 
     Returning a bare focus_metric float on an empty field is what let the Nestor
@@ -102,7 +120,10 @@ def normalized_laplacian_variance(
     return float(np.var(laplace(sig)) / mean ** 2)
 
 
-def compute_stats(image: np.ndarray, min_snr: float = MIN_SNR) -> ImageStats:
+def compute_stats(
+    image: np.ndarray,
+    min_snr: float = UNCALIBRATED_MIN_SNR_FALLBACK,
+) -> ImageStats:
     """Per-image statistics, including the NORMALIZED focus metric and its gate.
 
     focus_metric is now normalized_laplacian_variance, not the raw

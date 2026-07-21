@@ -1,10 +1,12 @@
 from __future__ import annotations
 import inspect
+import hashlib
 import json
 import math
 import queue
 import threading
 import time
+from datetime import datetime, timezone
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable
@@ -31,6 +33,7 @@ from microclaw.image_analysis import (
     normalized_laplacian_variance,
     snap_to_numpy,
     preview_window_open,
+    resolve_min_snr,
     snap_to_numpy_displayed,
 )
 from microclaw.safety import SafetyGuard, SafetyViolation
@@ -870,7 +873,17 @@ def _metric_stamp(ctrl: MicroscopeController) -> dict:
     }
 
 
-def _focus_metric_payload(ctrl: MicroscopeController, stats: ImageStats) -> dict:
+def _analysis_gate(guard: SafetyGuard) -> tuple[float, str]:
+    """Resolve the current rig gate once at a tool boundary."""
+    return resolve_min_snr(configured=guard.analysis_min_snr)
+
+
+def _focus_metric_payload(
+    ctrl: MicroscopeController,
+    stats: ImageStats,
+    min_snr: float,
+    min_snr_source: str,
+) -> dict:
     """Focus metric stamped with the settings it is only comparable within, and
     with the SNR gate that says whether it is a measurement at all (design/25).
 
@@ -886,10 +899,12 @@ def _focus_metric_payload(ctrl: MicroscopeController, stats: ImageStats) -> dict
         "focus_metric_valid": stats.focus_metric_valid,
         "background_level": stats.background_level,
         "snr": stats.snr,
+        "min_snr": min_snr,
+        "min_snr_source": min_snr_source,
         **_metric_stamp(ctrl),
     }
     if not stats.focus_metric_valid:
-        payload["warning"] = focus_invalid_warning(stats.snr)
+        payload["warning"] = focus_invalid_warning(stats.snr, min_snr)
     return payload
 
 
@@ -910,7 +925,8 @@ def snap_and_analyze(
     """
     with _pause_live(ctrl) as was_live:
         image = snap_to_numpy_displayed(ctrl) if display else snap_to_numpy(ctrl)
-    stats = compute_stats(image)
+    min_snr, min_snr_source = _analysis_gate(guard)
+    stats = compute_stats(image, min_snr=min_snr)
     text_payload: dict[str, Any] = {
         "z_um": round(ctrl.core.get_position(), 3),
         # Observed, not assumed. This used to echo the `display` parameter, so
@@ -919,7 +935,7 @@ def snap_and_analyze(
         # their image was on screen. Now it reports whether MM actually has a
         # Preview window open (which snap_to_numpy_displayed has just repainted).
         "displayed_in_mm_viewer": bool(display) and preview_window_open(ctrl),
-        **_focus_metric_payload(ctrl, stats),
+        **_focus_metric_payload(ctrl, stats, min_snr, min_snr_source),
         "mean_intensity": round(stats.mean_intensity, 1),
         "min_intensity": round(stats.min_intensity, 1),
         "max_intensity": round(stats.max_intensity, 1),
@@ -1528,7 +1544,8 @@ def _run_protocol_at(
         # an 18-call move+snap loop instead (design/20 F1). Costs no exposure.
         with _pause_live(ctrl):                     # snap(True) wedges under live (V1)
             image = snap_to_numpy_displayed(ctrl)
-        stats = compute_stats(image)
+        min_snr, min_snr_source = _analysis_gate(guard)
+        stats = compute_stats(image, min_snr=min_snr)
         tile = {
             "position": pos_label,
             "status": "snapped",
@@ -1544,6 +1561,8 @@ def _run_protocol_at(
             # focus_metric_valid is False where there is no signal to be sharp about.
             "focus_metric_valid": stats.focus_metric_valid,
             "snr": stats.snr,
+            "min_snr": min_snr,
+            "min_snr_source": min_snr_source,
             "background_level": stats.background_level,
             "mean_intensity": round(stats.mean_intensity, 1),
             "min_intensity": round(stats.min_intensity, 1),
@@ -1551,7 +1570,7 @@ def _run_protocol_at(
             "saturated_fraction": round(stats.saturated_fraction, 4),
         }
         if not stats.focus_metric_valid:
-            tile["warning"] = focus_invalid_warning(stats.snr)
+            tile["warning"] = focus_invalid_warning(stats.snr, min_snr)
         return tile
     if pos_save_dir is None:
         return {
@@ -1779,15 +1798,31 @@ def run_tile_acquisition(
         hook_params=hook_params,
         log_path=log_path,
     )
+    return_result = None
     if return_to_center:
         # Deliberately unguarded: the center was cleared up front (supplied) or
         # is where the stage already sat (default). Re-checking could only refuse
         # the move *home*, stranding the objective out over the sample on the
         # last tile — the opposite of what the guard is for.
+        return_started = time.monotonic()
         ctrl.set_xy(center_x, center_y)
+        try:
+            achieved_x = float(ctrl.core.get_x_position())
+            achieved_y = float(ctrl.core.get_y_position())
+            return_result = {
+                "requested_um": [center_x, center_y],
+                "achieved_um": [achieved_x, achieved_y],
+                "error_um": [achieved_x - center_x, achieved_y - center_y],
+                "duration_s": round(time.monotonic() - return_started, 6),
+            }
+        except Exception:
+            return_result = {"requested_um": [center_x, center_y],
+                             "achieved_um": None,
+                             "duration_s": round(time.monotonic() - return_started, 6)}
     # Report where the grid actually sat, so a caller comparing two runs can see
     # they measured the same ground rather than assuming it.
-    return {**result, "grid_center_x_um": center_x, "grid_center_y_um": center_y}
+    return {**result, "grid_center_x_um": center_x, "grid_center_y_um": center_y,
+            **({"return_to_center": return_result} if return_result else {})}
 
 
 def run_multiposition_with_autofocus(
@@ -1959,6 +1994,7 @@ def _adaptive_result(
     result: dict[str, Any] = {
         "status": status,
         "dataset_path": dataset_path,
+        "artifact": {"kind": "dataset", "path": dataset_path},
         **extra,
     }
     if log_path:
@@ -2000,8 +2036,15 @@ def run_adaptive_zstack(
     events = _build_acquisition_events(
         channel=channel, z_start=z_start_um, z_end=z_end_um, z_step=z_step_um,
     )
+    started_at = datetime.now(timezone.utc)
+    started = time.monotonic()
     dataset_path = _acquire_with_hooks(guard, save_dir, name, events, hook)
-    return _adaptive_result(dataset_path, log_path)
+    completed_at = datetime.now(timezone.utc)
+    return _adaptive_result(
+        dataset_path, log_path, frames_planned=len(events), frames_acquired=len(events),
+        started_at=started_at.isoformat(), completed_at=completed_at.isoformat(),
+        duration_s=round(time.monotonic() - started, 6),
+    )
 
 
 def run_adaptive_timelapse(
@@ -2034,8 +2077,15 @@ def run_adaptive_timelapse(
     events = _build_acquisition_events(
         channel=channel, num_time_points=n_frames, time_interval_s=interval_s,
     )
+    started_at = datetime.now(timezone.utc)
+    started = time.monotonic()
     dataset_path = _acquire_with_hooks(guard, save_dir, name, events, hook)
-    return _adaptive_result(dataset_path, log_path)
+    completed_at = datetime.now(timezone.utc)
+    return _adaptive_result(
+        dataset_path, log_path, frames_planned=len(events), frames_acquired=len(events),
+        started_at=started_at.isoformat(), completed_at=completed_at.isoformat(),
+        duration_s=round(time.monotonic() - started, 6),
+    )
 
 
 def _acquire_positions_with_hook(
@@ -2110,13 +2160,20 @@ def _acquire_positions_with_hook(
         channel=channel, exposure_ms=exposure_ms,
         position_labels=[p["name"] for p in positions], **shape_kwargs,
     )
+    started_at = datetime.now(timezone.utc)
+    started = time.monotonic()
     dataset_path = _acquire_with_hooks(guard, save_dir, name, events, hook)
+    completed_at = datetime.now(timezone.utc)
     # Say how many positions ran. "Adaptive acquisition complete." over a grid
     # left no way to confirm every tile fired without opening the log.
     return _adaptive_result(
         dataset_path, log_path,
         status=f"Hooked acquisition complete across {len(positions)} position(s).",
         positions=len(positions),
+        positions_planned=len(positions), positions_completed=len(positions),
+        frames_planned=len(events), frames_acquired=len(events),
+        started_at=started_at.isoformat(), completed_at=completed_at.isoformat(),
+        duration_s=round(time.monotonic() - started, 6),
     )
 
 
@@ -2478,6 +2535,283 @@ def read_hook_log(ctrl: MicroscopeController, guard: SafetyGuard, log_path: str)
     entries = json.loads(path.read_text(encoding="utf-8"))
     return {"log_path": log_path, "entry_count": len(entries), "entries": entries,
             "artifact": {"kind": "hook_log", "path": log_path}}
+
+
+def rank_hook_log(
+    ctrl: MicroscopeController,
+    guard: SafetyGuard,
+    log_path: str,
+    metric: str = "snr",
+    budgets: list[int] | None = None,
+    position_list_path: str | None = None,
+) -> dict:
+    """Replay a deterministic whole-record ranking from a completed hook log.
+
+    This is deliberately offline: it neither analyzes images nor moves hardware.
+    Equal metric values are ordered by position label, so replay is independent
+    of JSON record order and model arithmetic.
+    """
+    started = time.monotonic()
+    log_path = guard.resolve_in_workspace(log_path)
+    path = Path(log_path)
+    if not path.exists():
+        return {"error": f"Log file not found: {log_path}"}
+    entries = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(entries, list):
+        return {"error": "Hook log must contain a JSON array."}
+    seen: set[str] = set()
+    rows = []
+    for i, entry in enumerate(entries):
+        label = entry.get("position")
+        result = entry.get("result") or {}
+        missing = [k for k in ("position", "x_um", "y_um") if entry.get(k) is None]
+        if metric not in result:
+            missing.append(f"result.{metric}")
+        if missing:
+            return {"error": f"Entry {i} is missing required field(s): {missing}"}
+        if label in seen:
+            return {"error": f"Duplicate position in hook log: {label}"}
+        seen.add(label)
+        try:
+            value = float(result[metric])
+        except (TypeError, ValueError):
+            return {"error": f"Entry {i} has a non-numeric result.{metric}."}
+        if not math.isfinite(value):
+            return {"error": f"Entry {i} has a non-finite result.{metric}."}
+        rows.append({
+            "position": label, "x_um": entry["x_um"], "y_um": entry["y_um"],
+            **({"z_um": entry["z_um"]} if entry.get("z_um") is not None else {}),
+            metric: value,
+            "focus_metric_valid": result.get("focus_metric_valid"),
+            "saturated_fraction": result.get("saturated_fraction"),
+        })
+    rows.sort(key=lambda row: (-row[metric], row["position"]))
+    for rank, row in enumerate(rows, 1):
+        row["rank"] = rank
+    requested = sorted(set(budgets or []))
+    if any(not isinstance(k, int) or k < 1 or k > len(rows) for k in requested):
+        return {"error": f"Every budget must be an integer from 1 to {len(rows)}."}
+    result = {
+        "log_path": log_path,
+        "metric": metric,
+        "ranking_key": f"descending result.{metric}, then ascending position label",
+        "entry_count": len(rows),
+        "ranking": rows,
+        "budget_views": {str(k): rows[:k] for k in requested},
+    }
+    if position_list_path:
+        position_list_path = guard.resolve_in_workspace(position_list_path)
+        saved = json.loads(Path(position_list_path).read_text(encoding="utf-8"))
+        selected = saved.get("positions", saved) if isinstance(saved, dict) else saved
+        actual = [p.get("name", p.get("position")) for p in selected]
+        expected = [r["position"] for r in rows[:len(actual)]]
+        coordinate_matches = []
+        for saved_position, ranked in zip(selected, rows):
+            coordinate_matches.append(
+                saved_position.get("x_um") == ranked["x_um"] and
+                saved_position.get("y_um") == ranked["y_um"] and
+                (saved_position.get("z_um") == ranked.get("z_um")
+                 if "z_um" in saved_position and "z_um" in ranked else True)
+            )
+        result["position_list_verification"] = {
+            "path": position_list_path,
+            "matches_ranking_prefix": actual == expected and all(coordinate_matches),
+            "label_match": actual == expected,
+            "coordinate_matches": coordinate_matches,
+            "expected": expected, "actual": actual,
+        }
+    result["duration_s"] = round(time.monotonic() - started, 6)
+    return result
+
+
+def validate_positions(
+    ctrl: MicroscopeController,
+    guard: SafetyGuard,
+    positions: list[dict],
+) -> dict:
+    """Validate XY/Z coordinates against current guards without moving hardware."""
+    accepted, rejected = [], []
+    for i, position in enumerate(positions):
+        name = position.get("name", position.get("position", f"position_{i}"))
+        try:
+            if position.get("x_um") is None or position.get("y_um") is None:
+                raise ValueError("x_um and y_um are required")
+            try:
+                guard.check_xy(float(position["x_um"]), float(position["y_um"]))
+            except SafetyViolation:
+                rejected.append({"name": name,
+                                 "reason": "Rejected by the current XY safety guard."})
+                continue
+            if position.get("z_um") is not None:
+                try:
+                    guard.check_z(float(position["z_um"]))
+                except SafetyViolation:
+                    rejected.append({"name": name,
+                                     "reason": "Rejected by the current Z safety guard."})
+                    continue
+            accepted.append({"name": name, "x_um": position["x_um"],
+                             "y_um": position["y_um"],
+                             **({"z_um": position["z_um"]}
+                                if position.get("z_um") is not None else {})})
+        except (TypeError, ValueError) as e:
+            rejected.append({"name": name, "reason": str(e)})
+    return {"accepted": accepted, "rejected": rejected, "clipped": 0}
+
+
+def inspect_artifacts(
+    ctrl: MicroscopeController,
+    guard: SafetyGuard,
+    paths: list[str],
+    manifest_path: str | None = None,
+) -> dict:
+    """List and SHA-256 workspace artifacts, recursively and deterministically."""
+    files: set[Path] = set()
+    for raw in paths:
+        resolved = Path(guard.resolve_in_workspace(raw))
+        if not resolved.exists():
+            return {"error": f"Artifact path not found: {resolved}"}
+        if resolved.is_dir():
+            files.update(p for p in resolved.rglob("*") if p.is_file())
+        else:
+            files.add(resolved)
+    artifacts = []
+    for path in sorted(files, key=lambda p: str(p)):
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for block in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(block)
+        artifacts.append({"path": str(path), "size_bytes": path.stat().st_size,
+                          "sha256": digest.hexdigest()})
+    result = {"artifact_count": len(artifacts), "artifacts": artifacts}
+    if manifest_path:
+        manifest_path = guard.resolve_in_workspace(manifest_path)
+        Path(manifest_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(manifest_path).write_text(
+            json.dumps(result, indent=2, allow_nan=False), encoding="utf-8"
+        )
+        result["manifest"] = {"kind": "sha256_manifest", "path": manifest_path}
+    return result
+
+
+def compare_revisit_frames(
+    ctrl: MicroscopeController,
+    guard: SafetyGuard,
+    source_tiff: str,
+    revisit_tiff: str,
+    comparisons: list[dict],
+    min_correlation: float = 0.5,
+) -> dict:
+    """Register corresponding source/revisit TIFF pages without acquisition."""
+    from scipy.ndimage import gaussian_filter, shift as image_shift
+    from skimage.registration import phase_cross_correlation
+
+    source_tiff = guard.resolve_in_workspace(source_tiff)
+    revisit_tiff = guard.resolve_in_workspace(revisit_tiff)
+    source = tifffile.imread(source_tiff)
+    revisit = tifffile.imread(revisit_tiff)
+    if source.ndim == 2:
+        source = source[None, ...]
+    if revisit.ndim == 2:
+        revisit = revisit[None, ...]
+    affine = _load_current_affine(ctrl)
+    rows = []
+    for item in comparisons:
+        si, ri = int(item["source_index"]), int(item["revisit_index"])
+        if not (0 <= si < len(source) and 0 <= ri < len(revisit)):
+            return {"error": f"Frame index out of range for {item.get('position', item)}"}
+        a, b = source[si].astype(float), revisit[ri].astype(float)
+        if a.shape != b.shape:
+            return {"error": f"Frame shapes differ for {item.get('position', item)}: "
+                             f"{a.shape} versus {b.shape}"}
+        # High-pass removes camera offset/illumination drift; a Hann window
+        # prevents wrap-around edges from dominating phase correlation.
+        window = np.outer(np.hanning(a.shape[0]), np.hanning(a.shape[1]))
+        ah = (a - gaussian_filter(a, 8)) * window
+        bh = (b - gaussian_filter(b, 8)) * window
+        shift, _, _ = phase_cross_correlation(ah, bh, upsample_factor=100)
+        aligned = image_shift(bh, shift, order=1, mode="constant", cval=0)
+        margin = int(np.ceil(np.max(np.abs(shift)))) + 3
+        mask = np.ones(a.shape, dtype=bool)
+        if margin * 2 >= min(a.shape):
+            return {"error": f"Registration shift leaves no reliable overlap for "
+                             f"{item.get('position', item)}"}
+        mask[:margin] = mask[-margin:] = False
+        mask[:, :margin] = mask[:, -margin:] = False
+        correlation = float(np.corrcoef(ah[mask], aligned[mask])[0, 1])
+        row = {
+            "position": item.get("position"), "source_index": si, "revisit_index": ri,
+            "shift_to_apply_to_revisit_dy_dx_px": [float(shift[0]), float(shift[1])],
+            "translation_magnitude_px": float(np.hypot(*shift)),
+            "post_registration_correlation": correlation,
+            "registration_valid": bool(np.isfinite(correlation) and
+                                       correlation >= min_correlation),
+        }
+        if affine is not None:
+            dx_um, dy_um = affine.px_to_um(float(shift[1]), float(shift[0]))
+            row.update(translation_stage_dx_um=dx_um, translation_stage_dy_um=dy_um,
+                       translation_magnitude_um=float(np.hypot(dx_um, dy_um)),
+                       calibration_identity={"objective": affine.objective,
+                                             "binning": affine.binning})
+        else:
+            row["translation_um"] = None
+            row["calibration_warning"] = (
+                "No stage-camera affine for the current objective/binning."
+            )
+        rows.append(row)
+    return {"source_tiff": source_tiff, "revisit_tiff": revisit_tiff,
+            "comparisons": rows}
+
+
+def calibrate_snr_threshold(
+    ctrl: MicroscopeController,
+    guard: SafetyGuard,
+    dark_log_paths: list[str],
+    illuminated_log_paths: list[str],
+    output_path: str,
+    context: dict,
+) -> dict:
+    """Derive a provisional rig SNR gate from confirmed control logs.
+
+    No frames are acquired. A clean gap is required; overlapping controls are
+    reported as non-separable rather than forced into a misleading threshold.
+    """
+    required_context = {"objective", "camera", "roi", "binning", "exposure_ms", "channel"}
+    missing_context = sorted(required_context - set(context))
+    if missing_context:
+        return {"error": f"Calibration context is missing: {missing_context}"}
+
+    def values(paths: list[str]) -> list[float]:
+        out = []
+        for raw in paths:
+            path = Path(guard.resolve_in_workspace(raw))
+            records = json.loads(path.read_text(encoding="utf-8"))
+            out.extend(float(r["result"]["snr"]) for r in records)
+        return out
+    if len(dark_log_paths) < 2 or len(illuminated_log_paths) < 2:
+        return {"error": "Use at least two confirmed dark and two illuminated logs."}
+    dark, illuminated = values(dark_log_paths), values(illuminated_log_paths)
+    dark_max, illuminated_min = max(dark), min(illuminated)
+    if dark_max >= illuminated_min:
+        return {"status": "not_separable", "dark_max_snr": dark_max,
+                "illuminated_min_snr": illuminated_min,
+                "error": "Confirmed dark and illuminated SNR distributions overlap."}
+    recommended = (dark_max + illuminated_min) / 2
+    artifact = {
+        "schema": "microclaw.snr-calibration/v1",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "context": context,
+        "dark_log_paths": [guard.resolve_in_workspace(p) for p in dark_log_paths],
+        "illuminated_log_paths": [guard.resolve_in_workspace(p)
+                                  for p in illuminated_log_paths],
+        "dark_frame_count": len(dark), "illuminated_frame_count": len(illuminated),
+        "dark_max_snr": dark_max, "illuminated_min_snr": illuminated_min,
+        "recommended_min_snr": recommended,
+        "method": "midpoint between maximum confirmed-dark and minimum confirmed-illuminated SNR",
+    }
+    output_path = guard.resolve_in_workspace(output_path)
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(output_path).write_text(json.dumps(artifact, indent=2), encoding="utf-8")
+    return {**artifact, "artifact": {"kind": "snr_calibration", "path": output_path}}
 
 
 # --- Hook management ---
@@ -2899,6 +3233,11 @@ TOOL_REGISTRY = {
     "run_adaptive_timelapse": run_adaptive_timelapse,
     "run_adaptive_survey": run_adaptive_survey,
     "read_hook_log": read_hook_log,
+    "rank_hook_log": rank_hook_log,
+    "validate_positions": validate_positions,
+    "inspect_artifacts": inspect_artifacts,
+    "compare_revisit_frames": compare_revisit_frames,
+    "calibrate_snr_threshold": calibrate_snr_threshold,
     "generate_and_save_hook": generate_and_save_hook,
     "read_hook_from_file": read_hook_from_file,
     "list_hooks": list_hooks,
