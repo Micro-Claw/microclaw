@@ -50,6 +50,29 @@ References:
 - [Micro-Manager `PositionList` API](https://micro-manager.org/apidoc/mmstudio/2.0.0/org/micromanager/PositionList.html)
 - [Micro-Manager `PositionList` usage and manager behavior](https://micro-manager.org/apidoc/mmstudio/2.0.0/org/micromanager/class-use/PositionList.html)
 
+### Live spike result (2026-07-21)
+
+`design/31-native-position-file-spike.py` passed against MMCore 12.5.0 on the
+Windows test rig. The rig reported configured devices `XY` and `Z`, while the
+fixture names `SmarActXY`. The verified pycro-manager surface is:
+
+- `PositionList.load(str)` loaded all 25 fixture positions into a temporary
+  object without changing the Position List GUI. This is expected: parsing does
+  not publish a list; production load must explicitly call
+  `studio.positions().set_position_list(candidate)` after validation.
+- `MultiStagePosition.get_label()` returned `spiral_01`.
+- `get_default_xy_stage()` and `get_default_z_stage()` both returned the empty
+  strings stored in the fixture.
+- The first `StagePosition` exposed its device as raw field `stageName`, its axis
+  count as raw field `numAxes`, and coordinates as raw fields `x` and `y`.
+- `PositionList.save(str)` produced a file that reloaded as 25 positions.
+- The original and reloaded `to_property_map()` values compared equal.
+
+This establishes lossless native load/save and the spellings required for this
+XY fixture. It does not establish one-axis/Z field behavior or the semantics of
+non-empty default-stage fields; cover those with a second small fixture or the
+live integration tests before relying on them.
+
 ## Requirements
 
 1. Saving produces a file that Micro-Manager 2.x can load without conversion.
@@ -255,11 +278,10 @@ For each `MultiStagePosition`:
   Micro-Manager but should be reported as unsupported rather than silently
   appearing as a microclaw position with no coordinates.
 
-The pycro-manager bridge's exact field/method spellings need a short live spike.
-Existing evidence establishes `numAxes`, `x`, and `y`; the implementation must
-also verify the device-label member and default-stage getters. Do not infer Z
-solely from `numAxes == 1`, because a position list can contain other one-axis
-stages.
+The live spike establishes `stageName`, `numAxes`, `x`, `y`,
+`get_default_xy_stage()`, and `get_default_z_stage()` for this XY fixture. A
+one-axis/Z fixture must still verify that path. Do not infer Z solely from
+`numAxes == 1`, because a position list can contain other one-axis stages.
 
 Projection is device-name-bound, and this limits cross-rig interop. A `.pos`
 authored on another rig names its own devices —
@@ -270,7 +292,8 @@ stage is configured under a different name, every entry projects to
 fallback. The native list is still retained losslessly, but microclaw cannot
 navigate it and `rank_hook_log` verification reports coordinates as unavailable.
 Do not assume that a populated `DefaultXYStage` or `DefaultZStage` maps differently
-named devices across rigs; the live spike must establish their exact semantics.
+named devices across rigs; this fixture stores both as empty, so their non-empty
+semantics remain unverified.
 Until then, cross-rig navigation requires matching device names. A future
 explicit, user-approved device-name mapping is out of scope here.
 
@@ -529,12 +552,12 @@ comparing only microclaw's projection would miss metadata loss.
 
 ## Rollout
 
-1. Run `design/31-native-position-file-spike.py` against a live Micro-Manager
-   instance and record its output. It loads `tests/fixtures/PD_PositionList2.pos`
-   into a temporary Java `PositionList` without publishing it to the GUI or
-   moving hardware; it verifies bridge spellings, device/default-stage access,
-   native save/reload, and Property Map equality. Resolve every unknown it finds
-   in this design before implementing the production parser.
+1. **Complete:** `design/31-native-position-file-spike.py` passed against
+   MMCore 12.5.0. It loaded `tests/fixtures/PD_PositionList2.pos` into a temporary
+   Java `PositionList` without publishing it to the GUI or moving hardware, and
+   verified the XY bridge spellings, native save/reload, and Property Map
+   equality. One-axis/Z and non-empty default-stage behavior remain for a
+   focused fixture or live integration test.
 2. Add candidate projection and transactional load helpers in the controller.
 3. Switch save to the native Java method.
 4. Update tool schemas, agent prompt, README, and tests in the same change so no
