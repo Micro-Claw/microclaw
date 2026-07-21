@@ -1456,6 +1456,80 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "verify_emu_laser_power_calibration",
+        "description": (
+            "Verify an EMU laser's raw = slope * GUI-percent + offset calibration "
+            "against two distinct known GUI settings. Required once per session "
+            "before semantic percentage writes are allowed. Keep illumination disabled."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "slot": {"type": "integer", "description": "EMU laser slot index."},
+                "observations": {
+                    "type": "array", "minItems": 2,
+                    "items": {"type": "object", "properties": {
+                        "percent": {"type": "number"}, "raw_value": {"type": "integer"}
+                    }, "required": ["percent", "raw_value"]}
+                },
+            },
+            "required": ["slot", "observations"],
+        },
+    },
+    {
+        "name": "get_emu_laser_power_percentage",
+        "description": (
+            "Read an EMU laser power property and report commanded raw, interpreted "
+            "percentage, calibration status, and unavailable measured/GUI states separately."
+        ),
+        "input_schema": {"type": "object", "properties": {
+            "slot": {"type": "integer"}}, "required": ["slot"]},
+    },
+    {
+        "name": "set_emu_laser_power_percentage",
+        "description": (
+            "Set an EMU laser by semantic GUI percentage using the code-owned affine "
+            "conversion. Refuses until two-point calibration verification and reports "
+            "requested, raw, effective, representability, and minimum nonzero percentage. "
+            "Review the effective value before enabling illumination."
+        ),
+        "input_schema": {"type": "object", "properties": {
+            "slot": {"type": "integer"}, "percent": {"type": "number", "minimum": 0}
+        }, "required": ["slot", "percent"]},
+    },
+    {
+        "name": "get_album_state",
+        "description": "Read the current Micro-Manager Album datastore state; this is not a disk dataset or montage.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "snap_to_album",
+        "description": (
+            "Snap with MMStudio and add every returned camera image directly to its "
+            "Album, preserving MM metadata and GUI visibility. This creates independent "
+            "Album snaps, not a contact sheet, spatial mosaic, stitch, or TIFF."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "get_mda_settings",
+        "description": (
+            "Inspect and preview MMStudio's current GUI MDA settings. Returns a token "
+            "required by run_mda; it does not construct pycro-manager events."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "run_mda",
+        "description": (
+            "Run exactly the MMStudio GUI MDA settings most recently previewed by "
+            "get_mda_settings. Refuses stale previews and requires blocking human "
+            "confirmation because current settings may move hardware, illuminate, or save."
+        ),
+        "input_schema": {"type": "object", "properties": {
+            "preview_token": {"type": "string"}}, "required": ["preview_token"]},
+    },
+    {
         "name": "read_hook_from_file",
         "description": (
             "Read a user-specified hook file and run the AST safety scan. "

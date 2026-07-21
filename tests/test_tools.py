@@ -2579,3 +2579,94 @@ class TestGetFullDeviceState:
         mock_ctrl.core.get_device_property_names.return_value = self._make_sv([])
         result = get_full_device_state(mock_ctrl, unconstrained_guard, device="Dummy")
         assert result["state"] == {}
+
+
+# ---------------------------------------------------------------------------
+# EMU semantic power, MMStudio Album, and MDA (design/30)
+# ---------------------------------------------------------------------------
+
+def _design30_emu_power(monkeypatch):
+    props = {
+        "Laser 2 power percentage": {
+            "mm_property_string": "PWM-Position0",
+            "device": "PWM",
+            "property": "Position0",
+            "slope": "0.3",
+            "offset": "0.0",
+        }
+    }
+    monkeypatch.setattr(tools, "_cached_emu_properties", lambda ctrl: props)
+
+
+def test_emu_calibration_uses_slope_in_documented_direction(
+    mock_ctrl, unconstrained_guard, monkeypatch
+):
+    _design30_emu_power(monkeypatch)
+    result = tools.verify_emu_laser_power_calibration(
+        mock_ctrl, unconstrained_guard, 2,
+        [{"percent": 1, "raw_value": 0}, {"percent": 10, "raw_value": 3}],
+    )
+    assert result["verified"] is True
+
+
+def test_emu_write_reports_unrepresentable_one_percent(
+    mock_ctrl, unconstrained_guard, monkeypatch
+):
+    _design30_emu_power(monkeypatch)
+    tools.verify_emu_laser_power_calibration(
+        mock_ctrl, unconstrained_guard, 2,
+        [{"percent": 1, "raw_value": 0}, {"percent": 10, "raw_value": 3}],
+    )
+    monkeypatch.setattr(tools, "get_device_property_info", lambda *args, **kwargs: {
+        "read_only": False, "type": "Integer", "lower_limit": 0, "upper_limit": 100,
+    })
+    mock_ctrl.core.get_property.return_value = "0"
+    result = tools.set_emu_laser_power_percentage(mock_ctrl, unconstrained_guard, 2, 1)
+    mock_ctrl.core.set_property.assert_called_once_with("PWM", "Position0", "0")
+    assert result["effective_percent"] == 0
+    assert result["representable"] is False
+    assert result["min_nonzero_percent"] == pytest.approx(10 / 3)
+
+
+def test_emu_write_refuses_unverified_calibration(
+    mock_ctrl, unconstrained_guard, monkeypatch
+):
+    _design30_emu_power(monkeypatch)
+    result = tools.set_emu_laser_power_percentage(mock_ctrl, unconstrained_guard, 2, 1)
+    assert "unverified" in result["error"].lower()
+    mock_ctrl.core.set_property.assert_not_called()
+
+
+def test_snap_to_album_uses_proven_java_collection_path(
+    mock_ctrl, unconstrained_guard
+):
+    images = MagicMock(name="java_array_list")
+    manager = mock_ctrl.studio.acquisitions()
+    album = mock_ctrl.studio.album()
+    manager.snap.return_value = images
+    album.add_images.return_value = True
+    album.get_datastore.return_value = None
+    mock_ctrl.core.get_exposure.return_value = 10
+    result = tools.snap_to_album(mock_ctrl, unconstrained_guard)
+    album.add_images.assert_called_once_with(images)
+    assert result["created_new_album"] is True
+    assert result["album_exists"] is False
+
+
+def test_mda_requires_unchanged_preview_and_confirmation(
+    mock_ctrl, unconstrained_guard, monkeypatch
+):
+    settings = MagicMock()
+    for name in tools._MDA_SCALARS:
+        getattr(settings, name).return_value = False if name.startswith("use_") else None
+    settings.save.return_value = False
+    manager = mock_ctrl.studio.acquisitions()
+    manager.get_acquisition_settings.return_value = settings
+    store = MagicMock()
+    store.get_num_images.return_value = 1
+    manager.run_acquisition.return_value = store
+    preview = tools.get_mda_settings(mock_ctrl, unconstrained_guard)
+    monkeypatch.setattr(tools, "CONFIRM_FN", lambda *args, **kwargs: True)
+    result = tools.run_mda(mock_ctrl, unconstrained_guard, preview["preview_token"])
+    manager.run_acquisition.assert_called_once_with()
+    assert result["datastore"]["image_count"] == 1

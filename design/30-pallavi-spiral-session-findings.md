@@ -445,3 +445,34 @@ matches its previous statement.
    gate passed on MMCore 12.5.0.
 5. Make output terminology explicit and add coordinate-aware/offline mosaicking
    through the design/29 dataset reader.
+
+## Implementation status (2026-07-21)
+
+Implemented on `design/30-implementation`:
+
+- semantic EMU percentage get/set tools now own the documented affine conversion,
+  refuse writes until two distinct GUI/raw observations verify it, enforce the raw
+  property's type/range, and return requested/raw/effective/representability state;
+- state reporting separates commanded, interpreted, measured, and GUI values instead
+  of treating a raw readback as a calibrated measurement;
+- generated hooks receive a non-executing static syntax and callback-contract
+  preflight before save; import/constructor/synthetic execution remains prohibited
+  without a real sandbox;
+- `snap_to_album` and `get_album_state` use the rig-proven MMStudio Java collection
+  path and explicitly describe Album output as independent GUI snaps;
+- `get_mda_settings` fingerprints the current GUI MDA plan and `run_mda` refuses a
+  missing, stale, or changed preview, checks exposure and saving confinement, requires
+  blocking human confirmation, and reports the returned Datastore; and
+- agent/tool language distinguishes Album, contact sheet, stage-coordinate mosaic,
+  stitched mosaic, and multi-page TIFF.
+
+`tests/test_integration.py` adds MM-gated real-rig coverage for the live
+EMU calibration/readback, a disabled-laser setpoint round trip with restoration,
+Album reachability and one opt-in snap, MDA GUI-state preview, and one opt-in safe
+MDA. Mutating checks require exact environment-variable phrases; the MDA check also
+refuses unless saving, time, positions, Z, channels, and autofocus are all disabled.
+
+The coordinate-aware/offline mosaic remains assigned to design/29. An
+`add_image_to_album` tool is intentionally not exposed because Microclaw does not
+currently retain arbitrary MM Java Image proxies safely across tool calls; the proven
+and implemented `snap_to_album` path passes the live Java collection within one call.

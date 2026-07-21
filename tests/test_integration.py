@@ -16,11 +16,23 @@ before returning.
 """
 import base64
 import json
+import os
 from pathlib import Path
 
 import pytest
 
 pytestmark = pytest.mark.integration
+
+# Design/30's rig surfaces are separately gated: MM_RUNNING alone must never
+# snap, alter a laser setpoint, or run the GUI's current MDA.
+DESIGN30_EMU = pytest.mark.skipif(
+    os.environ.get("MM_DESIGN30_EMU") != "1",
+    reason="set MM_DESIGN30_EMU=1 for design/30 EMU rig tests",
+)
+DESIGN30_STUDIO = pytest.mark.skipif(
+    os.environ.get("MM_DESIGN30_STUDIO") != "1",
+    reason="set MM_DESIGN30_STUDIO=1 for design/30 MMStudio Album/MDA tests",
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1775,3 +1787,154 @@ def test_run_adaptive_survey_tool_reaches_the_adaptive_runner(
         dataset.close()
     assert {c.get("position") for c in coords} == {"tile_0", "tile_1"}, \
         "the dataset must hold exactly the first two tiles IN THE GIVEN ORDER"
+
+
+# ---------------------------------------------------------------------------
+# EMU semantic power, MMStudio Album, and MDA (design/30)
+#
+# PowerShell setup, in addition to MM_RUNNING=1:
+#   $env:MM_DESIGN30_EMU="1"
+#   $env:MM_APP_DIR="C:\Program Files\Micro-Manager-2.0"
+#   $env:MM_EMU_LASER_SLOT="2"
+#   $env:MM_EMU_CALIBRATION_POINTS='[{"percent":1,"raw_value":0},{"percent":10,"raw_value":3}]'
+#   $env:MM_DESIGN30_STUDIO="1"  # Album/MDA reads only
+# Mutations additionally require the exact phrases named by their skip reasons.
+# ---------------------------------------------------------------------------
+
+def _load_design30_real_emu(headless_mm, unconstrained_guard):
+    from microclaw import tools
+    app_dir = os.environ.get("MM_APP_DIR")
+    if not app_dir:
+        pytest.skip("MM_APP_DIR must name the rig's Micro-Manager installation")
+    tools._EMU_SESSION_CACHE.clear()
+    result = tools.get_emu_configuration(
+        headless_mm, unconstrained_guard, mm_app_dir=app_dir
+    )
+    assert "error" not in result, result
+    return result
+
+
+def _design30_calibration_points():
+    raw = os.environ.get("MM_EMU_CALIBRATION_POINTS")
+    if not raw:
+        pytest.skip("MM_EMU_CALIBRATION_POINTS must contain two known GUI/raw observations")
+    points = json.loads(raw)
+    assert isinstance(points, list) and len(points) >= 2
+    return points
+
+
+@DESIGN30_EMU
+def test_real_emu_percentage_readback_matches_verified_affine(
+    headless_mm, unconstrained_guard
+):
+    from microclaw import tools
+    _load_design30_real_emu(headless_mm, unconstrained_guard)
+    slot = int(os.environ.get("MM_EMU_LASER_SLOT", "2"))
+    verified = tools.verify_emu_laser_power_calibration(
+        headless_mm, unconstrained_guard, slot, _design30_calibration_points()
+    )
+    assert verified["verified"] is True, verified
+    state = tools.get_emu_laser_power_percentage(headless_mm, unconstrained_guard, slot)
+    assert state["interpreted_state"]["calibration_verified"] is True
+    assert state["commanded_state"]["raw_value"] is not None
+    assert isinstance(state["interpreted_state"]["effective_percent"], float)
+    assert state["measured_state"] is None
+    assert state["gui_state"] is None
+
+
+@DESIGN30_EMU
+@pytest.mark.skipif(
+    os.environ.get("MM_ALLOW_EMU_POWER_WRITE") != "WRITE DISABLED LASER SETPOINT",
+    reason="set MM_ALLOW_EMU_POWER_WRITE='WRITE DISABLED LASER SETPOINT' to opt in",
+)
+def test_real_emu_percentage_write_roundtrips_while_laser_is_disabled(
+    headless_mm, unconstrained_guard
+):
+    from microclaw import tools
+    emu = _load_design30_real_emu(headless_mm, unconstrained_guard)
+    slot = int(os.environ.get("MM_EMU_LASER_SLOT", "2"))
+    percent = float(os.environ.get("MM_EMU_WRITE_PERCENT", "1"))
+    laser = emu["lasers"][slot]
+    enable = laser.get("enable")
+    if not enable or "device" not in enable:
+        pytest.skip(f"slot {slot} has no readable enable property")
+    enable_raw = str(headless_mm.core.get_property(enable["device"], enable["property"]))
+    assert enable_raw == str(enable.get("off", "0")), (
+        "Refusing setpoint integration test while illumination is enabled"
+    )
+    verified = tools.verify_emu_laser_power_calibration(
+        headless_mm, unconstrained_guard, slot, _design30_calibration_points()
+    )
+    assert verified["verified"] is True, verified
+    power = laser["power_pct"]
+    original = str(headless_mm.core.get_property(power["device"], power["property"]))
+    try:
+        result = tools.set_emu_laser_power_percentage(
+            headless_mm, unconstrained_guard, slot, percent
+        )
+        assert "error" not in result, result
+        assert result["raw_value_written"] == str(
+            headless_mm.core.get_property(power["device"], power["property"])
+        )
+    finally:
+        headless_mm.core.set_property(power["device"], power["property"], original)
+        headless_mm.core.wait_for_device(power["device"])
+
+
+@DESIGN30_STUDIO
+def test_real_album_state_is_reachable(headless_mm, unconstrained_guard):
+    from microclaw import tools
+    result = tools.get_album_state(headless_mm, unconstrained_guard)
+    assert isinstance(result["album_exists"], bool)
+    if result["album_exists"]:
+        assert result["datastore"]["image_count"] >= 0
+
+
+@DESIGN30_STUDIO
+@pytest.mark.skipif(
+    os.environ.get("MM_ALLOW_ALBUM_SNAP") != "SNAP TO ALBUM",
+    reason="set MM_ALLOW_ALBUM_SNAP='SNAP TO ALBUM' to fire one camera snap",
+)
+def test_real_snap_appears_in_mmstudio_album(headless_mm, unconstrained_guard):
+    from microclaw import tools
+    before = tools.get_album_state(headless_mm, unconstrained_guard)
+    before_count = before["datastore"]["image_count"] if before["album_exists"] else 0
+    result = tools.snap_to_album(headless_mm, unconstrained_guard)
+    assert result["album_exists"] is True
+    assert result["datastore"]["image_count"] > before_count
+
+
+@DESIGN30_STUDIO
+def test_real_mda_preview_reads_gui_state(headless_mm, unconstrained_guard):
+    from microclaw import tools
+    result = tools.get_mda_settings(headless_mm, unconstrained_guard)
+    assert result["source"] == "MMStudio GUI current MDA"
+    assert len(result["preview_token"]) == 64
+    for key in ("save", "use_frames", "use_position_list", "use_slices",
+                "use_channels", "use_autofocus"):
+        assert isinstance(result["settings"][key], bool), result
+
+
+@DESIGN30_STUDIO
+@pytest.mark.skipif(
+    os.environ.get("MM_ALLOW_SAFE_MDA") != "RUN ONE SAFE IMAGE",
+    reason="set MM_ALLOW_SAFE_MDA='RUN ONE SAFE IMAGE' after configuring safe GUI MDA",
+)
+def test_real_mda_runs_exactly_one_deliberately_safe_image(
+    headless_mm, unconstrained_guard, monkeypatch
+):
+    from microclaw import tools
+    preview = tools.get_mda_settings(headless_mm, unconstrained_guard)
+    settings = preview["settings"]
+    unsafe = {
+        key: settings[key]
+        for key in ("save", "use_frames", "use_position_list", "use_slices",
+                    "use_channels", "use_autofocus")
+        if settings[key] is not False
+    }
+    assert not unsafe, f"Refusing unsafe current GUI MDA settings: {unsafe}"
+    monkeypatch.setattr(tools, "CONFIRM_FN", lambda summary, kind="action": True)
+    result = tools.run_mda(headless_mm, unconstrained_guard, preview["preview_token"])
+    assert "error" not in result, result
+    assert result["datastore"]["image_count"] == 1
+    assert result["datastore"]["frozen"] is True
