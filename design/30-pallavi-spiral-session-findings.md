@@ -228,6 +228,74 @@ MDA`; the command-line flag alone is deliberately insufficient because this
 path can move hardware, enable illumination, autofocus, and save data exactly
 as configured in the GUI.
 
+### Spike results (2026-07-21)
+
+The default and MDA opt-in passes ran successfully on the Windows rig with
+MMCore 12.5.0. They settled the MDA feasibility questions and the read side of
+Album:
+
+- `studio.album()` resolves to a reusable
+  `org_micromanager_internal_DefaultAlbum` proxy. The bridge exposes
+  `add_image`, `add_images`, their without-processing variants,
+  `create_new_album`, and `get_datastore`. Calling `get_datastore` twice through
+  the same proxy succeeded; it returned `None` because no Album existed yet.
+- `AcquisitionManager.snap()` returns a live `java_util_ArrayList` proxy. Passing
+  that proxy directly to `Album.add_images` succeeds without conversion or
+  Python-side iteration; `add_images` returned `True`, meaning it created a new
+  Album Datastore and display. The resulting reusable `DefaultDatastore` was
+  named `Album`, contained one image, was writable (`frozen=False`), and had no
+  save path. The operator confirmed that the Album window repainted and showed
+  the image. This settles both Java collection/Image marshalling and GUI
+  visibility for the intended `snap -> add_images` path.
+- `studio.acquisitions()` resolves to a reusable
+  `org_micromanager_acquisition_internal_DefaultAcquisitionManager` proxy. Its
+  surface includes `get_acquisition_settings`, `set_acquisition_settings`,
+  `load_sequence_settings`, `save_sequence_settings`, `sequence_settings_builder`,
+  `run_acquisition`, `run_acquisition_nonblocking`,
+  `run_acquisition_with_settings`, and `snap`.
+- `get_acquisition_settings()` returns a reusable
+  `org_micromanager_acquisition_SequenceSettings` proxy. Its scalar getters are
+  callable with snake-cased names, while `channels`, `slices`, and `save_mode`
+  remain Java proxies rather than ordinary Python values. Calling `prefix()`
+  again after reading the other settings succeeded, establishing proxy lifetime
+  across subsequent bridge calls.
+- `set_acquisition_settings(settings)` accepts that same returned proxy and
+  returns `None`. Rereading the settings produced no differences, and the
+  operator confirmed that the MDA dialog remained visibly correct. A
+  `SequenceSettings` object can therefore be read, retained across calls, and
+  passed back through pyjavaz to the running Studio instance.
+- With a safe one-image configuration, `run_acquisition()` completed, repainted
+  the MMStudio display, and returned a reusable
+  `org_micromanager_data_internal_DefaultDatastore` proxy. It contained one
+  image, was frozen after the blocking call returned, was named `Untitled`, and
+  had no save path, matching `save=False`. A later
+  `is_acquisition_running()` call returned `False`, and all Datastore reads
+  still succeeded afterward. The operator saw the acquired image and Inspector;
+  MMStudio's Messages window reported no messages.
+
+The safe settings used for the successful MDA run had time points, positions,
+Z, channels, autofocus, and saving disabled. The latent `num_frames=6` and
+`interval_ms=300000` values remained in `SequenceSettings`, but did not apply
+because `use_frames=False`. The run produced exactly one image and no saved
+dataset, confirming that the `use_*` flags—not stale values in disabled GUI
+sections—control the executed axes.
+
+The first read-only pass prevented an unsafe test: it observed time points and
+saving enabled, with six frames at a 300,000 ms interval and a network output
+path. The operator replaced that with the safe settings above before running
+MDA. Retain this inspect-then-confirm sequence in the eventual tool; the fact
+that the bridge can execute settings is not permission to execute them without
+the normal hardware guardrails and a resolved-plan preview.
+
+All feasibility questions posed by this spike are now settled for MMCore 12.5.0.
+The proven Album implementation path is `studio.acquisitions().snap()` followed
+by `studio.album().add_images(images)` using the returned Java collection proxy
+unchanged. The proven MDA path is read/preview settings, pass a retained
+`SequenceSettings` proxy back through `set_acquisition_settings` when required,
+and invoke `run_acquisition()` to obtain the displayed Datastore. Album and MDA
+tool implementation can proceed; both still require the normal exposure,
+illumination, motion, saving, and resolved-plan guardrails described above.
+
 ### Required tool surface
 
 Add Java/MMStudio-backed tools rather than attempting to emulate Album in a
@@ -370,8 +438,10 @@ matches its previous statement.
    commanded/interpreted/measured/GUI state separation here — it is the cheap,
    high-value part that would have surfaced the disagreement immediately.
 2. Validate generated hooks before touching illumination or the sample.
-3. Spike Album + MDA bridge reachability on the rig, then add the Album-backed
-   snap workflow so Microclaw preserves the user's normal MMStudio interaction.
-4. Expose the guarded MMStudio MDA settings/run surface (gated on the same spike).
+3. Add the Album-backed snap workflow so Microclaw preserves the user's normal
+   MMStudio interaction; its bridge, collection-marshalling, Datastore, and GUI
+   repaint feasibility gates passed on MMCore 12.5.0.
+4. Expose the guarded MMStudio MDA settings/run surface; its bridge feasibility
+   gate passed on MMCore 12.5.0.
 5. Make output terminology explicit and add coordinate-aware/offline mosaicking
    through the design/29 dataset reader.
