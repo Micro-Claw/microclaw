@@ -1,5 +1,7 @@
 from __future__ import annotations
-import json
+from dataclasses import dataclass
+import hashlib
+import math
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -7,6 +9,35 @@ from pycromanager import Core, Studio
 
 if TYPE_CHECKING:
     from microclaw.safety import SafetyGuard
+
+
+@dataclass(frozen=True)
+class PositionProjection:
+    """Lossless-enough inspection plus the safe microclaw navigation subset."""
+
+    positions: list[dict]
+    native_entries: list[dict]
+    issues: list[dict]
+
+
+@dataclass(frozen=True)
+class PreparedPositionList:
+    """A native list parsed but not yet published to Micro-Manager's GUI."""
+
+    candidate: object
+    projection: PositionProjection
+    path: str
+    content_hash: str
+
+
+class PositionListConflict(ValueError):
+    """A native position list could not be safely prepared or committed."""
+
+    def __init__(self, path: str, issues: list[dict], content_hash: str | None = None):
+        super().__init__(f"Position list conflict in {path}.")
+        self.path = path
+        self.issues = issues
+        self.content_hash = content_hash
 
 
 # Micro-Manager plugin access requires the unified SharedPluginClassLoader from
@@ -273,26 +304,171 @@ class MicroscopeController:
 
     # --- Position list management ---
 
-    def _read_mm_position_list(self) -> list[dict]:
-        """Read positions from MM's GUI position list (read-only Java access)."""
-        pl = self._studio.positions().get_position_list()
-        out = []
-        for i in range(pl.get_number_of_positions()):
-            msp = pl.get_position(i)
-            entry: dict = {"name": str(msp.get_label())}
-            for j in range(msp.size()):
+    @staticmethod
+    def _position_hash(path: str) -> str:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+    @staticmethod
+    def _stage_name(sp) -> str:
+        # Live-verified on MMCore 12.5.0 (design/31 spike). Keep fallbacks for
+        # bridge variants, but prefer the raw Java field that is known to work.
+        for attr in ("stageName", "stage_name"):
+            try:
+                return str(getattr(sp, attr))
+            except Exception:
+                pass
+        for method in ("get_stage_name", "getStageName"):
+            try:
+                return str(getattr(sp, method)())
+            except Exception:
+                pass
+        return ""
+
+    @staticmethod
+    def _msp_default(msp, axis: str) -> str:
+        names = (
+            ("get_default_xy_stage", "getDefaultXYStage")
+            if axis == "xy"
+            else ("get_default_z_stage", "getDefaultZStage")
+        )
+        for name in names:
+            try:
+                return str(getattr(msp, name)())
+            except Exception:
+                pass
+        return ""
+
+    def _project_mm_position_list(self, plist) -> PositionProjection:
+        """Project a native Java PositionList without mutating or publishing it."""
+        xy_device = str(self._core.get_xy_stage_device())
+        z_device = str(self._core.get_focus_device())
+        positions: list[dict] = []
+        native_entries: list[dict] = []
+        issues: list[dict] = []
+        labels: dict[str, list[int]] = {}
+
+        for i in range(int(plist.get_number_of_positions())):
+            msp = plist.get_position(i)
+            label = str(msp.get_label())
+            native: dict = {"index": i, "name": label, "device_positions": []}
+            projected: dict = {"name": label}
+            default_xy = self._msp_default(msp, "xy")
+            default_z = self._msp_default(msp, "z")
+            matched = False
+
+            if not label.strip():
+                issues.append({
+                    "code": "empty_label", "index": i, "label": label,
+                    "details": "Position label is empty.",
+                    "allowed_resolutions": ["cancel", "remove_entry"],
+                })
+            labels.setdefault(label, []).append(i)
+
+            for j in range(int(msp.size())):
                 sp = msp.get(j)
-                # The bridge exposes the axis-count as the raw Java field name
-                # `numAxes`; `sp.num_axes` does NOT resolve over pycro-manager and
-                # silently drops XY/Z (found via design/11b Spike A).
                 n_axes = int(sp.numAxes)
+                stage_name = self._stage_name(sp)
+                device_entry: dict = {"device": stage_name, "num_axes": n_axes}
                 if n_axes == 2:
-                    entry["x_um"] = round(float(sp.x), 3)
-                    entry["y_um"] = round(float(sp.y), 3)
+                    x, y = float(sp.x), float(sp.y)
+                    device_entry["position_um"] = [x, y]
+                    # Retain canonical coordinates for offline inspection even
+                    # when this rig calls the device something else.
+                    native.setdefault("x_um", x)
+                    native.setdefault("y_um", y)
+                    effective = stage_name or default_xy
+                    if effective == xy_device:
+                        projected["x_um"], projected["y_um"] = x, y
+                        matched = True
                 elif n_axes == 1:
-                    entry["z_um"] = round(float(sp.x), 3)
-            out.append(entry)
-        return out
+                    z = float(sp.x)
+                    device_entry["position_um"] = [z]
+                    native.setdefault("z_um", z)
+                    effective = stage_name or default_z
+                    if effective == z_device:
+                        projected["z_um"] = z
+                        matched = True
+                else:
+                    issues.append({
+                        "code": "unsupported_axis_count", "index": i,
+                        "label": label, "details": f"Stage {stage_name!r} has {n_axes} axes.",
+                        "allowed_resolutions": ["cancel", "remove_entry"],
+                    })
+                native["device_positions"].append(device_entry)
+
+            native_entries.append(native)
+            values = [projected[k] for k in ("x_um", "y_um", "z_um") if k in projected]
+            if any(not math.isfinite(v) for v in values):
+                issues.append({
+                    "code": "non_finite_coordinate", "index": i, "label": label,
+                    "details": "Position contains a non-finite coordinate.",
+                    "allowed_resolutions": ["cancel", "remove_entry"],
+                })
+            elif matched:
+                positions.append(projected)
+            else:
+                issues.append({
+                    "code": "unsupported_only", "index": i, "label": label,
+                    "details": "No stage in this entry matches the configured XY or focus device.",
+                    "allowed_resolutions": ["cancel", "preserve_and_omit", "remove_entry"],
+                })
+
+        for label, indexes in labels.items():
+            if label and len(indexes) > 1:
+                issues.append({
+                    "code": "duplicate_label", "indexes": indexes, "label": label,
+                    "details": f"Position label {label!r} occurs {len(indexes)} times.",
+                    "allowed_resolutions": ["cancel", "remove_entry"],
+                })
+        return PositionProjection(positions, native_entries, issues)
+
+    def _read_mm_position_list(self) -> list[dict]:
+        """Read the navigable projection of MM's current GUI position list."""
+        pl = self._studio.positions().get_position_list()
+        return self._project_mm_position_list(pl).positions
+
+    def prepare_position_list(self, path: str) -> PreparedPositionList:
+        """Parse a native file into a temporary Java list without publishing it."""
+        from pycromanager import JavaObject
+
+        before = self._position_hash(path)
+        candidate = JavaObject("org.micromanager.PositionList", port=self._port)
+        try:
+            candidate.load(str(path))
+        except Exception as e:
+            raise ValueError(
+                f"{path} is not a native Micro-Manager position list."
+            ) from e
+        after = self._position_hash(path)
+        if before != after:
+            raise PositionListConflict(path, [{
+                "code": "file_changed_during_load",
+                "details": "The position-list file changed while Micro-Manager parsed it.",
+                "allowed_resolutions": ["retry", "cancel"],
+            }], content_hash=after)
+        projection = self._project_mm_position_list(candidate)
+        return PreparedPositionList(candidate, projection, str(path), after)
+
+    def project_position_list_file(self, path: str) -> PositionProjection:
+        """Parse and project a native file without publishing or caching it."""
+        return self.prepare_position_list(path).projection
+
+    def commit_position_list(self, prepared: PreparedPositionList) -> None:
+        """Publish an already parsed and validated candidate to MM and Python."""
+        self._studio.positions().set_position_list(prepared.candidate)
+        self._positions = list(prepared.projection.positions)
+
+    def inspect_current_position_list(self) -> PositionProjection:
+        """Project the current native list without changing the Python cache."""
+        return self._project_mm_position_list(
+            self._studio.positions().get_position_list()
+        )
+
+    def set_position_projection(self, projection: PositionProjection) -> None:
+        """Publish a projection to the cache after caller-owned validation."""
+        if projection.issues:
+            raise ValueError("Cannot cache an inconsistent position projection.")
+        self._positions = list(projection.positions)
 
     def import_from_mm_position_list(self) -> list[str]:
         """Copy positions from MM's GUI position list into the internal store.
@@ -419,25 +595,23 @@ class MicroscopeController:
                 plist.remove_position(i)
             pm.set_position_list(plist)             # repaints the GUI list
 
-    def save_position_list(self, path: str) -> None:
-        """Persist the position list to a JSON file."""
-        Path(path).write_text(json.dumps(self._positions, indent=2), encoding="utf-8")
+    def save_position_list(self, path: str) -> PositionProjection:
+        """Persist Micro-Manager's current native PositionList."""
+        plist = self._studio.positions().get_position_list()
+        projection = self._project_mm_position_list(plist)
+        plist.save(str(path))
+        return projection
 
     def load_position_list(self, path: str) -> None:
-        """Load positions from a JSON file written by save_position_list.
+        """Load and publish a structurally valid native Micro-Manager list.
 
-        Rejects a malformed file (hand-edited, wrong schema) up front with a
-        ValueError rather than letting a missing key surface as a KeyError deep
-        in go_to_position. Z-only entries ({"name", "z_um"}) are valid — they
-        come from 1-axis MultiStagePositions in MM.
+        The tool layer uses prepare/commit directly so it can add safety-limit
+        validation before publication. This convenience method rejects every
+        projection issue and is retained for non-tool callers.
         """
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
-
-        def _valid(p) -> bool:
-            return isinstance(p, dict) and "name" in p and (
-                {"x_um", "y_um"} <= p.keys() or "z_um" in p
+        prepared = self.prepare_position_list(path)
+        if prepared.projection.issues:
+            raise PositionListConflict(
+                prepared.path, prepared.projection.issues, prepared.content_hash
             )
-
-        if not isinstance(data, list) or not all(_valid(p) for p in data):
-            raise ValueError(f"{path} is not a valid microclaw position list.")
-        self._positions = data
+        self.commit_position_list(prepared)

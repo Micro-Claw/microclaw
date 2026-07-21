@@ -307,8 +307,8 @@ MM_RUNNING=1 pytest -m integration
 | `go_to_position` | Move stage to a named position |
 | `delete_position` | Delete a named position |
 | `clear_position_list` | Clear all positions |
-| `save_position_list` | Save position list to a microclaw JSON file |
-| `load_position_list` | Load a microclaw JSON position file |
+| `save_position_list` | Save MM's native position list to an interoperable `.pos` file |
+| `load_position_list` | Transactionally load a native Micro-Manager position file |
 | `import_mm_positions` | Import positions from the MM GUI position list |
 | `run_multiposition_acquisition` | Visit each position and run snap/zstack/timelapse |
 | `run_tile_acquisition` | Acquire a rows×cols tile grid centered on current stage position |

@@ -618,20 +618,23 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "save_position_list",
         "description": (
-            "Save the position list to a microclaw JSON file for use in future "
-            "sessions. This is microclaw's own format, not MM's native .pos file."
+            "Save MM's current native position list to an interoperable .pos file. "
+            "If the path does not end in .pos, the suffix is appended."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "Output JSON file path."}
+                "path": {"type": "string", "description": "Output .pos file path."}
             },
             "required": ["path"],
         },
     },
     {
         "name": "load_position_list",
-        "description": "Load a previously saved position list file into the agent.",
+        "description": (
+            "Transactionally load a native Micro-Manager position-list file into "
+            "both microclaw and MM's Position List Manager."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {

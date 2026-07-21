@@ -73,6 +73,18 @@ XY fixture. It does not establish one-axis/Z field behavior or the semantics of
 non-empty default-stage fields; cover those with a second small fixture or the
 live integration tests before relying on them.
 
+One further limit of this spike: the rig's configured devices are `XY`/`Z`,
+while the fixture names `SmarActXY`, so every fixture entry would be classified
+as unsupported under the proposed device-name rules. The spike inspected the
+temporary Java object directly; it did not execute the proposed projection. It
+therefore verified only that the fields can be read — not the positive
+projection branch (`stageName` matches the configured XY stage → emit
+`x_um`/`y_um`) nor the `set_position_list` publish. The fixture/contract test
+must fake the configured XY device name as `SmarActXY` to exercise
+match-and-emit. Planned live integration test 2 exercises publication by loading
+through microclaw. Spellings are live-verified; match-and-emit and publication
+remain required tests.
+
 ## Requirements
 
 1. Saving produces a file that Micro-Manager 2.x can load without conversion.
@@ -217,13 +229,19 @@ reported projection. Saving also avoids changing the GUI merely to save.
 1. Construct a new `org.micromanager.PositionList` with `JavaObject` on the
    controller's existing bridge port.
 2. Call `candidate.load(str(path))`. Micro-Manager validates and parses its own
-   file format.
+   file format. Hash the workspace-confined file immediately before and after
+   this Java call. If the hashes differ, discard the candidate and return a
+   `file_changed_during_load` conflict; Python and Java may otherwise have read
+   different file versions even when they run on the same host.
 3. Derive a microclaw projection from `candidate`, without consulting or
    changing the current list.
 4. Validate the complete projection, including numeric types, finite values,
    stage safety limits, non-empty labels, and unique labels.
 5. If validation fails, return a structured conflict for the agent to present
    to the user, and leave both the old native list and `_positions` unchanged.
+   The conflict payload records the resolved workspace path and the matching
+   post-load content hash, computed by reading its bytes Python-side. The
+   resolution flow below compares against this recorded hash.
 6. Commit by calling `studio.positions().set_position_list(candidate)`, then
    assign the already-validated projection to `_positions`.
 
@@ -249,6 +267,9 @@ specifically approved changes, validates again, and commits. If the file
 changed, it returns a new conflict and asks again. Alternatively, the user can
 repair the file in Micro-Manager and retry the ordinary load. This prevents a
 resolution from mutating the pre-existing GUI list or acting on stale contents.
+The resolution retry repeats the before/after hash check around Java parsing;
+matching the old hash before parsing is not enough if the file changes during
+the parse.
 
 ### Projection rules
 
@@ -441,7 +462,14 @@ def project_position_list_file(self, path: str) -> PositionProjection:
 Then `rank_hook_log` reads through it instead of `json.loads`:
 
 ```python
-# microclaw/tools.py, inside rank_hook_log, replacing the json.loads block
+# microclaw/tools.py — needs `import math` at module scope.
+# A completed hook log may predate the rounding-removal change and still carry
+# 3-decimal values, which
+# differ from a full-precision .pos by up to ~5e-4 µm. A picometer tolerance
+# would spuriously fail exactly those historical replays, so use 1e-3 µm (1 nm).
+POSITION_ABS_TOL_UM = 1e-3
+
+# inside rank_hook_log, replacing the json.loads block
 if position_list_path:
     position_list_path = guard.resolve_in_workspace(position_list_path)
     projection = ctrl.project_position_list_file(position_list_path)
@@ -454,7 +482,7 @@ if position_list_path:
         presence_matches = all((a in saved_position) == (a in ranked) for a in axes)
         values_match = presence_matches and all(
             a not in saved_position or math.isclose(
-                saved_position[a], ranked[a], rel_tol=0.0, abs_tol=1e-6
+                saved_position[a], ranked[a], rel_tol=0.0, abs_tol=POSITION_ABS_TOL_UM
             )
             for a in axes
         )
@@ -477,6 +505,10 @@ Notes:
 - Update the `rank_hook_log` docstring: it is offline in the sense of no hardware
   motion and no image analysis, but it now parses the position file through the
   Java bridge.
+- Add `import math` at module scope, and compare coordinates with the `1e-3` µm
+  (1 nm) absolute tolerance, not exact equality. This is deliberately looser than
+  representational exactness so a full-precision `.pos` still matches an older,
+  3-decimal-rounded hook log; anything tighter reintroduces spurious mismatches.
 - Add a fixture test that ranks a hook log against
   `tests/fixtures/PD_PositionList2.pos` and
   asserts `label_match` and `coordinate_matches` for the `spiral_*` labels.
@@ -507,6 +539,8 @@ Notes:
   resolution followed by a fresh preflight.
 - Assert load resolution re-reads the file, verifies its path and content hash,
   rejects a changed file, and never retains a candidate Java proxy across turns.
+- Assert a file change between the pre-load and post-load hash reads returns
+  `file_changed_during_load` and publishes neither the candidate nor `_positions`.
 - Assert unsupported-only entries offer the preserve-and-omit choice and that
   choosing it applies only to the retried operation.
 - Assert load parses into a temporary list and calls `set_position_list` exactly
@@ -519,8 +553,9 @@ Notes:
 - Assert an old private JSON array is rejected as an invalid native file without
   special detection, migration guidance, or fallback parsing.
 - Assert offline ranking retains unsupported labels, treats missing-axis presence
-  as a mismatch, and compares coordinate values with the documented `1e-6 µm`
-  absolute tolerance rather than exact equality.
+  as a mismatch, and compares coordinate values with the documented `1e-3 µm`
+  (1 nm) absolute tolerance rather than exact equality. Include a case where a
+  3-decimal-rounded log still matches a full-precision `.pos`.
 - Update workspace-confinement, artifact-path, schema-description, README, and
   agent-prompt assertions for `.pos`.
 
@@ -558,10 +593,16 @@ comparing only microclaw's projection would miss metadata loss.
    verified the XY bridge spellings, native save/reload, and Property Map
    equality. One-axis/Z and non-empty default-stage behavior remain for a
    focused fixture or live integration test.
-2. Add candidate projection and transactional load helpers in the controller.
-3. Switch save to the native Java method.
-4. Update tool schemas, agent prompt, README, and tests in the same change so no
-   surface continues to promise the proprietary format.
+2. **In progress:** candidate projection and transactional load helpers are
+   implemented and unit-tested. Load/import now return structured conflicts
+   without post-publication filtering. The remaining position-consuming tools
+   must still adopt the refresh preflight before this step is complete.
+3. **Complete in code; live verification pending:** save uses the native Java
+   method, appends `.pos`, preserves inconsistent native lists losslessly, and
+   refreshes the cache only after tool-layer safety validation.
+4. **In progress:** tool schemas, the agent prompt, README, and affected unit
+   tests describe the native format. Complete the remaining consumer and live
+   integration updates in the same implementation series.
 5. Exercise both directions against a live Micro-Manager build before release.
 
 ## Decision summary

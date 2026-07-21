@@ -122,7 +122,7 @@ Image analysis:
 
 Position lists:
 - mark_position stores a position in microclaw's list and mirrors it into MM's PositionList, so it appears in the MM GUI's Position List Manager. Use it after the biologist has navigated to a site of interest.
-- save_position_list / load_position_list persist positions across sessions as a microclaw JSON file (not MM's native .pos format).
+- save_position_list / load_position_list exchange native Micro-Manager `.pos` files so MM's Position List Manager and microclaw stay synchronized.
 - Before saving analysis-selected coordinates, call validate_positions on the exact XY/Z records. Save only `accepted`; report `rejected`; never clip. Acquisition rechecks guards but is not the first validation step.
 - Use run_multiposition_with_autofocus for automated surveys — do not manually loop over go_to_position unless the user explicitly asks for it.
 - For grid or multi-position surveys, use run_tile_acquisition / run_multiposition_acquisition — including when the user wants the visited positions in the position list (pass mark_positions=true). Do not manually loop move_stage_xy / mark_position / snap_and_analyze; each manual step costs a full model round trip.

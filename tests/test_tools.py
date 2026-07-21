@@ -1953,7 +1953,9 @@ class TestArtifactDeclarations:
 
         path = str(tmp_path / "p.json")
         result = tools.save_position_list(mock_ctrl, unconstrained_guard, path=path)
-        assert result["artifact"] == {"kind": "position_list", "path": path}
+        final_path = path + ".pos"
+        assert result["artifact"] == {"kind": "position_list", "path": final_path}
+        mock_ctrl.save_position_list.assert_called_once_with(final_path)
 
     def test_read_hook_log_declares_the_log(self, mock_ctrl, unconstrained_guard, tmp_path):
         from microclaw import tools
@@ -2007,14 +2009,19 @@ class TestRunAOfflineTools:
     def test_rank_hook_log_verifies_saved_labels_and_coordinates(
         self, mock_ctrl, unconstrained_guard, tmp_path
     ):
+        from microclaw.controller import PositionProjection
         records = [
             {"position": "top", "x_um": 1, "y_um": 2,
              "result": {"snr": 9}},
             {"position": "low", "x_um": 3, "y_um": 4,
              "result": {"snr": 2}},
         ]
-        positions = tmp_path / "positions.json"
-        positions.write_text(json.dumps([{"name": "top", "x_um": 99, "y_um": 2}]))
+        positions = tmp_path / "positions.pos"
+        positions.write_text("native fixture placeholder")
+        native = [{"name": "top", "x_um": 99, "y_um": 2}]
+        mock_ctrl.project_position_list_file.return_value = PositionProjection(
+            [], native, []
+        )
         result = tools.rank_hook_log(
             mock_ctrl, unconstrained_guard, self._log(tmp_path, records),
             position_list_path=str(positions),
@@ -2023,6 +2030,35 @@ class TestRunAOfflineTools:
         assert verification["label_match"] is True
         assert verification["coordinate_matches"] == [False]
         assert verification["matches_ranking_prefix"] is False
+
+    def test_rank_hook_log_tolerates_legacy_rounding_and_checks_axis_presence(
+        self, mock_ctrl, unconstrained_guard, tmp_path
+    ):
+        from microclaw.controller import PositionProjection
+        records = [{
+            "position": "top", "x_um": 1.234, "y_um": 2.346,
+            "result": {"snr": 9},
+        }]
+        positions = tmp_path / "positions.pos"
+        positions.write_text("native fixture placeholder")
+        native = [{"name": "top", "x_um": 1.23449, "y_um": 2.34551}]
+        mock_ctrl.project_position_list_file.return_value = PositionProjection(
+            [], native, []
+        )
+        result = tools.rank_hook_log(
+            mock_ctrl, unconstrained_guard, self._log(tmp_path, records),
+            position_list_path=str(positions),
+        )
+        assert result["position_list_verification"]["coordinate_matches"] == [True]
+
+        mock_ctrl.project_position_list_file.return_value = PositionProjection(
+            [], [{**native[0], "z_um": 5.0}], []
+        )
+        result = tools.rank_hook_log(
+            mock_ctrl, unconstrained_guard, self._log(tmp_path, records),
+            position_list_path=str(positions),
+        )
+        assert result["position_list_verification"]["coordinate_matches"] == [False]
 
     def test_validate_positions_does_not_move_or_expose(self, mock_ctrl):
         guard = SafetyGuard(SafetyConstraints(
@@ -2165,39 +2201,48 @@ class TestMarkPosition:
 
 
 class TestLoadPositionListValidation:
-    def test_out_of_bounds_entry_rejected(self, mock_ctrl, default_guard):
+    def test_out_of_bounds_entry_returns_conflict_without_commit(self, mock_ctrl, default_guard):
+        from microclaw.controller import PreparedPositionList, PositionProjection
         from microclaw.tools import load_position_list
         stored = [
             {"name": "Good", "x_um": 0.0, "y_um": 0.0, "z_um": 50.0},
             {"name": "BadZ", "x_um": 0.0, "y_um": 0.0, "z_um": 999.0},
         ]
-        mock_ctrl.get_positions.side_effect = lambda: [
-            p for p in stored if p["name"] not in removed
+        projection = PositionProjection(stored, stored, [])
+        mock_ctrl.prepare_position_list.return_value = PreparedPositionList(
+            object(), projection, "x.pos", "abc"
+        )
+
+        result = load_position_list(mock_ctrl, default_guard, path="x.pos")
+        issues = result["position_list_conflict"]["issues"]
+        assert [(i["code"], i["label"]) for i in issues] == [
+            ("unsafe_coordinate", "BadZ")
         ]
-        removed: set = set()
-        mock_ctrl.remove_position.side_effect = lambda name: removed.add(name)
+        mock_ctrl.commit_position_list.assert_not_called()
 
-        result = load_position_list(mock_ctrl, default_guard, path="x.json")
-        assert [r["name"] for r in result["rejected"]] == ["BadZ"]
-        mock_ctrl.remove_position.assert_called_once_with("BadZ")
-        assert result["count"] == 1
-
-    def test_z_only_entry_survives(self, mock_ctrl, default_guard):
+    def test_z_only_entry_commits(self, mock_ctrl, default_guard):
+        from microclaw.controller import PreparedPositionList, PositionProjection
         from microclaw.tools import load_position_list
-        mock_ctrl.get_positions.return_value = [{"name": "Zonly", "z_um": 50.0}]
-        result = load_position_list(mock_ctrl, default_guard, path="x.json")
-        assert result["rejected"] == []
-        mock_ctrl.remove_position.assert_not_called()
+        stored = [{"name": "Zonly", "z_um": 50.0}]
+        projection = PositionProjection(stored, stored, [])
+        prepared = PreparedPositionList(object(), projection, "x.pos", "abc")
+        mock_ctrl.prepare_position_list.return_value = prepared
+        result = load_position_list(mock_ctrl, default_guard, path="x.pos")
+        assert result["count"] == 1
+        assert "rejected" not in result
+        mock_ctrl.commit_position_list.assert_called_once_with(prepared)
 
 
 class TestGetPositionList:
     def test_returns_positions(self, mock_ctrl, unconstrained_guard):
-        mock_ctrl.get_positions.return_value = [
-            {"name": "Pos1", "x_um": 0.0, "y_um": 0.0}
-        ]
+        from microclaw.controller import PositionProjection
+        positions = [{"name": "Pos1", "x_um": 0.0, "y_um": 0.0}]
+        projection = PositionProjection(positions, positions, [])
+        mock_ctrl.inspect_current_position_list.return_value = projection
         result = get_position_list(mock_ctrl, unconstrained_guard)
         assert result["count"] == 1
         assert result["positions"][0]["name"] == "Pos1"
+        mock_ctrl.set_position_projection.assert_called_once()
 
 
 class TestGoToPosition:

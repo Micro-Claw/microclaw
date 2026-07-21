@@ -22,7 +22,11 @@ from microclaw.autofocus import (
     curve_contrast,
     single_sweep_autofocus,
 )
-from microclaw.controller import MicroscopeController
+from microclaw.controller import (
+    MicroscopeController,
+    PositionListConflict,
+    PositionProjection,
+)
 from microclaw.errors import hint_for_error, humanize_java_error
 from microclaw.image_analysis import (
     ImageStats,
@@ -1399,8 +1403,15 @@ def mark_position(
 
 def get_position_list(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     """Return all positions from MM's native position list."""
-    positions = ctrl.get_positions()
-    return {"positions": positions, "count": len(positions)}
+    projection = _validate_position_projection(
+        ctrl.inspect_current_position_list(), guard
+    )
+    result = {"positions": projection.positions, "count": len(projection.positions)}
+    if projection.issues:
+        result["position_list_conflict"] = {"issues": projection.issues}
+    else:
+        ctrl.set_position_projection(projection)
+    return result
 
 
 def go_to_position(ctrl: MicroscopeController, guard: SafetyGuard, name: str) -> dict:
@@ -1429,50 +1440,78 @@ def clear_position_list(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
 
 
 def save_position_list(ctrl: MicroscopeController, guard: SafetyGuard, path: str) -> dict:
-    """Save the position list to a microclaw JSON file (not MM's native .pos)."""
+    """Save MM's current native position list to a `.pos` file."""
+    if not path.lower().endswith(".pos"):
+        path += ".pos"
     path = guard.resolve_in_workspace(path)
-    ctrl.save_position_list(path)
+    projection = ctrl.save_position_list(path)
     # The `artifact` key is for the transcript renderer, which draws a download
     # chip from it. Saying so structurally beats regexing paths out of `status`:
     # that works for six months and then matches a filename in an error message.
-    return {"status": f"Position list saved to {path}.",
-            "artifact": {"kind": "position_list", "path": path}}
+    result = {"status": f"Position list saved to {path}.",
+              "artifact": {"kind": "position_list", "path": path}}
+    if isinstance(projection, PositionProjection):
+        checked = _validate_position_projection(projection, guard)
+        if checked.issues:
+            result["position_list_conflict"] = {"issues": checked.issues}
+        else:
+            ctrl.set_position_projection(checked)
+    return result
 
 
-def _validate_stored_positions(
-    ctrl: MicroscopeController, guard: SafetyGuard
-) -> list[dict]:
-    """Drop any stored position that violates the numeric guards.
-
-    Positions enter the store from files or MM's GUI without passing through a
-    guard; validate at ingestion so an out-of-bounds entry can't later drive the
-    stage via go_to_position. Z-only entries (no XY) are legitimate — they come
-    from 1-axis MultiStagePositions in MM — so only guard the axes present.
-    Returns the list of rejected {"name", "reason"} entries (removed from store).
-    """
-    rejected: list[dict] = []
-    for p in list(ctrl.get_positions()):
+def _validate_position_projection(
+    projection: PositionProjection, guard: SafetyGuard
+) -> PositionProjection:
+    """Return projection plus safety issues, without mutating either list."""
+    issues = list(projection.issues)
+    for i, p in enumerate(projection.positions):
         try:
             if "x_um" in p and "y_um" in p:
                 guard.check_xy(p["x_um"], p["y_um"])
             if "z_um" in p:
                 guard.check_z(p["z_um"])
         except SafetyViolation as e:
-            ctrl.remove_position(p["name"])
-            rejected.append({"name": p["name"], "reason": str(e)})
-    return rejected
+            issues.append({
+                "code": "unsafe_coordinate", "index": i, "label": p["name"],
+                "details": str(e), "allowed_resolutions": ["cancel", "remove_entry"],
+            })
+    return PositionProjection(projection.positions, projection.native_entries, issues)
+
+
+def _position_conflict(
+    projection: PositionProjection,
+    *,
+    path: str | None = None,
+    content_hash: str | None = None,
+) -> dict:
+    payload: dict = {"issues": projection.issues}
+    if path is not None:
+        payload["path"] = path
+    if content_hash is not None:
+        payload["content_hash"] = content_hash
+    return {
+        "error": "Position list requires user resolution; no changes were published.",
+        "position_list_conflict": payload,
+    }
 
 
 def load_position_list(ctrl: MicroscopeController, guard: SafetyGuard, path: str) -> dict:
-    """Load a microclaw JSON position file (as written by save_position_list)."""
+    """Transactionally load a native Micro-Manager position-list file."""
     path = guard.resolve_in_workspace(path)   # save_position_list is guarded; be symmetric
-    ctrl.load_position_list(path)
-    rejected = _validate_stored_positions(ctrl, guard)
-    kept = ctrl.get_positions()
+    try:
+        prepared = ctrl.prepare_position_list(path)
+    except PositionListConflict as e:
+        projection = PositionProjection([], [], e.issues)
+        return _position_conflict(projection, path=e.path, content_hash=e.content_hash)
+    projection = _validate_position_projection(prepared.projection, guard)
+    if projection.issues:
+        return _position_conflict(
+            projection, path=prepared.path, content_hash=prepared.content_hash
+        )
+    ctrl.commit_position_list(prepared)
     return {
-        "status": f"Loaded {len(kept)} positions from {path}.",
-        "count": len(kept),
-        "rejected": rejected,
+        "status": f"Loaded {len(projection.positions)} positions from {path}.",
+        "count": len(projection.positions),
     }
 
 
@@ -1482,15 +1521,17 @@ def import_mm_positions(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     Use this after the user has set up positions in Micro-Manager's Position List
     Manager. The imported positions will be available for all acquisition tools.
     """
-    names = ctrl.import_from_mm_position_list()
-    rejected = _validate_stored_positions(ctrl, guard)
-    kept_names = [n for n in names if n not in {r["name"] for r in rejected}]
-    positions = ctrl.get_positions()
+    projection = _validate_position_projection(
+        ctrl.inspect_current_position_list(), guard
+    )
+    if projection.issues:
+        return _position_conflict(projection)
+    ctrl.set_position_projection(projection)
+    names = [p["name"] for p in projection.positions]
     return {
-        "status": f"Imported {len(kept_names)} position(s) from MM.",
-        "imported": kept_names,
-        "rejected": rejected,
-        "total": len(positions),
+        "status": f"Imported {len(names)} position(s) from MM.",
+        "imported": names,
+        "total": len(projection.positions),
     }
 
 
@@ -2601,23 +2642,37 @@ def rank_hook_log(
     }
     if position_list_path:
         position_list_path = guard.resolve_in_workspace(position_list_path)
-        saved = json.loads(Path(position_list_path).read_text(encoding="utf-8"))
-        selected = saved.get("positions", saved) if isinstance(saved, dict) else saved
-        actual = [p.get("name", p.get("position")) for p in selected]
+        try:
+            projection = ctrl.project_position_list_file(position_list_path)
+        except PositionListConflict as e:
+            return _position_conflict(
+                PositionProjection([], [], e.issues),
+                path=e.path, content_hash=e.content_hash,
+            )
+        selected = projection.native_entries
+        actual = [p["name"] for p in selected]
         expected = [r["position"] for r in rows[:len(actual)]]
         coordinate_matches = []
         for saved_position, ranked in zip(selected, rows):
+            axes = ("x_um", "y_um", "z_um")
+            presence_matches = all(
+                (axis in saved_position) == (axis in ranked) for axis in axes
+            )
             coordinate_matches.append(
-                saved_position.get("x_um") == ranked["x_um"] and
-                saved_position.get("y_um") == ranked["y_um"] and
-                (saved_position.get("z_um") == ranked.get("z_um")
-                 if "z_um" in saved_position and "z_um" in ranked else True)
+                presence_matches and all(
+                    axis not in saved_position or math.isclose(
+                        float(saved_position[axis]), float(ranked[axis]),
+                        rel_tol=0.0, abs_tol=1e-3,
+                    )
+                    for axis in axes
+                )
             )
         result["position_list_verification"] = {
             "path": position_list_path,
             "matches_ranking_prefix": actual == expected and all(coordinate_matches),
             "label_match": actual == expected,
             "coordinate_matches": coordinate_matches,
+            "projection_issues": projection.issues,
             "expected": expected, "actual": actual,
         }
     result["duration_s"] = round(time.monotonic() - started, 6)
