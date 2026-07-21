@@ -1208,3 +1208,177 @@ summarized the resulting implementation brief, field-spike runbook, observation 
 schema, and verification results.]
 
 Can you also update with prompts from previous gpt sessions from earlier today?
+Have a look at 20260720_155559_microclaw_history_pallavi_spiral_test.json.
+
+[the 25-position acquisition completed and wrote both an NDTiff dataset and a
+5x5 TIFF, but the central safety complaint was correct. The EMU map described
+561 power as PWM.Position0 with slope 0.3. The agent divided by that slope and
+wrote raw 3 for a requested 1%; round trips through the htSMLM GUI showed 10%
+reads raw 3 and 1% reads raw 0, so the operative direction is raw =
+round(percent * 0.3). The agent therefore delivered approximately 10%, then
+repeatedly misreported the readback as 0.9-1%. Every tile peaked above 53k and
+some near 63.6k, consistent with the user's saturation report. The hook also
+made a row-major contact sheet, not a spatial stitch: the positions are a
+spiral, so panel adjacency does not represent stage adjacency. A second problem
+was caught before exposure: the first generated hook used an implicit HookBase
+and nonexistent analyze method, and was only API-corrected after failing at
+runtime. Generated hooks need import/instantiate/synthetic-frame validation
+before illumination is changed.]
+
+Good points. There was also the issue that Pallavai wanted to use the Album
+(https://micro-manager.org/apidoc/mmstudio/2.0.0/org/micromanager/Album.html) to
+store the snaps and there is no tool for this. She also wanted access to
+https://micro-manager.org/Multi-Dimensional_Acquisition_Programming.
+
+[both are independent tool-surface gaps, not cosmetic alternatives. An NDTiff,
+multi-page TIFF, or hook-written composite does not populate MMStudio's Album;
+the workaround changed the intended workflow from visit -> snap -> Album ->
+inspect/montage in MM into pycro-manager Acquisition -> NDTiff -> external TIFF.
+Likewise, fixed z-stack/timelapse/multiposition wrappers do not expose the full
+MMStudio MDA settings/programming surface or run the configuration visible in
+the GUI. The required additions are Java/MMStudio-backed Album tools and a
+structured, guarded read/update/run interface for MMStudio MDA, with explicit
+distinctions between Album, contact sheet, coordinate mosaic, registered stitch,
+and a pycro-manager acquisition that merely has similar axes.]
+
+Yes. Please add this and your other findings to a new design file. Please also
+update prompts.md from this session and from previous sessions from today.
+
+[added design/30-pallavi-spiral-session-findings.md. It records the reversed
+laser conversion, quantization/representability requirement, saturation
+evidence, contact-sheet-versus-stitch distinction, Album and programmable-MDA
+gaps, generated-hook preflight failure, and the difference between commanded,
+interpreted, measured, and GUI state. No other 20260720 history JSON was present
+in the workspace or temporary directories; prompts.md already contained the
+earlier recorded sessions, so the available July 20 review session was appended
+without inventing missing prompt text. design/30 was used because design/28
+already reserves design/29 for offline dataset analysis.]
+
+----
+
+Have a look at design/30. Is this a good plan? Is anything missing or incorrect?
+
+[verified the plan against the transcript and the code before judging it. The two
+safety-critical claims hold: the agent wrote raw 3 for a requested 1% and the GUI
+round-trips (10%->raw 3, 1%->raw 0) confirm raw = round(percent * 0.3), so raw 3
+was ~10%, matching the ~53k/63.6k saturation in the hook log; and the first hook
+died with NameError from a magic HookBase global + an analyze method before any
+frame. Findings 3/4 gaps are real — no Album tool, MDA only via pycro-manager
+multi_d_acquisition_events. Verdict: good plan, accurate, correctly prioritized.
+Five things to fold in: (1) the strongest evidence for Finding 1 is in the repo —
+htsmlm_docs.py:53 already documents the correct raw = slope*percent+offset and the
+model still inverted it, and emu_manager already parses slope/offset, so the fix
+reuses existing plumbing rather than a greenfield tool; (2) biggest gap — no
+Windows-rig spike for Album/MDA bridge reachability, which every prior
+hardware-surface design (10/14/17/18) required, and which collides with known
+bridge caveats (Preview doesn't repaint in-process, static-class cache, async
+display); (3) Finding 5's title overstates it — the shutter was closed, nothing
+reached the sample, so it is a preflight-timing defect; (4) Finding 1's "backed
+away instead of correcting" is unfair — the agent did explicitly own the error,
+then re-hedged; (5) Priority list has 5 items for 6 findings — Finding 6's state
+separation is unslotted and is the cheapest high-value fix. Also the
+representability return should carry an explicit not-representable / min-nonzero
+flag.]
+
+Yes, fold them in
+
+[all five edits applied to design/30. Finding 1 now cites htsmlm_docs.py:53, points
+the fix at reusing htsmlm_docs/emu_manager slope handling, softens the
+characterization, and adds representable/min_nonzero_percent to the return schema.
+Findings 3 and 4 gained a "feasibility spike first" section naming the specific
+bridge-reachability unknowns and caveats. Finding 5 retitled to "validated at
+acquisition time, not before" and reframed as a timing defect. The priority list
+folds Finding 6 into item 1, promotes hook validation to item 2, and gates
+Album/MDA on the spike.]
+
+Update prompts.md
+
+[recorded this design/30 review session: the verification, the five requested
+improvements, and the edits that folded them into the design.]
+
+----
+
+I left some changes for you in design/30. Please evaluate
+
+[the changes substantially improved the design. The strongest addition was the
+existing worked formula in htsmlm_docs.py:53: `MM value = slope * ui_value +
+offset`, proving the model contradicted a correct instruction already in its
+runtime documentation. The representability result is also correct: requested
+1% quantizes to raw 0 on this integer property and raw 1 is approximately 3.33%.
+The Album/MDA Windows-rig spike is the right gate, and describing the hook bug as
+a preflight-timing defect is more precise because the failed import never
+exposed the sample. Four corrections remained: `design/24 MDA questions` was a
+broken reference to Finding 4; the claim that Preview never repaints in-process
+overstated design/18's cold-window async race; Java Album/MDA API names must be
+treated as candidates until their pyjavaz proxy signatures and lifetimes are
+measured; and generated-hook smoke execution needs a temporary directory plus
+an isolated subprocess with no hardware bridge. The reference to design/17 as a
+hardware-surface design was also narrowed to rig- and bridge-facing work.]
+
+ok please make your suggested edits and update prompts.md
+
+[updated design/30 accordingly: corrected the Finding 4 cross-reference;
+reframed GUI repaint as an async behavior to measure; required the spike to
+record proxy method names, argument encodings, return types, and lifetimes;
+marked Album.addImages, AcquisitionManager, and SequenceSettings as candidate
+Java APIs rather than confirmed pyjavaz contracts; and isolated synthetic hook
+validation in a resource-limited subprocess with no controller, temporary
+outputs, and cleanup. prompts.md updated with both the evaluation and edits.]
+
+----
+
+Have a look at the edits I made to design/30. Are these right?
+
+[verified the operator's edits against the codebase, not just read them. Two of
+three are pure improvements. The Finding 3/4 spike edits correctly hedge every
+Java name (studio.album/Album.addImages, studio.acquisitions/AcquisitionManager/
+SequenceSettings) as a candidate to prove on the rig, and the pyjavaz caveats +
+Preview cold-window race are accurately recalled; the four cited spike designs
+(10/14/17/18) all have spike files on disk. The Finding 5 subprocess-isolation
+edit is right and better-supported than the text claimed: hook_manager.py:21
+labels its AST denylist "ADVISORY ONLY — not a security boundary," which is the
+strongest justification for isolating even the import. One nuance flagged: the
+phrase "apply the same hook source checks" reads as if the denylist should gate
+the preflight, but legitimate file-writing hooks trip it routinely — the montage
+hook that SUCCEEDED this session imported os and wrote via tifffile, both on the
+denylist — so the guarantee must come from process isolation + no controller +
+temp-dir redirect, not the scan.]
+
+Yes
+
+[folded the nuance into Finding 5: the subprocess keeps the same resource/time
+limits, but safety comes from isolation (separate process, no controller/bridge
+proxy, temp-dir redirect) rather than the advisory denylist, with the montage
+hook's own banned os/tifffile usage cited as proof the scan cannot be the gate.]
+
+Update prompts.md
+
+[recorded this edit-review session verbatim, including the conclusion reached at
+the time that subprocess isolation should carry the preflight rather than the
+advisory source scan. The following session corrects that conclusion: a process
+without filesystem/network/subprocess/bridge confinement is not a sandbox, and
+the earlier note also incorrectly said tifffile was denylisted.]
+
+----
+
+Have a look at the minor edit just made and see if you agree
+
+[agreed with the intent but not the safety claim. hook_manager does explicitly
+call its AST scan advisory and not a security boundary, but tifffile is not on
+the denylist — only os triggered the montage warnings. More importantly, a
+separate process with no injected controller is not a sandbox: hook code can
+import pycro-manager and connect to the bridge itself, write elsewhere, use the
+network, or spawn children. The claim about applying the real runner's existing
+resource/time limits was also unsupported because that runner establishes no
+such limits. Recommended an actual filesystem/network/subprocess/bridge sandbox;
+until it exists, automatic preflight must not execute untrusted hook code.]
+
+OK. Make the edit. Then update prompts.md. Then commit and push to a new branch
+
+[corrected design/30: recorded os as the actual warning and tifffile as not
+denylisted; explicitly rejected subprocess/controller omission as a security
+boundary; specified the sandbox capabilities required for import, construction,
+and synthetic execution; and limited unsandboxed automatic preflight to static
+source review plus manifest/hash verification. Updated prompts.md, then committed
+the design and prompt files on a new branch without adding the untracked
+source-history JSON.]
