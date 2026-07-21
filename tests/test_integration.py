@@ -23,15 +23,12 @@ import pytest
 
 pytestmark = pytest.mark.integration
 
-# Design/30's rig surfaces are separately gated: MM_RUNNING alone must never
-# snap, alter a laser setpoint, or run the GUI's current MDA.
-DESIGN30_EMU = pytest.mark.skipif(
-    os.environ.get("MM_DESIGN30_EMU") != "1",
-    reason="set MM_DESIGN30_EMU=1 for design/30 EMU rig tests",
-)
-DESIGN30_STUDIO = pytest.mark.skipif(
-    os.environ.get("MM_DESIGN30_STUDIO") != "1",
-    reason="set MM_DESIGN30_STUDIO=1 for design/30 MMStudio Album/MDA tests",
+# EMU tests are rig/plugin/calibration-specific and opt in separately from the
+# general MM integration suite. The name is intentionally not design-numbered:
+# future EMU integration tests share this gate.
+EMU_RIG = pytest.mark.skipif(
+    os.environ.get("MM_EMU") != "1",
+    reason="set MM_EMU=1 for EMU rig tests",
 )
 
 # ---------------------------------------------------------------------------
@@ -1793,12 +1790,12 @@ def test_run_adaptive_survey_tool_reaches_the_adaptive_runner(
 # EMU semantic power, MMStudio Album, and MDA (design/30)
 #
 # PowerShell setup, in addition to MM_RUNNING=1:
-#   $env:MM_DESIGN30_EMU="1"
+#   $env:MM_EMU="1"
 #   $env:MM_APP_DIR="C:\Program Files\Micro-Manager-2.0"
 #   $env:MM_EMU_LASER_SLOT="2"
 #   $env:MM_EMU_CALIBRATION_POINTS='[{"percent":1,"raw_value":0},{"percent":10,"raw_value":3}]'
-#   $env:MM_DESIGN30_STUDIO="1"  # Album/MDA reads only
-# Mutations additionally require the exact phrases named by their skip reasons.
+# Album reads and one Album snap use the normal MM_RUNNING integration opt-in.
+# Running the GUI's current MDA additionally requires its exact phrase below.
 # ---------------------------------------------------------------------------
 
 def _load_design30_real_emu(headless_mm, unconstrained_guard):
@@ -1823,7 +1820,7 @@ def _design30_calibration_points():
     return points
 
 
-@DESIGN30_EMU
+@EMU_RIG
 def test_real_emu_percentage_readback_matches_verified_affine(
     headless_mm, unconstrained_guard
 ):
@@ -1842,7 +1839,7 @@ def test_real_emu_percentage_readback_matches_verified_affine(
     assert state["gui_state"] is None
 
 
-@DESIGN30_EMU
+@EMU_RIG
 @pytest.mark.skipif(
     os.environ.get("MM_ALLOW_EMU_POWER_WRITE") != "WRITE DISABLED LASER SETPOINT",
     reason="set MM_ALLOW_EMU_POWER_WRITE='WRITE DISABLED LASER SETPOINT' to opt in",
@@ -1881,7 +1878,6 @@ def test_real_emu_percentage_write_roundtrips_while_laser_is_disabled(
         headless_mm.core.wait_for_device(power["device"])
 
 
-@DESIGN30_STUDIO
 def test_real_album_state_is_reachable(headless_mm, unconstrained_guard):
     from microclaw import tools
     result = tools.get_album_state(headless_mm, unconstrained_guard)
@@ -1890,11 +1886,6 @@ def test_real_album_state_is_reachable(headless_mm, unconstrained_guard):
         assert result["datastore"]["image_count"] >= 0
 
 
-@DESIGN30_STUDIO
-@pytest.mark.skipif(
-    os.environ.get("MM_ALLOW_ALBUM_SNAP") != "SNAP TO ALBUM",
-    reason="set MM_ALLOW_ALBUM_SNAP='SNAP TO ALBUM' to fire one camera snap",
-)
 def test_real_snap_appears_in_mmstudio_album(headless_mm, unconstrained_guard):
     from microclaw import tools
     before = tools.get_album_state(headless_mm, unconstrained_guard)
@@ -1904,7 +1895,6 @@ def test_real_snap_appears_in_mmstudio_album(headless_mm, unconstrained_guard):
     assert result["datastore"]["image_count"] > before_count
 
 
-@DESIGN30_STUDIO
 def test_real_mda_preview_reads_gui_state(headless_mm, unconstrained_guard):
     from microclaw import tools
     result = tools.get_mda_settings(headless_mm, unconstrained_guard)
@@ -1915,7 +1905,6 @@ def test_real_mda_preview_reads_gui_state(headless_mm, unconstrained_guard):
         assert isinstance(result["settings"][key], bool), result
 
 
-@DESIGN30_STUDIO
 @pytest.mark.skipif(
     os.environ.get("MM_ALLOW_SAFE_MDA") != "RUN ONE SAFE IMAGE",
     reason="set MM_ALLOW_SAFE_MDA='RUN ONE SAFE IMAGE' after configuring safe GUI MDA",
