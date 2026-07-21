@@ -8,7 +8,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from microclaw.controller import MicroscopeController
+from microclaw.controller import (
+    MicroscopeController,
+    PositionListConflict,
+    PositionProjection,
+)
 from microclaw.safety import (
     SafetyConstraints,
     SafetyGuard,
@@ -78,42 +82,66 @@ class TestGoToPositionZOnly:
         ctrl._core.set_position.assert_called_once_with(3.0)
 
 
-class TestLoadPositionListFileValidation:
-    def test_malformed_file_raises(self, tmp_path):
+class TestNativePositionListPrepareCommit:
+    def test_prepare_loads_temporary_native_list(self, tmp_path, monkeypatch):
         ctrl = make_controller()
-        ctrl._positions = [{"name": "keep", "x_um": 0.0, "y_um": 0.0}]
-        f = tmp_path / "bad.json"
-        f.write_text('[{"nope": 1}]')  # no name, no coords
-        with pytest.raises(ValueError, match="not a valid"):
-            ctrl.load_position_list(str(f))
-        # store unchanged
-        assert ctrl._positions == [{"name": "keep", "x_um": 0.0, "y_um": 0.0}]
+        f = tmp_path / "positions.pos"
+        f.write_text("native")
+        candidate = MagicMock()
+        monkeypatch.setattr("pycromanager.JavaObject", lambda *a, **k: candidate)
+        projection = PositionProjection(
+            [{"name": "P", "x_um": 1.0, "y_um": 2.0}], [], []
+        )
+        monkeypatch.setattr(ctrl, "_project_mm_position_list", lambda p: projection)
 
-    def test_non_list_raises(self, tmp_path):
-        ctrl = make_controller()
-        f = tmp_path / "bad.json"
-        f.write_text('{"name": "x", "x_um": 0, "y_um": 0}')
-        with pytest.raises(ValueError):
-            ctrl.load_position_list(str(f))
+        prepared = ctrl.prepare_position_list(str(f))
 
-    def test_z_only_entry_valid(self, tmp_path):
-        ctrl = make_controller()
-        f = tmp_path / "zonly.json"
-        f.write_text('[{"name": "Z", "z_um": 12.0}]')
-        ctrl.load_position_list(str(f))
-        assert ctrl._positions == [{"name": "Z", "z_um": 12.0}]
+        candidate.load.assert_called_once_with(str(f))
+        assert prepared.candidate is candidate
+        assert prepared.projection is projection
+        ctrl._studio.positions().set_position_list.assert_not_called()
 
-    def test_save_load_roundtrip(self, tmp_path):
+    def test_file_change_during_java_load_is_rejected(self, tmp_path, monkeypatch):
         ctrl = make_controller()
-        ctrl._positions = [
-            {"name": "A", "x_um": 1.0, "y_um": 2.0, "z_um": 3.0},
-            {"name": "B", "z_um": 9.0},
-        ]
-        f = tmp_path / "pos.json"
+        f = tmp_path / "positions.pos"
+        f.write_text("before")
+        candidate = MagicMock()
+        candidate.load.side_effect = lambda path: f.write_text("after")
+        monkeypatch.setattr("pycromanager.JavaObject", lambda *a, **k: candidate)
+
+        with pytest.raises(PositionListConflict) as exc:
+            ctrl.prepare_position_list(str(f))
+
+        assert exc.value.issues[0]["code"] == "file_changed_during_load"
+        ctrl._studio.positions().set_position_list.assert_not_called()
+
+    def test_commit_publishes_java_first_then_projection(self):
+        from microclaw.controller import PreparedPositionList
+
+        ctrl = make_controller()
+        projection = PositionProjection(
+            [{"name": "P", "z_um": 12.0}], [{"name": "P", "z_um": 12.0}], []
+        )
+        candidate = object()
+        prepared = PreparedPositionList(candidate, projection, "p.pos", "hash")
+
+        ctrl.commit_position_list(prepared)
+
+        ctrl._studio.positions().set_position_list.assert_called_once_with(candidate)
+        assert ctrl._positions == projection.positions
+
+    def test_save_uses_current_native_list(self, tmp_path, monkeypatch):
+        ctrl = make_controller()
+        plist = ctrl._studio.positions().get_position_list.return_value
+        monkeypatch.setattr(
+            ctrl, "_project_mm_position_list",
+            lambda p: PositionProjection([], [], []),
+        )
+        f = tmp_path / "positions.pos"
+
         ctrl.save_position_list(str(f))
-        ctrl2 = make_controller()
-        ctrl2.load_position_list(str(f))
-        assert ctrl2._positions == ctrl._positions
+
+        plist.save.assert_called_once_with(str(f))
 
 
 class TestGetMmAppDir:

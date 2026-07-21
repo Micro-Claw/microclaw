@@ -1391,3 +1391,151 @@ and synthetic execution; and limited unsandboxed automatic preflight to static
 source review plus manifest/hash verification. Updated prompts.md, then committed
 the design and prompt files on a new branch without adding the untracked
 source-history JSON.]
+
+----
+
+Have a look at PD_PositionList2.pos, which is a saved position list
+(https://micro-manager.org/apidoc/mmstudio/2.0.0/org/micromanager/PositionList.html)
+file from a Micro-Manager run. I'd like to have microclaw save and load these .pos
+files in save_position_list() and load_position_list() in tools.py, instead of
+using a proprietary format. This way microclaw and micro-manager's position lists
+will be in sync. Can you write a design document to make this change?
+
+[inspected the sample, controller/tool implementations, tests, and official
+Micro-Manager API. Added design/31-native-mm-position-files.md. The central
+decision was to delegate serialization to Java PositionList.load/save rather
+than reproduce Micro-Manager's typed Property Map JSON in Python. The native
+PositionList is the lossless authority; microclaw keeps a guarded XY/focus-Z
+projection. Loads parse a temporary candidate, validate before publication, and
+then call PositionListManager.set_position_list. The design also covered metadata
+preservation, workspace confinement, device-name matching, atomic failures,
+tests, and migration away from the private JSON array.]
+
+Have a look at the edits I made. Do these make sense? Maybe we should get rid of
+legacy files entirely, as we do not use them
+
+[the edits added important consumers and bridge constraints: rank_hook_log also
+parsed the old format; Java, not Python, performs native file I/O; save captures
+GUI-only edits; and prepare/commit is cleaner than a validation callback. Agreed
+to remove legacy support completely. Flagged one remaining architectural issue:
+if the Java list is authoritative, _positions must refresh before consumers or
+the two lists can still diverge.]
+
+Refresh and validate _positions from the native list before operations. If
+there's any inconsistencies, ask the user what to do. Make this and the other
+suggested adjustments
+
+[updated design/31 with mandatory native preflight, structured conflicts, no
+silent filtering/movement/acquisition, explicit user resolution, complete legacy
+removal, final-path .pos confinement, full coordinate precision, atomic
+prepare/commit, rank_hook_log migration, and the co-located Java/Python path
+precondition.]
+
+I've made some updates to this document. What do you think?
+
+[the new distinctions were sound: invalid lists may still be saved losslessly;
+listing remains diagnostic; rank_hook_log is read-only; and import_mm_positions
+must stop filtering after ingestion. Recommended a structured PositionProjection
+instead of list[dict], corrected save ordering, specified fresh-candidate conflict
+resolution, kept partial listing out of the cache, fixed rank comparison semantics,
+and required verification of default-stage cross-rig behavior.]
+
+OK. Make these updates to the design file. Would it help if we wrote a spike to
+check some of this stuff first, as suggested in the rollout? If we use
+PD_PositionList2.pos for the spike and/or tests, let's move it out of the root
+folder. Maybe into test/fixtures? Open to suggestions
+
+[moved the sample to tests/fixtures/PD_PositionList2.pos, added the structured
+projection and conflict semantics to design/31, and wrote
+design/31-native-position-file-spike.py. The live, non-hardware-moving spike
+loads into temporary Java objects without publishing to the GUI, probes bridge
+field/method spellings, saves/reloads natively, compares Property Maps, and
+cleans up its temporary output.]
+
+Commit and push this to a new branch for testing
+
+[created design/31-native-mm-position-files, committed the design, spike, and
+fixture, and pushed the branch.]
+
+Output of the spike came back. It worked, but I didn't see anything change in
+the position list GUI.
+
+[explained that this was expected: PositionList.load mutates only the temporary
+candidate. Production load must explicitly call
+studio.positions().set_position_list(candidate) after validation to publish it.]
+
+D:\Code\microclaw>uv run design\31-native-position-file-spike.py
+[PASS] connect
+       core=MMCore version 12.5.0; xy='XY'; z='Z'; GUI positions=0
+[PASS] PositionList.load(String)
+       loaded 25 positions from D:\Code\microclaw\tests\fixtures\PD_PositionList2.pos
+[PASS] field and method spellings
+       label via get_label='spiral_01'; defaults via get_default_xy_stage/get_default_z_stage=''/''; device via stageName='SmarActXY'; axes via numAxes=2; coords via x/y=6073.4, 1555.7
+[PASS] PositionList.save(String)
+       saved D:\Code\microclaw\tests\fixtures\PD_PositionList2.spike-roundtrip.pos
+[PASS] saved file reload
+       reloaded 25 positions
+[PASS] Property Map equality
+       Property Maps are equal after native save/reload
+
+[recorded the successful MMCore 12.5.0 spike in design/31. It verified
+get_label, get_default_xy_stage/get_default_z_stage, raw stageName/numAxes/x/y,
+native save/reload, and exact Property Map equality. It also documented that the
+fixture's SmarActXY differs from the rig's XY device and that GUI publication,
+one-axis Z, and non-empty defaults still needed separate verification.]
+
+Have a look at the edits just made
+
+[the edits correctly tightened spike limitations, conflict hashes, and historical
+coordinate tolerance. Corrected three overclaims: the spike inspected rather
+than ran the proposed projection; co-location alone does not prevent a file
+change between Python and Java reads, so hash before and after parsing; and the
+1e-3 um tolerance is justified by compatibility with historical three-decimal
+logs, not a universal claim about physical stage resolution.]
+
+OK update the document with these corrections and proceed with the next step
+
+[corrected the design, then implemented PositionProjection, native temporary
+parse/project/commit, before/after SHA-256 checks, native save, atomic guarded
+load/import, diagnostic listing, .pos suffixing, and native rank_hook_log
+verification. Updated schemas, README, agent prompt, and unit tests. The focused
+suite passed; the full suite passed apart from two sandbox-denied localhost
+binds that passed with socket permission. Committed and pushed the implementation
+step to the testing branch.]
+
+OK. Is there anything preventing the remaining rollout? Should I run any tests
+on the rig first?
+
+[no hard blocker remained. Recommended the targeted live
+test_position_list_save_and_load on a Demo or sacrificial empty Position List,
+because it exercises native XY+Z save, clear, temporary parse, set_position_list
+publication, readback, and cleanup. Warned that directly loading the SmarActXY
+fixture on the XY-named rig should intentionally produce an unsupported-device
+conflict.]
+
+Test passed. Finish the implementation
+
+[completed the rollout. A shared native refresh/safety preflight now gates
+marking, go-to, delete, clear, named multiposition acquisition, multiposition
+autofocus, adaptive survey, and any raw-coordinate acquisition that also marks
+the native list. Read-only listing remains diagnostic and non-mutating on
+conflict. Explicit retries can preserve unsupported-device entries; destructive
+native-list/file conflict resolution requires confirmation and file resolution
+also verifies the reviewed content hash. Removed remaining coordinate rounding,
+updated schemas and prompt guidance, expanded conflict/preflight tests, and
+recorded the successful live XY+Z publication test. Verification: 711
+non-integration tests passed with one skip, all 60 webserve tests passed with
+localhost permission, static checks passed, and the completed rollout was pushed
+as fe877d5 on design/31-native-mm-position-files.]
+
+Tests passed on the rig
+
+[the native .pos implementation and synchronized Position List workflow are now
+verified both locally and on the live rig; the branch is ready for review and
+merge.]
+
+OK. Please update prompts.md
+
+[appended the complete design/31 native-position-file session, including the
+design decisions, reviews, spike, verified bridge output, implementation rollout,
+conflict policy, commits, and live-rig verification.]

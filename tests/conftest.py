@@ -2,7 +2,7 @@ import os
 
 import pytest
 from unittest.mock import MagicMock
-from microclaw.controller import MicroscopeController
+from microclaw.controller import MicroscopeController, PositionProjection
 from microclaw.safety import SafetyConstraints, SafetyGuard, StageConstraints, CameraConstraints
 
 
@@ -34,6 +34,7 @@ def mock_ctrl(mock_core, mock_studio):
     ctrl = MagicMock(spec=MicroscopeController)
     ctrl.core = mock_core
     ctrl.studio = mock_studio
+    ctrl.inspect_current_position_list.return_value = PositionProjection([], [], [])
     return ctrl
 
 

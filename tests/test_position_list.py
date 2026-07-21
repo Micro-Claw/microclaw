@@ -92,6 +92,7 @@ def _fake_sp(num_axes, x=0.0, y=0.0):
     sp = MagicMock()
     sp.numAxes = num_axes           # bridge exposes the raw Java field name only
     sp.num_axes = MagicMock()       # would NOT resolve over the real bridge
+    sp.stageName = "DXYStage" if num_axes == 2 else "DStage"
     sp.x = x
     sp.y = y
     return sp
@@ -207,5 +208,6 @@ def test_schema_and_prompt_wording_accurate():
     mark = next(t for t in tools_schema.TOOLS if t["name"] == "mark_position")
     assert "Position List Manager" in mark["description"]
     save = next(t for t in tools_schema.TOOLS if t["name"] == "save_position_list")
-    assert "JSON" in save["description"] and ".pos" in save["description"]
+    assert "native" in save["description"] and ".pos" in save["description"]
+    assert "microclaw JSON" not in save["description"]
     assert "Position List Manager" in agent.SYSTEM_PROMPT
