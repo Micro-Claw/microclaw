@@ -427,6 +427,10 @@ class MicroscopeController:
         pl = self._studio.positions().get_position_list()
         return self._project_mm_position_list(pl).positions
 
+    def project_position_list(self, plist) -> PositionProjection:
+        """Public controller seam for projecting an uncommitted native list."""
+        return self._project_mm_position_list(plist)
+
     def prepare_position_list(self, path: str) -> PreparedPositionList:
         """Parse a native file into a temporary Java list without publishing it."""
         from pycromanager import JavaObject
@@ -490,9 +494,9 @@ class MicroscopeController:
         bridge and repaints MM's Position List Manager immediately, so a marked
         position is visible in the GUI (unlike the jPypeMM Preview canvas).
         """
-        entry: dict = {"name": label, "x_um": round(x, 3), "y_um": round(y, 3)}
+        entry: dict = {"name": label, "x_um": float(x), "y_um": float(y)}
         if z is not None:
-            entry["z_um"] = round(z, 3)
+            entry["z_um"] = float(z)
         self._positions = [p for p in self._positions if p["name"] != label]
         self._positions.append(entry)
         self._write_position_to_mm(entry)          # mirror into the GUI list
@@ -574,6 +578,15 @@ class MicroscopeController:
         if len(self._positions) == before:
             raise KeyError(f"Position '{label}' not found.")
         self._remove_position_from_mm(label)
+
+    def remove_native_position(self, label: str) -> None:
+        """Remove a conflicted label directly from MM after explicit confirmation."""
+        pm = self._studio.positions()
+        plist = pm.get_position_list()
+        if not self._drop_label_from_plist(plist, label):
+            raise KeyError(f"Position '{label}' not found.")
+        pm.set_position_list(plist)
+        self._positions = [p for p in self._positions if p.get("name") != label]
 
     def _remove_position_from_mm(self, label: str) -> None:
         pm = self._studio.positions()

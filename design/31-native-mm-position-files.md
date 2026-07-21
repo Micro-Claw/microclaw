@@ -2,7 +2,9 @@
 
 ## Status
 
-Proposed, 2026-07-21.
+Implemented on `design/31-native-mm-position-files`, 2026-07-21. Native XY+Z
+save/load and publication passed on the live rig; non-empty default-stage
+semantics remain an interoperability edge case for a future fixture.
 
 ## Goal
 
@@ -72,6 +74,12 @@ This establishes lossless native load/save and the spellings required for this
 XY fixture. It does not establish one-axis/Z field behavior or the semantics of
 non-empty default-stage fields; cover those with a second small fixture or the
 live integration tests before relying on them.
+
+The subsequent live `test_position_list_save_and_load` passed on the rig. It
+marked the current XY+Z position, saved the native list, cleared it, loaded the
+file through microclaw, published it with `set_position_list`, and read the
+position back. This verifies the positive configured-device match, one-axis Z
+projection, and native-list publication paths that the first spike did not.
 
 One further limit of this spike: the rig's configured devices are `XY`/`Z`,
 while the fixture names `SmarActXY`, so every fixture entry would be classified
@@ -593,17 +601,18 @@ comparing only microclaw's projection would miss metadata loss.
    verified the XY bridge spellings, native save/reload, and Property Map
    equality. One-axis/Z and non-empty default-stage behavior remain for a
    focused fixture or live integration test.
-2. **In progress:** candidate projection and transactional load helpers are
-   implemented and unit-tested. Load/import now return structured conflicts
-   without post-publication filtering. The remaining position-consuming tools
-   must still adopt the refresh preflight before this step is complete.
-3. **Complete in code; live verification pending:** save uses the native Java
+2. **Complete:** candidate projection and transactional load helpers are
+   implemented and unit-tested. Load/import return structured conflicts without
+   post-publication filtering, and every position-consuming or mutating tool
+   refreshes through the shared preflight before acting.
+3. **Complete and live-verified:** save uses the native Java
    method, appends `.pos`, preserves inconsistent native lists losslessly, and
    refreshes the cache only after tool-layer safety validation.
-4. **In progress:** tool schemas, the agent prompt, README, and affected unit
-   tests describe the native format. Complete the remaining consumer and live
-   integration updates in the same implementation series.
-5. Exercise both directions against a live Micro-Manager build before release.
+4. **Complete:** tool schemas, the agent prompt, README, and affected tests
+   describe the native format and conflict-resolution contract.
+5. **Complete for the supported same-rig path:** the live rig passed native
+   XY+Z save, clear, load, publication, and readback. Cross-rig device-name
+   mapping and non-empty default-stage semantics remain explicitly out of scope.
 
 ## Decision summary
 

@@ -576,6 +576,14 @@ TOOLS: list[dict[str, Any]] = [
                         "without moving there."
                     ),
                 },
+                "preserve_unsupported": {
+                    "type": "boolean",
+                    "description": (
+                        "After the user explicitly approves, preserve native entries "
+                        "for unconfigured devices while omitting them from this operation."
+                    ),
+                    "default": False,
+                },
             },
             "required": ["name"],
         },
@@ -594,7 +602,12 @@ TOOLS: list[dict[str, Any]] = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "Position label."}
+                "name": {"type": "string", "description": "Position label."},
+                "preserve_unsupported": {
+                    "type": "boolean",
+                    "description": "Retry after explicit approval to preserve and omit unsupported-device entries.",
+                    "default": False,
+                },
             },
             "required": ["name"],
         },
@@ -605,7 +618,12 @@ TOOLS: list[dict[str, Any]] = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "Position label to delete."}
+                "name": {"type": "string", "description": "Position label to delete."},
+                "confirm_conflict_resolution": {
+                    "type": "boolean",
+                    "description": "Set only after the user asks to delete this conflicted native entry.",
+                    "default": False,
+                },
             },
             "required": ["name"],
         },
@@ -613,7 +631,17 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "clear_position_list",
         "description": "Clear all positions from MM's native position list.",
-        "input_schema": {"type": "object", "properties": {}, "required": []},
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "confirm_conflict_resolution": {
+                    "type": "boolean",
+                    "description": "Set only after the user asks to clear an inconsistent native list.",
+                    "default": False,
+                }
+            },
+            "required": [],
+        },
     },
     {
         "name": "save_position_list",
@@ -638,7 +666,20 @@ TOOLS: list[dict[str, Any]] = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "Path to the position list file."}
+                "path": {"type": "string", "description": "Path to the position list file."},
+                "preserve_unsupported": {
+                    "type": "boolean",
+                    "description": "Retry after explicit approval to preserve unsupported-device entries natively and omit them from microclaw navigation.",
+                    "default": False,
+                },
+                "remove_conflicting_indexes": {
+                    "type": "array", "items": {"type": "integer"},
+                    "description": "Native indexes explicitly approved for removal from the loaded candidate. Requires expected_content_hash.",
+                },
+                "expected_content_hash": {
+                    "type": "string",
+                    "description": "Hash returned with the reviewed conflict; prevents acting on a changed file.",
+                },
             },
             "required": ["path"],
         },
@@ -651,7 +692,17 @@ TOOLS: list[dict[str, Any]] = [
             "positions in the MM GUI. The imported positions are then available for "
             "mark_position, get_position_list, go_to_position, and all acquisition tools."
         ),
-        "input_schema": {"type": "object", "properties": {}, "required": []},
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "preserve_unsupported": {
+                    "type": "boolean",
+                    "description": "Retry after explicit approval to preserve and omit unsupported-device entries.",
+                    "default": False,
+                }
+            },
+            "required": [],
+        },
     },
     {
         "name": "run_multiposition_acquisition",
@@ -738,6 +789,11 @@ TOOLS: list[dict[str, Any]] = [
                         "(microclaw's list + MM's Position List Manager), as mark_position "
                         "would. Default false."
                     ),
+                    "default": False,
+                },
+                "preserve_unsupported": {
+                    "type": "boolean",
+                    "description": "Retry after explicit approval to preserve and omit unrelated unsupported-device entries.",
                     "default": False,
                 },
                 "hook_strategy": {
@@ -938,6 +994,11 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "object",
                     "description": "Extra parameters forwarded to the per-position protocol.",
                 },
+                "preserve_unsupported": {
+                    "type": "boolean",
+                    "description": "Retry after explicit approval to preserve and omit unrelated unsupported-device entries.",
+                    "default": False,
+                },
             },
             "required": ["position_names", "z_range_um", "z_step_um", "protocol", "save_dir"],
         },
@@ -1137,6 +1198,11 @@ TOOLS: list[dict[str, Any]] = [
                         "event is submitted for this many seconds (default 60)."
                     ),
                     "default": 60.0,
+                },
+                "preserve_unsupported": {
+                    "type": "boolean",
+                    "description": "Retry after explicit approval to preserve and omit unrelated unsupported-device entries.",
+                    "default": False,
                 },
             },
             "required": ["protocol", "save_dir", "hook_strategy"],

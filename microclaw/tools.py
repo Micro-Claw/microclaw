@@ -1357,6 +1357,27 @@ def run_autofocus(
 
 # --- Position management ---
 
+def _preflight_native_positions(
+    ctrl: MicroscopeController,
+    guard: SafetyGuard,
+    *,
+    preserve_unsupported: bool = False,
+) -> tuple[PositionProjection | None, dict | None]:
+    """Refresh from MM and stop on conflicts before a position operation."""
+    projection = _validate_position_projection(
+        ctrl.inspect_current_position_list(), guard
+    )
+    if preserve_unsupported:
+        projection = PositionProjection(
+            projection.positions,
+            projection.native_entries,
+            [i for i in projection.issues if i.get("code") != "unsupported_only"],
+        )
+    if projection.issues:
+        return None, _position_conflict(projection)
+    ctrl.set_position_projection(projection)
+    return projection, None
+
 def mark_position(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -1365,6 +1386,7 @@ def mark_position(
     x_um: float | None = None,
     y_um: float | None = None,
     z_um: float | None = None,
+    preserve_unsupported: bool = False,
 ) -> dict:
     """Record a position in microclaw's list and MM's GUI list.
 
@@ -1374,16 +1396,21 @@ def mark_position(
     way to write a known coordinate into the list was an acquisition tool's
     mark_positions=True flag, and that flag images.
     """
+    _, conflict = _preflight_native_positions(
+        ctrl, guard, preserve_unsupported=preserve_unsupported
+    )
+    if conflict:
+        return conflict
     if (x_um is None) != (y_um is None):
         return {"error": "Provide both x_um and y_um, or neither."}
     supplied = x_um is not None
     if supplied:
-        x, y = round(x_um, 3), round(y_um, 3)
-        z = round(z_um, 3) if z_um is not None else None
+        x, y = float(x_um), float(y_um)
+        z = float(z_um) if z_um is not None else None
     else:
-        x = round(ctrl.core.get_x_position(), 3)
-        y = round(ctrl.core.get_y_position(), 3)
-        z = round(ctrl.core.get_position(), 3) if include_z else None
+        x = float(ctrl.core.get_x_position())
+        y = float(ctrl.core.get_y_position())
+        z = float(ctrl.core.get_position()) if include_z else None
     # Supplied coordinates are unvalidated caller input, unlike the current stage
     # position, which is reachable by definition. Guard BEFORE anything is written.
     guard.check_xy(x, y)
@@ -1414,9 +1441,19 @@ def get_position_list(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     return result
 
 
-def go_to_position(ctrl: MicroscopeController, guard: SafetyGuard, name: str) -> dict:
+def go_to_position(
+    ctrl: MicroscopeController,
+    guard: SafetyGuard,
+    name: str,
+    preserve_unsupported: bool = False,
+) -> dict:
     """Move the stage to a named position from MM's native position list."""
-    positions = {p["name"]: p for p in ctrl.get_positions()}
+    projection, conflict = _preflight_native_positions(
+        ctrl, guard, preserve_unsupported=preserve_unsupported
+    )
+    if conflict:
+        return conflict
+    positions = {p["name"]: p for p in projection.positions}
     if name not in positions:
         return {"error": f"Position '{name}' not found."}
     pos = positions[name]
@@ -1427,14 +1464,53 @@ def go_to_position(ctrl: MicroscopeController, guard: SafetyGuard, name: str) ->
     return {"status": f"Moved to '{name}'.", **pos}
 
 
-def delete_position(ctrl: MicroscopeController, guard: SafetyGuard, name: str) -> dict:
+def delete_position(
+    ctrl: MicroscopeController,
+    guard: SafetyGuard,
+    name: str,
+    confirm_conflict_resolution: bool = False,
+) -> dict:
     """Delete a named position from MM's native position list."""
+    _, conflict = _preflight_native_positions(ctrl, guard)
+    if conflict:
+        if not confirm_conflict_resolution:
+            return conflict
+        issues = conflict["position_list_conflict"]["issues"]
+        affected = [i for i in issues if i.get("label") == name]
+        if not affected:
+            return conflict
+        if any(i.get("code") == "duplicate_label" for i in affected):
+            return {
+                **conflict,
+                "error": (
+                    f"Position label {name!r} is duplicated; delete is ambiguous. "
+                    "Repair the list in Micro-Manager or clear it after confirmation."
+                ),
+            }
+        if not CONFIRM_FN(
+            f"Remove conflicted native position {name!r} from Micro-Manager's list?"
+        ):
+            return {"status": "Position deletion cancelled."}
+        ctrl.remove_native_position(name)
+        return {"status": f"Conflicted position '{name}' deleted from MM position list."}
     ctrl.remove_position(name)
     return {"status": f"Position '{name}' deleted from MM position list."}
 
 
-def clear_position_list(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
+def clear_position_list(
+    ctrl: MicroscopeController,
+    guard: SafetyGuard,
+    confirm_conflict_resolution: bool = False,
+) -> dict:
     """Clear all positions from MM's native position list."""
+    _, conflict = _preflight_native_positions(ctrl, guard)
+    if conflict:
+        if not confirm_conflict_resolution:
+            return conflict
+        if not CONFIRM_FN(
+            "Clear the entire inconsistent native Micro-Manager position list?"
+        ):
+            return {"status": "Position-list clear cancelled."}
     ctrl.clear_positions()
     return {"status": "Position list cleared."}
 
@@ -1495,7 +1571,14 @@ def _position_conflict(
     }
 
 
-def load_position_list(ctrl: MicroscopeController, guard: SafetyGuard, path: str) -> dict:
+def load_position_list(
+    ctrl: MicroscopeController,
+    guard: SafetyGuard,
+    path: str,
+    preserve_unsupported: bool = False,
+    remove_conflicting_indexes: list[int] | None = None,
+    expected_content_hash: str | None = None,
+) -> dict:
     """Transactionally load a native Micro-Manager position-list file."""
     path = guard.resolve_in_workspace(path)   # save_position_list is guarded; be symmetric
     try:
@@ -1503,7 +1586,38 @@ def load_position_list(ctrl: MicroscopeController, guard: SafetyGuard, path: str
     except PositionListConflict as e:
         projection = PositionProjection([], [], e.issues)
         return _position_conflict(projection, path=e.path, content_hash=e.content_hash)
+    if expected_content_hash is not None and prepared.content_hash != expected_content_hash:
+        changed = PositionProjection([], [], [{
+            "code": "file_changed_since_review",
+            "details": "The position-list file changed after the reported conflict.",
+            "allowed_resolutions": ["retry", "cancel"],
+        }])
+        return _position_conflict(
+            changed, path=prepared.path, content_hash=prepared.content_hash
+        )
+    if remove_conflicting_indexes:
+        if expected_content_hash is None:
+            return {"error": "expected_content_hash is required to remove file entries."}
+        indexes = sorted(set(remove_conflicting_indexes), reverse=True)
+        n = int(prepared.candidate.get_number_of_positions())
+        if any(not isinstance(i, int) or i < 0 or i >= n for i in indexes):
+            return {"error": f"Removal indexes must be integers from 0 to {n - 1}."}
+        if not CONFIRM_FN(
+            f"Load {path} after removing native position indexes {sorted(indexes)}?"
+        ):
+            return {"status": "Position-list conflict resolution cancelled."}
+        for index in indexes:
+            prepared.candidate.remove_position(index)
+        projection = ctrl.project_position_list(prepared.candidate)
+        prepared = type(prepared)(
+            prepared.candidate, projection, prepared.path, prepared.content_hash
+        )
     projection = _validate_position_projection(prepared.projection, guard)
+    if preserve_unsupported:
+        projection = PositionProjection(
+            projection.positions, projection.native_entries,
+            [i for i in projection.issues if i.get("code") != "unsupported_only"],
+        )
     if projection.issues:
         return _position_conflict(
             projection, path=prepared.path, content_hash=prepared.content_hash
@@ -1515,7 +1629,11 @@ def load_position_list(ctrl: MicroscopeController, guard: SafetyGuard, path: str
     }
 
 
-def import_mm_positions(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
+def import_mm_positions(
+    ctrl: MicroscopeController,
+    guard: SafetyGuard,
+    preserve_unsupported: bool = False,
+) -> dict:
     """Import positions from MM's GUI position list into the agent's internal store.
 
     Use this after the user has set up positions in Micro-Manager's Position List
@@ -1524,6 +1642,11 @@ def import_mm_positions(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     projection = _validate_position_projection(
         ctrl.inspect_current_position_list(), guard
     )
+    if preserve_unsupported:
+        projection = PositionProjection(
+            projection.positions, projection.native_entries,
+            [i for i in projection.issues if i.get("code") != "unsupported_only"],
+        )
     if projection.issues:
         return _position_conflict(projection)
     ctrl.set_position_projection(projection)
@@ -1573,9 +1696,9 @@ def _run_protocol_at(
         # and MM's PositionList, so the grid appears in the GUI list.
         ctrl.add_position(
             pos_label,
-            round(x_um, 3),
-            round(y_um, 3),
-            round(z_um, 3) if z_um is not None else None,
+            float(x_um),
+            float(y_um),
+            float(z_um) if z_um is not None else None,
         )
         marked = {"marked": True}
     if protocol == "snap":
@@ -1643,6 +1766,7 @@ def run_multiposition_acquisition(
     hook_strategy: str | None = None,
     hook_params: dict | None = None,
     log_path: str | None = None,
+    preserve_unsupported: bool = False,
 ) -> dict:
     """Visit each position and run a per-position protocol.
 
@@ -1690,8 +1814,16 @@ def run_multiposition_acquisition(
     params = protocol_params or {}
     results = []
 
+    projection = None
+    if position_names is not None or mark_positions:
+        projection, conflict = _preflight_native_positions(
+            ctrl, guard, preserve_unsupported=preserve_unsupported
+        )
+        if conflict:
+            return conflict
+
     if position_names is not None:
-        all_positions = {p["name"]: p for p in ctrl.get_positions()}
+        all_positions = {p["name"]: p for p in projection.positions}
         resolved = []
         for pos_name in position_names:
             if pos_name not in all_positions:
@@ -1723,8 +1855,8 @@ def run_multiposition_acquisition(
             # The grid coordinates are known up front, so marking needs no stage
             # reads and no visit loop — mark before the Acquisition takes over.
             for pos_label, x_um, y_um, z_um in resolved:
-                ctrl.add_position(pos_label, round(x_um, 3), round(y_um, 3),
-                                  round(z_um, 3) if z_um is not None else None)
+                ctrl.add_position(pos_label, float(x_um), float(y_um),
+                                  float(z_um) if z_um is not None else None)
         hooked = _acquire_positions_with_hook(
             ctrl, guard,
             positions=[{"name": n, "x_um": x, "y_um": y, "z_um": z}
@@ -1878,13 +2010,19 @@ def run_multiposition_with_autofocus(
     autofocus_method: str = "coarse_then_fine",
     settle_ms: int = 50,
     protocol_params: dict | None = None,
+    preserve_unsupported: bool = False,
 ) -> dict:
     """Visit each position, autofocus, then run a per-position protocol.
 
     """
     save_dir = guard.resolve_in_workspace(save_dir)   # before the stage moves
     params = protocol_params or {}
-    all_positions = {p["name"]: p for p in ctrl.get_positions()}
+    projection, conflict = _preflight_native_positions(
+        ctrl, guard, preserve_unsupported=preserve_unsupported
+    )
+    if conflict:
+        return conflict
+    all_positions = {p["name"]: p for p in projection.positions}
     results = []
 
     live = ctrl.studio.live()
@@ -2475,6 +2613,7 @@ def run_adaptive_survey(
     hook_params: dict | None = None,
     log_path: str | None = None,
     max_idle_s: float = 60.0,
+    preserve_unsupported: bool = False,
 ) -> dict:
     """Acquire positions one at a time; the hook decides whether the next
     position is acquired at all.
@@ -2520,7 +2659,12 @@ def run_adaptive_survey(
         return {"error": f"protocol_params for '{protocol}' is missing {e}."}
 
     if position_names is not None:
-        all_positions = {p["name"]: p for p in ctrl.get_positions()}
+        projection, conflict = _preflight_native_positions(
+            ctrl, guard, preserve_unsupported=preserve_unsupported
+        )
+        if conflict:
+            return conflict
+        all_positions = {p["name"]: p for p in projection.positions}
         missing = [n for n in position_names if n not in all_positions]
         if missing:
             return {"error": f"Positions not found in position list: {missing}"}

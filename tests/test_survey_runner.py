@@ -876,12 +876,16 @@ class TestRunAdaptiveSurvey:
     def test_position_names_resolve_from_the_mm_list(
         self, mock_ctrl, unconstrained_guard, captured, tmp_path
     ):
+        from microclaw.controller import PositionProjection
         from microclaw.tools import run_adaptive_survey
 
-        mock_ctrl.get_positions.return_value = [
+        positions = [
             {"name": "a", "x_um": 1.0, "y_um": 2.0},
             {"name": "b", "x_um": 3.0, "y_um": 4.0},
         ]
+        mock_ctrl.inspect_current_position_list.return_value = PositionProjection(
+            positions, positions, []
+        )
         result = run_adaptive_survey(
             mock_ctrl, unconstrained_guard, protocol="timelapse",
             save_dir=str(tmp_path), hook_strategy="probe",
