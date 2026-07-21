@@ -6,6 +6,7 @@ from microclaw.hook_manager import (
     save_hook,
     list_saved_hooks,
     read_hook_from_file,
+    validate_hook_contract,
 )
 
 
@@ -35,6 +36,18 @@ def test_syntax_error_reported():
     code = "def broken(:"
     warnings = lint_hook_code(code)
     assert any("Syntax" in w for w in warnings)
+
+
+def test_static_contract_rejects_analyze_instead_of_image_process_fn():
+    assert validate_hook_contract("class Hook:\n    def analyze(self, image): pass\n")
+
+
+def test_static_contract_accepts_runner_callback_signature():
+    code = (
+        "class Hook:\n"
+        "    def image_process_fn(self, image, metadata, event_queue): pass\n"
+    )
+    assert validate_hook_contract(code) == []
 
 
 def test_subprocess_blocked():

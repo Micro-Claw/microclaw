@@ -1208,6 +1208,15 @@ summarized the resulting implementation brief, field-spike runbook, observation 
 schema, and verification results.]
 
 Can you also update with prompts from previous gpt sessions from earlier today?
+
+[recovered the earlier July 20 prompts verbatim from local Codex rollout histories
+and added them chronologically: the design/28 Laplacian review and branch cleanup,
+the initial design/26 plan review and restructuring, the hook-first custom-analysis
+redesign, the simplified biologist-facing intake, and the current design/26 readiness
+and field-spike session. Environment boilerplate and `exit` messages were omitted.]
+
+----
+
 Have a look at 20260720_155559_microclaw_history_pallavi_spiral_test.json.
 
 [the 25-position acquisition completed and wrote both an NDTiff dataset and a

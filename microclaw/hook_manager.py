@@ -54,6 +54,38 @@ def lint_hook_code(code: str) -> list[str]:
     return warnings
 
 
+def validate_hook_contract(code: str) -> list[str]:
+    """Statically reject hook source that cannot satisfy the runner contract.
+
+    This deliberately does not import or execute the source: without an actual
+    OS sandbox, doing so would turn validation into arbitrary code execution.
+    """
+    try:
+        tree = ast.parse(code)
+    except SyntaxError as e:
+        return [f"Syntax error: {e}"]
+    classes = [node for node in tree.body if isinstance(node, ast.ClassDef)]
+    hooks = [
+        node for node in classes
+        if any(isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+               and item.name == "image_process_fn" for item in node.body)
+    ]
+    if not hooks:
+        return [
+            "No top-level class defines image_process_fn(self, image, metadata, event_queue)."
+        ]
+    errors: list[str] = []
+    for cls in hooks:
+        fn = next(item for item in cls.body if getattr(item, "name", None) == "image_process_fn")
+        positional = len(fn.args.posonlyargs) + len(fn.args.args)
+        if positional < 4 and fn.args.vararg is None:
+            errors.append(
+                f"{cls.name}.image_process_fn must accept self, image, metadata, "
+                "and event_queue."
+            )
+    return errors
+
+
 # Back-compat alias: the tool layer and older callers referenced this name. It
 # is an advisory lint, not validation — prefer lint_hook_code in new code.
 validate_hook_code = lint_hook_code

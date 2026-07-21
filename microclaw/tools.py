@@ -2831,8 +2831,16 @@ def generate_and_save_hook(
     open/os, so warnings must not hard-block). The human review of the full code
     is the actual gate.
     """
-    from microclaw.hook_manager import lint_hook_code, save_hook
+    from microclaw.hook_manager import lint_hook_code, save_hook, validate_hook_contract
     warnings = lint_hook_code(code)
+    contract_errors = validate_hook_contract(code)
+    if contract_errors:
+        return {
+            "error": "Hook failed static preflight; it was not saved.",
+            "contract_errors": contract_errors,
+            "warnings": warnings,
+            "preflight": "static-only (source was not imported or executed)",
+        }
     if warnings and not CONFIRM_FN(
         f"Hook '{name}' — advisory lint flagged:\n" + "\n".join(warnings)
         + "\n\nSave anyway?",
@@ -2845,6 +2853,10 @@ def generate_and_save_hook(
         "path": str(Path.home() / ".microclaw" / "hooks" / f"{name}.py"),
         "source": source,
         "warnings": warnings,
+        "preflight": (
+            "Static syntax and image_process_fn contract passed. Source was not "
+            "imported or executed because no hook sandbox is configured."
+        ),
     }
 
 
@@ -3180,6 +3192,216 @@ def resolve_emu_device(
         return {"error": str(e).strip("'\"")}
 
 
+def _emu_power_entry(ctrl: MicroscopeController, slot: int) -> dict:
+    from microclaw.emu_manager import build_emu_map
+    props = _cached_emu_properties(ctrl)
+    if not props:
+        raise ValueError("No EMU configuration found — this is not an EMU/htSMLM rig.")
+    entry = build_emu_map(props)["lasers"].get(int(slot), {}).get("power_pct")
+    if not entry or "device" not in entry:
+        raise ValueError(f"EMU laser slot {slot} has no allocated percentage property.")
+    try:
+        slope = float(entry["slope"])
+        offset = float(entry.get("offset", 0.0))
+    except (KeyError, TypeError, ValueError) as e:
+        raise ValueError(f"EMU laser slot {slot} has no valid rescaling calibration.") from e
+    if slope <= 0:
+        raise ValueError(f"EMU laser slot {slot} has invalid slope {slope!r}.")
+    return {**entry, "slope": slope, "offset": offset}
+
+
+def _round_raw(value: float) -> int:
+    """Round a non-negative MM integer property half-up, not Python half-even."""
+    return int(math.floor(value + 0.5))
+
+
+def verify_emu_laser_power_calibration(
+    ctrl: MicroscopeController,
+    guard: SafetyGuard,
+    slot: int,
+    observations: list[dict],
+) -> dict:
+    """Verify two GUI-percent/raw observations against EMU's affine mapping."""
+    entry = _emu_power_entry(ctrl, slot)
+    if len(observations) < 2:
+        return {"error": "Two known GUI percent/raw observations are required."}
+    checked = []
+    for point in observations:
+        percent = float(point["percent"])
+        raw = int(point["raw_value"])
+        expected = _round_raw(entry["slope"] * percent + entry["offset"])
+        checked.append({"percent": percent, "raw_value": raw, "expected_raw": expected})
+    if len({p["percent"] for p in checked}) < 2:
+        return {"error": "The observations must use two distinct GUI percentages."}
+    if any(p["raw_value"] != p["expected_raw"] for p in checked):
+        return {
+            "verified": False,
+            "error": "Observed GUI/raw values disagree with the EMU calibration; keep illumination disabled.",
+            "observations": checked,
+        }
+    key = (entry["device"], entry["property"], entry["slope"], entry["offset"])
+    _EMU_SESSION_CACHE.setdefault("verified_power_calibrations", {})[int(slot)] = key
+    return {"verified": True, "slot": int(slot), "observations": checked,
+            "formula": "raw = slope * percent + offset"}
+
+
+def get_emu_laser_power_percentage(
+    ctrl: MicroscopeController, guard: SafetyGuard, slot: int
+) -> dict:
+    entry = _emu_power_entry(ctrl, slot)
+    raw_text = str(ctrl.core.get_property(entry["device"], entry["property"]))
+    raw = float(raw_text)
+    effective = (raw - entry["offset"]) / entry["slope"]
+    verified = _EMU_SESSION_CACHE.get("verified_power_calibrations", {}).get(int(slot)) == (
+        entry["device"], entry["property"], entry["slope"], entry["offset"]
+    )
+    return {
+        "slot": int(slot),
+        "commanded_state": {"raw_value": raw_text, "property": f"{entry['device']}.{entry['property']}"},
+        "interpreted_state": {"effective_percent": effective, "calibration_verified": verified},
+        "measured_state": None,
+        "gui_state": None,
+        "warning": None if verified else "Calibration is not verified against two known GUI settings.",
+    }
+
+
+def set_emu_laser_power_percentage(
+    ctrl: MicroscopeController, guard: SafetyGuard, slot: int, percent: float
+) -> dict:
+    entry = _emu_power_entry(ctrl, slot)
+    key = (entry["device"], entry["property"], entry["slope"], entry["offset"])
+    if _EMU_SESSION_CACHE.get("verified_power_calibrations", {}).get(int(slot)) != key:
+        return {"error": (
+            "Calibration is unverified. Keep illumination disabled and call "
+            "verify_emu_laser_power_calibration with two known GUI percent/raw observations first."
+        )}
+    requested = float(percent)
+    if requested < 0:
+        return {"error": "Laser power percentage cannot be negative."}
+    raw = _round_raw(entry["slope"] * requested + entry["offset"])
+    info = get_device_property_info(ctrl, guard, entry["device"], entry["property"])
+    if info["read_only"]:
+        return {"error": f"{entry['device']}.{entry['property']} is read-only."}
+    if info["type"] == "Integer":
+        raw_value = str(raw)
+    else:
+        raw_value = str(entry["slope"] * requested + entry["offset"])
+    numeric = float(raw_value)
+    if info["lower_limit"] is not None and numeric < float(info["lower_limit"]):
+        return {"error": f"Converted raw value {raw_value} is below the property limit."}
+    if info["upper_limit"] is not None and numeric > float(info["upper_limit"]):
+        return {"error": f"Converted raw value {raw_value} exceeds the property limit."}
+    effective = (numeric - entry["offset"]) / entry["slope"]
+    min_nonzero = max(0.0, (1.0 - entry["offset"]) / entry["slope"])
+    representable = math.isclose(effective, requested, rel_tol=0, abs_tol=1e-9)
+    guard.check_device_property(ctrl.core, entry["device"], entry["property"], raw_value)
+    guard.check_illumination(ctrl.core, entry["device"], entry["property"], raw_value,
+                             confirm_fn=CONFIRM_FN)
+    ctrl.core.set_property(entry["device"], entry["property"], raw_value)
+    written = str(ctrl.core.get_property(entry["device"], entry["property"]))
+    written_effective = (float(written) - entry["offset"]) / entry["slope"]
+    ctrl.studio.app().refresh_gui()
+    return {
+        "requested_percent": requested,
+        "raw_value_written": written,
+        "effective_percent": written_effective,
+        "representable": representable and math.isclose(written_effective, requested,
+                                                          rel_tol=0, abs_tol=1e-9),
+        "min_nonzero_percent": min_nonzero,
+        "commanded_state": {"raw_value": written},
+        "interpreted_state": {"effective_percent": written_effective, "calibration_verified": True},
+        "measured_state": None,
+        "gui_state": None,
+        "warning": None if representable else (
+            "Requested percentage is not representable by this property; review the effective value before enabling illumination."
+        ),
+    }
+
+
+def _datastore_state(store: Any) -> dict | None:
+    if store is None:
+        return None
+    out = {}
+    for name, getter in (("image_count", "get_num_images"), ("frozen", "is_frozen"),
+                         ("name", "get_name"), ("save_path", "get_save_path")):
+        try:
+            out[name] = getattr(store, getter)()
+        except Exception:
+            out[name] = None
+    return out
+
+
+def get_album_state(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
+    store = ctrl.studio.album().get_datastore()
+    return {"album_exists": store is not None, "datastore": _datastore_state(store)}
+
+
+def snap_to_album(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
+    guard.check_exposure(float(ctrl.core.get_exposure()))
+    with _pause_live(ctrl) as live_was_on:
+        images = ctrl.studio.acquisitions().snap()
+        created = bool(ctrl.studio.album().add_images(images))
+    state = get_album_state(ctrl, guard)
+    return {"status": "Snap added to the Micro-Manager Album.",
+            "created_new_album": created, "live_view_restarted": live_was_on, **state}
+
+
+_MDA_SCALARS = (
+    "prefix", "root", "save", "should_display_images", "use_frames", "num_frames",
+    "interval_ms", "use_position_list", "use_slices", "slice_z_bottom_um",
+    "slice_z_top_um", "slice_z_step_um", "relative_z_slice", "use_channels",
+    "channel_group", "use_autofocus", "skip_autofocus_count",
+    "keep_shutter_open_channels", "keep_shutter_open_slices", "acq_order_mode",
+    "camera_timeout", "comment",
+)
+
+
+def _read_mda_settings(settings: Any) -> dict:
+    out = {}
+    for name in _MDA_SCALARS:
+        try:
+            value = getattr(settings, name)()
+            out[name] = value if value is None or isinstance(value, (bool, int, float, str)) else str(value)
+        except Exception as e:
+            out[name] = f"<unreadable: {type(e).__name__}>"
+    return out
+
+
+def get_mda_settings(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
+    manager = ctrl.studio.acquisitions()
+    settings = manager.get_acquisition_settings()
+    values = _read_mda_settings(settings)
+    fingerprint = hashlib.sha256(json.dumps(values, sort_keys=True).encode()).hexdigest()
+    _EMU_SESSION_CACHE["mda_preview"] = (fingerprint, settings)
+    enabled = [axis for flag, axis in (("use_frames", "time"), ("use_position_list", "positions"),
+                                        ("use_slices", "z"), ("use_channels", "channels"),
+                                        ("use_autofocus", "autofocus")) if values.get(flag) is True]
+    return {"source": "MMStudio GUI current MDA", "settings": values,
+            "enabled_axes": enabled, "preview_token": fingerprint,
+            "warning": "Inspect illumination, motion, saving, and all enabled axes before running."}
+
+
+def run_mda(ctrl: MicroscopeController, guard: SafetyGuard, preview_token: str) -> dict:
+    preview = _EMU_SESSION_CACHE.get("mda_preview")
+    if not preview or preview[0] != preview_token:
+        return {"error": "Missing or stale MDA preview. Call get_mda_settings immediately before run_mda."}
+    manager = ctrl.studio.acquisitions()
+    current = _read_mda_settings(manager.get_acquisition_settings())
+    current_token = hashlib.sha256(json.dumps(current, sort_keys=True).encode()).hexdigest()
+    if current_token != preview_token:
+        return {"error": "MMStudio MDA settings changed after preview; inspect them again."}
+    if current.get("save") is True and current.get("root"):
+        guard.resolve_in_workspace(str(current["root"]))
+    guard.check_exposure(float(ctrl.core.get_exposure()))
+    summary = json.dumps(current, indent=2, sort_keys=True)
+    if not CONFIRM_FN("RUN MMSTUDIO CURRENT MDA:\n" + summary, kind="acquisition"):
+        return {"error": "User declined to run the current MMStudio MDA."}
+    store = manager.run_acquisition()
+    _EMU_SESSION_CACHE.pop("mda_preview", None)
+    return {"status": "MMStudio MDA complete.", "source": "MMStudio GUI current MDA",
+            "resolved_settings": current, "datastore": _datastore_state(store)}
+
+
 # --- Tool Registry ---
 
 # snap_image was removed (design/14 §7): it differed from snap_and_analyze only
@@ -3248,9 +3470,16 @@ TOOL_REGISTRY = {
     "get_htsmlm_documentation": get_htsmlm_documentation,
     "get_emu_configuration": get_emu_configuration,
     "get_emu_laser_map": get_emu_laser_map,
+    "verify_emu_laser_power_calibration": verify_emu_laser_power_calibration,
+    "get_emu_laser_power_percentage": get_emu_laser_power_percentage,
+    "set_emu_laser_power_percentage": set_emu_laser_power_percentage,
     "resolve_emu_device": resolve_emu_device,
     "get_focus_lock_state": get_focus_lock_state,
     "set_focus_lock": set_focus_lock,
+    "get_album_state": get_album_state,
+    "snap_to_album": snap_to_album,
+    "get_mda_settings": get_mda_settings,
+    "run_mda": run_mda,
     "save_knowledge": save_knowledge,
     "get_knowledge": get_knowledge,
     "delete_knowledge": delete_knowledge,
