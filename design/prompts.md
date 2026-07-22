@@ -1539,3 +1539,174 @@ OK. Please update prompts.md
 [appended the complete design/31 native-position-file session, including the
 design decisions, reviews, spike, verified bridge output, implementation rollout,
 conflict policy, commits, and live-rig verification.]
+
+----
+
+Have a look at design/29, now in the context of the new design files and in the
+context of the new approach in design/26. Does anything need to be revised?
+
+[the offline-dataset motivation and design/30 stage-coordinate-mosaic handoff were
+still sound, but the proposed implementation conflicted with design/26. In
+particular, `count_cells_in_saved_dataset` was an analysis-specific public tool;
+placement and an unvalidated biological counter were combined under one trust
+boundary; rot90/flip did not implement the promised general affine; a historical
+dataset could silently consume the microscope's current calibration; channel-only
+selection ignored time/Z/other axes; overwrite compositing did not guarantee
+cross-seam object deduplication; offline observation provenance had no non-hook
+writer; and the peak-memory claim omitted rasterization, masks, labels, and encoder
+temporaries. Recommended keeping one generic saved-NDTiff mosaic primitive while
+moving counting behind design/26's reviewed completed-dataset adapter lifecycle.]
+
+OK make your suggested updates
+
+[rewrote design/29 around that boundary. `microclaw/dataset_mosaic.py` now owns only
+generic geometry and uses the complete pixel/image-to-stage affine with an explicit
+frame-centre, axis, output-raster, interpolation, and overwrite contract. The generic
+`build_stage_coordinate_mosaic` requires one real value for every non-position axis
+and acquisition-tied or explicitly supplied calibration provenance. Removed the
+public counting tool; counting became the first fixture for a generic design/26
+completed-dataset adapter runner. Added the missing runner/observation-writer
+prerequisite, qualified live/offline equivalence, withdrew the seam-deduplication
+claim, expanded provenance and scale requirements, and added geometry, axes,
+calibration, seam, replay, and peak-RSS tests. No implementation changed.]
+
+Have a look at design/29 and the change referencing it in design/26
+
+[the new design/26 section correctly assigned NDTiff traversal and mosaic geometry
+to design/29 and runner lifecycle/schema ownership to design/26, but "the same
+HookBase adapter contract" was not implementable as written. Existing HookBase
+defines acquisition callbacks, and `load_hook_class` recognizes only
+`image_process_fn`; neither expresses a whole-dataset/mosaic/batch invocation.
+Recommended sharing the reviewed adapter lifecycle and observation schema rather
+than one callback signature; defining per-frame and completed-dataset invocation
+shapes; exposing one generic orchestration tool; supplying no hardware capabilities;
+making calibration provenance conditional; defining deterministic scientific
+payloads separately from timestamps; centralizing statuses; and removing duplicated
+normative runner text from design/29.]
+
+OK make the necessary edits
+
+[made design/26 the normative authority for completed-dataset replay. It now defines
+`analyze_frame` and `analyze_completed_dataset` invocation shapes, a provisional
+generic `run_analysis_on_saved_dataset` tool, manifest processing-unit declarations,
+a rejecting event-queue facade for legacy frame replay, read-only selected dataset
+views, capability restrictions, and the limit of those restrictions before design/32
+worker isolation. Calibration provenance is required only for spatial consumers;
+`observed`, `provisional`, and `unverified` form a closed non-authorizing status
+vocabulary; deterministic comparison excludes timestamps/run IDs/paths/latency.
+Reduced design/29 §3 to the counting fixture and geometry handoff, referring to
+design/26 for lifecycle, loading, status, provenance, and replay rules.]
+
+One small change in design/26
+
+[reviewed the clarification that `analyze_frame` is the runner's calling convention,
+not a new mandatory adapter method, and that legacy `image_process_fn` adapters are
+wrapped unchanged. The clarification resolved the main ambiguity. One adjacent
+sentence still said the loader accepted "either entry point," which misleadingly
+excluded the legacy compatibility path.]
+
+Ok fix that sentence
+
+[changed the loader requirement to accept `analyze_completed_dataset`,
+`analyze_frame`, or legacy `image_process_fn` through the compatibility wrapper;
+no single method is required of every offline adapter. `git diff --check` passed.]
+
+Update prompts.md
+
+[appended this complete design/29 and completed-dataset design/26 reconciliation
+session, including the reviews, architectural decisions, document edits, and final
+legacy-adapter compatibility clarification.]
+
+----
+
+I want to flag something about design/26. I think perhaps we are re-creating things
+pycro-manager already has. We already use pycro-manager's image_process_fn structure.
+But, for example, analyze_completed_dataset looks close to the saved image callbacks in
+pycro-manager. Maybe it's worth checking the pycro-manager documentation in detail to be
+sure we're not re-creating something that already exists?
+
+[reviewed pycro-manager's image processors, saved-image callbacks, acquisition hooks,
+adaptive-acquisition futures, Dataset access, and API reference against design/26.
+Confirmed the concern but separated the boundaries: `image_saved_fn(axes, dataset)` is
+per saved image, `AcquisitionFuture.await_image_saved(...)` waits for specified images,
+and completed data is accessed through the Dataset returned by `acq.get_dataset()`.
+The proposed offline runner still adds Microclaw policy, provenance, selection,
+normalization, cancellation, and analyzer lifecycle, but must not recreate acquisition
+notification or completion mechanics. Also found that the documented
+`image_saved_hook_fn(dataset_path, axes, image, metadata)` did not exist and was not
+wired by Microclaw.]
+
+OK please make all of these edits in the document, including the reconsideration of
+image_process_fn
+
+[reworked design/26 around native pycro-manager boundaries. Completed-dataset replay is
+now explicitly offline orchestration rather than a completed-run callback; per-image
+post-save work uses `image_saved_fn`, known adaptive groups use the native future pattern
+where appropriate, and completed acquisitions use the existing Dataset interface.
+Rejected automatic offline replay of `image_process_fn` with a fake event queue because
+processors may transform/drop images, depend on live metadata or ordering, retain state,
+or touch hardware. Corrected the hook-authoring documentation and recorded that
+Microclaw does not yet wire `image_saved_fn`.]
+
+Updates concerning the Dataset object were made to 26-implementation.md and hook_docs.py
+
+[reviewed and reconciled the updates: Dataset is implemented by `ndstorage` and returned
+by pycro-manager's `acq.get_dataset()`. Updated the remaining design/26 research-record
+wording to refer to `ndstorage.Dataset`.]
+
+Have a look at the changes to 26-ml-roi-detection.md and 26-implementation.md and
+hook_docs.py
+
+[found four inconsistencies: the saved-image event queue was conflated with the separate
+`AcquisitionFuture` API; the offline adapter alternated between receiving a native
+Dataset and a restricted facade; retained legacy `image_process_fn` replay was unusable
+for Microclaw's required three-argument hooks; and claiming `pycromanager.Dataset` never
+exists was too absolute across supported versions. Recommended an explicit DatasetView,
+no processor replay, and direct `ndstorage` imports without relying on re-exports.]
+
+OK, please make these changes
+
+[separated the saved-image queue API from `AcquisitionFuture`; made `DatasetView` the
+explicit read-only, selection-limited adapter protocol while the orchestrator owns the
+native `ndstorage.Dataset`; removed legacy `image_process_fn` replay entirely in favor
+of explicit `analyze_frame`/`analyze_completed_dataset`; and changed import guidance to
+avoid relying on a version-dependent pycro-manager re-export.]
+
+Look at the change to hook_docs.py
+
+[the new warning correctly marked DatasetView, offline orchestration, and
+`image_saved_fn` wiring as proposed rather than implemented. Found that the callback
+list still mixed native pycro-manager constructor support with callbacks actually wired
+by Microclaw, which could cause generated hooks to promise unavailable methods.]
+
+OK do it
+
+[split the hook guide into callbacks currently wired by Microclaw and native callbacks
+not currently wired. Marked `pre_hardware_hook_fn`, `event_generation_hook_fn`, and
+`image_saved_fn` unavailable to generated hooks until runner plumbing and tests land,
+and aligned the task-selection table.]
+
+Have a look at the recent changes to hook_docs.py
+
+[found one remaining contract mismatch: although the runner can wire
+`post_hardware_hook_fn` independently, the saved-hook validator and loader require every
+generated hook class to define `image_process_fn`. Therefore generated post-hardware-only
+hooks cannot be saved or loaded, while pre-coded registry hooks can. Also noted that the
+hardware-hook signatures said `dict | None` despite the documented requirement to always
+return a dict.]
+
+OK, fix the inconsistencies. Do not implement design/08
+
+[made the correction documentation-only. Generated/saved custom hooks now explicitly
+require `image_process_fn`; `post_hardware_hook_fn` is optional alongside it;
+post-hardware-only classes are limited to the pre-coded registry; broader saved-hook
+support remains deferred to design/08. Corrected both hardware-hook return annotations
+to `dict`. Focused verification passed throughout: 31 relevant tests and
+`git diff --check`.]
+
+Please update prompts.md
+
+[appended the complete pycro-manager/design/26 reconciliation session, including the
+native callback and Dataset boundaries, removal of legacy processor replay, explicit
+DatasetView contract, unimplemented-surface warnings, callback availability split, and
+the documentation-only saved-hook constraint correction.]

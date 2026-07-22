@@ -86,6 +86,110 @@ An unattributed tile score must not be assigned to a convenient blob centroid. W
 object proposals do not cover the concept, revisit the whole field or report the
 result as unresolved.
 
+## Completed-dataset replay orchestration (offline path shared with design/29)
+
+Both the two-pass survey review above and design/29's offline mosaic/analysis run an
+analysis over a *saved* dataset rather than a live acquisition. That offline path
+needs generic completed-dataset orchestration, and it is owned here, not in design/29:
+design/29 supplies the saved-NDTiff traversal (`_iter_present_coords`) and the
+stage-coordinate-mosaic input primitive; design/26 owns the runner's lifecycle,
+adapter contract, and record schema. This resolves the forward reference in
+design/29 §3, which previously pointed at a component neither doc described.
+
+This is a Microclaw policy and reproducibility layer over the existing `Dataset`
+interface, not a new acquisition callback or a replacement dataset model. `Dataset`
+is implemented by `ndstorage`: pycro-manager returns it from `acq.get_dataset()`.
+Import it directly with `from ndstorage import Dataset`; do not rely on pycro-manager
+re-exporting it, because that varies across supported versions. After the
+`Acquisition` context has exited (or `await_completion()` has returned), code can use
+`acq.get_dataset()`; an older saved acquisition can be opened with
+`Dataset(dataset_path)`. That completion boundary already guarantees that pending writes
+have finished. Traversal should delegate to the native dataset operations (`read_image`,
+`read_metadata`, coordinate enumeration, and lazy `as_array()` where appropriate).
+
+Microclaw adds the reviewed, fixture-tested, hash-pinned **adapter lifecycle**, bounded
+selection, provenance, normalized observation schema, artifacts, and cancellation. It
+does not invent a "completed-run hook" and does not add one public tool per analyzer.
+There are two explicitly offline invocation shapes:
+
+```python
+analyze_frame(image, metadata, context) -> normalized_result | None
+analyze_completed_dataset(dataset_view, selection, context) \
+    -> Iterable[normalized_result]
+```
+
+The first is a deliberately offline-safe per-frame contract over selected stored frames;
+the second is the boundary for multi-tile state, one completed mosaic, or one batch
+executable such as ilastik. Neither is a pycro-manager hook signature.
+
+Do **not** replay an acquisition-time `image_process_fn`, with a fake event queue or
+otherwise. That function may transform or discard pixels, depend on live metadata,
+retain acquisition-thread state, interact with hardware, or rely on callback ordering;
+discarding its returned image would also erase part of its contract. An adapter intended
+for both live and offline use must put its pure analysis in an explicit shared helper and
+expose a separately fixture-tested `analyze_frame`. There is no legacy compatibility
+path. The saved-adapter loader accepts `analyze_completed_dataset` or `analyze_frame`;
+no single method is required for every offline adapter.
+
+Expose this through one generic orchestration tool, provisionally
+`run_analysis_on_saved_dataset(dataset_path, adapter, axis_selection, input_kind,
+parameters, output_dir)`. `input_kind` is `frames` or `stage_coordinate_mosaic`; for
+the latter the runner calls design/29's geometry primitive with the selected
+calibration artifact. Analyzer-specific public tools remain forbidden.
+
+The runner normalizes output to `microclaw.analysis-observation/v1`. It must not
+filter acquisition, move hardware, or present an authoritative biological result.
+Enforce the capability boundary from the first implementation: offline adapters are
+supplied no controller, guard, acquisition object, hardware event queue, or API
+credentials. The orchestrator opens the native `ndstorage.Dataset`, but the adapter
+receives a `DatasetView`: a read-only, selection-limited protocol exposing only selected
+coordinate enumeration, `read_image`, `read_metadata`, and bounded lazy array access.
+It is a capability facade over the native object, not a second storage implementation.
+The manifest declares which of those operations the adapter needs. `context` exposes
+only the immutable input identity, a bounded artifact directory, observation emission,
+and cancellation. The eventual
+worker-process isolation in design/32 is required before claiming containment against
+an adapter that imports or opens capabilities for itself; until then, source review,
+lint, hash-pinning, and explicit confirmation remain the gate.
+
+Promotion to acquisition-driving use goes through the labelled-example, slide-level
+validation, object-attribution, guard, and confirmation workflow already described.
+
+Pycro-manager already supplies `image_saved_fn(axes, dataset)` for per-image post-save
+work, a native `AcquisitionFuture.await_image_saved(...)` adaptive pattern (returned by
+`acq.acquire()`), and hands back an `ndstorage` `Dataset` (via `acq.get_dataset()`) for
+completed data. The `AcquisitionFuture` pattern is real but is **not** microclaw's
+adaptive path: design/24 evaluated and rejected it (a hook is never handed the
+`Acquisition` object, and detection stays inside the hash-pinned `image_process_fn`
+rather than a runner-thread wait loop), so adaptive branching goes through the
+`run_adaptive_survey` candidates-queue runner instead. Microclaw's current
+runner wires only `image_process_fn` and `post_hardware_hook_fn`; it does not currently
+wire `image_saved_fn`. Add that native constructor argument only when a live post-save
+consumer needs it. It is not a completed-dataset callback and is not a prerequisite for
+offline replay. The orchestration requires a shared observation writer used by **both**
+`HookBase.log_analysis` (live) and offline replay, so an offline record is never a
+fabricated acquisition-time hook context. Each record carries source dataset
+identity and content hashes, the exact selected coordinates, analyzer source hash
+plus version and environment, parameters, an optional model/project/config hash,
+output artifact hashes, status, and timestamps. Record calibration contents and
+identity only when the adapter consumes a spatial mosaic or emits spatial coordinates;
+otherwise record `calibration_used=false` rather than attaching irrelevant current
+microscope state.
+
+`status` has a closed vocabulary: `unverified` means an input/output contract fact
+(axes, units, coordinates, or score semantics) remains unresolved; `provisional`
+means the contract is verified but scientific acceptance gates have not passed;
+`observed` is reserved for a verified measurement that makes no biological-recognition
+claim, such as the Run A SNR canary. No one of these statuses authorizes acquisition.
+An acquisition-driving artifact is a separate validated workflow output, not a fourth
+observation status.
+
+Replay over the same stored inputs and verdicts must reproduce the scientific payload,
+ranking, selected coordinates, and content-addressed artifacts without an adjudicator
+or network. Execution metadata such as timestamps, run IDs, paths, and measured latency
+may differ and is excluded from the deterministic comparison. This is the same
+determinism the "Replay is a requirement" clause states for ranking.
+
 ## What is implemented before the rig run
 
 - The hook-writing intake and agent-owned contract checklist live in `hook_docs.py`.

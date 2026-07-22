@@ -52,9 +52,19 @@ running `--help` or a documented example, and observing a safe dry run:
 Prefer primary sources: the installed code and version, the package's official
 documentation, and its upstream repository. Record where every inferred contract
 fact came from. Never silently infer coordinates, channels, or confidence semantics
-from a package name. Multi-tile or completed-dataset analyses need hook instance
-state, `image_saved_hook_fn`, or a two-pass acquisition; `image_process_fn` does
-not receive a batch.
+from a package name. To branch acquisition on a group of images, use microclaw's
+`run_adaptive_survey` candidates-queue runner (below), NOT pycro-manager's native
+`AcquisitionFuture.await_image_saved(...)` pattern: microclaw deliberately does not
+hand hooks the `Acquisition` object, and detection stays inside the hash-pinned,
+logged `image_process_fn` rather than a runner-thread wait loop (design/24). For
+per-image work after persistence use `image_saved_fn`. For completed data, the offline
+orchestrator opens the `ndstorage.Dataset` (from `acq.get_dataset()` or a direct
+`ndstorage` import; do not rely on a version-dependent `pycromanager` re-export) and
+gives the adapter a read-only, selection-limited `DatasetView`. That offline
+orchestrator and `DatasetView` are a design/26 proposal, not yet implemented; do not
+claim a generated adapter can run offline until they ship.
+Stateful streaming remains available when those boundaries do not fit.
+`image_process_fn` itself does not receive a batch.
 
 No network call may occur while images are acquired. A local subprocess is allowed
 only after its lint warning and full source are explicitly reviewed; derived XY/Z
@@ -76,17 +86,32 @@ model/project/config artifact. Use `status="unverified"` when axes, units, score
 semantics, or coordinates remain unresolved. Do not turn an unverified record into
 filtering, stage movement, early stopping, or follow-up acquisition.
 
-## Acquisition constructor hook kwargs
+## Acquisition callback availability
 
-Pass these as keyword arguments to Acquisition(...):
+Pycro-manager's native `Acquisition(...)` constructor accepts all of these callback
+kwargs, but Microclaw does not currently expose all of them through its runners.
+
+Currently wired by Microclaw's acquisition runner:
 
   image_process_fn       callable(image, metadata, event_queue) -> tuple | None
   post_hardware_hook_fn  callable(event) -> dict   (ALWAYS return the event)
-  pre_hardware_hook_fn   callable(event) -> dict   (ALWAYS return the event)
-  event_generation_hook_fn  callable(event) -> list[dict] | None
-  image_saved_hook_fn    callable(dataset_path, axes, image, metadata) -> None
 
-Only pass the hook kwargs you actually implement — unused ones are omitted.
+For a generated or saved custom hook, `image_process_fn` is mandatory because the
+current hook manager validates and loads classes through that method.
+`post_hardware_hook_fn` is optional alongside it; a generated post-hardware-only class
+cannot be saved or loaded. Pre-coded registry hooks may be post-hardware-only because
+they do not go through the saved-hook loader. Do not promise broader saved-hook support;
+generalizing that contract belongs to design/08 and is not part of design/26.
+
+Native pycro-manager callbacks not currently wired by Microclaw:
+
+  pre_hardware_hook_fn      callable(event) -> dict   (ALWAYS return the event)
+  event_generation_hook_fn callable(event) -> list[dict] | None
+  image_saved_fn            callable(axes, dataset[, event_queue]) -> None
+
+Do not implement or promise an unwired callback in a generated Microclaw hook. Adding
+one requires runner plumbing and fixture/integration tests first. For wired callbacks,
+only the methods actually implemented by the hook are passed to `Acquisition(...)`.
 
 ## Hook function signatures and return-value contracts
 
@@ -115,7 +140,7 @@ carry its keys, so read every one with .get() and fall back to
 `metadata["Axes"]["position"]` for identity. (metadata["Axes"] holds e.g.
 {"position": "tile_r0_c1", "time": 0, "z": 3}.)
 
-### post_hardware_hook_fn(event: dict) -> dict | None
+### post_hardware_hook_fn(event: dict) -> dict
 
 Called after the hardware has moved to the event's position (XY, Z, channel)
 but before the camera fires.
@@ -129,9 +154,11 @@ but before the camera fires.
   - Use this for autofocus: the stage is already at the nominal XY, so you can
     do a Z sweep here and update the focus device before the shutter opens.
 
-### pre_hardware_hook_fn(event: dict) -> dict | None
+### pre_hardware_hook_fn(event: dict) -> dict
 
-Called before the hardware moves for this event.
+Called before the hardware moves for this event. NOT currently wired by
+Microclaw's runner (see "Acquisition callback availability"); do not implement
+or promise it in a generated hook until that plumbing and its tests land.
 
   - Return the (optionally modified) event dict, ALWAYS. NEVER return None:
     as with post_hardware_hook_fn there is no cancel over the bridge — None
@@ -141,17 +168,31 @@ Called before the hardware moves for this event.
 
 ### event_generation_hook_fn(event: dict) -> list[dict] | None
 
-Called to dynamically generate or replace the events for an acquisition.
+Called to dynamically generate or replace the events for an acquisition. NOT
+currently wired by Microclaw's runner (see "Acquisition callback availability");
+do not implement or promise it in a generated hook until that plumbing and its
+tests land.
 
   - Return a list of replacement event dicts to use instead of the original.
   - Return None to leave the original event unchanged.
   - Use this when you need to compute event parameters at acquisition time
     rather than ahead of time.
 
-### image_saved_hook_fn(dataset_path: str, axes: dict, image: np.ndarray, metadata: dict) -> None
+### image_saved_fn(axes: dict, dataset[, event_queue]) -> None
 
-Called after each image has been written to the NDTiff dataset on disk.
-Return value is ignored. Use for side-channel logging, copying, or notification.
+Pycro-manager calls this after each image has been saved. Read the new pixels with
+`dataset.read_image(**axes)` and metadata with `dataset.read_metadata(**axes)`.
+This is a per-image callback, not a signal that the dataset or an image group is
+complete. The optional third argument is pycro-manager's older adaptive form: the
+callback may put follow-up events directly on that queue. It does not receive or return
+an `AcquisitionFuture`. The separate future API is returned by `acq.acquire()` and lets
+the acquisition owner await saved images. Microclaw uses neither mechanism here;
+adaptive branching goes through the `run_adaptive_survey` candidates-queue runner, so
+a hook is never handed an `Acquisition` or its future (design/24).
+
+Microclaw's current acquisition runner does not yet wire this constructor argument.
+Do not claim a generated hook can implement it until that native `image_saved_fn`
+plumbing is added and tested.
 
 ## Skipping and stopping — what a hook can actually do (design/27)
 
@@ -309,13 +350,23 @@ HookBase provides:
     dataset (discard only — the            (the position is still exposed)
     position keeps being exposed)
   Adjust exposure or settings per frame  image_process_fn → ctrl.core.set_*
-  Autofocus before each image capture    post_hardware_hook_fn (stage already at XY)
-  Redirect stage before hardware moves   pre_hardware_hook_fn (modify event["z"] etc.)
+  Autofocus before each image capture    post_hardware_hook_fn (stage already at XY;
+                                           generated hooks must also define
+                                           image_process_fn for save/load)
+  Redirect stage before hardware moves   pre_hardware_hook_fn (native pycro-manager;
+                                           not yet wired by Microclaw)
   Stop acquiring based on the images     run_adaptive_survey + adaptive hook
     (stop-on-condition, refine)            (stop = don't submit; NEVER return None)
   Abort everything on a safety limit     raise from any hook (loud, surfaces)
-  Generate events dynamically at runtime event_generation_hook_fn
-  Log metadata after image is saved      image_saved_hook_fn
+  Generate events dynamically at runtime event_generation_hook_fn (native;
+                                           not yet wired by Microclaw)
+  React after each image is persisted    image_saved_fn (native pycro-manager;
+                                           not yet wired by Microclaw)
+  Branch acquisition on a group of       run_adaptive_survey + adaptive hook
+    images before deciding                 (NOT AcquisitionFuture; see design/24)
+  Analyze a completed saved dataset      offline adapter over restricted DatasetView
+                                           (orchestrator owns ndstorage.Dataset;
+                                            design/26 proposal, not yet implemented)
 
 ## Observation-only SNR hook
 

@@ -184,22 +184,25 @@ The full generated source and advisory lint warnings are shown to the user. Savi
 requires explicit confirmation; the accepted bytes and warnings are hash-pinned by the
 existing hook manager. Running a newly saved hook requires the existing run confirmation.
 
-## Hook shapes needed by design/26
+## Native pycro-manager boundaries needed by design/26
 
-The design should implement behaviors as hooks, not backend tools:
+The design should select the existing pycro-manager boundary that matches each behavior,
+then add Microclaw policy and provenance around it rather than creating backend tools or
+parallel callback APIs:
 
 | behavior | hook shape |
 |---|---|
 | score or classify every tile | `image_process_fn`; log score/class and provenance |
 | return masks/boxes/centroids | `image_process_fn`; normalize coordinates and log objects |
-| inspect multiple tiles before deciding | stateful hook, or a two-pass survey; never pretend one callback receives a batch |
-| analyze a completed on-disk group | `image_saved_hook_fn` plus explicit completion/two-pass orchestration |
+| inspect a known group before deciding | `run_adaptive_survey` candidates-queue runner, stateful processing when streaming is required, or a two-pass survey — **not** pycro-manager's native `AcquisitionFuture.await_image_saved(...)`, which microclaw deliberately does not expose to hooks (design/24) |
+| react after each image is persisted | pycro-manager `image_saved_fn(axes, dataset)`; this is per image, not a completed-run callback |
+| analyze a completed on-disk group | after acquisition completion, open the `ndstorage.Dataset` returned by `acq.get_dataset()` or import it directly from `ndstorage`; give adapters a selection-limited `DatasetView` through the reviewed offline orchestration |
 | stop a serial survey when a condition is met | adaptive-survey hook using `candidates` / `progress` |
 | acquire guarded follow-ups around a detected object | survey-with-detector hook; check XY/Z and enforce an event cap |
 | rank all tiles and take top-*k* | two pass: score/log first, then deterministically select positions; streaming callbacks cannot know future ranks |
 
 Classical LDA/logistic logic, ilastik, and Cellpose are examples used to validate these
-shapes. They do not define public microclaw tool APIs. The research record remains useful
+boundaries. They do not define public microclaw tool APIs. The research record remains useful
 for choosing and testing shipped hooks, especially its findings about attribution,
 multi-tile ranking, latency, portability, and review.
 
