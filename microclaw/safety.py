@@ -146,28 +146,16 @@ class RangePolicy:
 
 
 AuthorizationMode = Literal["guaranteed", "degraded_trusted_plugins"]
-ClassificationKind = Literal[
-    "built_in_typed_capability", "reviewed_categorical_property", "excluded"
-]
-
-
-@dataclass(frozen=True)
-class AuthorizationClassification:
-    """One reviewed classification in the minimum Phase-1 registry."""
-
-    kind: ClassificationKind
-    capability: str | None = None
-    device: str | None = None
-    property: str | None = None
+BUILTIN_TYPED_CAPABILITIES = frozenset({"stage-position", "exposure"})
 
 
 @dataclass(frozen=True)
 class RigProfile:
-    """The declared completeness target and its reviewed classifications."""
+    """Reviewed per-rig property decisions; ranges declare stage actuators."""
 
     mode: AuthorizationMode
-    actuators: tuple[ActuatorId, ...]
-    classifications: tuple[AuthorizationClassification, ...]
+    categorical_properties: frozenset[tuple[str, str]]
+    excluded_properties: frozenset[tuple[str, str]]
 
 
 @dataclass
@@ -308,7 +296,7 @@ class ParsedSafetyConfig:
     constraints: SafetyConstraints
     ranges: dict[ActuatorId, RangePolicy]
     rig_profile: RigProfile = field(
-        default_factory=lambda: RigProfile("guaranteed", (), ())
+        default_factory=lambda: RigProfile("guaranteed", frozenset(), frozenset())
     )
 
     @classmethod
@@ -332,7 +320,7 @@ class ParsedSafetyConfig:
 
         top_keys = {
             "schema_version", "reviewed", "stage", "camera", "analysis", "channels", "plugins",
-            "illumination", "forbidden_properties", "allowed_properties",
+            "illumination", "forbidden_properties",
             "workspace_dir", "named_stages", "rig_profile",
         }
         section_keys = {
@@ -345,7 +333,7 @@ class ParsedSafetyConfig:
                 "shutters", "power_properties", "max_power_percent",
                 "max_power_step_factor", "require_confirm_on_enable",
             },
-            "rig_profile": {"mode", "actuators", "classifications"},
+            "rig_profile": {"mode", "categorical_properties", "excluded_properties"},
         }
         for key in cfg.keys() - top_keys:
             problem(str(key), "unknown top-level key")
@@ -463,9 +451,14 @@ class ParsedSafetyConfig:
         forbidden_cfg = object_list(
             "forbidden_properties", cfg.get("forbidden_properties"), {"device", "property"}
         )
-        allowed_value = cfg.get("allowed_properties")
-        allowed_items = object_list(
-            "allowed_properties", allowed_value, {"device", "property"}
+        categorical_value = rig_cfg.get("categorical_properties")
+        categorical_cfg = object_list(
+            "rig_profile.categorical_properties", categorical_value,
+            {"device", "property"},
+        )
+        excluded_cfg = object_list(
+            "rig_profile.excluded_properties", rig_cfg.get("excluded_properties"),
+            {"device", "property"},
         )
         shutters_cfg = object_list(
             "illumination.shutters", ill_cfg.get("shutters"),
@@ -478,17 +471,10 @@ class ParsedSafetyConfig:
         named_cfg = object_list(
             "named_stages", cfg.get("named_stages"), {"device", "min_um", "max_um"}
         )
-        actuator_cfg = object_list(
-            "rig_profile.actuators", rig_cfg.get("actuators"),
-            {"source", "device", "capability", "axis"},
-        )
-        classification_cfg = object_list(
-            "rig_profile.classifications", rig_cfg.get("classifications"),
-            {"kind", "capability", "device", "property"},
-        )
         for name, items in (
             ("forbidden_properties", forbidden_cfg),
-            ("allowed_properties", allowed_items),
+            ("rig_profile.categorical_properties", categorical_cfg),
+            ("rig_profile.excluded_properties", excluded_cfg),
             ("illumination.shutters", shutters_cfg),
             ("illumination.power_properties", power_cfg),
         ):
@@ -511,134 +497,29 @@ class ParsedSafetyConfig:
                 "expected 'guaranteed' or 'degraded_trusted_plugins'",
             )
         if "rig_profile" in cfg:
-            for key in {"actuators", "classifications"} - rig_cfg.keys():
+            for key in {"excluded_properties"} - rig_cfg.keys():
                 problem(f"rig_profile.{key}", "missing required key")
-        if mode == "guaranteed" and allowed_value is None:
+        if mode == "guaranteed" and categorical_value is None:
             problem(
-                "allowed_properties",
-                "required in guaranteed mode; denylist-only configs must migrate to an explicit allowlist",
+                "rig_profile.categorical_properties",
+                "required in guaranteed mode, even when empty; denylist-only configs must migrate",
             )
-
-        actuators: list[ActuatorId] = []
-        seen_actuators: set[ActuatorId] = set()
-        for index, item in enumerate(actuator_cfg):
-            location = f"rig_profile.actuators[{index}]"
-            for key in ("source", "capability"):
-                if key not in item:
-                    problem(f"{location}.{key}", "missing required key")
-            source = item.get("source")
-            capability = item.get("capability")
-            device = item.get("device")
-            axis = item.get("axis")
-            if source not in ("core_xy", "core_focus", "named"):
-                problem(f"{location}.source", "expected 'core_xy', 'core_focus', or 'named'")
-                continue
-            if capability != "stage-position":
-                problem(f"{location}.capability", "Phase 1 supports only 'stage-position'")
-                continue
-            if source == "core_xy":
-                if device is not None:
-                    problem(f"{location}.device", "must be omitted for a core actuator")
-                if axis not in ("x", "y"):
-                    problem(f"{location}.axis", "core_xy requires axis 'x' or 'y'")
-                    continue
-            elif source == "core_focus":
-                if device is not None:
-                    problem(f"{location}.device", "must be omitted for a core actuator")
-                if axis != "z":
-                    problem(f"{location}.axis", "core_focus requires axis 'z'")
-                    continue
-            else:
-                if not isinstance(device, str) or not device.strip():
-                    problem(f"{location}.device", "named actuator requires a non-empty device")
-                    continue
-                if axis is not None:
-                    problem(f"{location}.axis", "must be omitted for a named actuator")
-            identity = ActuatorId(source, device, capability, axis)
-            if identity in seen_actuators:
-                problem(location, f"duplicate actuator declaration {identity!r}")
-            else:
-                seen_actuators.add(identity)
-                actuators.append(identity)
-        for identity in actuators:
-            if identity not in ranges:
-                problem(
-                    "rig_profile.actuators",
-                    f"declared actuator {identity!r} has no corresponding range policy",
-                )
-
-        classifications: list[AuthorizationClassification] = []
-        seen_classifications: set[tuple[str, str | None, str | None, str | None]] = set()
-        for index, item in enumerate(classification_cfg):
-            location = f"rig_profile.classifications[{index}]"
-            kind = item.get("kind")
-            if kind not in (
-                "built_in_typed_capability", "reviewed_categorical_property", "excluded"
-            ):
-                problem(
-                    f"{location}.kind",
-                    "expected 'built_in_typed_capability', 'reviewed_categorical_property', or 'excluded'",
-                )
-                continue
-            capability = item.get("capability")
-            device = item.get("device")
-            prop = item.get("property")
-            if kind == "built_in_typed_capability":
-                if not isinstance(capability, str) or not capability.strip():
-                    problem(f"{location}.capability", "required non-empty string")
-                for key, value in (("device", device), ("property", prop)):
-                    if value is not None:
-                        problem(f"{location}.{key}", "not valid for a built-in capability")
-            else:
-                for key, value in (("device", device), ("property", prop)):
-                    if not isinstance(value, str) or not value.strip():
-                        problem(f"{location}.{key}", "required non-empty string")
-                if capability is not None:
-                    problem(f"{location}.capability", "not valid for a property classification")
-            identity = (kind, capability, device, prop)
-            if identity in seen_classifications:
-                problem(location, f"duplicate classification {identity!r}")
-            else:
-                seen_classifications.add(identity)
-                classifications.append(
-                    AuthorizationClassification(kind, capability, device, prop)
-                )
-
-        allowed_pairs = {
+        categorical_pairs = {
             (item["device"], item["property"])
-            for item in allowed_items
+            for item in categorical_cfg
             if isinstance(item.get("device"), str)
             and isinstance(item.get("property"), str)
         }
-        reviewed_pairs = {
-            (item.device, item.property)
-            for item in classifications
-            if item.kind == "reviewed_categorical_property"
-        }
         excluded_pairs = {
-            (item.device, item.property)
-            for item in classifications
-            if item.kind == "excluded"
+            (item["device"], item["property"])
+            for item in excluded_cfg
+            if isinstance(item.get("device"), str)
+            and isinstance(item.get("property"), str)
         }
-        for pair in sorted(allowed_pairs - reviewed_pairs):
+        for pair in sorted(categorical_pairs & excluded_pairs):
             problem(
-                "allowed_properties",
-                f"{pair!r} must be classified as a reviewed_categorical_property",
-            )
-        for pair in sorted(reviewed_pairs - allowed_pairs):
-            problem(
-                "rig_profile.classifications",
-                f"reviewed categorical property {pair!r} is not in allowed_properties",
-            )
-        for pair in sorted(allowed_pairs & excluded_pairs):
-            problem(
-                "rig_profile.classifications",
-                f"excluded property {pair!r} cannot also be in allowed_properties",
-            )
-        for pair in sorted(reviewed_pairs & excluded_pairs):
-            problem(
-                "rig_profile.classifications",
-                f"property {pair!r} cannot be both reviewed categorical and excluded",
+                "rig_profile",
+                f"property {pair!r} cannot be both categorically authorized and excluded",
             )
 
         if errors:
@@ -649,8 +530,8 @@ class ParsedSafetyConfig:
             for p in forbidden_cfg
         ]
         allowed = (
-            [ForbiddenProperty(**p) for p in allowed_items]
-            if allowed_value is not None
+            [ForbiddenProperty(**p) for p in categorical_cfg]
+            if categorical_value is not None
             else None
         )
         stage, named_stages = _stage_constraints(ranges)
@@ -685,7 +566,9 @@ class ParsedSafetyConfig:
         return cls(
             constraints=constraints,
             ranges=ranges,
-            rig_profile=RigProfile(mode, tuple(actuators), tuple(classifications)),
+            rig_profile=RigProfile(
+                mode, frozenset(categorical_pairs), frozenset(excluded_pairs)
+            ),
         )
 
 

@@ -802,8 +802,7 @@ def test_serve_refuses_an_unreviewed_safety_config(tmp_path):
     cfg = tmp_path / "safety_config.yaml"
     cfg.write_text(
         "schema_version: 2\nreviewed: false\n"
-        "allowed_properties: []\n"
-        "rig_profile: {mode: guaranteed, actuators: [], classifications: []}\n"
+        "rig_profile: {mode: guaranteed, categorical_properties: [], excluded_properties: []}\n"
         "stage: {x_min: -1.0, x_max: 1.0}\n",
         encoding="utf-8",
     )

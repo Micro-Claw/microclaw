@@ -4,13 +4,8 @@ schema_version: 2
 reviewed: true
 rig_profile:
   mode: guaranteed
-  actuators:
-    - {source: core_xy, capability: stage-position, axis: x}
-    - {source: core_xy, capability: stage-position, axis: y}
-    - {source: core_focus, capability: stage-position, axis: z}
-  classifications:
-    - {kind: built_in_typed_capability, capability: stage-position}
-    - {kind: built_in_typed_capability, capability: exposure}
+  categorical_properties: []
+  excluded_properties: []
 stage:
   x_min: -1000.0
   x_max:  1000.0
@@ -24,5 +19,3 @@ camera:
 
 channels:
   allowed: [DAPI, FITC, Cy5]
-
-allowed_properties: []
