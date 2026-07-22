@@ -7,12 +7,18 @@
 # Microclaw REFUSES TO START until you have gone through this file, set each
 # limit for THIS instrument, and changed the line below to `reviewed: true`.
 #
+# Schema 1 requires complete declared constraints and both range edges. To
+# migrate an older file, add this line and mark every missing edge explicitly
+# unbounded with a non-empty reason (or supply its finite bound).
+schema_version: 1
 reviewed: false
 #
 # ──────────────────────────────────────────────────────────────────────────────
 
 # All values are in micrometers unless noted.
-# Omit a field to leave it unconstrained.
+# Each declared axis needs both edges; use {unbounded: true, reason: "..."} for
+# a deliberately open edge. This preserves the review reason; it is not a
+# guarantee that the reachable hardware is contained (design/33 validates that).
 
 stage:
   x_min: -5000.0

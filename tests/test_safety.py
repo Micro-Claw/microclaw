@@ -1,16 +1,19 @@
 from unittest.mock import MagicMock
 
 import os
+from pathlib import Path
 
 import pytest
 import yaml
 from microclaw.safety import (
+    ActuatorId,
     CameraConstraints,
     ForbiddenProperty,
     IlluminationConstraints,
     IlluminationProperty,
     NamedStageLimits,
     PluginConstraints,
+    ParsedSafetyConfig,
     SafetyConstraints,
     SafetyConfigError,
     SafetyGuard,
@@ -27,6 +30,35 @@ def _core(x=0.0, y=0.0):
     core.get_x_position.return_value = x
     core.get_y_position.return_value = y
     return core
+
+
+def _parse(path):
+    """Give pre-schema parser tests the now-mandatory reviewed metadata."""
+    path = Path(path)
+    document = yaml.safe_load(path.read_text())
+    if document is None:
+        document = {}
+    if isinstance(document, dict):
+        document.setdefault("schema_version", 1)
+        document.setdefault("reviewed", True)
+        for section in ("camera", "analysis", "channels"):
+            if document.get(section) == {}:
+                document.pop(section)
+        stage = document.get("stage")
+        if isinstance(stage, dict):
+            for axis in ("x", "y", "z"):
+                low, high = f"{axis}_min", f"{axis}_max"
+                if low in stage and high not in stage:
+                    stage[high] = {"unbounded": True, "reason": "legacy test fixture"}
+                elif high in stage and low not in stage:
+                    stage[low] = {"unbounded": True, "reason": "legacy test fixture"}
+        for item in document.get("named_stages", []):
+            if "min_um" in item and "max_um" not in item:
+                item["max_um"] = {"unbounded": True, "reason": "legacy test fixture"}
+            elif "max_um" in item and "min_um" not in item:
+                item["min_um"] = {"unbounded": True, "reason": "legacy test fixture"}
+        path.write_text(yaml.safe_dump(document))
+    return ParsedSafetyConfig.from_yaml(str(path)).constraints
 
 
 @pytest.fixture
@@ -76,13 +108,101 @@ class TestNoConstraints:
 
 
 class TestFromYaml:
+    def test_schema_version_is_mandatory_and_old_versions_are_clear(self, tmp_path):
+        cfg = tmp_path / "safety.yaml"
+        cfg.write_text("reviewed: true\n")
+        with pytest.raises(SafetyConfigError, match="add `schema_version: 1`"):
+            ParsedSafetyConfig.from_yaml(str(cfg))
+        cfg.write_text("schema_version: 0\nreviewed: true\n")
+        with pytest.raises(SafetyConfigError, match="unsupported schema version 0"):
+            ParsedSafetyConfig.from_yaml(str(cfg))
+
+    def test_ordered_edges_have_structured_core_identities(self, tmp_path):
+        cfg = tmp_path / "safety.yaml"
+        cfg.write_text(
+            "schema_version: 1\nreviewed: true\n"
+            "stage: {x_min: -10, x_max: 10, z_min: 0, z_max: 200}\n"
+        )
+        parsed = ParsedSafetyConfig.from_yaml(str(cfg))
+        x = parsed.ranges[ActuatorId("core_xy", None, "stage-position", "x")]
+        z = parsed.ranges[ActuatorId("core_focus", None, "stage-position", "z")]
+        assert (x.minimum.bound, x.maximum.bound) == (-10.0, 10.0)
+        assert (z.minimum.bound, z.maximum.bound) == (0.0, 200.0)
+        assert parsed.constraints.stage.x_min == x.minimum.bound
+
+    def test_unbounded_reasons_survive_for_core_and_named_ranges(self, tmp_path):
+        cfg = tmp_path / "safety.yaml"
+        cfg.write_text(
+            "schema_version: 1\nreviewed: true\n"
+            "stage:\n"
+            "  x_min: -10\n"
+            "  x_max: {unbounded: true, reason: travel is mechanically stopped}\n"
+            "named_stages:\n"
+            "  - device: TIRF\n"
+            "    min_um: {unbounded: true, reason: controller enforces lower edge}\n"
+            "    max_um: {unbounded: true, reason: controller enforces upper edge}\n"
+        )
+        parsed = ParsedSafetyConfig.from_yaml(str(cfg))
+        assert {edge.unbounded_reason for policy in parsed.ranges.values()
+                for edge in (policy.minimum, policy.maximum) if edge.bound is None} == {
+            "travel is mechanically stopped",
+            "controller enforces lower edge",
+            "controller enforces upper edge",
+        }
+        assert parsed.constraints.stage.x_max is None
+        assert parsed.constraints.named_stages == [NamedStageLimits("TIRF", None, None)]
+
+    def test_missing_counterpart_and_other_errors_are_aggregated(self, tmp_path):
+        cfg = tmp_path / "safety.yaml"
+        cfg.write_text(
+            "schema_version: 1\nreviewed: true\n"
+            "stage: {x_min: 0, typo: 2}\n"
+            "camera: {max_exposure_ms: -1}\n"
+        )
+        with pytest.raises(SafetyConfigError) as exc:
+            ParsedSafetyConfig.from_yaml(str(cfg))
+        message = str(exc.value)
+        assert str(cfg) in message
+        assert "stage.typo" in message
+        assert "missing 'x_max'" in message
+        assert "greater than zero" in message
+
+    def test_rejects_duplicate_device_property_pairs(self, tmp_path):
+        cfg = tmp_path / "safety.yaml"
+        cfg.write_text(
+            "schema_version: 1\nreviewed: true\n"
+            "forbidden_properties:\n"
+            "  - {device: Core, property: Initialize}\n"
+            "  - {device: Core, property: Initialize}\n"
+        )
+        with pytest.raises(SafetyConfigError, match="duplicate device/property"):
+            ParsedSafetyConfig.from_yaml(str(cfg))
+
+    @pytest.mark.parametrize(
+        "edge",
+        [
+            "{unbounded: false, reason: no}",
+            "{unbounded: true}",
+            "{unbounded: true, reason: ''}",
+            "{unbounded: true, reason: ok, typo: true}",
+        ],
+    )
+    def test_rejects_malformed_or_unreasoned_unbounded_edge(self, tmp_path, edge):
+        cfg = tmp_path / "safety.yaml"
+        cfg.write_text(
+            "schema_version: 1\nreviewed: true\n"
+            f"stage:\n  x_min: 0\n  x_max: {edge}\n"
+        )
+        with pytest.raises(SafetyConfigError):
+            ParsedSafetyConfig.from_yaml(str(cfg))
+
     def test_loads_yaml(self, tmp_path):
         cfg = tmp_path / "safety.yaml"
         cfg.write_text(
             "stage:\n  z_min: 5.0\n  z_max: 100.0\n"
             "camera:\n  max_exposure_ms: 500\n"
         )
-        constraints = SafetyConstraints.from_yaml(str(cfg))
+        constraints = _parse(str(cfg))
         guard = SafetyGuard(constraints)
         with pytest.raises(SafetyViolation):
             guard.check_z(0.0)
@@ -92,7 +212,7 @@ class TestFromYaml:
     def test_empty_yaml_gives_no_constraints(self, tmp_path):
         cfg = tmp_path / "empty.yaml"
         cfg.write_text("")
-        constraints = SafetyConstraints.from_yaml(str(cfg))
+        constraints = _parse(str(cfg))
         guard = SafetyGuard(constraints)
         guard.check_z(999999.0)  # no exception
 
@@ -103,7 +223,7 @@ class TestFromYaml:
             "  - device: Core\n"
             "    property: Initialize\n"
         )
-        constraints = SafetyConstraints.from_yaml(str(cfg))
+        constraints = _parse(str(cfg))
         guard = SafetyGuard(constraints)
         with pytest.raises(SafetyViolation, match="forbidden"):
             guard.check_property("Core", "Initialize")
@@ -111,7 +231,7 @@ class TestFromYaml:
     def test_channels_loaded(self, tmp_path):
         cfg = tmp_path / "safety.yaml"
         cfg.write_text("channels:\n  allowed: [DAPI, FITC]\n")
-        constraints = SafetyConstraints.from_yaml(str(cfg))
+        constraints = _parse(str(cfg))
         guard = SafetyGuard(constraints)
         guard.check_channel("DAPI")  # no exception
         with pytest.raises(SafetyViolation):
@@ -125,14 +245,14 @@ class TestFromYaml:
             "    - org.example.KnownBadPlugin\n"
             "  allow_hardware_motion: true\n"
         )
-        constraints = SafetyConstraints.from_yaml(str(cfg))
+        constraints = _parse(str(cfg))
         assert constraints.plugins.blocked == ["org.example.KnownBadPlugin"]
         assert constraints.plugins.allow_hardware_motion is True
 
     def test_plugins_default_when_absent(self, tmp_path):
         cfg = tmp_path / "safety.yaml"
         cfg.write_text("stage:\n  z_min: 0.0\n")
-        constraints = SafetyConstraints.from_yaml(str(cfg))
+        constraints = _parse(str(cfg))
         assert constraints.plugins.blocked == []
         assert constraints.plugins.allow_hardware_motion is False
 
@@ -141,7 +261,7 @@ class TestFromYaml:
         cfg = tmp_path / "safety.yaml"
         cfg.write_text(document)
         with pytest.raises(SafetyConfigError) as exc:
-            SafetyConstraints.from_yaml(str(cfg))
+            _parse(str(cfg))
         assert str(cfg) in str(exc.value)
         assert "document root" in str(exc.value)
 
@@ -149,7 +269,7 @@ class TestFromYaml:
         cfg = tmp_path / "safety.yaml"
         cfg.write_text("stagee: {}\nstage: {x_mim: 0}\ncamera: {exposure: 5}\n")
         with pytest.raises(SafetyConfigError) as exc:
-            SafetyConstraints.from_yaml(str(cfg))
+            _parse(str(cfg))
         message = str(exc.value)
         assert str(cfg) in message
         assert "stagee: unknown top-level key" in message
@@ -188,7 +308,7 @@ class TestFromYaml:
         cfg = tmp_path / "safety.yaml"
         cfg.write_text(yaml.safe_dump(document))
         with pytest.raises(SafetyConfigError, match="finite number") as exc:
-            SafetyConstraints.from_yaml(str(cfg))
+            _parse(str(cfg))
         assert field in str(exc.value)
 
     @pytest.mark.parametrize(
@@ -204,14 +324,14 @@ class TestFromYaml:
         cfg = tmp_path / "safety.yaml"
         cfg.write_text(yaml.safe_dump(document))
         with pytest.raises(SafetyConfigError, match="minimum must be less"):
-            SafetyConstraints.from_yaml(str(cfg))
+            _parse(str(cfg))
 
     @pytest.mark.parametrize("value", [0, -0.1])
     def test_rejects_non_positive_max_exposure(self, tmp_path, value):
         cfg = tmp_path / "safety.yaml"
         cfg.write_text(yaml.safe_dump({"camera": {"max_exposure_ms": value}}))
         with pytest.raises(SafetyConfigError, match="greater than zero"):
-            SafetyConstraints.from_yaml(str(cfg))
+            _parse(str(cfg))
 
 
 class TestFiniteRuntimeGuards:
@@ -352,7 +472,7 @@ class TestAllowlistMode:
             "  - device: DCam\n"
             "    property: Binning\n"
         )
-        constraints = SafetyConstraints.from_yaml(str(cfg))
+        constraints = _parse(str(cfg))
         assert constraints.allowed_properties == [ForbiddenProperty("DCam", "Binning")]
         guard = SafetyGuard(constraints)
         with pytest.raises(SafetyViolation):
@@ -451,7 +571,7 @@ class TestWorkspaceSandbox:
     def test_from_yaml_loads_workspace_dir(self, tmp_path):
         cfg = tmp_path / "safety.yaml"
         cfg.write_text(f"workspace_dir: {tmp_path}\n")
-        constraints = SafetyConstraints.from_yaml(str(cfg))
+        constraints = _parse(str(cfg))
         assert constraints.workspace_dir == str(tmp_path)
 
 
@@ -588,7 +708,7 @@ class TestIlluminationGate:
             "  power_properties:\n"
             "    - {device: Luxx638, property: 'Laser Power Set-point Select [%]'}\n"
         )
-        c = SafetyConstraints.from_yaml(str(cfg))
+        c = _parse(str(cfg))
         assert c.illumination.max_power_percent == 30.0
         assert c.illumination.shutters[0].device == "Luxx638"
         assert c.illumination.shutters[0].on_value == "On"  # default
@@ -599,7 +719,7 @@ class TestIlluminationGate:
     def test_defaults_when_absent(self, tmp_path):
         cfg = tmp_path / "safety.yaml"
         cfg.write_text("stage:\n  z_min: 0.0\n")
-        c = SafetyConstraints.from_yaml(str(cfg))
+        c = _parse(str(cfg))
         assert c.illumination.shutters == []
         assert c.illumination.require_confirm_on_enable is True
 
@@ -636,7 +756,7 @@ class TestNamedStageLimits:
             "named_stages:\n"
             "  - {device: PIZStage, min_um: 0.0, max_um: 200.0}\n"
         )
-        c = SafetyConstraints.from_yaml(str(cfg))
+        c = _parse(str(cfg))
         assert c.named_stages == [NamedStageLimits("PIZStage", 0.0, 200.0)]
 
 

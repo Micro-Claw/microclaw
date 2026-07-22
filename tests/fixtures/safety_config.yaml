@@ -1,5 +1,6 @@
 # Safety config used in tests/conftest.py and integration tests.
 # Reviewed by construction: these are a fixture's limits, not a rig's.
+schema_version: 1
 reviewed: true
 stage:
   x_min: -1000.0

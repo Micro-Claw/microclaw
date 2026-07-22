@@ -168,8 +168,8 @@ def run_session(args):
     # which is what a desktop shortcut loads. Either way the file must carry
     # `reviewed: true`, so a session still cannot start under the example's
     # fictional limits (design/14 §6, design/17 v2).
-    constraints = load_safety_config_or_exit(args.safety_config)
-    guard = SafetyGuard(constraints)
+    parsed_safety = load_safety_config_or_exit(args.safety_config)
+    guard = SafetyGuard(parsed_safety.constraints)
 
     print("Connecting to Micro-Manager...")
     ctrl = MicroscopeController(port=args.port, guard=guard)

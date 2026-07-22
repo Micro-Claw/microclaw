@@ -800,6 +800,10 @@ def test_serve_without_a_safety_config_falls_back_to_the_per_user_default(tmp_pa
 def test_serve_refuses_an_unreviewed_safety_config(tmp_path):
     """The gate a double-click cannot get past without a human editing a line."""
     cfg = tmp_path / "safety_config.yaml"
-    cfg.write_text("reviewed: false\nstage: {x_min: -1.0, x_max: 1.0}\n", encoding="utf-8")
+    cfg.write_text(
+        "schema_version: 1\nreviewed: false\n"
+        "stage: {x_min: -1.0, x_max: 1.0}\n",
+        encoding="utf-8",
+    )
     with pytest.raises(SystemExit, match="has not been reviewed"):
         serve(_args(host="127.0.0.1", safety_config=str(cfg)))

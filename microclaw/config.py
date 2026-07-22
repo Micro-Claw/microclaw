@@ -6,14 +6,14 @@ from pathlib import Path
 import yaml
 
 from microclaw.paths import default_safety_config
-from microclaw.safety import SafetyConfigError, SafetyConstraints
+from microclaw.safety import ParsedSafetyConfig, SafetyConfigError
 
 
 class UnreviewedSafetyConfig(Exception):
     """The safety config still carries the example's fictional limits."""
 
 
-def load_safety_config(path: str | Path | None = None) -> SafetyConstraints:
+def load_safety_config(path: str | Path | None = None) -> ParsedSafetyConfig:
     """Load THIS RIG's limits, refusing anything a human has not signed off on.
 
     `path` of None means the per-user default (`microclaw init` writes it). That
@@ -35,14 +35,15 @@ def load_safety_config(path: str | Path | None = None) -> SafetyConstraints:
 
     # utf-8 explicit: the file is hand-edited and may hold µm; the Windows
     # default is cp1252 (design/14 knowledge-base bug).
-    cfg = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-    if not isinstance(cfg, dict) or cfg.get("reviewed") is not True:
+    cfg = yaml.safe_load(p.read_text(encoding="utf-8"))
+    parsed = ParsedSafetyConfig.from_yaml(str(p))
+    if cfg.get("reviewed") is not True:
         raise UnreviewedSafetyConfig(str(p))
 
-    return SafetyConstraints.from_yaml(str(p))
+    return parsed
 
 
-def load_safety_config_or_exit(path: str | Path | None = None) -> SafetyConstraints:
+def load_safety_config_or_exit(path: str | Path | None = None) -> ParsedSafetyConfig:
     """`load_safety_config`, but turn its refusals into readable exits.
 
     Both entry points (`run_session`, `serve`) want the same three messages, and
