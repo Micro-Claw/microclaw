@@ -33,7 +33,7 @@ Progress markers: `[ ]` not started, `[-]` active, `[x]` complete, `[!]` blocked
 | Block | Branch | Start commit | Implementation commit/PR | Rig evidence | Merge commit | Design reconciliation |
 |---|---|---|---|---|---|---|
 | 0 | — | c90d738 | baseline: 771 passed / 98 skipped (2026-07-22) | n/a | — | Run A located; NDTiff fixtures deferred to Block 8 |
-| 1 | `design32/config-hardening` | c90d738 | | n/a | | |
+| 1 | `design32/config-hardening` | c90d738 | 967ab5d | n/a | 56ed945 | Gate done: config matches Finding 1; non-numeric-write fail-closed change noted in design/32 (docs merge c86af6d) |
 | 2 | `design32/versioned-safety-schema` | | | n/a | | |
 | 3 | `design33/core-authorization-map` | | | required | | |
 | 4 | `design32/acquisition-budgets` | | | required | | |
@@ -102,24 +102,30 @@ Progress markers: `[ ]` not started, `[-]` active, `[x]` complete, `[!]` blocked
 
 Branch: `design32/config-hardening`
 
-- [ ] Create the branch from updated `main`.
-- [ ] Reject non-mapping YAML roots and unknown top-level and section keys with
+- [x] Create the branch from updated `main`.
+- [x] Reject non-mapping YAML roots and unknown top-level and section keys with
       file-anchored, aggregated errors.
-- [ ] Reject booleans, non-numbers, NaN, and infinities in configured numeric fields.
-- [ ] Enforce existing-field semantics: ordered finite bounds and positive
+- [x] Reject booleans, non-numbers, NaN, and infinities in configured numeric fields.
+- [x] Enforce existing-field semantics: ordered finite bounds and positive
       `max_exposure_ms`.
-- [ ] Add one shared fail-closed finite-number validator to every public numeric guard,
+- [x] Add one shared fail-closed finite-number validator to every public numeric guard,
       including hardware values read during a check.
-- [ ] Add migration diagnostics for every shipped/documented config found in Block 0;
+- [x] Add migration diagnostics for every shipped/documented config found in Block 0;
       do not introduce `schema_version` or the new range representation yet.
-- [ ] Run config, guard, tool, entry-point, and full non-hardware tests plus static checks.
-- [ ] Commit and hand back to the coordinator; coordinator reviews and merges.
+- [x] Run config, guard, tool, entry-point, and full non-hardware tests plus static checks.
+      — coordinator-verified on branch: 803 passed / 98 skipped / 3 baseline warnings;
+      compileall + `git diff --check` clean.
+- [x] Commit and hand back to the coordinator; coordinator reviews and merges. — impl
+      967ab5d, merged --no-ff as 56ed945.
 
 Post-merge design gate:
 
-- [ ] On updated `main`, compare behavior with design/32 Finding 1. If names, accepted
+- [x] On updated `main`, compare behavior with design/32 Finding 1. If names, accepted
       legacy shapes, or migration impact differ, update design/32 on a docs branch and
       merge it before Block 2. Otherwise record “no update required” in the ledger.
+      — config parsing matches Finding 1; recorded the measured zero shipped-file
+      migration impact AND the non-numeric-write fail-closed behavior change in design/32
+      (docs branch merged c86af6d).
 
 ## 2. Design/32 Finding 1b — versioned strict safety schema
 
