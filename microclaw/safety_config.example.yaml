@@ -7,11 +7,26 @@
 # Microclaw REFUSES TO START until you have gone through this file, set each
 # limit for THIS instrument, and changed the line below to `reviewed: true`.
 #
-# Schema 1 requires complete declared constraints and both range edges. To
-# migrate an older file, add this line and mark every missing edge explicitly
-# unbounded with a non-empty reason (or supply its finite bound).
-schema_version: 1
+# Schema 2 adds the declared rig profile and requires property allowlist mode
+# for the normal guarantee. It retains schema 1's complete range-edge rules.
+schema_version: 2
 reviewed: false
+rig_profile:
+  # Guaranteed mode is the normal fail-closed mode. The only alternative is
+  # degraded_trusted_plugins, which explicitly suspends the completeness claim.
+  mode: guaranteed
+  # These tagged identities are bound to the live core only after connection.
+  actuators:
+    - {source: core_xy, capability: stage-position, axis: x}
+    - {source: core_xy, capability: stage-position, axis: y}
+    - {source: core_focus, capability: stage-position, axis: z}
+  # Every enabled write path must resolve to one of these three classifications.
+  # Property exclusions are enforced across generic writes, presets, autofocus,
+  # and plugins by the authorization map; they are not denylist entries.
+  classifications:
+    - {kind: built_in_typed_capability, capability: stage-position}
+    - {kind: built_in_typed_capability, capability: exposure}
+    - {kind: excluded, device: Core, property: Initialize}
 #
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -43,23 +58,10 @@ channels:
   # Remove the list entirely to allow all channels.
   allowed: [DAPI, FITC, TRITC, Brightfield]
 
-# Raw device-property writes (set_device_property) have two modes:
-#
-#   DENYLIST (default, below): named (device, property) pairs are refused; every
-#   OTHER property is writable. This is NOT a complete gate — it can't enumerate
-#   every driver's motion/offset property, so a raw write can still reach an
-#   unlisted property. set_device_property additionally re-applies the numeric
-#   Z/XY/exposure guards when it can recognise the axis, but that too is only a
-#   heuristic (current focus/camera/XY device + known property names).
-#
-#   ALLOWLIST (recommended for hardware-attached rigs): uncomment
-#   allowed_properties below. When present, ONLY the listed pairs may be written
-#   and everything else is refused — the only mode in which raw property writes
-#   have a hard gate. forbidden_properties is ignored while allowed_properties is set.
-forbidden_properties:
-  - device: Core
-    property: Initialize
-
+# Guaranteed mode requires this allowlist, even when it is empty. Each entry also
+# needs a matching reviewed_categorical_property classification above. A property
+# that may drive a continuous actuator cannot be admitted as categorical.
+allowed_properties: []
 # allowed_properties:
 #   - device: DWheel
 #     property: Label

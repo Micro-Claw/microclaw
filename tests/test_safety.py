@@ -7,6 +7,7 @@ import pytest
 import yaml
 from microclaw.safety import (
     ActuatorId,
+    AuthorizationClassification,
     CameraConstraints,
     ForbiddenProperty,
     IlluminationConstraints,
@@ -14,6 +15,7 @@ from microclaw.safety import (
     NamedStageLimits,
     PluginConstraints,
     ParsedSafetyConfig,
+    RigProfile,
     SafetyConstraints,
     SafetyConfigError,
     SafetyGuard,
@@ -39,8 +41,25 @@ def _parse(path):
     if document is None:
         document = {}
     if isinstance(document, dict):
-        document.setdefault("schema_version", 1)
+        document.setdefault("schema_version", 2)
         document.setdefault("reviewed", True)
+        if "forbidden_properties" in document and "allowed_properties" not in document:
+            mode = "degraded_trusted_plugins"
+        else:
+            mode = "guaranteed"
+            document.setdefault("allowed_properties", [])
+        classifications = [
+            {
+                "kind": "reviewed_categorical_property",
+                "device": item["device"],
+                "property": item["property"],
+            }
+            for item in document.get("allowed_properties", [])
+        ]
+        document.setdefault(
+            "rig_profile",
+            {"mode": mode, "actuators": [], "classifications": classifications},
+        )
         for section in ("camera", "analysis", "channels"):
             if document.get(section) == {}:
                 document.pop(section)
@@ -108,13 +127,21 @@ class TestNoConstraints:
 
 
 class TestFromYaml:
+    _PROFILE = (
+        "allowed_properties: []\n"
+        "rig_profile:\n"
+        "  mode: guaranteed\n"
+        "  actuators: []\n"
+        "  classifications: []\n"
+    )
+
     def test_schema_version_is_mandatory_and_old_versions_are_clear(self, tmp_path):
         cfg = tmp_path / "safety.yaml"
         cfg.write_text("reviewed: true\n")
-        with pytest.raises(SafetyConfigError, match="add `schema_version: 1`"):
+        with pytest.raises(SafetyConfigError, match="add `schema_version: 2`"):
             ParsedSafetyConfig.from_yaml(str(cfg))
-        cfg.write_text("schema_version: 0\nreviewed: true\n")
-        with pytest.raises(SafetyConfigError, match="unsupported schema version 0"):
+        cfg.write_text("schema_version: 1\nreviewed: true\n")
+        with pytest.raises(SafetyConfigError, match="schema 1 configs must add rig_profile"):
             ParsedSafetyConfig.from_yaml(str(cfg))
 
     def test_shipped_example_parses_through_the_strict_schema(self):
@@ -133,14 +160,22 @@ class TestFromYaml:
 
     def test_analysis_section_without_min_snr_is_accepted(self, tmp_path):
         cfg = tmp_path / "safety.yaml"
-        cfg.write_text("schema_version: 1\nreviewed: true\nanalysis:\n")
+        cfg.write_text("schema_version: 2\nreviewed: true\n" + self._PROFILE + "analysis:\n")
         parsed = ParsedSafetyConfig.from_yaml(str(cfg))
         assert parsed.constraints.analysis.min_snr is None
 
     def test_ordered_edges_have_structured_core_identities(self, tmp_path):
         cfg = tmp_path / "safety.yaml"
         cfg.write_text(
-            "schema_version: 1\nreviewed: true\n"
+            "schema_version: 2\nreviewed: true\n"
+            "allowed_properties: []\n"
+            "rig_profile:\n"
+            "  mode: guaranteed\n"
+            "  actuators:\n"
+            "    - {source: core_xy, capability: stage-position, axis: x}\n"
+            "    - {source: core_focus, capability: stage-position, axis: z}\n"
+            "  classifications:\n"
+            "    - {kind: built_in_typed_capability, capability: stage-position}\n"
             "stage: {x_min: -10, x_max: 10, z_min: 0, z_max: 200}\n"
         )
         parsed = ParsedSafetyConfig.from_yaml(str(cfg))
@@ -149,11 +184,26 @@ class TestFromYaml:
         assert (x.minimum.bound, x.maximum.bound) == (-10.0, 10.0)
         assert (z.minimum.bound, z.maximum.bound) == (0.0, 200.0)
         assert parsed.constraints.stage.x_min == x.minimum.bound
+        assert parsed.rig_profile == RigProfile(
+            "guaranteed",
+            (
+                ActuatorId("core_xy", None, "stage-position", "x"),
+                ActuatorId("core_focus", None, "stage-position", "z"),
+            ),
+            (AuthorizationClassification("built_in_typed_capability", "stage-position"),),
+        )
 
     def test_unbounded_reasons_survive_for_core_and_named_ranges(self, tmp_path):
         cfg = tmp_path / "safety.yaml"
         cfg.write_text(
-            "schema_version: 1\nreviewed: true\n"
+            "schema_version: 2\nreviewed: true\n"
+            "allowed_properties: []\n"
+            "rig_profile:\n"
+            "  mode: guaranteed\n"
+            "  actuators:\n"
+            "    - {source: core_xy, capability: stage-position, axis: x}\n"
+            "    - {source: named, device: TIRF, capability: stage-position}\n"
+            "  classifications: []\n"
             "stage:\n"
             "  x_min: -10\n"
             "  x_max: {unbounded: true, reason: travel is mechanically stopped}\n"
@@ -172,10 +222,64 @@ class TestFromYaml:
         assert parsed.constraints.stage.x_max is None
         assert parsed.constraints.named_stages == [NamedStageLimits("TIRF", None, None)]
 
+    def test_guaranteed_mode_requires_allowed_properties(self, tmp_path):
+        cfg = tmp_path / "safety.yaml"
+        cfg.write_text(
+            "schema_version: 2\nreviewed: true\n"
+            "forbidden_properties: [{device: Core, property: Initialize}]\n"
+            "rig_profile: {mode: guaranteed, actuators: [], classifications: []}\n"
+        )
+        with pytest.raises(SafetyConfigError, match="denylist-only configs must migrate"):
+            ParsedSafetyConfig.from_yaml(str(cfg))
+
+    def test_degraded_trusted_plugin_mode_is_explicit_and_allows_denylist(self, tmp_path):
+        cfg = tmp_path / "safety.yaml"
+        cfg.write_text(
+            "schema_version: 2\nreviewed: true\n"
+            "forbidden_properties: [{device: Core, property: Initialize}]\n"
+            "rig_profile:\n"
+            "  mode: degraded_trusted_plugins\n"
+            "  actuators: []\n"
+            "  classifications:\n"
+            "    - {kind: excluded, device: Core, property: Initialize}\n"
+        )
+        parsed = ParsedSafetyConfig.from_yaml(str(cfg))
+        assert parsed.rig_profile.mode == "degraded_trusted_plugins"
+
+    def test_property_classifications_are_coupled_to_allowlist(self, tmp_path):
+        cfg = tmp_path / "safety.yaml"
+        cfg.write_text(
+            "schema_version: 2\nreviewed: true\n"
+            "allowed_properties: [{device: DCam, property: Binning}]\n"
+            "rig_profile:\n"
+            "  mode: guaranteed\n"
+            "  actuators: []\n"
+            "  classifications:\n"
+            "    - {kind: excluded, device: DCam, property: Binning}\n"
+        )
+        with pytest.raises(SafetyConfigError) as exc:
+            ParsedSafetyConfig.from_yaml(str(cfg))
+        message = str(exc.value)
+        assert "reviewed_categorical_property" in message
+        assert "cannot also be in allowed_properties" in message
+
+    def test_declared_actuator_requires_matching_range(self, tmp_path):
+        cfg = tmp_path / "safety.yaml"
+        cfg.write_text(
+            "schema_version: 2\nreviewed: true\nallowed_properties: []\n"
+            "rig_profile:\n"
+            "  mode: guaranteed\n"
+            "  actuators:\n"
+            "    - {source: core_focus, capability: stage-position, axis: z}\n"
+            "  classifications: []\n"
+        )
+        with pytest.raises(SafetyConfigError, match="no corresponding range policy"):
+            ParsedSafetyConfig.from_yaml(str(cfg))
+
     def test_missing_counterpart_and_other_errors_are_aggregated(self, tmp_path):
         cfg = tmp_path / "safety.yaml"
         cfg.write_text(
-            "schema_version: 1\nreviewed: true\n"
+            "schema_version: 2\nreviewed: true\n"
             "stage: {x_min: 0, typo: 2}\n"
             "camera: {max_exposure_ms: -1}\n"
         )
@@ -190,7 +294,7 @@ class TestFromYaml:
     def test_rejects_duplicate_device_property_pairs(self, tmp_path):
         cfg = tmp_path / "safety.yaml"
         cfg.write_text(
-            "schema_version: 1\nreviewed: true\n"
+            "schema_version: 2\nreviewed: true\n"
             "forbidden_properties:\n"
             "  - {device: Core, property: Initialize}\n"
             "  - {device: Core, property: Initialize}\n"
@@ -210,7 +314,7 @@ class TestFromYaml:
     def test_rejects_malformed_or_unreasoned_unbounded_edge(self, tmp_path, edge):
         cfg = tmp_path / "safety.yaml"
         cfg.write_text(
-            "schema_version: 1\nreviewed: true\n"
+            "schema_version: 2\nreviewed: true\n"
             f"stage:\n  x_min: 0\n  x_max: {edge}\n"
         )
         with pytest.raises(SafetyConfigError):

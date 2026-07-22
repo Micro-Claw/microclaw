@@ -801,7 +801,9 @@ def test_serve_refuses_an_unreviewed_safety_config(tmp_path):
     """The gate a double-click cannot get past without a human editing a line."""
     cfg = tmp_path / "safety_config.yaml"
     cfg.write_text(
-        "schema_version: 1\nreviewed: false\n"
+        "schema_version: 2\nreviewed: false\n"
+        "allowed_properties: []\n"
+        "rig_profile: {mode: guaranteed, actuators: [], classifications: []}\n"
         "stage: {x_min: -1.0, x_max: 1.0}\n",
         encoding="utf-8",
     )
