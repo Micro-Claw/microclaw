@@ -717,3 +717,36 @@ current-power hardware read during the illumination step ratchet — now fail
 closed (raise) rather than falling through denylist-only / defaulting to `0.0`.
 This is stricter than the "NaN fix at every guard boundary" phrasing above and
 is intentional; 1b should preserve it.
+
+### Landed: increment 1b (versioned strict safety schema)
+
+Increment 1b merged 2026-07-22 (impl `d5aa5c4` + coordinator review-fix
+`12b0677`, merge `b8092c4`); rig-verified to start clean with the reviewed rig
+config. It adds mandatory `schema_version: 1` with a migration note, the typed
+`RangeEdge`/`ActuatorId`/`RangePolicy`/`ParsedSafetyConfig` model, explicit
+two-edge policy for every declared stage/named-stage range, required-complete
+fields, retained reviewed-unbounded reasons, and duplicate `(device, property)`
+rejection across `forbidden_properties`, `allowed_properties`,
+`illumination.shutters`, and `illumination.power_properties`. `load_safety_config`
+now returns `ParsedSafetyConfig`; both entry points (`__main__.run_session`,
+`webserve.Session`) retain it and build `SafetyGuard(parsed.constraints)`.
+
+Divergences from the stub above, for the record:
+
+- `SafetyConfigError` subclasses `ValueError` (not bare `Exception`), carried
+  from 1a so parse-time numeric validation can be caught and aggregated.
+- `from_yaml` is a classmethod of `ParsedSafetyConfig`, not `SafetyConstraints`.
+- `_stage_constraints` derives the runtime `StageConstraints` **and** the
+  `named_stages` list in one pass over the single authoritative `ranges` map;
+  named-stage policies live in `ranges` keyed by
+  `ActuatorId("named", device, "stage-position")` (`axis=None`). This matches
+  design/33's live cross-check assumptions exactly, so **design/33 needs no
+  change**. A declared named stage with no bounds now fails validation
+  (complete-fields).
+- **Required-when-present policy (judgment call, endorsed):** when a section is
+  present, `camera.max_exposure_ms` and `channels.allowed` are required, but
+  `analysis.min_snr` is **not** — it is documented optional ("omit to retain the
+  uncalibrated fallback"), and requiring it broke the shipped example. A
+  regression test now loads the packaged example through `importlib` so strict
+  validation can never silently break startup again. If a future rig legitimately
+  wants `camera:`/`channels:` present without their key, revisit these two.
