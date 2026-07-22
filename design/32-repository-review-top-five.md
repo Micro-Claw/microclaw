@@ -24,65 +24,125 @@ regression. The 97 hardware integration tests were excluded.
 constructs dataclasses with mostly optional values (`microclaw/config.py:38-42`,
 `microclaw/safety.py:16-31`). There is no semantic validation that minima are
 below maxima, required rig limits exist, exposure is positive, values are
-finite, device/property entries are unique, or unknown/misspelled keys are
-rejected. The runtime comparisons at `microclaw/safety.py:193-228` also allow
-`NaN` through because every comparison with it is false. Thus a typo such as
-`max_exposure_ms: .nan`, an omitted `camera` section, or inverted bounds can be
-human-marked reviewed while providing no useful safety boundary.
+finite, or device/property entries are unique. The runtime comparisons at
+`microclaw/safety.py:193-228` also allow `NaN` through because every comparison
+with it is false. Thus a typo such as `max_exposure_ms: .nan`, an omitted
+`camera` section, or inverted bounds can be human-marked reviewed while
+providing no useful safety boundary.
+
+Unknown keys are only partially caught, and the difference matters. A stray key
+*inside* a known section (`stage: {x_mim: 0}`) does raise, because
+`StageConstraints(**stage_cfg)` rejects an unexpected keyword — but as a bare
+`TypeError` at construction, not a message that names the file and the typo. A
+misspelled *section* name is worse: `stagee:` falls through `cfg.get("stage",
+{})` to an empty dict and is dropped in complete silence, so the entire block of
+limits the operator wrote is discarded with no error at all. A strict schema
+replaces both behaviours with one clear, file-anchored validation error.
 
 The safety configuration is the wrong place for permissive parsing. It should
-be a strict, versioned schema that fails startup with all validation errors and
-requires finite bounds for every core actuator exposed by the tool set.
+be a strict, versioned schema that fails startup with all validation errors.
+Validation has three distinct jobs, and the implementation should keep them
+explicit rather than relying on dataclass construction to cover all three:
+
+1. **Structure:** the document root and every section must be mappings, values
+   must have the expected primitive types, and unknown keys are rejected at the
+   top level as well as inside sections.
+2. **Declared-field completeness:** when a constraint is declared, all fields
+   needed to interpret it must be present — for example both ends of a stage
+   range. Proving that the declarations cover every actuator the tools can reach
+   requires the rig profile and live cross-check in
+   `design/33-authorization-map.md`; file parsing alone cannot establish that.
+3. **Semantics:** minima are below maxima, exposure and other positive values
+   are greater than zero, values are finite, and keyed entries are unique.
 
 The codebase currently uses plain dataclasses plus `yaml` and takes no Pydantic
 dependency. Everything this finding needs — finite bounds, `min < max`, rejecting
-unknown keys, requiring the `camera`/`stage` sections — is achievable in the
-existing `from_yaml` path without a new dependency, and that is the preferred
-route unless we adopt Pydantic deliberately for other reasons. The stub below is
-illustrative of the *validation*, not a recommendation to add the library.
+unknown keys, and requiring complete fields for declared constraints — is
+achievable in the existing `from_yaml` path without a new dependency, and that
+is the preferred route unless we adopt Pydantic deliberately for other reasons.
+The stub below is therefore written in the repo's own dataclass idiom: parsers
+first validate shape and primitive types, then construct sections, and a
+separate pass enforces declared-field completeness and semantic invariants. It
+collects *all* recoverable errors and raises once, so a misconfigured file
+reports every problem in a single startup failure.
 
 ```python
-# microclaw/safety_config.py (stub; Pydantic shown only to illustrate the checks)
+# microclaw/safety.py (stub; same dataclasses, strict parse + validation)
+from dataclasses import fields
 from math import isfinite
-from pydantic import BaseModel, ConfigDict, model_validator
+from numbers import Real
 
-class StageLimits(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    x_min: float
-    x_max: float
-    y_min: float
-    y_max: float
-    z_min: float
-    z_max: float
+class SafetyConfigError(Exception):
+    """Structural and local semantic problems reported together."""
 
-    @model_validator(mode="after")
-    def valid_ranges(self):
-        values = (self.x_min, self.x_max, self.y_min,
-                  self.y_max, self.z_min, self.z_max)
-        if not all(isfinite(v) for v in values):
-            raise ValueError("all stage limits must be finite")
-        if not (self.x_min < self.x_max and self.y_min < self.y_max
-                and self.z_min < self.z_max):
-            raise ValueError("each stage minimum must be below its maximum")
-        return self
+def _number(raw, label: str, errors: list[str]):
+    # bool is a subclass of int, but is never a meaningful microscope limit.
+    if isinstance(raw, bool) or not isinstance(raw, Real):
+        errors.append(f"{label} must be a number, got {type(raw).__name__}")
+        return None
+    value = float(raw)
+    if not isfinite(value):
+        errors.append(f"{label} must be finite, got {raw!r}")
+        return None
+    return value
 
-class SafetyFileV1(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    schema_version: int = 1
-    reviewed: bool
-    stage: StageLimits
-    camera: CameraLimits  # requires finite max_exposure_ms > 0
+def _numeric_section(cls, cfg: dict, name: str, errors: list[str], *, required: bool):
+    raw = cfg.get(name)
+    if raw is None:
+        if required:
+            errors.append(f"missing required section: {name!r}")
+        return cls()
+    if not isinstance(raw, dict):
+        errors.append(f"{name} must be a mapping, got {type(raw).__name__}")
+        return cls()
+    unknown = set(raw) - {f.name for f in fields(cls)}
+    if unknown:
+        errors.append(f"{name}: unknown key(s) {sorted(unknown)}")
+    values = {}
+    for key, value in raw.items():
+        if key not in unknown:
+            parsed = _number(value, f"{name}.{key}", errors)
+            if parsed is not None:
+                values[key] = parsed
+    return cls(**values)
 
-def load_safety_config(path: Path) -> SafetyConstraints:
-    parsed = SafetyFileV1.model_validate(yaml.safe_load(path.read_text()))
-    if not parsed.reviewed:
-        raise UnreviewedSafetyConfig(path)
-    return parsed.to_constraints()
+def _finite_ordered(errors, label, lo, hi):
+    # Inputs have already passed _number; None means absent or invalid.
+    if lo is not None and hi is not None and lo >= hi:
+        errors.append(f"{label}: min ({lo}) must be below max ({hi})")
+
+# from_yaml first verifies that the root is a mapping and rejects unknown
+# top-level keys. It then gathers `errors`, parses numeric constraint sections
+# with _numeric_section (other section types get type-specific parsers), requires
+# complete fields for each declared constraint, validates ranges (each stage
+# axis via _finite_ordered), requires
+# max_exposure_ms > 0, and rejects duplicate (device, property) pairs. Finally:
+# if errors: raise SafetyConfigError("\n".join(errors)).
+# load_safety_config surfaces it like the existing UnreviewedSafetyConfig exit.
 ```
 
-Tests should cover missing sections, unknown keys, booleans used as numbers,
-inverted/equal ranges, infinities, and NaN both at configuration load and at
-every public `SafetyGuard.check_*` boundary.
+Requiring complete fields for every declared constraint is a behaviour change —
+today absent fields default to unconstrained — so it wants a `schema_version`
+key and a one-line migration note for configs that predate it, the same courtesy
+`reviewed:` got. Requiring declarations for every reachable actuator is the
+separate design/33 behavior change.
+
+Proving the declared numbers actually *cover the hardware* — not merely that they
+are well-formed — is a larger, multi-phase subsystem, and it is specified
+separately in `design/33-authorization-map.md`. In brief: completeness is checked
+against a **declared** rig profile (load-time validation cannot enumerate a live
+core), backed by a live cross-check that fails closed on any reachable, undeclared
+actuator before any tool is exposed. That design covers per-actuator-kind
+completeness, typed adapters for continuous writes, a channel-plan executor that
+closes the preset time-of-check/time-of-use gap, plugin trust modes, and the
+property-gate-mode coupling. It builds on the strict file validation above but is
+out of scope for this survey's stub.
+
+Tests for the validation covered *here* should exercise missing sections, unknown
+keys, booleans used as numbers, inverted/equal ranges, infinities, and NaN both
+at configuration load and at every public `SafetyGuard.check_*` boundary. The
+live-cross-check and authorization-map tests live with their design in
+`design/33`.
 
 ## 2. Safety limits individual actions, not cumulative exposure or acquisition size
 
@@ -158,7 +218,7 @@ accordingly rather than implying a running acquisition can be interrupted.
 
 ## 3. Remote mode exposes hardware-control endpoints without authentication
 
-**Priority: P0 — security / authorization**
+**Priority: P1 — security / authorization; release-blocking for remote mode**
 
 The server intentionally requires `--allow-remote` before a non-loopback bind,
 but after that opt-in any reachable client can call `/api/prompt`, `/api/stop`,
@@ -169,6 +229,14 @@ The prompt endpoint itself has no authentication check
 does not protect microscope control. On a shared or accidentally routed lab
 network, discovering the port is enough to operate the instrument or approve a
 pending illumination action.
+
+The residual exposure is narrower than a default unauthenticated public
+endpoint, which is why this is P1 rather than P0: the bind is loopback-only
+unless the operator passes `--allow-remote` (`webserve.py:550`, `569`), and the
+desktop shortcut never passes it (`shortcut.py:20`). It is nevertheless a hard
+release blocker for describing remote mode as supported. The realistic victim
+is a lab that deliberately opts in and assumes its network is private. That
+assumption is exactly what authentication should not require.
 
 Remote mode should require authentication independent of `Origin`: generate a
 high-entropy bearer/session secret, compare it in constant time, protect every
@@ -227,16 +295,27 @@ not execute them directly. The trusted parent validates each proposal through
 the audit log before placing it on the hardware event queue. This is conceptually
 close to the repository's existing candidate-event pattern.
 
-The first, relatively small change is to stop handing generated analysis hooks a
-live controller and accept only typed decisions from them. This does not apply to
-every hook: trusted built-in control hooks such as autofocus may legitimately
-need synchronous controller access and should remain a separate, explicitly
-trusted category.
+These are two separate pieces of work at two different sizes, and the doc should
+not imply they land together. **Phase 1 is small and high-value:** stop handing
+generated analysis hooks a live controller and accept only typed decisions from
+them (the discriminated action union below). It removes the direct
+hook-to-hardware path — the part that carries the security value — using code
+that already resembles the candidate-event pattern, and it needs no new process.
+**Phase 2 is a much larger reliability build:** the least-privilege worker
+process that adds hard deadlines, memory caps, and native-crash isolation. Phase
+2 is worth doing, but it is a later, independently scheduled item; treating the
+~130 lines below as one change overstates the immediate cost of getting the
+security win.
 
-Hard execution deadlines, per-hook memory limits, recovery from native crashes,
-and reliable termination of infinite loops require a worker-process boundary;
-they cannot be promised by an in-process thread. Run generated analysis hooks in
-a separate, least-privilege worker with a narrow serialized protocol. The worker
+Phase 1 does not apply to every hook: trusted built-in control hooks such as
+autofocus may legitimately need synchronous controller access and should remain a
+separate, explicitly trusted category.
+
+Phase 2, the worker process. Hard execution deadlines, per-hook memory limits,
+recovery from native crashes, and reliable termination of infinite loops require
+a worker-process boundary; they cannot be promised by an in-process thread. Run
+generated analysis hooks in a separate, least-privilege worker with a narrow
+serialized protocol. The worker
 receives image bytes plus immutable metadata and returns measurements and
 proposed events; only the trusted parent authorizes and executes them. Apply
 filesystem/network/process limits where the platform supports them.
@@ -372,12 +451,31 @@ Add token estimation before each API call, atomic transcript writes, explicit
 retention controls, and tests that compact histories only at complete Anthropic
 message boundaries (never between `tool_use` and `tool_result`).
 
+Compaction also interacts with prompt caching, and the design should account for
+it rather than fight it. Each round sends the history behind a cache breakpoint
+(`_with_cache_breakpoint`, `TOOLS_CACHED` at `agent.py:284-285`); rewriting older
+turns into a checkpoint invalidates every cached token from the rewrite point
+onward, so a naive per-turn compaction would repay in cache misses much of what
+it saves in context. Compact in infrequent, larger batches and keep the rewritten
+checkpoint as a stable prefix, so the breakpoint moves rarely and the common case
+still hits warm cache.
+
 ## Recommended order
 
-Implement strict configuration validation first, because all other hardware
-guards depend on trustworthy configuration. Next add acquisition budgets and
-interruptible batching. Authentication should be required before remote mode is
-described as usable. Define the generated-hook decision schema and withhold the
+Implement strict configuration validation first (the small, self-contained
+Finding 1 core: schema validation, the NaN fix, finite bounds), because all other
+hardware guards depend on trustworthy configuration. Next land the core of the
+rig authorization map — profile schema, property allowlist requirement, and live
+cross-check — tracked in `design/33-authorization-map.md`. Add acquisition
+budgets and interruptible batching next, then extend the authorization map with
+the resulting acquisition/dose policies. The typed actuator registry,
+channel-plan executor, and setup assistant are later design/33 phases.
+Authentication should be required before remote mode is
+described as usable — and because `--allow-remote` already ships and works
+today (`webserve.py:550`), the interim step is a now-fix: either land the token
+gate or add a startup warning that the flag exposes unauthenticated hardware
+control, rather than leaving the current behaviour undocumented until the full
+fix arrives. Define the generated-hook decision schema and withhold the
 live controller from that hook category next; this preserves smart microscopy
 while making the trusted authorization boundary explicit. A worker process is
 then required to enforce hard deadlines and memory caps—the document should not

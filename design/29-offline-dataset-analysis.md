@@ -72,22 +72,42 @@ and does not belong in this module.
 ```python
 # microclaw/dataset_mosaic.py
 from dataclasses import dataclass
-import numpy as np
+
+from microclaw.calibration import StageCameraAffine
 
 @dataclass
 class MosaicGeometry:
-    # Maps image displacement (dx_px, dy_px) to stage displacement (dx_um, dy_um),
-    # matching calibration.StageCameraAffine. Intended stage XY is the coordinate
-    # of the optical centre of the frame.
-    pixel_to_stage: np.ndarray  # shape (2, 2), finite and nonsingular
-    output_pixel_size_um: float
+    # The pixel/image -> stage transform is not re-represented here: it IS the
+    # calibration.StageCameraAffine measured for this dataset. Placement calls
+    # affine.px_to_um(dx_px, dy_px) directly, so there is exactly one copy of
+    # (a, b, c, d) and one implementation of the matrix product. Intended stage
+    # XY is the coordinate of the optical centre of the frame. This object is
+    # pure geometry: no calibration provenance, no dataset identity, no
+    # precedence policy. Those live in §2's tool, keyed off the knowledge base.
+    affine: StageCameraAffine       # its [[a, b], [c, d]] is the placement transform
+    output_pixel_size_um: float     # controls output sampling only, not placement
+
+    def __post_init__(self):
+        """Reject numerically invalid geometry before allocating or rasterizing.
+
+        This checks self-contained numeric invariants only — nothing that
+        requires knowing where the affine came from:
+          - all four affine coefficients finite (no NaN/inf),
+          - finite, non-negligible determinant (nonsingular transform),
+          - finite, strictly positive output_pixel_size_um.
+        Provenance completeness and calibration precedence are NOT checked here;
+        the geometry object cannot see which precedence branch produced it. That
+        validation belongs to the resolver in §2.
+        """
+        ...
 
 def assemble_stage_coordinate_mosaic(frames, geometry: MosaicGeometry):
     """Rasterize (pixels, intended_x_um, intended_y_um) frames in stage space.
 
     Derive every source pixel's stage coordinate as intended_xy plus
-    pixel_to_stage @ displacement_from_frame_centre. Compute the transformed
-    bounds and resample onto a documented +X-right/+Y-down output raster at
+    geometry.affine.px_to_um(dx_px, dy_px) for its displacement from the frame
+    centre. Compute the transformed bounds and resample onto a documented
+    +X-right/+Y-down output raster at
     output_pixel_size_um. Later tiles overwrite earlier pixels in overlap: this
     is a display convention, not registration, blending, or object deduplication.
 
@@ -100,12 +120,38 @@ def assemble_stage_coordinate_mosaic(frames, geometry: MosaicGeometry):
 The full 2×2 transform is required. `rot90_k` plus a flip cannot represent a
 non-90° rotation, unequal axis scales, or shear. The existing
 `StageCameraAffine` is **pixel/image → stage**, despite older prose calling it
-stage→camera. Its `px_to_um(dx_px, dy_px)` method already implements exactly this
-multiply, so `MosaicGeometry.pixel_to_stage` is its `[[a, b], [c, d]]` and placement
-should call `px_to_um` rather than reimplement the matrix product — keep one
-implementation of the geometry, not two. A legacy rot90/flip description may be
-converted into an explicit 2×2 matrix only as an opt-in fallback; it is not a second
-placement algorithm.
+stage→camera, and its `px_to_um(dx_px, dy_px)` method already implements exactly
+this multiply. `MosaicGeometry` therefore **holds the affine rather than a copy
+of its matrix**: no `pixel_to_stage` numpy field, no re-authored matrix product,
+one source of truth for `(a, b, c, d)`. Retaining the object also keeps its
+`objective` and `binning` attached instead of stripping them into a bare array.
+A legacy rot90/flip description may be converted into a `StageCameraAffine` (an
+explicit 2×2) only as an opt-in fallback; it is not a second placement algorithm
+and must be marked as a derived legacy fallback rather than a measured calibration
+artifact.
+
+**Two responsibilities, two homes.** `MosaicGeometry` owns the geometry;
+calibration provenance and precedence policy do not live on it (see §5 for where
+they do). This keeps the object at the altitude §1 declares — dataset-independent
+geometry — and avoids the geometry dataclass having to reason about which
+precedence branch produced its affine.
+
+**Validation splits along that seam.** `StageCameraAffine` currently permits
+direct construction without checking its values, so someone has to. Split it:
+
+- *Numeric invariants* — finite coefficients, nonsingular determinant, finite
+  positive `output_pixel_size_um` — are self-contained and belong in
+  `MosaicGeometry.__post_init__`, which runs before any canvas is allocated.
+  Callers must not be able to bypass this by constructing the dataclass directly.
+- *Provenance completeness and calibration precedence* — which identity fields a
+  given source (acquisition-recorded / supplied artifact / confirmed-current)
+  must carry — is policy the geometry object cannot see. It belongs to the
+  precedence resolver in §2, which validates before it ever builds a
+  `MosaicGeometry`.
+
+Conversion and artifact-loading helpers should also validate the numeric part at
+their own boundary, but the geometry-level check is the backstop that cannot be
+skipped.
 
 The coordinate contract is load-bearing: numpy arrays are indexed `(row, col)` =
 `(y_px, x_px)`, the affine consumes `(dx_px, dy_px)`, and intended XY denotes the
@@ -123,7 +169,7 @@ a *stitched mosaic*, which would register and blend overlaps.
 ```python
 # tools.py
 def build_stage_coordinate_mosaic(ctrl, guard, dataset_path, output_path,
-                                  axis_selection, calibration_path=None,
+                                  axis_selection, calibration_ref=None,
                                   output_pixel_size_um=None) -> dict:
     """Place one selected plane from an NDTiff already on disk; take no exposure.
 
@@ -131,14 +177,16 @@ def build_stage_coordinate_mosaic(ctrl, guard, dataset_path, output_path,
     position. Read the selected pixels and intended XY and call
     dataset_mosaic.assemble_stage_coordinate_mosaic.
 
-    Calibration precedence is: identity recorded with this acquisition; an
-    explicitly supplied calibration artifact; or an explicitly confirmed current
-    objective/binning calibration. Never silently apply the microscope's current
-    cached calibration to a historical dataset.
+    calibration_ref is a tagged reference selecting exactly one explicit source:
+    an artifact path, an immutable knowledge-base version key, a confirmed-current
+    objective/binning entry, or a derived legacy transform. If omitted, use an
+    identity recorded with the acquisition when available. Never silently apply
+    the microscope's current cached calibration to a historical dataset.
 
-    Write a 16-bit TIFF and return kind='stage_coordinate_mosaic', selection,
-    calibration identity, size/extent, overlap/coverage statistics, artifact path,
-    and hashes.
+    Write a 16-bit TIFF plus a JSON result manifest containing the exact resolved
+    affine payload and return kind='stage_coordinate_mosaic', selection,
+    calibration identity/payload, size/extent, overlap/coverage statistics,
+    artifact and manifest paths, and hashes.
     """
     dataset = Dataset(guard.resolve_in_workspace(dataset_path))
     coords_iter = _iter_present_coords(dataset, fixed_axes=axis_selection)
@@ -168,6 +216,22 @@ guards every candidate with `has_image`.
 Album and MMStudio-MDA paths can return live `DefaultDatastore` proxies with no
 disk path; those need a separate reader. Say "saved NDTiff dataset," not "any
 saved scan."
+
+**Calibration resolver contract.** `calibration_ref` is one tagged object rather
+than several partially overlapping parameters:
+
+- `{"kind": "artifact", "path": ...}` selects a calibration artifact;
+- `{"kind": "knowledge_version", "key": ...}` selects an immutable version;
+- `{"kind": "confirmed_current", "objective": ..., "binning": ...}` selects
+  the current alias only after explicit confirmation; and
+- `{"kind": "legacy_derived", ...}` explicitly converts a rot90/flip
+  description and records that it was derived rather than measured.
+
+The resolver returns `(affine, calibration_identity)`. The identity includes the
+source kind and source reference plus the canonical resolved affine payload. The
+tool passes only `affine` into `MosaicGeometry`, but retains the identity for the
+result manifest, response, and hashes. Thus geometry stays dataset-independent
+without discarding how its transform was obtained.
 
 ### 3. Completed-dataset analysis follows design/26
 
@@ -208,14 +272,57 @@ Reconstructing XY from `row`/`column` axes plus `step_um` is possible only as a
 separate, explicitly requested mode. It reintroduces the row/column↔stage-axis
 ambiguity that cost four re-scans and cannot represent Pallavi's spiral at all.
 
-### 5. Calibration identity is dataset provenance
+### 5. Calibration identity is versioned and resolved into every result
 
-The measured pixel→stage affine is a property of objective, binning, ROI/camera
-geometry, and optical path. A current cache entry may not describe an older
-dataset. New acquisitions intended for spatial replay must record the full affine,
-its knowledge/artifact identity, objective, binning, ROI, camera, and timestamp in
-the run artifacts. Historical datasets without this identity require an explicit
-calibration artifact or explicit confirmation that current calibration applies.
+The measured pixel→stage affine is a property of the optical path — objective,
+binning, and (in principle) ROI/camera geometry — not of the session. The
+provenance store builds on the one that already exists: `calibration.save_affine`
+/ `load_affine` persist `StageCameraAffine` entries in the knowledge base under
+`devices`. The current `affine_key(objective, binning)` is mutable and therefore
+is only a **current alias**, not a durable identity.
+
+Saving a calibration must also create an immutable version whose key includes a
+canonical-payload hash (or an equivalently unique version) and update the
+objective/binning alias to point to it. Existing unversioned entries are treated
+as mutable legacy aliases and resolved into a new immutable version before use.
+Loading an immutable version must verify that its stored canonical payload still
+matches its key.
+
+The canonical affine payload contains `a`, `b`, `c`, `d`, `objective`, `binning`,
+and `pixel_size_um` with a specified serialization and hash algorithm. The
+immutable version key plus that payload is the calibration identity. Versioning
+prevents a later recalibration from changing what an old identity resolves to.
+
+The precedence resolver in §2 owns the policy, in this order:
+
+1. a calibration identity recorded with the acquisition, if one is ever added;
+2. an explicitly supplied calibration artifact or immutable knowledge-version key;
+3. an explicitly confirmed current `objective`/`binning` entry from the
+   knowledge base.
+
+It must never *silently* apply the microscope's current cached calibration to a
+historical dataset — confirmation is required. Resolving the current alias pins
+its immutable version before rasterization; the result never records only the
+mutable alias. ROI/camera/timestamp are not required fields today.
+
+If calibration drift turns out to matter — a dataset placed with a stale affine,
+or an ROI change that the objective/binning key cannot distinguish — add
+ROI/camera/timestamp to the stored entry and promote branch 1 to a required
+per-run record. Until then, the immutable knowledge-base version and exact affine
+payload carry the identity. `calibration_provenance` is intentionally **not** a
+field on `MosaicGeometry`; if a richer typed calibration artifact later replaces
+the raw `StageCameraAffine`, it enters through the §2 resolver, not the geometry
+object.
+
+Every successful mosaic writes a JSON result manifest next to the TIFF. It embeds
+the complete canonical affine payload actually used, its immutable version key
+when one exists, `source_kind` (`acquisition_recorded`, `artifact`,
+`knowledge_version`, `confirmed_current`, or `legacy_derived`), the original
+source reference, and hashes of both the payload and output. The returned result
+contains the same record and the manifest path. Reproducing a mosaic therefore
+does not depend on the knowledge base still existing or on any mutable alias: the
+manifest's resolved payload is sufficient, while the version key preserves the
+calibration history and audit trail.
 
 `pixel_size_um` alone is insufficient whenever the camera axes are rotated,
 reflected, anisotropic, or sheared relative to stage axes. It may control output
@@ -261,9 +368,21 @@ and require completed-dataset analyzers to support bounded-memory access.
   by coordinate rather than acquisition order or row/column axes.
 - Axes: reject omitted or invalid channel/time/Z selections and prove that frames
   outside the selected plane cannot overwrite it.
-- Calibration provenance: reject unrecorded calibration by default, accept a
-  matching acquisition-recorded or explicit artifact, and never silently consume
-  current microscope state for an old dataset.
+- Geometry validation: `MosaicGeometry.__post_init__` rejects NaN/inf
+  coefficients, a singular affine, and non-positive `output_pixel_size_um`,
+  and cannot be bypassed by direct construction; provenance/precedence are not
+  checked here.
+- Calibration precedence (resolver, §2): accept a matching supplied artifact or
+  immutable knowledge-version key, or a confirmed current knowledge-base entry
+  keyed by objective/binning; reject when no identity is available, and never
+  silently consume current microscope state for an old dataset without
+  confirmation. Assert that legacy-derived sources remain marked as such.
+- Calibration versioning/result provenance: recalibrating the same
+  objective/binning creates a new immutable version without changing the old
+  payload; mutable aliases resolve to a pinned version. Assert that each mosaic's
+  JSON manifest embeds the exact canonical affine payload, source kind/reference,
+  version key when available, and matching hashes, and that replay succeeds from
+  the manifest payload after the knowledge-base entry is unavailable.
 - Replay/provenance: run a provisional counting adapter through the generic
   completed-dataset runner, assert full source/selection/calibration hashes, and
   assert deterministic normalized output with no acquisition-driving action.
