@@ -11,12 +11,17 @@ from microclaw.authorization import (
 from microclaw.safety import (
     ActuatorId,
     CameraConstraints,
+    ForbiddenProperty,
+    IlluminationConstraints,
+    IlluminationProperty,
     ParsedSafetyConfig,
     PluginConstraints,
     RangeEdge,
     RangePolicy,
     RigProfile,
     SafetyConstraints,
+    SafetyGuard,
+    SafetyViolation,
 )
 
 
@@ -26,6 +31,7 @@ class Core:
         self.focus = "Z"
         self.camera = "Cam"
         self.presets = {}
+        self.loaded_extra = []
 
     def get_xy_stage_device(self):
         return self.xy
@@ -41,11 +47,17 @@ class Core:
         return list(self.presets)
 
     def get_loaded_devices(self):
-        return [self.xy, self.focus, self.camera, "ReadOnlySensor", "SecondZ"]
+        return [
+            self.xy, self.focus, self.camera, "ReadOnlySensor", "SecondZ",
+            *self.loaded_extra,
+        ]
 
     def get_config_data(self, group, preset):
         assert group == "Channel"
         return self.presets[preset]
+
+    def get_property(self, device, prop):
+        return "5.0"
 
 
 class Controller:
@@ -66,7 +78,7 @@ def policy(low=-10.0, high=10.0):
 
 def parsed(
     *, ranges=None, categorical=(), excluded=(), channels=(), mode="guaranteed",
-    plugin_motion=False, exposure=100.0,
+    plugin_motion=False, exposure=100.0, illumination=None,
 ):
     if ranges is None:
         ranges = {
@@ -77,7 +89,9 @@ def parsed(
     constraints = SafetyConstraints(
         camera=CameraConstraints(exposure),
         allowed_channels=list(channels),
+        allowed_properties=[],
         plugins=PluginConstraints(allow_hardware_motion=plugin_motion),
+        illumination=illumination or IlluminationConstraints(),
     )
     return ParsedSafetyConfig(
         constraints,
@@ -183,6 +197,89 @@ def test_opaque_motion_plugin_requires_degraded_mode():
     )
     assert report.complete is None
     assert any(entry.classification == "trusted_degraded" for entry in report.entries)
+
+
+def illumination_policy(*, maximum=30.0, step=3.0):
+    return IlluminationConstraints(
+        shutters=[
+            IlluminationProperty("Laser", "Enable", on_value="On", off_value="Off")
+        ],
+        power_properties=[ForbiddenProperty("Laser", "Power")],
+        max_power_percent=maximum,
+        max_power_step_factor=step,
+    )
+
+
+@pytest.mark.parametrize(
+    ("maximum", "step", "message"),
+    [
+        (None, 3.0, "max_power_percent"),
+        (30.0, None, "max_power_step_factor"),
+        (101.0, 3.0, "within 0..100"),
+        (30.0, 0.5, "at least 1"),
+    ],
+)
+def test_reachable_illumination_power_requires_complete_policy(
+    maximum, step, message
+):
+    with pytest.raises(RigAuthorizationError, match=message):
+        validate_live_rig(
+            Controller(),
+            parsed(illumination=illumination_policy(maximum=maximum, step=step)),
+        )
+
+
+def test_bounded_shutter_and_power_writes_pass_map_and_typed_guard():
+    ctrl = Controller()
+    ctrl.core.loaded_extra = ["Laser"]
+    config = parsed(illumination=illumination_policy())
+    report = validate_live_rig(ctrl, config)
+    illumination_entries = {
+        (entry.device, entry.property)
+        for entry in report.entries
+        if entry.path == "dedicated-illumination"
+        and entry.classification == "built_in_typed_capability"
+    }
+    assert illumination_entries == {("Laser", "Enable"), ("Laser", "Power")}
+    assert not any(
+        entry.path == "connected-device-inventory" and entry.device == "Laser"
+        for entry in report.entries
+    )
+
+    guard = SafetyGuard(config.constraints)
+    authorize_property_write(ctrl, "Laser", "Enable")
+    guard.check_device_property(ctrl.core, "Laser", "Enable", "On")
+    guard.check_illumination(
+        ctrl.core, "Laser", "Enable", "On",
+        confirm_fn=lambda summary, kind="action": kind == "illumination",
+    )
+    authorize_property_write(ctrl, "Laser", "Power")
+    guard.check_device_property(ctrl.core, "Laser", "Power", "10")
+    guard.check_illumination(ctrl.core, "Laser", "Power", "10")
+
+
+def test_unclassified_and_over_limit_illumination_writes_fail():
+    ctrl = Controller()
+    config = parsed(illumination=illumination_policy())
+    validate_live_rig(ctrl, config)
+    guard = SafetyGuard(config.constraints)
+    with pytest.raises(RigAuthorizationError, match="excluded"):
+        authorize_property_write(ctrl, "Laser", "UnknownPower")
+    authorize_property_write(ctrl, "Laser", "Power")
+    with pytest.raises(SafetyViolation, match="max_power_percent"):
+        guard.check_illumination(ctrl.core, "Laser", "Power", "50")
+
+
+def test_illumination_preset_stays_excluded_without_channel_plan_executor():
+    core = Core()
+    core.presets["LaserOn"] = [
+        {"device": "Laser", "property": "Enable", "value": "On"}
+    ]
+    with pytest.raises(RigAuthorizationError, match="channel-plan executor"):
+        validate_live_rig(
+            Controller(core),
+            parsed(channels=["LaserOn"], illumination=illumination_policy()),
+        )
 
 
 def test_cli_and_web_validate_before_prompt_or_session_exposure(monkeypatch):

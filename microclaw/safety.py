@@ -146,7 +146,9 @@ class RangePolicy:
 
 
 AuthorizationMode = Literal["guaranteed", "degraded_trusted_plugins"]
-BUILTIN_TYPED_CAPABILITIES = frozenset({"stage-position", "exposure"})
+BUILTIN_TYPED_CAPABILITIES = frozenset(
+    {"stage-position", "exposure", "illumination"}
+)
 
 
 @dataclass(frozen=True)
@@ -669,10 +671,19 @@ class SafetyGuard:
         target is the *current* focus/camera/XY device and the property name is
         one of the small alias sets above. It does NOT protect a second Z drive,
         a driver whose position property is named differently ("Position (um)",
-        "PositionZ", ASI/PI names), or relative-move/offset properties. The only
-        hard gate for raw property writes is allowlist mode (allowed_properties).
+        "PositionZ", ASI/PI names), or relative-move/offset properties. Ordinary
+        raw writes require allowlist mode; configured illumination pairs instead
+        use their exact code-owned typed capability and check_illumination.
         """
-        self.check_property(device, prop)          # denylist/allowlist first
+        illumination_pair = self.is_illumination_enable(device, prop) or any(
+            item.device == device and item.property == prop
+            for item in self._c.illumination.power_properties
+        )
+        # Illumination pairs are code-owned typed capabilities. Startup's live
+        # map authorizes the exact pair; check_illumination below owns its
+        # confirmation/cap/ratchet rather than the categorical allowlist.
+        if not illumination_pair:
+            self.check_property(device, prop)      # denylist/allowlist first
         p = prop.lower()
         focus = core.get_focus_device()
         cam = core.get_camera_device()

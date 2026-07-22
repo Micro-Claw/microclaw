@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+import math
 import sys
 from typing import Any, Iterable
 
@@ -161,6 +162,8 @@ def validate_live_rig(ctrl: Any, parsed_config: ParsedSafetyConfig) -> Authoriza
         errors.append("Code registry is missing the built-in stage-position capability.")
     if "exposure" not in BUILTIN_TYPED_CAPABILITIES:
         errors.append("Code registry is missing the built-in exposure capability.")
+    if "illumination" not in BUILTIN_TYPED_CAPABILITIES:
+        errors.append("Code registry is missing the built-in illumination capability.")
 
     xy_device = str(core.get_xy_stage_device() or "")
     focus_device = str(core.get_focus_device() or "")
@@ -224,15 +227,12 @@ def validate_live_rig(ctrl: Any, parsed_config: ParsedSafetyConfig) -> Authoriza
             capability="exposure",
         ))
 
+    illumination = parsed_config.constraints.illumination
     illumination_power_pairs = {
-        (item.device, item.property)
-        for item in parsed_config.constraints.illumination.power_properties
+        (item.device, item.property) for item in illumination.power_properties
     }
     for device, prop in sorted(profile.categorical_properties):
-        if (
-            _known_continuous_raw_pair(core, (device, prop))
-            or (device, prop) in illumination_power_pairs
-        ):
+        if _known_continuous_raw_pair(core, (device, prop)):
             errors.append(
                 f"Raw property {device}.{prop} names a known continuous actuator; "
                 "Phase 1 cannot classify it as categorical."
@@ -243,6 +243,40 @@ def validate_live_rig(ctrl: Any, parsed_config: ParsedSafetyConfig) -> Authoriza
             device=device,
             property=prop,
         ))
+
+    illumination_pairs = {
+        (item.device, item.property) for item in illumination.shutters
+    } | illumination_power_pairs
+    for device, prop in sorted(illumination_pairs):
+        entries.append(AuthorizationEntry(
+            path="dedicated-illumination",
+            classification="built_in_typed_capability",
+            device=device,
+            property=prop,
+            capability="illumination",
+        ))
+    if guaranteed and illumination_power_pairs:
+        maximum = illumination.max_power_percent
+        step_factor = illumination.max_power_step_factor
+        if maximum is None:
+            errors.append(
+                "Reachable illumination power requires a finite "
+                "illumination.max_power_percent in guaranteed mode."
+            )
+        elif not math.isfinite(maximum) or not 0 <= maximum <= 100:
+            errors.append(
+                "illumination.max_power_percent must be within 0..100 "
+                "for reachable illumination power."
+            )
+        if step_factor is None:
+            errors.append(
+                "Reachable illumination power requires a finite "
+                "illumination.max_power_step_factor in guaranteed mode."
+            )
+        elif not math.isfinite(step_factor) or step_factor < 1:
+            errors.append(
+                "illumination.max_power_step_factor must be at least 1."
+            )
     for device, prop in sorted(profile.excluded_properties):
         if _known_continuous_raw_pair(core, (device, prop)):
             errors.append(
@@ -277,6 +311,12 @@ def validate_live_rig(ctrl: Any, parsed_config: ParsedSafetyConfig) -> Authoriza
             if pair in profile.excluded_properties:
                 classification = "excluded"
                 reasons.append(f"{device}.{prop} is excluded")
+            elif pair in illumination_pairs:
+                classification = "excluded"
+                reasons.append(
+                    f"{device}.{prop} is typed illumination but presets cannot "
+                    "invoke check_illumination without the deferred channel-plan executor"
+                )
             elif pair in profile.categorical_properties:
                 classification = "reviewed_categorical_property"
             else:
@@ -385,12 +425,20 @@ def authorize_property_write(ctrl: Any, device: str, prop: str) -> None:
     """Enforce the attached reviewed/excluded decision on any raw write path."""
     report = getattr(ctrl, "authorization_map", None)
     if report is None:
-        return  # Unit-level callers retain their historical behavior pre-startup.
-    entry = next(
-        (e for e in report.entries if e.device == device and e.property == prop),
-        None,
-    )
-    if entry is None or entry.classification != "reviewed_categorical_property":
+        # Invariant: startup attaches this before exposing production mutation paths.
+        return
+    matches = [
+        entry for entry in report.entries
+        if entry.device == device and entry.property == prop
+    ]
+    admitted = {
+        "reviewed_categorical_property", "built_in_typed_capability"
+    }
+    if (
+        not matches
+        or any(entry.classification == "excluded" for entry in matches)
+        or not any(entry.classification in admitted for entry in matches)
+    ):
         raise RigAuthorizationError(
             f"Property write {device}.{prop} is excluded from the authorization map."
         )
