@@ -163,6 +163,8 @@ def set_roi(
     width: int,
     height: int,
 ) -> dict:
+    from microclaw.authorization import authorize_path
+    authorize_path(ctrl, "camera-roi")
     ctrl.core.set_roi(x, y, width, height)
     _wait(ctrl, ctrl.core.get_camera_device())
     live_restarted = _bounce_live_if_on(ctrl)
@@ -173,6 +175,8 @@ def set_roi(
 
 
 def clear_roi(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
+    from microclaw.authorization import authorize_path
+    authorize_path(ctrl, "camera-roi")
     ctrl.core.clear_roi()
     _wait(ctrl, ctrl.core.get_camera_device())
     live_restarted = _bounce_live_if_on(ctrl)
@@ -357,7 +361,10 @@ def move_named_stage(
 # --- Channel / Config ---
 
 def set_channel(ctrl: MicroscopeController, guard: SafetyGuard, preset: str) -> dict:
+    from microclaw.authorization import authorize_channel
+
     guard.check_channel(preset)
+    authorize_channel(ctrl, preset)
     ctrl.core.set_config("Channel", preset)
     ctrl.core.wait_for_config("Channel", preset)
     return {"status": f"Channel set to '{preset}'."}
@@ -377,6 +384,9 @@ def set_device_property(
     property: str,
     value: str,
 ) -> dict:
+    from microclaw.authorization import authorize_property_write
+
+    authorize_property_write(ctrl, device, property)
     guard.check_device_property(ctrl.core, device, property, value)
     # Illumination gate (design/14 §3): shutter enables block on a human 'y',
     # power writes are capped and ratcheted. In code, not just the prompt.
@@ -3351,6 +3361,8 @@ def set_focus_lock(
     if lock is None or "device" not in lock:
         return {"error": "No focus-lock property in the EMU map."}
     target = str(lock.get("on", "1")) if enabled else str(lock.get("off", "0"))
+    from microclaw.authorization import authorize_property_write
+    authorize_property_write(ctrl, lock["device"], lock["property"])
     ctrl.core.set_property(lock["device"], lock["property"], target)
     return {
         "engaged": enabled,
@@ -3493,6 +3505,8 @@ def set_emu_laser_power_percentage(
     effective = (numeric - entry["offset"]) / entry["slope"]
     min_nonzero = max(0.0, (1.0 - entry["offset"]) / entry["slope"])
     representable = math.isclose(effective, requested, rel_tol=0, abs_tol=1e-9)
+    from microclaw.authorization import authorize_property_write
+    authorize_property_write(ctrl, entry["device"], entry["property"])
     guard.check_device_property(ctrl.core, entry["device"], entry["property"], raw_value)
     guard.check_illumination(ctrl.core, entry["device"], entry["property"], raw_value,
                              confirm_fn=CONFIRM_FN)
@@ -3581,6 +3595,8 @@ def get_mda_settings(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
 
 
 def run_mda(ctrl: MicroscopeController, guard: SafetyGuard, preview_token: str) -> dict:
+    from microclaw.authorization import authorize_path
+    authorize_path(ctrl, "mmstudio-mda")
     preview = _EMU_SESSION_CACHE.get("mda_preview")
     if not preview or preview[0] != preview_token:
         return {"error": "Missing or stale MDA preview. Call get_mda_settings immediately before run_mda."}

@@ -13,6 +13,7 @@ from pathlib import Path
 from pstats import SortKey
 
 from microclaw.agent import run_agent
+from microclaw.authorization import RigAuthorizationError, validate_live_rig
 from microclaw.assets import load_page
 from microclaw.controller import MicroscopeController
 from microclaw.config import load_safety_config_or_exit
@@ -178,6 +179,10 @@ def run_session(args):
             "Could not connect to Micro-Manager. "
             "Is the ZMQ server enabled in Tools → Options?"
         )
+    try:
+        validate_live_rig(ctrl, parsed_safety)
+    except RigAuthorizationError as exc:
+        sys.exit(str(exc))
     print("Connected. Type your instructions (type 'exit' or press Ctrl-C to quit).\n")
 
     # we will overwrite this
@@ -235,6 +240,24 @@ def _repl(args, ctrl, guard, history, history_fn_name):
 
         # Now write once per loop, in case it crashes
         write_history(history_fn_name, history, args.save_history)
+
+
+def print_authorization_map(args):
+    """Connect, validate, print the map as JSON, and expose no mutation surface."""
+    parsed_safety = load_safety_config_or_exit(args.safety_config)
+    guard = SafetyGuard(parsed_safety.constraints)
+    print("Connecting to Micro-Manager...", file=sys.stderr)
+    ctrl = MicroscopeController(port=args.port, guard=guard)
+    if not ctrl.is_connected():
+        sys.exit(
+            "Could not connect to Micro-Manager. "
+            "Is the ZMQ server enabled in Tools → Options?"
+        )
+    try:
+        report = validate_live_rig(ctrl, parsed_safety)
+    except RigAuthorizationError as exc:
+        sys.exit(str(exc))
+    print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
 
 
 def main():
@@ -308,6 +331,15 @@ def main():
         action="store_true",
         help="Print the URL instead of opening a browser window.",
     )
+
+    sub.add_parser(
+        "authorization-map",
+        help="Connect read-only, print the effective authorization map, and exit.",
+        description=(
+            "Connects only to enumerate and validate the effective authorization "
+            "surface. It never constructs an agent, app, or mutation-tool dispatcher."
+        ),
+    )
     sv.add_argument(
         "--allow-remote",
         action="store_true",
@@ -347,6 +379,10 @@ def main():
 
     if args.command == "view-history":
         view_history(args.path, open_browser=not args.no_browser)
+        return
+
+    if args.command == "authorization-map":
+        print_authorization_map(args)
         return
 
     if args.command == "serve":

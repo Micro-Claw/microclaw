@@ -42,6 +42,7 @@ from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
 from microclaw import credentials
+from microclaw.authorization import RigAuthorizationError, validate_live_rig
 from microclaw.agent import (
     DEFAULT_MODEL,
     known_models,
@@ -169,6 +170,10 @@ class Session:
                 "Could not connect to Micro-Manager. "
                 "Is the ZMQ server enabled in Tools → Options?"
             )
+        try:
+            validate_live_rig(ctrl, self.parsed_safety)
+        except RigAuthorizationError as exc:
+            sys.exit(str(exc))
         self.ctrl = ctrl
         self.guard = guard
         self.model = args.model
