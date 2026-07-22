@@ -352,9 +352,11 @@ class ParsedSafetyConfig:
         plugins_cfg = mapping("plugins")
         ill_cfg = mapping("illumination")
 
+        # `analysis.min_snr` is deliberately optional (omitting it retains the
+        # uncalibrated package fallback — see the shipped example), so it is NOT
+        # required-when-present here.
         for section_name, section, required_keys in (
             ("camera", camera_cfg, {"max_exposure_ms"}),
-            ("analysis", analysis_cfg, {"min_snr"}),
             ("channels", channels_cfg, {"allowed"}),
         ):
             if section_name in cfg:

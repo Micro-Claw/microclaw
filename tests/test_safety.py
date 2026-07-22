@@ -117,6 +117,26 @@ class TestFromYaml:
         with pytest.raises(SafetyConfigError, match="unsupported schema version 0"):
             ParsedSafetyConfig.from_yaml(str(cfg))
 
+    def test_shipped_example_parses_through_the_strict_schema(self):
+        """The packaged example must survive strict validation (design/32 1b).
+
+        Regression: `analysis.min_snr` is documented optional ("Omit to retain
+        the visibly uncalibrated package fallback"), so the example ships with it
+        commented out. Requiring it broke startup for every rig that omits it.
+        Read the example the way an installed wheel does, not via __file__.
+        """
+        from importlib.resources import files
+
+        example = files("microclaw").joinpath("safety_config.example.yaml")
+        parsed = ParsedSafetyConfig.from_yaml(str(example))
+        assert parsed.constraints.analysis.min_snr is None
+
+    def test_analysis_section_without_min_snr_is_accepted(self, tmp_path):
+        cfg = tmp_path / "safety.yaml"
+        cfg.write_text("schema_version: 1\nreviewed: true\nanalysis:\n")
+        parsed = ParsedSafetyConfig.from_yaml(str(cfg))
+        assert parsed.constraints.analysis.min_snr is None
+
     def test_ordered_edges_have_structured_core_identities(self, tmp_path):
         cfg = tmp_path / "safety.yaml"
         cfg.write_text(
