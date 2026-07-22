@@ -694,3 +694,26 @@ then required to enforce hard deadlines and memory caps—the document should no
 claim those guarantees before it exists. Context/audit separation is independent
 and can proceed in parallel, but should land before long-running sessions become
 a supported use case.
+
+### Landed: increment 1a (schema-version-free hardening)
+
+Increment 1a merged 2026-07-22 (impl `967ab5d`, merge `56ed945`) in the
+existing dataclass `from_yaml` path — no `schema_version`, `RangeEdge`,
+`ActuatorId`, `ParsedSafetyConfig`, completeness enforcement, or Pydantic
+dependency (those remain 1b). It rejects non-mapping roots and unknown top-level
+and section keys with file-anchored, aggregated `SafetyConfigError`s; rejects
+booleans/non-numbers/NaN/infinity in configured numeric fields; enforces
+`min < max` and `max_exposure_ms > 0`; and routes every public numeric guard
+(`check_xy`, `check_z`, `check_exposure`, `check_device_property`,
+`check_illumination`, `check_named_stage`) plus their hardware-read companions
+through one shared `_finite_number` validator.
+
+Two facts to carry forward. **Migration impact (measured):** every key in the
+shipped example and the test fixture was already recognized, so strict rejection
+breaks neither file; the migration surface is field configs with typo'd sections
+or stray keys only. **Behavior change beyond the NaN fix:** a *non-numeric* value
+written to a recognized motion/exposure/XY device property — and a non-numeric
+current-power hardware read during the illumination step ratchet — now fail
+closed (raise) rather than falling through denylist-only / defaulting to `0.0`.
+This is stricter than the "NaN fix at every guard boundary" phrasing above and
+is intentional; 1b should preserve it.
