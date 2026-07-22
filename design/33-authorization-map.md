@@ -20,13 +20,18 @@ by which microclaw can cause a hardware write.
 
 This is a program of work, not one atomic change. Its completion boundaries are:
 
-1. **Core authorization map:** add the declared profile schema, require property
-   allowlist mode (or disable the generic setter), build the effective write-path
-   map, and fail startup when the live rig exposes an undeclared reachable
-   actuator.
-2. **Typed continuous-actuator registry:** classify continuous write paths by
-   semantics and units, route them through typed guards, and exclude every
-   unclassified continuous write.
+1. **Core authorization map and minimum classification registry:** add the
+   declared profile schema, require property allowlist mode (or disable the
+   generic setter), classify every enabled write path as a built-in typed
+   capability, a reviewed categorical property, or excluded, build the effective
+   write-path map, and fail startup when the live rig exposes an undeclared
+   reachable actuator. An arbitrary property or preset effect that cannot yet be
+   classified is excluded in this phase; allowlisting its name alone does not
+   admit it.
+2. **Extended typed continuous-actuator registry:** add driver-specific
+   semantics and unit conversions beyond the built-in adapters, route those
+   writes through typed guards, and continue to exclude every unclassified
+   continuous write.
 3. **Acquisition/dose extension:** after design/32 Finding 2 lands, add its
    frame, duration, byte, illuminated-time, and cumulative-session budgets to
    the authorization policies.
@@ -51,6 +56,36 @@ connected core to enumerate capabilities from. Declaration keeps the structural
 and semantic checks at load time with no core, on the same trust model as
 `reviewed:`.
 
+### Reviewed-unbounded range edges must survive to the cross-check
+
+Design/32's Job 4 lets a stage/focus range edge be either a finite bound or an
+explicit reviewed-unbounded object (`{unbounded: true, reason: "..."}`). Its
+parser owns and returns `ParsedSafetyConfig`, containing both runtime
+`SafetyConstraints` and authoritative `RangePolicy` records keyed by structured
+`ActuatorId` values. This document does not redefine that parsing
+representation; it owns the live policy that consumes it.
+
+Core ranges arrive under design/32's tagged identities because load-time parsing
+has no live core and the `stage` config block carries no device label. Binding
+them to concrete hardware is this document's job: at cross-check time
+`validate_live_rig` resolves `source="core_xy"` to
+`core.get_xy_stage_device()` and `source="core_focus"` to
+`core.get_focus_device()`, then checks those live devices against the applicable
+X/Y and Z policies. Named stages use `source="named"` and their real `device`
+label, so no reserved string participates in identity. A live core device label
+that is also declared as a named stage is a declaration conflict the cross-check
+must reject rather than silently pick one policy.
+
+`validate_live_rig` treats a retained `RangeEdge` with `bound is None` as an open
+edge rather than trying to infer intent from `parsed.constraints`, where both an
+open edge and an unvalidated default would appear as `None`. In guaranteed mode,
+every reachable stage or focus axis requires two finite edges, so an open stage
+edge fails closed even when its reason is retained and logged. Reviewed-unbounded
+stage edges exist for migration, audit, and explicitly degraded operation; they
+are not full containment. A future actuator kind may accept an open edge in
+guaranteed mode only if this design adds an explicit capability-specific policy
+and explains why that still constitutes a guarantee.
+
 ## The live cross-check: fail closed on reachable, undeclared hardware
 
 Declaration alone cannot prove completeness, however: an operator can
@@ -63,6 +98,15 @@ declared limits**. Scoping to reachable hardware rather than blindly requiring
 limits for every connected read-only or observational device is deliberate, but
 "reachable" must be computed mechanically, not inferred from a short list of
 high-level tool names or device categories.
+
+Mechanical computation does not mean inferring actuation semantics from
+Micro-Manager property names. Phase 1's minimum registry knows the dedicated
+built-in adapters and reviewed categorical entries; everything else that might
+write is excluded. The extended registry can later make additional raw paths
+reachable only by declaring their exact semantics and units. This conservative
+rule removes the circular dependency in which a core map would otherwise claim
+completeness before it could distinguish a categorical setting from continuous
+motion.
 
 The authorization map must cover every path by which microclaw can cause a
 write: dedicated stage, camera, acquisition, and illumination tools; every
@@ -263,7 +307,7 @@ same shape (`webserve.py:163-165` then `build_app`). There is no existing shared
 lifecycle hook or separate tool-registration step: the tool set is static and
 `execute_tool` can dispatch once the agent is invoked.
 
-Add one shared `validate_live_rig(ctrl, constraints)` startup function that
+Add one shared `validate_live_rig(ctrl, parsed_config)` startup function that
 builds the effective authorization map and performs the authoritative
 cross-check. Both entry points must call it after a successful connection and
 before accepting a prompt, constructing the serving app, or invoking

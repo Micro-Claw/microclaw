@@ -41,19 +41,33 @@ replaces both behaviours with one clear, file-anchored validation error.
 
 The safety configuration is the wrong place for permissive parsing. It should
 be a strict, versioned schema that fails startup with all validation errors.
-Validation has three distinct jobs, and the implementation should keep them
-explicit rather than relying on dataclass construction to cover all three:
+Validation has four distinct jobs, and the implementation should keep them
+explicit rather than relying on dataclass construction to cover them:
 
 1. **Structure:** the document root and every section must be mappings, values
    must have the expected primitive types, and unknown keys are rejected at the
    top level as well as inside sections.
 2. **Declared-field completeness:** when a constraint is declared, all fields
-   needed to interpret it must be present — for example both ends of a stage
-   range. Proving that the declarations cover every actuator the tools can reach
-   requires the rig profile and live cross-check in
-   `design/33-authorization-map.md`; file parsing alone cannot establish that.
+   needed to interpret it must be present — for example a `named_stages` or
+   illumination `shutters` entry that omits `device` or `property`. Proving that
+   the declarations cover every actuator the tools can reach requires the rig
+   profile and live cross-check in `design/33-authorization-map.md`; file parsing
+   alone cannot establish that.
 3. **Semantics:** minima are below maxima, exposure and other positive values
    are greater than zero, values are finite, and keyed entries are unique.
+4. **Explicit range-edge policy:** a declared stage or focus range must state a
+   policy for *both* directions — omitting `z_max` after declaring `z_min` (or
+   vice versa) is rejected. Each edge is either a finite numeric bound or an
+   explicit reviewed-unbounded value such as
+   `{unbounded: true, reason: "no meaningful Z-up hazard"}`. This distinguishes a
+   forgotten field from an intentional one-sided constraint without pressuring
+   the operator to invent a large number that merely looks like a reviewed
+   hardware limit. `check_z` (`safety.py:212`) honors each numeric bound
+   independently today; the new schema preserves that behavior while making an
+   open edge deliberate and auditable. Because parsing creates this distinction,
+   design/32 also owns its retained representation: the validated result carries
+   both the existing runtime constraints and the typed edge policies. Design/33
+   owns the live containment policy that consumes those retained edges.
 
 The codebase currently uses plain dataclasses plus `yaml` and takes no Pydantic
 dependency. Everything this finding needs — finite bounds, `min < max`, rejecting
@@ -68,12 +82,35 @@ reports every problem in a single startup failure.
 
 ```python
 # microclaw/safety.py (stub; same dataclasses, strict parse + validation)
-from dataclasses import fields
+from dataclasses import dataclass, fields
 from math import isfinite
 from numbers import Real
+from typing import Literal
 
 class SafetyConfigError(Exception):
     """Structural and local semantic problems reported together."""
+
+@dataclass(frozen=True)
+class RangeEdge:
+    bound: float | None          # finite, or None only when explicitly unbounded
+    unbounded_reason: str | None # present iff explicitly unbounded
+
+@dataclass(frozen=True)
+class ActuatorId:
+    source: Literal["core_xy", "core_focus", "named"]
+    device: str | None           # present iff source == "named"
+    capability: str              # e.g. "stage-position"
+    axis: str | None = None      # x/y/z where the capability has axes
+
+@dataclass(frozen=True)
+class RangePolicy:
+    minimum: RangeEdge
+    maximum: RangeEdge
+
+@dataclass(frozen=True)
+class ParsedSafetyConfig:
+    constraints: SafetyConstraints              # compiled runtime view
+    ranges: dict[ActuatorId, RangePolicy]        # authoritative parsed policies
 
 def _number(raw, label: str, errors: list[str]):
     # bool is a subclass of int, but is never a meaningful microscope limit.
@@ -87,6 +124,9 @@ def _number(raw, label: str, errors: list[str]):
     return value
 
 def _numeric_section(cls, cfg: dict, name: str, errors: list[str], *, required: bool):
+    # Flat scalar sections only (e.g. camera.max_exposure_ms). Range sections
+    # (stage/focus) do NOT come through here — their values are edges, not plain
+    # numbers, so they need _range_edge below.
     raw = cfg.get(name)
     if raw is None:
         if required:
@@ -106,26 +146,155 @@ def _numeric_section(cls, cfg: dict, name: str, errors: list[str], *, required: 
                 values[key] = parsed
     return cls(**values)
 
-def _finite_ordered(errors, label, lo, hi):
-    # Inputs have already passed _number; None means absent or invalid.
-    if lo is not None and hi is not None and lo >= hi:
-        errors.append(f"{label}: min ({lo}) must be below max ({hi})")
+def _range_edge(raw, label: str, errors: list[str]) -> RangeEdge | None:
+    # A range edge is EITHER a scalar numeric bound OR a reviewed-unbounded
+    # object {unbounded: true, reason: "..."}. This is the type-specific parser
+    # a flat numeric parser cannot express.
+    if isinstance(raw, dict):
+        unknown = set(raw) - {"unbounded", "reason"}
+        if unknown:
+            errors.append(f"{label}: unknown key(s) {sorted(unknown)}")
+        if raw.get("unbounded") is not True:
+            errors.append(f"{label}: object edge must set 'unbounded: true'")
+            return None
+        reason = raw.get("reason")
+        if not isinstance(reason, str) or not reason.strip():
+            errors.append(f"{label}: reviewed-unbounded edge requires a non-empty 'reason'")
+            return None
+        return RangeEdge(bound=None, unbounded_reason=reason)
+    value = _number(raw, label, errors)
+    return None if value is None else RangeEdge(bound=value, unbounded_reason=None)
+
+# _AXES lists the axes a range block may declare; _stage_ranges parses the flat
+# `stage: {x_min, x_max, ...}` block into per-axis RangePolicy keyed by
+# ActuatorId. A focus block, if declared separately, reuses the same helper.
+_AXES = ("x", "y", "z")
+
+def _stage_ranges(cfg: dict, errors: list[str]) -> dict[ActuatorId, RangePolicy]:
+    raw = cfg.get("stage")
+    policies: dict[ActuatorId, RangePolicy] = {}
+    if raw is None:
+        return policies                       # absence is design/33's reachability call
+    if not isinstance(raw, dict):
+        errors.append(f"stage must be a mapping, got {type(raw).__name__}")
+        return policies
+    unknown = set(raw) - {f"{a}_{end}" for a in _AXES for end in ("min", "max")}
+    if unknown:
+        errors.append(f"stage: unknown key(s) {sorted(unknown)}")
+    for axis in _AXES:
+        lo_key, hi_key = f"{axis}_min", f"{axis}_max"
+        if lo_key not in raw and hi_key not in raw:
+            continue                          # axis simply not declared here
+        # A declared axis must state BOTH edges explicitly (job 4): a lone
+        # x_min with no x_max is a forgotten field, not a one-sided policy.
+        edges = {}
+        for end, key in (("minimum", lo_key), ("maximum", hi_key)):
+            if key not in raw:
+                errors.append(f"stage: axis {axis!r} declares one edge but is missing "
+                              f"{key!r}; give it a bound or mark it explicitly unbounded")
+            else:
+                edges[end] = _range_edge(raw[key], f"stage.{key}", errors)
+        if set(edges) != {"minimum", "maximum"} or None in edges.values():
+            continue
+        lo, hi = edges["minimum"], edges["maximum"]
+        if lo.bound is not None and hi.bound is not None and lo.bound >= hi.bound:
+            errors.append(f"stage.{axis}: min ({lo.bound}) must be below max ({hi.bound})")
+            continue
+        source = "core_focus" if axis == "z" else "core_xy"
+        policies[ActuatorId(source, None, "stage-position", axis)] = RangePolicy(lo, hi)
+    return policies
+
+def _stage_constraints(ranges: dict[ActuatorId, RangePolicy]) -> StageConstraints:
+    # Derive the runtime view in ONE pass from the authoritative map, never in
+    # parallel with it. A reviewed-unbounded edge (bound is None) collapses to
+    # the same None the guard already treats as "no bound this direction";
+    # design/33 recovers the intent from the retained RangePolicy, not from here.
+    def bound(axis, end):
+        source = "core_focus" if axis == "z" else "core_xy"
+        p = ranges.get(ActuatorId(source, None, "stage-position", axis))
+        return None if p is None else (p.minimum if end == "min" else p.maximum).bound
+    return StageConstraints(
+        x_min=bound("x", "min"), x_max=bound("x", "max"),
+        y_min=bound("y", "min"), y_max=bound("y", "max"),
+        z_min=bound("z", "min"), z_max=bound("z", "max"),
+    )
 
 # from_yaml first verifies that the root is a mapping and rejects unknown
-# top-level keys. It then gathers `errors`, parses numeric constraint sections
-# with _numeric_section (other section types get type-specific parsers), requires
-# complete fields for each declared constraint, validates ranges (each stage
-# axis via _finite_ordered), requires
-# max_exposure_ms > 0, and rejects duplicate (device, property) pairs. Finally:
-# if errors: raise SafetyConfigError("\n".join(errors)).
-# load_safety_config surfaces it like the existing UnreviewedSafetyConfig exit.
+# top-level keys. It then gathers `errors`, parses flat scalar sections with
+# _numeric_section (camera etc.) and range sections with _stage_ranges, requires
+# complete fields for each declared constraint, requires max_exposure_ms > 0, and
+# rejects duplicate (device, property) pairs. It derives the runtime
+# StageConstraints via _stage_constraints and assembles ParsedSafetyConfig from
+# that one map. Finally: if errors: raise SafetyConfigError("\n".join(errors)).
+# load_safety_config returns ParsedSafetyConfig and surfaces failures like the
+# existing UnreviewedSafetyConfig exit.
 ```
+
+`ActuatorId` is the stable identity for a range: it prevents string-key
+collisions between core axes, named stages, and future device-specific
+capabilities. Core X/Y/Z have no device label in the config today (the `stage`
+section is a flat block), so parsing uses tagged identities rather than inventing
+reserved device-label strings: X/Y use `source="core_xy"`, Z uses
+`source="core_focus"`, and both have `device=None`. Design/33's live cross-check
+binds those identities to `core.get_xy_stage_device()` and
+`core.get_focus_device()` respectively after connection. Named stages use
+`source="named"` with their real device label. Because the source tag, rather
+than a naming convention, separates these namespaces, an arbitrary external
+Micro-Manager label cannot collide with a core identity. The
+parsed `ranges` map is authoritative. `SafetyGuard` still needs only
+number-or-`None`, so `_stage_constraints` derives the existing runtime
+`SafetyConstraints` from that map in one pass; the parser must never populate the
+two representations independently. It retains the complete range policies in
+`ParsedSafetyConfig` for audit and the design/33 live check.
+`load_safety_config` has one canonical return contract:
+`ParsedSafetyConfig`. Entry points retain it through startup, construct
+`SafetyGuard` from `parsed.constraints`, and, once design/33 lands, pass the same
+`parsed` object to its live check before exposing tools. A directly
+constructed `StageConstraints()` or `SafetyConstraints()` remains an unvalidated
+test/internal value; its `None` fields must never be described as reviewed or
+allowed to masquerade as a loaded safety file.
+
+Only `schema_version` and `reviewed` are universally mandatory top-level fields
+in this local parsing phase. Hardware sections are optional structurally because
+whether a rig needs `stage`, `camera`, illumination, or another capability is a
+live reachability question owned by design/33. Once a section, range, or list
+entry is present, however, it must be internally complete under the rules above.
+Tests for a "missing section" therefore mean missing universally mandatory
+metadata or a missing required member inside a declared object; they must not
+arbitrarily require every possible hardware section before a rig is known.
 
 Requiring complete fields for every declared constraint is a behaviour change —
 today absent fields default to unconstrained — so it wants a `schema_version`
 key and a one-line migration note for configs that predate it, the same courtesy
-`reviewed:` got. Requiring declarations for every reachable actuator is the
-separate design/33 behavior change.
+`reviewed:` got. The explicit-edge policy (job 4) is a second behaviour change
+in the same schema bump: existing configs with an intentional one-sided stage
+bound will newly fail validation until they mark the opposite edge explicitly
+unbounded and give a reason, so the migration note has to call it out. Local file
+validation may accept that reviewed-unbounded edge for migration, audit, or an
+explicitly degraded mode; design/33's guaranteed mode always rejects an open
+edge for a reachable stage or focus axis. Requiring declarations for every
+reachable actuator is the separate design/33 behavior change.
+
+Because those pieces have different compatibility and migration scope, this
+finding should land as two increments, not one "small self-contained core." The first
+increment is **schema-version-free hardening**: reject a non-mapping root
+and unknown top-level/section keys, reject booleans/non-numbers/infinities/NaN at
+parse time, enforce `min < max` and `max_exposure_ms > 0` on values that are
+already present, and add the shared fail-closed finite-number validator at every
+`SafetyGuard.check_*` boundary (the runtime NaN hole below). It does not require
+the new `schema_version` or range representation, but it is still a parsing
+behavior change: files containing typos or previously ignored extension/custom
+keys (for example `notes:`) newly fail and may need editing. Inventory shipped
+and documented configs before landing it, and report each rejected key with its
+file path. The second increment
+carries the schema bump and the migration note: the mandatory `schema_version`
+key, required-complete-fields for declared constraints, and the job-4 explicit
+two-edge policy with its `RangeEdge`/`RangePolicy`/`ParsedSafetyConfig`
+representation. Sequencing the harden-only increment first buys the highest-value
+safety fix — no silently-ineffective NaN or inverted bound — without waiting on
+the versioned migration, and keeps the larger schema work as a deliberate,
+separately reviewable step. The stub above shows the end state of both
+increments together; it is not a claim that they ship in one commit.
 
 Proving the declared numbers actually *cover the hardware* — not merely that they
 are well-formed — is a larger, multi-phase subsystem, and it is specified
@@ -140,9 +309,25 @@ out of scope for this survey's stub.
 
 Tests for the validation covered *here* should exercise missing sections, unknown
 keys, booleans used as numbers, inverted/equal ranges, infinities, and NaN both
-at configuration load and at every public `SafetyGuard.check_*` boundary. The
-live-cross-check and authorization-map tests live with their design in
-`design/33`.
+at configuration load and at every public `SafetyGuard.check_*` boundary. Range
+tests should cover a missing counterpart edge, two ordered numeric edges, one
+numeric plus one valid reviewed-unbounded edge, malformed/unreasoned unbounded
+objects, and two unbounded edges if that actuator type permits them locally. The
+live-cross-check tests in design/33 should prove that guaranteed mode rejects
+every open edge on a reachable stage or focus axis. The
+design/32 parser tests should prove that every reason survives in the returned
+`ParsedSafetyConfig` and that directly constructed constraint dataclasses cannot
+enter the validated startup path or be reported as reviewed configuration.
+
+Configuration validation alone does not close the runtime `NaN` hole. Add a
+shared fail-closed finite-number validator at the start of every public numeric
+guard boundary, including `check_xy`, `check_z`, `check_exposure`,
+`check_named_stage`, numeric illumination checks, and the acquisition-plan
+validator introduced below. It rejects booleans, non-numbers, infinities, and
+NaN before comparisons or arithmetic. Hardware values read during a guard (for
+example current illumination power or the other XY coordinate) pass through the
+same validator; an unreadable or non-finite value is a refusal, not a reason to
+skip the numeric policy.
 
 ## 2. Safety limits individual actions, not cumulative exposure or acquisition size
 
@@ -251,16 +436,36 @@ def build_app(session, *, remote: bool, api_token: str | None):
 
     @app.middleware("http")
     async def authenticate(request, call_next):
-        if request.url.path.startswith("/api/"):
-            supplied = request.headers.get("authorization", "")
-            expected = f"Bearer {api_token}"
-            if not secrets.compare_digest(supplied, expected):
+        protected = remote and request.url.path.startswith("/api/")
+        pairing = request.url.path == "/api/pair"
+        if protected and not pairing:
+            bearer = valid_bearer(request, api_token)
+            session_cookie = valid_session_cookie(request)
+            if not (bearer or session_cookie):
                 return JSONResponse({"detail": "Unauthorized"}, status_code=401)
         return await call_next(request)
 
-# Prefer an HttpOnly, Secure, SameSite=Strict session cookie after a one-time
-# pairing code, so the long-lived bearer token is not stored in browser JS.
 ```
+
+The bearer header above is the non-browser API contract. The bundled browser
+must not receive or store that long-lived token in JavaScript: it uses a
+separate one-time pairing endpoint that exchanges a short-lived pairing code
+for an HttpOnly, Secure, SameSite=Strict session cookie. The pairing endpoint is
+the only remote `/api/*` exception to the normal bearer/session middleware; it
+is rate-limited, expires codes promptly, invalidates each code after one use,
+and is unavailable over untrusted cleartext transport. Subsequent browser API
+requests authenticate with the cookie. Local loopback mode preserves today's
+unauthenticated behavior; in particular, it must not accidentally compare a
+request against the string `Bearer None`.
+
+This auth gate is additional to, not a replacement for, the existing loopback
+gates on credential editing. The server already returns 403 when key/model
+editing is attempted on a non-loopback bind (`webserve.py:414, 443, 481`). Those
+protect *credential* mutation and stay as-is; the new bearer/session middleware
+protects *hardware control* (`/api/prompt`, `/api/stop`, `/api/confirm`). An
+implementer must keep both — the auth check does not subsume the loopback gate,
+and the loopback gate never protected the control endpoints — so the two run as
+distinct, complementary checks rather than one being folded into the other.
 
 Also add request-body limits, confirmation audit records (identity, time,
 decision), rate limiting, and tests using requests with no `Origin` header.
@@ -462,9 +667,16 @@ still hits warm cache.
 
 ## Recommended order
 
-Implement strict configuration validation first (the small, self-contained
-Finding 1 core: schema validation, the NaN fix, finite bounds), because all other
-hardware guards depend on trustworthy configuration. Next land the core of the
+Implement the schema-version-free hardening increment of Finding 1 first
+(unknown-key rejection,
+the NaN fix at every guard boundary, finite bounds, `min < max`, and
+`max_exposure_ms > 0` on values already present), because it is the highest-value
+safety fix, avoids the versioned schema migration (while still potentially
+requiring edits to files with previously ignored keys), and all other hardware guards depend on
+trustworthy configuration. Land the schema-bump increment (mandatory
+`schema_version`, required-complete-fields, and the job-4 explicit two-edge
+policy with `ParsedSafetyConfig`) as the deliberate next step, since it changes
+behaviour and needs the migration note. Next land the core of the
 rig authorization map — profile schema, property allowlist requirement, and live
 cross-check — tracked in `design/33-authorization-map.md`. Add acquisition
 budgets and interruptible batching next, then extend the authorization map with
