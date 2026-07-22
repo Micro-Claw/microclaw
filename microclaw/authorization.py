@@ -127,6 +127,17 @@ def _expand_preset(core: Any, preset: str) -> list[tuple[str, str, str | None]]:
     return effects
 
 
+def _clean_exception_message(exc: Exception) -> str:
+    """Return one useful line without Java/JNI class-name or stack noise."""
+    message = next(
+        (line.strip() for line in str(exc).splitlines() if line.strip()),
+        type(exc).__name__,
+    )
+    for prefix in ("java.lang.", "mmcorej.", "org.micromanager."):
+        message = message.replace(prefix, "")
+    return message
+
+
 def _known_continuous_raw_pair(core: Any, pair: tuple[str, str]) -> bool:
     device, prop = pair
     key = prop.lower().replace("_", "").replace(" ", "")
@@ -292,11 +303,27 @@ def validate_live_rig(ctrl: Any, parsed_config: ParsedSafetyConfig) -> Authoriza
         ))
 
     allowed_channels = parsed_config.constraints.allowed_channels
-    presets = (
-        _strings(core.get_available_configs("Channel"))
-        if allowed_channels is None
-        else list(allowed_channels)
-    )
+    try:
+        available_presets = _strings(core.get_available_configs("Channel"))
+    except Exception as exc:
+        available_presets = None
+        errors.append(
+            "Could not enumerate presets in the \"Channel\" group: "
+            + _clean_exception_message(exc)
+        )
+    if allowed_channels is None:
+        presets = available_presets or []
+    elif available_presets is None:
+        presets = []
+    else:
+        available = set(available_presets)
+        missing = [preset for preset in allowed_channels if preset not in available]
+        if missing:
+            errors.append(
+                "channels.allowed lists preset(s) not present in the \"Channel\" "
+                "group: " + ", ".join(repr(preset) for preset in missing) + "."
+            )
+        presets = [preset for preset in allowed_channels if preset in available]
     authorized_presets: set[str] = set()
     excluded_presets: dict[str, list[str]] = {}
     for preset in presets:
@@ -305,7 +332,7 @@ def validate_live_rig(ctrl: Any, parsed_config: ParsedSafetyConfig) -> Authoriza
             effects = _expand_preset(core, preset)
         except Exception as exc:
             effects = []
-            reasons.append(str(exc))
+            reasons.append(_clean_exception_message(exc))
         for device, prop, value in effects:
             pair = (device, prop)
             if pair in profile.excluded_properties:

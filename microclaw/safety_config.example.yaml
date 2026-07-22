@@ -22,8 +22,10 @@ rig_profile:
   # also supplies the runtime allowlist for set_device_property.
   categorical_properties: []
   # categorical_properties:
+  #   # Worked example for the commented channels.allowed: [DAPI] below.
+  #   # List every property effect that the rig's DAPI preset expands to.
   #   - {device: DWheel, property: Label}
-  #   - {device: DCam, property: Binning}
+  #   - {device: DichroicWheel, property: Label}
   # Removed from every write path by the Stage-B authorization map. These are
   # exclusions, not legacy forbidden_properties denylist entries.
   excluded_properties:
@@ -54,10 +56,12 @@ camera:
 analysis:
   # min_snr: 5.0
 
-channels:
-  # If present, only these presets may be set via set_channel.
-  # Remove the list entirely to allow all channels.
-  allowed: [DAPI, FITC, TRITC, Brightfield]
+# Channel names and their effects are coupled in guaranteed mode. To enable a
+# preset, list its name here AND list every categorical device/property effect
+# under rig_profile.categorical_properties above. Otherwise startup refuses it.
+# The DAPI worked example assumes exactly the two wheel effects shown above.
+# channels:
+#   allowed: [DAPI]
 
 # Illumination gate (design/14 §3). Anything that emits light at the sample.
 # Shutter enables listed here block on a human confirmation before turning on,

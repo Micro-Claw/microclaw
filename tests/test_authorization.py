@@ -31,6 +31,7 @@ class Core:
         self.focus = "Z"
         self.camera = "Cam"
         self.presets = {}
+        self.preset_errors = {}
         self.loaded_extra = []
 
     def get_xy_stage_device(self):
@@ -54,6 +55,8 @@ class Core:
 
     def get_config_data(self, group, preset):
         assert group == "Channel"
+        if preset in self.preset_errors:
+            raise self.preset_errors[preset]
         return self.presets[preset]
 
     def get_property(self, device, prop):
@@ -158,6 +161,39 @@ def test_preset_path_still_catches_device_when_generic_path_is_not_allowed():
     ]
     with pytest.raises(RigAuthorizationError, match="SecondZ.Position is unclassified"):
         validate_live_rig(Controller(core), parsed(channels=["Unsafe"]))
+
+
+def test_missing_allowed_presets_have_one_clean_aggregated_error():
+    core = Core()
+    core.presets["DAPI"] = []
+    with pytest.raises(RigAuthorizationError) as exc:
+        validate_live_rig(
+            Controller(core),
+            parsed(channels=["DAPI", "TRITC", "Brightfield"]),
+        )
+    message = str(exc.value)
+    assert (
+        'channels.allowed lists preset(s) not present in the "Channel" group: '
+        "'TRITC', 'Brightfield'."
+    ) in message
+    assert "mmcorej" not in message
+    assert "java.lang" not in message
+
+
+def test_present_but_unreadable_preset_has_one_sanitized_reason():
+    core = Core()
+    core.presets["Broken"] = []
+    core.preset_errors["Broken"] = RuntimeError(
+        "java.lang.RuntimeException: adapter refused preset\n"
+        "\tat mmcorej.CMMCore.getConfigData(CMMCore.java:123)"
+    )
+    with pytest.raises(RigAuthorizationError) as exc:
+        validate_live_rig(Controller(core), parsed(channels=["Broken"]))
+    message = str(exc.value)
+    assert "RuntimeException: adapter refused preset" in message
+    assert "CMMCore.java" not in message
+    assert "mmcorej" not in message
+    assert "java.lang" not in message
 
 
 def test_fully_reviewed_categorical_preset_is_authorized_and_runtime_gated():

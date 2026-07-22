@@ -16,6 +16,3 @@ stage:
 
 camera:
   max_exposure_ms: 2000.0
-
-channels:
-  allowed: [DAPI, FITC, Cy5]

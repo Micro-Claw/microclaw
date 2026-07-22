@@ -203,21 +203,26 @@ that is the case.
 
 Run `microclaw init` to write this rig's `safety_config.yaml`, then edit it to set the real hardware limits. These are enforced before every tool call and cannot be overridden by the AI.
 
-Safety files use `schema_version: 1`. To migrate an older file, add that line
-and give every declared stage or focus axis both edges: a finite bound or an
-explicit `{unbounded: true, reason: "..."}`. An open edge retains its review
-reason for audit/degraded operation; it does not guarantee hardware containment.
+Safety files use `schema_version: 2`. Stage and named-stage ranges declare the
+actuators the profile covers. Every declared axis needs two finite bounds in
+guaranteed mode; an explicit `{unbounded: true, reason: "..."}` is retained for
+audit or degraded operation but does not provide guaranteed containment.
 
 The file starts with a gate. Nothing runs until a human has read the limits and flipped it:
 
 ```yaml
 # Microclaw REFUSES TO START until you have gone through this file, set each
 # limit for THIS instrument, and changed the line below to `reviewed: true`.
-schema_version: 1
+schema_version: 2
 reviewed: false
+rig_profile:
+  mode: guaranteed
+  categorical_properties: []
+  excluded_properties: []
 ```
 
-The rest sets the limits themselves (the shipped values are examples, not defaults):
+The following fragments show the limits and a separate worked channel profile
+(the shipped values are examples, not defaults):
 
 ```yaml
 stage:
@@ -231,22 +236,22 @@ stage:
 camera:
   max_exposure_ms: 5000.0
 
+# In guaranteed mode, a channel preset is authorized by both its name and every
+# device/property effect Micro-Manager expands it to. For example, if DAPI sets
+# these two categorical wheel properties:
+# Replace the empty rig_profile fragment above with:
+rig_profile:
+  mode: guaranteed
+  categorical_properties:
+    - {device: DWheel, property: Label}
+    - {device: DichroicWheel, property: Label}
+  excluded_properties: []
 channels:
-  allowed: [DAPI, FITC, TRITC, Brightfield]
+  allowed: [DAPI]
 
-# Raw device-property writes default to a denylist: named (device, property)
-# pairs are refused and every other property stays writable.
-forbidden_properties:
-  - device: Core
-    property: Initialize
-
-# For hardware-attached rigs, swap the denylist for an allowlist — ONLY the
-# listed pairs may be written, everything else is refused. This is the only mode
-# in which raw property writes have a hard gate. (forbidden_properties is ignored
-# while allowed_properties is set.)
-# allowed_properties:
-#   - device: DWheel
-#     property: Label
+# A missing preset, an unlisted effect, or a preset effect requiring a deferred
+# typed executor is refused at startup. Leave `channels` absent until the names
+# and all effects have been reviewed on this rig.
 
 # Optional filesystem sandbox for file-touching tools (hook reads/writes,
 # position-list saves, TIFF export). Unset = unrestricted. When set, those tools
