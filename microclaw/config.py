@@ -6,7 +6,7 @@ from pathlib import Path
 import yaml
 
 from microclaw.paths import default_safety_config
-from microclaw.safety import SafetyConstraints
+from microclaw.safety import SafetyConfigError, SafetyConstraints
 
 
 class UnreviewedSafetyConfig(Exception):
@@ -65,3 +65,5 @@ def load_safety_config_or_exit(path: str | Path | None = None) -> SafetyConstrai
         )
     except yaml.YAMLError as e:
         sys.exit(f"Could not parse the safety config: {e}")
+    except SafetyConfigError as e:
+        sys.exit(str(e))

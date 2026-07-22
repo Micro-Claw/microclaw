@@ -109,6 +109,15 @@ def test_exit_on_malformed_yaml(tmp_path):
         load_safety_config_or_exit(_write(tmp_path, "reviewed: true\nstage: [unclosed\n"))
 
 
+def test_exit_on_invalid_schema_names_file_and_all_errors(tmp_path):
+    p = _write(tmp_path, "reviewed: true\nstagee: {}\nstage: {x_mim: 0}\n")
+    with pytest.raises(SystemExit) as exc:
+        load_safety_config_or_exit(p)
+    message = str(exc.value)
+    assert str(p) in message
+    assert "stagee" in message and "stage.x_mim" in message
+
+
 # ---- paths ----
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX conventions")
