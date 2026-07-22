@@ -34,7 +34,7 @@ Progress markers: `[ ]` not started, `[-]` active, `[x]` complete, `[!]` blocked
 |---|---|---|---|---|---|---|
 | 0 | — | c90d738 | baseline: 771 passed / 98 skipped (2026-07-22) | n/a | — | Run A located; NDTiff fixtures deferred to Block 8 |
 | 1 | `design32/config-hardening` | c90d738 | 967ab5d | n/a | 56ed945 | Gate done: config matches Finding 1; non-numeric-write fail-closed change noted in design/32 (docs merge c86af6d) |
-| 2 | `design32/versioned-safety-schema` | 252a4cc | | n/a | | |
+| 2 | `design32/versioned-safety-schema` | 252a4cc | d5aa5c4 (+fix 12b0677) | rig: starts clean w/ reviewed rig config | b8092c4 | Gate done: API matches design/33 (no change); 1b landed note + required-when-present judgment recorded in design/32 (docs merge 8dd521f) |
 | 3 | `design33/core-authorization-map` | | | required | | |
 | 4 | `design32/acquisition-budgets` | | | required | | |
 | 5 | `design33/dose-authorization` | | | required | | |
@@ -131,27 +131,34 @@ Post-merge design gate:
 
 Branch: `design32/versioned-safety-schema`
 
-- [ ] Create the branch from updated `main` after Block 1's design gate.
-- [ ] Add mandatory `schema_version` and a documented migration path.
-- [ ] Implement `RangeEdge`, `RangePolicy`, structured `ActuatorId`, and
+- [x] Create the branch from updated `main` after Block 1's design gate.
+- [x] Add mandatory `schema_version` and a documented migration path.
+- [x] Implement `RangeEdge`, `RangePolicy`, structured `ActuatorId`, and
       `ParsedSafetyConfig`; derive runtime constraints from the authoritative policies
-      once rather than parsing two representations.
-- [ ] Require complete fields for every declared constraint and an explicit policy for
+      once rather than parsing two representations. — `_stage_constraints` derives core
+      `StageConstraints` + `named_stages` in one pass over the single `ranges` map.
+- [x] Require complete fields for every declared constraint and an explicit policy for
       both edges of each declared stage/focus range.
-- [ ] Preserve reviewed-unbounded reasons for audit/degraded use; do not describe them as
+- [x] Preserve reviewed-unbounded reasons for audit/degraded use; do not describe them as
       guaranteed containment.
-- [ ] Make loaded `ParsedSafetyConfig` the canonical entry-point contract. Ensure directly
+- [x] Make loaded `ParsedSafetyConfig` the canonical entry-point contract. Ensure directly
       constructed test dataclasses cannot masquerade as reviewed startup configuration.
-- [ ] Migrate examples and docs; test old-version errors, typo reporting, aggregate
+- [x] Migrate examples and docs; test old-version errors, typo reporting, aggregate
       failures, range edges, and CLI/web startup parity.
-- [ ] Commit, review, and merge.
+- [x] Commit, review, and merge. — impl d5aa5c4; coordinator caught+fixed a blocker
+      (analysis.min_snr wrongly required, broke shipped example) as 12b0677 + regression
+      test; coordinator-verified 816 passed / 98 skipped; rig starts clean; merged b8092c4.
 
 Post-merge design gate:
 
-- [ ] Update design/32's stubs and migration facts if implementation differs.
-- [ ] Update design/33 if the final `ParsedSafetyConfig`/`ActuatorId` API or open-edge
+- [x] Update design/32's stubs and migration facts if implementation differs. — 1b landed
+      note added (docs merge 8dd521f): SafetyConfigError(ValueError), from_yaml on
+      ParsedSafetyConfig, single-pass named-stage derivation, required-when-present policy.
+- [x] Update design/33 if the final `ParsedSafetyConfig`/`ActuatorId` API or open-edge
       representation differs from what its live cross-check assumes. Merge doc changes
-      before Block 3.
+      before Block 3. — no change needed: landed API matches design/33 §"Reviewed-unbounded
+      range edges must survive" exactly (core_xy/core_focus/named identities, bound-None
+      open edge, ranges keyed by ActuatorId).
 
 ## 3. Design/33 Phase 1 — core authorization map
 
