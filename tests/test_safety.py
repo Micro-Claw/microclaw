@@ -3,6 +3,7 @@ from unittest.mock import MagicMock
 import os
 
 import pytest
+import yaml
 from microclaw.safety import (
     CameraConstraints,
     ForbiddenProperty,
@@ -11,6 +12,7 @@ from microclaw.safety import (
     NamedStageLimits,
     PluginConstraints,
     SafetyConstraints,
+    SafetyConfigError,
     SafetyGuard,
     SafetyViolation,
     StageConstraints,
@@ -133,6 +135,139 @@ class TestFromYaml:
         constraints = SafetyConstraints.from_yaml(str(cfg))
         assert constraints.plugins.blocked == []
         assert constraints.plugins.allow_hardware_motion is False
+
+    @pytest.mark.parametrize("document", ["[]\n", "a scalar\n"])
+    def test_rejects_non_mapping_root_with_filename(self, tmp_path, document):
+        cfg = tmp_path / "safety.yaml"
+        cfg.write_text(document)
+        with pytest.raises(SafetyConfigError) as exc:
+            SafetyConstraints.from_yaml(str(cfg))
+        assert str(cfg) in str(exc.value)
+        assert "document root" in str(exc.value)
+
+    def test_unknown_keys_are_file_anchored_and_aggregated(self, tmp_path):
+        cfg = tmp_path / "safety.yaml"
+        cfg.write_text("stagee: {}\nstage: {x_mim: 0}\ncamera: {exposure: 5}\n")
+        with pytest.raises(SafetyConfigError) as exc:
+            SafetyConstraints.from_yaml(str(cfg))
+        message = str(exc.value)
+        assert str(cfg) in message
+        assert "stagee: unknown top-level key" in message
+        assert "stage.x_mim: unknown key" in message
+        assert "camera.exposure: unknown key" in message
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("stage.x_min", True),
+            ("stage.x_max", "many"),
+            ("stage.y_min", float("nan")),
+            ("stage.y_max", float("inf")),
+            ("stage.z_min", float("-inf")),
+            ("stage.z_max", False),
+            ("camera.max_exposure_ms", "slow"),
+            ("analysis.min_snr", float("nan")),
+            ("illumination.max_power_percent", float("inf")),
+            ("illumination.max_power_step_factor", True),
+            ("named_stages[0].min_um", float("nan")),
+            ("named_stages[0].max_um", "far"),
+        ],
+    )
+    def test_rejects_invalid_value_in_every_numeric_field(
+        self, tmp_path, field, value
+    ):
+        document = {
+            "stage": {}, "camera": {}, "analysis": {}, "illumination": {},
+            "named_stages": [{"device": "Z"}],
+        }
+        if field.startswith("named_stages"):
+            document["named_stages"][0][field.rsplit(".", 1)[1]] = value
+        else:
+            section, key = field.split(".")
+            document[section][key] = value
+        cfg = tmp_path / "safety.yaml"
+        cfg.write_text(yaml.safe_dump(document))
+        with pytest.raises(SafetyConfigError, match="finite number") as exc:
+            SafetyConstraints.from_yaml(str(cfg))
+        assert field in str(exc.value)
+
+    @pytest.mark.parametrize(
+        "document",
+        [
+            {"stage": {"x_min": 2, "x_max": 1}},
+            {"stage": {"y_min": 2, "y_max": 2}},
+            {"stage": {"z_min": 2, "z_max": 1}},
+            {"named_stages": [{"device": "Z", "min_um": 2, "max_um": 1}]},
+        ],
+    )
+    def test_rejects_unordered_bounds(self, tmp_path, document):
+        cfg = tmp_path / "safety.yaml"
+        cfg.write_text(yaml.safe_dump(document))
+        with pytest.raises(SafetyConfigError, match="minimum must be less"):
+            SafetyConstraints.from_yaml(str(cfg))
+
+    @pytest.mark.parametrize("value", [0, -0.1])
+    def test_rejects_non_positive_max_exposure(self, tmp_path, value):
+        cfg = tmp_path / "safety.yaml"
+        cfg.write_text(yaml.safe_dump({"camera": {"max_exposure_ms": value}}))
+        with pytest.raises(SafetyConfigError, match="greater than zero"):
+            SafetyConstraints.from_yaml(str(cfg))
+
+
+class TestFiniteRuntimeGuards:
+    @pytest.mark.parametrize(
+        "call",
+        [
+            lambda guard: guard.check_xy(float("nan"), 0),
+            lambda guard: guard.check_xy(0, float("inf")),
+            lambda guard: guard.check_z(float("nan")),
+            lambda guard: guard.check_exposure(float("nan")),
+            lambda guard: guard.check_named_stage("Z", float("nan")),
+        ],
+    )
+    def test_public_numeric_guards_reject_non_finite_values(self, call):
+        guard = SafetyGuard(SafetyConstraints(
+            named_stages=[NamedStageLimits("Z", 0, 10)]
+        ))
+        with pytest.raises(SafetyViolation, match="finite number"):
+            call(guard)
+
+    def test_hardware_value_read_during_xy_check_rejects_nan(self):
+        guard = SafetyGuard(SafetyConstraints())
+        with pytest.raises(SafetyViolation, match="finite number"):
+            guard.check_device_property(
+                _core(y=float("nan")), "DXYStage", "X", "1"
+            )
+
+    def test_guarded_raw_property_rejects_non_numeric_value(self):
+        guard = SafetyGuard(SafetyConstraints())
+        with pytest.raises(SafetyViolation, match="finite number"):
+            guard.check_device_property(_core(), "DStage", "Position", "unknown")
+
+    def test_programmatic_non_finite_limit_fails_closed(self):
+        guard = SafetyGuard(SafetyConstraints(
+            stage=StageConstraints(z_max=float("nan"))
+        ))
+        with pytest.raises(SafetyViolation, match="Configured stage.z_max"):
+            guard.check_z(1)
+
+    def test_illumination_current_hardware_value_rejects_nan(self):
+        guard = _laser_guard()
+        core = _core()
+        core.get_property.return_value = "nan"
+        with pytest.raises(SafetyViolation, match="finite number"):
+            guard.check_illumination(
+                core, "Luxx638", "Laser Power Set-point Select [%]", "2"
+            )
+
+    def test_illumination_current_hardware_value_rejects_non_number(self):
+        guard = _laser_guard()
+        core = _core()
+        core.get_property.return_value = "unknown"
+        with pytest.raises(SafetyViolation, match="finite number"):
+            guard.check_illumination(
+                core, "Luxx638", "Laser Power Set-point Select [%]", "2"
+            )
 
 
 class TestCheckDeviceProperty:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
+import math
+from numbers import Real
 from typing import Optional
 import os
 import yaml
@@ -7,6 +9,28 @@ import yaml
 
 class SafetyViolation(Exception):
     """Raised when a tool call would violate a user-defined safety constraint."""
+
+
+class SafetyConfigError(ValueError):
+    """Raised once with all recoverable safety-config validation errors."""
+
+
+def _finite_number(value, name: str, error_type=SafetyViolation) -> float:
+    """Return a finite real number, failing closed on bools and invalid values."""
+    if isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(value):
+        raise error_type(f"{name} must be a finite number (not a boolean); got {value!r}")
+    return float(value)
+
+
+def _finite_number_text(value, name: str) -> float:
+    """Parse a numeric device-property value, then apply the shared validator."""
+    if isinstance(value, bool):
+        raise SafetyViolation(f"{name} must be a finite number; got {value!r}")
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise SafetyViolation(f"{name} must be a finite number; got {value!r}")
+    return _finite_number(number, name)
 
 
 @dataclass
@@ -124,22 +148,175 @@ class SafetyConstraints:
     @classmethod
     def from_yaml(cls, path: str) -> SafetyConstraints:
         with open(path, encoding="utf-8") as f:
-            cfg = yaml.safe_load(f) or {}
+            loaded = yaml.safe_load(f)
 
-        stage_cfg = cfg.get("stage", {})
-        camera_cfg = cfg.get("camera", {})
-        analysis_cfg = cfg.get("analysis", {}) or {}
-        channels_cfg = cfg.get("channels", {})
-        plugins_cfg = cfg.get("plugins", {}) or {}
-        ill_cfg = cfg.get("illumination", {}) or {}
+        errors: list[str] = []
+
+        def problem(location: str, message: str) -> None:
+            errors.append(f"{path}: {location}: {message}")
+
+        if loaded is None:
+            cfg = {}
+        elif not isinstance(loaded, dict):
+            raise SafetyConfigError(
+                f"{path}: document root: expected a mapping, got {type(loaded).__name__}"
+            )
+        else:
+            cfg = loaded
+
+        top_keys = {
+            "reviewed", "stage", "camera", "analysis", "channels", "plugins",
+            "illumination", "forbidden_properties", "allowed_properties",
+            "workspace_dir", "named_stages",
+        }
+        section_keys = {
+            "stage": {"x_min", "x_max", "y_min", "y_max", "z_min", "z_max"},
+            "camera": {"max_exposure_ms"},
+            "analysis": {"min_snr"},
+            "channels": {"allowed"},
+            "plugins": {"blocked", "allow_hardware_motion"},
+            "illumination": {
+                "shutters", "power_properties", "max_power_percent",
+                "max_power_step_factor", "require_confirm_on_enable",
+            },
+        }
+        for key in cfg.keys() - top_keys:
+            problem(str(key), "unknown top-level key")
+
+        def mapping(name: str) -> dict:
+            value = cfg.get(name, {})
+            if value is None:
+                value = {}
+            if not isinstance(value, dict):
+                problem(name, f"expected a mapping, got {type(value).__name__}")
+                return {}
+            for key in value.keys() - section_keys[name]:
+                problem(f"{name}.{key}", "unknown key")
+            return value
+
+        stage_cfg = mapping("stage")
+        camera_cfg = mapping("camera")
+        analysis_cfg = mapping("analysis")
+        channels_cfg = mapping("channels")
+        plugins_cfg = mapping("plugins")
+        ill_cfg = mapping("illumination")
+
+        def typed(location: str, value, expected_type: type) -> bool:
+            if not isinstance(value, expected_type):
+                problem(
+                    location,
+                    f"expected {expected_type.__name__}, got {type(value).__name__}",
+                )
+                return False
+            return True
+
+        if "reviewed" in cfg:
+            typed("reviewed", cfg["reviewed"], bool)
+        if cfg.get("workspace_dir") is not None:
+            typed("workspace_dir", cfg["workspace_dir"], str)
+        for section, key, location in (
+            (plugins_cfg, "allow_hardware_motion", "plugins.allow_hardware_motion"),
+            (ill_cfg, "require_confirm_on_enable", "illumination.require_confirm_on_enable"),
+        ):
+            if key in section:
+                typed(location, section[key], bool)
+        for section, key, location in (
+            (channels_cfg, "allowed", "channels.allowed"),
+            (plugins_cfg, "blocked", "plugins.blocked"),
+        ):
+            value = section.get(key)
+            if value is not None and typed(location, value, list):
+                for index, item in enumerate(value):
+                    typed(f"{location}[{index}]", item, str)
+
+        numeric_fields = [
+            (stage_cfg, name, f"stage.{name}")
+            for name in section_keys["stage"]
+        ] + [
+            (camera_cfg, "max_exposure_ms", "camera.max_exposure_ms"),
+            (analysis_cfg, "min_snr", "analysis.min_snr"),
+            (ill_cfg, "max_power_percent", "illumination.max_power_percent"),
+            (ill_cfg, "max_power_step_factor", "illumination.max_power_step_factor"),
+        ]
+        for section, key, location in numeric_fields:
+            if section.get(key) is not None:
+                try:
+                    section[key] = _finite_number(section[key], location, ValueError)
+                except ValueError as e:
+                    problem(location, str(e))
+
+        for low, high in (("x_min", "x_max"), ("y_min", "y_max"), ("z_min", "z_max")):
+            if isinstance(stage_cfg.get(low), float) and isinstance(stage_cfg.get(high), float):
+                if stage_cfg[low] >= stage_cfg[high]:
+                    problem(f"stage.{low}/{high}", "minimum must be less than maximum")
+        exposure = camera_cfg.get("max_exposure_ms")
+        if isinstance(exposure, float) and exposure <= 0:
+            problem("camera.max_exposure_ms", "must be greater than zero")
+
+        def object_list(name: str, value, allowed: set[str]) -> list[dict]:
+            if value is None:
+                return []
+            if not isinstance(value, list):
+                problem(name, f"expected a list, got {type(value).__name__}")
+                return []
+            result = []
+            for index, item in enumerate(value):
+                location = f"{name}[{index}]"
+                if not isinstance(item, dict):
+                    problem(location, f"expected a mapping, got {type(item).__name__}")
+                    continue
+                for key in item.keys() - allowed:
+                    problem(f"{location}.{key}", "unknown key")
+                for key, item_value in item.items():
+                    if key in allowed and key not in {"min_um", "max_um"}:
+                        typed(f"{location}.{key}", item_value, str)
+                result.append(item)
+            return result
+
+        forbidden_cfg = object_list(
+            "forbidden_properties", cfg.get("forbidden_properties"), {"device", "property"}
+        )
+        allowed_value = cfg.get("allowed_properties")
+        allowed_items = object_list(
+            "allowed_properties", allowed_value, {"device", "property"}
+        )
+        shutters_cfg = object_list(
+            "illumination.shutters", ill_cfg.get("shutters"),
+            {"device", "property", "on_value", "off_value"},
+        )
+        power_cfg = object_list(
+            "illumination.power_properties", ill_cfg.get("power_properties"),
+            {"device", "property"},
+        )
+        named_cfg = object_list(
+            "named_stages", cfg.get("named_stages"), {"device", "min_um", "max_um"}
+        )
+        for index, item in enumerate(named_cfg):
+            for key in ("min_um", "max_um"):
+                if item.get(key) is not None:
+                    try:
+                        item[key] = _finite_number(
+                            item[key], f"named_stages[{index}].{key}", ValueError
+                        )
+                    except ValueError as e:
+                        problem(f"named_stages[{index}].{key}", str(e))
+            if isinstance(item.get("min_um"), float) and isinstance(item.get("max_um"), float):
+                if item["min_um"] >= item["max_um"]:
+                    problem(
+                        f"named_stages[{index}].min_um/max_um",
+                        "minimum must be less than maximum",
+                    )
+
+        if errors:
+            raise SafetyConfigError("Invalid safety config:\n" + "\n".join(errors))
+
         forbidden = [
             ForbiddenProperty(**p)
-            for p in cfg.get("forbidden_properties", [])
+            for p in forbidden_cfg
         ]
-        allowed_cfg = cfg.get("allowed_properties")
         allowed = (
-            [ForbiddenProperty(**p) for p in allowed_cfg]
-            if allowed_cfg is not None
+            [ForbiddenProperty(**p) for p in allowed_items]
+            if allowed_value is not None
             else None
         )
         return cls(
@@ -156,11 +333,11 @@ class SafetyConstraints:
             ),
             illumination=IlluminationConstraints(
                 shutters=[
-                    IlluminationProperty(**s) for s in ill_cfg.get("shutters") or []
+                    IlluminationProperty(**s) for s in shutters_cfg
                 ],
                 power_properties=[
                     ForbiddenProperty(**p)
-                    for p in ill_cfg.get("power_properties") or []
+                    for p in power_cfg
                 ],
                 max_power_percent=ill_cfg.get("max_power_percent"),
                 max_power_step_factor=ill_cfg.get("max_power_step_factor"),
@@ -169,7 +346,7 @@ class SafetyConstraints:
                 ),
             ),
             named_stages=[
-                NamedStageLimits(**s) for s in cfg.get("named_stages") or []
+                NamedStageLimits(**s) for s in named_cfg
             ],
         )
 
@@ -191,7 +368,13 @@ class SafetyGuard:
         return self._c.analysis.min_snr
 
     def check_xy(self, x: float, y: float) -> None:
+        x = _finite_number(x, "X position")
+        y = _finite_number(y, "Y position")
         s = self._c.stage
+        for name in ("x_min", "x_max", "y_min", "y_max"):
+            value = getattr(s, name)
+            if value is not None:
+                _finite_number(value, f"Configured stage.{name}")
         if s.x_min is not None and x < s.x_min:
             raise SafetyViolation(
                 f"X={x:.1f} µm is below the minimum allowed ({s.x_min:.1f} µm)."
@@ -210,7 +393,12 @@ class SafetyGuard:
             )
 
     def check_z(self, z: float) -> None:
+        z = _finite_number(z, "Z position")
         s = self._c.stage
+        if s.z_min is not None:
+            _finite_number(s.z_min, "Configured stage.z_min")
+        if s.z_max is not None:
+            _finite_number(s.z_max, "Configured stage.z_max")
         if s.z_min is not None and z < s.z_min:
             raise SafetyViolation(
                 f"Z={z:.1f} µm is below the minimum allowed ({s.z_min:.1f} µm)."
@@ -221,7 +409,10 @@ class SafetyGuard:
             )
 
     def check_exposure(self, ms: float) -> None:
+        ms = _finite_number(ms, "Exposure")
         limit = self._c.camera.max_exposure_ms
+        if limit is not None:
+            _finite_number(limit, "Configured camera.max_exposure_ms")
         if limit is not None and ms > limit:
             raise SafetyViolation(
                 f"Exposure {ms:.0f} ms exceeds the maximum allowed ({limit:.0f} ms)."
@@ -262,18 +453,17 @@ class SafetyGuard:
         """
         self.check_property(device, prop)          # denylist/allowlist first
         p = prop.lower()
-        try:
-            num = float(value)
-        except (TypeError, ValueError):
-            return                                  # non-numeric; denylist only
         focus = core.get_focus_device()
         cam = core.get_camera_device()
         xy = core.get_xy_stage_device()
         if device == focus and p in self._MOTION_PROPS:
+            num = _finite_number_text(value, f"Position property {device}.{prop}")
             self.check_z(num)
         elif device == cam and p in self._EXPOSURE_PROPS:
+            num = _finite_number_text(value, f"Exposure property {device}.{prop}")
             self.check_exposure(num)
         elif device == xy and p in self._XY_PROPS:
+            num = _finite_number_text(value, f"Position property {device}.{prop}")
             # Only one axis is known here; read the other from the core so the
             # known axis is guarded against its own bound.
             x = num if p.startswith("x") else core.get_x_position()
@@ -319,20 +509,26 @@ class SafetyGuard:
             p.device == device and p.property == prop for p in ill.power_properties
         ):
             return
-        try:
-            new = float(value)
-        except (TypeError, ValueError):
-            return
+        new = _finite_number_text(value, f"Illumination power {device}.{prop}")
+        if ill.max_power_percent is not None:
+            _finite_number(
+                ill.max_power_percent, "Configured illumination.max_power_percent"
+            )
+        if ill.max_power_step_factor is not None:
+            _finite_number(
+                ill.max_power_step_factor,
+                "Configured illumination.max_power_step_factor",
+            )
         if ill.max_power_percent is not None and new > ill.max_power_percent:
             raise SafetyViolation(
                 f"{new:.1f}% exceeds illumination.max_power_percent "
                 f"({ill.max_power_percent:.1f}%)."
             )
         if ill.max_power_step_factor is not None:
-            try:
-                old = float(core.get_property(device, prop))
-            except (TypeError, ValueError):
-                old = 0.0
+            old = _finite_number_text(
+                core.get_property(device, prop),
+                f"Current illumination power {device}.{prop}",
+            )
             if old > 0 and new / old > ill.max_power_step_factor:
                 raise SafetyViolation(
                     f"Power increase {old:.1f}% → {new:.1f}% exceeds the "
@@ -362,6 +558,7 @@ class SafetyGuard:
         the core focus device, and applying it to (say) a ±3 mm TIRF steering
         axis would be wrong in both directions.
         """
+        pos = _finite_number(pos, f"Position for named stage {device}")
         lim = next(
             (l for l in self._c.named_stages if l.device == device), None
         )
@@ -370,6 +567,10 @@ class SafetyGuard:
                 f"No limits configured for stage '{device}'. Add a named_stages "
                 f"entry to the safety config before microclaw may move it."
             )
+        if lim.min_um is not None:
+            _finite_number(lim.min_um, f"Configured named_stages[{device}].min_um")
+        if lim.max_um is not None:
+            _finite_number(lim.max_um, f"Configured named_stages[{device}].max_um")
         if lim.min_um is not None and pos < lim.min_um:
             raise SafetyViolation(
                 f"{device}={pos:.2f} µm is below the minimum allowed ({lim.min_um:.2f} µm)."
