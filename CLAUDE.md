@@ -1,5 +1,13 @@
 # Microclaw — Claude Instructions
 
+## Git workflow
+
+- Never commit or push directly to `main`.
+- For any new work, create a branch named `florian/<short-description>`.
+- Before starting new work, pull the latest `main` and rebase the feature branch onto it.
+- Run any existing tests before committing.
+- When work is ready, push the branch and open a pull request with `gh pr create` instead of merging directly.
+
 ## Debugging checklist
 
 Before proposing code changes to fix pytest failures, import errors, or
