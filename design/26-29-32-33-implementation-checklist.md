@@ -32,8 +32,8 @@ Progress markers: `[ ]` not started, `[-]` active, `[x]` complete, `[!]` blocked
 
 | Block | Branch | Start commit | Implementation commit/PR | Rig evidence | Merge commit | Design reconciliation |
 |---|---|---|---|---|---|---|
-| 0 | — | | | | | |
-| 1 | `design32/config-hardening` | | | n/a | | |
+| 0 | — | c90d738 | baseline: 771 passed / 98 skipped (2026-07-22) | n/a | — | Run A located; NDTiff fixtures deferred to Block 8 |
+| 1 | `design32/config-hardening` | c90d738 | | n/a | | |
 | 2 | `design32/versioned-safety-schema` | | | n/a | | |
 | 3 | `design33/core-authorization-map` | | | required | | |
 | 4 | `design32/acquisition-budgets` | | | required | | |
@@ -70,23 +70,33 @@ Progress markers: `[ ]` not started, `[-]` active, `[x]` complete, `[!]` blocked
 
 ## 0. Baseline and evidence inventory — no implementation branch
 
-- [ ] Confirm the worktree state and preserve all pre-existing edits/untracked files.
-      Do not fold them into implementation commits.
-- [ ] Record current `main`, Python/platform versions, and the complete non-hardware test
+- [x] Confirm the worktree state and preserve all pre-existing edits/untracked files.
+      Do not fold them into implementation commits. — worktree clean at c90d738.
+- [x] Record current `main`, Python/platform versions, and the complete non-hardware test
       baseline. Treat the two socket-bind failures recorded in design/32 as environmental
-      only if they reproduce for the same reason.
-- [ ] Inventory every shipped/example/documented safety YAML before strict parsing makes
-      ignored keys fatal.
-- [ ] Locate the 2026-07-20 design/26 Run A history, hook log, selected-position list,
-      survey, revisit dataset, and manifest. Verify hashes where available.
-- [ ] Locate representative saved NDTiff fixtures: multi-position grid, non-grid spiral,
-      non-square images if available, and the 2500-tile dataset.
-- [ ] Run the no-hardware `design/26-roi-detection-spike.py` baseline and retain output.
-      Do not use its synthetic accuracy as field acceptance.
-- [ ] Decide where rig evidence is stored. Keep each run's commands, stdout/stderr,
-      environment identity, artifacts, hashes, and verdict in one dated directory.
-- [ ] Stop if any design is changing concurrently. Rebase the ordering on the merged
-      design text before creating Block 1.
+      only if they reproduce for the same reason. — main c90d738, Py 3.11.15,
+      macOS-14.5-arm64; 771 passed / 98 skipped; the two socket-bind failures did NOT
+      reproduce (environmental to design/32's machine).
+- [x] Inventory every shipped/example/documented safety YAML before strict parsing makes
+      ignored keys fatal. — canonical `microclaw/safety_config.example.yaml`, fixture
+      `tests/fixtures/safety_config.yaml`, stale `build/lib/...` copy (non-authoritative),
+      README doc surface. All keys in shipped files are already recognized, so strict
+      rejection breaks neither; migration risk is field configs only.
+- [x] Locate the 2026-07-20 design/26 Run A history, hook log, selected-position list,
+      survey, revisit dataset, and manifest. Verify hashes where available. — located in
+      OneDrive `microclaw-json-histories/` (`..._run_a.json` + `run-a/`); hash verify
+      deferred to Block 7 when it becomes the regression baseline.
+- [-] Locate representative saved NDTiff fixtures: multi-position grid, non-grid spiral,
+      non-square images if available, and the 2500-tile dataset. — DEFERRED to Block 8
+      (not a Block 1 gate); home-dir scan timed out on OneDrive lazy tree.
+- [-] Run the no-hardware `design/26-roi-detection-spike.py` baseline and retain output.
+      Do not use its synthetic accuracy as field acceptance. — DEFERRED to Block 7/12
+      (not a Block 1 gate).
+- [x] Decide where rig evidence is stored. Keep each run's commands, stdout/stderr,
+      environment identity, artifacts, hashes, and verdict in one dated directory. — one
+      dated dir per rig run; Block 1 requires no rig evidence.
+- [x] Stop if any design is changing concurrently. Rebase the ordering on the merged
+      design text before creating Block 1. — no concurrent design edits; worktree clean.
 
 ## 1. Design/32 Finding 1a — schema-version-free hardening
 
