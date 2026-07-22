@@ -6,6 +6,7 @@ example config's fictional limits. Everything here is about failing closed.
 """
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -16,8 +17,10 @@ from microclaw.config import (
     load_safety_config,
     load_safety_config_or_exit,
 )
+from microclaw.safety import ParsedSafetyConfig, SafetyConfigError, SafetyConstraints
 
 REAL = """
+schema_version: 1
 reviewed: true
 stage: {x_min: -100.0, x_max: 100.0, y_min: -100.0, y_max: 100.0}
 camera: {max_exposure_ms: 500.0}
@@ -34,7 +37,42 @@ def _write(tmp_path, text) -> Path:
 
 def test_reviewed_true_loads(tmp_path):
     c = load_safety_config(_write(tmp_path, REAL))
-    assert c.stage.x_max == 100.0
+    assert isinstance(c, ParsedSafetyConfig)
+    assert c.constraints.stage.x_max == 100.0
+
+
+def test_direct_constraints_cannot_enter_validated_loader_path():
+    with pytest.raises(TypeError):
+        load_safety_config(SafetyConstraints())
+
+
+def test_cli_and_web_build_guard_from_retained_parsed_contract(monkeypatch):
+    from microclaw import __main__ as cli
+    pytest.importorskip("fastapi")
+    from microclaw import webserve
+
+    parsed = ParsedSafetyConfig(SafetyConstraints(), {})
+    cli_seen = []
+    web_seen = []
+
+    class Disconnected:
+        def __init__(self, port, guard):
+            (cli_seen if not cli_seen else web_seen).append(guard._c)
+
+        def is_connected(self):
+            return False
+
+    monkeypatch.setattr(cli, "load_safety_config_or_exit", lambda path: parsed)
+    monkeypatch.setattr(cli, "MicroscopeController", Disconnected)
+    with pytest.raises(SystemExit, match="Could not connect"):
+        cli.run_session(SimpleNamespace(safety_config=None, port=1))
+
+    monkeypatch.setattr(webserve, "load_safety_config_or_exit", lambda path: parsed)
+    monkeypatch.setattr(webserve, "MicroscopeController", Disconnected)
+    with pytest.raises(SystemExit, match="Could not connect"):
+        webserve.Session(SimpleNamespace(safety_config=None, port=1))
+    assert cli_seen == [parsed.constraints]
+    assert web_seen == [parsed.constraints]
 
 
 def test_reviewed_false_refuses(tmp_path):
@@ -44,12 +82,12 @@ def test_reviewed_false_refuses(tmp_path):
 
 def test_missing_reviewed_key_refuses(tmp_path):
     """Every config predating this gate lands here. Refuse, don't assume."""
-    with pytest.raises(UnreviewedSafetyConfig):
+    with pytest.raises(SafetyConfigError, match="schema_version"):
         load_safety_config(_write(tmp_path, "stage: {x_min: -1.0, x_max: 1.0}\n"))
 
 
 def test_empty_file_refuses(tmp_path):
-    with pytest.raises(UnreviewedSafetyConfig):
+    with pytest.raises(SafetyConfigError, match="schema_version"):
         load_safety_config(_write(tmp_path, ""))
 
 
@@ -66,7 +104,7 @@ def test_only_a_real_yaml_true_passes(tmp_path, truthy):
     if parsed is True:
         load_safety_config(p)          # `yes` and `True` are YAML true
     else:
-        with pytest.raises(UnreviewedSafetyConfig):
+        with pytest.raises((UnreviewedSafetyConfig, SafetyConfigError)):
             load_safety_config(p)
 
 
@@ -84,7 +122,7 @@ def test_gate_applies_to_an_explicit_path_too(tmp_path):
 def test_none_means_the_per_user_default(tmp_path, monkeypatch):
     p = _write(tmp_path, REAL)
     monkeypatch.setattr(config, "default_safety_config", lambda: p)
-    assert load_safety_config(None).stage.x_max == 100.0
+    assert load_safety_config(None).constraints.stage.x_max == 100.0
 
 
 # ---- the messages a novice reads in a console about to close ----

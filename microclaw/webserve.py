@@ -160,7 +160,8 @@ class Session:
     """One live microscope + conversation, shared across requests."""
 
     def __init__(self, args):
-        guard = SafetyGuard(load_safety_config_or_exit(args.safety_config))
+        self.parsed_safety = load_safety_config_or_exit(args.safety_config)
+        guard = SafetyGuard(self.parsed_safety.constraints)
         print("Connecting to Micro-Manager...")
         ctrl = MicroscopeController(port=args.port, guard=guard)
         if not ctrl.is_connected():

@@ -203,11 +203,17 @@ that is the case.
 
 Run `microclaw init` to write this rig's `safety_config.yaml`, then edit it to set the real hardware limits. These are enforced before every tool call and cannot be overridden by the AI.
 
+Safety files use `schema_version: 1`. To migrate an older file, add that line
+and give every declared stage or focus axis both edges: a finite bound or an
+explicit `{unbounded: true, reason: "..."}`. An open edge retains its review
+reason for audit/degraded operation; it does not guarantee hardware containment.
+
 The file starts with a gate. Nothing runs until a human has read the limits and flipped it:
 
 ```yaml
 # Microclaw REFUSES TO START until you have gone through this file, set each
 # limit for THIS instrument, and changed the line below to `reviewed: true`.
+schema_version: 1
 reviewed: false
 ```
 

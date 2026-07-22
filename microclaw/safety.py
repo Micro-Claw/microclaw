@@ -2,7 +2,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import math
 from numbers import Real
-from typing import Optional
+from typing import Literal, Optional
 import os
 import yaml
 
@@ -121,6 +121,30 @@ class NamedStageLimits:
     max_um: Optional[float] = None
 
 
+@dataclass(frozen=True)
+class RangeEdge:
+    """One finite range boundary, or an explicitly reviewed open boundary."""
+
+    bound: float | None
+    unbounded_reason: str | None
+
+
+@dataclass(frozen=True)
+class ActuatorId:
+    """Collision-free identity for a core axis or a named stage."""
+
+    source: Literal["core_xy", "core_focus", "named"]
+    device: str | None
+    capability: str
+    axis: str | None = None
+
+
+@dataclass(frozen=True)
+class RangePolicy:
+    minimum: RangeEdge
+    maximum: RangeEdge
+
+
 @dataclass
 class SafetyConstraints:
     stage: StageConstraints = field(default_factory=StageConstraints)
@@ -145,8 +169,122 @@ class SafetyConstraints:
     # stages fail closed — no entry here means the stage may not be moved.
     named_stages: list[NamedStageLimits] = field(default_factory=list)
 
+
+def _range_edge(raw, label: str, problem) -> RangeEdge | None:
+    """Parse exactly one finite bound or reviewed-unbounded declaration."""
+    if isinstance(raw, dict):
+        for key in raw.keys() - {"unbounded", "reason"}:
+            problem(f"{label}.{key}", "unknown key")
+        if raw.get("unbounded") is not True:
+            problem(label, "object edge must set `unbounded: true`")
+            return None
+        reason = raw.get("reason")
+        if not isinstance(reason, str) or not reason.strip():
+            problem(label, "reviewed-unbounded edge requires a non-empty reason")
+            return None
+        return RangeEdge(None, reason)
+    try:
+        return RangeEdge(_finite_number(raw, label, ValueError), None)
+    except ValueError as exc:
+        problem(label, str(exc))
+        return None
+
+
+def _stage_ranges(
+    stage_cfg: dict, named_cfg: list[dict], problem
+) -> dict[ActuatorId, RangePolicy]:
+    """Build the single authoritative range map for core and named stages."""
+    policies: dict[ActuatorId, RangePolicy] = {}
+
+    def add(identity: ActuatorId, raw: dict, low: str, high: str, location: str) -> None:
+        present = low in raw or high in raw
+        if not present:
+            return
+        missing = [key for key in (low, high) if key not in raw]
+        for key in missing:
+            problem(
+                location,
+                f"declared range is missing {key!r}; give it a finite bound or mark it explicitly unbounded",
+            )
+        if missing:
+            return
+        prefix = "stage" if location.startswith("stage.") else location
+        minimum = _range_edge(raw[low], f"{prefix}.{low}", problem)
+        maximum = _range_edge(raw[high], f"{prefix}.{high}", problem)
+        if minimum is None or maximum is None:
+            return
+        if (
+            minimum.bound is not None
+            and maximum.bound is not None
+            and minimum.bound >= maximum.bound
+        ):
+            problem(location, "minimum must be less than maximum")
+            return
+        policies[identity] = RangePolicy(minimum, maximum)
+
+    for axis in ("x", "y", "z"):
+        source = "core_focus" if axis == "z" else "core_xy"
+        add(
+            ActuatorId(source, None, "stage-position", axis),
+            stage_cfg,
+            f"{axis}_min",
+            f"{axis}_max",
+            f"stage.{axis}",
+        )
+    seen_devices: set[str] = set()
+    for index, item in enumerate(named_cfg):
+        location = f"named_stages[{index}]"
+        device = item.get("device")
+        if not isinstance(device, str) or not device.strip():
+            problem(f"{location}.device", "required non-empty string")
+            continue
+        if device in seen_devices:
+            problem(f"{location}.device", f"duplicate named stage {device!r}")
+            continue
+        seen_devices.add(device)
+        if "min_um" not in item and "max_um" not in item:
+            problem(location, "declared named stage requires both 'min_um' and 'max_um'")
+            continue
+        add(
+            ActuatorId("named", device, "stage-position"),
+            item,
+            "min_um",
+            "max_um",
+            location,
+        )
+    return policies
+
+
+def _stage_constraints(
+    ranges: dict[ActuatorId, RangePolicy],
+) -> tuple[StageConstraints, list[NamedStageLimits]]:
+    """Compile all runtime stage limits in one pass over authoritative policies."""
+    core: dict[str, float | None] = {}
+    named: list[NamedStageLimits] = []
+    for identity, policy in ranges.items():
+        if identity.source == "named":
+            assert identity.device is not None
+            named.append(
+                NamedStageLimits(
+                    identity.device, policy.minimum.bound, policy.maximum.bound
+                )
+            )
+        else:
+            assert identity.axis is not None
+            core[f"{identity.axis}_min"] = policy.minimum.bound
+            core[f"{identity.axis}_max"] = policy.maximum.bound
+    return StageConstraints(**core), named
+
+
+@dataclass(frozen=True)
+class ParsedSafetyConfig:
+    """A schema-validated file and its retained authoritative range policies."""
+
+    constraints: SafetyConstraints
+    ranges: dict[ActuatorId, RangePolicy]
+
     @classmethod
-    def from_yaml(cls, path: str) -> SafetyConstraints:
+    def from_yaml(cls, path: str) -> ParsedSafetyConfig:
         with open(path, encoding="utf-8") as f:
             loaded = yaml.safe_load(f)
 
@@ -165,7 +303,7 @@ class SafetyConstraints:
             cfg = loaded
 
         top_keys = {
-            "reviewed", "stage", "camera", "analysis", "channels", "plugins",
+            "schema_version", "reviewed", "stage", "camera", "analysis", "channels", "plugins",
             "illumination", "forbidden_properties", "allowed_properties",
             "workspace_dir", "named_stages",
         }
@@ -182,6 +320,19 @@ class SafetyConstraints:
         }
         for key in cfg.keys() - top_keys:
             problem(str(key), "unknown top-level key")
+
+        if "schema_version" not in cfg:
+            problem(
+                "schema_version",
+                "missing required schema version; add `schema_version: 1` and give every declared range both edges",
+            )
+        elif type(cfg["schema_version"]) is not int or cfg["schema_version"] != 1:
+            problem(
+                "schema_version",
+                f"unsupported schema version {cfg['schema_version']!r}; expected 1",
+            )
+        if "reviewed" not in cfg:
+            problem("reviewed", "missing required key")
 
         def mapping(name: str) -> dict:
             value = cfg.get(name, {})
@@ -200,6 +351,17 @@ class SafetyConstraints:
         channels_cfg = mapping("channels")
         plugins_cfg = mapping("plugins")
         ill_cfg = mapping("illumination")
+
+        # `analysis.min_snr` is deliberately optional (omitting it retains the
+        # uncalibrated package fallback — see the shipped example), so it is NOT
+        # required-when-present here.
+        for section_name, section, required_keys in (
+            ("camera", camera_cfg, {"max_exposure_ms"}),
+            ("channels", channels_cfg, {"allowed"}),
+        ):
+            if section_name in cfg:
+                for key in required_keys - section.keys():
+                    problem(f"{section_name}.{key}", "missing required key")
 
         def typed(location: str, value, expected_type: type) -> bool:
             if not isinstance(value, expected_type):
@@ -230,9 +392,6 @@ class SafetyConstraints:
                     typed(f"{location}[{index}]", item, str)
 
         numeric_fields = [
-            (stage_cfg, name, f"stage.{name}")
-            for name in section_keys["stage"]
-        ] + [
             (camera_cfg, "max_exposure_ms", "camera.max_exposure_ms"),
             (analysis_cfg, "min_snr", "analysis.min_snr"),
             (ill_cfg, "max_power_percent", "illumination.max_power_percent"),
@@ -245,10 +404,6 @@ class SafetyConstraints:
                 except ValueError as e:
                     problem(location, str(e))
 
-        for low, high in (("x_min", "x_max"), ("y_min", "y_max"), ("z_min", "z_max")):
-            if isinstance(stage_cfg.get(low), float) and isinstance(stage_cfg.get(high), float):
-                if stage_cfg[low] >= stage_cfg[high]:
-                    problem(f"stage.{low}/{high}", "minimum must be less than maximum")
         exposure = camera_cfg.get("max_exposure_ms")
         if isinstance(exposure, float) and exposure <= 0:
             problem("camera.max_exposure_ms", "must be greater than zero")
@@ -291,21 +446,23 @@ class SafetyConstraints:
         named_cfg = object_list(
             "named_stages", cfg.get("named_stages"), {"device", "min_um", "max_um"}
         )
-        for index, item in enumerate(named_cfg):
-            for key in ("min_um", "max_um"):
-                if item.get(key) is not None:
-                    try:
-                        item[key] = _finite_number(
-                            item[key], f"named_stages[{index}].{key}", ValueError
-                        )
-                    except ValueError as e:
-                        problem(f"named_stages[{index}].{key}", str(e))
-            if isinstance(item.get("min_um"), float) and isinstance(item.get("max_um"), float):
-                if item["min_um"] >= item["max_um"]:
-                    problem(
-                        f"named_stages[{index}].min_um/max_um",
-                        "minimum must be less than maximum",
-                    )
+        for name, items in (
+            ("forbidden_properties", forbidden_cfg),
+            ("allowed_properties", allowed_items),
+            ("illumination.shutters", shutters_cfg),
+            ("illumination.power_properties", power_cfg),
+        ):
+            seen_pairs: set[tuple[str, str]] = set()
+            for index, item in enumerate(items):
+                for key in ("device", "property"):
+                    if key not in item:
+                        problem(f"{name}[{index}].{key}", "missing required key")
+                pair = (item.get("device"), item.get("property"))
+                if all(isinstance(value, str) for value in pair):
+                    if pair in seen_pairs:
+                        problem(f"{name}[{index}]", f"duplicate device/property pair {pair!r}")
+                    seen_pairs.add(pair)
+        ranges = _stage_ranges(stage_cfg, named_cfg, problem)
 
         if errors:
             raise SafetyConfigError("Invalid safety config:\n" + "\n".join(errors))
@@ -319,8 +476,9 @@ class SafetyConstraints:
             if allowed_value is not None
             else None
         )
-        return cls(
-            stage=StageConstraints(**stage_cfg),
+        stage, named_stages = _stage_constraints(ranges)
+        constraints = SafetyConstraints(
+            stage=stage,
             camera=CameraConstraints(**camera_cfg),
             analysis=AnalysisConstraints(**analysis_cfg),
             allowed_channels=channels_cfg.get("allowed"),
@@ -345,10 +503,9 @@ class SafetyConstraints:
                     ill_cfg.get("require_confirm_on_enable", True)
                 ),
             ),
-            named_stages=[
-                NamedStageLimits(**s) for s in named_cfg
-            ],
+            named_stages=named_stages,
         )
+        return cls(constraints=constraints, ranges=ranges)
 
 
 class SafetyGuard:
