@@ -38,7 +38,7 @@ Progress markers: `[ ]` not started, `[-]` active, `[x]` complete, `[!]` blocked
 | 2 | `design32/versioned-safety-schema` | 252a4cc | d5aa5c4 (+fix 12b0677) | rig: starts clean w/ reviewed rig config | b8092c4 | Gate done: API matches design/33 (no change); 1b landed note + required-when-present judgment recorded in design/32 (docs merge 8dd521f) |
 | 3 | `design33/core-authorization-map` | c18fa92 | fc346a4 (2 review-fixes) | rig M5: fail-closed+parity, complete map, cat/illum writes pass, PWM/FPGA refused, confirm-gate fires | 0124ffd | Gate done: design/33 Phase-1 landed note + M5 findings + ceiling + StateDevice fast-follow (docs merge ae4794f) |
 | 3b | `design33/statedevice-auto-classify` | 91c6364 | d80ae39 + aaa41d4 (rig-finding fix) | rig M5: before/after maps both complete@40; six Thorlabs pairs flip declared→auto; iChrome-MLE-TCP.State refused live despite explicit human confirm; auto-classified wheel write passes both gates via `serve` | 9491361 | Gate done: design/33 Block-3b landed note + ELL6/no-core-shutter/iChrome findings (docs merge daab107) |
-| 4 | `design32/acquisition-budgets` | | | required | | **NEXT** |
+| 4 | `design32/acquisition-budgets` | 0d0137d | | required | | **ACTIVE** |
 | 5 | `design33/dose-authorization` | | | required | | |
 | 6 | `design32/remote-auth` | | | n/a | | |
 | 7 | `design32/generated-hook-decisions` | | | regression required | | |
@@ -277,7 +277,7 @@ Post-merge design gate:
 
 Branch: `design32/acquisition-budgets`
 
-- [ ] Create the branch from updated `main`.
+- [x] Create the branch from updated `main`. — `design32/acquisition-budgets` from `0d0137d`.
 - [ ] Define a common `AcquisitionPlan` for frames, per-frame exposure, estimated
       duration, bytes, and illuminated time.
 - [ ] Add strict config fields for hard budgets and lower confirmation thresholds.
