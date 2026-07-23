@@ -285,9 +285,12 @@ Branch: `design32/acquisition-budgets`
       kind; reserve conservatively and commit actual usage as frames complete.
 - [ ] Apply the planner to timelapse, Z stack, tiles/multiposition, adaptive survey, and
       MMStudio MDA. Reject unplannable/unbounded work.
-- [ ] Implement separate bounded acquisitions so cancellation is checked between calls.
-      Document pyjavaz serialization, chosen batch size, setup overhead, and the fact that
-      an in-flight bridge call cannot be preempted.
+- [ ] Make cancellation possible by **feeding events lazily inside one `Acquisition`**,
+      generalizing the existing `_survey_event_stream` generator to the pre-dispatched
+      paths. Do NOT split a run into separate `Acquisition` objects — that fragments the
+      dataset and breaks multiposition/hook/adaptive semantics (reconciled 2026-07-23;
+      see design/32 §2 "Reconciliation"). Document pyjavaz serialization, the one-event
+      granularity, and MMStudio MDA's cancellation exemption.
 - [ ] Test limits, confirmations, cancellation, reservation rollback, partial completion,
       cumulative ledger behavior, and all acquisition entry points.
 - [ ] Commit but do not merge before the rig gate.
@@ -295,7 +298,9 @@ Branch: `design32/acquisition-budgets`
 Rig gate:
 
 - [ ] Run no-exposure/dark or safest representative plans around warning and hard limits.
-- [ ] Measure per-batch overhead and cancellation latency at multiple batch sizes.
+- [ ] Measure cancellation latency (request → last frame written) on a lazily fed
+      acquisition, and the `is_finished()` poll's bridge cost at the chosen poll interval.
+      There are no batches to size.
 - [ ] Verify planned/acquired counts, duration, bytes estimate, illuminated-time ledger,
       partial failure, and restart/session semantics.
 - [ ] Stop if actual execution can exceed a reservation silently or if cancellation
