@@ -6,8 +6,14 @@ goes, so a regression is measured rather than guessed at.
   asis    branch as shipped, timing every is_finished() bridge call
   wide    look-ahead raised so the feeder never blocks; isolates the per-event
           bridge poll from the gating cost
-  nopoll  look-ahead raised AND is_finished() stubbed cheap; if this matches
-          main, the poll is the cost
+  nopoll  look-ahead raised AND the is_finished() result cached for
+          _POLL_CACHE_S, so the feeder's per-event bridge cost goes to ~0.
+          If this matches main, the poll is the cost.
+
+The cache is deliberate: pycro-manager's OWN completion logic polls
+acq._acq.is_finished() too, so stubbing it False hangs Acquisition.__exit__
+forever waiting for a value that can never arrive. Caching keeps the real
+answer flowing (within the TTL) while removing the per-event round trip.
 
 Every argument is named and validated: an earlier positional version silently
 shifted a missing mode into the frame count and produced three identical runs.
@@ -21,7 +27,12 @@ from microclaw.safety import SafetyGuard
 from microclaw.controller import MicroscopeController
 from microclaw import tools
 
+# Line-buffer stdout: with `> file` redirection Python block-buffers, so a hang
+# late in the run swallows every result printed before it.
+sys.stdout.reconfigure(line_buffering=True)
+
 MODES = ("asis", "wide", "nopoll")
+_POLL_CACHE_S = 0.1   # nopoll: reuse a real is_finished() result this long
 
 parser = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -56,10 +67,24 @@ def capturing(*a, **kw):
         print("WARNING: acq._acq missing; is_finished NOT instrumented", file=sys.stderr)
         return acq
     real_is_finished = inner.is_finished
+    cache = {"at": 0.0, "value": False}
 
     def timed_is_finished():
         if args.mode == "nopoll":
-            return False                                  # skip the bridge entirely
+            # Never fabricate False: pycro-manager waits on this to finish.
+            now = time.monotonic()
+            if cache["value"] or now - cache["at"] < _POLL_CACHE_S:
+                return cache["value"]
+            t = time.monotonic()
+            try:
+                cache["value"] = real_is_finished()
+            finally:
+                dt = time.monotonic() - t
+                cache["at"] = time.monotonic()
+                stats["calls"] += 1
+                stats["total_s"] += dt
+                stats["max_s"] = max(stats["max_s"], dt)
+            return cache["value"]
         t = time.monotonic()
         try:
             return real_is_finished()
@@ -92,9 +117,7 @@ print(f"lookahead_in_effect={tools._ACQUISITION_EVENT_LOOKAHEAD} "
       f"(branch default {baseline_lookahead})")
 print(f"elapsed_s={elapsed:.3f} frames_per_s={args.frames/elapsed:.2f} "
       f"per_frame_ms={elapsed*1000/args.frames:.2f}")
-if args.mode == "nopoll":
-    print("is_finished: stubbed (no bridge calls made)")
-elif not stats["patched"]:
+if not stats["patched"]:
     print("is_finished: NOT INSTRUMENTED -- this run cannot attribute poll cost")
 else:
     mean_ms = stats["total_s"] * 1000 / stats["calls"] if stats["calls"] else 0.0
