@@ -232,6 +232,12 @@ reaches the sample. `microclaw --safety-config … authorization-map` prints the
 effective map; auto-classified entries carry `"source": "auto:state-device"`,
 declared ones `"source": "declared"`.
 
+Auto-classification fills vacuums only. Naming a device's `Label` **or** `State`
+in `categorical_properties` or `excluded_properties` means you own both: declare
+the one you will actually write, and the other stays refused. So if you are not
+sure whether a driver takes `Label` (string) or `State` (int), declaring one does
+not quietly hand you the other.
+
 The following fragments show the limits and a separate worked channel profile
 (the shipped values are examples, not defaults):
 

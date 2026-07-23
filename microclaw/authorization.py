@@ -212,41 +212,70 @@ def device_type_name(core: Any, label: str) -> str:
         return str(raw)
 
 
+def _position_ruled_devices(parsed_config: ParsedSafetyConfig) -> set[str]:
+    """Devices whose discrete position the operator has already ruled on.
+
+    M5 rig finding (2026-07-23): the config declared only
+    `iChrome-MLE-TCP.Label` — with a comment saying the operator was unsure
+    whether the driver's write property was Label or State — and
+    auto-classification handed them `State` on a laser engine for free. That
+    inverts the intent: declaring one position property is a narrowing, not an
+    invitation.
+
+    So a ruling on EITHER Label or State (categorical, excluded, or the
+    forbidden_properties denylist) takes the whole discrete position off the
+    table for that device. Auto-classification fills vacuums only. The rule is
+    scoped to the position pair, not the device: excluding, say, `Wheel.Speed`
+    must not silently kill the wheel's auto-classification.
+    """
+    profile = parsed_config.rig_profile
+    ruled = (
+        set(profile.categorical_properties)
+        | set(profile.excluded_properties)
+        | {
+            (item.device, item.property)
+            for item in parsed_config.constraints.forbidden_properties
+        }
+    )
+    return {
+        device
+        for device, prop in ruled
+        if prop in STATE_DEVICE_POSITION_PROPERTIES
+    }
+
+
 def _auto_classified_state_pairs(
     core: Any,
     parsed_config: ParsedSafetyConfig,
     loaded_devices: Iterable[str],
     illumination_pairs: set[tuple[str, str]],
-) -> tuple[set[tuple[str, str]], set[tuple[str, str]]]:
+) -> set[tuple[str, str]]:
     """StateDevice position pairs admitted without an explicit declaration.
-
-    Returns (admitted, denylisted): `admitted` are auto-classified categorical;
-    `denylisted` are StateDevice position pairs held back by
-    forbidden_properties so the map can say so out loud.
 
     Fails closed everywhere: an unreadable device type, an unreadable property
     list, or an unreadable Core shutter leaves the device excluded exactly as
     it is today. Shutter-ness comes only from the MM device type, Core.Shutter,
     and the reviewed illumination config — never from the device's name.
+
+    NOTE (M5, 2026-07-23): that rig has NO core shutter, so `Core.Shutter`
+    protects nothing there and the whole shutter carve-out rests on the
+    `illumination:` block being complete.
     """
-    profile = parsed_config.rig_profile
     try:
         core_shutter = str(core.get_shutter_device() or "")
     except Exception:
         # Without Core.Shutter the shutter carve-out cannot be applied, so no
         # device may be auto-classified.
-        return set(), set()
+        return set()
     illumination_devices = {device for device, _ in illumination_pairs}
-    forbidden = {
-        (item.device, item.property)
-        for item in parsed_config.constraints.forbidden_properties
-    }
+    ruled_devices = _position_ruled_devices(parsed_config)
     admitted: set[tuple[str, str]] = set()
-    denylisted: set[tuple[str, str]] = set()
     for device in sorted({str(d) for d in loaded_devices if d}):
         # Shutter carve-out: the Core shutter and anything the operator
         # reviewed as illumination stay on the illumination gate.
         if device == core_shutter or device in illumination_devices:
+            continue
+        if device in ruled_devices:     # operator already ruled on this position
             continue
         try:
             kind = device_type_name(core, device)
@@ -262,18 +291,10 @@ def _auto_classified_state_pairs(
             pair = (device, prop)
             if prop not in properties:
                 continue
-            if (
-                pair in profile.categorical_properties
-                or pair in profile.excluded_properties
-                or pair in illumination_pairs
-                or _known_continuous_raw_pair(core, pair)
-            ):
-                continue
-            if pair in forbidden:
-                denylisted.add(pair)
+            if pair in illumination_pairs or _known_continuous_raw_pair(core, pair):
                 continue
             admitted.add(pair)
-    return admitted, denylisted
+    return admitted
 
 
 def validate_live_rig(
@@ -400,8 +421,10 @@ def validate_live_rig(
         ))
 
     # Additive to the declared pairs above: an MM StateDevice (filter wheel,
-    # slider, turret) needs no declaration for its own discrete position.
-    auto_pairs, auto_denylisted = _auto_classified_state_pairs(
+    # slider, turret) needs no declaration for its own discrete position —
+    # unless the operator has already ruled on that device's position, in which
+    # case their declaration stands alone (see _position_ruled_devices).
+    auto_pairs = _auto_classified_state_pairs(
         core, parsed_config, loaded_devices, illumination_pairs
     )
     for device, prop in sorted(auto_pairs):
@@ -412,17 +435,6 @@ def validate_live_rig(
             property=prop,
             detail=_AUTO_STATE_DEVICE_DETAIL,
             source=AUTO_STATE_DEVICE_SOURCE,
-        ))
-    for device, prop in sorted(auto_denylisted):
-        entries.append(AuthorizationEntry(
-            path="generic-property",
-            classification="excluded",
-            device=device,
-            property=prop,
-            detail=(
-                "MM StateDevice position held back by the forbidden_properties "
-                "denylist"
-            ),
         ))
     categorical_pairs = set(profile.categorical_properties) | auto_pairs
 

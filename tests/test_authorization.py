@@ -495,7 +495,9 @@ def test_explicit_categorical_declarations_still_work_and_stay_distinguishable()
     assert entries[("FilterWheel", "Label")].source == "auto:state-device"
     authorize_property_write(ctrl, "iChrome", "Label")
     authorize_property_write(ctrl, "FilterWheel", "Label")
-    # An explicitly declared pair on a StateDevice is not duplicated as auto.
+    # A declared pair on a StateDevice is not duplicated as auto -- and after
+    # the M5 finding it also takes the device's OTHER position property off the
+    # table (see test_declaring_one_position_property_rules_out_the_other).
     report = validate_live_rig(ctrl, parsed(categorical={("FilterWheel", "Label")}))
     declared = [
         entry for entry in report.entries
@@ -503,6 +505,7 @@ def test_explicit_categorical_declarations_still_work_and_stay_distinguishable()
         and entry.path == "generic-property"
     ]
     assert [entry.source for entry in declared] == ["declared"]
+    assert ("FilterWheel", "State") not in categorical_entries(report)
 
 
 def test_non_state_devices_are_unaffected_by_auto_classification():
@@ -591,3 +594,85 @@ def test_auto_classified_preset_is_authorized_without_a_declaration():
     )
     assert preset_entry.classification == "reviewed_categorical_property"
     assert preset_entry.source == "auto:state-device"
+
+
+# --- M5 rig finding (2026-07-23): auto-classification fills vacuums only -------
+#
+# The operator's unmodified M5 config declared iChrome-MLE-TCP.Label, with a
+# comment saying they were not sure whether the driver's write property was
+# Label or State. Auto-classification then handed them State on a Toptica laser
+# engine, with no config change and against an explicit narrowing. A ruling on
+# either position property now takes the whole discrete position off the table.
+
+
+def test_declaring_one_position_property_does_not_auto_admit_the_other_m5():
+    """M5 regression: iChrome-MLE-TCP.Label declared must NOT yield State."""
+    core = state_device_core(**{"iChrome-MLE-TCP": "StateDevice"})
+    ctrl = Controller(core)
+    config = parsed(categorical={("iChrome-MLE-TCP", "Label")})
+    guard = SafetyGuard(config.constraints)
+    report = validate_live_rig(ctrl, config, guard=guard)
+
+    entries = categorical_entries(report)
+    assert set(entries) == {("iChrome-MLE-TCP", "Label")}
+    assert entries[("iChrome-MLE-TCP", "Label")].source == "declared"
+
+    authorize_property_write(ctrl, "iChrome-MLE-TCP", "Label")
+    with pytest.raises(RigAuthorizationError, match="excluded"):
+        authorize_property_write(ctrl, "iChrome-MLE-TCP", "State")
+    with pytest.raises(SafetyViolation, match="allowed_properties"):
+        guard.check_property("iChrome-MLE-TCP", "State")
+
+
+@pytest.mark.parametrize("declared", ["Label", "State"])
+@pytest.mark.parametrize("key", ["categorical", "excluded"])
+def test_declaring_one_position_property_rules_out_the_other(declared, key):
+    """Symmetric in both properties and in both kinds of ruling."""
+    other = "State" if declared == "Label" else "Label"
+    core = state_device_core(Selector="StateDevice")
+    ctrl = Controller(core)
+    report = validate_live_rig(ctrl, parsed(**{key: {("Selector", declared)}}))
+    assert ("Selector", other) not in categorical_entries(report)
+    with pytest.raises(RigAuthorizationError, match="excluded"):
+        authorize_property_write(ctrl, "Selector", other)
+
+
+def test_a_forbidden_position_property_also_rules_out_the_other():
+    core = state_device_core(Selector="StateDevice")
+    ctrl = Controller(core)
+    report = validate_live_rig(ctrl, parsed(forbidden={("Selector", "State")}))
+    assert categorical_entries(report) == {}
+    with pytest.raises(RigAuthorizationError, match="excluded"):
+        authorize_property_write(ctrl, "Selector", "Label")
+
+
+def test_a_ruling_on_a_non_position_property_does_not_disable_the_device():
+    """Position-scoped, not device-scoped: excluding Speed keeps the wheel."""
+    core = state_device_core(FilterWheel="StateDevice")
+    core.device_properties["FilterWheel"] = ["Label", "State", "Speed"]
+    ctrl = Controller(core)
+    report = validate_live_rig(ctrl, parsed(excluded={("FilterWheel", "Speed")}))
+    assert set(categorical_entries(report)) == {
+        ("FilterWheel", "Label"), ("FilterWheel", "State")
+    }
+    authorize_property_write(ctrl, "FilterWheel", "State")
+
+
+def test_a_ruling_on_one_device_leaves_other_state_devices_auto_classified():
+    """The block's purpose survives: undeclared wheels/ELL6 still auto-classify."""
+    core = state_device_core(**{
+        "iChrome-MLE-TCP": "StateDevice",
+        "Thorlabs Filter Wheel": "StateDevice",
+        "ELL6": "StateDevice",
+    })
+    ctrl = Controller(core)
+    report = validate_live_rig(
+        ctrl, parsed(categorical={("iChrome-MLE-TCP", "Label")})
+    )
+    assert set(categorical_entries(report)) == {
+        ("iChrome-MLE-TCP", "Label"),
+        ("Thorlabs Filter Wheel", "Label"), ("Thorlabs Filter Wheel", "State"),
+        ("ELL6", "Label"), ("ELL6", "State"),
+    }
+    authorize_property_write(ctrl, "Thorlabs Filter Wheel", "State")
+    authorize_property_write(ctrl, "ELL6", "State")

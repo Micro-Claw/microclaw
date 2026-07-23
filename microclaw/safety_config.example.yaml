@@ -28,6 +28,12 @@ rig_profile:
   # admitted, and a shutter is never auto-classified -- Core.Shutter, an MM
   # ShutterDevice, and anything under `illumination` below stay on the
   # illumination gate. List a pair here for every OTHER discrete property.
+  #
+  # Auto-classification fills vacuums only: naming a device's Label OR State
+  # here (or under excluded_properties) means you own BOTH. Declare the one you
+  # will actually write and the other stays refused -- so if you are unsure
+  # whether a driver takes Label (string) or State (int), declaring one does not
+  # quietly hand you the other.
   categorical_properties: []
   # categorical_properties:
   #   # Worked example: a discrete selector that MM does not type as a
