@@ -401,7 +401,54 @@ setup/teardown overhead. This is a design trade-off (responsiveness vs.
 throughput), not a free improvement, and the doc should size the batch
 accordingly rather than implying a running acquisition can be interrupted.
 
-## 3. Remote mode exposes hardware-control endpoints without authentication
+### Reconciliation (2026-07-23): lazy event feeding supersedes chunking
+
+Block 4's first implementation attempt stopped on a conflict between "chunked
+acquisitions" and the current acquisition APIs. The investigation was right that
+**separate bounded `Acquisition` objects are the wrong mechanism** — a
+pycro-manager `Acquisition` owns one dataset and one event queue, so splitting a
+run into several would fragment the dataset and break multiposition, hook, and
+adaptive semantics. That reading of "chunked" is withdrawn.
+
+The paragraph above is still correct that an in-flight bridge call cannot be
+preempted. What it got wrong is the remedy. Cancellation granularity is not set
+by how many `Acquisition` objects there are; it is set by **how many events have
+already been handed to the engine**. `_acquire_with_hooks` accepts either a list
+or a factory returning a generator (`microclaw/tools.py:622`), and the two shapes
+behave completely differently:
+
+- **Pre-dispatched list** (`run_timelapse`, `run_zstack`, and the multiposition/
+  tile runners via `_build_acquisition_events`): the whole event list enters the
+  engine queue in microseconds and is then genuinely unstoppable, exactly as
+  `microclaw/tools.py:2423` already states.
+- **Lazily fed generator** (`_survey_event_stream`, `microclaw/tools.py:2409`):
+  the adaptive path pre-dispatches only `survey_events[:1]` and yields each later
+  event on demand, polling `acq._acq.is_finished()` every `_CANDIDATE_POLL_S`
+  (0.05 s) so an external `abort()` is observed promptly. Its `finally` owns the
+  terminator (design/24 Fix 2a).
+
+So the repository already contains a cancellation mechanism with **one-event**
+granularity, inside a single `Acquisition` and a single dataset, and it is finer
+than any batch size chunking would have produced. The correct Block 4 work is to
+generalize that existing feeder to the pre-dispatched paths, not to introduce
+batching. There is no per-batch setup/teardown overhead to size, because there
+are no batches; the cost is one `is_finished()` bridge round trip per poll, which
+design/24 measured at <0.1 ms (~0.1% duty cycle at 0.05 s).
+
+Two limits this does not remove, both of which must be stated rather than
+engineered around:
+
+- The frame in flight when cancellation is requested still completes. Granularity
+  is one event, never zero.
+- **MMStudio MDA is exempt from cancellation.** `run_mda` delegates to one opaque
+  `manager.run_acquisition()` call (`microclaw/tools.py:3602`) whose settings
+  cannot be faithfully re-expressed as microclaw events. It is nonetheless fully
+  *plannable*: `_read_mda_settings` already exposes frames, exposure, slices,
+  positions, and time points before the call, so it must be planned, budgeted,
+  and confirmed up front and then documented as running to completion.
+
+The stub's `acquire_interruptibly(...)` should therefore be read as "feed events
+lazily and stop feeding on cancel", not "call acquire() several times".
 
 **Priority: P1 — security / authorization; release-blocking for remote mode**
 
