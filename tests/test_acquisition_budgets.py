@@ -1,6 +1,7 @@
 from unittest.mock import MagicMock
 import inspect
 import queue
+import threading
 
 import pytest
 
@@ -126,54 +127,17 @@ def test_reservation_records_an_extra_completed_frame_without_raising():
     assert reservation.overrun_frames == 1
 
 
-def test_list_feeder_stops_after_abort_and_replaces_terminator(monkeypatch, tmp_path):
+def test_reservation_uses_saved_callback_without_installing_pixel_hook(
+    monkeypatch, tmp_path
+):
     from microclaw import tools
 
-    seen = []
-    terminators = queue.Queue()
+    received_kwargs = {}
 
     class FakeAcquisition:
         def __init__(self, **kwargs):
-            self.process = kwargs["image_process_fn"]
-            self._event_queue = terminators
-            self._dataset_disk_location = str(tmp_path / "dataset")
-            self._acq = MagicMock()
-            self._acq.is_finished.return_value = False
-
-        def __enter__(self):
-            return self
-
-        def acquire(self, events):
-            for event in events:
-                seen.append(event)
-                self.process(object(), {}, self._event_queue)
-                # Simulate an external abort after the in-flight frame returned.
-                self._acq.is_finished.return_value = True
-
-        def __exit__(self, *_exc):
-            return None
-
-    monkeypatch.setattr(tools, "Acquisition", FakeAcquisition)
-    reservation = AcquisitionLedger().reserve(
-        _guard(max_frames=3), AcquisitionPlan(3, 1, 1, 3)
-    )
-    tools._acquire_with_hooks(
-        _guard(), str(tmp_path), "dataset", [{}, {}, {}],
-        reservation=reservation,
-    )
-    assert len(seen) == 1  # the frame in flight completes; no later event is fed
-    assert reservation.completed_frames == 1
-    assert terminators.get_nowait() is None
-
-
-def test_list_feeder_completion_signal_has_no_fixed_sleep(monkeypatch, tmp_path):
-    from microclaw import tools
-
-    seen = []
-
-    class FakeAcquisition:
-        def __init__(self, **kwargs):
-            self.process = kwargs["image_process_fn"]
+            received_kwargs.update(kwargs)
+            self.saved = kwargs["image_saved_fn"]
             self._event_queue = queue.Queue()
             self._dataset_disk_location = str(tmp_path / "dataset")
             self._acq = MagicMock()
@@ -184,26 +148,85 @@ def test_list_feeder_completion_signal_has_no_fixed_sleep(monkeypatch, tmp_path)
 
         def acquire(self, events):
             for event in events:
-                seen.append(event)
-                self.process(object(), {}, self._event_queue)
+                self.saved(event.get("axes", {}), object())
 
         def __exit__(self, *_exc):
             return None
 
     monkeypatch.setattr(tools, "Acquisition", FakeAcquisition)
-    monkeypatch.setattr(
-        tools.time, "sleep",
-        lambda *_: pytest.fail("frame feeder used a fixed sleep tick"),
-    )
     reservation = AcquisitionLedger().reserve(
-        _guard(max_frames=3), AcquisitionPlan(3, 1, 1, 3)
+        _guard(max_frames=2), AcquisitionPlan(2, 1, 1, 2)
     )
     tools._acquire_with_hooks(
         _guard(), str(tmp_path), "dataset",
-        [{"axes": {"time": i}} for i in range(3)],
+        [{"axes": {"time": 0}}, {"axes": {"time": 1}}],
         reservation=reservation,
     )
-    assert len(seen) == 3
+    assert "image_process_fn" not in received_kwargs
+    assert reservation.completed_frames == 2
+    assert reservation.ledger.frames == 2
+
+
+def test_list_feeder_bounds_lookahead_and_cancellation(monkeypatch, tmp_path):
+    from microclaw import tools
+
+    seen = []
+    feeder_at_window = threading.Event()
+    next_event_fed = threading.Event()
+    allow_abort = threading.Event()
+    terminators = queue.Queue()
+
+    class FakeAcquisition:
+        def __init__(self, **kwargs):
+            self.saved = kwargs["image_saved_fn"]
+            self._event_queue = terminators
+            self._dataset_disk_location = str(tmp_path / "dataset")
+            self._acq = MagicMock()
+            self._acq.is_finished.return_value = False
+
+        def __enter__(self):
+            return self
+
+        def acquire(self, events):
+            def feed():
+                for event in events:
+                    seen.append(event)
+                    if len(seen) == tools._ACQUISITION_EVENT_LOOKAHEAD:
+                        feeder_at_window.set()
+                    elif len(seen) == tools._ACQUISITION_EVENT_LOOKAHEAD + 1:
+                        next_event_fed.set()
+
+            feeder = threading.Thread(target=feed)
+            feeder.start()
+            assert feeder_at_window.wait(timeout=1)
+            assert len(seen) == tools._ACQUISITION_EVENT_LOOKAHEAD
+            self.saved({}, object())
+            assert next_event_fed.wait(timeout=1)
+            allow_abort.set()
+            self._acq.is_finished.return_value = True
+            self.saved({}, object())
+            feeder.join(timeout=1)
+            assert not feeder.is_alive()
+
+        def __exit__(self, *_exc):
+            return None
+
+    monkeypatch.setattr(tools, "Acquisition", FakeAcquisition)
+    reservation = AcquisitionLedger().reserve(
+        _guard(max_frames=6), AcquisitionPlan(6, 1, 1, 6)
+    )
+    tools._acquire_with_hooks(
+        _guard(), str(tmp_path), "dataset",
+        [{"axes": {"time": i}} for i in range(6)],
+        reservation=reservation,
+    )
+    assert allow_abort.is_set()
+    assert len(seen) == tools._ACQUISITION_EVENT_LOOKAHEAD + 1
+    assert (
+        len(seen) - reservation.completed_frames
+        <= tools._ACQUISITION_EVENT_LOOKAHEAD
+    )
+    assert terminators.get_nowait() is None
 
 
 @pytest.mark.parametrize(

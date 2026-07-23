@@ -739,23 +739,19 @@ def _acquire_with_hooks(
         if hasattr(hook, "image_process_fn"):
             hook_fn_kwargs["image_process_fn"] = hook.image_process_fn
 
-    original_process = hook_fn_kwargs.get("image_process_fn")
     if reservation is not None:
-        def account_frame(image, metadata, *args):
-            try:
-                if original_process is not None:
-                    return original_process(image, metadata, *args)
-                return image, metadata
-            finally:
-                # Pixels have returned: this frame consumed exposure/disk budget
-                # even when a user hook rejects or raises while processing it.
-                if not reservation.commit_frame():
-                    _note_budget_exhausted(
-                        hook,
-                        reservation.plan.frames,
-                        overrun_frames=reservation.overrun_frames,
-                    )
-        hook_fn_kwargs["image_process_fn"] = account_frame
+        def account_saved_frame(axes, dataset):
+            # pycro-manager 1.0.2 calls this after the image is on disk. Unlike
+            # image_process_fn, its arguments contain no pixel array, so plain
+            # acquisitions retain the Java-side streaming fast path.
+            if not reservation.commit_frame():
+                _note_budget_exhausted(
+                    hook,
+                    reservation.plan.frames,
+                    overrun_frames=reservation.overrun_frames,
+                )
+
+        hook_fn_kwargs["image_saved_fn"] = account_saved_frame
 
     if isinstance(events, list) and reservation is not None:
         bounded_events = events
@@ -773,22 +769,25 @@ def _acquire_with_hooks(
             def stream():
                 try:
                     for index, event in enumerate(bounded_events):
-                        # Keep at most one event in flight. This gate is
-                        # necessary: inspected pycro-manager 1.0.2
+                        # Keep bounded look-ahead because pycro-manager 1.0.2
                         # java_backend_acquisitions.py/EventQueue.get() eagerly
                         # advances a queued generator in the event-source loop;
-                        # it does not wait for an image. That pull-ahead is
-                        # measured from installed source and a fake-acquisition
-                        # regression test. The resulting loss of hardware
-                        # sequencing/pipelining is inferred off-rig; the rig
-                        # must measure it. Cancellation remains one-event
-                        # granular. Completion signals wake this wait directly;
-                        # its timeout is solely a liveness backstop.
-                        while completed_at_start + index > reservation.completed_frames:
+                        # it does not wait for an image. The M5 rig measured
+                        # 47-56 ms/frame of overlap on main; depth two is the
+                        # minimum that can restore next-frame pipelining while
+                        # bounding cancellation latency to two frames. A larger
+                        # depth worsens that bound without evidence of another
+                        # throughput gain. Completion signals wake this wait
+                        # directly; its timeout is only a liveness backstop.
+                        completion_needed = (
+                            completed_at_start + index + 1
+                            - _ACQUISITION_EVENT_LOOKAHEAD
+                        )
+                        while completion_needed > reservation.completed_frames:
                             if reservation.has_overrun or finished():
                                 return
                             reservation.wait_for_completed_frames(
-                                completed_at_start + index,
+                                completion_needed,
                                 _FEEDER_LIVENESS_TIMEOUT_S,
                             )
                         if index and finished():
@@ -2654,6 +2653,11 @@ class SurveyProgress:
 # empty pass also costs one is_finished() bridge round trip (measured ~<0.1 ms
 # on localhost, design/24), so at 0.05 s the poll's bridge duty cycle is ~0.1%.
 _CANDIDATE_POLL_S = 0.05
+# Maximum events fed beyond the last saved frame. Depth two is the smallest
+# window that permits engine/camera pipelining; the M5 rig measured 47-56 ms
+# per frame lost at depth one. The trade-off is cancellation within at most
+# this many frames rather than immediate cancellation.
+_ACQUISITION_EVENT_LOOKAHEAD = 2
 # Not a pacing poll: commit_frame() normally wakes the feeder immediately.
 # This only lets it re-check acquisition liveness if no frame ever arrives.
 _FEEDER_LIVENESS_TIMEOUT_S = 5.0
