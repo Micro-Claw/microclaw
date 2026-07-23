@@ -35,7 +35,7 @@ Progress markers: `[ ]` not started, `[-]` active, `[x]` complete, `[!]` blocked
 | 0 | — | c90d738 | baseline: 771 passed / 98 skipped (2026-07-22) | n/a | — | Run A located; NDTiff fixtures deferred to Block 8 |
 | 1 | `design32/config-hardening` | c90d738 | 967ab5d | n/a | 56ed945 | Gate done: config matches Finding 1; non-numeric-write fail-closed change noted in design/32 (docs merge c86af6d) |
 | 2 | `design32/versioned-safety-schema` | 252a4cc | d5aa5c4 (+fix 12b0677) | rig: starts clean w/ reviewed rig config | b8092c4 | Gate done: API matches design/33 (no change); 1b landed note + required-when-present judgment recorded in design/32 (docs merge 8dd521f) |
-| 3 | `design33/core-authorization-map` | c18fa92 | | required | | |
+| 3 | `design33/core-authorization-map` | c18fa92 | fc346a4 (2 review-fixes) | rig M5: fail-closed+parity, complete map, cat/illum writes pass, PWM/FPGA refused, confirm-gate fires | 0124ffd | Gate done: design/33 Phase-1 landed note + M5 findings + ceiling + StateDevice fast-follow (docs merge ae4794f) |
 | 4 | `design32/acquisition-budgets` | | | required | | |
 | 5 | `design33/dose-authorization` | | | required | | |
 | 6 | `design32/remote-auth` | | | n/a | | |
@@ -164,38 +164,49 @@ Post-merge design gate:
 
 Branch: `design33/core-authorization-map`
 
-- [ ] Create the branch from updated `main`.
-- [ ] Add the declared rig-profile schema and minimum classification registry.
-- [ ] Require property allowlist mode in guaranteed mode, or disable the generic setter.
-- [ ] Mechanically enumerate the effective write surface: dedicated tools, generic
+- [x] Create the branch from updated `main`.
+- [x] Add the declared rig-profile schema and minimum classification registry. — schema
+      checkpoint approved after revision (no actuator manifest; built-ins are code-level).
+- [x] Require property allowlist mode in guaranteed mode, or disable the generic setter.
+      — guaranteed requires `categorical_properties` (incl. empty); else fails closed.
+- [x] Mechanically enumerate the effective write surface: dedicated tools, generic
       properties, channel effects, autofocus, acquisitions, and plugins.
-- [ ] Implement shared `validate_live_rig(ctrl, parsed_config)` and call it in CLI and web
+- [x] Implement shared `validate_live_rig(ctrl, parsed_config)` and call it in CLI and web
       startup after connection but before prompts, app construction, agent invocation, or
       tool dispatch.
-- [ ] Bind tagged core XY/focus identities to live devices; reject conflicts with named
+- [x] Bind tagged core XY/focus identities to live devices; reject conflicts with named
       declarations, undeclared reachable actuators, open reachable stage edges, unknown
       continuous semantics, and opaque motion plugins in guaranteed mode.
-- [ ] Exclude unclassified preset/property effects in this phase. Do not approximate a
-      channel executor yet.
-- [ ] Test every path to the same actuator, not just each high-level tool in isolation.
-- [ ] Commit but **do not merge until the following rig spike passes**.
+- [x] Exclude unclassified preset/property effects in this phase. Do not approximate a
+      channel executor yet. — illumination added as a Phase-1 built-in capability (review fix).
+- [x] Test every path to the same actuator, not just each high-level tool in isolation.
+- [x] Commit but **do not merge until the following rig spike passes**. — impl fc346a4.
 
 Rig gate:
 
-- [ ] On a rig-safe checkout, first prove a representative incomplete profile fails before
-      any mutation tool becomes reachable in both CLI and web modes.
-- [ ] With the reviewed rig profile, enumerate the effective map and compare it manually
-      with connected devices and enabled write paths.
-- [ ] Prove allowed read-only startup works and representative guarded writes still pass.
-- [ ] Stop on any undeclared reachable device, path-classification ambiguity, CLI/web
-      mismatch, or write occurring before validation. Fix on the branch and repeat.
-- [ ] Coordinator reviews evidence and merges only after the fail-closed test is observed.
+- [x] On a rig-safe checkout, first prove a representative incomplete profile fails before
+      any mutation tool becomes reachable in both CLI and web modes. — M5: deleting
+      PIZStage range refused identically across CLI/serve/authorization-map.
+- [x] With the reviewed rig profile, enumerate the effective map and compare it manually
+      with connected devices and enabled write paths. — M5 map complete, cross-checked
+      against the MM .cfg; excluded list = FPGA/COM/serial + operator-undeclared devices.
+- [x] Prove allowed read-only startup works and representative guarded writes still pass.
+      — categorical (filter wheel) + illumination (iBeam power + confirm-gated enable)
+      writes passed; excluded (PWM.Position0) and name-mismatched writes refused.
+- [x] Stop on any undeclared reachable device, path-classification ambiguity, CLI/web
+      mismatch, or write occurring before validation. Fix on the branch and repeat. — none;
+      two blockers (illumination, preset UX) caught in review and fixed pre-merge.
+- [x] Coordinator reviews evidence and merges only after the fail-closed test is observed.
+      — merged 0124ffd.
 
 Post-merge design gate:
 
-- [ ] Update design/33 with the actual rig profile, classifications, unsupported/excluded
+- [x] Update design/33 with the actual rig profile, classifications, unsupported/excluded
       paths, and field findings. Update design/32 wherever it claims coverage now proven
-      or disproven. Merge documentation before Block 4.
+      or disproven. Merge documentation before Block 4. — design/33 Phase-1 landed note +
+      M5 findings + FPGA-laser ceiling + StateDevice fast-follow + illum-units/reload
+      caveats (docs merge ae4794f). No design/32 change required (its Finding 1 coverage
+      claims are consistent; the reload/units notes live in the design/33 landed note).
 
 ## 4. Design/32 Finding 2 — acquisition plans, budgets, ledger, and batching
 
