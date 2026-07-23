@@ -38,7 +38,7 @@ Progress markers: `[ ]` not started, `[-]` active, `[x]` complete, `[!]` blocked
 | 2 | `design32/versioned-safety-schema` | 252a4cc | d5aa5c4 (+fix 12b0677) | rig: starts clean w/ reviewed rig config | b8092c4 | Gate done: API matches design/33 (no change); 1b landed note + required-when-present judgment recorded in design/32 (docs merge 8dd521f) |
 | 3 | `design33/core-authorization-map` | c18fa92 | fc346a4 (2 review-fixes) | rig M5: fail-closed+parity, complete map, cat/illum writes pass, PWM/FPGA refused, confirm-gate fires | 0124ffd | Gate done: design/33 Phase-1 landed note + M5 findings + ceiling + StateDevice fast-follow (docs merge ae4794f) |
 | 3b | `design33/statedevice-auto-classify` | 91c6364 | d80ae39 + aaa41d4 (rig-finding fix) | rig M5: before/after maps both complete@40; six Thorlabs pairs flip declared→auto; iChrome-MLE-TCP.State refused live despite explicit human confirm; auto-classified wheel write passes both gates via `serve` | 9491361 | Gate done: design/33 Block-3b landed note + ELL6/no-core-shutter/iChrome findings (docs merge daab107) |
-| 4 | `design32/acquisition-budgets` | 0d0137d, rebased to 1c14271 | attempt 1 stopped w/o commit (chunking conflict) | required | | Pre-impl gate done: chunking premise reconciled in design/32 §2 (docs merge 1c14271); **ACTIVE** |
+| 4 | `design32/acquisition-budgets` | 0d0137d, rebased to 1c14271 | a8f0209 + 8d7e832 (3 review blockers) + 01b2766 (coord fix); 892/98/3; pushed | **AWAITING RIG GATE** | | Pre-impl gate done: chunking premise reconciled in design/32 §2 (docs merge 1c14271) |
 | 5 | `design33/dose-authorization` | | | required | | |
 | 6 | `design32/remote-auth` | | | n/a | | |
 | 7 | `design32/generated-hook-decisions` | | | regression required | | |
@@ -279,29 +279,46 @@ Branch: `design32/acquisition-budgets`
 
 - [x] Create the branch from updated `main`. — `design32/acquisition-budgets` from `0d0137d`,
       rebased onto `1c14271` after the chunking-premise reconciliation.
-- [ ] Define a common `AcquisitionPlan` for frames, per-frame exposure, estimated
-      duration, bytes, and illuminated time.
-- [ ] Add strict config fields for hard budgets and lower confirmation thresholds.
-- [ ] Plan before motion; reuse the existing confirmation mechanism with an acquisition
+- [x] Define a common `AcquisitionPlan` for frames, per-frame exposure, estimated
+      duration, bytes, and illuminated time. — `microclaw/acquisition.py`.
+- [x] Add strict config fields for hard budgets and lower confirmation thresholds.
+      — nine-field `acquisition:` section, **required** (coordinator review fix; optional
+      made the P0 fail open, reintroducing Finding 1's own thesis).
+- [x] Plan before motion; reuse the existing confirmation mechanism with an acquisition
       kind; reserve conservatively and commit actual usage as frames complete.
-- [ ] Apply the planner to timelapse, Z stack, tiles/multiposition, adaptive survey, and
-      MMStudio MDA. Reject unplannable/unbounded work.
-- [ ] Make cancellation possible by **feeding events lazily inside one `Acquisition`**,
+      — `_authorize_acquisition` reuses `CONFIRM_FN(..., kind="acquisition")`.
+- [x] Apply the planner to timelapse, Z stack, tiles/multiposition, adaptive survey, and
+      MMStudio MDA. Reject unplannable/unbounded work. — all seven entry points routed;
+      MDA is planned from `_read_mda_settings` and credits the ledger after its opaque call.
+- [x] Make cancellation possible by **feeding events lazily inside one `Acquisition`**,
       generalizing the existing `_survey_event_stream` generator to the pre-dispatched
       paths. Do NOT split a run into separate `Acquisition` objects — that fragments the
       dataset and breaks multiposition/hook/adaptive semantics (reconciled 2026-07-23;
       see design/32 §2 "Reconciliation"). Document pyjavaz serialization, the one-event
       granularity, and MMStudio MDA's cancellation exemption.
-- [ ] Test limits, confirmations, cancellation, reservation rollback, partial completion,
-      cumulative ledger behavior, and all acquisition entry points.
-- [ ] Commit but do not merge before the rig gate.
+      — **the one-event-in-flight gate is load-bearing and its cost is UNMEASURED.**
+      pycro-manager 1.0.2's `EventQueue.get()` eagerly advances a queued generator without
+      waiting for an image (verified from installed source + a fake-acquisition test), so an
+      ungated generator is drained and gives no cancellation granularity at all. The gate
+      buys one-event cancellation by forfeiting engine pipelining; the throughput cost is
+      inferred off-rig and the rig gate must measure it.
+- [x] Test limits, confirmations, cancellation, reservation rollback, partial completion,
+      cumulative ledger behavior, and all acquisition entry points. — 892 passed / 98
+      skipped / 3 warnings (+29 over the 863 `main` baseline).
+- [x] Commit but do not merge before the rig gate. — impl `a8f0209` + `8d7e832`
+      (three coordinator-review blockers), coordinator fix `01b2766`; pushed to origin.
 
 Rig gate:
 
 - [ ] Run no-exposure/dark or safest representative plans around warning and hard limits.
 - [ ] Measure cancellation latency (request → last frame written) on a lazily fed
-      acquisition, and the `is_finished()` poll's bridge cost at the chosen poll interval.
-      There are no batches to size.
+      acquisition. There are no batches to size.
+- [ ] **Measure the one-event-in-flight gate's throughput cost** (frames/s on this branch
+      vs. `main`, at a short exposure). This is the block's only inferred claim. Treat a
+      large regression on the SMLM path (`run_timelapse`, `interval_s=0`) as a stop.
+- [ ] Verify the MDA preview token round-trips: `settings.slices()` / `settings.channels()`
+      with `spec.useChannel` / `spec.exposure` is unverified bridge code, and a wrong field
+      name breaks the `get_mda_settings` → `run_mda` pairing at the point of use.
 - [ ] Verify planned/acquired counts, duration, bytes estimate, illuminated-time ledger,
       partial failure, and restart/session semantics.
 - [ ] Stop if actual execution can exceed a reservation silently or if cancellation
