@@ -2,7 +2,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import math
 from numbers import Real
-from typing import Literal, Optional
+from typing import Iterable, Literal, Optional
 import os
 import yaml
 
@@ -584,6 +584,22 @@ class SafetyGuard:
 
     def __init__(self, constraints: SafetyConstraints):
         self._c = constraints
+        # (device, property) pairs the live authorization map auto-classified
+        # as categorical because Micro-Manager types the device a StateDevice
+        # (see authorization.validate_live_rig). Empty until startup fills it,
+        # so nothing widens without a live rig saying so.
+        self._auto_classified: frozenset[tuple[str, str]] = frozenset()
+
+    def admit_auto_classified(self, pairs: Iterable[tuple[str, str]]) -> None:
+        """Admit exactly the pairs the live authorization map auto-classified.
+
+        Additive to allowed_properties, never a replacement: this is the only
+        way a pair enters the guard without a config declaration, and the
+        forbidden_properties denylist still refuses these pairs.
+        """
+        self._auto_classified = frozenset(
+            (str(device), str(prop)) for device, prop in pairs
+        )
 
     @property
     def analysis_min_snr(self) -> float | None:
@@ -653,9 +669,17 @@ class SafetyGuard:
         if allow is not None:
             # Allowlist mode: the only hard gate for raw property writes.
             if not any(a.device == device and a.property == prop for a in allow):
-                raise SafetyViolation(
-                    f"Property '{device}.{prop}' is not in the allowed_properties list."
-                )
+                if (device, prop) not in self._auto_classified:
+                    raise SafetyViolation(
+                        f"Property '{device}.{prop}' is not in the allowed_properties list."
+                    )
+                # Auto-classified StateDevice position: admitted by the live
+                # authorization map, but the denylist still wins over it.
+                for fp in self._c.forbidden_properties:
+                    if fp.device == device and fp.property == prop:
+                        raise SafetyViolation(
+                            f"Property '{device}.{prop}' is forbidden by safety config."
+                        )
             return
         for fp in self._c.forbidden_properties:
             if fp.device == device and fp.property == prop:

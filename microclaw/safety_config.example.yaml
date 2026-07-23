@@ -20,12 +20,19 @@ rig_profile:
   # Required in guaranteed mode, even when empty. Listing a pair is the reviewed
   # assertion that it is categorical/discrete, not a continuous actuator, and
   # also supplies the runtime allowlist for set_device_property.
+  #
+  # You do NOT need to list a filter wheel, slider, or turret here: any device
+  # Micro-Manager types as a StateDevice has its own Label/State auto-classified
+  # as categorical at startup (`microclaw authorization-map` shows those entries
+  # with "source": "auto:state-device"). Nothing else on such a device is
+  # admitted, and a shutter is never auto-classified -- Core.Shutter, an MM
+  # ShutterDevice, and anything under `illumination` below stay on the
+  # illumination gate. List a pair here for every OTHER discrete property.
   categorical_properties: []
   # categorical_properties:
-  #   # Worked example for the commented channels.allowed: [DAPI] below.
-  #   # List every property effect that the rig's DAPI preset expands to.
-  #   - {device: DWheel, property: Label}
-  #   - {device: DichroicWheel, property: Label}
+  #   # Worked example: a discrete selector that MM does not type as a
+  #   # StateDevice, so it still needs the reviewed declaration.
+  #   - {device: LaserSelector, property: Label}
   # Removed from every write path by the Stage-B authorization map. These are
   # exclusions, not legacy forbidden_properties denylist entries.
   excluded_properties:
@@ -57,9 +64,10 @@ analysis:
   # min_snr: 5.0
 
 # Channel names and their effects are coupled in guaranteed mode. To enable a
-# preset, list its name here AND list every categorical device/property effect
+# preset, list its name here AND classify every device/property effect it
+# expands to: either auto-classified (a StateDevice's own Label/State) or listed
 # under rig_profile.categorical_properties above. Otherwise startup refuses it.
-# The DAPI worked example assumes exactly the two wheel effects shown above.
+# A preset that only moves filter wheels needs no declaration at all.
 # channels:
 #   allowed: [DAPI]
 

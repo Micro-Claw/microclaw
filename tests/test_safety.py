@@ -589,6 +589,33 @@ class TestAllowlistMode:
         )
         guard.check_property("DCam", "Binning")  # allowed wins
 
+    def test_auto_classified_pair_is_admitted_but_the_denylist_still_wins(self):
+        # design/33 fast-follow: the live map hands the guard the StateDevice
+        # positions it auto-classified, so a raw write clears both gates. It is
+        # additive -- the declared allowlist and the denylist are untouched.
+        guard = SafetyGuard(
+            SafetyConstraints(
+                allowed_properties=[ForbiddenProperty("DCam", "Binning")],
+                forbidden_properties=[ForbiddenProperty("Wheel", "State")],
+            )
+        )
+        with pytest.raises(SafetyViolation, match="not in the allowed_properties"):
+            guard.check_property("Wheel", "Label")
+        guard.admit_auto_classified({("Wheel", "Label"), ("Wheel", "State")})
+        guard.check_property("Wheel", "Label")   # no exception
+        guard.check_property("DCam", "Binning")  # declared pair unaffected
+        with pytest.raises(SafetyViolation, match="forbidden"):
+            guard.check_property("Wheel", "State")
+        with pytest.raises(SafetyViolation, match="not in the allowed_properties"):
+            guard.check_property("Wheel", "Speed")
+
+    def test_no_pairs_are_auto_classified_until_a_live_rig_says_so(self):
+        guard = SafetyGuard(
+            SafetyConstraints(allowed_properties=[ForbiddenProperty("DCam", "Binning")])
+        )
+        with pytest.raises(SafetyViolation, match="not in the allowed_properties"):
+            guard.check_property("Wheel", "Label")
+
     def test_from_yaml_loads_allowed_properties(self, tmp_path):
         cfg = tmp_path / "safety.yaml"
         cfg.write_text(

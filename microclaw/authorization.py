@@ -27,6 +27,12 @@ class AuthorizationEntry:
     capability: str | None = None
     axis: str | None = None
     detail: str | None = None
+    # Where a categorical decision came from: "declared" (an explicit
+    # rig_profile.categorical_properties entry) or "auto:state-device" (this
+    # module classified the device as an MM StateDevice at startup). None for
+    # every other classification. The rig operator reads this field to verify
+    # an auto-classification without diffing the config.
+    source: str | None = None
 
 
 @dataclass
@@ -155,8 +161,131 @@ def _stage_identity(source: str, device: str | None, axis: str | None) -> Actuat
     return ActuatorId(source, device, "stage-position", axis)
 
 
-def validate_live_rig(ctrl: Any, parsed_config: ParsedSafetyConfig) -> AuthorizationMap:
-    """Build and attach the effective map before any mutation surface is exposed."""
+# mmcorej.DeviceType ordinals (5/6 verified over the bridge in the design/14
+# V3 spike; 2/3/4 are the same published enum). This is the single source of
+# truth for the table — microclaw.tools._device_type_name delegates here.
+#
+# Classifying one device at a time deliberately avoids
+# get_loaded_devices_of_type, which needs a DeviceType *static* enum shadow and
+# therefore the JavaClass cache workaround (CLAUDE.md); per-device
+# get_device_type needs no JavaClass at all.
+DEVICE_TYPE_NAMES = {
+    2: "CameraDevice",
+    3: "ShutterDevice",
+    4: "StateDevice",
+    5: "StageDevice",
+    6: "XYStageDevice",
+}
+
+# A StateDevice's discrete position is exposed as exactly these two MM
+# properties. Auto-classification admits these and nothing else on the device.
+STATE_DEVICE_POSITION_PROPERTIES = ("Label", "State")
+
+AUTO_STATE_DEVICE_SOURCE = "auto:state-device"
+_AUTO_STATE_DEVICE_DETAIL = (
+    "auto-classified: MM StateDevice discrete position; no declaration required"
+)
+
+
+def device_type_name(core: Any, label: str) -> str:
+    """Classify one device via core.get_device_type(label).
+
+    Returns the mmcorej DeviceType name when it can be resolved, otherwise the
+    raw string. Raises whatever the bridge raises; callers that must fail
+    closed catch it.
+    """
+    raw = core.get_device_type(label)
+    if hasattr(raw, "to_string"):
+        name = str(raw.to_string())
+        if name and "0x" not in name:
+            return name
+    if hasattr(raw, "swig_value"):
+        try:
+            ordinal = int(raw.swig_value())
+        except (TypeError, ValueError):
+            pass
+        else:
+            return DEVICE_TYPE_NAMES.get(ordinal, str(ordinal))
+    try:
+        return DEVICE_TYPE_NAMES.get(int(raw), str(raw))
+    except (TypeError, ValueError):
+        return str(raw)
+
+
+def _auto_classified_state_pairs(
+    core: Any,
+    parsed_config: ParsedSafetyConfig,
+    loaded_devices: Iterable[str],
+    illumination_pairs: set[tuple[str, str]],
+) -> tuple[set[tuple[str, str]], set[tuple[str, str]]]:
+    """StateDevice position pairs admitted without an explicit declaration.
+
+    Returns (admitted, denylisted): `admitted` are auto-classified categorical;
+    `denylisted` are StateDevice position pairs held back by
+    forbidden_properties so the map can say so out loud.
+
+    Fails closed everywhere: an unreadable device type, an unreadable property
+    list, or an unreadable Core shutter leaves the device excluded exactly as
+    it is today. Shutter-ness comes only from the MM device type, Core.Shutter,
+    and the reviewed illumination config — never from the device's name.
+    """
+    profile = parsed_config.rig_profile
+    try:
+        core_shutter = str(core.get_shutter_device() or "")
+    except Exception:
+        # Without Core.Shutter the shutter carve-out cannot be applied, so no
+        # device may be auto-classified.
+        return set(), set()
+    illumination_devices = {device for device, _ in illumination_pairs}
+    forbidden = {
+        (item.device, item.property)
+        for item in parsed_config.constraints.forbidden_properties
+    }
+    admitted: set[tuple[str, str]] = set()
+    denylisted: set[tuple[str, str]] = set()
+    for device in sorted({str(d) for d in loaded_devices if d}):
+        # Shutter carve-out: the Core shutter and anything the operator
+        # reviewed as illumination stay on the illumination gate.
+        if device == core_shutter or device in illumination_devices:
+            continue
+        try:
+            kind = device_type_name(core, device)
+        except Exception:
+            continue
+        if kind != "StateDevice":      # ShutterDevice and everything else: no
+            continue
+        try:
+            properties = set(_strings(core.get_device_property_names(device)))
+        except Exception:
+            continue
+        for prop in STATE_DEVICE_POSITION_PROPERTIES:
+            pair = (device, prop)
+            if prop not in properties:
+                continue
+            if (
+                pair in profile.categorical_properties
+                or pair in profile.excluded_properties
+                or pair in illumination_pairs
+                or _known_continuous_raw_pair(core, pair)
+            ):
+                continue
+            if pair in forbidden:
+                denylisted.add(pair)
+                continue
+            admitted.add(pair)
+    return admitted, denylisted
+
+
+def validate_live_rig(
+    ctrl: Any, parsed_config: ParsedSafetyConfig, guard: Any = None
+) -> AuthorizationMap:
+    """Build and attach the effective map before any mutation surface is exposed.
+
+    `guard` is the SafetyGuard that will police the session. When given, the
+    pairs auto-classified here (StateDevice discrete positions) are handed to
+    it, because a raw write passes through both the map and the guard's
+    categorical allowlist. Omit it for read-only enumeration.
+    """
     core = ctrl.core
     profile = parsed_config.rig_profile
     guaranteed = profile.mode == "guaranteed"
@@ -242,6 +371,20 @@ def validate_live_rig(ctrl: Any, parsed_config: ParsedSafetyConfig) -> Authoriza
     illumination_power_pairs = {
         (item.device, item.property) for item in illumination.power_properties
     }
+    illumination_pairs = {
+        (item.device, item.property) for item in illumination.shutters
+    } | illumination_power_pairs
+
+    # Device inventory is read once here: auto-classification needs it before
+    # the categorical entries are emitted. The enumeration error is still
+    # reported at its original position below, so failure ordering is unchanged.
+    try:
+        loaded_devices = _strings(core.get_loaded_devices())
+        loaded_devices_error = None
+    except Exception as exc:
+        loaded_devices = []
+        loaded_devices_error = f"Could not enumerate connected devices: {exc}"
+
     for device, prop in sorted(profile.categorical_properties):
         if _known_continuous_raw_pair(core, (device, prop)):
             errors.append(
@@ -253,11 +396,36 @@ def validate_live_rig(ctrl: Any, parsed_config: ParsedSafetyConfig) -> Authoriza
             classification="reviewed_categorical_property",
             device=device,
             property=prop,
+            source="declared",
         ))
 
-    illumination_pairs = {
-        (item.device, item.property) for item in illumination.shutters
-    } | illumination_power_pairs
+    # Additive to the declared pairs above: an MM StateDevice (filter wheel,
+    # slider, turret) needs no declaration for its own discrete position.
+    auto_pairs, auto_denylisted = _auto_classified_state_pairs(
+        core, parsed_config, loaded_devices, illumination_pairs
+    )
+    for device, prop in sorted(auto_pairs):
+        entries.append(AuthorizationEntry(
+            path="generic-property",
+            classification="reviewed_categorical_property",
+            device=device,
+            property=prop,
+            detail=_AUTO_STATE_DEVICE_DETAIL,
+            source=AUTO_STATE_DEVICE_SOURCE,
+        ))
+    for device, prop in sorted(auto_denylisted):
+        entries.append(AuthorizationEntry(
+            path="generic-property",
+            classification="excluded",
+            device=device,
+            property=prop,
+            detail=(
+                "MM StateDevice position held back by the forbidden_properties "
+                "denylist"
+            ),
+        ))
+    categorical_pairs = set(profile.categorical_properties) | auto_pairs
+
     for device, prop in sorted(illumination_pairs):
         entries.append(AuthorizationEntry(
             path="dedicated-illumination",
@@ -344,7 +512,10 @@ def validate_live_rig(ctrl: Any, parsed_config: ParsedSafetyConfig) -> Authoriza
                     f"{device}.{prop} is typed illumination but presets cannot "
                     "invoke check_illumination without the deferred channel-plan executor"
                 )
-            elif pair in profile.categorical_properties:
+            elif pair in categorical_pairs:
+                # Auto-classified StateDevice positions count here too: a
+                # preset that only moves filter wheels must not need the
+                # declaration the wheel itself no longer needs.
                 classification = "reviewed_categorical_property"
             else:
                 classification = "excluded"
@@ -355,6 +526,14 @@ def validate_live_rig(ctrl: Any, parsed_config: ParsedSafetyConfig) -> Authoriza
                 device=device,
                 property=prop,
                 detail=None if value is None else f"value={value!r}",
+                source=(
+                    AUTO_STATE_DEVICE_SOURCE
+                    if pair in auto_pairs
+                    and classification == "reviewed_categorical_property"
+                    else "declared"
+                    if classification == "reviewed_categorical_property"
+                    else None
+                ),
             ))
         if reasons:
             excluded_presets[preset] = reasons
@@ -405,12 +584,8 @@ def validate_live_rig(ctrl: Any, parsed_config: ParsedSafetyConfig) -> Authoriza
                 "Opaque hardware-motion plugins are forbidden in guaranteed mode."
             )
 
-    try:
-        loaded_devices = _strings(core.get_loaded_devices())
-    except Exception as exc:
-        loaded_devices = []
-        if guaranteed:
-            errors.append(f"Could not enumerate connected devices: {exc}")
+    if loaded_devices_error is not None and guaranteed:
+        errors.append(loaded_devices_error)
     devices_with_entries = {entry.device for entry in entries if entry.device}
     for device in sorted(set(loaded_devices) - devices_with_entries):
         entries.append(AuthorizationEntry(
@@ -431,6 +606,13 @@ def validate_live_rig(ctrl: Any, parsed_config: ParsedSafetyConfig) -> Authoriza
         raise RigAuthorizationError(
             "Live rig authorization failed:\n- " + "\n- ".join(errors)
         )
+
+    # A raw write passes two gates: this map and SafetyGuard.check_property's
+    # categorical allowlist (built from the declared pairs at config-parse
+    # time). Hand the guard exactly the pairs auto-classified above — nothing
+    # else — so an auto-classified write is admitted by both.
+    if guard is not None and auto_pairs:
+        guard.admit_auto_classified(auto_pairs)
 
     report = AuthorizationMap(
         mode=profile.mode,

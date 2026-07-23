@@ -33,6 +33,27 @@ class Core:
         self.presets = {}
         self.preset_errors = {}
         self.loaded_extra = []
+        # Live device typing for the design/33 StateDevice auto-classification.
+        # Default GenericDevice: nothing auto-classifies unless a test says so.
+        self.shutter = ""
+        self.device_types = {}
+        self.device_properties = {}
+
+    def _raise_or_return(self, value):
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    def get_shutter_device(self):
+        return self._raise_or_return(self.shutter)
+
+    def get_device_type(self, label):
+        return self._raise_or_return(self.device_types.get(label, "GenericDevice"))
+
+    def get_device_property_names(self, label):
+        return self._raise_or_return(
+            self.device_properties.get(label, ["Label", "State"])
+        )
 
     def get_xy_stage_device(self):
         return self.xy
@@ -81,7 +102,7 @@ def policy(low=-10.0, high=10.0):
 
 def parsed(
     *, ranges=None, categorical=(), excluded=(), channels=(), mode="guaranteed",
-    plugin_motion=False, exposure=100.0, illumination=None,
+    plugin_motion=False, exposure=100.0, illumination=None, forbidden=(),
 ):
     if ranges is None:
         ranges = {
@@ -92,7 +113,12 @@ def parsed(
     constraints = SafetyConstraints(
         camera=CameraConstraints(exposure),
         allowed_channels=list(channels),
-        allowed_properties=[],
+        allowed_properties=[
+            ForbiddenProperty(device, prop) for device, prop in categorical
+        ],
+        forbidden_properties=[
+            ForbiddenProperty(device, prop) for device, prop in forbidden
+        ],
         plugins=PluginConstraints(allow_hardware_motion=plugin_motion),
         illumination=illumination or IlluminationConstraints(),
     )
@@ -354,3 +380,214 @@ def test_read_only_enumeration_prints_map_without_agent_or_repl(monkeypatch):
     rendered = "\n".join(output)
     assert '"verdict": "complete"' in rendered
     assert '"dedicated-stage"' in rendered
+
+
+# --- design/33 fast-follow: MM StateDevice auto-classification -----------------
+#
+# A filter wheel / slider / turret is a discrete device; requiring a
+# categorical_properties declaration for each one was disproportionate (the M5
+# authoring exposed the friction). Auto-classification is additive and is driven
+# ONLY by the MM device type plus the reviewed config -- never by device names.
+
+
+def state_device_core(**types):
+    """Core whose named devices carry the given MM device types."""
+    core = Core()
+    core.device_types.update(types)
+    core.loaded_extra = list(types)
+    return core
+
+
+def categorical_entries(report):
+    return {
+        (entry.device, entry.property): entry
+        for entry in report.entries
+        if entry.path == "generic-property"
+        and entry.classification == "reviewed_categorical_property"
+    }
+
+
+def test_state_device_auto_classifies_its_discrete_position():
+    core = state_device_core(FilterWheel="StateDevice")
+    report = validate_live_rig(Controller(core), parsed())
+    entries = categorical_entries(report)
+    assert set(entries) == {("FilterWheel", "Label"), ("FilterWheel", "State")}
+    for entry in entries.values():
+        assert entry.source == "auto:state-device"
+        assert "StateDevice" in entry.detail
+    # The rig check reads this out of `microclaw ... authorization-map` JSON.
+    assert {
+        (item["device"], item["property"])
+        for item in report.to_dict()["entries"]
+        if item["source"] == "auto:state-device"
+    } == {("FilterWheel", "Label"), ("FilterWheel", "State")}
+    # Auto-classification covers the discrete position only, not the whole device.
+    core.device_properties["FilterWheel"] = ["Label", "State", "Speed", "Delay"]
+    ctrl = Controller(core)
+    report = validate_live_rig(ctrl, parsed())
+    assert set(categorical_entries(report)) == {
+        ("FilterWheel", "Label"), ("FilterWheel", "State")
+    }
+    with pytest.raises(RigAuthorizationError, match="excluded"):
+        authorize_property_write(ctrl, "FilterWheel", "Speed")
+
+
+def test_state_device_auto_classification_survives_the_ordinal_form():
+    """MM may answer with the enum ordinal rather than a name (4 = StateDevice)."""
+    core = state_device_core(Turret=4)
+    report = validate_live_rig(Controller(core), parsed())
+    assert ("Turret", "Label") in categorical_entries(report)
+
+
+def test_shutter_device_is_never_auto_classified():
+    """The shutter carve-out, pinned by MM device type -- not by the name."""
+    core = state_device_core(FilterWheel="StateDevice", Blocker="ShutterDevice")
+    report = validate_live_rig(Controller(core), parsed())
+    assert set(categorical_entries(report)) == {
+        ("FilterWheel", "Label"), ("FilterWheel", "State")
+    }
+    ctrl = Controller(core)
+    validate_live_rig(ctrl, parsed())
+    with pytest.raises(RigAuthorizationError, match="excluded"):
+        authorize_property_write(ctrl, "Blocker", "State")
+    assert any(
+        entry.path == "connected-device-inventory" and entry.device == "Blocker"
+        for entry in report.entries
+    )
+
+
+def test_core_shutter_is_never_auto_classified_even_when_typed_state_device():
+    """PINNED MECHANICAL SHUTTER TEST.
+
+    A mechanical shutter wired as a state device (a two-position slider that
+    gates light) must stay on the illumination gate. It is refused because it is
+    Core.Shutter, with no name matching anywhere.
+    """
+    core = state_device_core(Slider="StateDevice", FilterWheel="StateDevice")
+    core.shutter = "Slider"
+    ctrl = Controller(core)
+    report = validate_live_rig(ctrl, parsed())
+    assert ("FilterWheel", "Label") in categorical_entries(report)
+    assert ("Slider", "Label") not in categorical_entries(report)
+    with pytest.raises(RigAuthorizationError, match="excluded"):
+        authorize_property_write(ctrl, "Slider", "Label")
+
+    # Same carve-out for a state device the operator reviewed as illumination.
+    core.shutter = ""
+    ctrl = Controller(core)
+    validate_live_rig(
+        ctrl,
+        parsed(illumination=IlluminationConstraints(
+            shutters=[IlluminationProperty("Slider", "Label", "Open", "Closed")],
+        )),
+    )
+    with pytest.raises(RigAuthorizationError, match="excluded"):
+        authorize_property_write(ctrl, "Slider", "State")
+
+
+def test_explicit_categorical_declarations_still_work_and_stay_distinguishable():
+    core = state_device_core(FilterWheel="StateDevice")
+    core.loaded_extra = ["FilterWheel", "iChrome"]
+    ctrl = Controller(core)
+    report = validate_live_rig(ctrl, parsed(categorical={("iChrome", "Label")}))
+    entries = categorical_entries(report)
+    assert entries[("iChrome", "Label")].source == "declared"
+    assert entries[("FilterWheel", "Label")].source == "auto:state-device"
+    authorize_property_write(ctrl, "iChrome", "Label")
+    authorize_property_write(ctrl, "FilterWheel", "Label")
+    # An explicitly declared pair on a StateDevice is not duplicated as auto.
+    report = validate_live_rig(ctrl, parsed(categorical={("FilterWheel", "Label")}))
+    declared = [
+        entry for entry in report.entries
+        if (entry.device, entry.property) == ("FilterWheel", "Label")
+        and entry.path == "generic-property"
+    ]
+    assert [entry.source for entry in declared] == ["declared"]
+
+
+def test_non_state_devices_are_unaffected_by_auto_classification():
+    core = state_device_core(
+        Sensor="GenericDevice", Hub="HubDevice", Port="SerialDevice",
+    )
+    ctrl = Controller(core)
+    report = validate_live_rig(ctrl, parsed())
+    assert categorical_entries(report) == {}
+    for device in ("Sensor", "Hub", "Port", "SecondZ", "ReadOnlySensor"):
+        with pytest.raises(RigAuthorizationError, match="excluded"):
+            authorize_property_write(ctrl, device, "Label")
+
+
+@pytest.mark.parametrize(
+    "break_it",
+    [
+        lambda core: core.device_types.__setitem__("FilterWheel", RuntimeError("no type")),
+        lambda core: core.device_properties.__setitem__("FilterWheel", RuntimeError("no props")),
+        lambda core: setattr(core, "shutter", RuntimeError("no core shutter")),
+    ],
+)
+def test_unreadable_device_facts_fail_closed(break_it):
+    core = state_device_core(FilterWheel="StateDevice")
+    break_it(core)
+    ctrl = Controller(core)
+    report = validate_live_rig(ctrl, parsed())
+    assert categorical_entries(report) == {}
+    with pytest.raises(RigAuthorizationError, match="excluded"):
+        authorize_property_write(ctrl, "FilterWheel", "Label")
+
+
+def test_excluded_and_forbidden_pairs_still_win_over_auto_classification():
+    core = state_device_core(FilterWheel="StateDevice")
+    ctrl = Controller(core)
+    config = parsed(
+        excluded={("FilterWheel", "State")},
+        forbidden={("FilterWheel", "Label")},
+    )
+    guard = SafetyGuard(config.constraints)
+    report = validate_live_rig(ctrl, config, guard=guard)
+    assert categorical_entries(report) == {}
+    with pytest.raises(RigAuthorizationError, match="excluded"):
+        authorize_property_write(ctrl, "FilterWheel", "State")
+    with pytest.raises(RigAuthorizationError, match="excluded"):
+        authorize_property_write(ctrl, "FilterWheel", "Label")
+    with pytest.raises(SafetyViolation):
+        guard.check_property("FilterWheel", "Label")
+
+
+def test_runtime_allowlist_admits_auto_classified_write_and_refuses_excluded():
+    """Both gates on the raw-write path: the map AND the guard's allowlist."""
+    core = state_device_core(FilterWheel="StateDevice", Piezo="StageDevice")
+    ctrl = Controller(core)
+    config = parsed(excluded={("Piezo", "Position")})
+    guard = SafetyGuard(config.constraints)
+    validate_live_rig(ctrl, config, guard=guard)
+
+    authorize_property_write(ctrl, "FilterWheel", "Label")
+    guard.check_device_property(ctrl.core, "FilterWheel", "Label", "DAPI")
+
+    for device, prop in (("Piezo", "Position"), ("FilterWheel", "Speed")):
+        with pytest.raises(RigAuthorizationError, match="excluded"):
+            authorize_property_write(ctrl, device, prop)
+        with pytest.raises(SafetyViolation, match="allowed_properties"):
+            guard.check_property(device, prop)
+
+    # No guard handed over (read-only enumeration) => the guard never widens.
+    fresh = SafetyGuard(config.constraints)
+    validate_live_rig(Controller(core), config)
+    with pytest.raises(SafetyViolation, match="allowed_properties"):
+        fresh.check_property("FilterWheel", "Label")
+
+
+def test_auto_classified_preset_is_authorized_without_a_declaration():
+    core = state_device_core(FilterWheel="StateDevice")
+    core.presets["DAPI"] = [
+        {"device": "FilterWheel", "property": "Label", "value": "DAPI"}
+    ]
+    ctrl = Controller(core)
+    report = validate_live_rig(ctrl, parsed(channels=["DAPI"]))
+    assert report.complete is True
+    authorize_channel(ctrl, "DAPI")
+    preset_entry = next(
+        entry for entry in report.entries if entry.path == "channel-preset:DAPI"
+    )
+    assert preset_entry.classification == "reviewed_categorical_property"
+    assert preset_entry.source == "auto:state-device"
