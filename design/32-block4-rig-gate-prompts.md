@@ -12,6 +12,12 @@ environment identity, config files used, artifacts, hashes, and a verdict per se
 
 Replace every `<...>` placeholder.
 
+**The rig is Windows.** Commands here are written for PowerShell and avoid Unix
+pipelines (`tail`, `head`). Redirection with `>` and `2>&1` behaves the same in
+PowerShell and `cmd`, so every command below works in either. Paths are shown with
+backslashes; Python accepts forward slashes on Windows too, so either is fine inside
+the probe script's arguments.
+
 ## What is actually being tested
 
 Block 4 added a planner, hard budgets, a session dose ledger, an acquisition
@@ -29,12 +35,17 @@ reason to reject this branch. Run it first.
 
 Record the environment before touching anything.
 
-```
+```powershell
 git -C <repo> rev-parse HEAD
 git -C <repo> status --short
 python -V
-python -m pytest -q 2>&1 | tail -3
+python -m pytest -q > <evidence-dir>\pytest.txt 2>&1
 ```
+
+Open `pytest.txt` and record the summary line. Expect **892 passed / 98 skipped /
+3 warnings**; the 3 warnings are pre-existing on `main`. If the count differs, say so
+before continuing — the branch was verified at that number on macOS/Python 3.11.15 and
+a Windows delta is itself a finding.
 
 The `acquisition:` section is now **required**. An existing rig config will refuse to
 start until it is added. That refusal is itself the first test.
@@ -58,7 +69,7 @@ This is the block's only unmeasured claim, and the one that can sink it.
 Do not measure this through the agent — agent round-trip latency (design/13) would
 swamp the signal. Drive `run_timelapse` directly on each branch and compare.
 
-Save this as `<evidence-dir>/throughput_probe.py`:
+Save this as `<evidence-dir>\throughput_probe.py`:
 
 ```python
 """Block 4 gate G1: frames/s for a lazily-fed timelapse. Dark, minimum exposure."""
@@ -93,19 +104,34 @@ print(result)
 
 Run it on **both** branches, shutter closed, same frame count and exposure:
 
-```
+```powershell
 git checkout main
-python <evidence-dir>/throughput_probe.py <config> <workspace>/g1-main 200 5
+python <evidence-dir>\throughput_probe.py <config-no-acquisition-section> <workspace>\g1-main 200 5 > <evidence-dir>\g1-main-5ms.txt 2>&1
 
 git checkout design32/acquisition-budgets
-python <evidence-dir>/throughput_probe.py <config> <workspace>/g1-branch 200 5
+python <evidence-dir>\throughput_probe.py <config> <workspace>\g1-branch 200 5 > <evidence-dir>\g1-branch-5ms.txt 2>&1
 ```
 
-`main` has no `acquisition:` requirement, so use a copy of the config without that
-section for the `main` run and note that you did.
+`main` has no `acquisition:` requirement, so use a copy of the config **without** that
+section for the `main` run, and note in the evidence that you did. Keep both config
+files.
 
-Repeat at a longer exposure (`... 50 100`) — the gate's relative cost should shrink as
-exposure grows, and that shape is as informative as the absolute number.
+Repeat at a longer exposure, writing to `-50ms` files:
+
+```powershell
+git checkout main
+python <evidence-dir>\throughput_probe.py <config-no-acquisition-section> <workspace>\g1-main-50 100 50 > <evidence-dir>\g1-main-50ms.txt 2>&1
+
+git checkout design32/acquisition-budgets
+python <evidence-dir>\throughput_probe.py <config> <workspace>\g1-branch-50 100 50 > <evidence-dir>\g1-branch-50ms.txt 2>&1
+```
+
+The gate's relative cost should shrink as exposure grows, and that shape is as
+informative as the absolute number.
+
+Switching branches changes installed package code. If you hit import or
+"unrecognised arguments" oddities after a checkout, run `pip install -e .` before
+suspecting the probe (CLAUDE.md).
 
 Report `frames_per_s` and `overhead_per_frame_ms` for each branch at each exposure.
 
@@ -128,15 +154,78 @@ it either way.
 1. Start `microclaw serve`. Begin a long dark timelapse through the agent:
 
    > Run a timelapse of 500 frames at 5 ms exposure with `interval_s=0`, shutter
-   > closed, saving to `<workspace>/g2-cancel`. Do not analyze anything afterwards.
+   > closed, saving to `<workspace>\g2-cancel`. Do not analyze anything afterwards.
 
 2. While it runs, press Stop in the GUI. Record: does the acquisition stop, or does
    Stop only take effect after the tool returns? Time both.
 
 3. If Stop does not reach the acquisition, trigger an abort directly to measure the
-   feeder itself. In a second Python process against the same bridge, or from a thread
-   in a variant of the G1 script, call `acq.abort()` on the live acquisition and
-   record request → last frame written.
+   feeder itself. Save this as `<evidence-dir>\cancel_probe.py`:
+
+```python
+"""Block 4 gate G2: feeder cancellation latency. Dark, minimum exposure."""
+import sys, threading, time
+from microclaw.config import load_safety_config_or_exit
+from microclaw.safety import SafetyGuard
+from microclaw.controller import MicroscopeController
+from microclaw import tools
+
+CONFIG, SAVE_DIR = sys.argv[1], sys.argv[2]
+N_FRAMES = int(sys.argv[3]) if len(sys.argv) > 3 else 500
+EXPOSURE_MS = float(sys.argv[4]) if len(sys.argv) > 4 else 50.0
+ABORT_AFTER_S = float(sys.argv[5]) if len(sys.argv) > 5 else 5.0
+
+parsed = load_safety_config_or_exit(CONFIG)
+guard = SafetyGuard(parsed.constraints)
+ctrl = MicroscopeController(guard=guard)
+tools.CONFIRM_FN = lambda summary, kind="action": True   # unattended; dark run only
+
+# Capture the live Acquisition without subclassing it: tools calls
+# Acquisition(...) as a callable and uses the result as a context manager.
+captured = {}
+real_acquisition = tools.Acquisition
+def capturing(*args, **kwargs):
+    acq = real_acquisition(*args, **kwargs)
+    captured["acq"] = acq
+    return acq
+tools.Acquisition = capturing
+
+abort_at = {}
+def abort_later():
+    time.sleep(ABORT_AFTER_S)
+    acq = captured.get("acq")
+    if acq is None:
+        print("NO ACQUISITION CAPTURED"); return
+    abort_at["t"] = time.monotonic()
+    acq.abort()
+    print(f"abort() returned after {time.monotonic() - abort_at['t']:.3f}s")
+
+threading.Thread(target=abort_later, daemon=True).start()
+t0 = time.monotonic()
+result = tools.run_timelapse(
+    ctrl, guard, n_frames=N_FRAMES, interval_s=0,
+    save_dir=SAVE_DIR, name="g2_cancel", exposure_ms=EXPOSURE_MS,
+)
+returned = time.monotonic()
+print(f"planned_frames={N_FRAMES} exposure_ms={EXPOSURE_MS}")
+print(f"total_elapsed_s={returned - t0:.3f}")
+if "t" in abort_at:
+    print(f"abort_to_return_s={returned - abort_at['t']:.3f}")
+    print(f"frames_expected_before_abort≈{ABORT_AFTER_S * 1000 / EXPOSURE_MS:.0f}")
+print(result)
+```
+
+```powershell
+python <evidence-dir>\cancel_probe.py <config> <workspace>\g2-cancel 500 50 5 > <evidence-dir>\g2-cancel.txt 2>&1
+```
+
+Then count the frames actually written to `<workspace>\g2-cancel` and compare with
+`frames_expected_before_abort`. One or two extra is correct — the in-flight frame
+always completes. Many extra means the feeder is not observing the abort.
+
+Interpreting the number: `abort()` is itself a bridge call, and pyjavaz holds one lock
+across every round trip, so the abort thread blocks until the in-flight call finishes.
+That wait is part of the real latency, not an artifact of the probe.
 
 **What to report:** whether an operator can cancel an acquisition at all today; and,
 separately, the feeder's latency once an abort is actually issued. Confirm exactly one
@@ -159,7 +248,7 @@ Dark, minimum exposure throughout.
 1. **Just under a hard limit.** With `max_frames: <N>`:
 
    > Run a timelapse of `<N-1>` frames at minimum exposure with `interval_s=0`,
-   > shutter closed, saving to `<workspace>/g3-under`. Report the plan you were shown
+   > shutter closed, saving to `<workspace>\g3-under`. Report the plan you were shown
    > before it ran.
 
    Expect: runs, plan summary reported.
