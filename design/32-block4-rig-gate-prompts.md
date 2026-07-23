@@ -141,6 +141,39 @@ not a note — `run_timelapse(interval_s=0)` is the documented SMLM path
 running the rest of the gate: the fix is a design question (is one-event granularity
 worth this?), not a patch.
 
+### G1a. Attributing a regression — `design/32-block4-g1-diagnose.py`
+
+Run this only when G1 shows a regression. It runs the same dark timelapse three ways
+and says where the time goes, instead of inviting another guess:
+
+```powershell
+uv run python design\32-block4-g1-diagnose.py <config> <workspace>\d-asis   asis   200 5 > <evidence-dir>\d-asis.txt   2>&1
+uv run python design\32-block4-g1-diagnose.py <config> <workspace>\d-wide   wide   200 5 > <evidence-dir>\d-wide.txt   2>&1
+uv run python design\32-block4-g1-diagnose.py <config> <workspace>\d-nopoll nopoll 200 5 > <evidence-dir>\d-nopoll.txt 2>&1
+```
+
+- `asis` — branch as shipped, timing every `is_finished()` bridge call.
+- `wide` — look-ahead raised so the feeder never blocks; isolates the per-event bridge
+  poll from the gating cost.
+- `nopoll` — look-ahead raised **and** `is_finished()` stubbed cheap.
+
+Reading the result:
+
+| Result | Conclusion |
+|---|---|
+| `asis` mean `is_finished` ≫ 0.1 ms, large share of elapsed | the bridge poll is the cost; get it off the hot path |
+| `wide` ≈ `asis` | gating is not the cost; something per-event is |
+| `wide` ≈ `main` | gating **is** the cost, and no small depth fixes it |
+| `nopoll` ≈ `main` | confirms the poll specifically |
+| all three ≈ the regressed number | lazy feeding itself is the problem — the engine cannot sequence events it does not hold, and gated feeding cannot be the default for `interval_s=0` |
+
+The last row is a design/32 outcome, not a patch: it would mean cancellable feeding has
+to be opt-in with fast streaming as the default. Stop and reconcile the design before
+writing more code.
+
+The probe is diagnostic only — it changes nothing on the branch and produces no
+artifact worth keeping beyond its stdout.
+
 ---
 
 ## G2. Cancellation — is there anything that can trigger it?
