@@ -354,3 +354,73 @@ after the operator explicitly selects the degraded mode. When the setup prompt i
 implemented, test that it cannot expose the agent or mutation tools, never invents
 limits, always writes an unreviewed profile, and requires a reviewed restart
 before normal operation.
+
+## Phase 1 landed (2026-07-23)
+
+Phase 1 shipped as Block 3 (`microclaw/authorization.py`, merge `0124ffd`;
+implementation `fc346a4`). Two blockers were caught in coordinator review and
+fixed on-branch before merge: illumination was initially unmodeled (so guaranteed
+mode blocked all laser writes while claiming completeness), and a nonexistent
+channel preset dumped a raw JNI stack trace. Rig-verified on the **M5** microscope
+in guaranteed mode.
+
+### What Phase 1 actually implements
+
+- **Schema.** `rig_profile: {mode, categorical_properties, excluded_properties}`.
+  There is **no separate actuator manifest** — the declared stage/focus **ranges**
+  (`ParsedSafetyConfig.ranges`, from design/32) are the stage-position completeness
+  target. `excluded_properties` is required whenever `rig_profile` is present (both
+  modes); `categorical_properties` is required in guaranteed mode (may be empty).
+- **Built-in typed capabilities** are a code constant, not config-declared:
+  `BUILTIN_TYPED_CAPABILITIES = {stage-position, exposure, illumination}`.
+  Illumination (configured `illumination.shutters`/`power_properties`) is a Phase-1
+  typed capability, gated by the existing `check_illumination` confirm/cap/ratchet;
+  its pairs bypass the categorical allowlist but not that guard.
+- **`validate_live_rig(ctrl, parsed_config)`** runs in both entry points after
+  connection and before any prompt/app/agent/tool, fails closed on: an undeclared
+  reachable core/named stage axis, an open range edge in guaranteed mode, a
+  core/named identity conflict, an unclassified reachable write, and an opaque
+  motion plugin in guaranteed mode. It attaches the map to the controller; runtime
+  gates (`authorize_property_write`, `authorize_channel`, `authorize_path`) enforce
+  it per write.
+- **Categorical raw writes** are the only admitted generic property writes; a pair
+  that names a known continuous actuator (current focus/XY/camera position/exposure)
+  cannot be declared categorical. Unclassified/continuous raw writes → excluded.
+- **Presets** are expanded from the `Channel` config group only; unclassified
+  effects exclude the preset (no channel-plan executor — that's Phase 4).
+- **Read-only enumerator:** `microclaw ... authorization-map` connects, prints the
+  effective map + verdict as JSON, and exits without exposing any mutation surface.
+
+### M5 field findings (guaranteed mode, verdict complete)
+
+- Typed: `SmarAct 2D` (XY), `PIZStage` (Z), `HamamatsuHam_DCAM` (exposure),
+  `iBeamSmartCW-1`/`-Booster` (illumination). Categorical: two Thorlabs filter
+  wheels + ELL6 (Label+State) and the iChrome selector (Label).
+- Excluded (accepted): MicroFPGA `PWM`/`TTL`/`Servos`/`Laser Trigger`,
+  `Analog Input`, `MicroFPGA-Hub`, all `COM*`, Elliptec `ELL17/ELL20`,
+  `SmarAct 1D` and base `iBeamSmartCW` (undeclared by operator choice), ROI, MDA.
+- **The FPGA-laser ceiling is real and correct.** M5's lasers are TTL/PWM-gated
+  through the MicroFPGA; those paths have no Phase-1 typed adapter, so they are
+  excluded (fail-closed) rather than bounded. A live write to `PWM.Position0`
+  (255/full-scale) was correctly **refused**. Software power set-points on the
+  Toptica drivers *are* boundable as illumination; FPGA-modulated firing is not,
+  until Phase 2 typed continuous adapters (Block 14) or an explicit degraded session.
+- Verified live: categorical write passes; illumination power write + confirm-gated
+  enable pass; excluded (`PWM`) and name-mismatched (`Power` vs `Power (mW)`) writes
+  refused; fail-closed startup identical across CLI/`serve`/enumerator.
+
+### Known limitations / follow-ups
+
+- **StateDevice fast-follow (agreed):** auto-classify MM StateDevices (filter
+  wheels, sliders, turrets) as categorical **except shutters**, so benign discrete
+  devices don't need per-property declaration. Cuts the allowlist burden the M5
+  authoring exposed. To be done as a small branch after Block 3.
+- **Illumination power units:** `illumination.max_power_percent` is compared to the
+  raw property value, but a laser reporting `Power (mW)` (e.g. iBeam, 0–75 mW) is not
+  a percentage — so an absolute cap in mW is not expressible today (the ratchet is
+  unit-agnostic and unaffected). A units-aware illumination policy is future work.
+- **Config reload requires restart:** the map is built once at startup; editing the
+  safety config does not hot-reload. Acceptable; worth a usability note in design/32.
+- **Camera ROI** is excluded (no typed ROI capability) — tracked for a later phase.
+- **`degraded_trusted_plugins`** remains the sanctioned escape hatch: it suspends the
+  completeness guarantee for sessions where the allowlist ceremony is not warranted.
