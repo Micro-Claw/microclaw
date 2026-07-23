@@ -409,12 +409,83 @@ in guaranteed mode.
   enable pass; excluded (`PWM`) and name-mismatched (`Power` vs `Power (mW)`) writes
   refused; fail-closed startup identical across CLI/`serve`/enumerator.
 
+## Phase 1 fast-follow landed: StateDevice auto-classification (2026-07-23)
+
+Shipped as Block 3b (merge `9491361`; implementation `d80ae39` + rig-finding fix
+`aaa41d4`). Rig-verified on **M5** in guaranteed mode. This replaces the
+"StateDevice fast-follow (agreed)" item that previously sat under the follow-ups
+below.
+
+### The rule
+
+- Any device `core.get_device_type()` reports as a **StateDevice** has its own
+  `Label`/`State` classified `reviewed_categorical_property` with no declaration.
+  Nothing else on that device is admitted — `Speed`, `Delay`, mode and serial
+  properties stay unclassified and are refused.
+- **Auto-classification fills vacuums only.** If the operator has ruled on either
+  position property — `categorical_properties`, `excluded_properties`, or the
+  `forbidden_properties` denylist — auto-classification skips that device's whole
+  discrete position. Declaring one position property is a *narrowing*, not an
+  invitation to admit the other. The rule is scoped to the position pair, not the
+  device: excluding, say, `Wheel.Speed` must not silently kill the wheel's
+  auto-classification (pinned by test).
+- **Shutter carve-out**, decided only by MM device type, `Core.Shutter`, and the
+  reviewed `illumination:` block — **never by device name**. An MM `ShutterDevice`
+  is not a StateDevice and never qualifies; a state device that *is* `Core.Shutter`,
+  or that carries any configured `illumination.shutters`/`power_properties` entry,
+  is skipped device-wide and keeps its typed illumination gate.
+- **Fails closed throughout:** an unreadable device type or property list leaves
+  that device excluded, and an unreadable `get_shutter_device()` disables
+  auto-classification entirely (the carve-out cannot be applied, so nothing is
+  admitted).
+- **Presets:** an auto-classified pair counts as classified during preset
+  expansion, so a preset that only moves filter wheels needs no declaration. This
+  is a real widening over Block 3, and is what lets a map stay `complete` after
+  the declarations are removed.
+- **Both gates.** A raw write passes the map *and* `SafetyGuard.check_property`,
+  whose allowlist is derived from `categorical_properties` at parse time.
+  `validate_live_rig(ctrl, parsed_config, guard=...)` hands the guard exactly the
+  auto-classified pairs via `admit_auto_classified()`. The read-only
+  `authorization-map` enumerator deliberately passes no guard.
+- **Provenance is visible:** every categorical entry carries
+  `source: "declared"` or `source: "auto:state-device"` in the map JSON, so an
+  operator can verify an auto-classification without diffing the config.
+
+### M5 field findings (guaranteed mode, verdict complete)
+
+- Auto-classified: two Thorlabs filter wheels and the `Thorlabs ELL6`
+  (`Label` + `State` each). ELL6 is a **Bertrand-lens flip** — it changes the path,
+  it does not gate light, so auto-classification is correct for it.
+- With the operator's unmodified config the feature is **inert**: all three
+  Thorlabs devices already declare both position properties, so nothing
+  auto-classifies. Removing those declarations moves exactly those six pairs from
+  `declared` to `auto:state-device`; both maps are `complete` at 40 entries, with
+  illumination and the 20-device excluded inventory unchanged.
+- **`iChrome-MLE-TCP` — the finding that produced the vacuum-filling rule.** The
+  reviewed M5 config declares only `Label`, with an operator comment recording
+  genuine uncertainty about whether the driver's write property is `Label` or
+  `State`. The first implementation auto-admitted `State` on a **laser engine**,
+  against an explicit narrowing. With the rule in place `State` is refused live —
+  including after a human typed an explicit confirmation, which is the point: the
+  map is not overridable from the conversation.
+- **M5 has no core shutter device** (`get_shutter_device()` is empty). That limb
+  of the carve-out therefore protects nothing on this rig, and the whole shutter
+  carve-out rests on the `illumination:` block being complete. A light-gating
+  StateDevice absent from `illumination:` *and* unmentioned anywhere in
+  `rig_profile` would still auto-classify. That is the intended design, but on a
+  rig with no core shutter it is a sharper edge than it looks.
+- **Open item on the M5 reviewed profile, not on this code:**
+  `iChrome-MLE-TCP.Label` remains a bare categorical write on a multi-laser engine
+  with no confirmation, cap, or ratchet — it predates Block 3b. A session on
+  2026-07-23 wrote `State` 1→2→1 (under the pre-fix build) and laser slot 2
+  subsequently read `enabled=1` where it had read `0` before, which suggests the
+  property may gate emission. Unconfirmed — the EMU slot index is not necessarily
+  the `State` value. If it does gate light it belongs under
+  `illumination.shutters`, which would both confirm-gate it and carve it out of
+  auto-classification automatically.
+
 ### Known limitations / follow-ups
 
-- **StateDevice fast-follow (agreed):** auto-classify MM StateDevices (filter
-  wheels, sliders, turrets) as categorical **except shutters**, so benign discrete
-  devices don't need per-property declaration. Cuts the allowlist burden the M5
-  authoring exposed. To be done as a small branch after Block 3.
 - **Illumination power units:** `illumination.max_power_percent` is compared to the
   raw property value, but a laser reporting `Power (mW)` (e.g. iBeam, 0–75 mW) is not
   a percentage — so an absolute cap in mW is not expressible today (the ratchet is
