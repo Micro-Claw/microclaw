@@ -147,10 +147,16 @@ Run this only when G1 shows a regression. It runs the same dark timelapse three 
 and says where the time goes, instead of inviting another guess:
 
 ```powershell
-uv run python design\32-block4-g1-diagnose.py <config> <workspace>\d-asis   asis   200 5 > <evidence-dir>\d-asis.txt   2>&1
-uv run python design\32-block4-g1-diagnose.py <config> <workspace>\d-wide   wide   200 5 > <evidence-dir>\d-wide.txt   2>&1
-uv run python design\32-block4-g1-diagnose.py <config> <workspace>\d-nopoll nopoll 200 5 > <evidence-dir>\d-nopoll.txt 2>&1
+uv run python design\32-block4-g1-diagnose.py --config <config> --save-dir <workspace>\d-asis   --mode asis   --frames 200 --exposure-ms 5 > <evidence-dir>\d-asis.txt   2>&1
+uv run python design\32-block4-g1-diagnose.py --config <config> --save-dir <workspace>\d-wide   --mode wide   --frames 200 --exposure-ms 5 > <evidence-dir>\d-wide.txt   2>&1
+uv run python design\32-block4-g1-diagnose.py --config <config> --save-dir <workspace>\d-nopoll --mode nopoll --frames 200 --exposure-ms 5 > <evidence-dir>\d-nopoll.txt 2>&1
 ```
+
+Every argument is named and validated. Check the first two output lines of each file
+before reading the numbers: `mode=` must be the mode you asked for and
+`lookahead_in_effect=` must be 2 for `asis` and huge for `wide`/`nopoll`. The first
+attempt at this probe used positional arguments, and a dropped mode word silently
+produced three identical 5-frame runs.
 
 - `asis` — branch as shipped, timing every `is_finished()` bridge call.
 - `wide` — look-ahead raised so the feeder never blocks; isolates the per-event bridge
