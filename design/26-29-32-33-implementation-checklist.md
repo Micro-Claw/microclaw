@@ -1,6 +1,6 @@
 # Designs 26, 29, 32, and 33 — implementation checklist
 
-Last reviewed: 2026-07-22
+Last reviewed: 2026-07-23
 
 This is the implementation order and handoff record for the four designs. It is
 deliberately a checklist rather than another design authority. When this file and a
@@ -36,6 +36,7 @@ Progress markers: `[ ]` not started, `[-]` active, `[x]` complete, `[!]` blocked
 | 1 | `design32/config-hardening` | c90d738 | 967ab5d | n/a | 56ed945 | Gate done: config matches Finding 1; non-numeric-write fail-closed change noted in design/32 (docs merge c86af6d) |
 | 2 | `design32/versioned-safety-schema` | 252a4cc | d5aa5c4 (+fix 12b0677) | rig: starts clean w/ reviewed rig config | b8092c4 | Gate done: API matches design/33 (no change); 1b landed note + required-when-present judgment recorded in design/32 (docs merge 8dd521f) |
 | 3 | `design33/core-authorization-map` | c18fa92 | fc346a4 (2 review-fixes) | rig M5: fail-closed+parity, complete map, cat/illum writes pass, PWM/FPGA refused, confirm-gate fires | 0124ffd | Gate done: design/33 Phase-1 landed note + M5 findings + ceiling + StateDevice fast-follow (docs merge ae4794f) |
+| 3b | `design33/statedevice-auto-classify` | | | required (rig) | | **NEXT — do before Block 4** |
 | 4 | `design32/acquisition-budgets` | | | required | | |
 | 5 | `design33/dose-authorization` | | | required | | |
 | 6 | `design32/remote-auth` | | | n/a | | |
@@ -207,6 +208,46 @@ Post-merge design gate:
       M5 findings + FPGA-laser ceiling + StateDevice fast-follow + illum-units/reload
       caveats (docs merge ae4794f). No design/32 change required (its Finding 1 coverage
       claims are consistent; the reload/units notes live in the design/33 landed note).
+
+## 3b. Design/33 Phase 1 refinement — StateDevice auto-classification
+
+Branch: `design33/statedevice-auto-classify`
+
+**This is the NEXT item — do it before Block 4.** Agreed with the operator after Block 3
+(option 1 shipped as-is + this as option 2). Rationale: guaranteed-mode allowlist
+declaration is disproportionate for benign discrete devices; M5 authoring (two Thorlabs
+filter wheels + ELL6) exposed the friction. See [[project_design33_statedevice_fastfollow]]
+and design/33's "Phase 1 landed" note. `main` is a clean boundary at `285c258`; Block 3
+is fully merged, so start fresh from updated `main`.
+
+- [ ] Create the branch from updated `main`.
+- [ ] Auto-classify any device `core.get_device_type()` reports as a **StateDevice**
+      (filter wheels, sliders, turrets) as `reviewed_categorical_property` for its
+      State/Label writes, WITHOUT requiring a `categorical_properties` declaration.
+- [ ] **Shutter carve-out:** a shutter-type device (Core.Shutter, MM `ShutterDevice`,
+      or a state device that gates light) must NOT be auto-classified — it stays subject
+      to the illumination gate. Pin the mechanical shutter test; do not infer from names.
+- [ ] Keep explicit declarations working (auto-classification is additive, not a replacement).
+      Do not auto-admit continuous or generic devices — StateDevice type only.
+- [ ] Migrate example/README: filter wheels/sliders/turrets no longer need declaration;
+      shutters still do.
+- [ ] Test: a StateDevice auto-classifies categorical; a ShutterDevice does NOT; explicit
+      declarations still work; a non-state device is unaffected; the runtime allowlist
+      admits an auto-classified write and still refuses an excluded one.
+- [ ] Commit; do not merge until the rig check passes.
+
+Rig gate (small):
+
+- [ ] On M5 (or demo), remove the filter-wheel/ELL6 `categorical_properties` entries, run
+      `authorization-map`, and confirm they are now auto-classified categorical (not
+      excluded) and the map is still `complete`. Confirm a shutter/illumination device is
+      NOT silently auto-admitted.
+- [ ] Coordinator reviews evidence and merges after the rig check.
+
+Post-merge design gate:
+
+- [ ] Update design/33's "Phase 1 landed" note with the final StateDevice rule, the exact
+      shutter carve-out test, and the M5 result. Merge docs before Block 4.
 
 ## 4. Design/32 Finding 2 — acquisition plans, budgets, ledger, and batching
 
