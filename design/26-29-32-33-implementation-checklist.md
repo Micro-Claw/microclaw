@@ -268,6 +268,10 @@ Post-merge design gate:
       core shutter**, so the carve-out rests entirely on the `illumination:` block being
       complete; and `iChrome-MLE-TCP.Label` remains a bare categorical write on a laser
       engine in the reviewed M5 profile (open item on the rig config, not on this code).
+      A fourth finding — that `iChrome-MLE-TCP.State` might gate emission — was recorded
+      and then **retracted**: the operator reproduced the writes manually and the laser
+      did not turn on (an EMU GUI power click had enabled it). Correction merged in the
+      design note; the vacuum-filling rule does not rest on it.
 
 ## 4. Design/32 Finding 2 — acquisition plans, budgets, ledger, and batching
 
