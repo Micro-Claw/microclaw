@@ -1,7 +1,11 @@
 # Safety config used in tests/conftest.py and integration tests.
 # Reviewed by construction: these are a fixture's limits, not a rig's.
-schema_version: 1
+schema_version: 2
 reviewed: true
+rig_profile:
+  mode: guaranteed
+  categorical_properties: []
+  excluded_properties: []
 stage:
   x_min: -1000.0
   x_max:  1000.0
@@ -12,10 +16,3 @@ stage:
 
 camera:
   max_exposure_ms: 2000.0
-
-channels:
-  allowed: [DAPI, FITC, Cy5]
-
-forbidden_properties:
-  - device: Core
-    property: Initialize

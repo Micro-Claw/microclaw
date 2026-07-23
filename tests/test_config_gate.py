@@ -20,8 +20,9 @@ from microclaw.config import (
 from microclaw.safety import ParsedSafetyConfig, SafetyConfigError, SafetyConstraints
 
 REAL = """
-schema_version: 1
+schema_version: 2
 reviewed: true
+rig_profile: {mode: guaranteed, categorical_properties: [], excluded_properties: []}
 stage: {x_min: -100.0, x_max: 100.0, y_min: -100.0, y_max: 100.0}
 camera: {max_exposure_ms: 500.0}
 """

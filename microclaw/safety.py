@@ -145,6 +145,21 @@ class RangePolicy:
     maximum: RangeEdge
 
 
+AuthorizationMode = Literal["guaranteed", "degraded_trusted_plugins"]
+BUILTIN_TYPED_CAPABILITIES = frozenset(
+    {"stage-position", "exposure", "illumination"}
+)
+
+
+@dataclass(frozen=True)
+class RigProfile:
+    """Reviewed per-rig property decisions; ranges declare stage actuators."""
+
+    mode: AuthorizationMode
+    categorical_properties: frozenset[tuple[str, str]]
+    excluded_properties: frozenset[tuple[str, str]]
+
+
 @dataclass
 class SafetyConstraints:
     stage: StageConstraints = field(default_factory=StageConstraints)
@@ -282,6 +297,9 @@ class ParsedSafetyConfig:
 
     constraints: SafetyConstraints
     ranges: dict[ActuatorId, RangePolicy]
+    rig_profile: RigProfile = field(
+        default_factory=lambda: RigProfile("guaranteed", frozenset(), frozenset())
+    )
 
     @classmethod
     def from_yaml(cls, path: str) -> ParsedSafetyConfig:
@@ -304,8 +322,8 @@ class ParsedSafetyConfig:
 
         top_keys = {
             "schema_version", "reviewed", "stage", "camera", "analysis", "channels", "plugins",
-            "illumination", "forbidden_properties", "allowed_properties",
-            "workspace_dir", "named_stages",
+            "illumination", "forbidden_properties",
+            "workspace_dir", "named_stages", "rig_profile",
         }
         section_keys = {
             "stage": {"x_min", "x_max", "y_min", "y_max", "z_min", "z_max"},
@@ -317,6 +335,7 @@ class ParsedSafetyConfig:
                 "shutters", "power_properties", "max_power_percent",
                 "max_power_step_factor", "require_confirm_on_enable",
             },
+            "rig_profile": {"mode", "categorical_properties", "excluded_properties"},
         }
         for key in cfg.keys() - top_keys:
             problem(str(key), "unknown top-level key")
@@ -324,15 +343,17 @@ class ParsedSafetyConfig:
         if "schema_version" not in cfg:
             problem(
                 "schema_version",
-                "missing required schema version; add `schema_version: 1` and give every declared range both edges",
+                "missing required schema version; add `schema_version: 2`, a rig_profile, and give every declared range both edges",
             )
-        elif type(cfg["schema_version"]) is not int or cfg["schema_version"] != 1:
+        elif type(cfg["schema_version"]) is not int or cfg["schema_version"] != 2:
             problem(
                 "schema_version",
-                f"unsupported schema version {cfg['schema_version']!r}; expected 1",
+                f"unsupported schema version {cfg['schema_version']!r}; expected 2 (schema 1 configs must add rig_profile and migrate to property allowlist mode)",
             )
         if "reviewed" not in cfg:
             problem("reviewed", "missing required key")
+        if "rig_profile" not in cfg:
+            problem("rig_profile", "missing required declared rig profile")
 
         def mapping(name: str) -> dict:
             value = cfg.get(name, {})
@@ -351,6 +372,7 @@ class ParsedSafetyConfig:
         channels_cfg = mapping("channels")
         plugins_cfg = mapping("plugins")
         ill_cfg = mapping("illumination")
+        rig_cfg = mapping("rig_profile")
 
         # `analysis.min_snr` is deliberately optional (omitting it retains the
         # uncalibrated package fallback — see the shipped example), so it is NOT
@@ -431,9 +453,14 @@ class ParsedSafetyConfig:
         forbidden_cfg = object_list(
             "forbidden_properties", cfg.get("forbidden_properties"), {"device", "property"}
         )
-        allowed_value = cfg.get("allowed_properties")
-        allowed_items = object_list(
-            "allowed_properties", allowed_value, {"device", "property"}
+        categorical_value = rig_cfg.get("categorical_properties")
+        categorical_cfg = object_list(
+            "rig_profile.categorical_properties", categorical_value,
+            {"device", "property"},
+        )
+        excluded_cfg = object_list(
+            "rig_profile.excluded_properties", rig_cfg.get("excluded_properties"),
+            {"device", "property"},
         )
         shutters_cfg = object_list(
             "illumination.shutters", ill_cfg.get("shutters"),
@@ -448,7 +475,8 @@ class ParsedSafetyConfig:
         )
         for name, items in (
             ("forbidden_properties", forbidden_cfg),
-            ("allowed_properties", allowed_items),
+            ("rig_profile.categorical_properties", categorical_cfg),
+            ("rig_profile.excluded_properties", excluded_cfg),
             ("illumination.shutters", shutters_cfg),
             ("illumination.power_properties", power_cfg),
         ):
@@ -464,6 +492,38 @@ class ParsedSafetyConfig:
                     seen_pairs.add(pair)
         ranges = _stage_ranges(stage_cfg, named_cfg, problem)
 
+        mode = rig_cfg.get("mode", "guaranteed")
+        if mode not in ("guaranteed", "degraded_trusted_plugins"):
+            problem(
+                "rig_profile.mode",
+                "expected 'guaranteed' or 'degraded_trusted_plugins'",
+            )
+        if "rig_profile" in cfg:
+            for key in {"excluded_properties"} - rig_cfg.keys():
+                problem(f"rig_profile.{key}", "missing required key")
+        if mode == "guaranteed" and categorical_value is None:
+            problem(
+                "rig_profile.categorical_properties",
+                "required in guaranteed mode, even when empty; denylist-only configs must migrate",
+            )
+        categorical_pairs = {
+            (item["device"], item["property"])
+            for item in categorical_cfg
+            if isinstance(item.get("device"), str)
+            and isinstance(item.get("property"), str)
+        }
+        excluded_pairs = {
+            (item["device"], item["property"])
+            for item in excluded_cfg
+            if isinstance(item.get("device"), str)
+            and isinstance(item.get("property"), str)
+        }
+        for pair in sorted(categorical_pairs & excluded_pairs):
+            problem(
+                "rig_profile",
+                f"property {pair!r} cannot be both categorically authorized and excluded",
+            )
+
         if errors:
             raise SafetyConfigError("Invalid safety config:\n" + "\n".join(errors))
 
@@ -472,8 +532,8 @@ class ParsedSafetyConfig:
             for p in forbidden_cfg
         ]
         allowed = (
-            [ForbiddenProperty(**p) for p in allowed_items]
-            if allowed_value is not None
+            [ForbiddenProperty(**p) for p in categorical_cfg]
+            if categorical_value is not None
             else None
         )
         stage, named_stages = _stage_constraints(ranges)
@@ -505,7 +565,13 @@ class ParsedSafetyConfig:
             ),
             named_stages=named_stages,
         )
-        return cls(constraints=constraints, ranges=ranges)
+        return cls(
+            constraints=constraints,
+            ranges=ranges,
+            rig_profile=RigProfile(
+                mode, frozenset(categorical_pairs), frozenset(excluded_pairs)
+            ),
+        )
 
 
 class SafetyGuard:
@@ -605,10 +671,19 @@ class SafetyGuard:
         target is the *current* focus/camera/XY device and the property name is
         one of the small alias sets above. It does NOT protect a second Z drive,
         a driver whose position property is named differently ("Position (um)",
-        "PositionZ", ASI/PI names), or relative-move/offset properties. The only
-        hard gate for raw property writes is allowlist mode (allowed_properties).
+        "PositionZ", ASI/PI names), or relative-move/offset properties. Ordinary
+        raw writes require allowlist mode; configured illumination pairs instead
+        use their exact code-owned typed capability and check_illumination.
         """
-        self.check_property(device, prop)          # denylist/allowlist first
+        illumination_pair = self.is_illumination_enable(device, prop) or any(
+            item.device == device and item.property == prop
+            for item in self._c.illumination.power_properties
+        )
+        # Illumination pairs are code-owned typed capabilities. Startup's live
+        # map authorizes the exact pair; check_illumination below owns its
+        # confirmation/cap/ratchet rather than the categorical allowlist.
+        if not illumination_pair:
+            self.check_property(device, prop)      # denylist/allowlist first
         p = prop.lower()
         focus = core.get_focus_device()
         cam = core.get_camera_device()
