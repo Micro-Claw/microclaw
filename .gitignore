@@ -54,3 +54,7 @@ design-*-out.txt
 # limits as if they were repo defaults (design/14 §6). The committed example
 # lives at microclaw/safety_config.example.yaml.
 safety_config.yaml
+
+# Rig-gate probe output and stray transcripts land in the repo root.
+# Spike OUTPUTS are never committed (only the spike .py under design/).
+/*.txt
