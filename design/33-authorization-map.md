@@ -474,15 +474,24 @@ below.
   StateDevice absent from `illumination:` *and* unmentioned anywhere in
   `rig_profile` would still auto-classify. That is the intended design, but on a
   rig with no core shutter it is a sharper edge than it looks.
-- **Open item on the M5 reviewed profile, not on this code:**
-  `iChrome-MLE-TCP.Label` remains a bare categorical write on a multi-laser engine
-  with no confirmation, cap, or ratchet — it predates Block 3b. A session on
-  2026-07-23 wrote `State` 1→2→1 (under the pre-fix build) and laser slot 2
-  subsequently read `enabled=1` where it had read `0` before, which suggests the
-  property may gate emission. Unconfirmed — the EMU slot index is not necessarily
-  the `State` value. If it does gate light it belongs under
-  `illumination.shutters`, which would both confirm-gate it and carve it out of
-  auto-classification automatically.
+- **`iChrome-MLE-TCP.State` does NOT gate emission — suspicion retracted.** During
+  the gate a laser slot read `enabled=1` shortly after a `State` 1→2→1 write, and
+  this note initially recorded that as possible evidence the property gates light.
+  The operator then reproduced the `State` writes manually and the laser did not
+  turn on; the slot had been enabled by an accidental power-button click in the EMU
+  GUI. The property behaves as the benign output/mode selector originally assumed.
+  Recorded because the wrong inference was written down first: a correlation across
+  two sessions on a shared rig is not causal evidence, and the EMU slot index is not
+  the `State` value.
+- **Open item on the M5 reviewed profile, not on this code:** the semantics of
+  `iChrome-MLE-TCP` `Label`/`State` are still undocumented — the config carries an
+  operator comment saying as much — and `Label` is a bare categorical write on a
+  multi-laser engine with no confirmation, cap, or ratchet. That predates Block 3b
+  and is unaffected by it. Lower priority given the finding above, but a device
+  whose states nobody can name is a poor thing to leave in `categorical_properties`.
+- **The vacuum-filling rule does not depend on any of this.** It stands on the
+  principle that auto-classification must not override an explicit operator
+  narrowing, whatever the device turns out to do.
 
 ### Known limitations / follow-ups
 
