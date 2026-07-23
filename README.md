@@ -253,6 +253,27 @@ stage:
 camera:
   max_exposure_ms: 5000.0
 
+# Optional section, but all nine finite positive values are required when it is
+# present. Counts are frames, times are seconds/ms as named, and bytes are raw
+# camera payload estimates. Hard maxima refuse work; confirm_above_* values
+# invoke the existing blocking acquisition confirmation below those maxima.
+acquisition:
+  max_frames: 10000
+  max_duration_s: 3600
+  max_bytes: 50000000000
+  max_illuminated_ms: 600000
+  max_session_illuminated_ms: 1800000
+  confirm_above_frames: 500
+  confirm_above_duration_s: 300
+  confirm_above_bytes: 5000000000
+  confirm_above_illuminated_ms: 60000
+
+List-backed pycro-manager acquisitions are fed lazily within one `Acquisition`
+and one dataset. Cancellation stops before the next event; the frame already in
+flight always completes because bridge calls are serialized. MMStudio MDA is
+planned and confirmed from its current settings but is cancellation-exempt:
+its opaque `run_acquisition()` call runs to completion.
+
 # In guaranteed mode, a channel preset is authorized by both its name and every
 # device/property effect Micro-Manager expands it to. Filter wheels, sliders and
 # turrets need no declaration — see the note below — so if DAPI only moves those,

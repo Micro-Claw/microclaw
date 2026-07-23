@@ -6,6 +6,7 @@ import math
 import queue
 import threading
 import time
+import weakref
 from datetime import datetime, timezone
 from contextlib import contextmanager
 from pathlib import Path
@@ -41,6 +42,7 @@ from microclaw.image_analysis import (
     snap_to_numpy_displayed,
 )
 from microclaw.safety import SafetyGuard, SafetyViolation
+from microclaw.acquisition import AcquisitionLedger, AcquisitionPlan, Reservation, plan_events
 
 
 def _require_confirmation(summary: str, kind: str = "action") -> bool:
@@ -63,6 +65,51 @@ def _require_confirmation(summary: str, kind: str = "action") -> bool:
 # must read this module global at call time; importing it by value into another
 # module would silently disconnect the browser gate.
 CONFIRM_FN = _require_confirmation
+_ACQUISITION_LEDGERS: "weakref.WeakKeyDictionary[Any, AcquisitionLedger]" = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _acquisition_ledger(ctrl) -> AcquisitionLedger:
+    try:
+        ledger = _ACQUISITION_LEDGERS.get(ctrl)
+        if ledger is None:
+            ledger = AcquisitionLedger()
+            _ACQUISITION_LEDGERS[ctrl] = ledger
+        return ledger
+    except TypeError:
+        # Some controller test doubles are not weak-referenceable.
+        ledger = getattr(ctrl, "_microclaw_acquisition_ledger", None)
+        if not isinstance(ledger, AcquisitionLedger):
+            ledger = AcquisitionLedger()
+            setattr(ctrl, "_microclaw_acquisition_ledger", ledger)
+        return ledger
+
+
+def _authorize_acquisition(
+    ctrl, guard: SafetyGuard, plan: AcquisitionPlan, *, confirm: bool = True
+) -> Reservation:
+    reservation = _acquisition_ledger(ctrl).reserve(guard, plan)
+    c = guard.acquisition_confirmation_thresholds
+    exceeded = [
+        label for label, value, threshold in (
+            ("frames", plan.frames, c.confirm_above_frames),
+            ("duration", plan.estimated_duration_s, c.confirm_above_duration_s),
+            ("bytes", plan.estimated_bytes, c.confirm_above_bytes),
+            ("illuminated time", plan.illuminated_ms, c.confirm_above_illuminated_ms),
+        ) if threshold is not None and value > threshold
+    ]
+    if confirm and exceeded and not CONFIRM_FN(
+        "ACQUISITION PLAN\n"
+        f"frames={plan.frames}, exposure_ms/frame={plan.exposure_ms_per_frame:g}, "
+        f"duration_s≈{plan.estimated_duration_s:g}, bytes≈{plan.estimated_bytes}, "
+        f"illuminated_ms={plan.illuminated_ms:g}\n"
+        f"Confirmation thresholds exceeded: {', '.join(exceeded)}.",
+        kind="acquisition",
+    ):
+        reservation.close()
+        raise SafetyViolation("Acquisition declined.")
+    return reservation
 
 
 def _str_vector(sv) -> list[str]:
@@ -625,6 +672,8 @@ def _acquire_with_hooks(
     name: str,
     events: list | Callable[[Any], Any],
     hook: Any | None = None,
+    reservation: Reservation | None = None,
+    close_reservation: bool = True,
 ) -> str:
     """Run one Acquisition, attaching hook callables if a hook is supplied.
 
@@ -658,10 +707,59 @@ def _acquire_with_hooks(
         if hasattr(hook, "image_process_fn"):
             hook_fn_kwargs["image_process_fn"] = hook.image_process_fn
 
-    with Acquisition(directory=save_dir, name=name, show_display=True, **hook_fn_kwargs) as acq:
-        if callable(events):
-            events = events(acq)
-        acq.acquire(events)
+    original_process = hook_fn_kwargs.get("image_process_fn")
+    if reservation is not None:
+        def account_frame(image, metadata, *args):
+            try:
+                if original_process is not None:
+                    return original_process(image, metadata, *args)
+                return image, metadata
+            finally:
+                # Pixels have returned: this frame consumed exposure/disk budget
+                # even when a user hook rejects or raises while processing it.
+                reservation.commit_frame()
+        hook_fn_kwargs["image_process_fn"] = account_frame
+
+    if isinstance(events, list) and reservation is not None:
+        bounded_events = events
+
+        def lazy_factory(acq):
+            event_queue = acq._event_queue
+            completed_at_start = reservation.completed_frames
+
+            def finished() -> bool:
+                try:
+                    return bool(acq._acq.is_finished())
+                except Exception:
+                    return False
+
+            def stream():
+                try:
+                    for index, event in enumerate(bounded_events):
+                        # Keep at most one event in flight. An abort cannot
+                        # interrupt that frame because pyjavaz serializes bridge
+                        # calls; it prevents every later event from being fed.
+                        while completed_at_start + index > reservation.completed_frames:
+                            if finished():
+                                return
+                            time.sleep(_CANDIDATE_POLL_S)
+                        if index and finished():
+                            return
+                        yield event
+                finally:
+                    # Load-bearing: abort() clears the queued terminator.
+                    event_queue.put(None)
+            return stream()
+        events = lazy_factory
+
+    try:
+        with Acquisition(directory=save_dir, name=name, show_display=True, **hook_fn_kwargs) as acq:
+            if callable(events):
+                events = events(acq)
+            acq.acquire(events)
+    finally:
+        if reservation is not None and close_reservation:
+            reservation.close()
 
     return _acq_dataset_path(acq, save_dir, name)
 
@@ -687,6 +785,7 @@ def run_zstack(
     channel: str | None = None,
     exposure_ms: float | None = None,
     name: str = "zstack",
+    _reservation: Reservation | None = None,
 ) -> dict:
     # Before set_exposure and before the sweep: an out-of-workspace save_dir
     # must not cost an acquisition to discover.
@@ -704,7 +803,13 @@ def run_zstack(
         channel=channel, exposure_ms=exposure_ms,
         z_start=z_start_um, z_end=z_end_um, z_step=z_step_um,
     )
-    dataset_path = _acquire_with_hooks(guard, save_dir, name, events)
+    reservation = _reservation or _authorize_acquisition(
+        ctrl, guard, plan_events(ctrl, events, exposure_ms)
+    )
+    dataset_path = _acquire_with_hooks(
+        guard, save_dir, name, events, reservation=reservation,
+        close_reservation=_reservation is None,
+    )
     return {"status": "Z-stack complete.", "dataset_path": dataset_path}
 
 
@@ -760,6 +865,7 @@ def run_timelapse(
     exposure_ms: float | None = None,
     name: str = "timelapse",
     laser_slot: int | None = None,
+    _reservation: Reservation | None = None,
 ) -> dict:
     save_dir = guard.resolve_in_workspace(save_dir)   # before any hardware moves
     if laser_slot is not None:
@@ -778,7 +884,13 @@ def run_timelapse(
         channel=channel, exposure_ms=exposure_ms,
         num_time_points=n_frames, time_interval_s=interval_s,
     )
-    dataset_path = _acquire_with_hooks(guard, save_dir, name, events)
+    reservation = _reservation or _authorize_acquisition(
+        ctrl, guard, plan_events(ctrl, events, exposure_ms)
+    )
+    dataset_path = _acquire_with_hooks(
+        guard, save_dir, name, events, reservation=reservation,
+        close_reservation=_reservation is None,
+    )
     return {"status": "Timelapse complete.", "dataset_path": dataset_path}
 
 
@@ -1669,6 +1781,29 @@ def _protocol_shape_kwargs(protocol: str, params: dict) -> dict:
     raise ValueError(f"Unknown protocol '{protocol}'.")
 
 
+def _plan_protocol_repetitions(
+    ctrl: MicroscopeController, protocol: str, params: dict, repetitions: int
+) -> AcquisitionPlan:
+    """Bound a repeated per-position protocol before the first stage move."""
+    if repetitions <= 0:
+        raise SafetyViolation("Acquisition has no valid positions to acquire.")
+    shape = _protocol_shape_kwargs(protocol, params)
+    exposure_ms = params.get("exposure_ms")
+    one = plan_events(
+        ctrl,
+        _build_acquisition_events(
+            channel=params.get("channel"), exposure_ms=exposure_ms, **shape
+        ),
+        exposure_ms,
+    )
+    return AcquisitionPlan(
+        one.frames * repetitions,
+        one.exposure_ms_per_frame,
+        one.estimated_duration_s * repetitions,
+        one.estimated_bytes * repetitions,
+    )
+
+
 def _run_protocol_at(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -1680,6 +1815,7 @@ def _run_protocol_at(
     pos_save_dir: str | None,
     params: dict,
     mark_position_in_list: bool = False,
+    reservation: Reservation | None = None,
 ) -> dict:
     guard.check_xy(x_um, y_um)
     ctrl.core.set_xy_position(x_um, y_um)
@@ -1742,10 +1878,16 @@ def _run_protocol_at(
         }
     Path(pos_save_dir).mkdir(parents=True, exist_ok=True)
     if protocol == "zstack":
-        r = run_zstack(ctrl, guard, save_dir=pos_save_dir, name=pos_label, **params)
+        r = run_zstack(
+            ctrl, guard, save_dir=pos_save_dir, name=pos_label,
+            _reservation=reservation, **params
+        )
         return {"position": pos_label, **marked, **r}
     elif protocol == "timelapse":
-        r = run_timelapse(ctrl, guard, save_dir=pos_save_dir, name=pos_label, **params)
+        r = run_timelapse(
+            ctrl, guard, save_dir=pos_save_dir, name=pos_label,
+            _reservation=reservation, **params
+        )
         return {"position": pos_label, **marked, **r}
     else:
         return {"position": pos_label, "error": f"Unknown protocol '{protocol}'."}
@@ -1877,22 +2019,33 @@ def run_multiposition_acquisition(
             for n, x, y, z in resolved
         ]}
 
-    for pos_label, x_um, y_um, z_um in resolved:
-        pos_save_dir = str(Path(save_dir) / pos_label) if save_dir else None
-        # Coordinates on every row, including the error rows. The agent used to
-        # publish X/Y columns filled from its own call ordering rather than from
-        # anything a tool returned (design/19 F3, design/20 S1).
-        where = {"x_um": round(x_um, 3), "y_um": round(y_um, 3)}
-        if z_um is not None:
-            where["z_um"] = round(z_um, 3)
-        try:
-            result = _run_protocol_at(
-                ctrl, guard, pos_label, x_um, y_um, z_um, protocol, pos_save_dir,
-                params, mark_position_in_list=mark_positions,
-            )
-            results.append({**where, **result})
-        except Exception as e:
-            results.append({"position": pos_label, **where, "error": str(e)})
+    reservation = (
+        _authorize_acquisition(
+            ctrl, guard, _plan_protocol_repetitions(ctrl, protocol, params, len(resolved))
+        )
+        if protocol != "snap" else None
+    )
+    try:
+        for pos_label, x_um, y_um, z_um in resolved:
+            pos_save_dir = str(Path(save_dir) / pos_label) if save_dir else None
+            # Coordinates on every row, including the error rows. The agent used to
+            # publish X/Y columns filled from its own call ordering rather than from
+            # anything a tool returned (design/19 F3, design/20 S1).
+            where = {"x_um": round(x_um, 3), "y_um": round(y_um, 3)}
+            if z_um is not None:
+                where["z_um"] = round(z_um, 3)
+            try:
+                result = _run_protocol_at(
+                    ctrl, guard, pos_label, x_um, y_um, z_um, protocol, pos_save_dir,
+                    params, mark_position_in_list=mark_positions,
+                    reservation=reservation,
+                )
+                results.append({**where, **result})
+            except Exception as e:
+                results.append({"position": pos_label, **where, "error": str(e)})
+    finally:
+        if reservation is not None:
+            reservation.close()
 
     total = len(position_names or positions)
     n_ok = sum(1 for r in results if "error" not in r)
@@ -2022,6 +2175,14 @@ def run_multiposition_with_autofocus(
         return conflict
     all_positions = {p["name"]: p for p in projection.positions}
     results = []
+    valid_count = sum(1 for name in position_names if name in all_positions)
+    reservation = (
+        _authorize_acquisition(
+            ctrl, guard,
+            _plan_protocol_repetitions(ctrl, protocol, params, valid_count),
+        )
+        if protocol != "snap" and valid_count else None
+    )
 
     live = ctrl.studio.live()
     was_live = live.is_live_mode_on()
@@ -2075,10 +2236,16 @@ def run_multiposition_with_autofocus(
                     ctrl.studio.live().snap(True)
                     results.append({"position": pos_name, **af_info, "status": "snapped"})
                 elif protocol == "zstack":
-                    r = run_zstack(ctrl, guard, save_dir=pos_save_dir, name=pos_name, **params)
+                    r = run_zstack(
+                        ctrl, guard, save_dir=pos_save_dir, name=pos_name,
+                        _reservation=reservation, **params
+                    )
                     results.append({"position": pos_name, **af_info, **r})
                 elif protocol == "timelapse":
-                    r = run_timelapse(ctrl, guard, save_dir=pos_save_dir, name=pos_name, **params)
+                    r = run_timelapse(
+                        ctrl, guard, save_dir=pos_save_dir, name=pos_name,
+                        _reservation=reservation, **params
+                    )
                     results.append({"position": pos_name, **af_info, **r})
                 else:
                     results.append(
@@ -2093,6 +2260,8 @@ def run_multiposition_with_autofocus(
                     {"position": pos_name, **af_info, "error": str(e)}
                 )
     finally:
+        if reservation is not None:
+            reservation.close()
         if was_live:
             live.set_live_mode_on(True)
 
@@ -2213,9 +2382,14 @@ def run_adaptive_zstack(
     events = _build_acquisition_events(
         channel=channel, z_start=z_start_um, z_end=z_end_um, z_step=z_step_um,
     )
+    reservation = _authorize_acquisition(
+        ctrl, guard, plan_events(ctrl, events, None)
+    )
     started_at = datetime.now(timezone.utc)
     started = time.monotonic()
-    dataset_path = _acquire_with_hooks(guard, save_dir, name, events, hook)
+    dataset_path = _acquire_with_hooks(
+        guard, save_dir, name, events, hook, reservation=reservation
+    )
     completed_at = datetime.now(timezone.utc)
     return _adaptive_result(
         dataset_path, log_path, frames_planned=len(events), frames_acquired=len(events),
@@ -2254,9 +2428,12 @@ def run_adaptive_timelapse(
     events = _build_acquisition_events(
         channel=channel, num_time_points=n_frames, time_interval_s=interval_s,
     )
+    reservation = _authorize_acquisition(ctrl, guard, plan_events(ctrl, events, None))
     started_at = datetime.now(timezone.utc)
     started = time.monotonic()
-    dataset_path = _acquire_with_hooks(guard, save_dir, name, events, hook)
+    dataset_path = _acquire_with_hooks(
+        guard, save_dir, name, events, hook, reservation=reservation
+    )
     completed_at = datetime.now(timezone.utc)
     return _adaptive_result(
         dataset_path, log_path, frames_planned=len(events), frames_acquired=len(events),
@@ -2337,9 +2514,14 @@ def _acquire_positions_with_hook(
         channel=channel, exposure_ms=exposure_ms,
         position_labels=[p["name"] for p in positions], **shape_kwargs,
     )
+    reservation = _authorize_acquisition(
+        ctrl, guard, plan_events(ctrl, events, exposure_ms)
+    )
     started_at = datetime.now(timezone.utc)
     started = time.monotonic()
-    dataset_path = _acquire_with_hooks(guard, save_dir, name, events, hook)
+    dataset_path = _acquire_with_hooks(
+        guard, save_dir, name, events, hook, reservation=reservation
+    )
     completed_at = datetime.now(timezone.utc)
     # Say how many positions ran. "Adaptive acquisition complete." over a grid
     # left no way to confirm every tile fired without opening the log.
@@ -2413,6 +2595,7 @@ def _survey_event_stream(
     max_idle_s: float,
     hook: Any,
     adaptive: bool = False,
+    max_events: int | None = None,
 ) -> Callable[[Any], Any]:
     """The events-factory for _acquire_with_hooks: a survey whose event stream
     stays OPEN, so a hook can extend it (design/24 Fix 2/2a).
@@ -2459,10 +2642,12 @@ def _survey_event_stream(
                 return False
 
         def event_stream():
+            emitted = 0
             try:
                 if adaptive:
-                    yield from survey_events[:1]  # the ONLY pre-dispatched event;
-                                                  # the hook walks the rest
+                    if survey_events and (max_events is None or emitted < max_events):
+                        emitted += 1
+                        yield survey_events[0]  # the ONLY pre-dispatched event
                 else:
                     yield from survey_events      # dispatched in microseconds...
                 last_activity = time.monotonic()  # ...executed over the next minutes
@@ -2474,7 +2659,13 @@ def _survey_event_stream(
                     except queue.Empty:
                         pass
                     else:
+                        if max_events is not None and emitted >= max_events:
+                            raise SafetyViolation(
+                                "Adaptive acquisition attempted to exceed its "
+                                f"{max_events}-event reservation."
+                            )
                         last_activity = time.monotonic()
+                        emitted += 1
                         yield event
                         continue
 
@@ -2589,8 +2780,17 @@ def _acquire_survey_with_detector(
         # per decision; the stream pre-dispatches only survey_events[0].
         hook.survey_events = survey_events
     events = _survey_event_stream(survey_events, candidates, progress, max_idle_s, hook,
-                                  adaptive=adaptive)
-    dataset_path = _acquire_with_hooks(guard, save_dir, name, events, hook)
+                                  adaptive=adaptive,
+                                  max_events=len(survey_events) if adaptive else None)
+    reservation = (
+        _authorize_acquisition(
+            ctrl, guard, plan_events(ctrl, survey_events, exposure_ms)
+        )
+        if adaptive else None
+    )
+    dataset_path = _acquire_with_hooks(
+        guard, save_dir, name, events, hook, reservation=reservation
+    )
     return _adaptive_result(
         dataset_path, hook.log_path,
         status=f"Survey acquisition complete across {len(positions)} position(s).",
@@ -3565,6 +3765,27 @@ def _read_mda_settings(settings: Any) -> dict:
             out[name] = value if value is None or isinstance(value, (bool, int, float, str)) else str(value)
         except Exception as e:
             out[name] = f"<unreadable: {type(e).__name__}>"
+    # These are non-scalar but safety-critical: channel exposure changes and
+    # exact slice-list changes must invalidate the preview token.
+    if out.get("use_slices") is True:
+        try:
+            out["slices"] = [float(v) for v in settings.slices()]
+        except Exception as e:
+            out["slices"] = f"<unreadable: {type(e).__name__}>"
+    if out.get("use_channels") is True:
+        try:
+            raw_channels = settings.channels()
+            channels = []
+            for spec in raw_channels:
+                # Public Java fields retain camelCase over this bridge
+                # (CLAUDE.md). ChannelSpec keeps these compatibility fields.
+                channels.append({
+                    "use_channel": bool(spec.useChannel),
+                    "exposure_ms": float(spec.exposure),
+                })
+            out["channels"] = channels
+        except Exception as e:
+            out["channels"] = f"<unreadable: {type(e).__name__}>"
     return out
 
 
@@ -3595,11 +3816,78 @@ def run_mda(ctrl: MicroscopeController, guard: SafetyGuard, preview_token: str) 
         return {"error": "MMStudio MDA settings changed after preview; inspect them again."}
     if current.get("save") is True and current.get("root"):
         guard.resolve_in_workspace(str(current["root"]))
-    guard.check_exposure(float(ctrl.core.get_exposure()))
-    summary = json.dumps(current, indent=2, sort_keys=True)
+    exposure_ms = float(ctrl.core.get_exposure())
+    guard.check_exposure(exposure_ms)
+    try:
+        time_points = int(current["num_frames"]) if current.get("use_frames") else 1
+        if time_points <= 0:
+            raise ValueError("num_frames must be positive")
+        if current.get("use_slices"):
+            slice_values = current.get("slices")
+            if not isinstance(slice_values, list) or not slice_values:
+                raise ValueError("enabled slice list is unreadable or empty")
+            slices = len(slice_values)
+        else:
+            slices = 1
+        if current.get("use_position_list"):
+            position_list = ctrl.studio.positions().get_position_list()
+            positions = int(position_list.get_number_of_positions())
+            if positions <= 0:
+                raise ValueError("enabled position list is empty")
+        else:
+            positions = 1
+        if current.get("use_channels"):
+            channel_values = current.get("channels")
+            if not isinstance(channel_values, list):
+                raise ValueError("enabled channel list is unreadable")
+            enabled_channels = [
+                c for c in channel_values
+                if isinstance(c, dict) and c.get("use_channel") is True
+            ]
+            if not enabled_channels:
+                raise ValueError("enabled channel list is empty")
+            channels = len(enabled_channels)
+            exposure_ms = max(float(c["exposure_ms"]) for c in enabled_channels)
+            guard.check_exposure(exposure_ms)
+        else:
+            channels = 1
+        frames = time_points * slices * positions * channels
+        width = int(ctrl.core.get_image_width())
+        height = int(ctrl.core.get_image_height())
+        bpp = int(ctrl.core.get_bytes_per_pixel())
+        if min(width, height, bpp) <= 0:
+            raise ValueError("camera geometry is unavailable")
+        interval_s = float(current.get("interval_ms") or 0) / 1000.0
+        plan = AcquisitionPlan(
+            frames=frames,
+            exposure_ms_per_frame=exposure_ms,
+            estimated_duration_s=max(
+                frames * exposure_ms / 1000.0,
+                max(0, time_points - 1) * interval_s + exposure_ms / 1000.0,
+            ),
+            estimated_bytes=frames * width * height * bpp,
+        )
+    except (KeyError, TypeError, ValueError, AttributeError) as exc:
+        raise SafetyViolation(f"MMStudio MDA is unplannable: {exc}") from exc
+    reservation = _authorize_acquisition(ctrl, guard, plan, confirm=False)
+    summary = (
+        json.dumps(current, indent=2, sort_keys=True)
+        + "\n\nPlan: "
+        + f"{plan.frames} frames, {plan.exposure_ms_per_frame:g} ms/frame, "
+        + f"{plan.estimated_duration_s:g} s estimated, "
+        + f"{plan.estimated_bytes} bytes estimated."
+    )
     if not CONFIRM_FN("RUN MMSTUDIO CURRENT MDA:\n" + summary, kind="acquisition"):
+        reservation.close()
         return {"error": "User declined to run the current MMStudio MDA."}
-    store = manager.run_acquisition()
+    try:
+        # MMStudio owns this opaque call and it runs to completion; unlike
+        # generator-fed pycro-manager paths it cannot be cancelled per event.
+        store = manager.run_acquisition()
+        for _ in range(plan.frames):
+            reservation.commit_frame()
+    finally:
+        reservation.close()
     _EMU_SESSION_CACHE.pop("mda_preview", None)
     return {"status": "MMStudio MDA complete.", "source": "MMStudio GUI current MDA",
             "resolved_settings": current, "datastore": _datastore_state(store)}

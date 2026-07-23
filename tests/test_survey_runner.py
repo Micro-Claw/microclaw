@@ -459,7 +459,7 @@ class TestAcquireSurveyWithDetector:
         captured = {}
         monkeypatch.setattr(
             tools, "_acquire_with_hooks",
-            lambda guard, save_dir, name, events, hook=None: (
+            lambda guard, save_dir, name, events, hook=None, **kwargs: (
                 captured.update(events=events, hook=hook), "/ws/ds")[1],
         )
         log_path = os.path.join(str(tmp_path), "log.json")
@@ -749,7 +749,7 @@ class TestAcquireSurveyWithDetectorAdaptive:
         captured = {}
         monkeypatch.setattr(
             tools, "_acquire_with_hooks",
-            lambda guard, save_dir, name, events, hook=None: (
+            lambda guard, save_dir, name, events, hook=None, **kwargs: (
                 captured.update(events=events, hook=hook), "/ws/ds")[1],
         )
         hook = HookBase()
@@ -816,7 +816,7 @@ class TestRunAdaptiveSurvey:
         calls = []
         monkeypatch.setattr(
             tools, "_acquire_with_hooks",
-            lambda guard, save_dir, name, events, hook=None: (
+            lambda guard, save_dir, name, events, hook=None, **kwargs: (
                 calls.append({"save_dir": save_dir, "name": name,
                               "events": events, "hook": hook}),
                 "/ws/ds",

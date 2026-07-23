@@ -16,3 +16,13 @@ stage:
 
 camera:
   max_exposure_ms: 2000.0
+acquisition:
+  max_frames: 1000000
+  max_duration_s: 1000000
+  max_bytes: 1000000000000
+  max_illuminated_ms: 1000000000
+  max_session_illuminated_ms: 1000000000
+  confirm_above_frames: 1000000
+  confirm_above_duration_s: 1000000
+  confirm_above_bytes: 1000000000000
+  confirm_above_illuminated_ms: 1000000000

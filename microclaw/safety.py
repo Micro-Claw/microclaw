@@ -55,6 +55,19 @@ class AnalysisConstraints:
 
 
 @dataclass
+class AcquisitionConstraints:
+    max_frames: Optional[float] = None
+    max_duration_s: Optional[float] = None
+    max_bytes: Optional[float] = None
+    max_illuminated_ms: Optional[float] = None
+    max_session_illuminated_ms: Optional[float] = None
+    confirm_above_frames: Optional[float] = None
+    confirm_above_duration_s: Optional[float] = None
+    confirm_above_bytes: Optional[float] = None
+    confirm_above_illuminated_ms: Optional[float] = None
+
+
+@dataclass
 class ForbiddenProperty:
     device: str
     property: str
@@ -165,6 +178,7 @@ class SafetyConstraints:
     stage: StageConstraints = field(default_factory=StageConstraints)
     camera: CameraConstraints = field(default_factory=CameraConstraints)
     analysis: AnalysisConstraints = field(default_factory=AnalysisConstraints)
+    acquisition: AcquisitionConstraints = field(default_factory=AcquisitionConstraints)
     allowed_channels: Optional[list[str]] = None  # None means all allowed
     forbidden_properties: list[ForbiddenProperty] = field(default_factory=list)
     # None = denylist mode (forbidden_properties). When set, ONLY these
@@ -323,12 +337,18 @@ class ParsedSafetyConfig:
         top_keys = {
             "schema_version", "reviewed", "stage", "camera", "analysis", "channels", "plugins",
             "illumination", "forbidden_properties",
-            "workspace_dir", "named_stages", "rig_profile",
+            "workspace_dir", "named_stages", "rig_profile", "acquisition",
         }
         section_keys = {
             "stage": {"x_min", "x_max", "y_min", "y_max", "z_min", "z_max"},
             "camera": {"max_exposure_ms"},
             "analysis": {"min_snr"},
+            "acquisition": {
+                "max_frames", "max_duration_s", "max_bytes",
+                "max_illuminated_ms", "max_session_illuminated_ms",
+                "confirm_above_frames", "confirm_above_duration_s",
+                "confirm_above_bytes", "confirm_above_illuminated_ms",
+            },
             "channels": {"allowed"},
             "plugins": {"blocked", "allow_hardware_motion"},
             "illumination": {
@@ -369,6 +389,7 @@ class ParsedSafetyConfig:
         stage_cfg = mapping("stage")
         camera_cfg = mapping("camera")
         analysis_cfg = mapping("analysis")
+        acquisition_cfg = mapping("acquisition")
         channels_cfg = mapping("channels")
         plugins_cfg = mapping("plugins")
         ill_cfg = mapping("illumination")
@@ -418,6 +439,10 @@ class ParsedSafetyConfig:
             (analysis_cfg, "min_snr", "analysis.min_snr"),
             (ill_cfg, "max_power_percent", "illumination.max_power_percent"),
             (ill_cfg, "max_power_step_factor", "illumination.max_power_step_factor"),
+            *[
+                (acquisition_cfg, key, f"acquisition.{key}")
+                for key in section_keys["acquisition"]
+            ],
         ]
         for section, key, location in numeric_fields:
             if section.get(key) is not None:
@@ -429,6 +454,12 @@ class ParsedSafetyConfig:
         exposure = camera_cfg.get("max_exposure_ms")
         if isinstance(exposure, float) and exposure <= 0:
             problem("camera.max_exposure_ms", "must be greater than zero")
+        if "acquisition" in cfg:
+            for key in section_keys["acquisition"] - acquisition_cfg.keys():
+                problem(f"acquisition.{key}", "missing required key")
+        for key, value in acquisition_cfg.items():
+            if isinstance(value, float) and value <= 0:
+                problem(f"acquisition.{key}", "must be greater than zero")
 
         def object_list(name: str, value, allowed: set[str]) -> list[dict]:
             if value is None:
@@ -541,6 +572,7 @@ class ParsedSafetyConfig:
             stage=stage,
             camera=CameraConstraints(**camera_cfg),
             analysis=AnalysisConstraints(**analysis_cfg),
+            acquisition=AcquisitionConstraints(**acquisition_cfg),
             allowed_channels=channels_cfg.get("allowed"),
             forbidden_properties=forbidden,
             allowed_properties=allowed,
@@ -656,6 +688,38 @@ class SafetyGuard:
             raise SafetyViolation(
                 f"Exposure {ms:.0f} ms exceeds the maximum allowed ({limit:.0f} ms)."
             )
+
+    def check_acquisition(
+        self, *, frames, duration_s, bytes_, illuminated_ms,
+        session_illuminated_ms,
+    ) -> None:
+        values = {
+            "frames": _finite_number(frames, "Acquisition frames"),
+            "duration_s": _finite_number(duration_s, "Acquisition duration"),
+            "bytes": _finite_number(bytes_, "Acquisition bytes"),
+            "illuminated_ms": _finite_number(illuminated_ms, "Acquisition illuminated time"),
+            "session_illuminated_ms": _finite_number(
+                session_illuminated_ms, "Session illuminated time"
+            ) + _finite_number(illuminated_ms, "Acquisition illuminated time"),
+        }
+        limits = self._c.acquisition
+        for value_name, limit_name in (
+            ("frames", "max_frames"), ("duration_s", "max_duration_s"),
+            ("bytes", "max_bytes"), ("illuminated_ms", "max_illuminated_ms"),
+            ("session_illuminated_ms", "max_session_illuminated_ms"),
+        ):
+            limit = getattr(limits, limit_name)
+            if limit is not None and values[value_name] > _finite_number(
+                limit, f"Configured acquisition.{limit_name}"
+            ):
+                raise SafetyViolation(
+                    f"Acquisition {value_name}={values[value_name]:g} exceeds "
+                    f"acquisition.{limit_name}={limit:g}."
+                )
+
+    @property
+    def acquisition_confirmation_thresholds(self) -> AcquisitionConstraints:
+        return self._c.acquisition
 
     def check_channel(self, preset: str) -> None:
         allowed = self._c.allowed_channels

@@ -916,6 +916,7 @@ class TestRunMultipositionWithAutofocus:
                 z_step_um=1.0,
                 protocol="timelapse",
                 save_dir=str(tmp_path),
+                protocol_params={"n_frames": 1, "interval_s": 0},
             )
 
         live.set_live_mode_on.assert_called_with(True)
@@ -1279,7 +1280,7 @@ class TestHookedGridAcquisition:
         calls = []
         monkeypatch.setattr(
             tools, "_acquire_with_hooks",
-            lambda guard, save_dir, name, events, hook=None: (
+            lambda guard, save_dir, name, events, hook=None, **kwargs: (
                 calls.append({"save_dir": save_dir, "name": name,
                               "events": events, "hook": hook}),
                 "/ws/ds",
