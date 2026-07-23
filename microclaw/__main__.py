@@ -180,7 +180,7 @@ def run_session(args):
             "Is the ZMQ server enabled in Tools → Options?"
         )
     try:
-        validate_live_rig(ctrl, parsed_safety)
+        validate_live_rig(ctrl, parsed_safety, guard=guard)
     except RigAuthorizationError as exc:
         sys.exit(str(exc))
     print("Connected. Type your instructions (type 'exit' or press Ctrl-C to quit).\n")
@@ -254,6 +254,8 @@ def print_authorization_map(args):
             "Is the ZMQ server enabled in Tools → Options?"
         )
     try:
+        # No guard is handed over: this path prints the map and exits without
+        # exposing a mutation surface, so nothing needs the runtime allowlist.
         report = validate_live_rig(ctrl, parsed_safety)
     except RigAuthorizationError as exc:
         sys.exit(str(exc))

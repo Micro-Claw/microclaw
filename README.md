@@ -221,6 +221,23 @@ rig_profile:
   excluded_properties: []
 ```
 
+`categorical_properties` is the reviewed list of discrete (non-continuous)
+device properties the AI may write directly. Filter wheels, sliders and turrets
+do not belong on it: any device Micro-Manager types as a **StateDevice** has its
+own `Label`/`State` auto-classified as categorical at startup, and nothing else
+on that device. Shutters are never auto-classified — `Core.Shutter`, an MM
+`ShutterDevice`, and anything declared under `illumination` stay on the
+illumination gate, which is where a confirmation is required before light
+reaches the sample. `microclaw --safety-config … authorization-map` prints the
+effective map; auto-classified entries carry `"source": "auto:state-device"`,
+declared ones `"source": "declared"`.
+
+Auto-classification fills vacuums only. Naming a device's `Label` **or** `State`
+in `categorical_properties` or `excluded_properties` means you own both: declare
+the one you will actually write, and the other stays refused. So if you are not
+sure whether a driver takes `Label` (string) or `State` (int), declaring one does
+not quietly hand you the other.
+
 The following fragments show the limits and a separate worked channel profile
 (the shipped values are examples, not defaults):
 
@@ -237,14 +254,14 @@ camera:
   max_exposure_ms: 5000.0
 
 # In guaranteed mode, a channel preset is authorized by both its name and every
-# device/property effect Micro-Manager expands it to. For example, if DAPI sets
-# these two categorical wheel properties:
+# device/property effect Micro-Manager expands it to. Filter wheels, sliders and
+# turrets need no declaration — see the note below — so if DAPI only moves those,
+# the name is enough. Declare any other discrete effect, e.g. a laser selector:
 # Replace the empty rig_profile fragment above with:
 rig_profile:
   mode: guaranteed
   categorical_properties:
-    - {device: DWheel, property: Label}
-    - {device: DichroicWheel, property: Label}
+    - {device: LaserSelector, property: Label}
   excluded_properties: []
 channels:
   allowed: [DAPI]

@@ -171,7 +171,7 @@ class Session:
                 "Is the ZMQ server enabled in Tools → Options?"
             )
         try:
-            validate_live_rig(ctrl, self.parsed_safety)
+            validate_live_rig(ctrl, self.parsed_safety, guard=guard)
         except RigAuthorizationError as exc:
             sys.exit(str(exc))
         self.ctrl = ctrl

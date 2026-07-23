@@ -267,34 +267,22 @@ def move_stage_z(
 
 # --- Named stages (design/14 §6) ---
 
-# mmcorej.DeviceType ordinals for the stage types (verified V3).
-_DEVICE_TYPES = {5: "StageDevice", 6: "XYStageDevice"}
-
-
 def _device_type_name(core, label: str) -> str:
     """Classify a device via core.get_device_type(label).
+
+    The ordinal table and the implementation live in
+    microclaw.authorization (design/33 needs the same classification to
+    auto-classify StateDevices), so there is exactly one copy. Imported lazily
+    like the other authorization helpers in this module.
 
     Deliberately avoids get_loaded_devices_of_type: that needs a DeviceType
     enum value, whose static shadow must go through the JavaClass cache
     workaround and hung once in the design/14 spike (V3). Per-device
     classification needs no JavaClass at all.
     """
-    raw = core.get_device_type(label)
-    if hasattr(raw, "to_string"):
-        name = str(raw.to_string())
-        if name and "0x" not in name:
-            return name
-    if hasattr(raw, "swig_value"):
-        try:
-            v = int(raw.swig_value())
-            return _DEVICE_TYPES.get(v, str(v))
-        except (TypeError, ValueError):
-            pass
-    try:
-        v = int(raw)
-        return _DEVICE_TYPES.get(v, str(v))
-    except (TypeError, ValueError):
-        return str(raw)
+    from microclaw.authorization import device_type_name
+
+    return device_type_name(core, label)
 
 
 def list_stages(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
