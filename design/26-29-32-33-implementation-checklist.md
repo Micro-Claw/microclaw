@@ -33,11 +33,12 @@ Progress markers: `[ ]` not started, `[-]` active, `[x]` complete, `[!]` blocked
 | Block | Branch | Start commit | Implementation commit/PR | Rig evidence | Merge commit | Design reconciliation |
 |---|---|---|---|---|---|---|
 | 0 | — | c90d738 | baseline: 771 passed / 98 skipped (2026-07-22) | n/a | — | Run A located; NDTiff fixtures deferred to Block 8 |
+| — | — | — | **Baseline drift note:** the counts in this table are per-block snapshots, not a running total. `main` was 841/98 before Block 3b (not the 816 recorded at Block 2, which predates Block 3's tests). Re-measure `main` before judging a block's test output. | | | |
 | 1 | `design32/config-hardening` | c90d738 | 967ab5d | n/a | 56ed945 | Gate done: config matches Finding 1; non-numeric-write fail-closed change noted in design/32 (docs merge c86af6d) |
 | 2 | `design32/versioned-safety-schema` | 252a4cc | d5aa5c4 (+fix 12b0677) | rig: starts clean w/ reviewed rig config | b8092c4 | Gate done: API matches design/33 (no change); 1b landed note + required-when-present judgment recorded in design/32 (docs merge 8dd521f) |
 | 3 | `design33/core-authorization-map` | c18fa92 | fc346a4 (2 review-fixes) | rig M5: fail-closed+parity, complete map, cat/illum writes pass, PWM/FPGA refused, confirm-gate fires | 0124ffd | Gate done: design/33 Phase-1 landed note + M5 findings + ceiling + StateDevice fast-follow (docs merge ae4794f) |
-| 3b | `design33/statedevice-auto-classify` | | | required (rig) | | **NEXT — do before Block 4** |
-| 4 | `design32/acquisition-budgets` | | | required | | |
+| 3b | `design33/statedevice-auto-classify` | 91c6364 | d80ae39 + aaa41d4 (rig-finding fix) | rig M5: before/after maps both complete@40; six Thorlabs pairs flip declared→auto; iChrome-MLE-TCP.State refused live despite explicit human confirm; auto-classified wheel write passes both gates via `serve` | 9491361 | Gate done: design/33 Block-3b landed note + ELL6/no-core-shutter/iChrome findings (docs merge daab107) |
+| 4 | `design32/acquisition-budgets` | | | required | | **NEXT** |
 | 5 | `design33/dose-authorization` | | | required | | |
 | 6 | `design32/remote-auth` | | | n/a | | |
 | 7 | `design32/generated-hook-decisions` | | | regression required | | |
@@ -213,41 +214,60 @@ Post-merge design gate:
 
 Branch: `design33/statedevice-auto-classify`
 
-**This is the NEXT item — do it before Block 4.** Agreed with the operator after Block 3
-(option 1 shipped as-is + this as option 2). Rationale: guaranteed-mode allowlist
-declaration is disproportionate for benign discrete devices; M5 authoring (two Thorlabs
-filter wheels + ELL6) exposed the friction. See [[project_design33_statedevice_fastfollow]]
-and design/33's "Phase 1 landed" note. `main` is a clean boundary at `285c258`; Block 3
-is fully merged, so start fresh from updated `main`.
+Agreed with the operator after Block 3 (option 1 shipped as-is + this as option 2).
+Rationale: guaranteed-mode allowlist declaration is disproportionate for benign discrete
+devices; M5 authoring (two Thorlabs filter wheels + ELL6) exposed the friction. See
+[[project_design33_statedevice_fastfollow]] and design/33's "Phase 1 fast-follow landed"
+note.
 
-- [ ] Create the branch from updated `main`.
-- [ ] Auto-classify any device `core.get_device_type()` reports as a **StateDevice**
+- [x] Create the branch from updated `main`. — from `91c6364`.
+- [x] Auto-classify any device `core.get_device_type()` reports as a **StateDevice**
       (filter wheels, sliders, turrets) as `reviewed_categorical_property` for its
       State/Label writes, WITHOUT requiring a `categorical_properties` declaration.
-- [ ] **Shutter carve-out:** a shutter-type device (Core.Shutter, MM `ShutterDevice`,
+- [x] **Shutter carve-out:** a shutter-type device (Core.Shutter, MM `ShutterDevice`,
       or a state device that gates light) must NOT be auto-classified — it stays subject
       to the illumination gate. Pin the mechanical shutter test; do not infer from names.
-- [ ] Keep explicit declarations working (auto-classification is additive, not a replacement).
+      — decided only by device type / `Core.Shutter` / the `illumination:` block; pinned by
+      `test_core_shutter_is_never_auto_classified_even_when_typed_state_device`.
+- [x] Keep explicit declarations working (auto-classification is additive, not a replacement).
       Do not auto-admit continuous or generic devices — StateDevice type only.
-- [ ] Migrate example/README: filter wheels/sliders/turrets no longer need declaration;
+      — **strengthened after the rig gate:** auto-classification fills vacuums ONLY. A
+      ruling on either position property (categorical, excluded, or forbidden) takes that
+      device's whole discrete position off the table. See the M5 finding below.
+- [x] Migrate example/README: filter wheels/sliders/turrets no longer need declaration;
       shutters still do.
-- [ ] Test: a StateDevice auto-classifies categorical; a ShutterDevice does NOT; explicit
+- [x] Test: a StateDevice auto-classifies categorical; a ShutterDevice does NOT; explicit
       declarations still work; a non-state device is unaffected; the runtime allowlist
-      admits an auto-classified write and still refuses an excluded one.
-- [ ] Commit; do not merge until the rig check passes.
+      admits an auto-classified write and still refuses an excluded one. — plus the named
+      M5 regression `test_declaring_one_position_property_does_not_auto_admit_the_other_m5`.
+- [x] Commit; do not merge until the rig check passes. — impl `d80ae39`, rig-finding fix
+      `aaa41d4`; `main` 863 passed / 98 skipped after merge.
 
 Rig gate (small):
 
-- [ ] On M5 (or demo), remove the filter-wheel/ELL6 `categorical_properties` entries, run
+- [x] On M5 (or demo), remove the filter-wheel/ELL6 `categorical_properties` entries, run
       `authorization-map`, and confirm they are now auto-classified categorical (not
       excluded) and the map is still `complete`. Confirm a shutter/illumination device is
-      NOT silently auto-admitted.
-- [ ] Coordinator reviews evidence and merges after the rig check.
+      NOT silently auto-admitted. — both maps `complete` at 40 entries; the six Thorlabs
+      pairs flip `declared`→`auto:state-device` and nothing else changes; illumination and
+      the 20-device excluded inventory identical.
+- [x] Coordinator reviews evidence and merges after the rig check. — merged `9491361`.
+      **The gate caught a real defect.** The first implementation auto-admitted
+      `iChrome-MLE-TCP.State` — on a laser engine, against an operator who had declared
+      only `Label` — and did so in the *unmodified* config, i.e. it would have widened M5
+      without any config edit. Fixed on-branch by the vacuum-filling rule, then re-verified
+      live: the write is refused even after an explicit human confirmation in the session.
+      An auto-classified filter-wheel write passes both gates through `serve`.
 
 Post-merge design gate:
 
-- [ ] Update design/33's "Phase 1 landed" note with the final StateDevice rule, the exact
-      shutter carve-out test, and the M5 result. Merge docs before Block 4.
+- [x] Update design/33's "Phase 1 landed" note with the final StateDevice rule, the exact
+      shutter carve-out test, and the M5 result. Merge docs before Block 4. — design/33
+      "Phase 1 fast-follow landed" section (docs merge `daab107`), including three findings
+      the gate produced: ELL6 is a Bertrand-lens flip and does not gate light; **M5 has no
+      core shutter**, so the carve-out rests entirely on the `illumination:` block being
+      complete; and `iChrome-MLE-TCP.Label` remains a bare categorical write on a laser
+      engine in the reviewed M5 profile (open item on the rig config, not on this code).
 
 ## 4. Design/32 Finding 2 — acquisition plans, budgets, ledger, and batching
 
