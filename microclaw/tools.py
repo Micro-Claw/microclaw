@@ -2,6 +2,7 @@ from __future__ import annotations
 import inspect
 import hashlib
 import json
+import logging
 import math
 import queue
 import threading
@@ -43,6 +44,8 @@ from microclaw.image_analysis import (
 )
 from microclaw.safety import SafetyGuard, SafetyViolation
 from microclaw.acquisition import AcquisitionLedger, AcquisitionPlan, Reservation, plan_events
+
+logger = logging.getLogger(__name__)
 
 
 def _require_confirmation(summary: str, kind: str = "action") -> bool:
@@ -110,6 +113,35 @@ def _authorize_acquisition(
         reservation.close()
         raise SafetyViolation("Acquisition declined.")
     return reservation
+
+
+def _reservation_report(reservation: Reservation) -> dict[str, Any]:
+    """Public result fields for accounting findings; empty on an exact run."""
+    if not reservation.has_overrun:
+        return {}
+    return {
+        "budget_overrun": True,
+        "overrun_frames": reservation.overrun_frames,
+        "frames_reserved": reservation.plan.frames,
+        "frames_accounted": reservation.completed_frames,
+    }
+
+
+def _note_budget_exhausted(
+    hook: Any | None, max_events: int, *, overrun_frames: int = 0
+) -> None:
+    """Report loudly without allowing reporting failures onto engine threads."""
+    try:
+        note = getattr(hook, "note_budget_exhausted", None)
+        if callable(note):
+            note(max_events, overrun_frames=overrun_frames)
+            return
+    except Exception:
+        logger.exception("Hook failed while recording acquisition budget exhaustion")
+    logger.error(
+        "Acquisition budget exhausted: max_events=%s, overrun_frames=%s",
+        max_events, overrun_frames,
+    )
 
 
 def _str_vector(sv) -> list[str]:
@@ -717,7 +749,12 @@ def _acquire_with_hooks(
             finally:
                 # Pixels have returned: this frame consumed exposure/disk budget
                 # even when a user hook rejects or raises while processing it.
-                reservation.commit_frame()
+                if not reservation.commit_frame():
+                    _note_budget_exhausted(
+                        hook,
+                        reservation.plan.frames,
+                        overrun_frames=reservation.overrun_frames,
+                    )
         hook_fn_kwargs["image_process_fn"] = account_frame
 
     if isinstance(events, list) and reservation is not None:
@@ -736,13 +773,24 @@ def _acquire_with_hooks(
             def stream():
                 try:
                     for index, event in enumerate(bounded_events):
-                        # Keep at most one event in flight. An abort cannot
-                        # interrupt that frame because pyjavaz serializes bridge
-                        # calls; it prevents every later event from being fed.
+                        # Keep at most one event in flight. This gate is
+                        # necessary: inspected pycro-manager 1.0.2
+                        # java_backend_acquisitions.py/EventQueue.get() eagerly
+                        # advances a queued generator in the event-source loop;
+                        # it does not wait for an image. That pull-ahead is
+                        # measured from installed source and a fake-acquisition
+                        # regression test. The resulting loss of hardware
+                        # sequencing/pipelining is inferred off-rig; the rig
+                        # must measure it. Cancellation remains one-event
+                        # granular. Completion signals wake this wait directly;
+                        # its timeout is solely a liveness backstop.
                         while completed_at_start + index > reservation.completed_frames:
-                            if finished():
+                            if reservation.has_overrun or finished():
                                 return
-                            time.sleep(_CANDIDATE_POLL_S)
+                            reservation.wait_for_completed_frames(
+                                completed_at_start + index,
+                                _FEEDER_LIVENESS_TIMEOUT_S,
+                            )
                         if index and finished():
                             return
                         yield event
@@ -810,7 +858,10 @@ def run_zstack(
         guard, save_dir, name, events, reservation=reservation,
         close_reservation=_reservation is None,
     )
-    return {"status": "Z-stack complete.", "dataset_path": dataset_path}
+    return {
+        "status": "Z-stack complete.", "dataset_path": dataset_path,
+        **_reservation_report(reservation),
+    }
 
 
 def _assert_excitation_will_fire(ctrl: MicroscopeController, laser_slot: int) -> None:
@@ -891,7 +942,10 @@ def run_timelapse(
         guard, save_dir, name, events, reservation=reservation,
         close_reservation=_reservation is None,
     )
-    return {"status": "Timelapse complete.", "dataset_path": dataset_path}
+    return {
+        "status": "Timelapse complete.", "dataset_path": dataset_path,
+        **_reservation_report(reservation),
+    }
 
 
 def export_dataset_as_tiff(
@@ -2395,6 +2449,7 @@ def run_adaptive_zstack(
         dataset_path, log_path, frames_planned=len(events), frames_acquired=len(events),
         started_at=started_at.isoformat(), completed_at=completed_at.isoformat(),
         duration_s=round(time.monotonic() - started, 6),
+        **_reservation_report(reservation),
     )
 
 
@@ -2439,6 +2494,7 @@ def run_adaptive_timelapse(
         dataset_path, log_path, frames_planned=len(events), frames_acquired=len(events),
         started_at=started_at.isoformat(), completed_at=completed_at.isoformat(),
         duration_s=round(time.monotonic() - started, 6),
+        **_reservation_report(reservation),
     )
 
 
@@ -2533,6 +2589,7 @@ def _acquire_positions_with_hook(
         frames_planned=len(events), frames_acquired=len(events),
         started_at=started_at.isoformat(), completed_at=completed_at.isoformat(),
         duration_s=round(time.monotonic() - started, 6),
+        **_reservation_report(reservation),
     )
 
 
@@ -2548,6 +2605,7 @@ class SurveyProgress:
     def __init__(self, n_survey: int) -> None:
         self._n_survey, self._lock, self._done = n_survey, threading.Lock(), 0
         self._done_early = False
+        self._budget_exhausted = False
 
     def image_done(self) -> None:
         with self._lock:
@@ -2563,6 +2621,16 @@ class SurveyProgress:
         """
         with self._lock:
             self._done_early = True
+
+    def budget_exhausted(self) -> None:
+        with self._lock:
+            self._budget_exhausted = True
+            self._done_early = True
+
+    @property
+    def exhausted_budget(self) -> bool:
+        with self._lock:
+            return self._budget_exhausted
 
     @property
     def n_done(self) -> int:
@@ -2586,6 +2654,9 @@ class SurveyProgress:
 # empty pass also costs one is_finished() bridge round trip (measured ~<0.1 ms
 # on localhost, design/24), so at 0.05 s the poll's bridge duty cycle is ~0.1%.
 _CANDIDATE_POLL_S = 0.05
+# Not a pacing poll: commit_frame() normally wakes the feeder immediately.
+# This only lets it re-check acquisition liveness if no frame ever arrives.
+_FEEDER_LIVENESS_TIMEOUT_S = 5.0
 
 
 def _survey_event_stream(
@@ -2660,10 +2731,9 @@ def _survey_event_stream(
                         pass
                     else:
                         if max_events is not None and emitted >= max_events:
-                            raise SafetyViolation(
-                                "Adaptive acquisition attempted to exceed its "
-                                f"{max_events}-event reservation."
-                            )
+                            _note_budget_exhausted(hook, max_events)
+                            progress.budget_exhausted()
+                            return
                         last_activity = time.monotonic()
                         emitted += 1
                         yield event
@@ -2778,6 +2848,9 @@ def _acquire_survey_with_detector(
     if adaptive:
         # The tile list becomes state the hook walks, one candidates.put()
         # per decision; the stream pre-dispatches only survey_events[0].
+        # Deliberate limit: the reservation covers exactly the planned grid.
+        # A hook may revisit a planned tile but may not add a derived extra
+        # frame; widening that requires a separately planned event allowance.
         hook.survey_events = survey_events
     events = _survey_event_stream(survey_events, candidates, progress, max_idle_s, hook,
                                   adaptive=adaptive,
@@ -2795,6 +2868,7 @@ def _acquire_survey_with_detector(
         dataset_path, hook.log_path,
         status=f"Survey acquisition complete across {len(positions)} position(s).",
         positions=len(positions),
+        **(_reservation_report(reservation) if reservation is not None else {}),
     )
 
 
@@ -2902,6 +2976,7 @@ def run_adaptive_survey(
     )
     result["frames_acquired"] = progress.n_done
     result["stopped_early"] = stopped
+    result["budget_exhausted"] = progress.exhausted_budget
     result["tiles_planned"] = [
         {"position": p["name"], "x_um": round(p["x_um"], 3),
          "y_um": round(p["y_um"], 3)} for p in resolved
@@ -3889,8 +3964,13 @@ def run_mda(ctrl: MicroscopeController, guard: SafetyGuard, preview_token: str) 
     finally:
         reservation.close()
     _EMU_SESSION_CACHE.pop("mda_preview", None)
-    return {"status": "MMStudio MDA complete.", "source": "MMStudio GUI current MDA",
-            "resolved_settings": current, "datastore": _datastore_state(store)}
+    return {
+        "status": "MMStudio MDA complete.",
+        "source": "MMStudio GUI current MDA",
+        "resolved_settings": current,
+        "datastore": _datastore_state(store),
+        **_reservation_report(reservation),
+    }
 
 
 # --- Tool Registry ---

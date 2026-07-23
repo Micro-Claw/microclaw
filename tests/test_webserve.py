@@ -803,7 +803,11 @@ def test_serve_refuses_an_unreviewed_safety_config(tmp_path):
     cfg.write_text(
         "schema_version: 2\nreviewed: false\n"
         "rig_profile: {mode: guaranteed, categorical_properties: [], excluded_properties: []}\n"
-        "stage: {x_min: -1.0, x_max: 1.0}\n",
+        "stage: {x_min: -1.0, x_max: 1.0}\n"
+        "acquisition: {max_frames: 10000, max_duration_s: 3600, max_bytes: 50000000000, "
+        "max_illuminated_ms: 600000, max_session_illuminated_ms: 1800000, "
+        "confirm_above_frames: 500, confirm_above_duration_s: 300, "
+        "confirm_above_bytes: 5000000000, confirm_above_illuminated_ms: 60000}\n",
         encoding="utf-8",
     )
     with pytest.raises(SystemExit, match="has not been reviewed"):

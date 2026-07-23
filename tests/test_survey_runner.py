@@ -433,6 +433,27 @@ class TestAcquireWithHooksFactory:
         assert _FakeAcquisition.last.acquired is events
 
 
+def test_adaptive_budget_exhaustion_stops_cleanly_reports_and_terminates():
+    acq = _FakeAcq()
+    candidates = queue.Queue()
+    candidates.put(_followup("extra"))
+    progress = SurveyProgress(1)
+    hook = HookBase()
+    stream = _survey_event_stream(
+        _survey(1), candidates, progress, 1.0, hook,
+        adaptive=True, max_events=1,
+    )(acq)
+
+    # No SafetyViolation crosses the event-source boundary.
+    assert list(stream) == [_survey(1)[0]]
+    assert progress.stopped_early
+    assert progress.exhausted_budget
+    assert hook.get_summary() == [{
+        "event": "budget_exhausted", "max_events": 1, "overrun_frames": 0,
+    }]
+    assert acq._event_queue.get_nowait() is None
+
+
 class TestAcquireSurveyWithDetector:
     def _positions(self, n=3):
         return [{"name": f"tile_{i}", "x_um": 10.0 * i, "y_um": 0.0} for i in range(n)]

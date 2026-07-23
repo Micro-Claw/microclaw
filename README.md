@@ -253,8 +253,8 @@ stage:
 camera:
   max_exposure_ms: 5000.0
 
-# Optional section, but all nine finite positive values are required when it is
-# present. Counts are frames, times are seconds/ms as named, and bytes are raw
+# Required section; all nine finite positive values are required. Counts are
+# frames, times are seconds/ms as named, and bytes are raw
 # camera payload estimates. Hard maxima refuse work; confirm_above_* values
 # invoke the existing blocking acquisition confirmation below those maxima.
 acquisition:
@@ -269,10 +269,21 @@ acquisition:
   confirm_above_illuminated_ms: 60000
 
 List-backed pycro-manager acquisitions are fed lazily within one `Acquisition`
-and one dataset. Cancellation stops before the next event; the frame already in
-flight always completes because bridge calls are serialized. MMStudio MDA is
+and one dataset. The installed engine eagerly drains a free-running generator,
+so the feeder deliberately permits only one event in flight and wakes as soon
+as its frame returns. Cancellation stops before the next event; the frame
+already in flight always completes. This trades engine sequencing/pipelining
+for one-event cancellation; its rig throughput cost still needs measurement.
+`max_duration_s` bounds a known-low preflight estimate: exposure and scheduled
+start times are included, but unmeasured readout, stage, autofocus, and filter
+switching overhead is not. MMStudio MDA is
 planned and confirmed from its current settings but is cancellation-exempt:
 its opaque `run_acquisition()` call runs to completion.
+
+Adaptive survey reservations cover exactly the planned grid size. A hook may
+choose or revisit events within that allowance, but it cannot add an extra
+derived revisit beyond the planned frame count; budget exhaustion is logged and
+reported as an early stop.
 
 # In guaranteed mode, a channel preset is authorized by both its name and every
 # device/property effect Micro-Manager expands it to. Filter wheels, sliders and
@@ -361,7 +372,7 @@ MM_RUNNING=1 pytest -m integration
 | `import_mm_positions` | Import positions from the MM GUI position list |
 | `run_multiposition_acquisition` | Visit each position and run snap/zstack/timelapse |
 | `run_tile_acquisition` | Acquire a rows×cols tile grid centered on current stage position |
-| `run_multiposition_with_autofocus` | Same, with software autofocus at each position |
+| `run_multiposition_with_autofocus` | Same, with software autofocus at each position. `protocol="timelapse"` requires explicit `protocol_params` (`n_frames` and `interval_s`) because unspecified work cannot be planned or reserved. |
 | `run_adaptive_zstack` | Z-stack with a hook strategy for adaptive behaviour |
 | `run_adaptive_timelapse` | Timelapse with a hook strategy for adaptive behaviour |
 | `read_hook_log` | Read hook output log after an acquisition |

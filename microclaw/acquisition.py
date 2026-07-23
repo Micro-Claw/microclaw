@@ -51,25 +51,53 @@ class Reservation:
         self.ledger = ledger
         self.plan = plan
         self.completed_frames = 0
+        self.overrun_frames = 0
         self._closed = False
+        # The image-processor and event-source are different pycro-manager
+        # threads.  A Condition gives the feeder a completion handshake without
+        # imposing a fixed polling delay on every frame.
+        self._frame_completed = threading.Condition(ledger._lock)
 
-    def commit_frame(self) -> None:
-        with self.ledger._lock:
+    def commit_frame(self) -> bool:
+        """Account for a returned frame without raising on an engine thread.
+
+        False means the engine returned a frame outside the reservation.  The
+        caller records that finding and the feeder observes ``has_overrun`` and
+        stops.  Exceptions here would cross pycro-manager's image-process
+        thread and can strand its event-source during shutdown.
+        """
+        with self._frame_completed:
             if self._closed or self.completed_frames >= self.plan.frames:
-                raise SafetyViolation(
-                    "Acquisition produced more frames than its reservation."
-                )
+                self.overrun_frames += 1
+                self._frame_completed.notify_all()
+                return False
             self.completed_frames += 1
             fraction = 1 / self.plan.frames
             self.ledger.frames += 1
             self.ledger.bytes += math.ceil(self.plan.estimated_bytes * fraction)
             self.ledger.illuminated_ms += self.plan.exposure_ms_per_frame
+            self._frame_completed.notify_all()
+            return True
+
+    @property
+    def has_overrun(self) -> bool:
+        with self.ledger._lock:
+            return self.overrun_frames > 0
+
+    def wait_for_completed_frames(self, minimum: int, timeout_s: float) -> bool:
+        """Wait until ``minimum`` frames return; timeout is only a liveness tick."""
+        with self._frame_completed:
+            return self._frame_completed.wait_for(
+                lambda: self.completed_frames >= minimum or self.overrun_frames > 0,
+                timeout=timeout_s,
+            )
 
     def close(self) -> None:
-        with self.ledger._lock:
+        with self._frame_completed:
             if not self._closed:
                 self.ledger._reserved_illuminated_ms -= self.plan.illuminated_ms
                 self._closed = True
+                self._frame_completed.notify_all()
 
     def __enter__(self) -> "Reservation":
         return self
@@ -92,7 +120,10 @@ def plan_events(ctrl, events: list, exposure_ms: float | None = None) -> Acquisi
     bpp = int(ctrl.core.get_bytes_per_pixel())
     if width <= 0 or height <= 0 or bpp <= 0:
         raise SafetyViolation("Camera geometry is unavailable; acquisition is unplannable.")
-    # Event min_start_time is the strongest known lower bound on wall time.
+    # This is a deliberately known-low estimate: exposure and min_start_time
+    # are knowable before dispatch, while camera readout, stage settling,
+    # autofocus, and filter switching are rig-dependent and unmeasured.
+    # Consequently max_duration_s bounds this estimate, not actual wall time.
     last_start = max(
         (float(e.get("min_start_time", 0.0)) for e in events if isinstance(e, dict)),
         default=0.0,

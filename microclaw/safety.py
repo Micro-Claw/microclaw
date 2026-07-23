@@ -374,6 +374,13 @@ class ParsedSafetyConfig:
             problem("reviewed", "missing required key")
         if "rig_profile" not in cfg:
             problem("rig_profile", "missing required declared rig profile")
+        if "acquisition" not in cfg:
+            fields = ", ".join(sorted(section_keys["acquisition"]))
+            problem(
+                "acquisition",
+                "missing required acquisition budget section; add all nine fields: "
+                + fields,
+            )
 
         def mapping(name: str) -> dict:
             value = cfg.get(name, {})

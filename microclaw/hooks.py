@@ -173,6 +173,15 @@ class HookBase:
         self._log.append({"event": "aborted"})
         self._write_log()
 
+    def note_budget_exhausted(self, max_events: int, *, overrun_frames: int = 0) -> None:
+        """Record a clean feeder stop at its authorized event budget."""
+        self._log.append({
+            "event": "budget_exhausted",
+            "max_events": max_events,
+            "overrun_frames": overrun_frames,
+        })
+        self._write_log()
+
     def get_summary(self) -> list[dict]:
         return self._log
 
