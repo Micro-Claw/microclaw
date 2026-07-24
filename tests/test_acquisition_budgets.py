@@ -1,7 +1,5 @@
 from unittest.mock import MagicMock
 import inspect
-import queue
-import threading
 
 import pytest
 
@@ -133,20 +131,23 @@ def test_reservation_uses_saved_callback_without_installing_pixel_hook(
     from microclaw import tools
 
     received_kwargs = {}
+    supplied_events = [
+        {"axes": {"time": 0}},
+        {"axes": {"time": 1}},
+    ]
 
     class FakeAcquisition:
         def __init__(self, **kwargs):
             received_kwargs.update(kwargs)
             self.saved = kwargs["image_saved_fn"]
-            self._event_queue = queue.Queue()
             self._dataset_disk_location = str(tmp_path / "dataset")
-            self._acq = MagicMock()
-            self._acq.is_finished.return_value = False
 
         def __enter__(self):
             return self
 
         def acquire(self, events):
+            assert isinstance(events, list)
+            assert events is supplied_events
             for event in events:
                 self.saved(event.get("axes", {}), object())
 
@@ -159,7 +160,7 @@ def test_reservation_uses_saved_callback_without_installing_pixel_hook(
     )
     tools._acquire_with_hooks(
         _guard(), str(tmp_path), "dataset",
-        [{"axes": {"time": 0}}, {"axes": {"time": 1}}],
+        supplied_events,
         reservation=reservation,
     )
     assert "image_process_fn" not in received_kwargs
@@ -167,66 +168,29 @@ def test_reservation_uses_saved_callback_without_installing_pixel_hook(
     assert reservation.ledger.frames == 2
 
 
-def test_list_feeder_bounds_lookahead_and_cancellation(monkeypatch, tmp_path):
+def test_list_acquisition_passes_the_list_directly_to_acquire(monkeypatch, tmp_path):
     from microclaw import tools
 
-    seen = []
-    feeder_at_window = threading.Event()
-    next_event_fed = threading.Event()
-    allow_abort = threading.Event()
-    terminators = queue.Queue()
+    supplied_events = [{"axes": {"time": 0}}]
 
     class FakeAcquisition:
         def __init__(self, **kwargs):
-            self.saved = kwargs["image_saved_fn"]
-            self._event_queue = terminators
             self._dataset_disk_location = str(tmp_path / "dataset")
-            self._acq = MagicMock()
-            self._acq.is_finished.return_value = False
 
         def __enter__(self):
             return self
 
         def acquire(self, events):
-            def feed():
-                for event in events:
-                    seen.append(event)
-                    if len(seen) == tools._ACQUISITION_EVENT_LOOKAHEAD:
-                        feeder_at_window.set()
-                    elif len(seen) == tools._ACQUISITION_EVENT_LOOKAHEAD + 1:
-                        next_event_fed.set()
-
-            feeder = threading.Thread(target=feed)
-            feeder.start()
-            assert feeder_at_window.wait(timeout=1)
-            assert len(seen) == tools._ACQUISITION_EVENT_LOOKAHEAD
-            self.saved({}, object())
-            assert next_event_fed.wait(timeout=1)
-            allow_abort.set()
-            self._acq.is_finished.return_value = True
-            self.saved({}, object())
-            feeder.join(timeout=1)
-            assert not feeder.is_alive()
+            assert isinstance(events, list)
+            assert events is supplied_events
 
         def __exit__(self, *_exc):
             return None
 
     monkeypatch.setattr(tools, "Acquisition", FakeAcquisition)
-    reservation = AcquisitionLedger().reserve(
-        _guard(max_frames=6), AcquisitionPlan(6, 1, 1, 6)
-    )
     tools._acquire_with_hooks(
-        _guard(), str(tmp_path), "dataset",
-        [{"axes": {"time": i}} for i in range(6)],
-        reservation=reservation,
+        _guard(), str(tmp_path), "dataset", supplied_events
     )
-    assert allow_abort.is_set()
-    assert len(seen) == tools._ACQUISITION_EVENT_LOOKAHEAD + 1
-    assert (
-        len(seen) - reservation.completed_frames
-        <= tools._ACQUISITION_EVENT_LOOKAHEAD
-    )
-    assert terminators.get_nowait() is None
 
 
 @pytest.mark.parametrize(

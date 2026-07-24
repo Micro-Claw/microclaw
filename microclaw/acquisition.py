@@ -53,30 +53,23 @@ class Reservation:
         self.completed_frames = 0
         self.overrun_frames = 0
         self._closed = False
-        # The image-processor and event-source are different pycro-manager
-        # threads.  A Condition gives the feeder a completion handshake without
-        # imposing a fixed polling delay on every frame.
-        self._frame_completed = threading.Condition(ledger._lock)
 
     def commit_frame(self) -> bool:
         """Account for a returned frame without raising on an engine thread.
 
         False means the engine returned a frame outside the reservation.  The
-        caller records that finding and the feeder observes ``has_overrun`` and
-        stops.  Exceptions here would cross pycro-manager's image-process
-        thread and can strand its event-source during shutdown.
+        caller records that finding. Exceptions here would cross
+        pycro-manager's image-saved callback thread during shutdown.
         """
-        with self._frame_completed:
+        with self.ledger._lock:
             if self._closed or self.completed_frames >= self.plan.frames:
                 self.overrun_frames += 1
-                self._frame_completed.notify_all()
                 return False
             self.completed_frames += 1
             fraction = 1 / self.plan.frames
             self.ledger.frames += 1
             self.ledger.bytes += math.ceil(self.plan.estimated_bytes * fraction)
             self.ledger.illuminated_ms += self.plan.exposure_ms_per_frame
-            self._frame_completed.notify_all()
             return True
 
     @property
@@ -84,20 +77,11 @@ class Reservation:
         with self.ledger._lock:
             return self.overrun_frames > 0
 
-    def wait_for_completed_frames(self, minimum: int, timeout_s: float) -> bool:
-        """Wait until ``minimum`` frames return; timeout is only a liveness tick."""
-        with self._frame_completed:
-            return self._frame_completed.wait_for(
-                lambda: self.completed_frames >= minimum or self.overrun_frames > 0,
-                timeout=timeout_s,
-            )
-
     def close(self) -> None:
-        with self._frame_completed:
+        with self.ledger._lock:
             if not self._closed:
                 self.ledger._reserved_illuminated_ms -= self.plan.illuminated_ms
                 self._closed = True
-                self._frame_completed.notify_all()
 
     def __enter__(self) -> "Reservation":
         return self

@@ -268,17 +268,16 @@ acquisition:
   confirm_above_bytes: 5000000000
   confirm_above_illuminated_ms: 60000
 
-List-backed pycro-manager acquisitions are fed lazily within one `Acquisition`
-and one dataset. The installed engine eagerly drains a free-running generator,
-so the feeder deliberately permits only one event in flight and wakes as soon
-as its frame returns. Cancellation stops before the next event; the frame
-already in flight always completes. This trades engine sequencing/pipelining
-for one-event cancellation; its rig throughput cost still needs measurement.
-`max_duration_s` bounds a known-low preflight estimate: exposure and scheduled
-start times are included, but unmeasured readout, stage, autofocus, and filter
-switching overhead is not. MMStudio MDA is
-planned and confirmed from its current settings but is cancellation-exempt:
-its opaque `run_acquisition()` call runs to completion.
+List-backed pycro-manager acquisitions pass their event lists directly to the
+engine. They cannot be cancelled mid-run; this is not new, because they never
+could be. Generator feeding was measured at 3.14x the list cost and removed;
+the evidence and decision are recorded in design/32 §2. Adaptive surveys
+still require generators because later events do not exist until a hook
+produces them. `max_duration_s` bounds a known-low preflight estimate: exposure
+and scheduled start times are included, but unmeasured readout, stage,
+autofocus, and filter switching overhead is not. MMStudio MDA is planned and
+confirmed from its current settings, and its opaque `run_acquisition()` call
+runs to completion.
 
 Adaptive survey reservations cover exactly the planned grid size. A hook may
 choose or revisit events within that allowance, but it cannot add an extra

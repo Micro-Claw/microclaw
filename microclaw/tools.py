@@ -722,6 +722,11 @@ def _acquire_with_hooks(
     (abort() clears the queue, mark_finished()'s None included — Fix 2a), and
     that queue does not exist until the Acquisition is constructed here.
 
+    Known-up-front acquisitions pass their list directly to acquire(). They
+    cannot be cancelled mid-run, and never could; generator feeding was
+    measured at 3.14x the list cost and removed (design/32 §2). Adaptive
+    factories remain generators because their later events do not yet exist.
+
     The one place an acquisition touches the filesystem, and so the one place
     `save_dir` is confined to a configured workspace. Without this the guard is
     one-sided: `export_dataset_as_tiff` resolves the path it reads, while the
@@ -752,52 +757,6 @@ def _acquire_with_hooks(
                 )
 
         hook_fn_kwargs["image_saved_fn"] = account_saved_frame
-
-    if isinstance(events, list) and reservation is not None:
-        bounded_events = events
-
-        def lazy_factory(acq):
-            event_queue = acq._event_queue
-            completed_at_start = reservation.completed_frames
-
-            def finished() -> bool:
-                try:
-                    return bool(acq._acq.is_finished())
-                except Exception:
-                    return False
-
-            def stream():
-                try:
-                    for index, event in enumerate(bounded_events):
-                        # Keep bounded look-ahead because pycro-manager 1.0.2
-                        # java_backend_acquisitions.py/EventQueue.get() eagerly
-                        # advances a queued generator in the event-source loop;
-                        # it does not wait for an image. The M5 rig measured
-                        # 47-56 ms/frame of overlap on main; depth two is the
-                        # minimum that can restore next-frame pipelining while
-                        # bounding cancellation latency to two frames. A larger
-                        # depth worsens that bound without evidence of another
-                        # throughput gain. Completion signals wake this wait
-                        # directly; its timeout is only a liveness backstop.
-                        completion_needed = (
-                            completed_at_start + index + 1
-                            - _ACQUISITION_EVENT_LOOKAHEAD
-                        )
-                        while completion_needed > reservation.completed_frames:
-                            if reservation.has_overrun or finished():
-                                return
-                            reservation.wait_for_completed_frames(
-                                completion_needed,
-                                _FEEDER_LIVENESS_TIMEOUT_S,
-                            )
-                        if index and finished():
-                            return
-                        yield event
-                finally:
-                    # Load-bearing: abort() clears the queued terminator.
-                    event_queue.put(None)
-            return stream()
-        events = lazy_factory
 
     try:
         with Acquisition(directory=save_dir, name=name, show_display=True, **hook_fn_kwargs) as acq:
@@ -2653,16 +2612,6 @@ class SurveyProgress:
 # empty pass also costs one is_finished() bridge round trip (measured ~<0.1 ms
 # on localhost, design/24), so at 0.05 s the poll's bridge duty cycle is ~0.1%.
 _CANDIDATE_POLL_S = 0.05
-# Maximum events fed beyond the last saved frame. Depth two is the smallest
-# window that permits engine/camera pipelining; the M5 rig measured 47-56 ms
-# per frame lost at depth one. The trade-off is cancellation within at most
-# this many frames rather than immediate cancellation.
-_ACQUISITION_EVENT_LOOKAHEAD = 2
-# Not a pacing poll: commit_frame() normally wakes the feeder immediately.
-# This only lets it re-check acquisition liveness if no frame ever arrives.
-_FEEDER_LIVENESS_TIMEOUT_S = 5.0
-
-
 def _survey_event_stream(
     survey_events: list,
     candidates: "queue.Queue",
@@ -3960,8 +3909,8 @@ def run_mda(ctrl: MicroscopeController, guard: SafetyGuard, preview_token: str) 
         reservation.close()
         return {"error": "User declined to run the current MMStudio MDA."}
     try:
-        # MMStudio owns this opaque call and it runs to completion; unlike
-        # generator-fed pycro-manager paths it cannot be cancelled per event.
+        # MMStudio owns this opaque call and it runs to completion. Like the
+        # list-backed runners, it cannot be cancelled mid-run; this is not new.
         store = manager.run_acquisition()
         for _ in range(plan.frames):
             reservation.commit_frame()
