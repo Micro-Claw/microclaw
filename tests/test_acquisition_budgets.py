@@ -171,26 +171,39 @@ def test_reservation_uses_saved_callback_without_installing_pixel_hook(
 def test_list_acquisition_passes_the_list_directly_to_acquire(monkeypatch, tmp_path):
     from microclaw import tools
 
-    supplied_events = [{"axes": {"time": 0}}]
+    supplied_events = [{"axes": {"time": i}} for i in range(3)]
+    received = {}
 
     class FakeAcquisition:
         def __init__(self, **kwargs):
+            received["kwargs"] = kwargs
             self._dataset_disk_location = str(tmp_path / "dataset")
 
         def __enter__(self):
             return self
 
         def acquire(self, events):
-            assert isinstance(events, list)
-            assert events is supplied_events
+            received["events"] = events
 
         def __exit__(self, *_exc):
             return None
 
     monkeypatch.setattr(tools, "Acquisition", FakeAcquisition)
-    tools._acquire_with_hooks(
-        _guard(), str(tmp_path), "dataset", supplied_events
+    # A reservation MUST be supplied: the removed feeder only converted the
+    # list to a generator when one was present, so a reservation-free call
+    # passes this assertion even with the feeder still in place.
+    reservation = AcquisitionLedger().reserve(
+        _guard(max_frames=3), AcquisitionPlan(3, 1, 1, 3)
     )
+    tools._acquire_with_hooks(
+        _guard(), str(tmp_path), "dataset", supplied_events,
+        reservation=reservation,
+    )
+    assert isinstance(received["events"], list)
+    assert received["events"] is supplied_events
+    # Accounting still rides along on the free saved-image callback.
+    assert "image_saved_fn" in received["kwargs"]
+    assert "image_process_fn" not in received["kwargs"]
 
 
 @pytest.mark.parametrize(
