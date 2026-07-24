@@ -2612,6 +2612,8 @@ class SurveyProgress:
 # empty pass also costs one is_finished() bridge round trip (measured ~<0.1 ms
 # on localhost, design/24), so at 0.05 s the poll's bridge duty cycle is ~0.1%.
 _CANDIDATE_POLL_S = 0.05
+
+
 def _survey_event_stream(
     survey_events: list,
     candidates: "queue.Queue",
