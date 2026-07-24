@@ -450,6 +450,65 @@ engineered around:
 The stub's `acquire_interruptibly(...)` should therefore be read as "feed events
 lazily and stop feeding on cancel", not "call acquire() several times".
 
+### Second reconciliation (2026-07-24): lazy feeding is unaffordable — MEASURED
+
+The reconciliation above is **withdrawn**. It was reasoning, not measurement, and the
+M5 rig falsified it. Lazy event feeding costs **3.14× on real hardware**, and the
+cancellation it buys has no way to be triggered.
+
+Measured on M5, 200 frames, 5 ms exposure, dark, via
+`design/32-block4-bridge-cost-probe.py` — raw pycro-manager with microclaw's
+acquisition path entirely out of the picture:
+
+| event source | per-image callback | elapsed | per frame | vs list |
+|---|---|---|---|---|
+| list | none | 6.922 s | 34.61 ms | 1.00× |
+| generator | none | 21.718 s | 108.59 ms | **3.14×** |
+| list | `image_saved_fn` | 6.922 s | 34.61 ms | **1.00×** |
+| generator | `image_saved_fn` | 21.438 s | 107.19 ms | 3.10× |
+
+Two conclusions, both measured rather than argued:
+
+- **`image_saved_fn` is free.** Identical elapsed to three decimals with the callback
+  provably firing 200 times, on M5 and on a demo rig (0.95×). Per-frame budget
+  accounting costs nothing and stays.
+- **Feeding events from a Python generator instead of a list costs 3.14×**
+  (+74 ms/frame). The same probe on a demo camera showed only 1.44× (+3.6 ms/frame),
+  so the cost is hardware-dependent — a demo config cannot detect it.
+
+Three earlier hypotheses were eliminated by measurement first, and each is recorded so
+nobody re-proposes them:
+
+- *Not the pixel transfer.* Moving accounting off `image_process_fn` (which shipped
+  every frame over ZMQ) changed the microclaw-level number by 0.05 %: 31.953 s → 31.968 s.
+- *Not the gating.* Raising the look-ahead from 2 to 10⁹, so the feeder never blocks
+  once, gave 31.891 s against 31.969 s. The engine pulls one event at a time from
+  Python no matter how far ahead the feeder is willing to run, so **no look-ahead depth
+  fixes this.**
+- *Not the `is_finished()` poll.* 5.12 ms mean, 3.16 s total — 9.9 % of a 22.5 s gap.
+
+**The landed architecture.** Acquisitions whose events are known up front —
+`run_timelapse`, `run_zstack`, and the multiposition/tile runners — pass the **list**
+to `acquire()`, exactly as before Block 4. Budgets, the session dose ledger, the
+confirmation gate, and per-frame accounting via `image_saved_fn` all remain, at 1.00×.
+The adaptive paths (`_survey_event_stream`) already fed generators before Block 4 and
+are unchanged; they pay this cost today and always did, which is inherent to events
+that do not exist until a hook produces them.
+
+**Cancellation is deferred, not solved.** It is not merely expensive but currently
+unreachable: nothing in the package calls `Acquisition.abort()`, and `POST /api/stop`
+stops the agent turn at round and tool boundaries, not inside a running tool. Paying
+3.14× on every acquisition for a capability with no trigger is not a trade-off, it is a
+loss. Mid-acquisition cancellation needs its own block, which must deliver the abort
+trigger and the interruption mechanism together, and must budget for the fact that
+one long acquisition cannot be interrupted at all without changing how events reach the
+engine.
+
+*Incidental observation, not a claim:* the probe's list baseline (34.61 ms/frame,
+`show_display=False`) is faster than the same acquisition through
+`_acquire_with_hooks` (47 ms/frame, `show_display=True`). If ~12 ms/frame of display
+overhead is real it is worth its own measurement, but nothing here establishes it.
+
 **Priority: P1 — security / authorization; release-blocking for remote mode**
 
 The server intentionally requires `--allow-remote` before a non-loopback bind,

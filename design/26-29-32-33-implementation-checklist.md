@@ -290,12 +290,14 @@ Branch: `design32/acquisition-budgets`
 - [x] Apply the planner to timelapse, Z stack, tiles/multiposition, adaptive survey, and
       MMStudio MDA. Reject unplannable/unbounded work. — all seven entry points routed;
       MDA is planned from `_read_mda_settings` and credits the ledger after its opaque call.
-- [x] Make cancellation possible by **feeding events lazily inside one `Acquisition`**,
-      generalizing the existing `_survey_event_stream` generator to the pre-dispatched
-      paths. Do NOT split a run into separate `Acquisition` objects — that fragments the
-      dataset and breaks multiposition/hook/adaptive semantics (reconciled 2026-07-23;
-      see design/32 §2 "Reconciliation"). Document pyjavaz serialization, the one-event
-      granularity, and MMStudio MDA's cancellation exemption.
+- [!] ~~Make cancellation possible by feeding events lazily inside one `Acquisition`~~
+      — **WITHDRAWN 2026-07-24 on measured rig evidence.** Lazy generator feeding costs
+      **3.14×** on M5 (+74 ms/frame) and no look-ahead depth fixes it: the engine pulls
+      one event at a time from Python regardless. Cancellation is also unreachable today
+      (nothing calls `Acquisition.abort()`). List-known acquisitions pass the **list**;
+      `image_saved_fn` accounting is free (1.00×) and stays. Cancellation is deferred to
+      its own block, which must ship the abort trigger with the mechanism. See design/32
+      §2 "Second reconciliation (2026-07-24)".
       — **the one-event-in-flight gate is load-bearing and its cost is UNMEASURED.**
       pycro-manager 1.0.2's `EventQueue.get()` eagerly advances a queued generator without
       waiting for an image (verified from installed source + a fake-acquisition test), so an
@@ -311,11 +313,14 @@ Branch: `design32/acquisition-budgets`
 Rig gate:
 
 - [ ] Run no-exposure/dark or safest representative plans around warning and hard limits.
-- [ ] Measure cancellation latency (request → last frame written) on a lazily fed
-      acquisition. There are no batches to size.
-- [ ] **Measure the one-event-in-flight gate's throughput cost** (frames/s on this branch
-      vs. `main`, at a short exposure). This is the block's only inferred claim. Treat a
-      large regression on the SMLM path (`run_timelapse`, `interval_s=0`) as a stop.
+- [x] **Measure the feeder's throughput cost.** — DONE, and it rejected the design:
+      3.40× at 5 ms and 3.94× at 50 ms through microclaw; isolated to generator-vs-list
+      at 3.14× by the raw-bridge 2×2 probe. Accounting via `image_saved_fn` measured free
+      (1.00×). Evidence: `design/32-block4-bridge-cost-probe.py`,
+      `design/32-block4-g1-diagnose.py`.
+- [ ] Re-run G1 after the list revert. Expect ≈1.00× against `main`; anything above
+      ~1.1× means something else regressed and is a stop.
+- [ ] Cancellation latency is **not** measured in this block — the capability is deferred.
 - [ ] Verify the MDA preview token round-trips: `settings.slices()` / `settings.channels()`
       with `spec.useChannel` / `spec.exposure` is unverified bridge code, and a wrong field
       name breaks the `get_mda_settings` → `run_mda` pairing at the point of use.
