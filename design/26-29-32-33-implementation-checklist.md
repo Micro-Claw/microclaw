@@ -38,7 +38,7 @@ Progress markers: `[ ]` not started, `[-]` active, `[x]` complete, `[!]` blocked
 | 2 | `design32/versioned-safety-schema` | 252a4cc | d5aa5c4 (+fix 12b0677) | rig: starts clean w/ reviewed rig config | b8092c4 | Gate done: API matches design/33 (no change); 1b landed note + required-when-present judgment recorded in design/32 (docs merge 8dd521f) |
 | 3 | `design33/core-authorization-map` | c18fa92 | fc346a4 (2 review-fixes) | rig M5: fail-closed+parity, complete map, cat/illum writes pass, PWM/FPGA refused, confirm-gate fires | 0124ffd | Gate done: design/33 Phase-1 landed note + M5 findings + ceiling + StateDevice fast-follow (docs merge ae4794f) |
 | 3b | `design33/statedevice-auto-classify` | 91c6364 | d80ae39 + aaa41d4 (rig-finding fix) | rig M5: before/after maps both complete@40; six Thorlabs pairs flip declared→auto; iChrome-MLE-TCP.State refused live despite explicit human confirm; auto-classified wheel write passes both gates via `serve` | 9491361 | Gate done: design/33 Block-3b landed note + ELL6/no-core-shutter/iChrome findings (docs merge daab107) |
-| 4 | `design32/acquisition-budgets` | 0d0137d, rebased to 1c14271 | a8f0209 + 8d7e832 + 01b2766; 892/98/3 (mac), 876/114/3 (M5 win/py3.12) | **G1 REJECTED 2026-07-23**: 3.40x slower @5ms, 3.98x @50ms; cause = accounting installs image_process_fn on every acquisition, forcing a per-frame ZMQ pixel round trip `main` does not have | | Pre-impl gate done (docs merge 1c14271); G1 finding pending fix + re-measure |
+| 4 | `design32/acquisition-budgets` | 0d0137d, rebased to 1c14271 | 540a641…bce4e32; 894/98/3 (mac), 876/114/3 (M5) | **rig gate PASS 2026-07-26**: G1 1.00× (after list revert; the 3.4× feeder was removed), G3 budgets/confirm before hardware + attributable decline, G5 MDA token sensitive to slice/channel change (bridge reads fixed), G6 ~657 ms/frame overhead. Gate caught 3 defects. | e8e7afb | Gate done: chunking + lazy-feeding both withdrawn on measured evidence; Block 4 landed note + measured G1/G6 + final schema (docs merge PENDING) |
 | 5 | `design33/dose-authorization` | | | required | | |
 | 6 | `design32/remote-auth` | | | n/a | | |
 | 7 | `design32/generated-hook-decisions` | | | regression required | | |
@@ -333,9 +333,12 @@ Rig gate:
 
 Post-merge design gate:
 
-- [ ] Replace design/32 estimates with measured batch/cancellation findings and final
+- [x] Replace design/32 estimates with measured batch/cancellation findings and final
       schema names. If the rig result changes acceptable budgets or architecture, update
-      the design before Block 5.
+      the design before Block 5. — design/32 §2 "Landed: Block 4" note: final planner/
+      ledger/config shape, measured G1 (1.00×) and G6 (~657 ms/frame, 7.6×), the
+      lists-not-generators architecture, and the deferred items. No architecture change
+      beyond what the two reconciliations already recorded.
 
 ## 5. Design/33 Phase 3 — acquisition/dose authorization extension
 
