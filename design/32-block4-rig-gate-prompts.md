@@ -433,20 +433,51 @@ exceeds the estimate by a large factor, say so plainly: `max_duration_s` is then
 to unenforceable in practice and the design must say so rather than implying a wall-clock
 guarantee.
 
+### G6 MEASUREMENT (2026-07-26, `design/32-block4-g6-duration-probe.py`)
+
+9-position snake grid, 50 µm steps, 100 ms exposure, dark, 3 runs:
+
+| run | estimate_s | actual_s | overhead/frame | actual/estimate |
+|---|---|---|---|---|
+| 1 | 0.900 | 7.093 | 688 ms | 7.88× |
+| 2 | 0.900 | 6.734 | 648 ms | 7.48× |
+| 3 | 0.900 | 6.625 | 636 ms | 7.36× |
+
+**~657 ms/frame overhead; actual ≈ 7.6× the exposure-only estimate.** The overhead is
+per-position (50 µm move + settle + per-`Acquisition` setup/teardown + dataset write),
+essentially fixed and exposure-independent, so the ratio is worst at short exposure and
+approaches 1× as exposure grows (≈1.7× at 1 s/frame).
+
+Implication — reinforces, not contradicts, the design: **`max_duration_s` bounds the
+exposure-only estimate, not wall-clock time.** Frames, bytes, and illuminated time are
+exact; duration is the one estimated budget, and for multiposition it under-counts wall
+time by ~7.6× at these settings. An operator must not treat `max_duration_s` as a
+wall-clock cap. Adding a per-frame overhead term would be rig-specific (stage speed,
+camera, per-`Acquisition` cost) and is deferred; the honest position is the documented
+known-low estimate. This number goes to the post-merge design gate and Block 5.
+
 ---
 
-## Verdict
+## Verdict (2026-07-26)
 
-Record per section: pass / fail / finding, with the evidence path.
+| Section | Result | Evidence |
+|---|---|---|
+| G0 preflight / migration | PASS | migration refusal names 9 fields; win baseline 876/114/3 |
+| G1 throughput | PASS | 1.00× after the list revert (was 3.4×) |
+| G2 cancellation | DEFERRED | no operator trigger exists; own future block |
+| G3 budgets + confirmation | PASS | hard limits before hardware; token/confirm render; decline rolls back |
+| G4 ledger + partial completion | UNIT-COVERED | rollback/session/partial unit-tested; live partial-completion optional |
+| G5 MDA token | PASS | token sensitive to slice + per-channel-exposure change; bridge reads fixed |
+| G6 duration honesty | MEASURED | ~657 ms/frame overhead, 7.6× at 100 ms; `max_duration_s` = known-low |
 
-**Merge blockers:** a large short-exposure throughput regression (G1); a hard limit that
-can be exceeded silently; a refusal that arrives after motion or exposure; a declined or
-failed acquisition that does not roll its reservation back; an MDA token blind to
-exposure or slice changes; any exception crossing a pycro-manager thread; a hung
-`__exit__`.
+Every section that could fail the gate has passed. Outstanding: G4 optional live
+partial-completion run; full budgeted MDA end-to-end (needs `mmstudio-mda` authorized on
+M5). Neither is a merge blocker.
 
-**Findings, not blockers:** no operator-facing cancel trigger (G2); the measured
-duration-estimate gap (G6); per-session rather than durable ledger scope.
+**Findings for the post-merge design gate (design/32 §2):** no operator-facing cancel
+trigger (G2 — own block); MDA `run_mda` authz-excluded on M5 (G5 — rig config); measured
+~657 ms/frame duration overhead (G6); per-session rather than durable ledger scope.
 
-Return the evidence directory and the verdicts. The coordinator reviews and merges, then
-runs the post-merge design gate against design/32 §2.
+**Fixes the gate produced, now on-branch:** list-revert throughput fix; attributable
+decline message; MDA slices/channels bridge reads (+ staleness pin). Coordinator reviews
+and merges, then runs the post-merge design gate against design/32 §2.
