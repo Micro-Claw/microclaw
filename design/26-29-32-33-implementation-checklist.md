@@ -376,8 +376,9 @@ Branch: `design33/dose-authorization`
       to the adaptive wrappers `run_adaptive_zstack`/`run_adaptive_timelapse`, which reach
       the planner transitively and are covered by the AST tripwire.
 - [ ] Run a short rig regression proving incomplete dose policy fails before tools and a
-      complete policy produces the same authorized plan/ledger as Block 4. — gate scripted
-      as `design/33-block5-make-incomplete-config.py` and `design/33-block5-rig-probe.py`;
+      complete policy produces the same authorized plan/ledger as Block 4. — procedure in
+      `design/33-block5-rig-gate-prompts.md` (B0–B5), scripted by
+      `design/33-block5-make-incomplete-config.py` and `design/33-block5-rig-probe.py`;
       **PENDING operator execution**.
 - [ ] Commit, review, and merge. — impl `ff41de7`, coordinator-review fixes `a28e5bd`
       (two blockers, both coordinator-verified); 910 passed / 98 skipped / 3 warnings.
