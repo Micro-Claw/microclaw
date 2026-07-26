@@ -2776,6 +2776,50 @@ def test_snap_to_album_uses_proven_java_collection_path(
     assert result["album_exists"] is False
 
 
+def test_read_mda_settings_reads_arraylist_slices_and_channel_methods():
+    """Pin the measured bridge accessors (design/32 Block 4 G5 probe).
+
+    slices()/channels() return a java.util.ArrayList that is NOT iterable over
+    the bridge — read by size()/get(i). On ChannelSpec, useChannel is a field
+    but exposure is a METHOD. A regression to `for v in list` or
+    `float(spec.exposure)` makes these fields '<unreadable: TypeError>' again.
+    """
+    class FakeArrayList:
+        def __init__(self, items):
+            self._items = items
+        def size(self):
+            return len(self._items)
+        def get(self, i):
+            return self._items[i]
+        def __iter__(self):
+            raise TypeError("bridge ArrayList is not directly iterable")
+
+    class FakeChannelSpec:
+        def __init__(self, use_channel, exposure_ms):
+            self.useChannel = use_channel      # public field
+            self._exposure = exposure_ms
+        def exposure(self):                    # method, not a field
+            return self._exposure
+
+    settings = MagicMock()
+    for name in tools._MDA_SCALARS:
+        getattr(settings, name).return_value = None
+    settings.use_slices.return_value = True
+    settings.use_channels.return_value = True
+    settings.slices.return_value = FakeArrayList([1, 0.8, -1.0])
+    settings.channels.return_value = FakeArrayList(
+        [FakeChannelSpec(True, 10), FakeChannelSpec(False, 50)]
+    )
+
+    out = tools._read_mda_settings(settings)
+
+    assert out["slices"] == [1.0, 0.8, -1.0]
+    assert out["channels"] == [
+        {"use_channel": True, "exposure_ms": 10.0},
+        {"use_channel": False, "exposure_ms": 50.0},
+    ]
+
+
 def test_mda_requires_unchanged_preview_and_confirmation(
     mock_ctrl, unconstrained_guard, monkeypatch
 ):

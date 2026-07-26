@@ -3804,23 +3804,30 @@ def _read_mda_settings(settings: Any) -> dict:
             out[name] = f"<unreadable: {type(e).__name__}>"
     # These are non-scalar but safety-critical: channel exposure changes and
     # exact slice-list changes must invalidate the preview token.
+    #
+    # slices()/channels() return a java.util.ArrayList, which is NOT directly
+    # Python-iterable over the bridge (`for v in list` raises TypeError) — read
+    # it by size()/get(i), the same pattern as _str_vector. And on ChannelSpec
+    # the two accessors differ: `useChannel` is a public field (camelCase,
+    # CLAUDE.md) but `exposure` is a METHOD — `spec.exposure` is a bound method
+    # and `float(spec.exposure)` throws; `spec.exposure()` returns the value.
+    # Both facts measured on M5 (design/32 Block 4 G5 introspection probe).
     if out.get("use_slices") is True:
         try:
-            out["slices"] = [float(v) for v in settings.slices()]
+            sl = settings.slices()
+            out["slices"] = [float(sl.get(i)) for i in range(int(sl.size()))]
         except Exception as e:
             out["slices"] = f"<unreadable: {type(e).__name__}>"
     if out.get("use_channels") is True:
         try:
-            raw_channels = settings.channels()
-            channels = []
-            for spec in raw_channels:
-                # Public Java fields retain camelCase over this bridge
-                # (CLAUDE.md). ChannelSpec keeps these compatibility fields.
-                channels.append({
-                    "use_channel": bool(spec.useChannel),
-                    "exposure_ms": float(spec.exposure),
-                })
-            out["channels"] = channels
+            raw = settings.channels()
+            out["channels"] = [
+                {
+                    "use_channel": bool(raw.get(i).useChannel),
+                    "exposure_ms": float(raw.get(i).exposure()),
+                }
+                for i in range(int(raw.size()))
+            ]
         except Exception as e:
             out["channels"] = f"<unreadable: {type(e).__name__}>"
     return out
