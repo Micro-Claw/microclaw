@@ -509,6 +509,54 @@ engine.
 `_acquire_with_hooks` (47 ms/frame, `show_display=True`). If ~12 ms/frame of display
 overhead is real it is worth its own measurement, but nothing here establishes it.
 
+### Landed: Block 4 (merged `e8e7afb`, rig-gate PASS 2026-07-26)
+
+Implementation split across `microclaw/acquisition.py` (planner + ledger) and
+`microclaw/tools.py` (routing). Final shape, superseding the stubs above:
+
+- **`AcquisitionPlan(frames, exposure_ms_per_frame, estimated_duration_s,
+  estimated_bytes)`** with an `illuminated_ms` property; `plan_events()` builds it from
+  the event list and live camera geometry. `AcquisitionLedger`/`Reservation` hold a
+  per-session dose ledger: `reserve()` runs `guard.check_acquisition(...)` under a lock,
+  reserves conservatively, and `commit_frame()` books actual usage as frames complete;
+  `close()` rolls back the unused reservation. `commit_frame` returns a bool (never
+  raises onto an engine thread) and flags `has_overrun`.
+- **Config:** a **required** nine-field `acquisition:` section — hard `max_frames`,
+  `max_duration_s`, `max_bytes`, `max_illuminated_ms`, `max_session_illuminated_ms`, and
+  lower `confirm_above_*` thresholds for frames/duration/bytes/illuminated. Required (not
+  required-when-present): optional would let a reviewed config fail open, reintroducing
+  Finding 1's thesis. Migrated into the example, fixture, and README.
+- **Confirmation** reuses `CONFIRM_FN(..., kind="acquisition")`; a decline rolls back and
+  raises an *attributable* message ("declined at confirmation"), distinct from a limit
+  refusal (rig G3 found the bare message unattributable).
+- **Routing:** all of `run_timelapse`, `run_zstack`, `run_multiposition_acquisition`,
+  `run_tile_acquisition`, `run_multiposition_with_autofocus`, `run_adaptive_survey`, and
+  `run_mda` plan-before-motion and reject unplannable/unbounded work. MDA plans from
+  `_read_mda_settings` (slices/channels read via bridge `size()`/`get(i)`; `exposure()`
+  is a method, `useChannel` a field — measured, rig G5) and credits the ledger after its
+  opaque `run_acquisition()`.
+- **Per-frame accounting rides `image_saved_fn`** (measured free, 1.00×), *not*
+  `image_process_fn` (which shipped every frame over ZMQ). List-known acquisitions pass
+  the list to `acquire()`.
+
+**Measured rig findings (replace the estimates above):**
+
+- **Throughput:** list dispatch is 1.00× vs. `main` (7.015 s vs. 7.000 s @5 ms; 5.484 vs.
+  5.500 @50 ms). `image_saved_fn` accounting adds nothing (identical elapsed, callback
+  firing per frame).
+- **Duration overhead (G6):** a 9-position dark grid (50 µm, 100 ms) ran ~657 ms/frame
+  slower than the exposure-only estimate — **actual ≈ 7.6× estimate**, per-position and
+  exposure-independent (stage move + settle + per-`Acquisition` setup + dataset write).
+  So `max_duration_s` bounds a known-low estimate, **not** wall-clock time; frames,
+  bytes, and illuminated time are exact. A per-frame overhead term would be rig-specific
+  and is deferred.
+
+**Open items carried forward:** mid-acquisition cancellation (own block; no trigger
+exists); `run_mda` is authz-excluded on M5 so its end-to-end run is unobserved there
+(pinned at unit level); the ledger is per-session, not durable. Block 5 (design/33
+Phase 3) consumes this planner/ledger; per-frame exposure alone must never count as
+complete acquisition authorization.
+
 **Priority: P1 — security / authorization; release-blocking for remote mode**
 
 The server intentionally requires `--allow-remote` before a non-loopback bind,
