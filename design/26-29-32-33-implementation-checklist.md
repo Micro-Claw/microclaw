@@ -39,7 +39,7 @@ Progress markers: `[ ]` not started, `[-]` active, `[x]` complete, `[!]` blocked
 | 3 | `design33/core-authorization-map` | c18fa92 | fc346a4 (2 review-fixes) | rig M5: fail-closed+parity, complete map, cat/illum writes pass, PWM/FPGA refused, confirm-gate fires | 0124ffd | Gate done: design/33 Phase-1 landed note + M5 findings + ceiling + StateDevice fast-follow (docs merge ae4794f) |
 | 3b | `design33/statedevice-auto-classify` | 91c6364 | d80ae39 + aaa41d4 (rig-finding fix) | rig M5: before/after maps both complete@40; six Thorlabs pairs flip declared→auto; iChrome-MLE-TCP.State refused live despite explicit human confirm; auto-classified wheel write passes both gates via `serve` | 9491361 | Gate done: design/33 Block-3b landed note + ELL6/no-core-shutter/iChrome findings (docs merge daab107) |
 | 4 | `design32/acquisition-budgets` | 0d0137d, rebased to 1c14271 | 540a641…bce4e32; 894/98/3 (mac), 876/114/3 (M5) | **rig gate PASS 2026-07-26**: G1 1.00× (after list revert; the 3.4× feeder was removed), G3 budgets/confirm before hardware + attributable decline, G5 MDA token sensitive to slice/channel change (bridge reads fixed), G6 ~657 ms/frame overhead. Gate caught 3 defects. | e8e7afb | Gate done: chunking + lazy-feeding both withdrawn on measured evidence; Block 4 landed note + measured G1/G6 + final schema (docs merge `ec98330`) |
-| 5 | `design33/dose-authorization` | `ec98330` (main, 894/98/3) | | required | | |
+| 5 | `design33/dose-authorization` | `ec98330` (main, 894/98/3) | `ff41de7` + `a28e5bd` (review fixes); 910/98/3 (mac) | **PENDING** — scripted, not yet run | | |
 | 6 | `design32/remote-auth` | | | n/a | | |
 | 7 | `design32/generated-hook-decisions` | | | regression required | | |
 | 8 | `design29/saved-dataset-foundation` | | | probe required | | |
@@ -359,15 +359,29 @@ Post-merge design gate:
 
 Branch: `design33/dose-authorization`
 
-- [ ] Create the branch from updated `main`.
-- [ ] Add Block 4's frame, duration, byte, illuminated-time, and cumulative-session
-      policies to the authorization map and completeness report.
-- [ ] Ensure every acquisition path is classified and checked; per-frame exposure alone
-      must never count as complete acquisition authorization.
-- [ ] Test missing/partial dose declarations, aliases, all planners, and CLI/web startup.
+- [x] Create the branch from updated `main`. — from `ec98330`.
+- [x] Add Block 4's frame, duration, byte, illuminated-time, and cumulative-session
+      policies to the authorization map and completeness report. — nine
+      `acquisition-policy:*` rows under a new `acquisition-dose` built-in typed
+      capability. The session row states in the report that the ledger is an in-memory
+      controller session that resets on process restart; Block 5 does NOT make it durable.
+- [x] Ensure every acquisition path is classified and checked; per-frame exposure alone
+      must never count as complete acquisition authorization. — the old
+      `path="acquisition", capability="exposure"` row is deleted (pinned by an explicit
+      negative assertion). Eight `acquisition-tool:*` rows, `run_mda` deliberately NOT
+      among them; `execute_tool` checks the row before dispatch.
+- [x] Test missing/partial dose declarations, aliases, all planners, and CLI/web startup.
+      — each of the nine fields parametrized as the missing one; guaranteed mode fails
+      closed before any prompt or app construction in both CLI and web. "Aliases" resolved
+      to the adaptive wrappers `run_adaptive_zstack`/`run_adaptive_timelapse`, which reach
+      the planner transitively and are covered by the AST tripwire.
 - [ ] Run a short rig regression proving incomplete dose policy fails before tools and a
-      complete policy produces the same authorized plan/ledger as Block 4.
-- [ ] Commit, review, and merge.
+      complete policy produces the same authorized plan/ledger as Block 4. — gate scripted
+      as `design/33-block5-make-incomplete-config.py` and `design/33-block5-rig-probe.py`;
+      **PENDING operator execution**.
+- [ ] Commit, review, and merge. — impl `ff41de7`, coordinator-review fixes `a28e5bd`
+      (two blockers, both coordinator-verified); 910 passed / 98 skipped / 3 warnings.
+      **Not merged: awaiting the rig gate.**
 
 Post-merge design gate:
 
