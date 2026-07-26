@@ -25,6 +25,16 @@ reviewed: true
 rig_profile: {mode: guaranteed, categorical_properties: [], excluded_properties: []}
 stage: {x_min: -100.0, x_max: 100.0, y_min: -100.0, y_max: 100.0}
 camera: {max_exposure_ms: 500.0}
+acquisition:
+  max_frames: 10000
+  max_duration_s: 3600
+  max_bytes: 50000000000
+  max_illuminated_ms: 600000
+  max_session_illuminated_ms: 1800000
+  confirm_above_frames: 500
+  confirm_above_duration_s: 300
+  confirm_above_bytes: 5000000000
+  confirm_above_illuminated_ms: 60000
 """
 
 
@@ -40,6 +50,48 @@ def test_reviewed_true_loads(tmp_path):
     c = load_safety_config(_write(tmp_path, REAL))
     assert isinstance(c, ParsedSafetyConfig)
     assert c.constraints.stage.x_max == 100.0
+
+
+def test_missing_acquisition_section_names_file_and_all_nine_fields(tmp_path):
+    p = _write(tmp_path, REAL[:REAL.index("acquisition:")])
+    with pytest.raises(SafetyConfigError) as exc:
+        ParsedSafetyConfig.from_yaml(str(p))
+    message = str(exc.value)
+    assert str(p) in message
+    for key in (
+        "max_frames", "max_duration_s", "max_bytes", "max_illuminated_ms",
+        "max_session_illuminated_ms", "confirm_above_frames",
+        "confirm_above_duration_s", "confirm_above_bytes",
+        "confirm_above_illuminated_ms",
+    ):
+        assert key in message
+
+
+def test_partial_acquisition_section_aggregates_every_missing_key(tmp_path):
+    text = REAL[:REAL.index("acquisition:")] + "acquisition: {max_frames: 1}\n"
+    with pytest.raises(SafetyConfigError) as exc:
+        ParsedSafetyConfig.from_yaml(str(_write(tmp_path, text)))
+    message = str(exc.value)
+    assert message.count("missing required key") == 8
+
+
+@pytest.mark.parametrize("bad", ["nope", "true", ".nan", ".inf", "0", "-1"])
+def test_acquisition_values_must_be_finite_positive_numbers(tmp_path, bad):
+    text = REAL.replace("max_frames: 10000", f"max_frames: {bad}")
+    with pytest.raises(SafetyConfigError, match="acquisition.max_frames"):
+        ParsedSafetyConfig.from_yaml(str(_write(tmp_path, text)))
+
+
+def test_acquisition_unknown_key_and_value_errors_aggregate(tmp_path):
+    text = REAL.replace(
+        "  max_frames: 10000",
+        "  max_frames: false\n  surprise_budget: 1",
+    )
+    with pytest.raises(SafetyConfigError) as exc:
+        ParsedSafetyConfig.from_yaml(str(_write(tmp_path, text)))
+    message = str(exc.value)
+    assert "acquisition.surprise_budget: unknown key" in message
+    assert "acquisition.max_frames" in message
 
 
 def test_direct_constraints_cannot_enter_validated_loader_path():

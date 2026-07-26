@@ -916,6 +916,7 @@ class TestRunMultipositionWithAutofocus:
                 z_step_um=1.0,
                 protocol="timelapse",
                 save_dir=str(tmp_path),
+                protocol_params={"n_frames": 1, "interval_s": 0},
             )
 
         live.set_live_mode_on.assert_called_with(True)
@@ -1279,7 +1280,7 @@ class TestHookedGridAcquisition:
         calls = []
         monkeypatch.setattr(
             tools, "_acquire_with_hooks",
-            lambda guard, save_dir, name, events, hook=None: (
+            lambda guard, save_dir, name, events, hook=None, **kwargs: (
                 calls.append({"save_dir": save_dir, "name": name,
                               "events": events, "hook": hook}),
                 "/ws/ds",
@@ -2775,6 +2776,50 @@ def test_snap_to_album_uses_proven_java_collection_path(
     assert result["album_exists"] is False
 
 
+def test_read_mda_settings_reads_arraylist_slices_and_channel_methods():
+    """Pin the measured bridge accessors (design/32 Block 4 G5 probe).
+
+    slices()/channels() return a java.util.ArrayList that is NOT iterable over
+    the bridge — read by size()/get(i). On ChannelSpec, useChannel is a field
+    but exposure is a METHOD. A regression to `for v in list` or
+    `float(spec.exposure)` makes these fields '<unreadable: TypeError>' again.
+    """
+    class FakeArrayList:
+        def __init__(self, items):
+            self._items = items
+        def size(self):
+            return len(self._items)
+        def get(self, i):
+            return self._items[i]
+        def __iter__(self):
+            raise TypeError("bridge ArrayList is not directly iterable")
+
+    class FakeChannelSpec:
+        def __init__(self, use_channel, exposure_ms):
+            self.useChannel = use_channel      # public field
+            self._exposure = exposure_ms
+        def exposure(self):                    # method, not a field
+            return self._exposure
+
+    settings = MagicMock()
+    for name in tools._MDA_SCALARS:
+        getattr(settings, name).return_value = None
+    settings.use_slices.return_value = True
+    settings.use_channels.return_value = True
+    settings.slices.return_value = FakeArrayList([1, 0.8, -1.0])
+    settings.channels.return_value = FakeArrayList(
+        [FakeChannelSpec(True, 10), FakeChannelSpec(False, 50)]
+    )
+
+    out = tools._read_mda_settings(settings)
+
+    assert out["slices"] == [1.0, 0.8, -1.0]
+    assert out["channels"] == [
+        {"use_channel": True, "exposure_ms": 10.0},
+        {"use_channel": False, "exposure_ms": 50.0},
+    ]
+
+
 def test_mda_requires_unchanged_preview_and_confirmation(
     mock_ctrl, unconstrained_guard, monkeypatch
 ):
@@ -2792,3 +2837,26 @@ def test_mda_requires_unchanged_preview_and_confirmation(
     result = tools.run_mda(mock_ctrl, unconstrained_guard, preview["preview_token"])
     manager.run_acquisition.assert_called_once_with()
     assert result["datastore"]["image_count"] == 1
+
+
+def test_mda_refuses_a_stale_token_when_settings_changed(
+    mock_ctrl, unconstrained_guard, monkeypatch
+):
+    """Pin the staleness refusal — unobservable on M5, where the authorization
+    map excludes the mmstudio-mda path and refuses before this check (design/32
+    Block 4 G5). The live token proved sensitive to slice/channel changes; this
+    guards the run-side consumption of that sensitivity."""
+    settings = MagicMock()
+    for name in tools._MDA_SCALARS:
+        getattr(settings, name).return_value = False if name.startswith("use_") else None
+    settings.save.return_value = False
+    settings.num_frames.return_value = 3
+    manager = mock_ctrl.studio.acquisitions()
+    manager.get_acquisition_settings.return_value = settings
+    preview = tools.get_mda_settings(mock_ctrl, unconstrained_guard)
+    # Operator changes a setting in the GUI after previewing.
+    settings.num_frames.return_value = 5
+    monkeypatch.setattr(tools, "CONFIRM_FN", lambda *args, **kwargs: True)
+    result = tools.run_mda(mock_ctrl, unconstrained_guard, preview["preview_token"])
+    assert "changed" in result.get("error", "").lower()
+    manager.run_acquisition.assert_not_called()

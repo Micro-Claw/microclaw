@@ -57,6 +57,17 @@ def _parse(path):
             "rig_profile",
             profile,
         )
+        document.setdefault("acquisition", {
+            "max_frames": 10000,
+            "max_duration_s": 3600,
+            "max_bytes": 50000000000,
+            "max_illuminated_ms": 600000,
+            "max_session_illuminated_ms": 1800000,
+            "confirm_above_frames": 500,
+            "confirm_above_duration_s": 300,
+            "confirm_above_bytes": 5000000000,
+            "confirm_above_illuminated_ms": 60000,
+        })
         for section in ("camera", "analysis", "channels"):
             if document.get(section) == {}:
                 document.pop(section)
@@ -124,11 +135,24 @@ class TestNoConstraints:
 
 
 class TestFromYaml:
+    _ACQUISITION = (
+        "acquisition:\n"
+        "  max_frames: 10000\n"
+        "  max_duration_s: 3600\n"
+        "  max_bytes: 50000000000\n"
+        "  max_illuminated_ms: 600000\n"
+        "  max_session_illuminated_ms: 1800000\n"
+        "  confirm_above_frames: 500\n"
+        "  confirm_above_duration_s: 300\n"
+        "  confirm_above_bytes: 5000000000\n"
+        "  confirm_above_illuminated_ms: 60000\n"
+    )
     _PROFILE = (
         "rig_profile:\n"
         "  mode: guaranteed\n"
         "  categorical_properties: []\n"
         "  excluded_properties: []\n"
+        + _ACQUISITION
     )
 
     def test_schema_version_is_mandatory_and_old_versions_are_clear(self, tmp_path):
@@ -179,6 +203,7 @@ class TestFromYaml:
             "  categorical_properties: []\n"
             "  excluded_properties: []\n"
             "stage: {x_min: -10, x_max: 10, z_min: 0, z_max: 200}\n"
+            + self._ACQUISITION
         )
         parsed = ParsedSafetyConfig.from_yaml(str(cfg))
         x = parsed.ranges[ActuatorId("core_xy", None, "stage-position", "x")]
@@ -210,6 +235,7 @@ class TestFromYaml:
             "  - device: TIRF\n"
             "    min_um: {unbounded: true, reason: controller enforces lower edge}\n"
             "    max_um: {unbounded: true, reason: controller enforces upper edge}\n"
+            + self._ACQUISITION
         )
         parsed = ParsedSafetyConfig.from_yaml(str(cfg))
         assert {edge.unbounded_reason for policy in parsed.ranges.values()
@@ -240,6 +266,7 @@ class TestFromYaml:
             "  mode: degraded_trusted_plugins\n"
             "  excluded_properties:\n"
             "    - {device: Core, property: Initialize}\n"
+            + self._ACQUISITION
         )
         parsed = ParsedSafetyConfig.from_yaml(str(cfg))
         assert parsed.rig_profile.mode == "degraded_trusted_plugins"
@@ -250,11 +277,13 @@ class TestFromYaml:
         cfg.write_text(
             "schema_version: 2\nreviewed: true\n"
             "rig_profile: {categorical_properties: [], excluded_properties: []}\n"
+            + self._ACQUISITION
         )
         assert ParsedSafetyConfig.from_yaml(str(cfg)).rig_profile.mode == "guaranteed"
         cfg.write_text(
             "schema_version: 2\nreviewed: true\n"
             "rig_profile: {mode: trusted, categorical_properties: [], excluded_properties: []}\n"
+            + self._ACQUISITION
         )
         with pytest.raises(SafetyConfigError, match="degraded_trusted_plugins"):
             ParsedSafetyConfig.from_yaml(str(cfg))
