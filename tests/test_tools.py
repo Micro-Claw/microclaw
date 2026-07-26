@@ -2837,3 +2837,26 @@ def test_mda_requires_unchanged_preview_and_confirmation(
     result = tools.run_mda(mock_ctrl, unconstrained_guard, preview["preview_token"])
     manager.run_acquisition.assert_called_once_with()
     assert result["datastore"]["image_count"] == 1
+
+
+def test_mda_refuses_a_stale_token_when_settings_changed(
+    mock_ctrl, unconstrained_guard, monkeypatch
+):
+    """Pin the staleness refusal — unobservable on M5, where the authorization
+    map excludes the mmstudio-mda path and refuses before this check (design/32
+    Block 4 G5). The live token proved sensitive to slice/channel changes; this
+    guards the run-side consumption of that sensitivity."""
+    settings = MagicMock()
+    for name in tools._MDA_SCALARS:
+        getattr(settings, name).return_value = False if name.startswith("use_") else None
+    settings.save.return_value = False
+    settings.num_frames.return_value = 3
+    manager = mock_ctrl.studio.acquisitions()
+    manager.get_acquisition_settings.return_value = settings
+    preview = tools.get_mda_settings(mock_ctrl, unconstrained_guard)
+    # Operator changes a setting in the GUI after previewing.
+    settings.num_frames.return_value = 5
+    monkeypatch.setattr(tools, "CONFIRM_FN", lambda *args, **kwargs: True)
+    result = tools.run_mda(mock_ctrl, unconstrained_guard, preview["preview_token"])
+    assert "changed" in result.get("error", "").lower()
+    manager.run_acquisition.assert_not_called()

@@ -385,6 +385,34 @@ does not error; it silently produces a token that fails to invalidate.
 
 6. Confirm the result states MDA cannot be cancelled per event.
 
+### G5 VERDICT — PASS (2026-07-26, after two-run introspection fix)
+
+The gated property is the preview token's sensitivity to slice/channel changes.
+First attempt (`f7b1602` era) found `settings.slices()` / `settings.channels()`
+throwing `TypeError` — the token was blind to exactly those changes. Root cause found
+by the introspection probe (`design/32-block4-mda-settings-probe.py`): both return a
+`java.util.ArrayList` that is not directly iterable over the bridge (read by
+`size()`/`get(i)`), and on `ChannelSpec` `useChannel` is a field but `exposure` is a
+method. Fixed in `138a70d`.
+
+Live confirmation on M5:
+- `get_mda_settings` now returns real slice positions (11 values) and per-channel
+  `exposure_ms`.
+- **Token invalidates on a per-channel exposure change** (ch2 10→20 ms), **on a slice
+  change** (−1.0→−0.9 µm, 11→10 slices), and **is stable when nothing changes** (same
+  token returned). The exact defect G5 gated is fixed and confirmed.
+
+**Finding (rig config, not a Block 4 defect):** `run_mda` is refused on M5 by
+`RigAuthorizationError: mmstudio-mda write path is excluded from the Phase-1
+authorization map`. `authorize_path("mmstudio-mda")` is `run_mda`'s first line, before
+the token staleness check, so on M5 the clean-path run cannot execute and `run_mda`'s
+own staleness refusal is not live-observable. Fail-safe (an unauthorized path can't
+run). The staleness refusal and budget reservation are therefore pinned at the unit
+level (`test_mda_refuses_a_stale_token_when_settings_changed`,
+`test_read_mda_settings_reads_arraylist_slices_and_channel_methods`). Running a full
+budgeted MDA end-to-end on M5 would require the operator to add `mmstudio-mda` to the
+authorization map — deferred to their discretion; not required for this gate.
+
 ---
 
 ## G6. Duration honesty
