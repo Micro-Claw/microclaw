@@ -232,6 +232,8 @@ def test_list_acquisition_passes_the_list_directly_to_acquire(monkeypatch, tmp_p
             "_plan_protocol_repetitions",
             "_authorize_acquisition",
         ),
+        ("run_adaptive_zstack", "plan_events", "_authorize_acquisition"),
+        ("run_adaptive_timelapse", "plan_events", "_authorize_acquisition"),
         (
             "run_adaptive_survey",
             "_acquire_survey_with_detector",
@@ -254,3 +256,27 @@ def test_every_acquisition_entry_point_has_a_planning_and_reservation_edge(
     source = inspect.getsource(getattr(tools, entry_point))
     assert planning_edge in source
     assert reservation_edge in source
+    fn = tools.TOOL_REGISTRY[entry_point]
+    assert fn is getattr(tools, entry_point)
+    assert fn._microclaw_acquisition_entry_point is True
+
+
+def test_acquisition_named_public_tools_cannot_bypass_map_registration():
+    """Mechanical tripwire for a newly registered acquisition-like tool.
+
+    The marker, rather than a second authorization-module list, is the source
+    used to populate the live map. This naming tripwire catches the common
+    failure mode where a new public runner is registered but not marked.
+    """
+    from microclaw import tools
+
+    acquisition_terms = ("acquisition", "zstack", "timelapse", "survey", "mda")
+    candidates = {
+        name for name in tools.TOOL_REGISTRY
+        if name.startswith("run_") and any(term in name for term in acquisition_terms)
+    }
+    marked = {
+        name for name, fn in tools.TOOL_REGISTRY.items()
+        if getattr(fn, "_microclaw_acquisition_entry_point", False)
+    }
+    assert candidates <= marked

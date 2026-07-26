@@ -217,7 +217,7 @@ class TestFromYaml:
             frozenset(),
         )
         assert BUILTIN_TYPED_CAPABILITIES == frozenset(
-            {"stage-position", "exposure", "illumination"}
+            {"stage-position", "exposure", "illumination", "acquisition-dose"}
         )
 
     def test_unbounded_reasons_survive_for_core_and_named_ranges(self, tmp_path):
