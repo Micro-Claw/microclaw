@@ -595,6 +595,7 @@ def validate_live_rig(
             axis="z",
         ))
     acquisition = parsed_config.constraints.acquisition
+    acquisition_policy_complete = True
     for field_name, policy_detail in _ACQUISITION_POLICY_FIELDS:
         value = getattr(acquisition, field_name)
         valid = (
@@ -603,6 +604,7 @@ def validate_live_rig(
             and math.isfinite(value)
             and value > 0
         )
+        acquisition_policy_complete = acquisition_policy_complete and valid
         if guaranteed and not valid:
             errors.append(
                 f"Acquisition authorization requires finite positive "
@@ -623,10 +625,20 @@ def validate_live_rig(
             continue
         entries.append(AuthorizationEntry(
             path=f"acquisition-tool:{tool_name}",
-            classification="built_in_typed_capability",
+            classification=(
+                "built_in_typed_capability"
+                if acquisition_policy_complete else "trusted_degraded"
+            ),
             device=camera_device or None,
             capability="acquisition-dose",
-            detail="plans and reserves before hardware effects",
+            detail=(
+                "plans and reserves before hardware effects"
+                if acquisition_policy_complete
+                else (
+                    "planner and ledger remain active, but the complete typed dose "
+                    "policy is unavailable; global completeness is suspended"
+                )
+            ),
         ))
     entries.extend([
         AuthorizationEntry(

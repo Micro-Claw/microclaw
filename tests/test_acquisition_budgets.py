@@ -1,3 +1,4 @@
+import ast
 from unittest.mock import MagicMock
 import inspect
 
@@ -261,22 +262,43 @@ def test_every_acquisition_entry_point_has_a_planning_and_reservation_edge(
     assert fn._microclaw_acquisition_entry_point is True
 
 
-def test_acquisition_named_public_tools_cannot_bypass_map_registration():
-    """Mechanical tripwire for a newly registered acquisition-like tool.
-
-    The marker, rather than a second authorization-module list, is the source
-    used to populate the live map. This naming tripwire catches the common
-    failure mode where a new public runner is registered but not marked.
-    """
+def test_planner_reachable_public_tools_cannot_bypass_map_registration():
+    """Mechanically derive registry tools that reach the planner or ledger."""
     from microclaw import tools
 
-    acquisition_terms = ("acquisition", "zstack", "timelapse", "survey", "mda")
+    functions = {
+        name: fn for name, fn in inspect.getmembers(tools, inspect.isfunction)
+        if fn.__module__ == tools.__name__
+    }
+    calls = {}
+    for name, fn in functions.items():
+        tree = ast.parse(inspect.getsource(fn))
+        calls[name] = {
+            node.func.id for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+
+    sinks = {"plan_events", "_authorize_acquisition", "_acquisition_ledger"}
+
+    def reaches_planner(name, seen=frozenset()):
+        if name in seen:
+            return False
+        direct = calls.get(name, set())
+        return bool(direct & sinks) or any(
+            reaches_planner(callee, seen | {name})
+            for callee in direct & functions.keys()
+        )
+
     candidates = {
-        name for name in tools.TOOL_REGISTRY
-        if name.startswith("run_") and any(term in name for term in acquisition_terms)
+        name for name in tools.TOOL_REGISTRY if reaches_planner(name)
     }
     marked = {
         name for name, fn in tools.TOOL_REGISTRY.items()
         if getattr(fn, "_microclaw_acquisition_entry_point", False)
     }
-    assert candidates <= marked
+    assert candidates == marked
+    assert candidates - {"run_mda"} == {
+        "run_zstack", "run_timelapse", "run_multiposition_acquisition",
+        "run_tile_acquisition", "run_multiposition_with_autofocus",
+        "run_adaptive_zstack", "run_adaptive_timelapse", "run_adaptive_survey",
+    }

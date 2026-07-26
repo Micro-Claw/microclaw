@@ -212,6 +212,14 @@ def test_incomplete_dose_policy_suspends_claim_in_degraded_mode():
         and entry.classification == "trusted_degraded"
         for entry in report.entries
     )
+    tool_entries = [
+        entry for entry in report.entries
+        if entry.path.startswith("acquisition-tool:")
+    ]
+    assert len(tool_entries) == 8
+    assert {entry.classification for entry in tool_entries} == {"trusted_degraded"}
+    assert all("complete typed dose policy is unavailable" in entry.detail
+               for entry in tool_entries)
 
 
 def test_acquisition_report_names_all_policies_and_honest_session_scope():
