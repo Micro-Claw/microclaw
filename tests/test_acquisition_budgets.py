@@ -107,12 +107,18 @@ def test_declined_confirmation_rolls_back_reservation_fully(monkeypatch):
     monkeypatch.setattr(tools, "CONFIRM_FN", lambda *args, **kwargs: False)
     before = (ledger.frames, ledger.bytes, ledger.illuminated_ms,
               ledger._reserved_illuminated_ms)
-    with pytest.raises(SafetyViolation, match="declined"):
+    with pytest.raises(SafetyViolation, match="declined") as exc:
         tools._authorize_acquisition(
             ctrl, _guard(confirm_above_frames=1), AcquisitionPlan(2, 1, 1, 2)
         )
     assert (ledger.frames, ledger.bytes, ledger.illuminated_ms,
             ledger._reserved_illuminated_ms) == before
+    # The decline must be attributable — distinct from a limit refusal, which
+    # names a max_* field (design/32 Block 4 G3: an operator decline surfaced
+    # as a bare message the agent could not tell apart from a limit hit).
+    message = str(exc.value)
+    assert "confirmation" in message
+    assert "max_" not in message
 
 
 def test_reservation_records_an_extra_completed_frame_without_raising():

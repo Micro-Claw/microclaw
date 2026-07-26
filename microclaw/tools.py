@@ -111,7 +111,14 @@ def _authorize_acquisition(
         kind="acquisition",
     ):
         reservation.close()
-        raise SafetyViolation("Acquisition declined.")
+        # Name that this was a human confirmation decline, not a limit refusal.
+        # The two are otherwise indistinguishable to the agent and the audit
+        # log — an M5 operator's intentional decline surfaced as a bare
+        # "declined" the agent could not attribute (design/32 Block 4 G3).
+        raise SafetyViolation(
+            "Acquisition plan declined at confirmation "
+            "(operator refused the reserved plan)."
+        )
     return reservation
 
 
