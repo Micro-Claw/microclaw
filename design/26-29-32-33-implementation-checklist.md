@@ -318,8 +318,9 @@ Rig gate:
       at 3.14× by the raw-bridge 2×2 probe. Accounting via `image_saved_fn` measured free
       (1.00×). Evidence: `design/32-block4-bridge-cost-probe.py`,
       `design/32-block4-g1-diagnose.py`.
-- [ ] Re-run G1 after the list revert. Expect ≈1.00× against `main`; anything above
-      ~1.1× means something else regressed and is a stop.
+- [x] Re-run G1 after the list revert. — **PASS 2026-07-26**: 1.002× @5ms (7.015 vs
+      7.000 s), 0.997× @50ms (5.484 vs 5.500 s). Regression fully closed; `image_saved_fn`
+      accounting stays free in the full path.
 - [ ] Cancellation latency is **not** measured in this block — the capability is deferred.
 - [ ] Verify the MDA preview token round-trips: `settings.slices()` / `settings.channels()`
       with `spec.useChannel` / `spec.exposure` is unverified bridge code, and a wrong field
