@@ -182,98 +182,25 @@ artifact worth keeping beyond its stdout.
 
 ---
 
-## G2. Cancellation — is there anything that can trigger it?
+## G2. Cancellation — deferred, not tested
 
-The feeder honours an abort: it polls `acq._acq.is_finished()` and stops feeding.
-**But review found no operator-facing trigger** — nothing in the package calls
-`Acquisition.abort()`, and `POST /api/stop` stops the agent turn at round and tool
-boundaries, not inside a running tool. Establish this empirically rather than assuming
-it either way.
+**Nothing to run here.** The lazy-feeding cancellation mechanism was removed after G1
+measured it at 3.14x on M5 (design/32 §2, second reconciliation). List-backed
+acquisitions — every fixed runner — cannot be cancelled mid-run, and never could before
+Block 4 either. There is nothing to cancel and no operator trigger to test: nothing in
+the package calls `Acquisition.abort()`, and `POST /api/stop` stops the agent turn at
+round and tool boundaries, not inside a running tool.
 
-1. Start `microclaw serve`. Begin a long dark timelapse through the agent:
+Record one finding for the post-merge design gate, no rig action:
 
-   > Run a timelapse of 500 frames at 5 ms exposure with `interval_s=0`, shutter
-   > closed, saving to `<workspace>\g2-cancel`. Do not analyze anything afterwards.
+> Mid-acquisition cancellation is unimplemented and unreachable. It needs its own block
+> that ships the abort trigger and the interruption mechanism together, and that budgets
+> for the measured cost of feeding events lazily. Block 4 deliberately does not attempt
+> it.
 
-2. While it runs, press Stop in the GUI. Record: does the acquisition stop, or does
-   Stop only take effect after the tool returns? Time both.
-
-3. If Stop does not reach the acquisition, trigger an abort directly to measure the
-   feeder itself. Save this as `<evidence-dir>\cancel_probe.py`:
-
-```python
-"""Block 4 gate G2: feeder cancellation latency. Dark, minimum exposure."""
-import sys, threading, time
-from microclaw.config import load_safety_config_or_exit
-from microclaw.safety import SafetyGuard
-from microclaw.controller import MicroscopeController
-from microclaw import tools
-
-CONFIG, SAVE_DIR = sys.argv[1], sys.argv[2]
-N_FRAMES = int(sys.argv[3]) if len(sys.argv) > 3 else 500
-EXPOSURE_MS = float(sys.argv[4]) if len(sys.argv) > 4 else 50.0
-ABORT_AFTER_S = float(sys.argv[5]) if len(sys.argv) > 5 else 5.0
-
-parsed = load_safety_config_or_exit(CONFIG)
-guard = SafetyGuard(parsed.constraints)
-ctrl = MicroscopeController(guard=guard)
-tools.CONFIRM_FN = lambda summary, kind="action": True   # unattended; dark run only
-
-# Capture the live Acquisition without subclassing it: tools calls
-# Acquisition(...) as a callable and uses the result as a context manager.
-captured = {}
-real_acquisition = tools.Acquisition
-def capturing(*args, **kwargs):
-    acq = real_acquisition(*args, **kwargs)
-    captured["acq"] = acq
-    return acq
-tools.Acquisition = capturing
-
-abort_at = {}
-def abort_later():
-    time.sleep(ABORT_AFTER_S)
-    acq = captured.get("acq")
-    if acq is None:
-        print("NO ACQUISITION CAPTURED"); return
-    abort_at["t"] = time.monotonic()
-    acq.abort()
-    print(f"abort() returned after {time.monotonic() - abort_at['t']:.3f}s")
-
-threading.Thread(target=abort_later, daemon=True).start()
-t0 = time.monotonic()
-result = tools.run_timelapse(
-    ctrl, guard, n_frames=N_FRAMES, interval_s=0,
-    save_dir=SAVE_DIR, name="g2_cancel", exposure_ms=EXPOSURE_MS,
-)
-returned = time.monotonic()
-print(f"planned_frames={N_FRAMES} exposure_ms={EXPOSURE_MS}")
-print(f"total_elapsed_s={returned - t0:.3f}")
-if "t" in abort_at:
-    print(f"abort_to_return_s={returned - abort_at['t']:.3f}")
-    print(f"frames_expected_before_abort≈{ABORT_AFTER_S * 1000 / EXPOSURE_MS:.0f}")
-print(result)
-```
-
-```powershell
-python <evidence-dir>\cancel_probe.py <config> <workspace>\g2-cancel 500 50 5 > <evidence-dir>\g2-cancel.txt 2>&1
-```
-
-Then count the frames actually written to `<workspace>\g2-cancel` and compare with
-`frames_expected_before_abort`. One or two extra is correct — the in-flight frame
-always completes. Many extra means the feeder is not observing the abort.
-
-Interpreting the number: `abort()` is itself a bridge call, and pyjavaz holds one lock
-across every round trip, so the abort thread blocks until the in-flight call finishes.
-That wait is part of the real latency, not an artifact of the probe.
-
-**What to report:** whether an operator can cancel an acquisition at all today; and,
-separately, the feeder's latency once an abort is actually issued. Confirm exactly one
-further frame lands after the abort, and that the dataset closes cleanly rather than
-hanging in `__exit__` (that hang is the failure design/24 Fix 2a exists to prevent).
-
-If there is no operator trigger, that is a **finding, not necessarily a Block 4
-blocker** — the mechanism is correct and Block 4's charter was budgets. Record it for
-the post-merge design gate; it likely becomes its own small block.
+The adaptive survey path is the one exception and it is unchanged from `main`: it feeds
+generators because its later events do not exist until a hook produces them, and it
+stops by not enqueuing the next tile (design/24 Fix 2a), not by aborting.
 
 ---
 
