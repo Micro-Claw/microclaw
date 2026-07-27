@@ -247,3 +247,25 @@ def test_resolved_saved_hook_gets_neither_ctrl_nor_guard(monkeypatch):
     adapter = _resolve_hook(object(), object(), "saved", {}, None)
     assert isinstance(adapter, UntrustedHookAdapter)
     assert received == {"ctrl": None, "guard": None}
+
+
+def test_absent_and_ambiguous_labels_are_refused_with_distinct_reasons(tmp_path):
+    """The refusal record is the only account of why a tile was not acquired,
+    so 'no such label' and 'that label is ambiguous' must not read alike."""
+    adapter, candidates, _ = _adapter(AcquireAt("nope"), tmp_path)
+    adapter.image_process_fn(np.zeros((2, 2)), {}, object())
+    assert "no planned survey position is labelled" in adapter._log[-1]["reason"]
+
+    class Hook:
+        def analyze_frame(self, image, metadata):
+            return HookResult({}, (AcquireAt("dup"),))
+
+    duplicated = [{"axes": {"position": "dup"}, "x": 0.0, "y": 0.0},
+                  {"axes": {"position": "dup"}, "x": 1.0, "y": 0.0}]
+    ambiguous = UntrustedHookAdapter(Hook(), str(tmp_path / "amb.json"))
+    ambiguous.configure_adaptive(events=duplicated, candidates=queue.Queue(),
+                                 progress=SurveyProgress(2), guard=_Guard(),
+                                 max_events=2)
+    ambiguous.image_process_fn(np.zeros((2, 2)), {}, object())
+    assert "matches 2 planned positions" in ambiguous._log[-1]["reason"]
+    assert candidates.empty()

@@ -283,44 +283,165 @@ interactive prompt from the callback thread.
 
 ### D4. Reservation, planned-position, guard, and runner-support refusals
 
-Run separate minimal surveys using saved `analyze_frame` hooks that propose:
+Four refusal paths, run separately so each is attributable. Cases 1, 2 and 4 are
+saved `analyze_frame` hooks; case 3 is different and is explained below.
 
-1. enough `AcquireAt` actions to exceed the planned-grid frame reservation;
-2. `AcquireAt` for a label/index absent from the planned grid;
-3. `AcquireAt` for a planned event that violates a deliberately narrower copied
-   demo safety profile; and
-4. one valid but unsupported `SetExposure` (repeat with MoveStage or
-   RequestAutofocus if desired, but one is sufficient for the live gate).
+Each hook is minimal and terminates on its own — none needs an abort. Save each
+one through the normal show → confirm → `generate_and_save_hook` flow, run it, and
+call `read_hook_log` immediately afterwards.
 
-Keep these separate so each refusal is attributable.
+**Case 1 — exceed the committed reservation.** Two planned positions, a hook that
+always asks for tile 0:
 
-**Expected observable:** no refused action reaches hardware. The parent log says,
-respectively, outside committed reservation, not a planned position, SafetyGuard
-refusal, and unsupported-by-run_adaptive_survey. No case prompts interactively.
+```python
+class OverReserveHook:
+    def analyze_frame(self, image, metadata):
+        from microclaw.hook_decisions import AcquireAt, HookResult
+        return HookResult({"case": 1}, [AcquireAt(0)])
+```
 
-**Stop condition:** any extra frame, motion/exposure/autofocus call, prompt, missing
-reason, or refusal attributed only to generated-hook text instead of parent audit.
+Run over exactly **two** positions. The first `AcquireAt(0)` is accepted (revisiting
+a planned tile is allowed); the second is refused, because the reservation covers
+the planned grid and both of its frame slots are now spent. Two frames total, then
+the survey completes on its own.
+
+**Case 2 — a position that is not in the planned grid.** One run covers both the
+index and the label path:
+
+```python
+class UnknownPositionHook:
+    def analyze_frame(self, image, metadata):
+        from microclaw.hook_decisions import AcquireAt, HookResult, StopSurvey
+        return HookResult(
+            {"case": 2}, [AcquireAt(99), AcquireAt("no_such_tile"), StopSurvey()]
+        )
+```
+
+Run over three positions. Both `AcquireAt` actions are refused with *different*
+reasons — the index one names the planned survey, the label one says no planned
+position carries that label — and the `StopSurvey` then ends the run after a single
+frame.
+
+**Case 3 — the guard refusal is an UP-FRONT refusal, not an in-dispatch one.**
+The original form of this step ("propose `AcquireAt` for a planned event that
+violates a narrower profile") **cannot be executed**, and the gate should not
+pretend otherwise. `_acquire_survey_with_detector` calls `guard.check_xy` on every
+survey position before it builds a single event
+(`microclaw/tools.py`, "check every survey point up front"), so a narrowed profile
+refuses the whole survey before any hook runs. The in-dispatch guard check inside
+`UntrustedHookAdapter._dispatch` is therefore unreachable with a static config; it
+is defence-in-depth for a future action type that carries operator-supplied
+coordinates, and it is covered by the unit test
+`test_guard_violation_is_refused_and_logged`. Record it as unit-tested, **not**
+live-verified, and do not claim otherwise in the verdict.
+
+What to run instead is the safety property that does matter, and it is stronger:
+
+```powershell
+Copy-Item $Config "$Evidence\d4-narrowed-profile.yaml"
+```
+
+Narrow one XY stage bound in the copy so that one of the planned tiles falls
+outside it, then run the same survey with `--safety-config` pointing at the copy.
+Retain the diff between the two profiles.
+
+**Expected:** the survey is refused before any exposure, naming the offending
+position; no dataset directory is created; the stage does not move.
+
+**Case 4 — a valid but unsupported action.**
+
+```python
+class UnsupportedActionHook:
+    def analyze_frame(self, image, metadata):
+        from microclaw.hook_decisions import HookResult, SetExposure, StopSurvey
+        return HookResult(
+            {"case": 4}, [SetExposure(exposure_ms=20.0), StopSurvey()]
+        )
+```
+
+Run over three positions. `SetExposure` parses as a valid action and is then
+refused as unsupported by this runner — the closed union stays complete, and the
+camera exposure must be unchanged afterwards. Confirm that separately by calling
+`get_exposure` before and after the run and comparing the two values.
+
+**Expected observable:** no refused action reaches hardware, and the four reasons
+are distinct in the parent log — outside committed reservation; not in the planned
+survey / no position carries that label; the up-front guard refusal from case 3;
+and `unsupported-by-run_adaptive_survey`. No case prompts interactively. Case 1
+acquires exactly 2 frames; cases 2 and 4 acquire exactly 1.
+
+**Stop condition:** any extra frame, any motion/exposure/autofocus call, an
+interactive prompt, a missing or generic reason, two different refusals sharing one
+reason string, or a refusal attributed only to generated-hook text rather than to
+the parent audit record.
 
 ### D5. Complete design/26 Run A on the demo core
 
+This is the regression step: `snr_observer` is a reviewed built-in, so Block 7 must
+not have changed it at all. It is also the only end-to-end exercise of the trusted
+path available without M5.
+
 Follow `design\26-field-spike-prompts.md` Run A A1 through A3 without abbreviating
-the prompts: `snr_observer` fixed tile survey, `rank_hook_log`,
-`validate_positions`, `save_position_list`, full revisit, and
-`compare_revisit_frames`. Store everything under `$Scratch\run-a-demo` and copy the
-session history plus `inspect_artifacts` manifest to `$Evidence`.
+the prompts. Store everything under `$Scratch\run-a-demo`. Concrete substitutions
+for the demo core, replacing that document's `<...>` placeholders:
+
+- **Grid:** 3 × 3 at 50 µm spacing, centred on the current stage position; exposure
+  5 ms; `protocol="timelapse"` with `n_frames=1, interval_s=0` — one frame per tile,
+  nine frames total.
+- **Threshold:** the demo core has no calibration artifact, so supply **no**
+  `min_snr` and no `calibration_path`. The hook then resolves the package fallback
+  and records `min_snr_source: "package_default_uncalibrated"` in every observation.
+  Check that string is present — an honest provenance record is part of what this
+  step verifies. Do not invent a calibration file to make the number look better.
+- **Budget:** k = 3 for the A2 revisit.
+
+**Read these two limits before judging the output.**
+
+1. The demo camera returns synthetic frames, so SNR values, the ranking they
+   produce, and any focus-validity counts carry **no** information about a
+   specimen. What D5 checks is that nine tiles produce nine records with correct
+   positions and coordinates, that ranking is deterministic, and that the top-k
+   coordinates survive `validate_positions` and round-trip through
+   `save_position_list`. Do not report a demo SNR range as a result.
+2. `compare_revisit_frames` reports micrometres only when a current stage-camera
+   affine exists, and registers synthetic frames that may share no stable
+   structure. Treat a poor correlation or a large apparent translation on the demo
+   core as **uninformative, not as a failure**. What must hold is that the tool
+   runs, pairs each revisit page with the right source page, and states its method
+   and units. Real revisit accuracy is R1's job on M5.
+
+A step the Run A prompts do not spell out: `compare_revisit_frames` takes
+`source_tiff` and `revisit_tiff`, so both datasets must go through
+`export_dataset_as_tiff` first. Do that before A3's comparison.
+
+Determinism is checked by replay, not by inspection:
+
+> Call `rank_hook_log` on the same completed Run A log a second time and show me
+> both orderings in full. Confirm the ordering and the selected top-k are
+> byte-identical, and state the tie-break rule you applied. Do not re-acquire
+> anything.
 
 ```powershell
-certutil -hashfile "$Evidence\<run-a-history>.json" SHA256 > "$Evidence\run-a-history.sha256.txt" 2>&1
+Copy-Item "<session history>" "$Evidence\d5-run-a-demo.json"
+certutil -hashfile "$Evidence\d5-run-a-demo.json" SHA256 > "$Evidence\d5-run-a-demo.sha256.txt" 2>&1
 ```
 
-**Expected observable:** the trusted pre-coded `snr_observer` path behaves as before;
-fixed-survey image and completed-log counts match; ranking is deterministic;
-positions pass the guard before save/revisit; the saved list and revisit dataset are
-retained; comparison reports its plumbing metrics without an object/biology claim.
+Also copy the `inspect_artifacts` manifest, the hook log, the saved position list,
+and both dataset paths' hashes into `$Evidence`.
 
-**Stop condition:** dropped images/records, changed trusted-hook behavior, a parent
-gate bypass, non-deterministic ranking, unsafe position, incomplete revisit, or any
-claim of biological/object-level validation.
+**Expected observable:** the trusted pre-coded `snr_observer` path behaves exactly
+as before — nine planned, nine acquired, nine observation records, no duplicate or
+missing position, every record carrying position and intended stage coordinates and
+`min_snr_source: "package_default_uncalibrated"`; every image retained; the two
+`rank_hook_log` calls identical; the top-3 coordinates passing `validate_positions`
+and round-tripping through `save_position_list`; three revisit frames acquired and
+no more; `compare_revisit_frames` running and pairing pages correctly.
+
+**Stop condition:** dropped images or records, any change in trusted-hook behaviour,
+a parent gate bypass, ranking that differs between two reads of the same log, an
+unsafe position reaching the revisit, an incomplete revisit, a fabricated
+calibration to avoid the uncalibrated fallback, or any claim of biological or
+object-level validation from synthetic frames.
 
 ---
 

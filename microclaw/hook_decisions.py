@@ -266,8 +266,18 @@ class UntrustedHookAdapter:
             else:
                 matches = [e for e in events if
                            (e.get("axes") or {}).get("position") == action.position]
-                if len(matches) != 1:
-                    self._refuse(metadata, action, "position is not a unique planned survey label")
+                if not matches:
+                    # Absent and ambiguous are different operator mistakes and
+                    # must not share a reason string: the refusal record is the
+                    # only account of why a tile was not acquired.
+                    self._refuse(metadata, action,
+                                 "no planned survey position is labelled "
+                                 f"{action.position!r}")
+                    return
+                if len(matches) > 1:
+                    self._refuse(metadata, action,
+                                 f"label {action.position!r} matches {len(matches)} "
+                                 "planned positions and is not a unique target")
                     return
                 event = matches[0]
         try:
