@@ -486,6 +486,49 @@ This matters more on M5 than on the demo: the same mistake would have cost a rig
 session. Re-run the demo probe with `workspace_dir` set to a real directory to
 close B5's acquisition path.
 
+### DEMO RUN 2 — B5 PASS on a real core (2026-07-27)
+
+Re-run with `workspace_dir` set. **Every B5 criterion met**, through the real
+pyjavaz bridge, a real `Acquisition`, and a real NDTiff write:
+
+```
+MAP    complete=true, verdict=complete, 9 policy + 8 tool rows, mda=["excluded"]
+PLAN   frames=2, exposure_ms_per_frame=5.0, illuminated_ms=10.0, bytes=1048576
+RESULT {"status": "Timelapse complete.", "dataset_path": "D:\\microclaw_block5\\block5\\block5_authorized_1"}
+LEDGER {"bytes": 1048576, "frames": 2, "illuminated_ms": 10.0}
+```
+
+`LEDGER.bytes == PLAN.estimated_bytes` exactly, frames and illuminated time
+match the plan, and the dataset landed inside the workspace. The `_1` suffix is
+AcqEngJ's rename, already accounted for in `resolve_in_workspace`'s comment.
+
+**This is the finding that most reduces merge risk.** The fake rehearsal could
+not exercise pyjavaz, and Block 4's G5 proved that guessed bridge semantics are
+exactly where this project's errors hide. Block 5's path — map construction,
+`execute_tool` dose gate, planner, reservation, `image_saved_fn` accounting,
+rollback — now has live-bridge evidence end to end.
+
+**B4 (determinism) is also satisfied here.** Two independent runs against the
+same core produced structurally identical maps: 41 entries, 9 + 8 acquisition
+rows, the same 12 `auto:state-device` rows, the same five-device excluded
+inventory, `authorized_presets: []`, `mmstudio-mda` excluded.
+
+**Gate defect found in B4's comparison method.** The two raw files differed in
+size (29 276 vs 28 490 bytes) while the maps were identical. The delta is a
+PowerShell stderr preamble captured by `2>&1` — `uv : Connecting to
+Micro-Manager...` plus an echo of the command line, whose length varies with the
+command. **`Compare-Object` on raw lines will therefore report spurious
+differences.** For B4 on M5, compare the *parsed JSON*, not the file bytes:
+
+```powershell
+$a = (Get-Content "$Evidence\map-before.json" -Raw); $a = $a.Substring($a.IndexOf("{")) | ConvertFrom-Json
+$b = (Get-Content "$Evidence\map-after.json"  -Raw); $b = $b.Substring($b.IndexOf("{")) | ConvertFrom-Json
+($a | ConvertTo-Json -Depth 10) -eq ($b | ConvertTo-Json -Depth 10)
+```
+
+Expect `True`. The hash comparison in B4 has the same flaw and should be read as
+informational only.
+
 ## Verdict
 
 Record per section, then overall. Stop and return the branch to the coordinator on
@@ -499,11 +542,18 @@ any FAIL; do not merge and do not fix on the rig.
 - B2: **PASS**, off-rig, 2026-07-27. Finding B2-1: tests Block 4's parse layer,
   not Block 5; needs no rig, no MM, no demo config.
 - B3: **PASS**, off-rig, 2026-07-27. Same scope caveat.
-- B4: not yet run — reduced to a determinism diff by B2-1.
-- B4b: not yet run — the one live fail-closed check specific to this block.
-- B5: not yet run.
-- **Overall: INCOMPLETE — do not merge.** What genuinely remains on M5 is **B5**
-  (plan and ledger against real camera geometry) plus **B4b** (MDA refused live,
-  no exposure) and **B4** as a cheap determinism diff. Total rig cost: two dark
-  frames at 5 ms. B1 already covered the map contents and reconciles exactly
-  against Block 3b.
+- B4: **PASS on a demo core** (two runs, structurally identical maps),
+  2026-07-27. Comparison-method defect found and corrected — compare parsed
+  JSON, not raw bytes. Not yet run on M5.
+- B4b: **not yet run** — the one live fail-closed check specific to this block.
+  Zero exposure; runnable on the demo core.
+- B5: **PASS on a demo core**, 2026-07-27, through the real pyjavaz bridge and a
+  real Acquisition. Ledger matched the plan exactly. Not yet run on M5.
+- **Overall: SUBSTANTIVELY PASSED, one gap — B5 has not run on M5 itself.**
+  Everything Block 5 claims now has live-bridge evidence: B1 on M5, and B4/B5 on
+  a real demo core. What M5 would still add is confirmation against *its* config
+  (declared illumination, seven declared categorical pairs, a different camera)
+  rather than the demo's. That is the block's literally stated gate — "a short
+  rig regression" — and it costs two dark frames, so the conservative call is to
+  run it before merging rather than to merge on demo evidence and call the rig a
+  formality.
