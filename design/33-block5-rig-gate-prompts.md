@@ -363,6 +363,25 @@ that the generic `hint` is misleading for an authorization refusal — that is a
 pre-existing wart in `execute_tool`'s error handling, not a Block 5 defect, and
 worth its own cleanup.
 
+### B4b VERDICT — PASS on a demo core, with a real token (2026-07-27)
+
+```
+MAP    {"acquisition_tool_run_mda_row": false, "complete": true, "mmstudio_mda": ["excluded"], "verdict": "complete"}
+TOKEN  {"kind": "real"}
+RESULT {"error": "RigAuthorizationError: The mmstudio-mda write path is excluded from the Phase-1 authorization map.", ...}
+LEDGER {"frames_before": 0, "frames_after": 0, "illuminated_ms_after": 0.0}
+VERDICT PASS
+```
+
+`TOKEN kind: real` is what makes this conclusive. MMStudio was reachable,
+`get_mda_settings` returned a **valid** preview token, and `run_mda` refused it
+anyway. The refusal is therefore the authorization gate, not a stale-token
+rejection — the alternative explanation is ruled out by evidence rather than by
+reading the code. The ledger never moved, and the dose policy did not grow an
+`acquisition-tool:run_mda` row.
+
+This closes the one live fail-closed check specific to Block 5.
+
 ---
 
 ## B5. Authorized plan and ledger regression against Block 4
@@ -569,8 +588,8 @@ any FAIL; do not merge and do not fix on the rig.
 - B4: **PASS on a demo core** (two runs, structurally identical maps),
   2026-07-27. Comparison-method defect found and corrected — compare parsed
   JSON, not raw bytes. Not yet run on M5.
-- B4b: **not yet run** — the one live fail-closed check specific to this block.
-  Zero exposure; runnable on the demo core.
+- B4b: **PASS on a demo core with a real preview token**, 2026-07-27. The
+  strongest available form: the stale-token explanation is excluded by evidence.
 - B5: **PASS on a demo core**, 2026-07-27, through the real pyjavaz bridge and a
   real Acquisition. Ledger matched the plan exactly. Not yet run on M5.
 - **Overall: SUBSTANTIVELY PASSED, one gap — B5 has not run on M5 itself.**
