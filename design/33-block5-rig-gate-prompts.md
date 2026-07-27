@@ -218,6 +218,40 @@ loses comments and normalizes formatting. If startup refuses while naming a fiel
 *other than* `confirm_above_illuminated_ms`, suspect the round-trip, not the
 gate — diff the two files before recording a finding.
 
+### B2 VERDICT — PASS, off-rig (2026-07-27)
+
+`authorization-map` exits **1** with
+`acquisition.confirm_above_illuminated_ms: missing required key`, file-anchored,
+and the source config is byte-identical afterwards. No map emitted.
+
+**Finding B2-1 — this section does not test Block 5, and this gate was wrong to
+imply it needs a rig.** The refusal happens in `load_safety_config_or_exit`
+(`__main__.py:172`, `:247`) — *before* `MicroscopeController` is constructed
+(`:176`, `:250`), before `validate_live_rig` (`:183`, `:259`), and before the
+prompt (`:209`). So it needs no Micro-Manager, no demo config, and no rig at all.
+
+More importantly, it exercises **Block 4's required-section parsing**, not
+Block 5's new finite-and-positive check inside `validate_live_rig`. That check is
+**unreachable from any config file**: every invalid form is already rejected at
+parse. Measured, on the shipped example with `confirm_above_illuminated_ms` set
+to each of:
+
+| value | outcome |
+|---|---|
+| *(removed)* | rejected at parse |
+| `.inf` | rejected at parse |
+| `.nan` | rejected at parse |
+| `0` | rejected at parse |
+| `-5` | rejected at parse |
+| `true` | rejected at parse |
+
+Block 5's map check is therefore **defense-in-depth against a directly
+constructed `ParsedSafetyConfig`** — the seam Block 2 opened and this block was
+asked to close — and its coverage is the parametrized unit test
+`test_missing_or_partial_direct_dose_policy_fails_closed`, not this gate. Keep
+B2/B3 as a cheap end-to-end regression on the startup refusal chain; do not
+record them as evidence about Block 5.
+
 ---
 
 ## B3. CLI and web fail closed, without hanging the operator
@@ -250,6 +284,15 @@ no hardware mutation occurs.
 **FAIL:** the job is still running at 10 s (the script stops it and records the
 failure), any app becomes reachable, or any tool or hardware mutation occurs.
 
+### B3 VERDICT — PASS, off-rig (2026-07-27)
+
+`serve` exits **1** immediately with the same file-anchored error and never binds
+a port. The bounded-job wrapper above is unnecessary in practice — the refusal
+precedes any server construction — but keep it, because its purpose is to bound
+the *regressed* case, which by definition would not exit.
+
+Finding B2-1 applies here too: this is a Block 4 regression test.
+
 ---
 
 ## B4. The reviewed config still produces the identical map
@@ -267,6 +310,22 @@ Get-FileHash "$Evidence\map-after.json"  >> "$Evidence\map-hashes.txt"
 
 This is the Block 3b before/after pattern, which is what caught that block's real
 defect. A difference here means B2 mutated something it should not have.
+
+**Scope note after B2-1:** if B2/B3 were run off-rig against a *copy* (which is
+now the recommended way), the reviewed M5 config was never at risk and this
+section's non-mutation purpose is moot. What remains is map determinism — re-run
+the map on M5 and diff against the retained `map-before.json`. That is one
+command and worth doing while the rig is open, but it is no longer load-bearing.
+
+### B4b. Prove the MDA exclusion holds live — no acquisition
+
+This is the one **live fail-closed** check Block 5 can actually contribute, and
+it takes no exposure: `run_mda` has no `acquisition-tool:` row and `mmstudio-mda`
+is `excluded`, so dispatch must refuse it before it touches anything. Call
+`run_mda` through the normal tool path and confirm a `RigAuthorizationError`
+naming the excluded path, with no MDA started and no hardware effect. This pins
+the claim that the new dose policy did not quietly become the thing that admits
+MDA.
 
 ---
 
@@ -309,12 +368,14 @@ any FAIL; do not merge and do not fix on the rig.
 - B1: **PASS**, reconciles exactly against Block 3b's 40-entry map. Findings B1-1
   (budgets are the shipped example's values, not M5-reviewed) and B1-2 (nothing
   auto-classified; `iChrome-MLE-TCP.Label` open item unchanged). 2026-07-27.
-- B2: not yet run — session ended.
-- B3: not yet run.
-- B4: not yet run.
+- B2: **PASS**, off-rig, 2026-07-27. Finding B2-1: tests Block 4's parse layer,
+  not Block 5; needs no rig, no MM, no demo config.
+- B3: **PASS**, off-rig, 2026-07-27. Same scope caveat.
+- B4: not yet run — reduced to a determinism diff by B2-1.
+- B4b: not yet run — the one live fail-closed check specific to this block.
 - B5: not yet run.
-- **Overall: INCOMPLETE — do not merge.** B2–B4 remain, and they are the sections
-  that actually test fail-closed behaviour; B1 only tests the success path. B2,
-  B3 and B4 need **no acquisition and no illumination** (they are map builds and
-  startup refusals), so they can be run on a short session. Only B5 acquires, and
-  only two dark frames at 5 ms.
+- **Overall: INCOMPLETE — do not merge.** What genuinely remains on M5 is **B5**
+  (plan and ledger against real camera geometry) plus **B4b** (MDA refused live,
+  no exposure) and **B4** as a cheap determinism diff. Total rig cost: two dark
+  frames at 5 ms. B1 already covered the map contents and reconciles exactly
+  against Block 3b.
