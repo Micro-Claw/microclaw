@@ -551,6 +551,8 @@ platform/version delta. Stop and investigate; do not merge on an unexplained del
 
 ## Final verdict
 
+**Demo-core gate complete 2026-07-27: D1–D5 all PASS.** R1 on M5 remains.
+
 The gate passes only when D1–D5 and R1 each have a dated verdict, every refusal has
 a parent-written reason, trusted Run A is unchanged, and all evidence limitations
 are stated. Report demo-core and M5 findings separately. This remains plumbing and
@@ -566,7 +568,7 @@ output, acquisitions under `block7/`). Demo machine, Windows, Python 3.12.13,
 
 | Step | Verdict |
 |---|---|
-| D1 | **FAIL** — one test failure, see below |
+| D1 | **PASS** on re-run after the fix; initially FAIL, see below |
 | D2a | **PASS** |
 | D2b | **PASS** |
 | D3 | **PASS**, including the documentation-quality half |
@@ -574,7 +576,7 @@ output, acquisitions under `block7/`). Demo machine, Windows, Python 3.12.13,
 | D4 case 3 | **PASS** (re-run 2026-07-27 after the step was made concrete) |
 | D5 | **PASS**, with two procedural findings |
 
-### D1 — FAIL: `test_generate_save_and_use_custom_hook`
+### D1 — initially FAIL, PASS on re-run: `test_generate_save_and_use_custom_hook`
 
 `1 failed, 1037 passed, 21 skipped`. The failure is real and is a Block 7
 consequence, not flake. That test saves a legacy `MeanLogger` hook that writes its
@@ -592,6 +594,11 @@ parent records its per-frame retained/discarded outcome. Both are pinned
 off-rig in `tests/test_hook_decisions.py` so this cannot regress on a machine
 without Micro-Manager again, and `test_generate_save_and_use_custom_hook` now
 asserts the refusal.
+
+**Re-run 2026-07-27 after the fix: `1044 passed, 21 skipped`, no failures.**
+Skips stayed at 21, so the added hardware test ran rather than being silently
+skipped. Both tests need the `headless_mm` fixture and neither can be run
+off-rig, so this re-run is the only evidence that the fix works.
 
 **This is a breaking change for existing saved hooks.** Anything written to the
 old `hook_docs` rule that every generated hook inherit `HookBase` will be
