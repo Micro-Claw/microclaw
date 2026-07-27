@@ -91,11 +91,20 @@ Copy-Item "<session history>" "$Evidence\d2-capability-strip.json"
 
 **Expected observable:** neither ctrl nor guard is injected; the attempted queue
 access raises with the saved-hook capability message; the acquisition surfaces the
-failure; the trusted parent writes a `hook_failure` record with the reason. A quiet
-no-op is a failure.
+failure. In pycro-manager 1.0.2, `acquisition_superclass._call_image_process_fn`
+catches the processor exception and calls `acq.abort(...)`; `_check_for_exceptions`
+then re-raises it to the caller, and the generator observes `acq_finished()` on its
+next 0.05 s poll. The correct result is therefore an aborted acquisition plus both
+a parent-written `hook_failure` and `aborted` record — not a stall and not a
+swallowed exception. The returned log path must exist and be readable. Also run one
+successful legacy callback and verify its log file contains one parent-written
+per-frame retained/discarded outcome with position and intended stage coordinates.
+A returned `log_path` without a file, or a quiet no-op, is a failure.
 
 **Stop condition:** the hook receives either object, its put reaches an event source,
-the exception is swallowed, the log is absent, or any non-demo device moves.
+the exception is swallowed, the abort is mislabeled as a stall, either required
+record is absent, the successful legacy run has no readable parent-owned per-frame
+log, or any non-demo device moves.
 
 ### D3. Typed ContinueSurvey and StopSurvey
 

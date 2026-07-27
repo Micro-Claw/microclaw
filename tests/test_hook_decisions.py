@@ -10,6 +10,7 @@ from microclaw.hook_decisions import (
     AcquireAt, ContinueSurvey, HookResult, MoveStage, RequestAutofocus,
     SetExposure, StopSurvey, UntrustedHookAdapter,
 )
+from microclaw.hooks import HookBase
 from microclaw.safety import SafetyViolation
 from microclaw.tools import SurveyProgress
 
@@ -132,6 +133,55 @@ def test_non_json_measurements_fail_closed(tmp_path):
     assert adapter._log[-1]["event"] == "hook_failure"
 
 
+def test_action_list_is_normalized_but_other_iterables_are_rejected():
+    result = HookResult({"score": 1}, [ContinueSurvey()])
+    assert result.actions == (ContinueSurvey(),)
+    with pytest.raises(TypeError, match="list or tuple"):
+        HookResult({"score": 1}, "ContinueSurvey")
+    with pytest.raises(TypeError, match="list or tuple"):
+        HookResult({"score": 1}, (a for a in [ContinueSurvey()]))
+
+
+def test_parent_writes_design26_observation_envelope_and_coordinates(tmp_path):
+    class Hook:
+        def analyze_frame(self, image, metadata):
+            return HookResult(
+                {"score": 0.75}, [], analyzer="demo", analyzer_version="1.2",
+                parameters={"threshold": 0.5}, artifact_sha256="abc",
+                status="provisional",
+            )
+
+    path = tmp_path / "hook.json"
+    adapter = UntrustedHookAdapter(Hook(), str(path))
+    metadata = {
+        "PositionName": "tile_0", "XPosition_um_Intended": 12.5,
+        "YPosition_um_Intended": -3.25, "ZPosition_um_Intended": 7.0,
+    }
+    adapter.image_process_fn(np.ones((2, 2)), metadata, object())
+    record = json.loads(path.read_text())[-1]
+    assert {k: record[k] for k in ("position", "x_um", "y_um", "z_um")} == {
+        "position": "tile_0", "x_um": 12.5, "y_um": -3.25, "z_um": 7.0,
+    }
+    assert record["schema"] == "microclaw.analysis-observation/v1"
+    assert record["status"] == "provisional"
+    assert record["analyzer"] == "demo"
+    assert record["analyzer_version"] == "1.2"
+    assert record["parameters"] == {"threshold": 0.5}
+    assert record["artifact_sha256"] == "abc"
+    assert record["result"] == {"score": 0.75}
+
+
+def test_untrusted_hook_cannot_self_assert_observed_and_failure_is_logged(tmp_path):
+    class Hook:
+        def analyze_frame(self, image, metadata):
+            return HookResult({}, status="observed")
+
+    adapter = UntrustedHookAdapter(Hook(), str(tmp_path / "hook.json"))
+    with pytest.raises(ValueError, match="not self-assertable"):
+        adapter.image_process_fn(np.zeros((2, 2)), {}, object())
+    assert "not self-assertable" in adapter._log[-1]["reason"]
+
+
 def test_legacy_event_queue_access_raises_and_parent_logs(tmp_path):
     class Legacy:
         def image_process_fn(self, image, metadata, event_queue):
@@ -153,6 +203,30 @@ def test_legacy_image_metadata_return_is_preserved(tmp_path):
 
     returned = UntrustedHookAdapter(Legacy()).image_process_fn(image, metadata, object())
     assert returned[0] is image and returned[1] is metadata
+
+
+@pytest.mark.parametrize("returned,outcome", [(None, "discarded"), ("keep", "retained")])
+def test_legacy_parent_writes_one_frame_record_with_coordinates(
+    returned, outcome, tmp_path
+):
+    class LegacyGenerated(HookBase):
+        def image_process_fn(self, image, metadata, event_queue):
+            self.log(metadata, mean=float(np.mean(image)))
+            return returned
+
+    path = tmp_path / "legacy.json"
+    hook = LegacyGenerated()
+    adapter = UntrustedHookAdapter(hook, str(path))
+    metadata = {
+        "PositionName": "tile_0", "XPosition_um_Intended": 12.5,
+        "YPosition_um_Intended": -3.25,
+    }
+    assert adapter.image_process_fn(np.ones((4, 4)), metadata, object()) == returned
+    assert json.loads(path.read_text()) == [{
+        "position": "tile_0", "x_um": 12.5, "y_um": -3.25,
+        "event": "legacy_hook_frame", "outcome": outcome,
+    }]
+    assert hook._log[0]["mean"] == 1.0  # parent did not copy this self-authored record
 
 
 def test_resolved_saved_hook_gets_neither_ctrl_nor_guard(monkeypatch):

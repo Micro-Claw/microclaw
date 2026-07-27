@@ -58,14 +58,36 @@ HookAction = (
 @dataclass(frozen=True)
 class HookResult:
     measurements: dict[str, Any]
-    actions: tuple[HookAction | dict[str, Any], ...] = ()
+    actions: (
+        tuple[HookAction | dict[str, Any], ...] |
+        list[HookAction | dict[str, Any]]
+    ) = ()
+    analyzer: str | None = None
+    analyzer_version: str | None = None
+    parameters: dict[str, Any] | None = None
+    artifact_sha256: str | None = None
+    status: str = "unverified"
 
     def __post_init__(self) -> None:
         if not isinstance(self.measurements, dict):
             raise TypeError("HookResult.measurements must be a dict.")
         json.dumps(self.measurements, allow_nan=False)
-        if not isinstance(self.actions, tuple):
-            raise TypeError("HookResult.actions must be a tuple.")
+        if not isinstance(self.actions, (list, tuple)):
+            raise TypeError("HookResult.actions must be a list or tuple.")
+        object.__setattr__(self, "actions", tuple(self.actions))
+        if self.status not in {"unverified", "provisional"}:
+            raise ValueError(
+                "Untrusted HookResult.status must be 'unverified' or 'provisional'; "
+                f"{self.status!r} is not self-assertable."
+            )
+        if self.parameters is not None and not isinstance(self.parameters, dict):
+            raise TypeError("HookResult.parameters must be a dict or None.")
+        for name, value in (("analyzer", self.analyzer),
+                            ("analyzer_version", self.analyzer_version),
+                            ("artifact_sha256", self.artifact_sha256)):
+            if value is not None and not isinstance(value, str):
+                raise TypeError(f"HookResult.{name} must be a string or None.")
+        json.dumps(self.parameters or {}, allow_nan=False)
 
 
 _ACTION_TYPES = {
@@ -173,10 +195,8 @@ class UntrustedHookAdapter:
             )
 
     def _record(self, metadata: dict, **fields: Any) -> None:
-        axes = metadata.get("Axes") or {}
-        self._log.append({
-            "position": metadata.get("PositionName", axes.get("position")), **fields
-        })
+        from microclaw.hooks import HookBase
+        self._log.append({**HookBase.where(metadata), **fields})
         self._write_log()
 
     def note_stalled(self, max_idle_s: float) -> None:
@@ -264,15 +284,28 @@ class UntrustedHookAdapter:
                     raise TypeError("analyze_frame must return HookResult or None.")
                 # Parse the complete proposal before dispatching any part of it.
                 actions = tuple(parse_action(a) for a in result.actions)
-                json.dumps(result.measurements, allow_nan=False)
-                self._record(metadata, event="hook_measurements",
-                             measurements=result.measurements)
+                from microclaw.hooks import analysis_observation_record
+                observation = analysis_observation_record(
+                    analyzer=result.analyzer,
+                    analyzer_version=result.analyzer_version,
+                    result=result.measurements,
+                    parameters=result.parameters,
+                    artifact_sha256=result.artifact_sha256,
+                    status=result.status,
+                )
+                # Same where + envelope shape as HookBase.log_analysis. Action
+                # decisions remain separate parent-owned records below.
+                self._record(metadata, **observation)
                 for action in actions:
                     self._dispatch(action, metadata)
                 returned = (image, metadata)
             else:
                 returned = self.hook.image_process_fn(
                     image, metadata, DeniedEventQueue()
+                )
+                self._record(
+                    metadata, event="legacy_hook_frame",
+                    outcome="discarded" if returned is None else "retained",
                 )
             if self._context is not None:
                 self._context["progress"].image_done()

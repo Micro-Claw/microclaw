@@ -2807,6 +2807,13 @@ def _acquire_survey_with_detector(
     positions are {name, x_um, y_um} dicts; shape_kwargs carry the
     per-position event shape, as in _acquire_positions_with_hook.
     """
+    from microclaw.hook_decisions import UntrustedHookAdapter
+
+    if isinstance(hook, UntrustedHookAdapter) and not adaptive:
+        raise ValueError(
+            "Saved untrusted hooks are not supported by the non-adaptive "
+            "survey-with-detector runner; use run_adaptive_survey."
+        )
     save_dir = guard.resolve_in_workspace(save_dir)
 
     # The stage is driven by the Acquisition, so check every survey point up
@@ -2830,8 +2837,6 @@ def _acquire_survey_with_detector(
         xy_positions=[(p["x_um"], p["y_um"]) for p in positions],
         **shape_kwargs,
     )
-
-    from microclaw.hook_decisions import UntrustedHookAdapter
 
     if isinstance(hook, UntrustedHookAdapter):
         if adaptive:

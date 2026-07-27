@@ -433,6 +433,78 @@ class TestAcquireWithHooksFactory:
         assert _FakeAcquisition.last.acquired is events
 
 
+class TestUntrustedAdapterRunnerWiring:
+    def _positions(self):
+        return [
+            {"name": "tile_0", "x_um": 0.0, "y_um": 0.0},
+            {"name": "tile_1", "x_um": 1.0, "y_um": 1.0},
+            {"name": "tile_2", "x_um": 2.0, "y_um": 2.0},
+        ]
+
+    def test_adaptive_runner_keeps_state_parent_side_and_dispatches_actions(
+        self, mock_ctrl, unconstrained_guard, tmp_path, monkeypatch
+    ):
+        from microclaw import tools
+        from microclaw.hook_decisions import (
+            ContinueSurvey, HookResult, StopSurvey, UntrustedHookAdapter,
+        )
+
+        class Decisions:
+            def __init__(self):
+                self.calls = 0
+
+            def analyze_frame(self, image, metadata):
+                self.calls += 1
+                action = ContinueSurvey() if self.calls == 1 else StopSurvey()
+                return HookResult({"call": self.calls}, [action])
+
+        monkeypatch.setattr(tools, "Acquisition", _FakeAcquisition)
+        adapter = UntrustedHookAdapter(Decisions(), str(tmp_path / "hook.json"))
+        progress = SurveyProgress(3)
+        tools._acquire_survey_with_detector(
+            mock_ctrl, unconstrained_guard, self._positions(), str(tmp_path), "survey",
+            hook=adapter, progress=progress, candidates=queue.Queue(), adaptive=True,
+            num_time_points=1, time_interval_s=0,
+        )
+
+        assert not hasattr(adapter, "candidates")
+        assert not hasattr(adapter, "survey_events")
+        stream = _FakeAcquisition.last.acquired
+        first = next(stream)
+        assert first["axes"]["position"] == "tile_0"
+
+        process = _FakeAcquisition.last.kwargs["image_process_fn"]
+        process(object(), {"PositionName": "tile_0"}, object())
+        second = next(stream)
+        assert second["axes"]["position"] == "tile_1"
+        process(object(), {"PositionName": "tile_1"}, object())
+        with pytest.raises(StopIteration):
+            next(stream)
+        assert progress.n_done == 2
+        assert progress.stopped_early
+
+    def test_nonadaptive_runner_refuses_untrusted_hook_before_acquisition(
+        self, mock_ctrl, unconstrained_guard, tmp_path, monkeypatch
+    ):
+        from microclaw import tools
+        from microclaw.hook_decisions import UntrustedHookAdapter
+
+        class Legacy:
+            def image_process_fn(self, image, metadata, event_queue):
+                return image, metadata
+
+        monkeypatch.setattr(tools, "Acquisition", _FakeAcquisition)
+        _FakeAcquisition.last = None
+        with pytest.raises(ValueError, match="non-adaptive"):
+            tools._acquire_survey_with_detector(
+                mock_ctrl, unconstrained_guard, self._positions(), str(tmp_path),
+                "survey", hook=UntrustedHookAdapter(Legacy()),
+                progress=SurveyProgress(3), candidates=queue.Queue(), adaptive=False,
+                num_time_points=1, time_interval_s=0,
+            )
+        assert _FakeAcquisition.last is None
+
+
 def test_adaptive_budget_exhaustion_stops_cleanly_reports_and_terminates():
     acq = _FakeAcq()
     candidates = queue.Queue()

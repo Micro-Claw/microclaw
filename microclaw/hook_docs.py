@@ -116,13 +116,19 @@ only the methods actually implemented by the hook are passed to `Acquisition(...
 
 ### analyze_frame(image: np.ndarray, metadata: dict) -> HookResult | None
 
-The saved-hook contract. `HookResult` contains JSON-safe measurements and a tuple
-of typed action proposals: MoveStage, AcquireAt, SetExposure, ContinueSurvey,
+The saved-hook contract. `HookResult` contains JSON-safe measurements and a list
+or tuple of typed action proposals: MoveStage, AcquireAt, SetExposure, ContinueSurvey,
 StopSurvey, or RequestAutofocus. Under run_adaptive_survey the trusted parent
 supports ContinueSurvey, StopSurvey, and AcquireAt for a position in the planned
 grid. It guard-checks and reservation-checks every proposal and writes every
 accept/refuse decision to the log. The other three actions are parsed but refused
 as unsupported by this runner.
+
+Optional analyzer, analyzer_version, parameters, and artifact_sha256 fields retain
+the `microclaw.analysis-observation/v1` envelope used by HookBase.log_analysis.
+Saved hooks default to status `unverified` and may claim only `unverified` or
+`provisional`; `observed` is not self-assertable by untrusted source. The parent
+writes the envelope and the action audit.
 
 There is deliberately no interactive confirmation from the acquisition callback
 thread: pyjavaz serializes bridge calls behind one lock, so prompting there can
