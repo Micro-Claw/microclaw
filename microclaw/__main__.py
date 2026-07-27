@@ -346,8 +346,17 @@ def main():
         "--allow-remote",
         action="store_true",
         help=(
-            "Permit binding beyond localhost. Exposes microscope control on the "
-            "network — only on a trusted, isolated LAN."
+            "Permit binding beyond localhost. Requires --behind-tls-proxy and "
+            "remote authentication."
+        ),
+    )
+    sv.add_argument(
+        "--behind-tls-proxy",
+        action="store_true",
+        help=(
+            "Assert that a trusted TLS-terminating proxy is in front; trust its "
+            "X-Forwarded-Proto: https header. The bind port must be reachable "
+            "only by that proxy. Requires --allow-remote."
         ),
     )
 
