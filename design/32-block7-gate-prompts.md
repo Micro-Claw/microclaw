@@ -47,6 +47,10 @@ New-Item -ItemType Directory -Force $Scratch | Out-Null
 Set-Location $Repo
 ```
 
+**Substitute every `<...>` placeholder with a real path before pasting a prompt.**
+In the 2026-07-27 demo run the agent passed a literal `<workspace>` through to the
+runner and the acquisition failed with `OSError [WinError 123]`.
+
 Do not edit the reviewed config in place. If the demo core needs values not present
 in it, copy it into `$Evidence`, add only measured demo-core values, and retain the
 diff. Stop if `authorization-map` is not complete before any acquisition step.
@@ -131,7 +135,8 @@ reason. Batched runners have no `progress` object and are unaffected.
 >
 > Report the exact lint warnings, the manifest entry, and the pinned sha256.
 >
-> Then run **one** frame at 5 ms with that hook:
+> Set the exposure to 5 ms with `set_exposure` first — `run_adaptive_timelapse`
+> has no exposure parameter. Then run **one** frame with that hook:
 > `run_adaptive_timelapse(n_frames=1, interval_s=0,
 > hook_strategy="d2_capability_probe", save_dir="<workspace>/block7/d2a",
 > log_path="<workspace>/block7/d2a/hook.json")`.
@@ -143,8 +148,13 @@ D2a passes only if all four hold: neither `D2a FAIL` message appears; the error 
 the `DeniedEventQueue` text (`Saved hooks cannot access pycro-manager's event
 queue; return typed actions from analyze_frame instead`); the exception reaches
 the caller rather than being swallowed; and `read_hook_log` returns a
-`hook_failure` record carrying that reason plus `position` and intended stage
-coordinates.
+`hook_failure` record carrying that reason.
+
+**Do not require stage coordinates in D2's records.** A single-position
+timelapse stamps no position axis and no `XPosition_um_Intended`, so
+`position: null` with no coordinate keys is correct here, not a defect. The
+coordinate-stamping contract is exercised by D3 and D5, which are
+multi-position.
 
 #### D2b — the parent owns a successful legacy hook's log
 
@@ -168,15 +178,16 @@ coordinates.
 >
 > Then run `run_adaptive_timelapse(n_frames=2, interval_s=0,
 > hook_strategy="d2_legacy_benign", save_dir="<workspace>/block7/d2b",
-> log_path="<workspace>/block7/d2b/hook.json")` at 5 ms. Afterwards call
+> log_path="<workspace>/block7/d2b/hook.json")`, exposure already 5 ms.
+> Afterwards call
 > `read_hook_log` on that path and show every record verbatim, and tell me whether
 > the log file existed. Do not summarize the records — print them.
 
 D2b passes only if: the acquisition completes; the log file exists; it holds
 exactly two `event: "legacy_hook_frame"` records, one `outcome: "retained"` and
-one `outcome: "discarded"`; and both carry `position` and the intended stage
-coordinates. A record naming the position without its coordinates is a failure —
-that is the design/23 F2 contract.
+one `outcome: "discarded"`. As above, `position: null` and absent coordinates are
+correct for a single-position timelapse; D3 and D5 are where the design/23 F2
+coordinate contract is checked.
 
 **Expected observable — how D2a's failure should surface.** In pycro-manager
 1.0.2, `acquisition_superclass._call_image_process_fn` catches the processor
@@ -497,3 +508,84 @@ The gate passes only when D1–D5 and R1 each have a dated verdict, every refusa
 a parent-written reason, trusted Run A is unchanged, and all evidence limitations
 are stated. Report demo-core and M5 findings separately. This remains plumbing and
 safety-boundary evidence only.
+
+---
+
+## Demo-core gate results — 2026-07-27
+
+Evidence: `microclaw_block7/` (histories, hook logs, authorization map, pytest
+output, acquisitions under `block7/`). Demo machine, Windows, Python 3.12.13,
+`MMConfig_demo.cfg` over the ZMQ bridge.
+
+| Step | Verdict |
+|---|---|
+| D1 | **FAIL** — one test failure, see below |
+| D2a | **PASS** |
+| D2b | **PASS** |
+| D3 | **PASS**, including the documentation-quality half |
+| D4 cases 1, 2, 4 | **PASS** |
+| D4 case 3 | **NOT RUN** — no narrowed profile was produced |
+| D5 | **PASS**, with two procedural findings |
+
+### D1 — FAIL: `test_generate_save_and_use_custom_hook`
+
+`1 failed, 1037 passed, 21 skipped`. The failure is real and is a Block 7
+consequence, not flake. That test saves a legacy `MeanLogger` hook that writes its
+own log through `self.log_path` and asserts every entry carries `mean`. Block 7
+strips `log_path` from untrusted hooks and the parent writes `legacy_hook_frame`
+records instead, so `all("mean" in entry)` is false.
+
+The test never runs off-rig — it needs the `headless_mm` fixture — which is why the
+implementer's and the coordinator's runs did not see it. **A legacy saved hook's
+own measurements are no longer recorded anywhere.** The parent records that a frame
+was retained or discarded; the science the hook computed is dropped. Resolution is
+tracked as a Block 7 open decision, not as a gate re-run.
+
+### Evidence-integrity note
+
+`head.txt` records `980bf43`, but `d4-history.json` contains the refusal string
+`no planned survey position is labelled 'no_such_tile'`, which only exists from
+`259eaec` onward. The machine therefore ran code newer than the recorded identity.
+Re-capture `head.txt` immediately before the runs, not at the start of the session.
+
+### D4 case 3 was not run
+
+`d4-narrowed-profile.yaml` differs from the reviewed config only in line endings
+and `workspace_dir`; no stage bound was narrowed, and no run appears in
+`d4-history.json`. The up-front-refusal property remains unverified on the demo
+core. It is separately covered by
+`test_an_out_of_bounds_survey_position_is_refused_before_any_acquisition`.
+
+### D5 finding — `save_position_list` saves the whole MM list, not the selection
+
+The agent marked the k=3 tiles and called `save_position_list`; the resulting
+`.pos` holds **8** entries, because D3's five tiles were still in MM's position
+list. The saved artifact therefore misrepresents the Run A selection, and anything
+that later loads it would acquire five positions nobody selected.
+
+**Before R1 on M5:** clear the MM position list before marking the top-k, and
+assert the saved `.pos` contains exactly k entries. Treat a count mismatch as a
+stop condition — on a rig this is a dose-integrity problem, not a cosmetic one.
+
+### D5 limit — the demo core cannot exercise SNR ordering
+
+All nine tiles returned identical statistics (`snr` 0.95, `mean_intensity`
+330.78125), so the ranking was decided entirely by the position-label tie-break.
+Determinism was confirmed (two `rank_hook_log` calls, identical ordering), but
+ordering *by SNR* is untested until R1. Do not report the demo ranking as evidence
+that SNR ranking works.
+
+### Cross-cutting finding — the manifest hash cannot be verified externally
+
+`hook_manager.save_hook` pins `sha256(code)` where `code` is LF-normalized text,
+while Python's text-mode write puts CRLF on disk. Measured on both D2 hooks:
+
+    d2_capability_probe   manifest c8dbf833…   certutil 801419da…
+    d2_legacy_benign      manifest e68fa85c…   certutil c6faee98…
+
+`sha256(LF)` reproduces the manifest value exactly and `sha256(CRLF)` reproduces
+certutil's, so this is newline translation, not tampering. TOCTOU detection still
+works, because `load_hook_class` normalizes on read. But the pinned hash cannot be
+reproduced by any standard file-hashing tool on the platform the rig runs on, so it
+is not independently auditable. Pre-existing, not a Block 7 regression; recorded
+for the design gate.
