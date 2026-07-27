@@ -322,10 +322,22 @@ command and worth doing while the rig is open, but it is no longer load-bearing.
 This is the one **live fail-closed** check Block 5 can actually contribute, and
 it takes no exposure: `run_mda` has no `acquisition-tool:` row and `mmstudio-mda`
 is `excluded`, so dispatch must refuse it before it touches anything. Call
-`run_mda` through the normal tool path and confirm a `RigAuthorizationError`
-naming the excluded path, with no MDA started and no hardware effect. This pins
-the claim that the new dose policy did not quietly become the thing that admits
-MDA.
+`run_mda` through the normal tool path with any token value and confirm the
+refusal, with no MDA started and no hardware effect. This pins the claim that the
+new dose policy did not quietly become the thing that admits MDA.
+
+**PASS — the exact observed shape** (measured against fakes, 2026-07-27):
+`execute_tool` **returns** a JSON error, it does not raise:
+
+```json
+{"error": "RigAuthorizationError: The mmstudio-mda write path is excluded from the Phase-1 authorization map.", "hint": "This may be a hardware error (device busy, stage at limit, device not found) or a connection problem."}
+```
+
+An earlier draft of this section said "confirm a `RigAuthorizationError`", which
+would have had the operator looking for a traceback that never comes. Note also
+that the generic `hint` is misleading for an authorization refusal — that is a
+pre-existing wart in `execute_tool`'s error handling, not a Block 5 defect, and
+worth its own cleanup.
 
 ---
 
@@ -356,7 +368,73 @@ effect before `validate_live_rig` returns.
 Remember the probe auto-confirms. `RESULT` showing a completed acquisition is
 evidence about authorization and accounting, not about the confirmation gate.
 
+### B5 REHEARSAL — PASS against fakes (2026-07-27)
+
+The probe file was executed **unmodified** via `runpy` against a fake controller
+shaped after `MMConfig_demo.cfg`'s real device set (512×512, 8-bit, XY/Z/Camera,
+StateDevice filter wheels, ShutterDevice shutters), with `tools.Acquisition`
+replaced by the same fake `tests/test_acquisition_budgets.py` pins. Output:
+
+```
+MAP    complete=true, verdict=complete, 9 policy + 8 tool rows, mda=["excluded"]
+PLAN   frames=2, exposure_ms_per_frame=5.0, illuminated_ms=10.0, bytes=524288
+RESULT {"status": "Timelapse complete.", ...}
+LEDGER frames=2, illuminated_ms=10.0, bytes=524288   (== PLAN.estimated_bytes)
+```
+
+Every B5 criterion is satisfiable and the arithmetic is self-consistent
+(2 × 512 × 512 × 1 = 524 288). Two Block 4 invariants held incidentally: the fake
+asserts `image_process_fn` is never passed, and that `acquire()` receives a
+**list**, not a generator.
+
+**What this rehearsal establishes:** the probe's argparse surface, every API name
+and signature it touches, dispatch through Block 5's new `execute_tool` gate, and
+ledger accounting are all correct. The class of error that would otherwise burn a
+rig session — a wrong kwarg or a renamed attribute — is ruled out.
+
+**What it does not establish**, and what a real core still must: pyjavaz bridge
+semantics (the exact class of error that Block 4's G5 caught, where guessed field
+and method names were wrong), a real `Acquisition` and NDTiff write, and real
+camera geometry. `ctrl.studio` was `None` throughout and the probe never touched
+it, which is itself a useful finding: B5 does not require MMStudio.
+
 ---
+
+## Optional: rehearse B5 + B4b on a Micro-Manager demo core
+
+Strictly more valuable than the fake rehearsal above, because it exercises the
+real pyjavaz bridge and a real `Acquisition`. Needs any machine running MM with
+`MMConfig_demo.cfg` and the pycro-manager ZMQ server on port 4827.
+
+A ready profile is committed: **`design/33-block5-demo-safety-config.yaml`**.
+Set its `workspace_dir` to a real directory, then:
+
+```powershell
+python -m microclaw --port 4827 --safety-config design\33-block5-demo-safety-config.yaml authorization-map > demo-map.json 2>&1
+python design\33-block5-rig-probe.py --config design\33-block5-demo-safety-config.yaml --save-dir <workspace_dir>\block5 --port 4827 --frames 2 --exposure-ms 5 > demo-probe.txt 2>&1
+```
+
+Expect `verdict: complete`, ~39 entries, 10 `auto:state-device` rows (the five
+demo StateDevices × Label/State), `authorized_presets: []`, and the same
+PLAN/LEDGER agreement as the fake rehearsal — though `estimated_bytes` will
+follow the demo camera's actual geometry rather than 524 288.
+
+**Why `channels: allowed: []` is not optional here.** Every demo Channel preset
+sets `Core,Shutter` alongside its filter labels. `Core.Shutter` is not a
+StateDevice, is not in the illumination block, and cannot be declared
+categorical, so guaranteed mode refuses startup outright:
+
+```
+Live rig authorization failed:
+- Allowed channel preset 'FITC' is not fully classified: Core.Shutter is unclassified
+```
+
+That is correct fail-closed behaviour, not a bug — presets are design/33
+Phase 4 — but it will stop a demo run dead if the profile omits the empty
+allowlist. Measured 2026-07-27.
+
+Anything that fails on a demo core but passed the fake rehearsal is almost
+certainly a **bridge** finding, and should be treated the way G5 was.
 
 ## Verdict
 
