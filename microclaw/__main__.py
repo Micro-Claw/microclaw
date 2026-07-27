@@ -355,7 +355,8 @@ def main():
         action="store_true",
         help=(
             "Assert that a trusted TLS-terminating proxy is in front; trust its "
-            "X-Forwarded-Proto: https header. Requires --allow-remote."
+            "X-Forwarded-Proto: https header. The bind port must be reachable "
+            "only by that proxy. Requires --allow-remote."
         ),
     )
 

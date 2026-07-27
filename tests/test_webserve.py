@@ -76,6 +76,8 @@ def session():
         cancel=threading.Event(),
         _emit=None,
         pending=None,
+        audit_records=[],
+        current_identity="loopback",
     )
     # Session.confirm only reads _emit/pending/cancel, so binding the real
     # method makes the fake route confirmations exactly as the real one does.
@@ -725,7 +727,8 @@ def test_post_key_is_refused_when_bound_beyond_localhost(session, monkeypatch):
 
 def _args(**kw):
     base = dict(host="0.0.0.0", web_port=8000, allow_remote=False, no_browser=True,
-                safety_config="x.yaml", port=4827, model=None, save_history=False)
+                behind_tls_proxy=False, safety_config="x.yaml", port=4827,
+                model=None, save_history=False)
     base.update(kw)
     return types.SimpleNamespace(**base)
 
@@ -879,6 +882,37 @@ def test_missing_origin_does_not_bypass_auth_and_auth_does_not_replace_csrf(remo
     assert client.get("/api/history", headers=forged).status_code == 403
 
 
+def test_expected_proxy_origin_is_accepted_for_bearer_and_cookie(remote):
+    client, state = remote
+    origin = {**_bearer(), "Origin": "https://testserver"}
+    # Empty prompt reaches the endpoint's own 400, proving both middleware
+    # gates accepted the state-changing request.
+    assert client.post(
+        "/api/prompt", headers=origin, json={"message": " "}
+    ).status_code == 400
+    _paired_client(client, state)
+    assert client.post(
+        "/api/prompt", headers={**TLS, "Origin": "https://testserver"},
+        json={"message": " "},
+    ).status_code == 400
+
+
+def test_expected_proxy_origin_with_public_nondefault_port_is_accepted(
+    session, monkeypatch
+):
+    monkeypatch.setattr(credentials, "load_api_key", lambda: ("k", "env"))
+    state = webserve.RemoteAuth(REMOTE_TOKEN)
+    client = TestClient(
+        build_app(session, remote=True, api_token=REMOTE_TOKEN,
+                  behind_tls_proxy=True, auth_state=state),
+        base_url="https://lab.example.org:8443",
+    )
+    headers = {**_bearer(), "Origin": "https://lab.example.org:8443"}
+    assert client.post(
+        "/api/prompt", headers=headers, json={"message": " "}
+    ).status_code == 400
+
+
 def test_authorization_bearer_none_is_refused(remote):
     client, _ = remote
     assert client.get("/api/history", headers={**TLS, "Authorization": "Bearer None"}).status_code == 401
@@ -976,6 +1010,51 @@ def test_serve_refuses_remote_cleartext_and_invalid_proxy_combinations(monkeypat
     monkeypatch.setenv("MICROCLAW_REMOTE_TOKEN", "short")
     with pytest.raises(SystemExit, match="at least 32"):
         serve(_args(allow_remote=True, behind_tls_proxy=True))
+
+
+def _stub_serve_runtime(monkeypatch):
+    fake = types.SimpleNamespace(
+        history=[], history_fn="unused.json", save=False,
+        confirm=lambda *args: False,
+        guard=types.SimpleNamespace(shutter_all=lambda core: []),
+        ctrl=types.SimpleNamespace(core=object()),
+    )
+    monkeypatch.setattr(webserve, "Session", lambda args: fake)
+    monkeypatch.setattr(webserve, "build_app", lambda *args, **kwargs: object())
+    import uvicorn
+    monkeypatch.setattr(uvicorn, "run", lambda *args, **kwargs: None)
+    return fake
+
+
+def test_remote_startup_prints_real_bind_token_and_pair_code_without_opening(
+    monkeypatch, capsys
+):
+    _stub_serve_runtime(monkeypatch)
+    token = "operator-token-which-is-at-least-32-characters"
+    monkeypatch.setenv("MICROCLAW_REMOTE_TOKEN", token)
+    monkeypatch.setattr(webserve.secrets, "token_urlsafe", lambda size: "pair-code")
+    opened = []
+    monkeypatch.setattr(webserve, "_open_when_ready", lambda *args: opened.append(args))
+
+    serve(_args(allow_remote=True, behind_tls_proxy=True, no_browser=False))
+
+    output = capsys.readouterr().out
+    assert "Listening (cleartext) on http://0.0.0.0:8000" in output
+    assert token in output
+    assert "/#pair=pair-code" in output
+    assert "https://0.0.0.0:8000" not in output
+    assert "operator-supplied TLS proxy URL" in output
+    assert opened == []
+
+
+def test_loopback_startup_still_auto_opens_its_http_url(monkeypatch):
+    _stub_serve_runtime(monkeypatch)
+    opened = []
+    monkeypatch.setattr(webserve, "_open_when_ready", lambda *args: opened.append(args))
+
+    serve(_args(host="127.0.0.1", no_browser=False))
+
+    assert opened == [("127.0.0.1", 8000, "http://127.0.0.1:8000")]
 
 
 def test_remote_confirmation_audit_carries_identity(session, remote, fast_confirm_poll):

@@ -154,16 +154,22 @@ parser, so if you pass them they go *before* `serve`:
 | `--web-port N` | `8000` | HTTP port for the GUI. |
 | `--no-browser` | off | Print the URL instead of opening a browser window. |
 | `--allow-remote` | off | Permit an authenticated non-loopback bind. Requires `--behind-tls-proxy`. |
-| `--behind-tls-proxy` | off | Assert a trusted TLS-terminating proxy is in front. Requests are served only with `X-Forwarded-Proto: https`; use only when that proxy overwrites the header. |
+| `--behind-tls-proxy` | off | Assert a trusted TLS-terminating proxy is in front. Requests are served only with `X-Forwarded-Proto: https`; the cleartext bind port must be reachable only by that proxy. |
 
-A browser window opens once the server is accepting connections.
+In loopback mode, a browser window opens once the server is accepting
+connections. Remote mode never auto-opens a browser because only the operator
+knows the proxy's public URL.
 
 Remote mode refuses direct cleartext HTTP. Put the server behind a trusted
 TLS-terminating proxy, pass both `--allow-remote --behind-tls-proxy`, and ensure
 the proxy overwrites (rather than merely forwards) `X-Forwarded-Proto` with
-`https`. At startup Microclaw prints a long-lived bearer token for non-browser
-API clients and a single-use browser pairing URL. The pairing code is in the URL
-fragment, is cleared from the address bar before exchange, expires after 15
+`https`. Bind to a proxy-facing interface or firewall the cleartext bind port so
+clients cannot reach it directly. The header is an operator-supplied transport
+assumption; Microclaw cannot verify that the request actually traversed the
+proxy. At startup Microclaw prints a long-lived bearer token for non-browser API
+clients and a single-use browser pairing code to append to the operator's own
+public HTTPS proxy URL. The pairing code is in the URL fragment, is cleared from
+the address bar before exchange, expires after 15
 minutes, and becomes a 12-hour HttpOnly, Secure, SameSite=Strict cookie. A code
 can also be pasted into the page manually. Set `MICROCLAW_REMOTE_TOKEN` to use a
 stable operator-managed token (minimum 32 characters); otherwise a token is

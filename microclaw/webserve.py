@@ -296,6 +296,7 @@ class Session:
         # Volatile only. Durable confirmation auditing belongs to design/32
         # Finding 5 (Block 15), not this remote-auth release gate.
         self.audit_records: list[dict] = []
+        self.current_identity = "loopback"
 
         # env > keyring > file; a key found in a store is pushed into the
         # environment now so the first turn doesn't have to look for it.
@@ -319,7 +320,7 @@ class Session:
         """
         emit = self._emit
         confirmation_id = uuid.uuid4().hex
-        identity = getattr(self, "current_identity", "loopback")
+        identity = self.current_identity
 
         def decided(decision: str, decided_by: str = identity) -> bool:
             record = {
@@ -329,8 +330,6 @@ class Session:
                 "kind": kind,
                 "decision": decision,
             }
-            if not hasattr(self, "audit_records"):
-                self.audit_records = []
             self.audit_records.append(record)
             print("[microclaw] Confirmation audit: " + json.dumps(record, sort_keys=True))
             return decision == "approved"
@@ -373,9 +372,6 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
         if not api_token:
             raise RuntimeError("remote mode requires an API token")
         auth_state = auth_state or RemoteAuth(api_token)
-    if not hasattr(session, "audit_records"):
-        session.audit_records = []
-
     def client_address(request: Request) -> str:
         return request.client.host if request.client else "unknown"
 
@@ -501,7 +497,7 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
 
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue = asyncio.Queue()
-        turn_identity = getattr(request.state, "identity", "loopback")
+        turn_identity = request.state.identity
 
         def emit(event):
             try:
@@ -608,7 +604,7 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
         p = session.pending
         if p is None or p.id != c.id:
             raise HTTPException(409, "No confirmation with this id is pending.")
-        p.reply.put((c.approve, getattr(request.state, "identity", "loopback")))
+        p.reply.put((c.approve, request.state.identity))
         return JSONResponse({"resolved": True})
 
     @app.get("/api/model")
@@ -768,7 +764,7 @@ def serve(args):
             "Pass --allow-remote if you truly mean to expose it."
         )
     remote = args.host not in LOCAL_HOSTS
-    behind_tls_proxy = getattr(args, "behind_tls_proxy", False)
+    behind_tls_proxy = args.behind_tls_proxy
     if behind_tls_proxy and not args.allow_remote:
         sys.exit("--behind-tls-proxy requires --allow-remote.")
     if remote and not behind_tls_proxy:
@@ -803,20 +799,21 @@ def serve(args):
 
     if remote:
         print(
-            f"\n!! Microclaw is reachable at https://{args.host}:{args.web_port} "
-            "through the asserted trusted TLS proxy.\n"
+            f"\nListening (cleartext) on http://{args.host}:{args.web_port} — "
+            "for the TLS proxy only; do not expose this port.\n"
             f"Remote bearer token: {token}\n"
-            f"Browser pairing URL: https://{args.host}:{args.web_port}/#pair={pairing_code}\n"
+            "Browser pairing: open your proxy's HTTPS URL and append "
+            f"/#pair={pairing_code}\n"
         )
-    url = f"{'https' if remote else 'http'}://{args.host}:{args.web_port}"
-    print(f"Microclaw GUI: {url}  (Ctrl-C to stop)")
-    if not args.no_browser:
+        print("Microclaw GUI: use the operator-supplied TLS proxy URL  (Ctrl-C to stop)")
+    else:
+        url = f"http://{args.host}:{args.web_port}"
+        print(f"Microclaw GUI: {url}  (Ctrl-C to stop)")
+    if not remote and not args.no_browser:
         # A wildcard bind is not an address a browser (or Windows' connect())
         # can reach; the loopback the server is also listening on is.
         visit = "127.0.0.1" if args.host == "0.0.0.0" else args.host
-        browser_url = (f"https://{visit}:{args.web_port}/#pair={pairing_code}" if remote
-                       else f"http://{visit}:{args.web_port}")
-        _open_when_ready(visit, args.web_port, browser_url)
+        _open_when_ready(visit, args.web_port, f"http://{visit}:{args.web_port}")
 
     # Mirrors run_session: every exit path — Ctrl-C, a crash in a turn — writes
     # the history and shutters known illumination (design/14 §3).
