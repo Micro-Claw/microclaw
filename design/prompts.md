@@ -1710,3 +1710,1044 @@ Please update prompts.md
 native callback and Dataset boundaries, removal of legacy processor replay, explicit
 DatasetView contract, unimplemented-surface warnings, callback availability split, and
 the documentation-only saved-hook constraint correction.]
+
+----
+
+Have a look at design/26, design/29, and design/32. Which order should these be
+implemented in?
+
+[recommended 32 -> 29 -> 26, but argued the internal splits matter more than the
+coarse ordering. design/32's strict config validation underpins every hardware
+guard, its dose ledger is what bounds the surveys design/26 wants to run, and
+design/29 explicitly keeps re-analysis off that ledger. design/26 was the only
+one of the three with an unimplemented prerequisite surface.]
+
+----
+
+Look at design/29. Does the shared geometry model re-implement some of what is
+in calibration.py?
+
+[yes in one place: `MosaicGeometry` carried a parallel `pixel_to_stage` array
+while `StageCameraAffine` (calibration.py:18) already holds the same 2x2 plus
+`pixel_size_um`, and `px_to_um` already is the mosaic's per-pixel operation.
+Made `MosaicGeometry` hold the affine itself so the coefficients exist once, and
+kept objective/binning bound to the transform instead of stripped into a bare
+array.]
+
+Yes
+
+Have a look at the recent changes to design/29
+
+[verified the new claims against calibration.py: `StageCameraAffine` genuinely
+has no artifact/ROI/camera/timestamp identity, and it is a plain dataclass with
+no `__post_init__`, so a hand-built or artifact-loaded affine is never validated
+-- only `solve_affine` checks degeneracy. Both justifications hold.]
+
+Yes, draft that split. I'm not sure what to do about calibration provenance.
+It's a good idea to store this with every run, but it's unlikely that a
+microscope changes its calibration regularly. Probably fine to stash this in the
+knowledge base and update it if it becomes a problem
+
+[split validation along the geometry/policy seam: `MosaicGeometry.__post_init__`
+checks only self-contained numeric invariants before any canvas is allocated,
+and the precedence resolver owns provenance completeness, because the geometry
+object cannot see which branch produced its affine.]
+
+Have a look at the recent changes to design/29
+
+[the `calibration_ref` tagged union was a good shape, but flagged that §5 had
+grown from "stash it in the knowledge base" into a mandated immutable-versioning
+scheme -- heavier than the decision it was implementing.]
+
+Yes do a
+
+[Request interrupted by user]
+
+Hang on, sorry, don't do it yet. Have a look at
+https://github.com/micro-manager/micro-manager/tree/main/mmstudio/src/main/java/org/micromanager/internal/pixelcalibrator.
+Are we replicating some of this behavior? Could we use micro-manager's pixel
+calibrator instead?
+
+[yes -- `AutomaticCalibrationThread` runs essentially the same cross-correlation
+algorithm and persists through a `PixelSizeProvider` into MM's own pixel-size
+configuration, so MM already owns both the measurement and the storage microclaw
+was about to version itself. Rather than guess whether MM's stored affine
+encodes rotation and flip, wrote `design/29-mm-pixel-affine-probe.py` --
+read-only, no stage moves, no exposures -- to be run on the rig, printing
+`get_pixel_size_um`, the pixel-size config names, and `get_pixel_size_affine()`
+per config, then classifying each affine. A ROTATED/ANISOTROPIC/SHEARED verdict
+would let microclaw consume MM's affine and retire most of §5's versioning
+scheme.]
+
+Add binning and objective to the probe
+
+[added a section between config identity and the affine dump: `Binning` (plus
+`BinningX`/`BinningY` when present) off the camera device, guarded by
+`has_property`, because a config's affine is only valid at the binning it was
+measured at; and a best-effort objective read (MMCore has no `get_objective()`)
+that scans config groups for an objective/nosepiece/turret group and falls back
+to a matching state device's `get_state_label`.]
+
+----
+
+Have a look at design/32. Are these correct? Would you change anything?
+
+[all five findings were technically accurate and unusually well-anchored --
+every code reference checked out, including that every `if x < min` comparison
+in the guards is False for NaN. Recommended tightening the unknown-key claim (a
+stray key inside a section raises a bare `TypeError`, but a misspelled section
+name is silently dropped -- the more dangerous case), rewriting the stub in the
+repo's dataclass idiom instead of the Pydantic sketch that contradicted the
+doc's own recommendation, and noting that remote mode is P0-once-opted-in rather
+than P0-by-default.]
+
+OK make all of your suggested changes
+
+Have a look at the recent edits to design/32
+
+[the three-job split (Structure / Completeness / Semantics) was better than the
+original, and the stub correctly rejected `bool` before `Real`. Flagged that Job
+2's completeness check had a timing problem: "discovered" completeness cannot
+run at load time, because `load_safety_config` gates first hardware contact and
+so cannot assume a connected core.]
+
+Yes, fine. Let's go with declared. Ultimately we'll add a "first launch"
+interactive prompt, which will help the user figure out which actuators to add
+
+[committed the doc to a declared rig profile with the reasoning inline, and
+added the first-launch interactive prompt as what populates it -- run at a
+different time from the startup gate, so it may use a live core.]
+
+Have a look at the changes to design/32
+
+[the edit's upgrade of the live cross-check from a non-authoritative warning to
+a hard fail-closed startup gate closed the hole the declared-profile approach
+left: declaration alone cannot prove completeness, because an operator can
+simply omit an actuator. Refusing to *infer* limits was also right -- a wrong
+inferred bound is worse than an absent one. Asked for two reconciliations: an
+explicit definition of the connected/reachable intersection, and a pointer to
+`check_named_stage`, which already fails closed per-move for named stages.]
+
+Yes, fold both in
+
+add the ordering pointer too
+
+[named the concrete insertion point: in `run_session` (__main__.py:165)
+connection completes and `_repl` dispatches tools immediately after, with no
+gap, and `serve` has the same shape -- so the cross-check must be inserted
+explicitly between successful connection and the first tool dispatch, in *both*
+entry points.]
+
+Have a look at the recent changes to design/32
+
+[the shift to an "effective authorization surface, computed mechanically" was
+the right correction, because the generic `set_device_property` tool means
+reachability cannot be enumerated from a list of tool names. Flagged that
+"complete declared limits" was still defined only for numeric actuators.]
+
+Yes, fold both in
+
+Have a look at the recent changes to design/32
+
+[confirmed two corrections in the edits: `forbidden_properties` is exclusion,
+not authorization (an earlier fold had wrongly counted it as
+completeness-satisfying), and `allowed_channels` authorizes a *name* while MM
+applies whatever writes the config group defines -- so presets must be expanded
+at every startup and each resulting write evaluated against the map.]
+
+Yes, fold that in
+
+Have a look at the recent changes to design/32
+
+[verified a user correction that reversed an earlier claim of mine:
+`set_device_property` (tools.py:373) calls *both* `check_device_property` and
+`check_illumination`, so configured `power_properties` are guarded on the
+raw-write path. The real illumination bypass is an *unrecognized* power property
+or `set_channel`, which calls only `check_channel(preset)`.]
+
+yes fold that in
+
+Have a look at the recent changes to design/32
+
+[both new paragraphs verified against code: the channel-preset TOCTOU is real,
+because `set_config` makes MM re-read the preset at apply time, and
+`check_plugin_motion` (safety.py:422) gates only on the `allow_hardware_motion`
+flag, as its own docstring admits. Sharpened the TOCTOU prescription:
+re-authorizing then calling `set_config` does not close the gap -- trusted code
+must issue the individual authorized `set_property` writes itself, and the
+snapshot/hash is a drift detector, not a preventer.]
+
+yes fold it in
+
+Have a look at the recent changes to design/32
+
+[no factual problems this round, but flagged a structural one instead: Finding 1
+had grown to ~356 lines, larger than Findings 2-5 combined, and was no longer
+the "small design stub" the document promised -- it had become a full subsystem
+specification.]
+
+Fine, go for it
+
+[split the authorization-map material out into design/33-authorization-map.md
+(287 lines under twelve section headers), leaving design/32's Finding 1 as a
+~127-line do-now validation core with a one-paragraph handoff. design/32 dropped
+from 706 to 477 lines; no dangling "see below" references remained.]
+
+Have a look at the changes to design/32 and design/33
+
+[design/33's five delivery phases lined up with its own sections, and pulling
+opaque plugins out as a separate trust policy rather than another map phase was
+the right classification. But the renamed Job 2's example conflated field
+interpretation with a policy change, and one of the two was a silent behavior
+change.]
+
+yes fold it in
+
+[replaced the example with a genuine missing-required-field case, and added a
+separate Job 4 for the two-sided-range policy -- noting `check_z` honors
+one-sided bounds today, that mandating both ends closes the unguarded direction,
+and that the cost is forbidding intentional one-sided bounds like Z-down-only
+crash protection.]
+
+Have a look at the recent changes to design/32
+
+[the reviewed-unbounded object `{unbounded: true, reason: "..."}` was a better
+answer than inventing a large number, because it distinguishes a forgotten field
+from a deliberate open edge and leaves an audit trail. One wrinkle: it does not
+fit the "same dataclasses" the stub claims to reuse, since
+`StageConstraints.z_min` is `Optional[float]`.]
+
+Yes
+
+Have a look at the recent changes to design/32
+
+[retaining the reviewed-unbounded object in a structured `RangeEdge` was better
+than collapsing it to `None` at parse time, because design/33's guaranteed mode
+may reject a reviewed-unbounded edge and needs the reason for the audit. But
+`RangeEdge`/ `ParsedSafetyConfig` exist only to serve design/33 and change
+`load_safety_config`'s return type, which ripples through every caller.]
+
+Yes
+
+[split retention across the two docs: design/32 validates the edge and still
+returns the existing runtime shape with the guard unchanged, and design/33 owns
+retention in a new subsection explaining why `None` in `SafetyConstraints`
+cannot distinguish a reviewed-unbounded edge from a collapsed default.]
+
+Have a look at the recent changes to design/32 and design/33
+
+----
+
+Have a look at design/32 and design/33. Any issues?
+
+[spot-checked every code reference in both docs -- guards,
+`check_device_property`, `check_named_stage`, the
+`set_channel`/`set_device_property` wiring, and the tools/webserve/shortcut
+anchors -- and all held. Ownership between the two docs was clean. Raised four
+design issues instead: the stub still routed the whole `stage` section through
+the flat numeric parser, which cannot accept a Job-4 reviewed-unbounded object;
+core-axis `ActuatorId` had no device identity; the zero-migration sub-core was
+never carved out of the migration paragraph; and one error message named the
+missing key as if it were the declared one.]
+
+Yes make these changes
+
+[added `_range_edge` and `_stage_ranges` so range sections get their own
+type-specific parser, introduced a reserved core-stage sentinel with design/33
+owning the binding to `get_focus_device()`/`get_xy_stage_device()` at
+cross-check time, and fixed the migration split and the error message.]
+
+Have a look at the changes made to these edits in design/32 and design/33
+
+[the rework of the string sentinel into a tagged identity (`source:
+Literal["core_xy", "core_focus", "named"]`) was a genuine improvement: a
+structural source tag cannot be spoofed by an external MM label, whereas the
+`@`-prefix convention could. Verified no residual sentinel references anywhere,
+that the stub's positional construction matches field order, and that both docs
+resolve the three sources identically.]
+
+----
+
+Please make no edits to any files, only report your findings to me. Have a look
+at 20260716_173625_microclaw_history_pfs_problem.json. Here the user is working
+with a Nikon Perfect Focus System using https://micro-manager.org/NikonTI. What
+issues is the user having in this session? Does anything we do in design/32 or
+design/33 touch on any of these problems? Again, modify no files.
+
+[read all 216 messages. The central issue: `move_stage_z` (tools.py:241) is a
+bare `ctrl.core.set_position(target_z)` guarded only by `check_z`, with no
+continuous-focus coordination at all, so every call flipped `TIPFSStatus.State`
+from On to Off. The operator can jog the coarse wheel or use MM's Stage Control
+panel with PFS staying locked and watch it engage at ~2450 um; microclaw's only
+vertical-move tool cannot reproduce that, which drove most of the session's
+frustration. Neither design/32 nor design/33 addresses it -- they bound where Z
+may go, not whether the focus lock survives getting there.]
+
+----
+
+Hav ea look at design/26-29-32-33-implementation-checklist.md. Is this a good
+plan?
+
+[read it against all four designs it sequences rather than judging it in
+isolation. It is a good plan: the ordering is faithful to the designs' own
+stated dependencies rather than invented (strict parsing before the live
+completeness check, acquisition budgets before dose authorization, design/29
+traversal before design/26 consumes a mosaic), branch and merge boundaries are
+treated as rollback boundaries with an explicit "do not combine blocks," rig
+gates are separated from code gates, the design/29 calibration block is
+correctly probe-first, and a post-merge design-review gate is built in.]
+
+----
+
+Have a look at design/26-29-32-33-implementation-checklist.md. You are the
+coordinator. Please tell me what to give the first implementation agent
+
+[the run ledger was entirely empty, and Block 0 is coordinator work that is a
+hard prerequisite for Block 1: strict parsing makes currently-ignored keys
+fatal, so the inventory of every shipped and documented safety YAML has to exist
+first or the implementer cannot tell a migration diagnostic from a false
+positive.]
+
+Run Block 0 now and cut the branch
+
+Yes, fold note 2 in and give me the final package. then tell me what to hand to
+the implementation agent
+
+Yes you can commit block 0 ledger edits on main. Also, the block 1 implementer
+returned with the following message: (pasted report: increment 1a committed as
+967ab5d on design32/config-hardening; shared finite-number validation behind six
+guard call sites; 377 focused and 803 full-suite tests passing; no merge
+performed)
+
+Please push, so I can test them on a rig. For future blocks, it would be helpful
+to push them to branches where I can check them before merging them to main. In
+this case, just finish as-is and push to main. You can delete the branches once
+they are merged to main and pushed
+
+[recorded the branch-before-merge preference as a standing rule and treated
+Block 1's straight-to-main as the one-off it was.]
+
+Block 2, go ahead
+
+I dispatched the Block 2 agent, here's what it returned: (pasted report:
+mandatory `schema_version: 1`, typed range policies, structured actuator
+identities, two-edge validation, duplicate `(device, property)` rejection;
+committed as d5aa5c4; a local readline segfault forced a temporary shim)
+
+[independently re-measured 816 passed / 98 skipped -- the agent's reported
+stale-icon failure was its own broken environment, not real -- and caught a
+blocker its tests missed: the schema wrongly made `analysis.min_snr` mandatory,
+so the *shipped example* failed to parse. Fixed as 12b0677 with the missing
+regression test.]
+
+Rig config starts clean, go ahead and merge
+
+[merged Block 2 as b8092c4, recorded the design gate note, and confirmed
+design/33 needed no change because the landed
+`ParsedSafetyConfig`/`ActuatorId`/open-edge API matches its cross-check
+assumptions exactly.]
+
+Block 3, go ahead
+
+[handed out Block 3 as a two-stage handoff on one branch -- schema proposal
+first, coordinator approval, then the live cross-check -- with guaranteed mode
+required to declare an allowlist or refuse to start.]
+
+I dispatched Stage A, here's the schema proposal it returned: (pasted proposal:
+`schema_version: 2`, `rig_profile` with mode/actuators/classifications,
+guaranteed vs degraded_trusted_plugins, `excluded` distinct from
+`forbidden_properties`)
+
+What are the advantages/disadvantages to the two options you proposed?
+
+[safety is identical either way, because the fail-closed guarantee comes from
+the live cross-check, not the manifest -- an undeclared-but-reachable actuator
+fails closed under both. The choice was purely config ergonomics and source of
+truth: deriving the completeness target from the declared ranges keeps one
+source of truth, while a separate actuator manifest adds a second place to
+forget an entry.]
+
+Go with A, write the revision notes
+
+I dispatched the revised Stage A, here's what it returned: (pasted report:
+manifest removed, `ranges` is the sole completeness target,
+`BUILTIN_TYPED_CAPABILITIES` moved to code, `rig_profile.categorical_properties`
+replaces the two-entry allowlist; committed as f6ad78d)
+
+[approved after independently verifying that the example and fixture parse clean
+under schema 2 (example = guaranteed mode, empty allowlist, `Core/Initialize`
+excluded), 820 passed / 98 skipped, static checks clean.]
+
+I dispatched Stage B, here's what it returned: (pasted report: read-only
+`authorization-map` subcommand that connects, validates, prints the map and
+verdict, and exits without constructing the agent/REPL/web app; classification
+decisions for typed, reviewed-categorical, excluded, and trusted-degraded paths)
+
+[approved except one blocker: illumination was a Phase-1 built-in typed
+capability but was being left unclassified, so a config with `power_properties`
+and a power cap could pass while the map still claimed `complete`. Kept camera
+ROI excluded but tracked it for revisit.]
+
+I dispatched the Stage B revision, here's what it returned: (pasted report:
+illumination added to `BUILTIN_TYPED_CAPABILITIES`, dedicated shutter/power map
+entries, guaranteed mode now requires finite power caps and ratchet factors; 837
+passed)
+
+The rig a windows machine. Should /tmp be C:\tmp?
+
+[rewrote the whole rig-gate procedure for PowerShell -- `$env:TEMP` rather than
+a hand-created `C:\tmp`, `Copy-Item` rather than `cp`, no `tee` -- with cmd
+notes alongside.]
+
+So, before doing any of this, I tried just opening microclaw serve on the
+Windows rig running Micro-Manager in a demo configuration. This is what I get:
+(pasted failure: allowed channel presets not fully classified, plus a raw
+mmcorej/ZMQServer Java stack trace for presets that do not exist in the demo
+config)
+
+[two real defects, both from the smoke test: missing presets were expanded
+before being checked against the live "Channel" group, so a phantom preset
+surfaced as a raw Java stack trace, and the shipped example enabled channels
+that only exist on some rigs. Sent both back rather than papering over them in
+the config.]
+
+OK. In the meantime, I finished running on the MMDemo rig by making your
+suggested edits to the configuration file. The results of rig_ok are in
+authmap.json. The results of rig_broken are: (pasted output: all three entry
+points refusing with "Reachable z stage actuator 'Z' has no declared range
+policy.")
+
+[a textbook Step 1 pass: deleting `z_min`/`z_max` made the CLI, `serve`, and
+`authorization-map` refuse with byte-identical behavior, each after connecting
+and before any prompt or served app -- which is the property that matters most.]
+
+authmap.json is actually in the root folder here
+
+[Step 2 passes. The one design/33-flagged path checked out: `run_autofocus` is a
+software Z-sweep bounded by `guard.check_z(entry +/- z_range/2)` that drives
+only the core Z stage, so the demo's `Autofocus` *device* genuinely is
+unreachable by any tool and marking it excluded is correct rather than a hole.]
+
+Here is the stage B revision #2 response: (pasted report: missing presets
+checked against the live group before expansion, Java/JNI exceptions reduced to
+one sanitized line, shipped example's channels disabled by default; committed as
+fc346a4)
+
+I'm going to see if the real rig is available at the moment. When it is, how do
+I upgrade its safety_config.yaml to work with the new schema? There's many more
+devices on it than on the demo config and I'd like to control the majority of
+them with microclaw
+
+[gave an authoring method rather than a finished file: in guaranteed mode a
+device is controllable only if covered by a typed capability, a reviewed
+categorical property, or an allowed preset, and `authorization-map` reports
+exactly what is still uncovered -- so the config is authored iteratively against
+the enumerator instead of by guessing at 40 devices.]
+
+I've put the authmap from the microscope named M5 in authmap_m5.json in the root
+of this folder. Can you give me a tailored, annotated config?
+
+[refused to build a config on a mismatch: the file was not M5 but the standard
+Micro-Manager demo device set (`DHub`, `LED`, `White Light Shutter`,
+`Objective`, `Path`), identical to the earlier demo run.]
+
+I'm sorry, I gave you the wrong file. Have a look at the new authmap_m5.json,
+which should now be correct. I've also added the Micro-Manager configuration
+file, M5_working_config_Booster_NOELL2_withPresets_NK.cfg, for validation
+
+[cross-validated the real map against the .cfg: `SmarAct 2D` and `PIZStage`
+typed as stage-position, the Hamamatsu typed as exposure, everything else
+fail-closed excluded -- matching the .cfg device list exactly. Also found the
+"withPresets" file defines its presets in the **System** group, not `Channel`,
+so `set_channel` cannot reach them.]
+
+For some of these, like Thorlabs ELL6, both label and state change. So the
+options are Thorlabs ELL6-Label: Position 0 and Thorlabs ELL6-State: 0 together
+and then Thorlabs ELL6-Label: Position 1 and Thorlabs ELL6-State: 1 together.
+For this, what do I choose for categorical properties?
+
+[for an MM StateDevice, `Label` and `State` are two coupled names for the same
+discrete selection, so the choice is which write syntax is permitted, not what
+the device can do -- and the allowlist admits only the exact `(device,
+property)` pair written. Recommended declaring both.]
+
+Does this all not seem like a bit much? Maybe the blocklist was a better plan
+than the allowlist?
+
+[half right, and worth taking seriously: for benign discrete devices the
+allowlist ceremony is disproportionate, because the design collapses "gate
+hazardous writes" and "account for completeness" into one mechanism, so a filter
+wheel pays a laser-grade tax. But a denylist is fail-open -- "everything
+writable except X" silently admits every device nobody thought about. The fix is
+to keep the allowlist and make MM's own device typing do the declaring for
+discrete state devices.]
+
+OK, let's do 1 and then 2 as a fast follow. I first want to finish the test on
+the M5 for block 3 before merging. Currently I'm working my way through the
+device property list to set things up in the safety_config.yaml file. Can you
+then tell me what to do?
+
+I have added to the root folder safety_config_m5.yaml and the resulting authmap
+authmap_m5.json. I have also added a very brief test run of microclaw with this
+authmap on 20260723_112056_microclaw_history.json. The results of the tests
+were: (pasted output: all three entry points refusing with "Reachable z stage
+actuator 'PIZStage' has no declared range policy.")
+
+[the run exercised each typed capability and all behaved correctly:
+`move_stage_xy` in-bounds, `run_autofocus` bounded and correctly refusing to
+move on a flat metric, `snap_and_analyze` working, and every write after
+validation.]
+
+Outputs are in 20260723_121534_microclaw_history.json and
+20260723_121958_microclaw_history.json. I required two sessions because I'd
+misnamed the iBeamSmart power property. Values are real M5 limits, and I
+purposefully let the laser go to max power
+
+[closed Block 3: merged as 0124ffd with 841 passed / 98 skipped, M5
+guaranteed-mode gate passing on fail-closed refusal plus CLI/serve/enumerator
+parity, map cross-checked against the .cfg, categorical and illumination writes
+passing while PWM/FPGA and name-mismatch writes refused, and the laser
+confirm-on-enable firing. Two blockers had been caught and fixed on-branch
+before merge.]
+
+Can you set it up so I can pick up the fast-follow next session and then
+continue with block 4, etc. after? Does anything need to be written to file to
+do this?
+
+[made the ordering durable rather than conversational: inserted checklist item
+3b as a full block marked "NEXT -- do before Block 4" with the shutter carve-out
+spelled out, committed and pushed, and updated the memory note to point at it as
+a backstop.]
+
+Please remove the untracked files
+
+----
+
+continue the microclaw implementation checklist in
+26-29-32-33-implementation-checklist.md
+
+[Block 3b was next. Cut `design33/statedevice-auto-classify` from main and
+handed it to an implementation agent, flagging two things from the scoping pass:
+a raw write passes two gates rather than one, and the shutter carve-out must
+survive live MM device typing.]
+
+You didn't hand the block to an implementation agent. Can you please give me the
+prompt to hand to an implementation agent?
+
+[one was already running in the background; gave the prompt verbatim but flagged
+that dispatching a second agent would put two implementers on the same files on
+the same branch.]
+
+no, it's fine. let the background agent finish. then tell me how you'd like to
+test this and I'll execute the test
+
+I've included block3b-before, block3b-after and their corresponding
+configurational YAML files in the root of this directory. I've also added
+20260723_130635_microclaw_history.json, which is from a run using the after
+configuration. The output of (3) was: (pasted before/after maps: six Thorlabs
+pairs moving from `declared` to `auto`, `iChrome-MLE-TCP.State` auto-classified
+in both)
+
+[the diff was exactly the six expected pairs, with illumination and the excluded
+inventory byte-identical, and the live run wrote `Thorlabs Filter Wheel.State`
+-- undeclared in the after config -- end to end, which the map alone cannot
+prove. But refused to merge on one finding in the *before* map:
+auto-classification had admitted a laser-engine property in the unmodified
+config, against a narrowing the operator had deliberately written into it.]
+
+It's not clear to me what iChrome-MLE-TCP State/Label does. A better choice
+would have been iChrome-MLE-TCP-All: 1. Enable, which for sure turns the lasers
+on and off. I'm inclined to think iChrome-MLE-TCP State is a benign output/mode
+selector. Thorlabs ELL6 is a two-position slider that puts a Betrand lens in and
+out of the system, so it's more like a flip mirror in that it changes the path a
+bit. It doesn't gate light. Yes please add the narrowing rule now
+
+[scoped the rule to the position pair rather than the whole device on purpose: a
+device-level rule would mean excluding something unrelated like `Wheel.Speed`
+silently kills that wheel's auto-classification. Auto-classification now fills
+vacuums only.]
+
+I've put fresh block3b-before and block3b-after json files in the root of this
+folder. I also tested the parameter settings in microclaw serve with
+block3b-after's configuration in 20260723_135454_microclaw_history.json, even
+though you didn't ask me to
+
+[the two maps were old-code output -- the narrowing rule had never been pushed,
+so it was never on the rig. Ran the new rule against both real configs through
+the actual parser rather than trusting the agent's summary.]
+
+pulled aaa41d4, fresh maps are in the root, along with
+20260723_140713_microclaw_history.json
+
+It was physically on. changing that state does not turn it on (I replicated what
+we did, manually), so I must have accidentally clicked the power button in the
+EMU Gui. I've removed the untracked files. Please commit and merge everything
+that needs to be merged to close Block 3b. I will pick up block 4 in a later
+session
+
+[closed Block 3b at 863 passed / 98 skipped, and recorded a retraction rather
+than quietly deleting the earlier claim: `iChrome-MLE-TCP.State` does not gate
+emission, the enabled slot came from an EMU GUI click, and the wrong inference
+got written down because a correlation across two sessions on a hand-driven rig
+was treated as causal evidence.]
+
+What do you mean? What offer did I not take you up on? I'd like the full 3b fix
+to be on main, with no dangling branches
+
+yes, sweep the old merged branches too. I thought I'd deleted them on origin
+
+[deleted 13 merged local branches with `-d` so git verified containment in main
+first. Kept `port-to-jpype-acqj` (unmerged, and the only copy of the reverted
+jPype port) and left the two `origin/florian/*` branches alone as someone else's
+work on a shared remote.]
+
+----
+
+We continue the microclaw implementation checklist in
+26-29-32-33-implementation-checklist.md. You are the coordinator. You will
+decide what to do next what blocks to hand off to other agents to complete.
+Please hand me the prompt and I will pass it to an agent. Then I will tell you
+when the agent is done. You will check it and decide what to do next.
+
+[opened Block 4, cut `design32/acquisition-budgets` from main at 0d0137d,
+re-measured the baseline at 863/98, and handed out the implementation prompt.]
+
+So, I love this, but I just noticed that our last set of stuff (block 3/3b)
+created some errors on the integration tests. I'd like to fix these before
+continuing. Can you please revert all of this so I can start clean from main
+once this is fixed? It looks like nothing is pushed to main, so maybe all we
+have to do is get rid of this branch?
+
+[deleted the branch (it held only the one docs commit, never pushed) and put the
+checklist back to Block 4 unstarted. Nothing from Block 3/3b needed unwinding,
+since whatever the rig caught is a fix on top of the merged state rather than a
+rollback.]
+
+----
+
+We continue the microclaw implementation checklist in
+26-29-32-33-implementation-checklist.md. You are the coordinator. [...]
+
+[triaged the rig's integration failures before opening any block.
+`integration_failures.txt` was a full pytest run from the rig machine against
+the M5 real config: 10 failures, all in `tests/test_integration.py`, a file
+untouched since the design/30 era -- so none were Block 1-3b regressions. They
+decomposed into test portability (5 tests hardcode `device="Camera"`, which is
+not M5's Hamamatsu label; one assumes a 0.5 um stage tolerance), the suite's own
+docstring targeting `MMConfig_demo.cfg`, and a small remainder.]
+
+----
+
+We continue the microclaw implementation checklist in
+26-29-32-33-implementation-checklist.md. You are the coordinator. [...]
+
+The agent found an issue while implementing: (pasted stop report: "separate
+bounded acquisitions with cancellation between calls" and "all entry points
+retain their semantics" cannot both hold -- one pycro-manager `Acquisition` owns
+one dataset and the adaptive event queue, repeated `acquire()` calls merely
+queue work, and MMStudio exposes MDA as one opaque `run_acquisition()`)
+
+[ruled not blocked: the agent was right to stop rather than guess, and right
+that separate `Acquisition` objects are the wrong mechanism. The *design* was
+wrong. Reconciled the chunking premise to lazy event feeding inside one
+acquisition (merge 1c14271), recorded the dataset-fragmentation finding, and
+re-issued the block.]
+
+runner returned: (pasted report: `AcquisitionPlan`, session ledger, conservative
+reservations, rollback, overrun refusal, nine-field required-when-present
+`acquisition:` section, lazy generator with one event in flight; committed as
+a8f0209)
+
+[three blocking defects. The worst: the lazy feeder gates event i on
+`reservation.completed_frames` then `time.sleep(50 ms)`, so every frame pays up
+to 50 ms of pure sleep *plus* loses all engine pipelining. Sent back rather than
+spending the rig gate on that commit.]
+
+runner returned: (pasted report: 50 ms polling replaced with a Condition
+signaled by `commit_frame`, budget exhaustion no longer raising through
+pycro-manager threads, file-parsed configs now requiring a complete nine-field
+section; committed as 8d7e832)
+
+[accepted, and fixed one more defect the runner missed: the commit had
+regenerated `docs/microclaw-icon.png` -- outside Block 4 entirely -- which fails
+`test_readme_png_is_not_stale` in this project's own environment. Reverted it
+(01b2766); the runner's "check passed" was true only in whatever environment it
+used.]
+
+Can you give me a set of prompts to run through for these tasks?
+
+[wrote `design/32-block4-rig-gate-prompts.md` with six sections G0-G6,
+deliberately putting throughput first as the only section that could sink the
+branch, and making it a self-contained probe script rather than an agent prompt
+because agent round-trip latency would swamp the signal.]
+
+OK. Can you push it so I can test it on M5?
+
+Btw, the instructions don't work for windows (e.g. tail)
+
+[replaced `| tail -3` with `> <file> 2>&1`, which works identically in
+PowerShell and cmd and retains the output as gate evidence, fixed the paths and
+fence tags, and added the expected pytest count. While in there, found a worse
+problem than the Unix-isms: G2's step 3 told the operator to call `acq.abort()`,
+which is not the cancellation path under test.]
+
+Already G0 gives us something unexpected. Look at pytest.txt. The number of
+tests passed/skipped does not match. (plus environment identity: HEAD 0694f7c,
+Python 3.12.13, uv)
+
+Response: (pasted `uv pip install -e .` output confirming the editable install
+resolves into the repo)
+
+(pasted pytest tail: 876 passed, 114 skipped, 3 warnings)
+
+[fully explained and benign: the total is 990 on both platforms, so nothing
+failed to collect. Three `skipif(os.name == "nt")` tests, 13
+`test_transcript_js.py` tests skipped because `node` is absent, one Windows
+symlink test needing Developer Mode, and one Windows-only CRLF test that now
+actually runs: 892 - 3 - 13 - 1 + 1 = 876. Recorded as the Windows baseline.]
+
+OK I ran microclaw w/o the fixed acquisition section and got: (pasted refusal
+naming all nine missing `acquisition.*` fields)
+
+The text files from the run G1 with the timing are in this folder
+
+[G1 rejected the branch on measured evidence: 200 frames at 5 ms took 9.39 s on
+main and 31.95 s on the branch (3.40x), 100 frames at 50 ms 5.58 s vs 22.19 s
+(3.98x); per-frame wall time went from 47.0/55.8 ms to 159.8/221.9 ms. Diagnosed
+the cause as the per-event bridge round trips the feeder adds, not the sleep the
+previous round had removed.]
+
+runner returned: (pasted report: plain reservations no longer receive
+`image_process_fn`, frame accounting moved to `image_saved_fn` to avoid pixel
+transfer over ZMQ, bounded look-ahead of 2; committed as 779591b)
+
+[checked the look-ahead arithmetic rather than taking it on trust:
+`completed_at_start + index + 1 - LOOKAHEAD` yields -1, 0, 1, 2..., so events 0
+and 1 feed immediately and exactly two stay outstanding thereafter. The
+regression pin is real -- it asserts `image_process_fn` is absent from the
+kwargs.]
+
+The new branch runs along with the original main runs are in this folder
+
+Can you push g1-diagnose.py to the branch?
+
+Ran the git rev-parse: (pasted: HEAD 779591b) The results of those runs are in
+this folder as txt files
+
+Remove the .txts from the commit
+
+[a `git add -A` in two commits had swept up untracked rig output. Amended both
+(branch force-pushed with `--force-with-lease`, main's amend never having been
+pushed), left the files on disk, and added `/*.txt` to `.gitignore` as a
+backstop -- root-level only. Noted to stage by explicit path in this repo rather
+than relying on the gitignore.]
+
+No poll acquisition finished but it's hung and not writing to file
+
+[the `nopoll` mode had fabricated `False` from `is_finished()`, so pycro-manager
+never learned the run had completed. Made it cache a *real* result for 100 ms
+instead -- sticky once True -- and line-buffered stdout so a future hang still
+leaves partial evidence on disk.]
+
+OK, well I'd already run the other two before I noticed this. Their results are
+in this folder now
+
+Please resume where you left off
+
+[wrote a 2x2 bridge-cost probe that skips microclaw's acquisition code entirely
+and drives `pycromanager.Acquisition` directly, so generator-event-fetch cost
+and `image_saved_fn` cost could be attributed separately rather than guessed
+at.]
+
+I don't have access to the M5 at the moment. Would it be sufficinet to run this
+test on the system running the micro-manager demo configuration?
+
+[yes for this question: the cost under investigation is a per-frame Python/Java
+round trip over the pyjavaz bridge, which is identical whether the camera is
+real or demo, so the *attribution* transfers. The absolute numbers do not.]
+
+Can you give me the exact set of commands to run on the micro-manager demo
+configuration? Do I need run stuff on the main branch again as well for timing
+comparison?
+
+When you say run all four variants, do I have to run that command four times
+with different values?
+
+[once. All four variants run in sequence inside one process on purpose: four
+separate invocations would each carry their own bridge connection and JVM
+warm-up state, which would be a large fraction of the tens-of-milliseconds
+effect being measured.]
+
+I've placed bridge_cost_demo.txt in this folder
+
+[decisive split, and it did not reproduce M5: `list_nocb` 8.21 ms/frame,
+`gen_nocb` 11.79 ms (+3.58), `list_cb` 7.82 ms (free, with the callback provably
+firing 200 times), `gen_cb` 12.50 ms. So `image_saved_fn` accounting costs
+nothing and the generator does cost -- but 1.5x on demo against 3.4-4.0x on M5
+meant the generator alone did not explain the rig regression.]
+
+M5 run is now in this folder
+
+[reconciled the design to the measurement and merged it: design/32 §2 now
+carries the measured table, an explicit withdrawal of the 2026-07-23
+lazy-feeding recommendation, and the three eliminated hypotheses so none gets
+re-proposed. Issued the next task as a *removal*, not a redesign.]
+
+Ran it, here's what the agent returned: (pasted report: feeder, look-ahead
+constant, liveness timeout, and Condition handshake all removed; direct list
+dispatch to `acq.acquire()` retained along with the planner, ledger, and
+`image_saved_fn` accounting; committed as 9b48b37)
+
+[accepted with two coordinator fixes -- the regression pin was vacuous, so it
+asserted nothing about what `acquire()` actually received. Also rewrote G2 as a
+deferral record rather than a test, since mid-run cancellation is not achievable
+through this bridge and pretending otherwise in the gate would manufacture a
+false pass.]
+
+OK, the results of G1 run on M5 are in this folder
+
+[G1 PASS at 1.00x -- the regression is closed, and the branch now matches main's
+throughput on the rig that rejected it.]
+
+Ran the max_frames check for G3. The results are in this folder in
+20260726_171902_microclaw_history.json. Is there anything useful here already,
+or do we need to check the rest of the limits first?
+
+[the over/under pair for `max_frames` is nailed: 2 frames under a cap of 3
+completed, 4 frames refused with a message naming the field, the configured
+limit, and the actual value, with no frames acquired. Two incidental findings
+recorded: M5 has no shutter device, and the plan preview is only observable once
+a confirm threshold is crossed.]
+
+Can you give me a full ist of suggested values for the elements of acquisitons
+for the rest of these tests?
+
+[gave a complete config plus a nine-run table designed so each limit can be
+crossed on its own, using the check order and two independent levers (frame
+count and exposure). Flagged that every byte and duration figure assumed a
+2048x2048x16-bit frame and had to be verified on the rig first.]
+
+Yes, fold it in. Don't commit it yet. We can commit with the results of the run
+
+The results are in this folder in 20260726_193906_microclaw_history.json along
+with the safety config used safety_config_m5_g3.yaml
+
+Latest G3 run is in 20260726_194926_microclaw_history.json and the config is
+safety_config_m5_g3.yaml
+
+[the run proved more than the agent could report: `CONFIRM_FN` routes the plan
+to the operator's own dialog, not to the agent, so "no plan was shown to me" in
+the history is correct and expected -- the plan rendering is the operator's
+evidence and is invisible in the JSON. Corrected the frame size to 2304^2 from
+the live measurement.]
+
+1. Yes and yes. 2. Yes, intentional. 3. I don't know.
+
+[made an operator decline attributable: the message now reads "Acquisition plan
+declined at confirmation (operator refused the reserved plan)", pinned by a test
+asserting it contains "confirmation" and no `max_` field, so it can never
+regress into looking like a limit refusal.]
+
+Do I need to change the config file for G5?
+
+[yes -- confirmed the ordering in code first: the staleness check fires before
+the budget gate, so the token test would work under any config, but G5's
+clean-path run reaches `_authorize_acquisition` and a dozen-frame MDA under
+`max_frames: 3` would be refused there, producing a budget refusal that looks
+like an MDA failure but isn't one.]
+
+Ran G5 with the generous config, history is in
+20260726_201416_microclaw_history.json and config is safety_config_m5_g5.yaml
+
+Ran the probe, output is in mda-probe.txt
+
+Ran the probe, output is in mda-probe2.txt
+
+[two rounds of read-only introspection settled the bridge semantics instead of a
+third guess: MDA `slices`/`channels` are ArrayLists that are not Python-iterable
+and must be read by `size()`/`get(i)`, `useChannel` is a field, and `exposure()`
+is a method. Fixed the MDA reader accordingly with a unit test verified to fail
+against the buggy version.]
+
+Ran G5 again, history is in the folder at 20260726_203412_microclaw_history.json
+
+[G5 PASS. The thing G5 exists to guarantee -- that the MDA preview token cannot
+go stale-blind to slice or channel changes -- was genuinely broken, is fixed,
+and is now confirmed on real hardware. The five `run_mda` refusals are a
+separate pre-existing thing: M5's map excludes the `mmstudio-mda` path by a
+Block 3 decision.]
+
+I want to run G6. What prompt should I use?
+
+[G6 is a measurement, not a prompt, so it got a probe script like G1's --
+printing the exposure-only estimate, the actual wall time, and the per-frame
+overhead the estimate omits.]
+
+Ran G6 three times, output is in g6-duration.txt, g6-duration2.txt,
+g6-duration3.txt
+
+[closed Block 4: merge e8e7afb, main green at 894/98/3, the post-merge design
+gate recording the measured G1 (1.00x) and G6 (~657 ms/frame overhead, ~7.6x the
+estimate) findings, the lists-not-generators architecture, and the deferred
+items. `max_duration_s` is documented as bounding a known-low estimate, which G6
+now quantifies rather than asserts.]
+
+OK. Is everything closed so we can in theory close this session and pick up
+where we left off in a new one later?
+
+[verified rather than assumed: main in sync with origin, merged block branch
+deleted locally and on origin, no evidence files left in the tree, suite green,
+and everything a fresh session needs committed in the checklist ledger rather
+than living in the conversation.]
+
+----
+
+We continue the microclaw implementation checklist in
+26-29-32-33-implementation-checklist.md, at block 5. You are the coordinator.
+[...]
+
+the agent is done: (pasted report: acquisition-dose added to the typed
+capability registry, the defective "per-frame exposure = acquisition
+authorization" claim removed, guaranteed-mode fail-closed on all nine fields,
+nine policy rows and eight authorized entry points in the map, `mmstudio-mda`
+separately excluded, a naming-based tripwire for newly registered acquisition
+tools; committed as ff41de7)
+
+[two real defects: degraded-mode `acquisition-tool:*` rows did not degrade in
+lockstep with incomplete policy rows, and the tripwire was naming-based, so a
+differently-named acquisition tool would slip past it. Also noted the reported
+stale-icon failure does not reproduce -- it was the agent's broken editable
+install, exactly the trap CLAUDE.md warns about.]
+
+the agent is done: (pasted report: tool rows now degrade in lockstep including
+the 8-of-9 case, naming tripwire replaced with an AST call-graph check following
+registered tools transitively to
+`plan_events`/`_authorize_acquisition`/`_acquisition_ledger`, rig utilities
+committed; commit a28e5bd)
+
+[verified each claim independently rather than accepting the summary: the 8-of-9
+lockstep case, that stripping a marker actually fails the AST test, 910/98/3
+(+16 over baseline), and that the stale-icon failure passes on both main and the
+branch in isolation and in a full run.]
+
+Where can I find the five-step gate?
+
+[it did not exist as a file -- the two scripts were committed but the procedure
+lived only in a handoff message, which is no use at the rig. Wrote
+`design/33-block5-rig-gate-prompts.md` (B0-B5) in the same format as Block 4's.]
+
+I made it through G1 before I was kicked off the M5. Have a look at the results
+in the block5_tests subfolder in this foler. I also included the configuration I
+used, safety_config_block5.yaml
+
+[B0 and B1 PASS. The strongest single result is that B1's map reconciles exactly
+against Block 3b's M5 map: 40 entries then; 39 non-acquisition + 17 new
+acquisition = 56 now, and 39 + 1 deleted `exposure` row = 40. Block 5 added
+exactly what it should and moved nothing else. The larger pytest count was
+`MM_RUNNING=1` unlocking the live-hardware tests, not a regression.]
+
+Can I do B2-B4 on a Micro-Manager demo configuration system? Or does it have to
+be the M5?
+
+[neither -- B2 and B3 need no Micro-Manager at all, because
+`load_safety_config_or_exit` runs before the controller is constructed, so an
+incomplete config is rejected at parse and nothing ever connects. Both PASS. But
+checking this properly exposed a flaw in the gate as written: B2/B3 test *Block
+4's* required-section parsing, not Block 5's new finite-and-positive check,
+which is unreachable from any file-parsed config.]
+
+yes, rehearse B5 against the demo config
+
+[could not get a real demo core locally -- the installed MM 2.0.3's native libs
+and device adapters are x86_64 and this machine is arm64 -- so ran the probe
+file unmodified via `runpy` against a fake controller shaped after
+`MMConfig_demo.cfg`, and removed the two things that would have made the real
+run fail for uninteresting reasons.]
+
+demo-map.json and demo-probe.txt are now in this folder
+
+[the map passed on a real core -- first live confirmation outside M5 -- but the
+acquisition did not run, because of a footgun in the shipped config. Two
+findings kept: Block 3b's shutter carve-out holds against live MM device typing
+(`White Light Shutter` and `LED Shutter` excluded while 12 rows
+auto-classified), and the predicted 10 auto rows was wrong because the demo
+`LED` is also a StateDevice.]
+
+fresh map and probe from the demo machine are now in this folder
+
+[B5 PASSES on the demo core through the real pyjavaz bridge, a real
+`Acquisition`, and a real NDTiff write, with `LEDGER.bytes ==
+PLAN.estimated_bytes` exactly. This is the result that most reduces merge risk:
+the fake rehearsal could not touch pyjavaz, and G5 had just established that
+guessed bridge semantics are precisely where this project's bugs hide. B4
+determinism is satisfied by the two structurally identical maps.]
+
+For B4b, what's the prompt?
+
+[made B4b a script like the others. One design choice worth knowing: it calls
+`get_mda_settings` first to obtain a *real* preview token before feeding it to
+`run_mda`, so a refusal cannot be dismissed as a stale-token rejection rather
+than the authorization gate.]
+
+b4b-mda-refusal.txt is in this folder
+
+[B4b PASS, and `TOKEN {"kind": "real"}` is what makes it conclusive: MMStudio
+was reachable, the token was valid, and `run_mda` refused it anyway -- so the
+refusal is the authorization gate, excluded by evidence rather than by reading
+the code.]
+
+complete-probe.txt from the M5 is now in this folder
+
+[merged Block 5 as 3438b90, green at 910/98/3. B5 on M5 passed on every
+criterion, and the byte figure is the detail that matters: 21,233,664 = 2 x 2304
+x 2304 x 2, so the planner read M5's Hamamatsu geometry live. The same probe
+planned and accounted correctly across three different cameras (fake 512x512x1,
+demo 512x512x2, M5 2304x2304x2). Stated plainly that the gate found three
+defects and all three were in the gate, not the code.]
+
+hand it to an agent
+
+agent returned: (pasted report: design/33 "Phase 3 landed" section, design/32's
+acquisition-authorization requirement discharged with M5's exact 21,233,664-byte
+measurement and the ~7.6x duration caveat preserved, checklist post-merge gate
+completed; committed as 8798933)
+
+[reviewed the docs against the merged diff rather than the agent's summary:
+docs-only, all nine policy fields and eight tool rows matching the code,
+cross-doc links resolving, and the degraded-mode description precise in a way
+that is easy to get wrong. The one genuine design/code *disagreement*, as
+opposed to staleness, was the Phase-1 acquisition/exposure row that treated
+per-frame exposure as complete acquisition authorization; Block 5 deleted it.
+Merged as 299841c.]
+
+I will pause for now and pick up block 6 in a new session. Do we need to write
+anything else to file to make this happen? Or am I all set?
+
+[all set, verified: main == origin/main at 299841c, no unpushed commits, no rig
+evidence leaked into the repo (`complete-probe.txt` caught by the `/*.txt`
+rule), suite green, and Block 6's task list already in the checklist with its
+note that it needs no rig action.]
+
+What exactly do you want me to do with the dose budgets? How can I identify a
+good one?
+
+[answered from the run histories and M5's real frame size (10,616,832 B). Two of
+the five hard limits can never fire on M5: `max_bytes` binds at 4,710 frames
+below ~127 ms exposure and `max_illuminated_ms` above it, so `max_frames: 10000`
+and `max_duration_s: 3600` are decorative. Either lower `max_frames` to ~5,000
+so it binds just before `max_bytes` for a clearer refusal message, or accept the
+redundancy deliberately.]
+
+----
+
+Please update prompts.md. You will have to look at the last several days of
+sessions
+
+[recovered the twelve sessions since the last update from the local session
+transcripts and appended them chronologically: the implementation-order and
+design/29 geometry reviews, the long design/32 review that split design/33 out
+of Finding 1, the PFS history analysis, the checklist review, and then the
+coordinator sessions for Blocks 0-5 with their rig gates, measured rejections,
+and merges. Long pasted agent reports and rig outputs are recorded as
+parenthetical gists rather than verbatim; `exit` messages and environment
+boilerplate were omitted.]
