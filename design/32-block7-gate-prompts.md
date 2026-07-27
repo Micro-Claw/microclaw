@@ -590,10 +590,17 @@ On the demo core the list still held D3's five tiles and `save_position_list` wr
 **8** entries for a k=3 selection; on a rig that is a dose-integrity problem,
 because anything later loading that file acquires positions nobody selected.
 
-Check `~\.microclaw\hooks\manifest.json` first. On 2026-07-20 M5 carried three
-saved `claude_generated` hooks — `storm_prebleach_ramp`, `smlm_live_preview`, and
-`montage_grid` — and Block 7's boundary affects all three. See the open item in the
-results section.
+Check `~\.microclaw\hooks\manifest.json` first, and **copy the hook source off the
+rig before merging Block 7**. On 2026-07-20 M5 carried three saved
+`claude_generated` hooks — `storm_prebleach_ramp`, `smlm_live_preview`, and
+`montage_grid` — and Block 7 refuses or breaks all three: the first needs laser
+control the closed union cannot express, the other two write image files with no
+live artifact path. Their source is the only input the restoration work has, and no
+copy exists in the repo.
+
+Restoration is tracked as **checklist Block 7b**
+(`design32/hook-illumination-and-artifacts`). It is explicitly *not* Block 13:
+Phase 2 is process isolation for the same contract and adds no action types.
 
 Then run `design\26-field-spike-prompts.md` A1–A3 with rows=3, cols=4,
 step_um=20, k=2. Retain the new history, hook log, ranking output, saved position

@@ -42,6 +42,7 @@ Progress markers: `[ ]` not started, `[-]` active, `[x]` complete, `[!]` blocked
 | 5 | `design33/dose-authorization` | `ec98330` (main, 894/98/3) | `ff41de7` + `a28e5bd` (review fixes); 910/98/3 (mac) | B0/B1/B5 PASS on M5; B2/B3 PASS off-rig; B4/B4b/B5 PASS on a demo core via the live pyjavaz bridge. Gate found 3 defects, all in the gate not the code; 2 implementation defects were fixed in coordinator review before hardware. | `3438b90` | Gate done: design/33 Phase-3 landed semantics, evidence boundaries, and follow-ups; design/32 planner/ledger discharge + M5 live-geometry measurement |
 | 6 | `design32/remote-auth` | `d70874d` (main, 910/98/3) | `eb9ab16` + `c81aa16` (review fixes R1–R4) + `f68af87` (coordinator); 937/98/3 (mac) | n/a — network/security tests are this block's gate; no hardware path touched | `056a4ef` | Gate done: §3 heading restored (it was missing), Block 6 landed contract + five stated limitations, interim "unauthenticated remote warning" path removed from the ordering section |
 | 7 | `design32/generated-hook-decisions` | | | regression required | | |
+| 7b | `design32/hook-illumination-and-artifacts` | | | required | | |
 | 8 | `design29/saved-dataset-foundation` | | | probe required | | |
 | 9 | `design29/stage-coordinate-mosaic` | | | required | | |
 | 10 | `design26/completed-dataset-runner` | | | saved-data fixture | | |
@@ -461,12 +462,78 @@ Branch: `design32/generated-hook-decisions`
       2026-07-20 evidence. Do not claim biological or object-level validation.
 - [ ] Stop and fix if Run A changes acquisition, drops images/records, bypasses a parent
       gate, or cannot replay exactly. Then commit, review, and merge.
+- [ ] **Before merging, retain M5's saved-hook source and manifest.** Copy
+      `~/.microclaw/hooks/*.py` and `manifest.json` off the rig and hash them. Block 7
+      refuses all three of that registry's hooks, and their source is the only input
+      Block 7b's migration has. Nothing in the repo holds a copy.
 
 Post-merge design gate:
 
 - [ ] Update design/32 with the final trusted/generated category and action schemas.
 - [ ] Update design/26 only if its hook contract, Run A instructions, or current-runtime
       containment caveat changed. Merge doc corrections before Block 8.
+
+## 7b. Design/32 Finding 4 Phase 1 fast-follow — restore what the union cannot express
+
+Branch: `design32/hook-illumination-and-artifacts`
+
+Block 7's closed action union covers adaptive *acquisition* decisions and nothing
+else, so it silently removed two things M5's saved hooks depend on. This block owns
+getting them back. **Block 13 does not.** Phase 2 is process isolation for the same
+contract — its bullets keep controller and guard out of the worker and add no action
+types — so without this block the capability never returns.
+
+Measured from the retained 2026-07-20 M5 history: three `claude_generated` hooks were
+in that rig's registry, and Block 7 refuses or breaks all three.
+
+| Hook | Needs | Block 7 outcome |
+|---|---|---|
+| `storm_prebleach_ramp` | laser-power ramp via `ctrl` | no illumination action exists; unrunnable |
+| `smlm_live_preview` | writes a preview TIFF, pushes to MM display | no live artifact path; display push gone |
+| `montage_grid` | writes one composite TIFF after the last frame | no live artifact path |
+
+- [ ] Create the branch from updated `main`.
+- [ ] Add a typed illumination action to the closed union, authorized through
+      design/33's **existing** Phase-1 illumination gate (`require_confirm_on_enable`,
+      `max_power_percent`, `max_power_step_factor`). Do not introduce a second
+      authorization surface for light.
+- [ ] **Resolve the confirmation problem before coding.** Block 7 established that no
+      interactive confirmation may occur on an acquisition callback thread, because
+      pyjavaz serializes bridge calls behind one lock. `require_confirm_on_enable`
+      therefore cannot be satisfied mid-acquisition. Either pre-authorize an
+      illumination envelope at plan time, alongside the Block 4 reservation, or state
+      plainly that hook-proposed illumination is limited to what was authorized before
+      the run. Do not add a mid-run prompt.
+- [ ] Add a bounded, parent-mediated artifact-emission path for live hooks: writes go
+      to the acquisition's artifact directory only, are size-limited, and are recorded
+      in the parent audit with a hash. A generated hook must still not receive a
+      filesystem capability of its own.
+- [ ] Decide whether `storm_prebleach_ramp` belongs in the untrusted union at all. It
+      conditions fluorophores before acquisition and makes no decision from image
+      content, so it may be a reviewed `PRECODED_HOOK_REGISTRY` built-in rather than
+      generated code proposing actions. If so, keep lab-specific parameters external.
+- [ ] Migrate all three hooks to `analyze_frame` and use them as the acceptance
+      fixtures. Each must run again with no `ctrl`, no `guard`, and no self-written log.
+- [ ] Test refusal paths as carefully as success: an illumination proposal exceeding
+      the configured power ceiling or step factor, an artifact exceeding the size
+      limit, and an artifact path escaping the acquisition directory.
+
+Rig gate:
+
+- [ ] Re-run each migrated hook on M5 and compare with its pre-Block-7 behaviour using
+      the source and evidence retained at Block 7. Stop if a hook needs a capability
+      this block did not restore — that is a third gap, not a bug.
+
+Post-merge design gate:
+
+- [ ] Update design/32 §4's action vocabulary: it currently lists six variants as the
+      minimum and does not mention illumination or artifacts. Update design/33 if the
+      illumination gate's contract changed. Record which of the three hooks were
+      restored, which became built-ins, and which remain unsupported.
+
+**Scheduling.** M5's three hooks stay refused from the moment Block 7 merges until
+this block lands. Run it before Block 8 if the lab needs them; deferring is a
+legitimate choice, but the loss is live in the meantime, not theoretical.
 
 ## 8. Design/29 foundation — traversal and immutable calibration identity
 
