@@ -58,3 +58,7 @@ safety_config.yaml
 # Rig-gate probe output and stray transcripts land in the repo root.
 # Spike OUTPUTS are never committed (only the spike .py under design/).
 /*.txt
+
+# Rig/demo gate evidence lives outside the repo (design/26-29-32-33 checklist:
+# commit the spike and the findings, never the output artifacts).
+microclaw_block7/

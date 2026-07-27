@@ -571,7 +571,7 @@ output, acquisitions under `block7/`). Demo machine, Windows, Python 3.12.13,
 | D2b | **PASS** |
 | D3 | **PASS**, including the documentation-quality half |
 | D4 cases 1, 2, 4 | **PASS** |
-| D4 case 3 | **NOT RUN** — no narrowed profile was produced |
+| D4 case 3 | **PASS** (re-run 2026-07-27 after the step was made concrete) |
 | D5 | **PASS**, with two procedural findings |
 
 ### D1 — FAIL: `test_generate_save_and_use_custom_hook`
@@ -605,13 +605,29 @@ before R1; the demo machine's registry was empty.
 `259eaec` onward. The machine therefore ran code newer than the recorded identity.
 Re-capture `head.txt` immediately before the runs, not at the start of the session.
 
-### D4 case 3 was not run
+### D4 case 3 — PASS on the re-run
 
-`d4-narrowed-profile.yaml` differs from the reviewed config only in line endings
-and `workspace_dir`; no stage bound was narrowed, and no run appears in
-`d4-history.json`. The up-front-refusal property remains unverified on the demo
-core. It is separately covered by
-`test_an_out_of_bounds_survey_position_is_refused_before_any_acquisition`.
+The first attempt produced no narrowed profile and no run: the step said "narrow
+one XY stage bound" without saying which, against what positions, or what a pass
+looked like. Made concrete (`x_max` 10000 → 10 against the existing p0/p1 pair) it
+passed on every criterion.
+
+- The narrowed profile still started `complete: true`, so the refusal cannot be a
+  startup artifact.
+- Refusal verbatim: `Safety constraint prevented this action: X=20.0 µm exceeds
+  the maximum allowed (10.0 µm).` — the guard's own message, naming the offending
+  coordinate and the limit.
+- `inspect_artifacts` reported both `block7\case3` and `block7\case3_hook.log`
+  not found: no dataset directory, no log.
+- `get_xy_position` read (0, 0) before and after. The stage never moved.
+- The agent did not retry with different positions, drop `p1`, or edit the
+  profile — the three ways this step could have been passed hollowly.
+
+The refusal came from the positional guard, **not** from `UnsupportedActionHook`'s
+own unsupported-action path: the survey was rejected before the hook was ever
+consulted. That is the property the step exists to establish. It also confirms the
+saved-hook self-logging refusal is not over-broad — `UnsupportedActionHook`
+resolved normally on the way to the guard.
 
 ### D5 finding — `save_position_list` saves the whole MM list, not the selection
 
