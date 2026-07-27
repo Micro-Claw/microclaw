@@ -2330,12 +2330,17 @@ def _resolve_hook(
     hook_params: dict | None,
     log_path: str | None,
 ) -> Any:
-    """Instantiate a hook by strategy name (pre-coded registry or saved hook).
+    """Instantiate a hook with an explicit provenance-based trust category.
 
-    Injects ctrl/guard/log_path where the hook constructor accepts them.
-    Raises ValueError if the strategy is unknown.
+    Registry classes are reviewed, shipped control code and retain their
+    existing capabilities. Every class loaded from the saved-hook directory is
+    untrusted regardless of its manifest ``source`` label, receives no
+    controller/guard/log capability, and is wrapped by trusted parent code.
+    Saved source still runs in-process; review plus hash pinning remain the
+    containment story until Block 13.
     """
     from microclaw.hooks import PRECODED_HOOK_REGISTRY
+    from microclaw.hook_decisions import UntrustedHookAdapter
     from microclaw.hook_manager import load_hook_class, list_saved_hooks
 
     params = dict(hook_params or {})
@@ -2344,21 +2349,33 @@ def _resolve_hook(
 
     if hook_strategy in PRECODED_HOOK_REGISTRY:
         hook_cls = PRECODED_HOOK_REGISTRY[hook_strategy]
+        trusted_builtin = True
     elif hook_strategy in list_saved_hooks():
         hook_cls = load_hook_class(hook_strategy)
+        trusted_builtin = False
     else:
         raise ValueError(
             f"Unknown hook strategy '{hook_strategy}'. "
             "Run list_hooks() to see available strategies."
         )
 
-    sig = inspect.signature(hook_cls.__init__)
-    if "ctrl" in sig.parameters:
-        params.setdefault("ctrl", ctrl)
-    if "guard" in sig.parameters:
-        params.setdefault("guard", guard)
+    if trusted_builtin:
+        sig = inspect.signature(hook_cls.__init__)
+        if "ctrl" in sig.parameters:
+            params.setdefault("ctrl", ctrl)
+        if "guard" in sig.parameters:
+            params.setdefault("guard", guard)
+        return hook_cls(**params)
 
-    return hook_cls(**params)
+    # Do not let caller-supplied hook_params smuggle capabilities across the
+    # provenance boundary either. The trusted adapter, not generated code,
+    # owns the audit path.
+    for forbidden in (
+        "ctrl", "guard", "credentials", "candidates", "progress",
+        "survey_events", "event_queue", "log_path",
+    ):
+        params.pop(forbidden, None)
+    return UntrustedHookAdapter(hook_cls(**params), log_path=log_path)
 
 
 def _adaptive_result(
@@ -2814,13 +2831,19 @@ def _acquire_survey_with_detector(
         **shape_kwargs,
     )
 
-    # Hand the queue and counter to the hook as attributes. The inline
-    # detectors in the tests close over test-local objects; a saved hook
-    # class loaded by _resolve_hook has nothing to close over, so this is
-    # the only way a hook_strategy hook ever reaches them.
-    hook.candidates = candidates
-    hook.progress = progress
-    if adaptive:
+    from microclaw.hook_decisions import UntrustedHookAdapter
+
+    if isinstance(hook, UntrustedHookAdapter):
+        if adaptive:
+            hook.configure_adaptive(
+                events=survey_events, candidates=candidates, progress=progress,
+                guard=guard, max_events=len(survey_events),
+            )
+    else:
+        # Reviewed built-ins retain the legacy direct control contract.
+        hook.candidates = candidates
+        hook.progress = progress
+    if adaptive and not isinstance(hook, UntrustedHookAdapter):
         # The tile list becomes state the hook walks, one candidates.put()
         # per decision; the stream pre-dispatches only survey_events[0].
         # Deliberate limit: the reservation covers exactly the planned grid.

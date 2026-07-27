@@ -148,6 +148,17 @@ class TestHashPinnedLoad:
         cls = load_hook_class("h")
         assert hasattr(cls, "image_process_fn")
 
+    def test_analyze_frame_only_hook_round_trips(self):
+        code = (
+            "class H:\n"
+            "    def analyze_frame(self, image, metadata):\n"
+            "        return None\n"
+        )
+        assert validate_hook_contract(code) == []
+        save_hook("analysis", code, "analysis", source="claude_generated")
+        cls = load_hook_class("analysis")
+        assert hasattr(cls, "analyze_frame")
+
     def test_tampered_file_refused(self):
         save_hook("h", _CLEAN_HOOK, "clean", source="user_provided")
         # Edit the file on disk after save — TOCTOU.

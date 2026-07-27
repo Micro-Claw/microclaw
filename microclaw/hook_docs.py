@@ -56,7 +56,7 @@ from a package name. To branch acquisition on a group of images, use microclaw's
 `run_adaptive_survey` candidates-queue runner (below), NOT pycro-manager's native
 `AcquisitionFuture.await_image_saved(...)` pattern: microclaw deliberately does not
 hand hooks the `Acquisition` object, and detection stays inside the hash-pinned,
-logged `image_process_fn` rather than a runner-thread wait loop (design/24). For
+logged `analyze_frame` rather than a runner-thread wait loop (design/24). For
 per-image work after persistence use `image_saved_fn`. For completed data, the offline
 orchestrator opens the `ndstorage.Dataset` (from `acq.get_dataset()` or a direct
 `ndstorage` import; do not rely on a version-dependent `pycromanager` re-export) and
@@ -64,7 +64,7 @@ gives the adapter a read-only, selection-limited `DatasetView`. That offline
 orchestrator and `DatasetView` are a design/26 proposal, not yet implemented; do not
 claim a generated adapter can run offline until they ship.
 Stateful streaming remains available when those boundaries do not fit.
-`image_process_fn` itself does not receive a batch.
+`analyze_frame` itself does not receive a batch.
 
 No network call may occur while images are acquired. A local subprocess is allowed
 only after its lint warning and full source are explicitly reviewed; derived XY/Z
@@ -91,17 +91,16 @@ filtering, stage movement, early stopping, or follow-up acquisition.
 Pycro-manager's native `Acquisition(...)` constructor accepts all of these callback
 kwargs, but Microclaw does not currently expose all of them through its runners.
 
-Currently wired by Microclaw's acquisition runner:
+Currently wired by Microclaw's acquisition runner for reviewed built-ins:
 
   image_process_fn       callable(image, metadata, event_queue) -> tuple | None
   post_hardware_hook_fn  callable(event) -> dict   (ALWAYS return the event)
 
-For a generated or saved custom hook, `image_process_fn` is mandatory because the
-current hook manager validates and loads classes through that method.
-`post_hardware_hook_fn` is optional alongside it; a generated post-hardware-only class
-cannot be saved or loaded. Pre-coded registry hooks may be post-hardware-only because
-they do not go through the saved-hook loader. Do not promise broader saved-hook support;
-generalizing that contract belongs to design/08 and is not part of design/26.
+Generated and user-saved hooks instead implement
+`analyze_frame(image, metadata) -> HookResult | None`. They never receive ctrl,
+guard, credentials, runner queues, or the pycro-manager event queue. Legacy saved
+`image_process_fn` classes still load, but receive a raising event-queue stub and no
+other capability. Only classes shipped in PRECODED_HOOK_REGISTRY are trusted built-ins.
 
 Native pycro-manager callbacks not currently wired by Microclaw:
 
@@ -114,6 +113,21 @@ one requires runner plumbing and fixture/integration tests first. For wired call
 only the methods actually implemented by the hook are passed to `Acquisition(...)`.
 
 ## Hook function signatures and return-value contracts
+
+### analyze_frame(image: np.ndarray, metadata: dict) -> HookResult | None
+
+The saved-hook contract. `HookResult` contains JSON-safe measurements and a tuple
+of typed action proposals: MoveStage, AcquireAt, SetExposure, ContinueSurvey,
+StopSurvey, or RequestAutofocus. Under run_adaptive_survey the trusted parent
+supports ContinueSurvey, StopSurvey, and AcquireAt for a position in the planned
+grid. It guard-checks and reservation-checks every proposal and writes every
+accept/refuse decision to the log. The other three actions are parsed but refused
+as unsupported by this runner.
+
+There is deliberately no interactive confirmation from the acquisition callback
+thread: pyjavaz serializes bridge calls behind one lock, so prompting there can
+deadlock acquisition. A proposal outside the already committed reservation is
+refused and logged, never escalated to a prompt.
 
 ### image_process_fn(image: np.ndarray, metadata: dict, event_queue) -> tuple | None
 
@@ -248,10 +262,13 @@ The levers that DO work:
 Only keys relevant to the current axis configuration are present. The "axes"
 indices are sequence numbers (0, 1, 2, …), not physical values.
 
-## event_queue (inside image_process_fn) — NEVER call event_queue.put()
+## event_queue — unavailable to saved hooks
 
-image_process_fn receives pycro-manager's real event queue as its third
-argument, but a put() on it is a SILENT NO-OP under every microclaw runner:
+NEVER call event_queue.put(). Saved hooks receive no hardware event queue; legacy
+saved callbacks receive a stub that raises instead.
+
+Reviewed built-in image_process_fn callbacks receive pycro-manager's real event
+queue, but a put() on it is a SILENT NO-OP under every microclaw runner:
 by the time any image is processed, the acquisition's terminator is already
 queued ahead of (or the event source has already consumed) anything the hook
 adds, so the hook's event is orphaned and never executed. Nothing raises and
@@ -263,7 +280,7 @@ was silently dropped (design/24).
     early — the terminator it would duplicate is already queued, and the
     hook's None is discarded the same way.
 
-A hook that needs to ADD work must run under the survey-with-detector runner,
+A reviewed built-in that needs to ADD work may run under the survey-with-detector runner,
 which hands the hook a `candidates` queue and a `progress` counter as
 attributes: self.candidates and self.progress (None under every batched
 runner — check them and RAISE if missing). There the supported pattern is:
@@ -286,73 +303,38 @@ progress.done_early(); then progress.image_done(). Positions run in the order
 the tool was given — hand run_adaptive_survey a reversed list for a reverse
 scan.
 
-A hook that needs to add work and finds self.candidates is None must FAIL
+A reviewed built-in that needs to add work and finds self.candidates is None must FAIL
 LOUDLY (raise), not quietly log a success — it is running under a batched
 runner that can never honor its decisions.
 
-## HookBase pattern (required for all microclaw-generated hooks)
+## Generated saved-hook pattern
 
-Every hook saved through microclaw MUST inherit from HookBase. This ensures
-the hook writes a structured log that the agent can read with read_hook_log().
+Saved hooks need not inherit HookBase. The trusted parent owns the log so hook
+source cannot forge or omit its action decision record.
 
 ```python
-from microclaw.hooks import HookBase
+from microclaw.hook_decisions import ContinueSurvey, HookResult
 import numpy as np
 
-class MyHook(HookBase):
-    def __init__(self, ..., log_path=None):
-        super().__init__(log_path)   # sets self.log_path, self._log = []
-        # store any extra init params here
-
-    # Implement ONE OR MORE of the hook methods below.
-
-    def image_process_fn(self, image: np.ndarray, metadata: dict, event_queue):
+class MyHook:
+    def analyze_frame(self, image: np.ndarray, metadata: dict):
         # ... your logic ...
-        self.log(metadata, key="value")
-        return image, metadata       # or: return None  (discards THIS image
-                                     # only; no event is skipped or dropped)
-
-    def post_hardware_hook_fn(self, event: dict) -> dict:
-        # ... your logic ...
-        self._log.append({...})
-        self._write_log()
-        return event                 # ALWAYS return the event — return None
-                                     # fires an unlabeled ghost exposure
+        return HookResult({"key": "value"}, (ContinueSurvey(),))
 ```
 
-If the hook needs hardware access, accept `ctrl` and `guard` in __init__:
-
-```python
-    def __init__(self, ctrl, guard, ..., log_path=None):
-        super().__init__(log_path)
-        self.ctrl = ctrl
-        self.guard = guard
-```
-
-HookBase provides:
-  self.log(metadata, **fields) — append ONE entry stamped with position + stage
-                                 XY/Z from the image metadata, then persist.
-                                 Prefer this over appending to self._log by hand.
-  self.log_event(event, **fields) — same, for pre/post-hardware hooks that get an
-                                 event dict instead of image metadata.
-  HookBase.where(metadata)     — just the {position, x_um, y_um, z_um} dict.
-  HookBase.log_analysis(...)   — a versioned observation record with analyzer,
-                                 parameters, artifact hash, status, and JSON result.
-  self._log        list[dict]  — the raw record list (log()/log_event() append here)
-  self._write_log()            — writes self._log as JSON to self.log_path
-  self.log_path    str | None  — path supplied at construction time
+Saved source still executes in the hardware-control process. Source review and
+hash pinning remain the containment story until Block 13 adds worker isolation;
+there is no hard deadline, memory cap, network isolation, or native-crash recovery.
 
 ## Choosing the right hook type
 
   Task                                   Hook to implement
   -------------------------------------  --------------------------------
-  Keep low-quality frames out of the     image_process_fn → return None
-    dataset (discard only — the            (the position is still exposed)
-    position keeps being exposed)
-  Adjust exposure or settings per frame  image_process_fn → ctrl.core.set_*
-  Autofocus before each image capture    post_hardware_hook_fn (stage already at XY;
-                                           generated hooks must also define
-                                           image_process_fn for save/load)
+  Record measurements / propose action   analyze_frame → HookResult
+  Adjust exposure or settings per frame  SetExposure proposal (currently refused
+                                           by run_adaptive_survey)
+  Autofocus before each image capture    RequestAutofocus proposal (currently
+                                           refused by run_adaptive_survey)
   Redirect stage before hardware moves   pre_hardware_hook_fn (native pycro-manager;
                                            not yet wired by Microclaw)
   Stop acquiring based on the images     run_adaptive_survey + adaptive hook
