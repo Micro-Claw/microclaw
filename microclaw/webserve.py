@@ -372,6 +372,7 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
         if not api_token:
             raise RuntimeError("remote mode requires an API token")
         auth_state = auth_state or RemoteAuth(api_token)
+
     def client_address(request: Request) -> str:
         return request.client.host if request.client else "unknown"
 
