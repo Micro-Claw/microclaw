@@ -77,48 +77,205 @@ or a real-hardware adapter/device in what is believed to be the demo config.
 
 ### D2. Saved-hook capability stripping is live
 
-In a fresh Microclaw session, ask the agent to show, review, and save a generated
-hook whose constructor names optional `ctrl` and `guard`, and whose legacy
-`image_process_fn` calls `event_queue.put(...)`. Record the displayed source,
-warnings, confirmation, manifest entry, and pinned sha256. Then run one one-frame
-`run_adaptive_survey` over a single demo position with that saved hook.
+Two runs. D2a is a negative control that must fail; D2b must succeed, because the
+parent-owned log can only be checked on a run that completes.
 
-Save the complete JSON history as:
+`save_dir` and `log_path` must be inside the configured workspace and must already
+exist — Block 5's first demo run died on exactly that.
+
+```powershell
+$Hooks = "$env:USERPROFILE\.microclaw\hooks"
+Copy-Item "$Hooks\manifest.json" "$Evidence\d2-manifest-before.json" -ErrorAction SilentlyContinue
+```
+
+**Note on the runner.** D2 uses `run_adaptive_timelapse`, not
+`run_adaptive_survey`: a legacy `image_process_fn` hook cannot propose
+`ContinueSurvey`, and the adaptive survey runner now refuses it up front for that
+reason. Batched runners have no `progress` object and are unaffected.
+
+#### D2a — capability stripping (paste into a fresh microclaw session)
+
+> I am running gate step D2a from `design/32-block7-gate-prompts.md`. This is a
+> deliberate **negative control** for the Block 7 saved-hook capability boundary:
+> the hook below is written to FAIL, and its failure is the evidence. Do not
+> improve it, do not make it safe, and do not substitute `analyze_frame` — I need
+> the legacy `image_process_fn` path specifically. Save it exactly as written.
+>
+> First call `list_hooks`. Then show me this source, run the lint, and after I
+> confirm, save it with `generate_and_save_hook` under the name
+> `d2_capability_probe`, description "D2 negative control: probes for stripped
+> saved-hook capabilities; not for real use", source `claude_generated`:
+>
+> ```python
+> class CapabilityProbeHook:
+>     """D2 negative control. Probes for capabilities that Block 7 must strip."""
+>
+>     def __init__(self, ctrl=None, guard=None, log_path=None):
+>         self.ctrl = ctrl
+>         self.guard = guard
+>         self.log_path = log_path
+>
+>     def image_process_fn(self, image, metadata, event_queue):
+>         leaked = []
+>         if self.ctrl is not None:
+>             leaked.append("ctrl=" + type(self.ctrl).__name__)
+>         if self.guard is not None:
+>             leaked.append("guard=" + type(self.guard).__name__)
+>         if self.log_path is not None:
+>             leaked.append("log_path=" + str(self.log_path))
+>         if leaked:
+>             raise RuntimeError("D2a FAIL capability leak: " + ", ".join(leaked))
+>         event_queue.put({"axes": {"position": "d2_ghost"}, "x": 0.0, "y": 0.0})
+>         raise RuntimeError("D2a FAIL: event_queue.put returned without raising")
+> ```
+>
+> Report the exact lint warnings, the manifest entry, and the pinned sha256.
+>
+> Then run **one** frame at 5 ms with that hook:
+> `run_adaptive_timelapse(n_frames=1, interval_s=0,
+> hook_strategy="d2_capability_probe", save_dir="<workspace>/block7/d2a",
+> log_path="<workspace>/block7/d2a/hook.json")`.
+> I expect this acquisition to fail. Report verbatim the exception text that
+> reaches you, then call `read_hook_log` on that log path and show me every record.
+> Do not retry, do not work around the failure, and do not modify the hook.
+
+D2a passes only if all four hold: neither `D2a FAIL` message appears; the error is
+the `DeniedEventQueue` text (`Saved hooks cannot access pycro-manager's event
+queue; return typed actions from analyze_frame instead`); the exception reaches
+the caller rather than being swallowed; and `read_hook_log` returns a
+`hook_failure` record carrying that reason plus `position` and intended stage
+coordinates.
+
+#### D2b — the parent owns a successful legacy hook's log
+
+> Still in gate step D2. Save this second hook as `d2_legacy_benign`, description
+> "D2 control: a legacy saved hook that succeeds, to check parent-owned logging",
+> using the same show → confirm → `generate_and_save_hook` flow:
+>
+> ```python
+> class BenignLegacyHook:
+>     """D2b control: succeeds, discards its second frame, writes no log itself."""
+>
+>     def __init__(self):
+>         self.seen = 0
+>
+>     def image_process_fn(self, image, metadata, event_queue):
+>         self.seen += 1
+>         if self.seen == 2:
+>             return None
+>         return image, metadata
+> ```
+>
+> Then run `run_adaptive_timelapse(n_frames=2, interval_s=0,
+> hook_strategy="d2_legacy_benign", save_dir="<workspace>/block7/d2b",
+> log_path="<workspace>/block7/d2b/hook.json")` at 5 ms. Afterwards call
+> `read_hook_log` on that path and show every record verbatim, and tell me whether
+> the log file existed. Do not summarize the records — print them.
+
+D2b passes only if: the acquisition completes; the log file exists; it holds
+exactly two `event: "legacy_hook_frame"` records, one `outcome: "retained"` and
+one `outcome: "discarded"`; and both carry `position` and the intended stage
+coordinates. A record naming the position without its coordinates is a failure —
+that is the design/23 F2 contract.
+
+**Expected observable — how D2a's failure should surface.** In pycro-manager
+1.0.2, `acquisition_superclass._call_image_process_fn` catches the processor
+exception and calls `acq.abort(...)`; `_check_for_exceptions` re-raises it to the
+caller, and the survey generator observes `acq_finished()` on its next 0.05 s
+poll. A correct D2a is therefore an **aborted acquisition** carrying both a
+`hook_failure` and an `aborted` record — not a stall, and not a swallowed
+exception. Read a prompt abort as a pass, not a defect.
+
+**Stop condition:** the hook receives ctrl, guard, or a log path; its `put`
+reaches a real event source; the exception is swallowed; the abort is mislabeled
+as a stall; any required record is absent; D2b returns a `log_path` with no file
+behind it; or any non-demo device moves.
 
 ```powershell
 Copy-Item "<session history>" "$Evidence\d2-capability-strip.json"
+Copy-Item "$Hooks\manifest.json" "$Evidence\d2-manifest-after.json"
+certutil -hashfile "$Hooks\d2_capability_probe.py" SHA256 > "$Evidence\d2a-hook.sha256.txt" 2>&1
+certutil -hashfile "$Hooks\d2_legacy_benign.py"    SHA256 > "$Evidence\d2b-hook.sha256.txt" 2>&1
 ```
 
-**Expected observable:** neither ctrl nor guard is injected; the attempted queue
-access raises with the saved-hook capability message; the acquisition surfaces the
-failure. In pycro-manager 1.0.2, `acquisition_superclass._call_image_process_fn`
-catches the processor exception and calls `acq.abort(...)`; `_check_for_exceptions`
-then re-raises it to the caller, and the generator observes `acq_finished()` on its
-next 0.05 s poll. The correct result is therefore an aborted acquisition plus both
-a parent-written `hook_failure` and `aborted` record — not a stall and not a
-swallowed exception. The returned log path must exist and be readable. Also run one
-successful legacy callback and verify its log file contains one parent-written
-per-frame retained/discarded outcome with position and intended stage coordinates.
-A returned `log_path` without a file, or a quiet no-op, is a failure.
-
-**Stop condition:** the hook receives either object, its put reaches an event source,
-the exception is swallowed, the abort is mislabeled as a stall, either required
-record is absent, the successful legacy run has no readable parent-owned per-frame
-log, or any non-demo device moves.
+Afterwards remove both probes from `$Hooks` and from `manifest.json`. The manifest
+pins what the operator consented to; it must not carry gate scaffolding, and a
+hook whose name is a failure assertion must not stay in the registry.
 
 ### D3. Typed ContinueSurvey and StopSurvey
 
-Save a new `analyze_frame(image, metadata)` hook returning JSON-safe measurements
-and typed actions. It must return `ContinueSurvey` for the first N frames and
-`StopSurvey` before the final planned tile. Run it with `run_adaptive_survey` over
-at least four named demo positions. Retain the hook source/hash, tool result,
-dataset inspection, and hook log.
+D3 tests two things at once, and they must be kept distinct in the evidence: that
+the mechanism works, and that the **agent-facing documentation is good enough to
+produce a working hook unaided**. So the agent authors the hook from its own
+documentation; a reference implementation is given below only as a fallback.
+
+Define five demo positions first (a 5-tile line at 50 µm spacing around the
+current stage position is enough), either in the MM position list or as explicit
+`positions` dicts.
+
+> I am running gate step D3 from `design/32-block7-gate-prompts.md`. First call
+> `get_hook_documentation` and `list_hooks`, and tell me what contract a **saved**
+> hook must satisfy to steer `run_adaptive_survey`. Then write that hook yourself
+> from the documentation — do not ask me for the source.
+>
+> It must: implement `analyze_frame(image, metadata)`; record a simple JSON-safe
+> per-tile measurement (mean intensity is fine); return `ContinueSurvey` while
+> fewer than `max_tiles` frames have been analyzed; and return `StopSurvey` on the
+> `max_tiles`-th frame, before the planned grid is exhausted. Take `max_tiles` as a
+> constructor parameter. Show me the full source and the lint result, and save it
+> as `d3_tile_score` after I confirm.
+>
+> Then run it over the five positions with `run_adaptive_survey`, protocol
+> `timelapse`, `protocol_params={"n_frames": 1, "interval_s": 0}`, 5 ms exposure,
+> `hook_params={"max_tiles": 3}`, saving under `<workspace>/block7/d3` with the
+> log beside it. Before running, state how many frames you expect to be acquired
+> out of how many planned, and why.
+>
+> Afterwards report, without summarizing away the numbers: the tool result's
+> `positions`, `frames_acquired`, `stopped_early`, and reservation fields; the
+> full `read_hook_log` output; and the image count in the saved dataset. Tell me
+> explicitly whether the planned count, the acquired count, the number of accepted
+> actions, and the dataset image count reconcile with each other.
+
+If the agent cannot produce a savable, working hook from its own documentation,
+**that is a D3 finding about `hook_docs.py` / the tool schema — record it before
+falling back.** Then use this reference implementation and note in the evidence
+that the fallback was needed:
+
+```python
+class TileScoreHook:
+    """D3 reference: score each tile, continue to the budget, then stop."""
+
+    def __init__(self, max_tiles=3):
+        self.max_tiles = max_tiles
+        self.seen = 0
+
+    def analyze_frame(self, image, metadata):
+        import numpy as np
+        from microclaw.hook_decisions import ContinueSurvey, HookResult, StopSurvey
+
+        self.seen += 1
+        action = ContinueSurvey() if self.seen < self.max_tiles else StopSurvey()
+        return HookResult(
+            {"tile": self.seen, "mean_intensity": round(float(np.mean(image)), 3)},
+            [action],
+            analyzer="d3_tile_score",
+            analyzer_version="1",
+            parameters={"max_tiles": self.max_tiles},
+        )
+```
+
+With five planned positions and `max_tiles=3` the arithmetic is fixed: the seed is
+dispatched, two `ContinueSurvey` actions are accepted, the third frame returns
+`StopSurvey`, and the run ends having acquired **3 of 5** planned frames.
 
 **Expected observable:** only the seed is initially submitted; each accepted
-ContinueSurvey adds exactly the next planned tile; StopSurvey ends cleanly;
-`tiles_planned`, `frames_acquired`, and dataset image count reconcile;
-`stopped_early` is true. Every action has a parent-written `accepted` record and
-reason, and measurements are separately recorded.
+ContinueSurvey adds exactly the next planned tile, in planned order; StopSurvey
+ends cleanly; planned/acquired counts, accepted-action count, and dataset image
+count reconcile at 3 of 5; `stopped_early` is true. Every action has a
+parent-written `accepted` record with a reason, and each frame's measurements are
+recorded separately under the `microclaw.analysis-observation/v1` envelope with
+`status: "unverified"` — an untrusted hook cannot self-assert `observed`.
 
 **Stop condition:** a ghost exposure, an arbitrary coordinate, a missing/forgeable
 decision record, frame-count mismatch, stall, abort instead of clean stop, or an
