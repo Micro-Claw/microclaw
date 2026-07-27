@@ -32,9 +32,9 @@ This is a program of work, not one atomic change. Its completion boundaries are:
    semantics and unit conversions beyond the built-in adapters, route those
    writes through typed guards, and continue to exclude every unclassified
    continuous write.
-3. **Acquisition/dose extension:** after design/32 Finding 2 lands, add its
-   frame, duration, byte, illuminated-time, and cumulative-session budgets to
-   the authorization policies.
+3. **Acquisition/dose extension (landed):** design/32 Finding 2's frame,
+   duration, byte, illuminated-time, and cumulative-session budgets are now
+   authorization policies (Phase 3 / Block 5; merge `3438b90`).
 4. **Channel-plan executor:** expand presets into immutable authorized plans and
    implement ordered application, waits, verification, cancellation, and
    partial-failure cleanup.
@@ -138,10 +138,11 @@ surface is not one kind of device. The cross-check must branch by actuator kind:
   plus a finite, valid step-factor policy. These are different constraints from
   stage travel and must be validated according to what the illumination guard
   actually consumes.
-- **Acquisition and dose**, once finding 2 lands, require its frame, duration,
+- **Acquisition and dose** require design/32 Finding 2's landed frame, duration,
   byte, illuminated-time, and cumulative-session budgets; a safe per-frame
-  exposure maximum does not make an unbounded acquisition complete. This later
-  schema extension does not block landing strict validation first.
+  exposure maximum does not make an unbounded acquisition complete. This schema
+  extension landed after strict validation, preserving that earlier delivery
+  boundary while making acquisition its own completeness branch.
 - **Categorical or discrete write paths** — filter-wheel positions, binning,
   trigger modes, shutter state, arbitrary `set_device_property` targets — have no
   minimum below a maximum, so a numeric bound is meaningless for them.
@@ -493,6 +494,69 @@ below.
   principle that auto-classification must not override an explicit operator
   narrowing, whatever the device turns out to do.
 
+## Phase 3 landed (2026-07-27)
+
+Shipped as Block 5 (merge `3438b90`; implementation `ff41de7`; coordinator-review
+fixes `a28e5bd`). The [Block 5 rig gate](33-block5-rig-gate-prompts.md) passed on
+2026-07-27: B0/B1/B5 on M5, B2/B3 off-rig, and B4/B4b/B5 on a demo core through
+the live pyjavaz bridge. This is authorization and accounting evidence, not
+validation of the human confirmation gate, cancellation, durable session dose,
+or the appropriateness of M5's declared limits.
+
+### What Phase 3 actually implements
+
+- **Typed capability and policy rows.** `acquisition-dose` is a built-in typed
+  capability. The map emits nine `acquisition-policy:*` rows: the five hard
+  maxima (`max_frames`, `max_duration_s`, `max_bytes`, `max_illuminated_ms`,
+  `max_session_illuminated_ms`) and four `confirm_above_*` thresholds for frames,
+  estimated duration, estimated bytes, and illuminated time. Guaranteed mode
+  requires all nine values to be finite and strictly positive and fails closed
+  before any prompt, app construction, or tool dispatch.
+- **The Phase-1 acquisition claim was deleted, not extended.** The old
+  `path="acquisition", capability="exposure"` row had exactly the defect this
+  design forbids: it let per-frame exposure stand in for complete acquisition
+  authorization. Phase 3 removes that row and replaces it with the separate dose
+  completeness branch above.
+- **Tool coverage is derived mechanically.** Eight tool rows are emitted:
+  `run_zstack`, `run_timelapse`, `run_multiposition_acquisition`,
+  `run_tile_acquisition`, `run_multiposition_with_autofocus`,
+  `run_adaptive_zstack`, `run_adaptive_timelapse`, and `run_adaptive_survey`.
+  An acquisition-entry-point marker lives on the tool functions; map construction
+  enumerates marked functions in `TOOL_REGISTRY`, and `execute_tool` checks the
+  corresponding `acquisition-tool:*` path before dispatch. An AST call-graph
+  tripwire fails when a registered tool can reach the planner or ledger without
+  the marker.
+- **Degraded mode moves policy and surface together.** An incomplete policy marks
+  both its invalid `acquisition-policy:*` rows and all eight
+  `acquisition-tool:*` rows `trusted_degraded`; no tool row claims a complete
+  typed capability that the configuration does not back. This lockstep rule and
+  one missed tripwire entry point were the two real Block 5 defects caught and
+  fixed in coordinator review before hardware. The rig required no code fix.
+- **MDA remains excluded.** `run_mda` deliberately receives no
+  `acquisition-tool:` row; its existing `mmstudio-mda` path remains excluded.
+  Its internal planning/ledger plumbing does not make that opaque authorization
+  path complete.
+
+### Rig evidence and limits of the verdict
+
+- M5 produced a complete map with nine policy and eight tool rows, no legacy
+  acquisition/exposure row, and no `acquisition-tool:run_mda`. The gate verified
+  the plumbing against the live registry and config; it did not validate that
+  the nine M5 budgets are appropriate. Finding B1-1 records that they are copied
+  verbatim from the shipped example while `reviewed: true` sits beside a
+  `# <-- REPLACE` marker on `camera.max_exposure_ms`. That is an open rig-config
+  review item, not a Block 5 code defect.
+- B5 rig-plumbing verification exercised the map, `execute_tool` dose gate,
+  planner, reservation, live-geometry byte calculation, saved-frame accounting,
+  and ledger through a real acquisition. The human confirmation gate was not
+  validated because the probe self-confirms. Cancellation remains deferred with
+  its abort trigger.
+- The gate itself had three defects: B2/B3 claimed the wrong layer and rig need,
+  B4 compared noisy raw output instead of parsed JSON, and the first B5 probe
+  diagnosed an invalid save path too late. All three were gate defects, not code
+  defects. That does not make Block 5 defect-free: its two implementation defects
+  were the coordinator-review findings described above.
+
 ### Known limitations / follow-ups
 
 - **Illumination power units:** `illumination.max_power_percent` is compared to the
@@ -501,6 +565,19 @@ below.
   unit-agnostic and unaffected). A units-aware illumination policy is future work.
 - **Config reload requires restart:** the map is built once at startup; editing the
   safety config does not hot-reload. Acceptable; worth a usability note in design/32.
+- **Session dose is not durable:** the acquisition ledger is in-memory and resets
+  on process restart. The `max_session_illuminated_ms` map row now says so in its
+  detail; Phase 3 does not persist dose across processes.
+- **The map's finite-positive check is defense-in-depth:** every missing,
+  non-finite, zero, or negative acquisition value is already rejected while
+  parsing a config file, so Block 5's check is unreachable from file input
+  (measured in gate finding B2-1). It protects directly constructed
+  `ParsedSafetyConfig` values and is covered by
+  `test_missing_or_partial_direct_dose_policy_fails_closed`.
+- **Authorization refusals receive a misleading generic hint:** `execute_tool`
+  attaches `This may be a hardware error (device busy, stage at limit, device not
+  found) or a connection problem.` to a `RigAuthorizationError`. This predates
+  Block 5 and deserves a separate error-reporting cleanup.
 - **Camera ROI** is excluded (no typed ROI capability) — tracked for a later phase.
 - **`degraded_trusted_plugins`** remains the sanctioned escape hatch: it suspends the
   completeness guarantee for sessions where the allowlist ceremony is not warranted.
