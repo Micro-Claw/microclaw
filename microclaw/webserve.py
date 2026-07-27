@@ -8,8 +8,9 @@ the page once the stream ends.
 
 Three properties are load-bearing, because this endpoint moves real hardware:
 
-* **Localhost only.** Binding beyond 127.0.0.1 requires `--allow-remote`; on a
-  lab network a stray bind means anyone can drive the stage.
+* **Authenticated remote access.** Binding beyond 127.0.0.1 requires both
+  `--allow-remote` and an explicitly trusted TLS-terminating proxy. Remote API
+  calls require a bearer token or an in-memory paired-browser session.
 * **One operator.** The controller and history are shared mutable state and the
   microscope is physically single-user, so a turn holds `session.lock` and a
   second prompt is refused (409) rather than interleaved.
@@ -19,9 +20,13 @@ Three properties are load-bearing, because this endpoint moves real hardware:
   That is why this is POST-SSE rather than an `EventSource`.
 """
 import asyncio
+from collections import OrderedDict, deque
 import datetime
+import hmac
 import json
+import os
 import queue
+import secrets
 import socket
 import sys
 import threading
@@ -67,6 +72,100 @@ _TURN_DONE = object()
 CONFIRM_TIMEOUT_S = 300.0
 CONFIRM_POLL_S = 0.5
 _monotonic = time.monotonic
+
+REMOTE_TOKEN_MIN_CHARS = 32
+GLOBAL_JSON_LIMIT = 64 * 1024
+PROMPT_BODY_LIMIT = 256 * 1024
+PAIR_TTL_S = 15 * 60
+SESSION_TTL_S = 12 * 60 * 60
+RATE_WINDOW_S = 60.0
+RATE_MAX_FAILURES = 10
+RATE_MAX_PAIR_ATTEMPTS = 10
+RATE_CLIENTS_MAX = 256
+SESSIONS_MAX = 1024
+SESSION_COOKIE = "microclaw_session"
+
+
+class _RateLimiter:
+    """Bounded per-client sliding-window limiter."""
+
+    def __init__(self, limit: int):
+        self.limit = limit
+        self.clients: OrderedDict[str, deque[float]] = OrderedDict()
+
+    def allow(self, client: str) -> bool:
+        now = _monotonic()
+        hits = self.clients.pop(client, deque())
+        while hits and now - hits[0] >= RATE_WINDOW_S:
+            hits.popleft()
+        if len(hits) >= self.limit:
+            self.clients[client] = hits
+            return False
+        hits.append(now)
+        self.clients[client] = hits
+        while len(self.clients) > RATE_CLIENTS_MAX:
+            self.clients.popitem(last=False)
+        return True
+
+
+class RemoteAuth:
+    """Process-local bearer, pairing codes, and opaque browser sessions."""
+
+    def __init__(self, token: str):
+        self.token = token
+        self.codes: list[tuple[str, float]] = []
+        self.sessions: OrderedDict[str, tuple[str, float]] = OrderedDict()
+        self.failures = _RateLimiter(RATE_MAX_FAILURES)
+        self.pair_attempts = _RateLimiter(RATE_MAX_PAIR_ATTEMPTS)
+
+    def mint_code(self) -> str:
+        now = _monotonic()
+        self.codes = [(c, expiry) for c, expiry in self.codes if expiry > now][-4:]
+        code = secrets.token_urlsafe(16)
+        self.codes.append((code, now + PAIR_TTL_S))
+        return code
+
+    def consume_code(self, supplied: str) -> bool:
+        now = _monotonic()
+        matched = False
+        remaining = []
+        for code, expiry in self.codes:
+            valid = expiry > now and hmac.compare_digest(code, supplied)
+            if valid and not matched:
+                matched = True
+            elif expiry > now:
+                remaining.append((code, expiry))
+        self.codes = remaining
+        return matched
+
+    def valid_bearer(self, header: str | None) -> bool:
+        if not header or not header.startswith("Bearer "):
+            return False
+        supplied = header[7:]
+        return bool(supplied) and hmac.compare_digest(supplied, self.token)
+
+    def mint_session(self) -> tuple[str, str]:
+        value = secrets.token_urlsafe(32)
+        identity = secrets.token_hex(8)
+        self.sessions[value] = (identity, _monotonic() + SESSION_TTL_S)
+        while len(self.sessions) > SESSIONS_MAX:
+            self.sessions.popitem(last=False)
+        return value, identity
+
+    def valid_session(self, supplied: str | None) -> str | None:
+        if not supplied:
+            return None
+        now = _monotonic()
+        found = None
+        expired = []
+        for value, (identity, expiry) in self.sessions.items():
+            if expiry <= now:
+                expired.append(value)
+            elif hmac.compare_digest(value, supplied):
+                found = identity
+        for value in expired:
+            self.sessions.pop(value, None)
+        return found
 
 
 class _Pending:
@@ -194,6 +293,9 @@ class Session:
         # re-surface a banner the one-shot stream already delivered.
         self._emit = None
         self.pending: _Pending | None = None
+        # Volatile only. Durable confirmation auditing belongs to design/32
+        # Finding 5 (Block 15), not this remote-auth release gate.
+        self.audit_records: list[dict] = []
 
         # env > keyring > file; a key found in a store is pushed into the
         # environment now so the first turn doesn't have to look for it.
@@ -216,9 +318,26 @@ class Session:
         microscope can see.
         """
         emit = self._emit
+        confirmation_id = uuid.uuid4().hex
+        identity = getattr(self, "current_identity", "loopback")
+
+        def decided(decision: str, decided_by: str = identity) -> bool:
+            record = {
+                "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "identity": decided_by,
+                "confirmation_id": confirmation_id,
+                "kind": kind,
+                "decision": decision,
+            }
+            if not hasattr(self, "audit_records"):
+                self.audit_records = []
+            self.audit_records.append(record)
+            print("[microclaw] Confirmation audit: " + json.dumps(record, sort_keys=True))
+            return decision == "approved"
+
         if emit is None:
-            return False                                   # no stream: deny
-        p = _Pending(uuid.uuid4().hex, summary, kind)
+            return decided("declined:no-stream")           # no stream: deny
+        p = _Pending(confirmation_id, summary, kind)
         self.pending = p
         print(f"\n[microclaw] Confirmation required ({kind}):\n{summary}")
         emit({"type": "confirm_request", "id": p.id,
@@ -228,27 +347,77 @@ class Session:
             while _monotonic() < deadline:
                 if self.cancel.is_set():
                     print("[microclaw] Turn stopped; confirmation declined.")
-                    return False                           # Stop button: deny
+                    return decided("declined:stopped")     # Stop button: deny
                 try:
-                    answer = bool(p.reply.get(timeout=CONFIRM_POLL_S))
+                    answer, responder = p.reply.get(timeout=CONFIRM_POLL_S)
                 except queue.Empty:
                     continue
                 print(f"[microclaw] {'Approved' if answer else 'Declined'}"
                       f" from browser.")
-                return answer
+                return decided("approved" if answer else "declined", responder)
             print("[microclaw] Confirmation timed out; declined.")
-            return False                                   # deadline: deny
+            return decided("declined:timeout")             # deadline: deny
         finally:
             self.pending = None
             emit({"type": "confirm_resolved", "id": p.id})
 
 
-def build_app(session) -> FastAPI:
+def build_app(session, *, remote: bool = False, api_token: str | None = None,
+              behind_tls_proxy: bool = False, auth_state: RemoteAuth | None = None) -> FastAPI:
     from microclaw.__main__ import write_history
 
     app = FastAPI(title="Microclaw")
     page = load_page("serve.html")
     icon = icon_bytes()
+    if remote:
+        if not api_token:
+            raise RuntimeError("remote mode requires an API token")
+        auth_state = auth_state or RemoteAuth(api_token)
+    if not hasattr(session, "audit_records"):
+        session.audit_records = []
+
+    def client_address(request: Request) -> str:
+        return request.client.host if request.client else "unknown"
+
+    @app.middleware("http")
+    async def authenticate_remote(request: Request, call_next):
+        if not remote:
+            request.state.identity = "loopback"
+            return await call_next(request)
+        assert auth_state is not None
+        if behind_tls_proxy and request.headers.get("x-forwarded-proto", "").lower() != "https":
+            return JSONResponse({"detail": "HTTPS required."}, status_code=403)
+        path = request.url.path
+        if not path.startswith("/api/"):
+            return await call_next(request)
+
+        # JSON endpoints are deliberately small. Prompts get 256 KiB for long
+        # experimental context; every other JSON body gets 64 KiB.
+        limit = PROMPT_BODY_LIMIT if path == "/api/prompt" else GLOBAL_JSON_LIMIT
+        if request.method in {"POST", "PUT", "PATCH"}:
+            length = request.headers.get("content-length")
+            if length and (not length.isdigit() or int(length) > limit):
+                return JSONResponse({"detail": "Request body too large."}, status_code=413)
+            body = await request.body()
+            if len(body) > limit:
+                return JSONResponse({"detail": "Request body too large."}, status_code=413)
+
+        client = client_address(request)
+        bearer = auth_state.valid_bearer(request.headers.get("authorization"))
+        paired_id = auth_state.valid_session(request.cookies.get(SESSION_COOKIE))
+        if path == "/api/pair" and request.method == "POST":
+            return await call_next(request)
+        if path == "/api/pair/code" and request.method == "POST":
+            paired_id = None  # this endpoint is bearer-only by contract
+        if bearer:
+            request.state.identity = "bearer"
+        elif paired_id:
+            request.state.identity = f"paired:{paired_id[:8]}"
+        else:
+            if not auth_state.failures.allow(client):
+                return JSONResponse({"detail": "Too many authentication failures."}, status_code=429)
+            return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+        return await call_next(request)
 
     @app.middleware("http")
     async def block_cross_origin(request: Request, call_next):
@@ -260,7 +429,10 @@ def build_app(session) -> FastAPI:
         stray tab cannot drive the microscope.
         """
         origin = request.headers.get("origin")
-        if origin and origin != str(request.base_url).rstrip("/"):
+        expected = str(request.base_url).rstrip("/")
+        if remote and behind_tls_proxy:
+            expected = "https://" + request.headers.get("host", "")
+        if origin and origin != expected:
             return JSONResponse({"detail": "Cross-origin request refused."}, status_code=403)
         return await call_next(request)
 
@@ -274,12 +446,46 @@ def build_app(session) -> FastAPI:
         # the process lives. `image/x-icon` is what every browser expects here.
         return Response(icon, media_type="image/x-icon")
 
+    @app.post("/api/pair")
+    async def pair(request: Request):
+        if not remote:
+            raise HTTPException(404, "Not found.")
+        assert auth_state is not None
+        client = client_address(request)
+        if not auth_state.pair_attempts.allow(client):
+            raise HTTPException(429, "Too many pairing attempts.")
+        try:
+            body = await request.json()
+        except ValueError:
+            body = {}
+        code = body.get("code") if isinstance(body, dict) else None
+        if not isinstance(code, str) or not auth_state.consume_code(code):
+            raise HTTPException(401, "Unauthorized")
+        value, _ = auth_state.mint_session()
+        response = JSONResponse({"paired": True})
+        response.set_cookie(
+            SESSION_COOKIE, value, max_age=SESSION_TTL_S,
+            expires=(datetime.datetime.now(datetime.timezone.utc)
+                     + datetime.timedelta(seconds=SESSION_TTL_S)),
+            path="/", secure=True, httponly=True, samesite="strict",
+        )
+        return response
+
+    @app.post("/api/pair/code")
+    async def mint_pair_code(request: Request):
+        if not remote:
+            raise HTTPException(404, "Not found.")
+        assert auth_state is not None
+        if not auth_state.pair_attempts.allow(client_address(request)):
+            raise HTTPException(429, "Too many pairing requests.")
+        return JSONResponse({"code": auth_state.mint_code(), "expires_in": PAIR_TTL_S})
+
     @app.get("/api/history")
     async def get_history():
         return JSONResponse(_jsonable(session.history))
 
     @app.post("/api/prompt")
-    async def post_prompt(p: Prompt):
+    async def post_prompt(p: Prompt, request: Request):
         msg = p.message.strip()
         if not msg:
             raise HTTPException(400, "Empty message.")
@@ -295,6 +501,7 @@ def build_app(session) -> FastAPI:
 
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue = asyncio.Queue()
+        turn_identity = getattr(request.state, "identity", "loopback")
 
         def emit(event):
             try:
@@ -319,6 +526,7 @@ def build_app(session) -> FastAPI:
             # owns; only one turn runs at a time (session.lock), so there is no
             # second emit to confuse.
             session._emit = emit
+            session.current_identity = turn_identity
             try:
                 for event in run_agent_iter(
                     msg, session.ctrl, session.guard, session.history, session.model,
@@ -329,6 +537,7 @@ def build_app(session) -> FastAPI:
                 emit({"type": "error", "message": f"{type(e).__name__}: {e}"})
             finally:
                 session._emit = None
+                session.current_identity = "loopback"
                 # session.history holds the completed rounds either way —
                 # run_agent_iter appends to it in place.
                 try:
@@ -389,7 +598,7 @@ def build_app(session) -> FastAPI:
         return JSONResponse({"id": p.id, "summary": p.summary, "kind": p.kind})
 
     @app.post("/api/confirm")
-    async def post_confirm(c: Confirm):
+    async def post_confirm(c: Confirm, request: Request):
         """Answer the pending confirmation.
 
         Runs on the event loop, so it cannot be blocked by the turn thread that
@@ -399,7 +608,7 @@ def build_app(session) -> FastAPI:
         p = session.pending
         if p is None or p.id != c.id:
             raise HTTPException(409, "No confirmation with this id is pending.")
-        p.reply.put(c.approve)
+        p.reply.put((c.approve, getattr(request.state, "identity", "loopback")))
         return JSONResponse({"resolved": True})
 
     @app.get("/api/model")
@@ -558,6 +767,25 @@ def serve(args):
             f"Refusing to bind {args.host}: this endpoint moves real hardware. "
             "Pass --allow-remote if you truly mean to expose it."
         )
+    remote = args.host not in LOCAL_HOSTS
+    behind_tls_proxy = getattr(args, "behind_tls_proxy", False)
+    if behind_tls_proxy and not args.allow_remote:
+        sys.exit("--behind-tls-proxy requires --allow-remote.")
+    if remote and not behind_tls_proxy:
+        sys.exit(
+            "Refusing cleartext remote HTTP. Put Microclaw behind a TLS-terminating "
+            "proxy and pass --behind-tls-proxy."
+        )
+    token = None
+    auth_state = None
+    pairing_code = None
+    if remote:
+        token = os.environ.get("MICROCLAW_REMOTE_TOKEN")
+        if token is not None and len(token) < REMOTE_TOKEN_MIN_CHARS:
+            sys.exit(f"MICROCLAW_REMOTE_TOKEN must be at least {REMOTE_TOKEN_MIN_CHARS} characters.")
+        token = token or secrets.token_urlsafe(32)
+        auth_state = RemoteAuth(token)
+        pairing_code = auth_state.mint_code()
     import uvicorn
 
     from microclaw import tools
@@ -570,20 +798,25 @@ def serve(args):
     # time, so a single assignment covers them (design/21 F1). The CLI keeps
     # the stdin default — a terminal is present there by definition.
     tools.CONFIRM_FN = session.confirm
-    app = build_app(session)
+    app = build_app(session, remote=remote, api_token=token,
+                    behind_tls_proxy=behind_tls_proxy, auth_state=auth_state)
 
-    if args.allow_remote and args.host not in LOCAL_HOSTS:
+    if remote:
         print(
-            f"\n!! Microclaw is reachable at http://{args.host}:{args.web_port} — "
-            "anyone who can reach this port can drive the microscope.\n"
+            f"\n!! Microclaw is reachable at https://{args.host}:{args.web_port} "
+            "through the asserted trusted TLS proxy.\n"
+            f"Remote bearer token: {token}\n"
+            f"Browser pairing URL: https://{args.host}:{args.web_port}/#pair={pairing_code}\n"
         )
-    url = f"http://{args.host}:{args.web_port}"
+    url = f"{'https' if remote else 'http'}://{args.host}:{args.web_port}"
     print(f"Microclaw GUI: {url}  (Ctrl-C to stop)")
     if not args.no_browser:
         # A wildcard bind is not an address a browser (or Windows' connect())
         # can reach; the loopback the server is also listening on is.
         visit = "127.0.0.1" if args.host == "0.0.0.0" else args.host
-        _open_when_ready(visit, args.web_port, f"http://{visit}:{args.web_port}")
+        browser_url = (f"https://{visit}:{args.web_port}/#pair={pairing_code}" if remote
+                       else f"http://{visit}:{args.web_port}")
+        _open_when_ready(visit, args.web_port, browser_url)
 
     # Mirrors run_session: every exit path — Ctrl-C, a crash in a turn — writes
     # the history and shutters known illumination (design/14 §3).

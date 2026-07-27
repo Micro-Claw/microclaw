@@ -118,6 +118,15 @@
 </header>
 
 <main>
+  <div class="banner hidden" id="pair-banner">
+    <h2>Pair this browser</h2>
+    <p>Enter the one-time pairing code printed by the Microclaw server.</p>
+    <div class="row">
+      <input type="text" id="pair-input" autocomplete="off" spellcheck="false">
+      <button id="pair-submit" type="button">Pair</button>
+    </div>
+  </div>
+
   <div class="banner hidden" id="key-banner">
     <h2 id="key-title">No Anthropic API key</h2>
     <p id="key-help">Microclaw needs a key before it can run a turn. It is sent to this
@@ -192,6 +201,34 @@
 
   Transcript.initTheme($("theme"));
 
+  function requirePairing() {
+    $("pair-banner").classList.remove("hidden");
+    $("pair-input").focus();
+  }
+
+  async function apiFetch(url, options = {}) {
+    options.credentials = "include";
+    const res = await fetch(url, options);
+    if (res.status === 401) requirePairing();
+    return res;
+  }
+
+  async function pairBrowser(code) {
+    const res = await apiFetch("/api/pair", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code }),
+    });
+    if (!res.ok) { toast("Pairing failed: " + await detail(res)); requirePairing(); return false; }
+    $("pair-input").value = "";
+    $("pair-banner").classList.add("hidden");
+    return true;
+  }
+
+  $("pair-submit").addEventListener("click", async () => {
+    const code = $("pair-input").value.trim();
+    if (code && await pairBrowser(code)) location.reload();
+  });
+
   // ---- toast ----
   let toastTimer = null;
   function toast(text) {
@@ -253,7 +290,7 @@
   }
 
   async function refresh() {
-    const res = await fetch("/api/history");
+    const res = await apiFetch("/api/history");
     if (!res.ok) throw new Error("Could not load history (" + res.status + ").");
     history = await res.json();
     paint(history, false);
@@ -284,7 +321,7 @@
   $("stop").addEventListener("click", async () => {
     $("stop").disabled = true;
     try {
-      const res = await fetch("/api/stop", { method: "POST" });
+      const res = await apiFetch("/api/stop", { method: "POST" });
       if (!res.ok) { toast(await detail(res)); $("stop").disabled = false; return; }
       toast("Stopping after the current step finishes. Lasers and stage are left as they are.");
     } catch (err) {
@@ -391,7 +428,7 @@
 
   async function answerConfirm(approve) {
     if (!confirmId) return;
-    const res = await fetch("/api/confirm", {
+    const res = await apiFetch("/api/confirm", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: confirmId, approve }),
@@ -405,7 +442,7 @@
   $("confirm-decline").addEventListener("click", () => answerConfirm(false));
 
   async function runTurn(text) {
-    const res = await fetch("/api/prompt", {
+    const res = await apiFetch("/api/prompt", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ message: text }),
@@ -501,7 +538,7 @@
   $("key-save").addEventListener("click", async () => {
     const key = $("key-input").value.trim();
     if (!key) return;
-    const res = await fetch("/api/key", {
+    const res = await apiFetch("/api/key", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ key, persist: $("key-persist").checked }),
@@ -544,7 +581,7 @@
   $("model-save").addEventListener("click", async () => {
     const model = $("model-input").value.trim();
     if (!model) return;
-    const res = await fetch("/api/model", {
+    const res = await apiFetch("/api/model", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model }),
@@ -562,12 +599,20 @@
   // ---- boot ----
   (async () => {
     try {
-      showKey(await (await fetch("/api/key")).json());
-      showModel(await (await fetch("/api/model")).json());
+      const fragment = new URLSearchParams(location.hash.slice(1));
+      const code = fragment.get("pair");
+      if (code) {
+        window.history.replaceState(null, "", location.pathname + location.search);
+        if (!await pairBrowser(code)) return;
+      }
+      const keyRes = await apiFetch("/api/key");
+      if (keyRes.status === 401) return;
+      showKey(await keyRes.json());
+      showModel(await (await apiFetch("/api/model")).json());
       await refresh();
       // A reload mid-turn destroyed the stream that carried confirm_request;
       // without this fetch the turn would sit stranded until the deadline.
-      const pending = await (await fetch("/api/confirm")).json();
+      const pending = await (await apiFetch("/api/confirm")).json();
       if (pending.id) showConfirm(pending);
     } catch (err) { toast("Could not reach the Microclaw server: " + err.message); }
     msg.focus();

@@ -153,9 +153,25 @@ parser, so if you pass them they go *before* `serve`:
 | `--host ADDR` | `127.0.0.1` | Bind address. Anything but loopback needs `--allow-remote`. |
 | `--web-port N` | `8000` | HTTP port for the GUI. |
 | `--no-browser` | off | Print the URL instead of opening a browser window. |
-| `--allow-remote` | off | Permit a non-loopback bind. **Anyone who can reach the port can drive the microscope** — trusted, isolated LAN only. |
+| `--allow-remote` | off | Permit an authenticated non-loopback bind. Requires `--behind-tls-proxy`. |
+| `--behind-tls-proxy` | off | Assert a trusted TLS-terminating proxy is in front. Requests are served only with `X-Forwarded-Proto: https`; use only when that proxy overwrites the header. |
 
 A browser window opens once the server is accepting connections.
+
+Remote mode refuses direct cleartext HTTP. Put the server behind a trusted
+TLS-terminating proxy, pass both `--allow-remote --behind-tls-proxy`, and ensure
+the proxy overwrites (rather than merely forwards) `X-Forwarded-Proto` with
+`https`. At startup Microclaw prints a long-lived bearer token for non-browser
+API clients and a single-use browser pairing URL. The pairing code is in the URL
+fragment, is cleared from the address bar before exchange, expires after 15
+minutes, and becomes a 12-hour HttpOnly, Secure, SameSite=Strict cookie. A code
+can also be pasted into the page manually. Set `MICROCLAW_REMOTE_TOKEN` to use a
+stable operator-managed token (minimum 32 characters); otherwise a token is
+generated for that process and is never persisted. An authenticated bearer may
+POST `/api/pair/code` to mint a replacement pairing code.
+
+JSON request bodies are capped at 64 KiB globally, except `/api/prompt`, which
+allows 256 KiB. Oversized requests receive HTTP 413.
 
 ### Desktop shortcut (Windows)
 

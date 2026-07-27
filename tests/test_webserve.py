@@ -812,3 +812,182 @@ def test_serve_refuses_an_unreviewed_safety_config(tmp_path):
     )
     with pytest.raises(SystemExit, match="has not been reviewed"):
         serve(_args(host="127.0.0.1", safety_config=str(cfg)))
+
+
+# ---- remote authentication (design/32 Finding 3) ----
+
+REMOTE_TOKEN = "t" * 32
+TLS = {"X-Forwarded-Proto": "https"}
+
+
+@pytest.fixture
+def remote(session, monkeypatch):
+    monkeypatch.setattr(credentials, "load_api_key", lambda: ("sk-ant-test", "env"))
+    monkeypatch.setattr(webserve, "known_models", lambda: [])
+    session.editable = False
+    state = webserve.RemoteAuth(REMOTE_TOKEN)
+    app = build_app(session, remote=True, api_token=REMOTE_TOKEN,
+                    behind_tls_proxy=True, auth_state=state)
+    return TestClient(app, base_url="https://testserver"), state
+
+
+def _bearer():
+    return {**TLS, "Authorization": f"Bearer {REMOTE_TOKEN}"}
+
+
+def _paired_client(app_client, state):
+    code = state.mint_code()
+    assert app_client.post("/api/pair", headers=TLS, json={"code": code}).status_code == 200
+    return app_client
+
+
+@pytest.mark.parametrize(("method", "path", "body", "accepted"), [
+    ("get", "/api/history", None, 200),
+    ("post", "/api/prompt", {"message": " "}, 400),
+    ("post", "/api/stop", None, 409),
+    ("get", "/api/confirm", None, 200),
+    ("post", "/api/confirm", {"id": "none", "approve": False}, 409),
+    ("get", "/api/model", None, 200),
+    ("post", "/api/model", {"model": "x"}, 403),
+    ("get", "/api/key", None, 200),
+    ("post", "/api/key", {"key": "x"}, 403),
+    ("get", "/api/artifact?path=none", None, 403),
+])
+def test_every_remote_api_route_accepts_bearer_and_cookie(
+    remote, method, path, body, accepted
+):
+    client, state = remote
+    def call(headers):
+        return client.request(method.upper(), path, headers=headers, json=body)
+    assert call(TLS).status_code == 401
+    assert call(_bearer()).status_code == accepted
+    _paired_client(client, state)
+    assert call(TLS).status_code == accepted
+
+
+def test_public_page_and_favicon_load_before_pairing(remote):
+    client, _ = remote
+    assert client.get("/", headers=TLS).status_code == 200
+    assert client.get("/favicon.ico", headers=TLS).status_code == 200
+
+
+def test_missing_origin_does_not_bypass_auth_and_auth_does_not_replace_csrf(remote):
+    client, _ = remote
+    assert client.get("/api/history", headers=TLS).status_code == 401
+    assert client.get("/api/history", headers=_bearer()).status_code == 200
+    forged = {**_bearer(), "Origin": "https://evil.example"}
+    assert client.get("/api/history", headers=forged).status_code == 403
+
+
+def test_authorization_bearer_none_is_refused(remote):
+    client, _ = remote
+    assert client.get("/api/history", headers={**TLS, "Authorization": "Bearer None"}).status_code == 401
+
+
+def test_wrong_same_length_bearer_is_refused_and_correct_one_accepted(remote):
+    client, _ = remote
+    wrong = {**TLS, "Authorization": "Bearer " + "x" * len(REMOTE_TOKEN)}
+    assert client.get("/api/history", headers=wrong).status_code == 401
+    assert client.get("/api/history", headers=_bearer()).status_code == 200
+
+
+def test_pairing_cookie_attributes_replay_expiry_and_server_isolation(session, monkeypatch):
+    monkeypatch.setattr(credentials, "load_api_key", lambda: ("k", "env"))
+    now = [100.0]
+    monkeypatch.setattr(webserve, "_monotonic", lambda: now[0])
+    one = webserve.RemoteAuth(REMOTE_TOKEN)
+    two = webserve.RemoteAuth(REMOTE_TOKEN)
+    c1 = TestClient(build_app(session, remote=True, api_token=REMOTE_TOKEN,
+                              behind_tls_proxy=True, auth_state=one), base_url="https://one")
+    code = one.mint_code()
+    r = c1.post("/api/pair", headers=TLS, json={"code": code})
+    assert r.status_code == 200
+    cookie = r.headers["set-cookie"].lower()
+    for attribute in ("httponly", "samesite=strict", "secure", "path=/"):
+        assert attribute in cookie
+    assert f"max-age={webserve.SESSION_TTL_S}" in cookie
+    assert "expires=" in cookie
+    assert c1.post("/api/pair", headers=TLS, json={"code": code}).status_code == 401
+    expired = one.mint_code()
+    now[0] += webserve.PAIR_TTL_S + 1
+    assert c1.post("/api/pair", headers=TLS, json={"code": expired}).status_code == 401
+    foreign = two.mint_code()
+    assert c1.post("/api/pair", headers=TLS, json={"code": foreign}).status_code == 401
+
+
+def test_pair_code_endpoint_is_bearer_only(remote):
+    client, state = remote
+    _paired_client(client, state)
+    client.headers.update(TLS)
+    assert client.post("/api/pair/code").status_code == 401
+    r = client.post("/api/pair/code", headers=_bearer())
+    assert r.status_code == 200
+    assert isinstance(r.json()["code"], str)
+
+
+def test_auth_failure_rate_limit_trips_then_recovers(remote, monkeypatch):
+    client, _ = remote
+    now = [10.0]
+    monkeypatch.setattr(webserve, "_monotonic", lambda: now[0])
+    for _ in range(webserve.RATE_MAX_FAILURES):
+        assert client.get("/api/history", headers=TLS).status_code == 401
+    assert client.get("/api/history", headers=TLS).status_code == 429
+    now[0] += webserve.RATE_WINDOW_S
+    assert client.get("/api/history", headers=TLS).status_code == 401
+
+
+def test_pair_attempt_rate_limit_trips_then_recovers(remote, monkeypatch):
+    client, _ = remote
+    now = [20.0]
+    monkeypatch.setattr(webserve, "_monotonic", lambda: now[0])
+    for _ in range(webserve.RATE_MAX_PAIR_ATTEMPTS):
+        assert client.post("/api/pair", headers=TLS, json={"code": "wrong"}).status_code == 401
+    assert client.post("/api/pair", headers=TLS, json={"code": "wrong"}).status_code == 429
+    now[0] += webserve.RATE_WINDOW_S
+    assert client.post("/api/pair", headers=TLS, json={"code": "wrong"}).status_code == 401
+
+
+def test_prompt_and_global_json_body_limits_return_413(remote):
+    client, _ = remote
+    assert client.post("/api/prompt", headers=_bearer(),
+                       content=b"x" * (webserve.PROMPT_BODY_LIMIT + 1)).status_code == 413
+    assert client.post("/api/confirm", headers=_bearer(),
+                       content=b"x" * (webserve.GLOBAL_JSON_LIMIT + 1)).status_code == 413
+
+
+def test_loopback_mode_requires_no_auth_or_proxy(session, monkeypatch):
+    monkeypatch.setattr(credentials, "load_api_key", lambda: ("k", "env"))
+    local = TestClient(build_app(session))
+    assert local.get("/api/history").status_code == 200
+    assert local.get("/api/key").status_code == 200
+    assert local.post("/api/pair", json={"code": "anything"}).status_code == 404
+
+
+def test_remote_request_without_forwarded_https_is_refused(remote):
+    client, _ = remote
+    assert client.get("/").status_code == 403
+
+
+def test_serve_refuses_remote_cleartext_and_invalid_proxy_combinations(monkeypatch):
+    with pytest.raises(SystemExit, match="cleartext"):
+        serve(_args(allow_remote=True, behind_tls_proxy=False))
+    with pytest.raises(SystemExit, match="requires --allow-remote"):
+        serve(_args(host="127.0.0.1", behind_tls_proxy=True))
+    monkeypatch.setenv("MICROCLAW_REMOTE_TOKEN", "short")
+    with pytest.raises(SystemExit, match="at least 32"):
+        serve(_args(allow_remote=True, behind_tls_proxy=True))
+
+
+def test_remote_confirmation_audit_carries_identity(session, remote, fast_confirm_poll):
+    client, _ = remote
+    thread, _, box = _start_confirm(session, kind="illumination")
+    pid = session.pending.id
+    assert client.post("/api/confirm", headers=_bearer(),
+                       json={"id": pid, "approve": True}).status_code == 200
+    thread.join(timeout=5)
+    assert box["answer"] is True
+    assert session.audit_records[-1]["identity"] == "bearer"
+    assert session.audit_records[-1]["confirmation_id"] == pid
+    assert session.audit_records[-1]["kind"] == "illumination"
+    assert session.audit_records[-1]["decision"] == "approved"
+    assert session.audit_records[-1]["timestamp"]
