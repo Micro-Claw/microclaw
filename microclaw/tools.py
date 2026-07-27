@@ -2367,6 +2367,27 @@ def _resolve_hook(
             params.setdefault("guard", guard)
         return hook_cls(**params)
 
+    # Refuse a saved hook that means to keep its own log. The audit path now
+    # belongs to the trusted parent, so such a hook would construct fine, take
+    # every exposure, and record nothing: the parent notes only that a frame was
+    # retained or discarded, and whatever the hook measured is dropped. That is
+    # the silent-loss failure design/19 F3 and design/24 exist to prevent, and it
+    # is exactly what the 2026-07-27 demo gate caught in
+    # test_generate_save_and_use_custom_hook. Refuse before any hardware moves.
+    from microclaw.hooks import HookBase
+    if issubclass(hook_cls, HookBase) or "log_path" in inspect.signature(
+        hook_cls.__init__
+    ).parameters:
+        raise ValueError(
+            f"Saved hook '{hook_strategy}' writes its own log, which is no "
+            "longer possible: the trusted parent owns the audit record so hook "
+            "source cannot forge or omit it. As written this hook would acquire "
+            "images and record none of its measurements. Give it "
+            "analyze_frame(image, metadata) returning a HookResult instead — its "
+            "measurements are then written to the log by the parent, with "
+            "provenance — and drop log_path and any HookBase inheritance."
+        )
+
     # Do not let caller-supplied hook_params smuggle capabilities across the
     # provenance boundary either. The trusted adapter, not generated code,
     # owns the audit path.
@@ -2992,9 +3013,14 @@ def run_adaptive_survey(
     # joins on `position` without re-imaging (design/23 Episode A).
     stopped = progress.stopped_early
     result.pop("positions", None)   # "positions: 9" is the ambiguity this tool retires
+    # "acquired of N planned tile(s)" read as coverage, and a hook may revisit a
+    # planned tile instead of advancing: D4 case 1 acquired two frames at p0 and
+    # never visited p1, and the reading agent reported "both planned tiles were
+    # acquired (2 of 2)". Frames on one side of "of" and tiles on the other is
+    # the same conflation `positions: 9` was removed for.
     result["status"] = (
-        f"Adaptive survey: {progress.n_done} frame(s) acquired of "
-        f"{len(resolved)} planned tile(s)"
+        f"Adaptive survey: {progress.n_done} frame(s) acquired from a "
+        f"{len(resolved)}-tile plan"
         + (", stopped early by the hook." if stopped else ".")
     )
     result["frames_acquired"] = progress.n_done

@@ -1064,6 +1064,12 @@ def test_generate_save_and_use_custom_hook(headless_mm, unconstrained_guard, tmp
     assert "mean_logger" in hooks["saved"]
     assert hooks["saved"]["mean_logger"]["source"] == "claude_generated"
 
+    # Block 7: this hook keeps its own log, which the saved-hook boundary no
+    # longer permits — the trusted parent owns the audit record. Left to run it
+    # would take every exposure and record none of its means, so the refusal must
+    # arrive before the acquisition, not after. The 2026-07-27 demo gate caught
+    # exactly this case; before that it was invisible off-rig, because this test
+    # needs the headless_mm fixture.
     log_path = str(tmp_path / "mean_log.json")
     current_z = headless_mm.core.get_position()
     result = run_adaptive_zstack(
@@ -1074,10 +1080,47 @@ def test_generate_save_and_use_custom_hook(headless_mm, unconstrained_guard, tmp
         hook_params={},
         log_path=log_path,
     )
+    assert "error" in result and "writes its own log" in result["error"]
+    assert "analyze_frame" in result["error"], "the refusal must name the migration"
+    assert not Path(log_path).exists(), "nothing may be acquired or logged"
+
+
+def test_a_saved_hook_that_keeps_no_log_of_its_own_still_runs(
+    headless_mm, unconstrained_guard, tmp_path, monkeypatch
+):
+    """The refusal above is aimed at silent measurement loss, not at legacy
+    callbacks as such: a saved hook that makes no logging claim keeps working,
+    and the parent records each frame's retained/discarded outcome for it."""
+    import microclaw.hook_manager as hm
+    monkeypatch.setattr(hm, "HOOKS_DIR", tmp_path)
+    monkeypatch.setattr(hm, "MANIFEST", tmp_path / "manifest.json")
+
+    from microclaw.tools import generate_and_save_hook, run_adaptive_zstack
+
+    generate_and_save_hook(
+        headless_mm, unconstrained_guard,
+        name="quiet_legacy",
+        code=(
+            "class QuietLegacy:\n"
+            "    def image_process_fn(self, image, metadata, event_queue):\n"
+            "        return image, metadata\n"
+        ),
+        description="Legacy callback that keeps no log of its own",
+        source="claude_generated",
+    )
+
+    log_path = str(tmp_path / "quiet_log.json")
+    current_z = headless_mm.core.get_position()
+    result = run_adaptive_zstack(
+        headless_mm, unconstrained_guard,
+        z_start_um=current_z, z_end_um=current_z + 2.0, z_step_um=1.0,
+        save_dir=str(tmp_path), name="quiet_hook_run",
+        hook_strategy="quiet_legacy", hook_params={}, log_path=log_path,
+    )
     assert "complete" in result["status"]
     log = json.loads(Path(log_path).read_text())
-    assert len(log) > 0
-    assert all("mean" in entry for entry in log)
+    assert log and all(e["event"] == "legacy_hook_frame" for e in log)
+    assert all(e["outcome"] == "retained" for e in log)
 
 
 # ---------------------------------------------------------------------------
@@ -1775,7 +1818,7 @@ def test_run_adaptive_survey_tool_reaches_the_adaptive_runner(
     # transcript reported "complete across 9 position(s)" over a 4-tile stop.
     assert result["frames_acquired"] == stop_after
     assert result["stopped_early"] is True
-    assert f"{stop_after} frame(s) acquired of {n_tiles} planned" in result["status"]
+    assert f"{stop_after} frame(s) acquired from a {n_tiles}-tile plan" in result["status"]
 
     dataset = Dataset(result["dataset_path"])
     try:

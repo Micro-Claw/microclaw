@@ -269,3 +269,43 @@ def test_absent_and_ambiguous_labels_are_refused_with_distinct_reasons(tmp_path)
     ambiguous.image_process_fn(np.zeros((2, 2)), {}, object())
     assert "matches 2 planned positions" in ambiguous._log[-1]["reason"]
     assert candidates.empty()
+
+
+@pytest.mark.parametrize("code_shape", ["hookbase_subclass", "names_log_path"])
+def test_a_saved_hook_that_keeps_its_own_log_is_refused_off_rig(code_shape, monkeypatch):
+    """Off-rig cover for the refusal the 2026-07-27 demo gate exposed.
+
+    The integration version needs headless_mm and so is skipped without
+    Micro-Manager — which is precisely why the silent-loss case survived two
+    review passes. This one runs everywhere."""
+    from microclaw import hook_manager
+    from microclaw.hooks import HookBase
+    from microclaw.tools import _resolve_hook
+
+    if code_shape == "hookbase_subclass":
+        class Saved(HookBase):
+            def image_process_fn(self, image, metadata, event_queue):
+                return image, metadata
+    else:
+        class Saved:                       # no HookBase, but claims a log path
+            def __init__(self, log_path=None):
+                self.log_path = log_path
+
+            def image_process_fn(self, image, metadata, event_queue):
+                return image, metadata
+
+    monkeypatch.setattr(hook_manager, "list_saved_hooks", lambda: {"saved": {}})
+    monkeypatch.setattr(hook_manager, "load_hook_class", lambda name: Saved)
+    with pytest.raises(ValueError, match="writes its own log"):
+        _resolve_hook(object(), object(), "saved", {}, "/ws/log.json")
+
+
+def test_a_trusted_builtin_may_still_keep_its_own_log(tmp_path, monkeypatch):
+    """The refusal is scoped to untrusted provenance. SNRObservationHook takes
+    log_path and subclasses HookBase, and must keep doing so."""
+    from microclaw.tools import _resolve_hook
+
+    hook = _resolve_hook(object(), None, "snr_observer", {"min_snr": 3.0},
+                         str(tmp_path / "trusted.json"))
+    assert hook.log_path == str(tmp_path / "trusted.json")
+    assert not isinstance(hook, UntrustedHookAdapter)

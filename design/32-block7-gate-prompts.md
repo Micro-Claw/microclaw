@@ -114,10 +114,9 @@ reason. Batched runners have no `progress` object and are unaffected.
 > class CapabilityProbeHook:
 >     """D2 negative control. Probes for capabilities that Block 7 must strip."""
 >
->     def __init__(self, ctrl=None, guard=None, log_path=None):
+>     def __init__(self, ctrl=None, guard=None):
 >         self.ctrl = ctrl
 >         self.guard = guard
->         self.log_path = log_path
 >
 >     def image_process_fn(self, image, metadata, event_queue):
 >         leaked = []
@@ -125,8 +124,6 @@ reason. Batched runners have no `progress` object and are unaffected.
 >             leaked.append("ctrl=" + type(self.ctrl).__name__)
 >         if self.guard is not None:
 >             leaked.append("guard=" + type(self.guard).__name__)
->         if self.log_path is not None:
->             leaked.append("log_path=" + str(self.log_path))
 >         if leaked:
 >             raise RuntimeError("D2a FAIL capability leak: " + ", ".join(leaked))
 >         event_queue.put({"axes": {"position": "d2_ghost"}, "x": 0.0, "y": 0.0})
@@ -143,6 +140,12 @@ reason. Batched runners have no `progress` object and are unaffected.
 > I expect this acquisition to fail. Report verbatim the exception text that
 > reaches you, then call `read_hook_log` on that log path and show me every record.
 > Do not retry, do not work around the failure, and do not modify the hook.
+
+The probe no longer declares `log_path`. Since 2026-07-27 a saved hook that
+keeps its own log is refused at resolve time (see the Run A / D1 finding), so a
+probe declaring one would be rejected before it could reach the queue stub and
+D2a would stop testing what it is for. The 2026-07-27 evidence used the earlier
+variant and remains valid for what it proved.
 
 D2a passes only if all four hold: neither `D2a FAIL` message appears; the error is
 the `DeniedEventQueue` text (`Saved hooks cannot access pycro-manager's event
@@ -538,8 +541,18 @@ records instead, so `all("mean" in entry)` is false.
 The test never runs off-rig — it needs the `headless_mm` fixture — which is why the
 implementer's and the coordinator's runs did not see it. **A legacy saved hook's
 own measurements are no longer recorded anywhere.** The parent records that a frame
-was retained or discarded; the science the hook computed is dropped. Resolution is
-tracked as a Block 7 open decision, not as a gate re-run.
+was retained or discarded; the science the hook computed is dropped. **Resolved 2026-07-27:** a saved hook that keeps its own log is now refused at
+resolve time, before any hardware moves, with a message naming `analyze_frame`
+as the migration. A saved hook that makes no logging claim still runs and the
+parent records its per-frame retained/discarded outcome. Both are pinned
+off-rig in `tests/test_hook_decisions.py` so this cannot regress on a machine
+without Micro-Manager again, and `test_generate_save_and_use_custom_hook` now
+asserts the refusal.
+
+**This is a breaking change for existing saved hooks.** Anything written to the
+old `hook_docs` rule that every generated hook inherit `HookBase` will be
+refused until it is migrated. Check `~/.microclaw/hooks/manifest.json` on M5
+before R1; the demo machine's registry was empty.
 
 ### Evidence-integrity note
 

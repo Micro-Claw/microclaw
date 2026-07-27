@@ -986,7 +986,7 @@ class TestRunAdaptiveSurvey:
         # The mocked acquisition processed no frames — the report must say so.
         assert result["frames_acquired"] == 0
         assert result["stopped_early"] is False
-        assert "0 frame(s) acquired of 3 planned" in result["status"]
+        assert "0 frame(s) acquired from a 3-tile plan" in result["status"]
         assert "positions" not in result, "the ambiguous count is retired"
         assert [t["position"] for t in result["tiles_planned"]] == \
             ["tile_0", "tile_1", "tile_2"]
