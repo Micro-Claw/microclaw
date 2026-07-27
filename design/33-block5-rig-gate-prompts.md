@@ -73,12 +73,50 @@ python -V            > "$Evidence\python.txt" 2>&1
 python -m pytest -q  > "$Evidence\pytest.txt" 2>&1
 ```
 
-**PASS:** HEAD is `a28e5bd`; `status.txt` is empty; the pytest summary reads
+**Do NOT set `MM_RUNNING` for this step.** The 910/98/3 baseline is the
+*non-hardware* suite. Setting `MM_RUNNING=1` unlocks ~76 live-hardware
+integration tests and the counts stop being comparable — see the B0 verdict
+below, where that happened.
+
+**PASS:** HEAD contains `a28e5bd` (the branch tip is `e68b0f5`, which adds this
+document on top of it); `status.txt` is empty; the pytest summary reads
 **910 passed / 98 skipped / 3 warnings**. The 3 warnings are pre-existing on
 `main`.
 
 A Windows count that differs from 910/98/3 is itself a finding — record it before
 continuing rather than proceeding past it.
+
+---
+
+### B0 VERDICT — PASS with two findings (2026-07-27, M5)
+
+HEAD `e68b0f5` (contains `a28e5bd`), worktree clean, Python **3.12.13** (the
+branch was developed and coordinator-verified on 3.11.15 — a version delta, not
+a failure; nothing in Block 5 is version-sensitive and the non-hardware suite is
+fully green on both).
+
+The operator set `$env:MM_RUNNING=1`, so the run was **986 tests, not 910**:
+`9 failed, 977 passed, 22 skipped` in 135 s. The arithmetic settles what that
+means: 98 skipped − 22 skipped = 76 hardware tests newly ran, and
+910 + 76 = 986 = 977 + 9. **All 910 non-hardware tests passed.** Every failure is
+in the newly-unlocked hardware set.
+
+**Finding B0-1 — the nine failures are pre-existing fixture assumptions, not a
+Block 5 regression.** Block 5 does not touch `tests/test_integration.py`
+(verified against the diff). Seven fail with
+`java.lang.Exception: No device with label "Camera"` — the fixtures hardcode the
+demo config's device labels and M5's camera is named otherwise. The other two are
+`test_get_available_channels_nonempty` (`assert 0 >= 1`: M5's `Channel` config
+group is genuinely empty, which the map independently confirms —
+`authorized_presets: []`) and `test_find_features_is_deterministic`
+(`assert 1125 == 1436`: live-camera feature counts differ between two snaps, a
+determinism assumption that does not hold on real sensor noise). None of these
+touch authorization, planning, or the ledger. They are worth their own issue;
+they are not Block 5's to fix and must not block this gate.
+
+**Finding B0-2 — this gate document was wrong about the expected HEAD**, naming
+`a28e5bd` when the branch tip is `e68b0f5` (this document itself was committed
+after that criterion was written). Corrected above.
 
 ---
 
@@ -109,6 +147,48 @@ exit.
 
 A ninth `acquisition-tool:*` row is a real finding, not a rounding error: it means
 a tool reaches the planner on the rig that does not on the developer's machine.
+
+### B1 VERDICT — PASS (2026-07-27, M5, `map-before.json`)
+
+`mode: guaranteed`, `verdict: complete`, `complete: true`, 56 entries. Every B1
+criterion met:
+
+- Nine `acquisition-policy:*` rows, all `built_in_typed_capability`, each
+  carrying its configured value.
+- Eight `acquisition-tool:*` rows, exactly the expected eight, all
+  `built_in_typed_capability`.
+- No `acquisition-tool:run_mda`; `mmstudio-mda` is `excluded`.
+- No surviving `path="acquisition", capability="exposure"` row.
+- The session row reads "in-memory controller-session illuminated-time maximum;
+  **resets on process restart**".
+
+**The entry count reconciles exactly against Block 3b**, which is the strongest
+evidence here that Block 5 changed nothing it should not have: Block 3b's M5 map
+was 40 entries. This map has 39 non-acquisition rows + 17 new acquisition rows =
+56, and 39 + 1 (the deleted `acquisition`/`exposure` row) = 40. The 20-device
+excluded inventory, the four illumination rows, and the seven `declared`
+categorical pairs are all unchanged.
+
+**Finding B1-1 — the declared dose budgets are the shipped example's values
+verbatim, not M5-reviewed numbers.** All nine match
+`microclaw/safety_config.example.yaml` exactly (10000 frames, 3600 s, 50 GB,
+600 000 ms illuminated, 1 800 000 ms session, and the four `confirm_above_*`).
+B1 therefore proves the *mechanism* — that the map enforces, reports, and
+completes over a dose policy — and does **not** establish that 10 minutes of
+illumination per plan or 30 minutes per session is right for M5. The same config
+still carries `camera.max_exposure_ms: 1000.0` marked
+`# <-- REPLACE with a safe max for the Hamamatsu` while `reviewed: true` is
+already set. That is a rig-config review item, not a Block 5 code defect, but it
+is exactly the kind of nominally-reviewed-yet-unexamined limit design/32
+Finding 1 exists to surface, and it should be settled before these budgets are
+described as reviewed.
+
+**Finding B1-2 — nothing auto-classified on this config.** All seven categorical
+pairs report `source: declared`; there are no `auto:state-device` rows, because
+the operator declared *both* `Label` and `State` for each wheel and the ELL6, and
+Block 3b's vacuum-filling rule correctly stands down where a ruling exists. The
+known open item stands unchanged: `iChrome-MLE-TCP.Label` remains a bare
+categorical write on a laser engine.
 
 ---
 
@@ -224,10 +304,17 @@ evidence about authorization and accounting, not about the confirmation gate.
 Record per section, then overall. Stop and return the branch to the coordinator on
 any FAIL; do not merge and do not fix on the rig.
 
-- B0:
-- B1:
-- B2:
-- B3:
-- B4:
-- B5:
-- **Overall:**
+- B0: **PASS** with findings B0-1 (pre-existing hardware-fixture failures) and
+  B0-2 (stale HEAD criterion in this doc, corrected). 2026-07-27.
+- B1: **PASS**, reconciles exactly against Block 3b's 40-entry map. Findings B1-1
+  (budgets are the shipped example's values, not M5-reviewed) and B1-2 (nothing
+  auto-classified; `iChrome-MLE-TCP.Label` open item unchanged). 2026-07-27.
+- B2: not yet run — session ended.
+- B3: not yet run.
+- B4: not yet run.
+- B5: not yet run.
+- **Overall: INCOMPLETE — do not merge.** B2–B4 remain, and they are the sections
+  that actually test fail-closed behaviour; B1 only tests the success path. B2,
+  B3 and B4 need **no acquisition and no illumination** (they are map builds and
+  startup refusals), so they can be run on a short session. Only B5 acquires, and
+  only two dark frames at 5 ms.
