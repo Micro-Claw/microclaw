@@ -25,6 +25,22 @@ if args.frames <= 0 or args.exposure_ms <= 0:
 
 parsed = load_safety_config_or_exit(args.config)
 guard = SafetyGuard(parsed.constraints)
+
+# Check --save-dir against the configured workspace BEFORE connecting or
+# planning. This exact mismatch wasted a demo run on 2026-07-27: the refusal
+# otherwise surfaces only after MAP and PLAN have printed, which reads like a
+# Block 5 failure when it is a config-path mistake. On a rig it would also
+# waste the session.
+try:
+    guard.resolve_in_workspace(args.save_dir)
+except Exception as exc:
+    raise SystemExit(
+        f"FAIL (before any hardware contact): --save-dir {args.save_dir!r} is not "
+        f"inside the configured workspace_dir "
+        f"{parsed.constraints.workspace_dir!r}.\n{exc}\n"
+        "Fix workspace_dir in the config or pass a --save-dir inside it."
+    )
+
 ctrl = MicroscopeController(port=args.port, guard=guard)
 if not ctrl.is_connected():
     raise SystemExit(f"FAIL: controller did not connect on port {args.port}")

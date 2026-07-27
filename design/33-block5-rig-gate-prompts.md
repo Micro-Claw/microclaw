@@ -436,6 +436,56 @@ allowlist. Measured 2026-07-27.
 Anything that fails on a demo core but passed the fake rehearsal is almost
 certainly a **bridge** finding, and should be treated the way G5 was.
 
+### DEMO RUN — map PASS, acquisition BLOCKED by an operator-path mistake (2026-07-27)
+
+**The map passed on a real core, and this is the first live confirmation of
+Block 5 outside M5.** 41 entries, `verdict: complete`, nine policy rows, the
+exact eight tool rows, no `acquisition-tool:run_mda`, `mmstudio-mda` `excluded`,
+no surviving legacy `acquisition`/`exposure` row, `authorized_presets: []`.
+
+Two findings worth keeping:
+
+- **The shutter carve-out holds on a real core.** Twelve rows auto-classified as
+  `auto:state-device` — `Dichroic`, `Emission`, `Excitation`, `Objective`,
+  `Path` and `LED`, each × `Label`/`State` — while **`White Light Shutter` and
+  `LED Shutter` landed in the excluded inventory**, not auto-classified. That is
+  Block 3b's carve-out working against live MM device typing rather than a
+  fixture. (This gate predicted 10 auto rows; the real count is 12 because the
+  demo `LED` is also a StateDevice. A prediction miss, not a defect.)
+- **Real camera geometry differs from the fake**, as expected:
+  `estimated_bytes` 1 048 576 = 2 × 512 × 512 × **2**, so the demo camera is
+  16-bit where the fake assumed 8. The plan arithmetic followed the live core
+  correctly.
+
+**The acquisition did not run.** `workspace_dir` was left at this gate's
+placeholder while `--save-dir` pointed elsewhere, so the guard refused:
+
+```
+RESULT {"error": "Safety constraint prevented this action: Path 'D:\\microclaw_block5\\block5' escapes the configured workspace directory (D:\\REPLACE\\with\\a\\real\\directory)."}
+LEDGER {"bytes": 0, "frames": 0, "illuminated_ms": 0.0}
+```
+
+That refusal is correct behaviour, and the zeroed ledger is itself evidence:
+**the reservation was rolled back on a failed acquisition**, live — one of the
+partial-failure semantics Block 4 left unit-pinned only. But B5's own criteria
+(a completed timelapse, `LEDGER.frames == 2`) are **not** met, so **B5 remains
+open**.
+
+**Fix applied to the probe, not to the instructions.** The refusal previously
+surfaced only after `MAP` and `PLAN` had printed, which reads like a Block 5
+failure when it is a config-path mistake. `design/33-block5-rig-probe.py` now
+resolves `--save-dir` against the workspace immediately after loading the config
+and exits with a message naming both paths, **before any hardware contact**:
+
+```
+FAIL (before any hardware contact): --save-dir '/tmp/block5' is not inside the
+configured workspace_dir '/REPLACE/with/a/real/directory'.
+```
+
+This matters more on M5 than on the demo: the same mistake would have cost a rig
+session. Re-run the demo probe with `workspace_dir` set to a real directory to
+close B5's acquisition path.
+
 ## Verdict
 
 Record per section, then overall. Stop and return the branch to the coordinator on
