@@ -2809,11 +2809,26 @@ def _acquire_survey_with_detector(
     """
     from microclaw.hook_decisions import UntrustedHookAdapter
 
-    if isinstance(hook, UntrustedHookAdapter) and not adaptive:
-        raise ValueError(
-            "Saved untrusted hooks are not supported by the non-adaptive "
-            "survey-with-detector runner; use run_adaptive_survey."
-        )
+    if isinstance(hook, UntrustedHookAdapter):
+        if not adaptive:
+            raise ValueError(
+                "Saved untrusted hooks are not supported by the non-adaptive "
+                "survey-with-detector runner; use run_adaptive_survey."
+            )
+        if not hook.proposes_actions:
+            # A legacy saved hook has no way to reach candidates/progress, so it
+            # can never advance the survey past the seed tile. Left to run, the
+            # generator would idle out max_idle_s and log "stalled" — a
+            # structural impossibility reported as a hardware symptom. Refuse
+            # before any position is exposed.
+            raise ValueError(
+                "This saved hook defines only a legacy image_process_fn, so it "
+                "cannot propose ContinueSurvey or StopSurvey and can never "
+                "advance an adaptive survey past the seed tile. Give it an "
+                "analyze_frame(image, metadata) method, or run it under a "
+                "batched runner (run_tile_acquisition, run_adaptive_timelapse, "
+                "run_adaptive_zstack)."
+            )
     save_dir = guard.resolve_in_workspace(save_dir)
 
     # The stage is driven by the Acquisition, so check every survey point up
@@ -2908,13 +2923,17 @@ def run_adaptive_survey(
     is not supported (the survey runner drives XY; a zstack protocol sweeps
     the same absolute Z range at every tile).
 
-    The hook must implement the adaptive contract (see hook_docs "Skipping
-    and stopping"): the runner sets hook.survey_events / hook.candidates /
-    hook.progress; after each frame the hook submits the next tile with
-    candidates.put() OR calls progress.done_early(), then image_done().
-    A batched hook that only logs runs fine here too, but serialized —
-    prefer run_tile_acquisition / run_multiposition_acquisition for fixed
-    surveys that just report.
+    The hook must implement the adaptive contract, which differs by provenance
+    (see hook_docs "Skipping and stopping"). A saved hook returns a HookResult
+    from analyze_frame carrying ContinueSurvey or StopSurvey, and trusted parent
+    code dispatches it; a reviewed built-in keeps the direct contract, where the
+    runner sets hook.survey_events / hook.candidates / hook.progress and the hook
+    submits the next tile with candidates.put() OR calls progress.done_early(),
+    then image_done(). A built-in that only logs runs fine here too, but
+    serialized — prefer run_tile_acquisition / run_multiposition_acquisition for
+    fixed surveys that just report. A saved hook that only logs is REFUSED here:
+    with the runner state parent-side it has no way to ask for the next tile, so
+    it would idle out max_idle_s at the seed and report a stall.
     """
     if position_names is not None and positions is not None:
         return {"error": "Provide position_names or positions, not both."}

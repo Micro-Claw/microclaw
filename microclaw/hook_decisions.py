@@ -179,6 +179,16 @@ class UntrustedHookAdapter:
         self._log: list[dict[str, Any]] = []
         self._context: dict[str, Any] | None = None
 
+    @property
+    def proposes_actions(self) -> bool:
+        """Whether the wrapped hook can return typed actions at all.
+
+        A legacy ``image_process_fn``-only hook cannot: it has no channel for a
+        proposal now that the runner state is parent-side. Callers that need a
+        hook to steer an acquisition check this before starting one.
+        """
+        return hasattr(self.hook, "analyze_frame")
+
     def configure_adaptive(self, *, events, candidates, progress, guard,
                            max_events: int) -> None:
         self._context = {
