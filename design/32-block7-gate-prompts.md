@@ -505,49 +505,105 @@ object-level validation from synthetic frames.
 
 ## Rig gate
 
-### R1. M5 Run A regression and retained-baseline hash verification
+### R1. M5 Run A regression against the established 2026-07-20 baseline
 
-Do this only on M5 with its reviewed safety config. Repeat design/26 Run A A1–A3
-exactly, using the same fixed survey and retained comparison criteria as the
-2026-07-20 run in `OneDrive\Microclaw\microclaw-json-histories` (`*_run_a.json`
-plus `run-a\`). Do not overwrite the retained baseline.
+**The baseline is established.** The retained history was hashed 2026-07-27:
 
-Before using any retained file or directory artifact as a baseline, enumerate it
-and record a sha256 for every file:
+    1a0730a98592a7d13a3e1cda6fd3460f1fd222a675d4d2561e9139ec94f29e8a
+    20260720_162413_microclaw_history_run_a.json
 
-```powershell
-$Baseline = "<OneDrive>\Microclaw\microclaw-json-histories"
-Get-ChildItem -Path $Baseline -File -Recurse | Sort-Object FullName | ForEach-Object {
-    $Hash = Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName
-    "$($Hash.Hash)  $($_.FullName)"
-} > "$Evidence\retained-run-a-sha256.txt" 2>&1
-```
+Record that hash in the evidence directory and re-verify it before use. The
+history embeds the complete hook-log entries inline, so the numeric baseline below
+comes from the history itself and does not depend on the original log files still
+existing on the rig. If the separate `run-a\` artifacts are also wanted, hash them
+too and write `HASH NOT ESTABLISHED` for anything OneDrive will not hydrate.
 
-Record OneDrive placeholder/availability state separately:
+#### What the 2026-07-20 run actually was
 
-```powershell
-Get-ChildItem -Path $Baseline -Force -Recurse | Select-Object FullName,Length,Attributes,LastWriteTime > "$Evidence\retained-run-a-inventory.txt" 2>&1
-```
+Reading the history changed three assumptions this gate previously made. Reproduce
+the run as it was, **not** as the demo core ran D5:
 
-If a placeholder cannot be hydrated/read or an artifact is missing, write
-`HASH NOT ESTABLISHED` with its path and reason. Do not imply it was verified and
-do not use it as a quantitative baseline.
+- The survey was **3 × 4 = 12 tiles at 20 µm**, not 3 × 3 at 50 µm.
+- The budget was **k = 2**, not k = 3.
+- **There were two surveys.** The first (`run_a_1`, `snr_observer_log.json`) was
+  acquired with the laser off and is noise: every tile SNR 3.0–3.07. The operator
+  then enabled the laser and re-ran (`run_a_2`,
+  `snr_observer_log_rerun.json`), which carries the real signal. **The comparison
+  baseline is the rerun.** The dark run is useful only as a negative control.
 
-Run A itself follows `design\26-field-spike-prompts.md` A1, A2, and A3. Retain the
-new history, hook log, ranking, validated/saved positions, fixed survey, revisit
-dataset, comparison output, and an `inspect_artifacts` manifest with hashes.
+Rig context at the time: exposure 100 ms, ROI 453 × 227, `pixel_size_um: 0.0`
+(uncalibrated, so `compare_revisit_frames` will report `translation_um: null`
+unless a calibration has since been configured), `get_available_channels` empty,
+shutter device `Cobolt561`, stage near (6473, 1155), Z ≈ 83.3.
 
-**Expected observable:** compared with hash-established 2026-07-20 artifacts, record
-counts and image retention reconcile; ranking is deterministic; every revisit
-position passes the current guard; the whole saved list is revisited; revisit
-accuracy metrics are reported with method/units and without a biology/object claim.
-The trusted `snr_observer` behavior is unchanged by the saved-hook boundary.
+#### Numeric baseline — rerun (`run_a_2`), 12 records
 
-**Stop condition:** baseline hash cannot be established for an artifact needed by a
-comparison, any record/image is dropped, ranking changes between identical reads,
-guard validation is bypassed, revisit is incomplete/inaccurate beyond the retained
-criterion, or the acquisition differs from Run A rather than merely reporting a
-platform/version delta. Stop and investigate; do not merge on an unexplained delta.
+| tile | x_um | y_um | snr | tile | x_um | y_um | snr |
+|---|---|---|---|---|---|---|---|
+| r0_c0 | 6443.5 | 1135.5 | 85.48 | r1_c2 | 6483.5 | 1155.5 | 76.95 |
+| r0_c1 | 6463.5 | 1135.5 | 79.19 | r1_c3 | 6503.5 | 1155.5 | 88.49 |
+| r0_c2 | 6483.5 | 1135.5 | 47.25 | r2_c0 | 6443.5 | 1175.5 | 80.62 |
+| r0_c3 | 6503.5 | 1135.5 | 122.22 | r2_c1 | 6463.5 | 1175.5 | 123.57 |
+| r1_c0 | 6443.5 | 1155.5 | 54.24 | r2_c2 | 6483.5 | 1175.5 | 77.47 |
+| r1_c1 | 6463.5 | 1155.5 | 71.20 | r2_c3 | 6503.5 | 1175.5 | 23.76 |
+
+Every record: `focus_metric_valid: true`, `saturated_fraction: 0.0`,
+`parameters: {"min_snr": 3.0}`. Selected top-2: **`run_a_r2_c1` (123.57)** then
+**`run_a_r0_c3` (122.22)**. Revisit SNR: `r2_c1` 121.73 and `r0_c3` 119.01 — 98.5%
+and 97.4% of the survey values, consistent with mild bleaching.
+
+#### Three tools postdate the baseline — do not fake a comparison
+
+`rank_hook_log`, `validate_positions`, and `compare_revisit_frames` did not exist
+on 2026-07-20. In that session the ranking was computed **in prose**, the
+assistant explicitly recorded that no tool could read the guard limits, and the
+revisit comparison was assembled by hand from the logs. **There is therefore no
+baseline artifact for ranking output, guard validation, or registration-based
+revisit accuracy.** Report those as new capability, not as a regression
+comparison. Claiming a like-for-like result would be inventing a baseline.
+
+**The ranking comparison is already settled off-rig.** Replaying today's
+`rank_hook_log` over the 2026-07-20 rerun records reproduces the historical
+selection exactly — `run_a_r2_c1` then `run_a_r0_c3`, ranking key "descending
+result.snr, then ascending position label". R1 need not re-establish it; it only
+needs to show that a fresh acquisition still ranks deterministically.
+
+#### What R1 must actually settle
+
+1. `snr_observer` — a trusted built-in — is unchanged by the saved-hook boundary:
+   12 planned, 12 acquired, 12 observation records, no duplicate or missing
+   position, every record carrying position and intended stage coordinates.
+2. SNR **ordering** works on real signal. The demo core could not test this: all
+   nine synthetic tiles scored identically and the ranking fell entirely to the
+   label tie-break.
+3. Exactly k = 2 positions are revisited, with no replacements.
+4. Nothing in the run bypasses a parent gate.
+
+Absolute SNR values will not reproduce 2026-07-20 — different sample, focus, and
+laser state. Compare the **shape**: a spread of distinct values, a stable ordering
+across two reads of the same log, and revisit SNR close to its own survey tile.
+
+#### Before starting
+
+Clear the MM position list, then confirm the saved `.pos` holds exactly k entries.
+On the demo core the list still held D3's five tiles and `save_position_list` wrote
+**8** entries for a k=3 selection; on a rig that is a dose-integrity problem,
+because anything later loading that file acquires positions nobody selected.
+
+Check `~\.microclaw\hooks\manifest.json` first. On 2026-07-20 M5 carried three
+saved `claude_generated` hooks — `storm_prebleach_ramp`, `smlm_live_preview`, and
+`montage_grid` — and Block 7's boundary affects all three. See the open item in the
+results section.
+
+Then run `design\26-field-spike-prompts.md` A1–A3 with rows=3, cols=4,
+step_um=20, k=2. Retain the new history, hook log, ranking output, saved position
+list, revisit dataset, comparison output, and an `inspect_artifacts` manifest.
+
+**Stop condition:** a record or image is dropped; ranking differs between two reads
+of one log; the saved position list holds more than k entries; a revisit position
+skips guard validation; more than k positions are acquired; `snr_observer` output
+differs structurally from the baseline shape; or any claim of biological or
+object-level validation.
 
 ## Final verdict
 

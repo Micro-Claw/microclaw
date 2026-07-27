@@ -62,3 +62,6 @@ safety_config.yaml
 # Rig/demo gate evidence lives outside the repo (design/26-29-32-33 checklist:
 # commit the spike and the findings, never the output artifacts).
 microclaw_block7/
+
+# Retained rig histories staged at the repo root for comparison (evidence, not source).
+/*_microclaw_history_*.json
