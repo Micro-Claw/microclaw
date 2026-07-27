@@ -326,6 +326,30 @@ is `excluded`, so dispatch must refuse it before it touches anything. Call
 refusal, with no MDA started and no hardware effect. This pins the claim that the
 new dose policy did not quietly become the thing that admits MDA.
 
+Scripted as `design/33-block5-b4b-mda-refusal-probe.py`. It runs on the **demo
+core** as well as on M5 — the refusal happens before any MMStudio contact.
+
+```powershell
+python design\33-block5-b4b-mda-refusal-probe.py --config <config> --port 4827 > "$Evidence\b4b-mda-refusal.txt" 2>&1
+```
+
+On the demo machine that is:
+
+```powershell
+python design\33-block5-b4b-mda-refusal-probe.py --config design\33-block5-demo-safety-config.yaml --port 4827 > b4b-mda-refusal.txt 2>&1
+```
+
+The probe first tries `get_mda_settings` to obtain a **real** preview token, so
+the refusal cannot be explained away as a stale-token rejection; if MMStudio is
+unreachable it falls back to a placeholder and says so in the `TOKEN` line.
+Either way the authorization gate runs before the token is examined. It then
+checks the ledger did not move, and prints its own `VERDICT PASS`/`FAIL`.
+
+**PASS** requires all four: `mmstudio_mda` is `["excluded"]`,
+`acquisition_tool_run_mda_row` is `false`, `RESULT` names the excluded
+`mmstudio-mda` path, and the ledger is unchanged at zero. The probe's final line
+states the verdict; anything other than `VERDICT PASS` is a finding.
+
 **PASS — the exact observed shape** (measured against fakes, 2026-07-27):
 `execute_tool` **returns** a JSON error, it does not raise:
 
