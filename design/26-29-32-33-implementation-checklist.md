@@ -375,14 +375,13 @@ Branch: `design33/dose-authorization`
       closed before any prompt or app construction in both CLI and web. "Aliases" resolved
       to the adaptive wrappers `run_adaptive_zstack`/`run_adaptive_timelapse`, which reach
       the planner transitively and are covered by the AST tripwire.
-- [ ] Run a short rig regression proving incomplete dose policy fails before tools and a
-      complete policy produces the same authorized plan/ledger as Block 4. — procedure in
-      `design/33-block5-rig-gate-prompts.md` (B0–B5), scripted by
-      `design/33-block5-make-incomplete-config.py` and `design/33-block5-rig-probe.py`;
-      **PENDING operator execution**.
-- [ ] Commit, review, and merge. — impl `ff41de7`, coordinator-review fixes `a28e5bd`
+- [x] Run a short rig regression proving incomplete dose policy fails before tools and a
+      complete policy produces the same authorized plan/ledger as Block 4. — **PASS
+      2026-07-27**; procedure and verdicts in `design/33-block5-rig-gate-prompts.md`
+      (B0–B5). B0/B1/B5 on M5, B2/B3 off-rig, B4/B4b/B5 on a demo core. The gate found
+      three defects, **all in the gate itself, none in Block 5's code**.
+- [x] Commit, review, and merge. — impl `ff41de7`, coordinator-review fixes `a28e5bd`
       (two blockers, both coordinator-verified); 910 passed / 98 skipped / 3 warnings.
-      **Not merged: awaiting the rig gate.**
 
 Post-merge design gate:
 

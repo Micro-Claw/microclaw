@@ -411,6 +411,32 @@ effect before `validate_live_rig` returns.
 Remember the probe auto-confirms. `RESULT` showing a completed acquisition is
 evidence about authorization and accounting, not about the confirmation gate.
 
+### B5 VERDICT — PASS on M5 (2026-07-27)
+
+```
+MAP    complete=true, verdict=complete, 9 policy + 8 tool rows, mda=["excluded"]
+PLAN   frames=2, exposure_ms_per_frame=5.0, illuminated_ms=10.0, bytes=21233664
+RESULT {"status": "Timelapse complete.", "dataset_path": "C:\\Users\\ries\\data\\microclaw\\block5\\block5_authorized_1"}
+LEDGER {"bytes": 21233664, "frames": 2, "illuminated_ms": 10.0}
+```
+
+Every criterion met on the rig itself. `LEDGER.bytes == PLAN.estimated_bytes`
+exactly; frames and illuminated time match the plan; the dataset landed inside
+the configured workspace.
+
+**The byte figure is the check that the planner read live geometry rather than a
+default:** 21 233 664 = 2 × 2304 × 2304 × 2, i.e. a 2304×2304 16-bit sensor
+(M5's Hamamatsu). Compare the demo core's 1 048 576 = 2 × 512 × 512 × 2 from the
+same probe and the same arguments. Same code, three different cameras
+(fake 512×512×1, demo 512×512×2, M5 2304×2304×2), each planned and accounted
+correctly.
+
+**Both dose-relevant quantities are exact, as design/32's Block 4 note claims.**
+Frames and illuminated time are computed, not estimated. Only
+`estimated_duration_s` remains a known-low bound — Block 4's G6 measured actual
+at ≈7.6× the exposure-only estimate — which is why `max_duration_s` bounds the
+estimate rather than wall time. Nothing here changes that.
+
 ### B5 REHEARSAL — PASS against fakes (2026-07-27)
 
 The probe file was executed **unmodified** via `runpy` against a fake controller
@@ -590,13 +616,31 @@ any FAIL; do not merge and do not fix on the rig.
   JSON, not raw bytes. Not yet run on M5.
 - B4b: **PASS on a demo core with a real preview token**, 2026-07-27. The
   strongest available form: the stale-token explanation is excluded by evidence.
-- B5: **PASS on a demo core**, 2026-07-27, through the real pyjavaz bridge and a
-  real Acquisition. Ledger matched the plan exactly. Not yet run on M5.
-- **Overall: SUBSTANTIVELY PASSED, one gap — B5 has not run on M5 itself.**
-  Everything Block 5 claims now has live-bridge evidence: B1 on M5, and B4/B5 on
-  a real demo core. What M5 would still add is confirmation against *its* config
-  (declared illumination, seven declared categorical pairs, a different camera)
-  rather than the demo's. That is the block's literally stated gate — "a short
-  rig regression" — and it costs two dark frames, so the conservative call is to
-  run it before merging rather than to merge on demo evidence and call the rig a
-  formality.
+- B5: **PASS on a demo core and on M5**, 2026-07-27, through the real pyjavaz
+  bridge and a real Acquisition. Ledger matched the plan exactly on both, with
+  the byte count following each camera's live geometry.
+- **Overall: PASS (2026-07-27). Cleared to merge.** Every section passed, and
+  B1/B5 passed on M5 itself against its own config — declared illumination,
+  seven declared categorical pairs, a 2304×2304 16-bit camera.
+
+**What the gate actually found.** Three defects, **all of them in this gate
+document and its scripts, none in Block 5's code**:
+
+1. B2/B3 could not test what this document claimed they tested (finding B2-1).
+2. B4's `Compare-Object` would have reported spurious differences from a
+   PowerShell stderr preamble.
+3. The B5 probe surfaced a save-dir/workspace mismatch only after `MAP` and
+   `PLAN` had printed, which on M5 would have cost a session.
+
+Block 5's implementation took no corrections from the rig. Its two real defects
+— degraded-mode rows claiming a capability they did not have, and a tripwire
+that missed one of its own eight entry points — were both caught in coordinator
+review before the branch ever reached hardware. That is the intended division of
+labour: review catches what is knowable statically, the rig catches what is not.
+
+**What this gate does not establish**, restated so a PASS is not over-read: the
+human confirmation gate (the probe self-confirms), cancellation (deferred with
+its abort trigger to a later block), durable session dose (the ledger is still
+in-memory and resets on restart — the map now says so), and whether M5's
+declared budgets are *appropriate* rather than merely present (finding B1-1:
+they are the shipped example's values verbatim).
