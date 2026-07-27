@@ -569,6 +569,13 @@ illuminated time were exact; duration remains the known-low estimate G6 measured
 at ≈7.6×. The [gate record](33-block5-rig-gate-prompts.md) contains the evidence
 and its scope limits.
 
+## 3. Remote mode authorizes by network position, not by identity
+
+*(This heading was missing; the finding below ran on from §2 with only its
+priority line to separate them. Restored 2026-07-27 with the Block 6 landed
+note. Every `webserve.py` line anchor in the problem statement refers to the
+pre-Block-6 file.)*
+
 **Priority: P1 — security / authorization; release-blocking for remote mode**
 
 The server intentionally requires `--allow-remote` before a non-loopback bind,
@@ -635,6 +642,80 @@ distinct, complementary checks rather than one being folded into the other.
 
 Also add request-body limits, confirmation audit records (identity, time,
 decision), rate limiting, and tests using requests with no `Origin` header.
+
+### Landed: Block 6 (merged `056a4ef`, 2026-07-27)
+
+Implementation `eb9ab16` + review fixes `c81aa16`, coordinator `f68af87`;
+937 passed / 98 skipped / 3 warnings. No rig action: the acceptance gate for this
+block is its network/security tests, and none of it touches hardware paths.
+
+**The shipped contract**
+
+- **Two credentials, one middleware.** `authenticate_remote` protects every
+  `/api/*` route in remote mode — including `GET /api/history`, `/api/confirm`,
+  `/api/model`, `/api/key`, and `/api/artifact`, not only the three control
+  endpoints the finding named. `POST /api/pair` is the sole exception. `GET /`
+  and `/favicon.ico` stay public so the page can load in order to pair.
+  Unauthenticated is a bare 401 that does not distinguish "wrong token" from
+  "no token". All three secrets compare through `hmac.compare_digest`.
+- **Bearer = non-browser clients.** `MICROCLAW_REMOTE_TOKEN` if set, else
+  `secrets.token_urlsafe(32)` per process; printed once at startup, never
+  persisted, never returned by any endpoint.
+- **Pairing = browsers.** The startup code is delivered in a URL *fragment*
+  (`/#pair=CODE`), chosen so the code reaches neither the server's request line
+  nor the proxy's access log; the page clears it from the address bar before
+  exchanging it. Codes are single-use, 15-minute TTL, at most five outstanding,
+  rate-limited. A valid code returns an opaque server-side session value as an
+  HttpOnly, Secure, SameSite=Strict, `Path=/` cookie with a 12-hour life. The
+  browser never receives the bearer token. `POST /api/pair/code` mints a
+  replacement code and is **bearer-only by contract** — a paired cookie cannot
+  mint pairing codes.
+- **Transport.** A non-loopback bind now requires `--allow-remote` *and* the new
+  `--behind-tls-proxy`; cleartext remote is refused at startup. In proxy mode
+  every request must carry `X-Forwarded-Proto: https`, and the CSRF middleware's
+  expected origin becomes `https://` + the `Host` header (verified against a
+  non-default public port, 8443).
+- **Both gate families kept.** Origin/CSRF still runs, independently and
+  outermost, and is not identity. The `session.editable` loopback gates on
+  `/api/key`, `/api/model`, and `/api/artifact` still protect *credential and
+  config mutation*; the new middleware protects *hardware control*. Neither
+  subsumes the other, and tests assert each independently.
+- **Limits and audit.** 256 KiB on `/api/prompt`, 64 KiB on every other JSON
+  body, 413 past that; 10 auth failures and 10 pairing attempts per 60 s per
+  direct socket address, over bounded LRU maps (256 clients, 1024 sessions);
+  confirmation decisions recorded with identity, UTC timestamp, confirmation id,
+  kind, and decision, to stdout and an in-memory list.
+- **Loopback is untouched.** No token, no cookie, no pairing endpoints (404),
+  no new refusals, and the auto-open browser behaviour is unchanged. Pinned by
+  test.
+
+**Known limitations, stated rather than fixed**
+
+- **The proxy assertion is unverifiable.** Any client that reaches the cleartext
+  bind port directly can send `X-Forwarded-Proto: https` itself. This is not
+  privilege escalation — control still requires the bearer or a paired cookie —
+  but the transport guarantee rests on the operator making that port reachable
+  only from the proxy. README and `--behind-tls-proxy --help` now say so.
+- **`MICROCLAW_REMOTE_TOKEN` is length-checked, not entropy-checked.** The
+  minimum is 32 *characters*; `"t" * 32` passes. Length is the only property a
+  server can cheaply verify, so the operator owns token quality when they supply
+  one. The generated default is 32 bytes from `secrets`.
+- **No revocation.** A leaked bearer or cookie is valid until process restart or
+  the 12-hour cookie expiry. There is no revocation endpoint and no role
+  separation; every authenticated identity has the same authority.
+- **Shared-address rate limiting.** Behind a proxy all clients present one
+  socket address, so a burst of failed pairing attempts can deny pairing to a
+  legitimate operator for the rest of the window. Authenticated requests never
+  consult the limiter, so an already-paired session is unaffected.
+  `X-Forwarded-For` is deliberately not trusted for this.
+- **The audit is volatile by design.** It dies with the process. Durable,
+  append-only, redacted audit remains Finding 5 / Block 15 and this block must
+  not be read as delivering it.
+
+**Behaviour change for existing operators:** `--allow-remote` alone no longer
+starts. An operator running remote mode on a trusted LAN today gets a startup
+refusal directing them to a TLS proxy. This was a deliberate coordinator call —
+a cleartext escape hatch would reopen exactly the hole this block closes.
 
 ## 4. Confirmed hooks execute arbitrary Python inside the hardware-control process
 
@@ -849,11 +930,11 @@ budgets and interruptible batching next, then extend the authorization map with
 the resulting acquisition/dose policies. The typed actuator registry,
 channel-plan executor, and setup assistant are later design/33 phases.
 Authentication should be required before remote mode is
-described as usable — and because `--allow-remote` already ships and works
-today (`webserve.py:550`), the interim step is a now-fix: either land the token
-gate or add a startup warning that the flag exposes unauthenticated hardware
-control, rather than leaving the current behaviour undocumented until the full
-fix arrives. Define the generated-hook decision schema and withhold the
+described as usable. **Landed 2026-07-27 (Block 6, merge `056a4ef`):** the token
+gate shipped, so the interim path this paragraph offered — leaving
+`--allow-remote` unauthenticated behind a startup warning — no longer exists and
+must not be reintroduced. Remote mode is authenticated or it does not
+start. Define the generated-hook decision schema and withhold the
 live controller from that hook category next; this preserves smart microscopy
 while making the trusted authorization boundary explicit. A worker process is
 then required to enforce hard deadlines and memory caps—the document should not

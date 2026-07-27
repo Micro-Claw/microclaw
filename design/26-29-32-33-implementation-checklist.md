@@ -40,7 +40,7 @@ Progress markers: `[ ]` not started, `[-]` active, `[x]` complete, `[!]` blocked
 | 3b | `design33/statedevice-auto-classify` | 91c6364 | d80ae39 + aaa41d4 (rig-finding fix) | rig M5: before/after maps both complete@40; six Thorlabs pairs flip declared→auto; iChrome-MLE-TCP.State refused live despite explicit human confirm; auto-classified wheel write passes both gates via `serve` | 9491361 | Gate done: design/33 Block-3b landed note + ELL6/no-core-shutter/iChrome findings (docs merge daab107) |
 | 4 | `design32/acquisition-budgets` | 0d0137d, rebased to 1c14271 | 540a641…bce4e32; 894/98/3 (mac), 876/114/3 (M5) | **rig gate PASS 2026-07-26**: G1 1.00× (after list revert; the 3.4× feeder was removed), G3 budgets/confirm before hardware + attributable decline, G5 MDA token sensitive to slice/channel change (bridge reads fixed), G6 ~657 ms/frame overhead. Gate caught 3 defects. | e8e7afb | Gate done: chunking + lazy-feeding both withdrawn on measured evidence; Block 4 landed note + measured G1/G6 + final schema (docs merge `ec98330`) |
 | 5 | `design33/dose-authorization` | `ec98330` (main, 894/98/3) | `ff41de7` + `a28e5bd` (review fixes); 910/98/3 (mac) | B0/B1/B5 PASS on M5; B2/B3 PASS off-rig; B4/B4b/B5 PASS on a demo core via the live pyjavaz bridge. Gate found 3 defects, all in the gate not the code; 2 implementation defects were fixed in coordinator review before hardware. | `3438b90` | Gate done: design/33 Phase-3 landed semantics, evidence boundaries, and follow-ups; design/32 planner/ledger discharge + M5 live-geometry measurement |
-| 6 | `design32/remote-auth` | | | n/a | | |
+| 6 | `design32/remote-auth` | `d70874d` (main, 910/98/3) | `eb9ab16` + `c81aa16` (review fixes R1–R4) + `f68af87` (coordinator); 937/98/3 (mac) | n/a — network/security tests are this block's gate; no hardware path touched | `056a4ef` | Gate done: §3 heading restored (it was missing), Block 6 landed contract + five stated limitations, interim "unauthenticated remote warning" path removed from the ordering section |
 | 7 | `design32/generated-hook-decisions` | | | regression required | | |
 | 8 | `design29/saved-dataset-foundation` | | | probe required | | |
 | 9 | `design29/stage-coordinate-mosaic` | | | required | | |
@@ -396,24 +396,48 @@ Post-merge design gate:
 
 Branch: `design32/remote-auth`
 
-- [ ] Create the branch from updated `main`.
-- [ ] Require a high-entropy token for non-loopback mode and constant-time comparison.
-- [ ] Protect every remote `/api/*` control route, including stop and confirmation.
-- [ ] Add one-time, expiring, rate-limited browser pairing that yields an HttpOnly,
+- [x] Create the branch from updated `main`. — from `d70874d`.
+- [x] Require a high-entropy token for non-loopback mode and constant-time comparison.
+      — `MICROCLAW_REMOTE_TOKEN` (min 32 chars) or `secrets.token_urlsafe(32)`;
+      `hmac.compare_digest` for token, pairing codes, and session values.
+      **Length-checked, not entropy-checked** — recorded as a limitation, not a defect.
+- [x] Protect every remote `/api/*` control route, including stop and confirmation.
+      — widened beyond the three control routes: history, model, key, and artifact are
+      authenticated too. `POST /api/pair` is the only exception; `/` and `/favicon.ico`
+      stay public so the page can load in order to pair.
+- [x] Add one-time, expiring, rate-limited browser pairing that yields an HttpOnly,
       Secure, SameSite=Strict session cookie; never expose the long-lived bearer token to
-      browser JavaScript.
-- [ ] Refuse untrusted cleartext non-loopback operation unless explicitly behind the
-      supported trusted TLS-proxy mode.
-- [ ] Preserve Origin/CSRF checks and existing non-loopback credential-editing gates.
-- [ ] Add request limits, rate limits, identity-bearing confirmation audit records, and
+      browser JavaScript. — code delivered in the URL *fragment* so it reaches neither the
+      request line nor the proxy access log; single-use, 15-min TTL, five outstanding max.
+      `POST /api/pair/code` is bearer-only: a cookie cannot mint codes.
+- [x] Refuse untrusted cleartext non-loopback operation unless explicitly behind the
+      supported trusted TLS-proxy mode. — new `--behind-tls-proxy`; `--allow-remote` alone
+      now exits. **Behaviour change for anyone running remote mode on a trusted LAN.**
+- [x] Preserve Origin/CSRF checks and existing non-loopback credential-editing gates.
+      — both kept, independently tested; the CSRF expected origin becomes `https://` +
+      `Host` in proxy mode (verified against a non-default public port).
+- [x] Add request limits, rate limits, identity-bearing confirmation audit records, and
       tests for clients with missing/forged Origin, `Bearer None`, replayed pairing codes,
-      and every protected route.
-- [ ] Commit, review, and merge. No rig action is required; network/security tests are.
+      and every protected route. — 256 KiB prompt / 64 KiB JSON → 413; 10 failures and 10
+      pairing attempts per 60 s per socket address over bounded LRU maps; audit is
+      volatile by design (durable audit is Block 15).
+- [x] Commit, review, and merge. No rig action is required; network/security tests are.
+      — merged `056a4ef`. Coordinator review found one blocker (remote startup printed
+      `https://` URLs for the *cleartext* bind port and auto-opened a browser at an
+      address that cannot answer) plus three smaller items; all fixed in `c81aa16`.
+      The coordinator also independently probed the two risks the tests did not cover:
+      a real streaming remote turn through the body-consuming middleware, and the
+      proxy-mode Origin rewrite. Both pass on starlette 1.3.1.
 
 Post-merge design gate:
 
-- [ ] Update design/32 with the actual pairing/TLS contract and explicitly remove any
-      interim “unauthenticated remote” warning path that is no longer true.
+- [x] Update design/32 with the actual pairing/TLS contract and explicitly remove any
+      interim “unauthenticated remote” warning path that is no longer true. — "Landed:
+      Block 6" note added with the shipped contract and five stated limitations
+      (unverifiable proxy assertion, token length ≠ entropy, no revocation, shared-address
+      rate limiting behind a proxy, volatile audit). The ordering section's interim
+      "startup warning instead of a token gate" path is struck. Also repaired: Finding 3
+      had **no `## 3.` heading** and had been running on from Finding 2.
 
 ## 7. Design/32 Finding 4 Phase 1 — capability-limited generated-hook decisions
 
