@@ -73,6 +73,12 @@ _ACQUISITION_LEDGERS: "weakref.WeakKeyDictionary[Any, AcquisitionLedger]" = (
 )
 
 
+def _acquisition_entry_point(fn):
+    """Mark a public tool whose effects must pass the dose planner/ledger."""
+    fn._microclaw_acquisition_entry_point = True
+    return fn
+
+
 def _acquisition_ledger(ctrl) -> AcquisitionLedger:
     try:
         ledger = _ACQUISITION_LEDGERS.get(ctrl)
@@ -788,6 +794,7 @@ def _acq_dataset_path(acq, save_dir: str, name: str) -> str:
     return getattr(acq, "_dataset_disk_location", None) or str(Path(save_dir) / name)
 
 
+@_acquisition_entry_point
 def run_zstack(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -871,6 +878,7 @@ def _assert_excitation_will_fire(ctrl: MicroscopeController, laser_slot: int) ->
             )
 
 
+@_acquisition_entry_point
 def run_timelapse(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -1912,6 +1920,7 @@ def _run_protocol_at(
         return {"position": pos_label, "error": f"Unknown protocol '{protocol}'."}
 
 
+@_acquisition_entry_point
 def run_multiposition_acquisition(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -2079,6 +2088,7 @@ def run_multiposition_acquisition(
     return payload
 
 
+@_acquisition_entry_point
 def run_tile_acquisition(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -2168,6 +2178,7 @@ def run_tile_acquisition(
             **({"return_to_center": return_result} if return_result else {})}
 
 
+@_acquisition_entry_point
 def run_multiposition_with_autofocus(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -2368,6 +2379,7 @@ def _adaptive_result(
     return result
 
 
+@_acquisition_entry_point
 def run_adaptive_zstack(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -2418,6 +2430,7 @@ def run_adaptive_zstack(
     )
 
 
+@_acquisition_entry_point
 def run_adaptive_timelapse(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -2834,6 +2847,7 @@ def _acquire_survey_with_detector(
     )
 
 
+@_acquisition_entry_point
 def run_adaptive_survey(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -3847,6 +3861,7 @@ def get_mda_settings(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
             "warning": "Inspect illumination, motion, saving, and all enabled axes before running."}
 
 
+@_acquisition_entry_point
 def run_mda(ctrl: MicroscopeController, guard: SafetyGuard, preview_token: str) -> dict:
     from microclaw.authorization import authorize_path
     authorize_path(ctrl, "mmstudio-mda")
@@ -4041,6 +4056,12 @@ def execute_tool(
     if fn is None:
         return json.dumps({"error": f"Unknown tool '{name}'."})
     try:
+        if (
+            name != "run_mda"
+            and getattr(fn, "_microclaw_acquisition_entry_point", False)
+        ):
+            from microclaw.authorization import authorize_path
+            authorize_path(ctrl, f"acquisition-tool:{name}")
         result = fn(ctrl, guard, **tool_input)
         return result if isinstance(result, list) else json.dumps(result)
     except SafetyViolation as e:

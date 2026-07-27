@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 import math
+from numbers import Real
 import sys
 from typing import Any, Iterable
 
@@ -12,6 +13,32 @@ from microclaw.safety import (
     BUILTIN_TYPED_CAPABILITIES,
     ParsedSafetyConfig,
 )
+
+
+_ACQUISITION_POLICY_FIELDS = (
+    ("max_frames", "per-plan frame maximum"),
+    ("max_duration_s", "per-plan estimated-duration maximum"),
+    ("max_bytes", "per-plan estimated-byte maximum"),
+    ("max_illuminated_ms", "per-plan illuminated-time maximum"),
+    (
+        "max_session_illuminated_ms",
+        "in-memory controller-session illuminated-time maximum; resets on process restart",
+    ),
+    ("confirm_above_frames", "per-plan frame confirmation threshold"),
+    ("confirm_above_duration_s", "per-plan estimated-duration confirmation threshold"),
+    ("confirm_above_bytes", "per-plan estimated-byte confirmation threshold"),
+    ("confirm_above_illuminated_ms", "per-plan illuminated-time confirmation threshold"),
+)
+
+
+def _acquisition_tool_names() -> list[str]:
+    """Read the public tool registry; function metadata is the coverage source."""
+    from microclaw.tools import TOOL_REGISTRY
+
+    return sorted(
+        name for name, fn in TOOL_REGISTRY.items()
+        if getattr(fn, "_microclaw_acquisition_entry_point", False)
+    )
 
 
 class RigAuthorizationError(RuntimeError):
@@ -325,6 +352,8 @@ def validate_live_rig(
         errors.append("Code registry is missing the built-in exposure capability.")
     if "illumination" not in BUILTIN_TYPED_CAPABILITIES:
         errors.append("Code registry is missing the built-in illumination capability.")
+    if "acquisition-dose" not in BUILTIN_TYPED_CAPABILITIES:
+        errors.append("Code registry is missing the built-in acquisition-dose capability.")
 
     xy_device = str(core.get_xy_stage_device() or "")
     focus_device = str(core.get_focus_device() or "")
@@ -565,12 +594,52 @@ def validate_live_rig(
             capability="stage-position",
             axis="z",
         ))
-    entries.append(AuthorizationEntry(
-        path="acquisition",
-        classification="built_in_typed_capability",
-        device=camera_device or None,
-        capability="exposure",
-    ))
+    acquisition = parsed_config.constraints.acquisition
+    acquisition_policy_complete = True
+    for field_name, policy_detail in _ACQUISITION_POLICY_FIELDS:
+        value = getattr(acquisition, field_name)
+        valid = (
+            not isinstance(value, bool)
+            and isinstance(value, Real)
+            and math.isfinite(value)
+            and value > 0
+        )
+        acquisition_policy_complete = acquisition_policy_complete and valid
+        if guaranteed and not valid:
+            errors.append(
+                f"Acquisition authorization requires finite positive "
+                f"acquisition.{field_name}; got {value!r}."
+            )
+        entries.append(AuthorizationEntry(
+            path=f"acquisition-policy:{field_name}",
+            classification=(
+                "built_in_typed_capability" if valid else "trusted_degraded"
+            ),
+            device=camera_device or None,
+            capability="acquisition-dose",
+            detail=f"{policy_detail}; configured={value!r}",
+        ))
+
+    for tool_name in _acquisition_tool_names():
+        if tool_name == "run_mda":
+            continue
+        entries.append(AuthorizationEntry(
+            path=f"acquisition-tool:{tool_name}",
+            classification=(
+                "built_in_typed_capability"
+                if acquisition_policy_complete else "trusted_degraded"
+            ),
+            device=camera_device or None,
+            capability="acquisition-dose",
+            detail=(
+                "plans and reserves before hardware effects"
+                if acquisition_policy_complete
+                else (
+                    "planner and ledger remain active, but the complete typed dose "
+                    "policy is unavailable; global completeness is suspended"
+                )
+            ),
+        ))
     entries.extend([
         AuthorizationEntry(
             path="camera-roi",
@@ -581,7 +650,10 @@ def validate_live_rig(
         AuthorizationEntry(
             path="mmstudio-mda",
             classification="excluded",
-            detail="GUI-owned plan cannot be enumerated as immutable guarded effects",
+            detail=(
+                "run_mda remains excluded even though its preview is dose-planned; "
+                "GUI-owned effects cannot be enumerated as an immutable guarded plan"
+            ),
         ),
     ])
 

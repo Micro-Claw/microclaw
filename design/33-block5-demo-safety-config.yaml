@@ -1,0 +1,67 @@
+# Block 5 rig-gate rehearsal profile for the stock Micro-Manager demo config
+# (MMConfig_demo.cfg). This exists so the B5 probe can be rehearsed against a
+# real demo core before spending an M5 session on it. It is NOT a rig profile
+# and must never be used to drive real hardware.
+#
+# Set workspace_dir to a real directory before use.
+
+schema_version: 2
+reviewed: true
+
+rig_profile:
+  mode: guaranteed
+  # Empty on purpose. The demo config's Dichroic, Emission, Excitation,
+  # Objective and Path are MM StateDevices, so Block 3b auto-classifies their
+  # own Label/State writes with no declaration. "White Light Shutter" and
+  # "LED Shutter" are ShutterDevices and are correctly NOT auto-classified.
+  categorical_properties: []
+  excluded_properties: []
+
+stage:                          # demo XY stage + demo Z ("Z" is the core focus)
+  x_min: -10000.0
+  x_max: 10000.0
+  y_min: -10000.0
+  y_max: 10000.0
+  z_min: 0.0
+  z_max: 200.0
+
+camera:
+  max_exposure_ms: 1000.0
+
+acquisition:
+  max_frames: 10000
+  max_duration_s: 3600
+  max_bytes: 50000000000
+  max_illuminated_ms: 600000
+  max_session_illuminated_ms: 1800000
+  confirm_above_frames: 500
+  confirm_above_duration_s: 300
+  confirm_above_bytes: 5000000000
+  confirm_above_illuminated_ms: 60000
+
+illumination:
+  require_confirm_on_enable: true
+  max_power_percent: 100.0
+  max_power_step_factor: 3.0
+  shutters: []
+  power_properties: []
+
+# REQUIRED, and the reason is a measured finding rather than a preference.
+# Every demo Channel preset (FITC, DAPI, Rhodamine, ...) sets `Core,Shutter` in
+# addition to its filter labels. `Core.Shutter` is not a StateDevice, is not in
+# the illumination block, and is not declarable as a categorical property, so
+# guaranteed mode refuses startup with:
+#
+#   Live rig authorization failed:
+#   - Allowed channel preset 'FITC' is not fully classified: Core.Shutter is unclassified
+#
+# An empty allowlist authorizes no preset and sidesteps it. Block 5 does not
+# need presets; the channel-plan executor is design/33 Phase 4.
+channels:
+  allowed: []
+
+plugins:
+  blocked: []
+  allow_hardware_motion: false
+
+workspace_dir: /REPLACE/with/a/real/directory

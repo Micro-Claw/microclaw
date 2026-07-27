@@ -1,3 +1,4 @@
+import ast
 from unittest.mock import MagicMock
 import inspect
 
@@ -232,6 +233,8 @@ def test_list_acquisition_passes_the_list_directly_to_acquire(monkeypatch, tmp_p
             "_plan_protocol_repetitions",
             "_authorize_acquisition",
         ),
+        ("run_adaptive_zstack", "plan_events", "_authorize_acquisition"),
+        ("run_adaptive_timelapse", "plan_events", "_authorize_acquisition"),
         (
             "run_adaptive_survey",
             "_acquire_survey_with_detector",
@@ -254,3 +257,48 @@ def test_every_acquisition_entry_point_has_a_planning_and_reservation_edge(
     source = inspect.getsource(getattr(tools, entry_point))
     assert planning_edge in source
     assert reservation_edge in source
+    fn = tools.TOOL_REGISTRY[entry_point]
+    assert fn is getattr(tools, entry_point)
+    assert fn._microclaw_acquisition_entry_point is True
+
+
+def test_planner_reachable_public_tools_cannot_bypass_map_registration():
+    """Mechanically derive registry tools that reach the planner or ledger."""
+    from microclaw import tools
+
+    functions = {
+        name: fn for name, fn in inspect.getmembers(tools, inspect.isfunction)
+        if fn.__module__ == tools.__name__
+    }
+    calls = {}
+    for name, fn in functions.items():
+        tree = ast.parse(inspect.getsource(fn))
+        calls[name] = {
+            node.func.id for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+
+    sinks = {"plan_events", "_authorize_acquisition", "_acquisition_ledger"}
+
+    def reaches_planner(name, seen=frozenset()):
+        if name in seen:
+            return False
+        direct = calls.get(name, set())
+        return bool(direct & sinks) or any(
+            reaches_planner(callee, seen | {name})
+            for callee in direct & functions.keys()
+        )
+
+    candidates = {
+        name for name in tools.TOOL_REGISTRY if reaches_planner(name)
+    }
+    marked = {
+        name for name, fn in tools.TOOL_REGISTRY.items()
+        if getattr(fn, "_microclaw_acquisition_entry_point", False)
+    }
+    assert candidates == marked
+    assert candidates - {"run_mda"} == {
+        "run_zstack", "run_timelapse", "run_multiposition_acquisition",
+        "run_tile_acquisition", "run_multiposition_with_autofocus",
+        "run_adaptive_zstack", "run_adaptive_timelapse", "run_adaptive_survey",
+    }

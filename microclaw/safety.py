@@ -160,7 +160,7 @@ class RangePolicy:
 
 AuthorizationMode = Literal["guaranteed", "degraded_trusted_plugins"]
 BUILTIN_TYPED_CAPABILITIES = frozenset(
-    {"stage-position", "exposure", "illumination"}
+    {"stage-position", "exposure", "illumination", "acquisition-dose"}
 )
 
 

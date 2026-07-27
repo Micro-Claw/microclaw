@@ -38,8 +38,8 @@ Progress markers: `[ ]` not started, `[-]` active, `[x]` complete, `[!]` blocked
 | 2 | `design32/versioned-safety-schema` | 252a4cc | d5aa5c4 (+fix 12b0677) | rig: starts clean w/ reviewed rig config | b8092c4 | Gate done: API matches design/33 (no change); 1b landed note + required-when-present judgment recorded in design/32 (docs merge 8dd521f) |
 | 3 | `design33/core-authorization-map` | c18fa92 | fc346a4 (2 review-fixes) | rig M5: fail-closed+parity, complete map, cat/illum writes pass, PWM/FPGA refused, confirm-gate fires | 0124ffd | Gate done: design/33 Phase-1 landed note + M5 findings + ceiling + StateDevice fast-follow (docs merge ae4794f) |
 | 3b | `design33/statedevice-auto-classify` | 91c6364 | d80ae39 + aaa41d4 (rig-finding fix) | rig M5: before/after maps both complete@40; six Thorlabs pairs flip declared→auto; iChrome-MLE-TCP.State refused live despite explicit human confirm; auto-classified wheel write passes both gates via `serve` | 9491361 | Gate done: design/33 Block-3b landed note + ELL6/no-core-shutter/iChrome findings (docs merge daab107) |
-| 4 | `design32/acquisition-budgets` | 0d0137d, rebased to 1c14271 | 540a641…bce4e32; 894/98/3 (mac), 876/114/3 (M5) | **rig gate PASS 2026-07-26**: G1 1.00× (after list revert; the 3.4× feeder was removed), G3 budgets/confirm before hardware + attributable decline, G5 MDA token sensitive to slice/channel change (bridge reads fixed), G6 ~657 ms/frame overhead. Gate caught 3 defects. | e8e7afb | Gate done: chunking + lazy-feeding both withdrawn on measured evidence; Block 4 landed note + measured G1/G6 + final schema (docs merge PENDING) |
-| 5 | `design33/dose-authorization` | | | required | | |
+| 4 | `design32/acquisition-budgets` | 0d0137d, rebased to 1c14271 | 540a641…bce4e32; 894/98/3 (mac), 876/114/3 (M5) | **rig gate PASS 2026-07-26**: G1 1.00× (after list revert; the 3.4× feeder was removed), G3 budgets/confirm before hardware + attributable decline, G5 MDA token sensitive to slice/channel change (bridge reads fixed), G6 ~657 ms/frame overhead. Gate caught 3 defects. | e8e7afb | Gate done: chunking + lazy-feeding both withdrawn on measured evidence; Block 4 landed note + measured G1/G6 + final schema (docs merge `ec98330`) |
+| 5 | `design33/dose-authorization` | `ec98330` (main, 894/98/3) | `ff41de7` + `a28e5bd` (review fixes); 910/98/3 (mac) | B0/B1 PASS on M5; B2/B3 PASS off-rig; B4, B4b (real token), B5 PASS on a demo core via the live pyjavaz bridge. **Gap: B5 not run on M5 itself.** Gate found 3 defects, all in the gate not the code. | | |
 | 6 | `design32/remote-auth` | | | n/a | | |
 | 7 | `design32/generated-hook-decisions` | | | regression required | | |
 | 8 | `design29/saved-dataset-foundation` | | | probe required | | |
@@ -298,12 +298,13 @@ Branch: `design32/acquisition-budgets`
       `image_saved_fn` accounting is free (1.00×) and stays. Cancellation is deferred to
       its own block, which must ship the abort trigger with the mechanism. See design/32
       §2 "Second reconciliation (2026-07-24)".
-      — **the one-event-in-flight gate is load-bearing and its cost is UNMEASURED.**
-      pycro-manager 1.0.2's `EventQueue.get()` eagerly advances a queued generator without
-      waiting for an image (verified from installed source + a fake-acquisition test), so an
-      ungated generator is drained and gives no cancellation granularity at all. The gate
-      buys one-event cancellation by forfeiting engine pipelining; the throughput cost is
-      inferred off-rig and the rig gate must measure it.
+      — SUPERSEDED pre-withdrawal note, retained for the record: the one-event-in-flight
+      gate was believed load-bearing and its cost unmeasured. pycro-manager 1.0.2's
+      `EventQueue.get()` eagerly advances a queued generator without waiting for an image
+      (verified from installed source + a fake-acquisition test), so an ungated generator is
+      drained and gives no cancellation granularity at all. G1 then measured the gated
+      feeder at 3.14× and the mechanism was removed; nothing in the shipped code depends on
+      this paragraph.
 - [x] Test limits, confirmations, cancellation, reservation rollback, partial completion,
       cumulative ledger behavior, and all acquisition entry points. — 892 passed / 98
       skipped / 3 warnings (+29 over the 863 `main` baseline).
@@ -312,7 +313,9 @@ Branch: `design32/acquisition-budgets`
 
 Rig gate:
 
-- [ ] Run no-exposure/dark or safest representative plans around warning and hard limits.
+- [x] Run no-exposure/dark or safest representative plans around warning and hard limits.
+      — G3 exercised budgets and the confirmation threshold before any hardware call and
+      proved a decline is attributable; G6 ran a 9-position dark grid (50 µm, 100 ms).
 - [x] **Measure the feeder's throughput cost.** — DONE, and it rejected the design:
       3.40× at 5 ms and 3.94× at 50 ms through microclaw; isolated to generator-vs-list
       at 3.14× by the raw-bridge 2×2 probe. Accounting via `image_saved_fn` measured free
@@ -321,15 +324,27 @@ Rig gate:
 - [x] Re-run G1 after the list revert. — **PASS 2026-07-26**: 1.002× @5ms (7.015 vs
       7.000 s), 0.997× @50ms (5.484 vs 5.500 s). Regression fully closed; `image_saved_fn`
       accounting stays free in the full path.
-- [ ] Cancellation latency is **not** measured in this block — the capability is deferred.
-- [ ] Verify the MDA preview token round-trips: `settings.slices()` / `settings.channels()`
+- [x] Cancellation latency is **not** measured in this block — the capability is deferred.
+      — recorded as a deferral, not a test (G2 rewritten as a deferral record, `2a95607`).
+      Cancellation ships with its own abort trigger in a later block.
+- [x] Verify the MDA preview token round-trips: `settings.slices()` / `settings.channels()`
       with `spec.useChannel` / `spec.exposure` is unverified bridge code, and a wrong field
       name breaks the `get_mda_settings` → `run_mda` pairing at the point of use.
-- [ ] Verify planned/acquired counts, duration, bytes estimate, illuminated-time ledger,
-      partial failure, and restart/session semantics.
-- [ ] Stop if actual execution can exceed a reservation silently or if cancellation
-      granularity is materially worse than documented. Fix and repeat.
-- [ ] Merge after review.
+      — G5 PASS: the guessed reads were wrong and the probe caught it (`f7b1602`,
+      `2f94c87`); fixed in `138a70d` (bridge `size()`/`get(i)`; `exposure()` is a method,
+      `useChannel` a field) and the stale-token refusal pinned in `bce4e32`. The token is
+      sensitive to a slice/channel change.
+- [-] Verify planned/acquired counts, duration, bytes estimate, illuminated-time ledger,
+      partial failure, and restart/session semantics. — counts/bytes/illuminated ledger and
+      the duration estimate verified on the rig (G1, G3, G6: actual ≈ 7.6× the
+      exposure-only estimate, so `max_duration_s` bounds the estimate, not wall time).
+      **DEFERRED, unit-pinned only:** partial failure and restart/session semantics — the
+      ledger is per-session and not durable. Block 5 owns the cumulative-session policy.
+- [x] Stop if actual execution can exceed a reservation silently or if cancellation
+      granularity is materially worse than documented. Fix and repeat. — the gate caught
+      three defects (G1 feeder cost, G3 unattributable decline, G5 wrong bridge reads); all
+      fixed on-branch and re-measured before merge.
+- [x] Merge after review. — merged `e8e7afb`.
 
 Post-merge design gate:
 
@@ -344,15 +359,29 @@ Post-merge design gate:
 
 Branch: `design33/dose-authorization`
 
-- [ ] Create the branch from updated `main`.
-- [ ] Add Block 4's frame, duration, byte, illuminated-time, and cumulative-session
-      policies to the authorization map and completeness report.
-- [ ] Ensure every acquisition path is classified and checked; per-frame exposure alone
-      must never count as complete acquisition authorization.
-- [ ] Test missing/partial dose declarations, aliases, all planners, and CLI/web startup.
-- [ ] Run a short rig regression proving incomplete dose policy fails before tools and a
-      complete policy produces the same authorized plan/ledger as Block 4.
-- [ ] Commit, review, and merge.
+- [x] Create the branch from updated `main`. — from `ec98330`.
+- [x] Add Block 4's frame, duration, byte, illuminated-time, and cumulative-session
+      policies to the authorization map and completeness report. — nine
+      `acquisition-policy:*` rows under a new `acquisition-dose` built-in typed
+      capability. The session row states in the report that the ledger is an in-memory
+      controller session that resets on process restart; Block 5 does NOT make it durable.
+- [x] Ensure every acquisition path is classified and checked; per-frame exposure alone
+      must never count as complete acquisition authorization. — the old
+      `path="acquisition", capability="exposure"` row is deleted (pinned by an explicit
+      negative assertion). Eight `acquisition-tool:*` rows, `run_mda` deliberately NOT
+      among them; `execute_tool` checks the row before dispatch.
+- [x] Test missing/partial dose declarations, aliases, all planners, and CLI/web startup.
+      — each of the nine fields parametrized as the missing one; guaranteed mode fails
+      closed before any prompt or app construction in both CLI and web. "Aliases" resolved
+      to the adaptive wrappers `run_adaptive_zstack`/`run_adaptive_timelapse`, which reach
+      the planner transitively and are covered by the AST tripwire.
+- [x] Run a short rig regression proving incomplete dose policy fails before tools and a
+      complete policy produces the same authorized plan/ledger as Block 4. — **PASS
+      2026-07-27**; procedure and verdicts in `design/33-block5-rig-gate-prompts.md`
+      (B0–B5). B0/B1/B5 on M5, B2/B3 off-rig, B4/B4b/B5 on a demo core. The gate found
+      three defects, **all in the gate itself, none in Block 5's code**.
+- [x] Commit, review, and merge. — impl `ff41de7`, coordinator-review fixes `a28e5bd`
+      (two blockers, both coordinator-verified); 910 passed / 98 skipped / 3 warnings.
 
 Post-merge design gate:
 

@@ -9,6 +9,7 @@ from microclaw.authorization import (
     validate_live_rig,
 )
 from microclaw.safety import (
+    AcquisitionConstraints,
     ActuatorId,
     CameraConstraints,
     ForbiddenProperty,
@@ -103,6 +104,7 @@ def policy(low=-10.0, high=10.0):
 def parsed(
     *, ranges=None, categorical=(), excluded=(), channels=(), mode="guaranteed",
     plugin_motion=False, exposure=100.0, illumination=None, forbidden=(),
+    acquisition=None,
 ):
     if ranges is None:
         ranges = {
@@ -112,6 +114,17 @@ def parsed(
         }
     constraints = SafetyConstraints(
         camera=CameraConstraints(exposure),
+        acquisition=acquisition or AcquisitionConstraints(
+            max_frames=10000,
+            max_duration_s=3600,
+            max_bytes=50_000_000_000,
+            max_illuminated_ms=600_000,
+            max_session_illuminated_ms=1_800_000,
+            confirm_above_frames=500,
+            confirm_above_duration_s=300,
+            confirm_above_bytes=5_000_000_000,
+            confirm_above_illuminated_ms=60_000,
+        ),
         allowed_channels=list(channels),
         allowed_properties=[
             ForbiddenProperty(device, prop) for device, prop in categorical
@@ -133,13 +146,99 @@ def test_complete_map_covers_dedicated_autofocus_and_acquisition_paths():
     report = validate_live_rig(Controller(), parsed())
     assert report.complete is True
     paths = {entry.path for entry in report.entries}
-    assert {"dedicated-stage", "dedicated-exposure", "autofocus-and-acquisition",
-            "acquisition"} <= paths
+    assert {"dedicated-stage", "dedicated-exposure", "autofocus-and-acquisition"} <= paths
+    assert not any(
+        entry.path == "acquisition" and entry.capability == "exposure"
+        for entry in report.entries
+    )
+    assert {
+        entry.path for entry in report.entries
+        if entry.capability == "acquisition-dose"
+        and entry.path.startswith("acquisition-tool:")
+    } == {
+        "acquisition-tool:run_zstack",
+        "acquisition-tool:run_timelapse",
+        "acquisition-tool:run_multiposition_acquisition",
+        "acquisition-tool:run_tile_acquisition",
+        "acquisition-tool:run_multiposition_with_autofocus",
+        "acquisition-tool:run_adaptive_zstack",
+        "acquisition-tool:run_adaptive_timelapse",
+        "acquisition-tool:run_adaptive_survey",
+    }
     inventory = {
         entry.device for entry in report.entries
         if entry.path == "connected-device-inventory"
     }
     assert inventory == {"ReadOnlySensor", "SecondZ"}
+
+
+@pytest.mark.parametrize(
+    "missing",
+    [name for name, _detail in __import__(
+        "microclaw.authorization", fromlist=["_ACQUISITION_POLICY_FIELDS"]
+    )._ACQUISITION_POLICY_FIELDS],
+)
+def test_missing_or_partial_direct_dose_policy_fails_closed(missing):
+    values = {
+        "max_frames": 10000,
+        "max_duration_s": 3600,
+        "max_bytes": 50_000_000_000,
+        "max_illuminated_ms": 600_000,
+        "max_session_illuminated_ms": 1_800_000,
+        "confirm_above_frames": 500,
+        "confirm_above_duration_s": 300,
+        "confirm_above_bytes": 5_000_000_000,
+        "confirm_above_illuminated_ms": 60_000,
+    }
+    values[missing] = None
+    with pytest.raises(RigAuthorizationError, match=rf"acquisition\.{missing}"):
+        validate_live_rig(
+            Controller(), parsed(acquisition=AcquisitionConstraints(**values))
+        )
+
+
+def test_incomplete_dose_policy_suspends_claim_in_degraded_mode():
+    report = validate_live_rig(
+        Controller(),
+        parsed(
+            mode="degraded_trusted_plugins",
+            acquisition=AcquisitionConstraints(max_frames=100),
+        ),
+    )
+    assert report.complete is None
+    assert "suspended" in report.verdict
+    assert any(
+        entry.path == "acquisition-policy:max_duration_s"
+        and entry.classification == "trusted_degraded"
+        for entry in report.entries
+    )
+    tool_entries = [
+        entry for entry in report.entries
+        if entry.path.startswith("acquisition-tool:")
+    ]
+    assert len(tool_entries) == 8
+    assert {entry.classification for entry in tool_entries} == {"trusted_degraded"}
+    assert all("complete typed dose policy is unavailable" in entry.detail
+               for entry in tool_entries)
+
+
+def test_acquisition_report_names_all_policies_and_honest_session_scope():
+    report = validate_live_rig(Controller(), parsed())
+    policies = {
+        entry.path: entry.detail for entry in report.entries
+        if entry.path.startswith("acquisition-policy:")
+    }
+    assert len(policies) == 9
+    session = policies["acquisition-policy:max_session_illuminated_ms"]
+    assert "in-memory controller-session" in session
+    assert "resets on process restart" in session
+
+
+def test_mda_remains_excluded_and_is_not_admitted_by_dose_policy():
+    report = validate_live_rig(Controller(), parsed())
+    mda = [entry for entry in report.entries if entry.path == "mmstudio-mda"]
+    assert len(mda) == 1 and mda[0].classification == "excluded"
+    assert not any(entry.path == "acquisition-tool:run_mda" for entry in report.entries)
 
 
 @pytest.mark.parametrize(
@@ -361,6 +460,28 @@ def test_cli_and_web_validate_before_prompt_or_session_exposure(monkeypatch):
     monkeypatch.setattr(webserve, "load_safety_config_or_exit", lambda path: incomplete)
     monkeypatch.setattr(webserve, "MicroscopeController", lambda port, guard: Controller())
     with pytest.raises(SystemExit, match="Live rig authorization failed"):
+        webserve.Session(SimpleNamespace(
+            safety_config=None, port=1, model=None, save_history=False,
+            host="127.0.0.1",
+        ))
+
+
+def test_cli_and_web_fail_before_exposure_on_partial_direct_dose_policy(monkeypatch):
+    from microclaw import __main__ as cli
+    from microclaw import webserve
+
+    incomplete = parsed(acquisition=AcquisitionConstraints(max_frames=100))
+    prompted = []
+    monkeypatch.setattr(cli, "load_safety_config_or_exit", lambda path: incomplete)
+    monkeypatch.setattr(cli, "MicroscopeController", lambda port, guard: Controller())
+    monkeypatch.setattr("builtins.input", lambda prompt: prompted.append(prompt))
+    with pytest.raises(SystemExit, match="acquisition.max_duration_s"):
+        cli.run_session(SimpleNamespace(safety_config=None, port=1, save_history=False))
+    assert prompted == []
+
+    monkeypatch.setattr(webserve, "load_safety_config_or_exit", lambda path: incomplete)
+    monkeypatch.setattr(webserve, "MicroscopeController", lambda port, guard: Controller())
+    with pytest.raises(SystemExit, match="acquisition.max_duration_s"):
         webserve.Session(SimpleNamespace(
             safety_config=None, port=1, model=None, save_history=False,
             host="127.0.0.1",
