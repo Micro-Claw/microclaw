@@ -39,7 +39,7 @@ Progress markers: `[ ]` not started, `[-]` active, `[x]` complete, `[!]` blocked
 | 3 | `design33/core-authorization-map` | c18fa92 | fc346a4 (2 review-fixes) | rig M5: fail-closed+parity, complete map, cat/illum writes pass, PWM/FPGA refused, confirm-gate fires | 0124ffd | Gate done: design/33 Phase-1 landed note + M5 findings + ceiling + StateDevice fast-follow (docs merge ae4794f) |
 | 3b | `design33/statedevice-auto-classify` | 91c6364 | d80ae39 + aaa41d4 (rig-finding fix) | rig M5: before/after maps both complete@40; six Thorlabs pairs flip declared→auto; iChrome-MLE-TCP.State refused live despite explicit human confirm; auto-classified wheel write passes both gates via `serve` | 9491361 | Gate done: design/33 Block-3b landed note + ELL6/no-core-shutter/iChrome findings (docs merge daab107) |
 | 4 | `design32/acquisition-budgets` | 0d0137d, rebased to 1c14271 | 540a641…bce4e32; 894/98/3 (mac), 876/114/3 (M5) | **rig gate PASS 2026-07-26**: G1 1.00× (after list revert; the 3.4× feeder was removed), G3 budgets/confirm before hardware + attributable decline, G5 MDA token sensitive to slice/channel change (bridge reads fixed), G6 ~657 ms/frame overhead. Gate caught 3 defects. | e8e7afb | Gate done: chunking + lazy-feeding both withdrawn on measured evidence; Block 4 landed note + measured G1/G6 + final schema (docs merge `ec98330`) |
-| 5 | `design33/dose-authorization` | `ec98330` (main, 894/98/3) | `ff41de7` + `a28e5bd` (review fixes); 910/98/3 (mac) | B0/B1 PASS on M5; B2/B3 PASS off-rig; B4, B4b (real token), B5 PASS on a demo core via the live pyjavaz bridge. **Gap: B5 not run on M5 itself.** Gate found 3 defects, all in the gate not the code. | | |
+| 5 | `design33/dose-authorization` | `ec98330` (main, 894/98/3) | `ff41de7` + `a28e5bd` (review fixes); 910/98/3 (mac) | B0/B1/B5 PASS on M5; B2/B3 PASS off-rig; B4/B4b/B5 PASS on a demo core via the live pyjavaz bridge. Gate found 3 defects, all in the gate not the code; 2 implementation defects were fixed in coordinator review before hardware. | `3438b90` | Gate done: design/33 Phase-3 landed semantics, evidence boundaries, and follow-ups; design/32 planner/ledger discharge + M5 live-geometry measurement |
 | 6 | `design32/remote-auth` | | | n/a | | |
 | 7 | `design32/generated-hook-decisions` | | | regression required | | |
 | 8 | `design29/saved-dataset-foundation` | | | probe required | | |
@@ -385,8 +385,12 @@ Branch: `design33/dose-authorization`
 
 Post-merge design gate:
 
-- [ ] Update design/33 Phase 3 and design/32 Finding 2 with the final shared policy names,
-      completeness semantics, and rig evidence before Block 6.
+- [x] Update design/33 Phase 3 and design/32 Finding 2 with the final shared policy names,
+      completeness semantics, and rig evidence before Block 6. — design/33 now records
+      the nine policy/eight tool rows, deleted exposure-only claim, lockstep degraded
+      semantics, derived tool coverage, MDA exclusion, evidence boundaries, and
+      follow-ups; design/32 records how Block 5 consumed its planner/ledger plus M5's
+      live-geometry accounting measurement.
 
 ## 6. Design/32 Finding 3 — remote authentication release gate
 

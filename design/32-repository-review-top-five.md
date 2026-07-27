@@ -557,6 +557,18 @@ exists); `run_mda` is authz-excluded on M5 so its end-to-end run is unobserved t
 Phase 3) consumes this planner/ledger; per-frame exposure alone must never count as
 complete acquisition authorization.
 
+Block 5 has now landed (merge `3438b90`; rig-gate PASS 2026-07-27) and discharged
+that requirement by deleting the legacy per-frame-exposure acquisition claim and
+adding the separate dose-policy/tool completeness branch; design/33's
+[Phase 3 landed note](33-authorization-map.md#phase-3-landed-2026-07-27) owns those
+authorization semantics. M5 also validated the design/32 plumbing claim:
+`LEDGER.bytes == PLAN.estimated_bytes` exactly at 21 233 664 = 2 × 2304 × 2304 × 2,
+versus 1 048 576 = 2 × 512 × 512 × 2 on the demo core from the same probe and
+arguments, confirming that the planner reads live camera geometry. Frames and
+illuminated time were exact; duration remains the known-low estimate G6 measured
+at ≈7.6×. The [gate record](33-block5-rig-gate-prompts.md) contains the evidence
+and its scope limits.
+
 **Priority: P1 — security / authorization; release-blocking for remote mode**
 
 The server intentionally requires `--allow-remote` before a non-loopback bind,
