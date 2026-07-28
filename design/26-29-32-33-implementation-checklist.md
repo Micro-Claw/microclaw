@@ -44,7 +44,7 @@ Progress markers: `[ ]` not started, `[-]` active, `[x]` complete, `[!]` blocked
 | 7 | `design32/generated-hook-decisions` | `cc2df05` (main, 937/98/3) | `7a9a602`…`af8f51b`; 967/99/3 (mac), 1044/21/3 (demo core) | demo D1–D5 PASS + M5 R1 PASS 2026-07-28: capability stripping live, 3-of-5 typed stop, four attributable refusals, Run A 12/12/12 with revisit 0.01 px. Gate caught 4 defects, 3 invisible off-rig. | `2b8d752` | Gate done: design/32 §4 Block-7 landed note; design/26 5 reconciliations incl. the unresolved `analyze_frame` collision blocking Block 10 |
 | 7b | `design32/hook-illumination-and-artifacts` | `ff690e8` (main, 967/99/3) | `f300fff`…`35f6dc4`; 1014/99/3 (mac), 989/115/3 (M5 under uv), 1089/21/3 (demo core, integration live) | M5 2026-07-28: R1–R8 + P0–P2 + R5pre PASS; D2/D3 skipped by ruling. **Gate caught 4 defects, 2 invisible off-rig** | `e688606` | Gate done: design/32 §4 vocabulary corrected + Block-7b landed note; design/33 illumination-contract changes, failed-write-may-have-landed rule, and M5 405 findings (docs merge `d189722`) |
 | 8 | `design29/saved-dataset-foundation` | `c3af2b1` | `b1e347c` + `333144e` (7 review defects); 1052/99/3 | **pre-branch gate: `design29/probe-findings` (`cf0c00c`)** — probe was defective and its affine verdicts void; repaired, MMCore row-major pinned by `javap`. Live M5/demo/M2: **no measured affine anywhere**; identity is MM's default (same hash on two unrelated systems). Saved data gives the X column only (~90°, ~0.13 µm/px). No rig action for the implementation itself. | `e45a129` | Gate done: §5 precedence corrected (explicit ref beats the acquisition record, reconciling §2), measured per-image metadata contract recorded, Y column still open and owned by Block 9 |
-| 9 | `design29/stage-coordinate-mosaic` | | | required | | |
+| 9 | `design29/stage-coordinate-mosaic` | `fecb93b` | | required — 3 prerequisites gate the merge (coordinator ruling), not the branch | | |
 | 10 | `design26/completed-dataset-runner` | | | saved-data fixture | | |
 | 11 | `design26/generated-adapter-run-b` | | | required | | |
 | 12 | `design26/few-shot-run-c` (optional) | | | required | | |
@@ -711,9 +711,39 @@ Post-merge design gate:
 
 Branch: `design29/stage-coordinate-mosaic`
 
-Prerequisites — none of these are code, and all three must land before the branch
-opens. Block 9 places pixels, so unlike Block 8 it genuinely cannot proceed on a
-synthetic affine.
+Prerequisites — none of these are code. Block 9 places pixels, so unlike Block 8 it
+genuinely cannot proceed on a synthetic affine.
+
+**Coordinator ruling (2026-07-28): these three gate the MERGE, not the branch.**
+The original wording gated the branch, and that was one step too strong. Walking
+the seven implementation items, the split is clean:
+
+- *Construction* — `MosaicGeometry`, centre-based placement, bounds, resampling,
+  coverage/overlap, the tool, axis selection, the manifest — is correct or
+  incorrect independently of any affine's **values**. A wrong 2×2 produces a wrong
+  mosaic from correct code; the Y column determines whether a given affine is
+  right, not whether the placement algorithm is.
+- *Verification* — the saved grid/spiral runs, landmark comparison, seam
+  behaviour, the 2500-tile peak-RSS budget, and the first live exercise of Block
+  8's acquisition-recorded branch — cannot be faked and stays blocked. Those
+  bullets remain unticked and **no merge happens until all three prerequisites
+  land**.
+
+The one real construction risk is a *convention* error (row/col vs x/y, a sign, a
+transpose) that synthetic tests written by the same agent would happily confirm.
+It is mitigated structurally rather than by waiting: placement must call the
+existing `StageCameraAffine.px_to_um` — Block 8 already pinned MMCore row-major
+ordering by `javap` — so no matrix product is re-authored here, and the
+implementer is required to assert against the **measured** `run_a_2` X column
+(~90° stage/camera rotation at ~0.13 µm/px), which is real-data-derived rather
+than self-consistent. Accepted risk: if the Y column, once measured, contradicts
+the X column, the affine changes and the placement code does not.
+
+Two consequences that are NOT deferrals and must land in the implementation:
+per-instrument calibration identity must be **enforced**, not merely recorded
+(these fixtures span three microscopes — see the table below), and the block must
+leave behind a one-command peak-RSS harness so the 2500-tile measurement is a
+measurement and not another project.
 
 - [ ] Complete the convention check on the Run A datasets. The check was run:
       `run_a_1` is dark and
@@ -741,7 +771,8 @@ synthetic affine.
 
 Implementation:
 
-- [ ] Create the branch from updated `main`.
+- [x] Create the branch from updated `main`. — `design29/stage-coordinate-mosaic`
+      from `fecb93b`, under the merge-gate ruling above.
 - [ ] Add `MosaicGeometry` using the existing `StageCameraAffine`; validate finite
       coefficients, nonsingular determinant, and positive output sampling in direct
       construction.
