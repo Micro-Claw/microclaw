@@ -41,7 +41,7 @@ Progress markers: `[ ]` not started, `[-]` active, `[x]` complete, `[!]` blocked
 | 4 | `design32/acquisition-budgets` | 0d0137d, rebased to 1c14271 | 540a641…bce4e32; 894/98/3 (mac), 876/114/3 (M5) | **rig gate PASS 2026-07-26**: G1 1.00× (after list revert; the 3.4× feeder was removed), G3 budgets/confirm before hardware + attributable decline, G5 MDA token sensitive to slice/channel change (bridge reads fixed), G6 ~657 ms/frame overhead. Gate caught 3 defects. | e8e7afb | Gate done: chunking + lazy-feeding both withdrawn on measured evidence; Block 4 landed note + measured G1/G6 + final schema (docs merge `ec98330`) |
 | 5 | `design33/dose-authorization` | `ec98330` (main, 894/98/3) | `ff41de7` + `a28e5bd` (review fixes); 910/98/3 (mac) | B0/B1/B5 PASS on M5; B2/B3 PASS off-rig; B4/B4b/B5 PASS on a demo core via the live pyjavaz bridge. Gate found 3 defects, all in the gate not the code; 2 implementation defects were fixed in coordinator review before hardware. | `3438b90` | Gate done: design/33 Phase-3 landed semantics, evidence boundaries, and follow-ups; design/32 planner/ledger discharge + M5 live-geometry measurement |
 | 6 | `design32/remote-auth` | `d70874d` (main, 910/98/3) | `eb9ab16` + `c81aa16` (review fixes R1–R4) + `f68af87` (coordinator); 937/98/3 (mac) | n/a — network/security tests are this block's gate; no hardware path touched | `056a4ef` | Gate done: §3 heading restored (it was missing), Block 6 landed contract + five stated limitations, interim "unauthenticated remote warning" path removed from the ordering section |
-| 7 | `design32/generated-hook-decisions` | | | regression required | | |
+| 7 | `design32/generated-hook-decisions` | `cc2df05` (main, 937/98/3) | `7a9a602`…`af8f51b`; 967/99/3 (mac), 1044/21/3 (demo core) | demo D1–D5 PASS + M5 R1 PASS 2026-07-28: capability stripping live, 3-of-5 typed stop, four attributable refusals, Run A 12/12/12 with revisit 0.01 px. Gate caught 4 defects, 3 invisible off-rig. | `2b8d752` | Gate done: design/32 §4 Block-7 landed note; design/26 5 reconciliations incl. the unresolved `analyze_frame` collision blocking Block 10 |
 | 7b | `design32/hook-illumination-and-artifacts` | | | required | | |
 | 8 | `design29/saved-dataset-foundation` | | | probe required | | |
 | 9 | `design29/stage-coordinate-mosaic` | | | required | | |
@@ -444,25 +444,26 @@ Post-merge design gate:
 
 Branch: `design32/generated-hook-decisions`
 
-- [ ] Create the branch from updated `main`.
-- [ ] Separate trusted built-in control hooks from generated/user analysis hooks.
-- [ ] Define a closed, discriminated result/action schema covering measurements,
+- [x] Create the branch from updated `main`. — from `cc2df05`.
+- [x] Separate trusted built-in control hooks from generated/user analysis hooks.
+- [x] Define a closed, discriminated result/action schema covering measurements,
       `MoveStage`, `AcquireAt`, `SetExposure`, `ContinueSurvey`, `StopSurvey`, and
       `RequestAutofocus`.
-- [ ] Stop supplying generated analysis hooks with controller, guard, credentials, or a
-      hardware event queue.
-- [ ] Validate and convert every proposal in trusted parent code through safety, dose,
+- [x] Stop supplying generated analysis hooks with controller, guard, credentials, or a
+      hardware event queue. — plus `candidates`/`progress`/`survey_events`/`log_path`;
+      `hook_params` cannot smuggle them back.
+- [x] Validate and convert every proposal in trusted parent code through safety, dose,
       confirmation, cancellation, and audit gates. Reject unknown/unsupported actions.
-- [ ] Preserve stateful adaptive behavior without claiming worker isolation, hard
+- [x] Preserve stateful adaptive behavior without claiming worker isolation, hard
       deadlines, memory caps, network isolation, or native-crash recovery.
-- [ ] Run all hook and adaptive-survey tests.
-- [ ] Re-run design/26 Run A on the rig as a regression gate using
+- [x] Run all hook and adaptive-survey tests. — 967/99/3 mac, 1044/21/3 demo core.
+- [x] Re-run design/26 Run A on the rig as a regression gate using
       `design/26-field-spike-prompts.md` A1–A3. Compare record counts, image retention,
       deterministic ranking, guard validation, and revisit accuracy with the retained
       2026-07-20 evidence. Do not claim biological or object-level validation.
-- [ ] Stop and fix if Run A changes acquisition, drops images/records, bypasses a parent
-      gate, or cannot replay exactly. Then commit, review, and merge.
-- [ ] **Before merging, retain M5's saved-hook source and manifest.** Copy
+- [x] Stop and fix if Run A changes acquisition, drops images/records, bypasses a parent
+      gate, or cannot replay exactly. Then commit, review, and merge. — merged `2b8d752`.
+- [x] **Before merging, retain M5's saved-hook source and manifest.** Copy
       `~/.microclaw/hooks/*.py` and `manifest.json` off the rig and hash them. Block 7
       refuses all three of that registry's hooks, and their source is the only input
       Block 7b's migration has. Nothing in the repo holds a copy.
@@ -477,9 +478,14 @@ Branch: `design32/generated-hook-decisions`
 
 Post-merge design gate:
 
-- [ ] Update design/32 with the final trusted/generated category and action schemas.
-- [ ] Update design/26 only if its hook contract, Run A instructions, or current-runtime
-      containment caveat changed. Merge doc corrections before Block 8.
+- [x] Update design/32 with the final trusted/generated category and action schemas.
+      — §4 "Landed: Block 7" note.
+- [x] Update design/26 only if its hook contract, Run A instructions, or current-runtime
+      containment caveat changed. Merge doc corrections before Block 8. — five changed:
+      saved adapters must not inherit `HookBase`; `image_saved_fn` is wired (Block 4);
+      the shared observation writer now exists; the capability boundary is no longer
+      offline-only; and **`analyze_frame` now means two different things** — flagged
+      UNRESOLVED, to be settled before Block 10 branches.
 
 ## 7b. Design/32 Finding 4 Phase 1 fast-follow — restore what the union cannot express
 
