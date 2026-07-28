@@ -989,12 +989,13 @@ another M5 session in case the envelope turns out to be M5-shaped.
 
 | Step | What it settles | Verdict |
 |---|---|---|
+| P0/P1/P1b/P2/R5pre | pre-flight, 405 path, `Emission`=cw, write-with-laser-off | **SETTLED 2026-07-28** |
 | D1 | probe degrades cleanly on a laser-free stock config | **PASS 2026-07-28** |
 | D2 | stand-in declaration, demo map complete | **blocked** — config copy not yet made |
 | D3 | full envelope sequence on a stock config | |
 | R1 legacy | four legacy hooks refused, no motion/exposure | **PASS 2026-07-28** |
 | R1 migrated | migrated hooks run | **PASS 2026-07-28** (all four) |
-| R2 | numerical fidelity | **PASS** for `mosaic_stitcher`; 3 hooks left |
+| R2 | numerical fidelity | **PASS 2026-07-28** — all four hooks |
 | R3a | artifact in the acquisition's own directory, hashed | **PASS 2026-07-28** (post-`30f2450`) |
 | R3b | size refusal, same dir as R3a | **PASS 2026-07-28** |
 | R4 | discard saves storage not dose | **PASS 2026-07-28** (plumbing route) |
@@ -1143,6 +1144,28 @@ human instruction.** A gate cannot verify a refusal path the agent will not appr
 would have answered this directly; the agent prompt should also state that
 `hook_params` are filtered before construction.
 
+### R2 — PASS for all four hooks, 2026-07-28
+
+Run off-rig against `r3a\multipos_3`, two frames each, **zero mismatches**:
+
+| Hook | Shared measurements, legacy vs migrated |
+|---|---|
+| `mosaic_cell_counter` | `running_cell_count` 20 / 45, `mean_cell_area_um2` 28.7 / 29.9, `tile_snr` 82.46 / 91.97 — identical |
+| `filament_position_filter` | `filament_score` 0.12212 / 0.12597, `snr` 17.031, `ridge_coverage`, `kept` — identical |
+| `mosaic_stitcher` | `mosaic_shape` [2306, 2621], `tiles_seen`, `wrote_mosaic` — identical |
+| `mosaic_stitcher_rot` | as above plus `rot90_k` 1, `flip_after` false — identical |
+
+Both stitchers show the two expected renames as `only_legacy: ['mosaic_path',
+'writer']` / `only_migrated: ['mosaic_filename']` rather than as mismatches, which is
+the intended reporting. Where a fixture does not accept a supplied parameter the
+script drops it for **both** versions and says so, so the comparison stays
+apples-to-apples.
+
+**One thing R2 did not cover.** Both filament frames scored above threshold, so
+`kept: True` on each and the diff compared only the keep path. The discard branch is
+covered elsewhere — R4 on the rig (four discarded, zero-byte index) and the unit test
+`test_filament_migration_preserves_scores_and_discards` — but not by this comparison.
+
 ### R2 does not need the rig
 
 This document said to compare against "the retained pre-Block-7 evidence", but Block 7
@@ -1156,21 +1179,6 @@ R4 can be closed either way, but say which was done:
 - **with a sample**, choosing fields with and without filaments — the honest test; or
 - **plumbing-only**, raising `min_filament_score` above 0.13 so empty fields discard.
   That exercises the DiscardFrame path end to end and establishes nothing biological.
-| P0 | map complete; iBeam power declared; no 405 **declared** | **SETTLED 2026-07-28** |
-| P1 | 405 nm `Level %` exists, 0–100, undeclared | **SETTLED 2026-07-28** |
-| P1b | `Level %` is real power; htSMLM ramps pulse duration instead | **SETTLED 2026-07-28** |
-| P2 | `Emission` is `:cw`; both gates needed; declare both | **SETTLED 2026-07-28** |
-| R5pre | driver accepts a power write with the laser off | **PASS 2026-07-28** |
-| — | rig suite under `uv`: 989 passed / 115 skipped / 3 warnings | **PASS 2026-07-28** |
-| R1 | legacy refused, migrated run | |
-| R2 | numerical fidelity | |
-| R3 | artifact confinement, limits, hash | |
-| R4 | discard saves storage not dose | |
-| R5 | ramp, ceiling refusal, budget refusal, wind-down | |
-| R6 | declined envelope takes nothing | |
-| R7 | plan-time envelope refusals | |
-| R8 | callback-thread write cost | |
-
 ## Explicitly not settled by this gate
 
 Record these in the merge and the post-merge design gate. Do not let any of them be
