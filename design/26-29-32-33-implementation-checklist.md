@@ -466,6 +466,14 @@ Branch: `design32/generated-hook-decisions`
       `~/.microclaw/hooks/*.py` and `manifest.json` off the rig and hash them. Block 7
       refuses all three of that registry's hooks, and their source is the only input
       Block 7b's migration has. Nothing in the repo holds a copy.
+      **Copy, do not delete.** The saved hooks do not affect any gate — nothing
+      resolves a hook it was not asked for — and Block 7 already refuses them loudly
+      and before any hardware moves. Deleting a `.py` while its manifest entry remains
+      turns that clean refusal into a `FileNotFoundError`, and Block 7b wants them in
+      the live registry to verify the migration. Hash at both ends: a copy that
+      translates line endings is not faithful. Those file hashes will not equal the
+      `sha256` in `manifest.json`, which pins LF-normalized text rather than the bytes
+      on disk (D2 finding); that is expected, not corruption.
 
 Post-merge design gate:
 
