@@ -6,8 +6,11 @@ backend survey, and deferred online mode are not an implementation checklist.
 
 ## Decision
 
-Microclaw integrates an unfamiliar analysis as a reviewed `HookBase` adapter. It does
-not add one public tool family per analysis package. The first run is observation-only:
+Microclaw integrates an unfamiliar analysis as a reviewed, hash-pinned adapter. It does
+not add one public tool family per analysis package. **Since Block 7 a saved adapter
+must NOT inherit `HookBase`:** the trusted parent owns the audit record, and a saved
+hook that keeps its own log is refused at resolve time. `HookBase` remains the base
+class for the reviewed built-ins in `PRECODED_HOOK_REGISTRY` only. The first run is observation-only:
 it returns every image unchanged, records normalized analyzer output and provenance,
 and cannot filter images, stop a scan, submit events, or move hardware.
 
@@ -118,6 +121,21 @@ analyze_completed_dataset(dataset_view, selection, context) \
     -> Iterable[normalized_result]
 ```
 
+> **UNRESOLVED — settle before implementing Block 10.** Block 7 shipped
+> `analyze_frame(self, image, metadata) -> HookResult | None` as the **live**
+> saved-hook contract, and `hook_docs`, the tool schema, and
+> `validate_hook_contract` now teach it. That collides with the offline per-frame
+> contract above: same verb, different arity, different return type, and
+> `load_hook_class` returns the first class exposing either. This section's premise —
+> that `analyze_frame` is offline and live work stays in `image_process_fn` — no
+> longer holds.
+>
+> The live name is shipped and in use on the rig; the offline one is not yet built,
+> so it is the cheaper side to move. Rename the offline per-frame contract (e.g.
+> `analyze_saved_frame`) or make the two genuinely one method with `context`
+> optional, and reconcile this document before Block 10 creates its branch. Do not
+> let two different meanings of `analyze_frame` reach the saved-adapter loader.
+
 The first is a deliberately offline-safe per-frame contract over selected stored frames;
 the second is the boundary for multi-tile state, one completed mosaic, or one batch
 executable such as ilastik. Neither is a pycro-manager hook signature.
@@ -141,7 +159,9 @@ The runner normalizes output to `microclaw.analysis-observation/v1`. It must not
 filter acquisition, move hardware, or present an authoritative biological result.
 Enforce the capability boundary from the first implementation: offline adapters are
 supplied no controller, guard, acquisition object, hardware event queue, or API
-credentials. The orchestrator opens the native `ndstorage.Dataset`, but the adapter
+credentials. Block 7 applied the same boundary to **live** saved hooks, so this is no
+longer an offline-only rule; the two paths differ in what they may propose, not in
+what they hold. The orchestrator opens the native `ndstorage.Dataset`, but the adapter
 receives a `DatasetView`: a read-only, selection-limited protocol exposing only selected
 coordinate enumeration, `read_image`, `read_metadata`, and bounded lazy array access.
 It is a capability facade over the native object, not a second storage implementation.
@@ -162,13 +182,17 @@ completed data. The `AcquisitionFuture` pattern is real but is **not** microclaw
 adaptive path: design/24 evaluated and rejected it (a hook is never handed the
 `Acquisition` object, and detection stays inside the hash-pinned `image_process_fn`
 rather than a runner-thread wait loop), so adaptive branching goes through the
-`run_adaptive_survey` candidates-queue runner instead. Microclaw's current
-runner wires only `image_process_fn` and `post_hardware_hook_fn`; it does not currently
-wire `image_saved_fn`. Add that native constructor argument only when a live post-save
-consumer needs it. It is not a completed-dataset callback and is not a prerequisite for
+`run_adaptive_survey` candidates-queue runner instead. Microclaw's runner wires
+`image_process_fn` and `post_hardware_hook_fn`, and — since Block 4 — `image_saved_fn`,
+which the acquisition reservation uses to commit frames as they land (measured free,
+1.00×, where generator feeding cost 3.14×). It is not a completed-dataset callback and is not a prerequisite for
 offline replay. The orchestration requires a shared observation writer used by **both**
 `HookBase.log_analysis` (live) and offline replay, so an offline record is never a
-fabricated acquisition-time hook context. Each record carries source dataset
+fabricated acquisition-time hook context. **Block 7 created it:**
+`microclaw.hooks.analysis_observation_record` builds the
+`microclaw.analysis-observation/v1` envelope and is already used by
+`HookBase.log_analysis` and by the trusted parent that records an untrusted hook's
+`HookResult`. Block 10 extends that writer rather than introducing a second one. Each record carries source dataset
 identity and content hashes, the exact selected coordinates, analyzer source hash
 plus version and environment, parameters, an optional model/project/config hash,
 output artifact hashes, status, and timestamps. Record calibration contents and

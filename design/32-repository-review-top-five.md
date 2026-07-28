@@ -859,6 +859,76 @@ hooks should never receive a live controller as a shortcut around parent-side
 authorization, but they remain fully capable of adaptive, analysis-driven
 microscopy through proposed events.
 
+### Landed: Block 7 (merged `2b8d752`, demo gate D1–D5 + M5 R1 PASS 2026-07-28)
+
+Phase 1 shipped. The final categories and schemas, which differ from the sketch
+above in ways worth pinning:
+
+**Trust is decided by provenance, not by the manifest's `source` field.** Trusted =
+classes in `PRECODED_HOOK_REGISTRY`, shipped in-repo and reviewed at release.
+Untrusted = anything `hook_manager.load_hook_class` returns, whether it is labelled
+`claude_generated` or `user_provided`. `_resolve_hook` branches on that and nothing
+else.
+
+**Contract.** Untrusted hooks implement `analyze_frame(self, image, metadata) ->
+HookResult | None`. `HookResult` is a frozen dataclass carrying JSON-safe
+`measurements`, an `actions` sequence, and optional `analyzer`,
+`analyzer_version`, `parameters`, `artifact_sha256`, and `status`. `status`
+defaults to `"unverified"` and may only be `"unverified"` or `"provisional"` —
+untrusted code cannot self-assert `"observed"`. Measurements are written by the
+parent through `microclaw.hooks.analysis_observation_record`, the same
+`microclaw.analysis-observation/v1` envelope `HookBase.log_analysis` uses; design/26
+Block 10's "shared observation writer" therefore already exists.
+
+**Action union**, closed and discriminated, exactly as specified: `MoveStage`,
+`AcquireAt`, `SetExposure`, `ContinueSurvey`, `StopSurvey`, `RequestAutofocus`.
+Both dataclass instances and plain dicts with a `kind` are accepted. Under
+`run_adaptive_survey` the parent supports `ContinueSurvey`, `StopSurvey`, and
+`AcquireAt` naming a planned position by index or unique label; the other three
+parse, validate, and are refused as unsupported-by-this-runner with an attributable
+reason, so the union stays closed and complete rather than silently narrow.
+
+**What untrusted hooks no longer receive:** `ctrl`, `guard`, credentials,
+`candidates`, `progress`, `survey_events`, `log_path`, and the pycro-manager event
+queue (replaced by a stub that raises on any access). `hook_params` cannot smuggle
+any of them back. The runner keeps the tile cursor parent-side, so a hook advances
+the survey by asking, not by holding the queue.
+
+**Two limitations, stated rather than engineered around.**
+
+1. *No interactive confirmation from an acquisition callback thread.* pyjavaz
+   serializes every bridge call behind one lock, so a mid-acquisition prompt is a
+   deadlock hazard. A proposal outside the committed Block 4 reservation is refused
+   and audited, never escalated. This is why Block 7b's illumination work must
+   pre-authorize an envelope at plan time: a per-frame UV feedback loop cannot be
+   confirmed frame by frame.
+2. *A saved hook may no longer keep its own log.* The parent owns the audit record
+   so hook source cannot forge or omit it — and a hook that wrote its own log would
+   otherwise run, take every exposure, and record nothing. Such a hook is refused at
+   resolve time, before any hardware moves, with a message naming the migration.
+   **This breaks every hook written to the old rule that generated hooks inherit
+   `HookBase`.** All four hooks on M5 are affected.
+
+**What Phase 1 removed and did not replace**, tracked as checklist Block 7b and
+explicitly *not* restored by Phase 2: illumination control (UV activation is a live
+requirement), live artifact emission, and frame discard — `analyze_frame` cannot
+return `None` to drop a field, because the adapter always returns
+`(image, metadata)`.
+
+**Containment is unchanged.** Saved source still executes in the hardware-control
+process. Source review and hash pinning remain the gate until Phase 2. Nothing in
+Block 7 provides a deadline, memory cap, network isolation, or native-crash
+recovery, and the shipped docstrings say so.
+
+**The gate found four defects, three of them invisible off-rig.** A saved hook that
+kept its own log ran and recorded nothing (caught by a hardware-only test on the
+demo core); `tools_schema.py` still described the pre-Block-7 adaptive contract to
+the agent; absent and ambiguous `AcquireAt` labels shared one refusal reason; and
+`rank_hook_log` reported a correct top-k save as a coordinate mismatch because it
+required the saved position and the ranked record to carry identical axes, while
+Run A legitimately adds a focus Z. Procedure and evidence:
+`design/32-block7-gate-prompts.md`.
+
 ## 5. Conversation history grows without a context or storage policy
 
 **Priority: P1 — functional reliability / privacy / cost**
