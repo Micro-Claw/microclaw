@@ -448,6 +448,27 @@ property from the caller. These steps confirm that rather than assuming it.
 
 Run on the stock `MMConfig_demo.cfg` with the ZMQ bridge on port 4827.
 
+### D0. Prove the bridge answers before running anything else
+
+The 2026-07-28 attempt lost both steps to setup rather than to code: the probe timed
+out with *"Couldn't create Core. Is Micro-Manager running and is the ZMQ server on
+4827 option enabled?"*, and `pytest` produced **95 setup errors** because `MM_RUNNING`
+was set while nothing was listening. Check first, in ten seconds:
+
+```powershell
+uv run python -c "from pycromanager import Core; c = Core(port=4827); print('bridge OK:', c.get_version_info())"
+```
+
+**If that fails, stop.** Open Micro-Manager, load `MMConfig_demo.cfg`, and enable
+Tools → Options → "Run server on port 4827". Nothing below can work until this line
+prints.
+
+Note on the suite: `tests/test_integration.py` skips when `MM_RUNNING` is unset and
+**errors, once per test, when it is set but the bridge is unreachable** — 95 errors
+rather than one clear failure. Either leave `MM_RUNNING` unset for the plain suite, or
+run it only after D0 passes. That noisy failure mode is a test-harness wart, not a
+Block 7b defect; do not spend gate time on it.
+
 ### D1. The probe behaves on a config with no lasers
 
 ```powershell
@@ -465,11 +486,37 @@ camera property as illumination power.
 
 ### D2. Declare a stand-in and start clean
 
-From D1's output pick one two-state shutter-ish property and one continuous writable
-numeric property to stand in for a laser. The demo config's `LED Shutter` and
-`White Light Shutter` are real `ShutterDevice`s; for power, use whatever bounded float
-D1 actually found. Copy the demo profile into `$Evidence`, add only those two rows,
-and retain the diff — do not edit the checked-in file.
+**Expect D1 to report no power candidates at all.** That is the correct answer on a
+laser-free config and is half of what D1 establishes. The probe then prints a
+`WRITABLE NUMERIC PROPERTIES (possible stand-ins)` list; pick your power stand-in from
+there. For the shutter, the demo config's `LED Shutter` and `White Light Shutter` are
+real `ShutterDevice`s.
+
+Copy the demo profile into `$Evidence` first — the 2026-07-28 attempt failed with
+*"No safety config at …\demo-safety-config.yaml"* because this copy was described in
+prose and never made:
+
+```powershell
+Copy-Item "$Repo\design\33-block5-demo-safety-config.yaml" "$Evidence\demo-safety-config.yaml"
+notepad "$Evidence\demo-safety-config.yaml"
+```
+
+Set `workspace_dir` to a real directory, then replace the empty illumination lists
+with your two stand-in rows — `shutters` needs `on_value`/`off_value` matching what
+the probe reported as that property's allowed values:
+
+```yaml
+illumination:
+  require_confirm_on_enable: true
+  max_power_percent: 100.0
+  max_power_step_factor: 3.0
+  shutters:
+    - {device: <shutter device>, property: State, on_value: "1", off_value: "0"}
+  power_properties:
+    - {device: <device>, property: <writable float from D1>}
+```
+
+Retain the diff against the checked-in profile; do not edit the checked-in file.
 
 **Say plainly in the evidence that this is a stand-in.** Nothing on a demo core emits
 light; the point is the authorization path, not photons.
@@ -961,8 +1008,9 @@ another M5 session in case the envelope turns out to be M5-shaped.
 
 | Step | What it settles | Verdict |
 |---|---|---|
-| D1 | probe degrades cleanly on a laser-free stock config | |
-| D2 | stand-in declaration, demo map complete | |
+| D0 | demo bridge answers on 4827 | **blocked 2026-07-28** |
+| D1 | probe degrades cleanly on a laser-free stock config | **not run** — bridge down |
+| D2 | stand-in declaration, demo map complete | **not run** — config copy missing |
 | D3 | full envelope sequence on a stock config | |
 | R1 legacy | four legacy hooks refused, no motion/exposure | **PASS 2026-07-28** |
 | R1 migrated | migrated hooks run | **PASS 2026-07-28** (all four) |

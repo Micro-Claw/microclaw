@@ -358,6 +358,40 @@ def main() -> int:
         print(f"  [{mark:10}] {c['device']}.{c['property']} "
               f"= {c['current_value']}  allowed={c['allowed_values']}")
 
+    # A config with no lasers -- the stock demo, and the majority of Micro-Manager
+    # installs -- yields no candidates at all. That is the right answer, and it
+    # leaves anyone trying to exercise the illumination path with nothing to
+    # declare. List the writable numeric properties so a deliberate STAND-IN can
+    # be chosen. A stand-in proves the authorization path and nothing about light.
+    if not power_candidates:
+        print("\n" + "=" * 70)
+        print("NO POWER CANDIDATES. WRITABLE NUMERIC PROPERTIES (possible stand-ins)")
+        print("=" * 70)
+        shown = 0
+        for entry in devices:
+            if entry["type"] in _NON_EMITTING_TYPES:
+                continue
+            for record in entry.get("properties", []):
+                if record.get("read_only") or record.get("pre_init"):
+                    continue
+                if record.get("allowed_values"):
+                    continue
+                try:
+                    float(record.get("current_value"))
+                except (TypeError, ValueError):
+                    continue
+                span = ""
+                if record.get("upper_limit") is not None:
+                    span = f"  range {record['lower_limit']}..{record['upper_limit']}"
+                print(f"  {entry['device']}.{record['property']} "
+                      f"= {record['current_value']}{span}")
+                shown += 1
+        if not shown:
+            print("  none -- no writable numeric property on any non-camera device.")
+        print("\n  These are NOT illumination. Declaring one is a deliberate stand-in")
+        print("  for exercising the envelope on a rig with no laser; say so in the")
+        print("  evidence, and never carry such a declaration into a real rig config.")
+
     if proposed_yaml:
         print("\n" + "=" * 70)
         print("PROPOSED illumination: BLOCK  --  REVIEW EVERY ROW, DO NOT PASTE BLIND")
