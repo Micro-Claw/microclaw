@@ -52,13 +52,35 @@ sys.stdout.reconfigure(line_buffering=True)
 
 # Name heuristics. Deliberately broad — a missed candidate is invisible, whereas
 # a false positive is discarded by the human reading the proposal.
+#
+# `level` and a bare `%` are in here because the first version of this probe did
+# NOT have them and missed `iChrome-MLE-TCP.Laser 4: 3. Level %` — the 402 nm
+# activation line, i.e. the single property Block 7b's UV case exists for. The
+# regex required "laser" adjacent to "level", and the real name interposes
+# "4: 3.". A survey that under-reports is worse than one that over-reports:
+# a false positive dies in review, a false negative reads as "the rig cannot do
+# this."
 _POWER_NAME = re.compile(
-    r"power|intens|laser\s*level|percent|\bpwr\b|\bmw\b|\bamplitude\b", re.I
+    r"power|intens|level|percent|%|\bpwr\b|\bmw\b|\bamplitude\b", re.I
 )
 _ENABLE_NAME = re.compile(
     r"operation|enable|shutter|on/?off|\bstate\b|emission|output", re.I
 )
 _ON_VALUES = {"on", "1", "true", "open", "enabled", "yes"}
+
+# Device types that cannot emit light at the sample no matter what a property is
+# called. The camera's "INTENSITY LUT INPUT MAX" is a display lookup table.
+_NON_EMITTING_TYPES = {"CameraDevice", "StageDevice", "XYStageDevice"}
+
+# A multi-line laser engine names its channels `Laser 4: 3. Level %` and puts the
+# hardware description in a read-only `Laser 4:`. Pairing the two is how you learn
+# which numbered channel is the UV one without guessing — and design/14 §1 is
+# explicit that nothing may infer a laser's slot index.
+_CHANNEL_LABEL = re.compile(r"^(?P<chan>.+?):$")
+_CHANNEL_MEMBER = re.compile(r"^(?P<chan>.+?):\s*\d+\.\s*(?P<field>.+)$")
+
+# Sibling properties that decide whether writing a level does anything optically.
+_GATING_CONTEXT = re.compile(r"use\s*ttl|analog\s*mode|ttl\s*enable|ttl\s*high|master\s*mode", re.I)
 
 
 def _strings(vector) -> list[str]:
@@ -119,14 +141,41 @@ def _is_power_candidate(record: dict) -> bool:
 
 
 def _is_enable_candidate(record: dict) -> bool:
+    """A two-state writable gate: either an On/Off allowed set, or 0..1 limits.
+
+    The 0..1 branch exists because `iChrome-MLE-TCP.Laser 4: 2. Emission` has no
+    allowed-value set at all — it is a Float bounded 0..1 — so an allowed-values-only
+    test missed every gate on the engine that matters most.
+    """
     if record.get("read_only") or record.get("pre_init"):
         return False
     if not _ENABLE_NAME.search(record["property"]):
         return False
     allowed = record.get("allowed_values") or []
-    if not 0 < len(allowed) <= 4:
-        return False
-    return any(str(value).strip().lower() in _ON_VALUES for value in allowed)
+    if allowed:
+        if len(allowed) > 4:
+            return False
+        return any(str(value).strip().lower() in _ON_VALUES for value in allowed)
+    if record.get("lower_limit") == 0.0 and record.get("upper_limit") == 1.0:
+        return True
+    return False
+
+
+def _channel_map(properties: list[dict]) -> dict[str, str]:
+    """`{"Laser 4": "402nm laser diode"}` from a multi-line engine's descriptions."""
+    labels: dict[str, str] = {}
+    for record in properties:
+        match = _CHANNEL_LABEL.match(record["property"])
+        if match and record.get("read_only") and record.get("current_value"):
+            labels[match.group("chan").strip()] = str(record["current_value"])
+    return labels
+
+
+def _channel_of(prop: str, labels: dict[str, str]) -> str | None:
+    match = _CHANNEL_MEMBER.match(prop)
+    if not match:
+        return None
+    return labels.get(match.group("chan").strip())
 
 
 def _declared_pairs(config_path: str) -> tuple[set, set, dict]:
@@ -167,6 +216,7 @@ def main() -> int:
     devices: list[dict] = []
     power_candidates: list[dict] = []
     enable_candidates: list[dict] = []
+    rejected_non_emitting: list[dict] = []
 
     for label in _strings(core.get_loaded_devices()):
         try:
@@ -181,26 +231,45 @@ def main() -> int:
             devices.append(entry)
             print(f"  {label} ({kind}): property enumeration failed: {exc!r}")
             continue
-        for prop in names:
-            record = _property_record(core, label, prop)
-            entry["properties"].append(record)
+        records = [_property_record(core, label, prop) for prop in names]
+        entry["properties"] = records
+        labels = _channel_map(records)
+        if labels:
+            entry["channels"] = labels
+        gating = {
+            r["property"]: r.get("current_value")
+            for r in records if _GATING_CONTEXT.search(r["property"])
+        }
+        for record in records:
+            prop = record["property"]
             if _is_power_candidate(record):
-                power_candidates.append({
+                candidate = {
                     "device": label, "device_type": kind, "property": prop,
+                    "channel": _channel_of(prop, labels),
                     "current_value": record.get("current_value"),
                     "lower_limit": record.get("lower_limit"),
                     "upper_limit": record.get("upper_limit"),
                     "declared": (label, prop) in declared_power,
-                })
+                    "gating_context": gating or None,
+                }
+                if kind in _NON_EMITTING_TYPES:
+                    candidate["rejected_because"] = (
+                        f"{kind} cannot emit light at the sample"
+                    )
+                    rejected_non_emitting.append(candidate)
+                else:
+                    power_candidates.append(candidate)
             if _is_enable_candidate(record):
                 enable_candidates.append({
                     "device": label, "device_type": kind, "property": prop,
+                    "channel": _channel_of(prop, labels),
                     "current_value": record.get("current_value"),
                     "allowed_values": record.get("allowed_values"),
                     "declared": (label, prop) in declared_shutters,
                 })
         devices.append(entry)
-        print(f"  {label} ({kind}): {len(names)} properties")
+        print(f"  {label} ({kind}): {len(names)} properties"
+              + (f", channels: {sorted(labels)}" if labels else ""))
 
     # Only propose an enable that shares a device with a power candidate.
     power_devices = {c["device"] for c in power_candidates}
@@ -212,23 +281,35 @@ def main() -> int:
 
     lines = ["illumination:"]
     if proposal_enables:
+        # Commented out on purpose. A device typically exposes several two-state
+        # properties and only one of them gates emission — on the iBeam, "Enable
+        # Fine" and "Enable ext trigger" are a fine-adjust mode and a trigger
+        # source, and declaring either as a shutter would state that it gates
+        # light when it does not. Exactly one line per laser should survive.
         lines.append("  shutters:")
+        lines.append("    # CHOOSE ONE PER LASER. Delete the rest. A two-state")
+        lines.append("    # property is not a shutter just because it is writable.")
         for c in proposal_enables:
             on = next(
                 (v for v in (c["allowed_values"] or [])
                  if str(v).strip().lower() in _ON_VALUES),
-                "<on value>",
+                "1" if not c["allowed_values"] else "<on value>",
             )
-            lines.append(f"    - device: {c['device']}")
-            lines.append(f"      property: {c['property']}")
-            lines.append(f"      on_value: {on!r}    # allowed: {c['allowed_values']}")
+            chan = f"  # {c['channel']}" if c.get("channel") else ""
+            lines.append(f"    # - device: {c['device']}{chan}")
+            lines.append(f"    #   property: {c['property']}")
+            lines.append(f"    #   on_value: {str(on)!r}"
+                         f"    # allowed: {c['allowed_values'] or '0..1'}")
     if proposal_powers:
         lines.append("  power_properties:")
         for c in proposal_powers:
-            span = ""
+            notes = []
             if c["upper_limit"] is not None:
-                span = f"    # driver range {c['lower_limit']}..{c['upper_limit']}"
-            lines.append(f"    - device: {c['device']}{span}")
+                notes.append(f"range {c['lower_limit']}..{c['upper_limit']}")
+            if c.get("channel"):
+                notes.append(c["channel"])
+            suffix = f"    # {'; '.join(notes)}" if notes else ""
+            lines.append(f"    - device: {c['device']}{suffix}")
             lines.append(f"      property: {c['property']}")
     proposed_yaml = "\n".join(lines) if len(lines) > 1 else ""
 
@@ -239,6 +320,7 @@ def main() -> int:
         "devices": devices,
         "illumination_candidates": power_candidates,
         "enable_candidates": enable_candidates,
+        "rejected_non_emitting": rejected_non_emitting,
         "proposed_yaml": proposed_yaml,
     }
     with open(args.out, "w", encoding="utf-8") as handle:
@@ -252,11 +334,19 @@ def main() -> int:
         span = ""
         if c["upper_limit"] is not None:
             span = f"  range {c['lower_limit']}..{c['upper_limit']}"
+        chan = f"  [{c['channel']}]" if c.get("channel") else ""
         print(f"  [{mark:10}] {c['device']}.{c['property']} "
-              f"= {c['current_value']}{span}   ({c['device_type']})")
+              f"= {c['current_value']}{span}{chan}   ({c['device_type']})")
+        if c.get("gating_context"):
+            print(f"               gating context: {c['gating_context']}")
     if not power_candidates:
         print("  none matched. Widen _POWER_NAME and re-run before concluding "
               "the rig has no power control.")
+    if rejected_non_emitting:
+        print("\n  Rejected as non-emitting (name matched, device type cannot "
+              "illuminate):")
+        for c in rejected_non_emitting:
+            print(f"    {c['device']}.{c['property']}  — {c['rejected_because']}")
 
     print("\n" + "=" * 70)
     print("CANDIDATE ENABLE/SHUTTER PROPERTIES ON THOSE DEVICES")

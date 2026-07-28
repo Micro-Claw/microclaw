@@ -121,12 +121,59 @@ does not break startup validation on M5.
 | `iBeamSmartCW-Booster` | `Laser Operation` | shutter |
 | `iBeamSmartCW-Booster` | `Power (mW)` | power |
 
-**There is no 405 nm power property.** M5's 405 source is the `iChrome-MLE-TCP`
-engine, which appears in the map only as `iChrome-MLE-TCP.Label`, a
-`reviewed_categorical_property` on the `generic-property` path — the same open item
-design/33 already records. An envelope naming it is refused at plan time with
-*"illumination envelope device/property is not declared in
-illumination.power_properties"*, which is the code behaving correctly.
+No 405 nm row is **declared**. The map shows only what is declared, so on its own it
+cannot say whether the hardware exposes one. P1 answered that, and the answer
+corrects what this document said first — see below.
+
+## P1. Property probe — SETTLED 2026-07-28, and it changes the plan
+
+**The 402 nm activation line is exposed, writable, and in percent.**
+`iChrome-MLE-TCP` is a four-line engine, and the probe's channel pairing reads the
+wavelengths straight off the device rather than inferring them from slot order:
+
+| Channel | Hardware | Level property | Value | Range |
+|---|---|---|---|---|
+| `Laser 1` | 640nm laser diode | `Laser 1: 3. Level %` | 2.24 | 0–100 |
+| `Laser 2` | DPSS with AOM | `Laser 2: 3. Level %` | 4.64 | 0–100 |
+| `Laser 3` | 488nm laser diode | `Laser 3: 3. Level %` | 3.61 | 0–100 |
+| **`Laser 4`** | **402nm laser diode** | **`Laser 4: 3. Level %`** | **25.96** | **0–100** |
+
+Each has its own gates, `Laser N: 1. Enable` and `Laser N: 2. Emission`, plus engine-
+wide `All: 1. Enable` / `All: 2. Emission`. None of it is declared; only
+`iChrome-MLE-TCP.Label` is, which is the open item design/33 records.
+
+**So UV activation on M5 is a config-declaration decision, not a hardware
+impossibility.** This document previously said M5 had no 405 power property. That was
+wrong twice over: it read a declaration gap as a capability gap, and the first
+version of the probe's name regex required "laser" adjacent to "level" while the real
+property is `Laser 4: 3. Level %`. Both are fixed; the probe now carries a comment
+recording the miss, because a survey that under-reports reads as "the rig cannot do
+this" and that is the expensive direction to be wrong in.
+
+**Better still, `Level %` is genuinely a percentage, 0–100.** Declaring it would give
+Block 7b a power property whose units actually match the field that caps it — unlike
+the iBeam rows. See the units warning below.
+
+**Two things to resolve before declaring it:**
+
+1. **Emission is TTL-gated.** All four channels read `Use TTL = 1`, and the engine
+   reads `All: 3. TTL Enable = 1`. `MicroFPGA-Hub`, `Laser Trigger`, `TTL` and `PWM`
+   are all in the excluded device inventory. So writing `Level %` sets an analog
+   set-point whose optical effect depends on a trigger path microclaw cannot reach. A
+   ramp may be authorized, bounded, audited — and optically inert. Establish what
+   `Level %` does with `Use TTL = 1` before an experiment depends on it.
+2. **Two gates, not one.** `Enable` and `Emission` are separate, and which one should
+   be declared as the shutter is a hardware question. The probe deliberately emits
+   shutter rows commented out for this reason.
+
+The probe also found `iBeamSmartCW.Power (mW)` — a **third** iBeam laser, undeclared,
+range 0–75 mW, alongside `-1` and `-Booster`. Worth knowing whether that is a real
+third laser or a stale entry in the MM config.
+
+Four `HamamatsuHam_DCAM.INTENSITY LUT ...` properties matched the name heuristic and
+are now rejected automatically as a `CameraDevice` cannot illuminate. They appear in
+the report under "rejected as non-emitting" rather than vanishing, so the exclusion is
+reviewable.
 
 **Operator ruling (2026-07-28): run R5–R8 against `iBeamSmartCW-1.Power (mW)`,
 with the laser off.** It is already declared and reviewed, it exercises every line of
@@ -167,6 +214,23 @@ line 562) — Block 7b did not introduce it. But Block 7b is the first thing tha
 teeth it did not have when only a human could issue the write. Choose every ceiling
 below in **mW**, sanity-check it against the laser's actual range (iBeam is 0–75 mW),
 and record in the evidence that you did.
+
+**Measured consequence on M5, and it is not theoretical.** The reviewed config sets
+`max_power_percent: 100.0`, and `iBeamSmartCW-1.Power (mW)` has a driver range of
+0–75. A raw value of 75 is always less than 100, so **the configured ceiling can
+never refuse an iBeam power write.** The only thing bounding a ramp on that laser
+today is `max_power_step_factor: 3.0`, which limits how fast it climbs, not how high.
+`iBeamSmartCW-Booster` is worse: range 0–150, so the ceiling binds only above 100 mW.
+
+That is a finding about the M5 config, not about Block 7b's code — the envelope
+ceiling you pass per run *does* bind, and R5 relies on it. But it means the config
+ceiling is not a second line of defence on this rig, and R7 case 1 (envelope ceiling
+above the configured ceiling) can only be exercised by lowering
+`max_power_percent` to a value inside the laser's range first. Do that in a copy of
+the config under `$Evidence`, not in the reviewed file, and retain the diff.
+
+Declaring the iChrome `Level %` rows would improve this: 0–100 in genuine percent
+means `max_power_percent` becomes dimensionally meaningful for those channels.
 
 Before R5, read and record from `$Config`: the configured
 `illumination.max_power_percent` and `illumination.max_power_step_factor`. Every
@@ -338,19 +402,26 @@ position was still moved to and still exposed.
 Run last, with the operator present. **Do not enable the laser.** Leave
 `iBeamSmartCW-1`'s `Laser Operation` at `Off` for every step here.
 
-### R5pre. Does the driver accept a power write while the laser is off?
+### R5pre. Does the driver accept a power write while the laser is off? — PASS 2026-07-28
 
-The whole shutter-closed plan rests on this, so establish it before R5 and not
-during it. With `Laser Operation` = `Off`, read `Power (mW)`, ask microclaw to set it
-to a different low value through the ordinary guarded property path, and read it
-back.
+The whole shutter-closed plan rests on this, so it was established before R5 rather
+than during it. With `iBeamSmartCW-1.Laser Operation` = `Off`:
 
-**Expected observable:** the value changes and reads back. Nothing emits.
+- `Power (mW)` read `10.0000`; `get_device_property_info` reported `Float`, not
+  read-only, range 0–75.
+- `set_device_property` to `5` returned `Set iBeamSmartCW-1.Power (mW) = '5'.`
+- Read-back returned `5.0000`.
+- All four iChrome channels read `enabled = 0` throughout; nothing emitted.
 
-**If the driver refuses or silently ignores the write while off**, that is a finding,
-not a failure of this block — record it, and only then fall back to enabling the
-laser at the lowest power the ramp can start from, with the beam blocked or into a
-beam dump. Do not proceed on an unverified assumption that the write landed.
+**The driver accepts and retains a power write with the laser off.** R5–R8 run with
+no emission. Evidence: `block7-r5pre-history.json`.
+
+**The same run produced unplanned refusal evidence.** Setting
+`iBeamSmartCW.Power (mW)` — the third, *undeclared* iBeam — was refused with
+`RigAuthorizationError: Property write iBeamSmartCW.Power (mW) is excluded from the
+authorization map.` A real, undeclared laser power property on live hardware, refused
+before the write, with the range check having already passed. That is R7 case 2's
+observable, obtained for free; cite it there rather than re-running it.
 
 Choose `max_power_percent` (in **mW**, per the units warning) low enough that the
 fixture ramp **reaches it during the run**, and `max_writes` **smaller than the frame
@@ -441,9 +512,10 @@ way — a measured cost is the deliverable, not a pass/fail.
 
 | Step | What it settles | Verdict |
 |---|---|---|
-| P0 | map complete; iBeam power declared; **no 405** | **SETTLED 2026-07-28** |
-| P1 | property probe: is a 405 power property exposed at all? | |
-| R5pre | driver accepts a power write with the laser off | |
+| P0 | map complete; iBeam power declared; no 405 **declared** | **SETTLED 2026-07-28** |
+| P1 | 402 nm `Level %` exists, 0–100, undeclared; TTL-gated | **SETTLED 2026-07-28** |
+| R5pre | driver accepts a power write with the laser off | **PASS 2026-07-28** |
+| — | rig suite under `uv`: 989 passed / 115 skipped / 3 warnings | **PASS 2026-07-28** |
 | R1 | legacy refused, migrated run | |
 | R2 | numerical fidelity | |
 | R3 | artifact confinement, limits, hash | |
@@ -458,9 +530,12 @@ way — a measured cost is the deliverable, not a pass/fail.
 Record these in the merge and the post-merge design gate. Do not let any of them be
 described as passing.
 
-1. **405 nm UV activation.** Not authorizable on M5 — no declared power property on
-   the iChrome engine. The checklist's "exercise UV activation on a real closed loop"
-   bullet is **deferred**, not met.
+1. **402 nm UV activation.** The hardware exposes it —
+   `iChrome-MLE-TCP.Laser 4: 3. Level %`, 0–100 percent — but it is **undeclared**, so
+   no envelope can name it. The checklist's "exercise UV activation on a real closed
+   loop" bullet is **deferred**, not met. Unblocking it needs a reviewed config
+   declaration plus an answer to the TTL question in P1, and that is a separate item
+   from Block 7b's code.
 2. **Closed-loop feedback.** The fixture ramps deterministically and does not act on
    the blink density it measures. The authorization path is proven; feedback is not.
 2b. **Anything that requires light.** These steps run with the laser off, so nothing
