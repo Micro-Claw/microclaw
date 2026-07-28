@@ -93,8 +93,12 @@ class IlluminationConstraints:
                                 on_value requires a blocking human confirmation.
       power_properties          properties that set emission power (percent).
       max_power_percent         refuse writes above this value.
-      max_power_step_factor     refuse a power increase of more than N× in one
-                                write (1% → 25% must take deliberate steps).
+      max_power_step_factor     bound the ratio between consecutive parent writes,
+                                limiting how fast power climbs rather than how high
+                                it can reach. From zero it imposes no constraint;
+                                only max_power_percent bounds the first increase.
+                                This is a runaway backstop, not a gradual-ramp
+                                mechanism; hooks implement ramps themselves.
       require_confirm_on_enable confirm-gate shutter enables (default on).
     """
 
@@ -809,10 +813,35 @@ class SafetyGuard:
             None,
         )
 
+    def is_illumination_power(
+        self, device: str, prop: str
+    ) -> Optional[ForbiddenProperty]:
+        """Return the declared power property for an exact device/property pair."""
+        return next(
+            (
+                item
+                for item in self._c.illumination.power_properties
+                if item.device == device and item.property == prop
+            ),
+            None,
+        )
+
+    @property
+    def max_illumination_power_percent(self) -> Optional[float]:
+        return self._c.illumination.max_power_percent
+
+    @property
+    def max_illumination_power_step_factor(self) -> Optional[float]:
+        return self._c.illumination.max_power_step_factor
+
     def check_illumination(
-        self, core, device: str, prop: str, value: str, confirm_fn=None
+        self, core, device: str, prop: str, value: str, confirm_fn=None,
+        previous_percent: float | None = None,
     ) -> None:
         """Confirm-gate a shutter enable, and ratchet-gate a power increase.
+
+        ``previous_percent`` lets a trusted parent enforce the ratchet against
+        its own last successful write without re-reading mutable device state.
 
         Enforced in code, not just the prompt — same reasoning as
         save_knowledge's blocking confirmation: a confused model or an injected
@@ -832,9 +861,7 @@ class SafetyGuard:
                     f"User declined to enable illumination {device}.{prop}."
                 )
 
-        if not any(
-            p.device == device and p.property == prop for p in ill.power_properties
-        ):
+        if not self.is_illumination_power(device, prop):
             return
         new = _finite_number_text(value, f"Illumination power {device}.{prop}")
         if ill.max_power_percent is not None:
@@ -852,9 +879,13 @@ class SafetyGuard:
                 f"({ill.max_power_percent:.1f}%)."
             )
         if ill.max_power_step_factor is not None:
-            old = _finite_number_text(
-                core.get_property(device, prop),
-                f"Current illumination power {device}.{prop}",
+            old = (
+                _finite_number(previous_percent, "Previous illumination power")
+                if previous_percent is not None
+                else _finite_number_text(
+                    core.get_property(device, prop),
+                    f"Current illumination power {device}.{prop}",
+                )
             )
             if old > 0 and new / old > ill.max_power_step_factor:
                 raise SafetyViolation(

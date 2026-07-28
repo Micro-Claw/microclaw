@@ -2,16 +2,21 @@ from __future__ import annotations
 
 import json
 import queue
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
 
 from microclaw.hook_decisions import (
-    AcquireAt, ContinueSurvey, HookResult, MoveStage, RequestAutofocus,
-    SetExposure, StopSurvey, UntrustedHookAdapter,
+    AcquireAt, ContinueSurvey, DiscardFrame, EmitArtifact, HookResult, MoveStage,
+    RequestAutofocus, SetExposure, SetIlluminationPower, StopSurvey,
+    UntrustedHookAdapter,
 )
 from microclaw.hooks import HookBase
 from microclaw.safety import SafetyViolation
+from microclaw.safety import (
+    ForbiddenProperty, IlluminationConstraints, SafetyConstraints, SafetyGuard,
+)
 from microclaw.tools import SurveyProgress
 
 
@@ -131,6 +136,289 @@ def test_non_json_measurements_fail_closed(tmp_path):
     with pytest.raises(ValueError):
         adapter.image_process_fn(np.zeros((2, 2)), {}, object())
     assert adapter._log[-1]["event"] == "hook_failure"
+
+
+def _illumination_adapter(action, tmp_path, *, ceiling=20, writes=2,
+                          initial=5, configured=30, factor=2):
+    class Hook:
+        def analyze_frame(self, image, metadata):
+            return HookResult({}, (action,))
+    core = type("Core", (), {})()
+    core.writes = []
+    core.set_property = lambda device, prop, value: core.writes.append(
+        (device, prop, value)
+    )
+    guard = SafetyGuard(SafetyConstraints(illumination=IlluminationConstraints(
+        power_properties=[ForbiddenProperty("Laser", "Power")],
+        max_power_percent=configured, max_power_step_factor=factor,
+    )))
+    adapter = UntrustedHookAdapter(Hook(), str(tmp_path / "hook.json"))
+    adapter.configure_illumination(
+        core=core, guard=guard, device="Laser", property="Power",
+        max_power_percent=ceiling, max_writes=writes, initial_value=initial,
+    )
+    return adapter, core
+
+
+def test_illumination_without_envelope_is_refused(tmp_path):
+    class Hook:
+        def analyze_frame(self, image, metadata):
+            return HookResult({}, (SetIlluminationPower(2),))
+    adapter = UntrustedHookAdapter(Hook())
+    adapter.image_process_fn(np.zeros((1, 1)), {}, object())
+    assert adapter._log[-1]["reason"] == "no illumination envelope was authorized for this run"
+
+
+def test_illumination_envelope_ceiling_is_attributable(tmp_path):
+    adapter, core = _illumination_adapter(SetIlluminationPower(21), tmp_path)
+    adapter.image_process_fn(np.zeros((1, 1)), {}, object())
+    assert not core.writes
+    assert adapter._log[-1]["reason"] == "proposal exceeds authorized envelope ceiling"
+
+
+def test_illumination_step_uses_last_parent_value(tmp_path):
+    adapter, core = _illumination_adapter(SetIlluminationPower(11), tmp_path)
+    adapter.image_process_fn(np.zeros((1, 1)), {}, object())
+    assert not core.writes
+    assert "SafetyGuard refused illumination" in adapter._log[-1]["reason"]
+    assert "per-write ratchet" in adapter._log[-1]["reason"]
+
+
+def test_illumination_write_budget_is_attributable(tmp_path):
+    class Hook:
+        def __init__(self): self.values = iter((6, 7))
+        def analyze_frame(self, image, metadata):
+            return HookResult({}, (SetIlluminationPower(next(self.values)),))
+    core = MagicMock()
+    guard = SafetyGuard(SafetyConstraints(illumination=IlluminationConstraints(
+        power_properties=[ForbiddenProperty("Laser", "Power")],
+        max_power_percent=20, max_power_step_factor=2,
+    )))
+    adapter = UntrustedHookAdapter(Hook())
+    adapter.configure_illumination(
+        core=core, guard=guard, device="Laser", property="Power",
+        max_power_percent=20, max_writes=1, initial_value=5,
+    )
+    image = np.zeros((1, 1))
+    adapter.image_process_fn(image, {}, object())
+    adapter.image_process_fn(image, {}, object())
+    assert core.set_property.call_count == 1
+    assert adapter._log[-1]["reason"] == "authorized illumination write budget exhausted"
+
+
+def test_exhausted_budget_still_allows_wind_down_and_zero(tmp_path):
+    class Hook:
+        def __init__(self): self.values = iter((6, 4, 0))
+        def analyze_frame(self, image, metadata):
+            return HookResult({}, (SetIlluminationPower(next(self.values)),))
+    core = MagicMock()
+    guard = SafetyGuard(SafetyConstraints(illumination=IlluminationConstraints(
+        power_properties=[ForbiddenProperty("Laser", "Power")],
+        max_power_percent=20, max_power_step_factor=2,
+    )))
+    adapter = UntrustedHookAdapter(Hook())
+    adapter.configure_illumination(
+        core=core, guard=guard, device="Laser", property="Power",
+        max_power_percent=20, max_writes=1, initial_value=5,
+    )
+    for _ in range(3):
+        adapter.image_process_fn(np.zeros((1, 1)), {}, object())
+    assert [call.args[2] for call in core.set_property.call_args_list] == ["6.0", "4.0", "0.0"]
+    assert adapter._illumination_context["remaining"] == 0
+    assert all(r.get("decision") == "accepted" for r in adapter._log if "decision" in r)
+
+
+def test_increase_after_wind_down_is_charged_normally(tmp_path):
+    class Hook:
+        def __init__(self): self.values = iter((4, 5, 6))
+        def analyze_frame(self, image, metadata):
+            return HookResult({}, (SetIlluminationPower(next(self.values)),))
+    core = MagicMock()
+    guard = SafetyGuard(SafetyConstraints(illumination=IlluminationConstraints(
+        power_properties=[ForbiddenProperty("Laser", "Power")],
+        max_power_percent=20, max_power_step_factor=2,
+    )))
+    adapter = UntrustedHookAdapter(Hook())
+    adapter.configure_illumination(
+        core=core, guard=guard, device="Laser", property="Power",
+        max_power_percent=20, max_writes=1, initial_value=5,
+    )
+    for _ in range(3):
+        adapter.image_process_fn(np.zeros((1, 1)), {}, object())
+    assert [call.args[2] for call in core.set_property.call_args_list] == ["4.0", "5.0"]
+    assert adapter._log[-1]["reason"] == "authorized illumination write budget exhausted"
+
+
+def test_parent_device_write_failure_has_own_record(tmp_path):
+    adapter, core = _illumination_adapter(SetIlluminationPower(6), tmp_path)
+    def fail(*args): raise RuntimeError("bridge down")
+    core.set_property = fail
+    adapter.image_process_fn(np.zeros((1, 1)), {}, object())
+    assert adapter._log[-1]["event"] == "illumination_write_failure"
+    assert adapter._log[-1]["decision"] == "failed"
+    assert "bridge down" in adapter._log[-1]["reason"]
+    assert adapter._log[-1]["baseline_stale"] is True
+    assert not any(r.get("event") == "hook_failure" for r in adapter._log)
+
+
+def test_failed_write_rereads_true_baseline_before_ratchet(tmp_path):
+    class Hook:
+        def __init__(self): self.values = iter((25, 60))
+        def analyze_frame(self, image, metadata):
+            return HookResult({}, (SetIlluminationPower(next(self.values)),))
+    core = MagicMock()
+    core.get_property.return_value = "25.0000"
+    core.set_property.side_effect = RuntimeError("Serial timeout occurred. (17)")
+    guard = SafetyGuard(SafetyConstraints(illumination=IlluminationConstraints(
+        power_properties=[ForbiddenProperty("Laser", "Power")],
+        max_power_percent=100, max_power_step_factor=2,
+    )))
+    adapter = UntrustedHookAdapter(Hook())
+    adapter.configure_illumination(
+        core=core, guard=guard, device="Laser", property="Power",
+        max_power_percent=100, max_writes=1, initial_value=0,
+    )
+    image = np.zeros((1, 1))
+    adapter.image_process_fn(image, {}, object())
+    adapter.image_process_fn(image, {}, object())
+
+    core.get_property.assert_called_once_with("Laser", "Power")
+    assert core.set_property.call_count == 1
+    assert adapter._illumination_context["remaining"] == 1
+    assert adapter._log[-2] == {
+        "position": None,
+        "event": "illumination_baseline_reread", "decision": "succeeded",
+        "value_percent": 25.0, "baseline_stale": False,
+    }
+    assert "per-write ratchet" in adapter._log[-1]["reason"]
+
+
+def test_failed_baseline_reread_refuses_with_distinct_reason(tmp_path):
+    class Hook:
+        def __init__(self): self.values = iter((6, 7))
+        def analyze_frame(self, image, metadata):
+            return HookResult({}, (SetIlluminationPower(next(self.values)),))
+    adapter, core = _illumination_adapter(None, tmp_path)
+    adapter.hook = Hook()
+    core.set_property = MagicMock(side_effect=RuntimeError("write timeout"))
+    core.get_property = MagicMock(side_effect=RuntimeError("read timeout"))
+    image = np.zeros((1, 1))
+    adapter.image_process_fn(image, {}, object())
+    adapter.image_process_fn(image, {}, object())
+
+    assert core.set_property.call_count == 1
+    assert adapter._illumination_context["baseline_stale"] is True
+    assert adapter._log[-1]["decision"] == "refused"
+    assert adapter._log[-1]["reason"] == (
+        "illumination baseline could not be re-established: read timeout"
+    )
+
+
+def test_healthy_illumination_write_does_not_reread(tmp_path):
+    adapter, core = _illumination_adapter(SetIlluminationPower(6), tmp_path)
+    core.get_property = MagicMock()
+    adapter.image_process_fn(np.zeros((1, 1)), {}, object())
+    core.get_property.assert_not_called()
+
+
+def test_config_ceiling_still_wins_if_parent_context_is_wrongly_wide(tmp_path):
+    adapter, core = _illumination_adapter(
+        SetIlluminationPower(31), tmp_path, ceiling=50, configured=30, factor=100,
+    )
+    adapter.image_process_fn(np.zeros((1, 1)), {}, object())
+    assert not core.writes
+    assert "SafetyGuard refused illumination" in adapter._log[-1]["reason"]
+    assert "max_power_percent" in adapter._log[-1]["reason"]
+
+
+def test_shutter_enable_is_not_in_closed_union():
+    with pytest.raises(ValueError, match="Unknown hook action"):
+        from microclaw.hook_decisions import parse_action
+        parse_action({"kind": "SetIlluminationShutter", "value": "On"})
+
+
+def test_discard_records_observation_and_discards_pixels(tmp_path):
+    class Hook:
+        def analyze_frame(self, image, metadata):
+            return HookResult({"score": 0}, (DiscardFrame(),))
+    adapter = UntrustedHookAdapter(Hook())
+    assert adapter.image_process_fn(np.zeros((1, 1)), {}, object()) is None
+    assert adapter._log[0]["schema"] == "microclaw.analysis-observation/v1"
+    assert adapter._log[-1]["event"] == "legacy_hook_frame"
+    assert adapter._log[-1]["outcome"] == "discarded"
+
+
+@pytest.mark.parametrize("filename", ["../x", "/abs/x", "a/b", "", "a\\b"])
+def test_artifact_escape_names_are_refused(filename, tmp_path):
+    class Hook:
+        def analyze_frame(self, image, metadata):
+            return HookResult({}, (EmitArtifact(filename, b"x"),))
+    adapter = UntrustedHookAdapter(Hook())
+    adapter.configure_artifacts(target_dir=tmp_path, max_artifact_bytes=10,
+                                max_count=2, max_total_bytes=10)
+    adapter.image_process_fn(np.zeros((1, 1)), {}, object())
+    assert "bare filename" in adapter._log[-1]["reason"]
+
+
+def test_artifact_limits_and_collision_are_distinct(tmp_path):
+    class Hook:
+        def __init__(self): self.payload = b"123"
+        def analyze_frame(self, image, metadata):
+            return HookResult({}, (EmitArtifact("x.bin", self.payload),))
+    hook = Hook()
+    adapter = UntrustedHookAdapter(hook)
+    adapter.configure_artifacts(target_dir=tmp_path, max_artifact_bytes=2,
+                                max_count=2, max_total_bytes=4)
+    adapter.image_process_fn(np.zeros((1, 1)), {}, object())
+    assert "artifact size 3 bytes" in adapter._log[-1]["reason"]
+    assert "limit 2 bytes" in adapter._log[-1]["reason"]
+    hook.payload = b"12"
+    adapter.image_process_fn(np.zeros((1, 1)), {}, object())
+    adapter.image_process_fn(np.zeros((1, 1)), {}, object())
+    assert "collides" in adapter._log[-1]["reason"]
+
+
+def test_artifact_per_run_total_is_refused(tmp_path):
+    class Hook:
+        def __init__(self): self.i = 0
+        def analyze_frame(self, image, metadata):
+            self.i += 1
+            return HookResult({}, (EmitArtifact(f"{self.i}.bin", b"123"),))
+    adapter = UntrustedHookAdapter(Hook())
+    adapter.configure_artifacts(target_dir=tmp_path, max_artifact_bytes=3,
+                                max_count=3, max_total_bytes=5)
+    adapter.image_process_fn(np.zeros((1, 1)), {}, object())
+    adapter.image_process_fn(np.zeros((1, 1)), {}, object())
+    assert "total-bytes" in adapter._log[-1]["reason"]
+
+
+def test_artifact_count_limit_is_refused_distinctly(tmp_path):
+    class Hook:
+        def __init__(self): self.i = 0
+        def analyze_frame(self, image, metadata):
+            self.i += 1
+            return HookResult({}, (EmitArtifact(f"{self.i}.bin", b"x"),))
+    adapter = UntrustedHookAdapter(Hook())
+    adapter.configure_artifacts(target_dir=tmp_path, max_artifact_bytes=2,
+                                max_count=1, max_total_bytes=10)
+    adapter.image_process_fn(np.zeros((1, 1)), {}, object())
+    adapter.image_process_fn(np.zeros((1, 1)), {}, object())
+    assert adapter._log[-1]["reason"] == "artifact count limit exhausted"
+
+
+def test_only_one_artifact_may_be_proposed_per_frame(tmp_path):
+    class Hook:
+        def analyze_frame(self, image, metadata):
+            return HookResult({}, (
+                EmitArtifact("a.bin", b"a"), EmitArtifact("b.bin", b"b"),
+            ))
+    target = tmp_path / "artifacts"
+    adapter = UntrustedHookAdapter(Hook())
+    adapter.configure_artifacts(target_dir=target, max_artifact_bytes=2,
+                                max_count=2, max_total_bytes=4)
+    with pytest.raises(ValueError, match="at most one EmitArtifact"):
+        adapter.image_process_fn(np.zeros((1, 1)), {}, object())
+    assert not target.exists()
 
 
 def test_action_list_is_normalized_but_other_iterables_are_rejected():

@@ -45,3 +45,16 @@ def test_schema_matches_signature(name):
     assert required <= props, (
         f"{name}: 'required' lists non-properties: {required - props}"
     )
+
+
+@pytest.mark.parametrize("name", [
+    "run_adaptive_zstack", "run_adaptive_timelapse", "run_adaptive_survey",
+    "run_multiposition_acquisition",
+])
+def test_hook_capability_parameters_are_declared(name):
+    props = _SCHEMA_BY_NAME[name]["input_schema"]["properties"]
+    assert {"illumination_envelope", "artifact_limits"} <= set(props)
+    description = props["illumination_envelope"]["description"]
+    assert "Power-only" in description
+    assert "shutter enable" in description
+    assert "confirmed once before" in description

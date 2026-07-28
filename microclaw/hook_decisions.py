@@ -9,9 +9,14 @@ validates decisions in trusted parent code.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import hashlib
+import io
 import json
 import math
+from pathlib import Path
 from typing import Any
+
+import numpy as np
 
 
 @dataclass(frozen=True)
@@ -49,9 +54,30 @@ class RequestAutofocus:
     kind: str = "RequestAutofocus"
 
 
+@dataclass(frozen=True)
+class SetIlluminationPower:
+    """Propose power modulation; shutters/on-values are not expressible."""
+    value_percent: float
+    kind: str = "SetIlluminationPower"
+
+
+@dataclass(frozen=True)
+class EmitArtifact:
+    """Propose an in-memory artifact with a parent-confined bare filename."""
+    filename: str
+    payload: bytes | np.ndarray
+    kind: str = "EmitArtifact"
+
+
+@dataclass(frozen=True)
+class DiscardFrame:
+    """Discard saved pixels only; the position was moved to and exposed."""
+    kind: str = "DiscardFrame"
+
+
 HookAction = (
     MoveStage | AcquireAt | SetExposure | ContinueSurvey | StopSurvey |
-    RequestAutofocus
+    RequestAutofocus | SetIlluminationPower | EmitArtifact | DiscardFrame
 )
 
 
@@ -93,14 +119,14 @@ class HookResult:
 _ACTION_TYPES = {
     cls.__dataclass_fields__["kind"].default: cls
     for cls in (MoveStage, AcquireAt, SetExposure, ContinueSurvey, StopSurvey,
-                RequestAutofocus)
+                RequestAutofocus, SetIlluminationPower, EmitArtifact, DiscardFrame)
 }
 
 
 def parse_action(value: HookAction | dict[str, Any]) -> HookAction:
     """Convert one proposal through the closed discriminated union."""
     if isinstance(value, tuple(_ACTION_TYPES.values())):
-        payload = asdict(value)
+        payload = {f: getattr(value, f) for f in value.__dataclass_fields__}
     elif isinstance(value, dict):
         payload = dict(value)
     else:
@@ -119,7 +145,8 @@ def parse_action(value: HookAction | dict[str, Any]) -> HookAction:
         raise ValueError(f"Malformed {kind} action: {exc}") from exc
     # JSON validation rejects NaN/infinity and non-portable scalar objects.
     try:
-        json.dumps(asdict(action), allow_nan=False)
+        if not isinstance(action, EmitArtifact):
+            json.dumps(asdict(action), allow_nan=False)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"Malformed {kind} action: {exc}") from exc
     if isinstance(action, AcquireAt) and (
@@ -135,6 +162,8 @@ def parse_action(value: HookAction | dict[str, Any]) -> HookAction:
         numeric = (("x_um", action.x_um), ("y_um", action.y_um), ("z_um", action.z_um))
     elif isinstance(action, SetExposure):
         numeric = (("exposure_ms", action.exposure_ms),)
+    elif isinstance(action, SetIlluminationPower):
+        numeric = (("value_percent", action.value_percent),)
     for name, number in numeric:
         if number is None:
             continue
@@ -142,7 +171,54 @@ def parse_action(value: HookAction | dict[str, Any]) -> HookAction:
             raise ValueError(f"Malformed {kind} action: {name} must be a finite number.")
     if isinstance(action, SetExposure) and action.exposure_ms <= 0:
         raise ValueError("Malformed SetExposure action: exposure_ms must be positive.")
+    if isinstance(action, SetIlluminationPower) and action.value_percent < 0:
+        raise ValueError("Malformed SetIlluminationPower action: value_percent must be non-negative.")
+    if isinstance(action, EmitArtifact):
+        if not isinstance(action.filename, str):
+            raise ValueError("Malformed EmitArtifact action: filename must be a string.")
+        if not isinstance(action.payload, (bytes, np.ndarray)):
+            raise ValueError("Malformed EmitArtifact action: payload must be bytes or ndarray.")
     return action
+
+
+def write_hook_artifact(target_dir: str | Path, filename: str, payload: bytes | np.ndarray,
+                        *, max_artifact_bytes: int, max_count: int,
+                        max_total_bytes: int, state: dict[str, int]) -> dict[str, Any]:
+    """Write one bounded payload below *target_dir*, without an acquisition handle."""
+    if (not filename or Path(filename).name != filename or "/" in filename or
+            "\\" in filename or filename in {".", ".."}):
+        raise ValueError("artifact filename must be a non-empty bare filename")
+    target = Path(target_dir)
+    path = target / filename
+    if path.exists():
+        raise ValueError("artifact filename collides with an existing artifact")
+    if state.get("count", 0) >= max_count:
+        raise ValueError("artifact count limit exhausted")
+    if isinstance(payload, bytes):
+        data = payload
+    else:
+        stream = io.BytesIO()
+        if filename.lower().endswith((".tif", ".tiff")):
+            import tifffile
+            tifffile.imwrite(stream, payload)
+        else:
+            np.save(stream, payload)
+        data = stream.getvalue()
+    if len(data) > max_artifact_bytes:
+        raise ValueError(
+            f"artifact size {len(data)} bytes exceeds per-artifact size limit "
+            f"{max_artifact_bytes} bytes"
+        )
+    if state.get("total_bytes", 0) + len(data) > max_total_bytes:
+        raise ValueError("artifact exceeds per-run total-bytes limit")
+    target.mkdir(parents=True, exist_ok=True)
+    # Exclusive creation also closes the collision race.
+    with path.open("xb") as handle:
+        handle.write(data)
+    state["count"] = state.get("count", 0) + 1
+    state["total_bytes"] = state.get("total_bytes", 0) + len(data)
+    return {"path": str(path), "sha256": hashlib.sha256(data).hexdigest(),
+            "size_bytes": len(data)}
 
 
 class DeniedEventQueue:
@@ -178,6 +254,8 @@ class UntrustedHookAdapter:
         self.log_path = log_path
         self._log: list[dict[str, Any]] = []
         self._context: dict[str, Any] | None = None
+        self._illumination_context: dict[str, Any] | None = None
+        self._artifact_context: dict[str, Any] | None = None
 
     @property
     def proposes_actions(self) -> bool:
@@ -195,6 +273,34 @@ class UntrustedHookAdapter:
             "events": list(events), "candidates": candidates, "progress": progress,
             "guard": guard, "max_events": max_events, "emitted": 1, "cursor": 1,
         }
+
+    def configure_illumination(self, *, core, guard, device: str, property: str,
+                               max_power_percent: float, max_writes: int,
+                               initial_value: float) -> None:
+        self._illumination_context = {
+            "core": core, "guard": guard, "device": device, "property": property,
+            "ceiling": max_power_percent, "remaining": max_writes,
+            "last_written": initial_value, "baseline_stale": False,
+        }
+
+    def configure_artifacts(self, *, target_dir: str | Path,
+                            max_artifact_bytes: int, max_count: int,
+                            max_total_bytes: int) -> None:
+        self._artifact_context = {
+            "target_dir": target_dir, "max_artifact_bytes": max_artifact_bytes,
+            "max_count": max_count, "max_total_bytes": max_total_bytes,
+            "state": {"count": 0, "total_bytes": 0},
+        }
+
+    def bind_artifact_directory(self, target_dir: str | Path) -> None:
+        """Bind an authorized artifact budget to its acquisition's real path.
+
+        Acquisition naming collisions are resolved only when pycro-manager
+        constructs the acquisition.  Change only the destination here: limits
+        and already-consumed per-run state remain owned by the same context.
+        """
+        if self._artifact_context is not None:
+            self._artifact_context["target_dir"] = target_dir
 
     def _write_log(self) -> None:
         if self.log_path:
@@ -223,15 +329,96 @@ class UntrustedHookAdapter:
     def _event_xy(event: dict) -> tuple[float, float]:
         return float(event["x"]), float(event["y"])
 
+    @staticmethod
+    def _action_record(action: HookAction) -> dict[str, Any]:
+        if isinstance(action, EmitArtifact):
+            return {"kind": action.kind, "filename": action.filename,
+                    "payload_type": type(action.payload).__name__}
+        return asdict(action)
+
     def _refuse(self, metadata: dict, action: HookAction, reason: str) -> None:
-        self._record(metadata, event="hook_action", action=asdict(action),
+        self._record(metadata, event="hook_action", action=self._action_record(action),
                      decision="refused", reason=reason)
 
-    def _accept(self, metadata: dict, action: HookAction, reason: str) -> None:
-        self._record(metadata, event="hook_action", action=asdict(action),
-                     decision="accepted", reason=reason)
+    def _accept(self, metadata: dict, action: HookAction, reason: str,
+                **fields: Any) -> None:
+        self._record(metadata, event="hook_action", action=self._action_record(action),
+                     decision="accepted", reason=reason, **fields)
 
-    def _dispatch(self, action: HookAction, metadata: dict) -> None:
+    def _dispatch(self, action: HookAction, metadata: dict) -> str | None:
+        if isinstance(action, DiscardFrame):
+            self._accept(metadata, action, "frame pixels discarded after exposure")
+            return None
+        if isinstance(action, EmitArtifact):
+            ctx = self._artifact_context
+            if ctx is None:
+                self._refuse(metadata, action, "no artifact budget was authorized for this run")
+                return None
+            try:
+                info = write_hook_artifact(**ctx, filename=action.filename,
+                                           payload=action.payload)
+            except (OSError, ValueError) as exc:
+                self._refuse(metadata, action, str(exc))
+                return None
+            self._accept(metadata, action, "parent wrote bounded artifact", **info)
+            return info["sha256"]
+        if isinstance(action, SetIlluminationPower):
+            ctx = self._illumination_context
+            if ctx is None:
+                self._refuse(metadata, action, "no illumination envelope was authorized for this run")
+                return None
+            new = float(action.value_percent)
+            if ctx["baseline_stale"]:
+                try:
+                    raw = ctx["core"].get_property(ctx["device"], ctx["property"])
+                    current = float(raw)
+                    if not math.isfinite(current):
+                        raise ValueError(f"non-finite value {raw!r}")
+                except Exception as exc:
+                    self._refuse(
+                        metadata, action,
+                        f"illumination baseline could not be re-established: {exc}",
+                    )
+                    return None
+                ctx["last_written"] = current
+                ctx["baseline_stale"] = False
+                self._record(
+                    metadata, event="illumination_baseline_reread",
+                    decision="succeeded", value_percent=current,
+                    baseline_stale=False,
+                )
+            if new > ctx["ceiling"]:
+                self._refuse(metadata, action, "proposal exceeds authorized envelope ceiling")
+                return None
+            old = ctx["last_written"]
+            increasing = new > old
+            if increasing and ctx["remaining"] <= 0:
+                self._refuse(metadata, action, "authorized illumination write budget exhausted")
+                return None
+            try:
+                ctx["guard"].check_illumination(
+                    ctx["core"], ctx["device"], ctx["property"], str(new),
+                    confirm_fn=None, previous_percent=old,
+                )
+            except Exception as exc:
+                self._refuse(metadata, action, f"SafetyGuard refused illumination: {exc}")
+                return None
+            try:
+                ctx["core"].set_property(ctx["device"], ctx["property"], str(new))
+            except Exception as exc:
+                ctx["baseline_stale"] = True
+                self._record(
+                    metadata, event="illumination_write_failure",
+                    action=self._action_record(action), decision="failed",
+                    reason=f"parent device write failed: {exc}",
+                    baseline_stale=True,
+                )
+                return None
+            ctx["last_written"] = new
+            if increasing:
+                ctx["remaining"] -= 1
+            self._accept(metadata, action, "power write passed envelope and SafetyGuard")
+            return None
         ctx = self._context
         if ctx is None:
             self._refuse(metadata, action, "unsupported-by-this-runner")
@@ -304,6 +491,10 @@ class UntrustedHookAdapter:
                     raise TypeError("analyze_frame must return HookResult or None.")
                 # Parse the complete proposal before dispatching any part of it.
                 actions = tuple(parse_action(a) for a in result.actions)
+                if sum(isinstance(a, EmitArtifact) for a in actions) > 1:
+                    raise ValueError(
+                        "HookResult may propose at most one EmitArtifact per frame."
+                    )
                 from microclaw.hooks import analysis_observation_record
                 observation = analysis_observation_record(
                     analyzer=result.analyzer,
@@ -316,9 +507,17 @@ class UntrustedHookAdapter:
                 # Same where + envelope shape as HookBase.log_analysis. Action
                 # decisions remain separate parent-owned records below.
                 self._record(metadata, **observation)
+                observation_index = len(self._log) - 1
+                discard = False
                 for action in actions:
-                    self._dispatch(action, metadata)
-                returned = (image, metadata)
+                    artifact_hash = self._dispatch(action, metadata)
+                    if artifact_hash:
+                        self._log[observation_index]["artifact_sha256"] = artifact_hash
+                        self._write_log()
+                    discard = discard or isinstance(action, DiscardFrame)
+                returned = None if discard else (image, metadata)
+                if discard:
+                    self._record(metadata, event="legacy_hook_frame", outcome="discarded")
             else:
                 returned = self.hook.image_process_fn(
                     image, metadata, DeniedEventQueue()

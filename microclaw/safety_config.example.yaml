@@ -94,12 +94,16 @@ analysis:
 # Illumination gate (design/14 §3). Anything that emits light at the sample.
 # Shutter enables listed here block on a human confirmation before turning on,
 # and are driven to off_value when the session exits (any exit path).
-# Power writes are capped (max_power_percent) and ratcheted
-# (max_power_step_factor: refuse >N× increase in a single write).
+# Power writes are capped (max_power_percent) and ratcheted. The ratchet bounds
+# the ratio between consecutive parent writes, limiting how fast power climbs,
+# not how high it can reach. From zero it does not constrain the first increase;
+# the envelope ceiling is then the only bound. It is a runaway backstop, not a
+# gradual-ramp mechanism: hooks that want a gradual ramp implement one themselves
+# (for example, uv_activation uses step_percent).
 illumination:
   require_confirm_on_enable: true
   # max_power_percent: 30.0
-  # max_power_step_factor: 3.0        # 1% -> 25% is 25x: refused
+  # max_power_step_factor: 3.0        # 1% -> 25% is 25x: refused; 0% -> 25% is not
   shutters: []
   # shutters:
   #   - {device: Luxx405,   property: Laser Operation Select, on_value: "On", off_value: "Off"}
