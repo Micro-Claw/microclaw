@@ -28,8 +28,16 @@ illumination envelope is confirmed exactly once, before any motion. A prompt aft
 the run starts is a stop condition.
 
 **Hooks cannot enable light.** A shutter enable is not expressible in the action
-union. The laser must already be enabled by the operator, through the existing
-Phase-1 gate, before any illumination step below.
+union — only power modulation is. That is what makes the next paragraph possible.
+
+**Run the illumination steps with the laser OFF.** The envelope governs
+`Power (mW)`; the shutter is a separate property the hook cannot touch. Setting
+power on a laser whose `Laser Operation` is `Off` exercises every line of the path —
+envelope validation, ceiling refusal, step ratchet, write budget, wind-down, the
+bridge write on the callback thread, and its cost — and emits nothing. The
+`uv_activation` fixture computes `blink_density` but ramps on a fixed step
+regardless, so no real signal is needed to drive it. There is no reason to put light
+on a sample, or in the room, to gate this code. See R5's pre-check.
 
 **End-of-run illumination policy belongs to the hook, not the code** (operator
 ruling, 2026-07-28). Nothing in microclaw restores, zeroes, or winds down power when
@@ -120,11 +128,31 @@ design/33 already records. An envelope naming it is refused at plan time with
 *"illumination envelope device/property is not declared in
 illumination.power_properties"*, which is the code behaving correctly.
 
-**Operator ruling (2026-07-28): run R5–R8 against `iBeamSmartCW-1.Power (mW)`.** It
-is already declared and reviewed, it exercises every line of the envelope path, and
-it needs no config change. Declaring a 405 power property on the iChrome engine is a
-separate reviewed item; design/33 records that engine as an open question, and the
-Block 3b gate already caught one attempt to widen it.
+**Operator ruling (2026-07-28): run R5–R8 against `iBeamSmartCW-1.Power (mW)`,
+with the laser off.** It is already declared and reviewed, it exercises every line of
+the envelope path, and it needs no config change. Declaring a 405 power property on
+the iChrome engine is a separate reviewed item; design/33 records that engine as an
+open question, and the Block 3b gate already caught one attempt to widen it.
+
+### Before declaring anything new: run the property probe
+
+Do not hand-list the rig's properties. `design/32-block7b-device-property-probe.py`
+enumerates every loaded device and property read-only — it calls only `get_*`/`is_*`/
+`has_*`, writes nothing, moves nothing, and opens no shutter — then reports which
+properties look like continuous power controls, which enable properties sit on the
+same devices, which of those the reviewed config already declares, and a proposed
+`illumination:` block for the rest.
+
+```powershell
+uv run python design\32-block7b-device-property-probe.py --port $Port --config $Config --out "$Evidence\device-properties.json" > "$Evidence\device-properties.txt" 2>&1
+```
+
+This is how to find whether the iChrome engine exposes a 405 power property at all,
+under whatever name its driver uses. **Its proposal is a starting point for review,
+not a config to paste.** It matches on property names, and a name match is not
+evidence that a device emits light or that its units are what the field name implies.
+The Block 3b gate refused a laser engine's `State` write that had been auto-admitted
+without a config edit; that refusal is the standard this proposal has to meet.
 
 ### Units warning — read before choosing a ceiling
 
@@ -307,8 +335,22 @@ position was still moved to and still exposed.
 
 ## Illumination gate — the envelope
 
-Run last, with the operator present. Enable `iBeamSmartCW-1` first, through the
-existing operator confirmation, so the hook only ever modulates an already-on laser.
+Run last, with the operator present. **Do not enable the laser.** Leave
+`iBeamSmartCW-1`'s `Laser Operation` at `Off` for every step here.
+
+### R5pre. Does the driver accept a power write while the laser is off?
+
+The whole shutter-closed plan rests on this, so establish it before R5 and not
+during it. With `Laser Operation` = `Off`, read `Power (mW)`, ask microclaw to set it
+to a different low value through the ordinary guarded property path, and read it
+back.
+
+**Expected observable:** the value changes and reads back. Nothing emits.
+
+**If the driver refuses or silently ignores the write while off**, that is a finding,
+not a failure of this block — record it, and only then fall back to enabling the
+laser at the lowest power the ramp can start from, with the beam blocked or into a
+beam dump. Do not proceed on an unverified assumption that the write landed.
 
 Choose `max_power_percent` (in **mW**, per the units warning) low enough that the
 fixture ramp **reaches it during the run**, and `max_writes` **smaller than the frame
@@ -400,6 +442,8 @@ way — a measured cost is the deliverable, not a pass/fail.
 | Step | What it settles | Verdict |
 |---|---|---|
 | P0 | map complete; iBeam power declared; **no 405** | **SETTLED 2026-07-28** |
+| P1 | property probe: is a 405 power property exposed at all? | |
+| R5pre | driver accepts a power write with the laser off | |
 | R1 | legacy refused, migrated run | |
 | R2 | numerical fidelity | |
 | R3 | artifact confinement, limits, hash | |
@@ -419,6 +463,9 @@ described as passing.
    bullet is **deferred**, not met.
 2. **Closed-loop feedback.** The fixture ramps deterministically and does not act on
    the blink density it measures. The authorization path is proven; feedback is not.
+2b. **Anything that requires light.** These steps run with the laser off, so nothing
+   here establishes that a ramp produces the optical effect an experiment wants —
+   only that the ramp is authorized, bounded, and refused at its limits.
 3. **Power units.** `max_power_percent` is compared against a raw `Power (mW)` value.
    Pre-existing (design/33 line 562), now reachable by generated code.
 4. **Unbounded non-increasing writes.** A wind-down never consumes budget, so a hook
