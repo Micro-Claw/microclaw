@@ -733,6 +733,163 @@ way — a measured cost is the deliverable, not a pass/fail.
 
 ---
 
+## Closing the gate — exactly what is left, in order
+
+Everything below assumes the branch is at `eeef7da` or later and the six hooks are
+saved. Steps 1–2 need no microscope at all; run them first.
+
+### Step 1 (off-rig). R7 cases 1–3, without an agent
+
+The agent refused to make these calls, so bypass it. The probe touches no hardware —
+every check fails before the code reaches a device — so Micro-Manager need not be
+running.
+
+```powershell
+uv run python design\32-block7b-r7-refusal-probe.py `
+    --config $Config --hook mosaic_stitcher_v2 > "$Evidence\r7.txt" 2>&1
+```
+
+**Expected:** three `PASS` lines and `R7 PASS`. The messages it prints are the
+evidence; keep the file. Re-run with `--hook` set to each other saved hook you intend
+to use — a key is harmless either because it was stripped or because that hook's
+`__init__` happens not to accept it, and only the first is a guarantee.
+
+**Stop condition:** any `FAIL`, or `case 3: a smuggled key reached the constructor`.
+
+### Step 2 (off-rig). R2 fidelity, from datasets you already have
+
+```powershell
+uv run python design\32-block7b-r2-fidelity-diff.py `
+    --dataset "$Scratch\r3a\multipos_3" --hook mosaic_stitcher `
+    --params '{\"pixel_size_um\": 0.127, \"n_tiles\": 2}' > "$Evidence\r2-stitcher.txt" 2>&1
+```
+
+Repeat with `--hook mosaic_cell_counter`, `--hook mosaic_stitcher_rot`, and
+`--hook filament_position_filter`, pointing `--dataset` at any NDTiff those hooks
+have run over. Frames are read from disk; nothing is exposed.
+
+**Expected:** `R2 PASS` — every shared measurement identical, and the discard decision
+agreeing (legacy returning `None` ⇔ migrated emitting `DiscardFrame`).
+
+Two differences are expected and are reported as `only_legacy` / `only_migrated`
+rather than mismatches: the stitchers renamed `mosaic_path` to `mosaic_filename`, and
+`writer` is gone because the parent now owns the write.
+
+**Stop condition:** any `DIFFERS` line. Migration was meant to be mechanical.
+
+### Step 3 (M5). R1 migrated — the two hooks that have never run
+
+Paste each separately. Both need `protocol="timelapse"`; `protocol="snap"` is
+display-only and is refused with a different message, which is what happened on
+2026-07-28.
+
+> Run `run_multiposition_acquisition` over two positions from the current position
+> list with `protocol="timelapse"`, `protocol_params={"n_frames": 1, "interval_s": 0}`,
+> `hook_strategy="mosaic_cell_counter_v2"`, `name="r1_counter"`,
+> `save_dir="<$Scratch>\r1-migrated"`,
+> `log_path="<$Scratch>\r1-migrated\counter.json"`. Then call `read_hook_log` on that
+> path and show me every record.
+
+> Run `run_multiposition_acquisition` over two positions from the current position
+> list with `protocol="timelapse"`, `protocol_params={"n_frames": 1, "interval_s": 0}`,
+> `hook_strategy="mosaic_stitcher_rot_v2"`,
+> `hook_params={"n_tiles": 2, "pixel_size_um": 0.127, "rot90_k": 1,
+> "filename": "mosaic_rot.tiff"}`, `name="r1_rot"`,
+> `save_dir="<$Scratch>\r1-migrated"`,
+> `log_path="<$Scratch>\r1-migrated\rot.json"`,
+> `artifact_limits={"max_artifact_bytes": 50000000, "max_count": 2,
+> "max_total_bytes": 50000000}`. Then call `read_hook_log` and show me every record.
+
+**Expected:** both complete; every per-frame record carries
+`"schema": "microclaw.analysis-observation/v1"` and `"status": "unverified"`; the rot
+stitcher's artifact lands under the run's own `..._1\artifacts\` directory.
+
+### Step 4 (M5). R4 — discard, plumbing route
+
+The default threshold cannot discard an empty field: on 2026-07-28 empty frames scored
+0.12–0.13 against a 0.02 threshold. Raise the threshold above the noise floor so the
+discard path actually runs, and **label the result plumbing-only** — it establishes
+nothing biological.
+
+> Run `run_multiposition_acquisition` over four positions from the current position
+> list with `protocol="timelapse"`, `protocol_params={"n_frames": 1, "interval_s": 0}`,
+> `hook_strategy="filament_position_filter_v2"`,
+> `hook_params={"min_filament_score": 0.5}`, `name="r4_discard"`,
+> `save_dir="<$Scratch>\r4b"`, `log_path="<$Scratch>\r4b\filter.json"`.
+> Then report, from the hook log and the dataset: how many positions were visited,
+> how many images were saved, and the acquisition ledger's frame count and
+> illuminated time.
+
+**Expected:** every field `kept: false` with a `DiscardFrame` action and an
+`outcome: "discarded"` record; **no saved images** in the dataset; positions visited
+and ledger frames/illuminated time reflecting **all four** fields.
+
+**Stop condition:** the ledger under-counts exposure for discarded frames, or any
+summary calls this a dose saving. Per design/27 the stage still moved and the camera
+still fired.
+
+### Step 5 (M5). R5c — the step-factor ratchet
+
+The one refusal reason never yet produced. A 5× jump against the configured 3.0×.
+
+> Run `run_adaptive_timelapse` with `n_frames=2`, `interval_s=1`,
+> `save_dir="<$Scratch>\r5c"`, `log_path="<$Scratch>\r5c\step.json"`,
+> `name="r5c_step"`, `hook_strategy="uv_activation"`,
+> `hook_params={"start_percent": 5, "step_percent": 20, "ceiling_percent": 100}`,
+> `illumination_envelope={"device": "iChrome-MLE-TCP",
+> "property": "Laser 4: 3. Level %", "max_power_percent": 30, "max_writes": 5}`.
+> I will accept the confirmation. Then call `read_hook_log` and show me every record.
+
+Set the device to a known low value first (`Laser 4: 3. Level %` = 5) so the parent
+seeds `last_written` at 5 and the first proposal of 25 is a 5× step.
+
+**Expected:** the first proposal is refused with a reason naming the **step factor**,
+distinct from a ceiling refusal — 25 is below the envelope's 30, so only the ratchet
+can refuse it.
+
+**Stop condition:** refused for the wrong reason, or accepted.
+
+### Step 6 (M5). R8 — re-run at zero interval
+
+At `interval_s=1` the inter-frame wait absorbed the whole cost. Back-to-back frames,
+same as Block 4's G1/G6.
+
+> Run these two acquisitions and report the `duration_s` of each.
+> First: `run_adaptive_timelapse` with `n_frames=20`, `interval_s=0`,
+> `save_dir="<$Scratch>\r8"`, `log_path="<$Scratch>\r8\uv.json"`, `name="r8_uv"`,
+> `hook_strategy="uv_activation"`,
+> `hook_params={"start_percent": 1, "step_percent": 0.1, "ceiling_percent": 5}`,
+> `illumination_envelope={"device": "iChrome-MLE-TCP",
+> "property": "Laser 4: 3. Level %", "max_power_percent": 5, "max_writes": 20}`.
+> Second: the same call with no `illumination_envelope` and
+> `hook_strategy="position_filter"`, `name="r8_control"`,
+> `log_path="<$Scratch>\r8\control.json"`. Report both durations and the per-frame
+> difference. Do not estimate a duration you were not given.
+
+`step_percent: 0.1` keeps every proposal inside the ratchet and the ceiling, so all 20
+writes are accepted and the measurement is of 20 successful bridge writes rather than
+of refusals. `position_filter` is the control because it is a pre-coded hook that runs
+no analyzer — do **not** use `snr_observer`, whose ~320 ms/frame of `compute_stats`
+swamps the effect.
+
+**Expected:** a per-frame difference attributable to the write, against Block 4's
+~657 ms/frame baseline. Report the number whichever way it falls.
+
+**Stop condition:** a hang, a dropped or out-of-order frame, or overhead large enough
+to change what an acquisition can be planned to do.
+
+### Step 7 (demo core). D1–D3
+
+Not M5. Stock `MMConfig_demo.cfg`, per the demo-core section above. Worth doing before
+another M5 session in case the envelope turns out to be M5-shaped.
+
+### Not required to close the gate
+
+- **R1 legacy** — PASS already; do not repeat.
+- **R5, R5b, R6, R7 case 2, R3a, R3b** — PASS already.
+- **A sample-based R4** — the honest biological version. Worth doing eventually, but
+  the plumbing route in step 4 closes the gate; say which was done.
+
 ## Verdict table
 
 | Step | What it settles | Verdict |
