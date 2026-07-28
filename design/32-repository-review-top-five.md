@@ -853,6 +853,15 @@ type, invalid payload, or action unsupported by the current runner fails closed
 before dispatch. Every accepted action is converted by trusted code into a
 guarded operation or acquisition event.
 
+> **That minimum was not sufficient, and Block 7b says so in hindsight.** Those six
+> cover adaptive *acquisition* decisions and nothing else. Three capabilities the lab
+> already used fall outside them entirely — illumination control for UV activation,
+> writing an assembled mosaic, and dropping an uninteresting field — so shipping the
+> six alone silently withdrew all three. Block 7b adds `SetIlluminationPower`,
+> `EmitArtifact` and `DiscardFrame`; see "Landed: Block 7b" below. The lesson worth
+> carrying is that "the minimum vocabulary" was derived from the runner's needs rather
+> than from what the rig's existing hooks did, and the two sets were not the same.
+
 Hardware-motion plugins and trusted built-in control hooks are different
 boundaries and should remain behind explicit gates. Generated Python analysis
 hooks should never receive a live controller as a shortcut around parent-side
@@ -928,6 +937,76 @@ the agent; absent and ambiguous `AcquireAt` labels shared one refusal reason; an
 required the saved position and the ranked record to carry identical axes, while
 Run A legitimately adds a focus Z. Procedure and evidence:
 `design/32-block7-gate-prompts.md`.
+
+### Landed: Block 7b (merged `e688606`, M5 gate PASS 2026-07-28)
+
+Phase 1's closed union covered adaptive acquisition and nothing else, so merging it
+withdrew three capabilities the lab was already using. Block 7b returns them in
+bounded, parent-mediated form and extends the union to nine variants.
+
+**`SetIlluminationPower(value_percent)`** — power modulation only, inside an envelope
+the *caller* supplies and a human confirms once before any motion: a declared
+device/property, a ceiling at or under `illumination.max_power_percent`, and a maximum
+number of accepted writes. Per frame the parent checks the envelope ceiling, then the
+write budget, then routes the write through `SafetyGuard.check_illumination` so config
+policy has exactly one implementation. `check_illumination` gained
+`previous_percent`, letting the parent enforce the ratchet against its own last
+successful write instead of re-reading the device on every frame.
+
+*The confirmation problem is solved by construction, not by prompting.* A hook cannot
+express a shutter enable, so `require_confirm_on_enable` is never reached mid-run and
+no prompt can land on a callback thread — which pyjavaz's single lock would deadlock.
+Enabling light stays a pre-run human action.
+
+*End-of-run policy belongs to the hook* (operator ruling, 2026-07-28). Nothing in
+microclaw restores or zeroes power. That is only safe because a **non-increasing
+proposal costs no budget and is never refused for exhaustion**, so a hook's own
+wind-down cannot be blocked by a safety check. Verified on M5: three accepted writes,
+two budget refusals, then a wind-down accepted at zero.
+
+**`EmitArtifact(filename, payload)`** — bytes or an ndarray plus a *bare* filename.
+Trusted parent code writes it into the acquisition's artifact directory, enforces
+per-artifact, per-run count and per-run total limits, hashes it, and records path and
+sha256. A generated hook receives no path and no filesystem capability, so the
+migrated stitchers hold strictly less reach than the originals, which wrote to an
+unconfined constructor string.
+
+**`DiscardFrame`** — the parent returns `None` from the image processor after recording
+the observation. Documented in three places that the position was still moved to and
+still exposed: this saves storage, not dose (design/27).
+
+**The rig gate found four defects, two of them invisible off-rig.**
+The artifact directory was *predicted* from `save_dir/name` and so missed AcqEngJ's
+`_N` rename — artifacts filed beside their dataset rather than in it, and successive
+runs collided on a filename, which masked the size-limit test. Fixed by late-binding
+from `_acq_dataset_path` once the `Acquisition` exists. And **a write reported as
+failed had in fact landed**: a serial timeout raised after the device applied the
+value, leaving the ratchet baseline stale and *lower* than reality, i.e. permissive.
+The parent now marks the baseline unknown on failure and re-reads before the next
+write, failing closed if the re-read fails. The other two were in the gate's own
+design, not the code.
+
+**Three limitations, recorded rather than engineered around.**
+
+1. *The ratchet is inert from zero.* `check_illumination` guards its ratio with
+   `old > 0`, so from 0 % a proposal may go straight to the envelope ceiling in one
+   write — and this block's own recommended wind-down makes zero the normal starting
+   state. Documented in `IlluminationConstraints`, the example config and
+   `hook_docs.py` rather than changed, by operator ruling: the ratchet bounds how fast
+   power climbs, not how high it reaches, and a hook that wants a gradual ramp
+   implements one itself.
+2. *Dose is not bounded, only amplitude.* On M5 the 405 nm activation loop that htSMLM
+   actually uses ramps FPGA **pulse duration** (`Laser Trigger.Duration0`, 0–1 048 575
+   µs), not level. Dose goes as level × duration; `Laser Trigger` is an excluded
+   device, so microclaw can neither write nor bound it. Bounding duration is a
+   design/33 Phase 2 typed-actuator question.
+3. *One live configuration.* Every illumination run was on M5. The stock demo config
+   exposes no analog power property at all — its `LED` is a StateDevice selecting
+   wavelengths — so D2/D3 were skipped by ruling. That the envelope is config-shaped
+   rather than M5-shaped rests on inspection (no rig-specific string appears in the
+   shipped diff) and on unit tests, not on a second rig.
+
+Procedure and evidence: `design/32-block7b-rig-gate-prompts.md`.
 
 ## 5. Conversation history grows without a context or storage policy
 
