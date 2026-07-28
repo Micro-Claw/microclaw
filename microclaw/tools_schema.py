@@ -1388,10 +1388,27 @@ TOOLS: list[dict[str, Any]] = [
         "name": "list_hooks",
         "description": (
             "List all available hook strategies: pre-coded hooks and previously saved hooks "
-            "(with their descriptions and source). Call this before run_adaptive_zstack "
-            "or run_adaptive_timelapse to confirm the strategy name."
+            "(with their descriptions and source). Call describe_hook with a strategy name "
+            "to discover constructor parameters and resolve-time compatibility before an "
+            "acquisition."
         ),
         "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "describe_hook",
+        "description": (
+            "Describe a pre-coded or saved hook: class and docstring, constructor "
+            "parameters and defaults, callback, resolve-time refusal, stripped or "
+            "injected parameters, and saved-source integrity provenance. Saved source "
+            "is parsed without importing or executing it, including when changed or unpinned."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Hook strategy name from list_hooks."}
+            },
+            "required": ["name"],
+        },
     },
     {
         "name": "list_mm_plugins",

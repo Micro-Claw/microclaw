@@ -4,9 +4,15 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+from typing import Any
 
 HOOKS_DIR = Path.home() / ".microclaw" / "hooks"
 MANIFEST = HOOKS_DIR / "manifest.json"
+
+FORBIDDEN_SAVED_HOOK_PARAMS = (
+    "ctrl", "guard", "credentials", "candidates", "progress",
+    "survey_events", "event_queue", "log_path",
+)
 
 # Modules whose import or use is worth flagging for a human to review. Broad on
 # purpose (os/open catch benign log-writing hooks too), because this is an
@@ -167,6 +173,169 @@ def load_hook_class(name: str):
     raise AttributeError(
         f"No class with analyze_frame or image_process_fn found in hook '{name}'."
     )
+
+
+def _render_ast_default(node: ast.expr) -> str:
+    """Render a constructor default without evaluating executable expressions."""
+    try:
+        return repr(ast.literal_eval(node))
+    except (ValueError, TypeError):
+        return ast.unparse(node)
+
+
+def _ast_constructor_parameters(cls: ast.ClassDef) -> list[dict[str, Any]]:
+    init = next(
+        (node for node in cls.body
+         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+         and node.name == "__init__"),
+        None,
+    )
+    if init is None:
+        return []
+
+    positional = [*init.args.posonlyargs, *init.args.args]
+    defaults: list[ast.expr | None] = [None] * (
+        len(positional) - len(init.args.defaults)
+    ) + list(init.args.defaults)
+    parameters: list[dict[str, Any]] = []
+    for arg, default in zip(positional, defaults):
+        if arg.arg == "self":
+            continue
+        item: dict[str, Any] = {"name": arg.arg, "required": default is None}
+        if default is not None:
+            item["default"] = _render_ast_default(default)
+        parameters.append(item)
+
+    for arg, default in zip(init.args.kwonlyargs, init.args.kw_defaults):
+        item = {"name": arg.arg, "required": default is None}
+        if default is not None:
+            item["default"] = _render_ast_default(default)
+        parameters.append(item)
+    if init.args.vararg:
+        parameters.append({"name": init.args.vararg.arg, "required": False})
+    if init.args.kwarg:
+        parameters.append({"name": init.args.kwarg.arg, "required": False})
+    return parameters
+
+
+def _hookbase_aliases(tree: ast.Module) -> set[str]:
+    aliases = {"HookBase"}
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom) and node.module == "microclaw.hooks":
+            aliases.update(
+                item.asname or item.name for item in node.names
+                if item.name == "HookBase"
+            )
+    return aliases
+
+
+def describe_saved_hook(name: str) -> dict[str, Any]:
+    """Describe saved hook source using AST only; never import or execute it.
+
+    Description deliberately remains available when the file hash differs from
+    its manifest pin, or when a legacy manifest has no pin. Refusing to *run*
+    changed or unpinned source is protective; refusing to *read and describe*
+    it would hide the change an operator needs to inspect. Integrity state and
+    both hashes are therefore returned prominently instead of gating the read.
+    """
+    manifest = json.loads(MANIFEST.read_text(encoding="utf-8")) if MANIFEST.exists() else {}
+    if name not in manifest:
+        return {"error": f"No saved hook named '{name}'."}
+    entry = manifest[name]
+    path = Path(entry["path"])
+    provenance: dict[str, Any] = {
+        "path": str(path),
+        "source": entry.get("source"),
+        "accepted_warnings": entry.get("accepted_warnings", []),
+        "manifest_sha256": entry.get("sha256"),
+    }
+    try:
+        raw = path.read_bytes()
+        code = raw.decode("utf-8")
+    except (OSError, UnicodeError) as exc:
+        return {
+            "error": f"Could not read saved hook '{name}': {exc}",
+            "name": name,
+            "kind": "saved",
+            "provenance": {**provenance, "actual_sha256": None,
+                           "matches_manifest": False},
+        }
+    actual_sha256 = hashlib.sha256(raw).hexdigest()
+    provenance.update({
+        "actual_sha256": actual_sha256,
+        "matches_manifest": (
+            entry.get("sha256") is not None
+            and entry["sha256"] == actual_sha256
+        ),
+    })
+    try:
+        tree = ast.parse(code)
+    except SyntaxError as exc:
+        return {
+            "error": f"Could not parse saved hook '{name}': {exc}",
+            "name": name,
+            "kind": "saved",
+            "provenance": provenance,
+        }
+
+    classes = [node for node in tree.body if isinstance(node, ast.ClassDef)]
+    cls = next((
+        node for node in classes
+        if any(isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+               and item.name in {"analyze_frame", "image_process_fn"}
+               for item in node.body)
+    ), None)
+    if cls is None:
+        return {
+            "error": (
+                f"No top-level class defines analyze_frame or image_process_fn "
+                f"in saved hook '{name}'."
+            ),
+            "name": name,
+            "kind": "saved",
+            "provenance": provenance,
+        }
+
+    callback = (
+        "analyze_frame"
+        if any(getattr(node, "name", None) == "analyze_frame" for node in cls.body)
+        else "image_process_fn"
+    )
+    parameters = _ast_constructor_parameters(cls)
+    parameter_names = {item["name"] for item in parameters}
+    aliases = _hookbase_aliases(tree)
+    hookbase_subclass = any(
+        (isinstance(base, ast.Name) and base.id in aliases)
+        or (isinstance(base, ast.Attribute) and base.attr == "HookBase")
+        for base in cls.bases
+    )
+    refusal_reasons = []
+    if entry.get("sha256") is None:
+        refusal_reasons.append("saved hook has no manifest sha256 pin")
+    elif entry["sha256"] != actual_sha256:
+        refusal_reasons.append("saved hook file sha256 does not match manifest")
+    if hookbase_subclass:
+        refusal_reasons.append("saved hook subclasses HookBase")
+    if "log_path" in parameter_names:
+        refusal_reasons.append("saved hook constructor takes log_path")
+    stripped = [
+        parameter for parameter in FORBIDDEN_SAVED_HOOK_PARAMS
+        if parameter in parameter_names
+    ]
+    return {
+        "name": name,
+        "kind": "saved",
+        "class_name": cls.name,
+        "class_docstring": ast.get_docstring(cls, clean=True),
+        "constructor_parameters": parameters,
+        "callback": callback,
+        "resolve_refusal": {
+            "would_refuse": bool(refusal_reasons),
+            "reasons": refusal_reasons,
+        },
+        "parameter_handling": {"stripped": stripped, "injected": []},
+        "provenance": provenance,
+    }
 
 
 def list_saved_hooks() -> dict[str, dict]:
