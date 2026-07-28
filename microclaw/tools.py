@@ -1,6 +1,7 @@
 from __future__ import annotations
 import inspect
 import hashlib
+import itertools
 import json
 import logging
 import math
@@ -931,8 +932,6 @@ def export_dataset_as_tiff(
     dataset_path: str,
     output_path: str,
 ) -> dict:
-    import itertools
-
     dataset_path = guard.resolve_readable_path(dataset_path)
     output_path = guard.resolve_in_workspace(output_path)
     dataset = Dataset(dataset_path)
@@ -957,11 +956,10 @@ def export_dataset_as_tiff(
         # ImageJ hyperstack stays rectangular.
         coord_values = {a: sorted(axes[a]) for a in axis_names}
         combos = list(itertools.product(*(coord_values[a] for a in axis_names)))
-        present = {}
-        for combo in combos:
-            coords = dict(zip(axis_names, combo))
-            if dataset.has_image(**coords):
-                present[combo] = dataset.read_image(**coords)
+        present = {
+            tuple(coords[a] for a in axis_names): dataset.read_image(**coords)
+            for coords in _iter_present_coords(dataset, {})
+        }
         if not present:
             return {"error": f"No images found in dataset: {dataset_path}"}
         sample = next(iter(present.values()))
@@ -979,6 +977,29 @@ def export_dataset_as_tiff(
     return {"status": "Export complete.", "output_path": output_path,
             "axes": axis_names,
             "artifact": {"kind": "tiff", "path": output_path}}
+
+
+def _iter_present_coords(dataset, fixed_axes: dict) -> Any:
+    """Yield real coordinates for present cells in a sparse NDTiff dataset."""
+    unknown = set(fixed_axes) - set(dataset.axes)
+    if unknown:
+        raise ValueError(f"Unknown dataset axes: {sorted(unknown)}")
+    invalid = {
+        axis: value for axis, value in fixed_axes.items()
+        if value not in dataset.axes[axis]
+    }
+    if invalid:
+        raise ValueError(f"Dataset axis selections are not present: {invalid}")
+
+    axis_names = list(dataset.axes)
+    values = [
+        [fixed_axes[axis]] if axis in fixed_axes else sorted(dataset.axes[axis])
+        for axis in axis_names
+    ]
+    for combo in itertools.product(*values):
+        coords = dict(zip(axis_names, combo))
+        if dataset.has_image(**coords):
+            yield coords
 
 
 # --- Image capture with analysis ---
@@ -1270,7 +1291,28 @@ def calibrate_stage_to_camera(
     except ValueError as e:
         return {"error": f"Calibration failed: {e}"}
 
-    key = save_affine(affine)
+    try:
+        camera_device = str(ctrl.core.get_camera_device())
+        if not camera_device:
+            raise ValueError("camera device is empty")
+        camera_model = str(ctrl.core.get_device_name(camera_device))
+        if not camera_model:
+            raise ValueError("camera model is empty")
+        roi_value = ctrl.core.get_roi()
+        roi = [int(roi_value.x), int(roi_value.y),
+               int(roi_value.width), int(roi_value.height)]
+        if roi[2] <= 0 or roi[3] <= 0:
+            raise ValueError(f"camera ROI has invalid geometry {roi}")
+    except Exception as error:
+        return {
+            "error": (
+                "Calibration measured but not saved: complete camera device, "
+                f"model, and ROI identity could not be read ({error})."
+            )
+        }
+    key = save_affine(
+        affine, camera_device=camera_device, camera_model=camera_model, roi=roi,
+    )
     from dataclasses import asdict
     return {
         **asdict(affine),

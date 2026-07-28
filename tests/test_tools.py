@@ -163,6 +163,40 @@ class TestMoveStageXY:
 
 
 class TestCalibrateStageToCamera:
+    def test_identity_read_failure_refuses_to_save_calibration(
+        self, mock_ctrl, unconstrained_guard, monkeypatch, tmp_path
+    ):
+        from microclaw import knowledge_manager
+        from microclaw.tools import calibrate_stage_to_camera
+
+        monkeypatch.setattr(
+            knowledge_manager, "KNOWLEDGE_PATH", tmp_path / "knowledge.yaml"
+        )
+        monkeypatch.setattr(
+            "microclaw.tools.snap_to_numpy",
+            lambda ctrl: np.ones((128, 128), dtype=np.float32),
+        )
+        monkeypatch.setattr(
+            "skimage.registration.phase_cross_correlation",
+            MagicMock(side_effect=[
+                (np.array([0.0, 40.0]), 0, 0),
+                (np.array([40.0, 0.0]), 0, 0),
+            ]),
+        )
+        monkeypatch.setattr(
+            "microclaw.tools._diagnose_calibration_shift", lambda *args: None
+        )
+        mock_ctrl.core.get_camera_device.return_value = "Cam"
+        mock_ctrl.core.get_device_name.side_effect = RuntimeError("adapter unavailable")
+
+        result = calibrate_stage_to_camera(
+            mock_ctrl, unconstrained_guard, step_um=20.0
+        )
+
+        assert "measured but not saved" in result["error"]
+        assert "adapter unavailable" in result["error"]
+        assert not knowledge_manager.KNOWLEDGE_PATH.exists()
+
     def test_recovers_pixel_size_and_restores_stage(
         self, mock_ctrl, unconstrained_guard, monkeypatch, tmp_path
     ):
@@ -1755,6 +1789,23 @@ class TestTimelapseTriggerPreflight:
 
 
 class TestExportDatasetAllAxes:
+    def test_present_coord_helper_uses_strings_sparse_axes_and_selection(self):
+        from microclaw.tools import _iter_present_coords
+
+        class FakeDataset:
+            axes = {"position": ["run_a_r0_c3", "run_a_r2_c1"], "time": [4, 9]}
+
+            def has_image(self, **coords):
+                return (coords["position"], coords["time"]) in {
+                    ("run_a_r0_c3", 4), ("run_a_r2_c1", 9)
+                }
+
+        assert list(_iter_present_coords(FakeDataset(), {"time": 9})) == [
+            {"position": "run_a_r2_c1", "time": 9}
+        ]
+        with pytest.raises(ValueError, match="not present"):
+            list(_iter_present_coords(FakeDataset(), {"time": 0}))
+
     def test_iterates_full_axis_product(self, mock_ctrl, unconstrained_guard, monkeypatch, tmp_path):
         from microclaw import tools
 
