@@ -43,7 +43,7 @@ Progress markers: `[ ]` not started, `[-]` active, `[x]` complete, `[!]` blocked
 | 6 | `design32/remote-auth` | `d70874d` (main, 910/98/3) | `eb9ab16` + `c81aa16` (review fixes R1–R4) + `f68af87` (coordinator); 937/98/3 (mac) | n/a — network/security tests are this block's gate; no hardware path touched | `056a4ef` | Gate done: §3 heading restored (it was missing), Block 6 landed contract + five stated limitations, interim "unauthenticated remote warning" path removed from the ordering section |
 | 7 | `design32/generated-hook-decisions` | `cc2df05` (main, 937/98/3) | `7a9a602`…`af8f51b`; 967/99/3 (mac), 1044/21/3 (demo core) | demo D1–D5 PASS + M5 R1 PASS 2026-07-28: capability stripping live, 3-of-5 typed stop, four attributable refusals, Run A 12/12/12 with revisit 0.01 px. Gate caught 4 defects, 3 invisible off-rig. | `2b8d752` | Gate done: design/32 §4 Block-7 landed note; design/26 5 reconciliations incl. the unresolved `analyze_frame` collision blocking Block 10 |
 | 7b | `design32/hook-illumination-and-artifacts` | `ff690e8` (main, 967/99/3) | `f300fff`…`35f6dc4`; 1014/99/3 (mac), 989/115/3 (M5 under uv), 1089/21/3 (demo core, integration live) | M5 2026-07-28: R1–R8 + P0–P2 + R5pre PASS; D2/D3 skipped by ruling. **Gate caught 4 defects, 2 invisible off-rig** | `e688606` | Gate done: design/32 §4 vocabulary corrected + Block-7b landed note; design/33 illumination-contract changes, failed-write-may-have-landed rule, and M5 405 findings (docs merge `d189722`) |
-| 8 | `design29/saved-dataset-foundation` | `c3af2b1` | | **pre-branch gate: `design29/probe-findings` (`cf0c00c`)** — probe was defective and its affine verdicts void; repaired, MMCore row-major pinned by `javap`. Live M5/demo/M2: **no measured affine anywhere**; identity is MM's default (same hash on two unrelated systems). Saved data gives the X column only (~90°, ~0.13 µm/px). | | Gate questions 1–3 answered; **Y column still open**, so the implementation branch stays closed |
+| 8 | `design29/saved-dataset-foundation` | `c3af2b1` | `b1e347c` + `333144e` (7 review defects); 1052/99/3 | **pre-branch gate: `design29/probe-findings` (`cf0c00c`)** — probe was defective and its affine verdicts void; repaired, MMCore row-major pinned by `javap`. Live M5/demo/M2: **no measured affine anywhere**; identity is MM's default (same hash on two unrelated systems). Saved data gives the X column only (~90°, ~0.13 µm/px). No rig action for the implementation itself. | `e45a129` | Gate done: §5 precedence corrected (explicit ref beats the acquisition record, reconciling §2), measured per-image metadata contract recorded, Y column still open and owned by Block 9 |
 | 9 | `design29/stage-coordinate-mosaic` | | | required | | |
 | 10 | `design26/completed-dataset-runner` | | | saved-data fixture | | |
 | 11 | `design26/generated-adapter-run-b` | | | required | | |
@@ -667,30 +667,56 @@ Implementation:
       than where `get_pixel_size_affine_by_id` reads, the resolver's MM-sourced
       branch needs rework. That is one branch of one function, and one calibrator
       run plus one probe rerun falsifies it. Re-check before merging Block 8.
-- [ ] Extract `_iter_present_coords(dataset, fixed_axes)` from the exporter; iterate real
+      **Discharged at merge, and the risk was overstated.** The resolver's
+      acquisition branch reads per-image `PixelSizeAffine` from the saved dataset,
+      not from the live core, and MM stamps that field from whatever the active
+      config holds at acquisition time. So where the calibrator writes does not
+      change this code; it only determines whether *future* datasets carry a real
+      affine. Live config reads survive only in the diagnostic
+      `_config_mismatches`. The genuine residual limitation is different and is
+      recorded below: no dataset available to us carries a non-sentinel affine.
+- [x] Extract `_iter_present_coords(dataset, fixed_axes)` from the exporter; iterate real
       axis values and guard candidates with `has_image`. Refactor the exporter to use it.
-- [ ] Define canonical affine serialization/hash rules and immutable version keys; retain
+      — extracted; handles string position coords, per-dataset axis sets, and sparse
+      hypercubes. Exporter keeps its zero-fill (its concern, not the helper's).
+- [x] Define canonical affine serialization/hash rules and immutable version keys; retain
       the objective/binning alias only as a mutable current pointer.
-- [ ] Implement the revised tagged resolver. Parse acquisition `PixelSizeAffine`
+      — compact sorted JSON, `allow_nan=False`, SHA-256; version key embeds the hash and
+      the alias is demoted to a `current_version` pointer.
+- [x] Implement the revised tagged resolver. Parse acquisition `PixelSizeAffine`
       in MMCore row-major order and fall through on `Undefined`, all-zero,
       identity, non-finite, or singular values. Never infer uncalibrated from
       current pixel size/config alone: enumerate inactive calibrated configs and
       surface rule mismatches. Never silently use current microscope calibration
       for historical data. Identity includes camera/model, objective, binning,
       ROI geometry, exact affine payload, and hash.
-- [ ] Validate immutable payload hashes on load and migrate/version legacy aliases before
-      use.
-- [ ] Test sparse/non-zero-based coordinates, selection errors, exporter regression,
+- [x] Validate immutable payload hashes on load and migrate/version legacy aliases before
+      use. — hash re-derived and checked against both the stored field and the key suffix.
+- [x] Test sparse/non-zero-based coordinates, selection errors, exporter regression,
       recalibration immutability, artifact/knowledge/current/legacy sources, and replay
-      without the knowledge base.
-- [ ] Commit and merge only once the implementation records uncertainty honestly and requires an
-      explicit artifact/confirmation where the dataset is insufficient.
+      without the knowledge base. — replay verified after deleting the knowledge file.
+- [x] Commit and merge only once the implementation records uncertainty honestly and requires an
+      explicit artifact/confirmation where the dataset is insufficient. — satisfied: an
+      incomplete acquisition identity falls through and records
+      `acquisition_fallthrough_reason` rather than guessing, and a missing objective is
+      never stringified into the hashed payload.
 
 Post-merge design gate:
 
-- [ ] Update design/29 with the probe findings, actual MM metadata/affine sources,
+- [x] Update design/29 with the probe findings, actual MM metadata/affine sources,
       convention result, and final identity format. If the premise of full affine
       placement changed, revise design/29 and re-plan Block 9 before coding it.
+      — §5's precedence list **corrected**: it put the acquisition record first,
+      contradicting §2's "if omitted"; the explicit reference now wins, which is
+      what shipped. The measured per-image metadata contract is recorded as a
+      table (dash-delimited ROI, `Core-Camera`, `'1'` vs `'1x1'` binning, and the
+      **absent** objective key), because Block 8's first implementation was green
+      against invented key shapes and wrong against every real one.
+      The premise of full affine placement did **not** change, so Block 9 needs no
+      re-plan — but it inherits two open items: the **Y column** (operator action,
+      MM's own pixel calibrator) and the fact that **no available dataset carries a
+      non-sentinel affine**, so the acquisition branch's success path is
+      unit-tested and never field-verified.
 
 ## 9. Design/29 feature — pure geometry and stage-coordinate mosaic
 
