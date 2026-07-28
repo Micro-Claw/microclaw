@@ -4,6 +4,17 @@
 Uses only NumPy/SciPy.  It never opens Micro-Manager and never writes to the
 dataset.  Pixel shifts are the (dy, dx) displacement applied to the destination
 tile to align it to the source tile, matching ``solve_affine``'s convention.
+
+This measures the convention from tiles ALREADY on disk, at zero dose.  When it
+cannot -- because a dataset is dark, has no adjacent pairs, or (as on run_a_2)
+resolves only one column -- **do not write a move/snap spike to finish the job.**
+Micro-Manager already ships that measurement in
+``org.micromanager.internal.pixelcalibrator``: ``AutomaticCalibrationThread``
+moves the stage, snaps, and cross-correlates, and ``CalibrationThread.result_``
+is a full ``java.awt.geom.AffineTransform``.  Run MM's pixel calibrator on a
+contrast-rich field instead, then read the result back with
+``29-mm-pixel-affine-probe.py``.  See design/29's "Do not build a move/snap
+affine spike" section.
 """
 from __future__ import annotations
 
