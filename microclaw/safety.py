@@ -93,8 +93,12 @@ class IlluminationConstraints:
                                 on_value requires a blocking human confirmation.
       power_properties          properties that set emission power (percent).
       max_power_percent         refuse writes above this value.
-      max_power_step_factor     refuse a power increase of more than N× in one
-                                write (1% → 25% must take deliberate steps).
+      max_power_step_factor     bound the ratio between consecutive parent writes,
+                                limiting how fast power climbs rather than how high
+                                it can reach. From zero it imposes no constraint;
+                                only max_power_percent bounds the first increase.
+                                This is a runaway backstop, not a gradual-ramp
+                                mechanism; hooks implement ramps themselves.
       require_confirm_on_enable confirm-gate shutter enables (default on).
     """
 

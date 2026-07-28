@@ -257,7 +257,68 @@ def test_parent_device_write_failure_has_own_record(tmp_path):
     assert adapter._log[-1]["event"] == "illumination_write_failure"
     assert adapter._log[-1]["decision"] == "failed"
     assert "bridge down" in adapter._log[-1]["reason"]
+    assert adapter._log[-1]["baseline_stale"] is True
     assert not any(r.get("event") == "hook_failure" for r in adapter._log)
+
+
+def test_failed_write_rereads_true_baseline_before_ratchet(tmp_path):
+    class Hook:
+        def __init__(self): self.values = iter((25, 60))
+        def analyze_frame(self, image, metadata):
+            return HookResult({}, (SetIlluminationPower(next(self.values)),))
+    core = MagicMock()
+    core.get_property.return_value = "25.0000"
+    core.set_property.side_effect = RuntimeError("Serial timeout occurred. (17)")
+    guard = SafetyGuard(SafetyConstraints(illumination=IlluminationConstraints(
+        power_properties=[ForbiddenProperty("Laser", "Power")],
+        max_power_percent=100, max_power_step_factor=2,
+    )))
+    adapter = UntrustedHookAdapter(Hook())
+    adapter.configure_illumination(
+        core=core, guard=guard, device="Laser", property="Power",
+        max_power_percent=100, max_writes=1, initial_value=0,
+    )
+    image = np.zeros((1, 1))
+    adapter.image_process_fn(image, {}, object())
+    adapter.image_process_fn(image, {}, object())
+
+    core.get_property.assert_called_once_with("Laser", "Power")
+    assert core.set_property.call_count == 1
+    assert adapter._illumination_context["remaining"] == 1
+    assert adapter._log[-2] == {
+        "position": None,
+        "event": "illumination_baseline_reread", "decision": "succeeded",
+        "value_percent": 25.0, "baseline_stale": False,
+    }
+    assert "per-write ratchet" in adapter._log[-1]["reason"]
+
+
+def test_failed_baseline_reread_refuses_with_distinct_reason(tmp_path):
+    class Hook:
+        def __init__(self): self.values = iter((6, 7))
+        def analyze_frame(self, image, metadata):
+            return HookResult({}, (SetIlluminationPower(next(self.values)),))
+    adapter, core = _illumination_adapter(None, tmp_path)
+    adapter.hook = Hook()
+    core.set_property = MagicMock(side_effect=RuntimeError("write timeout"))
+    core.get_property = MagicMock(side_effect=RuntimeError("read timeout"))
+    image = np.zeros((1, 1))
+    adapter.image_process_fn(image, {}, object())
+    adapter.image_process_fn(image, {}, object())
+
+    assert core.set_property.call_count == 1
+    assert adapter._illumination_context["baseline_stale"] is True
+    assert adapter._log[-1]["decision"] == "refused"
+    assert adapter._log[-1]["reason"] == (
+        "illumination baseline could not be re-established: read timeout"
+    )
+
+
+def test_healthy_illumination_write_does_not_reread(tmp_path):
+    adapter, core = _illumination_adapter(SetIlluminationPower(6), tmp_path)
+    core.get_property = MagicMock()
+    adapter.image_process_fn(np.zeros((1, 1)), {}, object())
+    core.get_property.assert_not_called()
 
 
 def test_config_ceiling_still_wins_if_parent_context_is_wrongly_wide(tmp_path):

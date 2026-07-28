@@ -280,7 +280,7 @@ class UntrustedHookAdapter:
         self._illumination_context = {
             "core": core, "guard": guard, "device": device, "property": property,
             "ceiling": max_power_percent, "remaining": max_writes,
-            "last_written": initial_value,
+            "last_written": initial_value, "baseline_stale": False,
         }
 
     def configure_artifacts(self, *, target_dir: str | Path,
@@ -368,6 +368,25 @@ class UntrustedHookAdapter:
                 self._refuse(metadata, action, "no illumination envelope was authorized for this run")
                 return None
             new = float(action.value_percent)
+            if ctx["baseline_stale"]:
+                try:
+                    raw = ctx["core"].get_property(ctx["device"], ctx["property"])
+                    current = float(raw)
+                    if not math.isfinite(current):
+                        raise ValueError(f"non-finite value {raw!r}")
+                except Exception as exc:
+                    self._refuse(
+                        metadata, action,
+                        f"illumination baseline could not be re-established: {exc}",
+                    )
+                    return None
+                ctx["last_written"] = current
+                ctx["baseline_stale"] = False
+                self._record(
+                    metadata, event="illumination_baseline_reread",
+                    decision="succeeded", value_percent=current,
+                    baseline_stale=False,
+                )
             if new > ctx["ceiling"]:
                 self._refuse(metadata, action, "proposal exceeds authorized envelope ceiling")
                 return None
@@ -387,10 +406,12 @@ class UntrustedHookAdapter:
             try:
                 ctx["core"].set_property(ctx["device"], ctx["property"], str(new))
             except Exception as exc:
+                ctx["baseline_stale"] = True
                 self._record(
                     metadata, event="illumination_write_failure",
                     action=self._action_record(action), decision="failed",
                     reason=f"parent device write failed: {exc}",
+                    baseline_stale=True,
                 )
                 return None
             ctx["last_written"] = new

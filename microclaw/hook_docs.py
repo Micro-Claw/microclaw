@@ -145,6 +145,13 @@ a reviewed PRECODED_HOOK_REGISTRY built-in; a UV level computed per frame from b
 density is feedback and must use the proposed-action union. This block does not add
 such an open-loop built-in.
 
+`max_power_step_factor` bounds the ratio between consecutive parent writes, so it
+limits how fast power climbs rather than how high it can reach. From zero there is
+no ratio constraint and the envelope ceiling is the only bound. The ratchet is a
+backstop against a runaway, not the mechanism that makes a ramp gradual: a hook that
+wants a gradual ramp implements it itself, as `uv_activation` does with
+`step_percent`.
+
 End-of-run power policy belongs to the hook and its user: a hook may leave the last
 accepted value, restore a chosen value, or ramp down to zero. Microclaw does not add
 an automatic final write. A non-increasing write within the authorized envelope is
