@@ -190,8 +190,9 @@ class SafetyConstraints:
     # is the only mode in which raw property writes have a hard gate (see
     # SafetyGuard.check_property and safety_config.yaml).
     allowed_properties: Optional[list[ForbiddenProperty]] = None
-    # Filesystem boundary for paths microclaw writes or serves. None = unrestricted.
-    # (behaviour unchanged); set it to confine reads/writes to one directory.
+    # Filesystem boundary for paths microclaw writes or serves. None = unrestricted
+    # (behaviour unchanged); set it to confine writes and served files to one
+    # directory. Local reads are never confined by it.
     workspace_dir: Optional[str] = None
     plugins: PluginConstraints = field(default_factory=PluginConstraints)
     illumination: IlluminationConstraints = field(

@@ -2315,9 +2315,9 @@ def run_multiposition_with_autofocus(
 def _prepare_log_path(guard: SafetyGuard, log_path: str | None) -> str | None:
     """Resolve a hook's log path in the workspace and create its parent directory.
 
-    The hook writes this file itself, so it never passed the guard — while
-    Local reads are unconfined, but writes are not. Resolve it here so the hook
-    cannot write outside a configured workspace.
+    The hook writes this file itself, so the path never passed the guard on its
+    way to being written. Local reads are unconfined but writes are not, so
+    resolve it here or a hook can write outside a configured workspace.
 
     The mkdir matters as much as the resolve: the hook only opens the file on
     its first frame, so a missing parent surfaces as FileNotFoundError *inside
