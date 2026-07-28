@@ -170,3 +170,31 @@ def test_stitcher_migrations_preserve_canvas_and_parent_writes(name, class_name,
     np.testing.assert_array_equal(written, expected)
     observation = next(r for r in adapter._log if "schema" in r)
     assert len(observation["artifact_sha256"]) == 64
+
+
+def test_wind_down_fixture_survives_an_exhausted_budget(tmp_path):
+    """R5b as a unit test: the ramp spends the budget, the wind-down still lands.
+
+    This is the operator ruling made mechanical — end-of-run illumination policy
+    lives in the hook, which is only safe if the hook cannot be refused while
+    lowering power.
+    """
+    hook = _load("m5_migrated", "uv_activation_wind_down").UVActivationWithWindDown(
+        start_percent=5, step_percent=1, ceiling_percent=12, wind_down_after=3,
+    )
+    core = MagicMock()
+    adapter = UntrustedHookAdapter(hook)
+    adapter.configure_illumination(
+        core=core, guard=_guard(max_power=20, factor=3), device="Laser",
+        property="Power", max_power_percent=8, max_writes=2, initial_value=5,
+    )
+    for _ in range(5):
+        adapter.image_process_fn(np.zeros((2, 2)), {}, object())
+
+    written = [float(call.args[2]) for call in core.set_property.call_args_list]
+    # 6 and 7 spend the budget; 8 is refused for exhaustion; frames 4 and 5 are
+    # the wind-down and land anyway.
+    assert written == [6.0, 7.0, 0.0, 0.0]
+    assert adapter._illumination_context["remaining"] == 0
+    reasons = [r.get("reason") for r in adapter._log if r.get("decision") == "refused"]
+    assert reasons == ["authorized illumination write budget exhausted"]
