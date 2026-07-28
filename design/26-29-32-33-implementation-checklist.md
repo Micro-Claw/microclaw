@@ -42,7 +42,7 @@ Progress markers: `[ ]` not started, `[-]` active, `[x]` complete, `[!]` blocked
 | 5 | `design33/dose-authorization` | `ec98330` (main, 894/98/3) | `ff41de7` + `a28e5bd` (review fixes); 910/98/3 (mac) | B0/B1/B5 PASS on M5; B2/B3 PASS off-rig; B4/B4b/B5 PASS on a demo core via the live pyjavaz bridge. Gate found 3 defects, all in the gate not the code; 2 implementation defects were fixed in coordinator review before hardware. | `3438b90` | Gate done: design/33 Phase-3 landed semantics, evidence boundaries, and follow-ups; design/32 planner/ledger discharge + M5 live-geometry measurement |
 | 6 | `design32/remote-auth` | `d70874d` (main, 910/98/3) | `eb9ab16` + `c81aa16` (review fixes R1–R4) + `f68af87` (coordinator); 937/98/3 (mac) | n/a — network/security tests are this block's gate; no hardware path touched | `056a4ef` | Gate done: §3 heading restored (it was missing), Block 6 landed contract + five stated limitations, interim "unauthenticated remote warning" path removed from the ordering section |
 | 7 | `design32/generated-hook-decisions` | `cc2df05` (main, 937/98/3) | `7a9a602`…`af8f51b`; 967/99/3 (mac), 1044/21/3 (demo core) | demo D1–D5 PASS + M5 R1 PASS 2026-07-28: capability stripping live, 3-of-5 typed stop, four attributable refusals, Run A 12/12/12 with revisit 0.01 px. Gate caught 4 defects, 3 invisible off-rig. | `2b8d752` | Gate done: design/32 §4 Block-7 landed note; design/26 5 reconciliations incl. the unresolved `analyze_frame` collision blocking Block 10 |
-| 7b | `design32/hook-illumination-and-artifacts` | | | required | | |
+| 7b | `design32/hook-illumination-and-artifacts` | `ff690e8` (main, 967/99/3) | `f300fff`…`35f6dc4`; 1014/99/3 (mac), 989/115/3 (M5 under uv), 1089/21/3 (demo core, integration live) | M5 2026-07-28: R1–R8 + P0–P2 + R5pre PASS; D2/D3 skipped by ruling. **Gate caught 4 defects, 2 invisible off-rig** | `e688606` | pending |
 | 8 | `design29/saved-dataset-foundation` | | | probe required | | |
 | 9 | `design29/stage-coordinate-mosaic` | | | required | | |
 | 10 | `design26/completed-dataset-runner` | | | saved-data fixture | | |
@@ -537,53 +537,58 @@ fallback. They can write anywhere on disk. The replacement must be confined to t
 acquisition's artifact directory — this block should end with generated hooks
 holding *less* filesystem reach than before, not more.
 
-- [ ] Create the branch from updated `main`.
-- [ ] Add a typed illumination action to the closed union, authorized through
-      design/33's **existing** Phase-1 illumination gate (`require_confirm_on_enable`,
-      `max_power_percent`, `max_power_step_factor`). Do not introduce a second
-      authorization surface for light.
-- [ ] **Resolve the confirmation problem before coding.** Block 7 established that no
-      interactive confirmation may occur on an acquisition callback thread, because
-      pyjavaz serializes bridge calls behind one lock. `require_confirm_on_enable`
-      therefore cannot be satisfied mid-acquisition. Either pre-authorize an
-      illumination envelope at plan time, alongside the Block 4 reservation, or state
-      plainly that hook-proposed illumination is limited to what was authorized before
-      the run. Do not add a mid-run prompt.
-- [ ] Add a bounded, parent-mediated artifact-emission path for live hooks: writes go
-      to the acquisition's artifact directory only, are size-limited, and are recorded
-      in the parent audit with a hash. A generated hook must still not receive a
-      filesystem capability of its own.
-- [ ] Add a frame-discard path so an observation-only filter can drop a field.
-      State in the same place that the position is still exposed (design/27), so no
-      one reads discard as dose saving.
-- [ ] Distinguish open-loop conditioning from closed-loop feedback. A fixed
-      pre-acquisition ramp that reads no image content may belong in
-      `PRECODED_HOOK_REGISTRY` as a reviewed built-in; a UV level computed per frame
-      from blink density is genuinely a proposed action and must go through the
-      union. Do not solve the second by pretending it is the first.
-- [ ] Migrate all three hooks to `analyze_frame` and use them as the acceptance
-      fixtures. Each must run again with no `ctrl`, no `guard`, and no self-written log.
-- [ ] Test refusal paths as carefully as success: an illumination proposal exceeding
-      the configured power ceiling or step factor, one ramping within the ceiling but
-      faster than the step factor allows, one arriving after the pre-authorized
-      envelope is spent, an artifact exceeding the size limit, and an artifact path
-      escaping the acquisition directory.
+- [x] Create the branch from updated `main`. — from `ff690e8`.
+- [x] Add a typed illumination action to the closed union, authorized through
+      design/33's **existing** Phase-1 illumination gate. — `SetIlluminationPower`;
+      every proposal routes through `check_illumination`, which gained a
+      `previous_percent` parameter so the ratchet uses the parent's own last write
+      instead of a per-frame device read. No second authorization surface.
+- [x] **Resolve the confirmation problem before coding.** — resolved by construction:
+      a hook cannot enable a shutter (the union has no way to express it), so
+      `require_confirm_on_enable` is never reached mid-run and no prompt can land on a
+      callback thread. Hook illumination is power modulation only, inside an envelope
+      confirmed once before any motion, alongside the Block 4 reservation.
+- [x] Add a bounded, parent-mediated artifact-emission path. — `EmitArtifact` carries
+      bytes/ndarray plus a bare filename; the parent writes, size- and count-limits,
+      hashes, and records. **The rig gate caught this landing in the wrong directory**:
+      the path was predicted from `save_dir/name` and missed AcqEngJ's `_N` rename, so
+      artifacts filed beside their dataset and collided across runs. Fixed by
+      late-binding from `_acq_dataset_path` inside `_acquire_with_hooks` (`30f2450`).
+- [x] Add a frame-discard path. — `DiscardFrame`; docs state in all three places that
+      the position is still moved to and still exposed (design/27).
+- [x] Distinguish open-loop conditioning from closed-loop feedback. — documented in
+      `hook_docs.py`; no open-loop built-in was added, deliberately.
+- [x] Migrate all ~~three~~ **four** hooks to `analyze_frame`. — the fixture table
+      always listed four; the prose said three. All four migrated, committed under
+      `tests/fixtures/hooks/m5_migrated/`, with the originals retained byte-for-byte
+      under `m5_legacy/` (marked `binary` in `.gitattributes`, hashes verified through
+      a real Windows checkout).
+- [x] Test refusal paths as carefully as success. — ceiling, step factor, spent
+      budget, no envelope, oversize artifact, per-run total, count limit, filename
+      escape and collision, and `hook_params` smuggling.
 
 Rig gate:
 
-- [ ] Re-run each migrated hook on M5 and compare with its pre-Block-7 behaviour using
-      the source retained 2026-07-28 in the gate evidence. Stop if a hook needs a
-      capability this block did not restore — that is a fourth gap, not a bug.
-- [ ] Exercise UV activation on a real closed loop, not a synthetic one: a hook that
-      raises 405 nm power against measured blink density, with the envelope set low
-      enough that the refusal path fires during the run. A ramp that never reaches its
-      ceiling has not tested the gate.
+- [x] Re-run each migrated hook on M5. — all four run (R1). Fidelity checked off-rig
+      instead of against "retained pre-Block-7 evidence", which did not exist — Block 7
+      retained the source, not its outputs. `design/32-block7b-r2-fidelity-diff.py`
+      feeds one dataset's frames to both versions in the same process: **zero
+      mismatches across all four** (R2). No fourth gap was found.
+- [-] Exercise UV activation on a real closed loop. — **DEFERRED, and not met.** M5's
+      405 nm line is `iChrome-MLE-TCP.Laser 4: 3. Level %`, real and linearized, but it
+      was undeclared until this gate and htSMLM ramps FPGA *pulse duration*
+      (`Laser Trigger.Duration0`) rather than level — so dose is level × duration and
+      only the first is bounded. The envelope path is proven completely (R5/R5b/R5c:
+      20 accepted writes, 64 ceiling refusals, 12 budget refusals, a step-factor
+      refusal, and a wind-down accepted with the budget spent), but the fixture is a
+      deterministic ramp, not feedback, and every run was with the laser disarmed.
+      Pulse duration as a bounded actuator is design/33 Phase 2 by operator ruling.
 
 Post-merge design gate:
 
 - [ ] Update design/32 §4's action vocabulary: it currently lists six variants as the
       minimum and does not mention illumination or artifacts. Update design/33 if the
-      illumination gate's contract changed. Record which of the three hooks were
+      illumination gate's contract changed. Record which of the hooks were
       restored, which became built-ins, and which remain unsupported.
 
 **Scheduling.** M5's three hooks stay refused from the moment Block 7 merges until
