@@ -43,7 +43,7 @@ Progress markers: `[ ]` not started, `[-]` active, `[x]` complete, `[!]` blocked
 | 6 | `design32/remote-auth` | `d70874d` (main, 910/98/3) | `eb9ab16` + `c81aa16` (review fixes R1–R4) + `f68af87` (coordinator); 937/98/3 (mac) | n/a — network/security tests are this block's gate; no hardware path touched | `056a4ef` | Gate done: §3 heading restored (it was missing), Block 6 landed contract + five stated limitations, interim "unauthenticated remote warning" path removed from the ordering section |
 | 7 | `design32/generated-hook-decisions` | `cc2df05` (main, 937/98/3) | `7a9a602`…`af8f51b`; 967/99/3 (mac), 1044/21/3 (demo core) | demo D1–D5 PASS + M5 R1 PASS 2026-07-28: capability stripping live, 3-of-5 typed stop, four attributable refusals, Run A 12/12/12 with revisit 0.01 px. Gate caught 4 defects, 3 invisible off-rig. | `2b8d752` | Gate done: design/32 §4 Block-7 landed note; design/26 5 reconciliations incl. the unresolved `analyze_frame` collision blocking Block 10 |
 | 7b | `design32/hook-illumination-and-artifacts` | `ff690e8` (main, 967/99/3) | `f300fff`…`35f6dc4`; 1014/99/3 (mac), 989/115/3 (M5 under uv), 1089/21/3 (demo core, integration live) | M5 2026-07-28: R1–R8 + P0–P2 + R5pre PASS; D2/D3 skipped by ruling. **Gate caught 4 defects, 2 invisible off-rig** | `e688606` | Gate done: design/32 §4 vocabulary corrected + Block-7b landed note; design/33 illumination-contract changes, failed-write-may-have-landed rule, and M5 405 findings (docs merge `d189722`) |
-| 8 | `design29/saved-dataset-foundation` | | | **pre-branch gate: `design29/probe-findings` (`cf0c00c`)** — probe was defective and its affine verdicts void; repaired, MMCore row-major pinned by `javap`. Live M5/demo/M2: **no measured affine anywhere**; identity is MM's default (same hash on two unrelated systems). Saved data gives the X column only (~90°, ~0.13 µm/px). | | Gate questions 1–3 answered; **Y column still open**, so the implementation branch stays closed |
+| 8 | `design29/saved-dataset-foundation` | `c3af2b1` | | **pre-branch gate: `design29/probe-findings` (`cf0c00c`)** — probe was defective and its affine verdicts void; repaired, MMCore row-major pinned by `javap`. Live M5/demo/M2: **no measured affine anywhere**; identity is MM's default (same hash on two unrelated systems). Saved data gives the X column only (~90°, ~0.13 µm/px). | | Gate questions 1–3 answered; **Y column still open**, so the implementation branch stays closed |
 | 9 | `design29/stage-coordinate-mosaic` | | | required | | |
 | 10 | `design26/completed-dataset-runner` | | | saved-data fixture | | |
 | 11 | `design26/generated-adapter-run-b` | | | required | | |
@@ -652,7 +652,21 @@ Pre-branch spike/read-only probe (branch `design29/probe-findings`):
 
 Implementation:
 
-- [ ] Create the branch from updated `main` only after the probe/design gate passes.
+- [x] Create the branch from updated `main` only after the probe/design gate passes.
+      — `design29/saved-dataset-foundation` from `c3af2b1`.
+      **Coordinator ruling (2026-07-28): opened with the convention bullet still
+      unticked.** The gate exists to stop a resolver being built on wrong
+      assumptions, and those assumptions are now measured and revised (row-major
+      ordering, the three fall-through sentinels, camera identity, never inferring
+      uncalibrated from a zero scalar). Walking the seven implementation items,
+      none consumes an affine's *values*: traversal, canonical serialization,
+      hashing, version keys, and precedence policy all work on any affine, and the
+      tests run on synthetic ones. A measured 2×2 is a **Block 9** requirement
+      (placement), not a Block 8 one.
+      The one accepted risk: if MM's calibrator writes its affine somewhere other
+      than where `get_pixel_size_affine_by_id` reads, the resolver's MM-sourced
+      branch needs rework. That is one branch of one function, and one calibrator
+      run plus one probe rerun falsifies it. Re-check before merging Block 8.
 - [ ] Extract `_iter_present_coords(dataset, fixed_axes)` from the exporter; iterate real
       axis values and guard candidates with `has_image`. Refactor the exporter to use it.
 - [ ] Define canonical affine serialization/hash rules and immutable version keys; retain
