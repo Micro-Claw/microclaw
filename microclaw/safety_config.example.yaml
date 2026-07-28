@@ -125,19 +125,19 @@ named_stages: []
 #   - {device: PIZStage,   min_um: 0.0,     max_um: 200.0}
 #   - {device: TIRF Stage, min_um: -3000.0, max_um: 3000.0}
 
-# OPTIONAL filesystem sandbox for every tool that takes a path from the model:
-# the acquisitions' save_dir, the adaptive hooks' log_path, and
-# read_hook_from_file / read_hook_log / save_position_list / load_position_list /
-# export_dataset_as_tiff. Unset — the default — means unrestricted: save data
-# wherever you like. Set it only if you want the agent confined to one tree;
-# `..` and symlink escapes are then rejected, and an out-of-workspace save_dir is
-# refused BEFORE the acquisition moves any hardware.
+# OPTIONAL filesystem sandbox for paths microclaw writes or serves to a browser:
+# acquisition save roots, hook log outputs, position-list saves, TIFF exports,
+# manifests, and declared artifact downloads. Unset — the default — means those
+# paths are unrestricted. When set, writes and served files are confined to one
+# tree; `..` and symlink escapes are rejected, and an out-of-workspace save_dir
+# is refused BEFORE the acquisition moves any hardware. Local file reads are not
+# confined by workspace_dir; this is not a sandbox for hook code or plugins.
 #
 # If you set this, make it the directory your data actually lives in — not
 # ~/.microclaw, which is microclaw's own state (hooks, knowledge.yaml).
 #
-# `microclaw serve`'s artifact downloads do NOT need this. They are authorised
-# per-file, against the paths tools declared during the session.
+# `microclaw serve` artifact downloads require both a per-session declaration
+# and confinement to this workspace when it is configured.
 # workspace_dir: /data/microclaw
 
 # Micro-Manager plugin hooks (see design/09). Plugin code is arbitrary Java that

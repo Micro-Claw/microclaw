@@ -1945,12 +1945,15 @@ class TestAcquisitionsRespectTheWorkspace:
                 log_path="/somewhere/else/log.json",
             )
 
-    def test_load_position_list_is_confined_like_save(self, mock_ctrl, ws_guard):
+    def test_load_position_list_reads_outside_workspace(self, mock_ctrl, ws_guard):
         from microclaw import tools
 
-        with pytest.raises(SafetyViolation, match="escapes"):
-            tools.load_position_list(mock_ctrl, ws_guard, path="/somewhere/else/p.json")
-        mock_ctrl.load_position_list.assert_not_called()
+        mock_ctrl.prepare_position_list.side_effect = FileNotFoundError
+        with pytest.raises(FileNotFoundError):
+            tools.load_position_list(mock_ctrl, ws_guard, path="/somewhere/else/p.pos")
+        mock_ctrl.prepare_position_list.assert_called_once_with(
+            os.path.abspath("/somewhere/else/p.pos")
+        )
 
 
 class TestArtifactDeclarations:
@@ -1981,6 +1984,14 @@ class TestArtifactDeclarations:
             mock_ctrl, unconstrained_guard, log_path=str(tmp_path / "gone.json")
         )
         assert "error" in result and "artifact" not in result
+
+    def test_read_hook_log_reads_outside_configured_workspace(self, mock_ctrl, tmp_path):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        log = tmp_path / "outside.json"
+        log.write_text('[{"frame": 0}]', encoding="utf-8")
+        guard = SafetyGuard(SafetyConstraints(workspace_dir=str(workspace)))
+        assert tools.read_hook_log(mock_ctrl, guard, str(log))["entry_count"] == 1
 
 
 class TestRunAOfflineTools:
@@ -2170,6 +2181,80 @@ class TestRunAOfflineTools:
         )
         assert result["recommended_min_snr"] == pytest.approx(11.55)
         assert result["artifact"]["path"] == str(out)
+
+    def test_offline_read_inputs_may_be_outside_configured_workspace(
+        self, mock_ctrl, tmp_path, monkeypatch
+    ):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        guard = SafetyGuard(SafetyConstraints(workspace_dir=str(workspace)))
+
+        artifact = tmp_path / "outside.txt"
+        artifact.write_text("outside", encoding="utf-8")
+        assert tools.inspect_artifacts(mock_ctrl, guard, [str(artifact)])["artifact_count"] == 1
+
+        hook_log = tmp_path / "outside-hook.json"
+        hook_log.write_text(json.dumps([{
+            "position": "p0", "x_um": 1, "y_um": 2, "result": {"snr": 9}
+        }]), encoding="utf-8")
+        assert tools.rank_hook_log(mock_ctrl, guard, str(hook_log))["entry_count"] == 1
+        position_list = tmp_path / "outside.pos"
+        position_list.write_text("{}", encoding="utf-8")
+        projection = MagicMock(native_entries=[], issues=[])
+        mock_ctrl.project_position_list_file.return_value = projection
+        ranked = tools.rank_hook_log(
+            mock_ctrl, guard, str(hook_log), position_list_path=str(position_list)
+        )
+        assert ranked["position_list_verification"]["path"] == str(position_list)
+
+        class FakeDataset:
+            axes = {}
+            def __init__(self, path):
+                assert path == str(tmp_path / "outside-dataset")
+            def has_image(self, **kwargs):
+                return True
+            def read_image(self, **kwargs):
+                return np.zeros((2, 2), dtype=np.uint16)
+
+        monkeypatch.setattr(tools, "Dataset", FakeDataset)
+        monkeypatch.setattr(tools.tifffile, "imwrite", lambda *args, **kwargs: None)
+        exported = tools.export_dataset_as_tiff(
+            mock_ctrl, guard, str(tmp_path / "outside-dataset"),
+            str(workspace / "export.tif"),
+        )
+        assert "error" not in exported
+
+        def snr_log(name, value):
+            path = tmp_path / name
+            path.write_text(json.dumps([{"result": {"snr": value}}]), encoding="utf-8")
+            return str(path)
+        calibrated = tools.calibrate_snr_threshold(
+            mock_ctrl, guard,
+            [snr_log("dark1.json", 2), snr_log("dark2.json", 3)],
+            [snr_log("lit1.json", 10), snr_log("lit2.json", 11)],
+            str(workspace / "calibration.json"),
+            {"objective": "20x", "camera": "cam", "roi": [0, 0, 2, 2],
+             "binning": 1, "exposure_ms": 10, "channel": "DAPI"},
+        )
+        assert calibrated["recommended_min_snr"] == 6.5
+
+    def test_compare_revisit_reads_both_tiffs_outside_workspace(
+        self, mock_ctrl, tmp_path, monkeypatch
+    ):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        guard = SafetyGuard(SafetyConstraints(workspace_dir=str(workspace)))
+        rng = np.random.default_rng(3)
+        image = rng.normal(size=(32, 32)).astype(np.float32)
+        source, revisit = tmp_path / "source.tif", tmp_path / "revisit.tif"
+        tools.tifffile.imwrite(source, image)
+        tools.tifffile.imwrite(revisit, image)
+        monkeypatch.setattr(tools, "_load_current_affine", lambda ctrl: None)
+        result = tools.compare_revisit_frames(
+            mock_ctrl, guard, str(source), str(revisit),
+            [{"position": "p", "source_index": 0, "revisit_index": 0}],
+        )
+        assert len(result["comparisons"]) == 1
 
 
 class TestMarkPosition:
@@ -2458,6 +2543,16 @@ class TestReadHookFromFile:
     def test_error_for_missing_file(self, mock_ctrl, unconstrained_guard):
         result = read_hook_from_file(mock_ctrl, unconstrained_guard, path="/no/such/file.py")
         assert "error" in result
+
+    def test_reads_outside_configured_workspace(self, mock_ctrl, tmp_path):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        hook_file = tmp_path / "outside.py"
+        hook_file.write_text(
+            "class H:\n    def image_process_fn(self, img, meta, q): return img, meta\n"
+        )
+        guard = SafetyGuard(SafetyConstraints(workspace_dir=str(workspace)))
+        assert read_hook_from_file(mock_ctrl, guard, str(hook_file))["path"] == str(hook_file)
 
 
 class TestSaveKnowledgeConfirmation:
