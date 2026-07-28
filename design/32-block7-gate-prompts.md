@@ -585,10 +585,20 @@ across two reads of the same log, and revisit SNR close to its own survey tile.
 
 #### Before starting
 
-Clear the MM position list, then confirm the saved `.pos` holds exactly k entries.
-On the demo core the list still held D3's five tiles and `save_position_list` wrote
-**8** entries for a k=3 selection; on a rig that is a dose-integrity problem,
-because anything later loading that file acquires positions nobody selected.
+R1 carries nothing over from the demo core. It loads no position list; it builds
+one, by marking the top-k tiles the survey produced. On M5 the position list is
+expected to be **empty** at the start, so there is nothing to clear.
+
+The check that does apply is on the way out. `save_position_list` writes MM's
+*entire* position list, not the selection you just marked — so the saved artifact
+is only equal to the selection if the list was empty to begin with. Therefore:
+call `get_position_list` before marking and record what it returns (expected:
+empty), and after saving confirm the file holds exactly **k = 2** entries. If the
+list is not empty, `clear_position_list` first and say so in the evidence.
+
+This matters because anything later loading that file acquires every position in
+it. On the demo core the list still held D3's five tiles, and a k=3 save wrote
+**8** entries — five of which nobody had selected.
 
 Check `~\.microclaw\hooks\manifest.json` first, and **copy the hook source off the
 rig before merging Block 7**. On 2026-07-20 M5 carried three saved
