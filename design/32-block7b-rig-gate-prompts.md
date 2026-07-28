@@ -397,15 +397,26 @@ records the warnings you accepted. That pair is the whole flow.
 The legacy entries must stay in the registry — R1 needs them to prove they are still
 refused, and the checklist is explicit that they are copied, never deleted.
 
-Repeat for all five:
+### You must issue that prompt SIX times, once per hook
 
-| Fixture file | Save as | Used by |
-|---|---|---|
-| `filament_position_filter.py` | `filament_position_filter_v2` | R1, R2, R4 |
-| `mosaic_cell_counter.py` | `mosaic_cell_counter_v2` | R1, R2 |
-| `mosaic_stitcher.py` | `mosaic_stitcher_v2` | R1, R2, R3 |
-| `mosaic_stitcher_rot.py` | `mosaic_stitcher_rot_v2` | R1, R2, R3 |
-| `uv_activation.py` | `uv_activation` | R5, R6, R7, R8 |
+The block above is one worked example, not the whole step. On 2026-07-28 it was run
+once, `mosaic_stitcher_v2` was saved, and the session moved on — so R1's migrated half
+ran against a single hook and R2 could not run at all. Six separate prompts, six
+confirmations, six saves:
+
+| # | Fixture file | Save as | Used by |
+|---|---|---|---|
+| 1 | `filament_position_filter.py` | `filament_position_filter_v2` | R1, R2, R4 |
+| 2 | `mosaic_cell_counter.py` | `mosaic_cell_counter_v2` | R1, R2 |
+| 3 | `mosaic_stitcher.py` | `mosaic_stitcher_v2` | R1, R2, R3 |
+| 4 | `mosaic_stitcher_rot.py` | `mosaic_stitcher_rot_v2` | R1, R2, R3 |
+| 5 | `uv_activation.py` | `uv_activation` | R5, R7, R8 |
+| 6 | `uv_activation_wind_down.py` | `uv_activation_wind_down` | R5, R5b, R6 |
+
+**Checkpoint before leaving this section.** Call `list_hooks()` and confirm all six
+`saved` entries are present alongside the four legacy ones — ten in total. A missing
+entry surfaces later as an unhelpful "Unknown hook strategy", far from its cause.
+Watch for a trailing space in the name: `"mosaic_cell_counter_v2 "` will not resolve.
 
 Retain the manifest before and after:
 
