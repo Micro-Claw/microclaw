@@ -733,6 +733,60 @@ way — a measured cost is the deliverable, not a pass/fail.
 
 ---
 
+## Results 2026-07-28, closeout session (on `93bf504`)
+
+**R1 migrated — PASS.** `mosaic_cell_counter_v2` ran two tiles with a running count of
+12 → 24 and mean area 23.6 → 24.6 µm². `mosaic_stitcher_rot_v2` emitted
+`mosaic_rot.tiff` (2306 × 2621, `rot90_k: 1`) through the parent artifact path,
+recorded `accepted | parent wrote bounded artifact`. All four migrated hooks have now
+run on the rig.
+
+**R4 — PASS (plumbing route).** With `min_filament_score: 0.5`, all four fields scored
+~0.122–0.124 and were discarded: four `kept: false` observations, four accepted
+`DiscardFrame` actions, four `outcome: "discarded"` records. The dataset directory
+`r4_discard_1` contains a **zero-byte `NDTiff.index` and no image stack at all** —
+four positions visited and exposed, zero images saved. This establishes the discard
+plumbing and nothing biological.
+
+**R8 — PASS, measured.** At `interval_s=0`, 20 frames each: `r8_uv` **2.531 s** vs
+`r8_control` (`position_filter`, no envelope) **2.437 s**. Difference **0.094 s**, i.e.
+**≈4.7 ms per illumination write**. Against Block 4's ~657 ms/frame baseline, and
+against these runs' own ~126 ms/frame, the callback-thread bridge write is not a
+material cost. One pair of runs, so treat it as an order of magnitude rather than a
+characterised timing.
+
+### R5c did not test the ratchet, and found two defects instead
+
+The device sat at **0.0000 %** — left there by R5b's wind-down — so the run never
+reached the step-factor check.
+
+**F1. The ratchet is inert from zero.** `SafetyGuard.check_illumination` guards the
+ratio with `if old > 0 and new / old > factor`. From `old = 0` there is no ratio and
+no refusal, so the proposal of 25 % against a configured 3.0× factor was **not**
+refused. The envelope ceiling remains the only bound in that state.
+
+This is pre-existing code, but Block 7b changes who can reach it and how often: the
+block's own recommended pattern is a hook that winds down to 0 at end of run, which
+makes "device at zero" the *normal* starting state for the next run, and generated
+code now proposes power per frame unattended. A configuration reading
+`max_power_step_factor: 3.0` does not suggest "except from zero, where any value up to
+the ceiling is one write away."
+
+**F2. A write reported as failed may have succeeded.** Frame 1's write to 25 % was
+recorded as `illumination_write_failure` on a `Serial timeout occurred. (17)` — and
+`get_system_state` immediately afterwards read `power_pct: "25.0000"`. The device
+applied the value and timed out before acknowledging. The parent updates
+`last_written` only on success, so its ratchet baseline stayed at 0 while the hardware
+sat at 25.
+
+The divergence is in the permissive direction: every later ratio is computed against a
+value lower than reality, so the ratchet allows larger real jumps than configured. The
+same partial-success pattern appeared again at the end of the session on a manual
+write, so it is reproducible rather than a one-off.
+
+Neither finding is visible off-rig — a mocked core neither starts at zero by accident
+nor half-fails.
+
 ## Closing the gate — exactly what is left, in order
 
 Everything below assumes the branch is at `eeef7da` or later and the six hooks are
@@ -898,19 +952,19 @@ another M5 session in case the envelope turns out to be M5-shaped.
 | D2 | stand-in declaration, demo map complete | |
 | D3 | full envelope sequence on a stock config | |
 | R1 legacy | four legacy hooks refused, no motion/exposure | **PASS 2026-07-28** |
-| R1 migrated | migrated hooks run | **2 of 4** — counter and rot still unrun |
+| R1 migrated | migrated hooks run | **PASS 2026-07-28** (all four) |
 | R2 | numerical fidelity | **not run** (off-rig; see below) |
 | R3a | artifact in the acquisition's own directory, hashed | **PASS 2026-07-28** (post-`30f2450`) |
 | R3b | size refusal, same dir as R3a | **PASS 2026-07-28** |
-| R4 | discard saves storage not dose | **not exercised** — see below |
+| R4 | discard saves storage not dose | **PASS 2026-07-28** (plumbing route) |
 | R5 | ramp, ceiling, budget refusals | **PASS 2026-07-28** |
 | R5b | wind-down against a spent budget | **PASS 2026-07-28** |
-| R5c | step-factor refusal | **not run** |
+| R5c | step-factor refusal | **BLOCKED** — ratchet inert from 0; see F1/F2 |
 | R6 | declined envelope takes nothing | **PASS 2026-07-28** (three times) |
 | R7 case 1 | ceiling above the configured ceiling | **blocked by the agent** — see below |
 | R7 case 2 | undeclared device refused at plan time | **PASS 2026-07-28** (twice) |
 | R7 case 3 | `hook_params` smuggling is stripped | **blocked by the agent** — see below |
-| R8 | callback-thread write cost | **inconclusive** — see below |
+| R8 | callback-thread write cost | **PASS 2026-07-28** — ≈4.7 ms/write |
 
 ## Results 2026-07-28 (runs on `83a48e2`, before the artifact fix)
 
