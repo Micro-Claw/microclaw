@@ -486,32 +486,50 @@ Post-merge design gate:
 Branch: `design32/hook-illumination-and-artifacts`
 
 Block 7's closed action union covers adaptive *acquisition* decisions and nothing
-else, so it silently removed two things M5's saved hooks depend on. This block owns
+else. Three capabilities the lab actually uses fall outside it. This block owns
 getting them back. **Block 13 does not.** Phase 2 is process isolation for the same
-contract — its bullets keep controller and guard out of the worker and add no action
-types — so without this block the capability never returns.
+contract — its bullets keep controller and guard out of the worker and add no
+action types — so without this block none of them returns.
 
-M5's **current** registry, read from the manifest retained 2026-07-28, is not the
-one the 2026-07-20 history showed — those three hooks are gone. The four hooks
-actually installed are below, and they shift this block's priorities: **none needs
-laser control, and three need to write image files during or after an
-acquisition.** Live artifact emission is the dominant gap; the illumination action
-is speculative until a hook needs it again.
+**1. Illumination control, for UV activation.** Confirmed as a live requirement
+(2026-07-28), not a historical artifact of one deleted hook. Ramping 405 nm
+activation against measured blink density is the canonical SMLM feedback loop and
+is exactly the "analysis influences acquisition" case design/32 §4 says the
+boundary must not forbid. It is also the hardest to authorize: the loop is
+**per-frame and closed**, so `require_confirm_on_enable` cannot be satisfied by
+prompting — see the confirmation bullet below. Getting this wrong in either
+direction is serious: too permissive and generated code drives a UV laser
+unsupervised; too strict and the microscope cannot do the experiment.
 
-| Hook | Needs | Block 7 outcome |
+**2. Live artifact emission.** `mosaic_stitcher` and `mosaic_stitcher_rot` write an
+assembled 16-bit TIFF; Phase 1 gave hooks no artifact path at all.
+
+**3. Frame discard.** `filament_position_filter` returns `None` to drop an
+uninteresting field. `analyze_frame` **cannot express this** — the adapter always
+returns `(image, metadata)`. Either add a discard action or keep a supported
+observation-only callback shape. Note what discard does and does not buy: per
+design/27 the position is still moved to and still exposed, so this saves storage,
+not dose. Do not describe it as skipping acquisition.
+
+Fixtures, read from the retained source (2026-07-28), not inferred:
+
+| Hook | Blocked by | Needs |
 |---|---|---|
-| `filament_position_filter` | Sato ridge filter + SNR gate, discards fields | expressible today — `image_process_fn` returning `None` still works — unless it keeps its own log |
-| `mosaic_cell_counter` | accumulates a mosaic, "logs a running unique-cell total" | self-written log; refused |
-| `mosaic_stitcher` | writes the assembled mosaic as a 16-bit TIFF | no live artifact path |
-| `mosaic_stitcher_rot` | same, with rot90/flip alignment | no live artifact path |
+| `filament_position_filter` | `HookBase` + `log_path` | measurements; **frame discard** |
+| `mosaic_cell_counter` | `HookBase` + `log_path` | measurements + cross-frame state (state already survives) |
+| `mosaic_stitcher` | `HookBase` + `log_path` | **artifact write** |
+| `mosaic_stitcher_rot` | `HookBase` + `log_path` | **artifact write** |
 
-Confirm each against its source before designing: the table is inferred from
-manifest descriptions, because **the source has not yet been retained** (the
-2026-07-28 copy captured only `manifest.json`). `filament_position_filter` may need
-nothing but a migration off `HookBase`.
+All four subclass `HookBase` and take `log_path`, so all four are refused at
+resolve time today. **None takes `ctrl` or `guard`, and none touches
+`event_queue`** — so no current hook needs the capability Phase 1 was written to
+remove, and migration is mostly mechanical once the three gaps above are closed.
 
-The illumination action stays in scope — `storm_prebleach_ramp` existed once and the
-union still cannot express it — but sequence artifact emission first.
+Note what the stitchers do today: `tifffile.imwrite(self.out_path, canvas)` with
+`out_path` an unconfined constructor string, plus an `np.save(out_path + ".npy")`
+fallback. They can write anywhere on disk. The replacement must be confined to the
+acquisition's artifact directory — this block should end with generated hooks
+holding *less* filesystem reach than before, not more.
 
 - [ ] Create the branch from updated `main`.
 - [ ] Add a typed illumination action to the closed union, authorized through
@@ -529,21 +547,31 @@ union still cannot express it — but sequence artifact emission first.
       to the acquisition's artifact directory only, are size-limited, and are recorded
       in the parent audit with a hash. A generated hook must still not receive a
       filesystem capability of its own.
-- [ ] Decide whether `storm_prebleach_ramp` belongs in the untrusted union at all. It
-      conditions fluorophores before acquisition and makes no decision from image
-      content, so it may be a reviewed `PRECODED_HOOK_REGISTRY` built-in rather than
-      generated code proposing actions. If so, keep lab-specific parameters external.
+- [ ] Add a frame-discard path so an observation-only filter can drop a field.
+      State in the same place that the position is still exposed (design/27), so no
+      one reads discard as dose saving.
+- [ ] Distinguish open-loop conditioning from closed-loop feedback. A fixed
+      pre-acquisition ramp that reads no image content may belong in
+      `PRECODED_HOOK_REGISTRY` as a reviewed built-in; a UV level computed per frame
+      from blink density is genuinely a proposed action and must go through the
+      union. Do not solve the second by pretending it is the first.
 - [ ] Migrate all three hooks to `analyze_frame` and use them as the acceptance
       fixtures. Each must run again with no `ctrl`, no `guard`, and no self-written log.
 - [ ] Test refusal paths as carefully as success: an illumination proposal exceeding
-      the configured power ceiling or step factor, an artifact exceeding the size
-      limit, and an artifact path escaping the acquisition directory.
+      the configured power ceiling or step factor, one ramping within the ceiling but
+      faster than the step factor allows, one arriving after the pre-authorized
+      envelope is spent, an artifact exceeding the size limit, and an artifact path
+      escaping the acquisition directory.
 
 Rig gate:
 
 - [ ] Re-run each migrated hook on M5 and compare with its pre-Block-7 behaviour using
-      the source and evidence retained at Block 7. Stop if a hook needs a capability
-      this block did not restore — that is a third gap, not a bug.
+      the source retained 2026-07-28 in the gate evidence. Stop if a hook needs a
+      capability this block did not restore — that is a fourth gap, not a bug.
+- [ ] Exercise UV activation on a real closed loop, not a synthetic one: a hook that
+      raises 405 nm power against measured blink density, with the envelope set low
+      enough that the refusal path fires during the run. A ramp that never reaches its
+      ceiling has not tested the gate.
 
 Post-merge design gate:
 
