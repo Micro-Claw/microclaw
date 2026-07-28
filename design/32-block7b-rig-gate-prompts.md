@@ -991,8 +991,8 @@ another M5 session in case the envelope turns out to be M5-shaped.
 |---|---|---|
 | P0/P1/P1b/P2/R5pre | pre-flight, 405 path, `Emission`=cw, write-with-laser-off | **SETTLED 2026-07-28** |
 | D1 | probe degrades cleanly on a laser-free stock config | **PASS 2026-07-28** |
-| D2 | stand-in declaration, demo map complete | **blocked** — config copy not yet made |
-| D3 | full envelope sequence on a stock config | |
+| D2 | stand-in declaration, demo map complete | **SKIPPED** by operator ruling — see below |
+| D3 | full envelope sequence on a stock config | **SKIPPED** by operator ruling — see below |
 | R1 legacy | four legacy hooks refused, no motion/exposure | **PASS 2026-07-28** |
 | R1 migrated | migrated hooks run | **PASS 2026-07-28** (all four) |
 | R2 | numerical fidelity | **PASS 2026-07-28** — all four hooks |
@@ -1001,7 +1001,7 @@ another M5 session in case the envelope turns out to be M5-shaped.
 | R4 | discard saves storage not dose | **PASS 2026-07-28** (plumbing route) |
 | R5 | ramp, ceiling, budget refusals | **PASS 2026-07-28** |
 | R5b | wind-down against a spent budget | **PASS 2026-07-28** |
-| R5c | step-factor refusal | **REDO** — seed the device first; see F1 |
+| R5c | step-factor refusal | **PASS 2026-07-28** (after seeding) |
 | R6 | declined envelope takes nothing | **PASS 2026-07-28** (three times) |
 | R7 case 1 | ceiling above the configured ceiling | **PASS 2026-07-28** (probe) |
 | R7 case 2 | undeclared device refused at plan time | **PASS 2026-07-28** (twice) |
@@ -1144,6 +1144,37 @@ human instruction.** A gate cannot verify a refusal path the agent will not appr
 would have answered this directly; the agent prompt should also state that
 `hook_params` are filtered before construction.
 
+### R5c — PASS 2026-07-28, after seeding the device
+
+Seed confirmed first: `Laser 4: 3. Level %` set to 5, read back `5.0000`, laser left
+disarmed. Then two frames, two different refusals:
+
+| Frame | Proposed | Refusal |
+|---|---|---|
+| 1 | 25.0 | *"Power increase 5.0% → 25.0% exceeds the 3.0× per-write ratchet. Step up gradually."* |
+| 2 | 45.0 | *"proposal exceeds authorized envelope ceiling"* |
+
+Frame 1 is the evidence: 25 is below the envelope's ceiling of 30, so only the ratchet
+could have refused it. This was the last refusal reason the gate had never produced,
+and the first attempt missed it solely because the device sat at 0 where the ratchet is
+inert (F1). Frame 2 confirms the two refusals stay attributable to different causes
+within a single run.
+
+### D2 and D3 — SKIPPED by operator ruling, 2026-07-28
+
+D1 established that the stock demo config exposes **no analog power property at all**:
+its `LED` is a StateDevice selecting `385nm`/`470nm`/`550nm`/`635nm`/`Closed`, the
+camera is rejected as non-emitting, and every other device is discrete. D2 and D3 could
+therefore only run against a stand-in property with nothing to do with light, and the
+operator ruled that not worth doing.
+
+**What that leaves unproven, stated plainly:** the illumination envelope has been
+exercised live on M5's hardware only. The claim that it is config-shaped rather than
+M5-shaped rests on D1's clean negative result, on inspection of the shipped diff (no
+`iChrome`/`iBeam`/`MicroFPGA`/`TTL`/`EMU`/`htSMLM` string appears in it), and on the
+synthetic unit tests — **not** on a second live configuration. Anyone bringing this up
+on a different rig should expect to be the first to do so.
+
 ### R2 — PASS for all four hooks, 2026-07-28
 
 Run off-rig against `r3a\multipos_3`, two frames each, **zero mismatches**:
@@ -1205,6 +1236,9 @@ described as passing.
 2b. **Anything that requires light.** These steps run with the laser off, so nothing
    here establishes that a ramp produces the optical effect an experiment wants —
    only that the ramp is authorized, bounded, and refused at its limits.
+2c. **A second live configuration.** D2/D3 were skipped by operator ruling because the
+   stock demo config has no analog power property to point an envelope at. The
+   envelope has run live on M5 and nowhere else.
 3. **Power units.** `max_power_percent` is compared against a raw `Power (mW)` value.
    Pre-existing (design/33 line 562), now reachable by generated code.
 4. **Unbounded non-increasing writes.** A wind-down never consumes budget, so a hook
