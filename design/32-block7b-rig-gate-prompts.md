@@ -212,7 +212,55 @@ Operator ruling 2026-07-28: **declare `Level %` now and treat FPGA pulse duratio
 later, separate problem.** Bounding duration properly means making it a typed actuator
 with dose expressed as the product — design/33 Phase 2 territory, not Block 7b's.
 
-## P2. Confirm what `Laser 4: 2. Emission` actually is — REQUIRED before any shutter declaration
+## P2. What `Laser 4: 2. Emission` is — SETTLED 2026-07-28
+
+**Measured on M5: neither `1. Enable` nor `2. Emission` alone produces light. Both
+must be 1.**
+
+That is the `:cw` signature exactly. Manual §3 p.15: *"Set this parameter #t **while
+the laser is enabled** to switch on cw emission. This will overwrite the electronic
+trigger input. **This parameter has no effect while the laser is disabled.**"* So
+`2. Emission` is `:cw`, confirmed behaviourally and documentarily rather than inferred
+from property order. `1. Enable` is `:enable` — it arms and nothing more.
+
+`Enable` alone produced no light because nothing was pulsing the TTL line: `Mode0` is
+`Follow`, so the FPGA emits on camera triggers, and no acquisition was running.
+Consistent, not contradictory.
+
+**The gates are in series, and `Enable` is the master.** With `Enable = 0` nothing
+emits by any path. With `Enable = 1` light can leave by **two** routes:
+
+1. `Emission = 1` — cw, continuous, and per the manual it *overrides the electronic
+   trigger input* entirely; and
+2. the FPGA TTL line, with `Mode0 = Follow` and `Sequence0 = 65535` — **every frame of
+   any acquisition**, at whatever `Duration0` happens to be.
+
+Route 2 deserves emphasis: **arming the laser is sufficient for an acquisition to emit
+405 pulses**, with no further microclaw action and nothing else to confirm. Pulse
+width is 1 µs today, so the dose is small — but it is not zero, and it is not
+something microclaw can see or bound. Anyone reading `Enable = 1` as "armed but dark"
+is wrong during an acquisition.
+
+**Both properties are therefore declared as shutters.** `Enable` because it is the
+master gate; `Emission` because it independently forces continuous emission and
+bypasses the FPGA. Declaring both also means `shutter_all` drives both to 0 on session
+teardown, which is the correct off state.
+
+### Declaration, settled by P2
+
+```yaml
+illumination:
+  power_properties:
+    - {device: iChrome-MLE-TCP, property: "Laser 4: 3. Level %"}   # 405/402 nm, 0-100 %, linearized
+  shutters:
+    - {device: iChrome-MLE-TCP, property: "Laser 4: 1. Enable",   on_value: "1", off_value: "0"}
+    - {device: iChrome-MLE-TCP, property: "Laser 4: 2. Emission", on_value: "1", off_value: "0"}
+```
+
+Only the 405 line is declared. The 488, 561 and 640 levels stay undeclared and
+therefore unwritable, which is the right default until something needs them.
+
+## P2 procedure, retained for the record
 
 `2. Emission` is believed to be `:cw` purely from the order the properties appear in,
 matched against the manual's parameter order. That inference decides which property
@@ -240,25 +288,7 @@ indication at step 3 that step 2 did not produce. Manual §3 `laser1:status` bit
 "in cw mode", so the text form should say so. At `Level % = 0` the emitted power is at
 its floor throughout.
 
-**Then decide:** whichever of `1. Enable` / `2. Emission` can produce light on its own
-is the shutter, and goes in `illumination.shutters` with `require_confirm_on_enable`.
-If both can, declare both. Record the reasoning, not just the outcome.
-
-### Proposed declaration, pending P2
-
-```yaml
-illumination:
-  power_properties:
-    - {device: iChrome-MLE-TCP, property: "Laser 4: 3. Level %"}   # 405/402 nm, 0-100 %, linearized
-  shutters:
-    # Fill in from P2. Do not guess between these two.
-    # - {device: iChrome-MLE-TCP, property: "Laser 4: 1. Enable",   on_value: "1", off_value: "0"}
-    # - {device: iChrome-MLE-TCP, property: "Laser 4: 2. Emission", on_value: "1", off_value: "0"}
-```
-
-Declaring only the 405 row keeps the blast radius at one laser line. The 488, 561 and
-640 levels stay undeclared and therefore unwritable, which is the right default until
-something needs them.
+**Result 2026-07-28:** both were required; see the settled section above.
 
 The probe also found `iBeamSmartCW.Power (mW)` — a **third** iBeam laser, undeclared,
 range 0–75 mW, alongside `-1` and `-Booster`. Worth knowing whether that is a real
@@ -609,7 +639,7 @@ way — a measured cost is the deliverable, not a pass/fail.
 | P0 | map complete; iBeam power declared; no 405 **declared** | **SETTLED 2026-07-28** |
 | P1 | 405 nm `Level %` exists, 0–100, undeclared | **SETTLED 2026-07-28** |
 | P1b | `Level %` is real power; htSMLM ramps pulse duration instead | **SETTLED 2026-07-28** |
-| P2 | is `Laser 4: 2. Emission` the cw override? | **required before declaring** |
+| P2 | `Emission` is `:cw`; both gates needed; declare both | **SETTLED 2026-07-28** |
 | R5pre | driver accepts a power write with the laser off | **PASS 2026-07-28** |
 | — | rig suite under `uv`: 989 passed / 115 skipped / 3 warnings | **PASS 2026-07-28** |
 | R1 | legacy refused, migrated run | |
@@ -636,6 +666,12 @@ described as passing.
    actually ramps for activation, it lives on an excluded device, and no microclaw
    policy bounds it. Deferred to a design/33 Phase 2 typed actuator by operator ruling
    2026-07-28. Until then: **microclaw bounds what microclaw can change, not dose.**
+1c. **Emission that microclaw never authorized.** P2 established that with
+   `Laser 4: 1. Enable = 1`, `Mode0 = Follow` and `Sequence0 = 65535`, the FPGA emits a
+   405 pulse on **every frame of any acquisition** — no microclaw write, no
+   confirmation, nothing in the ledger. Confirm-gating `Enable` is the only point at
+   which that is visible to microclaw at all. Any claim that an acquisition was
+   "dark" must account for this.
 2. **Closed-loop feedback.** The fixture ramps deterministically and does not act on
    the blink density it measures. The authorization path is proven; feedback is not.
 2b. **Anything that requires light.** These steps run with the laser off, so nothing
