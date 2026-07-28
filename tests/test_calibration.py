@@ -1,10 +1,19 @@
 """Unit tests for the stage↔camera affine (design/14 §8)."""
+import json
+
 import pytest
 
 from microclaw.calibration import (
+    CalibrationResolutionError,
     StageCameraAffine,
+    affine_payload_hash,
     affine_key,
+    affine_version_key,
+    canonical_affine_payload,
     load_affine,
+    load_affine_version,
+    parse_mm_pixel_size_affine,
+    resolve_calibration,
     save_affine,
     solve_affine,
 )
@@ -62,3 +71,119 @@ class TestPersistence:
 
     def test_affine_key_slugifies(self):
         assert affine_key("20x Air / NA 0.75", 1) == "stage_camera_affine_20x_Air_NA_0_75_bin1"
+
+    def test_recalibration_does_not_change_old_version(self):
+        first = StageCameraAffine(0.2, 0, 0, 0.2, "20x", 1, 0.2)
+        second = StageCameraAffine(0, -0.3, 0.3, 0, "20x", 1, 0.3)
+        save_affine(first, camera_device="Cam", camera_model="Model", roi=[0, 0, 8, 8])
+        first_key = affine_version_key(first)
+        save_affine(second, camera_device="Cam", camera_model="Model", roi=[0, 0, 8, 8])
+        assert load_affine_version(first_key)[0] == first
+        assert load_affine("20x", 1) == second
+
+    def test_tampered_immutable_payload_is_refused(self):
+        from microclaw import knowledge_manager
+
+        affine = StageCameraAffine(0.2, 0, 0, 0.2, "20x", 1, 0.2)
+        save_affine(affine, camera_device="Cam", camera_model="Model", roi=[0, 0, 8, 8])
+        key = affine_version_key(affine)
+        data = knowledge_manager.load_knowledge()
+        data["devices"][key]["payload"]["a"] = 9
+        knowledge_manager.KNOWLEDGE_PATH.write_text(
+            __import__("yaml").dump(data), encoding="utf-8"
+        )
+        with pytest.raises(CalibrationResolutionError, match="hash"):
+            load_affine_version(key)
+
+    def test_legacy_alias_is_versioned_before_use(self):
+        from microclaw.knowledge_manager import load_knowledge, save_entry
+
+        affine = StageCameraAffine(0.2, 0, 0, 0.2, "20x", 1, 0.2)
+        save_entry("devices", affine_key("20x", 1), canonical_affine_payload(affine))
+        assert load_affine("20x", 1) == affine
+        alias = load_knowledge()["devices"][affine_key("20x", 1)]
+        assert alias["current_version"] == affine_version_key(affine)
+
+
+class FakeDataset:
+    def __init__(self, records):
+        self.records = records
+        self.axes = {"position": [record[0] for record in records]}
+
+    def has_image(self, **coords):
+        return coords["position"] in dict(self.records)
+
+    def read_image(self, **coords):
+        return None
+
+    def read_metadata(self, **coords):
+        return dict(self.records)[coords["position"]]
+
+
+def _metadata(raw="0;-0.2;0;0.2;0;0", roi=(0, 0, 8, 8)):
+    return {
+        "PixelSizeAffine": raw, "Objective": "20x", "Binning": "1x1",
+        "Camera": "Cam", "CameraModel": "Model", "ROI": list(roi),
+    }
+
+
+class TestCalibrationResolver:
+    def test_mm_row_major_and_sentinels(self):
+        affine = parse_mm_pixel_size_affine(
+            "1;2;3;4;5;6", objective="obj", binning=1
+        )
+        assert (affine.a, affine.b, affine.c, affine.d) == (1, 2, 4, 5)
+        for raw in ("Undefined", "0;0;0;0;0;0", "1;0;0;0;1;0",
+                    "nan;0;0;0;1;0", "1;2;0;2;4;0"):
+            assert parse_mm_pixel_size_affine(raw, objective="obj", binning=1) is None
+
+    def test_acquisition_recorded_takes_precedence(self):
+        dataset = FakeDataset([("p7", _metadata())])
+        affine, identity = resolve_calibration(
+            dataset, {"kind": "knowledge_version", "key": "missing"}
+        )
+        assert (affine.a, affine.b, affine.c, affine.d) == (0, -0.2, 0.2, 0)
+        assert identity["source_kind"] == "acquisition_recorded"
+
+    def test_mid_dataset_roi_change_is_refused(self):
+        dataset = FakeDataset([("p0", _metadata()), ("p9", _metadata(roi=(1, 0, 8, 8)))])
+        with pytest.raises(CalibrationResolutionError, match="ROI changes"):
+            resolve_calibration(dataset, None)
+
+    def test_all_four_explicit_source_kinds_and_artifact_replay_without_kb(
+        self, tmp_path
+    ):
+        empty = FakeDataset([("p", _metadata("Undefined"))])
+        affine = StageCameraAffine(0.2, 0, 0, 0.2, "20x", 1, 0.2)
+        save_affine(affine, camera_device="Cam", camera_model="Model", roi=[0, 0, 8, 8])
+        version = affine_version_key(affine)
+        _, version_identity = resolve_calibration(
+            empty, {"kind": "knowledge_version", "key": version}
+        )
+        _, current_identity = resolve_calibration(
+            empty, {"kind": "confirmed_current", "objective": "20x", "binning": 1}
+        )
+        assert version_identity["source_kind"] == "knowledge_version"
+        assert current_identity["source_kind"] == "confirmed_current"
+        _, legacy_identity = resolve_calibration(empty, {
+            "kind": "legacy_derived", "pixel_size_um": 0.2, "rot90_k": 1,
+            "objective": "20x", "binning": 1, "camera_device": "Cam",
+            "camera_model": "Model", "roi": [0, 0, 8, 8],
+        })
+        assert legacy_identity["source_kind"] == "legacy_derived"
+
+        artifact = tmp_path / "manifest.json"
+        artifact.write_text(json.dumps({"calibration_identity": version_identity}), encoding="utf-8")
+        from microclaw import knowledge_manager
+        knowledge_manager.KNOWLEDGE_PATH.unlink()
+        replayed, replay_identity = resolve_calibration(
+            empty, {"kind": "artifact", "path": str(artifact)}
+        )
+        assert replayed == affine
+        assert replay_identity["source_kind"] == "artifact"
+        assert replay_identity["payload_sha256"] == affine_payload_hash(affine)
+
+    def test_missing_identity_refuses_instead_of_guessing(self):
+        empty = FakeDataset([("p", _metadata("1;0;0;0;1;0"))])
+        with pytest.raises(CalibrationResolutionError, match="does not record"):
+            resolve_calibration(empty, None)

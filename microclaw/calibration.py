@@ -6,12 +6,22 @@ three moves produced three mutually inconsistent conclusions about the axis
 signs. The affine turns every "nudge and squint" loop into arithmetic.
 """
 from __future__ import annotations
+import hashlib
+import json
+import math
 import re
 from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any
 
 import numpy as np
 
 KNOWLEDGE_CATEGORY = "devices"
+AFFINE_FIELDS = ("a", "b", "c", "d", "objective", "binning", "pixel_size_um")
+
+
+class CalibrationResolutionError(ValueError):
+    """The saved data does not identify a trustworthy calibration."""
 
 
 @dataclass
@@ -91,11 +101,55 @@ def solve_affine(
 
 
 def affine_key(objective: str, binning: int) -> str:
+    """Return the mutable current-alias key (not a durable identity)."""
     slug = re.sub(r"\W+", "_", objective).strip("_") or "default"
     return f"stage_camera_affine_{slug}_bin{binning}"
 
 
-def save_affine(affine: StageCameraAffine) -> str:
+def canonical_affine_payload(affine: StageCameraAffine | dict) -> dict:
+    source = asdict(affine) if isinstance(affine, StageCameraAffine) else affine
+    payload = {field: source[field] for field in AFFINE_FIELDS}
+    payload["binning"] = int(payload["binning"])
+    for field in ("a", "b", "c", "d", "pixel_size_um"):
+        payload[field] = float(payload[field])
+    # json.dumps below rejects these too, but naming the failure is clearer.
+    if not all(math.isfinite(payload[f]) for f in ("a", "b", "c", "d", "pixel_size_um")):
+        raise ValueError("Affine payload contains a non-finite number")
+    return payload
+
+
+def serialize_affine_payload(affine: StageCameraAffine | dict) -> str:
+    """Canonical UTF-8 JSON input for calibration SHA-256 identities."""
+    return json.dumps(
+        canonical_affine_payload(affine), sort_keys=True,
+        separators=(",", ":"), allow_nan=False,
+    )
+
+
+def affine_payload_hash(affine: StageCameraAffine | dict) -> str:
+    return hashlib.sha256(serialize_affine_payload(affine).encode("utf-8")).hexdigest()
+
+
+def affine_version_key(affine: StageCameraAffine | dict) -> str:
+    payload = canonical_affine_payload(affine)
+    return f"{affine_key(payload['objective'], payload['binning'])}_sha256_{affine_payload_hash(payload)}"
+
+
+def _identity_fields(camera_device, camera_model, roi) -> dict:
+    return {
+        "camera_device": None if camera_device is None else str(camera_device),
+        "camera_model": None if camera_model is None else str(camera_model),
+        "roi": None if roi is None else [int(value) for value in roi],
+    }
+
+
+def save_affine(
+    affine: StageCameraAffine,
+    *,
+    camera_device: str | None = None,
+    camera_model: str | None = None,
+    roi: list[int] | tuple[int, int, int, int] | None = None,
+) -> str:
     """Persist under the knowledge base's devices category.
 
     Written via save_entry directly, NOT the confirm-gated save_knowledge
@@ -104,19 +158,57 @@ def save_affine(affine: StageCameraAffine) -> str:
     """
     from microclaw.knowledge_manager import save_entry
 
-    key = affine_key(affine.objective, affine.binning)
+    alias = affine_key(affine.objective, affine.binning)
+    version = affine_version_key(affine)
+    payload = canonical_affine_payload(affine)
+    identity = _identity_fields(camera_device, camera_model, roi)
     save_entry(
         KNOWLEDGE_CATEGORY,
-        key,
+        version,
         {
             "description": (
                 "Stage-camera affine calibration (px → µm) measured by "
                 "calibrate_stage_to_camera."
             ),
-            **asdict(affine),
+            "immutable": True,
+            "payload_sha256": affine_payload_hash(payload),
+            "payload": payload,
+            **identity,
         },
     )
-    return key
+    save_entry(
+        KNOWLEDGE_CATEGORY, alias,
+        {"description": "Mutable current stage-camera affine alias.",
+         "current_version": version, **identity},
+    )
+    return alias
+
+
+def load_affine_version(key: str) -> tuple[StageCameraAffine, dict]:
+    from microclaw.knowledge_manager import load_knowledge
+
+    entry = load_knowledge().get(KNOWLEDGE_CATEGORY, {}).get(key)
+    if not isinstance(entry, dict) or not entry.get("immutable"):
+        raise CalibrationResolutionError(f"No immutable calibration version: {key}")
+    try:
+        payload = canonical_affine_payload(entry.get("payload", {}))
+    except (KeyError, TypeError, ValueError) as error:
+        raise CalibrationResolutionError(
+            f"Immutable calibration has an invalid payload: {key}"
+        ) from error
+    actual_hash = affine_payload_hash(payload)
+    expected_suffix = f"_sha256_{actual_hash}"
+    if entry.get("payload_sha256") != actual_hash or not key.endswith(expected_suffix):
+        raise CalibrationResolutionError(
+            f"Immutable calibration payload hash does not match key: {key}"
+        )
+    affine = StageCameraAffine(**payload)
+    return affine, {
+        "version_key": key,
+        "payload": payload,
+        "payload_sha256": actual_hash,
+        **_identity_fields(entry.get("camera_device"), entry.get("camera_model"), entry.get("roi")),
+    }
 
 
 def load_affine(objective: str, binning: int) -> StageCameraAffine | None:
@@ -129,10 +221,278 @@ def load_affine(objective: str, binning: int) -> StageCameraAffine | None:
     )
     if not entry:
         return None
+    if isinstance(entry, dict) and entry.get("current_version"):
+        return load_affine_version(str(entry["current_version"]))[0]
+    # Legacy aliases stored the mutable payload inline. Pin one immutable copy
+    # before use, then replace the alias with a pointer to it.
     try:
-        return StageCameraAffine(
-            **{k: entry[k] for k in
-               ("a", "b", "c", "d", "objective", "binning", "pixel_size_um")}
-        )
-    except (KeyError, TypeError):
+        affine = StageCameraAffine(**{k: entry[k] for k in AFFINE_FIELDS})
+    except (KeyError, TypeError, ValueError):
         return None
+    save_affine(
+        affine, camera_device=entry.get("camera_device"),
+        camera_model=entry.get("camera_model"), roi=entry.get("roi"),
+    )
+    return affine
+
+
+def _metadata_value(metadata: dict, *keys: str):
+    for key in keys:
+        if key in metadata and metadata[key] not in (None, ""):
+            return metadata[key]
+    return None
+
+
+def parse_mm_pixel_size_affine(raw: Any, *, objective: str, binning: int) -> StageCameraAffine | None:
+    """Decode MMCore row-major m00,m01,m02,m10,m11,m12 or reject a sentinel."""
+    if raw is None or str(raw).strip().lower() == "undefined":
+        return None
+    try:
+        values = [float(value.strip()) for value in str(raw).split(";")]
+    except (TypeError, ValueError):
+        return None
+    if len(values) != 6 or not all(math.isfinite(value) for value in values):
+        return None
+    m00, m01, _m02, m10, m11, _m12 = values
+    linear = (m00, m01, m10, m11)
+    if all(value == 0.0 for value in values):
+        return None
+    if np.allclose(np.array([[m00, m01], [m10, m11]]), np.eye(2), rtol=0, atol=1e-12):
+        return None
+    determinant = m00 * m11 - m01 * m10
+    if math.isclose(determinant, 0.0, abs_tol=1e-12):
+        return None
+    return StageCameraAffine(
+        *linear, objective=str(objective), binning=int(binning),
+        pixel_size_um=math.sqrt(abs(determinant)),
+    )
+
+
+def _complete_identity(identity: dict, source_kind: str, source_reference: dict) -> dict:
+    missing = [
+        field for field in ("camera_device", "camera_model", "roi")
+        if identity.get(field) is None
+    ]
+    if missing:
+        raise CalibrationResolutionError(
+            "Calibration identity is incomplete; missing " + ", ".join(missing)
+        )
+    roi = identity["roi"]
+    if not isinstance(roi, (list, tuple)) or len(roi) != 4:
+        raise CalibrationResolutionError("Calibration ROI must be [x, y, width, height]")
+    return {
+        "source_kind": source_kind,
+        "source_reference": source_reference,
+        **identity,
+    }
+
+
+def _identity_for_affine(
+    affine: StageCameraAffine, *, source_kind: str, source_reference: dict,
+    camera_device: Any, camera_model: Any, roi: Any, version_key: str | None = None,
+) -> dict:
+    payload = canonical_affine_payload(affine)
+    identity = {
+        "camera_device": None if camera_device is None else str(camera_device),
+        "camera_model": None if camera_model is None else str(camera_model),
+        "roi": None if roi is None else [int(value) for value in roi],
+        "objective": payload["objective"], "binning": payload["binning"],
+        "payload": payload, "payload_sha256": affine_payload_hash(payload),
+    }
+    if version_key is not None:
+        identity["version_key"] = version_key
+    return _complete_identity(identity, source_kind, source_reference)
+
+
+def _acquisition_calibration(dataset, fixed_axes: dict) -> tuple[StageCameraAffine, dict] | None:
+    from microclaw.tools import _iter_present_coords
+
+    candidates = []
+    rois = set()
+    for coords in _iter_present_coords(dataset, fixed_axes):
+        metadata = dataset.read_metadata(**coords)
+        raw = _metadata_value(metadata, "PixelSizeAffine", "PixelSizeAffineString")
+        objective = _metadata_value(
+            metadata, "Objective", "ObjectiveLabel", "PixelSizeConfig", "PixelSizeConfigName"
+        )
+        binning = _metadata_value(metadata, "Binning", "Camera-Binning")
+        camera_device = _metadata_value(metadata, "Camera", "CameraDevice", "Core-Camera")
+        camera_model = _metadata_value(metadata, "CameraModel", "CameraDeviceName", "CameraAdapter")
+        roi = _metadata_value(metadata, "ROI", "Roi", "CameraROI")
+        if isinstance(roi, str):
+            try:
+                roi = [int(value.strip()) for value in re.split(r"[,;]", roi)]
+            except ValueError:
+                roi = None
+        if roi is not None:
+            rois.add(tuple(roi))
+        try:
+            affine = parse_mm_pixel_size_affine(
+                raw, objective=str(objective), binning=int(str(binning).split("x")[0])
+            )
+        except (TypeError, ValueError):
+            affine = None
+        if affine is not None:
+            candidates.append((affine, camera_device, camera_model, roi, coords))
+    if len(rois) > 1:
+        raise CalibrationResolutionError(
+            "Dataset ROI changes between frames; one relative calibration is unsafe"
+        )
+    if not candidates:
+        return None
+    first = candidates[0]
+    first_payload = canonical_affine_payload(first[0])
+    if any(canonical_affine_payload(item[0]) != first_payload for item in candidates[1:]):
+        raise CalibrationResolutionError("Dataset PixelSizeAffine changes between frames")
+    affine, camera_device, camera_model, roi, coords = first
+    return affine, _identity_for_affine(
+        affine, source_kind="acquisition_recorded",
+        source_reference={"metadata_key": "PixelSizeAffine", "coordinates": coords},
+        camera_device=camera_device, camera_model=camera_model, roi=roi,
+    )
+
+
+def _read_artifact(path: str, guard) -> dict:
+    resolved = guard.resolve_readable_path(path) if guard is not None else path
+    try:
+        data = json.loads(Path(resolved).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise CalibrationResolutionError(f"Cannot read calibration artifact: {error}") from error
+    identity = data.get("calibration_identity", data)
+    if not isinstance(identity, dict):
+        raise CalibrationResolutionError("Calibration artifact has no calibration identity")
+    return identity
+
+
+def _config_mismatches(ctrl) -> list[dict]:
+    if ctrl is None:
+        return []
+    results = []
+    try:
+        configs = list(ctrl.core.get_available_pixel_size_configs())
+    except Exception:
+        return results
+    for config in configs:
+        rules = []
+        try:
+            data = ctrl.core.get_pixel_size_config_data(config)
+            for index in range(int(data.size())):
+                setting = data.get_setting(index)
+                device = str(setting.get_device_label())
+                prop = str(setting.get_property_name())
+                expected = str(setting.get_property_value())
+                try:
+                    live = str(ctrl.core.get_property(device, prop))
+                except Exception as error:
+                    live = f"ERROR: {error}"
+                rules.append({"device": device, "property": prop,
+                              "expected": expected, "live": live,
+                              "matches": live == expected})
+        except Exception as error:
+            rules.append({"error": str(error), "matches": False})
+        try:
+            pixel_size_um = float(ctrl.core.get_pixel_size_um_by_id(config))
+        except Exception:
+            pixel_size_um = None
+        try:
+            raw_affine = ";".join(
+                str(value) for value in ctrl.core.get_pixel_size_affine_by_id(config)
+            )
+            affine_verdict = (
+                "usable" if parse_mm_pixel_size_affine(
+                    raw_affine, objective=str(config), binning=1
+                ) is not None else "sentinel_or_invalid"
+            )
+        except Exception:
+            affine_verdict = "unavailable"
+        results.append({
+            "config": str(config), "pixel_size_um": pixel_size_um,
+            "affine_verdict": affine_verdict, "rules": rules,
+            "would_activate": all(rule["matches"] for rule in rules),
+        })
+    return results
+
+
+def resolve_calibration(
+    dataset,
+    calibration_ref: dict | None,
+    *,
+    fixed_axes: dict | None = None,
+    ctrl=None,
+    guard=None,
+) -> tuple[StageCameraAffine, dict]:
+    """Resolve one trustworthy historical calibration without guessing."""
+    acquisition = _acquisition_calibration(dataset, fixed_axes or {})
+    if acquisition is not None:
+        return acquisition
+    if calibration_ref is None:
+        configs = _config_mismatches(ctrl)
+        detail = f" Available pixel-size configs: {configs}" if configs else ""
+        raise CalibrationResolutionError(
+            "Dataset does not record a usable calibration; supply an artifact, "
+            "immutable version, or explicitly confirmed current calibration." + detail
+        )
+    if not isinstance(calibration_ref, dict) or "kind" not in calibration_ref:
+        raise CalibrationResolutionError("calibration_ref must be one tagged object")
+    kind = calibration_ref["kind"]
+    if kind == "artifact":
+        identity = _read_artifact(str(calibration_ref.get("path", "")), guard)
+        payload = identity.get("payload")
+        try:
+            affine = StageCameraAffine(**canonical_affine_payload(payload))
+        except (KeyError, TypeError, ValueError) as error:
+            raise CalibrationResolutionError(
+                "Calibration artifact has an invalid affine payload"
+            ) from error
+        if identity.get("payload_sha256") != affine_payload_hash(affine):
+            raise CalibrationResolutionError("Calibration artifact payload hash mismatch")
+        return affine, _identity_for_affine(
+            affine, source_kind="artifact", source_reference={"path": calibration_ref["path"]},
+            camera_device=identity.get("camera_device"), camera_model=identity.get("camera_model"),
+            roi=identity.get("roi"), version_key=identity.get("version_key"),
+        )
+    if kind in ("knowledge_version", "confirmed_current"):
+        if kind == "knowledge_version":
+            version = str(calibration_ref.get("key", ""))
+        else:
+            objective = str(calibration_ref.get("objective", ""))
+            binning = int(calibration_ref.get("binning", 0))
+            from microclaw.knowledge_manager import load_knowledge
+            alias = load_knowledge().get(KNOWLEDGE_CATEGORY, {}).get(affine_key(objective, binning))
+            if isinstance(alias, dict) and not alias.get("current_version"):
+                load_affine(objective, binning)  # migrate the legacy alias first
+                alias = load_knowledge().get(KNOWLEDGE_CATEGORY, {}).get(affine_key(objective, binning))
+            if not isinstance(alias, dict) or not alias.get("current_version"):
+                raise CalibrationResolutionError(
+                    f"No current calibration for {objective!r} binning {binning}. "
+                    f"Available pixel-size configs: {_config_mismatches(ctrl)}"
+                )
+            version = str(alias["current_version"])
+        affine, stored = load_affine_version(version)
+        return affine, _identity_for_affine(
+            affine, source_kind=kind, source_reference=dict(calibration_ref),
+            camera_device=stored.get("camera_device"), camera_model=stored.get("camera_model"),
+            roi=stored.get("roi"), version_key=version,
+        )
+    if kind == "legacy_derived":
+        try:
+            pixel_size = float(calibration_ref["pixel_size_um"])
+            turns = int(calibration_ref.get("rot90_k", 0)) % 4
+            matrix = np.rot90(np.eye(2), -turns) * pixel_size
+            if calibration_ref.get("flip_x"):
+                matrix[:, 0] *= -1
+            if calibration_ref.get("flip_y"):
+                matrix[:, 1] *= -1
+            affine = StageCameraAffine(
+                float(matrix[0, 0]), float(matrix[0, 1]),
+                float(matrix[1, 0]), float(matrix[1, 1]),
+                str(calibration_ref["objective"]), int(calibration_ref["binning"]), pixel_size,
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise CalibrationResolutionError(f"Invalid legacy_derived reference: {error}") from error
+        return affine, _identity_for_affine(
+            affine, source_kind=kind, source_reference=dict(calibration_ref),
+            camera_device=calibration_ref.get("camera_device"),
+            camera_model=calibration_ref.get("camera_model"), roi=calibration_ref.get("roi"),
+        )
+    raise CalibrationResolutionError(f"Unknown calibration_ref kind: {kind!r}")

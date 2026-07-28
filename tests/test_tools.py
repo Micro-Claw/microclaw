@@ -1755,6 +1755,23 @@ class TestTimelapseTriggerPreflight:
 
 
 class TestExportDatasetAllAxes:
+    def test_present_coord_helper_uses_strings_sparse_axes_and_selection(self):
+        from microclaw.tools import _iter_present_coords
+
+        class FakeDataset:
+            axes = {"position": ["run_a_r0_c3", "run_a_r2_c1"], "time": [4, 9]}
+
+            def has_image(self, **coords):
+                return (coords["position"], coords["time"]) in {
+                    ("run_a_r0_c3", 4), ("run_a_r2_c1", 9)
+                }
+
+        assert list(_iter_present_coords(FakeDataset(), {"time": 9})) == [
+            {"position": "run_a_r2_c1", "time": 9}
+        ]
+        with pytest.raises(ValueError, match="not present"):
+            list(_iter_present_coords(FakeDataset(), {"time": 0}))
+
     def test_iterates_full_axis_product(self, mock_ctrl, unconstrained_guard, monkeypatch, tmp_path):
         from microclaw import tools
 
