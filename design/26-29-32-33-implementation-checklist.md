@@ -628,6 +628,11 @@ Pre-branch spike/read-only probe (branch `design29/probe-findings`):
       run the calibrator on a contrast-rich in-focus field, rerun our probe, and
       check the result against the `run_a_2` X column (~90°, ~0.13 µm/px). This
       bullet is an operator task, NOT an implementation task.
+      **Run A is M2** (operator-confirmed), so this is a same-instrument check:
+      MM's calibrator and our saved-tile correlation measure one optical path by
+      two independent methods, and M2's stored 0.127 µm/px is a third. Agreement
+      settles the convention; disagreement is equally informative and must be
+      resolved before any of the three is trusted.
 - [x] Stop if the affine is missing/singular, configuration selection is ambiguous, the
       dataset does not identify the historical transform, or Java/Python row-column signs
       are unresolved. Saved data resolves only X; keep the implementation gate
@@ -703,18 +708,28 @@ Branch: `design29/stage-coordinate-mosaic`
       has to re-hunt them — note these are **two different machines and drives**,
       so it is two separate retrievals:
 
-      | Fixture | Path on rig | Positions | History |
-      |---|---|---|---|
-      | 2500-tile 488 | `C:\Users\ries\cell_scan\scan488_900_1` | 2500 (50×50 @ 18 µm) | `20260717_133127_..._tiling_with_nestor.json` |
-      | 2500-tile 561 | `C:\Users\ries\cell_scan\scan561_900_1` | 2500 (50×50 @ 18 µm) | same |
-      | 36-tile grid | `C:\Users\ries\cell_scan\cellscan_1` | 36 (6×6 @ 18 µm) | same |
-      | Spiral | `F:\DataSSD\260720_PD_testMicroClaw\spiral_montage_1` | 25 (`spiral_01`…`spiral_25`) | `20260720_155559_..._pallavi_spiral_test.json` |
+      | Fixture | Instrument | Path on rig | Positions | History |
+      |---|---|---|---|---|
+      | 2500-tile 488 | M5 | `C:\Users\ries\cell_scan\scan488_900_1` | 2500 (50×50 @ 18 µm) | `20260717_133127_..._tiling_with_nestor.json` |
+      | 2500-tile 561 | M5 | `C:\Users\ries\cell_scan\scan561_900_1` | 2500 (50×50 @ 18 µm) | same |
+      | 36-tile grid | M5 | `C:\Users\ries\cell_scan\cellscan_1` | 36 (6×6 @ 18 µm) | same |
+      | Spiral | (spiral rig) | `F:\DataSSD\260720_PD_testMicroClaw\spiral_montage_1` | 25 (`spiral_01`…`spiral_25`) | `20260720_155559_..._pallavi_spiral_test.json` |
+      | Run A grid | **M2** | OneDrive `microclaw-json-histories/run-a/run_a_{1,2}` | 12 (4×3 @ 20 µm) | `20260720_162413_..._run_a.json` |
 
       Both 900 µm scans are centred (1735.5, −6967.2) with mosaic 8582×8578 px —
-      that is the peak-RSS target. The tiling session's stitcher ran with
-      `pixel_size_um: 0.105`, a **third** value alongside M2's configured 0.127 and
-      the measured ~0.13; reconcile before trusting any of them. The session's
-      closing "cleanup" was switching off the 561 laser, not deleting data.
+      that is the peak-RSS target. The session's closing "cleanup" was switching
+      off the 561 laser, not deleting data.
+
+      **Instrument attribution matters here** (operator-confirmed 2026-07-28), and
+      these fixtures span at least three: Run A is **M2** (Andor iXon), the tiling
+      fixtures are **M5** (Hamamatsu), and the spiral is a third. Each therefore
+      needs its OWN calibration identity; do not carry one instrument's affine to
+      another's dataset. This is exactly the failure design/29 §5's camera-identity
+      requirement exists to prevent, and these fixtures are the test case for it.
+      Corollary: the tiling session's `pixel_size_um: 0.105` is an M5 stitcher
+      parameter (and may simply have been set arbitrarily). It is NOT in tension
+      with M2's 0.127 or the ~0.13 measured from `run_a_2` — those two are the same
+      instrument and agree; 0.105 is a different one.
 - [ ] Stop on unexplained orientation, historical-calibration ambiguity, axis leakage,
       nondeterministic hashes/pixels, or unacceptable memory. Fix and repeat.
 - [ ] Commit, review, and merge.

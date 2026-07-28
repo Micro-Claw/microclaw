@@ -165,8 +165,17 @@ trusted.
 
 The fixed dataset arm confirms Run A intended XY on every image, string position
 values, and varying axes (`position+time`, plus Z on the sparse revisit). Summary
-affine is `Undefined`; per-image `PixelSizeAffine` is all-zero. Run A used an
-Andor iXon DU897 with a 453×227 ROI; M5 now reports a Hamamatsu at 2304×2304.
+affine is `Undefined`; per-image `PixelSizeAffine` is all-zero.
+
+**Run A was acquired on M2, not M5** (operator-confirmed 2026-07-28). Its device
+set — Andor iXon DU897 at a 453×227 ROI, `SmarActXY`/`SmarActZ`, Luxx 405/488/638,
+Cobolt561 — matches M2's probe, whose `Res0` rules key on exactly the
+`SmarActZ.Frequency`, `SmarActXY.Frequency`, and `SmarActXY.Hold time (ms)`
+properties Run A recorded, at the same `5000`/`10` values. M5 is a different
+microscope: Hamamatsu at 2304×2304 with an iChrome-MLE-TCP engine. Do not read
+the Andor→Hamamatsu difference as one rig's detector being swapped; these are two
+instruments, and that distinction is what §5's camera-identity requirement is
+actually about.
 `run_a_1` is unusable for a convention check: every acquisition laser is off and
 only 0.238% of pixels exceed background + 5×MAD (min/max 146/328). Its old weak
 correlations measured read noise and carry no verdict. Signal-bearing `run_a_2`
@@ -174,8 +183,12 @@ gives a **PARTIAL** result after overlap-normalized correlation. Seven of nine +
 pairs form the cluster `(dy,dx)={(139,1),(140,2),(140,1),(157,2),(162,2),
 (163,2),(163,2)}` px (combined IQR `(22.5,0.5)` px). Thus stage +X displaces
 content almost entirely along image rows: stage/camera axes are about 90° apart.
-The implied 0.1227–0.1439 µm/px brackets M2's configured 0.127 µm/px and is
-plausible for the DU897 optical path. The two shift modes, 139–140 and 157–163 px
+The implied 0.1227–0.1439 µm/px brackets M2's configured 0.127 µm/px. Because
+Run A is M2, that is agreement on **the same optical path**, from two independent
+methods — a stored operator calibration and a correlation over saved tiles — not
+a coincidence between similar instruments. It is the strongest corroboration
+available today for both the scale and the row-major decode. The two shift modes,
+139–140 and 157–163 px
 (roughly 20 versus 23 µm at 0.13 µm/px for the same intended 20 µm step), remain
 unexplained and cannot be resolved from saved data.
 
@@ -465,8 +478,16 @@ unrelated to optics. Never silently apply current calibration to a historical
 dataset. Resolving the current alias pins its immutable version before
 rasterization; the result never records only the mutable alias.
 
-Camera identity is required: objective/binning alone would map historical Andor
-data to M5's current Hamamatsu detector. Identity must carry camera device/model,
+Camera identity is required, and the reason is **cross-instrument**, not a
+detector swap on one rig. Run A is M2 (Andor iXon, 453×227); M5 is a different
+microscope (Hamamatsu, 2304×2304). An objective/binning key carries nothing that
+distinguishes the two, so M2 data could resolve against an M5 entry — or against
+a demo entry — and produce a mosaic with no error anywhere. Note the aggravating
+detail: both instruments have a `Res`-prefixed pixel-size config and a MicroFPGA,
+so neither the config name nor a casual device-list glance separates them. This
+also means the same failure exists *within* one instrument whenever its detector
+or ROI changes; the cross-instrument case is simply the one we can demonstrate.
+Identity must carry camera device/model,
 objective, binning, ROI geometry, exact affine payload, and hash. A constant
 off-centre ROI adds only a global translation and is harmless for relative
 placement; a mid-dataset ROI change changes frame geometry and must be rejected
