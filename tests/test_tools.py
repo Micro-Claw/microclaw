@@ -2060,6 +2060,11 @@ class TestRunAOfflineTools:
         )
         assert result["position_list_verification"]["coordinate_matches"] == [True]
 
+        # A saved position may ADD an axis the ranking lacks. Run A marks its
+        # top-k with a focus Z the operator supplies, while a fixed-Z survey
+        # stamps no ZPosition_um_Intended and so its records carry no z_um.
+        # Treating that as a mismatch reported M5's correct k=2 save as a
+        # coordinate mismatch with X and Y agreeing exactly (R1, 2026-07-28).
         mock_ctrl.project_position_list_file.return_value = PositionProjection(
             [], [{**native[0], "z_um": 5.0}], []
         )
@@ -2067,7 +2072,33 @@ class TestRunAOfflineTools:
             mock_ctrl, unconstrained_guard, self._log(tmp_path, records),
             position_list_path=str(positions),
         )
-        assert result["position_list_verification"]["coordinate_matches"] == [False]
+        verification = result["position_list_verification"]
+        assert verification["coordinate_matches"] == [True]
+        assert verification["matches_ranking_prefix"] is True
+        assert verification["axes_added_when_saved"] == [["z_um"]]
+
+    def test_a_saved_position_that_drops_a_ranked_axis_is_still_a_mismatch(
+        self, mock_ctrl, unconstrained_guard, tmp_path
+    ):
+        """The permissive direction is one-way. An axis the ranking carries and
+        the saved list lost means the selection is not what was ranked."""
+        from microclaw.controller import PositionProjection
+        records = [{
+            "position": "top", "x_um": 1.0, "y_um": 2.0, "z_um": 3.0,
+            "result": {"snr": 9},
+        }]
+        positions = tmp_path / "positions.pos"
+        positions.write_text("native fixture placeholder")
+        mock_ctrl.project_position_list_file.return_value = PositionProjection(
+            [], [{"name": "top", "x_um": 1.0, "y_um": 2.0}], []
+        )
+        result = tools.rank_hook_log(
+            mock_ctrl, unconstrained_guard, self._log(tmp_path, records),
+            position_list_path=str(positions),
+        )
+        verification = result["position_list_verification"]
+        assert verification["coordinate_matches"] == [False]
+        assert verification["matches_ranking_prefix"] is False
 
     def test_validate_positions_does_not_move_or_expose(self, mock_ctrl):
         guard = SafetyGuard(SafetyConstraints(

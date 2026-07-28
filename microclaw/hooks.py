@@ -13,6 +13,27 @@ from microclaw.image_analysis import (
 from microclaw.safety import SafetyViolation
 
 
+def analysis_observation_record(
+    *, analyzer: str | None, analyzer_version: str | None, result,
+    parameters: dict | None = None, artifact_sha256: str | None = None,
+    status: str = "observed",
+) -> dict:
+    """Build the shared live/offline design/26 observation envelope."""
+    record = {
+        "schema": "microclaw.analysis-observation/v1",
+        "observed_at": datetime.now(timezone.utc).isoformat(),
+        "status": status,
+        "analyzer": analyzer,
+        "analyzer_version": analyzer_version,
+        "parameters": parameters or {},
+        "result": result,
+    }
+    if artifact_sha256 is not None:
+        record["artifact_sha256"] = artifact_sha256
+    json.dumps(record, allow_nan=False)
+    return record
+
+
 def _frame_index(metadata: dict):
     """Frame/time index for a per-frame log entry.
 
@@ -140,17 +161,10 @@ class HookBase:
         Logging has no acquisition side effect. A later, separately reviewed
         hook may use a verified result to make a guarded decision.
         """
-        record = {
-            "schema": "microclaw.analysis-observation/v1",
-            "observed_at": datetime.now(timezone.utc).isoformat(),
-            "status": status,
-            "analyzer": analyzer,
-            "analyzer_version": analyzer_version,
-            "parameters": parameters or {},
-            "result": result,
-        }
-        if artifact_sha256 is not None:
-            record["artifact_sha256"] = artifact_sha256
+        record = analysis_observation_record(
+            analyzer=analyzer, analyzer_version=analyzer_version, result=result,
+            parameters=parameters, artifact_sha256=artifact_sha256, status=status,
+        )
         # Validate before mutating _log so a bad adapter cannot leave memory and
         # disk disagreeing. allow_nan=False keeps replay artifacts portable.
         json.dumps(record, allow_nan=False)

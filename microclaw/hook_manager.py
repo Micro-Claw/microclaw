@@ -68,20 +68,24 @@ def validate_hook_contract(code: str) -> list[str]:
     hooks = [
         node for node in classes
         if any(isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
-               and item.name == "image_process_fn" for item in node.body)
+               and item.name in {"analyze_frame", "image_process_fn"} for item in node.body)
     ]
     if not hooks:
         return [
-            "No top-level class defines image_process_fn(self, image, metadata, event_queue)."
+            "No top-level class defines analyze_frame(self, image, metadata) or "
+            "image_process_fn(self, image, metadata, event_queue)."
         ]
     errors: list[str] = []
     for cls in hooks:
-        fn = next(item for item in cls.body if getattr(item, "name", None) == "image_process_fn")
+        fn = next(item for item in cls.body if getattr(item, "name", None) in
+                  {"analyze_frame", "image_process_fn"})
         positional = len(fn.args.posonlyargs) + len(fn.args.args)
-        if positional < 4 and fn.args.vararg is None:
+        required = 3 if fn.name == "analyze_frame" else 4
+        if positional < required and fn.args.vararg is None:
             errors.append(
-                f"{cls.name}.image_process_fn must accept self, image, metadata, "
-                "and event_queue."
+                f"{cls.name}.{fn.name} must accept " +
+                ("self, image, and metadata." if fn.name == "analyze_frame" else
+                 "self, image, metadata, and event_queue.")
             )
     return errors
 
@@ -156,9 +160,13 @@ def load_hook_class(name: str):
     spec.loader.exec_module(mod)
     for attr in dir(mod):
         cls = getattr(mod, attr)
-        if isinstance(cls, type) and hasattr(cls, "image_process_fn"):
+        if isinstance(cls, type) and (
+            hasattr(cls, "analyze_frame") or hasattr(cls, "image_process_fn")
+        ):
             return cls
-    raise AttributeError(f"No class with image_process_fn found in hook '{name}'.")
+    raise AttributeError(
+        f"No class with analyze_frame or image_process_fn found in hook '{name}'."
+    )
 
 
 def list_saved_hooks() -> dict[str, dict]:

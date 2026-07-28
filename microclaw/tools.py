@@ -2330,12 +2330,17 @@ def _resolve_hook(
     hook_params: dict | None,
     log_path: str | None,
 ) -> Any:
-    """Instantiate a hook by strategy name (pre-coded registry or saved hook).
+    """Instantiate a hook with an explicit provenance-based trust category.
 
-    Injects ctrl/guard/log_path where the hook constructor accepts them.
-    Raises ValueError if the strategy is unknown.
+    Registry classes are reviewed, shipped control code and retain their
+    existing capabilities. Every class loaded from the saved-hook directory is
+    untrusted regardless of its manifest ``source`` label, receives no
+    controller/guard/log capability, and is wrapped by trusted parent code.
+    Saved source still runs in-process; review plus hash pinning remain the
+    containment story until Block 13.
     """
     from microclaw.hooks import PRECODED_HOOK_REGISTRY
+    from microclaw.hook_decisions import UntrustedHookAdapter
     from microclaw.hook_manager import load_hook_class, list_saved_hooks
 
     params = dict(hook_params or {})
@@ -2344,21 +2349,54 @@ def _resolve_hook(
 
     if hook_strategy in PRECODED_HOOK_REGISTRY:
         hook_cls = PRECODED_HOOK_REGISTRY[hook_strategy]
+        trusted_builtin = True
     elif hook_strategy in list_saved_hooks():
         hook_cls = load_hook_class(hook_strategy)
+        trusted_builtin = False
     else:
         raise ValueError(
             f"Unknown hook strategy '{hook_strategy}'. "
             "Run list_hooks() to see available strategies."
         )
 
-    sig = inspect.signature(hook_cls.__init__)
-    if "ctrl" in sig.parameters:
-        params.setdefault("ctrl", ctrl)
-    if "guard" in sig.parameters:
-        params.setdefault("guard", guard)
+    if trusted_builtin:
+        sig = inspect.signature(hook_cls.__init__)
+        if "ctrl" in sig.parameters:
+            params.setdefault("ctrl", ctrl)
+        if "guard" in sig.parameters:
+            params.setdefault("guard", guard)
+        return hook_cls(**params)
 
-    return hook_cls(**params)
+    # Refuse a saved hook that means to keep its own log. The audit path now
+    # belongs to the trusted parent, so such a hook would construct fine, take
+    # every exposure, and record nothing: the parent notes only that a frame was
+    # retained or discarded, and whatever the hook measured is dropped. That is
+    # the silent-loss failure design/19 F3 and design/24 exist to prevent, and it
+    # is exactly what the 2026-07-27 demo gate caught in
+    # test_generate_save_and_use_custom_hook. Refuse before any hardware moves.
+    from microclaw.hooks import HookBase
+    if issubclass(hook_cls, HookBase) or "log_path" in inspect.signature(
+        hook_cls.__init__
+    ).parameters:
+        raise ValueError(
+            f"Saved hook '{hook_strategy}' writes its own log, which is no "
+            "longer possible: the trusted parent owns the audit record so hook "
+            "source cannot forge or omit it. As written this hook would acquire "
+            "images and record none of its measurements. Give it "
+            "analyze_frame(image, metadata) returning a HookResult instead — its "
+            "measurements are then written to the log by the parent, with "
+            "provenance — and drop log_path and any HookBase inheritance."
+        )
+
+    # Do not let caller-supplied hook_params smuggle capabilities across the
+    # provenance boundary either. The trusted adapter, not generated code,
+    # owns the audit path.
+    for forbidden in (
+        "ctrl", "guard", "credentials", "candidates", "progress",
+        "survey_events", "event_queue", "log_path",
+    ):
+        params.pop(forbidden, None)
+    return UntrustedHookAdapter(hook_cls(**params), log_path=log_path)
 
 
 def _adaptive_result(
@@ -2790,6 +2828,28 @@ def _acquire_survey_with_detector(
     positions are {name, x_um, y_um} dicts; shape_kwargs carry the
     per-position event shape, as in _acquire_positions_with_hook.
     """
+    from microclaw.hook_decisions import UntrustedHookAdapter
+
+    if isinstance(hook, UntrustedHookAdapter):
+        if not adaptive:
+            raise ValueError(
+                "Saved untrusted hooks are not supported by the non-adaptive "
+                "survey-with-detector runner; use run_adaptive_survey."
+            )
+        if not hook.proposes_actions:
+            # A legacy saved hook has no way to reach candidates/progress, so it
+            # can never advance the survey past the seed tile. Left to run, the
+            # generator would idle out max_idle_s and log "stalled" — a
+            # structural impossibility reported as a hardware symptom. Refuse
+            # before any position is exposed.
+            raise ValueError(
+                "This saved hook defines only a legacy image_process_fn, so it "
+                "cannot propose ContinueSurvey or StopSurvey and can never "
+                "advance an adaptive survey past the seed tile. Give it an "
+                "analyze_frame(image, metadata) method, or run it under a "
+                "batched runner (run_tile_acquisition, run_adaptive_timelapse, "
+                "run_adaptive_zstack)."
+            )
     save_dir = guard.resolve_in_workspace(save_dir)
 
     # The stage is driven by the Acquisition, so check every survey point up
@@ -2814,13 +2874,17 @@ def _acquire_survey_with_detector(
         **shape_kwargs,
     )
 
-    # Hand the queue and counter to the hook as attributes. The inline
-    # detectors in the tests close over test-local objects; a saved hook
-    # class loaded by _resolve_hook has nothing to close over, so this is
-    # the only way a hook_strategy hook ever reaches them.
-    hook.candidates = candidates
-    hook.progress = progress
-    if adaptive:
+    if isinstance(hook, UntrustedHookAdapter):
+        if adaptive:
+            hook.configure_adaptive(
+                events=survey_events, candidates=candidates, progress=progress,
+                guard=guard, max_events=len(survey_events),
+            )
+    else:
+        # Reviewed built-ins retain the legacy direct control contract.
+        hook.candidates = candidates
+        hook.progress = progress
+    if adaptive and not isinstance(hook, UntrustedHookAdapter):
         # The tile list becomes state the hook walks, one candidates.put()
         # per decision; the stream pre-dispatches only survey_events[0].
         # Deliberate limit: the reservation covers exactly the planned grid.
@@ -2880,13 +2944,17 @@ def run_adaptive_survey(
     is not supported (the survey runner drives XY; a zstack protocol sweeps
     the same absolute Z range at every tile).
 
-    The hook must implement the adaptive contract (see hook_docs "Skipping
-    and stopping"): the runner sets hook.survey_events / hook.candidates /
-    hook.progress; after each frame the hook submits the next tile with
-    candidates.put() OR calls progress.done_early(), then image_done().
-    A batched hook that only logs runs fine here too, but serialized —
-    prefer run_tile_acquisition / run_multiposition_acquisition for fixed
-    surveys that just report.
+    The hook must implement the adaptive contract, which differs by provenance
+    (see hook_docs "Skipping and stopping"). A saved hook returns a HookResult
+    from analyze_frame carrying ContinueSurvey or StopSurvey, and trusted parent
+    code dispatches it; a reviewed built-in keeps the direct contract, where the
+    runner sets hook.survey_events / hook.candidates / hook.progress and the hook
+    submits the next tile with candidates.put() OR calls progress.done_early(),
+    then image_done(). A built-in that only logs runs fine here too, but
+    serialized — prefer run_tile_acquisition / run_multiposition_acquisition for
+    fixed surveys that just report. A saved hook that only logs is REFUSED here:
+    with the runner state parent-side it has no way to ask for the next tile, so
+    it would idle out max_idle_s at the seed and report a stall.
     """
     if position_names is not None and positions is not None:
         return {"error": "Provide position_names or positions, not both."}
@@ -2945,9 +3013,14 @@ def run_adaptive_survey(
     # joins on `position` without re-imaging (design/23 Episode A).
     stopped = progress.stopped_early
     result.pop("positions", None)   # "positions: 9" is the ambiguity this tool retires
+    # "acquired of N planned tile(s)" read as coverage, and a hook may revisit a
+    # planned tile instead of advancing: D4 case 1 acquired two frames at p0 and
+    # never visited p1, and the reading agent reported "both planned tiles were
+    # acquired (2 of 2)". Frames on one side of "of" and tiles on the other is
+    # the same conflation `positions: 9` was removed for.
     result["status"] = (
-        f"Adaptive survey: {progress.n_done} frame(s) acquired of "
-        f"{len(resolved)} planned tile(s)"
+        f"Adaptive survey: {progress.n_done} frame(s) acquired from a "
+        f"{len(resolved)}-tile plan"
         + (", stopped early by the hook." if stopped else ".")
     )
     result["frames_acquired"] = progress.n_done
@@ -3046,18 +3119,27 @@ def rank_hook_log(
         actual = [p["name"] for p in selected]
         expected = [r["position"] for r in rows[:len(actual)]]
         coordinate_matches = []
+        added_axes = []
         for saved_position, ranked in zip(selected, rows):
             axes = ("x_um", "y_um", "z_um")
-            presence_matches = all(
-                (axis in saved_position) == (axis in ranked) for axis in axes
-            )
+            # An axis the RANKING carries but the saved position lost is a real
+            # mismatch. An axis the saved position adds is not: a top-k revisit is
+            # marked with a focus Z the operator supplies, while a fixed-Z survey
+            # stamps no ZPosition_um_Intended and so its records have no z_um at
+            # all. Requiring both sides to carry the same axes reported M5's
+            # correct k=2 save as a coordinate mismatch (R1, 2026-07-28) with X
+            # and Y agreeing exactly — a false alarm on the one check standing
+            # between a ranking and what gets re-exposed.
+            lost = [a for a in axes if a in ranked and a not in saved_position]
+            added_axes.append([a for a in axes if a in saved_position and a not in ranked])
             coordinate_matches.append(
-                presence_matches and all(
-                    axis not in saved_position or math.isclose(
+                not lost and all(
+                    math.isclose(
                         float(saved_position[axis]), float(ranked[axis]),
                         rel_tol=0.0, abs_tol=1e-3,
                     )
                     for axis in axes
+                    if axis in saved_position and axis in ranked
                 )
             )
         result["position_list_verification"] = {
@@ -3065,6 +3147,10 @@ def rank_hook_log(
             "matches_ranking_prefix": actual == expected and all(coordinate_matches),
             "label_match": actual == expected,
             "coordinate_matches": coordinate_matches,
+            # Axes the saved position carries that the ranking does not — normally
+            # ["z_um"], the focus Z added at marking time. Reported so the operator
+            # can see what was added rather than inferring it from a silent pass.
+            "axes_added_when_saved": added_axes,
             "projection_issues": projection.issues,
             "expected": expected, "actual": actual,
         }
