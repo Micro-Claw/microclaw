@@ -241,6 +241,10 @@ width is 1 µs today, so the dose is small — but it is not zero, and it is not
 something microclaw can see or bound. Anyone reading `Enable = 1` as "armed but dark"
 is wrong during an acquisition.
 
+Route 2 is a property of *this rig*, not of microclaw. Most Micro-Manager systems have
+no FPGA in the light path and no second emission route to reason about. Record it here
+as an M5 fact; it must not become an assumption in the code.
+
 **Both properties are therefore declared as shutters.** `Enable` because it is the
 master gate; `Emission` because it independently forces continuous emission and
 bypasses the FPGA. Declaring both also means `shutter_all` drives both to 0 on session
@@ -415,6 +419,69 @@ Copy-Item "$Hooks\manifest.json" "$Evidence\manifest-after.json"
 Note that the `sha256` in the manifest will **not** equal `Get-FileHash` of the file
 on disk: the manifest pins LF-normalized text, the file on disk has CRLF. That is
 the D2 finding from the Block 7 gate, and it is expected, not corruption.
+
+---
+
+## Demo-core gate — prove the envelope is not M5-shaped
+
+**Why this exists.** M5 is an unusual Micro-Manager system: it drives its lasers
+through EMU and MicroFPGA, and most MM installations use neither. Most rigs look far
+closer to the stock demo config. Every illumination finding above came from M5's
+hardware, and the demo profile at `design/33-block5-demo-safety-config.yaml` declares
+`shutters: []` and `power_properties: []` — so the envelope path has never run against
+an ordinary config at all, only against M5 and against synthetic unit tests.
+
+That is a gap in this gate, not in the code: the shipped diff contains no reference to
+iChrome, iBeam, MicroFPGA, TTL, EMU or htSMLM, and the envelope names its device and
+property from the caller. These steps confirm that rather than assuming it.
+
+Run on the stock `MMConfig_demo.cfg` with the ZMQ bridge on port 4827.
+
+### D1. The probe behaves on a config with no lasers
+
+```powershell
+uv run python design\32-block7b-device-property-probe.py --port $Port --config design\33-block5-demo-safety-config.yaml --out "$Evidence\demo-properties.json" > "$Evidence\demo-properties.txt" 2>&1
+```
+
+**Expected observable:** it completes, enumerates the demo devices, and reports
+candidate power properties honestly — including "none matched" if the demo config has
+no continuous level control. The channel-pairing and gating-context features are
+iChrome-shaped heuristics and must degrade to nothing here rather than inventing
+structure.
+
+**Stop condition:** a crash, or a proposal that would declare a demo state device or
+camera property as illumination power.
+
+### D2. Declare a stand-in and start clean
+
+From D1's output pick one two-state shutter-ish property and one continuous writable
+numeric property to stand in for a laser. The demo config's `LED Shutter` and
+`White Light Shutter` are real `ShutterDevice`s; for power, use whatever bounded float
+D1 actually found. Copy the demo profile into `$Evidence`, add only those two rows,
+and retain the diff — do not edit the checked-in file.
+
+**Say plainly in the evidence that this is a stand-in.** Nothing on a demo core emits
+light; the point is the authorization path, not photons.
+
+```powershell
+uv run python -m microclaw --port $Port --safety-config "$Evidence\demo-safety-config.yaml" authorization-map > "$Evidence\demo-map.json" 2>&1
+```
+
+**Expected observable:** map `complete`, with the two declared rows appearing as
+`dedicated-illumination`.
+
+### D3. The full envelope sequence, on a stock config
+
+Run the R5 sequence against the demo stand-in with the same shape of numbers — an
+envelope ceiling the ramp reaches, and `max_writes` below the frame count.
+
+**Expected observable:** the same ordering as R5 — accepted increases, a budget
+refusal, a ceiling refusal, and a wind-down that lands with the budget spent. One
+confirmation before any motion, none after.
+
+**Stop condition:** any behaviour that differs from R5 in a way that traces to the
+device rather than to the numbers chosen. That would mean the envelope has acquired a
+dependency on M5's hardware, which is exactly what this section is here to catch.
 
 ---
 
@@ -636,6 +703,9 @@ way — a measured cost is the deliverable, not a pass/fail.
 
 | Step | What it settles | Verdict |
 |---|---|---|
+| D1 | probe degrades cleanly on a laser-free stock config | |
+| D2 | stand-in declaration, demo map complete | |
+| D3 | full envelope sequence on a stock config | |
 | P0 | map complete; iBeam power declared; no 405 **declared** | **SETTLED 2026-07-28** |
 | P1 | 405 nm `Level %` exists, 0–100, undeclared | **SETTLED 2026-07-28** |
 | P1b | `Level %` is real power; htSMLM ramps pulse duration instead | **SETTLED 2026-07-28** |
