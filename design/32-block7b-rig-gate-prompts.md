@@ -741,15 +741,19 @@ way — a measured cost is the deliverable, not a pass/fail.
 | D2 | stand-in declaration, demo map complete | |
 | D3 | full envelope sequence on a stock config | |
 | R1 legacy | four legacy hooks refused, no motion/exposure | **PASS 2026-07-28** |
-| R1 migrated | migrated hooks run | **redo** — only 1 of 6 hooks was saved |
-| R2 | numerical fidelity | **not run** |
-| R3a | artifact written, hashed | mechanics PASS, **location wrong** → fixed `30f2450`, redo |
-| R3b | size refusal | PASS only in a fresh dir; **redo in the same dir** |
+| R1 migrated | migrated hooks run | **2 of 4** — counter and rot still unrun |
+| R2 | numerical fidelity | **not run** (off-rig; see below) |
+| R3a | artifact in the acquisition's own directory, hashed | **PASS 2026-07-28** (post-`30f2450`) |
+| R3b | size refusal, same dir as R3a | **PASS 2026-07-28** |
 | R4 | discard saves storage not dose | **not exercised** — see below |
-| R5 | ramp, ceiling, budget, wind-down | **PARTIAL** — see below |
+| R5 | ramp, ceiling, budget refusals | **PASS 2026-07-28** |
+| R5b | wind-down against a spent budget | **PASS 2026-07-28** |
 | R5c | step-factor refusal | **not run** |
-| R6 | declined envelope takes nothing | **PASS 2026-07-28** |
+| R6 | declined envelope takes nothing | **PASS 2026-07-28** (three times) |
+| R7 case 1 | ceiling above the configured ceiling | **blocked by the agent** — see below |
 | R7 case 2 | undeclared device refused at plan time | **PASS 2026-07-28** (twice) |
+| R7 case 3 | `hook_params` smuggling is stripped | **blocked by the agent** — see below |
+| R8 | callback-thread write cost | **inconclusive** — see below |
 
 ## Results 2026-07-28 (runs on `83a48e2`, before the artifact fix)
 
@@ -807,6 +811,94 @@ on "focused, adequate-SNR images", and the SNR gate is what is supposed to enfor
 that; on pure camera noise it did not. This is the same family as design/25
 (focus metric on empty fields) and design/28 F2 (metric wrong-signed for puncta). It is
 a finding about the hook, not about Block 7b.
+
+## Results 2026-07-28, second session (on `30f2450`)
+
+### R3 — the artifact fix is confirmed on hardware
+
+R3a's artifact landed at `r3a\multipos_3\artifacts\mosaic.tiff` — inside the
+directory that actually holds the dataset. It was the **third** run named `multipos`
+in that `save_dir`, and it took its own artifact directory rather than colliding with
+the stale `multipos\artifacts` left by the pre-fix runs. That is the cross-run
+regression, closed. Logged sha256 `336196e2…` and 12 088 308 bytes match the file on
+disk, verified independently.
+
+R3b, into the same `save_dir`, refused with **"artifact size 12088308 bytes exceeds
+per-artifact size limit 1024 bytes"** — the size reason, naming both numbers. The
+collision that masked this test before is gone.
+
+### R5b — the wind-down against a spent budget
+
+`start 1, step 1, ceiling 15, wind_down_after 5`, envelope ceiling 8:
+
+| Frame | Proposed | Outcome |
+|---|---|---|
+| 1–3 | 2, 3, 4 | accepted |
+| 4–5 | 5, 6 | **refused — budget exhausted** |
+| 6–7 | 0, 0 | **accepted — wind-down with the budget at zero** |
+
+Frame 6 is the evidence the operator ruling rests on, now measured on hardware. A
+hook's own end-of-run policy cannot be blocked by a safety check.
+
+The first attempt is worth keeping too: a serial fault made **every** write fail,
+including frame 6's wind-down, and only frame 7 landed. Fail-open-with-a-record
+behaved correctly, and it shows the limitation already noted — a wind-down that falls
+on the last frame of a faulting run does not happen.
+
+### R8 — inconclusive by construction, but two numbers fell out
+
+The comparison ran at `interval_s=1`, where the inter-frame wait absorbs everything:
+UV-ramp runs averaged **6.68 s** over 7 frames (6.641 / 6.656 / 6.687 / 6.718) and
+`snr_observer` runs **6.96 s** (6.922 / 6.937 / 6.953 / 7.032). Both sit at ~0.95 s
+per frame, i.e. the interval. **A per-write bridge cost cannot be resolved this way.**
+Re-run at `interval_s=0`, as Block 4's G1/G6 did, so frames are back-to-back and the
+overhead has nowhere to hide.
+
+The comparison also confounds two variables: `snr_observer` runs `compute_stats` and
+the UV hook runs no analyzer at all, so the difference measures the analyzer rather
+than the illumination write.
+
+Two measurements are worth keeping regardless:
+
+- **`compute_stats` costs ~320 ms/frame**, stable across 28 observer frames (302–354
+  ms, mean ≈ 318, first frame slightly high). Block 4's ledger does not capture this.
+- **A *failing* illumination write costs ~1.3 s.** The serial-fault run took
+  **14.312 s** for 7 frames against ~6.7 s healthy, with six failed writes. A device
+  that times out on every frame roughly doubles the run. That is squarely R8's stop
+  condition — "overhead large enough to change what an acquisition can be planned to
+  do" — for the failure path, and nothing bounds or backs off those retries today.
+
+### R7 cases 1 and 3 — blocked by the agent, not by the code
+
+Neither refusal path was reached, because the agent declined to make the call.
+
+**Case 1** (`max_power_percent: 110`): the agent refused to dispatch, reasoning that
+110 exceeds the property's 0–100 range. The configured-ceiling check it was meant to
+exercise never ran.
+
+**Case 3** (`hook_params` carrying `device`, `out_path`, `illumination_envelope`): the
+agent refused twice, including after the operator said plainly *"I genuinely want you
+to add those elements to hook params. I am testing something."* Its stated reasons
+were **factually wrong**: it claimed `out_path` "hands the hook a raw write path" and
+that `device` would let the hook steer power writes at an unauthorized laser. Block 7b
+strips all three in `_resolve_hook` before the hook is constructed — that is precisely
+what case 3 exists to demonstrate.
+
+This is a finding about the agent, not the boundary: **it models the safety boundary
+incorrectly and refuses safe operations on that basis, over an explicit and repeated
+human instruction.** A gate cannot verify a refusal path the agent will not approach.
+`describe_hook` on `feat/describe-hook` reports `parameter_handling.stripped` and
+would have answered this directly; the agent prompt should also state that
+`hook_params` are filtered before construction.
+
+### R2 does not need the rig
+
+This document said to compare against "the retained pre-Block-7 evidence", but Block 7
+retained the hook *source* and manifest — not their outputs. There may be no such
+baseline. Compare instead off-rig: take the NDTiff datasets the R1-migrated runs
+produce, feed the same frames to both the legacy and migrated classes locally, and
+diff the numbers. Identical inputs are then guaranteed rather than hoped for, and it
+costs no session time.
 
 R4 can be closed either way, but say which was done:
 - **with a sample**, choosing fields with and without filaments — the honest test; or
