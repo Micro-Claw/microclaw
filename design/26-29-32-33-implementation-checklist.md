@@ -616,23 +616,12 @@ Pre-branch spike/read-only probe (branch `design29/probe-findings`):
 - [x] Run fixed `--dataset` on all three Run A datasets and retain output outside
       the repo. Per-image affine is all-zero and summary affine is `Undefined`.
 - [x] Retain qualified system/config/dataset findings and verdicts in design/29.
-- [ ] Complete the convention check on the Run A datasets. The check was run:
-      `run_a_1` is dark and
-      rejected; the sparse revisit has no adjacent pair. `run_a_2` is PARTIAL:
-      7/9 X pairs determine a ~90° row displacement at 0.1227–0.1439 µm/px,
-      while Y does not cluster. Record X as a future-affine consistency check.
-      **Finish this with MM's own pixel calibrator, not with new code** — see
-      design/29 "Do not build a move/snap affine spike". `AutomaticCalibrationThread`
-      already does the move/snap cross-correlation and `CalibrationThread.result_`
-      is a full `AffineTransform`. Operator action: correct M2's blocking predicate,
-      run the calibrator on a contrast-rich in-focus field, rerun our probe, and
-      check the result against the `run_a_2` X column (~90°, ~0.13 µm/px). This
-      bullet is an operator task, NOT an implementation task.
-      **Run A is M2** (operator-confirmed), so this is a same-instrument check:
-      MM's calibrator and our saved-tile correlation measure one optical path by
-      two independent methods, and M2's stored 0.127 µm/px is a third. Agreement
-      settles the convention; disagreement is equally informative and must be
-      resolved before any of the three is trusted.
+- [x] Complete the convention check on the Run A datasets. — done as far as saved
+      data allows: `run_a_1` is dark and rejected, the sparse revisit has no adjacent
+      pair, and `run_a_2` determines the **X** column (7/9 pairs, ~90° row displacement
+      at 0.1227–0.1439 µm/px) but not Y. **The unresolved Y column moved to Block 9's
+      prerequisites**, where it actually binds: nothing Block 8 shipped consumes an
+      affine's values, while Block 9 cannot place a tile without a full 2×2.
 - [x] Stop if the affine is missing/singular, configuration selection is ambiguous, the
       dataset does not identify the historical transform, or Java/Python row-column signs
       are unresolved. Saved data resolves only X; keep the implementation gate
@@ -722,6 +711,36 @@ Post-merge design gate:
 
 Branch: `design29/stage-coordinate-mosaic`
 
+Prerequisites — none of these are code, and all three must land before the branch
+opens. Block 9 places pixels, so unlike Block 8 it genuinely cannot proceed on a
+synthetic affine.
+
+- [ ] Complete the convention check on the Run A datasets. The check was run:
+      `run_a_1` is dark and
+      rejected; the sparse revisit has no adjacent pair. `run_a_2` is PARTIAL:
+      7/9 X pairs determine a ~90° row displacement at 0.1227–0.1439 µm/px,
+      while Y does not cluster. Record X as a future-affine consistency check.
+      **Finish this with MM's own pixel calibrator, not with new code** — see
+      design/29 "Do not build a move/snap affine spike". `AutomaticCalibrationThread`
+      already does the move/snap cross-correlation and `CalibrationThread.result_`
+      is a full `AffineTransform`. Operator action: correct M2's blocking predicate,
+      run the calibrator on a contrast-rich in-focus field, rerun our probe, and
+      check the result against the `run_a_2` X column (~90°, ~0.13 µm/px). This
+      bullet is an operator task, NOT an implementation task.
+      **Run A is M2** (operator-confirmed), so this is a same-instrument check:
+      MM's calibrator and our saved-tile correlation measure one optical path by
+      two independent methods, and M2's stored 0.127 µm/px is a third. Agreement
+      settles the convention; disagreement is equally informative and must be
+      resolved before any of the three is trusted.
+- [ ] Retrieve the spiral and 2500-tile fixtures — see the fixture table further
+      down this block. They sit on two different machines, so it is two retrievals.
+- [ ] Obtain one dataset carrying a **non-sentinel** affine. Every dataset available
+      today records the all-zeros sentinel, so Block 8's acquisition-recorded branch
+      is unit-tested and never field-verified. This comes free with the calibrator
+      run above and is the only way to exercise that path end to end.
+
+Implementation:
+
 - [ ] Create the branch from updated `main`.
 - [ ] Add `MosaicGeometry` using the existing `StageCameraAffine`; validate finite
       coefficients, nonsingular determinant, and positive output sampling in direct
@@ -742,8 +761,8 @@ Branch: `design29/stage-coordinate-mosaic`
       with known landmarks and record seam behavior.
 - [ ] Run the 2500-tile fixture, measure peak RSS and output correctness, and implement
       chunked/memory-mapped output before merge if it exceeds the agreed budget.
-- [ ] Retrieve the design/30 spiral and 2500-tile fixtures from the rig first;
-      neither is present here. The non-square fixture is found (`run_a_1`, 453×227).
+- [ ] Retrieve the design/30 spiral and 2500-tile fixtures from the rig first
+      (tracked as a prerequisite at the top of this block); neither is present here. The non-square fixture is found (`run_a_1`, 453×227).
       Exact locations, recovered from the saved histories (2026-07-28) so nobody
       has to re-hunt them — note these are **two different machines and drives**,
       so it is two separate retrievals:
