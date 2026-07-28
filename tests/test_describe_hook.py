@@ -173,3 +173,58 @@ def test_malformed_source_returns_error_and_does_not_break_listing(
     assert described["provenance"]["actual_sha256"]
     assert listed["saved"]["broken"]["description"] == "fixture"
     assert "describe_hook" in listed["hint"]
+
+
+def test_describe_reports_exactly_what_resolve_hook_strips(monkeypatch, tmp_path):
+    """The stripped list and the popping loop must stay one list.
+
+    A second copy drifts the moment the list grows — Block 7b extends it from
+    eight names to eighteen — and describe_hook would then report a parameter as
+    accepted while _resolve_hook drops it. That is worse than silence, because
+    the operator acts on it.
+    """
+    from microclaw import tools
+    from microclaw.hook_manager import FORBIDDEN_SAVED_HOOK_PARAMS
+
+    signature = ", ".join(f"{p}=None" for p in FORBIDDEN_SAVED_HOOK_PARAMS)
+    source = (
+        "class Everything:\n"
+        f"    def __init__(self, {signature}):\n"
+        "        self.seen = dict(locals())\n"
+        "        del self.seen['self']\n"
+        "    def analyze_frame(self, image, metadata):\n"
+        "        return None\n"
+    )
+    path = tmp_path / "everything.py"
+    path.write_text(source, encoding="utf-8")
+    manifest = {"everything": {
+        "description": "d", "path": str(path), "source": "user_provided",
+        "sha256": hashlib.sha256(source.encode()).hexdigest(),
+        "accepted_warnings": [],
+    }}
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    monkeypatch.setattr(hook_manager, "MANIFEST", tmp_path / "manifest.json")
+
+    described = describe_hook(None, None, "everything")
+    assert described["parameter_handling"]["stripped"] == list(
+        FORBIDDEN_SAVED_HOOK_PARAMS
+    )
+
+    # And the runtime actually drops every one of them. `log_path` is excluded
+    # here because a saved hook declaring it is refused before the strip loop is
+    # reached — its presence in the list is defensive only.
+    strippable = [p for p in FORBIDDEN_SAVED_HOOK_PARAMS if p != "log_path"]
+    runtime_source = source.replace(", log_path=None", "")
+    runtime_path = tmp_path / "runtime.py"
+    runtime_path.write_text(runtime_source, encoding="utf-8")
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("runtime_everything", runtime_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr("microclaw.hook_manager.list_saved_hooks",
+                        lambda: {"everything": {}})
+    monkeypatch.setattr("microclaw.hook_manager.load_hook_class",
+                        lambda name: module.Everything)
+    smuggled = {p: "smuggled" for p in strippable}
+    adapter = tools._resolve_hook(object(), object(), "everything", smuggled, None)
+    assert all(value is None for value in adapter.hook.seen.values())

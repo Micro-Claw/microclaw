@@ -2399,12 +2399,11 @@ def _resolve_hook(
     # Do not let caller-supplied hook_params smuggle capabilities across the
     # provenance boundary either. The trusted adapter, not generated code,
     # owns the audit path.
-    for forbidden in (
-        "ctrl", "guard", "credentials", "candidates", "progress",
-        "survey_events", "event_queue", "log_path", "illumination_envelope",
-        "illumination_device", "illumination_property", "device", "property",
-        "path", "out_path", "output_path", "save_dir", "artifact_dir",
-    ):
+    # One definition, shared with describe_hook. A second copy would drift the
+    # moment this list grows, and describe_hook would then report a parameter as
+    # accepted while this line silently drops it — worse than not reporting at all.
+    from microclaw.hook_manager import FORBIDDEN_SAVED_HOOK_PARAMS
+    for forbidden in FORBIDDEN_SAVED_HOOK_PARAMS:
         params.pop(forbidden, None)
     return UntrustedHookAdapter(hook_cls(**params), log_path=log_path)
 

@@ -9,9 +9,16 @@ from typing import Any
 HOOKS_DIR = Path.home() / ".microclaw" / "hooks"
 MANIFEST = HOOKS_DIR / "manifest.json"
 
+# Every hook_params key _resolve_hook strips before constructing a saved hook,
+# and the exact list describe_hook reports as stripped. ONE definition: Block 7b
+# grew this from eight names to eighteen, and a second copy would have had
+# describe_hook calling `out_path` an accepted parameter while _resolve_hook
+# dropped it.
 FORBIDDEN_SAVED_HOOK_PARAMS = (
     "ctrl", "guard", "credentials", "candidates", "progress",
-    "survey_events", "event_queue", "log_path",
+    "survey_events", "event_queue", "log_path", "illumination_envelope",
+    "illumination_device", "illumination_property", "device", "property",
+    "path", "out_path", "output_path", "save_dir", "artifact_dir",
 )
 
 # Modules whose import or use is worth flagging for a human to review. Broad on
