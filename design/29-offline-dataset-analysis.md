@@ -108,11 +108,60 @@ own `calibration.solve_affine` plus its knowledge base is the primary source.
 The MM-sourced resolver branch remains correct and cheap, but will normally fall
 through; it is not treated as a supported acquisition-recorded identity.
 
-MM appears to store the pixel-size scalar and affine separately. **UNVERIFIED
-LEAD:** Micro-Manager's “Pixel Calibrator” plugin is reportedly the tool that
-measures the full affine. Nobody has run it here and its behavior on M2's MM
-version is unconfirmed. Testing it on M2 may resolve the outstanding Y column
-without the proposed move/snap spike.
+MM stores the pixel-size scalar and the affine separately, which is why a config
+can carry a correct scalar and a default affine at the same time.
+
+### Do not build a move/snap affine spike — Micro-Manager already ships one
+
+The earlier "unverified lead" is now **verified by inspection** of the local
+`MMJ_.jar` (`Micro-Manager-2.0.3-20260625`, matching the rigs' MMCore 12.5.0).
+The pixel calibrator is not a plugin; it is internal to MM:
+
+```
+org.micromanager.internal.pixelcalibrator.CalibrationThread
+    protected java.awt.geom.AffineTransform result_    <- a FULL affine, not a scalar
+    java.awt.geom.AffineTransform getResult()
+
+org.micromanager.internal.pixelcalibrator.AutomaticCalibrationThread
+    public static java.awt.geom.Point2D$Double measureDisplacement(
+        ij.process.ImageProcessor, ij.process.ImageProcessor, boolean)
+
+org.micromanager.internal.pixelcalibrator.ManualPreciseCalibrationThread
+org.micromanager.internal.pixelcalibrator.ManualSimpleCalibrationThread
+org.micromanager.internal.pixelcalibrator.PixelCalibratorDialog
+    public java.lang.Double getCalibratedPixelSize()
+    public double safeTravelRadius()          <- bounded stage travel
+```
+
+`measureDisplacement` moves the stage, snaps, and cross-correlates: it **is** the
+move/snap measurement this design proposed, already implemented and far better
+tested than anything we would write. `result_` being an `AffineTransform` proves
+it yields the full 2×2 rather than a scalar, and `safeTravelRadius` proves travel
+is bounded. Three modes exist — Automatic, ManualPrecise, ManualSimple — so a
+field where automatic correlation fails still has a path.
+
+The result is written back through
+`org.micromanager.internal.dialogs.PixelSizeProvider`, which declares
+`getAffineTransform` / `setAffineTransform` and is implemented by both
+`PixelConfigEditor` and `PixelPresetEditor` (reached from `CalibrationListDlg`).
+So the calibrator is launched from the pixel-size config editor and stores its
+affine into that config, exactly where our probe's `get_pixel_size_affine_by_id`
+already reads. The precise menu label is not confirmed from bytecode; find it
+under the Pixel Size Calibration editor.
+
+**Consequence for this design: the outstanding Y column is an operator action,
+not an implementation task.** Do not write a move/snap spike. Run MM's calibrator
+on a contrast-rich, in-focus field — it is a correlation method and will fail on
+a blank or dim field exactly as `run_a_1` did — then rerun our probe. Success is
+that config's affine no longer reporting `IDENTITY`. On M2 the config's blocking
+predicate must be corrected first, or the measured affine has no active config to
+land in.
+
+That rerun is also the **independent cross-check**: MM's calibrator and our
+`run_a_2` correlation are wholly separate methods, so agreement on ~90°
+stage/camera rotation at ~0.13 µm/px would settle the convention outright.
+Disagreement is equally informative and must be resolved before either is
+trusted.
 
 The fixed dataset arm confirms Run A intended XY on every image, string position
 values, and varying axes (`position+time`, plus Z on the sparse revisit). Summary

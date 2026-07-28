@@ -621,7 +621,13 @@ Pre-branch spike/read-only probe (branch `design29/probe-findings`):
       rejected; the sparse revisit has no adjacent pair. `run_a_2` is PARTIAL:
       7/9 X pairs determine a ~90° row displacement at 0.1227–0.1439 µm/px,
       while Y does not cluster. Record X as a future-affine consistency check.
-      Proposal only: confirm X/resolve Y with unidirectional approaches.
+      **Finish this with MM's own pixel calibrator, not with new code** — see
+      design/29 "Do not build a move/snap affine spike". `AutomaticCalibrationThread`
+      already does the move/snap cross-correlation and `CalibrationThread.result_`
+      is a full `AffineTransform`. Operator action: correct M2's blocking predicate,
+      run the calibrator on a contrast-rich in-focus field, rerun our probe, and
+      check the result against the `run_a_2` X column (~90°, ~0.13 µm/px). This
+      bullet is an operator task, NOT an implementation task.
 - [x] Stop if the affine is missing/singular, configuration selection is ambiguous, the
       dataset does not identify the historical transform, or Java/Python row-column signs
       are unresolved. Saved data resolves only X; keep the implementation gate
@@ -693,6 +699,22 @@ Branch: `design29/stage-coordinate-mosaic`
       chunked/memory-mapped output before merge if it exceeds the agreed budget.
 - [ ] Retrieve the design/30 spiral and 2500-tile fixtures from the rig first;
       neither is present here. The non-square fixture is found (`run_a_1`, 453×227).
+      Exact locations, recovered from the saved histories (2026-07-28) so nobody
+      has to re-hunt them — note these are **two different machines and drives**,
+      so it is two separate retrievals:
+
+      | Fixture | Path on rig | Positions | History |
+      |---|---|---|---|
+      | 2500-tile 488 | `C:\Users\ries\cell_scan\scan488_900_1` | 2500 (50×50 @ 18 µm) | `20260717_133127_..._tiling_with_nestor.json` |
+      | 2500-tile 561 | `C:\Users\ries\cell_scan\scan561_900_1` | 2500 (50×50 @ 18 µm) | same |
+      | 36-tile grid | `C:\Users\ries\cell_scan\cellscan_1` | 36 (6×6 @ 18 µm) | same |
+      | Spiral | `F:\DataSSD\260720_PD_testMicroClaw\spiral_montage_1` | 25 (`spiral_01`…`spiral_25`) | `20260720_155559_..._pallavi_spiral_test.json` |
+
+      Both 900 µm scans are centred (1735.5, −6967.2) with mosaic 8582×8578 px —
+      that is the peak-RSS target. The tiling session's stitcher ran with
+      `pixel_size_um: 0.105`, a **third** value alongside M2's configured 0.127 and
+      the measured ~0.13; reconcile before trusting any of them. The session's
+      closing "cleanup" was switching off the 561 laser, not deleting data.
 - [ ] Stop on unexplained orientation, historical-calibration ambiguity, axis leakage,
       nondeterministic hashes/pixels, or unacceptable memory. Fix and repeat.
 - [ ] Commit, review, and merge.
