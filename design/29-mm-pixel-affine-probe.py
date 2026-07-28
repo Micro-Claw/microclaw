@@ -60,24 +60,26 @@ def _as_strings(value: Any) -> list[str]:
         return out
 
 
-def _decode_java_affine(raw: list[float]) -> dict[str, Any]:
-    """Decode java.awt.geom.AffineTransform.getMatrix ordering.
+def _decode_mmcore_affine(raw: list[float]) -> dict[str, Any]:
+    """Decode MMCore's row-major ``[m00, m01, m02, m10, m11, m12]``.
 
-    Java returns [m00, m10, m01, m11, m02, m12], representing:
+    Micro-Manager's ``AffineUtils.doubleToAffine`` rearranges those values as
+    ``[0, 3, 1, 4, 2, 5]`` for Java's column-major ``AffineTransform``
+    constructor.  The resulting transform represents:
 
         stage_x = m00 * pixel_x + m01 * pixel_y + m02
         stage_y = m10 * pixel_x + m11 * pixel_y + m12
     """
     if len(raw) != 6:
         raise ValueError(f"expected six Java affine values, got {len(raw)}: {raw}")
-    m00, m10, m01, m11, m02, m12 = raw
+    m00, m01, m02, m10, m11, m12 = raw
     det = m00 * m11 - m01 * m10
     x_scale = math.hypot(m00, m10)
     y_scale = math.hypot(m01, m11)
     dot = m00 * m01 + m10 * m11
-    normalized_dot = dot / (x_scale * y_scale) if x_scale and y_scale else math.nan
+    normalized_dot = dot / (x_scale * y_scale) if x_scale and y_scale else None
     return {
-        "raw_java_order": raw,
+        "raw_mmcore_row_major": raw,
         "linear_pixel_to_stage": [[m00, m01], [m10, m11]],
         "translation_um": [m02, m12],
         "determinant": det,
@@ -99,10 +101,19 @@ def _classify(decoded: dict[str, Any]) -> str:
     a, b = matrix[0]
     c, d = matrix[1]
     det = decoded["determinant"]
-    if not all(math.isfinite(x) for x in (a, b, c, d, det)):
+    translation = decoded["translation_um"]
+    if not all(math.isfinite(x) for x in (a, b, c, d, *translation, det)):
         return "INVALID — non-finite coefficient"
+    if all(x == 0.0 for x in (a, b, c, d, *translation)):
+        return "INVALID — all-zeros sentinel"
     if math.isclose(det, 0.0, abs_tol=1e-12):
-        return "INVALID — singular/empty affine"
+        return "INVALID — singular affine"
+    if (math.isclose(a, 1.0, abs_tol=1e-12)
+            and math.isclose(b, 0.0, abs_tol=1e-12)
+            and math.isclose(c, 0.0, abs_tol=1e-12)
+            and math.isclose(d, 1.0, abs_tol=1e-12)
+            and all(math.isclose(x, 0.0, abs_tol=1e-12) for x in translation)):
+        return "IDENTITY — finite and nonsingular, but not a measured calibration"
     off_axis = not (math.isclose(b, 0.0, abs_tol=1e-9)
                     and math.isclose(c, 0.0, abs_tol=1e-9))
     anisotropic = not math.isclose(
@@ -115,13 +126,12 @@ def _classify(decoded: dict[str, Any]) -> str:
 
 def _report_affine(label: str, raw: list[float]) -> dict[str, Any] | None:
     print(label)
+    print("  raw MMCore row-major    :", raw)
     try:
-        decoded = _decode_java_affine(raw)
-        payload, digest = _canonical_payload(decoded)
-    except (ValueError, TypeError) as error:
-        print("  INVALID:", error)
+        decoded = _decode_mmcore_affine(raw)
+    except (ValueError, TypeError, OverflowError) as error:
+        print("  verdict                 : INVALID —", error)
         return None
-    print("  raw Java order          :", decoded["raw_java_order"])
     print("  pixel->stage 2x2        :", decoded["linear_pixel_to_stage"])
     print("  translation (ignored)   :", decoded["translation_um"])
     print("  determinant/reflection  :", decoded["determinant"], decoded["reflection"])
@@ -129,9 +139,13 @@ def _report_affine(label: str, raw: list[float]) -> dict[str, Any] | None:
           decoded["y_scale_um_per_px"])
     print("  x-axis angle deg        :", decoded["x_axis_angle_deg"])
     print("  normalized axis dot     :", decoded["normalized_axis_dot"])
-    print("  canonical SHA-256       :", digest)
-    print("  canonical payload       :", payload)
     print("  verdict                 :", _classify(decoded))
+    try:
+        payload, digest = _canonical_payload(decoded)
+        print("  canonical SHA-256       :", digest)
+        print("  canonical payload       :", payload)
+    except (ValueError, TypeError) as error:
+        print("  canonical payload       : unavailable —", error)
     return decoded
 
 
@@ -230,6 +244,7 @@ def _report_config_rules(core: Any, config: str) -> None:
         return
     try:
         size = int(data.size())
+        matches: list[bool] = []
         if size == 0:
             print("    selection rules       : []")
         for index in range(size):
@@ -237,7 +252,19 @@ def _report_config_rules(core: Any, config: str) -> None:
             device = _setting_value(setting, "get_device_label", "getDeviceLabel")
             prop = _setting_value(setting, "get_property_name", "getPropertyName")
             value = _setting_value(setting, "get_property_value", "getPropertyValue")
-            print(f"    rule[{index}]              : {device!r}.{prop!r} == {value!r}")
+            try:
+                live = str(core.get_property(device, prop))
+                match = live == value
+                matches.append(match)
+                verdict = "MATCH" if match else "MISMATCH"
+                print(f"    rule[{index}]              : {device!r}.{prop!r} expected={value!r} "
+                      f"live={live!r} — {verdict}")
+            except Exception as error:
+                matches.append(False)
+                print(f"    rule[{index}]              : {device!r}.{prop!r} expected={value!r} "
+                      f"live=ERR {error} — MISMATCH")
+        activates = all(matches) if size else True
+        print("    would config activate :", "YES" if activates else "NO")
     except Exception as error:
         print("    selection rules       : ERR bridge shape:", error, repr(data))
 
@@ -273,12 +300,22 @@ def _report_dataset_metadata(path: str) -> None:
             for index, child in enumerate(value):
                 walk(child, f"{prefix}[{index}]")
 
-    if not candidates:
-        print("summary metadata         : unavailable through this ndstorage API")
-        return
+    try:
+        coordinates = list(dataset.get_image_coordinates_list())
+    except Exception as error:
+        coordinates = []
+        print("image coordinates        : ERR", error)
+    print("image coordinate count   :", len(coordinates))
     for name, metadata in candidates:
         print(f"metadata source {name!r}:")
         walk(metadata)
+    for index, coords in enumerate(coordinates):
+        try:
+            metadata = dataset.read_metadata(**coords)
+            print(f"per-image metadata[{index}] {coords!r}:")
+            walk(metadata)
+        except Exception as error:
+            print(f"per-image metadata[{index}] {coords!r}: ERR", error)
     print("NOTE: absence here means historical calibration identity is not proven; inspect")
     print("      raw NDTiff metadata if the installed ndstorage API omits summary fields.")
 
@@ -287,6 +324,10 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", help="optional saved NDTiff to inspect; never modifies it")
     args = parser.parse_args()
+
+    if args.dataset:
+        _report_dataset_metadata(args.dataset)
+        return
 
     from microclaw.controller import MicroscopeController
 
@@ -343,9 +384,6 @@ def main() -> None:
         print("exact raw equality       :", current_raw == current_by_id)
         print("current raw              :", current_raw)
         print("by-ID raw                :", current_by_id)
-
-    if args.dataset:
-        _report_dataset_metadata(args.dataset)
 
     print("\n== interpretation boundary ==")
     print("This probe does not prove Java/Python row-column signs against real imagery,")
