@@ -190,7 +190,7 @@ class SafetyConstraints:
     # is the only mode in which raw property writes have a hard gate (see
     # SafetyGuard.check_property and safety_config.yaml).
     allowed_properties: Optional[list[ForbiddenProperty]] = None
-    # Filesystem sandbox root for file-touching tools. None = unrestricted
+    # Filesystem boundary for paths microclaw writes or serves. None = unrestricted.
     # (behaviour unchanged); set it to confine reads/writes to one directory.
     workspace_dir: Optional[str] = None
     plugins: PluginConstraints = field(default_factory=PluginConstraints)
@@ -939,7 +939,7 @@ class SafetyGuard:
             )
 
     def resolve_in_workspace(self, path: str) -> str:
-        """Resolve a file path, confining it to workspace_dir if one is set.
+        """Resolve a path microclaw will write or serve, confined to workspace_dir.
 
         realpath-resolves (so `..` and symlinks can't escape) and raises
         SafetyViolation if the result leaves the configured root. When
@@ -966,6 +966,17 @@ class SafetyGuard:
                 f"Path '{path}' escapes the configured workspace directory ({root})."
             )
         return resolved
+
+    def resolve_readable_path(self, path: str) -> str:
+        """Absolutise a path that microclaw will only read locally.
+
+        NEVER use this for a path that will be written to or served to a client.
+        Local reads are deliberately not confined by workspace_dir.
+        """
+        # abspath, not normpath. normpath is lexical: it respells separators
+        # and leaves '/tmp/x' as the drive-relative '\tmp\x' on Windows. The
+        # spelling that matches the OS's resolution is the OS's resolution.
+        return os.path.abspath(path)
 
     def check_plugin(self, classpath: str) -> None:
         """Gate a read-only analyzer plugin: allow by default, deny if blocklisted.

@@ -323,9 +323,11 @@ channels:
 # typed executor is refused at startup. Leave `channels` absent until the names
 # and all effects have been reviewed on this rig.
 
-# Optional filesystem sandbox for file-touching tools (hook reads/writes,
-# position-list saves, TIFF export). Unset = unrestricted. When set, those tools
-# are confined to this directory; `..` and symlink escapes are rejected.
+# Optional filesystem boundary for paths microclaw writes or serves (acquisition
+# data, logs, position-list saves, TIFF exports, and artifact downloads). Unset =
+# unrestricted. When set, writes and served files are confined to this directory;
+# `..` and symlink escapes are rejected. Local reads remain unrestricted, so this
+# is not a sandbox for hook code or plugins.
 # workspace_dir: /data/microclaw
 
 # Micro-Manager plugin hooks run arbitrary Java that bypasses the checks above,

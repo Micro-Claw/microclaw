@@ -933,7 +933,7 @@ def export_dataset_as_tiff(
 ) -> dict:
     import itertools
 
-    dataset_path = guard.resolve_in_workspace(dataset_path)
+    dataset_path = guard.resolve_readable_path(dataset_path)
     output_path = guard.resolve_in_workspace(output_path)
     dataset = Dataset(dataset_path)
     axes = dataset.axes
@@ -1721,7 +1721,7 @@ def load_position_list(
     expected_content_hash: str | None = None,
 ) -> dict:
     """Transactionally load a native Micro-Manager position-list file."""
-    path = guard.resolve_in_workspace(path)   # save_position_list is guarded; be symmetric
+    path = guard.resolve_readable_path(path)  # local read; workspace confines writes/serves
     try:
         prepared = ctrl.prepare_position_list(path)
     except PositionListConflict as e:
@@ -2316,8 +2316,8 @@ def _prepare_log_path(guard: SafetyGuard, log_path: str | None) -> str | None:
     """Resolve a hook's log path in the workspace and create its parent directory.
 
     The hook writes this file itself, so it never passed the guard — while
-    read_hook_log does. Resolve it here or the log lands somewhere microclaw
-    will then refuse to read back.
+    Local reads are unconfined, but writes are not. Resolve it here so the hook
+    cannot write outside a configured workspace.
 
     The mkdir matters as much as the resolve: the hook only opens the file on
     its first frame, so a missing parent surfaces as FileNotFoundError *inside
@@ -3130,7 +3130,7 @@ def run_adaptive_survey(
 
 def read_hook_log(ctrl: MicroscopeController, guard: SafetyGuard, log_path: str) -> dict:
     """Read a hook's output log file after an acquisition completes."""
-    log_path = guard.resolve_in_workspace(log_path)
+    log_path = guard.resolve_readable_path(log_path)
     path = Path(log_path)
     if not path.exists():
         return {"error": f"Log file not found: {log_path}"}
@@ -3154,7 +3154,7 @@ def rank_hook_log(
     of JSON record order and model arithmetic.
     """
     started = time.monotonic()
-    log_path = guard.resolve_in_workspace(log_path)
+    log_path = guard.resolve_readable_path(log_path)
     path = Path(log_path)
     if not path.exists():
         return {"error": f"Log file not found: {log_path}"}
@@ -3202,7 +3202,7 @@ def rank_hook_log(
         "budget_views": {str(k): rows[:k] for k in requested},
     }
     if position_list_path:
-        position_list_path = guard.resolve_in_workspace(position_list_path)
+        position_list_path = guard.resolve_readable_path(position_list_path)
         try:
             projection = ctrl.project_position_list_file(position_list_path)
         except PositionListConflict as e:
@@ -3293,10 +3293,10 @@ def inspect_artifacts(
     paths: list[str],
     manifest_path: str | None = None,
 ) -> dict:
-    """List and SHA-256 workspace artifacts, recursively and deterministically."""
+    """List and SHA-256 local artifacts, recursively and deterministically."""
     files: set[Path] = set()
     for raw in paths:
-        resolved = Path(guard.resolve_in_workspace(raw))
+        resolved = Path(guard.resolve_readable_path(raw))
         if not resolved.exists():
             return {"error": f"Artifact path not found: {resolved}"}
         if resolved.is_dir():
@@ -3334,8 +3334,8 @@ def compare_revisit_frames(
     from scipy.ndimage import gaussian_filter, shift as image_shift
     from skimage.registration import phase_cross_correlation
 
-    source_tiff = guard.resolve_in_workspace(source_tiff)
-    revisit_tiff = guard.resolve_in_workspace(revisit_tiff)
+    source_tiff = guard.resolve_readable_path(source_tiff)
+    revisit_tiff = guard.resolve_readable_path(revisit_tiff)
     source = tifffile.imread(source_tiff)
     revisit = tifffile.imread(revisit_tiff)
     if source.ndim == 2:
@@ -3412,7 +3412,7 @@ def calibrate_snr_threshold(
     def values(paths: list[str]) -> list[float]:
         out = []
         for raw in paths:
-            path = Path(guard.resolve_in_workspace(raw))
+            path = Path(guard.resolve_readable_path(raw))
             records = json.loads(path.read_text(encoding="utf-8"))
             out.extend(float(r["result"]["snr"]) for r in records)
         return out
@@ -3429,8 +3429,8 @@ def calibrate_snr_threshold(
         "schema": "microclaw.snr-calibration/v1",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "context": context,
-        "dark_log_paths": [guard.resolve_in_workspace(p) for p in dark_log_paths],
-        "illuminated_log_paths": [guard.resolve_in_workspace(p)
+        "dark_log_paths": [guard.resolve_readable_path(p) for p in dark_log_paths],
+        "illuminated_log_paths": [guard.resolve_readable_path(p)
                                   for p in illuminated_log_paths],
         "dark_frame_count": len(dark), "illuminated_frame_count": len(illuminated),
         "dark_max_snr": dark_max, "illuminated_min_snr": illuminated_min,
@@ -3501,7 +3501,7 @@ def read_hook_from_file(
     """
     from microclaw.hook_manager import read_hook_from_file as _read
     try:
-        path = guard.resolve_in_workspace(path)
+        path = guard.resolve_readable_path(path)
         code, warnings = _read(path)
     except SafetyViolation as e:
         return {"error": str(e)}

@@ -401,7 +401,7 @@ class SNRObservationHook(HookBase):
         if calibration_path:
             if guard is None:
                 raise ValueError("calibration_path requires an injected safety guard")
-            calibration_path = guard.resolve_in_workspace(calibration_path)
+            calibration_path = guard.resolve_readable_path(calibration_path)
             calibration = json.loads(Path(calibration_path).read_text(encoding="utf-8"))
             min_snr = float(calibration["recommended_min_snr"])
             source = "calibration_artifact"

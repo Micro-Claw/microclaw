@@ -667,6 +667,18 @@ class TestAllowlistMode:
 
 
 class TestWorkspaceSandbox:
+    def test_local_reads_ignore_a_configured_workspace(self, tmp_path):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        outside = tmp_path / "outside" / "input.json"
+        guard = SafetyGuard(SafetyConstraints(workspace_dir=str(workspace)))
+        assert guard.resolve_readable_path(str(outside)) == os.path.abspath(outside)
+
+    def test_local_reads_are_unchanged_when_workspace_is_unset(self, tmp_path):
+        path = tmp_path / "input.json"
+        guard = SafetyGuard(SafetyConstraints())
+        assert guard.resolve_readable_path(str(path)) == guard.resolve_in_workspace(str(path))
+
     def test_unconfigured_confines_nothing(self):
         guard = SafetyGuard(SafetyConstraints())  # workspace_dir None
         # Build with os.sep: a literal "/anywhere/..." is already-normalised on

@@ -218,6 +218,15 @@ class TestHookBaseWhere:
 
 
 class TestSNRObservationHook:
+    def test_reads_calibration_outside_configured_workspace(self, tmp_path):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        calibration = tmp_path / "calibration.json"
+        calibration.write_text('{"recommended_min_snr": 8.5}', encoding="utf-8")
+        guard = SafetyGuard(SafetyConstraints(workspace_dir=str(workspace)))
+        hook = SNRObservationHook(guard=guard, calibration_path=str(calibration))
+        assert hook.min_snr == 8.5
+
     def test_logs_versioned_stats_and_never_changes_the_image(self):
         image = np.full((32, 32), 400, dtype=np.uint16)
         image[15:17, 15:17] = 1200
