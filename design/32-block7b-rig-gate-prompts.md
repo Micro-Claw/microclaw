@@ -154,17 +154,111 @@ this" and that is the expensive direction to be wrong in.
 Block 7b a power property whose units actually match the field that caps it — unlike
 the iBeam rows. See the units warning below.
 
-**Two things to resolve before declaring it:**
+## P1b. What actually drives the 405 — resolved from the EMU config and the Toptica reference
 
-1. **Emission is TTL-gated.** All four channels read `Use TTL = 1`, and the engine
-   reads `All: 3. TTL Enable = 1`. `MicroFPGA-Hub`, `Laser Trigger`, `TTL` and `PWM`
-   are all in the excluded device inventory. So writing `Level %` sets an analog
-   set-point whose optical effect depends on a trigger path microclaw cannot reach. A
-   ramp may be authorized, bounded, audited — and optically inert. Establish what
-   `Level %` does with `Use TTL = 1` before an experiment depends on it.
-2. **Two gates, not one.** `Enable` and `Emission` are separate, and which one should
-   be declared as the shutter is a hardware question. The probe deliberately emits
-   shutter rows commented out for this reason.
+Read against `config_emu_m5.uicfg` and *iChrome MLE Remote Command Reference*
+FW 1.4.2.241 §3, both supplied 2026-07-28. The earlier worry in this document that a
+`Level %` write might be "optically inert" under TTL was wrong, and the reason it was
+wrong matters.
+
+| Stage | Property | Value | Meaning (Toptica §3) |
+|---|---|---|---|
+| Arm | `Laser 4: 1. Enable` | 0 | `:enable` — "prepare the laser for emission". Necessary, not sufficient. |
+| CW override | `Laser 4: 2. Emission` | 0 | believed `:cw` — "**will overwrite the electronic trigger input**". See P2. |
+| Amplitude | `Laser 4: 3. Level %` | 25.96 | `:level` — with analog mode off, "**directly controls the output power in a linearized way**"; 50 means 50 % of maximum. |
+| Gate | `Laser 4: 4. Use TTL` | 1 | `:use-ttl` — with `:cw` false, emission is switched by the voltage on the digital input line. |
+| Mode | `Laser 4: 5. Analog Mode` | 0 | remote mode, so `Level %` is the real power control and not a ceiling for an analog input. |
+| Timing | `Laser Trigger.Mode0` | `4 - Follow` | FPGA channel 0 is the 405 (`Laser trigger 0 - Name: 405`). |
+| Pulse width | `Laser Trigger.Duration0 (us)` | 1 | range **0 – 1 048 575 µs**. |
+| Per-frame | `Laser Trigger.Sequence0` | 65535 | 16-bit pattern; fires on every frame. |
+
+**TTL gates *when* the laser emits; `Level %` sets *how hard*.** The two are
+orthogonal, so a ramp on `Level %` scales the amplitude of every FPGA-gated pulse and
+is physically meaningful.
+
+**But that is not how this rig does activation.** The EMU config carries a whole
+Activation panel — `Activation 1 name: 405`, `Default feedback: 0.01`,
+`Def. dynamic factor: 1.5`, `Default max pulse: 10000` — and
+`Pulse duration 1 (activation)` maps to `Laser Trigger-Duration0 (us)`. **htSMLM ramps
+the pulse width, not the level.**
+
+The EMU config also states the slot mapping outright, so none of it is inferred —
+which matters, because design/14 §1 forbids inferring a laser's slot index:
+
+| EMU slot | Name | iChrome channel | Level property |
+|---|---|---|---|
+| `Laser 0` | 405 | `Laser 4` (402nm diode) | `Laser 4: 3. Level %` |
+| `Laser 1` | 488 | `Laser 3` | `Laser 3: 3. Level %` |
+| `Laser 2` | 561 | `Laser 2` (DPSS with AOM) | `Laser 2: 3. Level %` |
+| `Laser 3` | 640 | `Laser 1` | `Laser 1: 3. Level %` |
+
+That matches `get_system_state`, which already reports slot 0 at 25.96 — microclaw is
+reading the 405 level today, through the EMU map, without being able to write it.
+
+### The dose consequence, which the declaration does not remove
+
+Per-frame UV dose is proportional to **`Level %` × `Duration0`**.
+`SetIlluminationPower` bounds the first term only. The second lives on
+`Laser Trigger`, an **excluded** device spanning six orders of magnitude.
+
+Excluded means microclaw cannot write it, so no hook can change the pulse width — but
+equally, no microclaw policy bounds it. Whatever EMU or the operator last set stands
+for the whole run. **An illumination envelope on `Level %` bounds what microclaw can
+change; it does not bound dose.** Say it that way in any report. Note also that the
+Block 4 ledger's `illuminated_ms` is derived from camera exposure, not from the FPGA
+duty cycle, so it is an exposure budget and not a dose budget on this rig.
+
+Operator ruling 2026-07-28: **declare `Level %` now and treat FPGA pulse duration as a
+later, separate problem.** Bounding duration properly means making it a typed actuator
+with dose expressed as the product — design/33 Phase 2 territory, not Block 7b's.
+
+## P2. Confirm what `Laser 4: 2. Emission` actually is — REQUIRED before any shutter declaration
+
+`2. Emission` is believed to be `:cw` purely from the order the properties appear in,
+matched against the manual's parameter order. That inference decides which property
+belongs behind `require_confirm_on_enable`, so confirm it rather than declare on it.
+If it is `:cw`, it turns the laser on continuously and **overrides the FPGA gate
+entirely** — which makes it the single most important property on the engine to put
+behind a human confirmation.
+
+**Do this by hand in Micro-Manager's Device Property Browser, not through microclaw.**
+These properties are undeclared, so microclaw refuses to write them, and the point of
+P2 is to decide the declaration — nothing should be declared to run the test that
+decides the declaration.
+
+Near-zero-dose procedure:
+
+1. Set `Laser 4: 3. Level %` to **0**. Record it.
+2. Set `Laser 4: 1. Enable` to 1. Read `Laser 4: 6. Status` and record the text.
+3. Set `Laser 4: 2. Emission` to 1. Read `Laser 4: 6. Status` again.
+4. Read `Analog Input.AnalogInput3` — EMU maps it as `Laser powermeter` — before and
+   after step 3.
+5. Set `Emission` to 0, then `Enable` to 0. Confirm `Status` returns to its step-1 text.
+
+**Expected observable if `Emission` is `:cw`:** the status text gains a cw/emission
+indication at step 3 that step 2 did not produce. Manual §3 `laser1:status` bit 2 is
+"in cw mode", so the text form should say so. At `Level % = 0` the emitted power is at
+its floor throughout.
+
+**Then decide:** whichever of `1. Enable` / `2. Emission` can produce light on its own
+is the shutter, and goes in `illumination.shutters` with `require_confirm_on_enable`.
+If both can, declare both. Record the reasoning, not just the outcome.
+
+### Proposed declaration, pending P2
+
+```yaml
+illumination:
+  power_properties:
+    - {device: iChrome-MLE-TCP, property: "Laser 4: 3. Level %"}   # 405/402 nm, 0-100 %, linearized
+  shutters:
+    # Fill in from P2. Do not guess between these two.
+    # - {device: iChrome-MLE-TCP, property: "Laser 4: 1. Enable",   on_value: "1", off_value: "0"}
+    # - {device: iChrome-MLE-TCP, property: "Laser 4: 2. Emission", on_value: "1", off_value: "0"}
+```
+
+Declaring only the 405 row keeps the blast radius at one laser line. The 488, 561 and
+640 levels stay undeclared and therefore unwritable, which is the right default until
+something needs them.
 
 The probe also found `iBeamSmartCW.Power (mW)` — a **third** iBeam laser, undeclared,
 range 0–75 mW, alongside `-1` and `-Booster`. Worth knowing whether that is a real
@@ -513,7 +607,9 @@ way — a measured cost is the deliverable, not a pass/fail.
 | Step | What it settles | Verdict |
 |---|---|---|
 | P0 | map complete; iBeam power declared; no 405 **declared** | **SETTLED 2026-07-28** |
-| P1 | 402 nm `Level %` exists, 0–100, undeclared; TTL-gated | **SETTLED 2026-07-28** |
+| P1 | 405 nm `Level %` exists, 0–100, undeclared | **SETTLED 2026-07-28** |
+| P1b | `Level %` is real power; htSMLM ramps pulse duration instead | **SETTLED 2026-07-28** |
+| P2 | is `Laser 4: 2. Emission` the cw override? | **required before declaring** |
 | R5pre | driver accepts a power write with the laser off | **PASS 2026-07-28** |
 | — | rig suite under `uv`: 989 passed / 115 skipped / 3 warnings | **PASS 2026-07-28** |
 | R1 | legacy refused, migrated run | |
@@ -530,12 +626,16 @@ way — a measured cost is the deliverable, not a pass/fail.
 Record these in the merge and the post-merge design gate. Do not let any of them be
 described as passing.
 
-1. **402 nm UV activation.** The hardware exposes it —
-   `iChrome-MLE-TCP.Laser 4: 3. Level %`, 0–100 percent — but it is **undeclared**, so
-   no envelope can name it. The checklist's "exercise UV activation on a real closed
-   loop" bullet is **deferred**, not met. Unblocking it needs a reviewed config
-   declaration plus an answer to the TTL question in P1, and that is a separate item
-   from Block 7b's code.
+1. **405 nm UV activation.** The hardware exposes it —
+   `iChrome-MLE-TCP.Laser 4: 3. Level %`, 0–100 percent, linearized — but it is
+   **undeclared**, so no envelope can name it. The checklist's "exercise UV activation
+   on a real closed loop" bullet is **deferred**, not met. Unblocking it needs P2's
+   answer plus a reviewed config declaration, both separate from Block 7b's code.
+1b. **UV dose.** Even once `Level %` is declared, an envelope over it bounds amplitude
+   only. Pulse width (`Laser Trigger.Duration0`, 0–1 048 575 µs) is the term htSMLM
+   actually ramps for activation, it lives on an excluded device, and no microclaw
+   policy bounds it. Deferred to a design/33 Phase 2 typed actuator by operator ruling
+   2026-07-28. Until then: **microclaw bounds what microclaw can change, not dose.**
 2. **Closed-loop feedback.** The fixture ramps deterministically and does not act on
    the blink density it measures. The authorization path is proven; feedback is not.
 2b. **Anything that requires light.** These steps run with the laser off, so nothing
