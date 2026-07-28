@@ -12,12 +12,14 @@ from dataclasses import dataclass
 
 import numpy as np
 from ndstorage import Dataset
-from scipy.ndimage import gaussian_filter, shift as image_shift
 from scipy.signal import fftconvolve
 
 
 STEP_UM = 20.0
-MIN_CORRELATION = 0.35
+MIN_OVERLAP_FRACTION = 0.25
+MIN_CORRELATION = 0.60
+MIN_PEAK_RATIO = 1.10
+MIN_STRUCTURED_FRACTION = 0.005
 
 
 @dataclass
@@ -28,43 +30,52 @@ class Pair:
     shift_dy_dx: np.ndarray
     peak_ratio: float
     correlation: float
+    overlap_fraction: float
 
     @property
     def strong(self) -> bool:
         return bool(np.isfinite(self.correlation) and self.correlation >= MIN_CORRELATION
-                    and self.peak_ratio >= 1.05)
+                    and self.peak_ratio >= MIN_PEAK_RATIO
+                    and self.overlap_fraction >= MIN_OVERLAP_FRACTION)
 
 
-def _overlap_slices(shape: tuple[int, int], shift: np.ndarray):
-    dy, dx = (int(round(float(v))) for v in shift)
-    ay = slice(max(0, dy), min(shape[0], shape[0] + dy))
-    ax = slice(max(0, dx), min(shape[1], shape[1] + dx))
-    by = slice(max(0, -dy), min(shape[0], shape[0] - dy))
-    bx = slice(max(0, -dx), min(shape[1], shape[1] - dx))
-    return (ay, ax), (by, bx)
+def _register(reference: np.ndarray, moved: np.ndarray):
+    """Linear overlap-normalized cross-correlation and quality metrics.
 
-
-def _register(reference: np.ndarray, moved: np.ndarray) -> tuple[np.ndarray, float, float]:
-    """Linear (non-wrapping) high-pass cross-correlation and quality metrics."""
+    At every lag this subtracts the two means and divides by both standard
+    deviations over exactly the pixels that overlap. Candidates retaining less
+    than ``MIN_OVERLAP_FRACTION`` of a frame are excluded before peak selection.
+    """
     a = reference.astype(float)
     b = moved.astype(float)
-    a -= gaussian_filter(a, 8)
-    b -= gaussian_filter(b, 8)
-    surface = fftconvolve(a, b[::-1, ::-1], mode="full")
+    # Scaling first keeps the FFT sum-of-squares arithmetic well conditioned.
+    offset = min(float(np.median(a)), float(np.median(b)))
+    scale = max(float(np.std(a)), float(np.std(b)), 1.0)
+    a, b = (a - offset) / scale, (b - offset) / scale
+    oa, ob = np.ones_like(a), np.ones_like(b)
+    reverse = lambda value: value[::-1, ::-1]
+    count = fftconvolve(oa, reverse(ob), mode="full")
+    sum_ab = fftconvolve(a, reverse(b), mode="full")
+    sum_a = fftconvolve(a, reverse(ob), mode="full")
+    sum_b = fftconvolve(oa, reverse(b), mode="full")
+    sum_a2 = fftconvolve(a * a, reverse(ob), mode="full")
+    sum_b2 = fftconvolve(oa, reverse(b * b), mode="full")
+    with np.errstate(invalid="ignore", divide="ignore"):
+        numerator = sum_ab - sum_a * sum_b / count
+        variance_a = np.maximum(0, sum_a2 - sum_a * sum_a / count)
+        variance_b = np.maximum(0, sum_b2 - sum_b * sum_b / count)
+        surface = numerator / np.sqrt(variance_a * variance_b)
+    overlap = count / float(a.size)
+    surface[(overlap < MIN_OVERLAP_FRACTION) | ~np.isfinite(surface)] = -np.inf
     peak = np.unravel_index(int(np.argmax(surface)), surface.shape)
     shift = np.asarray(peak, dtype=float) - np.asarray(b.shape) + 1
     guard = surface.copy()
     y, x = peak
     guard[max(0, y - 4):y + 5, max(0, x - 4):x + 5] = -np.inf
     second = float(np.max(guard))
-    peak_ratio = float(surface[peak] / second) if second > 0 else float("inf")
-
-    aligned = image_shift(b, shift, order=1, mode="constant", cval=0)
-    (ay, ax), _ = _overlap_slices(a.shape, shift)
-    av, bv = a[ay, ax].ravel(), aligned[ay, ax].ravel()
-    correlation = (float(np.corrcoef(av, bv)[0, 1])
-                   if av.size >= 100 and np.std(av) and np.std(bv) else float("nan"))
-    return shift, peak_ratio, correlation
+    correlation = float(surface[peak])
+    peak_ratio = correlation / second if second > 0 else float("inf")
+    return shift, peak_ratio, correlation, float(overlap[peak])
 
 
 def _load(path: str):
@@ -76,9 +87,35 @@ def _load(path: str):
             str(coords.get("position", coords)),
             float(metadata["XPosition_um_Intended"]),
             float(metadata["YPosition_um_Intended"]),
-            dataset.read_image(**coords),
+            dataset.read_image(**coords), metadata,
         ))
     return records
+
+
+def _signal_summary(records):
+    pixels = np.concatenate([record[3].ravel() for record in records])
+    background = float(np.median(pixels))
+    mad = float(np.median(np.abs(pixels - background)))
+    threshold = background + 5 * max(mad, 1.0)
+    structured = float(np.mean(pixels > threshold))
+    lasers = sorted({str(record[4].get("Cobolt561-Laser", "<?>")) for record in records})
+    return background, mad, structured, int(pixels.min()), int(pixels.max()), lasers
+
+
+def _axis_cluster(pairs: list[Pair], axis: str):
+    axis_pairs = [pair for pair in pairs if pair.axis == axis]
+    strong = [pair for pair in axis_pairs if pair.strong]
+    if not strong:
+        return axis_pairs, [], None
+    shifts = np.asarray([pair.shift_dy_dx for pair in strong])
+    seed = np.median(shifts, axis=0)
+    # A single physical displacement should agree in direction. Tolerances allow
+    # the observed X bimodality while excluding unrelated peaks across the frame.
+    members = [pair for pair in strong
+               if abs(pair.shift_dy_dx[0] - seed[0]) <= 30
+               and abs(pair.shift_dy_dx[1] - seed[1]) <= 15]
+    required = max(2, int(np.ceil(0.6 * len(axis_pairs))))
+    return axis_pairs, members, required
 
 
 def main() -> None:
@@ -87,50 +124,67 @@ def main() -> None:
     args = parser.parse_args()
     records = _load(args.dataset)
     pairs: list[Pair] = []
-    for source, sx, sy, simage in records:
-        for destination, dx, dy, dimage in records:
+    background, mad, structured, minimum, maximum, lasers = _signal_summary(records)
+    print(f"dataset: {args.dataset}")
+    print(f"frames: {len(records)}; intensity min/max={minimum}/{maximum} "
+          f"background={background:.1f} MAD={mad:.1f} "
+          f"fraction>background+5*MAD={structured:.4%}; Cobolt561={lasers}")
+    actual_xy_keys = sorted({key for record in records for key in record[4]
+                             if "Position" in key and "Intended" not in key
+                             and (key.startswith("X") or key.startswith("Y"))})
+    print("actual stage XY metadata:", actual_xy_keys or "ABSENT (intended XY only)")
+    if structured < MIN_STRUCTURED_FRACTION:
+        print("DATASET VERDICT: DARK/SIGNAL-FREE — insufficient structure for registration; "
+              "no convention verdict issued")
+        return
+
+    for source, sx, sy, simage, _ in records:
+        for destination, dx, dy, dimage, _ in records:
             delta = (dx - sx, dy - sy)
             axis = "X" if np.allclose(delta, (STEP_UM, 0)) else (
                 "Y" if np.allclose(delta, (0, STEP_UM)) else None)
             if axis:
-                shift, ratio, corr = _register(simage, dimage)
-                pairs.append(Pair(source, destination, axis, shift, ratio, corr))
+                shift, ratio, corr, overlap = _register(simage, dimage)
+                pairs.append(Pair(source, destination, axis, shift, ratio, corr, overlap))
 
-    print(f"dataset: {args.dataset}")
     print(f"frames: {len(records)}; adjacent pairs: {len(pairs)}")
     for pair in pairs:
         quality = "STRONG" if pair.strong else "WEAK"
         print(f"{pair.axis} {pair.source} -> {pair.destination}: "
               f"shift(dy,dx)={pair.shift_dy_dx.tolist()} "
-              f"peak_ratio={pair.peak_ratio:.3f} corr={pair.correlation:.3f} {quality}")
+              f"overlap={pair.overlap_fraction:.3f} peak_ratio={pair.peak_ratio:.3f} "
+              f"NCC={pair.correlation:.3f} {quality}")
 
-    means = {}
+    determined = {}
     for axis in "XY":
-        shifts = np.asarray([p.shift_dy_dx for p in pairs if p.axis == axis])
-        means[axis] = shifts.mean(axis=0)
-        print(f"{axis} all-pair mean(dy,dx)={means[axis].tolist()} "
-              f"scatter_std={shifts.std(axis=0, ddof=1).tolist()}")
-    strong = [p for p in pairs if p.strong]
-    if len([p for p in strong if p.axis == "X"]) >= 2 and len(
-            [p for p in strong if p.axis == "Y"]) >= 2:
-        sx = np.mean([p.shift_dy_dx for p in strong if p.axis == "X"], axis=0)
-        sy = np.mean([p.shift_dy_dx for p in strong if p.axis == "Y"], axis=0)
+        axis_pairs, cluster, required = _axis_cluster(pairs, axis)
+        if required is None or len(cluster) < required:
+            print(f"{axis} AXIS VERDICT: UNRESOLVED — cluster={len(cluster)}/{len(axis_pairs)} "
+                  f"pairs (need {required or 2}); no 2x2 column or scale reported")
+            determined[axis] = None
+            continue
+        shifts = np.asarray([pair.shift_dy_dx for pair in cluster])
+        median = np.median(shifts, axis=0)
+        q25, q75 = np.percentile(shifts, [25, 75], axis=0)
+        iqr = q75 - q25
+        magnitudes = np.hypot(shifts[:, 0], shifts[:, 1])
+        scales = STEP_UM / magnitudes
+        determined[axis] = median
+        print(f"{axis} AXIS VERDICT: DETERMINED — cluster={len(cluster)}/{len(axis_pairs)}; "
+              f"median(dy,dx)={median.tolist()} IQR={iqr.tolist()}; "
+              f"implied scale range={scales.min():.4f}..{scales.max():.4f} um/px")
+
+    if all(determined.get(axis) is not None for axis in "XY"):
+        sx, sy = determined["X"], determined["Y"]
         px_per_um = np.array([[sx[1], sy[1]], [sx[0], sy[0]]]) / STEP_UM
-        affine = np.linalg.inv(px_per_um)
-        pixel_size = float(np.sqrt(abs(np.linalg.det(affine))))
-        print("measured [[a,b],[c,d]]:", affine.tolist())
-        print(f"area-equivalent pixel size: {pixel_size:.6f} um/px")
-        plausible = 0.08 <= pixel_size <= 0.30
-        print("optics sanity: " + ("PLAUSIBLE" if plausible else "IMPLAUSIBLE")
-              + " for a 16 um-pixel DU897 and versus M2's 0.127 um/px")
-        print("VERDICT: PASS — saved data determines the convention" if plausible else
-              "VERDICT: FAIL — correlations imply an implausible pixel size")
+        print("measured [[a,b],[c,d]]:", np.linalg.inv(px_per_um).tolist())
+        print("DATASET VERDICT: PASS — both 2x2 columns are determined")
+    elif any(determined.get(axis) is not None for axis in "XY"):
+        print("measured [[a,b],[c,d]]: unavailable until both columns are determined")
+        print("DATASET VERDICT: PARTIAL — one stage-axis convention is determined")
     else:
-        print("measured [[a,b],[c,d]]: unavailable (insufficient strong pairs on both axes)")
-        print("VERDICT: FAIL — saved data cannot disambiguate signs/order: adjacent-tile "
-              "correlations are weak or inconsistent, especially the marginal Y overlap.")
-        print("PROPOSAL ONLY: snap a contrasty field, move +X by about one quarter of the "
-              "smaller FOV and snap, restore; repeat for +Y. No move/exposure was made.")
+        print("measured [[a,b],[c,d]]: unavailable")
+        print("DATASET VERDICT: UNRESOLVED — neither stage-axis convention is determined")
 
 
 if __name__ == "__main__":

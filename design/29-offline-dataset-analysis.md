@@ -88,13 +88,35 @@ The fixed dataset arm confirms Run A intended XY on every image, string position
 values, and varying axes (`position+time`, plus Z on the sparse revisit). Summary
 affine is `Undefined`; per-image `PixelSizeAffine` is all-zero. Run A used an
 Andor iXon DU897 with a 453×227 ROI; M5 now reports a Hamamatsu at 2304×2304.
-The saved-tile spike tested all 17 adjacent `run_a_1` pairs. All correlations
-were weak (0.011–0.017). X mean `(dy,dx)` was `(1.78,-45.56)` px with scatter
-`(33.42,56.01)`; Y mean was `(-4.63,-26.25)` with scatter `(21.97,31.98)`.
-Therefore **FAIL: saved data does not determine signs/order or a credible 2×2**;
-no optics sanity check is possible. The minimal proposal is contrast-rich snaps
-before/after +X and +Y moves of about one quarter of the smaller FOV. This is a
-proposal only; no stage move or exposure was made.
+`run_a_1` is unusable for a convention check: every acquisition laser is off and
+only 0.238% of pixels exceed background + 5×MAD (min/max 146/328). Its old weak
+correlations measured read noise and carry no verdict. Signal-bearing `run_a_2`
+gives a **PARTIAL** result after overlap-normalized correlation. Seven of nine +X
+pairs form the cluster `(dy,dx)={(139,1),(140,2),(140,1),(157,2),(162,2),
+(163,2),(163,2)}` px (combined IQR `(22.5,0.5)` px). Thus stage +X displaces
+content almost entirely along image rows: stage/camera axes are about 90° apart.
+The implied 0.1227–0.1439 µm/px brackets M2's configured 0.127 µm/px and is
+plausible for the DU897 optical path. The two shift modes, 139–140 and 157–163 px
+(roughly 20 versus 23 µm at 0.13 µm/px for the same intended 20 µm step), remain
+unexplained and cannot be resolved from saved data.
+
+The Y column is **UNRESOLVED**: normalized peaks do not form a cluster (IQR
+spread in the coordinator cross-check was `(227,182)` px), so no complete 2×2 is
+reported. The acquisition is a plain raster: each Y-adjacent comparison crosses
+a 60 µm X return from c3 to c0, whereas X pairs are small unidirectional moves.
+Uncorrected backlash after that reversal is the leading hypothesis, not a
+finding. Bleaching and drift are not supported: tiles are ~0.7 s apart over
+7.8 s and mean intensity has no monotonic trend (time correlation 0.03). The
+dataset records only intended XY, never achieved stage XY, so backlash or other
+settling error cannot be tested retrospectively. `run_a_revisit_top2_1` has real
+signal but no adjacent 20 µm pairs.
+
+The measured X column is a consistency check every future measured or MM-sourced
+affine for this optical path must satisfy: about 90° stage/camera rotation at
+roughly 0.13 µm/px. The smaller remaining proposal is to resolve Y and confirm X
+on a contrast-rich field, approaching every reference and destination from one
+direction to avoid raster reversal. It remains a proposal only; no stage move or
+exposure was made.
 
 ## Proposed shape
 
@@ -310,6 +332,11 @@ if "XPosition_um_Intended" not in md or "YPosition_um_Intended" not in md:
 Reconstructing XY from `row`/`column` axes plus `step_um` is possible only as a
 separate, explicitly requested mode. It reintroduces the row/column↔stage-axis
 ambiguity that cost four re-scans and cannot represent Pallavi's spiral at all.
+
+Run A records no achieved/actual stage XY, only the intended values. Placement
+therefore consumes intended XY, but intended need not equal achieved after a
+direction reversal on a stage with backlash or settling error. A coordinate
+mosaic must state that limitation; it cannot correct an unrecorded residual.
 
 ### 5. Calibration identity is versioned and resolved into every result
 

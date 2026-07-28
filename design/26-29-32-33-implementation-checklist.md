@@ -616,13 +616,15 @@ Pre-branch spike/read-only probe (branch `design29/probe-findings`):
 - [x] Run fixed `--dataset` on all three Run A datasets and retain output outside
       the repo. Per-image affine is all-zero and summary affine is `Undefined`.
 - [x] Retain qualified system/config/dataset findings and verdicts in design/29.
-- [x] Run the convention check on all 17 adjacent Run A pairs. FAIL: all
-      correlations are weak and scatter is large. If saved data
-      cannot disambiguate signs/order, propose a separate minimal move/snap spike and wait
-      for explicit authorization before moving or exposing. Proposal recorded only.
+- [x] Run the convention check on all Run A datasets. `run_a_1` is dark and
+      rejected; the sparse revisit has no adjacent pair. `run_a_2` is PARTIAL:
+      7/9 X pairs determine a ~90° row displacement at 0.1227–0.1439 µm/px,
+      while Y does not cluster. Record X as a future-affine consistency check.
+      Proposal only: confirm X/resolve Y with unidirectional approaches.
 - [x] Stop if the affine is missing/singular, configuration selection is ambiguous, the
       dataset does not identify the historical transform, or Java/Python row-column signs
-      are unresolved. Update design/29 with the measured result and revise this block's
+      are unresolved. Saved data resolves only X; keep the implementation gate
+      closed. Update design/29 with the measured result and revise this block's
       resolver assumptions before creating the implementation branch.
 - [ ] Small rig item: rerun the fixed live probe on M5, demo, and M2, retaining raw
       and by-ID affines and every expected/live rule comparison. Dataset work is
