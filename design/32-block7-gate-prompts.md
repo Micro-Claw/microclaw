@@ -742,3 +742,73 @@ works, because `load_hook_class` normalizes on read. But the pinned hash cannot 
 reproduced by any standard file-hashing tool on the platform the rig runs on, so it
 is not independently auditable. Pre-existing, not a Block 7 regression; recorded
 for the design gate.
+
+## R1 results — M5, 2026-07-28
+
+Evidence: `block7-runa-history.json`, `run-a/` (survey, revisit, exports, manifest,
+`snr_observer_log.jsonl`, `run-a_topk2.pos`), `safety_config.yaml`.
+Grid 3 × 4 at 20 µm, k = 2, exposure 100 ms, `pixel_size_um: 0.0`, no channels, no
+shutter device configured.
+
+**Verdict: PASS**, with one pre-existing defect surfaced and fixed.
+
+All four things R1 had to settle:
+
+1. **`snr_observer` unchanged by the saved-hook boundary.** 12 planned, 12
+   acquired, 12 observation records; no duplicate or missing position; every
+   record carries position and intended stage XY; all `status: "observed"`,
+   `focus_metric_valid: true`, `saturated_fraction: 0.0`, and
+   `min_snr_source: "package_default_uncalibrated"`.
+2. **SNR ordering works on real signal.** Values spread 13.59–17.51, all distinct
+   — the demo core could not test this, since its nine synthetic tiles scored
+   identically and ranking fell entirely to the label tie-break. Two
+   `rank_hook_log` calls over the same log returned identical orderings.
+3. **Exactly k = 2 revisited, no replacements.** Top-2 `run-a_r0_c2` (17.51) and
+   `run-a_r0_c0` (17.22); `run_multiposition_acquisition` reported 2/2.
+4. **No parent gate bypassed.** `validate_positions` accepted both with 0
+   rejected and 0 clipped; `mark_position` reported `stage_moved: false` and
+   `imaged: false`; the stage returned to grid centre within 0.2 µm.
+
+**Revisit accuracy — the number the demo core could not produce.**
+`compare_revisit_frames` measured translation of **0.01 px** for `r0_c2` and
+**0.00 px** for `r0_c0`, both `registration_valid: true`, correlations 0.840 and
+0.832, each revisit matched to the correct survey tile index (2 and 0).
+`translation_um` is `null` with `"No stage-camera affine for the current
+objective/binning"` — expected, since `pixel_size_um` is 0.0. This is plumbing
+accuracy, not a biological or object-level claim.
+
+### Defect surfaced: `rank_hook_log` reported a correct save as a mismatch
+
+The k=2 verification returned `matches_ranking_prefix: false` and
+`coordinate_matches: [false, false]` while `label_match` was true and `expected`
+equalled `actual`. The saved coordinates were in fact correct.
+
+Cause: the verifier required the saved position and the ranked record to carry the
+*same set* of axes. Run A marks its top-k with a focus Z the operator supplies
+(here 56.704 µm), while a fixed-Z survey stamps no `ZPosition_um_Intended` and so
+its records have no `z_um` at all. `("z_um" in saved) == ("z_um" in ranked)` was
+`True == False`, so a correct save failed on X and Y that agreed exactly.
+
+This is a false alarm on the one check standing between a ranking and what gets
+re-exposed, and crying wolf there trains an operator to ignore it. Pre-existing —
+`rank_hook_log` is untouched by Block 7 — but it only becomes visible in a real
+Run A, which is what R1 is.
+
+Fixed asymmetrically: an axis the ranking carries and the saved list **lost** is
+still a mismatch, while an axis the saved list **adds** is not, and the added axes
+are now reported as `axes_added_when_saved` rather than silently passing. Verified
+against M5's own `.pos` and log: `matches_ranking_prefix` goes `false → true` with
+`axes_added_when_saved: [["z_um"], ["z_um"]]`. Both directions are pinned in
+`tests/test_tools.py`; the test that pinned the old symmetric rule was replaced,
+deliberately, because it made the workflow design/26 A2 prescribes fail its own
+verification.
+
+### Outstanding: M5 hook source was not retained
+
+Five files were hashed on the rig but only `manifest.json` reached the destination;
+the four `.py` files did not copy. **The Block 7 pre-merge item is unsatisfied**
+and must be repeated before merge — that source is the only input Block 7b's
+migration has, and nothing in the repo holds a copy.
+
+The manifest also shows M5's registry has changed since 2026-07-20. Block 7b's
+fixtures are corrected accordingly.

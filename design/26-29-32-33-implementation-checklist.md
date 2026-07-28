@@ -491,14 +491,27 @@ getting them back. **Block 13 does not.** Phase 2 is process isolation for the s
 contract — its bullets keep controller and guard out of the worker and add no action
 types — so without this block the capability never returns.
 
-Measured from the retained 2026-07-20 M5 history: three `claude_generated` hooks were
-in that rig's registry, and Block 7 refuses or breaks all three.
+M5's **current** registry, read from the manifest retained 2026-07-28, is not the
+one the 2026-07-20 history showed — those three hooks are gone. The four hooks
+actually installed are below, and they shift this block's priorities: **none needs
+laser control, and three need to write image files during or after an
+acquisition.** Live artifact emission is the dominant gap; the illumination action
+is speculative until a hook needs it again.
 
 | Hook | Needs | Block 7 outcome |
 |---|---|---|
-| `storm_prebleach_ramp` | laser-power ramp via `ctrl` | no illumination action exists; unrunnable |
-| `smlm_live_preview` | writes a preview TIFF, pushes to MM display | no live artifact path; display push gone |
-| `montage_grid` | writes one composite TIFF after the last frame | no live artifact path |
+| `filament_position_filter` | Sato ridge filter + SNR gate, discards fields | expressible today — `image_process_fn` returning `None` still works — unless it keeps its own log |
+| `mosaic_cell_counter` | accumulates a mosaic, "logs a running unique-cell total" | self-written log; refused |
+| `mosaic_stitcher` | writes the assembled mosaic as a 16-bit TIFF | no live artifact path |
+| `mosaic_stitcher_rot` | same, with rot90/flip alignment | no live artifact path |
+
+Confirm each against its source before designing: the table is inferred from
+manifest descriptions, because **the source has not yet been retained** (the
+2026-07-28 copy captured only `manifest.json`). `filament_position_filter` may need
+nothing but a migration off `HookBase`.
+
+The illumination action stays in scope — `storm_prebleach_ramp` existed once and the
+union still cannot express it — but sequence artifact emission first.
 
 - [ ] Create the branch from updated `main`.
 - [ ] Add a typed illumination action to the closed union, authorized through

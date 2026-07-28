@@ -3119,18 +3119,27 @@ def rank_hook_log(
         actual = [p["name"] for p in selected]
         expected = [r["position"] for r in rows[:len(actual)]]
         coordinate_matches = []
+        added_axes = []
         for saved_position, ranked in zip(selected, rows):
             axes = ("x_um", "y_um", "z_um")
-            presence_matches = all(
-                (axis in saved_position) == (axis in ranked) for axis in axes
-            )
+            # An axis the RANKING carries but the saved position lost is a real
+            # mismatch. An axis the saved position adds is not: a top-k revisit is
+            # marked with a focus Z the operator supplies, while a fixed-Z survey
+            # stamps no ZPosition_um_Intended and so its records have no z_um at
+            # all. Requiring both sides to carry the same axes reported M5's
+            # correct k=2 save as a coordinate mismatch (R1, 2026-07-28) with X
+            # and Y agreeing exactly — a false alarm on the one check standing
+            # between a ranking and what gets re-exposed.
+            lost = [a for a in axes if a in ranked and a not in saved_position]
+            added_axes.append([a for a in axes if a in saved_position and a not in ranked])
             coordinate_matches.append(
-                presence_matches and all(
-                    axis not in saved_position or math.isclose(
+                not lost and all(
+                    math.isclose(
                         float(saved_position[axis]), float(ranked[axis]),
                         rel_tol=0.0, abs_tol=1e-3,
                     )
                     for axis in axes
+                    if axis in saved_position and axis in ranked
                 )
             )
         result["position_list_verification"] = {
@@ -3138,6 +3147,10 @@ def rank_hook_log(
             "matches_ranking_prefix": actual == expected and all(coordinate_matches),
             "label_match": actual == expected,
             "coordinate_matches": coordinate_matches,
+            # Axes the saved position carries that the ranking does not — normally
+            # ["z_um"], the focus Z added at marking time. Reported so the operator
+            # can see what was added rather than inferring it from a silent pass.
+            "axes_added_when_saved": added_axes,
             "projection_issues": projection.issues,
             "expected": expected, "actual": actual,
         }
