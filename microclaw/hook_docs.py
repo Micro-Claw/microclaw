@@ -98,7 +98,7 @@ Currently wired by Microclaw's acquisition runner for reviewed built-ins:
 
 Generated and user-saved hooks instead implement
 `analyze_frame(image, metadata) -> HookResult | None`. They never receive ctrl,
-guard, credentials, runner queues, or the pycro-manager event queue. Legacy saved
+guard, credentials, paths/directories, runner queues, or the pycro-manager event queue. Legacy saved
 `image_process_fn` classes still load, but receive a raising event-queue stub and no
 other capability. Only classes shipped in PRECODED_HOOK_REGISTRY are trusted built-ins.
 
@@ -118,7 +118,8 @@ only the methods actually implemented by the hook are passed to `Acquisition(...
 
 The saved-hook contract. `HookResult` contains JSON-safe measurements and a list
 or tuple of typed action proposals: MoveStage, AcquireAt, SetExposure, ContinueSurvey,
-StopSurvey, or RequestAutofocus. Under run_adaptive_survey the trusted parent
+StopSurvey, RequestAutofocus, SetIlluminationPower, EmitArtifact, or DiscardFrame.
+Under run_adaptive_survey the trusted parent
 supports ContinueSurvey, StopSurvey, and AcquireAt for a position in the planned
 grid. It guard-checks and reservation-checks every proposal and writes every
 accept/refuse decision to the log. The other three actions are parsed but refused
@@ -134,6 +135,23 @@ There is deliberately no interactive confirmation from the acquisition callback
 thread: pyjavaz serializes bridge calls behind one lock, so prompting there can
 deadlock acquisition. A proposal outside the already committed reservation is
 refused and logged, never escalated to a prompt.
+
+SetIlluminationPower is power modulation only. The caller must authorize a device,
+power property, ceiling, and accepted-write budget before the run; the parent reads
+the initial value once, confirms the whole unattended per-frame run once, and checks
+each proposal against that envelope and SafetyGuard. A hook cannot express a shutter
+enable or turn light on. A fixed open-loop ramp that reads no image content could be
+a reviewed PRECODED_HOOK_REGISTRY built-in; a UV level computed per frame from blink
+density is feedback and must use the proposed-action union. This block does not add
+such an open-loop built-in.
+
+EmitArtifact carries bytes or an ndarray and a bare filename, never a path. Trusted
+parent code confines and exclusively creates the file in the run artifact directory,
+enforces per-file and per-run limits, hashes it, and records the path and sha256.
+
+DiscardFrame returns None from the parent image processor after recording the
+observation. The position is still moved to and still exposed: discard saves storage,
+not dose. It does not skip acquisition or reduce dose (design/27).
 
 ### image_process_fn(image: np.ndarray, metadata: dict, event_queue) -> tuple | None
 

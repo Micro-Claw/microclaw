@@ -1935,6 +1935,8 @@ def run_multiposition_acquisition(
     hook_params: dict | None = None,
     log_path: str | None = None,
     preserve_unsupported: bool = False,
+    illumination_envelope: dict | None = None,
+    artifact_limits: dict | None = None,
 ) -> dict:
     """Visit each position and run a per-position protocol.
 
@@ -2032,6 +2034,8 @@ def run_multiposition_acquisition(
             save_dir=save_dir, name=name, hook_strategy=hook_strategy,
             hook_params=hook_params, log_path=log_path,
             channel=params.get("channel"), exposure_ms=params.get("exposure_ms"),
+            illumination_envelope=illumination_envelope,
+            artifact_limits=artifact_limits,
             **shape,
         )
         if "error" in hooked:
@@ -2393,10 +2397,79 @@ def _resolve_hook(
     # owns the audit path.
     for forbidden in (
         "ctrl", "guard", "credentials", "candidates", "progress",
-        "survey_events", "event_queue", "log_path",
+        "survey_events", "event_queue", "log_path", "illumination_envelope",
+        "illumination_device", "illumination_property", "device", "property",
+        "path", "out_path", "output_path", "save_dir", "artifact_dir",
     ):
         params.pop(forbidden, None)
     return UntrustedHookAdapter(hook_cls(**params), log_path=log_path)
+
+
+def _configure_hook_capabilities(hook: Any, ctrl: MicroscopeController,
+                                 guard: SafetyGuard, save_dir: str, name: str,
+                                 illumination_envelope: dict | None,
+                                 artifact_limits: dict | None) -> None:
+    """Validate and authorize independent parent-side hook capabilities."""
+    from microclaw.hook_decisions import UntrustedHookAdapter
+    if not isinstance(hook, UntrustedHookAdapter):
+        if illumination_envelope or artifact_limits:
+            raise ValueError("Hook envelopes apply only to saved generated hooks.")
+        return
+    if artifact_limits is not None:
+        allowed = {"max_artifact_bytes", "max_count", "max_total_bytes"}
+        if set(artifact_limits) != allowed:
+            raise ValueError(f"artifact_limits must contain exactly {sorted(allowed)}.")
+        limits = {key: artifact_limits[key] for key in allowed}
+        if any(isinstance(v, bool) or not isinstance(v, int) or v <= 0
+               for v in limits.values()):
+            raise ValueError("artifact limits must be positive integers.")
+        hook.configure_artifacts(
+            target_dir=Path(save_dir) / name / "artifacts", **limits,
+        )
+    if illumination_envelope is None:
+        return
+    allowed = {"device", "property", "max_power_percent", "max_writes"}
+    if set(illumination_envelope) != allowed:
+        raise ValueError(f"illumination_envelope must contain exactly {sorted(allowed)}.")
+    device = illumination_envelope["device"]
+    prop = illumination_envelope["property"]
+    ceiling = illumination_envelope["max_power_percent"]
+    writes = illumination_envelope["max_writes"]
+    power_pairs = {(p.device, p.property)
+                   for p in guard._c.illumination.power_properties}
+    if (device, prop) not in power_pairs:
+        raise ValueError(
+            "illumination envelope device/property is not declared in "
+            "illumination.power_properties."
+        )
+    if isinstance(ceiling, bool) or not isinstance(ceiling, (int, float)) or not math.isfinite(ceiling) or ceiling < 0:
+        raise ValueError("illumination envelope max_power_percent must be finite and non-negative.")
+    configured = guard._c.illumination.max_power_percent
+    if configured is not None and ceiling > configured:
+        raise ValueError(
+            f"illumination envelope ceiling {ceiling}% exceeds configured "
+            f"illumination.max_power_percent ({configured}%)."
+        )
+    if isinstance(writes, bool) or not isinstance(writes, int) or writes <= 0:
+        raise ValueError("illumination envelope max_writes must be a positive integer.")
+    initial = float(ctrl.core.get_property(device, prop))
+    if not math.isfinite(initial):
+        raise ValueError("initial illumination power must be finite.")
+    summary = (
+        f"AUTHORIZE UNATTENDED HOOK ILLUMINATION: {device}.{prop}\n"
+        f"Ceiling: {float(ceiling):g}% ({writes} accepted writes maximum).\n"
+        "Generated hook code will drive this power unattended, per frame, "
+        "for the duration of the run. It cannot enable a shutter or turn light on."
+    )
+    if not CONFIRM_FN(summary, kind="illumination"):
+        raise SafetyViolation(
+            f"User declined hook illumination envelope for {device}.{prop}; "
+            "acquisition was not started."
+        )
+    hook.configure_illumination(
+        core=ctrl.core, guard=guard, device=device, property=prop,
+        max_power_percent=float(ceiling), max_writes=writes, initial_value=initial,
+    )
 
 
 def _adaptive_result(
@@ -2430,6 +2503,8 @@ def run_adaptive_zstack(
     channel: str | None = None,
     name: str = "adaptive",
     log_path: str | None = None,
+    illumination_envelope: dict | None = None,
+    artifact_limits: dict | None = None,
 ) -> dict:
     """Run a Z-stack acquisition with a hook strategy for adaptive behaviour.
 
@@ -2451,6 +2526,8 @@ def run_adaptive_zstack(
     events = _build_acquisition_events(
         channel=channel, z_start=z_start_um, z_end=z_end_um, z_step=z_step_um,
     )
+    _configure_hook_capabilities(hook, ctrl, guard, save_dir, name,
+                                 illumination_envelope, artifact_limits)
     reservation = _authorize_acquisition(
         ctrl, guard, plan_events(ctrl, events, None)
     )
@@ -2480,6 +2557,8 @@ def run_adaptive_timelapse(
     channel: str | None = None,
     name: str = "adaptive",
     log_path: str | None = None,
+    illumination_envelope: dict | None = None,
+    artifact_limits: dict | None = None,
 ) -> dict:
     """Run a timelapse acquisition with a hook strategy for adaptive behaviour.
 
@@ -2499,6 +2578,8 @@ def run_adaptive_timelapse(
     events = _build_acquisition_events(
         channel=channel, num_time_points=n_frames, time_interval_s=interval_s,
     )
+    _configure_hook_capabilities(hook, ctrl, guard, save_dir, name,
+                                 illumination_envelope, artifact_limits)
     reservation = _authorize_acquisition(ctrl, guard, plan_events(ctrl, events, None))
     started_at = datetime.now(timezone.utc)
     started = time.monotonic()
@@ -2525,6 +2606,8 @@ def _acquire_positions_with_hook(
     log_path: str | None = None,
     channel: str | None = None,
     exposure_ms: float | None = None,
+    illumination_envelope: dict | None = None,
+    artifact_limits: dict | None = None,
     **shape_kwargs: Any,
 ) -> dict:
     """One Acquisition across every position, with a single hook instance.
@@ -2586,6 +2669,8 @@ def _acquire_positions_with_hook(
         channel=channel, exposure_ms=exposure_ms,
         position_labels=[p["name"] for p in positions], **shape_kwargs,
     )
+    _configure_hook_capabilities(hook, ctrl, guard, save_dir, name,
+                                 illumination_envelope, artifact_limits)
     reservation = _authorize_acquisition(
         ctrl, guard, plan_events(ctrl, events, exposure_ms)
     )
@@ -2800,6 +2885,8 @@ def _acquire_survey_with_detector(
     channel: str | None = None,
     exposure_ms: float | None = None,
     adaptive: bool = False,
+    illumination_envelope: dict | None = None,
+    artifact_limits: dict | None = None,
     **shape_kwargs: Any,
 ) -> dict:
     """One survey acquisition whose event stream a detector hook can EXTEND.
@@ -2874,6 +2961,9 @@ def _acquire_survey_with_detector(
         **shape_kwargs,
     )
 
+    _configure_hook_capabilities(hook, ctrl, guard, save_dir, name,
+                                 illumination_envelope, artifact_limits)
+
     if isinstance(hook, UntrustedHookAdapter):
         if adaptive:
             hook.configure_adaptive(
@@ -2926,6 +3016,8 @@ def run_adaptive_survey(
     log_path: str | None = None,
     max_idle_s: float = 60.0,
     preserve_unsupported: bool = False,
+    illumination_envelope: dict | None = None,
+    artifact_limits: dict | None = None,
 ) -> dict:
     """Acquire positions one at a time; the hook decides whether the next
     position is acquired at all.
@@ -3004,7 +3096,8 @@ def run_adaptive_survey(
         hook=hook, progress=progress, candidates=candidates,
         max_idle_s=max_idle_s,
         channel=params.get("channel"), exposure_ms=params.get("exposure_ms"),
-        adaptive=True, **shape,
+        adaptive=True, illumination_envelope=illumination_envelope,
+        artifact_limits=artifact_limits, **shape,
     )
     # The batched status ("complete across 9 position(s)") is exactly the
     # sentence that made 5 ghost exposures read as a clean early stop

@@ -7,11 +7,15 @@ import numpy as np
 import pytest
 
 from microclaw.hook_decisions import (
-    AcquireAt, ContinueSurvey, HookResult, MoveStage, RequestAutofocus,
-    SetExposure, StopSurvey, UntrustedHookAdapter,
+    AcquireAt, ContinueSurvey, DiscardFrame, EmitArtifact, HookResult, MoveStage,
+    RequestAutofocus, SetExposure, SetIlluminationPower, StopSurvey,
+    UntrustedHookAdapter,
 )
 from microclaw.hooks import HookBase
 from microclaw.safety import SafetyViolation
+from microclaw.safety import (
+    ForbiddenProperty, IlluminationConstraints, SafetyConstraints, SafetyGuard,
+)
 from microclaw.tools import SurveyProgress
 
 
@@ -131,6 +135,130 @@ def test_non_json_measurements_fail_closed(tmp_path):
     with pytest.raises(ValueError):
         adapter.image_process_fn(np.zeros((2, 2)), {}, object())
     assert adapter._log[-1]["event"] == "hook_failure"
+
+
+def _illumination_adapter(action, tmp_path, *, ceiling=20, writes=2,
+                          initial=5, configured=30, factor=2):
+    class Hook:
+        def analyze_frame(self, image, metadata):
+            return HookResult({}, (action,))
+    core = type("Core", (), {})()
+    core.writes = []
+    core.set_property = lambda device, prop, value: core.writes.append(
+        (device, prop, value)
+    )
+    guard = SafetyGuard(SafetyConstraints(illumination=IlluminationConstraints(
+        power_properties=[ForbiddenProperty("Laser", "Power")],
+        max_power_percent=configured, max_power_step_factor=factor,
+    )))
+    adapter = UntrustedHookAdapter(Hook(), str(tmp_path / "hook.json"))
+    adapter.configure_illumination(
+        core=core, guard=guard, device="Laser", property="Power",
+        max_power_percent=ceiling, max_writes=writes, initial_value=initial,
+    )
+    return adapter, core
+
+
+def test_illumination_without_envelope_is_refused(tmp_path):
+    class Hook:
+        def analyze_frame(self, image, metadata):
+            return HookResult({}, (SetIlluminationPower(2),))
+    adapter = UntrustedHookAdapter(Hook())
+    adapter.image_process_fn(np.zeros((1, 1)), {}, object())
+    assert adapter._log[-1]["reason"] == "no illumination envelope was authorized for this run"
+
+
+def test_illumination_envelope_ceiling_is_attributable(tmp_path):
+    adapter, core = _illumination_adapter(SetIlluminationPower(21), tmp_path)
+    adapter.image_process_fn(np.zeros((1, 1)), {}, object())
+    assert not core.writes
+    assert adapter._log[-1]["reason"] == "proposal exceeds authorized envelope ceiling"
+
+
+def test_illumination_step_uses_last_parent_value(tmp_path):
+    adapter, core = _illumination_adapter(SetIlluminationPower(11), tmp_path)
+    adapter.image_process_fn(np.zeros((1, 1)), {}, object())
+    assert not core.writes
+    assert adapter._log[-1]["reason"] == "proposal exceeds step factor from last parent write"
+
+
+def test_illumination_write_budget_is_attributable(tmp_path):
+    adapter, core = _illumination_adapter(SetIlluminationPower(5), tmp_path, writes=1)
+    image = np.zeros((1, 1))
+    adapter.image_process_fn(image, {}, object())
+    adapter.image_process_fn(image, {}, object())
+    assert len(core.writes) == 1
+    assert adapter._log[-1]["reason"] == "authorized illumination write budget exhausted"
+
+
+def test_config_ceiling_still_wins_if_parent_context_is_wrongly_wide(tmp_path):
+    adapter, core = _illumination_adapter(
+        SetIlluminationPower(31), tmp_path, ceiling=50, configured=30, factor=100,
+    )
+    adapter.image_process_fn(np.zeros((1, 1)), {}, object())
+    assert not core.writes
+    assert "SafetyGuard refused illumination" in adapter._log[-1]["reason"]
+    assert "max_power_percent" in adapter._log[-1]["reason"]
+
+
+def test_shutter_enable_is_not_in_closed_union():
+    with pytest.raises(ValueError, match="Unknown hook action"):
+        from microclaw.hook_decisions import parse_action
+        parse_action({"kind": "SetIlluminationShutter", "value": "On"})
+
+
+def test_discard_records_observation_and_discards_pixels(tmp_path):
+    class Hook:
+        def analyze_frame(self, image, metadata):
+            return HookResult({"score": 0}, (DiscardFrame(),))
+    adapter = UntrustedHookAdapter(Hook())
+    assert adapter.image_process_fn(np.zeros((1, 1)), {}, object()) is None
+    assert adapter._log[0]["schema"] == "microclaw.analysis-observation/v1"
+    assert adapter._log[-1]["event"] == "legacy_hook_frame"
+    assert adapter._log[-1]["outcome"] == "discarded"
+
+
+@pytest.mark.parametrize("filename", ["../x", "/abs/x", "a/b", "", "a\\b"])
+def test_artifact_escape_names_are_refused(filename, tmp_path):
+    class Hook:
+        def analyze_frame(self, image, metadata):
+            return HookResult({}, (EmitArtifact(filename, b"x"),))
+    adapter = UntrustedHookAdapter(Hook())
+    adapter.configure_artifacts(target_dir=tmp_path, max_artifact_bytes=10,
+                                max_count=2, max_total_bytes=10)
+    adapter.image_process_fn(np.zeros((1, 1)), {}, object())
+    assert "bare filename" in adapter._log[-1]["reason"]
+
+
+def test_artifact_limits_and_collision_are_distinct(tmp_path):
+    class Hook:
+        def __init__(self): self.payload = b"123"
+        def analyze_frame(self, image, metadata):
+            return HookResult({}, (EmitArtifact("x.bin", self.payload),))
+    hook = Hook()
+    adapter = UntrustedHookAdapter(hook)
+    adapter.configure_artifacts(target_dir=tmp_path, max_artifact_bytes=2,
+                                max_count=2, max_total_bytes=4)
+    adapter.image_process_fn(np.zeros((1, 1)), {}, object())
+    assert "per-artifact" in adapter._log[-1]["reason"]
+    hook.payload = b"12"
+    adapter.image_process_fn(np.zeros((1, 1)), {}, object())
+    adapter.image_process_fn(np.zeros((1, 1)), {}, object())
+    assert "collides" in adapter._log[-1]["reason"]
+
+
+def test_artifact_per_run_total_is_refused(tmp_path):
+    class Hook:
+        def __init__(self): self.i = 0
+        def analyze_frame(self, image, metadata):
+            self.i += 1
+            return HookResult({}, (EmitArtifact(f"{self.i}.bin", b"123"),))
+    adapter = UntrustedHookAdapter(Hook())
+    adapter.configure_artifacts(target_dir=tmp_path, max_artifact_bytes=3,
+                                max_count=3, max_total_bytes=5)
+    adapter.image_process_fn(np.zeros((1, 1)), {}, object())
+    adapter.image_process_fn(np.zeros((1, 1)), {}, object())
+    assert "total-bytes" in adapter._log[-1]["reason"]
 
 
 def test_action_list_is_normalized_but_other_iterables_are_rejected():
