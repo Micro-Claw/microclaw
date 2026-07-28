@@ -145,9 +145,18 @@ a reviewed PRECODED_HOOK_REGISTRY built-in; a UV level computed per frame from b
 density is feedback and must use the proposed-action union. This block does not add
 such an open-loop built-in.
 
+End-of-run power policy belongs to the hook and its user: a hook may leave the last
+accepted value, restore a chosen value, or ramp down to zero. Microclaw does not add
+an automatic final write. A non-increasing write within the authorized envelope is
+always permitted even after the increasing-write budget is exhausted, and does not
+consume that budget. An aborted or failed run may never reach the hook's intended
+final frame, so hardware can remain at whatever value the last accepted write set.
+
 EmitArtifact carries bytes or an ndarray and a bare filename, never a path. Trusted
 parent code confines and exclusively creates the file in the run artifact directory,
 enforces per-file and per-run limits, hashes it, and records the path and sha256.
+A HookResult may propose at most one artifact per frame; this keeps the observation's
+single artifact_sha256 provenance field unambiguous.
 
 DiscardFrame returns None from the parent image processor after recording the
 observation. The position is still moved to and still exposed: discard saves storage,

@@ -2435,16 +2435,14 @@ def _configure_hook_capabilities(hook: Any, ctrl: MicroscopeController,
     prop = illumination_envelope["property"]
     ceiling = illumination_envelope["max_power_percent"]
     writes = illumination_envelope["max_writes"]
-    power_pairs = {(p.device, p.property)
-                   for p in guard._c.illumination.power_properties}
-    if (device, prop) not in power_pairs:
+    if not guard.is_illumination_power(device, prop):
         raise ValueError(
             "illumination envelope device/property is not declared in "
             "illumination.power_properties."
         )
     if isinstance(ceiling, bool) or not isinstance(ceiling, (int, float)) or not math.isfinite(ceiling) or ceiling < 0:
         raise ValueError("illumination envelope max_power_percent must be finite and non-negative.")
-    configured = guard._c.illumination.max_power_percent
+    configured = guard.max_illumination_power_percent
     if configured is not None and ceiling > configured:
         raise ValueError(
             f"illumination envelope ceiling {ceiling}% exceeds configured "

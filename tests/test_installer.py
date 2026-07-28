@@ -82,6 +82,7 @@ def test_batch_files_are_forced_to_crlf():
     """cmd.exe can mis-parse a label read with a bare LF."""
     attrs = (ROOT / ".gitattributes").read_text(encoding="utf-8")
     assert "*.bat text eol=crlf" in attrs
+    assert "tests/fixtures/hooks/m5_legacy/*.py binary" in attrs
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="only meaningful in a Windows checkout")

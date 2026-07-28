@@ -205,7 +205,10 @@ def write_hook_artifact(target_dir: str | Path, filename: str, payload: bytes | 
             np.save(stream, payload)
         data = stream.getvalue()
     if len(data) > max_artifact_bytes:
-        raise ValueError("artifact exceeds per-artifact size limit")
+        raise ValueError(
+            f"artifact size {len(data)} bytes exceeds per-artifact size limit "
+            f"{max_artifact_bytes} bytes"
+        )
     if state.get("total_bytes", 0) + len(data) > max_total_bytes:
         raise ValueError("artifact exceeds per-run total-bytes limit")
     target.mkdir(parents=True, exist_ok=True)
@@ -358,28 +361,31 @@ class UntrustedHookAdapter:
             if new > ctx["ceiling"]:
                 self._refuse(metadata, action, "proposal exceeds authorized envelope ceiling")
                 return None
-            factor = ctx["guard"]._c.illumination.max_power_step_factor
             old = ctx["last_written"]
-            if factor is not None and old > 0 and new / old > factor:
-                self._refuse(metadata, action, "proposal exceeds step factor from last parent write")
-                return None
-            if ctx["remaining"] <= 0:
+            increasing = new > old
+            if increasing and ctx["remaining"] <= 0:
                 self._refuse(metadata, action, "authorized illumination write budget exhausted")
                 return None
-            class _LastWrittenCore:
-                def get_property(self, _device, _property):
-                    return str(old)
             try:
                 ctx["guard"].check_illumination(
-                    _LastWrittenCore(), ctx["device"], ctx["property"], str(new),
-                    confirm_fn=None,
+                    ctx["core"], ctx["device"], ctx["property"], str(new),
+                    confirm_fn=None, previous_percent=old,
                 )
             except Exception as exc:
                 self._refuse(metadata, action, f"SafetyGuard refused illumination: {exc}")
                 return None
-            ctx["core"].set_property(ctx["device"], ctx["property"], str(new))
+            try:
+                ctx["core"].set_property(ctx["device"], ctx["property"], str(new))
+            except Exception as exc:
+                self._record(
+                    metadata, event="illumination_write_failure",
+                    action=self._action_record(action), decision="failed",
+                    reason=f"parent device write failed: {exc}",
+                )
+                return None
             ctx["last_written"] = new
-            ctx["remaining"] -= 1
+            if increasing:
+                ctx["remaining"] -= 1
             self._accept(metadata, action, "power write passed envelope and SafetyGuard")
             return None
         ctx = self._context
@@ -454,6 +460,10 @@ class UntrustedHookAdapter:
                     raise TypeError("analyze_frame must return HookResult or None.")
                 # Parse the complete proposal before dispatching any part of it.
                 actions = tuple(parse_action(a) for a in result.actions)
+                if sum(isinstance(a, EmitArtifact) for a in actions) > 1:
+                    raise ValueError(
+                        "HookResult may propose at most one EmitArtifact per frame."
+                    )
                 from microclaw.hooks import analysis_observation_record
                 observation = analysis_observation_record(
                     analyzer=result.analyzer,

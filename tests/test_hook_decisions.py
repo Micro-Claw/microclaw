@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import queue
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
@@ -179,16 +180,84 @@ def test_illumination_step_uses_last_parent_value(tmp_path):
     adapter, core = _illumination_adapter(SetIlluminationPower(11), tmp_path)
     adapter.image_process_fn(np.zeros((1, 1)), {}, object())
     assert not core.writes
-    assert adapter._log[-1]["reason"] == "proposal exceeds step factor from last parent write"
+    assert "SafetyGuard refused illumination" in adapter._log[-1]["reason"]
+    assert "per-write ratchet" in adapter._log[-1]["reason"]
 
 
 def test_illumination_write_budget_is_attributable(tmp_path):
-    adapter, core = _illumination_adapter(SetIlluminationPower(5), tmp_path, writes=1)
+    class Hook:
+        def __init__(self): self.values = iter((6, 7))
+        def analyze_frame(self, image, metadata):
+            return HookResult({}, (SetIlluminationPower(next(self.values)),))
+    core = MagicMock()
+    guard = SafetyGuard(SafetyConstraints(illumination=IlluminationConstraints(
+        power_properties=[ForbiddenProperty("Laser", "Power")],
+        max_power_percent=20, max_power_step_factor=2,
+    )))
+    adapter = UntrustedHookAdapter(Hook())
+    adapter.configure_illumination(
+        core=core, guard=guard, device="Laser", property="Power",
+        max_power_percent=20, max_writes=1, initial_value=5,
+    )
     image = np.zeros((1, 1))
     adapter.image_process_fn(image, {}, object())
     adapter.image_process_fn(image, {}, object())
-    assert len(core.writes) == 1
+    assert core.set_property.call_count == 1
     assert adapter._log[-1]["reason"] == "authorized illumination write budget exhausted"
+
+
+def test_exhausted_budget_still_allows_wind_down_and_zero(tmp_path):
+    class Hook:
+        def __init__(self): self.values = iter((6, 4, 0))
+        def analyze_frame(self, image, metadata):
+            return HookResult({}, (SetIlluminationPower(next(self.values)),))
+    core = MagicMock()
+    guard = SafetyGuard(SafetyConstraints(illumination=IlluminationConstraints(
+        power_properties=[ForbiddenProperty("Laser", "Power")],
+        max_power_percent=20, max_power_step_factor=2,
+    )))
+    adapter = UntrustedHookAdapter(Hook())
+    adapter.configure_illumination(
+        core=core, guard=guard, device="Laser", property="Power",
+        max_power_percent=20, max_writes=1, initial_value=5,
+    )
+    for _ in range(3):
+        adapter.image_process_fn(np.zeros((1, 1)), {}, object())
+    assert [call.args[2] for call in core.set_property.call_args_list] == ["6.0", "4.0", "0.0"]
+    assert adapter._illumination_context["remaining"] == 0
+    assert all(r.get("decision") == "accepted" for r in adapter._log if "decision" in r)
+
+
+def test_increase_after_wind_down_is_charged_normally(tmp_path):
+    class Hook:
+        def __init__(self): self.values = iter((4, 5, 6))
+        def analyze_frame(self, image, metadata):
+            return HookResult({}, (SetIlluminationPower(next(self.values)),))
+    core = MagicMock()
+    guard = SafetyGuard(SafetyConstraints(illumination=IlluminationConstraints(
+        power_properties=[ForbiddenProperty("Laser", "Power")],
+        max_power_percent=20, max_power_step_factor=2,
+    )))
+    adapter = UntrustedHookAdapter(Hook())
+    adapter.configure_illumination(
+        core=core, guard=guard, device="Laser", property="Power",
+        max_power_percent=20, max_writes=1, initial_value=5,
+    )
+    for _ in range(3):
+        adapter.image_process_fn(np.zeros((1, 1)), {}, object())
+    assert [call.args[2] for call in core.set_property.call_args_list] == ["4.0", "5.0"]
+    assert adapter._log[-1]["reason"] == "authorized illumination write budget exhausted"
+
+
+def test_parent_device_write_failure_has_own_record(tmp_path):
+    adapter, core = _illumination_adapter(SetIlluminationPower(6), tmp_path)
+    def fail(*args): raise RuntimeError("bridge down")
+    core.set_property = fail
+    adapter.image_process_fn(np.zeros((1, 1)), {}, object())
+    assert adapter._log[-1]["event"] == "illumination_write_failure"
+    assert adapter._log[-1]["decision"] == "failed"
+    assert "bridge down" in adapter._log[-1]["reason"]
+    assert not any(r.get("event") == "hook_failure" for r in adapter._log)
 
 
 def test_config_ceiling_still_wins_if_parent_context_is_wrongly_wide(tmp_path):
@@ -240,7 +309,8 @@ def test_artifact_limits_and_collision_are_distinct(tmp_path):
     adapter.configure_artifacts(target_dir=tmp_path, max_artifact_bytes=2,
                                 max_count=2, max_total_bytes=4)
     adapter.image_process_fn(np.zeros((1, 1)), {}, object())
-    assert "per-artifact" in adapter._log[-1]["reason"]
+    assert "artifact size 3 bytes" in adapter._log[-1]["reason"]
+    assert "limit 2 bytes" in adapter._log[-1]["reason"]
     hook.payload = b"12"
     adapter.image_process_fn(np.zeros((1, 1)), {}, object())
     adapter.image_process_fn(np.zeros((1, 1)), {}, object())
@@ -259,6 +329,35 @@ def test_artifact_per_run_total_is_refused(tmp_path):
     adapter.image_process_fn(np.zeros((1, 1)), {}, object())
     adapter.image_process_fn(np.zeros((1, 1)), {}, object())
     assert "total-bytes" in adapter._log[-1]["reason"]
+
+
+def test_artifact_count_limit_is_refused_distinctly(tmp_path):
+    class Hook:
+        def __init__(self): self.i = 0
+        def analyze_frame(self, image, metadata):
+            self.i += 1
+            return HookResult({}, (EmitArtifact(f"{self.i}.bin", b"x"),))
+    adapter = UntrustedHookAdapter(Hook())
+    adapter.configure_artifacts(target_dir=tmp_path, max_artifact_bytes=2,
+                                max_count=1, max_total_bytes=10)
+    adapter.image_process_fn(np.zeros((1, 1)), {}, object())
+    adapter.image_process_fn(np.zeros((1, 1)), {}, object())
+    assert adapter._log[-1]["reason"] == "artifact count limit exhausted"
+
+
+def test_only_one_artifact_may_be_proposed_per_frame(tmp_path):
+    class Hook:
+        def analyze_frame(self, image, metadata):
+            return HookResult({}, (
+                EmitArtifact("a.bin", b"a"), EmitArtifact("b.bin", b"b"),
+            ))
+    target = tmp_path / "artifacts"
+    adapter = UntrustedHookAdapter(Hook())
+    adapter.configure_artifacts(target_dir=target, max_artifact_bytes=2,
+                                max_count=2, max_total_bytes=4)
+    with pytest.raises(ValueError, match="at most one EmitArtifact"):
+        adapter.image_process_fn(np.zeros((1, 1)), {}, object())
+    assert not target.exists()
 
 
 def test_action_list_is_normalized_but_other_iterables_are_rejected():

@@ -1,5 +1,39 @@
 from typing import Any
 
+_HOOK_ILLUMINATION_ENVELOPE_SCHEMA = {
+    "type": "object",
+    "description": (
+        "Optional pre-run envelope for generated-hook illumination power modulation. "
+        "Names one configured power device/property, a percent ceiling, and the "
+        "maximum accepted increasing writes. Power-only: a shutter enable or turning "
+        "light on is not expressible. The whole envelope is confirmed once before "
+        "the run; no callback-thread prompt occurs."
+    ),
+    "properties": {
+        "device": {"type": "string"},
+        "property": {"type": "string"},
+        "max_power_percent": {"type": "number"},
+        "max_writes": {"type": "integer"},
+    },
+    "required": ["device", "property", "max_power_percent", "max_writes"],
+    "additionalProperties": False,
+}
+
+_HOOK_ARTIFACT_LIMITS_SCHEMA = {
+    "type": "object",
+    "description": (
+        "Optional parent-owned limits for hook artifacts: maximum bytes per artifact, "
+        "artifact count, and total bytes for the run. Hooks receive no path."
+    ),
+    "properties": {
+        "max_artifact_bytes": {"type": "integer"},
+        "max_count": {"type": "integer"},
+        "max_total_bytes": {"type": "integer"},
+    },
+    "required": ["max_artifact_bytes", "max_count", "max_total_bytes"],
+    "additionalProperties": False,
+}
+
 TOOLS: list[dict[str, Any]] = [
     {
         "name": "start_live_view",
@@ -818,6 +852,8 @@ TOOLS: list[dict[str, Any]] = [
                         "(optional). Read it back with read_hook_log."
                     ),
                 },
+                "illumination_envelope": _HOOK_ILLUMINATION_ENVELOPE_SCHEMA,
+                "artifact_limits": _HOOK_ARTIFACT_LIMITS_SCHEMA,
             },
             "required": ["protocol"],
         },
@@ -1046,6 +1082,8 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "string",
                     "description": "Path for the hook's output log (optional).",
                 },
+                "illumination_envelope": _HOOK_ILLUMINATION_ENVELOPE_SCHEMA,
+                "artifact_limits": _HOOK_ARTIFACT_LIMITS_SCHEMA,
             },
             "required": ["z_start_um", "z_end_um", "z_step_um", "save_dir", "hook_strategy"],
         },
@@ -1096,6 +1134,8 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "string",
                     "description": "Path for the hook's output log (optional).",
                 },
+                "illumination_envelope": _HOOK_ILLUMINATION_ENVELOPE_SCHEMA,
+                "artifact_limits": _HOOK_ARTIFACT_LIMITS_SCHEMA,
             },
             "required": ["n_frames", "interval_s", "save_dir", "hook_strategy"],
         },
@@ -1210,6 +1250,8 @@ TOOLS: list[dict[str, Any]] = [
                     "description": "Retry after explicit approval to preserve and omit unrelated unsupported-device entries.",
                     "default": False,
                 },
+                "illumination_envelope": _HOOK_ILLUMINATION_ENVELOPE_SCHEMA,
+                "artifact_limits": _HOOK_ARTIFACT_LIMITS_SCHEMA,
             },
             "required": ["protocol", "save_dir", "hook_strategy"],
         },
