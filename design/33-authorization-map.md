@@ -563,6 +563,11 @@ or the appropriateness of M5's declared limits.
   raw property value, but a laser reporting `Power (mW)` (e.g. iBeam, 0–75 mW) is not
   a percentage — so an absolute cap in mW is not expressible today (the ratchet is
   unit-agnostic and unaffected). A units-aware illumination policy is future work.
+  **Measured consequence, 2026-07-28:** M5 declared `max_power_percent: 100.0` against
+  `iBeamSmartCW-1.Power (mW)`, whose driver range is 0–75. A raw 75 is always below
+  100, so on that rig the configured ceiling **could never refuse a write** and only
+  the step factor bounded a ramp. The cap is not merely imprecise across units; it can
+  be silently inoperative.
 - **Config reload requires restart:** the map is built once at startup; editing the
   safety config does not hot-reload. Acceptable; worth a usability note in design/32.
 - **Session dose is not durable:** the acquisition ledger is in-memory and resets
@@ -581,3 +586,69 @@ or the appropriateness of M5's declared limits.
 - **Camera ROI** is excluded (no typed ROI capability) — tracked for a later phase.
 - **`degraded_trusted_plugins`** remains the sanctioned escape hatch: it suspends the
   completeness guarantee for sessions where the allowlist ceremony is not warranted.
+
+## Illumination gate: what design/32 Block 7b changed (2026-07-28)
+
+Block 7b let generated hook code propose illumination per frame. It deliberately
+added **no second authorization surface** — every proposal still passes through
+`SafetyGuard.check_illumination` — but it changed the contract in three ways and
+found two facts about this gate worth recording here rather than in a block's gate
+document.
+
+**`check_illumination` gained `previous_percent`.** A trusted parent that already
+knows its own last successful write passes it, and the ratchet is evaluated against
+that instead of a fresh `core.get_property`. This exists so the per-frame path costs
+no bridge read; when the parameter is absent the device read is unchanged.
+
+**Hooks can modulate power but can never enable light.** A shutter enable is not
+expressible in the action union, so `require_confirm_on_enable` is never reached from
+hook code. That is what makes per-frame illumination safe without prompting: pyjavaz
+serializes bridge calls behind one lock, so an interactive confirmation on an
+acquisition callback thread would deadlock the run. Enabling stays a pre-run human
+act; the hook only moves a level on an already-enabled illuminator, inside an envelope
+confirmed once beforehand.
+
+**A write reported as failed may have succeeded.** Measured on M5: a `set_property`
+raised `Serial timeout occurred. (17)` and the device read back the new value
+immediately afterwards. Any caller that caches "what I last wrote" as a safety
+baseline must treat a write failure as invalidating that cache, not as leaving it
+intact — otherwise the baseline drifts below reality and the ratchet becomes more
+permissive than configured. Block 7b re-reads before its next write and fails closed
+if the re-read fails. **This applies to any future typed actuator that ratchets
+against a remembered value**, which is why it is recorded against the gate rather
+than against one block.
+
+### The ratchet bounds rate, not reach — and does nothing from zero
+
+`max_power_step_factor` refuses `new / old > factor`, guarded by `old > 0`. From a
+device at 0 % there is no ratio and therefore no refusal: a single write may go
+straight to whatever `max_power_percent` (or a caller's envelope ceiling) allows.
+
+This was always true and is now reachable far more often, because Block 7b's
+recommended pattern is a hook that winds power down to 0 at end of run — which makes
+zero the *normal* starting state for the next run. The operator ruled on 2026-07-28 to
+document rather than change it, on the grounds that the ceiling is human-confirmed
+before the run and a hook that wants a gradual ramp implements one itself. It is
+documented in `IlluminationConstraints`, `safety_config.example.yaml` and
+`hook_docs.py`. Revisit if an experiment is bitten by it.
+
+### M5's 405 nm line is declarable, and dose is not what the gate bounds
+
+The `iChrome-MLE-TCP` engine exposes per-channel `Laser N: 3. Level %` (0–100,
+linearized in remote mode), with `Laser N: 1. Enable` arming and
+`Laser N: 2. Emission` acting as the manual's `:cw` — confirmed on hardware, since
+neither alone produces light and both together do. `2. Emission` overrides the
+electronic trigger input, which makes it the single property on that engine most
+deserving of a confirmation gate; both are now declared as shutters on M5.
+
+Two consequences for this design:
+
+1. **Arming is not darkness.** With `Enable = 1`, `Laser Trigger.Mode0 = Follow` and
+   `Sequence0 = 65535`, the MicroFPGA fires a 405 pulse on *every frame of any
+   acquisition* — no microclaw write, no confirmation, nothing in the ledger.
+   Confirm-gating `Enable` is the only point at which the authorization map sees it.
+2. **The illumination gate bounds amplitude, not dose.** htSMLM's activation loop ramps
+   FPGA pulse *duration* (`Laser Trigger.Duration0`, 0–1 048 575 µs), not level. Dose
+   goes as level × duration, and `Laser Trigger` is an excluded device — microclaw can
+   neither write it nor bound it. A future Phase 2 typed actuator for pulse duration
+   should express dose as the product rather than adding a second independent cap.
