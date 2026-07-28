@@ -1,3 +1,4 @@
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -25,13 +26,60 @@ def assemble(frames, transform=None, sample=1):
     affine(2, 0, 0, .5), affine(1, .3, .2, 1),
 ])
 @pytest.mark.parametrize("shape", [(3, 3), (4, 4), (3, 6)])
-def test_affine_families_and_frame_dimensions(transform, shape):
+def test_affine_families_have_exact_inverse_sampled_geometry(transform, shape):
     image = np.arange(np.prod(shape), dtype=np.uint16).reshape(shape) + 1
     result = assemble([(image, 10, 20)], transform)
-    assert result["mosaic"].shape[0] > 0 and result["mosaic"].shape[1] > 0
-    assert result["overlap_statistics"]["source_sample_count"] == image.size
-    assert result["coverage_mask"].dtype == np.bool_
-    assert result["origin_um"][0] <= 10 <= result["origin_um"][0] + result["extent_um"][0]
+
+    # Independent scalar reference: transform the four source-centre corners for
+    # bounds, then invert the 2x2 coefficients directly for every output cell.
+    height, width = shape
+    corners = []
+    for dy in (-(height - 1) / 2, (height - 1) / 2):
+        for dx in (-(width - 1) / 2, (width - 1) / 2):
+            corners.append((10 + transform.a * dx + transform.b * dy,
+                            20 + transform.c * dx + transform.d * dy))
+    origin_x = min(point[0] for point in corners)
+    origin_y = min(point[1] for point in corners)
+    max_x = max(point[0] for point in corners)
+    max_y = max(point[1] for point in corners)
+    expected = np.zeros((math.ceil(max_y - origin_y - 1e-12) + 1,
+                         math.ceil(max_x - origin_x - 1e-12) + 1), dtype=image.dtype)
+    expected_coverage = np.zeros(expected.shape, dtype=bool)
+    determinant = transform.a * transform.d - transform.b * transform.c
+    last_output_col = math.floor((max_x - origin_x) + .5)
+    last_output_row = math.floor((max_y - origin_y) + .5)
+    for out_row in range(expected.shape[0]):
+        for out_col in range(expected.shape[1]):
+            if out_col > last_output_col or out_row > last_output_row:
+                continue
+            sx = origin_x + out_col - 10
+            sy = origin_y + out_row - 20
+            source_col = math.floor((transform.d * sx - transform.b * sy) / determinant
+                                    + (width - 1) / 2 + .5)
+            source_row = math.floor((-transform.c * sx + transform.a * sy) / determinant
+                                    + (height - 1) / 2 + .5)
+            if 0 <= source_row < height and 0 <= source_col < width:
+                expected[out_row, out_col] = image[source_row, source_col]
+                expected_coverage[out_row, out_col] = True
+
+    np.testing.assert_array_equal(result["mosaic"], expected)
+    np.testing.assert_array_equal(result["coverage_mask"], expected_coverage)
+    np.testing.assert_allclose(result["origin_um"], [origin_x, origin_y])
+    np.testing.assert_allclose(result["extent_um"], [max_x - origin_x, max_y - origin_y])
+    assert result["overlap_statistics"]["rasterized_output_sample_count"] == np.count_nonzero(expected_coverage)
+    assert result["overlap_statistics"]["overlap_pixels"] == 0
+    assert result["overlap_statistics"]["maximum_coverage"] == 1
+
+    # A convex transformed tile may leave legitimate empty bounding-box corners,
+    # but inverse sampling must not leave holes inside any covered row or column.
+    for row in expected_coverage:
+        occupied = np.flatnonzero(row)
+        if occupied.size:
+            assert np.all(row[occupied[0]:occupied[-1] + 1])
+    for col in expected_coverage.T:
+        occupied = np.flatnonzero(col)
+        if occupied.size:
+            assert np.all(col[occupied[0]:occupied[-1] + 1])
 
 
 def test_overlap_later_frame_wins_and_gap_is_zero():
@@ -43,6 +91,14 @@ def test_overlap_later_frame_wins_and_gap_is_zero():
     gap = assemble([(first, 0, 0), (second, 5, 0)])
     assert np.all(gap["mosaic"][:, 3:5] == 0)
     assert gap["overlap_statistics"]["uncovered_pixels"] == 6
+
+
+def test_single_tile_coarse_sampling_is_not_overlap():
+    result = assemble([(np.ones((64, 64), np.uint16), 0, 0)], sample=4)
+    statistics = result["overlap_statistics"]
+    assert statistics["overlap_pixels"] == 0
+    assert statistics["maximum_coverage"] == 1
+    assert statistics["rasterized_output_sample_count"] == statistics["covered_pixels"]
 
 
 def test_non_grid_coordinates_control_placement_not_iteration_index():
@@ -86,7 +142,8 @@ class FakeDataset:
 def metadata(x, y, *, camera="Andor", model="model", roi="0-0-3-3"):
     return {"XPosition_um_Intended": x, "YPosition_um_Intended": y,
             "PixelSizeAffine": "0;0;0;0;0;0", "Core-Camera": camera,
-            f"{camera}-Camera": model, "ROI": roi, "Binning": "1x1"}
+            f"{camera}-Camera": model, "ROI": roi, "Binning": "1x1",
+            "Height": 3, "Width": 3, "PixelType": "GRAY16"}
 
 
 def artifact(path, *, camera="Andor", model="model", roi=(0, 0, 3, 3)):
@@ -121,7 +178,13 @@ def test_plane_isolation_manifest_and_deterministic_replay(monkeypatch, tmp_path
     ref = artifact(tmp_path / "cal.json")
     first = run_tool(monkeypatch, tmp_path, {"time": 0}, ref)
     assert 999 not in __import__("tifffile").imread(tmp_path / "out.tif")
-    manifest = json.loads(Path(first["manifest_path"]).read_text())
+    manifest_document = json.loads(Path(first["manifest_path"]).read_text())
+    manifest = manifest_document["manifest_payload"]
+    canonical_payload = json.dumps(
+        manifest, sort_keys=True, separators=(",", ":"), allow_nan=False,
+    ).encode("utf-8")
+    assert manifest_document["manifest_payload_sha256"] == hashlib.sha256(canonical_payload).hexdigest()
+    assert first["manifest_payload_sha256"] == manifest_document["manifest_payload_sha256"]
     assert manifest["calibration_identity"]["payload"] == canonical_affine_payload(affine())
     assert manifest["calibration_identity"]["source_kind"] == "artifact"
     second = run_tool(monkeypatch, tmp_path, {"time": 0}, ref)

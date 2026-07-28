@@ -48,7 +48,7 @@ from microclaw.image_analysis import (
 from microclaw.safety import SafetyGuard, SafetyViolation
 from microclaw.acquisition import AcquisitionLedger, AcquisitionPlan, Reservation, plan_events
 from microclaw.calibration import resolve_calibration
-from microclaw.dataset_mosaic import MosaicGeometry, assemble_stage_coordinate_mosaic
+from microclaw.dataset_mosaic import MosaicFrameShape, MosaicGeometry, assemble_stage_coordinate_mosaic
 
 logger = logging.getLogger(__name__)
 
@@ -1093,7 +1093,10 @@ def build_stage_coordinate_mosaic(
 
     class SelectedFrames:
         """Re-read each tile per pass so source images are never retained together."""
+        iteration = 0
+
         def __iter__(self):
+            self.iteration += 1
             for item, metadata in metadata_items:
                 absent = [key for key in ("XPosition_um_Intended", "YPosition_um_Intended")
                           if metadata.get(key) in (None, "")]
@@ -1103,7 +1106,20 @@ def build_stage_coordinate_mosaic(
                         f"{absent} at {item}; XPosition_um_Intended and "
                         "YPosition_um_Intended are required"
                     )
-                yield (dataset.read_image(**item), float(metadata["XPosition_um_Intended"]),
+                pixels = None
+                if self.iteration == 1:
+                    pixel_dtypes = {"GRAY8": np.dtype(np.uint8), "GRAY16": np.dtype(np.uint16)}
+                    try:
+                        shape = (int(metadata["Height"]), int(metadata["Width"]))
+                        image_dtype = pixel_dtypes[str(metadata["PixelType"]).upper()]
+                        if min(shape) <= 0:
+                            raise ValueError
+                        pixels = MosaicFrameShape(shape, image_dtype)
+                    except (KeyError, TypeError, ValueError):
+                        pass
+                if pixels is None:
+                    pixels = dataset.read_image(**item)
+                yield (pixels, float(metadata["XPosition_um_Intended"]),
                        float(metadata["YPosition_um_Intended"]))
 
     sampling = affine.pixel_size_um if output_pixel_size_um is None else output_pixel_size_um
@@ -1129,12 +1145,17 @@ def build_stage_coordinate_mosaic(
         "artifact": {"kind": "tiff", "path": output_path},
         "manifest_path": manifest_path,
     }
-    manifest_bytes = json.dumps(
-        result, sort_keys=True, separators=(",", ":"), allow_nan=False
+    manifest_payload = dict(result)
+    payload_bytes = json.dumps(
+        manifest_payload, sort_keys=True, separators=(",", ":"), allow_nan=False
     ).encode("utf-8")
-    result["manifest_payload_sha256"] = hashlib.sha256(manifest_bytes).hexdigest()
+    result["manifest_payload_sha256"] = hashlib.sha256(payload_bytes).hexdigest()
+    # The digest covers the canonical inner payload without recursively covering
+    # itself. External readers can reproduce it directly from manifest_payload.
     manifest_bytes = json.dumps(
-        result, sort_keys=True, separators=(",", ":"), allow_nan=False
+        {"manifest_payload": manifest_payload,
+         "manifest_payload_sha256": result["manifest_payload_sha256"]},
+        sort_keys=True, separators=(",", ":"), allow_nan=False
     ).encode("utf-8")
 
     output_parent = Path(output_path).parent
