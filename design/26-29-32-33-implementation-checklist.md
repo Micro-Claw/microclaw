@@ -43,7 +43,7 @@ Progress markers: `[ ]` not started, `[-]` active, `[x]` complete, `[!]` blocked
 | 6 | `design32/remote-auth` | `d70874d` (main, 910/98/3) | `eb9ab16` + `c81aa16` (review fixes R1–R4) + `f68af87` (coordinator); 937/98/3 (mac) | n/a — network/security tests are this block's gate; no hardware path touched | `056a4ef` | Gate done: §3 heading restored (it was missing), Block 6 landed contract + five stated limitations, interim "unauthenticated remote warning" path removed from the ordering section |
 | 7 | `design32/generated-hook-decisions` | `cc2df05` (main, 937/98/3) | `7a9a602`…`af8f51b`; 967/99/3 (mac), 1044/21/3 (demo core) | demo D1–D5 PASS + M5 R1 PASS 2026-07-28: capability stripping live, 3-of-5 typed stop, four attributable refusals, Run A 12/12/12 with revisit 0.01 px. Gate caught 4 defects, 3 invisible off-rig. | `2b8d752` | Gate done: design/32 §4 Block-7 landed note; design/26 5 reconciliations incl. the unresolved `analyze_frame` collision blocking Block 10 |
 | 7b | `design32/hook-illumination-and-artifacts` | `ff690e8` (main, 967/99/3) | `f300fff`…`35f6dc4`; 1014/99/3 (mac), 989/115/3 (M5 under uv), 1089/21/3 (demo core, integration live) | M5 2026-07-28: R1–R8 + P0–P2 + R5pre PASS; D2/D3 skipped by ruling. **Gate caught 4 defects, 2 invisible off-rig** | `e688606` | Gate done: design/32 §4 vocabulary corrected + Block-7b landed note; design/33 illumination-contract changes, failed-write-may-have-landed rule, and M5 405 findings (docs merge `d189722`) |
-| 8 | `design29/saved-dataset-foundation` | | | probe required | | |
+| 8 | `design29/saved-dataset-foundation` | | | **pre-branch gate: `design29/probe-findings` (`cf0c00c`)** — probe was defective and its affine verdicts void; repaired, MMCore row-major pinned by `javap`. Live M5/demo/M2: **no measured affine anywhere**; identity is MM's default (same hash on two unrelated systems). Saved data gives the X column only (~90°, ~0.13 µm/px). | | Gate questions 1–3 answered; **Y column still open**, so the implementation branch stays closed |
 | 9 | `design29/stage-coordinate-mosaic` | | | required | | |
 | 10 | `design26/completed-dataset-runner` | | | saved-data fixture | | |
 | 11 | `design26/generated-adapter-run-b` | | | required | | |
@@ -90,8 +90,9 @@ Progress markers: `[ ]` not started, `[-]` active, `[x]` complete, `[!]` blocked
       OneDrive `microclaw-json-histories/` (`..._run_a.json` + `run-a/`); hash verify
       deferred to Block 7 when it becomes the regression baseline.
 - [-] Locate representative saved NDTiff fixtures: multi-position grid, non-grid spiral,
-      non-square images if available, and the 2500-tile dataset. — DEFERRED to Block 8
-      (not a Block 1 gate); home-dir scan timed out on OneDrive lazy tree.
+      non-square images if available, and the 2500-tile dataset. — PARTIAL: Run A
+      `run_a_1` is a grid with non-square 453×227 frames. The design/30 spiral and
+      2500-tile datasets are not here; retrieve them from the rig before Block 9.
 - [-] Run the no-hardware `design/26-roi-detection-spike.py` baseline and retain output.
       Do not use its synthetic accuracy as field acceptance. — DEFERRED to Block 7/12
       (not a Block 1 gate).
@@ -606,20 +607,37 @@ legitimate choice, but the loss is live in the meantime, not theoretical.
 
 Branch: `design29/saved-dataset-foundation`
 
-Pre-branch rig/read-only probe:
+Pre-branch spike/read-only probe (branch `design29/probe-findings`):
 
-- [ ] **Stop before writing calibration code.** Run
-      `python design/29-mm-pixel-affine-probe.py` on the rig.
-- [ ] Run it again with `--dataset` for at least one representative historical NDTiff.
-- [ ] Retain the decoded affine, camera/objective/binning selection evidence, dataset
-      identity findings, stdout, environment, and verdict.
-- [ ] Run the remaining convention check against a known saved tile pair. If saved data
-      cannot disambiguate signs/order, propose a separate minimal move/snap spike and wait
-      for explicit authorization before moving or exposing.
-- [ ] Stop if the affine is missing/singular, configuration selection is ambiguous, the
+- [x] **Stopped before writing calibration code.** Original M5/demo/M2 affine
+      verdicts are unusable because the decoder was defective.
+- [x] Repair all six defects and pin MMCore row-major ordering with off-rig tests;
+      `javap` confirms `AffineUtils` indices `0,3,1,4,2,5`.
+- [x] Run fixed `--dataset` on all three Run A datasets and retain output outside
+      the repo. Per-image affine is all-zero and summary affine is `Undefined`.
+- [x] Retain qualified system/config/dataset findings and verdicts in design/29.
+- [ ] Complete the convention check on the Run A datasets. The check was run:
+      `run_a_1` is dark and
+      rejected; the sparse revisit has no adjacent pair. `run_a_2` is PARTIAL:
+      7/9 X pairs determine a ~90° row displacement at 0.1227–0.1439 µm/px,
+      while Y does not cluster. Record X as a future-affine consistency check.
+      Proposal only: confirm X/resolve Y with unidirectional approaches.
+- [x] Stop if the affine is missing/singular, configuration selection is ambiguous, the
       dataset does not identify the historical transform, or Java/Python row-column signs
-      are unresolved. Update design/29 with the measured result and revise this block's
+      are unresolved. Saved data resolves only X; keep the implementation gate
+      closed. Update design/29 with the measured result and revise this block's
       resolver assumptions before creating the implementation branch.
+- [x] Run the fixed live probe on M5, demo, and M2, retaining raw and by-ID
+      affines and every expected/live rule comparison. M5 is genuinely
+      unconfigured (no configs; current all-zero). M2's `Res0` is blocked exactly
+      by `SmarActXY.Frequency` (`5` expected, `5000` live), but its own affine is
+      identity. Demo's active `Res10x` and inactive `Res20x`/`Res40x` all share
+      the same identity and hash, also shared by M2: positive evidence of MM's
+      default identity, not calibration. Across these three systems MM exposes
+      no measured affine.
+      Gate questions 1–3 are answered. The only remaining implementation-branch
+      blocker is the unresolved Y column of the 2×2 convention; X is measured as
+      ~90° stage/camera rotation at ~0.13 µm/px and remains a consistency check.
 
 Implementation:
 
@@ -628,8 +646,13 @@ Implementation:
       axis values and guard candidates with `has_image`. Refactor the exporter to use it.
 - [ ] Define canonical affine serialization/hash rules and immutable version keys; retain
       the objective/binning alias only as a mutable current pointer.
-- [ ] Implement the tagged calibration resolver and precedence policy. Never silently use
-      current microscope calibration for a historical dataset.
+- [ ] Implement the revised tagged resolver. Parse acquisition `PixelSizeAffine`
+      in MMCore row-major order and fall through on `Undefined`, all-zero,
+      identity, non-finite, or singular values. Never infer uncalibrated from
+      current pixel size/config alone: enumerate inactive calibrated configs and
+      surface rule mismatches. Never silently use current microscope calibration
+      for historical data. Identity includes camera/model, objective, binning,
+      ROI geometry, exact affine payload, and hash.
 - [ ] Validate immutable payload hashes on load and migrate/version legacy aliases before
       use.
 - [ ] Test sparse/non-zero-based coordinates, selection errors, exporter regression,
@@ -668,6 +691,8 @@ Branch: `design29/stage-coordinate-mosaic`
       with known landmarks and record seam behavior.
 - [ ] Run the 2500-tile fixture, measure peak RSS and output correctness, and implement
       chunked/memory-mapped output before merge if it exceeds the agreed budget.
+- [ ] Retrieve the design/30 spiral and 2500-tile fixtures from the rig first;
+      neither is present here. The non-square fixture is found (`run_a_1`, 453×227).
 - [ ] Stop on unexplained orientation, historical-calibration ambiguity, axis leakage,
       nondeterministic hashes/pixels, or unacceptable memory. Fix and repeat.
 - [ ] Commit, review, and merge.

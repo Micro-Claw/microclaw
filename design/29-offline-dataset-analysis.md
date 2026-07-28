@@ -61,6 +61,93 @@ pre-save pixels, mutable metadata, and acquisition state; an offline analyzer se
 only the processed pixels and metadata that survived into the dataset. Replay tests
 must establish equivalence for any analysis that claims it.
 
+## Probe findings (2026-07-28)
+
+These findings cover three systems and one historical acquisition family; they
+are not a survey of Micro-Manager installations.
+
+| System | Available pixel-size configs | Current config | Current scalar | Affine verdict |
+|---|---|---|---|---|
+| M5 | none | empty | 0.0 µm/px | current all-zero sentinel; genuinely unconfigured |
+| M2 | `Res0` | empty (`Res0` does not activate) | 0.0 µm/px; `Res0` is operator-reported as 0.127 µm/px | current all-zero sentinel; `Res0` identity default |
+| MM demo | `Res10x`, `Res20x`, `Res40x` | `Res10x` (matching and active) | 1.0 µm/px | current and all three by-ID affines are the same identity default |
+
+M5's clean ROI is `(0,0,2304,2304)` and its camera is
+`HamamatsuHam_DCAM`. On M2 the exact blocking predicate is
+`'SmarActXY'.'Frequency' expected='5' live='5000'` (the other two rules
+match). More importantly, `Res0`'s own affine is identity. Correcting the rule
+would therefore expose its scalar but no orientation. The enhanced probe now
+calls `get_pixel_size_um_by_id` alongside each by-ID affine; because that call
+was added after these runs, M2's configured 0.127 µm/px remains
+operator-reported rather than machine-confirmed.
+
+The demo is positive evidence that identity means **default**, not calibration:
+its 10x, 20x, and 40x configs all contain the same identity affine and the same
+canonical SHA-256, `3c9a2409d8902b67c481f68efd9606bac9a430202c3334d3379ced14433fe893`,
+even though 20x cannot have the same µm/px as 10x. The identical hash also
+appears on unrelated M2's `Res0`. Identity is thus an empirically confirmed
+hazard, not merely a theoretical one: the demo's healthy, matching, active path
+passes a naive finite+nonsingular check and would silently yield 1 µm/px,
+unrotated, for every objective.
+
+The original probe had decoded MMCore's
+row-major `[m00,m01,m02,m10,m11,m12]` as Java `getMatrix` order, canonicalized
+before printing, manufactured NaN for zero-length axes, omitted live config-rule
+values, iterated a bridged Java Rectangle instead of reading camelCase fields,
+and inspected only summary metadata. The repair prints raw values first,
+distinguishes non-finite/singular/all-zero/identity verdicts, enumerates every
+config and by-ID affine, reads Rectangle fields, and walks per-image metadata.
+`javap` confirms local `AffineUtils.doubleToAffine` reads indices
+`0,3,1,4,2,5`. Fixed live runs on M5, demo, and M2 answer the three gate
+questions: none exposes a measured affine; config activation can hide a scalar
+without hiding a useful affine; and the saved datasets identify neither a
+historical transform nor calibration identity.
+
+On these three available systems, MM is not a calibration source. Microclaw's
+own `calibration.solve_affine` plus its knowledge base is the primary source.
+The MM-sourced resolver branch remains correct and cheap, but will normally fall
+through; it is not treated as a supported acquisition-recorded identity.
+
+MM appears to store the pixel-size scalar and affine separately. **UNVERIFIED
+LEAD:** Micro-Manager's “Pixel Calibrator” plugin is reportedly the tool that
+measures the full affine. Nobody has run it here and its behavior on M2's MM
+version is unconfirmed. Testing it on M2 may resolve the outstanding Y column
+without the proposed move/snap spike.
+
+The fixed dataset arm confirms Run A intended XY on every image, string position
+values, and varying axes (`position+time`, plus Z on the sparse revisit). Summary
+affine is `Undefined`; per-image `PixelSizeAffine` is all-zero. Run A used an
+Andor iXon DU897 with a 453×227 ROI; M5 now reports a Hamamatsu at 2304×2304.
+`run_a_1` is unusable for a convention check: every acquisition laser is off and
+only 0.238% of pixels exceed background + 5×MAD (min/max 146/328). Its old weak
+correlations measured read noise and carry no verdict. Signal-bearing `run_a_2`
+gives a **PARTIAL** result after overlap-normalized correlation. Seven of nine +X
+pairs form the cluster `(dy,dx)={(139,1),(140,2),(140,1),(157,2),(162,2),
+(163,2),(163,2)}` px (combined IQR `(22.5,0.5)` px). Thus stage +X displaces
+content almost entirely along image rows: stage/camera axes are about 90° apart.
+The implied 0.1227–0.1439 µm/px brackets M2's configured 0.127 µm/px and is
+plausible for the DU897 optical path. The two shift modes, 139–140 and 157–163 px
+(roughly 20 versus 23 µm at 0.13 µm/px for the same intended 20 µm step), remain
+unexplained and cannot be resolved from saved data.
+
+The Y column is **UNRESOLVED**: normalized peaks do not form a cluster (IQR
+spread in the coordinator cross-check was `(227,182)` px), so no complete 2×2 is
+reported. The acquisition is a plain raster: each Y-adjacent comparison crosses
+a 60 µm X return from c3 to c0, whereas X pairs are small unidirectional moves.
+Uncorrected backlash after that reversal is the leading hypothesis, not a
+finding. Bleaching and drift are not supported: tiles are ~0.7 s apart over
+7.8 s and mean intensity has no monotonic trend (time correlation 0.03). The
+dataset records only intended XY, never achieved stage XY, so backlash or other
+settling error cannot be tested retrospectively. `run_a_revisit_top2_1` has real
+signal but no adjacent 20 µm pairs.
+
+The measured X column is a consistency check every future measured or MM-sourced
+affine for this optical path must satisfy: about 90° stage/camera rotation at
+roughly 0.13 µm/px. The smaller remaining proposal is to resolve Y and confirm X
+on a contrast-rich field, approaching every reference and destination from one
+direction to avoid raster reversal. It remains a proposal only; no stage move or
+exposure was made.
+
 ## Proposed shape
 
 ### 1. A shared geometry module — `microclaw/dataset_mosaic.py`
@@ -180,7 +267,9 @@ def build_stage_coordinate_mosaic(ctrl, guard, dataset_path, output_path,
     calibration_ref is a tagged reference selecting exactly one explicit source:
     an artifact path, an immutable knowledge-base version key, a confirmed-current
     objective/binning entry, or a derived legacy transform. If omitted, use an
-    identity recorded with the acquisition when available. Never silently apply
+    calibration identity recorded with the acquisition when available and valid.
+    Today this may be MM's per-image PixelSizeAffine, parsed as semicolon-delimited
+    MMCore row-major [m00,m01,m02,m10,m11,m12]. Never silently apply
     the microscope's current cached calibration to a historical dataset.
 
     Write a 16-bit TIFF plus a JSON result manifest containing the exact resolved
@@ -204,6 +293,8 @@ channel, time, Z, or another axis cannot silently composite all values into one
 canvas. A later batch convenience may produce one explicitly named mosaic per
 Cartesian selection, but the single-output tool fixes one *real dataset coordinate
 value* per axis and rejects missing, unknown, or ambiguous selections.
+Run A makes this concrete: position coordinates are strings, not integers, and
+the sparse revisit has a Z axis absent from the grid datasets.
 
 **Shared-traversal prerequisite.** design/28 Finding 3 is merged, but its fix is
 an inline real-coordinate + `has_image` loop in `export_dataset_as_tiff`. Extract
@@ -257,8 +348,8 @@ axis-selection rules, calibration-bearing mosaic primitive, and counting fixture
 
 ### 4. Metadata-XY dependency and fallback
 
-Placement needs `XPosition_um_Intended` / `YPosition_um_Intended`. These are
-present in Microclaw's multi-position acquisitions and absent from a
+Placement needs `XPosition_um_Intended` / `YPosition_um_Intended`. Their presence
+is confirmed on every image in the real Run A datasets. They are absent from a
 single-position acquisition, which does not need a mosaic. Guard the dependency
 explicitly and fail loud rather than placing every tile at the origin:
 
@@ -271,6 +362,11 @@ if "XPosition_um_Intended" not in md or "YPosition_um_Intended" not in md:
 Reconstructing XY from `row`/`column` axes plus `step_um` is possible only as a
 separate, explicitly requested mode. It reintroduces the row/column↔stage-axis
 ambiguity that cost four re-scans and cannot represent Pallavi's spiral at all.
+
+Run A records no achieved/actual stage XY, only the intended values. Placement
+therefore consumes intended XY, but intended need not equal achieved after a
+direction reversal on a stage with backlash or settling error. A coordinate
+mosaic must state that limitation; it cannot correct an unrecorded residual.
 
 ### 5. Calibration identity is versioned and resolved into every result
 
@@ -295,21 +391,38 @@ prevents a later recalibration from changing what an old identity resolves to.
 
 The precedence resolver in §2 owns the policy, in this order:
 
-1. a calibration identity recorded with the acquisition, if one is ever added;
+1. a calibration identity recorded with the acquisition, **if one is ever added**;
 2. an explicitly supplied calibration artifact or immutable knowledge-version key;
 3. an explicitly confirmed current `objective`/`binning` entry from the
    knowledge base.
 
-It must never *silently* apply the microscope's current cached calibration to a
-historical dataset — confirmation is required. Resolving the current alias pins
-its immutable version before rasterization; the result never records only the
-mutable alias. ROI/camera/timestamp are not required fields today.
+MM's current acquisition record is per-image `PixelSizeAffine`, a semicolon-
+delimited MMCore row-major `[m00,m01,m02,m10,m11,m12]`. Parse exactly six finite
+floats into `[[m00,m01],[m10,m11]]`, ignore translation for relative placement,
+and require a nonsingular determinant. Fall through on `Undefined`, all zeros,
+or identity. This MM-sourced branch is retained because it is correct and cheap,
+but on the available systems it normally falls through to microclaw's measured
+`solve_affine` knowledge-base calibration. It is not a supported
+acquisition-recorded identity. Identity is especially dangerous: finite and
+nonsingular, the active demo config demonstrates that it can silently make a
+plausible unrotated 1 µm/px mosaic from a default.
 
-If calibration drift turns out to matter — a dataset placed with a stale affine,
-or an ROI change that the objective/binning key cannot distinguish — add
-ROI/camera/timestamp to the stored entry and promote branch 1 to a required
-per-run record. Until then, the immutable knowledge-base version and exact affine
-payload carry the identity. `calibration_provenance` is intentionally **not** a
+Never infer "uncalibrated" solely from `get_pixel_size_um() == 0` or an empty
+current config. Enumerate all configs and surface calibrated-but-nonmatching
+configs and rule mismatches. Selection rules are arbitrary device/property
+predicates and need not describe the optical path, so a config name cannot be a
+calibration identity both because it is mutable and because activation may be
+unrelated to optics. Never silently apply current calibration to a historical
+dataset. Resolving the current alias pins its immutable version before
+rasterization; the result never records only the mutable alias.
+
+Camera identity is required: objective/binning alone would map historical Andor
+data to M5's current Hamamatsu detector. Identity must carry camera device/model,
+objective, binning, ROI geometry, exact affine payload, and hash. A constant
+off-centre ROI adds only a global translation and is harmless for relative
+placement; a mid-dataset ROI change changes frame geometry and must be rejected
+or handled per frame. Timestamp remains provenance rather than a lookup key.
+`calibration_provenance` is intentionally **not** a
 field on `MosaicGeometry`; if a richer typed calibration artifact later replaces
 the raw `StageCameraAffine`, it enters through the §2 resolver, not the geometry
 object.
