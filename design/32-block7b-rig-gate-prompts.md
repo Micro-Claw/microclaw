@@ -448,38 +448,19 @@ property from the caller. These steps confirm that rather than assuming it.
 
 Run on the stock `MMConfig_demo.cfg` with the ZMQ bridge on port 4827.
 
-### D0. Prove the bridge answers before running anything else
-
-The 2026-07-28 attempt lost both steps to setup rather than to code: the probe timed
-out with *"Couldn't create Core. Is Micro-Manager running and is the ZMQ server on
-4827 option enabled?"*, and `pytest` produced **95 setup errors** because `MM_RUNNING`
-was set while nothing was listening. Check first, in ten seconds:
-
-```powershell
-uv run python -c "from pycromanager import Core; c = Core(port=4827); print('bridge OK:', c.get_version_info())"
-```
-
-**If that fails, stop.** Open Micro-Manager, load `MMConfig_demo.cfg`, and enable
-Tools → Options → "Run server on port 4827". Nothing below can work until this line
-prints.
-
-Note on the suite: `tests/test_integration.py` skips when `MM_RUNNING` is unset and
-**errors, once per test, when it is set but the bridge is unreachable** — 95 errors
-rather than one clear failure. Either leave `MM_RUNNING` unset for the plain suite, or
-run it only after D0 passes. That noisy failure mode is a test-harness wart, not a
-Block 7b defect; do not spend gate time on it.
-
 ### D1. The probe behaves on a config with no lasers
 
 ```powershell
 uv run python design\32-block7b-device-property-probe.py --port $Port --config design\33-block5-demo-safety-config.yaml --out "$Evidence\demo-properties.json" > "$Evidence\demo-properties.txt" 2>&1
 ```
 
-**Expected observable:** it completes, enumerates the demo devices, and reports
-candidate power properties honestly — including "none matched" if the demo config has
-no continuous level control. The channel-pairing and gating-context features are
-iChrome-shaped heuristics and must degrade to nothing here rather than inventing
-structure.
+**Result 2026-07-28: PASS.** Fourteen devices enumerated, and **`none matched`** for
+power candidates — the correct answer, confirmed by inspection: the demo config's
+`LED` is a `StateDevice` whose positions are `385nm`/`470nm`/`550nm`/`635nm`/`Closed`,
+a discrete wavelength selector rather than a continuous level, and no other device
+carries an analog power property. No enable candidates, no channel structure invented,
+no proposal emitted, and nothing from `Camera`'s 51 properties leaked through. The
+iChrome-shaped heuristics degraded to nothing, which is what this step exists to check.
 
 **Stop condition:** a crash, or a proposal that would declare a demo state device or
 camera property as illumination power.
@@ -1008,9 +989,8 @@ another M5 session in case the envelope turns out to be M5-shaped.
 
 | Step | What it settles | Verdict |
 |---|---|---|
-| D0 | demo bridge answers on 4827 | **blocked 2026-07-28** |
-| D1 | probe degrades cleanly on a laser-free stock config | **not run** — bridge down |
-| D2 | stand-in declaration, demo map complete | **not run** — config copy missing |
+| D1 | probe degrades cleanly on a laser-free stock config | **PASS 2026-07-28** |
+| D2 | stand-in declaration, demo map complete | **blocked** — config copy not yet made |
 | D3 | full envelope sequence on a stock config | |
 | R1 legacy | four legacy hooks refused, no motion/exposure | **PASS 2026-07-28** |
 | R1 migrated | migrated hooks run | **PASS 2026-07-28** (all four) |
