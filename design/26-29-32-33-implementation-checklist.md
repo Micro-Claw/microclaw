@@ -42,7 +42,7 @@ Progress markers: `[ ]` not started, `[-]` active, `[x]` complete, `[!]` blocked
 | 5 | `design33/dose-authorization` | `ec98330` (main, 894/98/3) | `ff41de7` + `a28e5bd` (review fixes); 910/98/3 (mac) | B0/B1/B5 PASS on M5; B2/B3 PASS off-rig; B4/B4b/B5 PASS on a demo core via the live pyjavaz bridge. Gate found 3 defects, all in the gate not the code; 2 implementation defects were fixed in coordinator review before hardware. | `3438b90` | Gate done: design/33 Phase-3 landed semantics, evidence boundaries, and follow-ups; design/32 planner/ledger discharge + M5 live-geometry measurement |
 | 6 | `design32/remote-auth` | `d70874d` (main, 910/98/3) | `eb9ab16` + `c81aa16` (review fixes R1–R4) + `f68af87` (coordinator); 937/98/3 (mac) | n/a — network/security tests are this block's gate; no hardware path touched | `056a4ef` | Gate done: §3 heading restored (it was missing), Block 6 landed contract + five stated limitations, interim "unauthenticated remote warning" path removed from the ordering section |
 | 7 | `design32/generated-hook-decisions` | `cc2df05` (main, 937/98/3) | `7a9a602`…`af8f51b`; 967/99/3 (mac), 1044/21/3 (demo core) | demo D1–D5 PASS + M5 R1 PASS 2026-07-28: capability stripping live, 3-of-5 typed stop, four attributable refusals, Run A 12/12/12 with revisit 0.01 px. Gate caught 4 defects, 3 invisible off-rig. | `2b8d752` | Gate done: design/32 §4 Block-7 landed note; design/26 5 reconciliations incl. the unresolved `analyze_frame` collision blocking Block 10 |
-| 7b | `design32/hook-illumination-and-artifacts` | `ff690e8` (main, 967/99/3) | `f300fff`…`35f6dc4`; 1014/99/3 (mac), 989/115/3 (M5 under uv), 1089/21/3 (demo core, integration live) | M5 2026-07-28: R1–R8 + P0–P2 + R5pre PASS; D2/D3 skipped by ruling. **Gate caught 4 defects, 2 invisible off-rig** | `e688606` | pending |
+| 7b | `design32/hook-illumination-and-artifacts` | `ff690e8` (main, 967/99/3) | `f300fff`…`35f6dc4`; 1014/99/3 (mac), 989/115/3 (M5 under uv), 1089/21/3 (demo core, integration live) | M5 2026-07-28: R1–R8 + P0–P2 + R5pre PASS; D2/D3 skipped by ruling. **Gate caught 4 defects, 2 invisible off-rig** | `e688606` | Gate done: design/32 §4 vocabulary corrected + Block-7b landed note; design/33 illumination-contract changes, failed-write-may-have-landed rule, and M5 405 findings (docs merge `d189722`) |
 | 8 | `design29/saved-dataset-foundation` | | | probe required | | |
 | 9 | `design29/stage-coordinate-mosaic` | | | required | | |
 | 10 | `design26/completed-dataset-runner` | | | saved-data fixture | | |
@@ -586,10 +586,17 @@ Rig gate:
 
 Post-merge design gate:
 
-- [ ] Update design/32 §4's action vocabulary: it currently lists six variants as the
-      minimum and does not mention illumination or artifacts. Update design/33 if the
-      illumination gate's contract changed. Record which of the hooks were
-      restored, which became built-ins, and which remain unsupported.
+- [x] Update design/32 §4's action vocabulary; update design/33 if the illumination
+      gate's contract changed. — docs merge `d189722`. design/32 §4 now says *why*
+      the six-variant minimum was wrong (derived from the runner's needs, not from what
+      the rig's hooks did) and carries a "Landed: Block 7b" note with the nine-variant
+      union, the envelope contract, the four gate-found defects, and three limitations.
+      design/33 gets what binds the *gate* rather than one block: `previous_percent`,
+      why hooks can modulate but never enable, the ratchet's inertness from zero, the
+      measured units caveat (M5's cap could never refuse a write), M5's 405 path, and
+      that **a failed write may have landed** — which constrains any future typed
+      actuator ratcheting against a remembered value. All four hooks were restored;
+      none became built-ins; none remain unsupported.
 
 **Scheduling.** M5's three hooks stay refused from the moment Block 7 merges until
 this block lands. Run it before Block 8 if the lab needs them; deferring is a
