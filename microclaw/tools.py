@@ -2399,12 +2399,11 @@ def _resolve_hook(
     # Do not let caller-supplied hook_params smuggle capabilities across the
     # provenance boundary either. The trusted adapter, not generated code,
     # owns the audit path.
-    for forbidden in (
-        "ctrl", "guard", "credentials", "candidates", "progress",
-        "survey_events", "event_queue", "log_path", "illumination_envelope",
-        "illumination_device", "illumination_property", "device", "property",
-        "path", "out_path", "output_path", "save_dir", "artifact_dir",
-    ):
+    # One definition, shared with describe_hook. A second copy would drift the
+    # moment this list grows, and describe_hook would then report a parameter as
+    # accepted while this line silently drops it — worse than not reporting at all.
+    from microclaw.hook_manager import FORBIDDEN_SAVED_HOOK_PARAMS
+    for forbidden in FORBIDDEN_SAVED_HOOK_PARAMS:
         params.pop(forbidden, None)
     return UntrustedHookAdapter(hook_cls(**params), log_path=log_path)
 
@@ -3517,6 +3516,66 @@ def list_hooks(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     return {
         "precoded": list(PRECODED_HOOK_REGISTRY.keys()),
         "saved": list_saved_hooks(),
+        "hint": "Call describe_hook(name) to see constructor parameters and resolve-time compatibility.",
+    }
+
+
+def describe_hook(
+    ctrl: MicroscopeController, guard: SafetyGuard, name: str
+) -> dict:
+    """Describe a hook without running saved source.
+
+    Saved hooks are read and parsed as AST only. Unlike execution, description
+    remains available for hash-mismatched and legacy unpinned files so an
+    operator can inspect what changed; the returned provenance flags that state
+    rather than importing or executing the source.
+    """
+    from microclaw.hooks import PRECODED_HOOK_REGISTRY
+    from microclaw.hook_manager import describe_saved_hook, list_saved_hooks
+
+    if name in PRECODED_HOOK_REGISTRY:
+        hook_cls = PRECODED_HOOK_REGISTRY[name]
+        signature = inspect.signature(hook_cls)
+        parameters = []
+        for parameter in signature.parameters.values():
+            required = (
+                parameter.default is inspect.Parameter.empty
+                and parameter.kind not in (
+                    inspect.Parameter.VAR_POSITIONAL,
+                    inspect.Parameter.VAR_KEYWORD,
+                )
+            )
+            item = {"name": parameter.name, "required": required}
+            if parameter.default is not inspect.Parameter.empty:
+                item["default"] = repr(parameter.default)
+            parameters.append(item)
+        parameter_names = {item["name"] for item in parameters}
+        callback = (
+            "analyze_frame" if hasattr(hook_cls, "analyze_frame")
+            else "image_process_fn" if hasattr(hook_cls, "image_process_fn")
+            else None
+        )
+        own_doc = hook_cls.__dict__.get("__doc__")
+        return {
+            "name": name,
+            "kind": "precoded",
+            "class_name": hook_cls.__name__,
+            "class_docstring": inspect.cleandoc(own_doc) if own_doc else None,
+            "constructor_parameters": parameters,
+            "callback": callback,
+            "resolve_refusal": {"would_refuse": False, "reasons": []},
+            "parameter_handling": {
+                "stripped": [],
+                "injected": [
+                    parameter for parameter in ("ctrl", "guard")
+                    if parameter in parameter_names
+                ],
+            },
+        }
+    if name in list_saved_hooks():
+        return describe_saved_hook(name)
+    return {
+        "error": f"Unknown hook strategy '{name}'. Run list_hooks() to see available strategies."
     }
 
 
@@ -4199,6 +4258,7 @@ TOOL_REGISTRY = {
     "generate_and_save_hook": generate_and_save_hook,
     "read_hook_from_file": read_hook_from_file,
     "list_hooks": list_hooks,
+    "describe_hook": describe_hook,
     "list_mm_plugins": list_mm_plugins,
     "get_hook_documentation": get_hook_documentation,
     "get_smlm_documentation": get_smlm_documentation,
