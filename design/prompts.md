@@ -2751,3 +2751,176 @@ coordinator sessions for Blocks 0-5 with their rig gates, measured rejections,
 and merges. Long pasted agent reports and rig outputs are recorded as
 parenthetical gists rather than verbatim; `exit` messages and environment
 boilerplate were omitted.]
+
+----
+
+Continue the checklist in design/26-29-32-33-implementation-checklist.md at block
+7. You are the coordinator. You will decide what to do next what blocks to hand
+off to other agents to complete. Please hand me the prompt and I will pass it to
+an agent. Then I will tell you when the agent is done. You will check it and
+decide what to do next. Let's try to test as much of this block as we can using a
+system running the Micro-Manager demo configuration, and the rest we can use the
+real M5 microscope to test.
+
+[read the leak surface before writing the prompt rather than describing it
+abstractly: `_resolve_hook` injected ctrl/guard into any hook whose `__init__`
+named them, including saved ones; `_acquire_survey_with_detector` handed the hook
+the live `candidates` queue and made guarding its own job; `image_process_fn` got
+pycro-manager's queue. Prompt fixed nine coordinator decisions so the implementer
+would not relitigate them -- trust by provenance not the manifest `source` field,
+`analyze_frame` as the new contract, no interactive confirmation from a callback
+thread (pyjavaz holds one lock), and no worker/deadline/memory claims.]
+
+agent returned: (pasted report: hook_decisions.py with the six-action union,
+provenance split in tools.py, 17 new tests, 954/98/3)
+
+[architecture accepted, two blockers found by probing rather than by reading. A
+legacy saved hook's log vanished entirely -- `log_path` stripped, parent recorded
+nothing, yet the result still returned a `log_path` and told the agent to read it.
+And the new adapter hand-rolled a worse `HookBase.where`, dropping x_um/y_um: a
+straight regression of the design/23 F2 fix. Also flagged the list-vs-tuple
+brittleness and the missing end-to-end wiring test, and decided Q1 -- the design/26
+observation envelope had to stay reachable or Block 10 would have nothing to
+share.]
+
+agent is done with the fixes: (pasted report: 961/98/3, shared
+analysis_observation_record writer, status defaults unverified)
+
+[all six verified independently, not read from the summary. Then found a defect
+the implementer missed while writing D3: `tools_schema.py` still told the agent an
+adaptive hook must `candidates.put()` and call `progress.done_early()` -- never
+set on an untrusted adapter -- so the tool schema contradicted the rewritten
+hook_docs. Fixed with the stale docstring, plus an up-front refusal for a legacy
+saved hook under the adaptive runner, which could otherwise only idle out
+max_idle_s and log "stalled" at a structural impossibility.]
+
+Can you give me a prompt for D2?
+
+Did you commit and push this? Please also create this (and commit and push) for D3
+
+Yes, do D4 and D5 too
+
+[answered plainly that D2 had only been in chat. Wrote D2-D5 as concrete session
+prompts and verified every shipped hook off-rig first -- lint clean, contract
+clean, D2a raising the real DeniedEventQueue message, D3 acquiring exactly 3 of 5
+with two ContinueSurvey and one StopSurvey. D4's case 3 turned out to be
+*inexecutable* as specified: the runner check_xy's every position before building
+an event, so a narrowed profile refuses the whole survey and the in-dispatch guard
+check cannot be reached with a static config. Rewrote it as the up-front refusal
+and recorded the in-dispatch check as unit-tested, not live-verified. Also
+corrected a nonexistent `get_hardware_state` to `get_exposure`.]
+
+Ok the output of D1-D5 from the micro-manager demo machine is stored in the
+microclaw_block7 subfolder of this folder
+
+[D2a/D2b/D3/D4(1,2,4)/D5 PASS; D1 FAIL; D4 case 3 never run (the copied profile
+differed from the reviewed one only in line endings). The D1 failure was real and
+Block 7's: a legacy hook that writes its own log ran, exposed every frame, and
+recorded nothing -- invisible off-rig because the test needs `headless_mm`. Three
+of the gate's friction points were my own doc errors (no `exposure_ms` parameter,
+literal `<workspace>` placeholders, and demanding stage coordinates from a
+single-position timelapse that stamps none). Two pre-existing findings recorded:
+the manifest sha256 pins LF-normalized text so `certutil` can never reproduce it
+on Windows (verified: sha256(LF) and sha256(CRLF) match the two numbers exactly),
+and `save_position_list` wrote 8 entries for a k=3 selection.]
+
+(AskUserQuestion: legacy hooks -> "Refuse before the run")
+
+[refuse at resolve time naming `analyze_frame` as the migration; a hook making no
+logging claim still runs. Pinned off-rig as well as in the integration test.
+Separately fixed "N frame(s) acquired of M planned tile(s)", which put frames on
+one side of "of" and tiles on the other -- D4 case 1 acquired two frames at p0,
+never visited p1, and the reading agent reported "both planned tiles were
+acquired".]
+
+I don't understand how to run D4 case 3. Can you provide step by step
+instructions?
+
+I have placed the d4c3 files in the microclaw_block7 folder
+
+[wrote it out concretely -- x_max 10000 -> 10 against the existing p0/p1 pair, an
+authorization-map check first so a later refusal could not be mistaken for a
+startup artifact, and the exact guard message to expect. PASS on every criterion:
+the map still complete, `X=20.0 um exceeds the maximum allowed (10.0 um)`, no
+dataset, no log, stage unmoved, and the refusal arriving before the hook was
+consulted at all.]
+
+The output is in this folder as d1-rerun-pytest.txt
+
+[1044 passed / 21 skipped, no failures, against 1 failed / 1037 passed before.
+Skips held at 21, so the added hardware test ran rather than being silently
+skipped -- the only possible evidence, since neither test can run off-rig.]
+
+For R1, I've placed 20260720_162413_microclaw_history_run_a.json back in the root
+of this repository. You can do the sha256 on this before I use the same set of
+prompts on M5
+
+[hashed 1a0730a9..., then read it, which changed R1 substantially. The baseline
+was 3x4 at 20 um with k=2, not 3x3 at 50 um with k=3, and there were two surveys
+-- the first acquired with the laser off (every tile SNR ~3.0). More important,
+`rank_hook_log`, `validate_positions` and `compare_revisit_frames` all postdate
+2026-07-20: the ranking was done in prose and the assistant recorded that no tool
+could read the guard limits. So no baseline artifact exists for three of the four
+comparisons R1 assumed, and claiming otherwise would have invented one. Settled
+the ranking comparison off-rig instead by replaying today's `rank_hook_log` over
+the history's inline records -- it reproduces the historical top-2 exactly.]
+
+(AskUserQuestion: 18 MB of gate evidence committed by my own `git add -A` ->
+"Purge and force-push")
+
+[my mistake, flagged before being asked. Untracked and gitignored first, then
+filter-branch over the branch with --prune-empty, which also dropped a commit that
+contained nothing but evidence and carried a message describing a doc change it
+did not have. Verified zero evidence objects, code and docs byte-identical to a
+backup ref, then force-pushed with --force-with-lease.]
+
+I ran R1 on M5. All of the output is in the microclaw_block7 folder in the root of
+this repository. Do not commit this folder or anything in it to the git repo
+
+[R1 PASS: 12/12/12 with coordinates and uncalibrated provenance, SNR spread
+13.59-17.51 (all distinct, so ordering was genuinely exercised for the first time
+-- the demo core's synthetic tiles all scored identically), exactly k=2 revisited,
+and revisit translation of 0.01 px and 0.00 px with registration valid. The gate
+surfaced a fourth defect: `rank_hook_log` reported the correct k=2 save as a
+coordinate mismatch because it required the saved position and the ranked record
+to carry identical axes, while Run A legitimately adds a focus Z the survey log
+never had. A false alarm on the one check between a ranking and what gets
+re-exposed. Fixed asymmetrically and verified against M5's own .pos. Also caught
+that the hook-source copy had failed -- only manifest.json landed.]
+
+I've added the hooks to microclaw_block7/m5-hooks-pre-block7. We still do want to
+be able to control the UV activation with hooks, as you had pointed out before.
+Just because that hook is gone from this machine doesn't mean it's not something
+we want to do
+
+[right, and I had wrongly demoted it to "speculative" on the evidence of a changed
+registry. Rewrote Block 7b with illumination first: a 405 nm ramp against measured
+blink density is per-frame closed-loop, so `require_confirm_on_enable` cannot be
+satisfied by prompting and the pre-authorized envelope is load-bearing rather than
+a convenience. Reading the retained source also exposed a third gap --
+`filament_position_filter` returns None to discard a field and `analyze_frame`
+cannot express that, since the adapter always returns (image, metadata). Fixture
+table now read from source: all four subclass HookBase and take log_path, none
+takes ctrl or guard, none touches event_queue, and the stitchers write via
+tifffile to an unconfined out_path.]
+
+Merge it and do the post-merge design gate
+
+[merged 2b8d752, gate 3f508e0 merged f9c6224. design/26 needed five corrections,
+not the one or two expected: it opened by defining the integration as a reviewed
+`HookBase` adapter, which Block 7 now refuses; its `image_saved_fn` claim was
+stale since Block 4; its required shared observation writer now exists. The fifth
+is unresolved and left that way deliberately -- design/26 specifies
+`analyze_frame(image, metadata, context)` as the OFFLINE contract on the premise
+that live work stays in `image_process_fn`, and Block 7 took the same verb for
+live with different arity and return type. `load_hook_class` returns the first
+class exposing either. Must be settled before Block 10 branches.]
+
+Am I all set to close this session and start block 7b or block8 on a new session?
+Can you delete the dangling branches from this session on this machine and on the
+remote?
+
+[deleted both after verifying each was fully merged into main; left
+port-to-jpype-acqj and the two florian/* branches alone. Updated the memory Block
+7 had just falsified -- it still claimed saved hooks must define
+`image_process_fn`.]
