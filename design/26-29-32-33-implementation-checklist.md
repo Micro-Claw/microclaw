@@ -44,7 +44,7 @@ Progress markers: `[ ]` not started, `[-]` active, `[x]` complete, `[!]` blocked
 | 7 | `design32/generated-hook-decisions` | `cc2df05` (main, 937/98/3) | `7a9a602`…`af8f51b`; 967/99/3 (mac), 1044/21/3 (demo core) | demo D1–D5 PASS + M5 R1 PASS 2026-07-28: capability stripping live, 3-of-5 typed stop, four attributable refusals, Run A 12/12/12 with revisit 0.01 px. Gate caught 4 defects, 3 invisible off-rig. | `2b8d752` | Gate done: design/32 §4 Block-7 landed note; design/26 5 reconciliations incl. the unresolved `analyze_frame` collision blocking Block 10 |
 | 7b | `design32/hook-illumination-and-artifacts` | `ff690e8` (main, 967/99/3) | `f300fff`…`35f6dc4`; 1014/99/3 (mac), 989/115/3 (M5 under uv), 1089/21/3 (demo core, integration live) | M5 2026-07-28: R1–R8 + P0–P2 + R5pre PASS; D2/D3 skipped by ruling. **Gate caught 4 defects, 2 invisible off-rig** | `e688606` | Gate done: design/32 §4 vocabulary corrected + Block-7b landed note; design/33 illumination-contract changes, failed-write-may-have-landed rule, and M5 405 findings (docs merge `d189722`) |
 | 8 | `design29/saved-dataset-foundation` | `c3af2b1` | `b1e347c` + `333144e` (7 review defects); 1052/99/3 | **pre-branch gate: `design29/probe-findings` (`cf0c00c`)** — probe was defective and its affine verdicts void; repaired, MMCore row-major pinned by `javap`. Live M5/demo/M2: **no measured affine anywhere**; identity is MM's default (same hash on two unrelated systems). Saved data gives the X column only (~90°, ~0.13 µm/px). No rig action for the implementation itself. | `e45a129` | Gate done: §5 precedence corrected (explicit ref beats the acquisition record, reconciling §2), measured per-image metadata contract recorded, Y column still open and owned by Block 9 |
-| 9 | `design29/stage-coordinate-mosaic` | `fecb93b` | | required — 3 prerequisites gate the merge (coordinator ruling), not the branch | | |
+| 9 | `design29/stage-coordinate-mosaic` | `fecb93b` | `441cbd4` + `89efd3e` (3 blockers + 2) + `473ff0a` (coordinator); 1085/99/3 | **PENDING — construction complete, all 3 prerequisites still unstarted and still gate the merge.** Review caught a mosaic that rendered solid tiles as stripes | | |
 | 10 | `design26/completed-dataset-runner` | | | saved-data fixture | | |
 | 11 | `design26/generated-adapter-run-b` | | | required | | |
 | 12 | `design26/few-shot-run-c` (optional) | | | required | | |
@@ -773,21 +773,40 @@ Implementation:
 
 - [x] Create the branch from updated `main`. — `design29/stage-coordinate-mosaic`
       from `fecb93b`, under the merge-gate ruling above.
-- [ ] Add `MosaicGeometry` using the existing `StageCameraAffine`; validate finite
+- [x] Add `MosaicGeometry` using the existing `StageCameraAffine`; validate finite
       coefficients, nonsingular determinant, and positive output sampling in direct
-      construction.
-- [ ] Implement centre-based `(row, col)`/`(y, x)` to `(dx, dy)` placement, transformed
+      construction. — frozen dataclass, `__post_init__` numeric invariants only;
+      provenance/precedence stay in the resolver as design/29 §1 requires.
+- [x] Implement centre-based `(row, col)`/`(y, x)` to `(dx, dy)` placement, transformed
       bounds, documented interpolation/rounding, `+X` right/`+Y` down output, coverage
       mask, overlap statistics, and deterministic later-tile overwrite.
-- [ ] Add `build_stage_coordinate_mosaic` for one explicit real value on every
+      — **inverse** nearest-neighbour sampling, vectorized per tile. The first
+      implementation forward-mapped source pixels and the review measured a solid
+      tile rendering as alternating stripes (15 of 31 output columns zero under a
+      2×/0.5× affine; ~50% loss under 21° rotation and shear), with those holes
+      also reported as uncovered. Placement calls `StageCameraAffine.px_to_um`;
+      only the inverse 2×2 is formed here.
+- [x] Add `build_stage_coordinate_mosaic` for one explicit real value on every
       non-position axis, intended-XY metadata, tagged calibration resolution, 16-bit TIFF,
       and a hash-bearing JSON manifest with exact resolved affine payload.
-- [ ] Fail without intended XY. Keep row/column reconstruction a separate explicit legacy
+      — off the acquisition ledger (pinned by a test), atomic temp+`os.replace`
+      writes, and per-instrument identity **enforced**: a calibration whose
+      camera device/model, ROI, or binning contradicts the dataset's own
+      per-image metadata is refused with both sides named. Verified live against
+      `run_a_2`, which refused a wrong camera model and reported M2's real
+      `| iXon Ultra | DU897_BV | 8172 |`.
+- [x] Fail without intended XY. Keep row/column reconstruction a separate explicit legacy
       mode, if implemented at all. Do not call this registration, stitching, blending, or
-      biological deduplication.
-- [ ] Test arbitrary rotations, reflections, shear/anisotropy, even/odd and non-square
+      biological deduplication. — row/column reconstruction deliberately NOT built;
+      failure is before any artifact is written.
+- [x] Test arbitrary rotations, reflections, shear/anisotropy, even/odd and non-square
       frames, overlap/gaps, spiral placement, plane isolation, invalid geometry, and
-      manifest-only replay.
+      manifest-only replay. — the first version parametrized all seven affine
+      families and asserted nothing about pixel *locations* (its
+      `source_sample_count == image.size` check was a tautology of the loop
+      body), which is why the stripe defect was invisible; replaced with exact
+      array equality against an independently written scalar reference, plus a
+      no-interior-holes assertion per covered row and column.
 - [ ] Run on the saved grid and spiral rig datasets with zero exposures. Compare placement
       with known landmarks and record seam behavior.
 - [ ] Run the 2500-tile fixture, measure peak RSS and output correctness, and implement
