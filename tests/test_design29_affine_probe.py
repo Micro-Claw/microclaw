@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import math
 from pathlib import Path
+from unittest.mock import Mock
 
 
 def _probe():
@@ -38,3 +39,14 @@ def test_zero_scale_does_not_manufacture_nan():
     probe = _probe()
     decoded = probe._decode_mmcore_affine([1, 0, 0, 0, 0, 0])
     assert decoded["normalized_axis_dot"] is None
+
+
+def test_per_config_scalar_uses_by_id_call(capsys):
+    probe = _probe()
+    core = Mock()
+    core.get_pixel_size_um_by_id.return_value = 0.127
+
+    probe._report_config_scalar(core, "Res0")
+
+    core.get_pixel_size_um_by_id.assert_called_once_with("Res0")
+    assert "pixel size um         : 0.127" in capsys.readouterr().out

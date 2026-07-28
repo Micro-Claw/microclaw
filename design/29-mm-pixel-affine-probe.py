@@ -271,6 +271,14 @@ def _report_config_rules(core: Any, config: str) -> None:
         print("    selection rules       : ERR bridge shape:", error, repr(data))
 
 
+def _report_config_scalar(core: Any, config: str) -> None:
+    """Print the scalar stored for one config, independent of activation."""
+    try:
+        print("    pixel size um         :", float(core.get_pixel_size_um_by_id(config)))
+    except Exception as error:
+        print("    pixel size um         : ERR", error)
+
+
 def _report_dataset_metadata(path: str) -> None:
     print("\n== saved-dataset affine/config provenance ==")
     print("dataset                  :", path)
@@ -365,12 +373,13 @@ def main() -> None:
     except Exception as error:
         print("get_pixel_size_affine    : ERR", error)
 
-    print("\n== per-config affine and matching rules ==")
+    print("\n== per-config scalar, affine, and matching rules ==")
     current_by_id = None
     for config in configs:
         marker = "  <-- current" if config == current else ""
         print(f"config {config!r}{marker}")
         _report_config_rules(core, config)
+        _report_config_scalar(core, config)
         try:
             raw = _as_floats(core.get_pixel_size_affine_by_id(config))
             _report_affine("    affine:", raw)

@@ -616,7 +616,8 @@ Pre-branch spike/read-only probe (branch `design29/probe-findings`):
 - [x] Run fixed `--dataset` on all three Run A datasets and retain output outside
       the repo. Per-image affine is all-zero and summary affine is `Undefined`.
 - [x] Retain qualified system/config/dataset findings and verdicts in design/29.
-- [x] Run the convention check on all Run A datasets. `run_a_1` is dark and
+- [ ] Complete the convention check on the Run A datasets. The check was run:
+      `run_a_1` is dark and
       rejected; the sparse revisit has no adjacent pair. `run_a_2` is PARTIAL:
       7/9 X pairs determine a ~90° row displacement at 0.1227–0.1439 µm/px,
       while Y does not cluster. Record X as a future-affine consistency check.
@@ -626,9 +627,17 @@ Pre-branch spike/read-only probe (branch `design29/probe-findings`):
       are unresolved. Saved data resolves only X; keep the implementation gate
       closed. Update design/29 with the measured result and revise this block's
       resolver assumptions before creating the implementation branch.
-- [ ] Small rig item: rerun the fixed live probe on M5, demo, and M2, retaining raw
-      and by-ID affines and every expected/live rule comparison. Dataset work is
-      doable off-rig here; no live arm was attempted.
+- [x] Run the fixed live probe on M5, demo, and M2, retaining raw and by-ID
+      affines and every expected/live rule comparison. M5 is genuinely
+      unconfigured (no configs; current all-zero). M2's `Res0` is blocked exactly
+      by `SmarActXY.Frequency` (`5` expected, `5000` live), but its own affine is
+      identity. Demo's active `Res10x` and inactive `Res20x`/`Res40x` all share
+      the same identity and hash, also shared by M2: positive evidence of MM's
+      default identity, not calibration. Across these three systems MM exposes
+      no measured affine.
+      Gate questions 1–3 are answered. The only remaining implementation-branch
+      blocker is the unresolved Y column of the 2×2 convention; X is measured as
+      ~90° stage/camera rotation at ~0.13 µm/px and remains a consistency check.
 
 Implementation:
 

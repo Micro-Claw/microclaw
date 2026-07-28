@@ -64,17 +64,33 @@ must establish equivalence for any analysis that claims it.
 ## Probe findings (2026-07-28)
 
 These findings cover three systems and one historical acquisition family; they
-are not a survey of Micro-Manager installations. M5 has no pixel-size configs
-and reads 0.0 µm/px: genuinely unconfigured. The MM demo has three sound
-objective-selected configs and reads 1.0 µm/px; its leaked raw identity affine
-proves the old INVALID verdict false, but may still be an unset/default affine.
-M2 has `Res0`, reported by its operator to contain 0.127 µm/px, while its current
-config is empty and current pixel size is zero. Its activation predicates are
-stage-motion settings, not optical-path state, so a correct calibration can be
-silently inactive. The blocking predicate remains a hypothesis until the fixed
-live probe prints expected and current values side by side.
+are not a survey of Micro-Manager installations.
 
-The original probe's affine question is **unanswered**. It decoded MMCore's
+| System | Available pixel-size configs | Current config | Current scalar | Affine verdict |
+|---|---|---|---|---|
+| M5 | none | empty | 0.0 µm/px | current all-zero sentinel; genuinely unconfigured |
+| M2 | `Res0` | empty (`Res0` does not activate) | 0.0 µm/px; `Res0` is operator-reported as 0.127 µm/px | current all-zero sentinel; `Res0` identity default |
+| MM demo | `Res10x`, `Res20x`, `Res40x` | `Res10x` (matching and active) | 1.0 µm/px | current and all three by-ID affines are the same identity default |
+
+M5's clean ROI is `(0,0,2304,2304)` and its camera is
+`HamamatsuHam_DCAM`. On M2 the exact blocking predicate is
+`'SmarActXY'.'Frequency' expected='5' live='5000'` (the other two rules
+match). More importantly, `Res0`'s own affine is identity. Correcting the rule
+would therefore expose its scalar but no orientation. The enhanced probe now
+calls `get_pixel_size_um_by_id` alongside each by-ID affine; because that call
+was added after these runs, M2's configured 0.127 µm/px remains
+operator-reported rather than machine-confirmed.
+
+The demo is positive evidence that identity means **default**, not calibration:
+its 10x, 20x, and 40x configs all contain the same identity affine and the same
+canonical SHA-256, `3c9a2409d8902b67c481f68efd9606bac9a430202c3334d3379ced14433fe893`,
+even though 20x cannot have the same µm/px as 10x. The identical hash also
+appears on unrelated M2's `Res0`. Identity is thus an empirically confirmed
+hazard, not merely a theoretical one: the demo's healthy, matching, active path
+passes a naive finite+nonsingular check and would silently yield 1 µm/px,
+unrotated, for every objective.
+
+The original probe had decoded MMCore's
 row-major `[m00,m01,m02,m10,m11,m12]` as Java `getMatrix` order, canonicalized
 before printing, manufactured NaN for zero-length axes, omitted live config-rule
 values, iterated a bridged Java Rectangle instead of reading camelCase fields,
@@ -82,7 +98,21 @@ and inspected only summary metadata. The repair prints raw values first,
 distinguishes non-finite/singular/all-zero/identity verdicts, enumerates every
 config and by-ID affine, reads Rectangle fields, and walks per-image metadata.
 `javap` confirms local `AffineUtils.doubleToAffine` reads indices
-`0,3,1,4,2,5`. Fixed live reruns on M5, demo, and M2 remain open.
+`0,3,1,4,2,5`. Fixed live runs on M5, demo, and M2 answer the three gate
+questions: none exposes a measured affine; config activation can hide a scalar
+without hiding a useful affine; and the saved datasets identify neither a
+historical transform nor calibration identity.
+
+On these three available systems, MM is not a calibration source. Microclaw's
+own `calibration.solve_affine` plus its knowledge base is the primary source.
+The MM-sourced resolver branch remains correct and cheap, but will normally fall
+through; it is not treated as a supported acquisition-recorded identity.
+
+MM appears to store the pixel-size scalar and affine separately. **UNVERIFIED
+LEAD:** Micro-Manager's “Pixel Calibrator” plugin is reportedly the tool that
+measures the full affine. Nobody has run it here and its behavior on M2's MM
+version is unconfirmed. Testing it on M2 may resolve the outstanding Y column
+without the proposed move/snap spike.
 
 The fixed dataset arm confirms Run A intended XY on every image, string position
 values, and varying axes (`position+time`, plus Z on the sparse revisit). Summary
@@ -370,8 +400,12 @@ MM's current acquisition record is per-image `PixelSizeAffine`, a semicolon-
 delimited MMCore row-major `[m00,m01,m02,m10,m11,m12]`. Parse exactly six finite
 floats into `[[m00,m01],[m10,m11]]`, ignore translation for relative placement,
 and require a nonsingular determinant. Fall through on `Undefined`, all zeros,
-or identity. Identity is especially dangerous: finite and nonsingular, it would
-silently make a plausible unrotated 1 µm/px mosaic from a default.
+or identity. This MM-sourced branch is retained because it is correct and cheap,
+but on the available systems it normally falls through to microclaw's measured
+`solve_affine` knowledge-base calibration. It is not a supported
+acquisition-recorded identity. Identity is especially dangerous: finite and
+nonsingular, the active demo config demonstrates that it can silently make a
+plausible unrotated 1 µm/px mosaic from a default.
 
 Never infer "uncalibrated" solely from `get_pixel_size_um() == 0` or an empty
 current config. Enumerate all configs and surface calibrated-but-nonmatching
