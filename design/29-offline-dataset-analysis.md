@@ -453,16 +453,49 @@ prevents a later recalibration from changing what an old identity resolves to.
 
 The precedence resolver in §2 owns the policy, in this order:
 
-1. a calibration identity recorded with the acquisition, **if one is ever added**;
-2. an explicitly supplied calibration artifact or immutable knowledge-version key;
-3. an explicitly confirmed current `objective`/`binning` entry from the
-   knowledge base.
+1. an explicitly supplied calibration artifact or immutable knowledge-version key;
+2. an explicitly confirmed current `objective`/`binning` entry from the
+   knowledge base;
+3. a calibration identity recorded with the acquisition.
+
+**Corrected 2026-07-28 (Block 8 landed).** This list previously put the
+acquisition record first, contradicting §2's "*If omitted*, use an identity
+recorded with the acquisition when available" — which makes the explicit
+reference the primary and the acquisition record the fallback. §2 is right and
+this list was wrong. An operator supplies an explicit reference *precisely when
+they know the recorded value is wrong*, so letting the recorded value silently
+win would reproduce the exact failure class this design exists to prevent. The
+shipped resolver follows the corrected order and records `source_kind` either
+way; when an explicit reference is supplied and a usable acquisition record also
+exists, the record is audited into the identity rather than discarded silently.
 
 MM's current acquisition record is per-image `PixelSizeAffine`, a semicolon-
 delimited MMCore row-major `[m00,m01,m02,m10,m11,m12]`. Parse exactly six finite
 floats into `[[m00,m01],[m10,m11]]`, ignore translation for relative placement,
 and require a nonsingular determinant. Fall through on `Undefined`, all zeros,
-or identity. This MM-sourced branch is retained because it is correct and cheap,
+or identity.
+
+**The per-image metadata contract, measured (Block 8).** Every field below was
+read from real Run A metadata, not inferred. Block 8's first implementation was
+green against invented key names and shapes and wrong against all of these, so
+the exact forms are normative:
+
+| Need | Real key | Real form |
+|---|---|---|
+| affine | `PixelSizeAffine` | `'0.0;0.0;0.0;0.0;0.0;0.0'` — semicolons |
+| ROI | `ROI` | `'36-50-453-227'` — **dash**-delimited `x-y-w-h` string |
+| binning | `Binning` | `'1'`, and `'1x1'` on M5 — both must parse |
+| camera | `Core-Camera` | `'Andor'` |
+| camera model | *(none)* | only as `<Device>-Camera`, e.g. `'\| iXon Ultra \| DU897_BV \| 8172 \|'` |
+| objective | **absent** | no `Objective`/`ObjectiveLabel`/`PixelSizeConfig` key exists |
+
+Two consequences are load-bearing. The ROI is a **dash**-delimited string, so a
+parser splitting on `[,;]` yields `None` for every real dataset — which also
+silently disables the mid-dataset ROI-change check, since an unparsed ROI reads
+as "no ROI seen" rather than "unknown". Unknown must never collapse into
+unchanged. And there is **no per-image objective**, so an identity cannot be
+completed from MM metadata alone today: the resolver must mark it unknown and
+fall through, never stringify a missing value into the payload it then hashes. This MM-sourced branch is retained because it is correct and cheap,
 but on the available systems it normally falls through to microclaw's measured
 `solve_affine` knowledge-base calibration. It is not a supported
 acquisition-recorded identity. Identity is especially dangerous: finite and
