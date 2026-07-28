@@ -659,9 +659,32 @@ schedule — and it is why the closed-loop bullet stays open.
    ruling made testable. Prove it explicitly — see R5b.
 6. No prompt of any kind after the run starts.
 
-**R5b — the wind-down.** The `uv_activation` fixture only ramps up, so save one more
-hook for this, via the same `read_hook_from_file` flow, whose `analyze_frame` returns
-`SetIlluminationPower(0.0)` on its final frame. Run it with the budget already spent.
+**R5b — the wind-down against a SPENT budget.** Use `uv_activation_wind_down`, and
+choose numbers so the ramp is *accepted* often enough to exhaust `max_writes` before
+the ceiling refuses it. The 2026-07-28 attempt used `step_percent: 10`, so every
+proposal exceeded the ceiling immediately, no budget was consumed, and the wind-down
+proved nothing. Small steps are the whole point:
+
+```
+n_frames = 7,  hook_strategy = "uv_activation_wind_down"
+hook_params = {start_percent: 1, step_percent: 1, ceiling_percent: 15,
+               wind_down_after: 5, floor_percent: 0}
+illumination_envelope = {device: "iChrome-MLE-TCP", property: "Laser 4: 3. Level %",
+                         max_power_percent: 8, max_writes: 2}
+```
+
+| Frame | Proposed | Required outcome |
+|---|---|---|
+| 1 | 2 | accepted |
+| 2 | 3 | accepted — budget now spent |
+| 3 | 4 | refused, **budget exhausted** (not ceiling: 4 ≤ 8) |
+| 4 | 5 | refused, budget exhausted |
+| 5 | 6 | refused, budget exhausted |
+| 6 | 0 | **accepted** — wind-down with the budget at zero |
+| 7 | 0 | accepted |
+
+Frame 6 is the evidence. If it is refused, the operator ruling that end-of-run policy
+belongs in the hook is unsafe as implemented, and that is a stop condition.
 
 **Expected observable:** the zero write is **accepted**, reaches the device, and does
 not decrement anything. A hook implementing its own end-of-run policy is not blocked
@@ -717,6 +740,78 @@ way — a measured cost is the deliverable, not a pass/fail.
 | D1 | probe degrades cleanly on a laser-free stock config | |
 | D2 | stand-in declaration, demo map complete | |
 | D3 | full envelope sequence on a stock config | |
+| R1 legacy | four legacy hooks refused, no motion/exposure | **PASS 2026-07-28** |
+| R1 migrated | migrated hooks run | **redo** — only 1 of 6 hooks was saved |
+| R2 | numerical fidelity | **not run** |
+| R3a | artifact written, hashed | mechanics PASS, **location wrong** → fixed `30f2450`, redo |
+| R3b | size refusal | PASS only in a fresh dir; **redo in the same dir** |
+| R4 | discard saves storage not dose | **not exercised** — see below |
+| R5 | ramp, ceiling, budget, wind-down | **PARTIAL** — see below |
+| R5c | step-factor refusal | **not run** |
+| R6 | declined envelope takes nothing | **PASS 2026-07-28** |
+| R7 case 2 | undeclared device refused at plan time | **PASS 2026-07-28** (twice) |
+
+## Results 2026-07-28 (runs on `83a48e2`, before the artifact fix)
+
+The rig config was changed before these runs: the iBeam rows were replaced by the
+405 declaration settled in P2. R5/R6 therefore ran against
+`iChrome-MLE-TCP.Laser 4: 3. Level %`, not the iBeam. **No light was emitted** —
+`Laser 4: 1. Enable` stayed 0 throughout, so the level was written to a disarmed
+laser. That is the same posture as the iBeam-with-`Laser Operation`-off plan,
+reached by a different route.
+
+### R5 — what the envelope proved live
+
+| Outcome | Count |
+|---|---|
+| accepted power writes | 20 |
+| refused: exceeds envelope ceiling | 64 |
+| refused: write budget exhausted | 12 |
+| `illumination_write_failure` (device fault) | 3 |
+
+**The device-write-failure path fired on real hardware and was not planned for.**
+Three consecutive `Serial timeout occurred. (17)` faults from the iChrome while
+writing `0.0`. Each was recorded as its own `illumination_write_failure` with the Java
+stack and `decision: "failed"`, the acquisition continued, later frames succeeded, and
+the device finished at `0.0000`. That is the coordinator-review fix S3 — a parent/bridge
+fault must not be logged as a hook failure — validating itself in the field.
+
+**But it exposes a limitation worth stating:** a wind-down write can fail, and nothing
+retries it. Here four later frames happened to recover. Had the wind-down been on the
+final frame, the laser would have been left at its ramped value with only a log record
+to say so. End-of-run policy is the hook's by operator ruling, and the hook gets no
+retry.
+
+### R5 gap — the wind-down was never tested against an exhausted budget
+
+This is the one claim the operator ruling actually rests on, and it is still
+unverified on hardware. In `uv_winddown_after5` — the only run that passed
+`wind_down_after` — `step_percent` was 10, so every ramp proposal (11, 21, 31, 41, 50)
+exceeded the 10 % ceiling and **no budget was ever consumed**. The wind-down that
+followed was accepted against a *full* budget, which proves nothing about exhaustion.
+The other wind-down runs never passed `wind_down_after` at all and simply ramped until
+they were refused.
+
+`tests/test_hook_illumination_artifacts.py::test_wind_down_fixture_survives_an_exhausted_budget`
+pins the property off-rig. R5b below closes it on-rig.
+
+### R4 — discard was not exercised, and the reason is a finding of its own
+
+Six fields, all kept, zero `DiscardFrame` actions. There was no sample on the
+microscope, and on empty frames `filament_position_filter` scored **0.12–0.13** ridge
+coverage against its `min_filament_score` default of **0.02** — six times the
+threshold — with SNR 14–20, so the hook's own SNR gate passed too.
+
+**The filter does not discriminate empty fields.** Its docstring claims meaning only
+on "focused, adequate-SNR images", and the SNR gate is what is supposed to enforce
+that; on pure camera noise it did not. This is the same family as design/25
+(focus metric on empty fields) and design/28 F2 (metric wrong-signed for puncta). It is
+a finding about the hook, not about Block 7b.
+
+R4 can be closed either way, but say which was done:
+- **with a sample**, choosing fields with and without filaments — the honest test; or
+- **plumbing-only**, raising `min_filament_score` above 0.13 so empty fields discard.
+  That exercises the DiscardFrame path end to end and establishes nothing biological.
 | P0 | map complete; iBeam power declared; no 405 **declared** | **SETTLED 2026-07-28** |
 | P1 | 405 nm `Level %` exists, 0–100, undeclared | **SETTLED 2026-07-28** |
 | P1b | `Level %` is real power; htSMLM ramps pulse duration instead | **SETTLED 2026-07-28** |
