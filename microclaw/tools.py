@@ -1293,18 +1293,23 @@ def calibrate_stage_to_camera(
 
     try:
         camera_device = str(ctrl.core.get_camera_device())
-    except Exception:
-        camera_device = None
-    try:
-        camera_model = str(ctrl.core.get_device_name(camera_device)) if camera_device else None
-    except Exception:
-        camera_model = None
-    try:
+        if not camera_device:
+            raise ValueError("camera device is empty")
+        camera_model = str(ctrl.core.get_device_name(camera_device))
+        if not camera_model:
+            raise ValueError("camera model is empty")
         roi_value = ctrl.core.get_roi()
         roi = [int(roi_value.x), int(roi_value.y),
                int(roi_value.width), int(roi_value.height)]
-    except Exception:
-        roi = None
+        if roi[2] <= 0 or roi[3] <= 0:
+            raise ValueError(f"camera ROI has invalid geometry {roi}")
+    except Exception as error:
+        return {
+            "error": (
+                "Calibration measured but not saved: complete camera device, "
+                f"model, and ROI identity could not be read ({error})."
+            )
+        }
     key = save_affine(
         affine, camera_device=camera_device, camera_model=camera_model, roi=roi,
     )
