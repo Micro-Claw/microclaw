@@ -172,6 +172,117 @@ def test_stitcher_migrations_preserve_canvas_and_parent_writes(name, class_name,
     assert len(observation["artifact_sha256"]) == 64
 
 
+def test_artifact_directory_tracks_the_acquisitions_renamed_dataset(
+    monkeypatch, tmp_path
+):
+    class Hook:
+        def analyze_frame(self, image, metadata):
+            return HookResult({}, (EmitArtifact("result.bin", b"x"),))
+
+    class RenamedAcquisition:
+        def __init__(self, **kwargs):
+            self._dataset_disk_location = str(tmp_path / "run_1")
+            self.image_process_fn = kwargs["image_process_fn"]
+
+        def __enter__(self): return self
+        def __exit__(self, *_exc): return None
+
+        def acquire(self, _events):
+            self.image_process_fn(np.zeros((1, 1)), {}, object())
+
+    adapter = UntrustedHookAdapter(Hook())
+    adapter.configure_artifacts(
+        target_dir=tmp_path / "run" / "artifacts",
+        max_artifact_bytes=10, max_count=1, max_total_bytes=10,
+    )
+    monkeypatch.setattr(tools, "Acquisition", RenamedAcquisition)
+
+    path = tools._acquire_with_hooks(_guard(), str(tmp_path), "run", [], hook=adapter)
+
+    assert path == str(tmp_path / "run_1")
+    assert (tmp_path / "run_1" / "artifacts" / "result.bin").read_bytes() == b"x"
+    assert not (tmp_path / "run" / "artifacts").exists()
+
+
+def test_successive_renamed_runs_do_not_cross_collide(monkeypatch, tmp_path):
+    class Hook:
+        def analyze_frame(self, image, metadata):
+            return HookResult({}, (EmitArtifact("same.bin", b"x"),))
+
+    class SuccessiveAcquisition:
+        next_suffix = 1
+
+        def __init__(self, **kwargs):
+            suffix = type(self).next_suffix
+            type(self).next_suffix += 1
+            self._dataset_disk_location = str(tmp_path / f"run_{suffix}")
+            self.image_process_fn = kwargs["image_process_fn"]
+
+        def __enter__(self): return self
+        def __exit__(self, *_exc): return None
+
+        def acquire(self, _events):
+            self.image_process_fn(np.zeros((1, 1)), {}, object())
+
+    monkeypatch.setattr(tools, "Acquisition", SuccessiveAcquisition)
+    for _ in range(2):
+        adapter = UntrustedHookAdapter(Hook())
+        adapter.configure_artifacts(
+            target_dir=tmp_path / "run" / "artifacts",
+            max_artifact_bytes=10, max_count=1, max_total_bytes=10,
+        )
+        tools._acquire_with_hooks(_guard(), str(tmp_path), "run", [], hook=adapter)
+        assert adapter._log[-1]["decision"] == "accepted"
+
+    assert (tmp_path / "run_1" / "artifacts" / "same.bin").exists()
+    assert (tmp_path / "run_2" / "artifacts" / "same.bin").exists()
+
+
+def test_artifact_bind_is_idempotent_and_preserves_budget_state(tmp_path):
+    adapter = UntrustedHookAdapter(object())
+    adapter.configure_artifacts(
+        target_dir=tmp_path / "predicted",
+        max_artifact_bytes=11, max_count=2, max_total_bytes=12,
+    )
+    state = adapter._artifact_context["state"]
+    state.update(count=1, total_bytes=7)
+
+    adapter.bind_artifact_directory(tmp_path / "actual")
+    adapter.bind_artifact_directory(tmp_path / "actual")
+
+    assert adapter._artifact_context == {
+        "target_dir": tmp_path / "actual", "max_artifact_bytes": 11,
+        "max_count": 2, "max_total_bytes": 12, "state": state,
+    }
+    assert state == {"count": 1, "total_bytes": 7}
+
+
+def test_artifact_bind_without_budget_is_a_noop(tmp_path):
+    adapter = UntrustedHookAdapter(object())
+    adapter.bind_artifact_directory(tmp_path / "actual")
+    assert adapter._artifact_context is None
+
+
+def test_artifact_bind_uses_dataset_path_fallback(monkeypatch, tmp_path):
+    class AcquisitionWithoutLocation:
+        def __init__(self, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *_exc): return None
+        def acquire(self, _events): pass
+
+    adapter = UntrustedHookAdapter(object())
+    adapter.configure_artifacts(
+        target_dir=tmp_path / "run" / "artifacts",
+        max_artifact_bytes=10, max_count=1, max_total_bytes=10,
+    )
+    monkeypatch.setattr(tools, "Acquisition", AcquisitionWithoutLocation)
+
+    assert tools._acquire_with_hooks(
+        _guard(), str(tmp_path), "run", [], hook=adapter
+    ) == str(tmp_path / "run")
+    assert adapter._artifact_context["target_dir"] == tmp_path / "run" / "artifacts"
+
+
 def test_wind_down_fixture_survives_an_exhausted_budget(tmp_path):
     """R5b as a unit test: the ramp spends the budget, the wind-down still lands.
 

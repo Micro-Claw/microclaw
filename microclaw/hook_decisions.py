@@ -292,6 +292,16 @@ class UntrustedHookAdapter:
             "state": {"count": 0, "total_bytes": 0},
         }
 
+    def bind_artifact_directory(self, target_dir: str | Path) -> None:
+        """Bind an authorized artifact budget to its acquisition's real path.
+
+        Acquisition naming collisions are resolved only when pycro-manager
+        constructs the acquisition.  Change only the destination here: limits
+        and already-consumed per-run state remain owned by the same context.
+        """
+        if self._artifact_context is not None:
+            self._artifact_context["target_dir"] = target_dir
+
     def _write_log(self) -> None:
         if self.log_path:
             # Only this trusted adapter receives the acquisition's audit path.

@@ -157,6 +157,8 @@ parent code confines and exclusively creates the file in the run artifact direct
 enforces per-file and per-run limits, hashes it, and records the path and sha256.
 A HookResult may propose at most one artifact per frame; this keeps the observation's
 single artifact_sha256 provenance field unambiguous.
+Hook measurements are unverified claims and may describe an action that the parent
+refused; the corresponding `hook_action` records are authoritative.
 
 DiscardFrame returns None from the parent image processor after recording the
 observation. The position is still moved to and still exposed: discard saves storage,

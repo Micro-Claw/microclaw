@@ -773,6 +773,10 @@ def _acquire_with_hooks(
 
     try:
         with Acquisition(directory=save_dir, name=name, show_display=True, **hook_fn_kwargs) as acq:
+            if hook is not None and hasattr(hook, "bind_artifact_directory"):
+                hook.bind_artifact_directory(
+                    Path(_acq_dataset_path(acq, save_dir, name)) / "artifacts"
+                )
             if callable(events):
                 events = events(acq)
             acq.acquire(events)
