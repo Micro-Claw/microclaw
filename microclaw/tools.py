@@ -6,6 +6,8 @@ import json
 import logging
 import math
 import queue
+import os
+import tempfile
 import threading
 import time
 import weakref
@@ -45,6 +47,8 @@ from microclaw.image_analysis import (
 )
 from microclaw.safety import SafetyGuard, SafetyViolation
 from microclaw.acquisition import AcquisitionLedger, AcquisitionPlan, Reservation, plan_events
+from microclaw.calibration import resolve_calibration
+from microclaw.dataset_mosaic import MosaicGeometry, assemble_stage_coordinate_mosaic
 
 logger = logging.getLogger(__name__)
 
@@ -1000,6 +1004,162 @@ def _iter_present_coords(dataset, fixed_axes: dict) -> Any:
         coords = dict(zip(axis_names, combo))
         if dataset.has_image(**coords):
             yield coords
+
+
+def _mosaic_dataset_identity(metadata_items: list[tuple[dict, dict]]) -> dict:
+    """Read the real MM per-image camera/ROI/binning keys and require consistency."""
+    identities = []
+    for coords, metadata in metadata_items:
+        camera = metadata.get("Core-Camera")
+        model = metadata.get(f"{camera}-Camera") if camera not in (None, "") else None
+        raw_roi = metadata.get("ROI")
+        try:
+            roi = [int(value) for value in str(raw_roi).split("-")]
+        except (TypeError, ValueError):
+            roi = None
+        if roi is not None and len(roi) != 4:
+            roi = None
+        raw_binning = metadata.get("Binning")
+        try:
+            binning = int(str(raw_binning).lower().split("x", 1)[0])
+        except (TypeError, ValueError):
+            binning = None
+        identities.append((camera, model, roi, binning, coords))
+    first = identities[0]
+    if any(item[:4] != first[:4] for item in identities[1:]):
+        raise ValueError("Dataset camera, ROI, or binning changes within the selected plane")
+    missing = [name for name, value in zip(
+        ("Core-Camera", f"{first[0]}-Camera", "ROI", "Binning"), first[:4]
+    ) if value is None]
+    if missing:
+        raise ValueError("Dataset calibration identity metadata is incomplete; missing " + ", ".join(missing))
+    return {"camera_device": str(first[0]), "camera_model": str(first[1]),
+            "roi": first[2], "binning": first[3]}
+
+
+def build_stage_coordinate_mosaic(
+    ctrl: MicroscopeController,
+    guard: SafetyGuard,
+    dataset_path: str,
+    output_path: str,
+    axis_selection: dict,
+    calibration_ref: dict | None = None,
+    output_pixel_size_um: float | None = None,
+) -> dict:
+    """Build one stage-coordinate mosaic from a selected saved-NDTiff plane.
+
+    This is a zero-exposure read. Later tiles overwrite earlier tiles as a
+    deterministic display convention; it is not image alignment or object
+    matching. The TIFF is uint16 and the adjacent JSON manifest contains no
+    timestamp, so identical inputs and selection produce identical pixels and
+    hashed payloads.
+    """
+    if not isinstance(axis_selection, dict):
+        raise ValueError("axis_selection must be an object")
+    dataset_path = guard.resolve_readable_path(dataset_path)
+    output_path = guard.resolve_in_workspace(output_path)
+    dataset = Dataset(dataset_path)
+    axes = set(dataset.axes)
+    non_position_axes = axes - {"position"}
+    unknown = set(axis_selection) - non_position_axes
+    missing = non_position_axes - set(axis_selection)
+    if unknown:
+        raise ValueError(f"Unknown or position axis selections: {sorted(unknown)}")
+    if missing:
+        raise ValueError(f"axis_selection must fix every non-position axis: {sorted(missing)}")
+    for axis, value in axis_selection.items():
+        if value not in dataset.axes[axis]:
+            raise ValueError(f"Dataset axis selection is not present: {axis}={value!r}")
+
+    coords = list(_iter_present_coords(dataset, axis_selection))
+    if not coords:
+        raise ValueError("No images exist in the selected dataset plane")
+    metadata_items = [(item, dataset.read_metadata(**item)) for item in coords]
+    dataset_identity = _mosaic_dataset_identity(metadata_items)
+    affine, calibration_identity = resolve_calibration(
+        dataset, calibration_ref, fixed_axes=axis_selection, ctrl=ctrl, guard=guard
+    )
+    mismatches = {
+        key: {"dataset": dataset_identity[key], "calibration": calibration_identity[key]}
+        for key in ("camera_device", "camera_model", "roi")
+        if dataset_identity[key] != calibration_identity[key]
+    }
+    if dataset_identity["binning"] != affine.binning:
+        mismatches["binning"] = {
+            "dataset": dataset_identity["binning"], "calibration": affine.binning
+        }
+    if mismatches:
+        raise ValueError(f"Calibration identity contradicts dataset metadata: {mismatches}")
+
+    class SelectedFrames:
+        """Re-read each tile per pass so source images are never retained together."""
+        def __iter__(self):
+            for item, metadata in metadata_items:
+                absent = [key for key in ("XPosition_um_Intended", "YPosition_um_Intended")
+                          if metadata.get(key) in (None, "")]
+                if absent:
+                    raise ValueError(
+                        "Selected image lacks intended stage coordinates "
+                        f"{absent} at {item}; XPosition_um_Intended and "
+                        "YPosition_um_Intended are required"
+                    )
+                yield (dataset.read_image(**item), float(metadata["XPosition_um_Intended"]),
+                       float(metadata["YPosition_um_Intended"]))
+
+    sampling = affine.pixel_size_um if output_pixel_size_um is None else output_pixel_size_um
+    assembled = assemble_stage_coordinate_mosaic(
+        SelectedFrames(), MosaicGeometry(affine, float(sampling))
+    )
+    pixels = assembled.pop("mosaic")
+    coverage = assembled.pop("coverage_mask")
+    if not np.issubdtype(pixels.dtype, np.integer):
+        raise ValueError("16-bit TIFF output requires integer source pixels")
+    pixels16 = pixels.astype(np.uint16, copy=False)
+    pixel_sha256 = hashlib.sha256(pixels16.tobytes(order="C")).hexdigest()
+    manifest_path = str(Path(output_path).with_suffix(Path(output_path).suffix + ".json"))
+    result = {
+        "kind": "stage_coordinate_mosaic",
+        "selection": {key: axis_selection[key] for key in sorted(axis_selection)},
+        "calibration_identity": calibration_identity,
+        "shape": list(pixels16.shape),
+        **assembled,
+        "coverage_fraction": float(np.count_nonzero(coverage) / coverage.size),
+        "overwrite_convention": "later source tiles overwrite earlier source tiles for display",
+        "pixel_sha256": pixel_sha256,
+        "artifact": {"kind": "tiff", "path": output_path},
+        "manifest_path": manifest_path,
+    }
+    manifest_bytes = json.dumps(
+        result, sort_keys=True, separators=(",", ":"), allow_nan=False
+    ).encode("utf-8")
+    result["manifest_payload_sha256"] = hashlib.sha256(manifest_bytes).hexdigest()
+    manifest_bytes = json.dumps(
+        result, sort_keys=True, separators=(",", ":"), allow_nan=False
+    ).encode("utf-8")
+
+    output_parent = Path(output_path).parent
+    output_parent.mkdir(parents=True, exist_ok=True)
+    temporary_paths = []
+    try:
+        with tempfile.NamedTemporaryFile(dir=output_parent, suffix=".tif", delete=False) as handle:
+            temporary_tiff = handle.name
+        temporary_paths.append(temporary_tiff)
+        tifffile.imwrite(temporary_tiff, pixels16)
+        with tempfile.NamedTemporaryFile(dir=output_parent, suffix=".json", delete=False) as handle:
+            temporary_manifest = handle.name
+            handle.write(manifest_bytes)
+        temporary_paths.append(temporary_manifest)
+        os.replace(temporary_tiff, output_path)
+        temporary_paths.remove(temporary_tiff)
+        os.replace(temporary_manifest, manifest_path)
+        temporary_paths.remove(temporary_manifest)
+    finally:
+        for path in temporary_paths:
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
+    return result
 
 
 # --- Image capture with analysis ---
@@ -4276,6 +4436,7 @@ TOOL_REGISTRY = {
     "run_zstack": run_zstack,
     "run_timelapse": run_timelapse,
     "export_dataset_as_tiff": export_dataset_as_tiff,
+    "build_stage_coordinate_mosaic": build_stage_coordinate_mosaic,
     "run_autofocus": run_autofocus,
     "mark_position": mark_position,
     "get_position_list": get_position_list,
