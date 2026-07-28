@@ -177,7 +177,9 @@ def _report_camera_state(core: Any) -> None:
         except Exception as error:
             print(f"{method:<25}: ERR", error)
     try:
-        print("ROI                      :", list(core.get_roi()))
+        rect = core.get_roi()
+        print("ROI (x, y, width, height):", (int(rect.x), int(rect.y),
+                                                int(rect.width), int(rect.height)))
     except Exception as error:
         print("ROI                      : ERR", error)
     interesting = re.compile(r"bin|transpose|mirror|flip|rotat|orientation", re.I)

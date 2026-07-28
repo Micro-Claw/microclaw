@@ -90,8 +90,9 @@ Progress markers: `[ ]` not started, `[-]` active, `[x]` complete, `[!]` blocked
       OneDrive `microclaw-json-histories/` (`..._run_a.json` + `run-a/`); hash verify
       deferred to Block 7 when it becomes the regression baseline.
 - [-] Locate representative saved NDTiff fixtures: multi-position grid, non-grid spiral,
-      non-square images if available, and the 2500-tile dataset. — DEFERRED to Block 8
-      (not a Block 1 gate); home-dir scan timed out on OneDrive lazy tree.
+      non-square images if available, and the 2500-tile dataset. — PARTIAL: Run A
+      `run_a_1` is a grid with non-square 453×227 frames. The design/30 spiral and
+      2500-tile datasets are not here; retrieve them from the rig before Block 9.
 - [-] Run the no-hardware `design/26-roi-detection-spike.py` baseline and retain output.
       Do not use its synthetic accuracy as field acceptance. — DEFERRED to Block 7/12
       (not a Block 1 gate).
@@ -606,20 +607,26 @@ legitimate choice, but the loss is live in the meantime, not theoretical.
 
 Branch: `design29/saved-dataset-foundation`
 
-Pre-branch rig/read-only probe:
+Pre-branch spike/read-only probe (branch `design29/probe-findings`):
 
-- [ ] **Stop before writing calibration code.** Run
-      `python design/29-mm-pixel-affine-probe.py` on the rig.
-- [ ] Run it again with `--dataset` for at least one representative historical NDTiff.
-- [ ] Retain the decoded affine, camera/objective/binning selection evidence, dataset
-      identity findings, stdout, environment, and verdict.
-- [ ] Run the remaining convention check against a known saved tile pair. If saved data
+- [x] **Stopped before writing calibration code.** Original M5/demo/M2 affine
+      verdicts are unusable because the decoder was defective.
+- [x] Repair all six defects and pin MMCore row-major ordering with off-rig tests;
+      `javap` confirms `AffineUtils` indices `0,3,1,4,2,5`.
+- [x] Run fixed `--dataset` on all three Run A datasets and retain output outside
+      the repo. Per-image affine is all-zero and summary affine is `Undefined`.
+- [x] Retain qualified system/config/dataset findings and verdicts in design/29.
+- [x] Run the convention check on all 17 adjacent Run A pairs. FAIL: all
+      correlations are weak and scatter is large. If saved data
       cannot disambiguate signs/order, propose a separate minimal move/snap spike and wait
-      for explicit authorization before moving or exposing.
-- [ ] Stop if the affine is missing/singular, configuration selection is ambiguous, the
+      for explicit authorization before moving or exposing. Proposal recorded only.
+- [x] Stop if the affine is missing/singular, configuration selection is ambiguous, the
       dataset does not identify the historical transform, or Java/Python row-column signs
       are unresolved. Update design/29 with the measured result and revise this block's
       resolver assumptions before creating the implementation branch.
+- [ ] Small rig item: rerun the fixed live probe on M5, demo, and M2, retaining raw
+      and by-ID affines and every expected/live rule comparison. Dataset work is
+      doable off-rig here; no live arm was attempted.
 
 Implementation:
 
@@ -628,8 +635,13 @@ Implementation:
       axis values and guard candidates with `has_image`. Refactor the exporter to use it.
 - [ ] Define canonical affine serialization/hash rules and immutable version keys; retain
       the objective/binning alias only as a mutable current pointer.
-- [ ] Implement the tagged calibration resolver and precedence policy. Never silently use
-      current microscope calibration for a historical dataset.
+- [ ] Implement the revised tagged resolver. Parse acquisition `PixelSizeAffine`
+      in MMCore row-major order and fall through on `Undefined`, all-zero,
+      identity, non-finite, or singular values. Never infer uncalibrated from
+      current pixel size/config alone: enumerate inactive calibrated configs and
+      surface rule mismatches. Never silently use current microscope calibration
+      for historical data. Identity includes camera/model, objective, binning,
+      ROI geometry, exact affine payload, and hash.
 - [ ] Validate immutable payload hashes on load and migrate/version legacy aliases before
       use.
 - [ ] Test sparse/non-zero-based coordinates, selection errors, exporter regression,
@@ -668,6 +680,8 @@ Branch: `design29/stage-coordinate-mosaic`
       with known landmarks and record seam behavior.
 - [ ] Run the 2500-tile fixture, measure peak RSS and output correctness, and implement
       chunked/memory-mapped output before merge if it exceeds the agreed budget.
+- [ ] Retrieve the design/30 spiral and 2500-tile fixtures from the rig first;
+      neither is present here. The non-square fixture is found (`run_a_1`, 453×227).
 - [ ] Stop on unexplained orientation, historical-calibration ambiguity, axis leakage,
       nondeterministic hashes/pixels, or unacceptable memory. Fix and repeat.
 - [ ] Commit, review, and merge.
