@@ -121,7 +121,19 @@ def assemble_stage_coordinate_mosaic(
         expected_shape, expected_x, expected_y = frame_descriptors[frame_index]
         if (image.shape != expected_shape or image.dtype != dtype
                 or float(centre_x) != expected_x or float(centre_y) != expected_y):
-            raise ValueError("Frame iterable changed between bounds and raster passes")
+            # Two distinct causes share this check, and the caller cannot tell
+            # them apart from here: a genuinely non-deterministic iterable, or a
+            # first pass that described the frame from cheap metadata which the
+            # decoded pixels then contradict. Name both — bounds were allocated
+            # from the first-pass description, so continuing would misplace data.
+            raise ValueError(
+                f"Frame {frame_index} does not match its first-pass description "
+                f"(expected shape {expected_shape} dtype {dtype} centre "
+                f"({expected_x}, {expected_y}); got shape {image.shape} dtype "
+                f"{image.dtype} centre ({float(centre_x)}, {float(centre_y)})). "
+                "Either the frame iterable is not deterministic, or dataset "
+                "shape/pixel-type metadata contradicts the decoded image."
+            )
         image_height, image_width = image.shape
         tile_min_x, tile_max_x, tile_min_y, tile_max_y = bounds[frame_index]
         # Include the output cells whose centres are nearest to the transformed
