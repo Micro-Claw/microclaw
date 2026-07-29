@@ -612,6 +612,77 @@ both chains break at the first step. `b9xline14` and the 14 µm lines break too,
 on vote fraction. Nothing is wrong with them; they simply cannot answer the
 question, and the tooling now says so rather than fitting noise.
 
+## What MM's calibrator actually did (2026-07-29, `javap` on the local jar)
+
+The measured/reported disagreement above is not two measurements that disagree.
+**Only one of them is a measurement.** Established by decompiling
+`MMJ_.jar` (`Micro-Manager-2.0.3-20260625`), not by inference.
+
+`PixelCalibratorDialog` offers three methods: **Automatic**, **Manual-Precise**,
+**Manual-Simple**. `ManualSimpleCalibrationThread.calculateAffineTransform` takes
+the signature `(double, Point2D[])` — a **scalar in, not measured out** — and its
+entire body reduces to:
+
+```java
+AffineTransform t = identity;
+boolean swap = |x1-x0| < |y1-y0|;
+if (swap != (|y2-y0| < |x2-x0|)) return null;   // "Could not figure out orientation"
+int sx = -1, sy = -1;                            // then set to +-1 from click signs
+t.scale(sx * pixelSize, sy * pixelSize);         // BOTH axes get the SAME scalar
+if (swap) t.rotate(-1.5707963267948966);         // exactly -pi/2, hardcoded
+return t;
+```
+
+It **never measures a scale**. It applies the pixel size you already have to both
+axes, and determines only *which of eight discrete axis-aligned orientations*
+applies, from the sign and dominance of two clicks. It is a snapping function,
+not a fit — which is why it can return `null` with "Could not figure out
+orientation" rather than a poor estimate.
+
+**The reconstruction is bit-exact, signed zero included.** Java's
+`AffineTransform.rotate` snaps exact quadrants to `rotate90/180/270`, which flip
+signs instead of multiplying by cos/sin. For `sx=+1, sy=+1`:
+
+```
+after scale()  : [[+0.127, 0.0], [0.0, +0.127]]
+after rotate270: m00,m01,m10,m11 = -m01, m00, -m11, m10
+result         : -0.0;0.127;0.0;-0.127;0.0;0.0    <-- Res1, exactly as stored
+```
+
+Every oddity design/29 recorded now has a mechanism:
+
+| observed | cause |
+|---|---|
+| exactly ±0.127 in both columns | it is the pre-existing scalar, applied twice |
+| perfect isotropy, zero shear | structurally impossible to be otherwise |
+| exactly −90.00° | the literal constant `-1.5707963267948966` |
+| determinant exactly 0.016129 | `0.127²` |
+| the leading **`-0.0`** | `rotate270`'s `m00 = -m01` on a zero |
+
+The `-0.0` footnote above can be closed: it is not a config-file serialization
+artifact, it is the calibrator's own arithmetic.
+
+**So the operator's "0.127" was never measured on this rig.** design/29 already
+noted that 0.127 was `Res0`'s scalar; Manual-Simple carried a years-old number
+forward and dressed it in a matrix. What it *did* get right is exactly what it
+determines — the orientation — and that is precisely the part our motion
+measurement confirms to within 0.3°.
+
+**Automatic is a real fit and would not produce this.** It uses BoofCV
+correlation over multiple corners (`getFirstApprox`, `measureCorner`,
+`getSecondApprox`), and MM's own results dialog prints `XScale`, `YScale`,
+`Rotation` and `Shear` **separately** — so the model supports the anisotropy we
+measured. Two cautions before reaching for it on M2: its help text says to
+"choose a nonperiodic specimen (e.g., a cell) ... crisp, high-contrast images",
+and sparse blinking puncta are the pathological case (design/28 F4, and the
+correlation failure recorded above); and repeated Automatic runs against `Res0`
+previously killed the rig in the Andor SDK wind-down.
+
+**Recommendation.** Do not re-run Manual-Simple expecting a scale. Either run
+Automatic on a dense aperiodic field, or write the motion-measured values
+directly. Prefer microclaw's own `calibration.solve_affine` as the standing
+source — this is now the concrete reason why.
+
 ## Proposed shape
 
 ### 1. A shared geometry module — `microclaw/dataset_mosaic.py`
