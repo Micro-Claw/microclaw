@@ -218,6 +218,43 @@ def test_axis_selection_xy_and_identity_fail_loud_without_output(monkeypatch, tm
     assert not (tmp_path / "out.tif").exists()
 
 
+def test_roi_difference_is_recorded_not_refused(monkeypatch, tmp_path):
+    """Measured on M2: a full-frame calibration is valid for a cropped dataset.
+
+    Placement consumes only the affine's four coefficients and ROI does not
+    enter that arithmetic, so a crop on the same camera at the same binning
+    costs a constant translation of the whole mosaic and nothing else.
+    """
+    FakeDataset.images = {("p0", 0): np.ones((3, 3), np.uint16)}
+    FakeDataset.metadata = {("p0", 0): metadata(0, 0, roi="36-50-453-227")}
+    cropped = run_tool(monkeypatch, tmp_path, {"time": 0},
+                       artifact(tmp_path / "fullframe.json", roi=(0, 0, 512, 512)))
+    assert cropped["calibration_roi_difference"]["dataset"] == [36, 50, 453, 227]
+    assert cropped["calibration_roi_difference"]["calibration"] == [0, 0, 512, 512]
+    assert (tmp_path / "out.tif").exists()
+    manifest = json.loads(Path(cropped["manifest_path"]).read_text())["manifest_payload"]
+    assert manifest["calibration_roi_difference"]["calibration"] == [0, 0, 512, 512]
+
+    # A matching ROI records nothing, so the field cannot be read as a warning
+    # that is always present.
+    FakeDataset.metadata = {("p0", 0): metadata(0, 0)}
+    assert run_tool(monkeypatch, tmp_path, {"time": 0})["calibration_roi_difference"] is None
+
+
+@pytest.mark.parametrize("kwargs,expected", [
+    ({"camera": "Hamamatsu"}, "camera_device"),
+    ({"model": "other-model"}, "camera_model"),
+])
+def test_a_different_instrument_is_still_refused(monkeypatch, tmp_path, kwargs, expected):
+    """Relaxing ROI must not weaken design/29 §5's camera-identity guarantee."""
+    FakeDataset.images = {("p0", 0): np.ones((3, 3), np.uint16)}
+    FakeDataset.metadata = {("p0", 0): metadata(0, 0)}
+    wrong = artifact(tmp_path / "wrong.json", **kwargs)
+    with pytest.raises(ValueError, match=expected):
+        run_tool(monkeypatch, tmp_path, {"time": 0}, wrong)
+    assert not (tmp_path / "out.tif").exists()
+
+
 def test_tool_is_off_acquisition_ledger():
     from microclaw.tools import build_stage_coordinate_mosaic
     assert not getattr(build_stage_coordinate_mosaic, "_microclaw_acquisition_entry_point", False)

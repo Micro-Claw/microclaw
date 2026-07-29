@@ -1079,9 +1079,14 @@ def build_stage_coordinate_mosaic(
     affine, calibration_identity = resolve_calibration(
         dataset, calibration_ref, fixed_axes=axis_selection, ctrl=ctrl, guard=guard
     )
+    # Refuse only where the difference changes the transform we apply or means
+    # this is a different microscope. Camera device/model is design/29 §5's
+    # requirement — it is what stops one instrument's affine reaching another's
+    # dataset. Binning scales the effective pixel size, so an affine measured at
+    # one binning is numerically wrong at another.
     mismatches = {
         key: {"dataset": dataset_identity[key], "calibration": calibration_identity[key]}
-        for key in ("camera_device", "camera_model", "roi")
+        for key in ("camera_device", "camera_model")
         if dataset_identity[key] != calibration_identity[key]
     }
     if dataset_identity["binning"] != affine.binning:
@@ -1090,6 +1095,25 @@ def build_stage_coordinate_mosaic(
         }
     if mismatches:
         raise ValueError(f"Calibration identity contradicts dataset metadata: {mismatches}")
+    # ROI is recorded, never gating. Placement consumes only the affine's four
+    # coefficients, and ROI does not enter that arithmetic: a crop changes
+    # neither pixel size nor rotation. An off-centre crop displaces the true
+    # optical centre from the frame centre we place at, but identically for
+    # every tile in the dataset, so it costs a constant translation of the whole
+    # mosaic and nothing in the relative geometry. Measured live on M2: an
+    # affine calibrated at full frame (0,0,512,512) is valid for Run A's
+    # 453x227 crop on the same camera.
+    roi_difference = None
+    if dataset_identity["roi"] != calibration_identity["roi"]:
+        roi_difference = {
+            "dataset": dataset_identity["roi"],
+            "calibration": calibration_identity["roi"],
+            "effect": (
+                "calibration measured at a different ROI on the same camera; "
+                "placement is unaffected apart from a constant translation of "
+                "the whole mosaic"
+            ),
+        }
 
     class SelectedFrames:
         """Re-read each tile per pass so source images are never retained together."""
@@ -1137,6 +1161,7 @@ def build_stage_coordinate_mosaic(
         "kind": "stage_coordinate_mosaic",
         "selection": {key: axis_selection[key] for key in sorted(axis_selection)},
         "calibration_identity": calibration_identity,
+        "calibration_roi_difference": roi_difference,
         "shape": list(pixels16.shape),
         **assembled,
         "coverage_fraction": float(np.count_nonzero(coverage) / coverage.size),
