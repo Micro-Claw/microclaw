@@ -3,6 +3,10 @@
 This module deliberately accepts an MMCore-like object, not a controller.  Its
 public enumeration path contains queries only; candidates are questions for a
 human and are structurally separate from observed facts and human decisions.
+
+No YAML aid is emitted.  Inventory evidence is not authorization, and making a
+config-shaped derivative would invite an operator to mistake mechanically
+observed properties or heuristic candidates for reviewed safety decisions.
 """
 
 from __future__ import annotations
@@ -13,7 +17,13 @@ from pathlib import Path
 import re
 from typing import Any, Callable
 
-from microclaw.authorization import _config_settings, _setting_value, _strings, device_type_name
+from microclaw.authorization import (
+    _auto_classified_state_pairs,
+    _config_settings,
+    _setting_value,
+    _strings,
+    device_type_name,
+)
 
 
 # Deliberately broad: a false positive is discarded in review, while a false
@@ -35,6 +45,19 @@ _REDACTED = "<redacted>"
 def _error(exc: Exception) -> str:
     text = " ".join(str(exc).split()) or type(exc).__name__
     return _SECRET_NAME.sub("credential", text)
+
+
+def _fingerprint_facts(value: Any) -> Any:
+    """Copy facts while removing driver-controlled exception message text."""
+    if isinstance(value, dict):
+        return {
+            key: _fingerprint_facts(item)
+            for key, item in value.items()
+            if key != "error"
+        }
+    if isinstance(value, list):
+        return [_fingerprint_facts(item) for item in value]
+    return value
 
 
 def _query(errors: list[dict], scope: str, field: str, call: Callable[[], Any], default=None):
@@ -173,12 +196,14 @@ def enumerate_rig(core: Any, *, mm_config: str | Path | None = None) -> dict:
         presets = _query(failures, f"config_group:{group}", "presets", lambda g=group: sorted(_strings(core.get_available_configs(g))), [])
         groups.append({"name": group, "presets": [_preset(core, group, p, failures) for p in presets]})
 
-    powers, enables, unclassified = [], [], []
+    powers, enables, unclassified, unknown_writability = [], [], [], []
     for device in devices:
         channels = _channel_labels(device["properties"])
         gating = {p["name"]: p.get("current_value") for p in device["properties"] if _GATING_CONTEXT.search(p["name"])}
         for prop in device["properties"]:
             path = f'{device["label"]}.{prop["name"]}'
+            if prop.get("read_only") is None or prop.get("pre_init") is None:
+                unknown_writability.append(path)
             if prop.get("read_only") is False and prop.get("pre_init") is False:
                 unclassified.append(path)
             base = {"path": path, "device_type": device["device_type"], "channel_description": _channel(prop["name"], channels)}
@@ -209,7 +234,13 @@ def enumerate_rig(core: Any, *, mm_config: str | Path | None = None) -> dict:
     if mm_config is not None:
         p = Path(mm_config)
         config_record = {"path": str(p), "sha256": hashlib.sha256(p.read_bytes()).hexdigest()}
-    fingerprint_payload = {"schema": "microclaw.rig-inventory-fingerprint/v1", "facts": facts}
+    # Driver exception text is evidence, but not identity: adapters may embed a
+    # handle, address, or timestamp.  Retain our stable failure coordinates in
+    # the fingerprint while keeping the full text in facts/review.md.
+    fingerprint_payload = {
+        "schema": "microclaw.rig-inventory-fingerprint/v1",
+        "facts": _fingerprint_facts(facts),
+    }
     fingerprint = hashlib.sha256(json.dumps(fingerprint_payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     return {
         "schema": "microclaw.rig-inventory/v1",
@@ -221,22 +252,38 @@ def enumerate_rig(core: Any, *, mm_config: str | Path | None = None) -> dict:
             "illumination_enable_properties": sorted(enables, key=lambda x: x["path"]),
             "illumination_power_enable_pairs": sorted(pairs, key=lambda x: (x["power_path"], x["enable_path"])),
             "unclassified_writable_properties": sorted(unclassified),
+            "properties_with_unknown_writability": sorted(unknown_writability),
         },
         "human_decisions": {"source": None, "comparison": None},
     }
 
 
-def _declared_paths(parsed: Any) -> set[str]:
+def _declared_paths(parsed: Any, core: Any, loaded_devices: list[str]) -> set[str]:
     paths = {f"{d}.{p}" for d, p in parsed.rig_profile.categorical_properties | parsed.rig_profile.excluded_properties}
     paths |= {f"{x.device}.{x.property}" for x in parsed.constraints.forbidden_properties}
     illum = parsed.constraints.illumination
-    paths |= {f"{x.device}.{x.property}" for x in (*illum.shutters, *illum.power_properties)}
+    illumination_pairs = {
+        (x.device, x.property) for x in (*illum.shutters, *illum.power_properties)
+    }
+    paths |= {f"{device}.{prop}" for device, prop in illumination_pairs}
+    paths |= {
+        f"{device}.{prop}"
+        for device, prop in _auto_classified_state_pairs(
+            core, parsed, loaded_devices, illumination_pairs
+        )
+    }
     return paths
 
 
-def compare_reviewed_config(inventory: dict, parsed: Any, source: str) -> None:
-    live = {f'{d["label"]}.{p["name"]}' for d in inventory["facts"]["devices"] for p in d["properties"]}
-    declared = _declared_paths(parsed)
+def compare_reviewed_config(inventory: dict, parsed: Any, source: str, core: Any) -> None:
+    devices = inventory["facts"]["devices"]
+    live = {
+        f'{device["label"]}.{prop["name"]}'
+        for device in devices
+        for prop in device["properties"]
+        if prop.get("read_only") is False and prop.get("pre_init") is False
+    }
+    declared = _declared_paths(parsed, core, [d["label"] for d in devices])
     inventory["human_decisions"] = {
         "source": source,
         "comparison": {
@@ -252,6 +299,7 @@ def render_review(inventory: dict) -> str:
     comparison = inventory["human_decisions"].get("comparison") or {}
     sections = [
         ("Unclassified writable properties", candidates["unclassified_writable_properties"]),
+        ("Properties with unknown writability", candidates["properties_with_unknown_writability"]),
         ("Suspected continuous actuators", [x["path"] for x in candidates["suspected_continuous_actuators"]]),
         ("Illumination power/enable pairs", [f'{x["power_path"]} ↔ {x["enable_path"]}' for x in candidates["illumination_power_enable_pairs"]]),
         ("Preset effects", [f'{g["name"]}.{p["name"]}: ' + ", ".join(f'{e["device"]}.{e["property"]}={e["value"]}' for e in p["effects"]) for g in facts["configuration_groups"] for p in g["presets"]]),

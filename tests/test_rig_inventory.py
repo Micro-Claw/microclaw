@@ -1,8 +1,12 @@
+import ast
 import hashlib
 import json
 from pathlib import Path
-from types import SimpleNamespace
 
+import pytest
+
+import microclaw.__main__ as cli
+from microclaw.config import load_safety_config
 from microclaw.rig_inventory import (
     compare_reviewed_config,
     enumerate_rig,
@@ -13,13 +17,16 @@ from microclaw.rig_inventory import (
 class ReadOnlyRecordingCore:
     """Records every bridge attribute access; unknown calls fail by default."""
 
-    def __init__(self, *, fail_names=False, fail_attribute=False):
+    def __init__(self, *, fail_names=False, fail_attribute=False, fail_writability=False, fail_pre_init=False, error_text="type unavailable"):
         self.accesses = []
         self.fail_names = fail_names
         self.fail_attribute = fail_attribute
+        self.fail_writability = fail_writability
+        self.fail_pre_init = fail_pre_init
+        self.error_text = error_text
 
     def __getattribute__(self, name):
-        if name.startswith("_") or name in {"accesses", "fail_names", "fail_attribute"}:
+        if name.startswith("_") or name in {"accesses", "fail_names", "fail_attribute", "fail_writability", "fail_pre_init", "error_text"}:
             return object.__getattribute__(self, name)
         accesses = object.__getattribute__(self, "accesses")
         accesses.append(name)
@@ -54,12 +61,16 @@ class ReadOnlyRecordingCore:
         return ["State"] if device == "Wheel" else ["Password", "Power %", "Emission"]
     def _get_property(self, device, prop):
         return {"State": "1", "Password": "hunter2", "Power %": "20", "Emission": "0"}[prop]
-    def _is_property_read_only(self, device, prop): return prop == "Password"
-    def _is_property_pre_init(self, device, prop): return False
+    def _is_property_read_only(self, device, prop):
+        if self.fail_writability and prop == "Power %": raise RuntimeError("writability unavailable")
+        return prop == "Password"
+    def _is_property_pre_init(self, device, prop):
+        if self.fail_pre_init and prop == "Power %": raise RuntimeError("pre-init unavailable")
+        return False
     def _get_allowed_property_values(self, device, prop): return ["0", "1"] if prop in {"State", "Emission"} else []
     def _has_property_limits(self, device, prop): return prop in {"Power %", "Emission"}
     def _get_property_type(self, device, prop):
-        if self.fail_attribute and prop == "Power %": raise RuntimeError("type unavailable")
+        if self.fail_attribute and prop == "Power %": raise RuntimeError(self.error_text)
         return "Float"
     def _get_property_lower_limit(self, device, prop): return 0
     def _get_property_upper_limit(self, device, prop): return 100 if prop == "Power %" else 1
@@ -120,24 +131,117 @@ def test_mm_config_path_is_outside_fingerprint(tmp_path):
     assert one["live_inventory_fingerprint"] == two["live_inventory_fingerprint"]
 
 
-def test_outputs_are_confined_and_comparison_reports_both_directions(tmp_path):
-    inventory = enumerate_rig(ReadOnlyRecordingCore())
-    parsed = SimpleNamespace(
-        rig_profile=SimpleNamespace(
-            categorical_properties={("Missing", "State")}, excluded_properties=set()
-        ),
-        constraints=SimpleNamespace(
-            forbidden_properties=[],
-            illumination=SimpleNamespace(shutters=[], power_properties=[]),
-        ),
+def _demo_config(tmp_path):
+    source = Path("design/33-block5-demo-safety-config.yaml").read_text(encoding="utf-8")
+    path = tmp_path / "demo-safety.yaml"
+    path.write_text(source.replace("/REPLACE/with/a/real/directory", str(tmp_path)), encoding="utf-8")
+    return load_safety_config(path)
+
+
+def _demo_config_with_wheel_ruling(tmp_path):
+    source = Path("design/33-block5-demo-safety-config.yaml").read_text(encoding="utf-8")
+    source = source.replace(
+        "categorical_properties: []",
+        "categorical_properties:\n    - {device: Wheel, property: Label}",
     )
-    compare_reviewed_config(inventory, parsed, "reviewed.yaml")
+    path = tmp_path / "demo-safety-wheel-ruling.yaml"
+    path.write_text(source.replace("/REPLACE/with/a/real/directory", str(tmp_path)), encoding="utf-8")
+    return load_safety_config(path)
+
+
+def test_outputs_are_confined_and_comparison_uses_real_reviewed_config(tmp_path):
+    inventory = enumerate_rig(ReadOnlyRecordingCore())
+    compare_reviewed_config(inventory, _demo_config(tmp_path), "reviewed.yaml", ReadOnlyRecordingCore())
     comparison = inventory["human_decisions"]["comparison"]
-    assert comparison["declared_paths_missing_from_live_rig"] == ["Missing.State"]
     assert "Laser.Power %" in comparison["live_paths_missing_from_reviewed_config"]
+    assert "Laser.Password" not in comparison["live_paths_missing_from_reviewed_config"]
+    assert "Wheel.State" not in comparison["live_paths_missing_from_reviewed_config"]
     out = tmp_path / "only-here"
     paths = write_inventory_outputs(inventory, out)
     assert {p.parent for p in paths} == {out}
     assert sorted(p.name for p in out.iterdir()) == ["inventory.json", "review.md"]
     assert not (tmp_path / "inventory.json").exists()
     assert "not safety decisions" in paths[1].read_text(encoding="utf-8")
+
+
+def test_state_position_ruling_preserves_vacuum_filling_semantics(tmp_path):
+    inventory = enumerate_rig(ReadOnlyRecordingCore())
+    core = ReadOnlyRecordingCore()
+    compare_reviewed_config(
+        inventory, _demo_config_with_wheel_ruling(tmp_path), "reviewed.yaml", core
+    )
+    comparison = inventory["human_decisions"]["comparison"]
+    assert "Wheel.Label" in comparison["declared_paths_missing_from_live_rig"]
+    assert "Wheel.State" in comparison["live_paths_missing_from_reviewed_config"]
+
+
+@pytest.mark.parametrize("failure", ["read_only", "pre_init"])
+def test_unknown_writability_is_explicit_and_not_a_candidate(tmp_path, failure):
+    inventory = enumerate_rig(ReadOnlyRecordingCore(
+        fail_writability=failure == "read_only",
+        fail_pre_init=failure == "pre_init",
+    ))
+    candidates = inventory["heuristic_candidates"]
+    assert candidates["properties_with_unknown_writability"] == ["Laser.Power %"]
+    assert "Laser.Power %" not in candidates["unclassified_writable_properties"]
+    review = write_inventory_outputs(inventory, tmp_path)[1].read_text(encoding="utf-8")
+    assert "## Properties with unknown writability" in review
+    assert "Laser.Power %" in review
+
+
+def test_driver_error_text_is_not_part_of_fingerprint():
+    one = enumerate_rig(ReadOnlyRecordingCore(fail_attribute=True, error_text="handle 123"))
+    two = enumerate_rig(ReadOnlyRecordingCore(fail_attribute=True, error_text="handle 987"))
+    assert one["facts"]["enumeration_failures"] != two["facts"]["enumeration_failures"]
+    assert one["live_inventory_fingerprint"] == two["live_inventory_fingerprint"]
+
+
+def test_inspect_rig_bootstraps_without_safety_config(monkeypatch, tmp_path):
+    core = ReadOnlyRecordingCore()
+    controller = type("Controller", (), {"core": core, "is_connected": lambda self: True})()
+    monkeypatch.setattr(cli, "MicroscopeController", lambda port: controller)
+    args = type("Args", (), {"port": 4827, "safety_config": None, "mm_config": None, "out": tmp_path})()
+    cli.inspect_rig(args)
+    assert (tmp_path / "inventory.json").exists()
+
+
+def test_inspect_rig_refuses_unreadable_mm_config(monkeypatch, tmp_path):
+    core = ReadOnlyRecordingCore()
+    controller = type("Controller", (), {"core": core, "is_connected": lambda self: True})()
+    monkeypatch.setattr(cli, "MicroscopeController", lambda port: controller)
+    args = type("Args", (), {"port": 4827, "safety_config": None, "mm_config": tmp_path / "missing.cfg", "out": tmp_path / "out"})()
+    with pytest.raises(SystemExit, match="Could not read Micro-Manager config"):
+        cli.inspect_rig(args)
+
+
+def _calls_in_function(source, function_name):
+    function = next(
+        node for node in ast.parse(source).body
+        if isinstance(node, ast.FunctionDef) and node.name == function_name
+    )
+    return {
+        node.func.id if isinstance(node.func, ast.Name) else node.func.attr
+        for node in ast.walk(function)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, (ast.Name, ast.Attribute))
+    }
+
+
+def test_inspect_rig_ast_boundary_has_only_reviewed_construction_calls():
+    source = Path("microclaw/__main__.py").read_text(encoding="utf-8")
+    assert _calls_in_function(source, "inspect_rig") == {
+        "Path", "MicroscopeController", "compare_reviewed_config", "enumerate_rig",
+        "exit", "is_connected", "load_safety_config", "print", "str",
+        "write_inventory_outputs",
+    }
+
+
+def test_inspect_rig_ast_tripwire_detects_a_new_runtime_surface():
+    source = """
+def inspect_rig(args):
+    inventory = enumerate_rig(args.core)
+    build_app(args)
+    return inventory
+"""
+    approved = {"enumerate_rig"}
+    assert _calls_in_function(source, "inspect_rig") != approved

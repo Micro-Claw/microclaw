@@ -287,9 +287,14 @@ def inspect_rig(args):
             "Could not connect to Micro-Manager. "
             "Is the ZMQ server enabled in Tools → Options?"
         )
-    inventory = enumerate_rig(ctrl.core, mm_config=args.mm_config)
+    try:
+        inventory = enumerate_rig(ctrl.core, mm_config=args.mm_config)
+    except OSError as exc:
+        sys.exit(f"Could not read Micro-Manager config {args.mm_config}: {exc}")
     if parsed_safety is not None:
-        compare_reviewed_config(inventory, parsed_safety, str(Path(args.safety_config)))
+        compare_reviewed_config(
+            inventory, parsed_safety, str(Path(args.safety_config)), ctrl.core
+        )
     inventory_path, review_path = write_inventory_outputs(inventory, args.out)
     print(f"Inventory: {inventory_path}")
     print(f"Review: {review_path}")
