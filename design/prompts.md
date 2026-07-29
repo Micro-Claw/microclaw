@@ -3526,3 +3526,95 @@ The cross-rig bullet is the ONLY thing left unticked in Block 9b, and stays that
 way: live M5 still owes real enumeration failures, credential redaction, live
 config groups and state labels beyond .cfg contents, and bridge-typed returns.
 Reversed my own earlier merge-gate ruling to get here, and said so.]
+
+Let's knock off block 15 on the checklist in design/26-29-32-33-implementation-checklist.md,
+as it isn't blocked by anything. You are the coordinator. ... I presently only have
+access to the MMDemo rig, so let's do as much as we can there.
+
+[Block 15 merged at cafebd4. Two review rounds, 7 defects, two of them blockers no
+off-rig test could see: compaction could fold away EVERY verbatim turn (the loop
+walked boundaries until it got under low water, and when the checkpoint alone
+couldn't get there it consumed the whole history), and the checkpoint saved only
+12% on a hook-source-heavy history while destroying recent context. Both found by
+probing the real code rather than reading the diff. Also caught an unreported
+AGENTS.md the runner had added -- out of scope, hardcoded one machine's absolute
+paths into a repo whose rig is Windows, and its central claim ("never run
+python -m pytest here") was false in this shell.]
+
+Wait, what is this prompt? I don't have an agent on the machine itself. I have to
+run stuff on the demo machine
+
+[I had written an agent brief for a machine with no agent on it. Rewrote the gate
+as a hand-run PowerShell runbook. Should have asked where MMDemo actually runs
+before writing anything -- the shell determines every command in the document.]
+
+g1.txt is in the root of this directory. it failed
+... run after this fix ... it is inconclusive
+... again inconclusive
+
+[Three failures in a row, all mine, none the code under test. (1) The spike called
+run_agent directly, which only reads ANTHROPIC_API_KEY, while serve resolves
+env > keyring > file -- so the key the operator had entered in the browser was
+invisible. (2) Water marks of 6000 against a session that peaks near 3000, so
+compaction never fired. (3) run_timelapse requires save_dir and my prompt omitted
+it, so the agent correctly stopped to ask and declared no artifact. Each round I
+calibrated against the previous run's real numbers instead of guessing again.
+Four of the seven problems this gate hit were its own scaffolding.]
+
+Outputs for everything except for G6 and G7 are now in that same folder ... it
+didn't ask for permission when I "turned on" the laser, so there was no
+opportunity to accept/deny any actions
+
+[The important finding of the whole gate, and not Block 15's. check_illumination
+IS wired into set_device_property, but it gates only what is_illumination_enable
+recognises, and that reads illumination.shutters alone -- empty on this config.
+So require_confirm_on_enable: true governed nothing and the gate was skipped
+silently. shutter_all reads the same list, so teardown would not have swept the
+laser either. Meanwhile the authorization map permitted the write via StateDevice
+auto-classification, and get_emu_configuration in that same session named that
+exact property as slot 0's laser enable. One subsystem had the laser mapped; the
+other had never heard of it; nothing cross-checks them. Filed to design/33 with a
+proposed startup cross-check. The EMU suspicion was a red herring -- Emu.jar
+really is installed on that box.]
+
+For G4, how am I supposed to download an artifact? I could not find any option
+for this in the web gui
+
+[Because that session declared none. The chip renders only from a tool result
+carrying an artifact block, inside the collapsed tool card -- and run_tile_acquisition
+with protocol snap saves nothing while run_timelapse returns dataset_path with no
+artifact block at all. Fixed the runbook to say how to create one
+(save_position_list) and where the chip lives. The run_timelapse gap is
+pre-existing on main and went to memory, not to this branch.]
+
+g7 default and prune are still empty. g7-results is: 1 seeded True / 2 after
+default run True / 3 after prune run False
+
+[G7 PASS, and line 2 is the whole test. The first attempt had died on an empty
+$CFG set in another terminal, and the second produced empty capture files because
+a piped serve loses its buffered stdout on Ctrl-C -- which meant "run 2 pruned it"
+and "run 1 pruned it" (the stop-ship) were indistinguishable. Rewrote it to
+record Test-Path into its own file at each step. The lesson is that a gate step
+has to capture the discriminating observation, not the process output.]
+
+OK. make notes in the documentation. Also note that microclaw serve can collect
+and store an API key, but the interactive CLI session (run_session) never calls
+credentials.load_api_key()
+
+[Three pre-existing findings filed against the docs that own each contract rather
+than left in a gate document: design/33 the inert illumination gate, design/32 a
+clean hook save skipping its confirmation (the gate is conditional on the
+advisory lint firing, while the system prompt claims hook saves are enforced in
+code), design/15 the env > keyring > file order applying to serve only. The
+common thread in the first two: the system prompt asserts code-enforced gates
+that are config-dependent in one case and lint-dependent in the other, and on
+this rig neither fired. Only the model's prose discipline stood in the way, and
+it held both times -- but that is discipline, not enforcement.]
+
+[On G1's attribution finding I was wrong and said so. Under compaction the model
+twice attributed an earlier turn's tool calls to the current turn, and I diagnosed
+it as the checkpoint listing tool names without a temporal anchor, then fixed the
+framing. The passing run refuted that: the window contained the earlier turn
+verbatim, tool_use blocks and all, and the framing change did nothing. Kept the
+change on its own merits, recorded the observation as open with a sharper probe
+to settle it, and did not let a plausible story stand in for a cause.]
