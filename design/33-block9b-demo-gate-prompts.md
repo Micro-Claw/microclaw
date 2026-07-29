@@ -49,8 +49,13 @@ anything else. Authentication may need this machine's own SSH key
 (`GIT_SSH_COMMAND="ssh -i <key>" git fetch origin`); the key name that works on
 the development Mac is not necessarily the one here.
 
-`setup-head.txt` must read `c097fcd...`. If it does not, you are testing
-something other than what was reviewed — stop.
+`setup-head.txt` records exactly which commit you tested; keep it with the
+evidence. It must match the branch tip the coordinator named in the handoff. If
+it does not, you are testing something other than what was reviewed — stop and
+ask, rather than assuming a newer commit is a better one. (A specific SHA is
+deliberately not written here: this runbook is committed on the branch it
+describes, so any correction to it changes the tip and would make a pinned
+value wrong the moment it was written.)
 
 A stale editable install has caused misleading failures in this repository, so
 reinstalling is part of the gate, not optional setup. It is safe here because
