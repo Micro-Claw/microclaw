@@ -35,6 +35,24 @@ rig_profile:
   # whether a driver takes Label (string) or State (int), declaring one does not
   # quietly hand you the other.
   categorical_properties: []
+  # Exact raw continuous writes are opt-in and are checked against the live
+  # driver's type/writability/range before this file is admitted. Bounds are in
+  # canonical units, never inferred from driver technical limits.
+  typed_actuators: []
+  # typed_actuators:
+  #   - device: AuxiliaryZ
+  #     property: "Position (um)"
+  #     kind: absolute-position
+  #     units: um
+  #     minimum: 0.0
+  #     maximum: 200.0
+  #   - device: iBeamSmartCW-1
+  #     property: "Power (mW)"
+  #     kind: illumination-power
+  #     units: native
+  #     full_scale: 75.0
+  #     minimum: 0.0
+  #     maximum: 30.0       # canonical percent; raw 22.5 mW
   # categorical_properties:
   #   # Worked example: a discrete selector that MM does not type as a
   #   # StateDevice, so it still needs the reviewed declaration.
@@ -112,9 +130,12 @@ illumination:
   #   - {device: Cobolt561, property: Laser,                  on_value: "On", off_value: "Off"}
   power_properties: []
   # power_properties:
-  #   - {device: Luxx405, property: "Laser Power Set-point Select [%]"}
+  #   - {device: Luxx405, property: "Laser Power Set-point Select [%]", units: percent}
   #   - {device: Luxx488, property: "Laser Power Set-point Select [%]"}
-  #   - {device: Luxx638, property: "Laser Power Set-point Select [%]"}
+  #   - {device: Luxx638, property: "Laser Power Set-point Select [%]", units: percent}
+  # Native-unit migration (measured M5 shape): Power (mW) ranges 0..75, so a
+  # raw max_power_percent: 100 cap was inoperative. Declare the representation:
+  #   - {device: iBeamSmartCW-1, property: "Power (mW)", units: native, full_scale: 75.0}
 
 # Per-device travel limits for stages addressed by label via move_named_stage
 # (design/14 §6). FAIL-CLOSED: a stage with no entry here cannot be moved by

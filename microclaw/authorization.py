@@ -12,6 +12,8 @@ from microclaw.safety import (
     ActuatorId,
     BUILTIN_TYPED_CAPABILITIES,
     ParsedSafetyConfig,
+    TypedActuatorId,
+    TypedActuatorPolicy,
 )
 
 
@@ -182,6 +184,73 @@ def _known_continuous_raw_pair(core: Any, pair: tuple[str, str]) -> bool:
         or (device == xy and key in {"x", "y", "xposition", "yposition"})
         or (device == camera and key == "exposure")
     )
+
+
+def _property_type_name(core: Any, device: str, prop: str) -> str:
+    raw = core.get_property_type(device, prop)
+    if hasattr(raw, "to_string"):
+        name = str(raw.to_string())
+        if name in {"Float", "Integer", "String", "Undef"}:
+            return name
+    if hasattr(raw, "swig_value"):
+        try:
+            return {0: "Undef", 1: "String", 2: "Float", 3: "Integer"}.get(int(raw.swig_value()), "Unknown")
+        except (TypeError, ValueError):
+            pass
+    return str(raw)
+
+
+def _continuous_introspection(core: Any, device: str, prop: str) -> bool:
+    """Conservative refusal signal only; never an authorization source."""
+    try:
+        kind = device_type_name(core, device)
+        if kind not in {"StageDevice", "XYStageDevice", "CameraDevice"}:
+            return False
+        if bool(core.is_property_read_only(device, prop)):
+            return False
+        if _strings(core.get_allowed_property_values(device, prop)):
+            return False
+        return _property_type_name(core, device, prop) in {"Float", "Integer"}
+    except Exception:
+        return False
+
+
+def _validate_typed_live(
+    core: Any, identity: TypedActuatorId, policy: TypedActuatorPolicy
+) -> list[str]:
+    pair = f"{identity.device}.{identity.property}"
+    errors: list[str] = []
+    try:
+        devices = set(_strings(core.get_loaded_devices()))
+        if identity.device not in devices:
+            return [f"Typed actuator {pair} names a device that is not connected."]
+        properties = set(_strings(core.get_device_property_names(identity.device)))
+        if identity.property not in properties:
+            return [f"Typed actuator {pair} names a property that does not exist on the live device."]
+        if bool(core.is_property_read_only(identity.device, identity.property)):
+            errors.append(f"Typed actuator {pair} is read-only on the live device.")
+        allowed = _strings(core.get_allowed_property_values(identity.device, identity.property))
+        if allowed:
+            errors.append(f"Typed actuator {pair} is enumerated ({allowed!r}), not continuous numeric.")
+        reported = _property_type_name(core, identity.device, identity.property)
+        if reported not in {"Float", "Integer"}:
+            errors.append(f"Typed actuator {pair} is not numeric (driver reports {reported}).")
+        if bool(core.has_property_limits(identity.device, identity.property)):
+            lower = float(core.get_property_lower_limit(identity.device, identity.property))
+            upper = float(core.get_property_upper_limit(identity.device, identity.property))
+            raw_min, raw_max = policy.minimum, policy.maximum
+            if policy.kind == "illumination-power" and policy.units == "native":
+                assert policy.full_scale is not None
+                raw_min = policy.minimum * policy.full_scale / 100.0
+                raw_max = policy.maximum * policy.full_scale / 100.0
+            if raw_min < lower or raw_max > upper:
+                errors.append(
+                    f"Typed actuator {pair} declares a safe bound mapping to raw {raw_min:g}..{raw_max:g}, "
+                    f"outside the driver-reported technical range {lower:g}..{upper:g}; technical ranges are only an outer sanity check, never inferred safe limits."
+                )
+    except Exception as exc:
+        errors.append(f"Could not validate typed actuator {pair} by live introspection: {_clean_exception_message(exc)}")
+    return errors
 
 
 def _stage_identity(source: str, device: str | None, axis: str | None) -> ActuatorId:
@@ -435,11 +504,52 @@ def validate_live_rig(
         loaded_devices = []
         loaded_devices_error = f"Could not enumerate connected devices: {exc}"
 
+    typed_pairs = {(identity.device, identity.property) for identity in parsed_config.typed_actuators}
+    for identity, policy in sorted(
+        parsed_config.typed_actuators.items(), key=lambda item: (item[0].device, item[0].property)
+    ):
+        errors.extend(_validate_typed_live(core, identity, policy))
+        if policy.kind == "illumination-power":
+            declared_power = next((item for item in illumination.power_properties
+                                   if (item.device, item.property) == (identity.device, identity.property)), None)
+            if declared_power is None:
+                errors.append(
+                    f"Typed illumination-power {identity.device}.{identity.property} must also appear in "
+                    "illumination.power_properties so the percent cap and per-write ratchet remain active."
+                )
+            elif ((getattr(declared_power, "units", None) or "percent") != policy.units
+                  or getattr(declared_power, "full_scale", None) != policy.full_scale):
+                errors.append(
+                    f"Typed illumination-power {identity.device}.{identity.property} units/full_scale disagree with "
+                    "illumination.power_properties; declare the same raw representation in both places."
+                )
+        canonical_unit = "um" if policy.kind == "absolute-position" else "percent"
+        conversion = (
+            f"raw native/full_scale {policy.full_scale:g} -> percent"
+            if policy.kind == "illumination-power" and policy.units == "native"
+            else f"raw {policy.units} -> {canonical_unit} identity"
+        )
+        entries.append(AuthorizationEntry(
+            path="generic-property",
+            classification="typed_continuous_actuator",
+            device=identity.device,
+            property=identity.property,
+            capability=policy.kind,
+            detail=(f"units={policy.units}; {conversion}; effective canonical bound "
+                    f"{policy.minimum:g}..{policy.maximum:g} {canonical_unit}"),
+            source="declared",
+        ))
+    if guard is not None:
+        guard.admit_typed_actuators(parsed_config.typed_actuators)
+
     for device, prop in sorted(profile.categorical_properties):
-        if _known_continuous_raw_pair(core, (device, prop)):
+        if (device, prop) in typed_pairs:
+            errors.append(f"Raw property {device}.{prop} cannot be both typed-continuous and categorical.")
+        if (_known_continuous_raw_pair(core, (device, prop))
+                or _continuous_introspection(core, device, prop)):
             errors.append(
-                f"Raw property {device}.{prop} names a known continuous actuator; "
-                "Phase 1 cannot classify it as categorical."
+                f"Raw property {device}.{prop} is a known continuous actuator (confirmed by the live rig) and cannot be classified as categorical; "
+                "declare it in rig_profile.typed_actuators with exact semantics, units, and safe canonical bounds."
             )
         entries.append(AuthorizationEntry(
             path="generic-property",
@@ -497,6 +607,20 @@ def validate_live_rig(
             errors.append(
                 "illumination.max_power_step_factor must be at least 1."
             )
+        for item in illumination.power_properties:
+            if getattr(item, "units", None) is None:
+                try:
+                    has_limits = bool(core.has_property_limits(item.device, item.property))
+                    lower = float(core.get_property_lower_limit(item.device, item.property)) if has_limits else None
+                    upper = float(core.get_property_upper_limit(item.device, item.property)) if has_limits else None
+                except Exception:
+                    lower = upper = None
+                if lower is not None and upper is not None and (lower, upper) != (0.0, 100.0):
+                    errors.append(
+                        f"Illumination power {item.device}.{item.property} has no declared units and its driver technical range is "
+                        f"{lower!r}..{upper!r}, not 0..100 percent. The existing max_power_percent cap may be inoperative; "
+                        "declare units: native and full_scale equal to the measured native full scale (M5 Power (mW): 75.0), or select a real percent property."
+                    )
     for device, prop in sorted(profile.excluded_properties):
         if _known_continuous_raw_pair(core, (device, prop)):
             errors.append(
@@ -547,6 +671,11 @@ def validate_live_rig(
             if pair in profile.excluded_properties:
                 classification = "excluded"
                 reasons.append(f"{device}.{prop} is excluded")
+            elif pair in typed_pairs:
+                classification = "excluded"
+                reasons.append(
+                    f"{device}.{prop} is typed continuous but presets cannot invoke the typed guard without the deferred channel-plan executor"
+                )
             elif pair in illumination_pairs:
                 classification = "excluded"
                 reasons.append(
@@ -725,7 +854,8 @@ def authorize_property_write(ctrl: Any, device: str, prop: str) -> None:
         if entry.device == device and entry.property == prop
     ]
     admitted = {
-        "reviewed_categorical_property", "built_in_typed_capability"
+        "reviewed_categorical_property", "built_in_typed_capability",
+        "typed_continuous_actuator",
     }
     if (
         not matches

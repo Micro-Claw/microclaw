@@ -4147,6 +4147,7 @@ def set_focus_lock(
     target = str(lock.get("on", "1")) if enabled else str(lock.get("off", "0"))
     from microclaw.authorization import authorize_property_write
     authorize_property_write(ctrl, lock["device"], lock["property"])
+    guard.check_device_property(ctrl.core, lock["device"], lock["property"], target)
     ctrl.core.set_property(lock["device"], lock["property"], target)
     return {
         "engaged": enabled,
