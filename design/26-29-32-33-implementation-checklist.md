@@ -491,7 +491,9 @@ Post-merge design gate:
       saved adapters must not inherit `HookBase`; `image_saved_fn` is wired (Block 4);
       the shared observation writer now exists; the capability boundary is no longer
       offline-only; and **`analyze_frame` now means two different things** — flagged
-      UNRESOLVED, to be settled before Block 10 branches.
+      UNRESOLVED, to be settled before Block 10 branches. — **SETTLED 2026-07-29** on
+      docs branch `design26/analyze-frame-collision`: the offline per-frame verb becomes
+      `analyze_saved_frame`; live `analyze_frame` is untouched. Docs-only, no code change.
 
 ## 7b. Design/32 Finding 4 Phase 1 fast-follow — restore what the union cannot express
 
@@ -1021,10 +1023,14 @@ Branch: `design26/completed-dataset-runner`
 - [ ] Implement a selection-limited, read-only `DatasetView` and bounded context exposing
       only immutable input identity, artifact directory, observation emission, and
       cancellation.
-- [ ] Implement reviewed/hash-pinned saved-adapter loading for `analyze_frame` and
-      `analyze_completed_dataset`. Do not replay acquisition-time `image_process_fn` as an
-      offline callback unless design/26 is first explicitly revised to define a safe
-      compatibility contract.
+- [ ] Implement reviewed/hash-pinned saved-adapter loading for `analyze_saved_frame` and
+      `analyze_completed_dataset`. **Not `analyze_frame`** — that verb is Block 7's shipped
+      *live* contract, and the collision was settled on 2026-07-29 by renaming the offline
+      side (design/26 "SETTLED"; docs merge recorded in the ledger). Refuse a live-only
+      class at resolve time, naming both offline verbs, mirroring the refusal
+      `microclaw/tools.py` already ships in the other direction. Do not replay
+      acquisition-time `image_process_fn` as an offline callback unless design/26 is first
+      explicitly revised to define a safe compatibility contract.
 - [ ] Add generic `run_analysis_on_saved_dataset` with `frames` and
       `stage_coordinate_mosaic` input kinds; call Block 9 for the latter.
 - [ ] Record dataset/selection/content hashes, analyzer source/version/environment,

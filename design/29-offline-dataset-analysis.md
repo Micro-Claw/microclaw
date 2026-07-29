@@ -812,11 +812,16 @@ too narrow, and Block 10 should not discover them at implementation time:
    primitive writes a TIFF **plus** an adjacent manifest to an `output_path`,
    where design/26 offers an `output_dir`.
 
-**Left unresolved on purpose**: design/26 still specifies `analyze_frame` as the
+**Left unresolved on purpose** by this gate, and **settled separately on
+2026-07-29** before Block 10 branched: design/26 specified `analyze_frame` as the
 *offline* adapter contract while Block 7 took the same verb for *live* work with
 different arity and return type, and `load_hook_class` returns the first class
-exposing either. That collision is Block 10's to settle and is not this gate's to
-force.
+exposing either. The offline verb was renamed **`analyze_saved_frame`** — the live
+name is shipped and in field use, the offline one was not built at all, and the two
+cannot be merged because the live return may carry typed hardware actions that have
+no referent offline. See design/26's "SETTLED" note for the reasoning and for the
+resolve-time refusal the offline loader owes. Nothing in this document's geometry
+contract changed.
 
 ## Proposed shape
 
