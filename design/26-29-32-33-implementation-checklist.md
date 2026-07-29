@@ -45,7 +45,7 @@ Progress markers: `[ ]` not started, `[-]` active, `[x]` complete, `[!]` blocked
 | 7b | `design32/hook-illumination-and-artifacts` | `ff690e8` (main, 967/99/3) | `f300fff`…`35f6dc4`; 1014/99/3 (mac), 989/115/3 (M5 under uv), 1089/21/3 (demo core, integration live) | M5 2026-07-28: R1–R8 + P0–P2 + R5pre PASS; D2/D3 skipped by ruling. **Gate caught 4 defects, 2 invisible off-rig** | `e688606` | Gate done: design/32 §4 vocabulary corrected + Block-7b landed note; design/33 illumination-contract changes, failed-write-may-have-landed rule, and M5 405 findings (docs merge `d189722`) |
 | 8 | `design29/saved-dataset-foundation` | `c3af2b1` | `b1e347c` + `333144e` (7 review defects); 1052/99/3 | **pre-branch gate: `design29/probe-findings` (`cf0c00c`)** — probe was defective and its affine verdicts void; repaired, MMCore row-major pinned by `javap`. Live M5/demo/M2: **no measured affine anywhere**; identity is MM's default (same hash on two unrelated systems). Saved data gives the X column only (~90°, ~0.13 µm/px). No rig action for the implementation itself. | `e45a129` | Gate done: §5 precedence corrected (explicit ref beats the acquisition record, reconciling §2), measured per-image metadata contract recorded, Y column still open and owned by Block 9 |
 | 9 | `design29/stage-coordinate-mosaic` | `fecb93b` | through `82feeb5`; 1092/99/3 | **MERGED.** Gate run + R6. R1/R2/R3 pass — first non-sentinel per-image affine ever recorded. R3b: no objective key even with `Res1` live → acquisition-recorded identity unreachable on M2 (finding, not defect; artifact path mandatory). R4: both affine columns corroborated. R5 answered **offline** — dihedral match proves the renderer does not mirror. R6: affine orientation confirmed to 0.3° but **scales are wrong, −3.5% / −15.7%, anisotropic where the config reports isotropy** — traced by `javap` to Manual-Simple never measuring a scale at all. A calibration-input defect on M2, not a Block 9 code defect. | `311de3f` (+ close-out `a18c966`) | Gate done: design/29 gains "as built" — no interpolation (inverse nearest-neighbour, `floor(v+0.5)`, centre-based inclusive bounds, later-overwrites-earlier), TIFF + timestamp-free manifest, seam behaviour, six unsupported cases. design/26 corrected on all three counts of its `stage_coordinate_mosaic` promise; `analyze_frame` collision recorded as open for Block 10 |
-| 9b | `design33/read-only-rig-inventory` | `a415adc` | | demo core now; M5 + one materially different rig deferred (see the block's coordinator ruling) | | |
+| 9b | `design33/read-only-rig-inventory` | `a415adc` | `1854e5d` → `c8d69e9` (2 review rounds, 9 defects); 1110/99/3 | **demo gate PASS 2026-07-29 on `cafe05b`** (2nd run). The 1st run FAILED Step 3 and caught two defects invisible off-rig: `reported_type` held a pyjavaz proxy's repr (heap address → nondeterministic fingerprint), and `get_device_adapter_name` does not exist. Re-run: identical fingerprints, zero enumeration failures, real property types, adapter names on all 14 devices. **M5 + one materially different rig still outstanding — merge blocker.** | | |
 | 10 | `design26/completed-dataset-runner` | | | saved-data fixture | | |
 | 11 | `design26/generated-adapter-run-b` | | | required | | |
 | 12 | `design26/few-shot-run-c` (optional) | | | required | | |
@@ -1003,6 +1003,19 @@ order rig access allows. Do not weaken the cross-rig bullet to "demo passed".
       commands, `inventory.json`, `review.md`, the MM config hash, every query failure,
       and a by-hand check that the demo's StateDevice labels, shutters, and `Channel`
       preset expansions are present and are not reported as safety decisions.
+      — **PASS 2026-07-29, second run, on `cafe05b`.** Evidence `block9b_29072026-2`
+      (Windows 11, Python 3.12.13, MMCore 12.5.0, Device API 75). Step 3 identical
+      fingerprints `627f2349…` with `facts` byte-identical; 14 devices; zero
+      enumeration failures; `reported_type` real on every property (64 String, 37
+      Integer, 21 Float) with no heap address anywhere; adapter names populated on
+      all 14. Step 5 by hand: six StateDevices with complete labels, both shutters,
+      four `Channel` presets each fully expanded, no StateDevice `Label`/`State`
+      reported undeclared, 68 writable paths, nothing presented as a safety decision.
+      Step 1 showed exactly the four known Block 7 CRLF `test_describe_hook` failures
+      and no fifth.
+      **The first run (`495e96c`, evidence `block9b_29072026`) FAILED Step 3 and is
+      retained.** It caught both defects; neither was reachable off-rig, because the
+      fake core invented `get_device_adapter_name` and returned a plain `"Float"`.
 - [ ] Stop on any hardware mutation, agent/tool reachability, nondeterministic identity,
       silent enumeration loss, or candidate represented as an authorization decision.
 - [ ] Commit, review, and merge.
