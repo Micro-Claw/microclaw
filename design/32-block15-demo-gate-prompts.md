@@ -37,6 +37,16 @@ cd $OUT
 Start Micro-Manager with the **demo** config and enable the ZMQ server
 (Tools → Options) before G1.
 
+**API key.** G1 drives the agent directly, so it needs a key. It resolves
+env → keyring → config file, the same order `serve` uses, and prints which
+source won. If you have only ever entered the key in the browser it is in the
+keyring and will be found. Otherwise `$env:ANTHROPIC_API_KEY = "sk-ant-..."`
+for this session.
+
+**Capture output as UTF-8.** Windows PowerShell 5.1 writes `*>` redirects as
+UTF-16, which is unreadable when the file is shared. Use
+`2>&1 | Out-File -Encoding utf8 <name>.txt` throughout, as the commands below do.
+
 ---
 
 ## G1 — a compacted history survives a real API round trip
@@ -49,9 +59,14 @@ not a parameter.
 
 ```powershell
 python ..\design\32-block15-compaction-live-spike.py --config $CFG `
-    --high-water 6000 --low-water 3000 *> g1.txt
+    --high-water 6000 --low-water 3000 2>&1 | Out-File -Encoding utf8 g1.txt
 Get-Content g1.txt -Tail 30
 ```
+
+The first line of `g1.txt` must read `API key: …xxxx (from env|keyring|file)`.
+A `TypeError: Could not resolve authentication method` on turn 0 means no key
+was found — that is a setup failure, not a gate result. Fix the key and re-run;
+nothing about compaction has been tested at that point.
 
 Spends real tokens and drives the demo stage. The water marks are deliberately
 far below the shipped 120k/90k so compaction fires within a handful of turns.
@@ -83,7 +98,7 @@ FAIL: any exception, or a `"verdict": "FAIL"` block naming the API error.
 Leave this running in **window A**:
 
 ```powershell
-microclaw serve --port 4827 --safety-config $CFG *> g2-serve.txt
+microclaw serve --port 4827 --safety-config $CFG 2>&1 | Out-File -Encoding utf8 g2-serve.txt
 ```
 
 Run three or four turns in the browser that call tools, including one that
@@ -162,7 +177,7 @@ that sets up G6.
 ## G6 — an interrupted session is still readable
 
 ```powershell
-microclaw view-history .\$H --no-browser *> g6-view.txt
+microclaw view-history .\$H --no-browser 2>&1 | Out-File -Encoding utf8 g6-view.txt
 Get-Content g6-view.txt
 ```
 
@@ -174,7 +189,7 @@ than failing. Force that path deliberately too:
 Copy-Item $H torn.jsonl
 $lines = Get-Content torn.jsonl
 $lines[0..($lines.Count-2)] + '{"role":"assistant"' | Set-Content -NoNewline torn.jsonl
-microclaw view-history .\torn.jsonl --no-browser *> g6-torn.txt
+microclaw view-history .\torn.jsonl --no-browser 2>&1 | Out-File -Encoding utf8 g6-torn.txt
 Get-Content g6-torn.txt
 ```
 
@@ -184,7 +199,7 @@ Finally, open one **old** array-format history from
 `OneDrive\Microclaw\microclaw-json-histories`:
 
 ```powershell
-microclaw view-history "C:\path\to\an_old_microclaw_history.json" --no-browser *> g6-legacy.txt
+microclaw view-history "C:\path\to\an_old_microclaw_history.json" --no-browser 2>&1 | Out-File -Encoding utf8 g6-legacy.txt
 ```
 
 PASS: it still renders. Legacy `.json` histories must keep working — that
@@ -203,11 +218,11 @@ cd retention
 (Get-Item old_microclaw_history.jsonl).LastWriteTime = (Get-Date).AddDays(-30)
 
 # default: no flag
-microclaw serve --port 4828 --safety-config $CFG *> ..\g7-default.txt
+microclaw serve --port 4828 --safety-config $CFG 2>&1 | Out-File -Encoding utf8 ..\g7-default.txt
 # (Ctrl-C once it is up)
 Test-Path old_microclaw_history.jsonl      # expect True
 
-microclaw serve --port 4828 --safety-config $CFG --history-retention-days 1 *> ..\g7-prune.txt
+microclaw serve --port 4828 --safety-config $CFG --history-retention-days 1 2>&1 | Out-File -Encoding utf8 ..\g7-prune.txt
 # (Ctrl-C once it is up)
 Test-Path old_microclaw_history.jsonl      # expect False
 Select-String -Path ..\g7-prune.txt -Pattern "Pruned transcript"

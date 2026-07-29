@@ -20,7 +20,8 @@ Spends real tokens and moves the demo stage. Do not point it at a live sample.
 import argparse
 import json
 
-from microclaw.agent import run_agent
+from microclaw import credentials
+from microclaw.agent import run_agent, set_api_key
 from microclaw.config import load_safety_config_or_exit
 from microclaw.controller import MicroscopeController
 from microclaw.conversation import AuditLog, ConversationStore, estimate_tokens
@@ -52,6 +53,19 @@ parser.add_argument("--prompt", action="append", default=[])
 args = parser.parse_args()
 
 prompts = args.prompt or DEFAULT_PROMPTS
+
+# env > keyring > file, the same resolution `serve` does. run_agent alone only
+# sees ANTHROPIC_API_KEY, so a key stored from the browser would otherwise look
+# like an API failure on turn 0 (first run of this spike did exactly that).
+key, source = credentials.load_api_key()
+if not key:
+    raise SystemExit(
+        "No Anthropic API key found in the environment, keyring, or config file.\n"
+        "Set ANTHROPIC_API_KEY, or start `microclaw serve` once and enter the key\n"
+        "in the browser so it is stored, then re-run this spike."
+    )
+set_api_key(key)
+print(f"API key: {credentials.mask(key)} (from {source})", flush=True)
 
 parsed = load_safety_config_or_exit(args.config)
 guard = SafetyGuard(parsed.constraints)
