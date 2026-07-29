@@ -823,6 +823,40 @@ no referent offline. See design/26's "SETTLED" note for the reasoning and for th
 resolve-time refusal the offline loader owes. Nothing in this document's geometry
 contract changed.
 
+### Open gap found by Block 10: no supported way to AUTHOR a calibration artifact
+
+Block 10's real-data run (2026-07-29) exercised the `artifact` branch of
+`resolve_calibration` against `b9grid_2` and it works — coverage 1.0000 over
+553×537, zero uncovered pixels, and the per-instrument identity check refuses a
+wrong camera device and a wrong camera model. But **nothing in the shipped code
+can write that artifact.** `calibrate_stage_to_camera` stores an immutable
+*knowledge version* at calibration time, and the tests construct artifacts by
+writing JSON directly. So a historical dataset whose calibration was never
+captured has no supported route to a `calibration_ref` at all.
+
+Scope this precisely, because an earlier coordinator statement got it wrong and
+the error is easy to repeat:
+
+- It is **not** a limitation of rigs without an objective turret. A pixel
+  calibration needs a camera, an objective and a stage; a turret is irrelevant.
+  The artifact identity is `payload`, `payload_sha256`, `camera_device`,
+  `camera_model`, `roi` — **no objective field** — and the mosaic's identity
+  comparison checks camera device, camera model and binning only. `objective` is
+  a plain string on `StageCameraAffine` (`affine_key` slugs it and falls back to
+  `"default"` when empty), so it is a label, not a device requirement.
+- A missing objective key only removes the *acquisition-record fallback*, forcing
+  an explicit ref. That is the correct behaviour, not a defect.
+- The gap therefore applies to **any** dataset whose calibration was not captured
+  at acquisition time, on any rig.
+
+The bootstrap is also circular today: a completed mosaic manifest is itself a
+valid artifact, but only once a first mosaic has succeeded.
+
+A supported writer belongs here rather than in design/26, and it must stay a
+deliberate human act — §5 forbids silently applying current calibration to
+historical data, so an export path must record what was measured and when, not
+snapshot whatever the microscope currently reports.
+
 ## Proposed shape
 
 ### 1. A shared geometry module — `microclaw/dataset_mosaic.py`
