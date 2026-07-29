@@ -25,7 +25,14 @@ which is exactly why none of it can answer the two questions below.
 
 It cannot settle whether the mosaic is globally flipped relative to the
 specimen. Every tile would be wrong identically and every overlap would still
-agree. Only R3's visual check addresses that.
+agree. R5 was written to address that by eye.
+
+**Superseded 2026-07-29** — see "R5, resolved offline" below. The mirror half of
+that question is answered mechanically, by comparing a tile's rendering against
+the dihedral group of the raw frame; a bead field is a fine fingerprint for a
+*comparison* even though it gives no *absolute* orientation. The remaining half
+— whether MM's stage frame is physically right-handed — is a rig property, not a
+Block 9 property.
 
 ## R1 — confirm `Res1` is active BEFORE acquiring
 
@@ -235,47 +242,87 @@ design/29 stop describing Y as single-sourced. If the Y line still shows a large
 residual, that is a **stage** finding to record, not a Block 9 defect, and the
 merge is not blocked by it.
 
-## R5 — the one thing only a human can do
+## R5 — the one thing only a human can do (SUPERSEDED, see below)
 
 The script writes `landmark_check.png`. Look at it and answer one question:
 
 > Is a recognisable asymmetric feature oriented the way it is on the microscope,
 > or is the whole mosaic mirrored or rotated?
 
+**This ran and could not be answered**: both gate datasets are fields of
+isolated beads, which have no handedness. Rather than book more rig time for a
+sample that does, the mirror question was reformulated and answered offline —
+next section. Keep this section for the reasoning; do not re-run it.
+
 Every overlap residual can be zero and this can still be wrong, because a
 uniformly wrong transform is uniformly wrong in every tile. There is no
 automated substitute; if you cannot tell from the image, say so rather than
 guessing, and we will find a feature you can.
 
-## R6 — the follow-up this run earned (one short session)
+## R5, resolved offline — no graticule, no rig time
 
-Two things are unresolved, and one short session settles both. Same sample is
-fine for the first, **not** for the second.
+**R6b is withdrawn.** R5 asked whether the mosaic is mirrored, and a bead field
+was said to be unable to answer it. That was half right. A bead constellation
+cannot give *absolute* orientation, but it is a perfectly good fingerprint for a
+*comparison* — and the comparison that matters is the tile's rendering against
+the raw camera frame.
 
-**R6a — an X line, at two step sizes.** The mirror of the Y line, and the thing
-that should have been in R2 alongside it:
+`design/29-block9-mirror-check.py` renders one tile and scores it against all
+eight dihedral transforms of the raw frame. On both gate datasets:
 
-> Run a tile acquisition with `rows=1, cols=6`, 14 µm step, same protocol and
-> `hook_strategy="snr_observer"`, named `b9xline14`. Then repeat it with
-> `cols=6` and a 28 µm step, named `b9xline28`. Nothing else changes — same
-> ROI, same exposure, same laser, same centre.
+```
+rot90 CCW              NCC  1.0000   <== MATCH
+rot90 CW               NCC  0.0349
+MIRROR lr + rot90 CW   NCC  0.4174
+MIRROR lr + rot90 CCW  NCC -0.0030
+```
 
-One row means no Y motion and no raster return, so X is isolated exactly as the
-Y line isolated Y. Two step sizes then separate the two surviving models: if the
-residual stays ~11 px, it is a fixed offset; if it doubles to ~22 px (staying
-10%), it is a scale error. Twelve exposures.
+An exact 90° CCW rotation, no reflection — consistent with the affine's own
+positive determinant (`+0.016129`). The renderer does not mirror.
 
-**R6b — R5, on a sample that can answer it.** Beads cannot. A field of isolated
-points has no handedness, so a globally mirrored or 90°-rotated mosaic renders
-identically and every overlap residual agrees. Acquire the 4×4 grid again on
-anything with a recognisable asymmetric feature — a lettered graticule, a
-scratch, a cell with an obvious polarity — and compare the PNG against the
-eyepiece. This is the only open question that is about Block 9 rather than about
-the stage.
+**What genuinely remains untestable, and why it is not ours.** Whether MM's stage
+frame is physically right-handed — whether MM's +X is the direction the specimen
+actually travels — cannot be settled from any self-consistent set of images,
+because everything in a dataset lives in MM's frame. But that is a rig and
+Micro-Manager property, identical for MM's own Preview and position list, and it
+is flip-invariant for distances, counts, and drive-back-to-a-coordinate. It is
+not a Block 9 question and Block 9 should not be held for it.
 
-A graticule would answer R6a's remaining degeneracy too, by supplying the
-independent length reference that separates a stage scale error from an affine
-scale error. If one is available, prefer it for both.
+## R6 — the one thing still open: stage X
+
+The 10% stage-X residual is the only unresolved item, and the operator's
+suggestion is the right experiment: **steps small enough that the same beads
+stay in the field**, so individual beads can be tracked in raw pixel coordinates
+with no placement, no mosaic, and no correlation ambiguity anywhere in the
+measurement.
+
+The field is 206 px ≈ 26.2 µm along stage X. Two runs, **the same 16 µm of total
+travel** in each:
+
+> Run a tile acquisition `rows=1, cols=9`, **2 µm** step, same protocol and
+> `hook_strategy="snr_observer"`, named `b9xfine2`. Then `rows=1, cols=5` at
+> **4 µm**, named `b9xfine4`. Same ROI, exposure, laser and centre for both.
+> Then the same two runs along Y (`cols=1`, `rows=9` @ 2 µm and `rows=5` @ 4 µm),
+> named `b9yfine2` and `b9yfine4`.
+
+Holding total travel constant is what makes it a discriminator:
+
+- **Scale error** → total error is 10% of 16 µm ≈ 1.6 µm in **both** runs.
+- **Fixed per-move offset** → eight 2 µm moves accumulate twice the error of four
+  4 µm moves.
+
+Each 2 µm step displaces content by 15.7 px, comfortably measurable, and a bead
+entering at one edge survives the whole 16 µm sweep. The bead track also shows
+the direction of travel directly, confirming the sign of the affine's X column
+against the live camera independently of every correlation method used so far.
+
+**State the degeneracy plainly, because it does not go away.** This measures
+px-of-content per µm-commanded, which is `actual_moved / (commanded × true µm/px)`
+— one number, two unknowns. It cannot separate "the stage under-moves by 10%"
+from "the pixel size is 10% larger than 0.127". A graticule would, and there
+isn't one. **It does not matter for the mosaic**: placement needs exactly the
+px-per-commanded-µm ratio, which is exactly what this measures. The unresolved
+physics is real and operationally irrelevant here — record it, do not chase it.
 
 ## Verdicts
 

@@ -456,6 +456,35 @@ cannot separate them — an X line at two different step sizes distinguishes
 scale from offset, and separating stage scale from affine scale needs an
 independent length reference (a graticule), not more mosaics.
 
+**R5, reformulated and answered offline (no graticule, no rig time).** The
+first reading below was half wrong, and the correction is worth stating plainly.
+
+A bead field gives no *absolute* orientation, so it cannot say "this points the
+way it does down the eyepiece". But the mirror question does not need absolute
+orientation — it needs a *comparison*, and a random bead constellation is an
+excellent fingerprint for one. `design/29-block9-mirror-check.py` renders a tile
+and scores it against all eight dihedral transforms of the raw camera frame:
+
+```
+rot90 CCW              NCC  1.0000   <== MATCH
+rot90 CW               NCC  0.0349
+MIRROR lr + rot90 CW   NCC  0.4174
+MIRROR lr + rot90 CCW  NCC -0.0030
+```
+
+Identical on both gate datasets. An exact 90° CCW rotation with no reflection,
+consistent with the affine's own positive determinant (`+0.016129`). **The
+renderer does not mirror.**
+
+What is genuinely left is whether MM's stage frame is physically right-handed —
+whether MM's +X is the direction the specimen actually travels. No self-consistent
+set of images can settle it, because every coordinate in a dataset lives in MM's
+frame. But it is a rig and Micro-Manager property, identical for MM's own Preview
+and position list, and it is flip-invariant for distances, counts, and
+drive-back-to-a-coordinate. It is not Block 9's to answer.
+
+**The original reading, kept for the reasoning:**
+
 **R5 cannot be answered on this sample.** Both PNGs are fields of isolated
 beads. A bead field has no asymmetric feature, so it cannot show a global mirror
 or 90° flip — every residual would be identical either way. The gate anticipated
