@@ -348,6 +348,50 @@ Placement consumes only the affine's four coefficients and ROI never enters that
 arithmetic. Refuse on camera device/model and binning, which change the transform
 or the instrument; **record** ROI differences.
 
+**M2 has no objective, and four-fifths of an identity is a refusal.** Reading
+M2's config and device-property probe to build the Block 9 rig-gate safety
+profile turned up something the gate had not accounted for. The
+acquisition-recorded branch needs five identity fields, and the affine is only
+one of them. Audited directly against `run_a_2`'s 420 metadata keys:
+
+| field | key that resolves it | present on M2 |
+|---|---|---|
+| binning | `Binning` | `'1'` |
+| camera_device | `Core-Camera` | `'Andor'` |
+| camera_model | `Andor-Camera` | `'\| iXon Ultra \| DU897_BV \| 8172 \|'` |
+| roi | `ROI` | `'36-50-453-227'` |
+| **objective** | `Objective` / `ObjectiveLabel` / `PixelSizeConfig` / `PixelSizeConfigName` | **none present** |
+
+M2's config declares no objective turret, so the system-state dump has no
+objective property to stamp. `_resolve_from_acquisition` therefore returns
+`acquisition calibration identity is incomplete; missing objective` with a
+perfectly good affine in hand, and `resolve_calibration` refuses when no explicit
+`calibration_ref` is supplied.
+
+Whether MM stamps `PixelSizeConfig` only while a pixel-size config is *active* is
+untested and unresolvable from what we have: `run_a_2` ran with none active, so
+"never stamped" and "not stamped then" are indistinguishable in it. `Res1` is
+active now, so R2's own first frame settles it at zero extra cost — that is
+`R1b` in `design/29-block9-rig-gate-prompts.md`.
+
+This does not block Block 9. The artifact path is the documented
+higher-precedence route (§5) and is what the landmark check already uses; the
+mosaic still builds. What it does mean is that **gate question 1 may be
+unanswerable on M2 for a reason unrelated to the affine**, and that on any rig
+without an objective device an explicit artifact is mandatory rather than
+merely preferred. Note the asymmetry with the camera model: that was a real key
+under a vendor-specific name and the fix was to look wider (`f941896`). This one
+is a key that does not exist, and widening the search would only invent it.
+
+**Footnote on `-0.0`.** The `.cfg` stores `PixelSizeAffine,Res1,-0.0,0.127,...`,
+and `serialize_affine_payload` emits `"a":-0.0` where `0.0` gives `"a":0.0` — a
+different SHA-256. Nothing in the current paths breaks on it: the cross-frame
+comparison at `calibration.py:367` uses `!=`, and `-0.0 != 0.0` is False in
+Python; the artifact hash check compares an artifact against itself. The
+exposure is narrow and latent — a stored `version_key` built from `-0.0` will not
+match one built from `0.0` for the same physical calibration. Recorded here so
+it is recognised rather than rediscovered.
+
 ## Proposed shape
 
 ### 1. A shared geometry module — `microclaw/dataset_mosaic.py`

@@ -43,6 +43,48 @@ Run `design/29-mm-pixel-affine-probe.py` and confirm:
 **Stop if any of these differ.** Do not acquire against a config you have not
 confirmed is live.
 
+## R1b — settle the objective key, or R2 cannot answer question 1
+
+Added 2026-07-29, after reading M2's config and device-property probe. **This is
+cheap and it decides what R2 is worth.**
+
+`resolve_calibration`'s acquisition-recorded branch needs five identity fields,
+not just the affine: objective, binning, camera device, camera model, ROI. Any
+one missing and it returns `acquisition calibration identity is incomplete;
+missing …` and refuses, with a correct affine sitting right there in the
+metadata.
+
+Four of the five resolve on M2. `run_a_2`'s per-image metadata was audited
+directly: `Binning='1'`, `Core-Camera='Andor'`, `Andor-Camera='| iXon Ultra |
+DU897_BV | 8172 |'` (this is the vendor-key fix in `f941896` earning its keep),
+`ROI='36-50-453-227'`. **The objective does not.** Across all 420 metadata keys,
+none of `Objective`, `ObjectiveLabel`, `PixelSizeConfig`, `PixelSizeConfigName`
+is present — M2 has no objective turret in the config, so the system-state dump
+has no objective property to stamp.
+
+The open question is whether MM stamps `PixelSizeConfig` **only when a pixel-size
+config is active**. `run_a_2` was acquired with none active (`PixelSizeUm=0`,
+sentinel affine), so it cannot distinguish "never stamped" from "not stamped
+then". `Res1` is active now, so R2's own first frame settles it — no extra
+exposure needed. Against the saved dataset:
+
+```powershell
+python -c "from ndstorage import Dataset; d=Dataset(r'<path>'); c={k:sorted(v)[0] for k,v in d.axes.items()}; m=d.read_metadata(**c); print({k:m[k] for k in m if 'bjective' in k or 'PixelSizeConfig' in k})" > r1b.txt 2>&1
+```
+
+- **Non-empty** → question 1 is live and R2's dataset answers it. Proceed
+  normally.
+- **Empty** → the acquisition-recorded branch cannot succeed on M2 for a reason
+  that has nothing to do with the affine, and no amount of rig time changes
+  that. **This does not stop the gate.** Question 2 — is the mosaic correct —
+  is answered through an explicit calibration artifact, which is the documented
+  higher-precedence path (design/29 §5) and exactly what R4 already uses. Run R2
+  and R3 as written, note the result here, and record it as a finding: on rigs
+  with no objective device, acquisition-recorded calibration is unreachable and
+  an artifact is mandatory.
+
+Do not "fix" this by inventing an objective key on the rig.
+
 ## R2 — acquire an overlapping grid on structured sample
 
 Requirements, each for a reason:
