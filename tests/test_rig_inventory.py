@@ -111,6 +111,33 @@ class MissingAdapterNameCore(ReadOnlyRecordingCore):
         return super().__getattribute__(name)
 
 
+class CandidateShapeCore(ReadOnlyRecordingCore):
+    """Synthetic devices for candidate-shape tests, not an M2 data copy."""
+
+    def __init__(self, properties):
+        super().__init__()
+        self.properties = properties
+
+    def __getattribute__(self, name):
+        if name == "properties":
+            return object.__getattribute__(self, name)
+        return super().__getattribute__(name)
+
+    def _get_loaded_devices(self): return list(self.properties)
+    def _get_device_type(self, device): return 3
+    def _get_device_property_names(self, device): return list(self.properties[device])
+    def _get_property(self, device, prop): return "0"
+    def _is_property_read_only(self, device, prop): return False
+    def _is_property_pre_init(self, device, prop): return False
+    def _get_allowed_property_values(self, device, prop):
+        return ["Off", "On"] if "Enable" in prop else []
+    def _has_property_limits(self, device, prop): return True
+    def _get_property_lower_limit(self, device, prop): return 0
+    def _get_property_upper_limit(self, device, prop): return 1 if "Enable" in prop else 100
+    def _get_state_labels(self, device): return []
+    def _get_available_config_groups(self): return []
+
+
 def test_whole_enumeration_is_query_only_and_unknown_access_fails():
     core = ReadOnlyRecordingCore()
     inventory = enumerate_rig(core)
@@ -174,6 +201,61 @@ def test_missing_real_core_method_is_recorded_without_repr():
     assert len(failures) == len(inventory["facts"]["devices"])
     assert all(item["error"] == "get_device_name" for item in failures)
     assert "object at 0x" not in json.dumps(inventory)
+
+
+def test_power_and_enable_candidates_are_grouped_without_cross_product_assertions():
+    inventory = enumerate_rig(CandidateShapeCore({
+        "FocusLock": [
+            "Power A", "Power B", "Power C",
+            "Enable A", "Enable B", "Enable C",
+        ],
+    }))
+    candidates = inventory["heuristic_candidates"]
+    assert "illumination_power_enable_pairs" not in candidates
+    assert candidates["illumination_power_enable_groups"] == [{
+        "device": "FocusLock",
+        "power_paths": ["FocusLock.Power A", "FocusLock.Power B", "FocusLock.Power C"],
+        "enable_paths": ["FocusLock.Enable A", "FocusLock.Enable B", "FocusLock.Enable C"],
+        "reviewer_instruction": "Determine which, if any, enable property gates each power property; no relationship is inferred here.",
+    }]
+
+
+def test_possible_duplicate_unit_representations_are_observations_only():
+    inventory = enumerate_rig(CandidateShapeCore({
+        "Luxx405": ["Laser Power Set-point Select [%]", "Laser Power Set-point Select [mW]"],
+    }))
+    duplicates = inventory["heuristic_candidates"]["possible_duplicate_power_representations"]
+    assert len(duplicates) == 1
+    assert duplicates[0]["device"] == "Luxx405"
+    assert duplicates[0]["property_base"] == "Laser Power Set-point Select"
+    assert [row["unit_suffix"] for row in duplicates[0]["representations"]] == ["[%]", "[mW]"]
+    assert inventory["human_decisions"] == {"source": None, "comparison": None}
+
+
+def test_power_enable_grouping_retains_one_sided_device_candidates():
+    inventory = enumerate_rig(CandidateShapeCore({
+        "PowerOnly": ["Laser Power"],
+        "EnableOnly": ["Laser Enable"],
+    }))
+    groups = {
+        group["device"]: group
+        for group in inventory["heuristic_candidates"]["illumination_power_enable_groups"]
+    }
+    assert groups["PowerOnly"]["power_paths"] == ["PowerOnly.Laser Power"]
+    assert groups["PowerOnly"]["enable_paths"] == []
+    assert groups["EnableOnly"]["power_paths"] == []
+    assert groups["EnableOnly"]["enable_paths"] == ["EnableOnly.Laser Enable"]
+
+
+def test_review_groups_unclassified_writable_properties_by_device(tmp_path):
+    inventory = enumerate_rig(CandidateShapeCore({
+        "Camera": ["Gain", "Temperature"],
+        "Laser": ["Power"],
+    }))
+    review = write_inventory_outputs(inventory, tmp_path)[1].read_text(encoding="utf-8")
+    assert "## Unclassified writable properties (grouped by device)" in review
+    assert "**Camera** (2)" in review
+    assert review.index("Camera.Gain") < review.index("Camera.Temperature") < review.index("**Laser** (1)")
 
 
 def test_property_type_bridge_conversion_prefers_name_then_ordinal():

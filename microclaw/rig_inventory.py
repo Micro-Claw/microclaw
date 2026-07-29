@@ -39,6 +39,7 @@ _GATING_CONTEXT = re.compile(r"use\s*ttl|analog\s*mode|ttl\s*enable|ttl\s*high|m
 _SECRET_NAME = re.compile(r"password|passwd|secret|token|credential|api.?key|private.?key", re.I)
 _REDACTED = "<redacted>"
 _PROP_TYPES = {0: "Undef", 1: "String", 2: "Float", 3: "Integer"}
+_TRAILING_UNIT = re.compile(r"\s*(?P<unit>\[[^\[\]]+\])\s*$")
 
 
 class _NonPrimitiveResult(TypeError):
@@ -202,6 +203,14 @@ def _is_enable(record: dict) -> bool:
     return span.get("lower") == 0.0 and span.get("upper") == 1.0
 
 
+def _power_representation(record: dict) -> tuple[str, str] | None:
+    """Return a base name and unit suffix for a unit-qualified power property."""
+    match = _TRAILING_UNIT.search(record["property"])
+    if match is None:
+        return None
+    return record["property"][:match.start()].rstrip(), match.group("unit")
+
+
 def _channel_labels(properties: list[dict]) -> dict[str, str]:
     out = {}
     for record in properties:
@@ -299,7 +308,13 @@ def enumerate_rig(core: Any, *, mm_config: str | Path | None = None) -> dict:
                 unknown_writability.append(path)
             if prop.get("read_only") is False and prop.get("pre_init") is False:
                 unclassified.append(path)
-            base = {"path": path, "device_type": device["device_type"], "channel_description": _channel(prop["name"], channels)}
+            base = {
+                "path": path,
+                "device": device["label"],
+                "property": prop["name"],
+                "device_type": device["device_type"],
+                "channel_description": _channel(prop["name"], channels),
+            }
             if _is_power(prop):
                 base["gating_context"] = gating
                 base["rejected_non_emitting"] = device["device_type"] in _NON_EMITTING_TYPES
@@ -308,10 +323,36 @@ def enumerate_rig(core: Any, *, mm_config: str | Path | None = None) -> dict:
                 enables.append(base)
 
     emitting_powers = [p for p in powers if not p["rejected_non_emitting"]]
-    pairs = [
-        {"power_path": power["path"], "enable_path": enable["path"]}
-        for power in emitting_powers for enable in enables
-        if power["path"].split(".", 1)[0] == enable["path"].split(".", 1)[0]
+    candidate_devices = sorted({p["device"] for p in emitting_powers} | {e["device"] for e in enables})
+    power_enable_groups = [
+        {
+            "device": device,
+            "power_paths": sorted(p["path"] for p in emitting_powers if p["device"] == device),
+            "enable_paths": sorted(e["path"] for e in enables if e["device"] == device),
+            "reviewer_instruction": "Determine which, if any, enable property gates each power property; no relationship is inferred here.",
+        }
+        for device in candidate_devices
+    ]
+    representations: dict[tuple[str, str], dict] = {}
+    for power in emitting_powers:
+        parsed = _power_representation(power)
+        if parsed is not None:
+            base_name, unit = parsed
+            group = representations.setdefault(
+                (power["device"], base_name.casefold()),
+                {"property_base": base_name, "representations": []},
+            )
+            group["representations"].append({"path": power["path"], "unit_suffix": unit})
+    duplicate_representations = [
+        {
+            "device": device,
+            "property_base": group["property_base"],
+            "representations": sorted(group["representations"], key=lambda x: x["path"]),
+            "observation": "Possible duplicate representations of one physical actuator; a human must decide whether they are duplicates and which, if any, to retain.",
+        }
+        for (device, _), group in sorted(representations.items())
+        if len(group["representations"]) > 1
+        and len({row["unit_suffix"].casefold() for row in group["representations"]}) > 1
     ]
     facts = {
         "core_identity": {
@@ -336,14 +377,15 @@ def enumerate_rig(core: Any, *, mm_config: str | Path | None = None) -> dict:
     }
     fingerprint = hashlib.sha256(json.dumps(fingerprint_payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     return {
-        "schema": "microclaw.rig-inventory/v1",
+        "schema": "microclaw.rig-inventory/v2",
         "mm_config": config_record,
         "live_inventory_fingerprint": {"algorithm": "sha256", "value": fingerprint},
         "facts": facts,
         "heuristic_candidates": {
             "suspected_continuous_actuators": sorted(powers, key=lambda x: x["path"]),
             "illumination_enable_properties": sorted(enables, key=lambda x: x["path"]),
-            "illumination_power_enable_pairs": sorted(pairs, key=lambda x: (x["power_path"], x["enable_path"])),
+            "illumination_power_enable_groups": power_enable_groups,
+            "possible_duplicate_power_representations": duplicate_representations,
             "unclassified_writable_properties": sorted(unclassified),
             "properties_with_unknown_writability": sorted(unknown_writability),
         },
@@ -401,11 +443,37 @@ def render_review(inventory: dict) -> str:
         for (field, error), scopes in sorted(repeated.items())
         if device_count and len(scopes) == device_count
     ]
+    unclassified_by_device: dict[str, list[str]] = {}
+    device_labels = sorted((d["label"] for d in facts["devices"]), key=lambda x: (-len(x), x))
+    for path in candidates["unclassified_writable_properties"]:
+        device = next(
+            (label for label in device_labels if path.startswith(f"{label}.")),
+            "Unknown device",
+        )
+        unclassified_by_device.setdefault(device, []).append(path)
+    grouped_unclassified = [
+        f'**{device}** ({len(paths)})\n' + "\n".join(f"  - {path}" for path in paths)
+        for device, paths in sorted(unclassified_by_device.items())
+    ]
+    power_enable_groups = [
+        f'**{group["device"]}**\n'
+        f'  - Power candidates: {", ".join(group["power_paths"]) or "None observed"}\n'
+        f'  - Enable candidates: {", ".join(group["enable_paths"]) or "None observed"}\n'
+        f'  - Review: {group["reviewer_instruction"]}'
+        for group in candidates["illumination_power_enable_groups"]
+    ]
+    duplicate_representations = [
+        f'{item["device"]}.{item["property_base"]}: '
+        + ", ".join(f'{row["path"]} ({row["unit_suffix"]})' for row in item["representations"])
+        + f' — {item["observation"]}'
+        for item in candidates["possible_duplicate_power_representations"]
+    ]
     sections = [
-        ("Unclassified writable properties", candidates["unclassified_writable_properties"]),
+        ("Unclassified writable properties (grouped by device)", grouped_unclassified),
         ("Properties with unknown writability", candidates["properties_with_unknown_writability"]),
         ("Suspected continuous actuators", [x["path"] for x in candidates["suspected_continuous_actuators"]]),
-        ("Illumination power/enable pairs", [f'{x["power_path"]} ↔ {x["enable_path"]}' for x in candidates["illumination_power_enable_pairs"]]),
+        ("Illumination power/enable candidate groups", power_enable_groups),
+        ("Possible duplicate power representations", duplicate_representations),
         ("Preset effects", [f'{g["name"]}.{p["name"]}: ' + ", ".join(f'{e["device"]}.{e["property"]}={e["value"]}' for e in p["effects"]) for g in facts["configuration_groups"] for p in g["presets"]]),
         ("Systemic enumeration failures", systemic),
         ("Enumeration failures", [f'{x["scope"]} / {x["field"]}: {x["error"]}' for x in facts["enumeration_failures"]]),
