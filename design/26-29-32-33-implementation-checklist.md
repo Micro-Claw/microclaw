@@ -45,7 +45,7 @@ Progress markers: `[ ]` not started, `[-]` active, `[x]` complete, `[!]` blocked
 | 7b | `design32/hook-illumination-and-artifacts` | `ff690e8` (main, 967/99/3) | `f300fff`…`35f6dc4`; 1014/99/3 (mac), 989/115/3 (M5 under uv), 1089/21/3 (demo core, integration live) | M5 2026-07-28: R1–R8 + P0–P2 + R5pre PASS; D2/D3 skipped by ruling. **Gate caught 4 defects, 2 invisible off-rig** | `e688606` | Gate done: design/32 §4 vocabulary corrected + Block-7b landed note; design/33 illumination-contract changes, failed-write-may-have-landed rule, and M5 405 findings (docs merge `d189722`) |
 | 8 | `design29/saved-dataset-foundation` | `c3af2b1` | `b1e347c` + `333144e` (7 review defects); 1052/99/3 | **pre-branch gate: `design29/probe-findings` (`cf0c00c`)** — probe was defective and its affine verdicts void; repaired, MMCore row-major pinned by `javap`. Live M5/demo/M2: **no measured affine anywhere**; identity is MM's default (same hash on two unrelated systems). Saved data gives the X column only (~90°, ~0.13 µm/px). No rig action for the implementation itself. | `e45a129` | Gate done: §5 precedence corrected (explicit ref beats the acquisition record, reconciling §2), measured per-image metadata contract recorded, Y column still open and owned by Block 9 |
 | 9 | `design29/stage-coordinate-mosaic` | `fecb93b` | through `82feeb5`; 1092/99/3 | **MERGED.** Gate run + R6. R1/R2/R3 pass — first non-sentinel per-image affine ever recorded. R3b: no objective key even with `Res1` live → acquisition-recorded identity unreachable on M2 (finding, not defect; artifact path mandatory). R4: both affine columns corroborated. R5 answered **offline** — dihedral match proves the renderer does not mirror. R6: affine orientation confirmed to 0.3° but **scales are wrong, −3.5% / −15.7%, anisotropic where the config reports isotropy** — traced by `javap` to Manual-Simple never measuring a scale at all. A calibration-input defect on M2, not a Block 9 code defect. | `311de3f` (+ close-out `a18c966`) | Gate done: design/29 gains "as built" — no interpolation (inverse nearest-neighbour, `floor(v+0.5)`, centre-based inclusive bounds, later-overwrites-earlier), TIFF + timestamp-free manifest, seam behaviour, six unsupported cases. design/26 corrected on all three counts of its `stage_coordinate_mosaic` promise; `analyze_frame` collision recorded as open for Block 10 |
-| 9b | `design33/read-only-rig-inventory` | | | read-only rig inventory required | | |
+| 9b | `design33/read-only-rig-inventory` | `a415adc` | | demo core now; M5 + one materially different rig deferred (see the block's coordinator ruling) | | |
 | 10 | `design26/completed-dataset-runner` | | | saved-data fixture | | |
 | 11 | `design26/generated-adapter-run-b` | | | required | | |
 | 12 | `design26/few-shot-run-c` (optional) | | | required | | |
@@ -939,6 +939,28 @@ Do not start this block until Block 9 is merged and its post-merge design gate i
 This is discovery infrastructure for Block 14 Phase 5, not an early configuration
 wizard and not an authorization mechanism.
 
+**Coordinator ruling (2026-07-29): built and verified on the demo core; the
+cross-rig run gates the MERGE, not the branch, and the merge blocks nothing.**
+Only the Micro-Manager demo config is reachable this session. The split is
+cleaner here than it was for Block 9 because this block writes nothing:
+
+- *Construction and refusal* — extraction, the `inspect-rig` command, the
+  inventory schema, fact/candidate separation, `review.md`, the non-loadable
+  YAML aid, and the whole fake-core mutation test — are verifiable off-rig and
+  on a demo core. The demo core is a real MMCore over the same pyjavaz bridge,
+  so the bridge-shaped defects this project keeps finding (collections that are
+  not iterable, a method read without `()`, camelCase fields) surface there.
+  The demo config also carries StateDevices with labels, shutters, config
+  groups with presets, and an autofocus and galvo — most enumeration paths.
+- *Cross-rig gap measurement* — real driver enumeration failures, serial and
+  FPGA devices, credential-bearing properties, and the size of a real
+  inventory — cannot be faked and stays blocked. That bullet stays unticked.
+
+Merging is not on Block 10's critical path: nothing before Block 14 Phase 5
+consumes the inventory, and Block 10 does not import it. So this block is built
+now, pushed to origin for rig review, and merged after the M5 run, in whatever
+order rig access allows. Do not weaken the cross-rig bullet to "demo passed".
+
 - [ ] Extract the read-only enumeration machinery from
       `design/32-block7b-device-property-probe.py` into reusable production code. Keep
       the probe's defensive per-property error capture and its prohibition on mutation.
@@ -972,6 +994,13 @@ wizard and not an authorization mechanism.
 - [ ] Run on at least M5 and one materially different rig. Retain commands, inventory,
       report, MM config hash, query failures, and a manual check that representative
       devices/properties/presets were neither omitted nor misreported as facts.
+      — **BLOCKED on rig access; demo core only this session.** The demo run is a
+      separate item below and does not discharge this one.
+- [ ] Run on the Micro-Manager demo core (`MMConfig_demo.cfg`) with and without
+      `design/33-block5-demo-safety-config.yaml` as the comparison config. Retain the
+      commands, `inventory.json`, `review.md`, the MM config hash, every query failure,
+      and a by-hand check that the demo's StateDevice labels, shutters, and `Channel`
+      preset expansions are present and are not reported as safety decisions.
 - [ ] Stop on any hardware mutation, agent/tool reachability, nondeterministic identity,
       silent enumeration loss, or candidate represented as an authorization decision.
 - [ ] Commit, review, and merge.
