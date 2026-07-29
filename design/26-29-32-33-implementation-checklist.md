@@ -45,7 +45,7 @@ Progress markers: `[ ]` not started, `[-]` active, `[x]` complete, `[!]` blocked
 | 7b | `design32/hook-illumination-and-artifacts` | `ff690e8` (main, 967/99/3) | `f300fff`…`35f6dc4`; 1014/99/3 (mac), 989/115/3 (M5 under uv), 1089/21/3 (demo core, integration live) | M5 2026-07-28: R1–R8 + P0–P2 + R5pre PASS; D2/D3 skipped by ruling. **Gate caught 4 defects, 2 invisible off-rig** | `e688606` | Gate done: design/32 §4 vocabulary corrected + Block-7b landed note; design/33 illumination-contract changes, failed-write-may-have-landed rule, and M5 405 findings (docs merge `d189722`) |
 | 8 | `design29/saved-dataset-foundation` | `c3af2b1` | `b1e347c` + `333144e` (7 review defects); 1052/99/3 | **pre-branch gate: `design29/probe-findings` (`cf0c00c`)** — probe was defective and its affine verdicts void; repaired, MMCore row-major pinned by `javap`. Live M5/demo/M2: **no measured affine anywhere**; identity is MM's default (same hash on two unrelated systems). Saved data gives the X column only (~90°, ~0.13 µm/px). No rig action for the implementation itself. | `e45a129` | Gate done: §5 precedence corrected (explicit ref beats the acquisition record, reconciling §2), measured per-image metadata contract recorded, Y column still open and owned by Block 9 |
 | 9 | `design29/stage-coordinate-mosaic` | `fecb93b` | through `82feeb5`; 1092/99/3 | **MERGED.** Gate run + R6. R1/R2/R3 pass — first non-sentinel per-image affine ever recorded. R3b: no objective key even with `Res1` live → acquisition-recorded identity unreachable on M2 (finding, not defect; artifact path mandatory). R4: both affine columns corroborated. R5 answered **offline** — dihedral match proves the renderer does not mirror. R6: affine orientation confirmed to 0.3° but **scales are wrong, −3.5% / −15.7%, anisotropic where the config reports isotropy** — traced by `javap` to Manual-Simple never measuring a scale at all. A calibration-input defect on M2, not a Block 9 code defect. | `311de3f` (+ close-out `a18c966`) | Gate done: design/29 gains "as built" — no interpolation (inverse nearest-neighbour, `floor(v+0.5)`, centre-based inclusive bounds, later-overwrites-earlier), TIFF + timestamp-free manifest, seam behaviour, six unsupported cases. design/26 corrected on all three counts of its `stage_coordinate_mosaic` promise; `analyze_frame` collision recorded as open for Block 10 |
-| 9b | `design33/read-only-rig-inventory` | `a415adc` | `1854e5d` → `c8d69e9` (2 review rounds, 9 defects); 1110/99/3 | **demo gate PASS 2026-07-29 on `cafe05b`** (2nd run). The 1st run FAILED Step 3 and caught two defects invisible off-rig: `reported_type` held a pyjavaz proxy's repr (heap address → nondeterministic fingerprint), and `get_device_adapter_name` does not exist. Re-run: identical fingerprints, zero enumeration failures, real property types, adapter names on all 14 devices. **Partial M2 offline replay:** 30 real devices / 395 properties at production-rig scale, including serial and FPGA devices; it exposed and discharged candidate cross-product and dual-unit representation defects. The cross-rig gate remains open: live M5 still owes real enumeration failures, credential redaction, live config groups and state labels beyond `.cfg` contents, and bridge-typed returns. | | |
+| 9b | `design33/read-only-rig-inventory` | `a415adc` | `1854e5d` → `c8d69e9` (3 review rounds, 11 defects); 1114/99/3 | **demo gate PASS 2026-07-29 on `cafe05b`** (2nd run). The 1st run FAILED Step 3 and caught two defects invisible off-rig: `reported_type` held a pyjavaz proxy's repr (heap address → nondeterministic fingerprint), and `get_device_adapter_name` does not exist. Re-run: identical fingerprints, zero enumeration failures, real property types, adapter names on all 14 devices. **Partial M2 offline replay:** 30 real devices / 395 properties at production-rig scale, including serial and FPGA devices; it exposed and discharged candidate cross-product and dual-unit representation defects. The cross-rig gate remains open: live M5 still owes real enumeration failures, credential redaction, live config groups and state labels beyond `.cfg` contents, and bridge-typed returns. | `041f6f8` | Gate done: design/33 "Landed: Block 9b" — schema regions, javap boundary, Phase 2/4/5 handoff, four open cross-rig items |
 | 10 | `design26/completed-dataset-runner` | `c1cc8ea` | `1d35d01` + `167732b` (7 review defects); 1116/99/3 | **saved-data, complete.** b9grid_2 (M2): frames 16/16; mosaic coverage 1.0000 over 553x537, zero uncovered, max overlap 6, `source_kind: artifact` — coordinator-reproduced independently. Identity check refuses a wrong camera device and model against the real `| iXon Ultra | DU897_BV | 8172 |`. No live-rig gate applies. | `a7a1e1c` | Gate done: design/26 mosaic metadata contract + loader tightening; design/29 calibration-artifact-writer gap |
 | 11 | `design26/generated-adapter-run-b` | | | required | | |
 | 12 | `design26/few-shot-run-c` (optional) | | | required | | |
@@ -963,32 +963,32 @@ consumes the inventory, and Block 10 does not import it. So this block is built
 now, pushed to origin for rig review, and merged after the M5 run, in whatever
 order rig access allows. Do not weaken the cross-rig bullet to "demo passed".
 
-- [ ] Extract the read-only enumeration machinery from
+- [x] Extract the read-only enumeration machinery from
       `design/32-block7b-device-property-probe.py` into reusable production code. Keep
       the probe's defensive per-property error capture and its prohibition on mutation.
-- [ ] Add `microclaw inspect-rig` with an explicit port, optional Micro-Manager `.cfg`
+- [x] Add `microclaw inspect-rig` with an explicit port, optional Micro-Manager `.cfg`
       path, optional existing reviewed safety config for comparison, and an output
       directory. Do not start an agent, web server, acquisition, or mutation tool.
-- [ ] Emit a versioned, deterministic `inventory.json` whose schema is independent of
+- [x] Emit a versioned, deterministic `inventory.json` whose schema is independent of
       `safety_config.yaml`. Record the MM config path/hash when supplied, MM/core
       identity, core device assignments, loaded devices and types, adapter identities,
       property metadata and query errors, StateDevice labels, configuration groups and
       fully expanded presets, and a hash/fingerprint of the live inventory.
-- [ ] Separate mechanically observed facts from heuristic candidates and unresolved
+- [x] Separate mechanically observed facts from heuristic candidates and unresolved
       human decisions. Driver-reported property limits are technical ranges, never
       inferred safe limits.
-- [ ] Emit `review.md` listing unclassified writable properties, suspected continuous
+- [x] Emit `review.md` listing unclassified writable properties, suspected continuous
       actuators, illumination power/enable pairs, preset effects, enumeration failures,
       declarations missing from the live rig, and live paths missing from an optional
       reviewed config.
-- [ ] If a YAML aid is emitted, make it conspicuously non-loadable (for example,
+- [x] If a YAML aid is emitted, make it conspicuously non-loadable (for example,
       `safety-config-template.yaml.not-ready`). It must remain `reviewed: false`, contain
       no inferred limits or approvals, and must not modify or replace an existing safety
       config. Do not add unresolved-marker keys to the strict safety schema.
-- [ ] Ensure the inventory retains enough raw evidence for Block 14 Phase 2 to add typed
+- [x] Ensure the inventory retains enough raw evidence for Block 14 Phase 2 to add typed
       actuator semantics and Phase 4 to analyze channel effects without changing the
       inventory format merely to match the safety schema.
-- [ ] Test with fake cores that only approved `get_*`, `is_*`, and `has_*` bridge calls
+- [x] Test with fake cores that only approved `get_*`, `is_*`, and `has_*` bridge calls
       occur; fail the test on any setter, motion, shutter, exposure, acquisition, plugin,
       or configuration-application call. Test partial query failures, deterministic
       ordering/hashes, redaction of credentials, output confinement, and comparison with
@@ -1006,7 +1006,7 @@ order rig access allows. Do not weaken the cross-rig bullet to "demo passed".
       run therefore still owes real enumeration failures, credential redaction, live
       config groups and state labels beyond what a `.cfg` holds, and bridge-typed
       returns. The separate demo run below does not discharge the cross-rig gate.
-- [ ] Run on the Micro-Manager demo core (`MMConfig_demo.cfg`) with and without
+- [x] Run on the Micro-Manager demo core (`MMConfig_demo.cfg`) with and without
       `design/33-block5-demo-safety-config.yaml` as the comparison config. Retain the
       commands, `inventory.json`, `review.md`, the MM config hash, every query failure,
       and a by-hand check that the demo's StateDevice labels, shutters, and `Channel`
@@ -1024,15 +1024,24 @@ order rig access allows. Do not weaken the cross-rig bullet to "demo passed".
       **The first run (`495e96c`, evidence `block9b_29072026`) FAILED Step 3 and is
       retained.** It caught both defects; neither was reachable off-rig, because the
       fake core invented `get_device_adapter_name` and returned a plain `"Float"`.
-- [ ] Stop on any hardware mutation, agent/tool reachability, nondeterministic identity,
+- [x] Stop on any hardware mutation, agent/tool reachability, nondeterministic identity,
       silent enumeration loss, or candidate represented as an authorization decision.
-- [ ] Commit, review, and merge.
+- [x] Commit, review, and merge. — merged `041f6f8` after three review rounds and
+      eleven defects. Two were caught only by the live demo gate's FAILED first run
+      and two only by the offline M2 replay; none was reachable from the off-rig
+      suite, which was green throughout.
 
 Post-merge design gate:
 
-- [ ] Update design/33 with the landed inventory schema, read-only boundary, measured
+- [x] Update design/33 with the landed inventory schema, read-only boundary, measured
       cross-rig gaps, and the exact handoff to Phase 2/4/5. Keep Phase 5 responsible for
       the interactive review workflow and for writing an unreviewed safety profile.
+      — design/33 gains "Landed: Block 9b" under the first-launch section: the three
+      structurally separate inventory regions Phase 5 must not flatten, the javap-pinned
+      read-only boundary and why a hand-written fake made it necessary, the
+      technical-range-never-a-safe-limit rule for Phase 2, the two heuristic findings
+      (no Cartesian assertions; dual-unit actuators) for Phase 4, and the four items
+      live M5 still owes before the format should be treated as frozen.
 
 ## 10. Design/26 — shared observation writer and completed-dataset runner
 
