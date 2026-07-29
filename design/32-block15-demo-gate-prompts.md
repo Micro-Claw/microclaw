@@ -103,10 +103,11 @@ what to change. Two ways it happens, both seen on the first live runs:
 - **the session never reached the high-water mark**, so no checkpoint was ever
   built. Lower `--high-water` / `--low-water` as `next_step` suggests, or add
   `--prompt` turns;
-- **turn 0 declared no artifact.** Check its `reply_head`: if the agent asked a
-  clarifying question rather than running the timelapse, the `--save-dir` was
-  missing or the guard refused it. Compaction can still be proved without this;
-  only the allowlist property is lost.
+- **no artifact was declared.** The allowlist property is lost; compaction can
+  still be proved without it. Note `run_timelapse` alone never declares an
+  artifact — it returns `dataset_path` with no `artifact` block, so the *export*
+  turn is what has to succeed. Check its `reply_head` for a guard refusal on the
+  output path.
 
 ---
 

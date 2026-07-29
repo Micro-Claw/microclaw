@@ -101,13 +101,18 @@ def test_compaction_is_batched_stable_and_keeps_tool_pairs_together(tmp_path):
     history = _turn(0, image=True) + sum((_turn(i) for i in range(1, 5)), [])
     history[0]["content"] += " with " + secret
     store = ConversationStore(
-        AuditLog(tmp_path / "audit.jsonl", secrets=[secret]), high_water_tokens=1200,
+        # The high-water mark has to clear the checkpoint's own fixed cost (the
+        # contract text, totals and digest -- ~500 tokens) plus the retained
+        # turns, or the next small turn re-trips it and the "stable prefix"
+        # property this test exists to check is untestable. Production's 120k
+        # default dwarfs that cost; these miniature budgets do not.
+        AuditLog(tmp_path / "audit.jsonl", secrets=[secret]), high_water_tokens=1500,
         low_water_tokens=500,
     )
     first = store.model_messages(history)
     assert store.compaction_count == 1
     checkpoint = first[0]
-    assert "Historical provenance only" in checkpoint["content"][0]["text"]
+    assert "EARLIER turns" in checkpoint["content"][0]["text"]
     assert "IMAGE-BYTES-SECRET" not in checkpoint["content"][0]["text"]
     assert secret not in checkpoint["content"][0]["text"]
 
@@ -191,3 +196,45 @@ def test_structured_credential_named_payload_keeps_its_shape():
 
     value = {"authorization": {"mode": "categorical", "token": "public-value"}}
     assert redact_credentials(value) == value
+
+
+def test_checkpoint_marks_its_contents_as_belonging_to_earlier_turns():
+    """Regression for the live G1 finding.
+
+    On the first compacted rig run the model answered "which values came from a
+    tool call THIS turn?" by listing two tools it had called four turns earlier;
+    the same prompt on an uncompacted run answered "none of them" correctly. A
+    bare list of tool names in context reads as current activity, so every key
+    that carries past activity has to say so in its own name, and the contract
+    has to forbid answering a current-turn question from the block. This test
+    cannot prove the model complies -- only that the framing is present.
+    """
+    from microclaw.conversation import _checkpoint
+
+    history = [
+        {"role": "user", "content": "measure the exposure"},
+        {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "c0", "name": "get_exposure", "input": {}}]},
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "c0", "content": "{}"}]},
+        {"role": "assistant", "content": [{"type": "text", "text": "10 ms"}]},
+    ]
+
+    text = _checkpoint(history)["content"][0]["text"]
+    payload = json.loads(text.split("\n", 1)[1])
+
+    # The tool is recorded, under a key that dates it.
+    assert payload["completed_actions_in_earlier_turns"] == [
+        {"tool": "get_exposure", "input": {}}
+    ]
+    assert "completed_actions" not in payload
+    assert "user_decisions" not in payload
+    for key in payload:
+        assert key not in {"artifact_references", "hashes"}, key
+
+    contract = payload["checkpoint_contract"]
+    assert "EARLIER turns" in contract
+    assert "NOT part of the current turn" in contract
+    # The specific failure observed live: answering a current-turn question out
+    # of the checkpoint instead of out of the visible messages.
+    assert "current turn from this block" in contract

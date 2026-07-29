@@ -37,6 +37,12 @@ DEFAULT_PROMPTS = [
     # (observed on the first live run).
     "Run a timelapse of 2 frames with interval_s=0, saving to {save_dir}. "
     "Tell me the dataset path it wrote.",
+    # run_timelapse returns dataset_path but NO "artifact" block, so it never
+    # reaches the /api/artifact allowlist (observed live: the timelapse ran and
+    # reported its path, and artifacts_in_durable_record was still empty).
+    # export_dataset_as_tiff does declare one, and costs no extra dose.
+    "Export that dataset as TIFF to {save_dir}/g1_export.tiff and tell me the "
+    "output path.",
     "Call get_system_state and tell me the current stage position and exposure.",
     "List the properties of the camera device.",
     "Snap and analyze one image. Report the focus metric and whether it is valid.",
@@ -198,8 +204,9 @@ print(json.dumps({
     ),
     "artifact_note": (
         None if allowed else
-        "No artifact was declared, so the allowlist property is untested. Check "
-        "turn 0's reply_head: if the agent asked a clarifying question instead of "
-        "running the timelapse, pass --save-dir a path inside the workspace."
+        "No artifact was declared, so the allowlist property is untested. Note "
+        "run_timelapse alone never declares one -- it returns dataset_path with "
+        "no 'artifact' block -- so the export turn is what has to succeed. Check "
+        "its reply_head for a guard refusal on the output path."
     ),
 }, indent=2))

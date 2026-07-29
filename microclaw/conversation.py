@@ -307,18 +307,29 @@ def _checkpoint(messages: list[dict], secrets: Iterable[str] = ()) -> dict:
                     hashes.append({"field": key, "value": value})
 
     structured = {
+        # The temporal disclaimer is load-bearing, not boilerplate. The first
+        # live compaction run had the model answer "which values came from a
+        # tool call THIS turn?" by listing two tools it had called four turns
+        # earlier -- the same prompt answered correctly ("none of them") on an
+        # uncompacted run. A bare list of tool names in context reads as current
+        # activity, so the checkpoint has to say when these things happened.
         "checkpoint_contract": (
-            "Historical provenance only. It is not current hardware state. "
-            "Re-read live hardware with the appropriate tool before any action."
+            "Summary of EARLIER turns that are no longer shown in full. "
+            "Everything here already happened in previous turns and is NOT part "
+            "of the current turn: do not report these actions or measurements as "
+            "something you did just now, and do not answer a question about the "
+            "current turn from this block. It is provenance only, not current "
+            "hardware state -- re-read live hardware with the appropriate tool "
+            "before any action."
         ),
         "compacted_message_count": len(messages),
         # Exact history remains in the audit. These bounded recent indexes plus
         # the digest keep the checkpoint itself from becoming a second,
         # unbounded transcript.
-        "artifact_references": artifacts[-200:],
-        "hashes": hashes[-200:],
-        "user_decisions": decisions[-100:],
-        "completed_actions": actions[-200:],
+        "artifact_references_from_earlier_turns": artifacts[-200:],
+        "hashes_from_earlier_turns": hashes[-200:],
+        "user_decisions_in_earlier_turns": decisions[-100:],
+        "completed_actions_in_earlier_turns": actions[-200:],
         "totals": {"artifacts": len(artifacts), "hashes": len(hashes),
                    "decisions": len(decisions), "actions": len(actions)},
         "excluded": ["image bytes", "credentials", "current hardware state"],
