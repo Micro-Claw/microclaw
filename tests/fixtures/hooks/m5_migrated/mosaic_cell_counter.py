@@ -96,7 +96,7 @@ class MosaicCellCounter:
                 objs.append(area_um2)
         return len(objs), objs
 
-    def analyze_frame(self, image, metadata):
+    def _measure(self, image, metadata):
         pos = metadata.get("Axes", {}).get("position",
                                            metadata.get("PositionName"))
         xu = metadata.get("XPosition_um_Intended")
@@ -104,18 +104,20 @@ class MosaicCellCounter:
         if xu is not None and yu is not None and pos is not None:
             self.tiles[pos] = (float(xu), float(yu), np.asarray(image))
         count, areas = self._count_mosaic()
-        return HookResult({
+        return {
             "tiles_seen": len(self.tiles),
             "tile_snr": round(float(self._snr(np.asarray(image))), 2),
             "running_cell_count": count,
             "mean_cell_area_um2": round(float(np.mean(areas)), 1) if areas else 0.0,
-        })
+        }
+
+    def analyze_frame(self, image, metadata):
+        return HookResult(self._measure(image, metadata))
 
     def analyze_saved_frame(self, image, metadata, context):
         """Offline design/26 entry point over the same pure counting state."""
-        live = self.analyze_frame(image, metadata)
         return {
-            "result": live.measurements,
+            "result": self._measure(image, metadata),
             "status": "provisional",
             "analyzer": "mosaic_cell_counter",
             "analyzer_version": "m5-migrated-fixture",

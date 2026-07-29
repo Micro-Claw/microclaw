@@ -120,6 +120,38 @@ class Dual:
     assert run(offline_home, "dual")["status"] == "completed"
 
 
+def test_live_and_offline_loaders_share_alphabetical_module_defined_selection(
+    offline_home, monkeypatch,
+):
+    from microclaw import hook_manager
+    save, *_ = offline_home
+    code = '''
+from collections import Counter
+class Zeta:
+ def analyze_frame(self, image, metadata): return None
+ def analyze_saved_frame(self, image, metadata, context): return {"chosen": "zeta"}
+class Alpha:
+ def analyze_frame(self, image, metadata): return None
+ def analyze_saved_frame(self, image, metadata, context): return {"chosen": "alpha"}
+'''
+    save("choice", code)
+    monkeypatch.setattr(hook_manager, "MANIFEST", completed_dataset.MANIFEST)
+    assert hook_manager.load_hook_class("choice").__name__ == "Alpha"
+    assert completed_dataset._load_saved_adapter("choice")[0].__name__ == "Alpha"
+
+
+def test_plain_measurements_may_use_status_key(offline_home):
+    save, *_ = offline_home
+    save("status_measurement", '''
+class Measurement:
+ def analyze_saved_frame(self, image, metadata, context):
+  return {"status": "ok", "cells": 3}
+''')
+    result = run(offline_home, "status_measurement")
+    assert result["status"] == "completed"
+    assert result["observations"][0]["result"] == {"status": "ok", "cells": 3}
+
+
 def test_untrusted_cannot_self_assert_observed(offline_home):
     save, *_ = offline_home
     save("claim", '''
@@ -154,6 +186,30 @@ class Artifact:
                  artifact_limits={"max_artifact_bytes": 2, "max_count": 1, "max_total_bytes": 2})
     assert result["status"] == "failed"
     assert "exceeds" in result["failure"]["message"]
+
+
+def test_manifest_survives_artifact_record_assembly_failure(offline_home, monkeypatch):
+    save, *_ = offline_home
+    save("bad_record", '''
+class Artifact:
+ def analyze_saved_frame(self, image, metadata, context):
+  context.artifacts.emit("x.bin", b"abc")
+''')
+    original = completed_dataset.write_hook_artifact
+    def outside_path(*args, **kwargs):
+        info = original(*args, **kwargs)
+        return {**info, "path": "/outside/artifact.bin"}
+    monkeypatch.setattr(completed_dataset, "write_hook_artifact", outside_path)
+    result = run(offline_home, "bad_record")
+    assert result["status"] == "failed"
+    assert result["failure"]["type"] == "ValueError"
+    assert Path(result["manifest_path"]).exists()
+
+
+def test_dataset_and_content_hashes_are_distinct(offline_home):
+    _, dataset, *_ = offline_home
+    dataset_hash, content_hash, _ = completed_dataset._dataset_content(str(dataset))
+    assert dataset_hash != content_hash
 
 
 def test_cancellation_before_adapter_invocation(offline_home):

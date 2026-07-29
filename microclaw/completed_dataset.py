@@ -21,12 +21,13 @@ from types import MappingProxyType
 from typing import Any, Iterable, Mapping
 
 import numpy as np
+import tifffile
 from ndstorage import Dataset
 
 from microclaw import __version__
 from microclaw.hook_decisions import write_hook_artifact
 from microclaw.hook_manager import (
-    FORBIDDEN_SAVED_HOOK_PARAMS, MANIFEST, lint_hook_code,
+    FORBIDDEN_SAVED_HOOK_PARAMS, MANIFEST, lint_hook_code, select_hook_class,
 )
 from microclaw.hooks import write_analysis_observation
 
@@ -89,17 +90,11 @@ def _load_saved_adapter(name: str):
     spec = importlib.util.spec_from_file_location(f"microclaw_offline_{name}", entry["path"])
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    live_only = False
-    for value in vars(module).values():
-        if not isinstance(value, type):
-            continue
-        if any(callable(getattr(value, verb, None)) for verb in OFFLINE_VERBS):
-            verb = next(v for v in OFFLINE_VERBS if callable(getattr(value, v, None)))
-            return value, verb, entry, source
-        live_only |= callable(getattr(value, "analyze_frame", None)) or callable(
-            getattr(value, "image_process_fn", None)
-        )
-    if live_only:
+    cls = select_hook_class(module, OFFLINE_VERBS)
+    if cls is not None:
+        verb = next(v for v in OFFLINE_VERBS if callable(getattr(cls, v, None)))
+        return cls, verb, entry, source
+    if select_hook_class(module, ("analyze_frame", "image_process_fn")) is not None:
         raise ValueError(
             f"Saved hook {name!r} implements only a live acquisition callback. "
             "Use analyze_saved_frame(image, metadata, context) or "
@@ -197,18 +192,19 @@ class AnalysisCancelled(RuntimeError):
     pass
 
 
-def _dataset_content(dataset_path: str) -> tuple[str, list[dict]]:
+def _dataset_content(dataset_path: str) -> tuple[str, str, list[dict]]:
     root = Path(dataset_path)
     files = [root] if root.is_file() else sorted(p for p in root.rglob("*") if p.is_file())
-    digest = hashlib.sha256()
+    content_digest = hashlib.sha256()
     manifest = []
     for path in files:
         relative = path.name if root.is_file() else path.relative_to(root).as_posix()
         data = path.read_bytes()
         item = {"relative_path": relative, "size_bytes": len(data), "sha256": _sha(data)}
         manifest.append(item)
-        digest.update(_canonical_bytes(item))
-    return digest.hexdigest(), manifest
+        content_digest.update(len(data).to_bytes(8, "big"))
+        content_digest.update(data)
+    return (_sha(_canonical_bytes(manifest)), content_digest.hexdigest(), manifest)
 
 
 def _optional_input_hashes(values: dict | None, guard) -> dict | None:
@@ -236,7 +232,9 @@ def _normalized_result(raw: Any) -> dict:
         raise TypeError("Offline analysis results must be dictionaries or None")
     known = {"result", "status", "analyzer", "analyzer_version", "parameters",
              "artifact_sha256"}
-    if "result" not in raw and not (set(raw) & (known - {"result"})):
+    # A normalized envelope is explicit: it always has a ``result`` field.
+    # Otherwise every key, including names such as ``status``, is a measurement.
+    if "result" not in raw:
         return {"result": raw, "status": "unverified"}
     unknown = set(raw) - known
     if unknown:
@@ -285,8 +283,8 @@ def run_analysis_on_saved_dataset(
         raise ValueError("No images exist in the selected dataset")
     selection = {"axis_selection": {k: axis_selection[k] for k in sorted(axis_selection)},
                  "coordinates": [{k: item[k] for k in sorted(item)} for item in coordinates]}
-    content_hash, content_manifest = _dataset_content(dataset_path)
-    dataset_identity = {"dataset_sha256": content_hash,
+    dataset_hash, content_hash, content_manifest = _dataset_content(dataset_path)
+    dataset_identity = {"dataset_sha256": dataset_hash,
                         "selection_sha256": _sha(_canonical_bytes(selection)),
                         "content_sha256": content_hash,
                         "selected_coordinates": selection["coordinates"]}
@@ -343,7 +341,7 @@ def run_analysis_on_saved_dataset(
                 data = Path(path).read_bytes()
                 artifacts.append({"path": path, "sha256": _sha(data),
                                   "size_bytes": len(data)})
-            image = np.asarray(__import__("tifffile").imread(mosaic_path))
+            image = np.asarray(tifffile.imread(mosaic_path))
             metadata = {"input_kind": input_kind, "mosaic_manifest": mosaic_result}
             if verb == "analyze_saved_frame":
                 raw_results = [instance.analyze_saved_frame(image, metadata, context)]
@@ -374,16 +372,7 @@ def run_analysis_on_saved_dataset(
         failure = {"type": type(error).__name__, "message": str(error)}
 
     finished = datetime.now(timezone.utc)
-    artifact_records = [{**item, "relative_path": Path(item["path"]).relative_to(output_dir).as_posix()}
-                        for item in artifacts]
-    scientific_payload = {
-        "selection": selection, "observations": [
-            {k: v for k, v in item.items() if k != "observed_at"} for item in observations
-        ],
-        "artifacts": [{k: item[k] for k in ("relative_path", "sha256", "size_bytes")}
-                      for item in artifact_records],
-    }
-    manifest = {
+    manifest_base = {
         "schema": "microclaw.completed-dataset-analysis/v1",
         "run_id": str(uuid.uuid4()), "status": status,
         "started_at": started.isoformat(), "finished_at": finished.isoformat(),
@@ -395,15 +384,41 @@ def run_analysis_on_saved_dataset(
                      "environment": {"microclaw": __version__, "python": sys.version.split()[0],
                                      "platform": platform.platform()}},
         "parameters": _json_value(parameters),
-        "model_project_config": _optional_input_hashes(model_project_config, guard),
-        "artifacts": artifact_records, "observations": observations,
         "calibration_used": calibration_identity is not None,
         "cancelled": status == "cancelled", "failure": failure,
-        "scientific_payload": scientific_payload,
-        "scientific_payload_sha256": _sha(_canonical_bytes(scientific_payload)),
     }
     if calibration_identity is not None:
-        manifest["calibration_identity"] = calibration_identity
+        manifest_base["calibration_identity"] = calibration_identity
+    try:
+        artifact_records = [
+            {**item, "relative_path": Path(item["path"]).relative_to(output_dir).as_posix()}
+            for item in artifacts
+        ]
+        scientific_payload = {
+            "selection": selection, "observations": [
+                {k: v for k, v in item.items() if k != "observed_at"}
+                for item in observations
+            ],
+            "artifacts": [
+                {k: item[k] for k in ("relative_path", "sha256", "size_bytes")}
+                for item in artifact_records
+            ],
+        }
+        manifest = {
+            **manifest_base,
+            "model_project_config": _optional_input_hashes(model_project_config, guard),
+            "artifacts": artifact_records, "observations": observations,
+            "scientific_payload": scientific_payload,
+            "scientific_payload_sha256": _sha(_canonical_bytes(scientific_payload)),
+        }
+    except Exception as error:
+        assembly_failure = {"type": type(error).__name__, "message": str(error)}
+        manifest = {
+            **manifest_base, "status": "failed", "cancelled": False,
+            "failure": failure or assembly_failure,
+            "manifest_assembly_failure": assembly_failure,
+            "artifacts": [], "observations": observations,
+        }
     manifest_path = Path(output_dir) / "analysis-manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2, allow_nan=False), encoding="utf-8")
     return {**manifest, "manifest_path": str(manifest_path),
