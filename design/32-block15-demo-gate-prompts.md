@@ -253,12 +253,30 @@ PASS: `400` for both.
 
 ### G4 — artifact download from an early turn
 
-In the browser, download the artifact declared in your **first** turn, after
-several later turns have run. PASS: the file downloads. A
-`403 Not an artifact produced by this session` is a defect — the allowlist is
-required to read the full durable record. (The compacted variant of this
-property is proved by G1's `artifacts_compacted_away_but_still_downloadable`;
-the shipped 120k/90k thresholds are unreachable by hand in one session.)
+**There is no download button in the UI.** The chip is drawn only from a tool
+result that carries an `artifact` object, and it appears *inside that tool's
+result card* — expand the collapsed tool card in the transcript and it is the
+labelled pill under **Result** (`transcript.js:98`). No declaring tool, no chip.
+The 2026-07-29 session found nothing to click for exactly this reason: not one
+of its tools declares an artifact. `run_tile_acquisition` with `protocol:
+"snap"` saves nothing, and `run_timelapse` returns `dataset_path` with **no**
+`artifact` block.
+
+So make one deliberately, as the **first** turn of the session. Either works:
+
+- `save_position_list` — cheapest, no exposure, and the grid positions are
+  already marked. Ask: *"Save the position list to grid.pos"* → chip
+  `position_list grid.pos`.
+- `export_dataset_as_tiff` on a dataset you already have on disk → chip
+  `tiff <name>.tiff`.
+
+Run several more turns, then expand that first tool card and click the chip.
+
+PASS: the file downloads. A `403 Not an artifact produced by this session` is a
+defect — the allowlist is required to read the full durable record. (The
+compacted variant of this property is already proved by G1's
+`artifacts_compacted_away_but_still_downloadable`; the shipped 120k/90k
+thresholds are unreachable by hand in one session.)
 
 ### G5 — the confirmation audit is durable
 
