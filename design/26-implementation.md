@@ -206,6 +206,50 @@ Also inherited: the mosaic **refuses** a dataset without per-image intended XY
 rather than reconstructing a grid, which is the normal shape for single-position
 acquisitions. See design/29 "Block 9 post-merge design gate — as built".
 
+## Landed: Block 10 (merge `a7a1e1c`, 2026-07-29)
+
+`microclaw/completed_dataset.py`. Implementation `1d35d01`, seven coordinator
+review defects fixed in `167732b`; 1116 passed / 99 skipped / 3 warnings.
+
+What shipped matches the brief above. Three things are recorded here because they
+constrain later work rather than merely describing this block.
+
+**1. The mosaic `input_kind` gives the adapter no per-image metadata.** For
+`frames`, an adapter receives that frame's real stored metadata. For
+`stage_coordinate_mosaic` it receives one assembled image plus
+`{"input_kind", "mosaic_manifest"}` — and **no `Axes`, no
+`XPosition_um_Intended`, no `YPosition_um_Intended`**, because a mosaic is one
+canvas rather than a positioned tile. Any coordinate-dependent analyzer is
+therefore structurally blind under this input kind. Measured, not inferred: the
+design/29 counting fixture returns `tiles_seen=0, running_cell_count=0` on a real
+mosaic built from `b9grid_2` at coverage 1.0000 — a metadata-contract fact, **not
+a count of anything**. An analyzer needing tile coordinates must consume `frames`,
+or this branch must grow a coordinate contract. Do not read its zero as a
+measurement.
+
+**2. Calibration for a mosaic is explicit, and `confirmed_current` is refused.**
+Correction 2 above offered "require an explicit ref *or* surface
+`acquisition_fallthrough_reason`". The runner requires the ref. It also refuses
+`kind: "confirmed_current"` outright, since that resolves against a live core
+which completed-dataset replay does not have; `artifact` and `knowledge_version`
+both work offline. Field-verified on `b9grid_2` (M2, no objective key): a
+hand-authored artifact resolves, the mosaic builds at coverage 1.0000 over
+553×537 with zero uncovered pixels, and the per-instrument identity check refuses
+both a wrong camera device and a wrong camera model against the real
+`| iXon Ultra | DU897_BV | 8172 |`.
+
+**3. Block 10 tightened Block 7's *live* loader.** Both loaders now share
+`hook_manager.select_hook_class`, which selects the first alphabetically named
+class **defined in the hook module** that exposes a wanted verb. Previously
+`load_hook_class` walked `dir(mod)` with no `__module__` filter, so an *imported*
+class could be selected, while the offline loader walked `vars()` in definition
+order — the same module could resolve to different classes live and offline,
+which is a real hazard for exactly the dual-use adapters this document blesses.
+The shared helper fixes both. **This is a behaviour change to a shipped path:** a
+saved hook that only imports its class and defines none now fails to resolve
+where it previously loaded. All four migrated M5 fixtures define their classes
+locally and are unaffected.
+
 The runner normalizes output to `microclaw.analysis-observation/v1`. It must not
 filter acquisition, move hardware, or present an authoritative biological result.
 Enforce the capability boundary from the first implementation: offline adapters are

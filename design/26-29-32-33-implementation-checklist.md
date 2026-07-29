@@ -46,7 +46,7 @@ Progress markers: `[ ]` not started, `[-]` active, `[x]` complete, `[!]` blocked
 | 8 | `design29/saved-dataset-foundation` | `c3af2b1` | `b1e347c` + `333144e` (7 review defects); 1052/99/3 | **pre-branch gate: `design29/probe-findings` (`cf0c00c`)** — probe was defective and its affine verdicts void; repaired, MMCore row-major pinned by `javap`. Live M5/demo/M2: **no measured affine anywhere**; identity is MM's default (same hash on two unrelated systems). Saved data gives the X column only (~90°, ~0.13 µm/px). No rig action for the implementation itself. | `e45a129` | Gate done: §5 precedence corrected (explicit ref beats the acquisition record, reconciling §2), measured per-image metadata contract recorded, Y column still open and owned by Block 9 |
 | 9 | `design29/stage-coordinate-mosaic` | `fecb93b` | through `82feeb5`; 1092/99/3 | **MERGED.** Gate run + R6. R1/R2/R3 pass — first non-sentinel per-image affine ever recorded. R3b: no objective key even with `Res1` live → acquisition-recorded identity unreachable on M2 (finding, not defect; artifact path mandatory). R4: both affine columns corroborated. R5 answered **offline** — dihedral match proves the renderer does not mirror. R6: affine orientation confirmed to 0.3° but **scales are wrong, −3.5% / −15.7%, anisotropic where the config reports isotropy** — traced by `javap` to Manual-Simple never measuring a scale at all. A calibration-input defect on M2, not a Block 9 code defect. | `311de3f` (+ close-out `a18c966`) | Gate done: design/29 gains "as built" — no interpolation (inverse nearest-neighbour, `floor(v+0.5)`, centre-based inclusive bounds, later-overwrites-earlier), TIFF + timestamp-free manifest, seam behaviour, six unsupported cases. design/26 corrected on all three counts of its `stage_coordinate_mosaic` promise; `analyze_frame` collision recorded as open for Block 10 |
 | 9b | `design33/read-only-rig-inventory` | | | read-only rig inventory required | | |
-| 10 | `design26/completed-dataset-runner` | | | saved-data fixture | | |
+| 10 | `design26/completed-dataset-runner` | `c1cc8ea` | `1d35d01` + `167732b` (7 review defects); 1116/99/3 | **saved-data, complete.** b9grid_2 (M2): frames 16/16; mosaic coverage 1.0000 over 553x537, zero uncovered, max overlap 6, `source_kind: artifact` — coordinator-reproduced independently. Identity check refuses a wrong camera device and model against the real `| iXon Ultra | DU897_BV | 8172 |`. No live-rig gate applies. | `a7a1e1c` | Gate done: design/26 mosaic metadata contract + loader tightening; design/29 calibration-artifact-writer gap |
 | 11 | `design26/generated-adapter-run-b` | | | required | | |
 | 12 | `design26/few-shot-run-c` (optional) | | | required | | |
 | 13 | `design32/hook-worker-isolation` | | | regression required | | |
@@ -988,13 +988,14 @@ Post-merge design gate:
 
 Branch: `design26/completed-dataset-runner`
 
-- [ ] Create the branch from updated `main`.
-- [ ] Extract one observation writer shared by live `HookBase.log_analysis` and offline
+- [x] Create the branch from updated `main`. — from `c1cc8ea`, in a git worktree so a
+      concurrent block could not share a working directory.
+- [x] Extract one observation writer shared by live `HookBase.log_analysis` and offline
       analysis; retain the closed statuses `unverified`, `provisional`, and `observed`.
-- [ ] Implement a selection-limited, read-only `DatasetView` and bounded context exposing
+- [x] Implement a selection-limited, read-only `DatasetView` and bounded context exposing
       only immutable input identity, artifact directory, observation emission, and
       cancellation.
-- [ ] Implement reviewed/hash-pinned saved-adapter loading for `analyze_saved_frame` and
+- [x] Implement reviewed/hash-pinned saved-adapter loading for `analyze_saved_frame` and
       `analyze_completed_dataset`. **Not `analyze_frame`** — that verb is Block 7's shipped
       *live* contract, and the collision was settled on 2026-07-29 by renaming the offline
       side (design/26 "SETTLED"; docs merge recorded in the ledger). Refuse a live-only
@@ -1002,28 +1003,38 @@ Branch: `design26/completed-dataset-runner`
       `microclaw/tools.py` already ships in the other direction. Do not replay
       acquisition-time `image_process_fn` as an offline callback unless design/26 is first
       explicitly revised to define a safe compatibility contract.
-- [ ] Add generic `run_analysis_on_saved_dataset` with `frames` and
+- [x] Add generic `run_analysis_on_saved_dataset` with `frames` and
       `stage_coordinate_mosaic` input kinds; call Block 9 for the latter.
-- [ ] Record dataset/selection/content hashes, analyzer source/version/environment,
+- [x] Record dataset/selection/content hashes, analyzer source/version/environment,
       parameters, optional model/project/config, artifacts, calibration only when used,
       status, timestamps, cancellation, and failures.
-- [ ] Compare deterministic scientific payload/ranking/artifacts separately from run IDs,
+- [x] Compare deterministic scientific payload/ranking/artifacts separately from run IDs,
       paths, timestamps, and latency.
-- [ ] Supply no controller, guard, acquisition, event queue, or credentials. State clearly
+- [x] Supply no controller, guard, acquisition, event queue, or credentials. State clearly
       that source review/hash pinning is the gate until Block 13 supplies process isolation.
-- [ ] Test malicious capability requests, selection escape, artifact escape/limits,
+- [x] Test malicious capability requests, selection escape, artifact escape/limits,
       cancellation, per-frame and batch adapters, normalized replay, and zero hardware
       action.
-- [ ] Run the design/29 provisional counting fixture over a saved mosaic and frames. Check
+- [x] Run the design/29 provisional counting fixture over a saved mosaic and frames. Check
       that it emits provisional observations and takes no exposure or hardware action;
       do not promote it to an analysis-specific public tool.
-- [ ] Commit, review, and merge.
+      — done on real data. Frames over `b9grid_2` (M2): 16/16, provisional throughout.
+      Mosaic: one provisional observation, `tiles_seen=0`. That zero is **structural**,
+      not a count — the mosaic branch supplies no `Axes` and no intended XY, so a
+      coordinate-dependent analyzer is blind there. Recorded in design/26's Block 10
+      landed note; it constrains any future coordinate-aware mosaic analyzer.
+- [x] Commit, review, and merge. — merged `a7a1e1c`.
 
 Post-merge design gate:
 
-- [ ] Update design/26's normative implementation brief with the exact loader, view,
+- [x] Update design/26's normative implementation brief with the exact loader, view,
       manifest, and replay contracts and measured fixture behavior. Update design/29 §3
-      only where its consumer call changed. Merge docs before Run B.
+      only where its consumer call changed. Merge docs before Run B. — design/26 gains
+      "Landed: Block 10" (mosaic metadata contract, explicit calibration ref with
+      `confirmed_current` refused offline, and the shared `select_hook_class` that
+      **tightened Block 7's live loader**). design/29 gains the open gap Block 10 found:
+      no supported way to author a calibration artifact for a historical dataset — and
+      an explicit correction that this is NOT about objective turrets.
 
 ## 11. Design/26 Run B — generated adapter for a real existing analysis
 
