@@ -146,8 +146,28 @@ The result is written back through
 `PixelConfigEditor` and `PixelPresetEditor` (reached from `CalibrationListDlg`).
 So the calibrator is launched from the pixel-size config editor and stores its
 affine into that config, exactly where our probe's `get_pixel_size_affine_by_id`
-already reads. The precise menu label is not confirmed from bytecode; find it
-under the Pixel Size Calibration editor.
+already reads.
+
+**The launch control is resolved** (2026-07-29, `javap` + constant-pool strings
+on the local `MMJ_.jar`). `AffineEditorPanel` — the "Affine Transform (Rotation
+and Scaling)" box inside the Pixel Preset Editor — carries three buttons:
+
+| Button | What it does | Use it? |
+|---|---|---|
+| `Measure` | constructs `PixelCalibratorDialog(Studio, PixelSizeProvider)`; that dialog offers `Select method:` = Automatic / Manual-Precise / Manual-Simple, a `Safe travel radius, um:` combo, and `Start` | **yes** — this is the real move/snap calibrator |
+| `Calculate` | calls `PixelSizeProvider.getPixelSize()` + `AffineUtils.noTransform()` to synthesize a **pure-scale** affine from the scalar | **never** |
+| `Reset` | restores `originalAffineTransform` | — |
+
+`Measure` only opens the dialog; the run starts at `Start` inside it.
+
+**`Calculate` is a trap and must be named as one.** It fabricates a
+non-sentinel-looking affine with zero rotation and no measurement behind it —
+which would pass any finite-and-nonsingular check, satisfy the
+"obtain a dataset with a non-sentinel affine" prerequisite, and be a lie. The
+same fabrication is offered as a prompt: `PixelPresetEditor` contains the string
+`"Affine transform appears wrong.  Calculate from pixelSize?"`, which MM raises
+precisely because the stored affine is identity. **Answer No.** This is the
+identity-default hazard of the demo's 10×/20×/40× configs, except self-inflicted.
 
 **Consequence for this design: the outstanding Y column is an operator action,
 not an implementation task.** Do not write a move/snap spike. Run MM's calibrator

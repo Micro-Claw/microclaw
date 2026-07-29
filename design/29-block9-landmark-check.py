@@ -23,6 +23,30 @@ feature against the sample can rule that out -- hence the PNG this writes.
 
 Usage:
     python design/29-block9-landmark-check.py <dataset> <cal.json> [--axis time=0]
+
+<cal.json> is a calibration artifact, or any mosaic manifest this tool wrote
+(both are accepted). To rebuild M2's from the measured Res1 values -- the
+knowledge base does not hold it, and nothing in the repo does either:
+
+    import json
+    from microclaw.calibration import (
+        StageCameraAffine, canonical_affine_payload, affine_payload_hash)
+    a = StageCameraAffine(0.0, 0.127, -0.127, 0.0, "obj", 1, 0.127)
+    json.dump({"payload": canonical_affine_payload(a),
+               "payload_sha256": affine_payload_hash(a),
+               "camera_device": "Andor",
+               "camera_model": "| iXon Ultra | DU897_BV | 8172 |",
+               "roi": [0, 0, 512, 512]},          # calibrated at full frame
+              open("res1.json", "w"))
+
+The ROI is deliberately the calibration's, not the dataset's; a difference is
+recorded rather than refused (see design/29's 2026-07-29 section).
+
+Fixture paths on this machine, for whoever picks this up:
+    run_a_2      OneDrive-Personal/Microclaw/microclaw-json-histories/run-a/run_a_2
+    M5 2500-tile ~/Documents/Documents - Beyonce/Projects/Micro-Claw/scan488_900_1
+    spiral       ~/Documents/.../260720_PD_testMicroClaw_M2  (unusable: no intended XY)
+Copy before reading; treat the originals as read-only.
 """
 
 from __future__ import annotations
