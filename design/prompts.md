@@ -2924,3 +2924,451 @@ remote?
 port-to-jpype-acqj and the two florian/* branches alone. Updated the memory Block
 7 had just falsified -- it still claimed saved hooks must define
 `image_process_fn`.]
+
+----
+
+Continue the checklist in design/26-29-32-33-implementation-checklist.md at block
+7b. You are the coordinator. You will decide what to do next what blocks to hand
+off to other agents to complete. Please hand me the prompt and I will pass it to
+an agent. Then I will tell you when the agent is done. You will check it and
+decide what to do next.
+
+agent ran: (pasted report: illumination envelopes on all four hook paths,
+artifacts with SHA-256, DiscardFrame, 996/99/3)
+
+runner returned: (pasted report, with a self-correction that the previous number
+was 995 passed / 1 failed, not 996 passed)
+
+Preflight stuff is in microclaw_block7b in the root of this repository. Do not
+commit this folder to git. Please check if this is sufficient. Also, please be
+more explicit in your R1-R8 instructions in 32-block7b-rig-gate-prompts.md. How
+should I save each migrated hook? How do I get microclaw to call
+generate_and_save_hook for these? Are they not already written? Why not just copy
+them over?
+
+OK. But is it worth actually turning on the UV here? Maybe rather than me listing
+all of the properties, you can write a spike to get the device properties
+available on the M5. Then you could write which ones to explicitly enable in the
+white list
+
+OK, the device properties, r5pre history and its configuration file, and new
+pytest and compileall (now run with uv) are all in the microclaw_block7b folder
+
+1. I am not sure what it does. I contacted Toptica about this and then sent me a
+command reference that explains some of it. Perhaps the more important thing to
+look at is how EMU interacts with the lasers, since this is how they are
+controlled on this system. The EMU configuration is in this folder at
+config_emu_m5.uicfg. 2. I don't know, again, let's check the EMU config. I think
+TTL activates the FPGA to allow the laser to emit. So it's gating. But I am not
+sure. You could check https://github.com/mufpga/MicroFPGA for details of how
+MicroFPGA-Hub works
+
+OK, let me run P2 and R1-R8 on the rig
+
+Tried P2. Both iChrome-MLE-TCP-Laser4: 1. Enable and 2. Emission need to be set
+to 1 before I can see laser light. Neither alone is sufficient to enable the
+laser
+
+I want us to keep one more thing in mind: M5 is a strange setup. Most
+Micro-Manager systems do not use EMU at all (even though it is always available,
+as it ships with Micro-Manager). Even fewer systems use MicroFPGA to control
+their lasers. So, while it's critical to get this right for this system, I do not
+want to over-tailor microclaw to this kind of setup. Most other Micro-Manager
+setups I use will be closer to the Demo configuration
+
+[the constraint that shaped the rest of the block: rig specifics go in gate docs
+and spikes, never into microclaw/. Wrote the device-property probe rather than
+asking for a hand-listed whitelist, which is what surfaced that the M5 405 path
+needs BOTH Enable and Emission -- neither alone emits -- and that EMU's slot
+order is reversed relative to the device list.]
+
+OK. I had started in on "How to save migrated hooks" and I ran into the problem
+that the hook file cannot be read because it's outside the workspace directory.
+This implies that the workspace directory must overlap with the microclaw code
+directory. This should not be the case: the user should be able to define the
+workspace anywhere on the machine. What's more: it's annoying that the workspace
+has to be defined before launch. Maybe we could ease up on the workspace
+requirements
+
+I think the read policy is good. I'd like to defer the workspace decision until
+later. The command line is the most enticing, but the problem is I expect a lot
+of users to access microclaw via double clicking the shortcut, in which case they
+will not have an option to set the workspace. The runtime tool would be nice for
+flexibility, but I do worry about allowing updates writing areas live from a
+security perspective. Let's just enable the broader reading for now
+
+But wait. I was having trouble reading the migrated hooks when i was testing 7b.
+If we don't fix this first, how can I complete the gate?
+
+[correct -- the gate was unrunnable without it, so the read/write split had to
+land first rather than after. Split every path into confined-write and
+unconfined-read and enumerated all three mixed read/write sites rather than
+guessing at them.]
+
+The results of R1-R3 of block7b are now in microclaw_block7b. It's worth noting
+that some of the non-legacy hooks are missing, despite running the "how to save
+the migrated hooks" section
+
+I migrated all of the hooks. I've placed the history for runs r4, r5, r6 in
+microclaw_block7b. I've also included the safety_config.yaml used. Please note
+that I ran all of this on the commit prior to the latest fixes (83a48e2).
+
+Yes, write the prompt for the describe_hook fix
+
+OK. While that is running, can you tell me what I still need to run on M5 to
+close 7b?
+
+OK. The recommended sequence of gates on the m5 is in
+20260728_144452_microclaw_history.json
+
+Can you put detailed instructions into the rig gate prompts on how to get through
+these last set of tests? Explicit instructions/prompts please
+
+I ran the closeout tests in 20260728_152356_microclaw_history.json
+
+AH sorry. I put r7 and r2-stitcher in the folder now. Fix prompt for F2 sounds
+right. I sort of agree for F1, except we do want the uv to ramp, not just jump to
+the maximum value. But we also don't want to overengineer... Let's try
+documenting it plainly and we can fix it if it becomes a problem in experiments
+later
+
+Look at the demo_7b folder inside this folder. D1 and D2 are run here.
+
+I put the new demo files in the folder. I'd just forgotten to start
+Micro-Manager. You really jumped the gun editing that stuff. I just re-ran it
+without any of the changes
+
+[fair, and the correction stuck: a single failed rig run is a data point, not a
+diagnosis. I had started writing fixes for what turned out to be MM not running.]
+
+I put the rest of the R2 stuff in microclaw_block7b
+
+The r5c re-run is in microclaw_block7b/20260728_161753_microclaw_history.json.
+Let's skip D2 and D3
+
+Yes, merge it
+
+Yes, land those two before block 8. Would it make sense to do each in subagents?
+
+Not yet. I want to pause here and pick up block 8 in a new session. Can you
+please ensure that everything we need done from previous blocks is complete and
+we are ready to pick up with block 8? Please also remove any dangling branches
+locally and on the remote
+
+[merged e688606. The gate caught four defects including a write that had failed
+and still left the illumination baseline stale, so a later ratchet check compared
+against a value the device never held. Dose remains unbounded: the envelope caps
+level, not level x duration, which is how the FPGA path actually accumulates it.]
+
+----
+
+Continue the checklist in design/26-29-32-33-implementation-checklist.md at block
+8. You are the coordinator. You will decide what to do next what blocks to hand
+off to other agents to complete. Please hand me the prompt and I will pass it to
+an agent. Then I will tell you when the agent is done. You will check it and
+decide what to do next. I have already run 29-mm-pixel-affine-probe.py and the
+result is in the root of this repository as 29-mm-pixel-affine-probe.txt.
+
+Have a look at 29-mm-pixel-affine-probe-demo.txt from the demo config before
+proceeding. I think perhaps M5 simply hasn't been configured properly
+
+Please also have a look at 29-mm-pixel-affine-probe-m2.txt, which is the same
+probe run on a microscope very similar to M5, but is slightly different. This one
+has a properly configured pixel size with label Res0 and pixel size of 0.127,
+which doesn't seem to show up in the probe.
+
+[the demo comparison is what broke the block open, and it inverted the reading:
+the demo's 10x, 20x and 40x configs all carry the SAME identity affine and the
+same canonical SHA-256, which 20x cannot possibly share with 10x. So identity
+means DEFAULT, not calibration -- an empirically confirmed hazard rather than a
+theoretical one, and the same hash turned up on unrelated M2's Res0. The probe
+itself was defective and its affine verdicts void: it had decoded MMCore
+row-major order as Java getMatrix order. javap on the local MMJ_.jar settled the
+ordering rather than inference.]
+
+agent returned: (pasted report: probe repaired, six defects, convention verdict
+FAIL on all 17 adjacent correlations)
+
+Started it. Can you push the new probe so I can run it on the microscopes? I
+don't have much more time to try this out
+
+agent returned: (pasted report correcting the convention findings: run_a_1 is
+dark and rejected, run_a_2 PARTIAL with X determined and Y unresolved)
+
+OK. I already re-ran the probe on demo, M2, and M5. The text files are in the
+root of this repository.
+
+runner finished: (pasted report: cf0c00c, per-config get_pixel_size_um_by_id,
+three live verdicts recorded)
+
+OK. Can you tell me exactly what to do with M2's pixel calibrator? And where the
+move/snap spike is? And what are the file names and locations for the design/30
+spiral and the 2500-tile data sets, as reported in the histories?
+
+OK. Can you please make notes in the design docs about these functions you found,
+so we do not rebuild them unnecessarily?
+
+[there is no move/snap spike and there should not be one: javap showed MM already
+ships the calibrator, CalibrationThread.result_ is a full AffineTransform, and
+AutomaticCalibrationThread does the move/snap cross-correlation. Recorded as "do
+not build a move/snap affine spike" so a later session does not re-derive it.
+Recovered the fixture paths from the saved histories so nobody re-hunts them.]
+
+Yeah the stitcher was on M5, instead of M2. Also the pixel size of 0.105 may have
+been arbitrarily set. Can you tell me what's left on Block 8?
+
+Yeah run_a_2 was on M2
+
+[instrument attribution mattered more than it looked: the fixtures span two
+machines, not three, and each needs its own calibration identity. M5's 0.105 is
+not in tension with M2's 0.127 -- they are different microscopes.]
+
+Open the Block 8 implementation branch and hand me the prompt
+
+runner returned: (pasted report: b1e347c, sparse _iter_present_coords, canonical
+affine hashing, immutable calibration versions, 1045/99/3)
+
+runner returned: (pasted report: 333144e, D1-D7 corrections, 1052/99/3)
+
+OK. So what is left to do on block 8?
+
+move it to block 9's prerequisites
+
+[the Y-column item was written into Block 8 but binds on Block 9: nothing Block 8
+ships consumes an affine's values, while Block 9 cannot place a tile without a
+full 2x2. Moved rather than left to block the wrong thing.]
+
+OK. Am I all set to stop for now and pick up block 9 in a new session?
+
+Can you clean up all the dangling branches from this block on here and on the
+remote?
+
+[merged e45a129 plus the design gate ec3ff9e. Two ROI findings from real
+metadata: it is dash-delimited '36-50-453-227', and there is no single camera
+model key -- Andor writes <Device>-Camera where Hamamatsu writes -CameraName.]
+
+----
+
+Continue the checklist in design/26-29-32-33-implementation-checklist.md at block
+9. You are the coordinator. You will decide what to do next what blocks to hand
+off to other agents to complete. Please hand me the prompt and I will pass it to
+an agent. Then I will tell you when the agent is done. You will check it and
+decide what to do next.
+
+[ruled first, before handing anything off: Block 9's three prerequisites gate the
+MERGE, not the branch. Construction is correct or incorrect independently of an
+affine's values; only verification needs real data. That let the block open
+while the rig work was still outstanding.]
+
+I haven't done anything on the rig yet. Runner returned: (pasted report: 441cbd4,
+dataset_mosaic.py, 1084/99/3, run_a_2 mosaic pixel SHA-256 b98e549e...)
+
+runner returned: (pasted report: 89efd3e, five fixes, 1085/99/3, run_a_2 hash
+unchanged)
+
+[review found five, two of them invisible to a green suite. Forward sampling
+rendered SOLID tiles as STRIPES -- 15 of 31 output columns zero under an
+anisotropic affine -- and the test that parametrized all seven affine families
+asserted nothing about pixel locations, so it could not have caught it. Fixed
+with inverse vectorized sampling and exact placement assertions against an
+independently written scalar reference. Also: overlap counted resampling
+multiplicity, so a SINGLE tile reported 100% overlap.]
+
+OK, so, for M2. I am on it now. I went to Devices > Pixel Size Calibration. I
+selected the single element in there with label "Res0" and Pixel Size [um]
+"0.127". When I click edit, I see [...] "Property Name": {"SmarActZ-Frequency":
+5.000, "SmarActXY-Frequency": 5, "SmaractXY-Hold time (ms)": 10}. So, it looks
+like the SmarActXY.Frequency is set to 5, but it's a floating point number,
+"5.000".
+
+Devices > Device Property Browser indeed has "SmarActXY-Frequency" set to 5. I am
+willing to bet that "5.000" gets read in as a string and cast to 5000 using
+system defaults (in the European Union, "." is the thousands separator by system
+default, and "," is the floating point decimal separator, but Micro-Manager is an
+American system that uses "." for floating point decimal separators), when it
+should be cast to 5. I will try the calibration now and let you know how that
+goes
+
+Unfortunately I every time I run measure, MM crashes
+
+The frequency thing is wrong. No one changed it. It was just read in wrong by the
+spike. I am sure of this. When I go to the device property browser, the minimum
+value for SmarActXY-Frequency is 1 and the maximum is 18.500. It has been set at
+5 for years.
+
+[correct, and it corrected me: the instruction to "fix M2's blocking predicate"
+pointed at the wrong thing. The mismatch is config-string format drift on a de_AT
+system -- MM's own CoreLog writes SmarActXY/Frequency:18,500 with locale
+separators -- so editing the live device to match a stale string would have been
+actively wrong.]
+
+I tried Manual (simple) and Automatic with the lowest values possible (1000) and
+it still crashes every time. I have placed the CoreLogs from this latest crash at
+[...]. I suspect there are some misconfigured settings in Res0
+
+Instead of doing this, I continued working on M2. Instead of modifying Res0, I
+created a new pixel calibration, Res1, on M2. For this new one, I was able to
+calibrate the M2 pixel size, and there was no crash. The result of running the
+probe on M2 after this is at [...]/29-post-calib-pixel-affine-probe-M2.txt
+
+[the CoreLog ends mid-sequence 22 ms after aborting an iXon sequence acquisition,
+with no exception -- a native process death, and a race in the Andor SDK
+wind-down rather than a Res0 misconfiguration, since the same transition survived
+twice earlier at 13 and 20 ms. Calibrating into a NEW config was the right move
+and it worked.]
+
+The values all came from the calibrator. I didn't change anything. I agree that
+translation of the ROI is harmless and it doesn't make sense to block on this.
+Why does keeping the refusal as default make sense and how would a user have to
+specify that this OK? I don't want this process to be too annoying for a user
+
+[it did not make sense, and I dropped it. Block 9's first implementation refused
+on an ROI difference, which blocked the first genuinely measured affine we have
+from reaching the first fixture we have. ROI never enters placement arithmetic.
+Now recorded, not refused; camera device, model and binning still refuse.
+Separately recorded the suspicious exactness of Res1 -- exact zeros, exactly
++-0.127, exactly -90.00, both scales identical to the digit -- as cleaner than a
+correlation fit normally lands. That note paid off two sessions later.]
+
+go ahead and write up the design/29 corrections. Also have a look at [...]
+260720_PD_testMicroClaw_M2, which is the spiral data, which was taken on M2 and
+therefore has the Res0/Res1 calibration. I have also included the 2500-tile
+fixtures [...]. Please note that the 2500-tile fixtures were taken on M5, which
+has a different calibration.
+
+[the spiral is unusable for placement and it is M2, not a third instrument -- 25
+SEPARATE single-position datasets, no position axis, no intended XY at all, and a
+200 um step against a 57x29 um field so the tiles never overlap. Withdrawn rather
+than deferred. Scale gate passed on the 2500-tile fixture: 8576x8580 in 3.4 s at
+723 MB peak RSS, so chunked output is deliberately not implemented.]
+
+OK. For task 1, can you give me a prompt? For task 2, how do you want me to look
+at this? Will you stitch the tiles together for me and I tell you if they look
+correct? Or something else?
+
+OK. I feel like this session is suffering a bit from too much history. Am I in a
+position where I could start a new session and pick up from where we left off
+here?
+
+OK. Can you give me a prompt to restart this?
+
+[wrote the handoff prompt and the R1-R5 rig gate, committed so the next session
+would read the record rather than a summary.]
+
+----
+
+(a Block 9 session and a Block 10 session were each opened and interrupted within
+two minutes, with no work done; not recorded separately)
+
+----
+
+You are the coordinator for design/26-29-32-33-implementation-checklist.md [...]
+Continue at Block 9. [...] Block 9 is BUILT AND PUSHED but NOT MERGED [...] Start
+by confirming that state against the repo rather than trusting this summary.
+
+When I run the rig gate, I will need to modify my safety configuration on M2 to
+match the new format. I have included the Micro-Manager configuration file for
+M2 [...] and the result of design/32-block7b-device-property-probe.py [...].
+Please give me a new configuration file that will have enough elements enabled to
+run the rig gate.
+
+[built the M2 profile from the .cfg roles and the probe's device types, then
+proved it: parses, and validate_live_rig runs clean against a stub core replayed
+from the real inventory. Three entries were judgement calls -- the focus lock is
+NOT an illumination shutter, because a listed shutter is driven to off_value on
+session exit and that would kill the lock as a side effect of quitting; the
+MicroFPGA Duration/Mode/Sequence properties are excluded outright because dose is
+level x duration and the gate bounds only level; and the step factor is 10 rather
+than 3 because the heads idle at 1.0012% and factor 3 would refuse the first
+legitimate command of the session. Reading the metadata to build it turned up the
+finding: four of the five identity fields resolve on M2 and the objective does
+not, across all 420 keys, so acquisition-recorded calibration can never complete
+there.]
+
+For R1b, what dataset should I try this on, given that I haven't taken any data
+sets yet with the new rig? Should this not be for R3? For R2, please give me a
+prompt
+
+[right on both counts -- R1b read R2's saved dataset, so it could not run before
+R2 existed. Moved to R3b. Writing R2's prompt turned up the two things that would
+have quietly ruined the run: hook_strategy is not optional, because without it
+every position is written as its own single-position dataset with no intended XY
+-- exactly how the unusable spiral was acquired -- and the Y line must be
+rows=6, cols=1, because run_tile_acquisition rasters rather than serpentines and
+a wider grid puts a full-width X return between rows.]
+
+I've placed all of the data, the output txts of the runs, and the history file in
+[...]/b9_gate
+
+[R1/R2/R3 pass, and the first non-sentinel per-image affine we have ever had.
+R3b returned {}, so the objective key is absent even with a config active and
+question 1 is answered negatively for a reason unrelated to the transform. R4
+corroborated the Y column at last -- cross-axis residual +0.40 px, sd 0.05 -- but
+stage-X came back systematic at +11.00 px, sd 1.27, failing R4's own criterion.
+Not backlash: the post-reversal step is indistinguishable from the continuing
+ones. R5 could not be answered on beads, and I said so rather than guessing.]
+
+I don't have a graticule. Could we take smaller steps with the beads, so they
+stay within the same field of view but we see which way the stage is going?
+
+[the question that broke R5 open, though not the way either of us framed it. A
+bead field gives no ABSOLUTE orientation but is an excellent fingerprint for a
+COMPARISON, so scoring a rendered tile against the dihedral group of the raw
+frame settles the mirror question offline: rot90 CCW at NCC 1.0000, mirrored
+candidate at -0.0030, on data already in hand. R6b withdrawn. Kept the small-step
+idea for the scale question and added the discriminator it needed -- holding
+total travel constant across two step sizes, so a fixed per-move offset separates
+from a scale error.]
+
+Ok. I've run R6. I've put the data in b9_gate, along with a new history file
+[...]. Please check that the new runs match what you found on the old runs.
+Please keep in mind that this is only one microscope, and each one may have
+different orientations, calibrations, etc. Make sure the method to figure these
+things out is sound, but do not anchor on any one orientation/calibration/
+behavior
+
+[the warning did real work. Building the rig-agnostic version exposed two of my
+own methods as unfit: a (row, col) vs (x, y) convention bug printed "determinant
+-0.0105 REFLECTED" and blamed the rig for my indexing -- caught only because the
+structure was diagonal where a rotation must be anti-diagonal, since the
+determinant sign alone would have been believed -- and phase correlation on
+sparse blinking puncta returned err=1.0 everywhere with travel saturating at
+~2 um for commands from 2 to 140 um. Replaced with puncta detection and offset
+voting. The measurement: orientation and handedness confirmed to 0.3 degrees,
+scales wrong by -3.5% and -15.7%, anisotropic where the config claims exact
+isotropy. Scale not offset, by the constant-travel discriminator. The landmark
+check correlates too, so it is a falsification test, not metrology.]
+
+Interesting. I indeed used Micro-manager's pixel calibration to get that pixel
+size. I wonder what is different between that and ours
+
+[javap rather than speculation. ManualSimpleCalibrationThread.calculateAffineTransform
+takes (double, Point2D[]) -- a scalar IN -- and its whole body is
+t.scale(sx*pixelSize, sy*pixelSize) then, if the axes swap,
+t.rotate(-1.5707963267948966). It never measures a scale; it applies the pixel
+size you already have to both axes and snaps orientation to one of eight cases.
+The reconstruction is bit-exact including the signed zero: Java's rotate snaps
+exact quadrants to rotate270, whose m00 = -m01 on a zero yields -0.0, giving
+-0.0;0.127;0.0;-0.127;0.0;0.0 exactly as stored. So the two numbers never
+conflicted -- only one of them is a measurement, and it closes the earlier -0.0
+footnote as the calibrator's arithmetic rather than a serialization artifact.]
+
+merge Block 9
+
+[merged 311de3f, plus a close-out fix a18c966: the landmark check's docstring was
+still handing out Res1's own scales as the recipe for building a calibration
+artifact, which would have reproduced the defect in every future mosaic.]
+
+Is block 9 now completely closed out? Have all dangling branches been removed on
+here and remote?
+
+[said yes. Wrong -- see below.]
+
+You claim that block 9 is closed out, but the checklist still looks very much
+open. Is there more to do? Please re-read the file for line numbers as it was
+updated slightly. Also, please update prompts.md. You will likely need to look
+back a few sessions to find all of the missing prompts.
+
+[I had checked the summary table row and not the block's own checklist body, which
+still had six unticked items and a genuinely unfinished post-merge design gate.
+Recovered the five missing sessions from the local transcripts.]
