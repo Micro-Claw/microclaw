@@ -290,9 +290,19 @@
   }
 
   async function refresh() {
-    const res = await apiFetch("/api/history");
-    if (!res.ok) throw new Error("Could not load history (" + res.status + ").");
-    history = await res.json();
+    const messages = [];
+    let cursor = null;
+    do {
+      const query = cursor == null ? "?limit=500" :
+        "?limit=500&cursor=" + encodeURIComponent(cursor);
+      const res = await apiFetch("/api/history" + query);
+      if (!res.ok) throw new Error("Could not load history (" + res.status + ").");
+      const page = await res.json();
+      if (!page || !Array.isArray(page.items)) throw new Error("Invalid history page.");
+      messages.push(...page.items);
+      cursor = page.next_cursor;
+    } while (cursor != null);
+    history = messages;
     paint(history, false);
   }
 

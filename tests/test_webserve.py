@@ -17,6 +17,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from microclaw import config, credentials, webserve
+from microclaw.conversation import AuditLog, ConversationStore, load_history
 from microclaw.webserve import build_app, serve
 
 
@@ -92,23 +93,43 @@ def client(session, monkeypatch):
     return TestClient(build_app(session))
 
 
+@pytest.fixture
+def stored_session(session):
+    session.store = ConversationStore(AuditLog(None, enabled=False))
+    return session
+
+
+@pytest.fixture
+def stored_client(stored_session, monkeypatch):
+    monkeypatch.setattr(credentials, "load_api_key", lambda: ("sk-ant-secret-AA8f", "env"))
+    return TestClient(build_app(stored_session))
+
+
 def _agent_iter(reply="ok", tool_calls=()):
     """A stand-in for run_agent_iter: appends to `messages` in place, as the
     real one does, and yields the event sequence a turn produces."""
 
-    def fake(msg, ctrl, guard, messages, model=None, **kw):
-        messages.append({"role": "user", "content": msg})
+    def fake(msg, ctrl, guard, messages, model=None, context_provider=None,
+             on_message=None, **kw):
+        def append(message):
+            messages.append(message)
+            if on_message is not None:
+                on_message(message)
+
+        append({"role": "user", "content": msg})
+        if context_provider is not None:
+            context_provider(messages)
         yield {"type": "round_start", "iteration": 0}
         for i, (name, tool_input) in enumerate(tool_calls):
             tid = f"t{i}"
-            messages.append({"role": "assistant", "content": [
+            append({"role": "assistant", "content": [
                 {"type": "tool_use", "id": tid, "name": name, "input": tool_input}]})
             yield {"type": "tool_use", "id": tid, "name": name, "input": tool_input}
-            messages.append({"role": "user", "content": [
+            append({"role": "user", "content": [
                 {"type": "tool_result", "tool_use_id": tid, "content": "{}"}]})
             yield {"type": "tool_result", "tool_use_id": tid, "content": "{}",
                    "is_error": False}
-        messages.append({"role": "assistant", "content": [{"type": "text", "text": reply}]})
+        append({"role": "assistant", "content": [{"type": "text", "text": reply}]})
         yield {"type": "done", "reply": reply}
 
     return fake
@@ -158,7 +179,9 @@ def test_favicon_is_served(client):
 # ---- history ----
 
 def test_history_starts_empty(client):
-    assert client.get("/api/history").json() == []
+    assert client.get("/api/history").json() == {
+        "items": [], "next_cursor": None, "total": 0,
+    }
 
 
 def test_history_serialises_sdk_content_blocks(session, client):
@@ -168,9 +191,52 @@ def test_history_serialises_sdk_content_blocks(session, client):
             return {"type": "text", "text": "hi"}
 
     session.history = [{"role": "assistant", "content": [Block()]}]
-    assert client.get("/api/history").json() == [
-        {"role": "assistant", "content": [{"type": "text", "text": "hi"}]}
-    ]
+    assert client.get("/api/history").json() == {
+        "items": [
+            {"role": "assistant", "content": [{"type": "text", "text": "hi"}]}
+        ],
+        "next_cursor": None,
+        "total": 1,
+    }
+
+
+def test_history_pages_with_cursor_and_does_not_narrow_artifact_scan(session, client):
+    session.history = _history_declaring("first.tif", "second.tif", "third.tif")
+    # Add ordinary records so the declaration-containing record is not special
+    # merely because it is the whole first page.
+    session.history.extend([
+        {"role": "assistant", "content": [{"type": "text", "text": "one"}]},
+        {"role": "assistant", "content": [{"type": "text", "text": "two"}]},
+    ])
+    first = client.get("/api/history?limit=2").json()
+    assert first["total"] == 3
+    assert len(first["items"]) == 2
+    assert first["next_cursor"] == "2"
+    last = client.get("/api/history?limit=2&cursor=2").json()
+    assert len(last["items"]) == 1
+    assert last["next_cursor"] is None
+    assert webserve._declared_artifacts(webserve._durable_history(session)) == {
+        "first.tif", "second.tif", "third.tif",
+    }
+
+
+def test_store_backed_history_pages_over_audit_records(stored_session, stored_client):
+    for index in range(5):
+        stored_session.store.append({"role": "user", "content": f"record {index}"})
+    stored_session.history = [{"role": "user", "content": "compatibility decoy"}]
+
+    first = stored_client.get("/api/history?limit=2").json()
+    second = stored_client.get("/api/history?limit=2&cursor=2").json()
+
+    assert first == {"items": stored_session.store.audit.records[:2],
+                     "next_cursor": "2", "total": 5}
+    assert second == {"items": stored_session.store.audit.records[2:4],
+                      "next_cursor": "4", "total": 5}
+
+
+@pytest.mark.parametrize("query", ["cursor=-1", "cursor=nope", "limit=0"])
+def test_history_rejects_invalid_paging(query, client):
+    assert client.get("/api/history?" + query).status_code == 400
 
 
 # ---- prompts ----
@@ -188,7 +254,19 @@ def test_prompt_streams_events_and_appends_to_history(session, client, monkeypat
 
     # The stripped prompt is what reached the agent, and history is the server's.
     assert session.history[0] == {"role": "user", "content": "set DAPI"}
-    assert client.get("/api/history").json() == session.history
+    assert client.get("/api/history").json()["items"] == session.history
+
+
+def test_store_backed_prompt_uses_context_provider_and_populates_audit(
+    stored_session, stored_client, monkeypatch
+):
+    monkeypatch.setattr(webserve, "run_agent_iter", _agent_iter("audited"))
+
+    assert stored_client.post("/api/prompt", json={"message": "remember"}).status_code == 200
+    assert _settle(stored_session)
+    assert stored_session.store.last_estimated_tokens > 0
+    assert stored_session.store.audit.records == stored_session.history
+    assert [m["role"] for m in stored_session.store.audit.records] == ["user", "assistant"]
 
 
 def test_tool_lifecycle_reaches_the_browser_one_event_at_a_time(session, client, monkeypatch):
@@ -367,6 +445,16 @@ def test_a_confirm_with_no_stream_bound_denies(session):
     # A confirmation that cannot reach the operator must never become a yes.
     assert session._emit is None
     assert session.confirm("Save knowledge x") is False
+
+
+def test_confirmation_audit_is_durable_jsonl(session, tmp_path):
+    path = tmp_path / "confirmations.jsonl"
+    session.confirmation_audit = AuditLog(path)
+    assert session.confirm("Enable illumination", "illumination") is False
+    records = load_history(path).messages
+    assert len(records) == 1
+    assert records[0]["kind"] == "illumination"
+    assert records[0]["decision"] == "declined:no-stream"
 
 
 def test_the_browser_can_approve_a_pending_confirm(session, client, fast_confirm_poll):
@@ -552,6 +640,38 @@ def test_a_declared_artifact_downloads_with_no_workspace_configured(session, cli
     # from this origin, is script execution against the endpoint driving the stage.
     assert res.headers["content-type"] == "application/octet-stream"
     assert res.headers["content-disposition"] == 'attachment; filename="zstack_1.tiff"'
+
+
+def test_store_backed_artifact_survives_compaction_out_of_model_view(
+    stored_session, stored_client, tmp_path
+):
+    data = tmp_path / "old.tiff"
+    data.write_text("old pixels", encoding="utf-8")
+    history = [
+        {"role": "user", "content": "make artifact"},
+        _history_declaring(str(data))[0],
+        {"role": "assistant", "content": [{"type": "text", "text": "made it"}]},
+    ]
+    for index in range(5):
+        history.extend([
+            {"role": "user", "content": f"later {index}"},
+            {"role": "assistant", "content": [
+                {"type": "text", "text": "x" * 1000},
+            ]},
+        ])
+    stored_session.store = ConversationStore(
+        AuditLog(None, enabled=False), high_water_tokens=1000, low_water_tokens=600,
+    )
+    stored_session.history = history
+    for message in history:
+        stored_session.store.append(message)
+    model_view = stored_session.store.model_messages(history)
+    assert history[1] not in model_view
+
+    response = stored_client.get("/api/artifact", params={"path": str(data)})
+
+    assert response.status_code == 200
+    assert response.text == "old pixels"
 
 
 def test_a_sibling_of_a_declared_artifact_is_still_refused(session, client, tmp_path):

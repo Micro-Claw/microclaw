@@ -341,6 +341,26 @@ class TestRunAgentIter:
         assert "overloaded" in events[-1]["message"].lower()
         assert messages == [{"role": "user", "content": "earlier"}]
 
+    def test_overload_rollback_keeps_attempted_prompt_in_append_only_audit(
+        self, mock_ctrl, guard, monkeypatch
+    ):
+        from microclaw.conversation import AuditLog, ConversationStore
+
+        monkeypatch.setattr("microclaw.agent._RETRY_DELAYS", ())
+        client = MagicMock()
+        client.messages.stream.side_effect = anthropic._exceptions.OverloadedError(
+            "overloaded", response=httpx.Response(529, request=httpx.Request("POST", "/")),
+            body=None,
+        )
+        messages = []
+        store = ConversationStore(AuditLog(None, enabled=False))
+        with patch("microclaw.agent._get_client", return_value=client):
+            list(run_agent_iter("attempted", mock_ctrl, guard, messages,
+                                on_message=store.append))
+
+        assert messages == []
+        assert store.audit.records == [{"role": "user", "content": "attempted"}]
+
     def test_iteration_cap_keeps_the_turn(self, mock_ctrl, guard):
         client = looping_mock_client(tool_use_response("get_system_state", {}))
         messages = []
@@ -469,6 +489,25 @@ class TestBadModel:
         assert "nope" in events[-1]["message"]
         # nothing ran, so the prompt is not left sitting unanswered in history
         assert messages == [{"role": "user", "content": "earlier"}]
+
+    def test_rejected_model_rollback_keeps_attempted_prompt_in_audit(
+        self, mock_ctrl, guard
+    ):
+        from microclaw.conversation import AuditLog, ConversationStore
+
+        client = MagicMock()
+        client.messages.stream.side_effect = anthropic.NotFoundError(
+            "model: nope", response=httpx.Response(404, request=httpx.Request("POST", "/")),
+            body=None,
+        )
+        messages = []
+        store = ConversationStore(AuditLog(None, enabled=False))
+        with patch("microclaw.agent._get_client", return_value=client):
+            list(run_agent_iter("attempted", mock_ctrl, guard, messages, model="nope",
+                                on_message=store.append))
+
+        assert messages == []
+        assert store.audit.records == [{"role": "user", "content": "attempted"}]
 
 
 class TestKnownModels:

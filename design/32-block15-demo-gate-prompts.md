@@ -1,0 +1,495 @@
+# Block 15 — MMDemo gate runbook (design/32 Finding 5)
+
+Branch under test: `design32/context-audit-store`.
+Baseline: 1160 passed / 99 skipped off-rig.
+
+Block 15's ledger row says no rig evidence is required — the block is
+off-hardware by design. This gate runs anyway because four of its claims are
+only observable in a live process, and the off-rig suite mocks the Anthropic
+client entirely:
+
+1. the API accepts a compacted history (a checkpoint `user` message immediately
+   followed by a real `user` prompt — two consecutive same-role messages),
+2. the JSONL audit is written and flushed per message on a real turn,
+3. paging, artifact download, and the confirmation audit work through the real
+   `serve` app rather than the test fixture's compatibility fallback,
+4. an interrupted session still leaves a readable transcript.
+
+Run by hand in **PowerShell** on the demo machine. Keep every step's output in
+one dated directory. Commit nothing: gate output files are never committed;
+findings get folded into this file and design/32 by the coordinator.
+
+## Result — all eight steps PASS, 2026-07-29
+
+| Step | Result | What it establishes |
+|---|---|---|
+| G1 | PASS | The Messages API accepts a compacted history (checkpoint `user` message followed by a real `user` prompt). 5 compactions, 4 such turns, no errors, two-turn floor held, and an artifact stayed in the durable allowlist after its declaring turn left the model view. |
+| G2 | PASS | One JSONL, no `.json` array, 35 records, every line independently valid, growing per message. |
+| G3 | PASS | Store-backed `/api/history` paging — `total` = line count, cursors advance, bad input 400s. First-ever execution of this path; all off-rig tests take the compatibility fallback. |
+| G4 | PASS | An artifact declared in turn 1 downloaded at the end of the session, contents matching. |
+| G5 | PASS | Durable confirmation audit: approve and decline both recorded with kind, identity, timestamp and id. |
+| G6 | PASS | Interrupted-session transcript readable; torn final record recovered with a warning; legacy `.json` array still renders. |
+| G7 | PASS | Retention deletes nothing by default; `--history-retention-days` opts in. |
+
+**Four of the seven problems hit along the way were this gate's own scaffolding**
+— a missing API-key lookup, uncalibrated water marks, a missing `save_dir`, and
+two rounds of wrong CLI syntax — not the code under test. The two genuine
+findings below concern gates that predate this block.
+
+Set once per session:
+
+```powershell
+cd C:\path\to\microclaw
+git fetch origin
+git checkout design32/context-audit-store
+git log --oneline -1        # expect the tip of the branch
+pip install -e .            # a stale editable install is the usual cause of
+                            # confusing import/plugin errors here
+$CFG = "C:\path\to\your\demo_safety_config.yaml"
+$OUT = "gate-block15-$(Get-Date -Format yyyyMMdd)"
+New-Item -ItemType Directory -Force $OUT | Out-Null
+cd $OUT
+```
+
+Start Micro-Manager with the **demo** config and enable the ZMQ server
+(Tools → Options) before G1.
+
+**API key.** G1 drives the agent directly, so it needs a key. It resolves
+env → keyring → config file, the same order `serve` uses, and prints which
+source won. If you have only ever entered the key in the browser it is in the
+keyring and will be found. Otherwise `$env:ANTHROPIC_API_KEY = "sk-ant-..."`
+for this session.
+
+**Capture output as UTF-8.** Windows PowerShell 5.1 writes `*>` redirects as
+UTF-16, which is unreadable when the file is shared. Use
+`2>&1 | Out-File -Encoding utf8 <name>.txt` throughout, as the commands below do.
+
+**Flag order is load-bearing.** Session options (`--safety-config`, `--port`,
+`--model`, `--save-history`, `--history-retention-days`) live on the *top-level*
+parser and must come **before** the subcommand.
+`microclaw serve --safety-config ...` fails with "unrecognized arguments";
+`microclaw --safety-config ... serve` is correct.
+
+**Two different ports.** `--port` (top-level, default 4827) is the Micro-Manager
+ZMQ port. The browser port is `serve --web-port`, default **8000**. Both
+defaults are already right for a demo rig, so neither needs passing — the URLs
+below use 8000.
+
+---
+
+## G1 — a compacted history survives a real API round trip
+
+**RESULT: PASS, 2026-07-29** (4th attempt; the first three were defective
+prompts and parameters of this spike's, not the code under test). 5 compactions,
+4 turns sent to the real API with a checkpoint prefix and
+`max_leading_consecutive_user_messages: 2`, no API errors across 8 turns, the
+two-complete-turn floor held, and `g1_export.tiff` was still in the durable
+allowlist after its declaring turn had been compacted out of the model view
+(`artifacts_still_in_model_view: []`). The Messages API accepts a checkpoint
+`user` message immediately followed by a real `user` prompt.
+
+**Open observation, not a defect.** Under compaction the model twice answered
+"which values came from a tool call this turn?" by naming tools from an earlier
+turn; the same prompt on an uncompacted run answered "none of them" correctly.
+The first hypothesis — that the checkpoint listed tool names without a temporal
+anchor — is **refuted**: on the passing run the window was checkpoint + turn 5 +
+turn 6 + prompt, so turn 5's `tool_use` blocks were visible verbatim and the
+model still called them current. Adding temporal framing to the checkpoint
+changed nothing. Compaction plausibly makes the oldest *visible* turn read as
+current. The probe is also ambiguous ("values you reported" points at the prior
+turn's summary). Settle it with a sharper probe — "did you make any tool calls
+in this turn, yes or no?" — before drawing a conclusion, and record whatever
+holds in design/32 as a stated limitation rather than a fix.
+
+**Run this first. If it fails, stop and report — nothing else matters.**
+
+Every compaction test on this branch mocks the client, so the checkpoint has
+never been sent to the real API. A 400 here invalidates the compaction design,
+not a parameter.
+
+```powershell
+python ..\design\32-block15-compaction-live-spike.py --config $CFG `
+    --save-dir g1_timelapse 2>&1 | Out-File -Encoding utf8 g1.txt
+Get-Content g1.txt -Tail 40
+```
+
+The water marks now default to 1500/800, calibrated against a real 7-turn demo
+run that peaked at ~3000 estimated tokens and never tripped an earlier 6000
+mark. `--save-dir` must be a path the guard will accept — inside the configured
+workspace, if the demo safety config sets one.
+
+The first line of `g1.txt` must read `API key: …xxxx (from env|keyring|file)`.
+A `TypeError: Could not resolve authentication method` on turn 0 means no key
+was found — that is a setup failure, not a gate result. Fix the key and re-run;
+nothing about compaction has been tested at that point.
+
+Spends real tokens and drives the demo stage. The water marks are deliberately
+far below the shipped 120k/90k so compaction fires within a handful of turns.
+
+PASS requires, from the final JSON block:
+
+- `"verdict": "PASS"`;
+- `compaction_count` at least 1, and `turns_sent_with_a_checkpoint_prefix`
+  at least 1 — a compacted history actually went over the wire;
+- `max_leading_consecutive_user_messages` is 2 — the checkpoint-then-prompt
+  shape was really sent, and the API accepted it;
+- `final_verbatim_messages_in_model_view` greater than 0 — the floor that keeps
+  recent turns verbatim held on live data;
+- the per-turn `reply_head` after compaction is still coherent and still refers
+  to earlier findings, rather than the model acting as if the session restarted.
+
+Also record `artifacts_compacted_away_but_still_downloadable`. A non-empty list
+is the security property proved on real session data: an artifact whose
+declaring turn is gone from the model view is still in the durable allowlist
+that `/api/artifact` consults. Empty means nothing got compacted away this run —
+inconclusive for that property, not a failure.
+
+FAIL: any exception, or a `"verdict": "FAIL"` block naming the API error.
+
+INCONCLUSIVE means the run proved nothing and must be repeated — it is not a
+partial pass. The final block carries `next_step` and `artifact_note` saying
+what to change. Two ways it happens, both seen on the first live runs:
+
+- **the session never reached the high-water mark**, so no checkpoint was ever
+  built. Lower `--high-water` / `--low-water` as `next_step` suggests, or add
+  `--prompt` turns;
+- **no artifact was declared.** The allowlist property is lost; compaction can
+  still be proved without it. Note `run_timelapse` alone never declares an
+  artifact — it returns `dataset_path` with no `artifact` block, so the *export*
+  turn is what has to succeed. Check its `reply_head` for a guard refusal on the
+  output path.
+
+---
+
+## Finding: two "enforced in code" gates that did not fire
+
+Both raised by the 2026-07-29 sessions, **neither is a Block 15 defect** —
+pre-existing on `main`. Recorded here because the gate is where they surfaced.
+
+The system prompt tells the model that two confirmations are backstopped in code:
+
+> Confirmation for save_knowledge and hook saves is also enforced in code (a
+> blocking prompt) […]
+
+and, for illumination, that it must "ask, and wait for a reply, before enabling
+illumination". On this rig, in these sessions, **neither gate fired**. The model
+asked in prose and behaved correctly both times — but that is discipline, not
+enforcement, and the prompt overstates what the code guarantees.
+
+1. **Illumination enable — inert when nothing is declared.** Detailed below.
+2. **Hook save — conditional on the advisory lint.** `generate_and_save_hook`
+   gates on `if warnings and not CONFIRM_FN(...)` (`tools.py:3777`). A hook that
+   trips no lint warning saves with **no** confirmation. The 2026-07-29 session
+   saved `AaarghHook` with `"warnings": []` and no prompt. The code is
+   self-consistent — its docstring says the human reading the full source is the
+   real gate — but `save_knowledge`'s gate is unconditional (`tools.py:3967`)
+   and a hook save's is not, so the prompt's sentence is true of one and false
+   of the other.
+
+Worth fixing as a pair on a follow-up branch: either make the guarantees real,
+or correct the system prompt so it stops asserting a backstop that is
+config-dependent in one case and lint-dependent in the other. Overstating an
+enforced gate is worse than declaring none, because it discourages the operator
+from adding the declaration that would actually create one.
+
+## Finding: an undeclared light source is writable, ungated, and never swept
+
+Raised by the 2026-07-29 session, **not a Block 15 defect** — pre-existing on
+`main`, design/33 territory. Recorded here because the gate is where it surfaced.
+
+The operator asked the agent to turn a laser on. It wrote
+`set_device_property(LED.State = 1)`, the write succeeded, and **no confirmation
+was requested**. Tracing it:
+
+- `SafetyGuard.check_illumination` is wired into `set_device_property`
+  (`tools.py:478`), but it gates only what `is_illumination_enable` recognises,
+  and that function consults `illumination.shutters` alone (`safety.py:805`).
+- The demo safety config has `illumination.shutters: []`, so
+  `require_confirm_on_enable: true` governs nothing. The gate is skipped
+  silently — there is no "this looks like a light source" warning.
+- `shutter_all` iterates the *same* empty list (`safety.py:898`), so the
+  teardown sweep that design/14 §3 exists to guarantee would not turn this
+  laser off either. The session ended with a 300-frame timelapse running with
+  the LED on.
+- Meanwhile the authorization map **permitted** the write (`LED` is a demo
+  StateDevice, auto-classified by Block 3b) while refusing `Emission.State`.
+
+The sharp edge is that microclaw *knew*: `get_emu_configuration` in that same
+session returned `lasers: {"0": {enable: {device: "LED", property: "State",
+on: "1", off: "0"}}}`. One subsystem had the laser mapped while the other had
+never heard of it, and nothing cross-checked them.
+
+Cheap fix, for a design/33 branch rather than this one: at startup, compare the
+EMU laser map against `illumination.shutters` and refuse — or at minimum warn
+loudly — when a declared laser enable is absent from the shutter list. It is the
+same family as the "laser-engine widening" a previous rig gate caught in
+Block 3b.
+
+Note for whoever runs the gate: **turning a laser on is not a test of G5** on
+this configuration. Use `save_knowledge`, which has an unconditional in-code
+confirm gate (`tools.py:3967`, `kind="knowledge"`).
+
+---
+
+## G2–G5 — one live `serve` session
+
+Leave this running in **window A**:
+
+```powershell
+microclaw --safety-config $CFG serve 2>&1 | Out-File -Encoding utf8 g2-serve.txt
+```
+
+It opens the browser at <http://127.0.0.1:8000>.
+
+Run three or four turns in the browser that call tools, including one that
+writes a dataset (a 2-frame timelapse) so an artifact is declared, and one that
+asks to save something to the knowledge base (that triggers the confirmation
+gate for G5). Then, **without stopping the server**, in window B:
+
+If `microclaw` is not on `PATH` in a second terminal, prefix with `uv run`
+(`uv run microclaw view-history ...`) — observed on the demo rig.
+
+### G2 — the durable audit is written and flushed per message
+
+**RESULT: PASS, 2026-07-29.** One `*_microclaw_history.jsonl`, no `.json` array
+file, 35 records, every line parsed independently.
+
+```powershell
+Get-ChildItem *_microclaw_history.jsonl, *_microclaw_history.json
+$H = (Get-ChildItem *_microclaw_history.jsonl | Select-Object -First 1).Name
+(Get-Content $H | Measure-Object -Line).Lines
+Get-Content $H | ForEach-Object { $_ | ConvertFrom-Json | Out-Null }; "all lines parse"
+```
+
+PASS: exactly one `.jsonl` exists; **no** `*_microclaw_history.json` array file
+was written; every line parses independently; and the line count grows when you
+run another turn and re-check (flushed per message, not per session).
+
+### G3 — paging over the real store
+
+**RESULT: PASS, 2026-07-29.** `total` 35 on both pages and equal to the JSONL
+line count; `next_cursor` advanced 2 → 4; 2 items per page; `cursor=-1` and
+`limit=0` both returned 400. This was the first execution of the store-backed
+`/api/history` path — every off-rig test takes the compatibility fallback.
+
+The browser uses `limit=500`, which one demo session will not exceed, so force
+more than one page by hand:
+
+```powershell
+$p1 = Invoke-RestMethod "http://127.0.0.1:8000/api/history?limit=2"
+$p2 = Invoke-RestMethod "http://127.0.0.1:8000/api/history?limit=2&cursor=$($p1.next_cursor)"
+$p1 | ConvertTo-Json -Depth 6 > g3-page1.json
+$p2 | ConvertTo-Json -Depth 6 > g3-page2.json
+"total p1=$($p1.total) p2=$($p2.total)  next1=$($p1.next_cursor) next2=$($p2.next_cursor)"
+"items p1=$($p1.items.Count) p2=$($p2.items.Count)  jsonl lines=$((Get-Content $H | Measure-Object -Line).Lines)"
+```
+
+PASS: `total` identical across pages and equal to the JSONL line count;
+`next_cursor` advances (`2` then `4`) and eventually goes null on the last page;
+concatenated `items` match the JSONL records in order. Then reload the browser
+tab — the transcript must still render the whole session, since `serve.html`
+walks the cursor itself.
+
+Also confirm bad input is refused rather than silently coerced:
+
+```powershell
+try { Invoke-RestMethod "http://127.0.0.1:8000/api/history?cursor=-1" } catch { $_.Exception.Response.StatusCode.value__ }
+try { Invoke-RestMethod "http://127.0.0.1:8000/api/history?limit=0" }  catch { $_.Exception.Response.StatusCode.value__ }
+```
+
+PASS: `400` for both.
+
+### G4 — artifact download from an early turn
+
+**RESULT: PASS, 2026-07-29.** `save_position_list` in turn 1 declared
+`{"kind": "position_list", "path": "…\grid.pos"}`; the chip was clicked at the
+*end* of the session, many turns later, and the download was byte-identical to
+the original — both `grid.pos` and `grid_artifact.pos` sha256
+`35ac7b1e7900cda79d8afd789a63e6469b868a4106cc567645bad8ee7bae779f`.
+
+**There is no download button in the UI.** The chip is drawn only from a tool
+result that carries an `artifact` object, and it appears *inside that tool's
+result card* — expand the collapsed tool card in the transcript and it is the
+labelled pill under **Result** (`transcript.js:98`). No declaring tool, no chip.
+The 2026-07-29 session found nothing to click for exactly this reason: not one
+of its tools declares an artifact. `run_tile_acquisition` with `protocol:
+"snap"` saves nothing, and `run_timelapse` returns `dataset_path` with **no**
+`artifact` block.
+
+So make one deliberately, as the **first** turn of the session. Either works:
+
+- `save_position_list` — cheapest, no exposure, and the grid positions are
+  already marked. Ask: *"Save the position list to grid.pos"* → chip
+  `position_list grid.pos`.
+- `export_dataset_as_tiff` on a dataset you already have on disk → chip
+  `tiff <name>.tiff`.
+
+Run several more turns, then expand that first tool card and click the chip.
+
+PASS: the file downloads. A `403 Not an artifact produced by this session` is a
+defect — the allowlist is required to read the full durable record. (The
+compacted variant of this property is already proved by G1's
+`artifacts_compacted_away_but_still_downloadable`; the shipped 120k/90k
+thresholds are unreachable by hand in one session.)
+
+### G5 — the confirmation audit is durable
+
+**RESULT: PASS, 2026-07-29.** Two records in
+`20260729_213937_312072_microclaw_confirmations.jsonl`, one `approved` and one
+`declined`, both `kind: "knowledge"`, each with a UTC timestamp, `identity:
+"loopback"`, and a distinct `confirmation_id`. Use `save_knowledge` — see the
+findings above for why a laser enable and a clean hook save do not exercise this.
+
+Approve one confirmation in the browser and decline a second.
+
+```powershell
+Get-ChildItem *_confirmations.jsonl
+Get-Content (Get-ChildItem *_confirmations.jsonl | Select-Object -First 1)
+```
+
+PASS: one record per decision, each carrying `decision`, `kind`, `identity`, and
+a timestamp; the approve and the decline both present and distinguishable.
+
+Then **Ctrl-C the server mid-turn** (start a longer turn and interrupt it) —
+that sets up G6.
+
+---
+
+## G6 — an interrupted session is still readable
+
+**RESULT: PASS, 2026-07-29.** The viewer rendered the live session's JSONL, and
+the hand-truncated copy printed
+`Warning: Ignored an incomplete final JSONL record in torn.jsonl; all complete
+records were recovered.` on stderr and still wrote a viewer. The legacy
+array-format check is still outstanding.
+
+```powershell
+microclaw view-history .\$H --no-browser 2>&1 | Out-File -Encoding utf8 g6-view.txt
+Get-Content g6-view.txt
+```
+
+PASS: the viewer writes an HTML file and renders the completed turns. If the
+interrupt landed mid-write, it prints the incomplete-final-record warning rather
+than failing. Force that path deliberately too:
+
+```powershell
+Copy-Item $H torn.jsonl
+$lines = Get-Content torn.jsonl
+$lines[0..($lines.Count-2)] + '{"role":"assistant"' | Set-Content -NoNewline torn.jsonl
+microclaw view-history .\torn.jsonl --no-browser 2>&1 | Out-File -Encoding utf8 g6-torn.txt
+Get-Content g6-torn.txt
+```
+
+PASS: complete records recovered, warning printed on stderr, no exception.
+
+Finally, open one **old** array-format history from
+`OneDrive\Microclaw\microclaw-json-histories`:
+
+```powershell
+microclaw view-history "C:\path\to\an_old_microclaw_history.json" --no-browser 2>&1 | Out-File -Encoding utf8 g6-legacy.txt
+```
+
+PASS: it still renders. Legacy `.json` histories must keep working — that
+compatibility is why the loader sniffs the first character.
+
+**RESULT: PASS, 2026-07-29.** An old array-format history opened in the browser.
+
+---
+
+## G7 — retention deletes nothing by default
+
+**RESULT: PASS, 2026-07-29** (2nd attempt; the 1st died on an empty `$CFG` set in
+another terminal and tested nothing). `g7-results.txt`:
+
+```
+1 seeded (expect True): True
+2 after default run (expect True): True
+3 after prune run (expect False): False
+```
+
+Line 2 is the safety property: a session started with no retention flag left a
+30-day-old transcript untouched. Line 3 shows `--history-retention-days 1`
+deletes it. Both capture files were empty — a piped `serve` loses its buffered
+stdout on Ctrl-C — so the `Pruned transcript` announcement is unverified; the
+existence checks are what decide this step.
+
+The safety property. A default that prunes a scientific record is a stop-ship.
+
+**Self-contained on purpose.** `$CFG` set in another terminal does not exist
+here, and an empty `--safety-config $CFG` makes argparse swallow the *next*
+flag as its value — the 2026-07-29 attempt died twice that way
+(`invalid choice: '8001'`, then `--safety-config: expected one argument`) without
+testing anything. This block therefore omits `--safety-config` entirely and
+relies on the per-user default that `microclaw init` writes. If your config is
+somewhere else, set `$CFG` **in this terminal** and add the flag back.
+
+> Any command that answers with an argparse usage dump means a variable was
+> empty. Check it before re-running, and never read a usage dump as a result.
+
+**The check between the two runs is the whole test.** A `serve` process piped
+through `Out-File` loses its buffered stdout when you Ctrl-C it — the
+2026-07-29 attempt produced two empty capture files, and with no intermediate
+`Test-Path` recorded, "run 2 pruned it" and "run 1 pruned it" (the stop-ship
+condition) were indistinguishable afterwards. So record the file's existence
+into its own file at each step, and use `Tee-Object`, which streams as output
+arrives instead of buffering to the end.
+
+```powershell
+New-Item -ItemType Directory -Force retention | Out-Null
+cd retention
+Remove-Item -Force old_microclaw_history.jsonl -ErrorAction SilentlyContinue
+Remove-Item -Force ..\g7-results.txt -ErrorAction SilentlyContinue
+'{"role":"user","content":"old"}' | Set-Content old_microclaw_history.jsonl
+(Get-Item old_microclaw_history.jsonl).LastWriteTime = (Get-Date).AddDays(-30)
+"1 seeded (expect True): $(Test-Path old_microclaw_history.jsonl)" |
+  Tee-Object -Append ..\g7-results.txt
+
+# Run 1 -- NO retention flag. Ctrl-C once the browser opens.
+uv run microclaw serve --web-port 8001 2>&1 |
+  Tee-Object -FilePath ..\g7-default.txt
+"2 after default run (expect True): $(Test-Path old_microclaw_history.jsonl)" |
+  Tee-Object -Append ..\g7-results.txt
+
+# Run 2 -- opt in. Ctrl-C once the browser opens.
+uv run microclaw --history-retention-days 1 serve --web-port 8001 2>&1 |
+  Tee-Object -FilePath ..\g7-prune.txt
+"3 after prune run (expect False): $(Test-Path old_microclaw_history.jsonl)" |
+  Tee-Object -Append ..\g7-results.txt
+
+Get-Content ..\g7-results.txt
+Select-String -Path ..\g7-prune.txt -Pattern "Pruned transcript"
+cd ..
+```
+
+Both runs must reach the point where the server is actually up — the prune
+happens in `Session.__init__`, *after* the safety config loads and the rig
+authorises, so a run that exits early prunes nothing and proves nothing.
+The prune also targets the **current working directory**, which is why the
+`cd retention` matters.
+
+PASS: line 1 True, line 2 **True**, line 3 False. Line 2 is the safety
+property; line 3 only shows the opt-in works. An empty `g7-prune.txt` is not a
+failure on its own — the `Test-Path` results decide it.
+
+---
+
+## G8 — clean exit
+
+From `g2-serve.txt`: confirm the session still shutters known illumination on
+exit. The demo core has no real lasers, so this is a regression check on
+ordering, not a safety measurement.
+
+---
+
+## Recording the result
+
+Per step: PASS / FAIL / BLOCKED, the exact command, and the evidence that
+decided it. Hash the transcripts you keep:
+
+```powershell
+Get-FileHash *.jsonl, *.txt | Format-Table Hash, Path
+```
+
+Do not upgrade "the file exists" into "the audit is correct" — say which records
+you actually opened and read. If a step cannot run on the demo core, mark it
+BLOCKED with the reason rather than passed.

@@ -51,7 +51,7 @@ Progress markers: `[ ]` not started, `[-]` active, `[x]` complete, `[!]` blocked
 | 12 | `design26/few-shot-run-c` (optional) | | | required | | |
 | 13 | `design32/hook-worker-isolation` | | | regression required | | |
 | 14 | `design33/extended-authorization` | | | required per phase | | |
-| 15 | `design32/context-audit-store` | | | n/a | | |
+| 15 | `design32/context-audit-store` | `0fd6811` (main, 1138/99/3) | | n/a per design; a live MMDemo `serve` gate is being run anyway | | |
 
 ## Why this order
 
@@ -1216,8 +1216,9 @@ Do not combine these into one branch. Repeat the branch/review/rig/design gate f
 
 Branch: `design32/context-audit-store`
 
-- [ ] Create the branch from updated `main` (this block may be deliberately scheduled
+- [x] Create the branch from updated `main` (this block may be deliberately scheduled
       earlier by a human, but this single-agent checklist does not run it concurrently).
+      — branched from `0fd6811`; baseline re-measured 1138 passed / 99 skipped.
 - [ ] Separate durable append-only/redacted audit from bounded model context.
 - [ ] Estimate tokens before calls; compact only complete message/tool boundaries in
       infrequent batches; keep a stable structured checkpoint prefix without image bytes,

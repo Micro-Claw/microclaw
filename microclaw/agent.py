@@ -1,5 +1,5 @@
 from __future__ import annotations
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Any
 import json
 import os
@@ -225,7 +225,7 @@ def _cancelled(cancel) -> bool:
     return cancel is not None and cancel.is_set()
 
 
-def _unwind_cancel(messages: list[dict]):
+def _unwind_cancel(messages: list[dict], on_message=None):
     """Leave `messages` in a state the API will accept on the next turn.
 
     An assistant turn ending in tool_use blocks is only valid if the next user
@@ -240,12 +240,15 @@ def _unwind_cancel(messages: list[dict]):
             if (getattr(b, "type", None) or (isinstance(b, dict) and b.get("type"))) == "tool_use"
         ]
         if pending:
-            messages.append({"role": "user", "content": [
+            message = {"role": "user", "content": [
                 {"type": "tool_result",
                  "tool_use_id": b.id if hasattr(b, "id") else b["id"],
                  "is_error": True, "content": CANCEL_RESULT}
                 for b in pending
-            ]})
+            ]}
+            messages.append(message)
+            if on_message is not None:
+                on_message(message)
     yield {"type": "cancelled", "reason": CANCEL_REASON}
 
 
@@ -265,7 +268,7 @@ def _system_blocks() -> list[dict[str, Any]]:
     return blocks
 
 
-def _stream_one_round(messages, system_blocks, model):
+def _stream_one_round(messages, system_blocks, model, context_provider=None):
     """One model call, streamed.
 
     Yields `text_delta` events as the prose arrives; returns the final Message —
@@ -277,12 +280,15 @@ def _stream_one_round(messages, system_blocks, model):
             yield {"type": "retry", "delay": delay, "attempt": attempt}
             time.sleep(delay)
         try:
+            model_messages = (
+                context_provider(messages) if context_provider is not None else messages
+            )
             with _get_client().messages.stream(
                 model=model,
                 max_tokens=4096,
                 system=system_blocks,
                 tools=TOOLS_CACHED,
-                messages=_with_cache_breakpoint(messages),
+                messages=_with_cache_breakpoint(model_messages),
             ) as stream:
                 for event in stream:
                     if (
@@ -309,6 +315,8 @@ def run_agent_iter(
     model: str | None = None,
     max_iterations: int = DEFAULT_MAX_ITERATIONS,
     cancel=None,
+    context_provider: Callable[[list[dict]], list[dict]] | None = None,
+    on_message: Callable[[dict], None] | None = None,
 ) -> Iterator[dict]:
     """Run one user turn, yielding an event per thing that happens.
 
@@ -316,6 +324,10 @@ def run_agent_iter(
     disconnects mid-turn still leaves the completed rounds in the caller's list,
     which is what `serve` needs: the stage has already moved, so the history has
     to say so whether or not anyone was listening.
+
+    `context_provider` maps the full history to the bounded view sent to the
+    model; identity is the default. `on_message` runs immediately after each
+    append, allowing a durable audit to flush records as they are produced.
 
     `cancel` is an optional `threading.Event`, polled at round boundaries and
     before each tool dispatch — never mid-tool. `execute_tool` blocks in Java and
@@ -327,28 +339,41 @@ def run_agent_iter(
     """
     model = resolve_model(model)
     start = len(messages)
-    messages.append({"role": "user", "content": user_message})
+
+    def append(message: dict) -> None:
+        messages.append(message)
+        if on_message is not None:
+            on_message(message)
+
+    append({"role": "user", "content": user_message})
     system_blocks = _system_blocks()
 
     for iteration in range(max_iterations):
         if _cancelled(cancel):
-            yield from _unwind_cancel(messages)
+            yield from _unwind_cancel(messages, on_message)
             return
         yield {"type": "round_start", "iteration": iteration}
 
         try:
-            response = yield from _stream_one_round(messages, system_blocks, model)
+            response = yield from _stream_one_round(
+                messages, system_blocks, model, context_provider
+            )
         except _Overloaded:
-            del messages[start:]  # discard the turn, user message and all
+            # Remove the unsent/unanswered turn from the API-facing history.
+            # on_message may already have durably audited it; that append-only
+            # record truthfully shows the attempted prompt and is not rolled back.
+            del messages[start:]
             yield {"type": "error", "message": OVERLOADED_MESSAGE}
             return
         except _BadModel as e:
-            del messages[start:]  # nothing ran; don't leave an unanswered prompt
+            # Keep API history valid, while retaining the attempted prompt in
+            # any append-only audit populated by on_message (see above).
+            del messages[start:]
             yield {"type": "error",
                    "message": f"The API rejected the model '{model}': {e}"}
             return
 
-        messages.append({"role": "assistant", "content": response.content})
+        append({"role": "assistant", "content": response.content})
 
         if response.stop_reason == "end_turn":
             text = next((b.text for b in response.content if hasattr(b, "text")), "")
@@ -392,7 +417,7 @@ def run_agent_iter(
                 "content": result_json,
                 "is_error": stopped,
             }
-        messages.append({"role": "user", "content": tool_results})
+        append({"role": "user", "content": tool_results})
         if stopped:
             # The model sees "Cancelled by the operator" on every skipped tool,
             # which is exactly what it needs when the operator types "continue".
@@ -416,6 +441,8 @@ def run_agent(
     history: list[dict] | None = None,
     model: str | None = None,
     max_iterations: int = DEFAULT_MAX_ITERATIONS,
+    context_provider: Callable[[list[dict]], list[dict]] | None = None,
+    on_message: Callable[[dict], None] | None = None,
 ) -> tuple[str, list[dict]]:
     """Run one user turn through the agent loop.
 
@@ -430,7 +457,8 @@ def run_agent(
     messages: list[dict[str, Any]] = list(history or [])
     reply = ""
     for event in run_agent_iter(
-        user_message, ctrl, guard, messages, model, max_iterations
+        user_message, ctrl, guard, messages, model, max_iterations,
+        context_provider=context_provider, on_message=on_message,
     ):
         if event["type"] == "done":
             reply = event["reply"]

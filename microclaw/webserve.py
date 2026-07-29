@@ -48,6 +48,7 @@ from starlette.concurrency import run_in_threadpool
 
 from microclaw import credentials
 from microclaw.authorization import RigAuthorizationError, validate_live_rig
+from microclaw.conversation import AuditLog, ConversationStore, prune_transcripts
 from microclaw.agent import (
     DEFAULT_MODEL,
     known_models,
@@ -246,6 +247,22 @@ def _declared_artifacts(history: list[dict]) -> set[str]:
     return paths
 
 
+def _durable_history(session) -> list[dict]:
+    """Return the full audit record, with a fallback for legacy/test sessions."""
+    store = getattr(session, "store", None)
+    return store.audit.records if store is not None else _jsonable(session.history)
+
+
+def _add_audit_secret(session, secret: str | None) -> None:
+    """Register a credential with every audit owned by a session."""
+    store = getattr(session, "store", None)
+    if store is not None:
+        store.audit.add_secret(secret)
+    confirmation_audit = getattr(session, "confirmation_audit", None)
+    if confirmation_audit is not None:
+        confirmation_audit.add_secret(secret)
+
+
 def _sse(event: dict) -> str:
     """One agent event as an SSE frame.
 
@@ -278,9 +295,13 @@ class Session:
         self.model = args.model
         self.history: list[dict] = []
         self.history_fn = (
-            f"{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}_microclaw_history.json"
+            f"{datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f')}_microclaw_history.jsonl"
         )
         self.save = args.save_history
+        removed = prune_transcripts(".", getattr(args, "history_retention_days", None))
+        for path in removed:
+            print(f"[microclaw] Pruned transcript: {path}")
+        self.store = ConversationStore(AuditLog(self.history_fn, enabled=self.save))
         # Editing credentials from a browser is offered only on loopback, the
         # same rule design/15 sets for the safety-config editor (v2).
         self.editable = args.host in LOCAL_HOSTS
@@ -293,15 +314,16 @@ class Session:
         # re-surface a banner the one-shot stream already delivered.
         self._emit = None
         self.pending: _Pending | None = None
-        # Volatile only. Durable confirmation auditing belongs to design/32
-        # Finding 5 (Block 15), not this remote-auth release gate.
         self.audit_records: list[dict] = []
+        confirmation_path = self.history_fn.replace("_history.jsonl", "_confirmations.jsonl")
+        self.confirmation_audit = AuditLog(confirmation_path, enabled=self.save)
         self.current_identity = "loopback"
 
         # env > keyring > file; a key found in a store is pushed into the
         # environment now so the first turn doesn't have to look for it.
         key, source = credentials.load_api_key()
         if key:
+            _add_audit_secret(self, key)
             set_api_key(key)
             print(f"Anthropic API key: {credentials.mask(key)} (from {source})")
         else:
@@ -331,6 +353,9 @@ class Session:
                 "decision": decision,
             }
             self.audit_records.append(record)
+            confirmation_audit = getattr(self, "confirmation_audit", None)
+            if confirmation_audit is not None:
+                confirmation_audit.append(record)
             print("[microclaw] Confirmation audit: " + json.dumps(record, sort_keys=True))
             return decision == "approved"
 
@@ -363,8 +388,6 @@ class Session:
 
 def build_app(session, *, remote: bool = False, api_token: str | None = None,
               behind_tls_proxy: bool = False, auth_state: RemoteAuth | None = None) -> FastAPI:
-    from microclaw.__main__ import write_history
-
     app = FastAPI(title="Microclaw")
     page = load_page("serve.html")
     icon = icon_bytes()
@@ -372,6 +395,7 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
         if not api_token:
             raise RuntimeError("remote mode requires an API token")
         auth_state = auth_state or RemoteAuth(api_token)
+        _add_audit_secret(session, api_token)
 
     def client_address(request: Request) -> str:
         return request.client.host if request.client else "unknown"
@@ -459,6 +483,7 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
         if not isinstance(code, str) or not auth_state.consume_code(code):
             raise HTTPException(401, "Unauthorized")
         value, _ = auth_state.mint_session()
+        _add_audit_secret(session, value)
         response = JSONResponse({"paired": True})
         response.set_cookie(
             SESSION_COOKIE, value, max_age=SESSION_TTL_S,
@@ -475,11 +500,28 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
         assert auth_state is not None
         if not auth_state.pair_attempts.allow(client_address(request)):
             raise HTTPException(429, "Too many pairing requests.")
-        return JSONResponse({"code": auth_state.mint_code(), "expires_in": PAIR_TTL_S})
+        code = auth_state.mint_code()
+        _add_audit_secret(session, code)
+        return JSONResponse({"code": code, "expires_in": PAIR_TTL_S})
 
     @app.get("/api/history")
-    async def get_history():
-        return JSONResponse(_jsonable(session.history))
+    async def get_history(cursor: str | None = None, limit: int = 100):
+        records = _durable_history(session)
+        if limit < 1:
+            raise HTTPException(400, "limit must be positive")
+        limit = min(limit, 500)
+        try:
+            start = int(cursor) if cursor is not None else 0
+        except ValueError:
+            raise HTTPException(400, "cursor must be a non-negative integer") from None
+        if start < 0:
+            raise HTTPException(400, "cursor must be a non-negative integer")
+        end = min(start + limit, len(records))
+        return JSONResponse({
+            "items": records[start:end],
+            "next_cursor": str(end) if end < len(records) else None,
+            "total": len(records),
+        })
 
     @app.post("/api/prompt")
     async def post_prompt(p: Prompt, request: Request):
@@ -528,6 +570,10 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
                 for event in run_agent_iter(
                     msg, session.ctrl, session.guard, session.history, session.model,
                     cancel=session.cancel,
+                    context_provider=(session.store.model_messages
+                                      if hasattr(session, "store") else None),
+                    on_message=(session.store.append
+                                if hasattr(session, "store") else None),
                 ):
                     emit(event)
             except Exception as e:  # noqa: BLE001 — the stream is the only channel
@@ -535,12 +581,15 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
             finally:
                 session._emit = None
                 session.current_identity = "loopback"
-                # session.history holds the completed rounds either way —
-                # run_agent_iter appends to it in place.
-                try:
-                    write_history(session.history_fn, session.history, session.save)
-                except Exception as e:  # noqa: BLE001
-                    print(f"[microclaw] Could not write history: {e}", file=sys.stderr)
+                # AuditLog has already appended and flushed every message.
+                if not hasattr(session, "store"):
+                    # Compatibility for embedders/test sessions that have not
+                    # adopted ConversationStore yet.
+                    try:
+                        from microclaw.__main__ import write_history
+                        write_history(session.history_fn, session.history, session.save)
+                    except Exception as e:  # noqa: BLE001
+                        print(f"[microclaw] Could not write history: {e}", file=sys.stderr)
                 emit(_TURN_DONE)
                 loop.call_soon_threadsafe(session.lock.release)
 
@@ -653,7 +702,7 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
         """
         if not session.editable:  # loopback only
             raise HTTPException(403, "Not available when bound beyond localhost.")
-        if path not in _declared_artifacts(session.history):
+        if path not in _declared_artifacts(_durable_history(session)):
             raise HTTPException(403, "Not an artifact produced by this session.")
         try:
             # A configured workspace still applies — this endpoint may not be a
@@ -696,6 +745,7 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
         if not key:
             raise HTTPException(400, "Empty key.")
         # Overwrites whatever was set, so a key can be swapped mid-session.
+        _add_audit_secret(session, key)
         set_api_key(key)
         stored_in = stored_at = None
         stale_store = False
@@ -786,9 +836,12 @@ def serve(args):
     import uvicorn
 
     from microclaw import tools
-    from microclaw.__main__ import write_history
 
     session = Session(args)
+    if token:
+        _add_audit_secret(session, token)
+    if pairing_code:
+        _add_audit_secret(session, pairing_code)
     # Route every in-code confirmation gate (save_knowledge, hook save, the
     # illumination enable) to the browser, where the operator is. Installed
     # once, not per turn: all three callsites read the module global at call
@@ -816,12 +869,11 @@ def serve(args):
         visit = "127.0.0.1" if args.host == "0.0.0.0" else args.host
         _open_when_ready(visit, args.web_port, f"http://{visit}:{args.web_port}")
 
-    # Mirrors run_session: every exit path — Ctrl-C, a crash in a turn — writes
-    # the history and shutters known illumination (design/14 §3).
+    # Audit records are already flushed message-by-message. Every exit path
+    # still shutters known illumination (design/14 §3).
     try:
         uvicorn.run(app, host=args.host, port=args.web_port, log_level="warning")
     finally:
-        write_history(session.history_fn, session.history, session.save)
         shuttered = session.guard.shutter_all(session.ctrl.core)
         if shuttered:
             print(f"[microclaw] Illumination off: {', '.join(shuttered)}")

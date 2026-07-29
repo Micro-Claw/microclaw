@@ -938,6 +938,39 @@ required the saved position and the ranked record to carry identical axes, while
 Run A legitimately adds a focus Z. Procedure and evidence:
 `design/32-block7-gate-prompts.md`.
 
+### A clean hook save is not confirmed in code (2026-07-29)
+
+Found during the Block 15 demo gate. **Not a Block 15 defect** — pre-existing on
+`main`, recorded here because §4 owns the hook-save contract.
+
+`generate_and_save_hook` gates on `if warnings and not CONFIRM_FN(...)`
+(`tools.py:3777`). A hook that trips **no** advisory lint warning is saved with no
+confirmation at all. The gate session saved a generated `AaarghHook` with
+`"warnings": []` and no prompt; the operator only saw the agent's prose request.
+
+The code is self-consistent and the docstring is honest about it — warnings must
+not hard-block, because benign hooks legitimately use `open`/`os`, and "the human
+review of the full code is the actual gate". The problem is the claim made
+elsewhere. `agent.py`'s system prompt tells the model:
+
+> Confirmation for save_knowledge and hook saves is also enforced in code (a
+> blocking prompt), so those tools may return a "User declined" result if the
+> person says no.
+
+That is true of `save_knowledge`, whose gate is unconditional (`tools.py:3967`),
+and false of a hook save with a clean lint. Two options, either acceptable,
+neither taken yet:
+
+- make the guarantee real — confirm every save, with the lint warnings as extra
+  detail when present rather than as the trigger; or
+- correct the prompt so it stops asserting a backstop that only exists
+  conditionally.
+
+Overstating an enforced gate is the worse failure of the two, because a reader
+who believes the backstop exists has no reason to add the review step that would
+actually provide one. The same pattern, on the illumination gate, is recorded in
+design/33 — there the gate is inert whenever `illumination.shutters` is empty.
+
 ### Landed: Block 7b (merged `e688606`, M5 gate PASS 2026-07-28)
 
 Phase 1's closed union covered adaptive acquisition and nothing else, so merging it

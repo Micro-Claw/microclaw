@@ -38,7 +38,7 @@
   </div>
   <div class="controls">
     <label class="filebtn" tabindex="0" role="button" id="openlbl">Open file
-      <input type="file" id="file" accept=".json,application/json">
+      <input type="file" id="file" accept=".json,.jsonl,application/json">
     </label>
     <button id="expand" class="hidden">Expand all</button>
     <button id="collapse" class="hidden">Collapse all</button>
@@ -48,11 +48,11 @@
 
 <main>
   <div id="drop">
-    <div class="big">Drop a history JSON here</div>
-    <p>Renders a <code>*_microclaw_history.json</code> run as a readable conversation — user prompts, the agent's replies, and every microscope tool call with its result.</p>
+    <div class="big">Drop a history JSON or JSONL here</div>
+    <p>Renders a <code>*_microclaw_history.json[l]</code> run as a readable conversation — user prompts, the agent's replies, and every microscope tool call with its result.</p>
     <p class="hint">Everything stays in your browser. No upload.</p>
     <label class="filebtn primary" tabindex="0" role="button">Choose file
-      <input type="file" accept=".json,application/json" onchange="window.__load(this.files[0])">
+      <input type="file" accept=".json,.jsonl,application/json" onchange="window.__load(this.files[0])">
     </label>
   </div>
   <div id="transcript"></div>
@@ -85,13 +85,21 @@
     $("foot").textContent = `${userTurns} user · ${asstTurns} assistant messages · ${toolCalls} tool calls`;
   }
 
+  function showWarning(message) {
+    const notice = document.createElement("div");
+    notice.className = "bubble user";
+    notice.setAttribute("role", "alert");
+    notice.textContent = "Warning: " + message;
+    tx.insertBefore(notice, tx.firstChild);
+  }
+
   function showError(msg) {
     drop.classList.remove("hidden", "hot");
     drop.innerHTML = '<div class="big">Couldn\'t read that file</div>' +
       '<p>' + Transcript.esc(msg) + '</p>' +
-      '<p class="hint">Expected a microclaw history JSON — an array of chat messages.</p>' +
+      '<p class="hint">Expected a microclaw history JSON array or JSONL message log.</p>' +
       '<label class="filebtn primary" tabindex="0" role="button">Try another file' +
-      '<input type="file" accept=".json,application/json" onchange="window.__load(this.files[0])"></label>';
+      '<input type="file" accept=".json,.jsonl,application/json" onchange="window.__load(this.files[0])"></label>';
   }
 
   // ---- file loading ----
@@ -99,7 +107,12 @@
     if (!file) return;
     const r = new FileReader();
     r.onload = () => {
-      try { render(JSON.parse(r.result)); window.scrollTo({ top: 0 }); }
+      try {
+        const parsed = Transcript.parseHistoryText(r.result);
+        render(parsed.messages);
+        if (parsed.warning) showWarning(parsed.warning);
+        window.scrollTo({ top: 0 });
+      }
       catch (e) { showError(e.message); }
     };
     r.readAsText(file);
