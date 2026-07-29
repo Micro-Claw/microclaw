@@ -16,7 +16,7 @@ from microclaw.agent import run_agent
 from microclaw.authorization import RigAuthorizationError, validate_live_rig
 from microclaw.assets import load_page
 from microclaw.controller import MicroscopeController
-from microclaw.config import load_safety_config_or_exit
+from microclaw.config import load_safety_config, load_safety_config_or_exit
 from microclaw.paths import default_safety_config
 from microclaw.safety import SafetyGuard
 
@@ -262,6 +262,44 @@ def print_authorization_map(args):
     print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
 
 
+def inspect_rig(args):
+    """Connect for read-only discovery and write evidence under one directory."""
+    from microclaw.rig_inventory import (
+        compare_reviewed_config,
+        enumerate_rig,
+        write_inventory_outputs,
+    )
+
+    # Unlike authorization-map, absence of a safety config is intentional.  A
+    # supplied reviewed file is parsed only to annotate a comparison after the
+    # live facts have been collected.
+    parsed_safety = load_safety_config(args.safety_config) if args.safety_config else None
+    print("Connecting to Micro-Manager for read-only rig inspection...", file=sys.stderr)
+    try:
+        ctrl = MicroscopeController(port=args.port)
+    except Exception:
+        sys.exit(
+            "Could not connect to Micro-Manager. "
+            "Is the ZMQ server enabled in Tools → Options?"
+        )
+    if not ctrl.is_connected():
+        sys.exit(
+            "Could not connect to Micro-Manager. "
+            "Is the ZMQ server enabled in Tools → Options?"
+        )
+    try:
+        inventory = enumerate_rig(ctrl.core, mm_config=args.mm_config)
+    except OSError as exc:
+        sys.exit(f"Could not read Micro-Manager config {args.mm_config}: {exc}")
+    if parsed_safety is not None:
+        compare_reviewed_config(
+            inventory, parsed_safety, str(Path(args.safety_config)), ctrl.core
+        )
+    inventory_path, review_path = write_inventory_outputs(inventory, args.out)
+    print(f"Inventory: {inventory_path}")
+    print(f"Review: {review_path}")
+
+
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="Microclaw: AI agent for Micro-Manager")
@@ -342,6 +380,17 @@ def main():
             "surface. It never constructs an agent, app, or mutation-tool dispatcher."
         ),
     )
+    ir = sub.add_parser(
+        "inspect-rig",
+        help="Enumerate a rig read-only and write inventory evidence.",
+        description=(
+            "Connects only for read-only MMCore enumeration. It starts no agent, "
+            "server, acquisition, plugin, or mutation-tool dispatcher. --mm-config "
+            "identifies the already-loaded configuration; this command never applies it."
+        ),
+    )
+    ir.add_argument("--mm-config", default=None, help="Path to the already-loaded MM .cfg (record/hash only).")
+    ir.add_argument("--out", required=True, help="Directory for inventory.json and review.md.")
     sv.add_argument(
         "--allow-remote",
         action="store_true",
@@ -394,6 +443,10 @@ def main():
 
     if args.command == "authorization-map":
         print_authorization_map(args)
+        return
+
+    if args.command == "inspect-rig":
+        inspect_rig(args)
         return
 
     if args.command == "serve":
