@@ -210,6 +210,103 @@ on a contrast-rich field, approaching every reference and destination from one
 direction to avoid raster reversal. It remains a proposal only; no stage move or
 exposure was made.
 
+## Calibration session, and what it corrected (2026-07-29)
+
+M2 now carries a measured affine. Four things in the section above were wrong,
+and one of them was ours.
+
+**The Y column is resolved, and X is corroborated.** MM's calibrator produced,
+in a new config `Res1`:
+
+```
+pixel->stage 2x2  : [[0.0, 0.127], [-0.127, 0.0]]
+x-axis angle deg  : -90.0     x/y scale: 0.127  0.127
+reflection        : False     determinant: 0.016129
+canonical SHA-256 : d60e84f434efebf41832af1cbb3eb425208921563ec73d9d3c059fe503b046f6
+```
+
+Inverting it, a +20 µm stage X step should displace image content **157.5 px
+along rows and 0 along columns**. `run_a_2`'s measured cluster was
+`(dy,dx)` = (139,1) (140,2) (140,1) (157,2) (162,2) (163,2) (163,2). The upper
+mode, 157–163 px, is 19.94–20.70 µm for an intended 20 µm. Two wholly
+independent methods — MM's move/snap cross-correlation and our overlap-normalized
+correlation over saved tiles — agree on ~90° at 0.127 µm/px. The convention is
+settled for X.
+
+**Y is supplied, not corroborated.** The calibrator gives the full 2×2, but
+`run_a_2` could never resolve Y, so nothing independent checks that column. Do
+not describe the 2×2 as cross-validated; describe X as cross-validated and Y as
+single-sourced. The 139–140 mode (17.65–17.78 µm, ~11% short) remains
+unexplained and is still only consistent with, not evidence for, the raster-
+reversal backlash hypothesis.
+
+**Record the suspicious exactness.** Exact zeros, exactly ±0.127, exactly
+−90.00°, zero shear, and both scales identical to the digit is cleaner than a
+correlation fit normally lands, and 0.127 was already `Res0`'s scalar. The
+operator confirms every value came from the calibrator and nothing was typed. It
+is recorded as measured — but if MM turns out to regularize on store, this
+paragraph is how a future reader spots it.
+
+**M2's "does not activate" was our artifact, not a misconfigured rig.** The
+blocking predicate is real but its cause is config-string format drift. The
+post-calibration probe shows both configs against one unchanged machine state:
+
+```
+Res0  rule[1]: 'SmarActXY'.'Frequency' expected='5'    live='5000'  MISMATCH -> activate NO
+Res1  rule[1]: 'SmarActXY'.'Frequency' expected='5000' live='5000'  MATCH    -> activate YES
+```
+
+`Res0` was authored years ago and stored `5`; `Res1` captured the *same* state
+today and stored `5000`. The Device Property Browser shows `5`, with an allowed
+range of 1–18500. Micro-Manager's own CoreLog writes these values with locale
+separators embedded — `SmarActXY/Frequency:18,500`, `SmarActZ/Frequency:18,315`
+— i.e. property values pass through a locale-aware formatter. A value formatted
+under one convention and parsed under another turns 5 into 5000, which is
+exactly the observed drift on a de_AT system. **Correction: the instruction to
+"correct M2's blocking predicate" pointed at the wrong thing.** Creating a new
+pixel-size config is the right move; repairing the old one is not, and editing
+the live device to match a stale string would have been actively wrong.
+
+**MM's calibrator can crash the rig, and the workaround is a new config.**
+Repeated attempts against `Res0` killed Micro-Manager outright. The CoreLog ends
+mid-sequence with no exception:
+
+```
+08:49:06.635  [dev:Andor] Stopped sequence acquisition
+08:49:06.657  [dev:Andor] PrepareSnap();          <-- last line in the file
+```
+
+A native process death 22 ms after aborting an iXon sequence acquisition. The
+same transition survived twice earlier at 13 ms and 20 ms, so it is a race in
+the Andor SDK's wind-down, not a deterministic fault, and not the calibration
+config. Calibrating into a **new** config succeeded with no crash. Separately,
+every `SmarAct*/Frequency` write blocks MM's event thread for 5.0–7.5 s
+(`EDTHangLogger`), which reads as a freeze and is not one. None of this
+overturns "do not build a move/snap spike" — the calibrator did the job once it
+had somewhere to write.
+
+**The spiral fixture cannot be placed, and it is M2.** Corrections: the spiral
+was acquired on **M2**, not a third instrument — same Andor iXon DU897_BV serial
+8172 at the same `36-50-453-227` ROI as Run A. And it is **25 separate
+single-position datasets** (`spiral_NN/spiral_NN_1`), each with axes `{'time':
+[0]}` and no `position` axis. Per-image intended XY is **absent**, exactly as §4
+predicts for a single-position acquisition, so the tool refuses it — verified.
+The coordinates exist only in the sidecar `montage_hook_log.txt` as `x_um` /
+`y_um` per tile. Consuming a sidecar is a different input contract from reading
+dataset metadata and is not in scope here. Note also the geometry: a 200 µm step
+against a 453×227 tile at 0.127 µm/px (57.5 × 28.8 µm) leaves the tiles entirely
+non-overlapping, so even with coordinates this fixture exercises **gaps and
+coverage**, never seams.
+
+**ROI must not gate.** This section already said a constant off-centre ROI "adds
+only a global translation and is harmless for relative placement", and Block 9's
+first implementation refused on it anyway — which blocked the first genuinely
+measured affine we have from reaching the first fixture we have, because the
+calibrator ran at full frame `(0,0,512,512)` and Run A is a `453×227` crop.
+Placement consumes only the affine's four coefficients and ROI never enters that
+arithmetic. Refuse on camera device/model and binning, which change the transform
+or the instrument; **record** ROI differences.
+
 ## Proposed shape
 
 ### 1. A shared geometry module — `microclaw/dataset_mosaic.py`
@@ -486,8 +583,18 @@ the exact forms are normative:
 | ROI | `ROI` | `'36-50-453-227'` — **dash**-delimited `x-y-w-h` string |
 | binning | `Binning` | `'1'`, and `'1x1'` on M5 — both must parse |
 | camera | `Core-Camera` | `'Andor'` |
-| camera model | *(none)* | only as `<Device>-Camera`, e.g. `'\| iXon Ultra \| DU897_BV \| 8172 \|'` |
+| camera model | *(vendor-specific)* | **no single key.** Andor: `Andor-Camera` = `'\| iXon Ultra \| DU897_BV \| 8172 \|'`. Hamamatsu: **no `-Camera` key at all** — `HamamatsuHam_DCAM-CameraName` = `'C15440-20UP'`, serial under `-CameraID` = `'S/N: 500975'` |
 | objective | **absent** | no `Objective`/`ObjectiveLabel`/`PixelSizeConfig` key exists |
+
+The camera-model row is corrected from Block 8's version, which recorded "only
+as `<Device>-Camera`". That was true of the only datasets we had then — all
+Andor — and generalising it hardcoded one vendor's shape. Every M5 dataset was
+then refused as "identity metadata is incomplete", including the 2500-tile
+fixture the scale gate needs. Resolve the model by trying `-Camera`,
+`-CameraName`, `-CameraID` in order and **record which key answered**; a reader
+cannot infer it from the value. This is the second time an assumed key shape
+passed a green suite and failed on real data, which is why the three measured
+forms above are pinned by name in the tests.
 
 Two consequences are load-bearing. The ROI is a **dash**-delimited string, so a
 parser splitting on `[,;]` yields `None` for every real dataset — which also
@@ -569,6 +676,30 @@ Measure peak RSS on the 2500-tile fixture and set a budget. If it is not
 comfortably within that budget, rasterize to a chunked or memory-mapped artifact
 and require completed-dataset analyzers to support bounded-memory access.
 
+**Measured (2026-07-29), and chunking is not needed.** `scan488_900_1`, 2500
+positions, one time point:
+
+| | |
+|---|---|
+| output | 8576 × 8580 px (predicted 8582 × 8578) |
+| wall time | 3.4 s |
+| peak RSS | 723 MB |
+| coverage | 1.0000, zero uncovered pixels |
+| overlap depth | max 4 tiles (corners); 5.43 M cells covered more than once |
+
+Two estimates above were wrong in the same direction. The source tiles are
+**180 × 176 px on a `1336-1084-180-176` ROI**, not the full 2304², so the
+rasterizing work is ~79 M output-cell operations rather than the 13 G the
+full-frame assumption implied. And the 18 µm step against a 180 px tile at
+0.105 µm/px (18.9 µm) gives a real but thin overlap, which is why coverage is
+complete and the depth reaches 4 at tile corners.
+
+723 MB for a 140 MB canvas is roughly 5×, accounted for by the mosaic, the
+`uint16` coverage counter, the boolean mask, and the TIFF encode buffer. That is
+comfortably within budget, so **chunked/memory-mapped output is not implemented**
+and the design's conditional does not fire. Re-measure before assuming this
+holds for a full-frame 2304² tiling, which would be ~164× the per-tile work.
+
 ## Testing
 
 - Geometry: synthesize tiles at known XY and verify output extent and pixel
@@ -580,7 +711,9 @@ and require completed-dataset analyzers to support bounded-memory access.
 - Exporter regression: after extracting `_iter_present_coords`, assert the
   exporter and mosaic tool both traverse the multi-position dataset that once
   raised `KeyError: 'position'`.
-- Spiral regression: synthesize non-grid intended-XY positions and assert placement
+- Spiral regression: **must be synthetic.** The real spiral fixture is 25
+  single-position datasets carrying no intended XY (see the 2026-07-29 section),
+  so it can verify only the §4 refusal path. Synthesize non-grid intended-XY positions and assert placement
   by coordinate rather than acquisition order or row/column axes.
 - Axes: reject omitted or invalid channel/time/Z selections and prove that frames
   outside the selected plane cannot overwrite it.
