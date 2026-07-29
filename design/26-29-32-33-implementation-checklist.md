@@ -762,12 +762,37 @@ measurement and not another project.
       two independent methods, and M2's stored 0.127 µm/px is a third. Agreement
       settles the convention; disagreement is equally informative and must be
       resolved before any of the three is trusted.
-- [ ] Retrieve the spiral and 2500-tile fixtures — see the fixture table further
-      down this block. They sit on two different machines, so it is two retrievals.
+      — **DONE 2026-07-29, and it agrees.** MM's calibrator produced
+      `[[0, 0.127], [-0.127, 0]]` (−90.0°, 0.127 µm/px, no reflection, no shear)
+      in a new config `Res1`. Inverted, that predicts 157.5 px of row
+      displacement and 0 of column displacement for a +20 µm stage X step;
+      `run_a_2`'s upper mode is 157–163 px at 1–2 px of column displacement.
+      Two independent methods, one optical path, agreement. **X is
+      cross-validated; Y is supplied by the calibrator alone and corroborated by
+      nothing** — do not record the 2×2 as verified.
+      Two corrections to this bullet's own instructions: "correct M2's blocking
+      predicate" pointed at the wrong thing (the mismatch is config-string
+      format drift, not a misconfigured rig — a *new* config is the fix, and
+      editing the live device to match a stale string would have been wrong),
+      and MM's calibrator **crashed the rig repeatedly** against the old config,
+      dying natively in the Andor SDK 22 ms after aborting a sequence
+      acquisition. Calibrating into a new config succeeded. See design/29's
+      2026-07-29 section for the CoreLog evidence and the locale mechanism.
+- [x] Retrieve the spiral and 2500-tile fixtures. — DONE 2026-07-29. Both
+      2500-tile scans (`scan488_900_1`, `scan561_900_1`) and the spiral are
+      retrieved. **The spiral is unusable for placement**: it is 25 *separate
+      single-position* datasets with no `position` axis and **no intended-XY
+      metadata**, so the tool refuses it (verified). Its coordinates exist only
+      in the sidecar `montage_hook_log.txt`, which is a different input
+      contract and out of scope. It also has a 200 µm step against a 57.5 ×
+      28.8 µm field, so the tiles never overlap — it could only ever have
+      tested gaps, never seams. Spiral placement stays synthetic.
 - [ ] Obtain one dataset carrying a **non-sentinel** affine. Every dataset available
       today records the all-zeros sentinel, so Block 8's acquisition-recorded branch
-      is unit-tested and never field-verified. This comes free with the calibrator
-      run above and is the only way to exercise that path end to end.
+      is unit-tested and never field-verified. — **UNBLOCKED, not yet done.**
+      `Res1` now reads `would config activate: YES`, so any small multi-position
+      acquisition on M2 will stamp a real per-image `PixelSizeAffine`. This is
+      the last prerequisite standing.
 
 Implementation:
 
@@ -807,10 +832,27 @@ Implementation:
       body), which is why the stripe defect was invisible; replaced with exact
       array equality against an independently written scalar reference, plus a
       no-interior-holes assertion per covered row and column.
-- [ ] Run on the saved grid and spiral rig datasets with zero exposures. Compare placement
+- [-] Run on the saved grid and spiral rig datasets with zero exposures. Compare placement
       with known landmarks and record seam behavior.
-- [ ] Run the 2500-tile fixture, measure peak RSS and output correctness, and implement
+      — **PARTIAL.** Grid done on two instruments, zero exposure both times:
+      `run_a_2` (M2, 12 tiles, the measured `Res1` affine) builds 768×700 at
+      99.86% coverage, and `scan488_900_1` (M5, 2500 tiles) builds 8576×8580 at
+      100% coverage with a maximum overlap depth of 4 at tile corners.
+      **Spiral is withdrawn, not deferred** — the fixture carries no intended XY
+      at all (see the prerequisite above), so it can only exercise the §4
+      refusal path, which it does. Spiral placement stays synthetic.
+      **Landmark comparison is still outstanding** and is the one thing here
+      that needs a human eye: nothing yet confirms the mosaics are *right*, only
+      that they are complete, deterministic, and self-consistent.
+- [x] Run the 2500-tile fixture, measure peak RSS and output correctness, and implement
       chunked/memory-mapped output before merge if it exceeds the agreed budget.
+      — **8576×8580 in 3.4 s at 723 MB peak RSS**, coverage 1.0000, zero
+      uncovered pixels. Comfortably within budget, so **chunked output is not
+      implemented** and the design's conditional does not fire. Note the premise
+      was wrong in our favour: the tiles are 180×176 on a `1336-1084-180-176`
+      ROI, not full-frame 2304², so this is ~79 M cell operations rather than
+      the 13 G a full-frame tiling would be. Re-measure before assuming it holds
+      for full-frame tiles.
 - [ ] Retrieve the design/30 spiral and 2500-tile fixtures from the rig first
       (tracked as a prerequisite at the top of this block); neither is present here. The non-square fixture is found (`run_a_1`, 453×227).
       Exact locations, recovered from the saved histories (2026-07-28) so nobody
@@ -830,8 +872,10 @@ Implementation:
       off the 561 laser, not deleting data.
 
       **Instrument attribution matters here** (operator-confirmed 2026-07-28), and
-      these fixtures span at least three: Run A is **M2** (Andor iXon), the tiling
-      fixtures are **M5** (Hamamatsu), and the spiral is a third. Each therefore
+      these fixtures span ~~at least three~~ **two**: Run A is **M2** (Andor iXon)
+      and the tiling fixtures are **M5** (Hamamatsu). **Corrected 2026-07-29: the
+      spiral is also M2**, not a third instrument — same Andor iXon DU897_BV
+      serial 8172 at the same `36-50-453-227` ROI as Run A. Each instrument
       needs its OWN calibration identity; do not carry one instrument's affine to
       another's dataset. This is exactly the failure design/29 §5's camera-identity
       requirement exists to prevent, and these fixtures are the test case for it.
