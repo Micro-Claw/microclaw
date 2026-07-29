@@ -3372,3 +3372,122 @@ back a few sessions to find all of the missing prompts.
 [I had checked the summary table row and not the block's own checklist body, which
 still had six unticked items and a genuinely unfinished post-merge design gate.
 Recovered the five missing sessions from the local transcripts.]
+
+----
+
+Continue the checklist in design/26-29-32-33-implementation-checklist.md at block
+9b. You are the coordinator. You will decide what to do next what blocks to hand
+off to other agents to complete. Please hand me the prompt and I will pass it to
+an agent. Then I will tell you when the agent is done. You will check it and
+decide what to do next. I presently only have access to the MMDemo rig, so let's
+do as much as we can there.
+
+[opened design33/read-only-rig-inventory from a415adc and ruled that the cross-rig
+run gates 9b's MERGE, not its branch -- unlike Blocks 7/7b this block writes
+nothing, and a demo core is a real MMCore over the same pyjavaz bridge. Merging
+is off Block 10's critical path: nothing before Block 14 Phase 5 consumes the
+inventory.]
+
+yes, settle the analyze_frame collision on a docs branch
+
+[renamed the OFFLINE verb to analyze_saved_frame; live analyze_frame is shipped
+and in field use, offline was not built at all. Rejected "one method with an
+optional context": the live return may carry typed hardware actions (MoveStage,
+SetIlluminationPower, StopSurvey) with no referent offline, so a merged method
+would either silently drop them or raise at call time instead of resolve time.
+Docs-only, merged c1cc8ea.]
+
+9b runner returned: [5301915..1854e5d; demo bridge did not answer, stopped rather
+than faking a run]
+
+[MY ERROR, caught later: while that agent worked in the shared tree I ran
+git add -A on the docs branch. It swept their in-progress rig_inventory.py into
+a docs commit and I merged it to main under a message saying "docs-only, no code
+change" -- ungated implementation code on main, bypassing the whole block gate.
+origin/main was untouched, so with the user's approval I reset main to a415adc,
+rebuilt the docs commit from three design/ files only, and recommitted the agent's
+work byte-identically onto a clean base.]
+
+I have to run the demo run on a different machine. So the runner will have to
+commit and push this and then I will pull and test on the demo machine
+
+last time I let you do something while another runner was going, it was split
+across multiple branches. how can we safetly do block 10 while the block 9b
+runner is still going?
+
+[the root cause was one working DIRECTORY with two writers, not two branches.
+Fixed with git worktree + rules: each agent in its own dir, never pip install -e .
+(one shared editable install), explicit git pathspecs only. Verified rather than
+assumed: _EditableFinder sits AFTER PathFinder in sys.meta_path, so cwd decides
+which source is imported, reliably in both directions.]
+
+yes, write the block 10 prompt
+
+Sorry, this --ff-only bit, is this on the main branch? Or is it on
+design33/read-only-rig-inventory?
+
+[on the branch. The question exposed a real setup bug: no git fetch, so git switch
+would fail on any machine that had not fetched since the push. Then I pinned
+setup-head.txt to c097fcd and pushing that very change moved the tip -- a runbook
+committed on the branch it describes cannot pin its own tip.]
+
+The missing files you are looking for are in .../Micro-Claw. scan_488_900_1 is
+directly in there and b9grid_2 is under b9_gate. We could pass this info back to
+the runner?
+
+Of course you can do a pixel calibration without an objective turret. All you
+need is a camera, a single objective, and a stage. Maybe we have to express it in
+a certain way in micro-manager, but an objective turret is not physically
+necessary for such a thing.
+
+[correct, and I had it wrong. I conflated physical calibration with our code's
+identity binding. The artifact schema is payload, payload_sha256, camera_device,
+camera_model, roi -- NO objective field -- and affine_key slugs an operator
+string, falling back to "default". I then authored the artifact from Block 9's
+measured values and built a real mosaic from b9grid_2: coverage 1.0000 over
+553x537, zero uncovered, and the identity check refuses a wrong camera device and
+model against the real | iXon Ultra | DU897_BV | 8172 |. The real finding is
+narrower: nothing shipped can AUTHOR a calibration artifact for a historical
+dataset.]
+
+I have a different question now: on 33-block9b-demo-gate-prompts, what should be
+in /REPLACE/with/a/real/directory for part 4?
+
+The results of 33-block9b-demo-gate-prompts are in .../block9b_29072026
+
+[demo gate FAILED at Step 3 and earned its keep. reported_type held
+str(get_property_type(...)) -- a pyjavaz shadow OBJECT, so its repr carries a heap
+address that changes every process: the fingerprint can never be stable on real
+hardware, and the field recorded garbage. Second defect: get_device_adapter_name
+does not exist (CMMCore has getDeviceName), so adapter identity was None on all
+14 devices. Both were green off-rig because the fake core INVENTS the methods --
+the third occurrence of Block 8's "green against invented shapes" failure class.
+Steps 2/4/5 passed and confirmed F1/F2 on real data. Four test_describe_hook
+failures on Windows are the existing Block 7 CRLF-vs-LF-manifest finding, not 9b.]
+
+yes, write the fix prompt
+
+Great! I kicked that 9b fix agent off. In the meantime, the block10 agent came
+back: [c1cc8ea..167732b]
+
+merge block 10 to main
+
+[merged a7a1e1c in a THIRD worktree so the live 9b agent's tree was never touched;
+design gate 9722586. Recorded three things that constrain later work: the mosaic
+input kind supplies no Axes or intended XY, so the counting fixture's tiles_seen=0
+is a metadata-contract fact and not a count; calibration for a mosaic is an
+explicit ref with confirmed_current refused offline; and the shared
+select_hook_class TIGHTENED Block 7's live loader, so a hook that only imports its
+class no longer resolves. design/29 gains the artifact-writer gap, scoped
+explicitly against my turret error.]
+
+The analyze_frame settlement was critical to ungating block10, which is now
+closed. What do you mean it pre-dates today? I thought we just made that fix.
+What exactly is unpushed from main?
+
+[I was wrong -- all seven unpushed commits were from that same day, 14:00-15:06.
+The divergence started at the settlement, not at the Block 10 merge. Four of the
+seven were already on GitHub inside the two pushed feature branches; the three
+that existed nowhere else were the Block 10 merge and its design gate.]
+
+OK. push main is fine. Let's resolve block 10 completely.
