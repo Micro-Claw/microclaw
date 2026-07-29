@@ -1,7 +1,7 @@
 # Block 15 — MMDemo gate runbook (design/32 Finding 5)
 
-Branch under test: `design32/context-audit-store` (`ebd7c9d`).
-Baseline: 1159 passed / 99 skipped off-rig.
+Branch under test: `design32/context-audit-store`.
+Baseline: 1160 passed / 99 skipped off-rig.
 
 Block 15's ledger row says no rig evidence is required — the block is
 off-hardware by design. This gate runs anyway because four of its claims are
@@ -25,7 +25,7 @@ Set once per session:
 cd C:\path\to\microclaw
 git fetch origin
 git checkout design32/context-audit-store
-git log --oneline -1        # expect ebd7c9d
+git log --oneline -1        # expect the tip of the branch
 pip install -e .            # a stale editable install is the usual cause of
                             # confusing import/plugin errors here
 $CFG = "C:\path\to\your\demo_safety_config.yaml"
@@ -46,6 +46,17 @@ for this session.
 **Capture output as UTF-8.** Windows PowerShell 5.1 writes `*>` redirects as
 UTF-16, which is unreadable when the file is shared. Use
 `2>&1 | Out-File -Encoding utf8 <name>.txt` throughout, as the commands below do.
+
+**Flag order is load-bearing.** Session options (`--safety-config`, `--port`,
+`--model`, `--save-history`, `--history-retention-days`) live on the *top-level*
+parser and must come **before** the subcommand.
+`microclaw serve --safety-config ...` fails with "unrecognized arguments";
+`microclaw --safety-config ... serve` is correct.
+
+**Two different ports.** `--port` (top-level, default 4827) is the Micro-Manager
+ZMQ port. The browser port is `serve --web-port`, default **8000**. Both
+defaults are already right for a demo rig, so neither needs passing — the URLs
+below use 8000.
 
 ---
 
@@ -138,8 +149,10 @@ what to change. Two ways it happens, both seen on the first live runs:
 Leave this running in **window A**:
 
 ```powershell
-microclaw serve --port 4827 --safety-config $CFG 2>&1 | Out-File -Encoding utf8 g2-serve.txt
+microclaw --safety-config $CFG serve 2>&1 | Out-File -Encoding utf8 g2-serve.txt
 ```
+
+It opens the browser at <http://127.0.0.1:8000>.
 
 Run three or four turns in the browser that call tools, including one that
 writes a dataset (a 2-frame timelapse) so an artifact is declared, and one that
@@ -165,8 +178,8 @@ The browser uses `limit=500`, which one demo session will not exceed, so force
 more than one page by hand:
 
 ```powershell
-$p1 = Invoke-RestMethod "http://127.0.0.1:4827/api/history?limit=2"
-$p2 = Invoke-RestMethod "http://127.0.0.1:4827/api/history?limit=2&cursor=$($p1.next_cursor)"
+$p1 = Invoke-RestMethod "http://127.0.0.1:8000/api/history?limit=2"
+$p2 = Invoke-RestMethod "http://127.0.0.1:8000/api/history?limit=2&cursor=$($p1.next_cursor)"
 $p1 | ConvertTo-Json -Depth 6 > g3-page1.json
 $p2 | ConvertTo-Json -Depth 6 > g3-page2.json
 "total p1=$($p1.total) p2=$($p2.total)  next1=$($p1.next_cursor) next2=$($p2.next_cursor)"
@@ -182,8 +195,8 @@ walks the cursor itself.
 Also confirm bad input is refused rather than silently coerced:
 
 ```powershell
-try { Invoke-RestMethod "http://127.0.0.1:4827/api/history?cursor=-1" } catch { $_.Exception.Response.StatusCode.value__ }
-try { Invoke-RestMethod "http://127.0.0.1:4827/api/history?limit=0" }  catch { $_.Exception.Response.StatusCode.value__ }
+try { Invoke-RestMethod "http://127.0.0.1:8000/api/history?cursor=-1" } catch { $_.Exception.Response.StatusCode.value__ }
+try { Invoke-RestMethod "http://127.0.0.1:8000/api/history?limit=0" }  catch { $_.Exception.Response.StatusCode.value__ }
 ```
 
 PASS: `400` for both.
@@ -258,11 +271,11 @@ cd retention
 (Get-Item old_microclaw_history.jsonl).LastWriteTime = (Get-Date).AddDays(-30)
 
 # default: no flag
-microclaw serve --port 4828 --safety-config $CFG 2>&1 | Out-File -Encoding utf8 ..\g7-default.txt
+microclaw --safety-config $CFG serve --web-port 8001 2>&1 | Out-File -Encoding utf8 ..\g7-default.txt
 # (Ctrl-C once it is up)
 Test-Path old_microclaw_history.jsonl      # expect True
 
-microclaw serve --port 4828 --safety-config $CFG --history-retention-days 1 2>&1 | Out-File -Encoding utf8 ..\g7-prune.txt
+microclaw --safety-config $CFG --history-retention-days 1 serve --web-port 8001 2>&1 | Out-File -Encoding utf8 ..\g7-prune.txt
 # (Ctrl-C once it is up)
 Test-Path old_microclaw_history.jsonl      # expect False
 Select-String -Path ..\g7-prune.txt -Pattern "Pruned transcript"
