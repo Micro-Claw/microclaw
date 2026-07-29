@@ -110,3 +110,19 @@ class MosaicCellCounter:
             "running_cell_count": count,
             "mean_cell_area_um2": round(float(np.mean(areas)), 1) if areas else 0.0,
         })
+
+    def analyze_saved_frame(self, image, metadata, context):
+        """Offline design/26 entry point over the same pure counting state."""
+        live = self.analyze_frame(image, metadata)
+        return {
+            "result": live.measurements,
+            "status": "provisional",
+            "analyzer": "mosaic_cell_counter",
+            "analyzer_version": "m5-migrated-fixture",
+            "parameters": {
+                "pixel_size_um": self.px,
+                "min_area_um2": self.min_area_um2,
+                "max_area_um2": self.max_area_um2,
+                "snr_min": self.snr_min,
+            },
+        }

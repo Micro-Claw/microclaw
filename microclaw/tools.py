@@ -1235,6 +1235,36 @@ def build_stage_coordinate_mosaic(
     return result
 
 
+def run_analysis_on_saved_dataset(
+    ctrl: MicroscopeController,
+    guard: SafetyGuard,
+    dataset_path: str,
+    adapter: str,
+    axis_selection: dict,
+    input_kind: str,
+    parameters: dict,
+    output_dir: str,
+    calibration_ref: dict | None = None,
+    output_pixel_size_um: float | None = None,
+    model_project_config: dict | None = None,
+    artifact_limits: dict | None = None,
+    max_array_bytes: int = 512 * 1024 * 1024,
+) -> dict:
+    """Run a reviewed adapter over saved pixels without touching ``ctrl``.
+
+    ``ctrl`` is accepted only because public tools share one dispatcher shape;
+    it is deliberately not forwarded to the offline runner or adapter.
+    """
+    from microclaw.completed_dataset import run_analysis_on_saved_dataset as run
+    return run(
+        guard, dataset_path, adapter, axis_selection, input_kind, parameters,
+        output_dir, calibration_ref=calibration_ref,
+        output_pixel_size_um=output_pixel_size_um,
+        model_project_config=model_project_config,
+        artifact_limits=artifact_limits, max_array_bytes=max_array_bytes,
+    )
+
+
 # --- Image capture with analysis ---
 
 def _metric_stamp(ctrl: MicroscopeController) -> dict:
@@ -4510,6 +4540,7 @@ TOOL_REGISTRY = {
     "run_timelapse": run_timelapse,
     "export_dataset_as_tiff": export_dataset_as_tiff,
     "build_stage_coordinate_mosaic": build_stage_coordinate_mosaic,
+    "run_analysis_on_saved_dataset": run_analysis_on_saved_dataset,
     "run_autofocus": run_autofocus,
     "mark_position": mark_position,
     "get_position_list": get_position_list,

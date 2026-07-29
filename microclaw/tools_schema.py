@@ -440,6 +440,34 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "run_analysis_on_saved_dataset",
+        "description": (
+            "Run one reviewed, hash-pinned offline adapter over a bounded selection "
+            "of a completed NDTiff dataset. This is a zero-hardware-action tool."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "dataset_path": {"type": "string"},
+                "adapter": {"type": "string"},
+                "axis_selection": {"type": "object"},
+                "input_kind": {"type": "string", "enum": ["frames", "stage_coordinate_mosaic"]},
+                "parameters": {"type": "object"},
+                "output_dir": {"type": "string"},
+                "calibration_ref": {
+                    "type": "object",
+                    "description": "Explicit artifact or immutable knowledge_version reference required for mosaics.",
+                },
+                "output_pixel_size_um": {"type": "number", "exclusiveMinimum": 0},
+                "model_project_config": {"type": "object"},
+                "artifact_limits": _HOOK_ARTIFACT_LIMITS_SCHEMA,
+                "max_array_bytes": {"type": "integer", "minimum": 1},
+            },
+            "required": ["dataset_path", "adapter", "axis_selection", "input_kind",
+                         "parameters", "output_dir"],
+        },
+    },
+    {
         "name": "snap_and_analyze",
         "description": (
             "Snap a single image, display it in the Micro-Manager viewer, and return "
