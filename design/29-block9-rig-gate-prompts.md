@@ -43,48 +43,6 @@ Run `design/29-mm-pixel-affine-probe.py` and confirm:
 **Stop if any of these differ.** Do not acquire against a config you have not
 confirmed is live.
 
-## R1b — settle the objective key, or R2 cannot answer question 1
-
-Added 2026-07-29, after reading M2's config and device-property probe. **This is
-cheap and it decides what R2 is worth.**
-
-`resolve_calibration`'s acquisition-recorded branch needs five identity fields,
-not just the affine: objective, binning, camera device, camera model, ROI. Any
-one missing and it returns `acquisition calibration identity is incomplete;
-missing …` and refuses, with a correct affine sitting right there in the
-metadata.
-
-Four of the five resolve on M2. `run_a_2`'s per-image metadata was audited
-directly: `Binning='1'`, `Core-Camera='Andor'`, `Andor-Camera='| iXon Ultra |
-DU897_BV | 8172 |'` (this is the vendor-key fix in `f941896` earning its keep),
-`ROI='36-50-453-227'`. **The objective does not.** Across all 420 metadata keys,
-none of `Objective`, `ObjectiveLabel`, `PixelSizeConfig`, `PixelSizeConfigName`
-is present — M2 has no objective turret in the config, so the system-state dump
-has no objective property to stamp.
-
-The open question is whether MM stamps `PixelSizeConfig` **only when a pixel-size
-config is active**. `run_a_2` was acquired with none active (`PixelSizeUm=0`,
-sentinel affine), so it cannot distinguish "never stamped" from "not stamped
-then". `Res1` is active now, so R2's own first frame settles it — no extra
-exposure needed. Against the saved dataset:
-
-```powershell
-python -c "from ndstorage import Dataset; d=Dataset(r'<path>'); c={k:sorted(v)[0] for k,v in d.axes.items()}; m=d.read_metadata(**c); print({k:m[k] for k in m if 'bjective' in k or 'PixelSizeConfig' in k})" > r1b.txt 2>&1
-```
-
-- **Non-empty** → question 1 is live and R2's dataset answers it. Proceed
-  normally.
-- **Empty** → the acquisition-recorded branch cannot succeed on M2 for a reason
-  that has nothing to do with the affine, and no amount of rig time changes
-  that. **This does not stop the gate.** Question 2 — is the mosaic correct —
-  is answered through an explicit calibration artifact, which is the documented
-  higher-precedence path (design/29 §5) and exactly what R4 already uses. Run R2
-  and R3 as written, note the result here, and record it as a finding: on rigs
-  with no objective device, acquisition-recorded calibration is unreachable and
-  an artifact is mandatory.
-
-Do not "fix" this by inventing an objective key on the rig.
-
 ## R2 — acquire an overlapping grid on structured sample
 
 Requirements, each for a reason:
@@ -109,6 +67,78 @@ Y** — 5 or 6 positions at 14 µm, all approached from the same direction, no
 reversal. Rationale in R4: a plain raster cannot test the Y column, and this
 line is the only thing that can. It is a handful of extra exposures.
 
+### The one parameter that can void the whole run
+
+`run_tile_acquisition` **without `hook_strategy` writes one separate dataset per
+position**, each single-position, each with no `position` axis and therefore
+**no intended XY at all**. That is not a hypothetical: it is exactly how the
+design/30 spiral was acquired, and it is precisely why that fixture is unusable
+for placement. Sixteen tiles acquired that way would be sixteen unusable
+datasets and the gate would have to be re-run.
+
+Passing `hook_strategy` switches to a single Acquisition spanning every position
+— one dataset, one `position` axis, intended XY on every frame. Use
+`"snr_observer"`: it observes and logs and changes nothing about the
+acquisition. This is how `run_a_2` was acquired, which is why `run_a_2` works.
+
+### The Y line is a 1-column grid, and that is the whole trick
+
+`run_tile_acquisition` generates a **plain raster**, not a serpentine: each row
+restarts at column 0, so between rows the stage makes a full-width X return —
+`(cols-1) × step`. In `run_a_2` that was 4 columns × 20 µm = the 60 µm return
+that R4's stage-Y residual is actually measuring.
+
+Set `cols=1` and there is no X motion anywhere in the run. Y steps monotonically
+and unidirectionally, one direction, no reversal. `rows=6, cols=1, step_um=14`
+is the Y line, and it is the only thing in this gate that can retire "Y is
+single-sourced".
+
+### Before you start microclaw (by hand)
+
+1. R1 is passed — `Res1` is the active pixel-size config.
+2. Sample in focus, focus lock settled. **Do not run autofocus during the gate**:
+   the lock owns Z, and design/28 F1/F2 are unresolved for this metric.
+3. Pick the ROI and leave it alone for both runs. Full frame `512×512` is the
+   better choice — it matches the calibration's own ROI exactly, is square so X
+   and Y overlap equally, and gives more area to correlate. Your `453×227` crop
+   also works; a difference is recorded, not refused.
+4. Set the Andor readout preset from the `Camera` config group in the GUI.
+   Microclaw is not authorized to change it, by design.
+5. Both runs use the same ROI, binning and center. Do not change them in between.
+
+### The prompt
+
+Paste this to microclaw:
+
+> I am running the design/29 Block 9 geometry gate. Two acquisitions, both
+> saved under `F:/DataSSD/b9_gate`.
+>
+> First, turn on Luxx488 and set its power to the lowest level that gives
+> visible structure — start at 2% and raise it only if the field is flat. Keep
+> the exposure near 10 ms. This is a geometry test, so I want structure, not
+> signal; do not optimize image quality.
+>
+> Then run a 4×4 tile grid with a 14 µm step, `protocol="timelapse"` with
+> `protocol_params={"n_frames": 1, "interval_s": 0}`, and
+> `hook_strategy="snr_observer"`, named `b9grid`. The hook_strategy is
+> mandatory — without it each position is written as its own single-position
+> dataset with no intended-XY metadata and the run is worthless to me. I need
+> one dataset with a `position` axis.
+>
+> Then, from the same center, run a second acquisition with `rows=6, cols=1`
+> and the same 14 µm step, same protocol, same hook_strategy, named `b9yline`.
+> One column is deliberate: it steps Y unidirectionally with no X return.
+>
+> Do not run autofocus, do not move Z, and do not change the ROI, the binning
+> or the camera preset between the two runs. Report the save path of each
+> dataset and turn the laser off when you are done.
+
+Expect ~22 exposures total. Both runs sit under every confirmation threshold in
+the M2 profile, so the only prompt you should see is the illumination
+confirmation when the 488 is enabled. **If microclaw asks you to confirm
+anything about frames, duration or bytes, something is larger than intended —
+stop and read it.**
+
 ## R3 — verify the affine landed, then hand the dataset over
 
 On the rig, confirm the saved dataset carries a real affine rather than the
@@ -120,6 +150,50 @@ python -c "from ndstorage import Dataset; d=Dataset(r'<path>'); c={k:sorted(v)[0
 
 Expect `PixelSizeAffine` to be `0.0;0.127;0.0;-0.127;0.0;0.0` and **not** all
 zeros, and both intended-XY keys to be present.
+
+### R3b — settle the objective key: it decides what R2 was worth
+
+Added 2026-07-29, after reading M2's config and device-property probe. This runs
+on R2's saved dataset, alongside the affine check above — it needs no extra
+exposure and no second visit to the rig.
+
+`resolve_calibration`'s acquisition-recorded branch needs five identity fields,
+not just the affine: objective, binning, camera device, camera model, ROI. Any
+one missing and it returns `acquisition calibration identity is incomplete;
+missing …` and refuses, with a correct affine sitting right there in the
+metadata.
+
+Four of the five resolve on M2. `run_a_2`'s per-image metadata was audited
+directly: `Binning='1'`, `Core-Camera='Andor'`, `Andor-Camera='| iXon Ultra |
+DU897_BV | 8172 |'` (this is the vendor-key fix in `f941896` earning its keep),
+`ROI='36-50-453-227'`. **The objective does not.** Across all 420 metadata keys,
+none of `Objective`, `ObjectiveLabel`, `PixelSizeConfig`, `PixelSizeConfigName`
+is present — M2 has no objective turret in the config, so the system-state dump
+has no objective property to stamp.
+
+The open question is whether MM stamps `PixelSizeConfig` **only when a pixel-size
+config is active**. `run_a_2` was acquired with none active (`PixelSizeUm=0`,
+sentinel affine), so it cannot distinguish "never stamped" from "not stamped
+then". `Res1` is active now, so R2's own first frame settles it — no extra
+exposure needed. Against the saved dataset:
+
+```powershell
+python -c "from ndstorage import Dataset; d=Dataset(r'<path>'); c={k:sorted(v)[0] for k,v in d.axes.items()}; m=d.read_metadata(**c); print({k:m[k] for k in m if 'bjective' in k or 'PixelSizeConfig' in k})" > r3b.txt 2>&1
+```
+
+- **Non-empty** → question 1 is live and R2's dataset answers it. Proceed
+  normally.
+- **Empty** → the acquisition-recorded branch cannot succeed on M2 for a reason
+  that has nothing to do with the affine, and no amount of rig time changes
+  that. **This does not stop the gate.** Question 2 — is the mosaic correct —
+  is answered through an explicit calibration artifact, which is the documented
+  higher-precedence path (design/29 §5) and exactly what R4 already uses. Run R2
+  and R3 as written, note the result here, and record it as a finding: on rigs
+  with no objective device, acquisition-recorded calibration is unreachable and
+  an artifact is mandatory.
+
+Do not "fix" this by inventing an objective key on the rig.
+
 
 Then copy the dataset off the rig to
 `~/Documents/Documents - Beyonce/Projects/Micro-Claw/` as with the other
