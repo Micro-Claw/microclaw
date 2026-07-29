@@ -683,6 +683,141 @@ Automatic on a dense aperiodic field, or write the motion-measured values
 directly. Prefer microclaw's own `calibration.solve_affine` as the standing
 source — this is now the concrete reason why.
 
+## Block 9 post-merge design gate — as built (2026-07-29)
+
+The sections below this one state what Block 9 *should* do. This one states what
+it *does*, read off the merged implementation rather than restated from the
+requirement. Where the design said a convention "must be specified", the
+specified value is here.
+
+### Interpolation and rounding, as implemented
+
+**There is no interpolation.** Sampling is inverse nearest-neighbour, and that is
+deliberate: an interpolating resampler would invent intensities that no detector
+measured, which is exactly the kind of quiet fabrication an offline analysis path
+must not introduce.
+
+- **Direction.** Inverse, not forward. Each output-cell centre inside a tile's
+  transformed bounding box is mapped through the inverse affine to a source
+  coordinate and nearest-neighbour sampled. The first implementation sampled
+  *forward* — scattering source centres into output cells — which rendered solid
+  tiles as **stripes**, leaving 15 of 31 output columns zero under an anisotropic
+  affine. Forward scatter cannot tile the output plane when the transform
+  expands; inverse gather always can. This is the single most important
+  convention in the module.
+- **Rounding.** Exact half source coordinates round toward **increasing** source
+  indices: `floor(value + 0.5)`. Applied identically to rows and columns.
+- **Canvas bounds.** Computed over transformed pixel **centres**, not pixel
+  corners, and endpoints are inclusive: `ceil((max - origin) / sample - 1e-12) + 1`.
+  Even-sized tiles therefore straddle the optical centre symmetrically at
+  half-integer displacements. The `1e-12` absorbs float error at exact multiples
+  so a tile does not gain a spurious final row or column.
+- **Output grid pitch** is `geometry.output_pixel_size_um`, defaulting to the
+  affine's `pixel_size_um` and overridable per call. It is an output sampling
+  choice and is independent of the affine's own scales.
+- **Uncovered cells are zero.** Zero is therefore not distinguishable from a
+  measured zero in the pixels alone — use `coverage_mask`, which is returned
+  precisely so a consumer never has to infer coverage from intensity.
+- **Overwrite order: later frames overwrite earlier frames.** A display
+  convention, not alignment and not object matching. It is deterministic because
+  the frame iterable is required to be deterministic and re-iterable.
+
+### Artifact format
+
+`build_stage_coordinate_mosaic(dataset_path, output_path, axis_selection,
+calibration_ref=None, output_pixel_size_um=None)` writes **two** files: a uint16
+TIFF at `output_path`, and an adjacent JSON manifest at `output_path + ".json"`.
+
+The manifest carries no timestamp, by design, so identical inputs and selection
+produce byte-identical pixels and identical hashed payloads. Fields:
+
+| field | meaning |
+|---|---|
+| `kind` | `"stage_coordinate_mosaic"` |
+| `selection` | the axis selection, key-sorted |
+| `calibration_identity` | resolved affine + provenance, including `source_kind` |
+| `dataset_identity` | what the dataset says about itself, incl. `camera_model_key` — which vendor key answered, because that differs per adapter and cannot be inferred later |
+| `calibration_roi_difference` | `null`, or the two ROIs and a note that the effect is a constant whole-mosaic translation |
+| `shape`, `coverage_fraction`, `overlap_statistics` | geometry outcome |
+| `overwrite_convention` | stated in the artifact, not only in the docs |
+| `pixel_sha256` | SHA-256 over the uint16 buffer in C order |
+| `artifact`, `manifest_path` | where the TIFF is |
+
+`overlap_statistics` counts **tiles**, not resampling multiplicity — an earlier
+version counted the latter, so a *single* tile reported 100% overlap.
+
+### Measured seam behaviour
+
+Seam behaviour was measured on the gate datasets, and the honest summary is that
+**it is bounded by the calibration, not by the geometry**. With M2's reported
+`Res1` affine, overlapping tiles disagree by a median 11.01 px along stage X and
+~0.4–5 px along stage Y. With the motion-measured affine the same datasets give
+8.98 / 3.84. The geometry contributes no seam error that survives a correct
+affine; the residual tracks the affine's scale error, which R6 traced to MM's
+calibrator.
+
+Two cautions for whoever reads those numbers next:
+
+- They were measured by cross-correlating placed renderings, and on **sparse
+  blinking puncta that estimator is unreliable** — individual pairs returned ~99 px
+  of noise. Treat `design/29-block9-landmark-check.py` as a falsification test,
+  not metrology. `design/29-block9-affine-from-motion.py` is the metrology.
+- No seam **blending** exists and none is proposed. Overlaps are resolved purely
+  by overwrite order.
+
+Peak RSS is recorded under "Memory / scale note" below: 8576×8580 in 3.4 s at
+723 MB, so chunked output is deliberately not implemented.
+
+### Explicitly unsupported, consolidated
+
+Scattered through the sections above; collected here so a consumer does not have
+to discover them one refusal at a time.
+
+1. **Datasets without per-image intended XY.** Refused, not guessed. This is the
+   normal shape for **single-position** acquisitions, and it is why the design/30
+   spiral — 25 separate single-position datasets — cannot be placed at all.
+2. **Rigs with no objective device.** `resolve_calibration`'s acquisition-recorded
+   branch needs five identity fields and M2 supplies four; no `Objective`,
+   `ObjectiveLabel`, `PixelSizeConfig` or `PixelSizeConfigName` exists in any of
+   its 420 metadata keys. An explicit `calibration_ref` is **mandatory** there,
+   not merely higher precedence.
+3. **Non-integer source pixels.** 16-bit TIFF output requires integer sources;
+   float datasets are refused rather than quantized silently.
+4. **Mixed dtypes or mixed ROI across frames**, and non-finite intended
+   coordinates. Refused.
+5. **Seam blending, deduplication, and object matching.** Not implemented and not
+   promised; §"Seam correctness is an analysis question" owns that boundary.
+6. **Chunked/memory-mapped output.** Not implemented — the measured budget did
+   not require it. The premise was wrong in our favour (180×176 tiles, not
+   full-frame 2304²), so **re-measure before assuming it holds for full-frame
+   tiles**.
+
+### What design/26 must absorb
+
+design/26 promises `run_analysis_on_saved_dataset(dataset_path, adapter,
+axis_selection, input_kind, parameters, output_dir)` and says that for
+`input_kind="stage_coordinate_mosaic"` "the runner calls design/29's geometry
+primitive with the selected calibration artifact". Three parts of that are now
+too narrow, and Block 10 should not discover them at implementation time:
+
+1. **"the selected calibration artifact" is not the only input.** The resolver
+   takes a *tagged* `calibration_ref` — `artifact`, `knowledge_version`, or
+   `confirmed_current` — or `None` to fall through to the acquisition record. The
+   runner must carry the tag, not a bare path.
+2. **`calibration_ref=None` is not a safe default.** On any rig without an
+   objective device it can never succeed (unsupported case 2 above). The runner
+   should either require an explicit ref for this `input_kind` or surface the
+   `acquisition_fallthrough_reason` rather than reporting a generic failure.
+3. **`output_pixel_size_um` has no home in the promised signature**, and the
+   primitive writes a TIFF **plus** an adjacent manifest to an `output_path`,
+   where design/26 offers an `output_dir`.
+
+**Left unresolved on purpose**: design/26 still specifies `analyze_frame` as the
+*offline* adapter contract while Block 7 took the same verb for *live* work with
+different arity and return type, and `load_hook_class` returns the first class
+exposing either. That collision is Block 10's to settle and is not this gate's to
+force.
+
 ## Proposed shape
 
 ### 1. A shared geometry module — `microclaw/dataset_mosaic.py`
