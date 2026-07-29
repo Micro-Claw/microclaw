@@ -45,6 +45,7 @@ Progress markers: `[ ]` not started, `[-]` active, `[x]` complete, `[!]` blocked
 | 7b | `design32/hook-illumination-and-artifacts` | `ff690e8` (main, 967/99/3) | `f300fff`…`35f6dc4`; 1014/99/3 (mac), 989/115/3 (M5 under uv), 1089/21/3 (demo core, integration live) | M5 2026-07-28: R1–R8 + P0–P2 + R5pre PASS; D2/D3 skipped by ruling. **Gate caught 4 defects, 2 invisible off-rig** | `e688606` | Gate done: design/32 §4 vocabulary corrected + Block-7b landed note; design/33 illumination-contract changes, failed-write-may-have-landed rule, and M5 405 findings (docs merge `d189722`) |
 | 8 | `design29/saved-dataset-foundation` | `c3af2b1` | `b1e347c` + `333144e` (7 review defects); 1052/99/3 | **pre-branch gate: `design29/probe-findings` (`cf0c00c`)** — probe was defective and its affine verdicts void; repaired, MMCore row-major pinned by `javap`. Live M5/demo/M2: **no measured affine anywhere**; identity is MM's default (same hash on two unrelated systems). Saved data gives the X column only (~90°, ~0.13 µm/px). No rig action for the implementation itself. | `e45a129` | Gate done: §5 precedence corrected (explicit ref beats the acquisition record, reconciling §2), measured per-image metadata contract recorded, Y column still open and owned by Block 9 |
 | 9 | `design29/stage-coordinate-mosaic` | `fecb93b` | through `82feeb5`; 1092/99/3 | **MERGED.** Gate run + R6. R1/R2/R3 pass — first non-sentinel per-image affine ever recorded. R3b: no objective key even with `Res1` live → acquisition-recorded identity unreachable on M2 (finding, not defect; artifact path mandatory). R4: both affine columns corroborated. R5 answered **offline** — dihedral match proves the renderer does not mirror. R6: affine orientation confirmed to 0.3° but **scales are wrong, −3.5% / −15.7%, anisotropic where the config reports isotropy** — traced by `javap` to Manual-Simple never measuring a scale at all. A calibration-input defect on M2, not a Block 9 code defect. |
+| 9b | `design33/read-only-rig-inventory` | | | read-only rig inventory required | | |
 | 10 | `design26/completed-dataset-runner` | | | saved-data fixture | | |
 | 11 | `design26/generated-adapter-run-b` | | | required | | |
 | 12 | `design26/few-shot-run-c` (optional) | | | required | | |
@@ -63,10 +64,14 @@ Progress markers: `[ ]` not started, `[-]` active, `[x]` complete, `[!]` blocked
 3. Design/29 owns NDTiff traversal, calibration identity, and stage-coordinate mosaic
    geometry. These primitives land before design/26 consumes a mosaic through its
    generic completed-dataset runner.
-4. Design/26 Run A has already produced field findings. Re-run it as a regression gate,
+4. After Block 9 is complete, a small read-only rig-inventory block lands before Block
+   10. It turns the Block 7b probe into reusable discovery evidence without generating
+   or approving a safety configuration. Block 14 Phase 5 later consumes that stable
+   inventory after the typed-actuator and channel-plan schemas have landed.
+5. Design/26 Run A has already produced field findings. Re-run it as a regression gate,
    not as if it were unfinished. Run B is the required custom-integration milestone.
    Run C is conditional on a real target needing few-shot learning.
-5. Design/32's remote authentication is independent, but the shipped
+6. Design/32's remote authentication is independent, but the shipped
    `--allow-remote` surface makes it a before-feature-work release gate. Context storage
    is independent and can move earlier on another schedule, but is last here to keep one
    coordinator's path serial and safety-first.
@@ -893,6 +898,57 @@ Post-merge design gate:
       results, artifact format, and any explicitly unsupported cases. Update design/26 if
       the runner's promised `stage_coordinate_mosaic` input must change.
 
+## 9b. Design/33 preparation — read-only rig inventory
+
+Branch: `design33/read-only-rig-inventory`
+
+Do not start this block until Block 9 is merged and its post-merge design gate is done.
+This is discovery infrastructure for Block 14 Phase 5, not an early configuration
+wizard and not an authorization mechanism.
+
+- [ ] Extract the read-only enumeration machinery from
+      `design/32-block7b-device-property-probe.py` into reusable production code. Keep
+      the probe's defensive per-property error capture and its prohibition on mutation.
+- [ ] Add `microclaw inspect-rig` with an explicit port, optional Micro-Manager `.cfg`
+      path, optional existing reviewed safety config for comparison, and an output
+      directory. Do not start an agent, web server, acquisition, or mutation tool.
+- [ ] Emit a versioned, deterministic `inventory.json` whose schema is independent of
+      `safety_config.yaml`. Record the MM config path/hash when supplied, MM/core
+      identity, core device assignments, loaded devices and types, adapter identities,
+      property metadata and query errors, StateDevice labels, configuration groups and
+      fully expanded presets, and a hash/fingerprint of the live inventory.
+- [ ] Separate mechanically observed facts from heuristic candidates and unresolved
+      human decisions. Driver-reported property limits are technical ranges, never
+      inferred safe limits.
+- [ ] Emit `review.md` listing unclassified writable properties, suspected continuous
+      actuators, illumination power/enable pairs, preset effects, enumeration failures,
+      declarations missing from the live rig, and live paths missing from an optional
+      reviewed config.
+- [ ] If a YAML aid is emitted, make it conspicuously non-loadable (for example,
+      `safety-config-template.yaml.not-ready`). It must remain `reviewed: false`, contain
+      no inferred limits or approvals, and must not modify or replace an existing safety
+      config. Do not add unresolved-marker keys to the strict safety schema.
+- [ ] Ensure the inventory retains enough raw evidence for Block 14 Phase 2 to add typed
+      actuator semantics and Phase 4 to analyze channel effects without changing the
+      inventory format merely to match the safety schema.
+- [ ] Test with fake cores that only approved `get_*`, `is_*`, and `has_*` bridge calls
+      occur; fail the test on any setter, motion, shutter, exposure, acquisition, plugin,
+      or configuration-application call. Test partial query failures, deterministic
+      ordering/hashes, redaction of credentials, output confinement, and comparison with
+      a stale or incomplete reviewed config.
+- [ ] Run on at least M5 and one materially different rig. Retain commands, inventory,
+      report, MM config hash, query failures, and a manual check that representative
+      devices/properties/presets were neither omitted nor misreported as facts.
+- [ ] Stop on any hardware mutation, agent/tool reachability, nondeterministic identity,
+      silent enumeration loss, or candidate represented as an authorization decision.
+- [ ] Commit, review, and merge.
+
+Post-merge design gate:
+
+- [ ] Update design/33 with the landed inventory schema, read-only boundary, measured
+      cross-rig gaps, and the exact handoff to Phase 2/4/5. Keep Phase 5 responsible for
+      the interactive review workflow and for writing an unreviewed safety profile.
+
 ## 10. Design/26 — shared observation writer and completed-dataset runner
 
 Branch: `design26/completed-dataset-runner`
@@ -1037,8 +1093,10 @@ Do not combine these into one branch. Repeat the branch/review/rig/design gate f
       rollback/safe-state behavior, and injected failure after every write. Disable gated
       presets if MM semantics cannot be reproduced safely.
 - [ ] **Phase 5, `design33/first-launch-setup`:** restricted enumeration only, no agent or
-      mutation tools, no inferred limits, write an unreviewed profile, disconnect, require
-      human review and normal restart.
+      mutation tools, no inferred limits; consume Block 9b's versioned inventory, guide
+      the human through every unresolved decision, write an unreviewed profile,
+      disconnect, and require human review and normal restart. Do not duplicate a second
+      incompatible enumeration format.
 - [ ] For every phase, run its design/33 rig tests before merge and stop on any unenumerable
       effect or pre-validation write.
 - [ ] After every phase merge, update design/33 with supported drivers/presets, measured
