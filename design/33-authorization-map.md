@@ -338,6 +338,79 @@ tool-directed hardware action is possible before review. Its implementation
 should use the least-active connection path Micro-Manager supports and document
 any unavoidable device initialization.
 
+### Landed: Block 9b — read-only rig inventory (merge `041f6f8`, 2026-07-29)
+
+Step 1 of that flow now exists as `microclaw inspect-rig`
+(`microclaw/rig_inventory.py`). It is **discovery infrastructure, not an
+authorization mechanism**: it approves nothing, writes no safety config, and
+emits no YAML aid at all — a deliberate decision recorded in the module
+docstring, because a config-shaped derivative invites an operator to mistake an
+observed property for a reviewed decision.
+
+**Read-only boundary.** Only `get_*` / `is_*` / `has_*` calls. Two mechanical
+tests hold that line rather than a reviewer's attention: a recording fake core
+fails on any attribute outside an approved set, and every core call the module
+makes is checked against **305 method names extracted from MMCoreJ.jar with
+`javap`**. That second test exists because a hand-written fake had *invented*
+`get_device_adapter_name`, so the suite was green against an API CMMCore does not
+have. Prefer mechanically derived fixtures over hand-maintained allowlists here;
+this failure class has now cost three blocks.
+
+**Unlike every other entry point, it must run with no safety config.** A rig that
+already has a reviewed config does not need discovery. Supplying one is optional
+and only annotates a comparison.
+
+**Inventory schema** — `microclaw.rig-inventory/v1`, deterministic, with three
+structurally separate regions. Phase 5 must preserve that separation rather than
+flattening it:
+
+| Region | Meaning |
+|---|---|
+| `facts` | mechanically observed: core identity, device assignments, devices with types/adapters/properties/state labels, config groups with fully expanded presets, per-query failures |
+| `heuristic_candidates` | questions for a human — never decisions |
+| `human_decisions` | populated only from a supplied reviewed config |
+
+Driver-reported property limits are recorded as `technical_range` with
+`"source": "driver_reported"`. **They are technical ranges and never inferred
+safe limits**; Phase 2 may consume them as evidence, never as bounds.
+
+**Two findings that constrain the handoff:**
+
+1. *Heuristic candidates must not assert relationships the code has not
+   established.* The first implementation emitted illumination power/enable
+   **pairs** as a Cartesian product — on a real rig, one device with 3 power and
+   3 enable candidates produced 9 rows, each reading as "this enable gates this
+   power", when at most 3 such relationships exist and the probe's own comments
+   say only one two-state property actually gates emission. It now emits
+   per-device groups that name both lists and infer nothing. Phase 4's channel
+   analysis should take the same care.
+2. *The same physical actuator can appear twice in different units.* All three
+   Luxx lasers expose `Laser Power Set-point Select [%]` **and** `[mW]`. These
+   are surfaced as possible duplicate representations. Declaring both would
+   double-bound one actuator, and `illumination.max_power_percent` is compared
+   against the raw value, so it is not a percentage on the mW variant.
+
+**Evidence and its limits.** The live demo-core gate passed on Windows: identical
+fingerprints across two unchanged runs with byte-identical `facts`, zero
+enumeration failures, adapter names on all 14 devices, six StateDevices with
+complete labels, both shutters, four fully expanded `Channel` presets. Its
+**first run failed**, and that failure is why two bridge defects were found —
+`reported_type` had been stringifying a pyjavaz proxy, embedding a heap address
+that made the fingerprint nondeterministic on any real rig. Non-primitive bridge
+values are now refused rather than stringified, so an address cannot reach the
+payload by any path.
+
+A separate **offline replay of real M2 data** (`design/33-block9b-m2-replay.py`;
+30 devices, 395 properties, 11 serial ports, MicroFPGA hub, three lasers) covers
+production scale and serial/FPGA devices, and produced both findings above.
+
+**The cross-rig gate is still open.** Live M5 owes four things nothing so far has
+exercised: real enumeration failures (M2 recorded none), credential redaction (M2
+has no credential-like properties), live config groups and state labels beyond
+what a `.cfg` holds, and bridge-typed returns. Phase 5 should not treat the
+inventory format as frozen until those land; the schema is versioned so a finding
+can bump it.
+
 ## Tests
 
 Controller-startup tests should prove that undeclared or insufficiently bounded
