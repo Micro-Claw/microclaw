@@ -298,6 +298,27 @@ against a 453×227 tile at 0.127 µm/px (57.5 × 28.8 µm) leaves the tiles enti
 non-overlapping, so even with coordinates this fixture exercises **gaps and
 coverage**, never seams.
 
+**A third confirmation of X, from placed-mosaic overlaps.**
+`design/29-block9-landmark-check.py` renders each tile separately through one
+shared geometry and cross-correlates pairs inside their placed overlap. On
+`run_a_2` with the `Res1` affine, grouped by intended stage displacement:
+
+```
+stage-X    n=9    median   5.15 px  (0.65 um)
+stage-Y    n=12   median  99.85 px  (12.7 um)
+diagonal   n=18   median  60.93 px
+```
+
+A wrong affine cannot be axis-selective — it rotates every tile's content
+identically while tile centres come from stage XY, so it would inflate all three
+groups together. So this corroborates X a third time (after the calibrator and
+the raw-tile correlation) and independently reproduces the Y non-clustering from
+a different method entirely. The stage-Y figure is measuring the raster's 60 µm
+X return, i.e. uncorrected backlash, exactly as §4 warns: placement consumes
+intended XY and cannot correct an unrecorded achieved-XY residual. **Testing the
+Y column requires a unidirectional line**, not a raster; that is R2 in
+`design/29-block9-rig-gate-prompts.md`.
+
 **ROI must not gate.** This section already said a constant off-centre ROI "adds
 only a global translation and is harmless for relative placement", and Block 9's
 first implementation refused on it anyway — which blocked the first genuinely
