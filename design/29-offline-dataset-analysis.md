@@ -502,6 +502,116 @@ overlap still returned ~99 px: sparse beads give a correlator few features to
 lock onto, and it can lock onto the wrong one. That is a sample property, not a
 bug.
 
+## R6, and the correction it forced (2026-07-29)
+
+R6 ran: `b9xfine2/4`, `b9yfine2/4`, `b9xline14/28`, plus repeats `b9grid_3` and
+`b9yline_2`. The headline is that **the reported affine's orientation is right
+and its scales are not**, and the second headline is that two of our own
+measurement methods were unfit for this sample and had to be replaced.
+
+### The measurement, from motion, on raw frames
+
+`design/29-block9-affine-from-motion.py` solves the 2×2 from commanded motion
+alone — no mosaic, no placement code, and no assumption about the affine's
+shape. Four independent series, two step sizes per axis, **the same 16 µm of
+total travel in each**:
+
+```
+series        step   n   total px   total um   um/px
+b9xfine2_1    2.0    8     148.88      16.00   0.10747   stage-X
+b9xfine4_1    4.0    4     150.15      16.00   0.10656   stage-X
+b9yfine2_1    2.0    8     130.46      16.00   0.12265   stage-Y
+b9yfine4_1    4.0    4     130.09      16.00   0.12300   stage-Y
+```
+
+Pooled (24 cumulative observations, residual median **0.023 µm**, max 0.438):
+
+```
+                    column 0    column 1
+measured um/px       0.12254     0.10706
+reported um/px       0.12700     0.12700
+ratio                 -3.5%      -15.7%
+angle vs reported    +0.30 deg   -0.02 deg
+handedness           AGREE (det +0.0131 vs +0.0161, both positive)
+```
+
+**Orientation and handedness are confirmed to a third of a degree.** The 90°
+structure, the signs, and the absence of shear all hold. **The scales do not**:
+one column is 3.5% low, the other 15.7% low, and the truth is **anisotropic by
+14% between axes where the config reports perfect isotropy**.
+
+design/29 already recorded the suspicion — "exact zeros, exactly ±0.127, exactly
+−90.00°, zero shear, and both scales identical to the digit is cleaner than a
+correlation fit normally lands". **That suspicion is now vindicated by
+measurement.** The exactness was a symptom. This is direct evidence for the
+standing position that MM is not a calibration source and
+`calibration.solve_affine` plus the knowledge base is primary.
+
+### It is a scale error, not a per-move offset — the discriminator fired
+
+This was the whole point of holding total travel constant. Eight 2 µm moves and
+four 4 µm moves cover the same 16 µm: a fixed per-move offset would leave the
+8-step series differing from the 4-step series by four times the offset. They
+differ by **under 1%** on both axes. Scale, definitively.
+
+The per-step numbers are nonetheless bimodal — identical 2 µm commands produce
+14.8 or 22.4 px — which is stage quantization of roughly 0.8 µm, averaging out
+over a run. That is a stage property to record, not a transform property.
+
+### Two of our own methods were wrong for this sample
+
+**A (row, col) vs (x, y) convention bug reported the rig as REFLECTED.** The
+first version of the motion script solved with numpy's `(row, col)` while
+MMCore's affine acts on `(x, y)` where x is the column. That silently transposed
+the basis, turned M2's 90° rotation into a diagonal matrix, and produced
+`determinant −0.0105 → REFLECTED`. Nothing was wrong with the rig. It was caught
+only because the *structure* came out diagonal where a rotation must be
+anti-diagonal — the determinant sign alone would have been believed. Convention
+conversion now happens in exactly one function, `to_xy`, with the failure
+recorded in its docstring.
+
+**Phase correlation is unfit for sparse blinking puncta.** On these datasets it
+returned `err=1.0` on every pair and "measured travel" that saturated at ~2 µm
+for commanded moves from 2 µm to 140 µm — a spurious near-zero peak reported as
+a number rather than a failure. The sample is a handful of puncta whose
+population changes frame to frame (4–12 detected per frame, bright-pixel counts
+varying 2× across a 2 µm step). Whitening the spectrum destroys what little
+signal there is. The replacement detects puncta and votes on pairwise offsets,
+which is robust to partial correspondence — appearing and vanishing puncta
+simply cast no vote — and reports the vote count so a weak estimate is visible.
+
+**This impugns the landmark check on this sample class**, because it correlates
+too. Its medians do move the right way when handed the measured affine
+(stage-X 11.01 → 8.98, diagonal 16.03 → 10.92, stage-Y 8.73 → 5.51 on
+`b9grid_2`; same direction on `b9grid_3`), which corroborates the measurement,
+but it cannot give a sharp number here and single pairs still return ~99 px of
+noise. **Treat the landmark check as a falsification test, not a metrology
+tool**, and treat the motion script as the metrology.
+
+### Reproducibility, old runs vs new
+
+- `b9grid_2` stage-X median 11.01 → `b9grid_3` 10.85. Reproduces.
+- Mirror check: `rot90 CCW` at NCC 1.0000 on `b9grid_3`, `b9yline_2` and
+  `b9xfine2_1`, identical to the first pass. Reproduces exactly.
+- `b9yline_1` stage-Y median 4.42 → `b9yline_2` 8.51, with one pair returning
+  −18.70/−62.50. That spread is the correlator, not the stage — see above.
+
+### A limit added to the mirror check
+
+The dihedral group only spans the possible renderings when the affine is a
+multiple of 90°, as M2's happens to be. On a 45°, anisotropic or sheared rig
+every NCC would be low and "best match" would be meaningless. The script now
+**refuses** outside that regime and points at the motion script, whose
+determinant comparison is general.
+
+### The 28 µm runs cannot work, and that is arithmetic
+
+The field is 206 px ≈ 26.2 µm along stage X. A 28 µm step cannot overlap at all,
+so `b9xline28_1` and `b9xline28_focused_1` carry no recoverable correspondence —
+both chains break at the first step. `b9xline14` and the 14 µm lines break too,
+on vote fraction. Nothing is wrong with them; they simply cannot answer the
+question, and the tooling now says so rather than fitting noise.
+
 ## Proposed shape
 
 ### 1. A shared geometry module — `microclaw/dataset_mosaic.py`

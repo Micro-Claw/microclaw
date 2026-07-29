@@ -9,6 +9,15 @@ the mosaic is mirrored relative to the camera.
 A random bead constellation is a perfectly good fingerprint for this. What it
 cannot settle is whether MM's stage frame is physically right-handed -- but that
 is a rig/MM property, identical for MM's own display, not a Block 9 property.
+
+LIMIT OF THIS SCRIPT, and it is a real one. The dihedral group only spans the
+possible renderings when the affine is a multiple of 90 degrees, as M2's is. On
+a rig whose affine is 45 degrees, anisotropic, or sheared, the rendering is NOT
+any dihedral transform of the raw frame, every NCC will be low, and the "best
+match" would be meaningless. The check below refuses rather than guessing in
+that case. The general handedness test is the sign of the determinant of the
+MEASURED affine compared against the reported one -- see
+design/29-block9-affine-from-motion.py, which works on any rig.
 """
 import json, sys
 from pathlib import Path
@@ -54,6 +63,17 @@ raw = d.read_image(position=pos, time=0)
 result = assemble_stage_coordinate_mosaic(
     [(raw, 0.0, 0.0)], geom)
 placed = result["mosaic"]
+# Refuse outside the regime where the dihedral group is the right hypothesis set.
+_angles = [np.degrees(np.arctan2(affine.c, affine.a)),
+           np.degrees(np.arctan2(affine.d, affine.b))]
+if any(min(abs((a % 90)), 90 - abs((a % 90))) > 2.0 for a in _angles):
+    print(f"REFUSING: affine column angles {_angles[0]:+.2f}, {_angles[1]:+.2f} deg "
+          "are not multiples of 90.\nThe dihedral group does not span the possible "
+          "renderings here, so a 'best match' would be\nmeaningless. Use "
+          "design/29-block9-affine-from-motion.py, which compares determinant "
+          "signs\nof the measured and reported affines and works on any rig.")
+    sys.exit(3)
+
 print(f"tile                    : {pos}")
 print(f"raw frame shape         : {raw.shape}")
 print(f"rendered footprint      : {placed.shape}\n")
