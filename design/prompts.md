@@ -3491,3 +3491,38 @@ seven were already on GitHub inside the two pushed feature branches; the three
 that existed nowhere else were the Block 10 merge and its design gate.]
 
 OK. push main is fine. Let's resolve block 10 completely.
+
+Is it possible to validate these serial/FPGA drivers using .../m2-device-properties.txt,
+which was from a run of 32-block7b-device-property-probe.py earlier today, and its
+Micro-Manager configuration, MM2_AndorAuBox_ELL10_NK_PhasefluxStage_newTIRF.cfg?
+
+[yes, and it was the best idea of the session. Built a replay core from the probe
+JSON plus the .cfg -- 30 devices, 395 properties, 11 serial ports, MicroFPGA hub,
+three Luxx lasers -- and ran enumerate_rig against real production-rig data
+offline. It found two defects a demo config never could: illumination
+power/enable candidates were a CARTESIAN PRODUCT (Focus-lock rendered 3 powers x
+3 enables as 9 rows each asserting "this enable gates this power", when the Block
+7b probe's own comment says only one two-state property actually gates emission),
+and one physical actuator appears twice in different units (Luxx [%] and [mW],
+where max_power_percent compares against the raw value). Both fixed; 15 asserted
+relationships became 0, replaced by nine non-assertive per-device groups.
+What a replay CANNOT settle, stated in the spike's docstring: the probe never
+called get_property_type, so the bridge-proxy conversion that Step 3 catches is
+untestable from JSON; M2 recorded zero enumeration failures; and M2 has no
+credential-like properties.]
+
+yes, write that prompt
+
+[my prompt said "the inventory emits 9 pairs" when 9 was Focus-lock's share and
+15 was the rig total. The runner caught the ambiguity and reported both.]
+
+Yes, do all of that
+
+[merged Block 9b at 041f6f8 (one checklist conflict, each side owning its own
+ledger row), design gate c10033d, main pushed, all branches pruned including the
+backup from the git add -A incident -- verified its tree was identical to the
+rebuilt commit before force-deleting. main 1138 passed / 99 skipped / 3 warnings.
+The cross-rig bullet is the ONLY thing left unticked in Block 9b, and stays that
+way: live M5 still owes real enumeration failures, credential redaction, live
+config groups and state labels beyond .cfg contents, and bridge-typed returns.
+Reversed my own earlier merge-gate ruling to get here, and said so.]
