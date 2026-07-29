@@ -51,7 +51,7 @@ Progress markers: `[ ]` not started, `[-]` active, `[x]` complete, `[!]` blocked
 | 12 | `design26/few-shot-run-c` (optional) | | | required | | |
 | 13 | `design32/hook-worker-isolation` | | | regression required | | |
 | 14 | `design33/extended-authorization` | | | required per phase | | |
-| 15 | `design32/context-audit-store` | `0fd6811` (main, 1138/99/3) | | n/a per design; a live MMDemo `serve` gate is being run anyway | | |
+| 15 | `design32/context-audit-store` | `0fd6811` (main, 1138/99/3) | `c86326d` → `dacab18` (2 review rounds, 7 defects); 1160/99/3 | **demo gate PASS 2026-07-29, all 8 steps** (`design/32-block15-demo-gate-prompts.md`). G1 established the load-bearing claim on the 4th attempt — the API accepts a compacted history (checkpoint `user` immediately followed by a real `user` prompt), 5 compactions / 4 such turns / no errors / floor held — and that an artifact stays in the durable allowlist after its declaring turn leaves the model view (byte-exact download, sha256 `35ac7b1e…`). G3 was the **first live execution of the store-backed `/api/history`**; every off-rig test takes the compatibility fallback. G7: default deletes nothing. Review caught 2 blockers invisible off-rig — compaction could fold away *every* verbatim turn, and the checkpoint saved 12% while destroying recent context. 4 of the 7 problems hit were the gate's own scaffolding. | `cafebd4` | pending |
 
 ## Why this order
 
@@ -1219,16 +1219,41 @@ Branch: `design32/context-audit-store`
 - [x] Create the branch from updated `main` (this block may be deliberately scheduled
       earlier by a human, but this single-agent checklist does not run it concurrently).
       — branched from `0fd6811`; baseline re-measured 1138 passed / 99 skipped.
-- [ ] Separate durable append-only/redacted audit from bounded model context.
-- [ ] Estimate tokens before calls; compact only complete message/tool boundaries in
+- [x] Separate durable append-only/redacted audit from bounded model context.
+      — `microclaw/conversation.py`: `AuditLog` (append-only JSONL, fsynced per
+      record, credential-redacted) + `ConversationStore`. `run_agent_iter` takes
+      optional `context_provider`/`on_message`, so the in-place-append contract
+      `serve` depends on is unchanged and every existing caller is unaffected.
+- [x] Estimate tokens before calls; compact only complete message/tool boundaries in
       infrequent batches; keep a stable structured checkpoint prefix without image bytes,
       credentials, or invented current hardware state.
-- [ ] Preserve artifact references, hashes, decisions, and completed actions; require live
+      — local deterministic estimator (no `count_tokens` in the turn path);
+      hysteretic high/low water (120k/90k) so the prefix moves rarely; whole
+      completed turns only, never splitting `tool_use` from `tool_result`.
+      **Review fixed two blockers here:** compaction could fold away *every*
+      verbatim turn (now a floor of 2 complete turns, honoured even when the
+      budget cannot be met), and the checkpoint saved only 12% on tool-input-heavy
+      histories (now bounded per string; 68% on the same fixture).
+- [x] Preserve artifact references, hashes, decisions, and completed actions; require live
       hardware re-read before action.
-- [ ] Add atomic transcript writes, retention controls, paginated browser history, and
+      — verified on the rig, not just in fixtures: an artifact whose declaring
+      turn had been compacted out of the model view was still served by
+      `/api/artifact`, byte-exact.
+- [x] Add atomic transcript writes, retention controls, paginated browser history, and
       tests for crash recovery, cache behavior, tool-use/result integrity, redaction, and
-      long sessions.
-- [ ] Commit, review, and merge.
+      long sessions. — `os.replace` via a same-directory temp file (Windows-safe);
+      retention opt-in only, **default deletes nothing** (confirmed live, G7);
+      `/api/history` cursor paging with `serve.html` walking it. Legacy `.json`
+      array histories still load, and a torn final JSONL record recovers with a
+      warning.
+- [x] Commit, review, and merge. — merged `cafebd4`. Two review rounds, 7 defects,
+      two of them blockers no off-rig test could see. A third review item is
+      recorded as an **open observation, not a fix**: under compaction the model
+      twice attributed an earlier turn's tool calls to the current turn. My first
+      diagnosis (the checkpoint lacked temporal anchoring) was **refuted** by the
+      passing run — the turn in question was visible verbatim in the window — so
+      the framing change I made is kept on its own merits and fixes nothing
+      observed. Settle it with a sharper probe before claiming a cause.
 
 Post-merge design gate:
 
