@@ -116,25 +116,41 @@ does not invent a "completed-run hook" and does not add one public tool per anal
 There are two explicitly offline invocation shapes:
 
 ```python
-analyze_frame(image, metadata, context) -> normalized_result | None
+analyze_saved_frame(image, metadata, context) -> normalized_result | None
 analyze_completed_dataset(dataset_view, selection, context) \
     -> Iterable[normalized_result]
 ```
 
-> **UNRESOLVED — settle before implementing Block 10.** Block 7 shipped
+> **SETTLED 2026-07-29, before Block 10 branches.** This section originally named
+> the per-frame offline contract `analyze_frame`. Block 7 then shipped
 > `analyze_frame(self, image, metadata) -> HookResult | None` as the **live**
-> saved-hook contract, and `hook_docs`, the tool schema, and
-> `validate_hook_contract` now teach it. That collides with the offline per-frame
-> contract above: same verb, different arity, different return type, and
-> `load_hook_class` returns the first class exposing either. This section's premise —
-> that `analyze_frame` is offline and live work stays in `image_process_fn` — no
-> longer holds.
+> saved-hook contract — same verb, different arity, different return type — and
+> `hook_docs`, the tool schema, `validate_hook_contract`, and two refusal messages
+> now teach it, with four migrated M5 hooks using it. `load_hook_class` returns the
+> first class exposing either name, so one verb meaning two things would have
+> reached the saved-adapter loader, which the original note explicitly forbade.
 >
-> The live name is shipped and in use on the rig; the offline one is not yet built,
-> so it is the cheaper side to move. Rename the offline per-frame contract (e.g.
-> `analyze_saved_frame`) or make the two genuinely one method with `context`
-> optional, and reconcile this document before Block 10 creates its branch. Do not
-> let two different meanings of `analyze_frame` reach the saved-adapter loader.
+> **Resolution: the offline per-frame contract is renamed `analyze_saved_frame`.**
+> The live name is shipped and in field use; the offline one is not built at all
+> (nothing in `microclaw/` or `tests/` referenced it when this was settled), so it
+> is the side that moves. Nothing in the shipped code changes — this settlement is
+> documentation only.
+>
+> **The rejected alternative was "one method with `context` optional."** It reads
+> as the convenient choice and is the wrong one, because the two contracts differ
+> in more than arity. The live return may carry typed *actions* — `MoveStage`,
+> `AcquireAt`, `SetIlluminationPower`, `StopSurvey` — that have no referent
+> offline, where there is no hardware, no survey, and no acquisition to gate them.
+> A merged method would have to either silently drop those actions (a hook that
+> asked to move a stage and was ignored, with no way to tell) or raise at call
+> time, deep inside a run, instead of at resolve time. Distinct verbs let the
+> loader discriminate the two contracts *before* anything runs, which is the
+> property the original note was protecting.
+>
+> Keeping the arities different (`(image, metadata)` live, `(image, metadata,
+> context)` offline) is deliberate and load-bearing, not incidental: a class
+> written for one contract cannot be silently invoked under the other even if
+> someone later aliases the names.
 
 The first is a deliberately offline-safe per-frame contract over selected stored frames;
 the second is the boundary for multi-tile state, one completed mosaic, or one batch
@@ -145,9 +161,20 @@ otherwise. That function may transform or discard pixels, depend on live metadat
 retain acquisition-thread state, interact with hardware, or rely on callback ordering;
 discarding its returned image would also erase part of its contract. An adapter intended
 for both live and offline use must put its pure analysis in an explicit shared helper and
-expose a separately fixture-tested `analyze_frame`. There is no legacy compatibility
-path. The saved-adapter loader accepts `analyze_completed_dataset` or `analyze_frame`;
-no single method is required for every offline adapter.
+expose two thin, separately fixture-tested entry points over it — `analyze_frame` for
+live and `analyze_saved_frame` for offline. They cannot be one method: they return
+different types (§"SETTLED" above). There is no legacy compatibility path. The
+saved-adapter loader accepts `analyze_completed_dataset` or `analyze_saved_frame`; no
+single method is required for every offline adapter.
+
+**The offline loader must refuse a live-only class at resolve time**, naming the two
+offline verbs, rather than discovering the mismatch when it calls the method. A class
+exposing only `analyze_frame` or `image_process_fn` implements the live contract and is
+not an offline adapter; a class exposing both live and offline methods is a legitimate
+dual-use adapter, and the offline runner calls only the offline one. This mirrors the
+refusal Block 7 already ships in the other direction — a legacy `image_process_fn`-only
+hook is refused before any position is exposed, with a message naming `analyze_frame` as
+the migration (`microclaw/tools.py`). Match that message shape; the symmetry is the point.
 
 Expose this through one generic orchestration tool, provisionally
 `run_analysis_on_saved_dataset(dataset_path, adapter, axis_selection, input_kind,
