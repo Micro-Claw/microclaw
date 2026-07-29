@@ -46,12 +46,12 @@ Progress markers: `[ ]` not started, `[-]` active, `[x]` complete, `[!]` blocked
 | 8 | `design29/saved-dataset-foundation` | `c3af2b1` | `b1e347c` + `333144e` (7 review defects); 1052/99/3 | **pre-branch gate: `design29/probe-findings` (`cf0c00c`)** — probe was defective and its affine verdicts void; repaired, MMCore row-major pinned by `javap`. Live M5/demo/M2: **no measured affine anywhere**; identity is MM's default (same hash on two unrelated systems). Saved data gives the X column only (~90°, ~0.13 µm/px). No rig action for the implementation itself. | `e45a129` | Gate done: §5 precedence corrected (explicit ref beats the acquisition record, reconciling §2), measured per-image metadata contract recorded, Y column still open and owned by Block 9 |
 | 9 | `design29/stage-coordinate-mosaic` | `fecb93b` | through `82feeb5`; 1092/99/3 | **MERGED.** Gate run + R6. R1/R2/R3 pass — first non-sentinel per-image affine ever recorded. R3b: no objective key even with `Res1` live → acquisition-recorded identity unreachable on M2 (finding, not defect; artifact path mandatory). R4: both affine columns corroborated. R5 answered **offline** — dihedral match proves the renderer does not mirror. R6: affine orientation confirmed to 0.3° but **scales are wrong, −3.5% / −15.7%, anisotropic where the config reports isotropy** — traced by `javap` to Manual-Simple never measuring a scale at all. A calibration-input defect on M2, not a Block 9 code defect. | `311de3f` (+ close-out `a18c966`) | Gate done: design/29 gains "as built" — no interpolation (inverse nearest-neighbour, `floor(v+0.5)`, centre-based inclusive bounds, later-overwrites-earlier), TIFF + timestamp-free manifest, seam behaviour, six unsupported cases. design/26 corrected on all three counts of its `stage_coordinate_mosaic` promise; `analyze_frame` collision recorded as open for Block 10 |
 | 9b | `design33/read-only-rig-inventory` | `a415adc` | `1854e5d` → `c8d69e9` (3 review rounds, 11 defects); 1114/99/3 | **demo gate PASS 2026-07-29 on `cafe05b`** (2nd run). The 1st run FAILED Step 3 and caught two defects invisible off-rig: `reported_type` held a pyjavaz proxy's repr (heap address → nondeterministic fingerprint), and `get_device_adapter_name` does not exist. Re-run: identical fingerprints, zero enumeration failures, real property types, adapter names on all 14 devices. **Partial M2 offline replay:** 30 real devices / 395 properties at production-rig scale, including serial and FPGA devices; it exposed and discharged candidate cross-product and dual-unit representation defects. The cross-rig gate remains open: live M5 still owes real enumeration failures, credential redaction, live config groups and state labels beyond `.cfg` contents, and bridge-typed returns. | `041f6f8` | Gate done: design/33 "Landed: Block 9b" — schema regions, javap boundary, Phase 2/4/5 handoff, four open cross-rig items |
-| 10 | `design26/completed-dataset-runner` | `c1cc8ea` | `1d35d01` + `167732b` (7 review defects); 1116/99/3 | **saved-data, complete.** b9grid_2 (M2): frames 16/16; mosaic coverage 1.0000 over 553x537, zero uncovered, max overlap 6, `source_kind: artifact` — coordinator-reproduced independently. Identity check refuses a wrong camera device and model against the real `| iXon Ultra | DU897_BV | 8172 |`. No live-rig gate applies. | `a7a1e1c` | Gate done: design/26 mosaic metadata contract + loader tightening; design/29 calibration-artifact-writer gap |
+| 10 | `design26/completed-dataset-runner` | `c1cc8ea` | `1d35d01` + `167732b` (7 review defects); 1116/99/3 | **saved-data, complete.** b9grid_2 (M2): frames 16/16; mosaic coverage 1.0000 over 553x537, zero uncovered, max overlap 6, `source_kind: artifact` — coordinator-reproduced independently. Identity check refuses a wrong camera device and model against the real `iXon Ultra` / `DU897_BV` / `8172`. No live-rig gate applies. | `a7a1e1c` | Gate done: design/26 mosaic metadata contract + loader tightening; design/29 calibration-artifact-writer gap |
 | 11 | `design26/generated-adapter-run-b` | | | required | | |
 | 12 | `design26/few-shot-run-c` (optional) | | | required | | |
 | 13 | `design32/hook-worker-isolation` | | | regression required | | |
 | 14 | `design33/extended-authorization` | | | required per phase | | |
-| 15 | `design32/context-audit-store` | `0fd6811` (main, 1138/99/3) | `c86326d` → `dacab18` (2 review rounds, 7 defects); 1160/99/3 | **demo gate PASS 2026-07-29, all 8 steps** (`design/32-block15-demo-gate-prompts.md`). G1 established the load-bearing claim on the 4th attempt — the API accepts a compacted history (checkpoint `user` immediately followed by a real `user` prompt), 5 compactions / 4 such turns / no errors / floor held — and that an artifact stays in the durable allowlist after its declaring turn leaves the model view (byte-exact download, sha256 `35ac7b1e…`). G3 was the **first live execution of the store-backed `/api/history`**; every off-rig test takes the compatibility fallback. G7: default deletes nothing. Review caught 2 blockers invisible off-rig — compaction could fold away *every* verbatim turn, and the checkpoint saved 12% while destroying recent context. 4 of the 7 problems hit were the gate's own scaffolding. | `cafebd4` | pending |
+| 15 | `design32/context-audit-store` | `0fd6811` (main, 1138/99/3) | `c86326d` → `dacab18` (2 review rounds, 7 defects); 1160/99/3 | **demo gate PASS 2026-07-29, all 8 steps** (`design/32-block15-demo-gate-prompts.md`). G1 established the load-bearing claim on the 4th attempt — the API accepts a compacted history (checkpoint `user` immediately followed by a real `user` prompt), 5 compactions / 4 such turns / no errors / floor held — and that an artifact stays in the durable allowlist after its declaring turn leaves the model view (byte-exact download, sha256 `35ac7b1e…`). G3 was the **first live execution of the store-backed `/api/history`**; every off-rig test takes the compatibility fallback. G7: default deletes nothing. Review caught 2 blockers invisible off-rig — compaction could fold away *every* verbatim turn, and the checkpoint saved 12% while destroying recent context. 4 of the 7 problems hit were the gate's own scaffolding. | `cafebd4` | Gate done: design/32 §5 "Landed: Block 15" — final audit/checkpoint schema, the two properties the sketch lacked (verbatim floor, checkpoint size bound), thresholds, retention, paging; states plainly that the shipped 120k/90k marks are **unexercised** (the gate ran at 1500/800) and that cache behaviour is asserted by test, not measured. Attribution finding recorded as an open observation with my diagnosis explicitly refuted. Three pre-existing findings filed to design/15, /32, /33 |
 
 ## Why this order
 
@@ -1257,17 +1257,87 @@ Branch: `design32/context-audit-store`
 
 Post-merge design gate:
 
-- [ ] Update design/32 with the final audit/checkpoint schema, token thresholds, retention
+- [x] Update design/32 with the final audit/checkpoint schema, token thresholds, retention
       controls, paging contract, and measured long-session behavior.
+      — §5 "Landed: Block 15". Records the two properties the original sketch
+      lacked (the verbatim floor and the checkpoint size bound), and states
+      plainly that "measured long-session behavior" is the weakest claim in the
+      block: the mechanism is proven, the shipped 120k/90k thresholds are not.
 
 ## Final closeout
 
-- [ ] Re-run the full non-hardware suite and static checks on updated `main`.
-- [ ] Run the smallest safe rig smoke test covering startup authorization, acquisition
+- [x] Re-run the full non-hardware suite and static checks on updated `main`.
+      — 1160 passed / 99 skipped / 3 warnings; `compileall` clean. No linter is
+      configured in this repo (`ruff` is not installed), so "static checks" means
+      compile + the suite, not a lint pass. Both pre-existing warnings are the
+      known `phase_cross_correlation` empty-image warnings from
+      `test_featureless_field_returns_error_not_garbage`, plus one starlette
+      deprecation.
+- [!] Run the smallest safe rig smoke test covering startup authorization, acquisition
       planning/ledger, Run A observation/replay, saved mosaic replay, and worker isolation.
-- [ ] Confirm every rig artifact is hashed and every checklist row has a merge and design
+      — **NOT RUN, and cannot be as written.** "Worker isolation" is Block 13,
+      which was never started, so a smoke test covering it does not exist. The
+      other four elements each have their own passing gate evidence from Blocks
+      3/4/5, 7, 8/9 and 10; what is missing is a single end-to-end pass over all
+      of them on one session. This row is the honest gap in the closeout: do not
+      read the per-block gates as a substitute for it.
+- [x] Confirm every rig artifact is hashed and every checklist row has a merge and design
       reconciliation result.
-- [ ] Confirm no design claims validation that its acceptance gates did not establish;
+      — rows 0–10 and 15 all carry a merge commit and a reconciliation result.
+      Rows 11, 12, 13 and 14 are empty because those blocks were never started
+      (see the deferred list below). Block 15's artifacts are hashed
+      (`grid.pos` = `grid_artifact.pos` = `35ac7b1e…`). Also repaired row 10,
+      whose rig-evidence cell contained unescaped `|` characters and so rendered
+      as extra table columns.
+- [x] Confirm no design claims validation that its acceptance gates did not establish;
       distinguish implemented, rig-plumbing-verified, scientifically provisional, and
       validated.
-- [ ] Mark deferred items explicitly rather than leaving an ambiguous unchecked block.
+      — audited for Block 15 and stated in design/32 §5. The four tiers as they
+      apply to this block:
+      **implemented** — the audit/context split, retention, paging, atomic writes;
+      **rig-plumbing-verified** — the API accepting a compacted history, the
+      store-backed `/api/history`, the artifact allowlist outliving compaction,
+      retention's default;
+      **provisional** — the 120k/90k thresholds and the cache-stability claim,
+      neither exercised at shipped values on real data;
+      **validated** — nothing in this block. No scientific claim is made or
+      implied by it.
+      Earlier blocks' tiers stand as recorded in their own reconciliation cells;
+      this closeout does not re-audit them.
+- [x] Mark deferred items explicitly rather than leaving an ambiguous unchecked block.
+      — deferred, each with a reason rather than an empty checkbox:
+      - **Block 11** (design/26 Run B, generated adapter for a real analysis) —
+        needs a real operator workflow to adapt; no such target has been named.
+      - **Block 12** (Run C, few-shot classifier) — conditional by design, on a
+        real target needing few-shot learning. None identified.
+      - **Block 13** (generated-hook worker isolation) — not started. Until it
+        lands, source review plus hash pinning remain the containment story, and
+        no design may claim process containment. This is what blocks the closeout
+        smoke test above.
+      - **Block 14** (design/33 Phases 2/4/5) — not started; Phase 5 depends on
+        Block 9b's inventory, which shipped, so it is unblocked whenever wanted.
+      - **Block 9b cross-rig gate** — deliberately left open: live M5 still owes
+        real enumeration failures, credential redaction, live config groups and
+        state labels beyond `.cfg` contents, and bridge-typed returns.
+      - **Block 0's two `[-]` rows** — the design/30 spiral and 2500-tile NDTiff
+        fixtures were never retrieved, and the ROI-detection spike baseline was
+        folded into Block 7/12 rather than run standalone.
+
+### Findings open at closeout (none are these blocks' defects)
+
+Filed against the design docs that own each contract, all pre-existing on `main`:
+
+- **design/33** — the illumination gate is inert on an undeclared light source.
+  On the demo config `illumination.shutters` is empty, so `check_illumination`
+  gates nothing and `shutter_all` sweeps nothing, while the authorization map
+  permits the write and the EMU map names that same property as a laser enable.
+  **Highest priority of the three**: on that rig a laser is writable,
+  unconfirmed, and not shuttered on exit.
+- **design/32 §4** — a clean hook save is not confirmed in code; the gate is
+  conditional on the advisory lint firing, while the system prompt claims hook
+  saves are enforced in code.
+- **design/15** — the documented `env > keyring > file` key order applies to
+  `serve` only; `run_session` never calls `load_api_key`, so a browser-stored key
+  is invisible to the REPL.
+- **`run_timelapse` declares no artifact**, so its dataset cannot be downloaded
+  through `/api/artifact` (the adaptive runners do declare one).

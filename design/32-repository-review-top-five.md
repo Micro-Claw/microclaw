@@ -1094,6 +1094,97 @@ it saves in context. Compact in infrequent, larger batches and keep the rewritte
 checkpoint as a stable prefix, so the breakpoint moves rarely and the common case
 still hits warm cache.
 
+### Landed: Block 15 (merged `cafebd4`, demo gate PASS 2026-07-29)
+
+`microclaw/conversation.py`. The sketch above survived contact largely intact;
+what changed is that the checkpoint needed a **floor** and a **size bound**, and
+that the thresholds it ships with have never been exercised at their real values.
+
+**Audit — durable, append-only, redacted.** `AuditLog` writes one JSON object per
+message to `*_microclaw_history.jsonl`, appended and `fsync`ed as each message is
+produced rather than re-serialised per turn (the old `write_history` was O(n²)
+over a session and lost everything on a crash). Redaction is applied at write
+time and covers credentials only: registered runtime secrets by substring, plus
+`sk-ant-…` and `Bearer …` by pattern, plus a fixed set of secret key names — but
+**only when the value is a string**, so a structured payload under a key like
+`authorization` keeps its shape. Image bytes stay in the audit; the viewer
+renders them. `microclaw view-history` reads both JSONL and the legacy
+`indent=2` array, sniffed on the first non-whitespace character, and recovers a
+torn final record with a visible warning instead of an exception.
+
+**Context — hysteretic, whole-turn, floored.** `ConversationStore.model_messages`
+maps the full history to what the model sees. High water 120 000 estimated
+tokens, low water 90 000; between compactions the checkpoint is byte-stable, so
+the cache prefix moves rarely. Only complete turns are folded — user prompt
+through the assistant `end_turn` — so a `tool_use` is never separated from its
+`tool_result`. Token estimation is a local deterministic byte-count (payload
+bytes ÷ 4, plus 8 per message); no `count_tokens` call in the turn path.
+
+Two properties the original sketch did not have, both added because review found
+them missing and both load-bearing:
+
+- **`MIN_RECENT_COMPLETE_TURNS = 2`.** Without a floor the loop walked turn
+  boundaries until it got under low water, and when the checkpoint alone could
+  not get there it consumed *the entire history* — leaving the model a JSON
+  digest and nothing else. The floor is honoured even when the budget cannot be
+  met; the API is then allowed to report its own limit, the same philosophy as
+  an oversized in-flight turn.
+- **`CHECKPOINT_STRING_LIMIT = 256`.** Retained tool inputs and prompts are
+  elided past 256 characters with an explicit marker. Before this, a history of
+  `generate_and_save_hook` calls compacted to 88% of its original size — paying
+  full cache invalidation to save an eighth — because `completed_actions` kept
+  whole Python source files. The same fixture now compacts to 32%.
+
+**Checkpoint schema** (one `user` message, `"Conversation checkpoint:\n"` + sorted
+JSON). Keys carrying past activity name themselves as such:
+`checkpoint_contract`, `compacted_message_count`,
+`artifact_references_from_earlier_turns`, `hashes_from_earlier_turns` (both last
+200), `user_decisions_in_earlier_turns` (last 100),
+`completed_actions_in_earlier_turns` (last 200, `{tool, input}`), `totals`,
+`excluded`, and `audit_digest_sha256` over the compacted region. Artifact paths
+and hashes are **not** elided — a truncated sha256 is worse than none.
+`_without_images` strips image blocks; `redact_credentials` runs over the whole
+structure last.
+
+**Retention — opt-in, and the default deletes nothing.** `--history-retention-days`
+is absent by default and `prune_transcripts(None)` returns immediately. When set,
+it deletes `*_microclaw_history.jsonl` older than N days from the working
+directory at startup and prints each removal. This is the one behaviour where a
+wrong default destroys a scientific record, so it is a flag rather than a policy.
+
+**Paging contract.** `GET /api/history?cursor=&limit=` returns
+`{items, next_cursor, total}`; `limit` is clamped to 1–500, a non-integer or
+negative cursor is a 400, and `next_cursor` is `null` on the last page.
+`serve.html` walks the cursor itself at `limit=500`. Critically, the
+`/api/artifact` allowlist reads the **full durable record**, never the page or
+the model view — narrowing it would make the server refuse files it really
+produced.
+
+**Measured behaviour, and the honest gap.** The gate proved the load-bearing
+claim: the Messages API accepts a compacted history — a checkpoint `user` message
+immediately followed by a real `user` prompt, two consecutive same-role messages
+— across four such turns with no errors, and an artifact whose declaring turn had
+been compacted out of the model view was still served byte-exact. **But that ran
+at water marks of 1500/800, not 120 000/90 000.** A demo session peaks near 3000
+estimated tokens; the shipped thresholds are three orders of magnitude away and
+remain unexercised on real data. What is verified is the *mechanism*, not the
+tuning. Nothing here measures cache-hit behaviour either: the stable-prefix
+property is asserted by unit test, not by observed `cache_read_input_tokens`.
+
+**One open observation, deliberately not fixed.** Under compaction the model
+twice answered "which values came from a tool call this turn?" by naming tools
+from an earlier turn; the same prompt on an uncompacted run answered "none of
+them" correctly. The first hypothesis — that the checkpoint listed tool names
+without a temporal anchor — is **refuted**: on the passing run the window
+contained that earlier turn verbatim, `tool_use` blocks and all, and adding
+temporal framing to the checkpoint changed nothing. Compaction plausibly makes
+the oldest *visible* turn read as current. The probe is also ambiguous ("values
+you reported" points at the prior turn's summary). Recorded as a limitation with
+a sharper probe to settle it — "did you make any tool calls in this turn, yes or
+no?" — rather than as a fix.
+
+Procedure and evidence: `design/32-block15-demo-gate-prompts.md`.
+
 ## Recommended order
 
 Implement the schema-version-free hardening increment of Finding 1 first
