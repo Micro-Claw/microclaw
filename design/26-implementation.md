@@ -152,8 +152,32 @@ no single method is required for every offline adapter.
 Expose this through one generic orchestration tool, provisionally
 `run_analysis_on_saved_dataset(dataset_path, adapter, axis_selection, input_kind,
 parameters, output_dir)`. `input_kind` is `frames` or `stage_coordinate_mosaic`; for
-the latter the runner calls design/29's geometry primitive with the selected
-calibration artifact. Analyzer-specific public tools remain forbidden.
+the latter the runner calls design/29's geometry primitive. Analyzer-specific public
+tools remain forbidden.
+
+**Corrected 2026-07-29 by design/29 Block 9's post-merge gate.** "with the selected
+calibration artifact" was too narrow in three ways, each of which Block 10 would
+otherwise hit at implementation time. The shipped primitive is
+`build_stage_coordinate_mosaic(dataset_path, output_path, axis_selection,
+calibration_ref=None, output_pixel_size_um=None)`, so:
+
+1. **The calibration input is a tagged object, not a path.** `calibration_ref` is
+   `{"kind": "artifact"|"knowledge_version"|"confirmed_current", ...}`, or `None`
+   to fall through to the acquisition record. The runner must carry the tag.
+2. **`None` is not a safe default.** `resolve_calibration`'s acquisition-recorded
+   branch needs five identity fields, and a rig with no objective device supplies
+   only four — measured on M2, where none of `Objective`, `ObjectiveLabel`,
+   `PixelSizeConfig` or `PixelSizeConfigName` appears in any of 420 metadata keys.
+   There, an explicit ref is mandatory rather than preferred. Require one for this
+   `input_kind`, or surface `acquisition_fallthrough_reason` instead of a generic
+   failure.
+3. **Output shape differs.** The primitive takes an `output_path` and writes a
+   uint16 TIFF *plus* an adjacent `.json` manifest; this tool offers an
+   `output_dir`. Reconcile the two rather than assuming one file.
+
+Also inherited: the mosaic **refuses** a dataset without per-image intended XY
+rather than reconstructing a grid, which is the normal shape for single-position
+acquisitions. See design/29 "Block 9 post-merge design gate — as built".
 
 The runner normalizes output to `microclaw.analysis-observation/v1`. It must not
 filter acquisition, move hardware, or present an authoritative biological result.

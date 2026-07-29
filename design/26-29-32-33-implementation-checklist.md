@@ -44,7 +44,7 @@ Progress markers: `[ ]` not started, `[-]` active, `[x]` complete, `[!]` blocked
 | 7 | `design32/generated-hook-decisions` | `cc2df05` (main, 937/98/3) | `7a9a602`…`af8f51b`; 967/99/3 (mac), 1044/21/3 (demo core) | demo D1–D5 PASS + M5 R1 PASS 2026-07-28: capability stripping live, 3-of-5 typed stop, four attributable refusals, Run A 12/12/12 with revisit 0.01 px. Gate caught 4 defects, 3 invisible off-rig. | `2b8d752` | Gate done: design/32 §4 Block-7 landed note; design/26 5 reconciliations incl. the unresolved `analyze_frame` collision blocking Block 10 |
 | 7b | `design32/hook-illumination-and-artifacts` | `ff690e8` (main, 967/99/3) | `f300fff`…`35f6dc4`; 1014/99/3 (mac), 989/115/3 (M5 under uv), 1089/21/3 (demo core, integration live) | M5 2026-07-28: R1–R8 + P0–P2 + R5pre PASS; D2/D3 skipped by ruling. **Gate caught 4 defects, 2 invisible off-rig** | `e688606` | Gate done: design/32 §4 vocabulary corrected + Block-7b landed note; design/33 illumination-contract changes, failed-write-may-have-landed rule, and M5 405 findings (docs merge `d189722`) |
 | 8 | `design29/saved-dataset-foundation` | `c3af2b1` | `b1e347c` + `333144e` (7 review defects); 1052/99/3 | **pre-branch gate: `design29/probe-findings` (`cf0c00c`)** — probe was defective and its affine verdicts void; repaired, MMCore row-major pinned by `javap`. Live M5/demo/M2: **no measured affine anywhere**; identity is MM's default (same hash on two unrelated systems). Saved data gives the X column only (~90°, ~0.13 µm/px). No rig action for the implementation itself. | `e45a129` | Gate done: §5 precedence corrected (explicit ref beats the acquisition record, reconciling §2), measured per-image metadata contract recorded, Y column still open and owned by Block 9 |
-| 9 | `design29/stage-coordinate-mosaic` | `fecb93b` | through `82feeb5`; 1092/99/3 | **MERGED.** Gate run + R6. R1/R2/R3 pass — first non-sentinel per-image affine ever recorded. R3b: no objective key even with `Res1` live → acquisition-recorded identity unreachable on M2 (finding, not defect; artifact path mandatory). R4: both affine columns corroborated. R5 answered **offline** — dihedral match proves the renderer does not mirror. R6: affine orientation confirmed to 0.3° but **scales are wrong, −3.5% / −15.7%, anisotropic where the config reports isotropy** — traced by `javap` to Manual-Simple never measuring a scale at all. A calibration-input defect on M2, not a Block 9 code defect. |
+| 9 | `design29/stage-coordinate-mosaic` | `fecb93b` | through `82feeb5`; 1092/99/3 | **MERGED.** Gate run + R6. R1/R2/R3 pass — first non-sentinel per-image affine ever recorded. R3b: no objective key even with `Res1` live → acquisition-recorded identity unreachable on M2 (finding, not defect; artifact path mandatory). R4: both affine columns corroborated. R5 answered **offline** — dihedral match proves the renderer does not mirror. R6: affine orientation confirmed to 0.3° but **scales are wrong, −3.5% / −15.7%, anisotropic where the config reports isotropy** — traced by `javap` to Manual-Simple never measuring a scale at all. A calibration-input defect on M2, not a Block 9 code defect. | `311de3f` (+ close-out `a18c966`) | Gate done: design/29 gains "as built" — no interpolation (inverse nearest-neighbour, `floor(v+0.5)`, centre-based inclusive bounds, later-overwrites-earlier), TIFF + timestamp-free manifest, seam behaviour, six unsupported cases. design/26 corrected on all three counts of its `stage_coordinate_mosaic` promise; `analyze_frame` collision recorded as open for Block 10 |
 | 9b | `design33/read-only-rig-inventory` | | | read-only rig inventory required | | |
 | 10 | `design26/completed-dataset-runner` | | | saved-data fixture | | |
 | 11 | `design26/generated-adapter-run-b` | | | required | | |
@@ -750,7 +750,13 @@ per-instrument calibration identity must be **enforced**, not merely recorded
 leave behind a one-command peak-RSS harness so the 2500-tile measurement is a
 measurement and not another project.
 
-- [ ] Complete the convention check on the Run A datasets. The check was run:
+- [x] Complete the convention check on the Run A datasets. — **DONE 2026-07-29, then
+      superseded.** The operator ran MM's calibrator into a new `Res1` and the X column
+      agreed. R6 then measured the affine directly from commanded motion and found the
+      calibrator's *scales* wrong (−3.5% / −15.7%, anisotropic); orientation and
+      handedness confirmed to 0.3°. `javap` traced it to Manual-Simple never measuring
+      a scale at all. The original text below is kept for its reasoning.
+      The check was run:
       `run_a_1` is dark and
       rejected; the sparse revisit has no adjacent pair. `run_a_2` is PARTIAL:
       7/9 X pairs determine a ~90° row displacement at 0.1227–0.1439 µm/px,
@@ -792,7 +798,12 @@ measurement and not another project.
       contract and out of scope. It also has a 200 µm step against a 57.5 ×
       28.8 µm field, so the tiles never overlap — it could only ever have
       tested gaps, never seams. Spiral placement stays synthetic.
-- [ ] Obtain one dataset carrying a **non-sentinel** affine. Every dataset available
+- [x] Obtain one dataset carrying a **non-sentinel** affine. — **DONE 2026-07-29.**
+      `b9grid_2` records `-0.0;0.127;0.0;-0.127;0.0;0.0` with intended XY on every
+      frame: the first non-sentinel per-image affine we have ever had, so Block 8's
+      acquisition-recorded stamping is field-verified. Note it is literally `-0.0`,
+      which is Java `rotate270`'s sign flip inside the calibrator.
+      Every dataset available
       today records the all-zeros sentinel, so Block 8's acquisition-recorded branch
       is unit-tested and never field-verified. — **UNBLOCKED, not yet done.**
       `Res1` now reads `would config activate: YES`, so any small multi-position
@@ -837,8 +848,13 @@ Implementation:
       body), which is why the stripe defect was invisible; replaced with exact
       array equality against an independently written scalar reference, plus a
       no-interior-holes assertion per covered row and column.
-- [-] Run on the saved grid and spiral rig datasets with zero exposures. Compare placement
-      with known landmarks and record seam behavior.
+- [x] Run on the saved grid and spiral rig datasets with zero exposures. Compare placement
+      with known landmarks and record seam behavior. — **DONE 2026-07-29.** The landmark
+      comparison ran on `b9grid_2/3` and `b9yline_1/2`; seam behaviour is recorded in
+      design/29 "Block 9 post-merge design gate — as built". Both affine columns are
+      corroborated (Y's cross-axis residual +0.40 px, sd 0.05), and the mirror question
+      was settled offline by dihedral match rather than needing an asymmetric specimen.
+      Seam residual tracks the affine's scale error, not the geometry. Original note:
       — **PARTIAL.** Grid done on two instruments, zero exposure both times:
       `run_a_2` (M2, 12 tiles, the measured `Res1` affine) builds 768×700 at
       99.86% coverage, and `scan488_900_1` (M5, 2500 tiles) builds 8576×8580 at
@@ -858,7 +874,9 @@ Implementation:
       ROI, not full-frame 2304², so this is ~79 M cell operations rather than
       the 13 G a full-frame tiling would be. Re-measure before assuming it holds
       for full-frame tiles.
-- [ ] Retrieve the design/30 spiral and 2500-tile fixtures from the rig first
+- [x] Retrieve the design/30 spiral and 2500-tile fixtures from the rig first — **DONE**
+      (duplicate of the retrieval item above; both are complete).
+      Original text:
       (tracked as a prerequisite at the top of this block); neither is present here. The non-square fixture is found (`run_a_1`, 453×227).
       Exact locations, recovered from the saved histories (2026-07-28) so nobody
       has to re-hunt them — note these are **two different machines and drives**,
@@ -888,15 +906,30 @@ Implementation:
       parameter (and may simply have been set arbitrarily). It is NOT in tension
       with M2's 0.127 or the ~0.13 measured from `run_a_2` — those two are the same
       instrument and agree; 0.105 is a different one.
-- [ ] Stop on unexplained orientation, historical-calibration ambiguity, axis leakage,
-      nondeterministic hashes/pixels, or unacceptable memory. Fix and repeat.
-- [ ] Commit, review, and merge.
+- [x] Stop on unexplained orientation, historical-calibration ambiguity, axis leakage,
+      nondeterministic hashes/pixels, or unacceptable memory. Fix and repeat. — **None
+      fired.** Orientation explained to 0.3° and the renderer proven unmirrored;
+      calibration ambiguity resolved (the affine is wrong in a *known, mechanistically
+      explained* way, which is the opposite of ambiguous); axis leakage measured under
+      1.6% cross-talk; pixel SHA-256 stable across reruns and across the resampling
+      rewrite; peak RSS 723 MB. The one stop-condition that did trigger during the
+      block was the striped-tile resampling defect, fixed before merge.
+- [x] Commit, review, and merge. — Merged `311de3f`, plus close-out `a18c966`.
 
 Post-merge design gate:
 
-- [ ] Update design/29 with interpolation/rounding details, measured seam and peak-RSS
+- [x] Update design/29 with interpolation/rounding details, measured seam and peak-RSS
       results, artifact format, and any explicitly unsupported cases. Update design/26 if
-      the runner's promised `stage_coordinate_mosaic` input must change.
+      the runner's promised `stage_coordinate_mosaic` input must change. — **DONE
+      2026-07-29.** design/29 gains "Block 9 post-merge design gate — as built": no
+      interpolation at all (inverse nearest-neighbour, `floor(v+0.5)`, centre-based
+      inclusive bounds, later-overwrites-earlier), the TIFF + timestamp-free JSON
+      manifest format, seam behaviour, and six consolidated unsupported cases.
+      **design/26 needed correcting on all three counts**: the calibration input is a
+      tagged object not a path, `None` is not a safe default on a rig with no objective
+      device, and the primitive writes to an `output_path` with an adjacent manifest
+      rather than an `output_dir`. The `analyze_frame` collision is recorded as still
+      open and left to Block 10.
 
 ## 9b. Design/33 preparation — read-only rig inventory
 
