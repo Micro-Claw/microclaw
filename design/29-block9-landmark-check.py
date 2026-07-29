@@ -25,19 +25,30 @@ Usage:
     python design/29-block9-landmark-check.py <dataset> <cal.json> [--axis time=0]
 
 <cal.json> is a calibration artifact, or any mosaic manifest this tool wrote
-(both are accepted). To rebuild M2's from the measured Res1 values -- the
-knowledge base does not hold it, and nothing in the repo does either:
+(both are accepted). To rebuild one for M2 -- the knowledge base does not hold
+it, and nothing in the repo does either:
 
     import json
     from microclaw.calibration import (
         StageCameraAffine, canonical_affine_payload, affine_payload_hash)
-    a = StageCameraAffine(0.0, 0.127, -0.127, 0.0, "obj", 1, 0.127)
+    a = StageCameraAffine(0.0, 0.10706, -0.12254, 0.0, "obj", 1, 0.1148)
     json.dump({"payload": canonical_affine_payload(a),
                "payload_sha256": affine_payload_hash(a),
                "camera_device": "Andor",
                "camera_model": "| iXon Ultra | DU897_BV | 8172 |",
                "roi": [0, 0, 512, 512]},          # calibrated at full frame
               open("res1.json", "w"))
+
+DO NOT USE Res1's OWN VALUES (0.127 on both axes). They are wrong: measured
+against commanded motion the true scales are 0.12254 and 0.10706 -- off by 3.5%
+and 15.7%, and anisotropic where the config claims exact isotropy. MM's
+Manual-Simple calibration never measured a scale at all; it applied the
+pre-existing scalar to both axes and snapped the orientation. The orientation IS
+right (confirmed to 0.3 degrees, handedness included), which is why the numbers
+above keep Res1's structure and replace only its magnitudes. See design/29,
+"What MM's calibrator actually did", and re-measure with
+design/29-block9-affine-from-motion.py before trusting these on any other rig or
+after any optical change.
 
 The ROI is deliberately the calibration's, not the dataset's; a difference is
 recorded rather than refused (see design/29's 2026-07-29 section).
