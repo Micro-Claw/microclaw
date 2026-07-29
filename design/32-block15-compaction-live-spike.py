@@ -29,6 +29,9 @@ from microclaw.safety import SafetyGuard
 # Tool-calling prompts, so the history fills with real tool_use/tool_result
 # pairs rather than prose. Compaction has to survive tool pairs, not sentences.
 DEFAULT_PROMPTS = [
+    # Turn 0 must declare an artifact: the allowlist check below needs a real
+    # dataset path recorded early enough to be compacted away later.
+    "Run a timelapse of 2 frames with interval_s=0 and tell me where it saved.",
     "Call get_system_state and tell me the current stage position and exposure.",
     "List the properties of the camera device.",
     "Snap and analyze one image. Report the focus metric and whether it is valid.",
@@ -112,6 +115,20 @@ for index, prompt in enumerate(prompts):
 
 view = store.model_messages(history)
 verbatim = [m for m in view if m is not store._checkpoint]
+
+# The security-relevant property, checked on real session data rather than a
+# fixture: /api/artifact resolves against the FULL durable record, so an artifact
+# declared in turn 0 must stay downloadable after that turn has been compacted
+# out of what the model sees. Narrowing this to the model view would make the
+# server refuse files it really did produce.
+from microclaw.webserve import _declared_artifacts  # noqa: E402 — after the run
+
+allowed = _declared_artifacts(store.audit.records)
+in_model_view = _declared_artifacts(
+    json.loads(json.dumps(verbatim, default=str))
+)
+compacted_away = sorted(allowed - in_model_view)
+
 print(json.dumps({
     # PASS needs all four: compaction happened, at least one turn was SENT with
     # a checkpoint in front of it, the API never refused that shape, and the
@@ -121,7 +138,13 @@ print(json.dumps({
         and first_compacted_turn is not None
         and first_compacted_turn < len(prompts) - 1
         and len(verbatim) > 0
+        and len(allowed) > 0
     ) else "INCONCLUSIVE",
+    "artifacts_in_durable_record": sorted(allowed),
+    "artifacts_still_in_model_view": sorted(in_model_view),
+    # Non-empty here is the interesting case: proof the allowlist outlives
+    # compaction. Empty just means nothing got compacted away this run.
+    "artifacts_compacted_away_but_still_downloadable": compacted_away,
     "compaction_count": store.compaction_count,
     "first_turn_after_compaction": (
         None if first_compacted_turn is None else first_compacted_turn + 1
