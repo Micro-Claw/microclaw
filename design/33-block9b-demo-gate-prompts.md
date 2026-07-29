@@ -50,19 +50,29 @@ the gate, not optional setup. If this machine uses `uv`, replace each subsequent
 git rev-parse HEAD > "$Evidence\commit.txt" 2>&1
 git status --short > "$Evidence\status.txt" 2>&1
 python -V > "$Evidence\python.txt" 2>&1
-python -m pip show pymmcore-plus pyjavaz > "$Evidence\mm-packages.txt" 2>&1
+python -m pip show pycromanager pyjavaz > "$Evidence\mm-packages.txt" 2>&1
 python -c "import platform; print(platform.platform())" > "$Evidence\os.txt" 2>&1
-python -c "from pymmcore_plus import CMMCorePlus; c=CMMCorePlus.instance(); print(c.getVersionInfo()); print(c.getAPIVersionInfo())" > "$Evidence\mm-version.txt" 2>&1
 python -m pytest -q > "$Evidence\pytest.txt" 2>&1
 ```
 
 The POSIX equivalents differ only in path separators: use `$Evidence/file.txt`
 instead of `$Evidence\file.txt`.
 
+Micro-Manager's own version is **not** captured here. It is read over the bridge
+and recorded by `inspect-rig` itself, as `facts.core_identity.version` and
+`facts.core_identity.api_version` inside every `inventory.json` from Step 2 on.
+Do not add a second core to this step to fetch it: the project talks to MM only
+through the pycro-manager ZMQ bridge, and instantiating any other core object
+here would neither read the running Micro-Manager nor prove anything about it.
+
 **PASS:** `commit.txt` names the expected pushed SHA, `status.txt` is empty,
-every identity file is populated, and pytest reports the branch baseline stated
-in the handoff (currently 1097 passed / 99 skipped / 3 warnings before these
-regressions were added; use the new pushed-branch count as authoritative).
+every identity file is populated, and pytest reports **1105 passed / 99 skipped /
+3 warnings**. There is no known-failing test on this branch: the coordinator
+measured this exact count on the pushed commit. Treat any failure as real and
+stop — in particular `test_readme_png_is_not_stale`, which passes here and was
+reported as an environment artifact during implementation. That report was
+mistaken and traced to a `readline` stub the implementer had put on the import
+path; it is not a property of this branch or of Pillow.
 
 **FAIL:** identity is incomplete, the tree is dirty before the run, or tests fail.
 
