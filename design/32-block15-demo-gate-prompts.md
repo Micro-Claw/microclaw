@@ -19,6 +19,23 @@ Run by hand in **PowerShell** on the demo machine. Keep every step's output in
 one dated directory. Commit nothing: gate output files are never committed;
 findings get folded into this file and design/32 by the coordinator.
 
+## Result — all eight steps PASS, 2026-07-29
+
+| Step | Result | What it establishes |
+|---|---|---|
+| G1 | PASS | The Messages API accepts a compacted history (checkpoint `user` message followed by a real `user` prompt). 5 compactions, 4 such turns, no errors, two-turn floor held, and an artifact stayed in the durable allowlist after its declaring turn left the model view. |
+| G2 | PASS | One JSONL, no `.json` array, 35 records, every line independently valid, growing per message. |
+| G3 | PASS | Store-backed `/api/history` paging — `total` = line count, cursors advance, bad input 400s. First-ever execution of this path; all off-rig tests take the compatibility fallback. |
+| G4 | PASS | An artifact declared in turn 1 downloaded at the end of the session, contents matching. |
+| G5 | PASS | Durable confirmation audit: approve and decline both recorded with kind, identity, timestamp and id. |
+| G6 | PASS | Interrupted-session transcript readable; torn final record recovered with a warning; legacy `.json` array still renders. |
+| G7 | PASS | Retention deletes nothing by default; `--history-retention-days` opts in. |
+
+**Four of the seven problems hit along the way were this gate's own scaffolding**
+— a missing API-key lookup, uncalibrated water marks, a missing `save_dir`, and
+two rounds of wrong CLI syntax — not the code under test. The two genuine
+findings below concern gates that predate this block.
+
 Set once per session:
 
 ```powershell
@@ -144,6 +161,37 @@ what to change. Two ways it happens, both seen on the first live runs:
 
 ---
 
+## Finding: two "enforced in code" gates that did not fire
+
+Both raised by the 2026-07-29 sessions, **neither is a Block 15 defect** —
+pre-existing on `main`. Recorded here because the gate is where they surfaced.
+
+The system prompt tells the model that two confirmations are backstopped in code:
+
+> Confirmation for save_knowledge and hook saves is also enforced in code (a
+> blocking prompt) […]
+
+and, for illumination, that it must "ask, and wait for a reply, before enabling
+illumination". On this rig, in these sessions, **neither gate fired**. The model
+asked in prose and behaved correctly both times — but that is discipline, not
+enforcement, and the prompt overstates what the code guarantees.
+
+1. **Illumination enable — inert when nothing is declared.** Detailed below.
+2. **Hook save — conditional on the advisory lint.** `generate_and_save_hook`
+   gates on `if warnings and not CONFIRM_FN(...)` (`tools.py:3777`). A hook that
+   trips no lint warning saves with **no** confirmation. The 2026-07-29 session
+   saved `AaarghHook` with `"warnings": []` and no prompt. The code is
+   self-consistent — its docstring says the human reading the full source is the
+   real gate — but `save_knowledge`'s gate is unconditional (`tools.py:3967`)
+   and a hook save's is not, so the prompt's sentence is true of one and false
+   of the other.
+
+Worth fixing as a pair on a follow-up branch: either make the guarantees real,
+or correct the system prompt so it stops asserting a backstop that is
+config-dependent in one case and lint-dependent in the other. Overstating an
+enforced gate is worse than declaring none, because it discourages the operator
+from adding the declaration that would actually create one.
+
 ## Finding: an undeclared light source is writable, ungated, and never swept
 
 Raised by the 2026-07-29 session, **not a Block 15 defect** — pre-existing on
@@ -253,6 +301,11 @@ PASS: `400` for both.
 
 ### G4 — artifact download from an early turn
 
+**RESULT: PASS, 2026-07-29.** `save_position_list` in turn 1 declared
+`{"kind": "position_list", "path": "…\grid.pos"}`; the chip was clicked at the
+*end* of the session, many turns later, and the download
+(`grid_artifact.pos`, 409 lines) matched the original head-and-tail.
+
 **There is no download button in the UI.** The chip is drawn only from a tool
 result that carries an `artifact` object, and it appears *inside that tool's
 result card* — expand the collapsed tool card in the transcript and it is the
@@ -279,6 +332,12 @@ compacted variant of this property is already proved by G1's
 thresholds are unreachable by hand in one session.)
 
 ### G5 — the confirmation audit is durable
+
+**RESULT: PASS, 2026-07-29.** Two records in
+`20260729_213937_312072_microclaw_confirmations.jsonl`, one `approved` and one
+`declined`, both `kind: "knowledge"`, each with a UTC timestamp, `identity:
+"loopback"`, and a distinct `confirmation_id`. Use `save_knowledge` — see the
+findings above for why a laser enable and a clean hook save do not exercise this.
 
 Approve one confirmation in the browser and decline a second.
 
@@ -332,32 +391,84 @@ microclaw view-history "C:\path\to\an_old_microclaw_history.json" --no-browser 2
 PASS: it still renders. Legacy `.json` histories must keep working — that
 compatibility is why the loader sniffs the first character.
 
+**RESULT: PASS, 2026-07-29.** An old array-format history opened in the browser.
+
 ---
 
 ## G7 — retention deletes nothing by default
 
+**RESULT: PASS, 2026-07-29** (2nd attempt; the 1st died on an empty `$CFG` set in
+another terminal and tested nothing). `g7-results.txt`:
+
+```
+1 seeded (expect True): True
+2 after default run (expect True): True
+3 after prune run (expect False): False
+```
+
+Line 2 is the safety property: a session started with no retention flag left a
+30-day-old transcript untouched. Line 3 shows `--history-retention-days 1`
+deletes it. Both capture files were empty — a piped `serve` loses its buffered
+stdout on Ctrl-C — so the `Pruned transcript` announcement is unverified; the
+existence checks are what decide this step.
+
 The safety property. A default that prunes a scientific record is a stop-ship.
+
+**Self-contained on purpose.** `$CFG` set in another terminal does not exist
+here, and an empty `--safety-config $CFG` makes argparse swallow the *next*
+flag as its value — the 2026-07-29 attempt died twice that way
+(`invalid choice: '8001'`, then `--safety-config: expected one argument`) without
+testing anything. This block therefore omits `--safety-config` entirely and
+relies on the per-user default that `microclaw init` writes. If your config is
+somewhere else, set `$CFG` **in this terminal** and add the flag back.
+
+> Any command that answers with an argparse usage dump means a variable was
+> empty. Check it before re-running, and never read a usage dump as a result.
+
+**The check between the two runs is the whole test.** A `serve` process piped
+through `Out-File` loses its buffered stdout when you Ctrl-C it — the
+2026-07-29 attempt produced two empty capture files, and with no intermediate
+`Test-Path` recorded, "run 2 pruned it" and "run 1 pruned it" (the stop-ship
+condition) were indistinguishable afterwards. So record the file's existence
+into its own file at each step, and use `Tee-Object`, which streams as output
+arrives instead of buffering to the end.
 
 ```powershell
 New-Item -ItemType Directory -Force retention | Out-Null
 cd retention
+Remove-Item -Force old_microclaw_history.jsonl -ErrorAction SilentlyContinue
+Remove-Item -Force ..\g7-results.txt -ErrorAction SilentlyContinue
 '{"role":"user","content":"old"}' | Set-Content old_microclaw_history.jsonl
 (Get-Item old_microclaw_history.jsonl).LastWriteTime = (Get-Date).AddDays(-30)
+"1 seeded (expect True): $(Test-Path old_microclaw_history.jsonl)" |
+  Tee-Object -Append ..\g7-results.txt
 
-# default: no flag
-microclaw --safety-config $CFG serve --web-port 8001 2>&1 | Out-File -Encoding utf8 ..\g7-default.txt
-# (Ctrl-C once it is up)
-Test-Path old_microclaw_history.jsonl      # expect True
+# Run 1 -- NO retention flag. Ctrl-C once the browser opens.
+uv run microclaw serve --web-port 8001 2>&1 |
+  Tee-Object -FilePath ..\g7-default.txt
+"2 after default run (expect True): $(Test-Path old_microclaw_history.jsonl)" |
+  Tee-Object -Append ..\g7-results.txt
 
-microclaw --safety-config $CFG --history-retention-days 1 serve --web-port 8001 2>&1 | Out-File -Encoding utf8 ..\g7-prune.txt
-# (Ctrl-C once it is up)
-Test-Path old_microclaw_history.jsonl      # expect False
+# Run 2 -- opt in. Ctrl-C once the browser opens.
+uv run microclaw --history-retention-days 1 serve --web-port 8001 2>&1 |
+  Tee-Object -FilePath ..\g7-prune.txt
+"3 after prune run (expect False): $(Test-Path old_microclaw_history.jsonl)" |
+  Tee-Object -Append ..\g7-results.txt
+
+Get-Content ..\g7-results.txt
 Select-String -Path ..\g7-prune.txt -Pattern "Pruned transcript"
 cd ..
 ```
 
-PASS: untouched with no flag; deleted and announced with
-`--history-retention-days 1`.
+Both runs must reach the point where the server is actually up — the prune
+happens in `Session.__init__`, *after* the safety config loads and the rig
+authorises, so a run that exits early prunes nothing and proves nothing.
+The prune also targets the **current working directory**, which is why the
+`cd retention` matters.
+
+PASS: line 1 True, line 2 **True**, line 3 False. Line 2 is the safety
+property; line 3 only shows the opt-in works. An empty `g7-prune.txt` is not a
+failure on its own — the `Test-Path` results decide it.
 
 ---
 

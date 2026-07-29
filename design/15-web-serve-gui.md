@@ -358,6 +358,22 @@ Endpoints: `GET /api/key` → `{"has_key": bool, "suffix": "…AA8f"}` and
   meant to be readable and checked in as an example. See storage below.
 - Loading order: explicit env var > keyring > stored file > unset (banner).
 
+> **As built, this order applies to `serve` only — the interactive CLI ignores
+> stored keys.** Found during the design/32 Block 15 demo gate (2026-07-29).
+> `credentials.load_api_key()` is called from `webserve.py` alone;
+> `__main__.run_session` — the `microclaw` REPL — never calls it, so it sees only
+> `ANTHROPIC_API_KEY` in the environment. A key the operator entered in the
+> browser is stored in the keyring and then invisible to the REPL, which fails
+> with `TypeError: Could not resolve authentication method` and no hint that a
+> usable key exists a few lines of code away. The gate's own spike hit this and
+> had to replicate `serve`'s lookup by hand
+> (`design/32-block15-compaction-live-spike.py`).
+>
+> Not a Block 15 defect — pre-existing, and not fixed there. The fix is small
+> (call `load_api_key()` + `set_api_key()` in `run_session`, as `Session.__init__`
+> does) but it changes what a REPL session will authenticate with, so it belongs
+> on its own branch rather than riding along in an unrelated block.
+
 #### Where to store it
 
 Prefer **`keyring`**, which brokers to the OS credential store — macOS Keychain,

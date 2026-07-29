@@ -660,6 +660,55 @@ or the appropriateness of M5's declared limits.
 - **`degraded_trusted_plugins`** remains the sanctioned escape hatch: it suspends the
   completeness guarantee for sessions where the allowlist ceremony is not warranted.
 
+## The illumination gate is inert on an undeclared light source (2026-07-29)
+
+Found during the design/32 Block 15 demo gate on the MM demo config. **Not a
+Block 15 defect** — this is design/33's own boundary, pre-existing on `main`, and
+it needs a decision here rather than a note in a block's gate document.
+
+An operator asked the agent to turn a laser on. It wrote
+`set_device_property(LED.State = 1)`, the write succeeded, and **no confirmation
+was requested**. The chain:
+
+- `check_illumination` is wired into `set_device_property` (`tools.py:478`), but
+  it gates only what `is_illumination_enable` recognises, and that consults
+  `illumination.shutters` alone (`safety.py:805`).
+- That list was empty, so `require_confirm_on_enable: true` governed nothing.
+  The gate is skipped **silently** — there is no "this write looks like a light
+  source" diagnostic.
+- `shutter_all` iterates the *same* list (`safety.py:898`), so the teardown sweep
+  that design/14 §3 exists to guarantee would not have turned this laser off
+  either. The session ended with an acquisition running and the source on.
+- The authorization map meanwhile **permitted** the write: `LED` is a demo
+  StateDevice, auto-classified by the Phase 1 fast-follow above, while
+  `Emission.State` was correctly refused.
+
+The sharp edge is that microclaw already held the answer. `get_emu_configuration`
+in that same session returned
+`lasers: {"0": {enable: {device: "LED", property: "State", on: "1", off: "0"}}}`.
+One subsystem had the laser mapped by semantic role; the other had never heard of
+it; **nothing cross-checks them.** Writes are authorised by the map, illumination
+is gated by a separate declaration, and the two are allowed to disagree.
+
+This is the same family as the laser-engine widening the Block 3b rig gate
+caught: StateDevice auto-classification is the mechanism in both. The difference
+is that there the widening was refused, and here it was permitted and then
+ungated.
+
+Proposed resolution, for its own branch: at startup, cross-check every EMU laser
+enable against `illumination.shutters` and refuse — or at minimum warn loudly —
+when a declared enable is absent from the shutter list. That reuses the
+"Where the cross-check runs" machinery above rather than adding a surface. The
+weaker alternative (warn only) is still worth more than today's silence, because
+the current behaviour actively discourages declaration: everything appears to
+work without it.
+
+Related, and recorded in design/32 §4: a clean generated hook saves with no
+confirmation either, because that gate is conditional on the advisory lint. In
+both cases the agent asked in prose and behaved correctly — but the system prompt
+tells the model these confirmations are *enforced in code*, and on this rig
+neither was.
+
 ## Illumination gate: what design/32 Block 7b changed (2026-07-28)
 
 Block 7b let generated hook code propose illumination per frame. It deliberately
