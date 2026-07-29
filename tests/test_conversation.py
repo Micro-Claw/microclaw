@@ -101,7 +101,7 @@ def test_compaction_is_batched_stable_and_keeps_tool_pairs_together(tmp_path):
     history = _turn(0, image=True) + sum((_turn(i) for i in range(1, 5)), [])
     history[0]["content"] += " with " + secret
     store = ConversationStore(
-        AuditLog(tmp_path / "audit.jsonl", secrets=[secret]), high_water_tokens=900,
+        AuditLog(tmp_path / "audit.jsonl", secrets=[secret]), high_water_tokens=1200,
         low_water_tokens=500,
     )
     first = store.model_messages(history)
@@ -140,3 +140,54 @@ def test_long_session_compacts_model_view_without_losing_audit(tmp_path):
     assert len(store.audit.records) == len(history) == 120
     assert len(load_history(tmp_path / "long.jsonl").messages) == 120
     assert estimate_tokens(store.model_messages(history)) < estimate_tokens(history)
+
+
+def test_compaction_keeps_two_complete_recent_turns_when_budget_is_impossible():
+    history = []
+    for index in range(8):
+        history.extend([
+            {"role": "user", "content": f"turn {index}"},
+            {"role": "assistant", "content": [
+                {"type": "text", "text": "x" * 1200},
+            ]},
+        ])
+    store = ConversationStore(
+        AuditLog(None, enabled=False), high_water_tokens=1500, low_water_tokens=800,
+    )
+
+    view = store.model_messages(history)
+
+    assert view[1:] == history[-4:]
+    assert estimate_tokens(view) > store.low_water_tokens
+
+
+def test_tool_input_heavy_checkpoint_shrinks_history_meaningfully():
+    history = []
+    for index in range(12):
+        history.extend([
+            {"role": "user", "content": "decision " + "d" * 2000},
+            {"role": "assistant", "content": [{
+                "type": "tool_use", "id": f"call-{index}", "name": "save_hook",
+                "input": {"script": "s" * 5000, "nested": {"notes": "n" * 3000}},
+            }]},
+            {"role": "user", "content": [{
+                "type": "tool_result", "tool_use_id": f"call-{index}", "content": "{}",
+            }]},
+            {"role": "assistant", "content": [{"type": "text", "text": "saved"}]},
+        ])
+    store = ConversationStore(
+        AuditLog(None, enabled=False), high_water_tokens=1000, low_water_tokens=600,
+    )
+
+    view = store.model_messages(history)
+    checkpoint_text = view[0]["content"][0]["text"]
+
+    assert "ELIDED" in checkpoint_text
+    assert estimate_tokens(view) < estimate_tokens(history) * 0.35
+
+
+def test_structured_credential_named_payload_keeps_its_shape():
+    from microclaw.conversation import redact_credentials
+
+    value = {"authorization": {"mode": "categorical", "token": "public-value"}}
+    assert redact_credentials(value) == value

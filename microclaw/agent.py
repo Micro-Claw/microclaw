@@ -8,7 +8,6 @@ import time
 import anthropic
 
 from microclaw.controller import MicroscopeController
-from microclaw.conversation import estimate_tokens
 from microclaw.knowledge_manager import format_for_prompt, load_knowledge
 from microclaw.safety import SafetyGuard
 from microclaw.tools import execute_tool
@@ -284,8 +283,6 @@ def _stream_one_round(messages, system_blocks, model, context_provider=None):
             model_messages = (
                 context_provider(messages) if context_provider is not None else messages
             )
-            # Local deterministic estimate only; this is not exact API usage.
-            estimate_tokens(model_messages)
             with _get_client().messages.stream(
                 model=model,
                 max_tokens=4096,
@@ -362,11 +359,16 @@ def run_agent_iter(
                 messages, system_blocks, model, context_provider
             )
         except _Overloaded:
-            del messages[start:]  # discard the turn, user message and all
+            # Remove the unsent/unanswered turn from the API-facing history.
+            # on_message may already have durably audited it; that append-only
+            # record truthfully shows the attempted prompt and is not rolled back.
+            del messages[start:]
             yield {"type": "error", "message": OVERLOADED_MESSAGE}
             return
         except _BadModel as e:
-            del messages[start:]  # nothing ran; don't leave an unanswered prompt
+            # Keep API history valid, while retaining the attempted prompt in
+            # any append-only audit populated by on_message (see above).
+            del messages[start:]
             yield {"type": "error",
                    "message": f"The API rejected the model '{model}': {e}"}
             return

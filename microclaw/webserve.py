@@ -253,6 +253,16 @@ def _durable_history(session) -> list[dict]:
     return store.audit.records if store is not None else _jsonable(session.history)
 
 
+def _add_audit_secret(session, secret: str | None) -> None:
+    """Register a credential with every audit owned by a session."""
+    store = getattr(session, "store", None)
+    if store is not None:
+        store.audit.add_secret(secret)
+    confirmation_audit = getattr(session, "confirmation_audit", None)
+    if confirmation_audit is not None:
+        confirmation_audit.add_secret(secret)
+
+
 def _sse(event: dict) -> str:
     """One agent event as an SSE frame.
 
@@ -313,8 +323,7 @@ class Session:
         # environment now so the first turn doesn't have to look for it.
         key, source = credentials.load_api_key()
         if key:
-            self.store.audit.add_secret(key)
-            self.confirmation_audit.add_secret(key)
+            _add_audit_secret(self, key)
             set_api_key(key)
             print(f"Anthropic API key: {credentials.mask(key)} (from {source})")
         else:
@@ -386,10 +395,7 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
         if not api_token:
             raise RuntimeError("remote mode requires an API token")
         auth_state = auth_state or RemoteAuth(api_token)
-        if hasattr(session, "store"):
-            session.store.audit.add_secret(api_token)
-        if hasattr(session, "confirmation_audit"):
-            session.confirmation_audit.add_secret(api_token)
+        _add_audit_secret(session, api_token)
 
     def client_address(request: Request) -> str:
         return request.client.host if request.client else "unknown"
@@ -477,10 +483,7 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
         if not isinstance(code, str) or not auth_state.consume_code(code):
             raise HTTPException(401, "Unauthorized")
         value, _ = auth_state.mint_session()
-        if hasattr(session, "store"):
-            session.store.audit.add_secret(value)
-        if hasattr(session, "confirmation_audit"):
-            session.confirmation_audit.add_secret(value)
+        _add_audit_secret(session, value)
         response = JSONResponse({"paired": True})
         response.set_cookie(
             SESSION_COOKIE, value, max_age=SESSION_TTL_S,
@@ -498,10 +501,7 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
         if not auth_state.pair_attempts.allow(client_address(request)):
             raise HTTPException(429, "Too many pairing requests.")
         code = auth_state.mint_code()
-        if hasattr(session, "store"):
-            session.store.audit.add_secret(code)
-        if hasattr(session, "confirmation_audit"):
-            session.confirmation_audit.add_secret(code)
+        _add_audit_secret(session, code)
         return JSONResponse({"code": code, "expires_in": PAIR_TTL_S})
 
     @app.get("/api/history")
@@ -745,10 +745,7 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
         if not key:
             raise HTTPException(400, "Empty key.")
         # Overwrites whatever was set, so a key can be swapped mid-session.
-        if hasattr(session, "store"):
-            session.store.audit.add_secret(key)
-        if hasattr(session, "confirmation_audit"):
-            session.confirmation_audit.add_secret(key)
+        _add_audit_secret(session, key)
         set_api_key(key)
         stored_in = stored_at = None
         stale_store = False
@@ -841,14 +838,10 @@ def serve(args):
     from microclaw import tools
 
     session = Session(args)
-    if token and hasattr(session, "store"):
-        session.store.audit.add_secret(token)
-        if hasattr(session, "confirmation_audit"):
-            session.confirmation_audit.add_secret(token)
-    if pairing_code and hasattr(session, "store"):
-        session.store.audit.add_secret(pairing_code)
-        if hasattr(session, "confirmation_audit"):
-            session.confirmation_audit.add_secret(pairing_code)
+    if token:
+        _add_audit_secret(session, token)
+    if pairing_code:
+        _add_audit_secret(session, pairing_code)
     # Route every in-code confirmation gate (save_knowledge, hook save, the
     # illumination enable) to the browser, where the operator is. Installed
     # once, not per turn: all three callsites read the module global at call

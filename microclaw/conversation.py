@@ -24,6 +24,9 @@ DEFAULT_CONTEXT_HIGH_WATER_TOKENS = 120_000
 DEFAULT_CONTEXT_LOW_WATER_TOKENS = 90_000
 DEFAULT_HISTORY_PAGE_LIMIT = 100
 MAX_HISTORY_PAGE_LIMIT = 500
+MIN_RECENT_COMPLETE_TURNS = 2
+CHECKPOINT_STRING_LIMIT = 256
+CHECKPOINT_ELISION = "[...ELIDED {count} CHARS...]"
 
 _API_KEY_RE = re.compile(r"\bsk-ant-[A-Za-z0-9_-]{12,}\b")
 _BEARER_RE = re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]{12,}")
@@ -48,7 +51,7 @@ def redact_credentials(value: Any, secrets: Iterable[str] = ()) -> Any:
     known = tuple(s for s in secrets if s)
 
     def redact(item: Any, key: str | None = None) -> Any:
-        if key and key.lower() in _SECRET_KEYS:
+        if key and key.lower() in _SECRET_KEYS and isinstance(item, str):
             return REDACTED
         if isinstance(item, dict):
             return {str(k): redact(v, str(k)) for k, v in item.items()}
@@ -248,6 +251,18 @@ def _without_images(value: Any) -> Any:
     return value
 
 
+def _bounded_checkpoint_value(value: Any) -> Any:
+    """Bound retained prose/tool inputs; the audit remains the complete record."""
+    if isinstance(value, dict):
+        return {k: _bounded_checkpoint_value(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_bounded_checkpoint_value(v) for v in value]
+    if isinstance(value, str) and len(value) > CHECKPOINT_STRING_LIMIT:
+        marker = CHECKPOINT_ELISION.format(count=len(value) - CHECKPOINT_STRING_LIMIT)
+        return value[:CHECKPOINT_STRING_LIMIT] + marker
+    return value
+
+
 def _checkpoint(messages: list[dict], secrets: Iterable[str] = ()) -> dict:
     artifacts: list[dict] = []
     hashes: list[dict] = []
@@ -259,7 +274,7 @@ def _checkpoint(messages: list[dict], secrets: Iterable[str] = ()) -> dict:
     for message in plain:
         content = message.get("content")
         if message.get("role") == "user" and isinstance(content, str):
-            decisions.append(content)
+            decisions.append(_bounded_checkpoint_value(content))
         if not isinstance(content, list):
             continue
         for block in content:
@@ -267,7 +282,8 @@ def _checkpoint(messages: list[dict], secrets: Iterable[str] = ()) -> dict:
                 continue
             if block.get("type") == "tool_use":
                 actions.append({"tool": block.get("name"),
-                                "input": _without_images(block.get("input", {}))})
+                                "input": _bounded_checkpoint_value(
+                                    _without_images(block.get("input", {})))})
             if block.get("type") != "tool_result":
                 continue
             payload = block.get("content")
@@ -343,7 +359,16 @@ class ConversationStore:
         if self.last_estimated_tokens <= self.high_water_tokens:
             return current
 
-        ends = [end for end in _complete_turn_ends(full_history) if end > self._cut]
+        complete_ends = _complete_turn_ends(full_history)
+        # Never fold the two most recent complete turns into the checkpoint.
+        # If that floor makes the target impossible, preserve the turns and let
+        # the API report its real context limit, just as for an oversized
+        # in-flight turn below.
+        floor_boundary = (complete_ends[-MIN_RECENT_COMPLETE_TURNS - 1]
+                          if len(complete_ends) > MIN_RECENT_COMPLETE_TURNS
+                          else self._cut)
+        ends = [end for end in complete_ends
+                if self._cut < end <= floor_boundary]
         chosen = self._cut
         for end in ends:
             candidate_checkpoint = _checkpoint(full_history[:end], self.audit.secrets)
