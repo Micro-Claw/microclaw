@@ -20,6 +20,29 @@ credential-bearing drivers, or the scale and oddities of a production rig. The
 Block 9b cross-rig checklist bullet therefore stays unticked even if every demo
 step passes.
 
+## First demo run — failed, retained as evidence
+
+The first Windows demo run on 2026-07-29 tested commit `495e96c` and **failed at
+Step 3**. Two unchanged inventories had different fingerprints because
+`reported_type` contained the process-specific repr of a pyjavaz
+`mmcorej_PropertyType` proxy (including its heap address). The same run also
+found that adapter names were absent on all 14 devices: the implementation
+called nonexistent `get_device_adapter_name`; CMMCore's real method is
+`getDeviceName`, exposed by the bridge as `get_device_name`.
+
+Steps 2, 4, and 5 substantively passed: the inventory contained all 14 devices,
+six configuration groups, all four fully expanded Channel presets, complete
+labels for six StateDevices, and both shutters; the review did not present
+observations as safety decisions. The comparison contained 68 writable paths,
+and no StateDevice `Label`/`State` was incorrectly reported as undeclared.
+
+That Windows run also had four `tests/test_describe_hook.py` failures caused by
+CRLF bytes disagreeing with LF-normalized manifest hashes. This is the existing
+Block 7 finding and is outside Block 9b; this branch does not change that code.
+The corrected inventory implementation must be rerun through the unchanged
+steps below. In particular, Step 3 is retained verbatim because it caught the
+defect.
+
 ## Common setup
 
 ```powershell
