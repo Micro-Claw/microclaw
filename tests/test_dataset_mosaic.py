@@ -255,6 +255,38 @@ def test_a_different_instrument_is_still_refused(monkeypatch, tmp_path, kwargs, 
     assert not (tmp_path / "out.tif").exists()
 
 
+@pytest.mark.parametrize("key,model", [
+    ("Andor-Camera", "| iXon Ultra | DU897_BV | 8172 |"),      # M2, measured
+    ("Andor-CameraName", "C15440-20UP"),                        # M5 shape, measured
+    ("Andor-CameraID", "S/N: 500975"),                          # last resort
+])
+def test_camera_model_is_read_from_any_vendor_key(monkeypatch, tmp_path, key, model):
+    """MM stamps the model under whatever the adapter calls its property.
+
+    Measured on real data: the Andor iXon exposes '-Camera'; the Hamamatsu
+    C15440-20UP has no '-Camera' key at all and carries the model under
+    '-CameraName'. Assuming one vendor's shape refused every M5 dataset.
+    """
+    FakeDataset.images = {("p0", 0): np.ones((3, 3), np.uint16)}
+    base = metadata(0, 0)
+    base.pop("Andor-Camera")
+    base[key] = model
+    FakeDataset.metadata = {("p0", 0): base}
+    result = run_tool(monkeypatch, tmp_path, {"time": 0},
+                      artifact(tmp_path / "cal.json", model=model))
+    assert result["dataset_identity"]["camera_model"] == model
+    assert result["dataset_identity"]["camera_model_key"] == key
+
+
+def test_no_camera_model_key_at_all_names_every_candidate(monkeypatch, tmp_path):
+    FakeDataset.images = {("p0", 0): np.ones((3, 3), np.uint16)}
+    base = metadata(0, 0)
+    base.pop("Andor-Camera")
+    FakeDataset.metadata = {("p0", 0): base}
+    with pytest.raises(ValueError, match="Andor-Camera or Andor-CameraName or Andor-CameraID"):
+        run_tool(monkeypatch, tmp_path, {"time": 0})
+
+
 def test_tool_is_off_acquisition_ledger():
     from microclaw.tools import build_stage_coordinate_mosaic
     assert not getattr(build_stage_coordinate_mosaic, "_microclaw_acquisition_entry_point", False)

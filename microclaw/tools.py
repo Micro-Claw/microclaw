@@ -1006,12 +1006,34 @@ def _iter_present_coords(dataset, fixed_axes: dict) -> Any:
             yield coords
 
 
+# Camera model lives under a different per-image key for every vendor, because
+# MM stamps whatever the adapter happens to call its property. Measured on real
+# datasets: the Andor iXon exposes 'Andor-Camera', while the Hamamatsu
+# C15440-20UP has no '-Camera' key at all and carries the model under
+# '-CameraName' with the serial under '-CameraID'. Resolve in order and record
+# which key answered, rather than assuming one vendor's shape is the contract.
+_CAMERA_MODEL_KEY_SUFFIXES = ("-Camera", "-CameraName", "-CameraID")
+
+
+def _camera_model(metadata: dict, camera: str) -> tuple[str, str] | tuple[None, None]:
+    for suffix in _CAMERA_MODEL_KEY_SUFFIXES:
+        key = f"{camera}{suffix}"
+        value = metadata.get(key)
+        if value not in (None, ""):
+            return str(value), key
+    return None, None
+
+
 def _mosaic_dataset_identity(metadata_items: list[tuple[dict, dict]]) -> dict:
     """Read the real MM per-image camera/ROI/binning keys and require consistency."""
     identities = []
+    model_key = None
     for coords, metadata in metadata_items:
         camera = metadata.get("Core-Camera")
-        model = metadata.get(f"{camera}-Camera") if camera not in (None, "") else None
+        if camera in (None, ""):
+            model = None
+        else:
+            model, model_key = _camera_model(metadata, str(camera))
         raw_roi = metadata.get("ROI")
         try:
             roi = [int(value) for value in str(raw_roi).split("-")]
@@ -1028,13 +1050,14 @@ def _mosaic_dataset_identity(metadata_items: list[tuple[dict, dict]]) -> dict:
     first = identities[0]
     if any(item[:4] != first[:4] for item in identities[1:]):
         raise ValueError("Dataset camera, ROI, or binning changes within the selected plane")
+    model_names = " or ".join(f"{first[0]}{suffix}" for suffix in _CAMERA_MODEL_KEY_SUFFIXES)
     missing = [name for name, value in zip(
-        ("Core-Camera", f"{first[0]}-Camera", "ROI", "Binning"), first[:4]
+        ("Core-Camera", model_names, "ROI", "Binning"), first[:4]
     ) if value is None]
     if missing:
         raise ValueError("Dataset calibration identity metadata is incomplete; missing " + ", ".join(missing))
     return {"camera_device": str(first[0]), "camera_model": str(first[1]),
-            "roi": first[2], "binning": first[3]}
+            "camera_model_key": model_key, "roi": first[2], "binning": first[3]}
 
 
 def build_stage_coordinate_mosaic(
@@ -1161,6 +1184,10 @@ def build_stage_coordinate_mosaic(
         "kind": "stage_coordinate_mosaic",
         "selection": {key: axis_selection[key] for key in sorted(axis_selection)},
         "calibration_identity": calibration_identity,
+        # What the dataset says about itself, recorded alongside what the
+        # calibration claims. camera_model_key names which vendor key answered,
+        # because that differs per adapter and a future reader cannot infer it.
+        "dataset_identity": dataset_identity,
         "calibration_roi_difference": roi_difference,
         "shape": list(pixels16.shape),
         **assembled,
