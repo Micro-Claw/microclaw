@@ -303,8 +303,9 @@ PASS: `400` for both.
 
 **RESULT: PASS, 2026-07-29.** `save_position_list` in turn 1 declared
 `{"kind": "position_list", "path": "…\grid.pos"}`; the chip was clicked at the
-*end* of the session, many turns later, and the download
-(`grid_artifact.pos`, 409 lines) matched the original head-and-tail.
+*end* of the session, many turns later, and the download was byte-identical to
+the original — both `grid.pos` and `grid_artifact.pos` sha256
+`35ac7b1e7900cda79d8afd789a63e6469b868a4106cc567645bad8ee7bae779f`.
 
 **There is no download button in the UI.** The chip is drawn only from a tool
 result that carries an `artifact` object, and it appears *inside that tool's
