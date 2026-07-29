@@ -87,6 +87,18 @@ def test_view_history_embeds_parseable_json(tmp_path):
     assert "render(JSON.parse(raw))" in html
 
 
+def test_view_history_recovers_truncated_jsonl_with_visible_warning(tmp_path, capsys):
+    src = tmp_path / "session_microclaw_history.jsonl"
+    src.write_text(
+        "\n".join(json.dumps(message) for message in SAMPLE_HISTORY) +
+        '\n{"role":"assistant"',
+        encoding="utf-8",
+    )
+    html = view_history(src, open_browser=False).read_text(encoding="utf-8")
+    assert json.loads(_data_blob(html)) == SAMPLE_HISTORY
+    assert "incomplete final JSONL record" in capsys.readouterr().err
+
+
 def test_transcript_js_has_no_end_script_tag():
     """assets.py inlines transcript.js into a script block. A literal end-script
     tag anywhere in it — even in a comment or a string — would close that block
@@ -119,5 +131,4 @@ def test_view_history_output_is_self_contained(tmp_path):
     html = view_history(src, open_browser=False).read_text(encoding="utf-8")
     assert 'href="transcript.css"' not in html
     assert 'src="transcript.js"' not in html
-
 

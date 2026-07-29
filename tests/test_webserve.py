@@ -17,6 +17,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from microclaw import config, credentials, webserve
+from microclaw.conversation import AuditLog, load_history
 from microclaw.webserve import build_app, serve
 
 
@@ -158,7 +159,9 @@ def test_favicon_is_served(client):
 # ---- history ----
 
 def test_history_starts_empty(client):
-    assert client.get("/api/history").json() == []
+    assert client.get("/api/history").json() == {
+        "items": [], "next_cursor": None, "total": 0,
+    }
 
 
 def test_history_serialises_sdk_content_blocks(session, client):
@@ -168,9 +171,38 @@ def test_history_serialises_sdk_content_blocks(session, client):
             return {"type": "text", "text": "hi"}
 
     session.history = [{"role": "assistant", "content": [Block()]}]
-    assert client.get("/api/history").json() == [
-        {"role": "assistant", "content": [{"type": "text", "text": "hi"}]}
-    ]
+    assert client.get("/api/history").json() == {
+        "items": [
+            {"role": "assistant", "content": [{"type": "text", "text": "hi"}]}
+        ],
+        "next_cursor": None,
+        "total": 1,
+    }
+
+
+def test_history_pages_with_cursor_and_does_not_narrow_artifact_scan(session, client):
+    session.history = _history_declaring("first.tif", "second.tif", "third.tif")
+    # Add ordinary records so the declaration-containing record is not special
+    # merely because it is the whole first page.
+    session.history.extend([
+        {"role": "assistant", "content": [{"type": "text", "text": "one"}]},
+        {"role": "assistant", "content": [{"type": "text", "text": "two"}]},
+    ])
+    first = client.get("/api/history?limit=2").json()
+    assert first["total"] == 3
+    assert len(first["items"]) == 2
+    assert first["next_cursor"] == "2"
+    last = client.get("/api/history?limit=2&cursor=2").json()
+    assert len(last["items"]) == 1
+    assert last["next_cursor"] is None
+    assert webserve._declared_artifacts(webserve._durable_history(session)) == {
+        "first.tif", "second.tif", "third.tif",
+    }
+
+
+@pytest.mark.parametrize("query", ["cursor=-1", "cursor=nope", "limit=0"])
+def test_history_rejects_invalid_paging(query, client):
+    assert client.get("/api/history?" + query).status_code == 400
 
 
 # ---- prompts ----
@@ -188,7 +220,7 @@ def test_prompt_streams_events_and_appends_to_history(session, client, monkeypat
 
     # The stripped prompt is what reached the agent, and history is the server's.
     assert session.history[0] == {"role": "user", "content": "set DAPI"}
-    assert client.get("/api/history").json() == session.history
+    assert client.get("/api/history").json()["items"] == session.history
 
 
 def test_tool_lifecycle_reaches_the_browser_one_event_at_a_time(session, client, monkeypatch):
@@ -367,6 +399,16 @@ def test_a_confirm_with_no_stream_bound_denies(session):
     # A confirmation that cannot reach the operator must never become a yes.
     assert session._emit is None
     assert session.confirm("Save knowledge x") is False
+
+
+def test_confirmation_audit_is_durable_jsonl(session, tmp_path):
+    path = tmp_path / "confirmations.jsonl"
+    session.confirmation_audit = AuditLog(path)
+    assert session.confirm("Enable illumination", "illumination") is False
+    records = load_history(path).messages
+    assert len(records) == 1
+    assert records[0]["kind"] == "illumination"
+    assert records[0]["decision"] == "declined:no-stream"
 
 
 def test_the_browser_can_approve_a_pending_confirm(session, client, fast_confirm_poll):

@@ -238,9 +238,37 @@
 
   const setOpen = (tx, open) => tx.querySelectorAll("details.tool").forEach(d => d.open = open);
 
+  /* Parse either legacy JSON-array history or append-only JSONL. A torn final
+     JSONL record is recoverable and returned as a visible warning. */
+  function parseHistoryText(raw) {
+    const text = String(raw || "");
+    const trimmed = text.trimStart();
+    if (!trimmed) return { messages: [], warning: null };
+    if (trimmed[0] === "[") return { messages: JSON.parse(text), warning: null };
+    const lines = text.match(/[^\n]*\n|[^\n]+$/g) || [];
+    const messages = [];
+    let warning = null;
+    for (let i = 0; i < lines.length; i++) {
+      const physical = lines[i];
+      const line = physical.replace(/[\r\n]+$/, "");
+      if (!line.trim()) continue;
+      try {
+        const record = JSON.parse(line);
+        if (!record || Array.isArray(record) || typeof record !== "object")
+          throw new Error("record is not an object");
+        messages.push(record);
+      } catch (e) {
+        const tornFinal = i === lines.length - 1 && !/[\r\n]$/.test(physical);
+        if (!tornFinal) throw new Error("Malformed JSONL record " + (i + 1) + ": " + e.message);
+        warning = "Incomplete final JSONL record ignored; complete messages were recovered.";
+      }
+    }
+    return { messages, warning };
+  }
+
   global.Transcript = {
     esc, escAttr, md, fmtJSON, preview, renderResult, toolCard, render, initTheme,
-    artifactOf, artifactChip,
+    artifactOf, artifactChip, parseHistoryText,
     expandAll: (tx) => setOpen(tx, true),
     collapseAll: (tx) => setOpen(tx, false),
   };
