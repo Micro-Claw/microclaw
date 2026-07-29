@@ -83,7 +83,15 @@ def main() -> int:
     parser.add_argument("calibration", help="artifact JSON holding the affine payload")
     parser.add_argument("--axis", action="append", default=[],
                         help="fix one non-position axis, e.g. --axis time=0")
-    parser.add_argument("--min-overlap-px", type=int, default=400)
+    # A flat 400 px is far too permissive, and the b9_gate run showed why: two
+    # tiles a full field apart met in a 412 px sliver -- roughly one output row
+    # -- and phase_cross_correlation duly returned 98.90 and 73.40 px of pure
+    # noise, which then set the stage-Y p90 and max. A sliver is not a small
+    # measurement, it is not a measurement. Scale the floor to the tile instead:
+    # 5% of a tile's area is still generous and rejects every sliver.
+    parser.add_argument("--min-overlap-px", type=int, default=None,
+                        help="absolute floor; default is 5%% of one tile's area")
+    parser.add_argument("--min-overlap-frac", type=float, default=0.05)
     parser.add_argument("--out", default="landmark_check")
     args = parser.parse_args()
 
@@ -147,12 +155,18 @@ def main() -> int:
         result = assemble_stage_coordinate_mosaic(OneTile(index), geometry)
         rendered.append(result["mosaic"])
 
+    tile_area = int(np.prod(tiles[0][1].shape[:2]))
+    min_overlap = (args.min_overlap_px if args.min_overlap_px is not None
+                   else max(400, int(args.min_overlap_frac * tile_area)))
+    print(f"min overlap             : {min_overlap} px "
+          f"({min_overlap / tile_area:.1%} of a {tile_area} px tile)")
+
     residuals = []
     for i in range(len(tiles)):
         for j in range(i + 1, len(tiles)):
             both = (rendered[i] > 0) & (rendered[j] > 0)
             count = int(np.count_nonzero(both))
-            if count < args.min_overlap_px:
+            if count < min_overlap:
                 continue
             rows, cols = np.nonzero(both)
             box = (slice(rows.min(), rows.max() + 1), slice(cols.min(), cols.max() + 1))

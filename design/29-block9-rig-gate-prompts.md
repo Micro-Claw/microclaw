@@ -247,6 +247,36 @@ uniformly wrong transform is uniformly wrong in every tile. There is no
 automated substitute; if you cannot tell from the image, say so rather than
 guessing, and we will find a feature you can.
 
+## R6 — the follow-up this run earned (one short session)
+
+Two things are unresolved, and one short session settles both. Same sample is
+fine for the first, **not** for the second.
+
+**R6a — an X line, at two step sizes.** The mirror of the Y line, and the thing
+that should have been in R2 alongside it:
+
+> Run a tile acquisition with `rows=1, cols=6`, 14 µm step, same protocol and
+> `hook_strategy="snr_observer"`, named `b9xline14`. Then repeat it with
+> `cols=6` and a 28 µm step, named `b9xline28`. Nothing else changes — same
+> ROI, same exposure, same laser, same centre.
+
+One row means no Y motion and no raster return, so X is isolated exactly as the
+Y line isolated Y. Two step sizes then separate the two surviving models: if the
+residual stays ~11 px, it is a fixed offset; if it doubles to ~22 px (staying
+10%), it is a scale error. Twelve exposures.
+
+**R6b — R5, on a sample that can answer it.** Beads cannot. A field of isolated
+points has no handedness, so a globally mirrored or 90°-rotated mosaic renders
+identically and every overlap residual agrees. Acquire the 4×4 grid again on
+anything with a recognisable asymmetric feature — a lettered graticule, a
+scratch, a cell with an obvious polarity — and compare the PNG against the
+eyepiece. This is the only open question that is about Block 9 rather than about
+the stage.
+
+A graticule would answer R6a's remaining degeneracy too, by supplying the
+independent length reference that separates a stage scale error from an affine
+scale error. If one is available, prefer it for both.
+
 ## Verdicts
 
 Record PASS/FAIL per section. **Stop and report rather than continuing** if R1

@@ -392,6 +392,87 @@ exposure is narrow and latent — a stored `version_key` built from `-0.0` will 
 match one built from `0.0` for the same physical calibration. Recorded here so
 it is recognised rather than rediscovered.
 
+## The Block 9 rig gate, run (2026-07-29)
+
+Two acquisitions on M2 with `Res1` live: `b9grid_2` (4×4 raster, 14 µm) and
+`b9yline_1` (6×1 unidirectional Y line, 14 µm). Both at a `263-95-222-206` ROI —
+not the full frame the R1 probe reported, which matters only in that a 26×28 µm
+field makes two-apart tiles meet in a sliver. Sparse fluorescent beads, Luxx488
+at 2.0%, 10 ms.
+
+**The affine landed. This is the first non-sentinel per-image affine we have.**
+`PixelSizeAffine = -0.0;0.127;0.0;-0.127;0.0;0.0`, intended XY present on every
+frame. Block 8's acquisition-recorded stamping works.
+
+Note the value is literally `-0.0`, exactly as the `.cfg` stores it. The footnote
+above stops being hypothetical: MM hands back the signed zero, so any
+`version_key` derived from this dataset is built from `"a":-0.0`.
+
+**The objective key is absent even with a config active.** R3b returned `{}`.
+That settles it: MM does not stamp `PixelSizeConfig`, and on M2 the
+acquisition-recorded branch can never complete an identity no matter how good
+the affine is. An explicit artifact is mandatory here. Gate question 1 is
+answered, negatively, for a reason that has nothing to do with the transform.
+
+**The Y column is corroborated. Stop calling it single-sourced.** The Y line is
+the clean experiment: no X motion anywhere in the run, so no reversal and no
+return. Its **cross-axis** residual — content displacement along stage X, which
+should be zero — is `+0.40 px, sd 0.05` (0.05 µm) across all five adjacent
+pairs. A wrong Y column would misplace a 14 µm Y move by up to 110 px. It
+misplaces it by two fifths of one pixel. Along Y itself the residual is
+`+1.20 px, sd 6.09` — zero plus about ±0.8 µm of random stage jitter.
+
+**Stage X carries a systematic 10% error, and it fails R4's stated criterion.**
+Across all twelve stage-X pairs in the grid:
+
+```
+stage-X   residual along X : median +11.00 px  mean +11.07  sd 1.27   (+1.40 um)
+          residual along Y : median  -0.30 px  mean  +0.20  sd 1.98   (-0.04 um)
+stage-Y (Y line, clean)
+          residual along X : median  +0.40 px  mean  +0.36  sd 0.05   (+0.05 um)
+          residual along Y : median  +3.00 px  mean  +1.20  sd 6.09   (+0.38 um)
+```
+
+`sd 1.27` over twelve pairs spanning every row and every column step is not
+scatter; it is a systematic offset of 1.40 µm on a 14 µm step, **10.0%**. R4's
+criterion was a single-digit px median. This is 11.
+
+What it is **not**:
+
+- Not a rotation error. Cross-axis terms are ~0 in both directions.
+- Not an isotropic scale error. That would inflate the Y line identically; the Y
+  line shows 1.1% ± 5.5%.
+- **Not backlash.** The raster returns −42 µm in X between rows, so `c0→c1` is
+  the first step after a reversal while `c1→c2` and `c2→c3` continue in the same
+  direction. If backlash were the cause, `c0→c1` would stand out. It does not:
+  `c0→c1` reads 10.70 / 10.90 / 12.60 / 12.30 across the four rows, and the
+  continuing steps read 7.90–12.50. Indistinguishable. This is a scale-type
+  error, not a reversal offset.
+
+What remains degenerate: a 10% stage-X scale error and a 10%-low affine X scale
+(0.127 where the truth is ~0.1397) predict identical placement residuals. Note
+0.1397 falls inside design/28 F4's measured 0.1227–0.1439 range. Placement alone
+cannot separate them — an X line at two different step sizes distinguishes
+scale from offset, and separating stage scale from affine scale needs an
+independent length reference (a graticule), not more mosaics.
+
+**R5 cannot be answered on this sample.** Both PNGs are fields of isolated
+beads. A bead field has no asymmetric feature, so it cannot show a global mirror
+or 90° flip — every residual would be identical either way. The gate anticipated
+exactly this and said to say so rather than guess. **The global-orientation
+question is still open**, and it is the one open question that is genuinely about
+Block 9's correctness rather than about the stage.
+
+**One script defect the data exposed.** `--min-overlap-px` defaulted to a flat
+400. Two tiles a full field apart met in a 412 px sliver — about one output row —
+and `phase_cross_correlation` returned 98.90 and 73.40 px of noise, which then
+set the script's own reported p90 and max. A sliver is not a small measurement;
+it is not a measurement. The floor is now 5% of a tile's area, and the Y line's
+reported max drops from 67.90 px to 9.80. Separately, two grid pairs with real
+overlap still returned ~99 px: sparse beads give a correlator few features to
+lock onto, and it can lock onto the wrong one. That is a sample property, not a
+bug.
+
 ## Proposed shape
 
 ### 1. A shared geometry module — `microclaw/dataset_mosaic.py`
