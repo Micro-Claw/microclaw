@@ -144,6 +144,45 @@ what to change. Two ways it happens, both seen on the first live runs:
 
 ---
 
+## Finding: an undeclared light source is writable, ungated, and never swept
+
+Raised by the 2026-07-29 session, **not a Block 15 defect** — pre-existing on
+`main`, design/33 territory. Recorded here because the gate is where it surfaced.
+
+The operator asked the agent to turn a laser on. It wrote
+`set_device_property(LED.State = 1)`, the write succeeded, and **no confirmation
+was requested**. Tracing it:
+
+- `SafetyGuard.check_illumination` is wired into `set_device_property`
+  (`tools.py:478`), but it gates only what `is_illumination_enable` recognises,
+  and that function consults `illumination.shutters` alone (`safety.py:805`).
+- The demo safety config has `illumination.shutters: []`, so
+  `require_confirm_on_enable: true` governs nothing. The gate is skipped
+  silently — there is no "this looks like a light source" warning.
+- `shutter_all` iterates the *same* empty list (`safety.py:898`), so the
+  teardown sweep that design/14 §3 exists to guarantee would not turn this
+  laser off either. The session ended with a 300-frame timelapse running with
+  the LED on.
+- Meanwhile the authorization map **permitted** the write (`LED` is a demo
+  StateDevice, auto-classified by Block 3b) while refusing `Emission.State`.
+
+The sharp edge is that microclaw *knew*: `get_emu_configuration` in that same
+session returned `lasers: {"0": {enable: {device: "LED", property: "State",
+on: "1", off: "0"}}}`. One subsystem had the laser mapped while the other had
+never heard of it, and nothing cross-checked them.
+
+Cheap fix, for a design/33 branch rather than this one: at startup, compare the
+EMU laser map against `illumination.shutters` and refuse — or at minimum warn
+loudly — when a declared laser enable is absent from the shutter list. It is the
+same family as the "laser-engine widening" a previous rig gate caught in
+Block 3b.
+
+Note for whoever runs the gate: **turning a laser on is not a test of G5** on
+this configuration. Use `save_knowledge`, which has an unconditional in-code
+confirm gate (`tools.py:3967`, `kind="knowledge"`).
+
+---
+
 ## G2–G5 — one live `serve` session
 
 Leave this running in **window A**:
@@ -159,7 +198,13 @@ writes a dataset (a 2-frame timelapse) so an artifact is declared, and one that
 asks to save something to the knowledge base (that triggers the confirmation
 gate for G5). Then, **without stopping the server**, in window B:
 
+If `microclaw` is not on `PATH` in a second terminal, prefix with `uv run`
+(`uv run microclaw view-history ...`) — observed on the demo rig.
+
 ### G2 — the durable audit is written and flushed per message
+
+**RESULT: PASS, 2026-07-29.** One `*_microclaw_history.jsonl`, no `.json` array
+file, 35 records, every line parsed independently.
 
 ```powershell
 Get-ChildItem *_microclaw_history.jsonl, *_microclaw_history.json
@@ -173,6 +218,11 @@ was written; every line parses independently; and the line count grows when you
 run another turn and re-check (flushed per message, not per session).
 
 ### G3 — paging over the real store
+
+**RESULT: PASS, 2026-07-29.** `total` 35 on both pages and equal to the JSONL
+line count; `next_cursor` advanced 2 → 4; 2 items per page; `cursor=-1` and
+`limit=0` both returned 400. This was the first execution of the store-backed
+`/api/history` path — every off-rig test takes the compatibility fallback.
 
 The browser uses `limit=500`, which one demo session will not exceed, so force
 more than one page by hand:
@@ -228,6 +278,12 @@ that sets up G6.
 ---
 
 ## G6 — an interrupted session is still readable
+
+**RESULT: PASS, 2026-07-29.** The viewer rendered the live session's JSONL, and
+the hand-truncated copy printed
+`Warning: Ignored an incomplete final JSONL record in torn.jsonl; all complete
+records were recovered.` on stderr and still wrote a viewer. The legacy
+array-format check is still outstanding.
 
 ```powershell
 microclaw view-history .\$H --no-browser 2>&1 | Out-File -Encoding utf8 g6-view.txt
