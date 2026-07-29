@@ -51,6 +51,28 @@ UTF-16, which is unreadable when the file is shared. Use
 
 ## G1 — a compacted history survives a real API round trip
 
+**RESULT: PASS, 2026-07-29** (4th attempt; the first three were defective
+prompts and parameters of this spike's, not the code under test). 5 compactions,
+4 turns sent to the real API with a checkpoint prefix and
+`max_leading_consecutive_user_messages: 2`, no API errors across 8 turns, the
+two-complete-turn floor held, and `g1_export.tiff` was still in the durable
+allowlist after its declaring turn had been compacted out of the model view
+(`artifacts_still_in_model_view: []`). The Messages API accepts a checkpoint
+`user` message immediately followed by a real `user` prompt.
+
+**Open observation, not a defect.** Under compaction the model twice answered
+"which values came from a tool call this turn?" by naming tools from an earlier
+turn; the same prompt on an uncompacted run answered "none of them" correctly.
+The first hypothesis — that the checkpoint listed tool names without a temporal
+anchor — is **refuted**: on the passing run the window was checkpoint + turn 5 +
+turn 6 + prompt, so turn 5's `tool_use` blocks were visible verbatim and the
+model still called them current. Adding temporal framing to the checkpoint
+changed nothing. Compaction plausibly makes the oldest *visible* turn read as
+current. The probe is also ambiguous ("values you reported" points at the prior
+turn's summary). Settle it with a sharper probe — "did you make any tool calls
+in this turn, yes or no?" — before drawing a conclusion, and record whatever
+holds in design/32 as a stated limitation rather than a fix.
+
 **Run this first. If it fails, stop and report — nothing else matters.**
 
 Every compaction test on this branch mocks the client, so the checkpoint has
