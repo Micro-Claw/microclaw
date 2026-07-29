@@ -146,8 +146,28 @@ The result is written back through
 `PixelConfigEditor` and `PixelPresetEditor` (reached from `CalibrationListDlg`).
 So the calibrator is launched from the pixel-size config editor and stores its
 affine into that config, exactly where our probe's `get_pixel_size_affine_by_id`
-already reads. The precise menu label is not confirmed from bytecode; find it
-under the Pixel Size Calibration editor.
+already reads.
+
+**The launch control is resolved** (2026-07-29, `javap` + constant-pool strings
+on the local `MMJ_.jar`). `AffineEditorPanel` — the "Affine Transform (Rotation
+and Scaling)" box inside the Pixel Preset Editor — carries three buttons:
+
+| Button | What it does | Use it? |
+|---|---|---|
+| `Measure` | constructs `PixelCalibratorDialog(Studio, PixelSizeProvider)`; that dialog offers `Select method:` = Automatic / Manual-Precise / Manual-Simple, a `Safe travel radius, um:` combo, and `Start` | **yes** — this is the real move/snap calibrator |
+| `Calculate` | calls `PixelSizeProvider.getPixelSize()` + `AffineUtils.noTransform()` to synthesize a **pure-scale** affine from the scalar | **never** |
+| `Reset` | restores `originalAffineTransform` | — |
+
+`Measure` only opens the dialog; the run starts at `Start` inside it.
+
+**`Calculate` is a trap and must be named as one.** It fabricates a
+non-sentinel-looking affine with zero rotation and no measurement behind it —
+which would pass any finite-and-nonsingular check, satisfy the
+"obtain a dataset with a non-sentinel affine" prerequisite, and be a lie. The
+same fabrication is offered as a prompt: `PixelPresetEditor` contains the string
+`"Affine transform appears wrong.  Calculate from pixelSize?"`, which MM raises
+precisely because the stored affine is identity. **Answer No.** This is the
+identity-default hazard of the demo's 10×/20×/40× configs, except self-inflicted.
 
 **Consequence for this design: the outstanding Y column is an operator action,
 not an implementation task.** Do not write a move/snap spike. Run MM's calibrator
@@ -209,6 +229,459 @@ roughly 0.13 µm/px. The smaller remaining proposal is to resolve Y and confirm 
 on a contrast-rich field, approaching every reference and destination from one
 direction to avoid raster reversal. It remains a proposal only; no stage move or
 exposure was made.
+
+## Calibration session, and what it corrected (2026-07-29)
+
+M2 now carries a measured affine. Four things in the section above were wrong,
+and one of them was ours.
+
+**The Y column is resolved, and X is corroborated.** MM's calibrator produced,
+in a new config `Res1`:
+
+```
+pixel->stage 2x2  : [[0.0, 0.127], [-0.127, 0.0]]
+x-axis angle deg  : -90.0     x/y scale: 0.127  0.127
+reflection        : False     determinant: 0.016129
+canonical SHA-256 : d60e84f434efebf41832af1cbb3eb425208921563ec73d9d3c059fe503b046f6
+```
+
+Inverting it, a +20 µm stage X step should displace image content **157.5 px
+along rows and 0 along columns**. `run_a_2`'s measured cluster was
+`(dy,dx)` = (139,1) (140,2) (140,1) (157,2) (162,2) (163,2) (163,2). The upper
+mode, 157–163 px, is 19.94–20.70 µm for an intended 20 µm. Two wholly
+independent methods — MM's move/snap cross-correlation and our overlap-normalized
+correlation over saved tiles — agree on ~90° at 0.127 µm/px. The convention is
+settled for X.
+
+**Y is supplied, not corroborated.** The calibrator gives the full 2×2, but
+`run_a_2` could never resolve Y, so nothing independent checks that column. Do
+not describe the 2×2 as cross-validated; describe X as cross-validated and Y as
+single-sourced. The 139–140 mode (17.65–17.78 µm, ~11% short) remains
+unexplained and is still only consistent with, not evidence for, the raster-
+reversal backlash hypothesis.
+
+**Record the suspicious exactness.** Exact zeros, exactly ±0.127, exactly
+−90.00°, zero shear, and both scales identical to the digit is cleaner than a
+correlation fit normally lands, and 0.127 was already `Res0`'s scalar. The
+operator confirms every value came from the calibrator and nothing was typed. It
+is recorded as measured — but if MM turns out to regularize on store, this
+paragraph is how a future reader spots it.
+
+**M2's "does not activate" was our artifact, not a misconfigured rig.** The
+blocking predicate is real but its cause is config-string format drift. The
+post-calibration probe shows both configs against one unchanged machine state:
+
+```
+Res0  rule[1]: 'SmarActXY'.'Frequency' expected='5'    live='5000'  MISMATCH -> activate NO
+Res1  rule[1]: 'SmarActXY'.'Frequency' expected='5000' live='5000'  MATCH    -> activate YES
+```
+
+`Res0` was authored years ago and stored `5`; `Res1` captured the *same* state
+today and stored `5000`. The Device Property Browser shows `5`, with an allowed
+range of 1–18500. Micro-Manager's own CoreLog writes these values with locale
+separators embedded — `SmarActXY/Frequency:18,500`, `SmarActZ/Frequency:18,315`
+— i.e. property values pass through a locale-aware formatter. A value formatted
+under one convention and parsed under another turns 5 into 5000, which is
+exactly the observed drift on a de_AT system. **Correction: the instruction to
+"correct M2's blocking predicate" pointed at the wrong thing.** Creating a new
+pixel-size config is the right move; repairing the old one is not, and editing
+the live device to match a stale string would have been actively wrong.
+
+**MM's calibrator can crash the rig, and the workaround is a new config.**
+Repeated attempts against `Res0` killed Micro-Manager outright. The CoreLog ends
+mid-sequence with no exception:
+
+```
+08:49:06.635  [dev:Andor] Stopped sequence acquisition
+08:49:06.657  [dev:Andor] PrepareSnap();          <-- last line in the file
+```
+
+A native process death 22 ms after aborting an iXon sequence acquisition. The
+same transition survived twice earlier at 13 ms and 20 ms, so it is a race in
+the Andor SDK's wind-down, not a deterministic fault, and not the calibration
+config. Calibrating into a **new** config succeeded with no crash. Separately,
+every `SmarAct*/Frequency` write blocks MM's event thread for 5.0–7.5 s
+(`EDTHangLogger`), which reads as a freeze and is not one. None of this
+overturns "do not build a move/snap spike" — the calibrator did the job once it
+had somewhere to write.
+
+**The spiral fixture cannot be placed, and it is M2.** Corrections: the spiral
+was acquired on **M2**, not a third instrument — same Andor iXon DU897_BV serial
+8172 at the same `36-50-453-227` ROI as Run A. And it is **25 separate
+single-position datasets** (`spiral_NN/spiral_NN_1`), each with axes `{'time':
+[0]}` and no `position` axis. Per-image intended XY is **absent**, exactly as §4
+predicts for a single-position acquisition, so the tool refuses it — verified.
+The coordinates exist only in the sidecar `montage_hook_log.txt` as `x_um` /
+`y_um` per tile. Consuming a sidecar is a different input contract from reading
+dataset metadata and is not in scope here. Note also the geometry: a 200 µm step
+against a 453×227 tile at 0.127 µm/px (57.5 × 28.8 µm) leaves the tiles entirely
+non-overlapping, so even with coordinates this fixture exercises **gaps and
+coverage**, never seams.
+
+**A third confirmation of X, from placed-mosaic overlaps.**
+`design/29-block9-landmark-check.py` renders each tile separately through one
+shared geometry and cross-correlates pairs inside their placed overlap. On
+`run_a_2` with the `Res1` affine, grouped by intended stage displacement:
+
+```
+stage-X    n=9    median   5.15 px  (0.65 um)
+stage-Y    n=12   median  99.85 px  (12.7 um)
+diagonal   n=18   median  60.93 px
+```
+
+A wrong affine cannot be axis-selective — it rotates every tile's content
+identically while tile centres come from stage XY, so it would inflate all three
+groups together. So this corroborates X a third time (after the calibrator and
+the raw-tile correlation) and independently reproduces the Y non-clustering from
+a different method entirely. The stage-Y figure is measuring the raster's 60 µm
+X return, i.e. uncorrected backlash, exactly as §4 warns: placement consumes
+intended XY and cannot correct an unrecorded achieved-XY residual. **Testing the
+Y column requires a unidirectional line**, not a raster; that is R2 in
+`design/29-block9-rig-gate-prompts.md`.
+
+**ROI must not gate.** This section already said a constant off-centre ROI "adds
+only a global translation and is harmless for relative placement", and Block 9's
+first implementation refused on it anyway — which blocked the first genuinely
+measured affine we have from reaching the first fixture we have, because the
+calibrator ran at full frame `(0,0,512,512)` and Run A is a `453×227` crop.
+Placement consumes only the affine's four coefficients and ROI never enters that
+arithmetic. Refuse on camera device/model and binning, which change the transform
+or the instrument; **record** ROI differences.
+
+**M2 has no objective, and four-fifths of an identity is a refusal.** Reading
+M2's config and device-property probe to build the Block 9 rig-gate safety
+profile turned up something the gate had not accounted for. The
+acquisition-recorded branch needs five identity fields, and the affine is only
+one of them. Audited directly against `run_a_2`'s 420 metadata keys:
+
+| field | key that resolves it | present on M2 |
+|---|---|---|
+| binning | `Binning` | `'1'` |
+| camera_device | `Core-Camera` | `'Andor'` |
+| camera_model | `Andor-Camera` | `'\| iXon Ultra \| DU897_BV \| 8172 \|'` |
+| roi | `ROI` | `'36-50-453-227'` |
+| **objective** | `Objective` / `ObjectiveLabel` / `PixelSizeConfig` / `PixelSizeConfigName` | **none present** |
+
+M2's config declares no objective turret, so the system-state dump has no
+objective property to stamp. `_resolve_from_acquisition` therefore returns
+`acquisition calibration identity is incomplete; missing objective` with a
+perfectly good affine in hand, and `resolve_calibration` refuses when no explicit
+`calibration_ref` is supplied.
+
+Whether MM stamps `PixelSizeConfig` only while a pixel-size config is *active* is
+untested and unresolvable from what we have: `run_a_2` ran with none active, so
+"never stamped" and "not stamped then" are indistinguishable in it. `Res1` is
+active now, so R2's own first frame settles it at zero extra cost — that is
+`R1b` in `design/29-block9-rig-gate-prompts.md`.
+
+This does not block Block 9. The artifact path is the documented
+higher-precedence route (§5) and is what the landmark check already uses; the
+mosaic still builds. What it does mean is that **gate question 1 may be
+unanswerable on M2 for a reason unrelated to the affine**, and that on any rig
+without an objective device an explicit artifact is mandatory rather than
+merely preferred. Note the asymmetry with the camera model: that was a real key
+under a vendor-specific name and the fix was to look wider (`f941896`). This one
+is a key that does not exist, and widening the search would only invent it.
+
+**Footnote on `-0.0`.** The `.cfg` stores `PixelSizeAffine,Res1,-0.0,0.127,...`,
+and `serialize_affine_payload` emits `"a":-0.0` where `0.0` gives `"a":0.0` — a
+different SHA-256. Nothing in the current paths breaks on it: the cross-frame
+comparison at `calibration.py:367` uses `!=`, and `-0.0 != 0.0` is False in
+Python; the artifact hash check compares an artifact against itself. The
+exposure is narrow and latent — a stored `version_key` built from `-0.0` will not
+match one built from `0.0` for the same physical calibration. Recorded here so
+it is recognised rather than rediscovered.
+
+## The Block 9 rig gate, run (2026-07-29)
+
+Two acquisitions on M2 with `Res1` live: `b9grid_2` (4×4 raster, 14 µm) and
+`b9yline_1` (6×1 unidirectional Y line, 14 µm). Both at a `263-95-222-206` ROI —
+not the full frame the R1 probe reported, which matters only in that a 26×28 µm
+field makes two-apart tiles meet in a sliver. Sparse fluorescent beads, Luxx488
+at 2.0%, 10 ms.
+
+**The affine landed. This is the first non-sentinel per-image affine we have.**
+`PixelSizeAffine = -0.0;0.127;0.0;-0.127;0.0;0.0`, intended XY present on every
+frame. Block 8's acquisition-recorded stamping works.
+
+Note the value is literally `-0.0`, exactly as the `.cfg` stores it. The footnote
+above stops being hypothetical: MM hands back the signed zero, so any
+`version_key` derived from this dataset is built from `"a":-0.0`.
+
+**The objective key is absent even with a config active.** R3b returned `{}`.
+That settles it: MM does not stamp `PixelSizeConfig`, and on M2 the
+acquisition-recorded branch can never complete an identity no matter how good
+the affine is. An explicit artifact is mandatory here. Gate question 1 is
+answered, negatively, for a reason that has nothing to do with the transform.
+
+**The Y column is corroborated. Stop calling it single-sourced.** The Y line is
+the clean experiment: no X motion anywhere in the run, so no reversal and no
+return. Its **cross-axis** residual — content displacement along stage X, which
+should be zero — is `+0.40 px, sd 0.05` (0.05 µm) across all five adjacent
+pairs. A wrong Y column would misplace a 14 µm Y move by up to 110 px. It
+misplaces it by two fifths of one pixel. Along Y itself the residual is
+`+1.20 px, sd 6.09` — zero plus about ±0.8 µm of random stage jitter.
+
+**Stage X carries a systematic 10% error, and it fails R4's stated criterion.**
+Across all twelve stage-X pairs in the grid:
+
+```
+stage-X   residual along X : median +11.00 px  mean +11.07  sd 1.27   (+1.40 um)
+          residual along Y : median  -0.30 px  mean  +0.20  sd 1.98   (-0.04 um)
+stage-Y (Y line, clean)
+          residual along X : median  +0.40 px  mean  +0.36  sd 0.05   (+0.05 um)
+          residual along Y : median  +3.00 px  mean  +1.20  sd 6.09   (+0.38 um)
+```
+
+`sd 1.27` over twelve pairs spanning every row and every column step is not
+scatter; it is a systematic offset of 1.40 µm on a 14 µm step, **10.0%**. R4's
+criterion was a single-digit px median. This is 11.
+
+What it is **not**:
+
+- Not a rotation error. Cross-axis terms are ~0 in both directions.
+- Not an isotropic scale error. That would inflate the Y line identically; the Y
+  line shows 1.1% ± 5.5%.
+- **Not backlash.** The raster returns −42 µm in X between rows, so `c0→c1` is
+  the first step after a reversal while `c1→c2` and `c2→c3` continue in the same
+  direction. If backlash were the cause, `c0→c1` would stand out. It does not:
+  `c0→c1` reads 10.70 / 10.90 / 12.60 / 12.30 across the four rows, and the
+  continuing steps read 7.90–12.50. Indistinguishable. This is a scale-type
+  error, not a reversal offset.
+
+What remains degenerate: a 10% stage-X scale error and a 10%-low affine X scale
+(0.127 where the truth is ~0.1397) predict identical placement residuals. Note
+0.1397 falls inside design/28 F4's measured 0.1227–0.1439 range. Placement alone
+cannot separate them — an X line at two different step sizes distinguishes
+scale from offset, and separating stage scale from affine scale needs an
+independent length reference (a graticule), not more mosaics.
+
+**R5, reformulated and answered offline (no graticule, no rig time).** The
+first reading below was half wrong, and the correction is worth stating plainly.
+
+A bead field gives no *absolute* orientation, so it cannot say "this points the
+way it does down the eyepiece". But the mirror question does not need absolute
+orientation — it needs a *comparison*, and a random bead constellation is an
+excellent fingerprint for one. `design/29-block9-mirror-check.py` renders a tile
+and scores it against all eight dihedral transforms of the raw camera frame:
+
+```
+rot90 CCW              NCC  1.0000   <== MATCH
+rot90 CW               NCC  0.0349
+MIRROR lr + rot90 CW   NCC  0.4174
+MIRROR lr + rot90 CCW  NCC -0.0030
+```
+
+Identical on both gate datasets. An exact 90° CCW rotation with no reflection,
+consistent with the affine's own positive determinant (`+0.016129`). **The
+renderer does not mirror.**
+
+What is genuinely left is whether MM's stage frame is physically right-handed —
+whether MM's +X is the direction the specimen actually travels. No self-consistent
+set of images can settle it, because every coordinate in a dataset lives in MM's
+frame. But it is a rig and Micro-Manager property, identical for MM's own Preview
+and position list, and it is flip-invariant for distances, counts, and
+drive-back-to-a-coordinate. It is not Block 9's to answer.
+
+**The original reading, kept for the reasoning:**
+
+**R5 cannot be answered on this sample.** Both PNGs are fields of isolated
+beads. A bead field has no asymmetric feature, so it cannot show a global mirror
+or 90° flip — every residual would be identical either way. The gate anticipated
+exactly this and said to say so rather than guess. **The global-orientation
+question is still open**, and it is the one open question that is genuinely about
+Block 9's correctness rather than about the stage.
+
+**One script defect the data exposed.** `--min-overlap-px` defaulted to a flat
+400. Two tiles a full field apart met in a 412 px sliver — about one output row —
+and `phase_cross_correlation` returned 98.90 and 73.40 px of noise, which then
+set the script's own reported p90 and max. A sliver is not a small measurement;
+it is not a measurement. The floor is now 5% of a tile's area, and the Y line's
+reported max drops from 67.90 px to 9.80. Separately, two grid pairs with real
+overlap still returned ~99 px: sparse beads give a correlator few features to
+lock onto, and it can lock onto the wrong one. That is a sample property, not a
+bug.
+
+## R6, and the correction it forced (2026-07-29)
+
+R6 ran: `b9xfine2/4`, `b9yfine2/4`, `b9xline14/28`, plus repeats `b9grid_3` and
+`b9yline_2`. The headline is that **the reported affine's orientation is right
+and its scales are not**, and the second headline is that two of our own
+measurement methods were unfit for this sample and had to be replaced.
+
+### The measurement, from motion, on raw frames
+
+`design/29-block9-affine-from-motion.py` solves the 2×2 from commanded motion
+alone — no mosaic, no placement code, and no assumption about the affine's
+shape. Four independent series, two step sizes per axis, **the same 16 µm of
+total travel in each**:
+
+```
+series        step   n   total px   total um   um/px
+b9xfine2_1    2.0    8     148.88      16.00   0.10747   stage-X
+b9xfine4_1    4.0    4     150.15      16.00   0.10656   stage-X
+b9yfine2_1    2.0    8     130.46      16.00   0.12265   stage-Y
+b9yfine4_1    4.0    4     130.09      16.00   0.12300   stage-Y
+```
+
+Pooled (24 cumulative observations, residual median **0.023 µm**, max 0.438):
+
+```
+                    column 0    column 1
+measured um/px       0.12254     0.10706
+reported um/px       0.12700     0.12700
+ratio                 -3.5%      -15.7%
+angle vs reported    +0.30 deg   -0.02 deg
+handedness           AGREE (det +0.0131 vs +0.0161, both positive)
+```
+
+**Orientation and handedness are confirmed to a third of a degree.** The 90°
+structure, the signs, and the absence of shear all hold. **The scales do not**:
+one column is 3.5% low, the other 15.7% low, and the truth is **anisotropic by
+14% between axes where the config reports perfect isotropy**.
+
+design/29 already recorded the suspicion — "exact zeros, exactly ±0.127, exactly
+−90.00°, zero shear, and both scales identical to the digit is cleaner than a
+correlation fit normally lands". **That suspicion is now vindicated by
+measurement.** The exactness was a symptom. This is direct evidence for the
+standing position that MM is not a calibration source and
+`calibration.solve_affine` plus the knowledge base is primary.
+
+### It is a scale error, not a per-move offset — the discriminator fired
+
+This was the whole point of holding total travel constant. Eight 2 µm moves and
+four 4 µm moves cover the same 16 µm: a fixed per-move offset would leave the
+8-step series differing from the 4-step series by four times the offset. They
+differ by **under 1%** on both axes. Scale, definitively.
+
+The per-step numbers are nonetheless bimodal — identical 2 µm commands produce
+14.8 or 22.4 px — which is stage quantization of roughly 0.8 µm, averaging out
+over a run. That is a stage property to record, not a transform property.
+
+### Two of our own methods were wrong for this sample
+
+**A (row, col) vs (x, y) convention bug reported the rig as REFLECTED.** The
+first version of the motion script solved with numpy's `(row, col)` while
+MMCore's affine acts on `(x, y)` where x is the column. That silently transposed
+the basis, turned M2's 90° rotation into a diagonal matrix, and produced
+`determinant −0.0105 → REFLECTED`. Nothing was wrong with the rig. It was caught
+only because the *structure* came out diagonal where a rotation must be
+anti-diagonal — the determinant sign alone would have been believed. Convention
+conversion now happens in exactly one function, `to_xy`, with the failure
+recorded in its docstring.
+
+**Phase correlation is unfit for sparse blinking puncta.** On these datasets it
+returned `err=1.0` on every pair and "measured travel" that saturated at ~2 µm
+for commanded moves from 2 µm to 140 µm — a spurious near-zero peak reported as
+a number rather than a failure. The sample is a handful of puncta whose
+population changes frame to frame (4–12 detected per frame, bright-pixel counts
+varying 2× across a 2 µm step). Whitening the spectrum destroys what little
+signal there is. The replacement detects puncta and votes on pairwise offsets,
+which is robust to partial correspondence — appearing and vanishing puncta
+simply cast no vote — and reports the vote count so a weak estimate is visible.
+
+**This impugns the landmark check on this sample class**, because it correlates
+too. Its medians do move the right way when handed the measured affine
+(stage-X 11.01 → 8.98, diagonal 16.03 → 10.92, stage-Y 8.73 → 5.51 on
+`b9grid_2`; same direction on `b9grid_3`), which corroborates the measurement,
+but it cannot give a sharp number here and single pairs still return ~99 px of
+noise. **Treat the landmark check as a falsification test, not a metrology
+tool**, and treat the motion script as the metrology.
+
+### Reproducibility, old runs vs new
+
+- `b9grid_2` stage-X median 11.01 → `b9grid_3` 10.85. Reproduces.
+- Mirror check: `rot90 CCW` at NCC 1.0000 on `b9grid_3`, `b9yline_2` and
+  `b9xfine2_1`, identical to the first pass. Reproduces exactly.
+- `b9yline_1` stage-Y median 4.42 → `b9yline_2` 8.51, with one pair returning
+  −18.70/−62.50. That spread is the correlator, not the stage — see above.
+
+### A limit added to the mirror check
+
+The dihedral group only spans the possible renderings when the affine is a
+multiple of 90°, as M2's happens to be. On a 45°, anisotropic or sheared rig
+every NCC would be low and "best match" would be meaningless. The script now
+**refuses** outside that regime and points at the motion script, whose
+determinant comparison is general.
+
+### The 28 µm runs cannot work, and that is arithmetic
+
+The field is 206 px ≈ 26.2 µm along stage X. A 28 µm step cannot overlap at all,
+so `b9xline28_1` and `b9xline28_focused_1` carry no recoverable correspondence —
+both chains break at the first step. `b9xline14` and the 14 µm lines break too,
+on vote fraction. Nothing is wrong with them; they simply cannot answer the
+question, and the tooling now says so rather than fitting noise.
+
+## What MM's calibrator actually did (2026-07-29, `javap` on the local jar)
+
+The measured/reported disagreement above is not two measurements that disagree.
+**Only one of them is a measurement.** Established by decompiling
+`MMJ_.jar` (`Micro-Manager-2.0.3-20260625`), not by inference.
+
+`PixelCalibratorDialog` offers three methods: **Automatic**, **Manual-Precise**,
+**Manual-Simple**. `ManualSimpleCalibrationThread.calculateAffineTransform` takes
+the signature `(double, Point2D[])` — a **scalar in, not measured out** — and its
+entire body reduces to:
+
+```java
+AffineTransform t = identity;
+boolean swap = |x1-x0| < |y1-y0|;
+if (swap != (|y2-y0| < |x2-x0|)) return null;   // "Could not figure out orientation"
+int sx = -1, sy = -1;                            // then set to +-1 from click signs
+t.scale(sx * pixelSize, sy * pixelSize);         // BOTH axes get the SAME scalar
+if (swap) t.rotate(-1.5707963267948966);         // exactly -pi/2, hardcoded
+return t;
+```
+
+It **never measures a scale**. It applies the pixel size you already have to both
+axes, and determines only *which of eight discrete axis-aligned orientations*
+applies, from the sign and dominance of two clicks. It is a snapping function,
+not a fit — which is why it can return `null` with "Could not figure out
+orientation" rather than a poor estimate.
+
+**The reconstruction is bit-exact, signed zero included.** Java's
+`AffineTransform.rotate` snaps exact quadrants to `rotate90/180/270`, which flip
+signs instead of multiplying by cos/sin. For `sx=+1, sy=+1`:
+
+```
+after scale()  : [[+0.127, 0.0], [0.0, +0.127]]
+after rotate270: m00,m01,m10,m11 = -m01, m00, -m11, m10
+result         : -0.0;0.127;0.0;-0.127;0.0;0.0    <-- Res1, exactly as stored
+```
+
+Every oddity design/29 recorded now has a mechanism:
+
+| observed | cause |
+|---|---|
+| exactly ±0.127 in both columns | it is the pre-existing scalar, applied twice |
+| perfect isotropy, zero shear | structurally impossible to be otherwise |
+| exactly −90.00° | the literal constant `-1.5707963267948966` |
+| determinant exactly 0.016129 | `0.127²` |
+| the leading **`-0.0`** | `rotate270`'s `m00 = -m01` on a zero |
+
+The `-0.0` footnote above can be closed: it is not a config-file serialization
+artifact, it is the calibrator's own arithmetic.
+
+**So the operator's "0.127" was never measured on this rig.** design/29 already
+noted that 0.127 was `Res0`'s scalar; Manual-Simple carried a years-old number
+forward and dressed it in a matrix. What it *did* get right is exactly what it
+determines — the orientation — and that is precisely the part our motion
+measurement confirms to within 0.3°.
+
+**Automatic is a real fit and would not produce this.** It uses BoofCV
+correlation over multiple corners (`getFirstApprox`, `measureCorner`,
+`getSecondApprox`), and MM's own results dialog prints `XScale`, `YScale`,
+`Rotation` and `Shear` **separately** — so the model supports the anisotropy we
+measured. Two cautions before reaching for it on M2: its help text says to
+"choose a nonperiodic specimen (e.g., a cell) ... crisp, high-contrast images",
+and sparse blinking puncta are the pathological case (design/28 F4, and the
+correlation failure recorded above); and repeated Automatic runs against `Res0`
+previously killed the rig in the Andor SDK wind-down.
+
+**Recommendation.** Do not re-run Manual-Simple expecting a scale. Either run
+Automatic on a dense aperiodic field, or write the motion-measured values
+directly. Prefer microclaw's own `calibration.solve_affine` as the standing
+source — this is now the concrete reason why.
 
 ## Proposed shape
 
@@ -486,8 +959,18 @@ the exact forms are normative:
 | ROI | `ROI` | `'36-50-453-227'` — **dash**-delimited `x-y-w-h` string |
 | binning | `Binning` | `'1'`, and `'1x1'` on M5 — both must parse |
 | camera | `Core-Camera` | `'Andor'` |
-| camera model | *(none)* | only as `<Device>-Camera`, e.g. `'\| iXon Ultra \| DU897_BV \| 8172 \|'` |
+| camera model | *(vendor-specific)* | **no single key.** Andor: `Andor-Camera` = `'\| iXon Ultra \| DU897_BV \| 8172 \|'`. Hamamatsu: **no `-Camera` key at all** — `HamamatsuHam_DCAM-CameraName` = `'C15440-20UP'`, serial under `-CameraID` = `'S/N: 500975'` |
 | objective | **absent** | no `Objective`/`ObjectiveLabel`/`PixelSizeConfig` key exists |
+
+The camera-model row is corrected from Block 8's version, which recorded "only
+as `<Device>-Camera`". That was true of the only datasets we had then — all
+Andor — and generalising it hardcoded one vendor's shape. Every M5 dataset was
+then refused as "identity metadata is incomplete", including the 2500-tile
+fixture the scale gate needs. Resolve the model by trying `-Camera`,
+`-CameraName`, `-CameraID` in order and **record which key answered**; a reader
+cannot infer it from the value. This is the second time an assumed key shape
+passed a green suite and failed on real data, which is why the three measured
+forms above are pinned by name in the tests.
 
 Two consequences are load-bearing. The ROI is a **dash**-delimited string, so a
 parser splitting on `[,;]` yields `None` for every real dataset — which also
@@ -569,6 +1052,30 @@ Measure peak RSS on the 2500-tile fixture and set a budget. If it is not
 comfortably within that budget, rasterize to a chunked or memory-mapped artifact
 and require completed-dataset analyzers to support bounded-memory access.
 
+**Measured (2026-07-29), and chunking is not needed.** `scan488_900_1`, 2500
+positions, one time point:
+
+| | |
+|---|---|
+| output | 8576 × 8580 px (predicted 8582 × 8578) |
+| wall time | 3.4 s |
+| peak RSS | 723 MB |
+| coverage | 1.0000, zero uncovered pixels |
+| overlap depth | max 4 tiles (corners); 5.43 M cells covered more than once |
+
+Two estimates above were wrong in the same direction. The source tiles are
+**180 × 176 px on a `1336-1084-180-176` ROI**, not the full 2304², so the
+rasterizing work is ~79 M output-cell operations rather than the 13 G the
+full-frame assumption implied. And the 18 µm step against a 180 px tile at
+0.105 µm/px (18.9 µm) gives a real but thin overlap, which is why coverage is
+complete and the depth reaches 4 at tile corners.
+
+723 MB for a 140 MB canvas is roughly 5×, accounted for by the mosaic, the
+`uint16` coverage counter, the boolean mask, and the TIFF encode buffer. That is
+comfortably within budget, so **chunked/memory-mapped output is not implemented**
+and the design's conditional does not fire. Re-measure before assuming this
+holds for a full-frame 2304² tiling, which would be ~164× the per-tile work.
+
 ## Testing
 
 - Geometry: synthesize tiles at known XY and verify output extent and pixel
@@ -580,7 +1087,9 @@ and require completed-dataset analyzers to support bounded-memory access.
 - Exporter regression: after extracting `_iter_present_coords`, assert the
   exporter and mosaic tool both traverse the multi-position dataset that once
   raised `KeyError: 'position'`.
-- Spiral regression: synthesize non-grid intended-XY positions and assert placement
+- Spiral regression: **must be synthetic.** The real spiral fixture is 25
+  single-position datasets carrying no intended XY (see the 2026-07-29 section),
+  so it can verify only the §4 refusal path. Synthesize non-grid intended-XY positions and assert placement
   by coordinate rather than acquisition order or row/column axes.
 - Axes: reject omitted or invalid channel/time/Z selections and prove that frames
   outside the selected plane cannot overwrite it.

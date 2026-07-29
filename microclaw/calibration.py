@@ -394,6 +394,7 @@ def _read_artifact(path: str, guard) -> dict:
         data = json.loads(Path(resolved).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise CalibrationResolutionError(f"Cannot read calibration artifact: {error}") from error
+    data = data.get("manifest_payload", data)
     identity = data.get("calibration_identity", data)
     if not isinstance(identity, dict):
         raise CalibrationResolutionError("Calibration artifact has no calibration identity")

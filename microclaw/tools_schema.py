@@ -416,6 +416,30 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "build_stage_coordinate_mosaic",
+        "description": (
+            "Build a zero-exposure stage-coordinate mosaic from one explicitly "
+            "selected plane of a saved NDTiff dataset."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "dataset_path": {"type": "string"},
+                "output_path": {"type": "string"},
+                "axis_selection": {
+                    "type": "object",
+                    "description": "One real coordinate value for every non-position axis.",
+                },
+                "calibration_ref": {
+                    "type": "object",
+                    "description": "Tagged artifact, knowledge_version, confirmed_current, or legacy_derived reference.",
+                },
+                "output_pixel_size_um": {"type": "number", "exclusiveMinimum": 0},
+            },
+            "required": ["dataset_path", "output_path", "axis_selection"],
+        },
+    },
+    {
         "name": "snap_and_analyze",
         "description": (
             "Snap a single image, display it in the Micro-Manager viewer, and return "

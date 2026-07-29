@@ -39,7 +39,8 @@ def _callers(source: str, resolver: str) -> set[str]:
 def test_only_deliberately_reviewed_functions_may_use_permissive_read_resolution():
     expected = {
         "microclaw/tools.py": {
-            "export_dataset_as_tiff", "load_position_list", "read_hook_log",
+            "export_dataset_as_tiff", "build_stage_coordinate_mosaic",
+            "load_position_list", "read_hook_log",
             "rank_hook_log", "inspect_artifacts", "compare_revisit_frames",
             "calibrate_snr_threshold", "read_hook_from_file",
         },
@@ -70,7 +71,8 @@ def test_all_write_and_serve_owners_remain_on_the_confined_resolver():
     expected = {
         "microclaw/tools.py": {
             "_acquire_with_hooks", "run_zstack", "run_timelapse",
-            "export_dataset_as_tiff", "save_position_list",
+            "export_dataset_as_tiff", "build_stage_coordinate_mosaic",
+            "save_position_list",
             "run_multiposition_acquisition", "run_multiposition_with_autofocus",
             "_prepare_log_path", "run_adaptive_zstack", "run_adaptive_timelapse",
             "_acquire_positions_with_hook", "_acquire_survey_with_detector",

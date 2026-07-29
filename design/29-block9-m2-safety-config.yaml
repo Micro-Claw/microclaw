@@ -1,0 +1,214 @@
+# Block 9 rig-gate safety profile for M2
+# (MM2_AndorAuBox_ELL10_NK_PhasefluxStage_newTIRF.cfg, Configurator 2026-07-29).
+#
+# Schema 2. Written to authorize exactly what design/29-block9-rig-gate-prompts.md
+# R2 needs -- a small overlapping multi-position grid on one laser -- and nothing
+# else. Guaranteed mode is fail-closed: any device/property not named below
+# cannot be written at all, so the short lists here are the point, not an
+# oversight.
+#
+# THREE LINES ARE INFERRED, NOT MEASURED. Read the ">>> CONFIRM" blocks before
+# using this: stage.x/y bounds, and workspace_dir. Everything else is taken
+# from the .cfg or from m2-device-properties.txt.
+
+schema_version: 2
+reviewed: true
+
+rig_profile:
+  mode: guaranteed
+
+  # EMPTY ON PURPOSE, and the probe is why.
+  #
+  # The only StateDevices on M2 are `Thorlabs ELL9` and `Thorlabs ELL9-1`
+  # (device_type StateDevice, positions 0-3 / 'Position 0'-'Position 3').
+  # Block 3b auto-classifies a StateDevice's own Label and State with no
+  # declaration -- and auto-classification fills vacuums only, so naming either
+  # one here would mean owning BOTH and would take the other away. Declaring
+  # nothing is what leaves both sliders drivable.
+  #
+  # Nothing else on M2 is a discrete non-StateDevice selector the gate needs.
+  # The Andor's readout presets (EM200_10MHz etc.) live in the `Camera` config
+  # group, not in set_device_property, and the gate does not change them.
+  categorical_properties: []
+
+  # Belt and braces. Guaranteed mode already refuses every undeclared property;
+  # these entries make the refusal explicit and auditable in
+  # `microclaw authorization-map` rather than merely implied.
+  excluded_properties:
+    - {device: Core, property: Initialize}
+
+    # The MicroFPGA dose path. On this rig illumination dose is level x pulse
+    # duration, and microclaw's illumination gate bounds only the level -- it
+    # has no model of Duration/Sequence at all. A 10x Duration0 write would
+    # multiply dose by 10 with every power check still passing. Excluded so
+    # that stays impossible rather than merely undeclared.
+    - {device: Laser Trigger, property: Duration0 (us)}
+    - {device: Laser Trigger, property: Duration1 (us)}
+    - {device: Laser Trigger, property: Duration2 (us)}
+    - {device: Laser Trigger, property: Duration3 (us)}
+    - {device: Laser Trigger, property: Mode0}
+    - {device: Laser Trigger, property: Mode1}
+    - {device: Laser Trigger, property: Mode2}
+    - {device: Laser Trigger, property: Mode3}
+    - {device: Laser Trigger, property: Sequence0}
+    - {device: Laser Trigger, property: Sequence1}
+    - {device: Laser Trigger, property: Sequence2}
+    - {device: Laser Trigger, property: Sequence3}
+
+    # The focus lock is a 785 nm iBeam that is ON at 30 mW and must STAY on.
+    # It is deliberately NOT in the illumination block below: listing a shutter
+    # there means microclaw drives it to off_value on every session exit, which
+    # would kill the focus lock as a side effect of quitting.
+    - {device: Focus-lock, property: Laser Operation}
+    - {device: Focus-lock, property: Power (mW)}
+    - {device: Focus-lock, property: Enable Fine}
+
+    # Core.Shutter is Cobolt561 and Core.AutoShutter is 0, so nothing opens it
+    # implicitly. The gate does not need 561; keep both the enable and the
+    # 0-360 mW power out of reach.
+    - {device: Cobolt561, property: Laser}
+    - {device: Cobolt561, property: Power}
+    - {device: Cobolt561, property: Current}
+
+    # Andor mechanical shutters. Both currently read 'Open'; the gate has no
+    # reason to touch them and a stray 'Closed' would silently produce a grid
+    # of dark frames -- run_a_1's failure mode, arrived at a different way.
+    - {device: Andor, property: Shutter (Internal)}
+    - {device: Andor, property: Shutter (External)}
+
+# ─── Stage ────────────────────────────────────────────────────────────────────
+# Core.XYStage = SmarActXY, Core.Focus = PIZStage. This section governs exactly
+# those two devices and no others.
+#
+# >>> CONFIRM THE X/Y BOX BEFORE YOU RUN. <<<
+# SmarActXY exposes no position limits at all (the probe lists Frequency, Hold
+# time, channels and directions -- no Position property, no lower/upper), so
+# there is no travel figure to read off the hardware. Guaranteed mode refuses an
+# open range edge, so a number has to be chosen.
+#
+# The box below is INFERRED from where your two M2 fixtures actually sat:
+#   run_a_2 first position    X = 6443.5   Y = 1135.5
+#   spiral montage log (n=25) X 5673-6473  Y 1156-1956
+# It brackets both with roughly 2.5-3 mm of margin in every direction -- about a
+# 6 mm x 6 mm working box. That is ample for R2 (a 4x4 grid at 14 um spans
+# 42 um) but it is NOT SmarActXY's travel and is not a hardware limit.
+#
+# If today's sample sits outside this box, widen it here BEFORE starting, not
+# mid-session: an out-of-range move is refused, and you would have to restart.
+stage:
+  x_min:  3000.0
+  x_max:  9000.0
+  y_min: -1000.0
+  y_max:  5000.0
+
+  # PIZStage's own Limit_um is 500 and its Position property reports lim=(0,500),
+  # so this mirrors the hardware rather than adding a tighter policy. Current
+  # position is 21.09 um.
+  #
+  # The gate needs NO Z motion whatsoever -- it is a 2D geometry test, and the
+  # focus lock owns this axis. If you want Z frozen outright rather than merely
+  # unused, narrow this to a band around wherever the lock is sitting when you
+  # start. Do not run autofocus during the gate either way; it would fight the
+  # lock, and design/28 F1/F2 are unresolved for this metric.
+  z_min: 0.0
+  z_max: 500.0
+
+# Per-device travel for stages addressed by label. EMPTY ON PURPOSE, and it has
+# to be: SmarActZ and TIRF Stage are absent, so they cannot be moved by name at
+# all (named stages fail closed). Set TIRF angle from the MM GUI before starting.
+#
+# PIZStage and SmarActXY must NEVER appear here. They are the live core focus
+# and core XY devices, and authorization.py refuses startup with a
+# "Core/named actuator declaration conflict" if a named entry shadows either.
+named_stages: []
+
+# ─── Camera ───────────────────────────────────────────────────────────────────
+# The Andor reports no exposure limits, so this cap is microclaw's alone.
+# Working exposure on this rig is ~10 ms (Andor-Exposure = 10.0, ActualInterval
+# 34.58 ms); 1000 ms is two orders of headroom and still bounds a typo.
+camera:
+  max_exposure_ms: 1000.0
+
+# ─── Acquisition ──────────────────────────────────────────────────────────────
+# Sized to R2, not to the rig. R2 is 9-16 exposures plus an optional 5-6 position
+# Y line: call it 25. At 453x227x2 bytes a frame is 0.2 MB; at full 512x512 it
+# is 0.5 MB. The confirm thresholds sit just above the intended run, so the gate
+# itself proceeds without a prompt and anything materially larger has to be
+# agreed to out loud.
+acquisition:
+  max_frames: 100
+  max_duration_s: 600
+  max_bytes: 200000000
+  max_illuminated_ms: 60000
+  max_session_illuminated_ms: 300000
+  confirm_above_frames: 30
+  confirm_above_duration_s: 120
+  confirm_above_bytes: 50000000
+  confirm_above_illuminated_ms: 10000
+
+# Omitted deliberately: no rig-calibrated min_snr exists for M2, and the
+# MIN_SNR calibration was consciously deferred. The visibly-uncalibrated package
+# fallback is the honest state. Do not copy M5's.
+analysis: {}
+
+# ─── Illumination ─────────────────────────────────────────────────────────────
+# All three Omicron LuxX heads are listed. Each currently reads
+# 'Laser Operation Select' = Off, each requires a human confirmation to enable,
+# and each is driven Off on every session exit. Listing all three costs nothing
+# and means the sample decides the wavelength, not the config; delete the two
+# you will not use if you prefer the tighter surface.
+#
+# Not listed, on purpose: Cobolt561 (excluded above), Focus-lock (must stay on),
+# and the '[mW]' twin of each power property -- '[%]' is the linearized control
+# and max_power_percent is a percent cap, so capping a milliwatt field with it
+# would be a unit error wearing the right units.
+illumination:
+  require_confirm_on_enable: true
+
+  # >>> The number most likely to be wrong for your sample. <<<
+  # The 405 head is a 60 mW part and all three currently sit at ~1.0%. 30% is a
+  # deliberately low ceiling for a geometry test, where the requirement is
+  # structure, not signal. If the field is too dim to correlate, RAISE THIS AND
+  # RESTART -- do not work around it. That is a config edit, not a code change.
+  max_power_percent: 30.0
+
+  # Runaway backstop, not a ramp mechanism: it bounds the ratio between
+  # consecutive writes. Set to 10 rather than the example's 3 because the heads
+  # idle at 1.0012% and a first write to 5% is a 5.0x step -- factor 3 would
+  # refuse the very first legitimate command of the session. With a 30% ceiling
+  # the step factor is the secondary bound anyway.
+  max_power_step_factor: 10.0
+
+  shutters:
+    - {device: Luxx405, property: Laser Operation Select, on_value: "On", off_value: "Off"}
+    - {device: Luxx488, property: Laser Operation Select, on_value: "On", off_value: "Off"}
+    - {device: Luxx638, property: Laser Operation Select, on_value: "On", off_value: "Off"}
+
+  power_properties:
+    - {device: Luxx405, property: "Laser Power Set-point Select [%]"}
+    - {device: Luxx488, property: "Laser Power Set-point Select [%]"}
+    - {device: Luxx638, property: "Laser Power Set-point Select [%]"}
+
+# ─── Channels ─────────────────────────────────────────────────────────────────
+# EMPTY, and on M2 there is nothing to put here: Core.ChannelGroup is '' and the
+# only config group in the .cfg is `Camera` (Andor readout presets). M2 does not
+# hit the demo config's Core.Shutter classification refusal because it has no
+# channel presets to classify.
+channels:
+  allowed: []
+
+# ─── Plugins ──────────────────────────────────────────────────────────────────
+# Hardware-motion plugins stay off. The gate needs no autofocus, and MM's
+# calibrator -- the one plugin that would want motion -- has already run.
+plugins:
+  blocked: []
+  allow_hardware_motion: false
+
+# >>> CONFIRM THIS PATH. <<<
+# Optional, but set: it confines every path microclaw writes, and an
+# out-of-workspace save_dir is refused BEFORE any hardware moves. The value
+# below is inferred from where the spiral run wrote
+# (F:\DataSSD\260720_PD_testMicroClaw\...). If M2 saves elsewhere, change it;
+# if you would rather not confine writes at all, delete the line entirely.
+# Forward slashes are fine on Windows.
+workspace_dir: F:/DataSSD

@@ -6,6 +6,8 @@ import json
 import logging
 import math
 import queue
+import os
+import tempfile
 import threading
 import time
 import weakref
@@ -45,6 +47,8 @@ from microclaw.image_analysis import (
 )
 from microclaw.safety import SafetyGuard, SafetyViolation
 from microclaw.acquisition import AcquisitionLedger, AcquisitionPlan, Reservation, plan_events
+from microclaw.calibration import resolve_calibration
+from microclaw.dataset_mosaic import MosaicFrameShape, MosaicGeometry, assemble_stage_coordinate_mosaic
 
 logger = logging.getLogger(__name__)
 
@@ -1000,6 +1004,235 @@ def _iter_present_coords(dataset, fixed_axes: dict) -> Any:
         coords = dict(zip(axis_names, combo))
         if dataset.has_image(**coords):
             yield coords
+
+
+# Camera model lives under a different per-image key for every vendor, because
+# MM stamps whatever the adapter happens to call its property. Measured on real
+# datasets: the Andor iXon exposes 'Andor-Camera', while the Hamamatsu
+# C15440-20UP has no '-Camera' key at all and carries the model under
+# '-CameraName' with the serial under '-CameraID'. Resolve in order and record
+# which key answered, rather than assuming one vendor's shape is the contract.
+_CAMERA_MODEL_KEY_SUFFIXES = ("-Camera", "-CameraName", "-CameraID")
+
+
+def _camera_model(metadata: dict, camera: str) -> tuple[str, str] | tuple[None, None]:
+    for suffix in _CAMERA_MODEL_KEY_SUFFIXES:
+        key = f"{camera}{suffix}"
+        value = metadata.get(key)
+        if value not in (None, ""):
+            return str(value), key
+    return None, None
+
+
+def _mosaic_dataset_identity(metadata_items: list[tuple[dict, dict]]) -> dict:
+    """Read the real MM per-image camera/ROI/binning keys and require consistency."""
+    identities = []
+    model_key = None
+    for coords, metadata in metadata_items:
+        camera = metadata.get("Core-Camera")
+        if camera in (None, ""):
+            model = None
+        else:
+            model, model_key = _camera_model(metadata, str(camera))
+        raw_roi = metadata.get("ROI")
+        try:
+            roi = [int(value) for value in str(raw_roi).split("-")]
+        except (TypeError, ValueError):
+            roi = None
+        if roi is not None and len(roi) != 4:
+            roi = None
+        raw_binning = metadata.get("Binning")
+        try:
+            binning = int(str(raw_binning).lower().split("x", 1)[0])
+        except (TypeError, ValueError):
+            binning = None
+        identities.append((camera, model, roi, binning, coords))
+    first = identities[0]
+    if any(item[:4] != first[:4] for item in identities[1:]):
+        raise ValueError("Dataset camera, ROI, or binning changes within the selected plane")
+    model_names = " or ".join(f"{first[0]}{suffix}" for suffix in _CAMERA_MODEL_KEY_SUFFIXES)
+    missing = [name for name, value in zip(
+        ("Core-Camera", model_names, "ROI", "Binning"), first[:4]
+    ) if value is None]
+    if missing:
+        raise ValueError("Dataset calibration identity metadata is incomplete; missing " + ", ".join(missing))
+    return {"camera_device": str(first[0]), "camera_model": str(first[1]),
+            "camera_model_key": model_key, "roi": first[2], "binning": first[3]}
+
+
+def build_stage_coordinate_mosaic(
+    ctrl: MicroscopeController,
+    guard: SafetyGuard,
+    dataset_path: str,
+    output_path: str,
+    axis_selection: dict,
+    calibration_ref: dict | None = None,
+    output_pixel_size_um: float | None = None,
+) -> dict:
+    """Build one stage-coordinate mosaic from a selected saved-NDTiff plane.
+
+    This is a zero-exposure read. Later tiles overwrite earlier tiles as a
+    deterministic display convention; it is not image alignment or object
+    matching. The TIFF is uint16 and the adjacent JSON manifest contains no
+    timestamp, so identical inputs and selection produce identical pixels and
+    hashed payloads.
+    """
+    if not isinstance(axis_selection, dict):
+        raise ValueError("axis_selection must be an object")
+    dataset_path = guard.resolve_readable_path(dataset_path)
+    output_path = guard.resolve_in_workspace(output_path)
+    dataset = Dataset(dataset_path)
+    axes = set(dataset.axes)
+    non_position_axes = axes - {"position"}
+    unknown = set(axis_selection) - non_position_axes
+    missing = non_position_axes - set(axis_selection)
+    if unknown:
+        raise ValueError(f"Unknown or position axis selections: {sorted(unknown)}")
+    if missing:
+        raise ValueError(f"axis_selection must fix every non-position axis: {sorted(missing)}")
+    for axis, value in axis_selection.items():
+        if value not in dataset.axes[axis]:
+            raise ValueError(f"Dataset axis selection is not present: {axis}={value!r}")
+
+    coords = list(_iter_present_coords(dataset, axis_selection))
+    if not coords:
+        raise ValueError("No images exist in the selected dataset plane")
+    metadata_items = [(item, dataset.read_metadata(**item)) for item in coords]
+    dataset_identity = _mosaic_dataset_identity(metadata_items)
+    affine, calibration_identity = resolve_calibration(
+        dataset, calibration_ref, fixed_axes=axis_selection, ctrl=ctrl, guard=guard
+    )
+    # Refuse only where the difference changes the transform we apply or means
+    # this is a different microscope. Camera device/model is design/29 §5's
+    # requirement — it is what stops one instrument's affine reaching another's
+    # dataset. Binning scales the effective pixel size, so an affine measured at
+    # one binning is numerically wrong at another.
+    mismatches = {
+        key: {"dataset": dataset_identity[key], "calibration": calibration_identity[key]}
+        for key in ("camera_device", "camera_model")
+        if dataset_identity[key] != calibration_identity[key]
+    }
+    if dataset_identity["binning"] != affine.binning:
+        mismatches["binning"] = {
+            "dataset": dataset_identity["binning"], "calibration": affine.binning
+        }
+    if mismatches:
+        raise ValueError(f"Calibration identity contradicts dataset metadata: {mismatches}")
+    # ROI is recorded, never gating. Placement consumes only the affine's four
+    # coefficients, and ROI does not enter that arithmetic: a crop changes
+    # neither pixel size nor rotation. An off-centre crop displaces the true
+    # optical centre from the frame centre we place at, but identically for
+    # every tile in the dataset, so it costs a constant translation of the whole
+    # mosaic and nothing in the relative geometry. Measured live on M2: an
+    # affine calibrated at full frame (0,0,512,512) is valid for Run A's
+    # 453x227 crop on the same camera.
+    roi_difference = None
+    if dataset_identity["roi"] != calibration_identity["roi"]:
+        roi_difference = {
+            "dataset": dataset_identity["roi"],
+            "calibration": calibration_identity["roi"],
+            "effect": (
+                "calibration measured at a different ROI on the same camera; "
+                "placement is unaffected apart from a constant translation of "
+                "the whole mosaic"
+            ),
+        }
+
+    class SelectedFrames:
+        """Re-read each tile per pass so source images are never retained together."""
+        iteration = 0
+
+        def __iter__(self):
+            self.iteration += 1
+            for item, metadata in metadata_items:
+                absent = [key for key in ("XPosition_um_Intended", "YPosition_um_Intended")
+                          if metadata.get(key) in (None, "")]
+                if absent:
+                    raise ValueError(
+                        "Selected image lacks intended stage coordinates "
+                        f"{absent} at {item}; XPosition_um_Intended and "
+                        "YPosition_um_Intended are required"
+                    )
+                pixels = None
+                if self.iteration == 1:
+                    pixel_dtypes = {"GRAY8": np.dtype(np.uint8), "GRAY16": np.dtype(np.uint16)}
+                    try:
+                        shape = (int(metadata["Height"]), int(metadata["Width"]))
+                        image_dtype = pixel_dtypes[str(metadata["PixelType"]).upper()]
+                        if min(shape) <= 0:
+                            raise ValueError
+                        pixels = MosaicFrameShape(shape, image_dtype)
+                    except (KeyError, TypeError, ValueError):
+                        pass
+                if pixels is None:
+                    pixels = dataset.read_image(**item)
+                yield (pixels, float(metadata["XPosition_um_Intended"]),
+                       float(metadata["YPosition_um_Intended"]))
+
+    sampling = affine.pixel_size_um if output_pixel_size_um is None else output_pixel_size_um
+    assembled = assemble_stage_coordinate_mosaic(
+        SelectedFrames(), MosaicGeometry(affine, float(sampling))
+    )
+    pixels = assembled.pop("mosaic")
+    coverage = assembled.pop("coverage_mask")
+    if not np.issubdtype(pixels.dtype, np.integer):
+        raise ValueError("16-bit TIFF output requires integer source pixels")
+    pixels16 = pixels.astype(np.uint16, copy=False)
+    pixel_sha256 = hashlib.sha256(pixels16.tobytes(order="C")).hexdigest()
+    manifest_path = str(Path(output_path).with_suffix(Path(output_path).suffix + ".json"))
+    result = {
+        "kind": "stage_coordinate_mosaic",
+        "selection": {key: axis_selection[key] for key in sorted(axis_selection)},
+        "calibration_identity": calibration_identity,
+        # What the dataset says about itself, recorded alongside what the
+        # calibration claims. camera_model_key names which vendor key answered,
+        # because that differs per adapter and a future reader cannot infer it.
+        "dataset_identity": dataset_identity,
+        "calibration_roi_difference": roi_difference,
+        "shape": list(pixels16.shape),
+        **assembled,
+        "coverage_fraction": float(np.count_nonzero(coverage) / coverage.size),
+        "overwrite_convention": "later source tiles overwrite earlier source tiles for display",
+        "pixel_sha256": pixel_sha256,
+        "artifact": {"kind": "tiff", "path": output_path},
+        "manifest_path": manifest_path,
+    }
+    manifest_payload = dict(result)
+    payload_bytes = json.dumps(
+        manifest_payload, sort_keys=True, separators=(",", ":"), allow_nan=False
+    ).encode("utf-8")
+    result["manifest_payload_sha256"] = hashlib.sha256(payload_bytes).hexdigest()
+    # The digest covers the canonical inner payload without recursively covering
+    # itself. External readers can reproduce it directly from manifest_payload.
+    manifest_bytes = json.dumps(
+        {"manifest_payload": manifest_payload,
+         "manifest_payload_sha256": result["manifest_payload_sha256"]},
+        sort_keys=True, separators=(",", ":"), allow_nan=False
+    ).encode("utf-8")
+
+    output_parent = Path(output_path).parent
+    output_parent.mkdir(parents=True, exist_ok=True)
+    temporary_paths = []
+    try:
+        with tempfile.NamedTemporaryFile(dir=output_parent, suffix=".tif", delete=False) as handle:
+            temporary_tiff = handle.name
+        temporary_paths.append(temporary_tiff)
+        tifffile.imwrite(temporary_tiff, pixels16)
+        with tempfile.NamedTemporaryFile(dir=output_parent, suffix=".json", delete=False) as handle:
+            temporary_manifest = handle.name
+            handle.write(manifest_bytes)
+        temporary_paths.append(temporary_manifest)
+        os.replace(temporary_tiff, output_path)
+        temporary_paths.remove(temporary_tiff)
+        os.replace(temporary_manifest, manifest_path)
+        temporary_paths.remove(temporary_manifest)
+    finally:
+        for path in temporary_paths:
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
+    return result
 
 
 # --- Image capture with analysis ---
@@ -4276,6 +4509,7 @@ TOOL_REGISTRY = {
     "run_zstack": run_zstack,
     "run_timelapse": run_timelapse,
     "export_dataset_as_tiff": export_dataset_as_tiff,
+    "build_stage_coordinate_mosaic": build_stage_coordinate_mosaic,
     "run_autofocus": run_autofocus,
     "mark_position": mark_position,
     "get_position_list": get_position_list,

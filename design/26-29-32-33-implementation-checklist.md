@@ -44,7 +44,7 @@ Progress markers: `[ ]` not started, `[-]` active, `[x]` complete, `[!]` blocked
 | 7 | `design32/generated-hook-decisions` | `cc2df05` (main, 937/98/3) | `7a9a602`…`af8f51b`; 967/99/3 (mac), 1044/21/3 (demo core) | demo D1–D5 PASS + M5 R1 PASS 2026-07-28: capability stripping live, 3-of-5 typed stop, four attributable refusals, Run A 12/12/12 with revisit 0.01 px. Gate caught 4 defects, 3 invisible off-rig. | `2b8d752` | Gate done: design/32 §4 Block-7 landed note; design/26 5 reconciliations incl. the unresolved `analyze_frame` collision blocking Block 10 |
 | 7b | `design32/hook-illumination-and-artifacts` | `ff690e8` (main, 967/99/3) | `f300fff`…`35f6dc4`; 1014/99/3 (mac), 989/115/3 (M5 under uv), 1089/21/3 (demo core, integration live) | M5 2026-07-28: R1–R8 + P0–P2 + R5pre PASS; D2/D3 skipped by ruling. **Gate caught 4 defects, 2 invisible off-rig** | `e688606` | Gate done: design/32 §4 vocabulary corrected + Block-7b landed note; design/33 illumination-contract changes, failed-write-may-have-landed rule, and M5 405 findings (docs merge `d189722`) |
 | 8 | `design29/saved-dataset-foundation` | `c3af2b1` | `b1e347c` + `333144e` (7 review defects); 1052/99/3 | **pre-branch gate: `design29/probe-findings` (`cf0c00c`)** — probe was defective and its affine verdicts void; repaired, MMCore row-major pinned by `javap`. Live M5/demo/M2: **no measured affine anywhere**; identity is MM's default (same hash on two unrelated systems). Saved data gives the X column only (~90°, ~0.13 µm/px). No rig action for the implementation itself. | `e45a129` | Gate done: §5 precedence corrected (explicit ref beats the acquisition record, reconciling §2), measured per-image metadata contract recorded, Y column still open and owned by Block 9 |
-| 9 | `design29/stage-coordinate-mosaic` | `fecb93b` | | required — 3 prerequisites gate the merge (coordinator ruling), not the branch | | |
+| 9 | `design29/stage-coordinate-mosaic` | `fecb93b` | through `82feeb5`; 1092/99/3 | **MERGED.** Gate run + R6. R1/R2/R3 pass — first non-sentinel per-image affine ever recorded. R3b: no objective key even with `Res1` live → acquisition-recorded identity unreachable on M2 (finding, not defect; artifact path mandatory). R4: both affine columns corroborated. R5 answered **offline** — dihedral match proves the renderer does not mirror. R6: affine orientation confirmed to 0.3° but **scales are wrong, −3.5% / −15.7%, anisotropic where the config reports isotropy** — traced by `javap` to Manual-Simple never measuring a scale at all. A calibration-input defect on M2, not a Block 9 code defect. |
 | 10 | `design26/completed-dataset-runner` | | | saved-data fixture | | |
 | 11 | `design26/generated-adapter-run-b` | | | required | | |
 | 12 | `design26/few-shot-run-c` (optional) | | | required | | |
@@ -762,36 +762,97 @@ measurement and not another project.
       two independent methods, and M2's stored 0.127 µm/px is a third. Agreement
       settles the convention; disagreement is equally informative and must be
       resolved before any of the three is trusted.
-- [ ] Retrieve the spiral and 2500-tile fixtures — see the fixture table further
-      down this block. They sit on two different machines, so it is two retrievals.
+      — **DONE 2026-07-29, and it agrees.** MM's calibrator produced
+      `[[0, 0.127], [-0.127, 0]]` (−90.0°, 0.127 µm/px, no reflection, no shear)
+      in a new config `Res1`. Inverted, that predicts 157.5 px of row
+      displacement and 0 of column displacement for a +20 µm stage X step;
+      `run_a_2`'s upper mode is 157–163 px at 1–2 px of column displacement.
+      Two independent methods, one optical path, agreement. **X is
+      cross-validated; Y is supplied by the calibrator alone and corroborated by
+      nothing** — do not record the 2×2 as verified.
+      Two corrections to this bullet's own instructions: "correct M2's blocking
+      predicate" pointed at the wrong thing (the mismatch is config-string
+      format drift, not a misconfigured rig — a *new* config is the fix, and
+      editing the live device to match a stale string would have been wrong),
+      and MM's calibrator **crashed the rig repeatedly** against the old config,
+      dying natively in the Andor SDK 22 ms after aborting a sequence
+      acquisition. Calibrating into a new config succeeded. See design/29's
+      2026-07-29 section for the CoreLog evidence and the locale mechanism.
+- [x] Retrieve the spiral and 2500-tile fixtures. — DONE 2026-07-29. Both
+      2500-tile scans (`scan488_900_1`, `scan561_900_1`) and the spiral are
+      retrieved. **The spiral is unusable for placement**: it is 25 *separate
+      single-position* datasets with no `position` axis and **no intended-XY
+      metadata**, so the tool refuses it (verified). Its coordinates exist only
+      in the sidecar `montage_hook_log.txt`, which is a different input
+      contract and out of scope. It also has a 200 µm step against a 57.5 ×
+      28.8 µm field, so the tiles never overlap — it could only ever have
+      tested gaps, never seams. Spiral placement stays synthetic.
 - [ ] Obtain one dataset carrying a **non-sentinel** affine. Every dataset available
       today records the all-zeros sentinel, so Block 8's acquisition-recorded branch
-      is unit-tested and never field-verified. This comes free with the calibrator
-      run above and is the only way to exercise that path end to end.
+      is unit-tested and never field-verified. — **UNBLOCKED, not yet done.**
+      `Res1` now reads `would config activate: YES`, so any small multi-position
+      acquisition on M2 will stamp a real per-image `PixelSizeAffine`. This is
+      the last prerequisite standing.
 
 Implementation:
 
 - [x] Create the branch from updated `main`. — `design29/stage-coordinate-mosaic`
       from `fecb93b`, under the merge-gate ruling above.
-- [ ] Add `MosaicGeometry` using the existing `StageCameraAffine`; validate finite
+- [x] Add `MosaicGeometry` using the existing `StageCameraAffine`; validate finite
       coefficients, nonsingular determinant, and positive output sampling in direct
-      construction.
-- [ ] Implement centre-based `(row, col)`/`(y, x)` to `(dx, dy)` placement, transformed
+      construction. — frozen dataclass, `__post_init__` numeric invariants only;
+      provenance/precedence stay in the resolver as design/29 §1 requires.
+- [x] Implement centre-based `(row, col)`/`(y, x)` to `(dx, dy)` placement, transformed
       bounds, documented interpolation/rounding, `+X` right/`+Y` down output, coverage
       mask, overlap statistics, and deterministic later-tile overwrite.
-- [ ] Add `build_stage_coordinate_mosaic` for one explicit real value on every
+      — **inverse** nearest-neighbour sampling, vectorized per tile. The first
+      implementation forward-mapped source pixels and the review measured a solid
+      tile rendering as alternating stripes (15 of 31 output columns zero under a
+      2×/0.5× affine; ~50% loss under 21° rotation and shear), with those holes
+      also reported as uncovered. Placement calls `StageCameraAffine.px_to_um`;
+      only the inverse 2×2 is formed here.
+- [x] Add `build_stage_coordinate_mosaic` for one explicit real value on every
       non-position axis, intended-XY metadata, tagged calibration resolution, 16-bit TIFF,
       and a hash-bearing JSON manifest with exact resolved affine payload.
-- [ ] Fail without intended XY. Keep row/column reconstruction a separate explicit legacy
+      — off the acquisition ledger (pinned by a test), atomic temp+`os.replace`
+      writes, and per-instrument identity **enforced**: a calibration whose
+      camera device/model, ROI, or binning contradicts the dataset's own
+      per-image metadata is refused with both sides named. Verified live against
+      `run_a_2`, which refused a wrong camera model and reported M2's real
+      `| iXon Ultra | DU897_BV | 8172 |`.
+- [x] Fail without intended XY. Keep row/column reconstruction a separate explicit legacy
       mode, if implemented at all. Do not call this registration, stitching, blending, or
-      biological deduplication.
-- [ ] Test arbitrary rotations, reflections, shear/anisotropy, even/odd and non-square
+      biological deduplication. — row/column reconstruction deliberately NOT built;
+      failure is before any artifact is written.
+- [x] Test arbitrary rotations, reflections, shear/anisotropy, even/odd and non-square
       frames, overlap/gaps, spiral placement, plane isolation, invalid geometry, and
-      manifest-only replay.
-- [ ] Run on the saved grid and spiral rig datasets with zero exposures. Compare placement
+      manifest-only replay. — the first version parametrized all seven affine
+      families and asserted nothing about pixel *locations* (its
+      `source_sample_count == image.size` check was a tautology of the loop
+      body), which is why the stripe defect was invisible; replaced with exact
+      array equality against an independently written scalar reference, plus a
+      no-interior-holes assertion per covered row and column.
+- [-] Run on the saved grid and spiral rig datasets with zero exposures. Compare placement
       with known landmarks and record seam behavior.
-- [ ] Run the 2500-tile fixture, measure peak RSS and output correctness, and implement
+      — **PARTIAL.** Grid done on two instruments, zero exposure both times:
+      `run_a_2` (M2, 12 tiles, the measured `Res1` affine) builds 768×700 at
+      99.86% coverage, and `scan488_900_1` (M5, 2500 tiles) builds 8576×8580 at
+      100% coverage with a maximum overlap depth of 4 at tile corners.
+      **Spiral is withdrawn, not deferred** — the fixture carries no intended XY
+      at all (see the prerequisite above), so it can only exercise the §4
+      refusal path, which it does. Spiral placement stays synthetic.
+      **Landmark comparison is still outstanding** and is the one thing here
+      that needs a human eye: nothing yet confirms the mosaics are *right*, only
+      that they are complete, deterministic, and self-consistent.
+- [x] Run the 2500-tile fixture, measure peak RSS and output correctness, and implement
       chunked/memory-mapped output before merge if it exceeds the agreed budget.
+      — **8576×8580 in 3.4 s at 723 MB peak RSS**, coverage 1.0000, zero
+      uncovered pixels. Comfortably within budget, so **chunked output is not
+      implemented** and the design's conditional does not fire. Note the premise
+      was wrong in our favour: the tiles are 180×176 on a `1336-1084-180-176`
+      ROI, not full-frame 2304², so this is ~79 M cell operations rather than
+      the 13 G a full-frame tiling would be. Re-measure before assuming it holds
+      for full-frame tiles.
 - [ ] Retrieve the design/30 spiral and 2500-tile fixtures from the rig first
       (tracked as a prerequisite at the top of this block); neither is present here. The non-square fixture is found (`run_a_1`, 453×227).
       Exact locations, recovered from the saved histories (2026-07-28) so nobody
@@ -811,8 +872,10 @@ Implementation:
       off the 561 laser, not deleting data.
 
       **Instrument attribution matters here** (operator-confirmed 2026-07-28), and
-      these fixtures span at least three: Run A is **M2** (Andor iXon), the tiling
-      fixtures are **M5** (Hamamatsu), and the spiral is a third. Each therefore
+      these fixtures span ~~at least three~~ **two**: Run A is **M2** (Andor iXon)
+      and the tiling fixtures are **M5** (Hamamatsu). **Corrected 2026-07-29: the
+      spiral is also M2**, not a third instrument — same Andor iXon DU897_BV
+      serial 8172 at the same `36-50-453-227` ROI as Run A. Each instrument
       needs its OWN calibration identity; do not carry one instrument's affine to
       another's dataset. This is exactly the failure design/29 §5's camera-identity
       requirement exists to prevent, and these fixtures are the test case for it.
