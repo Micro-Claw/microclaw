@@ -32,7 +32,11 @@ from microclaw.safety import SafetyGuard
 DEFAULT_PROMPTS = [
     # Turn 0 must declare an artifact: the allowlist check below needs a real
     # dataset path recorded early enough to be compacted away later.
-    "Run a timelapse of 2 frames with interval_s=0 and tell me where it saved.",
+    # save_dir is required by run_timelapse and has no default -- omit it and
+    # the agent correctly stops to ask, spending a turn and declaring nothing
+    # (observed on the first live run).
+    "Run a timelapse of 2 frames with interval_s=0, saving to {save_dir}. "
+    "Tell me the dataset path it wrote.",
     "Call get_system_state and tell me the current stage position and exposure.",
     "List the properties of the camera device.",
     "Snap and analyze one image. Report the focus metric and whether it is valid.",
@@ -47,12 +51,22 @@ parser.add_argument("--port", type=int, default=4827)
 parser.add_argument("--model")
 # Deliberately far below the 120k/90k shipped defaults: a demo session will
 # never reach those, and the point is to observe a compacted request on the wire.
-parser.add_argument("--high-water", type=int, default=6000)
-parser.add_argument("--low-water", type=int, default=3000)
+# Calibrated against a real 7-turn demo run that ended at ~3000 estimated tokens
+# and never tripped a 6000 high-water mark. 1500 fires around turn 3, leaving
+# several later turns to be sent WITH a checkpoint in front of them.
+parser.add_argument("--high-water", type=int, default=1500)
+parser.add_argument("--low-water", type=int, default=800)
+parser.add_argument("--save-dir", default="g1_timelapse",
+                    help="Where turn 0's timelapse writes; must be inside the "
+                         "configured workspace if one is set.")
 parser.add_argument("--prompt", action="append", default=[])
 args = parser.parse_args()
 
-prompts = args.prompt or DEFAULT_PROMPTS
+prompts = [
+    # Only the placeholder is substituted -- a custom --prompt containing braces
+    # must not be run through str.format.
+    p.replace("{save_dir}", args.save_dir) for p in (args.prompt or DEFAULT_PROMPTS)
+]
 
 # env > keyring > file, the same resolution `serve` does. run_agent alone only
 # sees ANTHROPIC_API_KEY, so a key stored from the browser would otherwise look
@@ -173,4 +187,19 @@ print(json.dumps({
     "final_verbatim_messages_in_model_view": len(verbatim),
     "final_estimated_tokens_sent": store.last_estimated_tokens,
     "final_estimated_tokens_full_history": estimate_tokens(history),
+    # An INCONCLUSIVE run tested nothing. Say what to change rather than leaving
+    # the operator to infer it from the token trace.
+    "next_step": (
+        None if store.compaction_count >= 1 else
+        f"No compaction: the session peaked at {estimate_tokens(history)} estimated "
+        f"tokens, under the {args.high_water} high-water mark. Re-run with "
+        f"--high-water {max(400, estimate_tokens(history) // 2)} --low-water "
+        f"{max(200, estimate_tokens(history) // 4)}, or add more --prompt turns."
+    ),
+    "artifact_note": (
+        None if allowed else
+        "No artifact was declared, so the allowlist property is untested. Check "
+        "turn 0's reply_head: if the agent asked a clarifying question instead of "
+        "running the timelapse, pass --save-dir a path inside the workspace."
+    ),
 }, indent=2))

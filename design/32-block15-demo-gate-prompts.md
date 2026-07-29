@@ -59,9 +59,14 @@ not a parameter.
 
 ```powershell
 python ..\design\32-block15-compaction-live-spike.py --config $CFG `
-    --high-water 6000 --low-water 3000 2>&1 | Out-File -Encoding utf8 g1.txt
-Get-Content g1.txt -Tail 30
+    --save-dir g1_timelapse 2>&1 | Out-File -Encoding utf8 g1.txt
+Get-Content g1.txt -Tail 40
 ```
+
+The water marks now default to 1500/800, calibrated against a real 7-turn demo
+run that peaked at ~3000 estimated tokens and never tripped an earlier 6000
+mark. `--save-dir` must be a path the guard will accept — inside the configured
+workspace, if the demo safety config sets one.
 
 The first line of `g1.txt` must read `API key: …xxxx (from env|keyring|file)`.
 A `TypeError: Could not resolve authentication method` on turn 0 means no key
@@ -90,6 +95,18 @@ that `/api/artifact` consults. Empty means nothing got compacted away this run �
 inconclusive for that property, not a failure.
 
 FAIL: any exception, or a `"verdict": "FAIL"` block naming the API error.
+
+INCONCLUSIVE means the run proved nothing and must be repeated — it is not a
+partial pass. The final block carries `next_step` and `artifact_note` saying
+what to change. Two ways it happens, both seen on the first live runs:
+
+- **the session never reached the high-water mark**, so no checkpoint was ever
+  built. Lower `--high-water` / `--low-water` as `next_step` suggests, or add
+  `--prompt` turns;
+- **turn 0 declared no artifact.** Check its `reply_head`: if the agent asked a
+  clarifying question rather than running the timelapse, the `--save-dir` was
+  missing or the guard refused it. Compaction can still be proved without this;
+  only the allowlist property is lost.
 
 ---
 
