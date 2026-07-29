@@ -34,6 +34,31 @@ def analysis_observation_record(
     return record
 
 
+def write_analysis_observation(
+    sink: list[dict], *, where: dict | None = None,
+    analyzer: str | None, analyzer_version: str | None, result,
+    parameters: dict | None = None, artifact_sha256: str | None = None,
+    status: str = "observed", write=None,
+) -> dict:
+    """Build, validate, append, and optionally persist one observation.
+
+    This is the shared live/offline writing path.  Callers supply provenance
+    around the stable observation envelope rather than inventing a second one.
+    """
+    if status not in {"unverified", "provisional", "observed"}:
+        raise ValueError(f"Unknown analysis observation status: {status!r}")
+    record = analysis_observation_record(
+        analyzer=analyzer, analyzer_version=analyzer_version, result=result,
+        parameters=parameters, artifact_sha256=artifact_sha256, status=status,
+    )
+    entry = {**(where or {}), **record}
+    json.dumps(entry, allow_nan=False)
+    sink.append(entry)
+    if write is not None:
+        write()
+    return entry
+
+
 def _frame_index(metadata: dict):
     """Frame/time index for a per-frame log entry.
 
@@ -161,14 +186,12 @@ class HookBase:
         Logging has no acquisition side effect. A later, separately reviewed
         hook may use a verified result to make a guarded decision.
         """
-        record = analysis_observation_record(
-            analyzer=analyzer, analyzer_version=analyzer_version, result=result,
-            parameters=parameters, artifact_sha256=artifact_sha256, status=status,
+        write_analysis_observation(
+            self._log, where=self.where(metadata), analyzer=analyzer,
+            analyzer_version=analyzer_version, result=result,
+            parameters=parameters, artifact_sha256=artifact_sha256,
+            status=status, write=self._write_log,
         )
-        # Validate before mutating _log so a bad adapter cannot leave memory and
-        # disk disagreeing. allow_nan=False keeps replay artifacts portable.
-        json.dumps(record, allow_nan=False)
-        self.log(metadata, **record)
 
     def note_stalled(self, max_idle_s: float) -> None:
         """The survey runner's idle watchdog fired: no image came back and no

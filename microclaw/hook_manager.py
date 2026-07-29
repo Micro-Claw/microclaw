@@ -142,6 +142,16 @@ def read_hook_from_file(path: str) -> tuple[str, list[str]]:
     return code, warnings
 
 
+def select_hook_class(module, verbs):
+    """Select the first alphabetically named, module-defined hook class."""
+    for name in sorted(vars(module)):
+        cls = vars(module)[name]
+        if (isinstance(cls, type) and cls.__module__ == module.__name__
+                and any(callable(getattr(cls, verb, None)) for verb in verbs)):
+            return cls
+    return None
+
+
 def load_hook_class(name: str):
     """Dynamically import a saved hook and return its class.
 
@@ -171,12 +181,9 @@ def load_hook_class(name: str):
     spec = importlib.util.spec_from_file_location(name, entry["path"])
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    for attr in dir(mod):
-        cls = getattr(mod, attr)
-        if isinstance(cls, type) and (
-            hasattr(cls, "analyze_frame") or hasattr(cls, "image_process_fn")
-        ):
-            return cls
+    cls = select_hook_class(mod, ("analyze_frame", "image_process_fn"))
+    if cls is not None:
+        return cls
     raise AttributeError(
         f"No class with analyze_frame or image_process_fn found in hook '{name}'."
     )
