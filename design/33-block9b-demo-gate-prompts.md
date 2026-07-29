@@ -111,16 +111,37 @@ Do not add a second core to this step to fetch it: the project talks to MM only
 through the pycro-manager ZMQ bridge, and instantiating any other core object
 here would neither read the running Micro-Manager nor prove anything about it.
 
-**PASS:** `commit.txt` names the expected pushed SHA, `status.txt` is empty,
-every identity file is populated, and pytest reports **1105 passed / 99 skipped /
-3 warnings**. There is no known-failing test on this branch: the coordinator
-measured this exact count on the pushed commit. Treat any failure as real and
-stop — in particular `test_readme_png_is_not_stale`, which passes here and was
-reported as an environment artifact during implementation. That report was
-mistaken and traced to a `readline` stub the implementer had put on the import
-path; it is not a property of this branch or of Pillow.
+**Do not pin an absolute test count on this machine.** The totals differ by
+platform, and not because anything is wrong: the development Mac has no
+Micro-Manager, so many tests skip there that RUN on a rig machine. Coordinator
+reference on the Mac is **1110 passed / 99 skipped / 3 warnings**; the 2026-07-29
+Windows run of an earlier commit showed 1179 passed / 21 skipped for the same
+reason. Compare the *failure list*, not the totals.
 
-**FAIL:** identity is incomplete, the tree is dirty before the run, or tests fail.
+**Exactly four failures are known and expected on Windows**, all in
+`tests/test_describe_hook.py`:
+
+    test_saved_parameters_defaults_required_and_source_never_executes
+    test_saved_refusal_and_stripped_parameters
+    test_saved_log_path_alone_is_refused
+    test_hash_mismatch_is_described
+
+They come from `describe_saved_hook` hashing `path.read_bytes()` while the
+manifest pins LF-normalized text: on Windows `write_text` emits CRLF, the hashes
+disagree, and `would_refuse` returns True. That is the existing Block 7 D2
+finding. Block 9b does not touch that code, and these four are **not** a reason
+to stop.
+
+**PASS:** `commit.txt` names the expected pushed SHA, `status.txt` is empty,
+every identity file is populated, and the only failures are some subset of those
+four.
+
+**FAIL:** identity is incomplete, the tree is dirty before the run, or **any test
+outside that list of four fails.** Treat such a failure as real and stop — in
+particular `test_readme_png_is_not_stale`, which passes on both platforms and was
+once reported as an environment artifact. That report was mistaken and traced to
+a `readline` stub on the implementer's import path; it is a property of neither
+this branch nor Pillow.
 
 **STEP 1 VERDICT — PASS / FAIL:** ____________________
 
