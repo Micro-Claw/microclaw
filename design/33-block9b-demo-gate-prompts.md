@@ -30,15 +30,33 @@ $Port       = 4827
 
 New-Item -ItemType Directory -Force $Evidence | Out-Null
 Set-Location $Repo
+git fetch origin > "$Evidence\fetch.txt" 2>&1
 git switch design33/read-only-rig-inventory > "$Evidence\checkout.txt" 2>&1
 git pull --ff-only > "$Evidence\pull.txt" 2>&1
+git rev-parse HEAD > "$Evidence\setup-head.txt" 2>&1
 python -m pip install -e . > "$Evidence\install.txt" 2>&1
 ```
 
-Replace every `<...>` placeholder before continuing. A stale editable install
-has caused misleading failures in this repository, so reinstalling is part of
-the gate, not optional setup. If this machine uses `uv`, replace each subsequent
-`python` with `uv run python`; the commands otherwise stay the same.
+Replace every `<...>` placeholder before continuing.
+
+Everything in this gate happens **on the branch, never on `main`.** The
+`--ff-only` pull above fast-forwards `design33/read-only-rig-inventory`; `main`
+is not needed on this machine at all. The `git fetch` is not optional: this
+branch is new, and `git switch` cannot create a local tracking branch for a
+remote ref the machine has not yet seen. If `switch` still reports an invalid
+reference, the fetch did not reach GitHub — check that step's output before
+anything else. Authentication may need this machine's own SSH key
+(`GIT_SSH_COMMAND="ssh -i <key>" git fetch origin`); the key name that works on
+the development Mac is not necessarily the one here.
+
+`setup-head.txt` must read `c097fcd...`. If it does not, you are testing
+something other than what was reviewed — stop.
+
+A stale editable install has caused misleading failures in this repository, so
+reinstalling is part of the gate, not optional setup. It is safe here because
+this is a dedicated machine; do not run it on the development Mac. If this
+machine uses `uv`, replace each subsequent `python` with `uv run python`; the
+commands otherwise stay the same.
 
 **SETUP VERDICT — PASS / FAIL:** ____________________
 
