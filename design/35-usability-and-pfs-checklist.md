@@ -119,10 +119,10 @@ Rig-facing commands must be PowerShell/cmd-safe (the rig is Windows): prefer
 
 | Block | Track | Depends on | Branch | Start commit | Implementation commit | Rig evidence | Merge | Design reconciliation |
 |---|---|---|---|---|---|---|---|---|
-| 0a | Remote kit | — | `design34/nikon-probe-kit` | `b717594` | `8696169` **rejected, revision owed** | **is the deliverable** | | |
-| 0b | Remote kit | — | `design34/nikon-stopgap-config` | `b717594` | `ead2fb9` **accepted** (`6ac2ab2` rejected) | 0c ships it | merge held for 0a | |
+| 0a | Remote kit | — | `design34/nikon-probe-kit` | `b717594` | `42d8978` (`8696169` rejected) | **is the deliverable** | `ba695da` | pending |
+| 0b | Remote kit | — | `design34/nikon-stopgap-config` | `b717594` | `ead2fb9` (`6ac2ab2` rejected) | 0c ships it | `96a0a91` | pending |
 | 0c | Remote kit | 0a, 0b | — (ship + wait) | | | **operator returns evidence** | n/a | |
-| 1 | Usability | 0a and 0b assigned | `design33/phase5-doc-reconciliation` | `b717594` | `dd359a3` **accepted** | n/a | pending push | this block *is* the gate |
+| 1 | Usability | 0a and 0b assigned | `design33/phase5-doc-reconciliation` | `b717594` | `dd359a3` | n/a | `20b92e2` | done — block *is* the gate |
 | 2 | Usability | 1 | `design33/undeclared-light-source-gate` | | | required | | |
 | 3 | Usability | 2 | `design33/config-diagnostics` | | | optional | | |
 | 4 | Usability | 3 | `design33/first-launch-setup` | | | **required** | | |
