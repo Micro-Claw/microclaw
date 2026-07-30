@@ -24,6 +24,20 @@ from microclaw.authorization import (
 )
 
 
+INVENTORY_SCHEMA = "microclaw.rig-inventory/v2"
+SUPPORTED_INVENTORY_SCHEMAS = frozenset({INVENTORY_SCHEMA})
+# This versions the internal input to the live-inventory fingerprint, not the
+# inventory document.  It deliberately evolves independently.
+FINGERPRINT_SCHEMA = "microclaw.rig-inventory-fingerprint/v1"
+
+
+def validate_inventory_schema(schema: Any) -> str:
+    """Return a supported inventory schema or fail closed."""
+    if not isinstance(schema, str) or schema not in SUPPORTED_INVENTORY_SCHEMAS:
+        raise ValueError(f"unsupported rig inventory schema: {schema!r}")
+    return schema
+
+
 # Deliberately broad: a false positive is discarded in review, while a false
 # negative falsely says the rig cannot do something.  `level` and bare `%`
 # specifically catch iChrome's real `Laser 4: 3. Level %`; requiring laser and
@@ -372,12 +386,12 @@ def enumerate_rig(core: Any, *, mm_config: str | Path | None = None) -> dict:
     # handle, address, or timestamp.  Retain our stable failure coordinates in
     # the fingerprint while keeping the full text in facts/review.md.
     fingerprint_payload = {
-        "schema": "microclaw.rig-inventory-fingerprint/v1",
+        "schema": FINGERPRINT_SCHEMA,
         "facts": _fingerprint_facts(facts),
     }
     fingerprint = hashlib.sha256(json.dumps(fingerprint_payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     return {
-        "schema": "microclaw.rig-inventory/v2",
+        "schema": INVENTORY_SCHEMA,
         "mm_config": config_record,
         "live_inventory_fingerprint": {"algorithm": "sha256", "value": fingerprint},
         "facts": facts,

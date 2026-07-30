@@ -8,8 +8,12 @@ import pytest
 import microclaw.__main__ as cli
 from microclaw.config import load_safety_config
 from microclaw.rig_inventory import (
+    FINGERPRINT_SCHEMA,
+    INVENTORY_SCHEMA,
+    SUPPORTED_INVENTORY_SCHEMAS,
     compare_reviewed_config,
     enumerate_rig,
+    validate_inventory_schema,
     write_inventory_outputs,
 )
 
@@ -136,6 +140,23 @@ class CandidateShapeCore(ReadOnlyRecordingCore):
     def _get_property_upper_limit(self, device, prop): return 1 if "Enable" in prop else 100
     def _get_state_labels(self, device): return []
     def _get_available_config_groups(self): return []
+
+
+def test_inventory_schema_contract_matches_producer():
+    inventory = enumerate_rig(ReadOnlyRecordingCore())
+    assert inventory["schema"] == INVENTORY_SCHEMA
+    assert SUPPORTED_INVENTORY_SCHEMAS == frozenset({INVENTORY_SCHEMA})
+    assert validate_inventory_schema(inventory["schema"]) == INVENTORY_SCHEMA
+
+
+@pytest.mark.parametrize("schema", ["microclaw.rig-inventory/v999", None, []])
+def test_inventory_schema_contract_refuses_unrecognised_version(schema):
+    with pytest.raises(ValueError, match="unsupported rig inventory schema"):
+        validate_inventory_schema(schema)
+
+
+def test_fingerprint_schema_is_independently_versioned():
+    assert FINGERPRINT_SCHEMA not in SUPPORTED_INVENTORY_SCHEMAS
 
 
 def test_whole_enumeration_is_query_only_and_unknown_access_fails():

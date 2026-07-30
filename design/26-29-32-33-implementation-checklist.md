@@ -1,5 +1,7 @@
 # Designs 26, 29, 32, and 33 — implementation checklist
 
+Active implementation order: `design/35-usability-and-pfs-checklist.md`.
+
 Last reviewed: 2026-07-23
 
 This is the implementation order and handoff record for the four designs. It is
@@ -1223,15 +1225,16 @@ Do not combine these into one branch. Repeat the branch/review/rig/design gate f
       the human through every unresolved decision, write an unreviewed profile,
       disconnect, and require human review and normal restart. Do not duplicate a second
       incompatible enumeration format.
-- [ ] For every phase, run its design/33 rig tests before merge and stop on any unenumerable
-      effect or pre-validation write. — **Phases 2 and 4 discharged**; remains unticked
-      explicitly because Phase 5 has not started.
-- [ ] After every phase merge, update design/33 with supported drivers/presets, measured
+- [x] For every phase, run its design/33 rig tests before merge and stop on any unenumerable
+      effect or pre-validation write. — **Phases 2 and 4 discharged**; requirements
+      for Phase 5 are carried forward in
+      `design/35-usability-and-pfs-checklist.md`.
+- [x] After every phase merge, update design/33 with supported drivers/presets, measured
       waits/failure cleanup, setup contact semantics, and remaining excluded paths before
       beginning the next phase. — **Phases 2 and 4 discharged** (design/33 "Phase 2
       landed", merge `14df6b3`; "Phase 4 landed", added in `5bb6849` after phase
-      merge `5458483`); remains unticked
-      explicitly because Phase 5 has not started.
+      merge `5458483`); requirements for Phase 5 are carried forward in
+      `design/35-usability-and-pfs-checklist.md`.
 
 ## 15. Design/32 Finding 5 — bounded context and append-only audit
 
@@ -1335,8 +1338,8 @@ Post-merge design gate:
         lands, source review plus hash pinning remain the containment story, and
         no design may claim process containment. This is what blocks the closeout
         smoke test above.
-      - **Block 14** (design/33 Phases 2/4/5) — not started; Phase 5 depends on
-        Block 9b's inventory, which shipped, so it is unblocked whenever wanted.
+      - **Block 14 Phase 5** (`design33/first-launch-setup`) — not started and
+        unblocked; Phases 2 (`47f6702`) and 4 (`5458483`) are merged.
       - **Block 9b cross-rig gate** — deliberately left open: live M5 still owes
         real enumeration failures, credential redaction, live config groups and
         state labels beyond `.cfg` contents, and bridge-typed returns.
