@@ -25,6 +25,16 @@ read-back behavior, the meaning and bridge writability of its `Core.Shutter`
 settings, MM's demo-config partial-failure behavior, and whether an edited config is
 freshly read.
 
+This is also the first live confirmation over this pyjavaz bridge of
+`get_available_config_groups`, `get_current_config`, `system_busy`, and
+`device_busy`, and of the presence of the mutating `define_config`, `delete_config`,
+and `delete_config_group` surfaces. Like Phase 2's previously unconfirmed device-type
+ordinals, these calls are an explicit bridge risk rather than assumed API parity.
+The read-only Q0 records concrete Python return types and stops before the snapshot
+or mutation on a missing method, exception, or non-primitive boolean. The mutating
+three can only be confirmed by the later scratch test, after restoration evidence
+exists.
+
 It cannot establish that those observations generalize to M5's adapters. In
 particular, the demo has simulated state devices and shutters, no real emission, no
 serial latency/timeouts, and none of M5's `GenericDevice` laser controls. It also
@@ -99,6 +109,14 @@ based on observed members and order, not Java/Python naming assumptions. Stop if
 setting is unreadable, the two reads differ without an intentional GUI edit, or an
 effect is absent from the evidence.
 
+Before G2, inspect both Q0 sections. The capability section must record successful
+typed returns for all four read-only calls and callable bridge members for all three
+mutating methods. The 20-call `get_property` baseline must include every sample plus
+minimum and median milliseconds. What this settles: whether the new bridge surface
+exists as expected and the serialized ZMQ round-trip floor against which all later
+timings must be interpreted. Method presence does not prove mutation semantics; G5
+does that.
+
 ## G3 — Replay equivalence, waits, and read-back
 
 For each preset, inspect `Q2/Q4/Q5`. The load-bearing fields are:
@@ -110,24 +128,38 @@ For each preset, inspect `Q2/Q4/Q5`. The load-bearing fields are:
   end state;
 - `set_config_ms`, `busy_immediately_after_set_config`, `wait_for_config_ms`, and
   replay `total_ms` plus every per-write `set_ms`/`wait_ms`; and
-- every requested string, exact read-back string, and `exact` flag.
+- every requested string, exact read-back string, and `exact` flag on **both** the
+  `set_config` and replay paths; and
+- shutter target/open/auto-shutter observations before `set_config`, immediately
+  after it returns, and after `wait_for_config`.
 
 What this settles: whether a plain ordered property loop is observably equivalent on
 the demo core; what `set_config` has completed when it returns; what additional wait
 time `wait_for_config` consumes; the round-trip cost of per-device serialization;
 and whether exact-string verification would reject values MM legitimately reformats.
+Compare these timings with Q0's minimum/median bridge baseline: an executor write
+with a device wait and read-back uses roughly three serialized round trips, so the
+measured cost—not a local-call assumption—must inform the executor design.
+
+Whether `set_config` applies its individual settings in expansion order is **not
+observable over this bridge**. This probe measures complete end-state equivalence,
+busy/wait behavior, and read-back fidelity; it must not be cited as evidence of
+internal apply ordering.
 
 An empty property diff is insufficient if configuration-state bookkeeping differs.
 Conversely, a bookkeeping-only difference is still a real non-equivalence that the
 executor design must resolve explicitly. Record the full diff rather than summarizing
 it as “looks the same.”
 
-## G4 — `Core.Shutter`
+## G4 — every `Core.*` pseudo-device effect, including `Core.Shutter`
 
-Inspect `Q3 Core.Shutter semantics`. Record the expansion values, active shutter,
-`Core.AutoShutter`, every named shutter's `get_shutter_open(device)` value, whether
-`set_property("Core", "Shutter", value)` was permitted, and the complete before/after
-observation.
+Inspect `Q3 All Core.* pseudo-device effects`. The probe restores the pristine
+pre-run snapshot before Q3 and between effects. Record every distinct Core property
+and value appearing in an expansion, its direct bridge permission and read-back,
+and its before/after shutter observation. For `Core.Shutter`, record the active
+shutter, `Core.AutoShutter`, and every named shutter's primitive
+`get_shutter_open(device)` value. Also correlate these with each preset's Q2
+before/immediate/after-wait shutter observations.
 
 What this settles: whether the demo `Core.Shutter` property selects the active
 shutter device or opens light, and whether that pseudo-device effect can be replayed
@@ -138,8 +170,10 @@ authorize the same operation on M5.
 ## G5 — Partial failure and reversibility
 
 Inspect `Q6 Partial failure and reversibility`. The scratch config contains three
-ordered, distinct, writable enumerated properties; setting 2 has an intentionally
-invalid value. Record for `set_config` and the ordered property loop:
+ordered, distinct, writable enumerated properties on **three distinct devices**;
+setting 2 has an intentionally invalid value. The probe must fail clearly if the
+demo config cannot supply those three devices. Record for `set_config` and the
+ordered property loop:
 
 - the cleaned exception text;
 - the complete `state_diff` immediately after failure;
@@ -176,13 +210,16 @@ measurements otherwise look persuasive.
 |---|---|---|---|
 | G0 source + compile |  |  |  |
 | G1 complete run / exit code |  |  |  |
+| Q0 new bridge capabilities and Python types |  |  |  |
+| Q0 20-call round-trip min/median |  |  |  |
 | G2 all preset expansions and consecutive reads |  |  |  |
 | G2 `Core.*` entries |  |  |  |
 | G3 structural replay equivalence |  |  |  |
 | G3 `Channel` bookkeeping equivalence |  |  |  |
 | G3 busy/wait timings |  |  |  |
 | G3 read-back formatting |  |  |  |
-| G4 `Core.Shutter` bridge permission and semantics |  |  |  |
+| G3 per-preset shutter observations |  |  |  |
+| G4 all `Core.*` bridge permissions and semantics |  |  |  |
 | G5 `set_config` partial failure |  |  |  |
 | G5 property-loop partial failure |  |  |  |
 | G5 reversibility |  |  |  |

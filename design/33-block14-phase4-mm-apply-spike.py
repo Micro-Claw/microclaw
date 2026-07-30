@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
+import statistics
 import sys
 import time
 import traceback
@@ -22,6 +22,28 @@ from pycromanager import Core
 sys.stdout.reconfigure(line_buffering=True)
 SCRATCH_GROUP = "microclaw_block14_phase4_scratch"
 BAD_VALUE = "__MICROCLAW_INTENTIONAL_BAD_VALUE__"
+
+
+class NonPrimitiveBridgeResult(TypeError):
+    pass
+
+
+def primitive(value: Any) -> str | int | float | bool | None:
+    """Admit only stable JSON leaves returned by the bridge."""
+    if type(value) in (str, int, float, bool) or value is None:
+        return value
+    raise NonPrimitiveBridgeResult(
+        f"non-primitive bridge result type: {type(value).__name__}"
+    )
+
+
+def primitive_bool(value: Any, call: str) -> bool:
+    result = primitive(value)
+    if type(result) is not bool:
+        raise NonPrimitiveBridgeResult(
+            f"{call} returned {type(result).__name__}, expected bool"
+        )
+    return result
 
 
 def clean_exception(exc: BaseException) -> str:
@@ -107,7 +129,7 @@ class Evidence:
         self.path = path
         self.lines: list[str] = []
         self.data: dict[str, Any] = {
-            "schema": "microclaw.block14.phase4.mm-apply-spike.v1",
+            "schema": "microclaw.block14.phase4.mm-apply-spike.v2",
             "started_unix_s": time.time(),
             "sections": {},
             "errors": [],
@@ -160,7 +182,10 @@ def snapshot_diff(left: dict[str, Any], right: dict[str, Any]) -> list[dict[str,
 
 
 def is_read_only(core: Any, device: str, prop: str) -> bool:
-    return bool(core.is_property_read_only(device, prop))
+    return primitive_bool(
+        core.is_property_read_only(device, prop),
+        f"is_property_read_only({device!r}, {prop!r})",
+    )
 
 
 def restore(core: Any, before: dict[str, Any]) -> dict[str, Any]:
@@ -195,16 +220,22 @@ def config_state(core: Any) -> dict[str, Any]:
 def busy_state(core: Any, devices: list[str]) -> dict[str, Any]:
     state: dict[str, Any] = {}
     try:
-        state["system_busy"] = bool(core.system_busy())
+        state["system_busy"] = primitive_bool(core.system_busy(), "system_busy()")
     except Exception as exc:
+        if isinstance(exc, NonPrimitiveBridgeResult):
+            raise
         state["system_busy_error"] = clean_exception(exc)
     state["devices"] = {}
     for device in devices:
         if device == "Core":
             continue
         try:
-            state["devices"][device] = bool(core.device_busy(device))
+            state["devices"][device] = primitive_bool(
+                core.device_busy(device), f"device_busy({device!r})"
+            )
         except Exception as exc:
+            if isinstance(exc, NonPrimitiveBridgeResult):
+                raise
             state["devices"][device] = {"error": clean_exception(exc)}
     return state
 
@@ -213,6 +244,86 @@ def timed(fn: Callable[[], Any]) -> tuple[Any, float]:
     start = time.perf_counter()
     result = fn()
     return result, (time.perf_counter() - start) * 1000.0
+
+
+def capability_check(core: Any) -> dict[str, Any]:
+    """Confirm new bridge surfaces without invoking mutating methods."""
+    result: dict[str, Any] = {"safe_calls": {}, "mutating_methods": {}}
+    groups_raw = core.get_available_config_groups()
+    groups = vector(groups_raw)
+    result["safe_calls"]["get_available_config_groups"] = {
+        "return_type": type(groups_raw).__name__,
+        "value": groups,
+        "item_types": sorted({type(item).__name__ for item in groups}),
+    }
+    current = primitive(core.get_current_config("Channel"))
+    result["safe_calls"]["get_current_config"] = {
+        "return_type": type(current).__name__, "value": current,
+    }
+    system = primitive_bool(core.system_busy(), "system_busy()")
+    result["safe_calls"]["system_busy"] = {
+        "return_type": type(system).__name__, "value": system,
+    }
+    devices = [item for item in vector(core.get_loaded_devices()) if item != "Core"]
+    if not devices:
+        raise RuntimeError("Q0 needs one non-Core device for device_busy")
+    device = devices[0]
+    device_result = primitive_bool(core.device_busy(device), f"device_busy({device!r})")
+    result["safe_calls"]["device_busy"] = {
+        "device": device,
+        "return_type": type(device_result).__name__,
+        "value": device_result,
+    }
+    for name in ("define_config", "delete_config", "delete_config_group"):
+        member = getattr(core, name, None)
+        if not callable(member):
+            raise RuntimeError(f"Q0 bridge capability missing callable {name}")
+        result["mutating_methods"][name] = {
+            "present": True,
+            "python_type": type(member).__name__,
+            "invoked": False,
+            "reason": "mutation deferred until after the pre-run snapshot",
+        }
+    return result
+
+
+def round_trip_baseline(
+    core: Any, pair: tuple[str, str], count: int = 20
+) -> dict[str, Any]:
+    device, prop = pair
+    samples = []
+    value_types = set()
+    for _ in range(count):
+        value, elapsed = timed(lambda: core.get_property(device, prop))
+        primitive_value = primitive(value)
+        value_types.add(type(primitive_value).__name__)
+        samples.append(elapsed)
+    return {
+        "call": "get_property",
+        "pair": [device, prop],
+        "n": count,
+        "return_types": sorted(value_types),
+        "samples_ms": samples,
+        "min_ms": min(samples),
+        "median_ms": statistics.median(samples),
+    }
+
+
+def row_readbacks(rows: list[dict[str, Any]], state: dict[str, Any]) -> list[dict[str, Any]]:
+    results = []
+    for row in rows:
+        key = json.dumps([row["device"], row["property"]], separators=(",", ":"))
+        observed = state.get(key)
+        item = {
+            "index": row["index"], "device": row["device"],
+            "property": row["property"], "requested": row["value"],
+            "snapshot_result": observed,
+        }
+        if observed is not None and observed.get("ok"):
+            item["read_back"] = observed["value"]
+            item["exact"] = row["value"] == observed["value"]
+        results.append(item)
+    return results
 
 
 def apply_loop(core: Any, rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -272,7 +383,10 @@ def scratch_triplet(
         if device == "Core":
             continue
         try:
-            if is_read_only(core, device, prop) or bool(core.is_property_pre_init(device, prop)):
+            if is_read_only(core, device, prop) or primitive_bool(
+                core.is_property_pre_init(device, prop),
+                f"is_property_pre_init({device!r}, {prop!r})",
+            ):
                 continue
             current = str(core.get_property(device, prop))
             other, allowed_error = alternate(core, device, prop, current)
@@ -281,10 +395,24 @@ def scratch_triplet(
             if other is not None:
                 candidates.append({"device": device, "property": prop, "before": current, "test": other})
         except Exception as exc:
+            if isinstance(exc, NonPrimitiveBridgeResult):
+                raise
             diagnostics.append({"pair": [device, prop], "candidate_error": clean_exception(exc)})
-    if len(candidates) < 3:
-        raise RuntimeError("Need three distinct reversible writable enumerated DemoCamera properties for scratch test")
-    first, bad, third = candidates[:3]
+    selected = []
+    selected_devices = set()
+    for candidate in candidates:
+        if candidate["device"] not in selected_devices:
+            selected.append(candidate)
+            selected_devices.add(candidate["device"])
+        if len(selected) == 3:
+            break
+    if len(selected) < 3:
+        raise RuntimeError(
+            "Scratch partial-failure test requires reversible writable enumerated "
+            "properties on three distinct devices; found devices "
+            f"{sorted(selected_devices)!r}"
+        )
+    first, bad, third = selected
     return [first, {**bad, "test": BAD_VALUE}, third], diagnostics
 
 
@@ -314,42 +442,65 @@ def define_scratch(core: Any, preset: str, triplet: list[dict[str, str]]) -> Non
         core.define_config(SCRATCH_GROUP, preset, row["device"], row["property"], row["test"])
 
 
-def shutter_probe(core: Any, channel_rows: list[dict[str, Any]]) -> dict[str, Any]:
-    result: dict[str, Any] = {"core_shutter_effects": []}
+def shutter_names(core: Any, channel_rows: list[dict[str, Any]]) -> list[str]:
+    names = set()
+    active = str(core.get_shutter_device())
+    if active:
+        names.add(active)
     for row in channel_rows:
-        if row["device"] == "Core" and row["property"] == "Shutter":
-            result["core_shutter_effects"].append(row)
-    shutter_names = set()
+        if row["device"] == "Core" and row["property"] == "Shutter" and row["value"]:
+            names.add(row["value"])
+    return sorted(names)
+
+
+def observe_shutters(core: Any, names: list[str]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
     try:
-        active = str(core.get_shutter_device())
-        result["before_active_shutter"] = active
-        if active:
-            shutter_names.add(active)
+        out["active_shutter"] = str(core.get_shutter_device())
     except Exception as exc:
-        result["before_active_shutter_error"] = clean_exception(exc)
-    for row in result["core_shutter_effects"]:
-        if row["value"]:
-            shutter_names.add(row["value"])
-    def observe() -> dict[str, Any]:
-        out: dict[str, Any] = {}
-        try: out["active_shutter"] = str(core.get_shutter_device())
-        except Exception as exc: out["active_shutter_error"] = clean_exception(exc)
-        try: out["auto_shutter"] = str(core.get_property("Core", "AutoShutter"))
-        except Exception as exc: out["auto_shutter_error"] = clean_exception(exc)
-        out["open"] = {}
-        for name in sorted(shutter_names):
-            try: out["open"][name] = bool(core.get_shutter_open(name))
-            except Exception as exc: out["open"][name] = {"error": clean_exception(exc)}
-        return out
-    result["before"] = observe()
-    target = next((row["value"] for row in result["core_shutter_effects"] if row["value"]), None)
-    if target is not None:
+        out["active_shutter_error"] = clean_exception(exc)
+    try:
+        out["auto_shutter"] = str(core.get_property("Core", "AutoShutter"))
+    except Exception as exc:
+        out["auto_shutter_error"] = clean_exception(exc)
+    out["open"] = {}
+    for name in names:
+        out["open"][name] = primitive_bool(
+            core.get_shutter_open(name), f"get_shutter_open({name!r})"
+        )
+    return out
+
+
+def core_effect_probe(
+    core: Any,
+    channel_rows: list[dict[str, Any]],
+    before: dict[str, Any],
+    names: list[str],
+) -> dict[str, Any]:
+    distinct: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in channel_rows:
+        if row["device"] == "Core":
+            distinct.setdefault((row["property"], row["value"]), row)
+    result: dict[str, Any] = {"effects": [], "shutter_names": names}
+    for row in distinct.values():
+        restore(core, before)
+        item = {
+            "index": row["index"],
+            "property": row["property"],
+            "requested": row["value"],
+            "before_value": str(core.get_property("Core", row["property"])),
+            "shutters_before": observe_shutters(core, names),
+        }
         try:
-            core.set_property("Core", "Shutter", target)
-            result["set_property"] = {"permitted": True, "target": target}
+            core.set_property("Core", row["property"], row["value"])
+            item["permitted"] = True
+            item["read_back"] = str(core.get_property("Core", row["property"]))
         except Exception as exc:
-            result["set_property"] = {"permitted": False, "target": target, "error": clean_exception(exc)}
-        result["after"] = observe()
+            item["permitted"] = False
+            item["error"] = clean_exception(exc)
+        item["shutters_after"] = observe_shutters(core, names)
+        result["effects"].append(item)
+    restore(core, before)
     return result
 
 
@@ -366,6 +517,7 @@ def main() -> int:
     core = Core(port=args.port)
     pre: dict[str, Any] | None = None
     pairs: list[tuple[str, str]] = []
+    scratch_may_exist = False
     exit_code = 0
     try:
         ev.section("Safety gate and pre-run snapshot")
@@ -376,12 +528,27 @@ def main() -> int:
             raise RuntimeError("HARD ABORT: no loaded device uses the DemoCamera adapter")
         if args.allow_non_demo:
             ev.line("WARNING: --allow-non-demo is active. This override is NOT FOR M5.")
-        if SCRATCH_GROUP in vector(core.get_available_config_groups()):
+        ev.section("Q0 New bridge capability check (read-only)")
+        capabilities = capability_check(core)
+        ev.data["sections"]["capabilities"] = capabilities
+        ev.show("Bridge capabilities", capabilities)
+        if SCRATCH_GROUP in capabilities["safe_calls"]["get_available_config_groups"]["value"]:
             raise RuntimeError(f"HARD ABORT: scratch group {SCRATCH_GROUP!r} already exists")
         pairs = all_pairs(core)
         pre = snapshot(core, pairs)
         ev.data["pre_snapshot"] = pre
         ev.show("Property count", len(pairs))
+
+        ev.section("Q0 Bridge round-trip timing baseline")
+        readable_pair = next(
+            (json.loads(key) for key, value in pre.items() if value.get("ok")),
+            None,
+        )
+        if readable_pair is None:
+            raise RuntimeError("No readable property available for round-trip baseline")
+        baseline = round_trip_baseline(core, tuple(readable_pair))
+        ev.data["sections"]["round_trip_baseline"] = baseline
+        ev.show("20-call baseline", baseline)
 
         ev.section("Q1 Expansion shape and consecutive reads")
         presets = vector(core.get_available_configs("Channel"))
@@ -402,13 +569,17 @@ def main() -> int:
             rows = expansions[preset]["first"]["settings"]
             restore(core, pre)
             before = snapshot(core, pairs)
+            names = shutter_names(core, all_rows)
+            shutters_before_set = observe_shutters(core, names)
             set_start = time.perf_counter()
             core.set_config("Channel", preset)
             set_ms = (time.perf_counter() - set_start) * 1000.0
+            shutters_after_set = observe_shutters(core, names)
             devices = sorted({row["device"] for row in rows})
             busy_after_return = busy_state(core, devices)
             _, wait_config_ms = timed(lambda p=preset: core.wait_for_config("Channel", p))
             busy_after_wait = busy_state(core, devices)
+            shutters_after_wait = observe_shutters(core, names)
             after_set = snapshot(core, pairs)
             state_set = config_state(core)
             restore(core, before)
@@ -420,6 +591,10 @@ def main() -> int:
                 "busy_immediately_after_set_config": busy_after_return,
                 "wait_for_config_ms": wait_config_ms,
                 "busy_after_wait_for_config": busy_after_wait,
+                "shutters_before_set_config": shutters_before_set,
+                "shutters_immediately_after_set_config": shutters_after_set,
+                "shutters_after_wait_for_config": shutters_after_wait,
+                "set_config_readbacks": row_readbacks(rows, after_set),
                 "replay": replay,
                 "current_config_after_set_config": state_set,
                 "current_config_after_replay": state_replay,
@@ -432,10 +607,12 @@ def main() -> int:
             ev.show(preset, result)
         ev.data["sections"]["replay_equivalence"] = replay_results
 
-        ev.section("Q3 Core.Shutter semantics")
-        shutter = shutter_probe(core, all_rows)
-        ev.data["sections"]["core_shutter"] = shutter
-        ev.show("Core.Shutter", shutter)
+        ev.section("Q3 All Core.* pseudo-device effects")
+        restore(core, pre)
+        names = shutter_names(core, all_rows)
+        core_effects = core_effect_probe(core, all_rows, pre, names)
+        ev.data["sections"]["core_effects"] = core_effects
+        ev.show("Core effects", core_effects)
 
         ev.section("Q6 Partial failure and reversibility")
         restore(core, pre)
@@ -444,8 +621,20 @@ def main() -> int:
             "triplet": triplet,
             "candidate_diagnostics": candidate_diagnostics,
         }
+        scratch_may_exist = True
         define_scratch(core, "bad", triplet)
         partial["expanded"] = expand(core, SCRATCH_GROUP, "bad")
+        expanded_rows = partial["expanded"]["settings"]
+        if (
+            len(expanded_rows) != 3
+            or len({row["device"] for row in expanded_rows}) != 3
+            or expanded_rows[1]["value"] != BAD_VALUE
+        ):
+            raise RuntimeError(
+                "Scratch expansion did not preserve the required three-device "
+                "order with the intentional bad value at position 2: "
+                + json.dumps(expanded_rows, sort_keys=True)
+            )
         before_bad = snapshot(core, pairs)
         try:
             core.set_config(SCRATCH_GROUP, "bad")
@@ -456,7 +645,7 @@ def main() -> int:
         partial["set_config"]["state_diff"] = snapshot_diff(before_bad, after_bad)
         partial["set_config"]["restore"] = restore(core, before_bad)
         partial["set_config"]["post_restore_diff"] = snapshot_diff(before_bad, snapshot(core, pairs))
-        loop_rows = partial["expanded"]["settings"]
+        loop_rows = expanded_rows
         before_loop = snapshot(core, pairs)
         try:
             partial["property_loop"] = {"raised": False, "result": apply_loop(core, loop_rows)}
@@ -489,10 +678,17 @@ def main() -> int:
         ev.show("Failure", failure)
     finally:
         ev.section("Cleanup and residue verification")
-        try:
-            scratch_cleanup = delete_scratch(core)
-        except Exception as exc:
-            scratch_cleanup = {"error": clean_exception(exc)}
+        if scratch_may_exist:
+            try:
+                scratch_cleanup = delete_scratch(core)
+            except Exception as exc:
+                scratch_cleanup = {"error": clean_exception(exc)}
+        else:
+            scratch_cleanup = {
+                "attempted": False,
+                "still_present": False,
+                "reason": "probe did not begin scratch-group definition",
+            }
         ev.data["scratch_cleanup"] = scratch_cleanup
         ev.show("Scratch cleanup", scratch_cleanup)
         if pre is not None:
