@@ -202,20 +202,19 @@ def _property_type_name(core: Any, device: str, prop: str) -> str:
 
 def _continuous_introspection(core: Any, device: str, prop: str) -> bool:
     """Conservative refusal signal only; never an authorization source."""
-    try:
-        kind = device_type_name(core, device)
-        if kind not in {
-            "StageDevice", "XYStageDevice", "CameraDevice", "GalvoDevice",
-            "SignalIODevice",
-        }:
-            return False
-        if bool(core.is_property_read_only(device, prop)):
-            return False
-        if _strings(core.get_allowed_property_values(device, prop)):
-            return False
-        return _property_type_name(core, device, prop) in {"Float", "Integer"}
-    except Exception:
+    kind = device_type_name(core, device)
+    if kind not in {
+        "StageDevice", "XYStageDevice", "CameraDevice", "GalvoDevice",
+        "SignalIODevice", "GenericDevice",
+    }:
         return False
+    if bool(core.is_property_pre_init(device, prop)):
+        return False
+    if bool(core.is_property_read_only(device, prop)):
+        return False
+    if _strings(core.get_allowed_property_values(device, prop)):
+        return False
+    return _property_type_name(core, device, prop) in {"Float", "Integer"}
 
 
 def _validate_typed_live(
@@ -592,11 +591,23 @@ def validate_live_rig(
     for device, prop in sorted(profile.categorical_properties):
         if (device, prop) in typed_pairs:
             errors.append(f"Raw property {device}.{prop} cannot be both typed-continuous and categorical.")
-        if (_known_continuous_raw_pair(core, (device, prop))
-                or _continuous_introspection(core, device, prop)):
+        try:
+            continuous = (_known_continuous_raw_pair(core, (device, prop))
+                          or _continuous_introspection(core, device, prop))
+        except Exception as exc:
+            continuous = False
+            # Degraded mode deliberately retains its existing best-effort
+            # admission; only guaranteed mode promises a complete map.
+            if guaranteed:
+                errors.append(
+                    f"Could not introspect declared categorical property "
+                    f"{device}.{prop}: {_clean_exception_message(exc)}"
+                )
+        if continuous:
             errors.append(
                 f"Raw property {device}.{prop} is a known continuous actuator (confirmed by the live rig) and cannot be classified as categorical; "
-                "declare it in rig_profile.typed_actuators with exact semantics, units, and safe canonical bounds."
+                "declare it in rig_profile.typed_actuators with exact semantics, units, and safe canonical bounds, or place it in "
+                "rig_profile.excluded_properties if it is intentionally unavailable for writes."
             )
         entries.append(AuthorizationEntry(
             path="generic-property",

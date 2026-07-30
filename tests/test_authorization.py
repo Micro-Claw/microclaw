@@ -56,6 +56,15 @@ class Core:
             self.device_properties.get(label, ["Label", "State"])
         )
 
+    def is_property_pre_init(self, device, prop):
+        return False
+
+    def is_property_read_only(self, device, prop):
+        return False
+
+    def get_allowed_property_values(self, device, prop):
+        return ["0", "1"]
+
     def get_xy_stage_device(self):
         return self.xy
 
