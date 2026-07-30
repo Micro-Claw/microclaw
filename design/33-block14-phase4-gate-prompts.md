@@ -449,16 +449,28 @@ must not describe this as an in-flight bridge-call interrupt.
 *Role: OPERATOR (rig, interactive).*
 
 This is the sole interactive executor limb. Its only purpose is to prove that the
-real human-facing prompt renders and blocks. Start the agent session:
+real human-facing prompt renders and blocks. Run it in **`serve`**, which is the
+path an operator actually uses:
 
 ```powershell
-microclaw --safety-config <profile> --port 4827
+microclaw --safety-config <profile> --port 4827 serve
 ```
 
-Type exactly `Set the channel to DAPI.`. Decline the illumination prompt and confirm
-from the MM GUI that nothing changed. Type exactly `Set the channel to DAPI.` again
-and accept the prompt; confirm that DAPI applied. Save the session output in the
-dated evidence directory.
+In the browser, type exactly `Set the channel to DAPI.`. Decline the illumination
+prompt and confirm from the MM GUI that nothing changed. Type exactly
+`Set the channel to DAPI.` again and accept the prompt; confirm that DAPI applied.
+Save the session history JSONL in the dated evidence directory, and **check that it
+contains a `set_channel` tool call** — a history from some other request is not
+evidence for this limb.
+
+Two things this limb does and does not cover. `serve` installs
+`session.confirm` (the browser dialog) as `tools.CONFIRM_FN`, so that is the
+implementation under test. The terminal REPL installs a *different* one,
+`tools._require_confirmation`, which **this gate does not exercise**. The REPL is
+also not usable for this limb today: per the open design/15 finding, `env > keyring
+> file` resolution applies to `serve` only, `run_session` never calls
+`load_api_key`, and a browser-stored key is therefore invisible to the REPL. Setting
+`ANTHROPIC_API_KEY` in the shell works around it; fixing it belongs to design/15.
 
 This limb tests prompt rendering and the human path. The probe tests executor logic.
 A natural-language transcript is not evidence for any behavior covered by the
