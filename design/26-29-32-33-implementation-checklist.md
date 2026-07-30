@@ -1216,10 +1216,12 @@ Do not combine these into one branch. Repeat the branch/review/rig/design gate f
       disconnect, and require human review and normal restart. Do not duplicate a second
       incompatible enumeration format.
 - [ ] For every phase, run its design/33 rig tests before merge and stop on any unenumerable
-      effect or pre-validation write.
+      effect or pre-validation write. — **Phase 2 discharged**; unticked because it spans
+      Phases 4 and 5, which are not started.
 - [ ] After every phase merge, update design/33 with supported drivers/presets, measured
       waits/failure cleanup, setup contact semantics, and remaining excluded paths before
-      beginning the next phase.
+      beginning the next phase. — **Phase 2 discharged** (design/33 "Phase 2 landed",
+      merge `14df6b3`); unticked for the same reason.
 
 ## 15. Design/32 Finding 5 — bounded context and append-only audit
 
