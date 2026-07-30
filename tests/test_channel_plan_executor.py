@@ -8,6 +8,7 @@ from microclaw.authorization import (
     ChannelPlanSafeStateError, RigAuthorizationError, _expansion_hash,
     execute_channel_plan,
 )
+from microclaw.tools import set_device_property
 from microclaw.safety import (
     CameraConstraints, ForbiddenProperty, IlluminationConstraints,
     IlluminationProperty, SafetyConstraints, SafetyGuard, SafetyViolation, TypedActuatorId,
@@ -24,7 +25,11 @@ DEMO_CHANNEL_SHAPES = {
              ("Excitation", "Label", "Chroma-HQ480"), ("Core", "Shutter", "White Light Shutter")],
     "Rhodamine": [("Dichroic", "Label", "Q585LP"), ("Emission", "Label", "Chroma-HQ700"),
                   ("Excitation", "Label", "Chroma-HQ570"), ("Core", "Shutter", "White Light Shutter")],
-    "Channel-Multiband": [("Core", "Shutter", "LED Shutter"), ("LED", "Label", "Blue")],
+    "Channel-Multiband": [("Dichroic", "Label", "89402bs"),
+                          ("Emission", "Label", "89402m"),
+                          ("Excitation", "Label", "Empty"),
+                          ("LED", "Label", "385nm"),
+                          ("Core", "Shutter", "LED Shutter")],
 }
 
 
@@ -198,6 +203,30 @@ def test_illumination_power_routes_through_cap_and_ratchet():
 @pytest.mark.parametrize("name,effects", DEMO_CHANNEL_SHAPES.items())
 def test_demo_channel_shapes_are_nonvacuous_fixtures(name, effects):
     assert len(effects) >= 2 and all(len(effect) == 3 for effect in effects), name
+
+
+@pytest.mark.parametrize(
+    "device,prop,value",
+    [("Core", "Shutter", "LED Shutter"), ("Camera", "Exposure", "10")],
+)
+def test_preset_entries_do_not_authorize_raw_property_writes(device, prop, value):
+    core = Core([(device, prop, value)])
+    ctrl = SimpleNamespace(
+        core=core,
+        authorization_map=AuthorizationMap(
+            "guaranteed", "complete", True,
+            entries=[AuthorizationEntry(
+                "channel-preset:FITC", "built_in_typed_capability", device, prop
+            )],
+        ),
+    )
+    # Deliberately make the guard permissive for this exact pair. The refusal
+    # must come from the map, proving neither half of the two-gate design is
+    # load-bearing alone.
+    guard = make_guard(categorical=[(device, prop)])
+    with pytest.raises(RigAuthorizationError, match="excluded from the authorization map"):
+        set_device_property(ctrl, guard, device, prop, value)
+    assert core.calls == []
 
 
 def test_other_core_properties_are_excluded():

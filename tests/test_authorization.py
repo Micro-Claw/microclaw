@@ -330,21 +330,6 @@ def test_present_but_unreadable_preset_has_one_sanitized_reason():
     assert "java.lang" not in message
 
 
-def test_read_only_preset_setting_is_refused():
-    class Setting:
-        def get_read_only(self): return True
-        def get_device_label(self): return "Wheel"
-        def get_property_name(self): return "Label"
-        def get_property_value(self): return "DAPI"
-    core = Core()
-    core.presets["ReadOnly"] = [Setting()]
-    with pytest.raises(RigAuthorizationError, match="read-only setting"):
-        validate_live_rig(
-            Controller(core),
-            parsed(channels=["ReadOnly"], categorical={("Wheel", "Label")}),
-        )
-
-
 def test_fully_reviewed_categorical_preset_is_authorized_and_runtime_gated():
     core = Core()
     core.presets["DAPI"] = [

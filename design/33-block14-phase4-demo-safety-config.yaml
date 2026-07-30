@@ -35,12 +35,12 @@ illumination:
   require_confirm_on_enable: true
   max_power_percent: 100.0
   max_power_step_factor: 3.0
-  # White Light Shutter is a DemoCamera shutter. LED Shutter is the Utilities
-  # State Device Shutter; its measured writable selection property is what the
-  # demo System/Startup preset uses to bind it to LED.
+  # LED Shutter is omitted: the Utilities shutter's State Device property is a
+  # binding, not a gate, and the wrapped LED's measured on/off value pair has
+  # not been established. This profile therefore does not authorize a
+  # Core.Shutter retarget to LED Shutter.
   shutters:
     - {device: White Light Shutter, property: State, on_value: "1", off_value: "0"}
-    - {device: LED Shutter, property: State Device, on_value: "LED", off_value: ""}
   power_properties: []
 
 channels:

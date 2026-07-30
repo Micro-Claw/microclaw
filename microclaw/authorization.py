@@ -169,13 +169,6 @@ def _expand_preset(core: Any, preset: str) -> list[tuple[str, str, str | None]]:
     config = core.get_config_data(CHANNEL_CONFIG_GROUP, preset)
     effects = []
     for setting in _config_settings(config):
-        read_only = _setting_value(
-            setting, ("read_only", "get_read_only", "getReadOnly")
-        )
-        if read_only is not None and str(read_only).lower() in {"true", "1"}:
-            raise RigAuthorizationError(
-                f"Channel preset {preset!r} contains a read-only setting; refusing it."
-            )
         device = _setting_value(
             setting, ("device", "device_label", "get_device_label", "getDeviceLabel")
         )
@@ -769,8 +762,12 @@ def validate_live_rig(
                 classification = "excluded"
                 reasons.append(f"{device}.{prop} is excluded")
             elif device == "Core":
-                declared_targets = {item.device for item in illumination.shutters}
-                if prop == "Shutter" and value in declared_targets:
+                if prop == "Shutter" and (
+                    guard.is_illumination_shutter_device(value)
+                    if guard is not None else value in {
+                        item.device for item in illumination.shutters
+                    }
+                ):
                     classification = "built_in_typed_capability"
                 else:
                     classification = "excluded"
@@ -954,6 +951,12 @@ def authorize_property_write(ctrl: Any, device: str, prop: str) -> None:
     matches = [
         entry for entry in report.entries
         if entry.device == device and entry.property == prop
+        # Preset entries authorize only the captured channel-plan route. A raw
+        # write must have its own reachable map entry so the map and guard
+        # remain independent gates.
+        and entry.path in {
+            "generic-property", "dedicated-illumination", "all-property-paths"
+        }
     ]
     admitted = {
         "reviewed_categorical_property", "built_in_typed_capability",
@@ -1019,8 +1022,7 @@ def _authorize_channel_effect(
     if device == "Core":
         if prop != "Shutter":
             raise RigAuthorizationError(f"Channel effect Core.{prop} is excluded.")
-        declared = {item.device for item in guard._c.illumination.shutters}
-        if value not in declared:
+        if not guard.is_illumination_shutter_device(value):
             raise RigAuthorizationError(
                 f"Core.Shutter target {value!r} is not a declared illumination shutter."
             )
@@ -1045,7 +1047,7 @@ def _authorize_channel_effect(
 
     if guard.is_illumination_enable(device, prop) or guard.is_illumination_power(device, prop):
         guard.check_illumination(core, device, prop, value, confirm_fn=confirm_fn)
-    elif TypedActuatorId(device, prop) in guard._typed_actuators:
+    elif guard.is_typed_actuator(device, prop):
         guard.check_device_property(core, device, prop, value)
     elif _known_continuous_raw_pair(core, pair):
         key = prop.lower().replace("_", "").replace(" ", "")

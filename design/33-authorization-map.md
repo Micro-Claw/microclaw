@@ -264,6 +264,10 @@ round trip owns a single lock, so an in-flight set, device wait, or read-back ca
 be killed by another thread. A stop therefore takes effect at the next write
 boundary and triggers rollback; it is not a mid-write interrupt.
 
+This closes the preset-definition TOCTOU gap only for sessions with a rig profile
+and therefore an authorization map. A map-less legacy session still delegates the
+apply to Micro-Manager with `set_config` and retains the gap for compatibility.
+
 ## Plugins are a different boundary
 
 Plugins are a different boundary. An arbitrary Java hardware-motion plugin can

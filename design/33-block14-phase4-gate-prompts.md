@@ -328,6 +328,13 @@ failure into a live property write.
 
 ### G11 — shutter-retarget confirmation and cancellation boundary
 
+Before declaring the wrapped LED as an illumination gate, use read-only calls to
+record every allowed `LED.Label` value and determine which value is off and which
+values emit. The measured list currently establishes `Closed` at position 0 plus
+the wavelength labels, but not a single safe `on_value` pair. Until that evidence
+exists, leave LED Shutter out of `illumination.shutters` and do not run the
+retarget limb below with the checked-in demo profile.
+
 Temporarily create a scratch preset **inside the fixed Channel group** containing
 the measured Channel-Multiband shape (`Core.Shutter = LED Shutter` plus `LED.Label`)
 with both demo shutters declared; never execute the Channel-Multiband group itself.

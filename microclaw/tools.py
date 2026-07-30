@@ -445,13 +445,21 @@ def move_named_stage(
 
 # --- Channel / Config ---
 
+def _has_channel_authorization_map(ctrl: MicroscopeController) -> bool:
+    """Whether this session can use the capture/authorize/replay executor.
+
+    A legacy session with no rig_profile has no authorization map. It keeps MM
+    delegation for compatibility, including MM's preset-definition re-read.
+    """
+    return getattr(ctrl, "authorization_map", None) is not None
+
 def set_channel(
     ctrl: MicroscopeController, guard: SafetyGuard, preset: str, *, cancel=None
 ) -> dict:
     from microclaw.authorization import CHANNEL_CONFIG_GROUP, execute_channel_plan
 
     guard.check_channel(preset)
-    if getattr(ctrl, "authorization_map", None) is not None:
+    if _has_channel_authorization_map(ctrl):
         return execute_channel_plan(
             ctrl, guard, preset, confirm_fn=CONFIRM_FN, cancel=cancel
         )
