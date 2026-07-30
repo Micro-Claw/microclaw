@@ -56,6 +56,42 @@ device type as a bare integer rather than a name, stop** — that is the ordinal
 table failing over the bridge, and it is the one new fact in this block nobody has
 confirmed on hardware.
 
+### G1 result — PASS, 2026-07-30, evidence `block14p2_20260730`
+
+14 devices, zero enumeration failures, fingerprint
+`627f2349d6f77ee42cbe3cc92962d60c00a8a736e1eda8ad28bf2e52c2c15308` — **byte-identical
+to the Block 9b demo gate**, so the demo core is in the same state that gate measured.
+MMCore 12.5.0, Device API 75. (`g1.txt` shows a PowerShell `NativeCommandError`; that
+is PowerShell rendering the tool's stderr progress line, not a failure — both output
+files wrote.)
+
+Every device type resolved to a **name**, no bare ordinals, across eight distinct
+types: `AutoFocusDevice`, `CameraDevice`, `CoreDevice`, `HubDevice`, `ShutterDevice`,
+`StateDevice`, `StageDevice`, `XYStageDevice`. The hard stop does not fire.
+
+Three consequences that change the steps below:
+
+1. **`Z.Position` is Float, writable, unenumerated, and has NO driver limits**
+   (`has_limits: false`). That is the ideal subject for G2/G3 — with no technical
+   range the declared bound is the *only* thing between the agent and the stage,
+   which is the case this registry exists for. It also means the technical-range
+   outer check cannot fire on `Z`; see G3b.
+2. **This demo config has no GalvoDevice and no SignalIODevice.** The galvo/DAC half
+   of G4 is **not dischargeable here**, so ordinals 12 and 16 — the two added for
+   review finding 5 — stay unconfirmed over the bridge. Do not record G4 as covering
+   them. M5's MicroFPGA `Analog Input` / `PWM` devices are the realistic place to
+   confirm ordinal 12.
+3. **Both `device_type_name` and `rig_inventory._device_type` prefer `to_string()`**
+   and only fall back to the ordinal table. Since this bridge returns resolvable
+   names, G1 proves the *names* are right; it does **not** exercise the ordinal
+   fallback at all. State it that way in the design gate.
+
+**Ruling 4 was load-bearing, and the demo proves it.** `LED.State` is Integer,
+writable, with **zero allowed values and no limits** — indistinguishable from a
+continuous actuator by value shape alone. Only the `StateDevice` device-type
+exclusion keeps it auto-classified. A "numeric ⇒ continuous" detector would have
+broken the stock demo config, not just M5.
+
 ## G2 — Opt-in additivity, then a valid narrowing
 
 Start from `design/33-block5-demo-safety-config.yaml` (set `workspace_dir`).
@@ -99,28 +135,74 @@ Typed absolute-position Z.Position bounds 0..5000 um widen the declared core foc
 bounds 0.0..200.0 um; a typed axis entry may only narrow them.
 ```
 
-Then set `maximum: 100000.0` **and** raise `stage.z_max` to match. Expected: a
-different refusal, naming the driver-reported technical range — the outer sanity
-check. Record both messages verbatim; they are the block's two distinct guards and
-they must not collapse into one.
+The G1 typed entry stays as written above (`Z.Position`, `0..150` inside `stage.z`
+`0..200`) — G1 confirmed those are the real names and that `Z.Position` carries no
+driver limits, so this step isolates the narrowing rule with nothing else firing.
+
+### G3b — the technical-range outer check, mechanism only
+
+`Z.Position` reports **no** driver limits, so the outer sanity check cannot fire on
+it. The only demo properties carrying a `technical_range` are on `Camera`. Exercise
+the code path with a deliberately nonsensical declaration, and label it as such in
+the evidence:
+
+```
+  typed_actuators:
+    - device: Camera
+      property: Exposure          # driver technical range 0..10000
+      kind: absolute-position
+      units: um
+      minimum: 0.0
+      maximum: 20000.0
+```
+
+Expected: startup refusal naming `outside the driver-reported technical range
+0..10000` and the phrase `never inferred safe limits`.
+
+**This is a code-path probe, not a rig declaration** — an exposure property is not a
+position actuator, and nothing should conclude from it that such a declaration is
+sensible. The semantically meaningful version of this check exists only on M5's
+`Power (mW)` (0–75) in G7. Record both G3a and G3b messages verbatim; they are the
+block's two distinct guards and they must not collapse into one.
 
 ## G4 — The continuous-refusal net on a real driver
 
-Take the G1 galvo/DAC property and declare it under `categorical_properties`:
+G1 established that this demo config has **no galvo and no DAC**, so this step is
+re-scoped to the continuous devices it does have. Declare each of these under
+`categorical_properties`, one config per run:
 
 ```
-python -m microclaw --safety-config demo-galvo-categorical.yaml authorization-map > g4.txt 2>&1
+  categorical_properties:
+    - {device: Z, property: Position}          # StageDevice, Float, no driver limits
+```
+```
+  categorical_properties:
+    - {device: Camera, property: Exposure}     # CameraDevice, Float, limits 0..10000
 ```
 
-Expected: startup refusal, `is a known continuous actuator (confirmed by the live
-rig) and cannot be classified as categorical`. This is the only step that proves
-device-type ordinals 7–16 resolve over the bridge. Repeat with the G1 stage property
-for a second, independent confirmation.
+```
+python -m microclaw --safety-config demo-cat-z.yaml authorization-map > g4-z.txt 2>&1
+python -m microclaw --safety-config demo-cat-exposure.yaml authorization-map > g4-exposure.txt 2>&1
+```
+
+Expected in both: startup refusal, `is a known continuous actuator (confirmed by the
+live rig) and cannot be classified as categorical`, directing the operator to
+`rig_profile.typed_actuators`. `Z.Position` is the load-bearing one — it is refused
+purely on device type and property shape, with **no driver limits to lean on**.
+
+`Camera.Exposure` would also trip the pre-existing alias heuristic, so run `Z` first
+and treat `Camera` as corroboration, not as independent evidence.
+
+**What this step no longer claims.** It confirms the net for `StageDevice` (5) and
+`CameraDevice` (2), both already in the previously verified region. Ordinals **12
+(SignalIODevice) and 16 (GalvoDevice) remain unconfirmed over the bridge** and no
+demo run can fix that. Record them as open.
 
 Then the non-regression, which matters just as much: re-run G2's base config and
-confirm the six demo **StateDevices** still auto-classify (`source:
-"auto:state-device"`). A refusal here means the net has swallowed discrete devices
-and the block must not merge.
+confirm the demo **StateDevices** still auto-classify (`source: "auto:state-device"`).
+G1 makes this sharp — `LED.State` is Integer with zero allowed values and no limits,
+so only the device-type exclusion saves it. A refusal here means the net has
+swallowed discrete devices and the block must not merge.
 
 ## G5 — Preset expansion and denylist precedence
 
