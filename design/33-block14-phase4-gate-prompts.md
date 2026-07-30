@@ -119,6 +119,12 @@ Also inspect `Q1 Read-only expansion of every config group`. It must enumerate a
 expand every preset in Camera, Channel, Channel-Multiband, LightPath, Objective, and
 System. This section is enumeration only: no preset outside Channel is applied.
 
+Round 2 completed this inventory: all six groups expanded with zero enumeration
+failures. The demo configuration's real shutter-retarget case is
+`Channel-Multiband`, whose presets contain `Core.Shutter = LED Shutter` plus the
+corresponding `LED.Label` setting. `System` / `Startup` contains
+`Core.ChannelGroup = Channel`.
+
 Before G2, inspect both Q0 sections. The capability section must record successful
 typed returns for all four read-only calls and callable bridge members for all three
 mutating methods. The 20-call `get_property` baseline must include every sample plus
@@ -126,6 +132,11 @@ minimum and median milliseconds. What this settles: whether the new bridge surfa
 exists as expected and the serialized ZMQ round-trip floor against which all later
 timings must be interpreted. Method presence does not prove mutation semantics; G5
 does that.
+
+Round 2 also recorded the concrete expansion bridge surface:
+`mmcorej_Configuration` and `mmcorej_PropertySetting`, including
+`PropertySetting.get_read_only`. These are observed bridge members, not assumed
+Java/Python naming parity.
 
 ## G3 — Replay equivalence, waits, and read-back
 
@@ -229,7 +240,7 @@ measurements otherwise look persuasive.
 
 ---
 
-## Results — round 1 recorded; round-2-only observations pending a demo-core run
+## Results — rounds 1 and 2
 
 | Gate | Result | Evidence file / exact observation | Phase 4 consequence |
 |---|---|---|---|
@@ -237,18 +248,19 @@ measurements otherwise look persuasive.
 | G1 complete run / exit code | PASS (round 1) | `exit_code: 0`, `errors: []`. | Round-1 evidence is usable. |
 | Q0 new bridge capabilities and Python types | PASS | Four read-only calls returned the expected primitive/vector shapes; `define_config`, `delete_config`, and `delete_config_group` were callable and later exercised. | The required bridge surface exists. |
 | Q0 20-call round-trip min/median | Measured | 0.13 ms min / 0.14 ms median over 20 `get_property` calls. | Use as the serialized bridge-call floor. |
-| G2 all preset expansions and consecutive reads | PASS (Channel); round-2 all-group inventory pending | Cy5, DAPI, FITC, and Rhodamine were stable on consecutive reads. Round 1 reported six groups: Camera, Channel, Channel-Multiband, LightPath, Objective, System. | Ordered capture is supported for the four Channel presets; the expanded cross-group inventory awaits round 2. |
-| G2 `Core.*` entries | Measured, incomplete in round 1 | Every Channel preset contained `Core.Shutter = White Light Shutter`; it was already active, making the write a no-op. | Do not infer retargeting semantics from round 1. |
+| G2 all preset expansions and consecutive reads | PASS (round 2) | All six groups—Camera, Channel, Channel-Multiband, LightPath, Objective, and System—expanded; zero enumeration failures. Cy5, DAPI, FITC, and Rhodamine were stable on consecutive reads in round 1. | The cross-group inventory is complete for the demo configuration. |
+| G2 `Core.*` entries | Measured | Round 1: every Channel preset contained `Core.Shutter = White Light Shutter`, already active. Round 2: Channel-Multiband supplies the real retarget shape, `Core.Shutter = LED Shutter` plus `LED.Label` per preset; System/Startup sets `Core.ChannelGroup = Channel`. | Retarget measurement must use the round-2-discovered LED Shutter case; inventory alone does not establish apply semantics. |
+| G2 expansion bridge object surface | Measured (round 2) | Concrete types were `mmcorej_Configuration` and `mmcorej_PropertySetting`; the recorded PropertySetting members include `get_read_only`. | Expansion code must follow the observed bridge surface and preserve it in evidence. |
 | G3 structural replay equivalence | PASS | Empty `end_state_diff_set_config_vs_replay` on all four presets. Cy5 is vacuous: the core was already in the Cy5 state, so its `set_config_change` is empty and it evidences nothing. DAPI, FITC, and Rhodamine are the three non-vacuous cases carrying the finding. | Ordered replay matched `set_config` on the three evidentiary demo cases. |
 | G3 `Channel` bookkeeping equivalence | PASS | `configuration_state_equal: true` on all four presets, with the same Cy5 vacuity caveat. | Replay preserved observed MM config bookkeeping on the three non-vacuous cases. |
 | G3 busy/wait timings | Not settled and not settleable here | `system_busy` and every `device_busy` read false immediately after `set_config` on all four presets because demo devices complete instantly. `set_config` was 0.20–1.38 ms; replay was 2.36–12.32 ms. | This says nothing about a real rig's wait requirements; per-write wait semantics remain unmeasured. |
-| G3 read-back formatting | Partial; numeric round 2 pending | Round 1's enumerated string labels read back exactly. No numeric preset effect existed. | Exact-string verification against driver-reformatted numeric values is not yet settled. |
+| G3 read-back formatting / Q5b numeric | Partial; Q5b NOT RUN (round 2) | Round 1's enumerated string labels read back exactly. Round 2 aborted at Q3b before Q5b. | Exact-string verification against driver-reformatted numeric values is not yet settled. |
 | G3 per-preset shutter observations | Inconclusive | `Core.AutoShutter = 1`, but all presets selected the already-active White Light Shutter and it remained closed in the observations. | A real retarget is required; round 2 adds it without snapping or opening shutters. |
-| G4 all `Core.*` bridge permissions and semantics | Bridge permission measured; semantics pending | The no-op `Core.Shutter` write was permitted. | Round 2 must measure retargeting to LED Shutter and restoration. |
-| G5 `set_config` partial failure | Measured behavior | MM continues past a failed setting and raises afterward. Exact `state_diff`: `Camera.AllowMultiROI` `0`→`1` (setting 1) and `Emission.ClosedPosition` `0`→`1` (setting 3). | Executor cannot assume `set_config` is atomic or fail-fast. |
-| G5 property-loop partial failure | Measured behavior | Ordered replay failed fast at setting 2 after setting 1 landed; exact `state_diff`: only `Camera.AllowMultiROI` `0`→`1`; setting 3 was untouched. | Ordered execution provides a known failure boundary. |
-| G5 reversibility | PASS on demo | Both `post_restore_diff` values were empty. | Demonstrates demo reversibility only. |
-| G6 mutable-definition re-read | PASS | `reread_changed: true`. | TOCTOU is observable; capture/re-read policy is required. |
+| G4 Q3b shutter retarget | NOT RUN (round 2) | Q3b failed before measurement because active `White Light Shutter` was not enumerated: the probe stringified the DeviceType proxy instead of converting it through the bridge API. | Retargeting remains pending; the revised probe preserves converted and raw bridge type evidence. |
+| G5 `set_config` partial failure | Measured behavior (round 1); Q6 NOT RUN (round 2) | Round 1: MM continued past a failed setting and raised afterward. Exact `state_diff`: `Camera.AllowMultiROI` `0`→`1` (setting 1) and `Emission.ClosedPosition` `0`→`1` (setting 3). Round 2 aborted at Q3b before Q6. | Executor cannot assume `set_config` is atomic or fail-fast; this conclusion remains attributed to round 1. |
+| G5 property-loop partial failure | Measured behavior (round 1); Q6 NOT RUN (round 2) | Round 1: ordered replay failed fast at setting 2 after setting 1 landed; exact `state_diff`: only `Camera.AllowMultiROI` `0`→`1`; setting 3 was untouched. Round 2 aborted at Q3b before Q6. | Ordered execution provides a known failure boundary based on round-1 evidence. |
+| G5 reversibility | PASS on demo (round 1); Q6 NOT RUN (round 2) | Round 1: both `post_restore_diff` values were empty. Round 2 aborted at Q3b before Q6. | Demonstrates round-1 demo reversibility only. |
+| G6 mutable-definition re-read | PASS (round 1); Q7 NOT RUN (round 2) | Round 1: `reread_changed: true`. Round 2 aborted at Q3b before Q7. | TOCTOU is observable from round-1 evidence; capture/re-read policy is required. |
 | G6 scratch deletion and final residue | PASS (round 1) | `still_present: false`; `final_residue: []`. | Round 1 left zero residue; round 2 must prove this for both scratch groups. |
 
 ## Stop list

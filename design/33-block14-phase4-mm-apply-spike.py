@@ -23,6 +23,23 @@ sys.stdout.reconfigure(line_buffering=True)
 SCRATCH_GROUP = "microclaw_block14_phase4_scratch"
 NUMERIC_SCRATCH_GROUP = "microclaw_block14_phase4_numeric_scratch"
 BAD_VALUE = "__MICROCLAW_INTENTIONAL_BAD_VALUE__"
+DEVICE_TYPE_NAMES = {
+    2: "CameraDevice",
+    3: "ShutterDevice",
+    4: "StateDevice",
+    5: "StageDevice",
+    6: "XYStageDevice",
+    7: "SerialDevice",
+    8: "GenericDevice",
+    9: "AutoFocusDevice",
+    10: "CoreDevice",
+    11: "ImageProcessorDevice",
+    12: "SignalIODevice",
+    13: "MagnifierDevice",
+    14: "SLMDevice",
+    15: "HubDevice",
+    16: "GalvoDevice",
+}
 
 
 class NonPrimitiveBridgeResult(TypeError):
@@ -55,6 +72,29 @@ def clean_exception(exc: BaseException) -> str:
     for prefix in ("java.lang.", "mmcorej.", "org.micromanager."):
         message = message.replace(prefix, "")
     return message
+
+
+def device_type(core: Any, label: str) -> tuple[str, str]:
+    """Convert DeviceType through its bridge API; never stringify its proxy."""
+    raw = core.get_device_type(label)
+    raw_type = type(raw).__name__
+    if isinstance(raw, str):
+        return raw, raw_type
+    to_string = getattr(raw, "to_string", None)
+    if callable(to_string):
+        name = primitive(to_string())
+        if isinstance(name, str):
+            return name, raw_type
+    swig_value = getattr(raw, "swig_value", None)
+    if callable(swig_value):
+        raw = primitive(swig_value())
+    raw = primitive(raw)
+    if type(raw) is int:
+        return DEVICE_TYPE_NAMES.get(raw, str(raw)), raw_type
+    raise NonPrimitiveBridgeResult(
+        f"get_device_type({label!r}) returned unsupported primitive "
+        f"{type(raw).__name__} via bridge type {raw_type}"
+    )
 
 
 def vector(value: Any) -> list[str]:
@@ -474,22 +514,49 @@ def loaded_shutter_names(core: Any) -> tuple[list[str], list[dict[str, Any]]]:
     classifications = []
     for device in vector(core.get_loaded_devices()):
         try:
-            device_type = str(core.get_device_type(device))
-            is_shutter = device_type == "ShutterDevice"
+            converted_type, bridge_return_type = device_type(core, device)
+            is_shutter = converted_type == "ShutterDevice"
             classifications.append({
                 "device": device,
-                "device_type": device_type,
+                "device_type": converted_type,
+                "bridge_return_type": bridge_return_type,
                 "is_shutter": is_shutter,
             })
             if is_shutter:
                 names.append(device)
         except Exception as exc:
+            if isinstance(exc, NonPrimitiveBridgeResult):
+                raise
             classifications.append({
                 "device": device,
                 "device_type_error": clean_exception(exc),
                 "is_shutter": False,
             })
     return sorted(names), classifications
+
+
+def measurement_section(
+    ev: Evidence,
+    title: str,
+    key: str,
+    label: str,
+    measure: Callable[[], dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Record one measurement failure without suppressing bridge type violations."""
+    ev.section(title)
+    try:
+        result = measure()
+        ev.data["sections"][key] = result
+        ev.show(label, result)
+        return result
+    except NonPrimitiveBridgeResult:
+        raise
+    except Exception as exc:
+        failure = {"ok": False, "error": clean_exception(exc)}
+        ev.data["sections"][key] = failure
+        ev.data["errors"].append({"section": key, **failure})
+        ev.show(label, failure)
+        return None
 
 
 def observe_shutters(core: Any, names: list[str]) -> dict[str, Any]:
@@ -629,6 +696,7 @@ def main() -> int:
     pairs: list[tuple[str, str]] = []
     scratch_may_exist = False
     numeric_scratch_may_exist = False
+    triplet: list[dict[str, str]] | None = None
     exit_code = 0
     try:
         ev.section("Safety gate and pre-run snapshot")
@@ -751,82 +819,108 @@ def main() -> int:
             ev.show(preset, result)
         ev.data["sections"]["replay_equivalence"] = replay_results
 
-        ev.section("Q3 All Core.* pseudo-device effects")
-        restore(core, pre)
-        names = shutter_names(core, all_rows)
-        core_effects = core_effect_probe(core, all_rows, pre, names)
-        ev.data["sections"]["core_effects"] = core_effects
-        ev.show("Core effects", core_effects)
+        def measure_core_effects() -> dict[str, Any]:
+            restore(core, pre)
+            names = shutter_names(core, all_rows)
+            return core_effect_probe(core, all_rows, pre, names)
 
-        ev.section("Q3b Core.Shutter retargeting without exposure or direct shutter writes")
-        restore(core, pre)
-        shutter_retarget = shutter_retarget_probe(core, pre)
-        ev.data["sections"]["shutter_retarget"] = shutter_retarget
-        ev.show("Shutter retarget", shutter_retarget)
+        measurement_section(
+            ev, "Q3 All Core.* pseudo-device effects", "core_effects",
+            "Core effects", measure_core_effects,
+        )
 
-        ev.section("Q5b Numeric read-back fidelity")
-        restore(core, pre)
-        numeric_scratch_may_exist = True
-        numeric_readback = numeric_readback_probe(core, pre, expansion_surface)
-        ev.data["sections"]["numeric_readback"] = numeric_readback
-        ev.show("Numeric read-back", numeric_readback)
+        def measure_shutter_retarget() -> dict[str, Any]:
+            restore(core, pre)
+            return shutter_retarget_probe(core, pre)
 
-        ev.section("Q6 Partial failure and reversibility")
-        restore(core, pre)
-        triplet, candidate_diagnostics = scratch_triplet(core, pairs)
-        partial: dict[str, Any] = {
-            "triplet": triplet,
-            "candidate_diagnostics": candidate_diagnostics,
-        }
-        scratch_may_exist = True
-        define_scratch(core, "bad", triplet)
-        partial["expanded"] = expand(core, SCRATCH_GROUP, "bad", expansion_surface)
-        expanded_rows = partial["expanded"]["settings"]
-        if (
-            len(expanded_rows) != 3
-            or len({row["device"] for row in expanded_rows}) != 3
-            or expanded_rows[1]["value"] != BAD_VALUE
-        ):
-            raise RuntimeError(
-                "Scratch expansion did not preserve the required three-device "
-                "order with the intentional bad value at position 2: "
-                + json.dumps(expanded_rows, sort_keys=True)
+        measurement_section(
+            ev, "Q3b Core.Shutter retargeting without exposure or direct shutter writes",
+            "shutter_retarget", "Shutter retarget", measure_shutter_retarget,
+        )
+
+        def measure_numeric_readback() -> dict[str, Any]:
+            nonlocal numeric_scratch_may_exist
+            restore(core, pre)
+            numeric_scratch_may_exist = True
+            return numeric_readback_probe(core, pre, expansion_surface)
+
+        measurement_section(
+            ev, "Q5b Numeric read-back fidelity", "numeric_readback",
+            "Numeric read-back", measure_numeric_readback,
+        )
+
+        def measure_partial_failure() -> dict[str, Any]:
+            nonlocal scratch_may_exist, triplet
+            restore(core, pre)
+            triplet, candidate_diagnostics = scratch_triplet(core, pairs)
+            partial: dict[str, Any] = {
+                "triplet": triplet,
+                "candidate_diagnostics": candidate_diagnostics,
+            }
+            scratch_may_exist = True
+            define_scratch(core, "bad", triplet)
+            partial["expanded"] = expand(core, SCRATCH_GROUP, "bad", expansion_surface)
+            expanded_rows = partial["expanded"]["settings"]
+            if (
+                len(expanded_rows) != 3
+                or len({row["device"] for row in expanded_rows}) != 3
+                or expanded_rows[1]["value"] != BAD_VALUE
+            ):
+                raise RuntimeError(
+                    "Scratch expansion did not preserve the required three-device "
+                    "order with the intentional bad value at position 2: "
+                    + json.dumps(expanded_rows, sort_keys=True)
+                )
+            before_bad = snapshot(core, pairs)
+            try:
+                core.set_config(SCRATCH_GROUP, "bad")
+                partial["set_config"] = {"raised": False}
+            except Exception as exc:
+                partial["set_config"] = {"raised": True, "error": clean_exception(exc)}
+            after_bad = snapshot(core, pairs)
+            partial["set_config"]["state_diff"] = snapshot_diff(before_bad, after_bad)
+            partial["set_config"]["restore"] = restore(core, before_bad)
+            partial["set_config"]["post_restore_diff"] = snapshot_diff(
+                before_bad, snapshot(core, pairs)
             )
-        before_bad = snapshot(core, pairs)
-        try:
-            core.set_config(SCRATCH_GROUP, "bad")
-            partial["set_config"] = {"raised": False}
-        except Exception as exc:
-            partial["set_config"] = {"raised": True, "error": clean_exception(exc)}
-        after_bad = snapshot(core, pairs)
-        partial["set_config"]["state_diff"] = snapshot_diff(before_bad, after_bad)
-        partial["set_config"]["restore"] = restore(core, before_bad)
-        partial["set_config"]["post_restore_diff"] = snapshot_diff(before_bad, snapshot(core, pairs))
-        loop_rows = expanded_rows
-        before_loop = snapshot(core, pairs)
-        try:
-            partial["property_loop"] = {"raised": False, "result": apply_loop(core, loop_rows)}
-        except Exception as exc:
-            partial["property_loop"] = {"raised": True, "error": clean_exception(exc)}
-        after_loop = snapshot(core, pairs)
-        partial["property_loop"]["state_diff"] = snapshot_diff(before_loop, after_loop)
-        partial["property_loop"]["restore"] = restore(core, before_loop)
-        partial["property_loop"]["post_restore_diff"] = snapshot_diff(before_loop, snapshot(core, pairs))
-        ev.data["sections"]["partial_failure"] = partial
-        ev.show("Partial failure", partial)
+            before_loop = snapshot(core, pairs)
+            try:
+                partial["property_loop"] = {
+                    "raised": False, "result": apply_loop(core, expanded_rows),
+                }
+            except Exception as exc:
+                partial["property_loop"] = {"raised": True, "error": clean_exception(exc)}
+            after_loop = snapshot(core, pairs)
+            partial["property_loop"]["state_diff"] = snapshot_diff(before_loop, after_loop)
+            partial["property_loop"]["restore"] = restore(core, before_loop)
+            partial["property_loop"]["post_restore_diff"] = snapshot_diff(
+                before_loop, snapshot(core, pairs)
+            )
+            return partial
 
-        ev.section("Q7 TOCTOU re-read")
-        before_edit = expand(core, SCRATCH_GROUP, "bad", expansion_surface)
-        first = triplet[0]
-        core.define_config(SCRATCH_GROUP, "bad", first["device"], first["property"], first["before"])
-        after_edit = expand(core, SCRATCH_GROUP, "bad", expansion_surface)
-        toctou = {
-            "before": before_edit,
-            "after": after_edit,
-            "reread_changed": before_edit["settings"] != after_edit["settings"],
-        }
-        ev.data["sections"]["toctou"] = toctou
-        ev.show("Definition re-read", toctou)
+        measurement_section(
+            ev, "Q6 Partial failure and reversibility", "partial_failure",
+            "Partial failure", measure_partial_failure,
+        )
+
+        def measure_toctou() -> dict[str, Any]:
+            if triplet is None:
+                raise RuntimeError("Q7 requires Q6 scratch definition, but Q6 failed before creating it")
+            before_edit = expand(core, SCRATCH_GROUP, "bad", expansion_surface)
+            first = triplet[0]
+            core.define_config(
+                SCRATCH_GROUP, "bad", first["device"], first["property"], first["before"]
+            )
+            after_edit = expand(core, SCRATCH_GROUP, "bad", expansion_surface)
+            return {
+                "before": before_edit,
+                "after": after_edit,
+                "reread_changed": before_edit["settings"] != after_edit["settings"],
+            }
+
+        measurement_section(
+            ev, "Q7 TOCTOU re-read", "toctou", "Definition re-read", measure_toctou,
+        )
     except Exception as exc:
         exit_code = 1
         failure = {"type": type(exc).__name__, "message": clean_exception(exc), "traceback": traceback.format_exc()}
@@ -875,6 +969,8 @@ def main() -> int:
         if scratch_cleanup.get("still_present") is not False:
             exit_code = 1
         if numeric_scratch_cleanup.get("still_present") is not False:
+            exit_code = 1
+        if ev.data["errors"]:
             exit_code = 1
         ev.data["exit_code"] = exit_code
         ev.write()
