@@ -206,13 +206,19 @@ swallowed discrete devices and the block must not merge.
 
 ## G5 — Preset expansion and denylist precedence
 
-With `demo-typed.yaml`, set `channels.allowed` to a preset that touches the typed
-property if one exists; otherwise assert this from the off-rig test and say so.
-Expected reason: `is typed continuous but presets cannot invoke the typed guard
-without the deferred channel-plan executor`.
+**The preset half is not dischargeable on this demo config.** G1 enumerated all six
+config groups: every `Channel` and `Channel-Multiband` preset touches only
+`Dichroic`/`Emission`/`Excitation`/`LED` `Label` plus `Core.Shutter`; `LightPath` and
+`Objective` touch only `State`; `Camera` and `System` touch camera settings. **No
+demo preset touches `Z.Position`**, so no preset can be made to collide with the
+typed pair without editing the MM configuration itself. Record the preset-exclusion
+claim as covered by the off-rig test only. (Optional: if you want live evidence, add
+a `Channel` preset in the MM GUI that sets `Z.Position` and re-run — this mutates the
+demo config, so only do it if you are happy to restore it.)
 
-Then add the same pair to `forbidden_properties`. Expected: `cannot be both
-typed-continuous and explicitly excluded`.
+The denylist half **is** dischargeable here. Add the typed pair to
+`forbidden_properties` alongside its `typed_actuators` entry. Expected: `cannot be
+both typed-continuous and explicitly excluded`.
 
 ## G6 — Live write behaviour through the real tool path
 
