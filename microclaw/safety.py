@@ -896,12 +896,35 @@ class SafetyGuard:
         # confirmation/cap/ratchet rather than the categorical allowlist.
         if not illumination_pair and not typed_pair:
             self.check_property(device, prop)      # denylist/allowlist first
+        elif typed_pair:
+            # Typed declarations carry their own authorization and therefore
+            # bypass the categorical allowlist, but explicit exclusions still win.
+            for fp in self._c.forbidden_properties:
+                if fp.device == device and fp.property == prop:
+                    raise SafetyViolation(
+                        f"Property '{device}.{prop}' is forbidden by safety config."
+                    )
         self.check_typed_actuator(device, prop, value)
         p = prop.lower()
         focus = core.get_focus_device()
         cam = core.get_camera_device()
         xy = core.get_xy_stage_device()
-        if device == focus and p in self._MOTION_PROPS:
+        typed_policy = self._typed_actuators.get(TypedActuatorId(device, prop))
+        typed_position = (
+            typed_policy is not None and typed_policy.kind == "absolute-position"
+        )
+        if typed_position and device == focus:
+            self.check_z(_finite_number_text(value, f"Position property {device}.{prop}"))
+        elif typed_position and device == xy:
+            num = _finite_number_text(value, f"Position property {device}.{prop}")
+            self.check_xy(num, num)
+        elif typed_position and any(
+            limits.device == device for limits in self._c.named_stages
+        ):
+            self.check_named_stage(
+                device, _finite_number_text(value, f"Position property {device}.{prop}")
+            )
+        elif device == focus and p in self._MOTION_PROPS:
             num = _finite_number_text(value, f"Position property {device}.{prop}")
             self.check_z(num)
         elif device == cam and p in self._EXPOSURE_PROPS:

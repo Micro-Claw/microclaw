@@ -204,7 +204,10 @@ def _continuous_introspection(core: Any, device: str, prop: str) -> bool:
     """Conservative refusal signal only; never an authorization source."""
     try:
         kind = device_type_name(core, device)
-        if kind not in {"StageDevice", "XYStageDevice", "CameraDevice"}:
+        if kind not in {
+            "StageDevice", "XYStageDevice", "CameraDevice", "GalvoDevice",
+            "SignalIODevice",
+        }:
             return False
         if bool(core.is_property_read_only(device, prop)):
             return False
@@ -216,12 +219,13 @@ def _continuous_introspection(core: Any, device: str, prop: str) -> bool:
 
 
 def _validate_typed_live(
-    core: Any, identity: TypedActuatorId, policy: TypedActuatorPolicy
+    core: Any, identity: TypedActuatorId, policy: TypedActuatorPolicy,
+    loaded_devices: Iterable[str],
 ) -> list[str]:
     pair = f"{identity.device}.{identity.property}"
     errors: list[str] = []
     try:
-        devices = set(_strings(core.get_loaded_devices()))
+        devices = set(loaded_devices)
         if identity.device not in devices:
             return [f"Typed actuator {pair} names a device that is not connected."]
         properties = set(_strings(core.get_device_property_names(identity.device)))
@@ -271,6 +275,16 @@ DEVICE_TYPE_NAMES = {
     4: "StateDevice",
     5: "StageDevice",
     6: "XYStageDevice",
+    7: "SerialDevice",
+    8: "GenericDevice",
+    9: "AutoFocusDevice",
+    10: "CoreDevice",
+    11: "ImageProcessorDevice",
+    12: "SignalIODevice",
+    13: "MagnifierDevice",
+    14: "SLMDevice",
+    15: "HubDevice",
+    16: "GalvoDevice",
 }
 
 # A StateDevice's discrete position is exposed as exactly these two MM
@@ -505,10 +519,46 @@ def validate_live_rig(
         loaded_devices_error = f"Could not enumerate connected devices: {exc}"
 
     typed_pairs = {(identity.device, identity.property) for identity in parsed_config.typed_actuators}
+    denied_pairs = {
+        (item.device, item.property)
+        for item in parsed_config.constraints.forbidden_properties
+    } | set(profile.excluded_properties)
     for identity, policy in sorted(
         parsed_config.typed_actuators.items(), key=lambda item: (item[0].device, item[0].property)
     ):
-        errors.extend(_validate_typed_live(core, identity, policy))
+        errors.extend(_validate_typed_live(core, identity, policy, loaded_devices))
+        pair = (identity.device, identity.property)
+        if pair in denied_pairs:
+            errors.append(
+                f"Raw property {identity.device}.{identity.property} cannot be both "
+                "typed-continuous and explicitly excluded."
+            )
+        if policy.kind == "absolute-position":
+            axis_policies: list[tuple[str, Any]] = []
+            if identity.device == focus_device:
+                axis_policies.append(("core focus z", parsed_config.ranges.get(
+                    _stage_identity("core_focus", None, "z")
+                )))
+            if identity.device == xy_device:
+                axis_policies.extend([
+                    ("core XY x", parsed_config.ranges.get(_stage_identity("core_xy", None, "x"))),
+                    ("core XY y", parsed_config.ranges.get(_stage_identity("core_xy", None, "y"))),
+                ])
+            if identity.device in named_devices:
+                axis_policies.append((f"named stage {identity.device}", parsed_config.ranges.get(
+                    _stage_identity("named", identity.device, None)
+                )))
+            for axis_name, axis_policy in axis_policies:
+                if axis_policy is None:
+                    continue
+                lower, upper = axis_policy.minimum.bound, axis_policy.maximum.bound
+                if ((lower is not None and policy.minimum < lower)
+                        or (upper is not None and policy.maximum > upper)):
+                    errors.append(
+                        f"Typed absolute-position {identity.device}.{identity.property} bounds "
+                        f"{policy.minimum:g}..{policy.maximum:g} um widen the declared {axis_name} "
+                        f"bounds {lower!r}..{upper!r} um; a typed axis entry may only narrow them."
+                    )
         if policy.kind == "illumination-power":
             declared_power = next((item for item in illumination.power_properties
                                    if (item.device, item.property) == (identity.device, identity.property)), None)
@@ -539,9 +589,6 @@ def validate_live_rig(
                     f"{policy.minimum:g}..{policy.maximum:g} {canonical_unit}"),
             source="declared",
         ))
-    if guard is not None:
-        guard.admit_typed_actuators(parsed_config.typed_actuators)
-
     for device, prop in sorted(profile.categorical_properties):
         if (device, prop) in typed_pairs:
             errors.append(f"Raw property {device}.{prop} cannot be both typed-continuous and categorical.")
@@ -608,7 +655,7 @@ def validate_live_rig(
                 "illumination.max_power_step_factor must be at least 1."
             )
         for item in illumination.power_properties:
-            if getattr(item, "units", None) is None:
+            if getattr(item, "units", None) in (None, "percent"):
                 try:
                     has_limits = bool(core.has_property_limits(item.device, item.property))
                     lower = float(core.get_property_lower_limit(item.device, item.property)) if has_limits else None
@@ -617,7 +664,8 @@ def validate_live_rig(
                     lower = upper = None
                 if lower is not None and upper is not None and (lower, upper) != (0.0, 100.0):
                     errors.append(
-                        f"Illumination power {item.device}.{item.property} has no declared units and its driver technical range is "
+                        f"Illumination power {item.device}.{item.property} declares "
+                        f"{('no units' if getattr(item, 'units', None) is None else 'units: percent')} and its driver technical range is "
                         f"{lower!r}..{upper!r}, not 0..100 percent. The existing max_power_percent cap may be inoperative; "
                         "declare units: native and full_scale equal to the measured native full scale (M5 Power (mW): 75.0), or select a real percent property."
                     )
@@ -826,6 +874,8 @@ def validate_live_rig(
     # else — so an auto-classified write is admitted by both.
     if guard is not None and auto_pairs:
         guard.admit_auto_classified(auto_pairs)
+    if guard is not None:
+        guard.admit_typed_actuators(parsed_config.typed_actuators)
 
     report = AuthorizationMap(
         mode=profile.mode,
