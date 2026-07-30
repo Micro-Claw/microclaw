@@ -1,5 +1,26 @@
 # Nikon PFS probe kit — operator run sheet
 
+**You were sent two documents. This is the one to start with.** The other,
+`design/34-nikon-stopgap-run-sheet.md`, is about getting Microclaw itself running
+again on your rig, and is independent of these probes — the probes need only
+Micro-Manager, not Microclaw, so you can run them whatever state your Microclaw
+config is in.
+
+## Get the files
+
+```powershell
+git fetch --tags
+git checkout nikon-shipment-1
+```
+
+`nikon-shipment-1` is a **tag, not a branch.** On GitHub it appears under
+*Releases / Tags*, not in the branch dropdown. Expect a "detached HEAD" message
+from that checkout: it looks alarming and mentions discarding commits, but it is
+normal and expected, and simply means you are on an exact fixed version. Confirm
+with `git describe --tags`, which must print exactly `nikon-shipment-1`.
+
+## Before you run anything
+
 Use this kit only with the agreed Nikon Ti configuration, objective, sample holder,
 and oil-immersion setup. Keep Micro-Manager open with its pycromanager/ZMQ server
 enabled. Open PowerShell in the folder containing `design`. Replace every value in
