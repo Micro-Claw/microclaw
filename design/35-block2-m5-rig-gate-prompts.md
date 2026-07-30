@@ -54,6 +54,8 @@ New-Item -ItemType Directory -Path $Evidence | Out-Null
 git fetch origin design33/undeclared-light-source-gate > "$Evidence\git-fetch.txt" 2>&1
 git switch --detach origin/design33/undeclared-light-source-gate > "$Evidence\git-switch.txt" 2>&1
 git rev-parse HEAD > "$Evidence\head.txt" 2>&1
+git merge-base --is-ancestor e9817ade02ac7e076997cda60a00fbb0c9cc217c HEAD
+$LASTEXITCODE > "$Evidence\contains-implementation-tip.txt"
 git status --short > "$Evidence\status.txt" 2>&1
 python -V > "$Evidence\python.txt" 2>&1
 git diff --check 98842cfc00281e442ceacd7ef345686851943c8d..HEAD > "$Evidence\diff-check.txt" 2>&1
@@ -73,9 +75,12 @@ loaded `.cfg` path:
 "mm_config=$MMConfig" >> "$Evidence\rig.txt"
 ```
 
-**PASS:** `head.txt` is exactly
-`e9817ade02ac7e076997cda60a00fbb0c9cc217c`, `status.txt` and `diff-check.txt`
-are empty, and the source and backup hashes match. Stop otherwise.
+**PASS:** `head.txt` is the fetched
+`origin/design33/undeclared-light-source-gate` tip,
+`contains-implementation-tip.txt` is `0`, `status.txt` and `diff-check.txt` are
+empty, and the source and backup hashes match. Stop otherwise. This avoids an
+impossible self-reference where committing a new runbook hash would make the
+hash written inside that same runbook stale.
 
 Run the deterministic off-rig evidence on the rig checkout:
 
