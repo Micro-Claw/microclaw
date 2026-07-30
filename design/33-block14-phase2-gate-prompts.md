@@ -394,6 +394,45 @@ entries, same 20-device excluded inventory, `iChrome-MLE-TCP.State` still refuse
   `iChrome-MLE-TCP.State` still not admitted. No collateral change.
 - **G7c** deferred: live emission, operator's call.
 
+### G7c RESULT — PASS, 2026-07-30. The two claims no demo core could reach.
+
+Live M5, `m5-safety-migrated.yaml`, beam not emitting (`Laser Operation` read `Off`
+throughout and was verified before and after every write).
+
+**The ratchet evaluates in canonical percent.** From a device sitting at 5.0 mW, a
+write of 30 mW was refused with `Power increase 6.7% → 40.0% exceeds the 3.0×
+per-write ratchet.` The 6.7 % is the load-bearing number: it is 5/75, so
+`check_illumination` converted the **device read** from native mW into canonical
+percent before taking the ratio. Had the conversion not fired it would have printed
+`5.0% → 40.0%`. This exercises the `old = old * 100 / scale` branch that runs only
+when `previous_percent` is absent, and it had no off-rig or demo equivalent.
+
+**The typed cap and the ratchet are independent guards.** 31 mW was refused with
+`Typed actuator iBeamSmartCW-1.Power (mW) has canonical value 41.3333 percent;
+allowed absolute range is 0..40 percent.` — while 30 → 31 mW is 1.03×, comfortably
+inside the ratchet. The earlier case was the reverse. Neither guard collapsed into
+the other, which is the property G3a/G3b established statically and this confirms
+under live writes.
+
+**The bound is inclusive and the round trip is exact.** 30 mW = 40.0 % passed at
+exactly the ceiling, with no float drift into 40.000…1.
+
+### G7d RESULT — PASS, plus a free determinism check
+
+`g7d.txt` re-ran the migrated config in a separate connection: 58 entries,
+**entry set, verdict and preset sets byte-identical to `g7b.txt`**. The migrated map
+is deterministic across connections, not merely correct once. Combined with the
+coordinator-computed `g7-before.txt` vs `g7b.txt` diff, the only change the migration
+makes to the M5 map is the two rows for the newly declared device.
+
+### Not a Phase 2 defect, observed during G7c
+
+`iBeamSmartCW-1."Laser Operation"` is a String `On`/`Off` control that is **not** in
+`illumination.shutters`, so microclaw neither confirm-gates it nor drives it off at
+teardown. It stayed `Off` only because nothing wrote it. This is the closeout's
+"illumination gate is inert on an undeclared light source" finding appearing on M5;
+it is an M5 config gap and belongs to that separate branch.
+
 ## G8 — the GenericDevice gap (read-only, added 2026-07-30)
 
 The M5 inventory shows every hazardous continuous actuator on this rig is a
@@ -553,6 +592,27 @@ conflict on the line above it.
 ordinals 12 and 16; a preset colliding with a typed pair; the XY axis ambiguity; the
 entire illumination-units path; and the ratchet in canonical percent. The last two are
 the measured defect this block exists to fix.
+
+## Round-3 fix and the remaining re-gate
+
+`47295f2` closes the G8 gap: `GenericDevice` added to the refusal net, `pre_init`
+properties exempted, guaranteed mode fails closed when introspection of a **declared**
+pair fails, and the refusal message now names `rig_profile.excluded_properties`.
+
+Coordinator-verified off-rig against the exact M5 inventory rows — `Power (mW)`,
+`PWM.Position0`, `Laser Trigger.Duration0 (us)` and `TTL.State0` refused;
+`PWM."Number of PWM"` (pre-init) and all seven of M5's real StateDevice declarations
+still admitted; introspection failure fatal in guaranteed mode and best-effort in
+degraded. Suite 1184 passed / 99 skipped / 3 warnings.
+
+**Remaining rig work — read-only, two runs:**
+
+1. Re-run G8 (`m5-generic-categorical.yaml`, unchanged) → now expect a **startup
+   refusal** naming `iBeamSmartCW-1.Power (mW)`, offering both `typed_actuators` and
+   `excluded_properties`.
+2. Re-run the unmodified `m5-safety.yaml` → expect a `complete` map **identical to
+   `g7-before.txt`** (57 entries). This is the non-regression check that the widening
+   did not disturb the deployed profile, and it is the one that must not be skipped.
 
 ## Stop conditions
 
