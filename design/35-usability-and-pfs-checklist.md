@@ -103,6 +103,12 @@ while the shipped kit is in flight.
       boundaries are safety and rollback boundaries.
 - [ ] One worktree per concurrent agent. Never `git add -A`. Never
       `pip install -e .` while another agent is live in a shared directory.
+- [ ] **Commit coordinator edits to this file before assigning the next block.**
+      Process failure caught by block 1's implementer, 2026-07-30: corrections and
+      ledger rows lived only as uncommitted working-tree changes on `main`, so an
+      agent in a worktree branched from the pre-edit commit correctly reported that
+      the items it was told to implement did not exist. Worktrees see committed
+      history, not the coordinator's editor buffer.
 
 Progress markers: `[ ]` not started, `[-]` active, `[x]` complete, `[!]` blocked.
 
@@ -113,10 +119,10 @@ Rig-facing commands must be PowerShell/cmd-safe (the rig is Windows): prefer
 
 | Block | Track | Depends on | Branch | Start commit | Implementation commit | Rig evidence | Merge | Design reconciliation |
 |---|---|---|---|---|---|---|---|---|
-| 0a | Remote kit | — | `design34/nikon-probe-kit` | | | **is the deliverable** | | |
-| 0b | Remote kit | — | `design34/nikon-stopgap-config` | | | required | | |
+| 0a | Remote kit | — | `design34/nikon-probe-kit` | `b717594` | `8696169` **rejected, revision owed** | **is the deliverable** | | |
+| 0b | Remote kit | — | `design34/nikon-stopgap-config` | `b717594` | `ead2fb9` **accepted** (`6ac2ab2` rejected) | 0c ships it | merge held for 0a | |
 | 0c | Remote kit | 0a, 0b | — (ship + wait) | | | **operator returns evidence** | n/a | |
-| 1 | Usability | 0a and 0b assigned | `design33/phase5-doc-reconciliation` | | | n/a | | |
+| 1 | Usability | 0a and 0b assigned | `design33/phase5-doc-reconciliation` | `b717594` | `dd359a3` **accepted** | n/a | pending push | this block *is* the gate |
 | 2 | Usability | 1 | `design33/undeclared-light-source-gate` | | | required | | |
 | 3 | Usability | 2 | `design33/config-diagnostics` | | | optional | | |
 | 4 | Usability | 3 | `design33/first-launch-setup` | | | **required** | | |
@@ -134,6 +140,15 @@ Rig-facing commands must be PowerShell/cmd-safe (the rig is Windows): prefer
 Baseline to re-measure before block 1: `main` was 1160 passed / 99 skipped / 3
 warnings at the previous closeout, before Block 14 Phases 2 (`47f6702`) and 4
 (`5458483`) landed. Re-measure; do not trust that number.
+
+**Re-measured 2026-07-30 at `b717594`: 1207 passed / 99 skipped / 3 warnings in
+13.2 s.** This is the baseline every block below is compared against. The 3
+warnings are **one `StarletteDeprecationWarning` plus two
+`phase_cross_correlation` empty-image `UserWarning`s** from
+`microclaw/tools.py:1551`–`:1552`, raised by the featureless-field calibration
+tests; all three are pre-existing and expected, not a regression. (Corrected
+after block 1: an earlier version of this line attributed all three to
+`phase_cross_correlation` and cited only `:1552`.)
 
 ---
 
@@ -369,28 +384,43 @@ No branch — this is coordination.
 
 Branch: `design33/phase5-doc-reconciliation`
 
-Small and documentation-only, but it goes first because a Phase 5 implementer
-reading design/33 today would pin the wrong contract.
+Small, and it goes first because a Phase 5 implementer reading design/33 today
+would pin the wrong contract.
 
-- [ ] Fix design/33 `:392`: the inventory schema is documented as
+**Correction (coordinator, 2026-07-30): this block is NOT documentation-only, as
+this section originally claimed.** Verified on `b717594`:
+`microclaw/rig_inventory.py:380` emits the version as a bare inline string
+literal, and `grep` for `SCHEMA`/`SUPPORTED` in that module returns nothing —
+there is no constant to point prose at. The second item below therefore requires
+a real change under `microclaw/`, plus tests. Scope the block accordingly; do not
+hand an implementer a "docs only" framing that its own second item contradicts.
+
+- [x] Fix design/33 `:392`: the inventory schema is documented as
       `microclaw.rig-inventory/v1`, but `microclaw/rig_inventory.py:380` has
       emitted `microclaw.rig-inventory/v2` since `5c54e55`. Pinning `v1` would
       reject every inventory the shipped producer writes.
-- [ ] Replace the prose version literal with a pointer to a **shared supported-
+- [x] Replace the prose version literal with a pointer to a **shared supported-
       version constant or parser contract** exported by `rig_inventory`, so the
       next bump cannot desynchronise prose from producer again. Phase 5 reads the
       supported set from the producer, never from the document.
-- [ ] Correct the previous checklist's final-closeout line (`:1338`), which says
+- [x] **There is a second, independent version literal the block text missed:**
+      `microclaw/rig_inventory.py:375` emits
+      `microclaw.rig-inventory-fingerprint/v1` for the fingerprint payload, which
+      versions separately from the inventory schema. Decide explicitly whether it
+      joins the shared constant/contract or stays deliberately independent, and
+      record which. Fixing only the inventory literal leaves the exact same
+      desynchronisation defect live one line above it.
+- [x] Correct the previous checklist's final-closeout line (`:1338`), which says
       Block 14 Phases 2, 4, and 5 are all unstarted. Phases 2 (`47f6702`) and 4
       (`5458483`) are merged; only Phase 5 remains. Leave the rest of that file
       intact and add a one-line pointer at its top to this file.
-- [ ] Tick the two Block 14 rows that were held unticked only because Phase 5 had
+- [x] Tick the two Block 14 rows that were held unticked only because Phase 5 had
       not started (old checklist `:1226`, `:1229`), or restate them as
       Phase-5-scoped here. Do not leave them ambiguous in two files.
 
 Post-merge design gate:
 
-- [ ] None beyond the edits themselves; this block *is* a design gate.
+- [x] None beyond the edits themselves; this block *is* a design gate.
 
 ## 2. Close the undeclared-light-source vulnerability — rig gate required
 
@@ -1047,6 +1077,34 @@ This is an inventory, not permission to close with unresolved blank work. Block
   2500-tile datasets were never retrieved from the rig.
 - **Shipped context thresholds are unexercised.** Block 15 shipped 120k/90k; the
   gate ran at 1500/800. Cache behaviour is asserted by test, not measured.
+- **Offline and live validation have complementary, non-overlapping coverage, and
+  neither is complete alone.** Found while reviewing block 0b, verified on
+  `b717594`. **Corrected 2026-07-30:** an earlier version of this entry claimed a
+  reviewed config could *start* with no exposure cap, no acquisition budget, and
+  no Z ceiling. That is false, and the error was mine — I proved it against
+  `load_safety_config` (the offline path) and generalised to live startup without
+  reading `validate_live_rig`. The measured split is:
+  - **Offline strict schema** rejects blank/null `stage.*` edges and
+    `named_stages[*].min_um/max_um` (they must be finite), but **accepts**
+    `camera.max_exposure_ms: null` and all nine `acquisition` budgets as null.
+  - **Live `validate_live_rig` in guaranteed mode** rejects what the offline path
+    misses: null `max_exposure_ms` when a camera is reachable
+    (`microclaw/authorization.py:520`), any acquisition policy field that is not
+    finite and positive (`:832`–`:836`), any **open range edge** —
+    `{unbounded: true}` included — on a reachable stage actuator (`:504`–`:509`),
+    and any reachable actuator with no declared policy (`:497`–`:502`).
+  - Runtime enforcement is uniformly `if limit is not None and value > limit`
+    (`microclaw/safety.py:806`, `:788`–`:802`, `:1091`–`:1094`), so a null that
+    reached runtime would be unenforced — guaranteed mode is what stops it
+    arriving, not the schema.
+  **The consequence that matters is block 3's**, and it is sharper than the
+  original claim: block 3 ships an **offline** validator that operators will
+  trust, and as measured it would certify a config that live startup then refuses.
+  "Passes the checker, then refuses on the rig" is exactly the usability failure
+  block 3 exists to remove. Block 3's validator must therefore report the
+  guaranteed-mode live requirements it cannot verify, rather than returning clean.
+  Block 5 should check the deployed M5 config for null budgets; block 4 must never
+  emit them. Note the exposure check is gated on a reachable camera being found.
 
 ## Standing constraints that outlive any block
 
