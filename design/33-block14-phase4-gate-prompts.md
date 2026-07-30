@@ -328,20 +328,20 @@ failure into a live property write.
 
 ### G11 — shutter-retarget confirmation and cancellation boundary
 
-Before declaring the wrapped LED as an illumination gate, use read-only calls to
-record every allowed `LED.Label` value and determine which value is off and which
-values emit. The measured list currently establishes `Closed` at position 0 plus
-the wavelength labels, but not a single safe `on_value` pair. Until that evidence
-exists, leave LED Shutter out of `illumination.shutters` and do not run the
-retarget limb below with the checked-in demo profile.
+Before starting microclaw, select **LED Shutter** as the active shutter in the MM
+GUI. Record that pre-run active-shutter value in the evidence; it must be
+`LED Shutter`, so the retarget cannot pass vacuously. Start microclaw with the
+checked-in `design/33-block14-phase4-demo-safety-config.yaml`, then apply `FITC`
+through `set_channel`. Its captured plan writes
+`Core.Shutter = White Light Shutter`, a real retarget to the only shutter declared
+by that profile.
 
-Temporarily create a scratch preset **inside the fixed Channel group** containing
-the measured Channel-Multiband shape (`Core.Shutter = LED Shutter` plus `LED.Label`)
-with both demo shutters declared; never execute the Channel-Multiband group itself.
-Decline the first
-illumination-class prompt: no property may change. Repeat and accept: while idle,
-the selected shutter changes, both shutters remain closed, and the previous target
-is restored after evidence capture. Do not snap or expose. Separately run:
+Decline the first illumination-class prompt: no property may change. Repeat from
+the same precondition and accept: the active shutter must change from
+`LED Shutter` to `White Light Shutter`, both shutters must remain closed, no snap
+or exposure may occur, and the executor result must show successful read-back
+verification of the captured `Core.Shutter` value. Preserve the before/after full
+property snapshots and prompt result with the evidence. Separately run:
 
 ```powershell
 python -m pytest tests\test_channel_plan_executor.py -k cancellation_between_writes -vv
@@ -349,3 +349,11 @@ python -m pytest tests\test_channel_plan_executor.py -k cancellation_between_wri
 
 PASS requires cancellation only at a write boundary followed by rollback. The gate
 must not describe this as an in-flight bridge-call interrupt.
+
+**Future profile item, not a prerequisite for this gate:** before a profile may
+declare LED Shutter itself as an illumination gate, use read-only calls to record
+every allowed `LED.Label` value and determine which value is off and which values
+emit. The measured list currently establishes `Closed` at position 0 plus the
+wavelength labels, but not a safe `on_value`/`off_value` pair. That missing
+characterization is why the checked-in profile declares only White Light Shutter;
+it does not block the retarget test above.
