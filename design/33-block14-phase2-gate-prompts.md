@@ -302,21 +302,126 @@ comment.
 
 ## G7 — M5 only. Not dischargeable on the demo core.
 
-1. Current, **unmigrated** M5 config →
-   `python -m microclaw --safety-config m5-safety.yaml authorization-map > g7-before.txt 2>&1`
-   Expected: startup refusal naming `iBeamSmartCW-1.Power (mW)`, its real 0–75
-   technical range, and the `units: native` / `full_scale: 75.0` instruction. This
-   is a deliberate breaking change: the current 100 % cap on that property has been
-   measured to be inoperative.
-2. Migrated config → `complete`, with the typed entry's canonical percent bound in
-   `detail`. Verify by hand that the declared percent maps to the mW ceiling you
-   actually intend.
-3. Live: write at the bound (passes), just above it (refused pre-write), and a
-   ratchet-violating increase (refused). After **any** write that reports failure,
-   read the property back before retrying — a `Serial timeout` on M5 has been
-   measured to raise while the value landed.
-4. Confirm the M5 map is otherwise unchanged: same categorical entries, same
-   excluded inventory, `iChrome-MLE-TCP.State` still refused.
+### What the M5 inventory settled first (2026-07-30, `m5_inventory/`)
+
+30 devices, 395 properties, **zero enumeration failures**. Live driver introspection
+confirms, for the first time:
+
+- `iBeamSmartCW-1."Power (mW)"` — Float, writable, unenumerated, **technical range
+  0.0–75.0**. The 0–75 figure design/33 recorded from the Block 7b session is now
+  measured through the bridge, and the migration guard *can* fire on this driver.
+- `iChrome-MLE-TCP."Laser 4: 3. Level %"` — Float, **0.0–100.0**. A genuine percent
+  property.
+
+**The currently deployed M5 profile therefore passes correctly.** It declares only
+the iChrome `Level %`, so `(0.0, 100.0) == (0.0, 100.0)` and no migration error is
+raised. The defective declaration design/33 recorded belongs to an earlier config
+generation; illumination was migrated to the iChrome engine during Block 7b. Silence
+here is the right answer, not a missed refusal — record it that way.
+
+### G7a — reproduce the defect
+
+`m5-safety-ibeam.yaml` — copy of `m5-safety.yaml`, keeping `max_power_percent: 100.0`,
+with the historical declaration restored:
+
+```
+  power_properties:
+    - {device: iChrome-MLE-TCP, property: "Laser 4: 3. Level %"}
+    - {device: iBeamSmartCW-1, property: "Power (mW)"}
+```
+
+Expected: startup refusal naming `iBeamSmartCW-1.Power (mW)`, its `0.0..75.0` range,
+and the `units: native` / `full_scale` instruction.
+
+### G7b — the migrated declaration
+
+`m5-safety-migrated.yaml` — declare the representation in **both** places (the code
+requires them to agree) and choose a ceiling that means something:
+
+```
+rig_profile:
+  typed_actuators:
+    - device: iBeamSmartCW-1
+      property: "Power (mW)"
+      kind: illumination-power
+      units: native
+      full_scale: 75.0
+      minimum: 0.0
+      maximum: 40.0            # canonical percent -> 30 mW
+illumination:
+  max_power_percent: 40.0
+  power_properties:
+    - {device: iChrome-MLE-TCP, property: "Laser 4: 3. Level %"}
+    - {device: iBeamSmartCW-1, property: "Power (mW)", units: native, full_scale: 75.0}
+```
+
+Expected: `complete`, with the typed entry's `detail` showing
+`units=native; raw native/full_scale 75 -> percent; effective canonical bound 0..40 percent`.
+
+**Migration alone does not make the cap meaningful.** With `units: native` and
+`max_power_percent` left at 100, raw 75 mW converts to exactly 100 % and is still
+permitted. The units fix makes the ceiling *expressible*; the operator must then pick
+a real one. Note also that `max_power_percent` is global, so lowering it to 40 also
+caps the iChrome `Level %` at 40 % — which is the point of a canonical unit: one cap
+that means the same thing across mixed-unit drivers.
+
+### G7c — live writes. Operator's call; real emission.
+
+Only with the beam blocked or the shutter closed, and only if the operator wants it:
+write at the canonical bound (passes), just above it (refused pre-write), and a
+ratchet-violating increase (refused). After **any** write that reports failure, read
+the property back before retrying — a `Serial timeout` on M5 has been measured to
+raise while the value landed. The static G7a/G7b halves already prove the units
+conversion and the refusal; G7c adds the live cap and ratchet only.
+
+### G7d — no collateral change
+
+Confirm the migrated map is otherwise identical to `g7-before.txt`: same categorical
+entries, same 20-device excluded inventory, `iChrome-MLE-TCP.State` still refused.
+
+## G8 — the GenericDevice gap (read-only, added 2026-07-30)
+
+The M5 inventory shows every hazardous continuous actuator on this rig is a
+**GenericDevice**, which `_continuous_introspection` does not cover:
+
+| Property | Type | Driver range |
+|---|---|---|
+| `iBeamSmartCW-1."Power (mW)"` | Float | 0–75 |
+| `iBeamSmartCW-Booster."Fine A (%)"` | Float | 0–100 |
+| `PWM.Position0` | Integer | 0–255 |
+| `Servos.Position0` | Integer | 0–65535 |
+| `Laser Trigger."Duration0 (us)"` | Integer | 0–1048575 |
+
+Off-rig, the same property on a `GenericDevice` is **admitted as categorical and
+written unbounded**, while on a `StageDevice` it is refused. Confirm on the rig:
+
+`m5-generic-categorical.yaml` — copy of `m5-safety.yaml` with the existing
+`categorical_properties` kept and one entry added:
+
+```
+    - {device: iBeamSmartCW-1, property: "Power (mW)"}
+```
+
+```
+python -m microclaw --safety-config m5-generic-categorical.yaml authorization-map > g8.txt 2>&1
+```
+
+Predicted: the map returns **complete** and admits the pair — a Class-3B laser power
+property authorized as "categorical/discrete" with no numeric bound. If it instead
+refuses, the analysis above is wrong and the fix is unnecessary; either result is
+worth having.
+
+Note what this is *not*: the default remains fail-closed. `g7-before.txt` shows all
+of these devices in the excluded inventory today. The gap opens only when an operator
+affirmatively mis-declares one — which is exactly the mistake this net exists to catch.
+
+The Integer "configuration" properties on the same devices (`PWM."Number of PWM"`
+1–5, `TTL."Number of channels"` 1–4, `Servos."Number of Servos"` 1–7) are why this
+widening needs a decision rather than a reflex: they are numeric, writable and
+unenumerated too, so a GenericDevice rule refuses them as "continuous actuators"
+with no typed kind available to declare them. Their remedy would be
+`excluded_properties`, and the refusal message must therefore name exclusion as an
+alternative, which it currently does not.
 
 ## Demo coverage summary (settled by G1, 2026-07-30)
 
