@@ -1,0 +1,73 @@
+# Nikon Ti stopgap safety worksheet -- THIS FILE IS NOT RUNNABLE.
+#
+# Fill every blank below with a value measured or deliberately chosen for this
+# microscope, objective, and sample holder. Observed session values are not
+# safety limits. When complete, transfer the answers into
+# design/34-nikon-stopgap-draft.yaml and follow the run sheet.
+
+schema_version: 2
+reviewed: false
+
+rig_profile:
+  mode: guaranteed
+  # The labelled Nikon turrets are expected to be MM StateDevices, whose own
+  # Label/State pair is auto-classified after live inspection. No additional
+  # non-StateDevice categorical property is known from the supplied evidence.
+  categorical_properties: []
+  typed_actuators: []
+  excluded_properties:
+    - {device: Core, property: Initialize}
+    # TIPFSStatus is Core.AutoFocus. Microclaw must not arm or disarm PFS by a
+    # raw property write until blocks 7a-7b provide a typed continuous-focus
+    # operation. Excluding State rules out the device's whole Label/State pair.
+    # Cost: the operator cannot turn PFS on or off through microclaw at all.
+    - {device: TIPFSStatus, property: State}
+
+stage:
+  x_min:  # Measure/decide the lowest safe TIXYDrive X for this holder; no travel limits were supplied.
+  x_max:  # Measure/decide the highest safe TIXYDrive X; observed positions are not limits.
+  y_min:  # Measure/decide the lowest safe TIXYDrive Y for this holder; no travel limits were supplied.
+  y_max:  # Measure/decide the highest safe TIXYDrive Y; observed positions are not limits.
+  z_min:  # Decide the lowest safe TIZDrive position for the installed objective/holder combination.
+  z_max:  # HARD CEILING: operator must confirm collision-safe TIZDrive maximum; 2462.15 um was only observed.
+
+camera:
+  max_exposure_ms:  # Decide a sample-safe AndorIxon exposure cap; the observed 10 ms is not a limit.
+
+acquisition:
+  max_frames:  # Decide the largest unattended frame count safe for sample, storage, and workflow.
+  max_duration_s:  # Decide the maximum acquisition duration before microclaw must refuse.
+  max_bytes:  # Decide the maximum raw payload (width x height x bytes/pixel x frames) storage budget.
+  max_illuminated_ms:  # Decide the maximum illuminated time for one acquisition from sample tolerance.
+  max_session_illuminated_ms:  # Decide the total illuminated-time budget for a complete session.
+  confirm_above_frames:  # Decide when frame count needs explicit human confirmation (at or below max_frames).
+  confirm_above_duration_s:  # Decide when duration needs confirmation (at or below max_duration_s).
+  confirm_above_bytes:  # Decide when raw payload needs confirmation (at or below max_bytes).
+  confirm_above_illuminated_ms:  # Decide when illuminated time needs confirmation (at or below its maximum).
+
+# There is no Channel config group. BF/On and BF/Off control Shutter-1.State,
+# but microclaw channels address only the literal Channel group; do not put On
+# here. An empty list authorizes no Channel presets.
+channels:
+  allowed: []
+
+illumination:
+  require_confirm_on_enable: true
+  # MM implicitly selected the only loaded ShutterDevice: the session's
+  # get_shutter_device-backed state resolved Shutter-1 despite the cfg having no
+  # explicit Property,Core,Shutter line. Core.AutoShutter=1 opens it for images.
+  shutters:
+    - {device: Shutter-1, property: State, on_value: "1", off_value: "0"}
+  power_properties: []
+
+named_stages:
+  - device: TIPFSOffset
+    min_um:  # Measure a safe useful PFS-offset lower bound; 130 was only an observed target.
+    max_um:  # Measure a safe useful PFS-offset upper bound; 160 was only an observed target.
+  - device: TITIRF
+    min_um:  # Measure/decide its collision- and optics-safe lower travel bound; no positions were supplied.
+    max_um:  # Measure/decide its collision- and optics-safe upper travel bound; no positions were supplied.
+
+plugins:
+  blocked: []
+  allow_hardware_motion: false

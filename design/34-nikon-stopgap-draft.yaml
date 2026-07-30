@@ -1,0 +1,78 @@
+# Nikon Ti stopgap safety-config structure.
+#
+# This parses as schema 2 but is deliberately unreviewed and cannot start
+# microclaw. Replace every reviewed-unbounded stage edge and every null budget
+# with the operator's worksheet answers. Only the operator may then change
+# reviewed to true.
+
+schema_version: 2
+reviewed: false
+
+rig_profile:
+  mode: guaranteed
+  categorical_properties: []
+  typed_actuators: []
+  excluded_properties:
+    - {device: Core, property: Initialize}
+    # Core.AutoFocus is TIPFSStatus. Its MM type is AutoFocusDevice, not
+    # StateDevice, so current auto-classification would not admit State anyway.
+    # Keep this explicit exclusion: a ruling on State suppresses the entire
+    # Label/State discrete-position pair if a driver reports a different type.
+    # Until blocks 7a-7b land, microclaw cannot arm OR disarm PFS at all.
+    - {device: TIPFSStatus, property: State}
+
+# Schema 2 can represent an open stage edge, but these declarations are only a
+# parseable drafting device, not operator approval. Replace all ten edges
+# below with finite, operator-confirmed values before setting reviewed: true.
+stage:
+  x_min: {unbounded: true, reason: "Draft only: operator has not supplied the safe TIXYDrive X minimum."}
+  x_max: {unbounded: true, reason: "Draft only: operator has not supplied the safe TIXYDrive X maximum."}
+  y_min: {unbounded: true, reason: "Draft only: operator has not supplied the safe TIXYDrive Y minimum."}
+  y_max: {unbounded: true, reason: "Draft only: operator has not supplied the safe TIXYDrive Y maximum."}
+  z_min: {unbounded: true, reason: "Draft only: operator has not supplied the safe TIZDrive minimum."}
+  z_max: {unbounded: true, reason: "Draft only: operator has not confirmed the hard collision-safe TIZDrive ceiling."}
+
+# Null is accepted structurally but supplies no usable guaranteed-mode limit.
+# This schema has no reviewed-unbounded form for exposure or acquisition
+# budgets; replace every null with a finite operator decision before review.
+camera:
+  max_exposure_ms: null
+
+acquisition:
+  max_frames: null
+  max_duration_s: null
+  max_bytes: null
+  max_illuminated_ms: null
+  max_session_illuminated_ms: null
+  confirm_above_frames: null
+  confirm_above_duration_s: null
+  confirm_above_bytes: null
+  confirm_above_illuminated_ms: null
+
+# There is no Channel group. BF/On and BF/Off are presets in the BF group and
+# cannot be declared through channels.allowed, which enumerates only Channel.
+channels:
+  allowed: []
+
+illumination:
+  require_confirm_on_enable: true
+  # The live session's get_shutter_device-backed state resolved Shutter-1 as
+  # Core.Shutter even though the cfg has no explicit Core.Shutter property line:
+  # MM implicitly selected the rig's only loaded ShutterDevice. AutoShutter=1
+  # opens it during exposures. It therefore stays on the confirmation/exit-off
+  # illumination gate and is never eligible for StateDevice auto-classification.
+  shutters:
+    - {device: Shutter-1, property: State, on_value: "1", off_value: "0"}
+  power_properties: []
+
+named_stages:
+  - device: TIPFSOffset
+    min_um: {unbounded: true, reason: "Draft only: operator has not measured a safe useful TIPFSOffset minimum."}
+    max_um: {unbounded: true, reason: "Draft only: operator has not measured a safe useful TIPFSOffset maximum."}
+  - device: TITIRF
+    min_um: {unbounded: true, reason: "Draft only: operator has not supplied the safe TITIRF minimum."}
+    max_um: {unbounded: true, reason: "Draft only: operator has not supplied the safe TITIRF maximum."}
+
+plugins:
+  blocked: []
+  allow_hardware_motion: false
