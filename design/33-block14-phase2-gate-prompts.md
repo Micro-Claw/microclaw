@@ -430,6 +430,28 @@ Note what this is *not*: the default remains fail-closed. `g7-before.txt` shows 
 of these devices in the excluded inventory today. The gap opens only when an operator
 affirmatively mis-declares one — which is exactly the mistake this net exists to catch.
 
+### G8 RESULT — the gap is real, measured on M5, 2026-07-30
+
+`g8.txt`: the map returns **`complete`** and emits
+
+```
+generic-property | iBeamSmartCW-1 | Power (mW) | reviewed_categorical_property | source: declared | detail: None
+```
+
+A Class-3B laser power set-point — Float, 0–75 mW, live-confirmed — authorized as a
+discrete/categorical property with **no numeric bound**, in a map that reports itself
+complete. This is the exact condition this gate's own stop list names: *"any map
+reporting `complete` while a write path in it is unbounded."*
+
+Two things keep it from being a merge-blocking regression. It is **not new** — on
+`main` the same mis-declaration is equally unbounded for every device type, because
+there is no net at all — and the **default stays fail-closed**: `g7-before.txt` shows
+all of these devices in the excluded inventory. The gap opens only when an operator
+affirmatively declares one categorical.
+
+What it does mean is that the net, as merged, would cover none of the hazardous
+continuous hardware on the only production rig this project has evidence from.
+
 ### The pre-init finding removes most of the objection (2026-07-30)
 
 The "configuration" properties I worried would be false-positives — `PWM."Number of
