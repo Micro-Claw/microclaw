@@ -21,6 +21,7 @@ from pycromanager import Core
 
 sys.stdout.reconfigure(line_buffering=True)
 SCRATCH_GROUP = "microclaw_block14_phase4_scratch"
+NUMERIC_SCRATCH_GROUP = "microclaw_block14_phase4_numeric_scratch"
 BAD_VALUE = "__MICROCLAW_INTENTIONAL_BAD_VALUE__"
 
 
@@ -129,7 +130,7 @@ class Evidence:
         self.path = path
         self.lines: list[str] = []
         self.data: dict[str, Any] = {
-            "schema": "microclaw.block14.phase4.mm-apply-spike.v2",
+            "schema": "microclaw.block14.phase4.mm-apply-spike.v3",
             "started_unix_s": time.time(),
             "sections": {},
             "errors": [],
@@ -416,22 +417,22 @@ def scratch_triplet(
     return [first, {**bad, "test": BAD_VALUE}, third], diagnostics
 
 
-def delete_scratch(core: Any) -> dict[str, Any]:
+def delete_scratch(core: Any, group: str) -> dict[str, Any]:
     result: dict[str, Any] = {"attempted": True}
     try:
-        core.delete_config_group(SCRATCH_GROUP)
+        core.delete_config_group(group)
         result["delete_call"] = "delete_config_group"
     except Exception as group_exc:
         result["delete_config_group_error"] = clean_exception(group_exc)
         try:
-            for preset in vector(core.get_available_configs(SCRATCH_GROUP)):
-                core.delete_config(SCRATCH_GROUP, preset)
-            core.delete_config_group(SCRATCH_GROUP)
+            for preset in vector(core.get_available_configs(group)):
+                core.delete_config(group, preset)
+            core.delete_config_group(group)
             result["delete_call"] = "delete_config then delete_config_group"
         except Exception as exc:
             result["delete_error"] = clean_exception(exc)
     try:
-        result["still_present"] = SCRATCH_GROUP in vector(core.get_available_config_groups())
+        result["still_present"] = group in vector(core.get_available_config_groups())
     except Exception as exc:
         result["verification_error"] = clean_exception(exc)
     return result
@@ -451,6 +452,21 @@ def shutter_names(core: Any, channel_rows: list[dict[str, Any]]) -> list[str]:
         if row["device"] == "Core" and row["property"] == "Shutter" and row["value"]:
             names.add(row["value"])
     return sorted(names)
+
+
+def loaded_shutter_names(core: Any) -> tuple[list[str], list[dict[str, str]]]:
+    """Identify loaded shutter devices using the shutter-specific read API."""
+    names = []
+    rejected = []
+    for device in vector(core.get_loaded_devices()):
+        if device == "Core":
+            continue
+        try:
+            primitive_bool(core.get_shutter_open(device), f"get_shutter_open({device!r})")
+            names.append(device)
+        except Exception as exc:
+            rejected.append({"device": device, "error": clean_exception(exc)})
+    return sorted(names), rejected
 
 
 def observe_shutters(core: Any, names: list[str]) -> dict[str, Any]:
@@ -504,6 +520,68 @@ def core_effect_probe(
     return result
 
 
+def shutter_retarget_probe(core: Any, before: dict[str, Any]) -> dict[str, Any]:
+    names, rejected = loaded_shutter_names(core)
+    original = str(core.get_shutter_device())
+    result: dict[str, Any] = {
+        "enumeration_method": "loaded devices accepted by get_shutter_open(device)",
+        "shutter_devices": names,
+        "non_shutter_devices": rejected,
+        "original_active_shutter": original,
+        "targets": [],
+    }
+    if original not in names:
+        raise RuntimeError(f"Active shutter {original!r} was not enumerated as a shutter")
+    for target in names:
+        if target == original:
+            continue
+        restore(core, before)
+        item = {"target": target, "before": observe_shutters(core, names)}
+        core.set_property("Core", "Shutter", target)
+        item["after"] = observe_shutters(core, names)
+        item["previously_active_open_after"] = item["after"]["open"][original]
+        result["targets"].append(item)
+    core.set_property("Core", "Shutter", original)
+    result["restore_observation"] = observe_shutters(core, names)
+    result["restore_verified"] = result["restore_observation"]["active_shutter"] == original
+    if not result["restore_verified"]:
+        raise RuntimeError("Failed to restore the original active shutter")
+    return result
+
+
+def numeric_readback_probe(core: Any, before: dict[str, Any]) -> dict[str, Any]:
+    requested = "10"
+    preset = "float"
+    core.define_config(NUMERIC_SCRATCH_GROUP, preset, "Camera", "Exposure", requested)
+    rows = expand(core, NUMERIC_SCRATCH_GROUP, preset)["settings"]
+    if len(rows) != 1:
+        raise RuntimeError(f"Numeric scratch expansion has {len(rows)} settings, expected 1")
+    restore(core, before)
+    core.set_config(NUMERIC_SCRATCH_GROUP, preset)
+    set_config_read_back = str(core.get_property("Camera", "Exposure"))
+    restore(core, before)
+    replay = apply_loop(core, rows)
+    replay_read_back = str(core.get_property("Camera", "Exposure"))
+    restore(core, before)
+    return {
+        "group": NUMERIC_SCRATCH_GROUP,
+        "preset": preset,
+        "effect": {"device": "Camera", "property": "Exposure", "requested": requested},
+        "expanded": rows,
+        "set_config": {
+            "requested": requested,
+            "read_back": set_config_read_back,
+            "exact": requested == set_config_read_back,
+        },
+        "ordered_replay": {
+            "requested": requested,
+            "read_back": replay_read_back,
+            "exact": requested == replay_read_back,
+            "details": replay,
+        },
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", required=True, type=int)
@@ -518,6 +596,7 @@ def main() -> int:
     pre: dict[str, Any] | None = None
     pairs: list[tuple[str, str]] = []
     scratch_may_exist = False
+    numeric_scratch_may_exist = False
     exit_code = 0
     try:
         ev.section("Safety gate and pre-run snapshot")
@@ -532,8 +611,10 @@ def main() -> int:
         capabilities = capability_check(core)
         ev.data["sections"]["capabilities"] = capabilities
         ev.show("Bridge capabilities", capabilities)
-        if SCRATCH_GROUP in capabilities["safe_calls"]["get_available_config_groups"]["value"]:
-            raise RuntimeError(f"HARD ABORT: scratch group {SCRATCH_GROUP!r} already exists")
+        existing_groups = capabilities["safe_calls"]["get_available_config_groups"]["value"]
+        for scratch_group in (SCRATCH_GROUP, NUMERIC_SCRATCH_GROUP):
+            if scratch_group in existing_groups:
+                raise RuntimeError(f"HARD ABORT: scratch group {scratch_group!r} already exists")
         pairs = all_pairs(core)
         pre = snapshot(core, pairs)
         ev.data["pre_snapshot"] = pre
@@ -562,6 +643,16 @@ def main() -> int:
             all_rows.extend(first["settings"])
             ev.show(preset, expansions[preset])
         ev.data["sections"]["expansion"] = expansions
+
+        ev.section("Q1 Read-only expansion of every config group")
+        all_group_expansions: dict[str, Any] = {}
+        for group in existing_groups:
+            group_presets: dict[str, Any] = {}
+            for preset in vector(core.get_available_configs(group)):
+                group_presets[preset] = expand(core, group, preset)
+            all_group_expansions[group] = group_presets
+            ev.show(group, group_presets)
+        ev.data["sections"]["all_group_expansion"] = all_group_expansions
 
         ev.section("Q2/Q4/Q5 Replay equivalence, waits, and read-back fidelity")
         replay_results: dict[str, Any] = {}
@@ -613,6 +704,19 @@ def main() -> int:
         core_effects = core_effect_probe(core, all_rows, pre, names)
         ev.data["sections"]["core_effects"] = core_effects
         ev.show("Core effects", core_effects)
+
+        ev.section("Q3b Core.Shutter retargeting without exposure or direct shutter writes")
+        restore(core, pre)
+        shutter_retarget = shutter_retarget_probe(core, pre)
+        ev.data["sections"]["shutter_retarget"] = shutter_retarget
+        ev.show("Shutter retarget", shutter_retarget)
+
+        ev.section("Q5b Numeric read-back fidelity")
+        restore(core, pre)
+        numeric_scratch_may_exist = True
+        numeric_readback = numeric_readback_probe(core, pre)
+        ev.data["sections"]["numeric_readback"] = numeric_readback
+        ev.show("Numeric read-back", numeric_readback)
 
         ev.section("Q6 Partial failure and reversibility")
         restore(core, pre)
@@ -680,7 +784,7 @@ def main() -> int:
         ev.section("Cleanup and residue verification")
         if scratch_may_exist:
             try:
-                scratch_cleanup = delete_scratch(core)
+                scratch_cleanup = delete_scratch(core, SCRATCH_GROUP)
             except Exception as exc:
                 scratch_cleanup = {"error": clean_exception(exc)}
         else:
@@ -691,6 +795,19 @@ def main() -> int:
             }
         ev.data["scratch_cleanup"] = scratch_cleanup
         ev.show("Scratch cleanup", scratch_cleanup)
+        if numeric_scratch_may_exist:
+            try:
+                numeric_scratch_cleanup = delete_scratch(core, NUMERIC_SCRATCH_GROUP)
+            except Exception as exc:
+                numeric_scratch_cleanup = {"error": clean_exception(exc)}
+        else:
+            numeric_scratch_cleanup = {
+                "attempted": False,
+                "still_present": False,
+                "reason": "probe did not begin numeric scratch-group definition",
+            }
+        ev.data["numeric_scratch_cleanup"] = numeric_scratch_cleanup
+        ev.show("Numeric scratch cleanup", numeric_scratch_cleanup)
         if pre is not None:
             final_restore = restore(core, pre)
             final_snapshot = snapshot(core, pairs)
@@ -703,6 +820,8 @@ def main() -> int:
                 exit_code = 1
                 ev.data["errors"].append({"type": "RestoreResidue", "message": f"{len(residue)} properties differ"})
         if scratch_cleanup.get("still_present") is not False:
+            exit_code = 1
+        if numeric_scratch_cleanup.get("still_present") is not False:
             exit_code = 1
         ev.data["exit_code"] = exit_code
         ev.write()

@@ -10,10 +10,11 @@ All commands below are PowerShell-safe. Run them from the repo root. Do **not** 
 rig's existing installation. Keep every output file in one dated evidence directory.
 There are no Unix pipelines; PowerShell redirects both streams with `> ... 2>&1`.
 
-The probe mutates device properties and creates one temporary configuration group.
+The probe mutates device properties and creates two temporary configuration groups.
 It hard-aborts unless a loaded device reports the `DemoCamera` adapter, captures a
-full property snapshot, restores it in `finally`, deletes the scratch group, and
-prints any residue. `--allow-non-demo` exists for probe development only and is
+full property snapshot, restores it in `finally`, deletes both scratch groups, and
+independently verifies their absence before printing any residue. `--allow-non-demo`
+exists for probe development only and is
 **not for M5**.
 
 ## What this demo gate can and cannot settle; M5 still owes X
@@ -40,12 +41,17 @@ particular, the demo has simulated state devices and shutters, no real emission,
 serial latency/timeouts, and none of M5's `GenericDevice` laser controls. It also
 cannot settle executor cancellation, process loss, or a safe-state policy: this
 single synchronous probe can only measure normal return and an intentionally bad
-write.
+write. Per-write wait semantics and numeric driver reformatting on real hardware
+remain unmeasured. M5 cannot supply either measurement for this executor path:
+the 30 July M5 inventory has no `Channel` config group at all (only `System`), so
+there is no live channel-plan executor test available on that rig.
 
-**M5 still owes X:** a read-only expansion inventory for every production `Channel`
-preset (including every `Core.*` entry and the raw setting-object surface), followed
-by an operator-approved dark/beam-blocked test of real per-device waits, read-back
-formatting, reversibility, and injected partial failures for the actual drivers.
+**M5 still owes X:** if a production `Channel` group is added, a read-only expansion
+inventory for every preset (including every `Core.*` entry and the raw
+setting-object surface), followed by an operator-approved dark/beam-blocked test of
+real per-device waits, read-back formatting, reversibility, and injected partial
+failures for the actual drivers. The current M5 `System`-only inventory cannot
+discharge those measurements.
 No production `Core.*` effect may be admitted merely because demo `Core.Shutter`
 selects a simulated shutter. Cancellation and safe-state cleanup remain an
 implementation gate with failure injection after every write; this spike cannot
@@ -83,7 +89,7 @@ leave the GUI alone for the duration of the run. Then run exactly:
 python design\33-block14-phase4-mm-apply-spike.py --port 4827 --evidence block14p4_30072026\mm-apply-evidence.txt > block14p4_30072026\g1-console.txt 2>&1
 ```
 
-What this settles: all seven questions are measured in one connection against one
+What this settles: the semantic questions are measured in one connection against one
 pre-run snapshot. `g1-console.txt` preserves stdout/stderr even if Python terminates
 unexpectedly; `mm-apply-evidence.txt` contains the human-readable sections and the
 single JSON document headed `MACHINE_READABLE_JSON` when the probe reaches its
@@ -108,6 +114,10 @@ What this settles: Phase 4's captured-plan representation and bridge access must
 based on observed members and order, not Java/Python naming assumptions. Stop if a
 setting is unreadable, the two reads differ without an intentional GUI edit, or an
 effect is absent from the evidence.
+
+Also inspect `Q1 Read-only expansion of every config group`. It must enumerate and
+expand every preset in Camera, Channel, Channel-Multiband, LightPath, Objective, and
+System. This section is enumeration only: no preset outside Channel is applied.
 
 Before G2, inspect both Q0 sections. The capability section must record successful
 typed returns for all four read-only calls and callable bridge members for all three
@@ -167,6 +177,17 @@ over this bridge. The property must not be admitted in Phase 4 if the call is bl
 or its observed effect cannot be represented and authorized. Demo evidence does not
 authorize the same operation on M5.
 
+Then inspect `Q3b Core.Shutter retargeting`. It must enumerate both White Light
+Shutter and LED Shutter, retarget each non-active shutter without snapping or a
+direct shutter-open call, record the active shutter, `Core.AutoShutter`, and every
+shutter's open state before and after, and verify restoration of the original active
+shutter. In particular, record whether the previously active shutter remains open.
+
+Inspect `Q5b Numeric read-back fidelity` for the separate Camera.Exposure scratch
+group. Record requested `"10"` against the exact string read back after both
+`set_config` and ordered replay. Cleanup must prove deletion of this group separately
+from the partial-failure scratch group.
+
 ## G5 — Partial failure and reversibility
 
 Inspect `Q6 Partial failure and reversibility`. The scratch config contains three
@@ -193,7 +214,7 @@ Inspect `Q7 TOCTOU re-read` and `Cleanup and residue verification`. The former m
 show the scratch definition before and after replacing one value and must report
 `reread_changed: true`. The latter must report:
 
-- `still_present: false` for the scratch group;
+- `still_present: false` for both scratch groups;
 - an empty `RESIDUE (must be empty)` list; and
 - top-level JSON `exit_code: 0` and an empty `errors` list.
 
@@ -204,27 +225,27 @@ measurements otherwise look persuasive.
 
 ---
 
-## Results — coordinator fills after the run
+## Results — round 1 recorded; round-2-only observations pending a demo-core run
 
 | Gate | Result | Evidence file / exact observation | Phase 4 consequence |
 |---|---|---|---|
-| G0 source + compile |  |  |  |
-| G1 complete run / exit code |  |  |  |
-| Q0 new bridge capabilities and Python types |  |  |  |
-| Q0 20-call round-trip min/median |  |  |  |
-| G2 all preset expansions and consecutive reads |  |  |  |
-| G2 `Core.*` entries |  |  |  |
-| G3 structural replay equivalence |  |  |  |
-| G3 `Channel` bookkeeping equivalence |  |  |  |
-| G3 busy/wait timings |  |  |  |
-| G3 read-back formatting |  |  |  |
-| G3 per-preset shutter observations |  |  |  |
-| G4 all `Core.*` bridge permissions and semantics |  |  |  |
-| G5 `set_config` partial failure |  |  |  |
-| G5 property-loop partial failure |  |  |  |
-| G5 reversibility |  |  |  |
-| G6 mutable-definition re-read |  |  |  |
-| G6 scratch deletion and final residue |  |  |  |
+| G0 source + compile | PASS (round 1) | Probe compiled before the recorded run. | Subject was runnable; round 2 must compile again before execution. |
+| G1 complete run / exit code | PASS (round 1) | `exit_code: 0`, `errors: []`. | Round-1 evidence is usable. |
+| Q0 new bridge capabilities and Python types | PASS | Four read-only calls returned the expected primitive/vector shapes; `define_config`, `delete_config`, and `delete_config_group` were callable and later exercised. | The required bridge surface exists. |
+| Q0 20-call round-trip min/median | Measured | 0.13 ms min / 0.14 ms median over 20 `get_property` calls. | Use as the serialized bridge-call floor. |
+| G2 all preset expansions and consecutive reads | PASS (Channel); round-2 all-group inventory pending | Cy5, DAPI, FITC, and Rhodamine were stable on consecutive reads. Round 1 reported six groups: Camera, Channel, Channel-Multiband, LightPath, Objective, System. | Ordered capture is supported for the four Channel presets; the expanded cross-group inventory awaits round 2. |
+| G2 `Core.*` entries | Measured, incomplete in round 1 | Every Channel preset contained `Core.Shutter = White Light Shutter`; it was already active, making the write a no-op. | Do not infer retargeting semantics from round 1. |
+| G3 structural replay equivalence | PASS | Empty `end_state_diff_set_config_vs_replay` on all four presets. Cy5 is vacuous: the core was already in the Cy5 state, so its `set_config_change` is empty and it evidences nothing. DAPI, FITC, and Rhodamine are the three non-vacuous cases carrying the finding. | Ordered replay matched `set_config` on the three evidentiary demo cases. |
+| G3 `Channel` bookkeeping equivalence | PASS | `configuration_state_equal: true` on all four presets, with the same Cy5 vacuity caveat. | Replay preserved observed MM config bookkeeping on the three non-vacuous cases. |
+| G3 busy/wait timings | Not settled and not settleable here | `system_busy` and every `device_busy` read false immediately after `set_config` on all four presets because demo devices complete instantly. `set_config` was 0.20–1.38 ms; replay was 2.36–12.32 ms. | This says nothing about a real rig's wait requirements; per-write wait semantics remain unmeasured. |
+| G3 read-back formatting | Partial; numeric round 2 pending | Round 1's enumerated string labels read back exactly. No numeric preset effect existed. | Exact-string verification against driver-reformatted numeric values is not yet settled. |
+| G3 per-preset shutter observations | Inconclusive | `Core.AutoShutter = 1`, but all presets selected the already-active White Light Shutter and it remained closed in the observations. | A real retarget is required; round 2 adds it without snapping or opening shutters. |
+| G4 all `Core.*` bridge permissions and semantics | Bridge permission measured; semantics pending | The no-op `Core.Shutter` write was permitted. | Round 2 must measure retargeting to LED Shutter and restoration. |
+| G5 `set_config` partial failure | Measured behavior | MM continues past a failed setting and raises afterward. Exact `state_diff`: `Camera.AllowMultiROI` `0`→`1` (setting 1) and `Emission.ClosedPosition` `0`→`1` (setting 3). | Executor cannot assume `set_config` is atomic or fail-fast. |
+| G5 property-loop partial failure | Measured behavior | Ordered replay failed fast at setting 2 after setting 1 landed; exact `state_diff`: only `Camera.AllowMultiROI` `0`→`1`; setting 3 was untouched. | Ordered execution provides a known failure boundary. |
+| G5 reversibility | PASS on demo | Both `post_restore_diff` values were empty. | Demonstrates demo reversibility only. |
+| G6 mutable-definition re-read | PASS | `reread_changed: true`. | TOCTOU is observable; capture/re-read policy is required. |
+| G6 scratch deletion and final residue | PASS (round 1) | `still_present: false`; `final_residue: []`. | Round 1 left zero residue; round 2 must prove this for both scratch groups. |
 
 ## Stop list
 
