@@ -1,0 +1,685 @@
+# Block 14 Phase 2 gate — typed continuous-actuator registry
+
+Branch under test: `design33/typed-actuator-registry` (`e0645f1`).
+Coordinator-verified off-rig: **1179 passed / 99 skipped / 3 warnings** on macOS,
+`compileall` clean, `git diff --check` clean. Baseline `main` (`4295639`) is
+1160/99/3, so the branch adds 19 tests and breaks nothing.
+
+All commands are PowerShell/cmd-safe. Run them from the repo root with the branch
+checked out and the package reinstalled (`pip install -e .`) — a stale editable
+install has produced convincing false failures on this project before.
+
+Keep every output file. One dated evidence directory per run,
+`block14p2_<DDMMYYYY>`.
+
+**CLI shape.** `--port` and `--safety-config` are **global** options and must come
+*before* the subcommand; only `--mm-config` and `--out` belong to `inspect-rig`.
+Under uv, prefix each command with `uv run` (`uv run python -m microclaw ...`).
+
+## What this gate can and cannot settle
+
+**Demo core (reachable now)** settles: bridge-typed returns for the new device-type
+and property-type reads, the opt-in additivity claim, the narrowing rule, the
+continuous-refusal net on a real driver, preset exclusion, and the denylist
+conflict.
+
+**M5 (not reachable this session)** still owes: the illumination units migration
+against a real `iBeamSmartCW-1."Power (mW)"` 0–75 driver, the live cap and ratchet
+in canonical percent, and a real refusal at the bound. **A demo pass does not
+discharge G7.** Do not merge the M5 half of this gate on demo evidence.
+
+The reason the split matters here is the same one that bit Block 9b: its first demo
+run failed because a fake core had invented `get_device_adapter_name` and returned a
+plain `"Float"` where the bridge returns a proxy. Every new call this block adds —
+`get_property_type`, `has_property_limits`, `get_property_lower_limit` /
+`upper_limit`, and `get_device_type` for **device-type ordinals 7–16, which are the
+published mmcorej enum but have never been confirmed over this bridge** — is
+off-rig-fake-only until G2 and G4 run.
+
+---
+
+## G1 — Discover, don't guess (uses Block 9b)
+
+```
+python -m microclaw --port 4827 inspect-rig --mm-config "C:\Program Files\Micro-Manager-2.0\MMConfig_demo.cfg" --out block14p2_inventory > g1.txt 2>&1
+```
+
+From `block14p2_inventory\inventory.json`, record for the demo core:
+
+1. a **StageDevice** numeric writable position property (expected: `Z`), with its
+   `reported_type` and `technical_range`;
+2. any **GalvoDevice** or **SignalIODevice** numeric writable property;
+3. the device type string reported for each of the above.
+
+Everything below uses the real names you just read. **If the inventory reports a
+device type as a bare integer rather than a name, stop** — that is the ordinal
+table failing over the bridge, and it is the one new fact in this block nobody has
+confirmed on hardware.
+
+### G1 result — PASS, 2026-07-30, evidence `block14p2_20260730`
+
+14 devices, zero enumeration failures, fingerprint
+`627f2349d6f77ee42cbe3cc92962d60c00a8a736e1eda8ad28bf2e52c2c15308` — **byte-identical
+to the Block 9b demo gate**, so the demo core is in the same state that gate measured.
+MMCore 12.5.0, Device API 75. (`g1.txt` shows a PowerShell `NativeCommandError`; that
+is PowerShell rendering the tool's stderr progress line, not a failure — both output
+files wrote.)
+
+Every device type resolved to a **name**, no bare ordinals, across eight distinct
+types: `AutoFocusDevice`, `CameraDevice`, `CoreDevice`, `HubDevice`, `ShutterDevice`,
+`StateDevice`, `StageDevice`, `XYStageDevice`. The hard stop does not fire.
+
+Three consequences that change the steps below:
+
+1. **`Z.Position` is Float, writable, unenumerated, and has NO driver limits**
+   (`has_limits: false`). That is the ideal subject for G2/G3 — with no technical
+   range the declared bound is the *only* thing between the agent and the stage,
+   which is the case this registry exists for. It also means the technical-range
+   outer check cannot fire on `Z`; see G3b.
+2. **This demo config has no GalvoDevice and no SignalIODevice.** The galvo/DAC half
+   of G4 is **not dischargeable here**, so ordinals 12 and 16 — the two added for
+   review finding 5 — stay unconfirmed over the bridge. Do not record G4 as covering
+   them. M5's MicroFPGA `Analog Input` / `PWM` devices are the realistic place to
+   confirm ordinal 12.
+3. **Both `device_type_name` and `rig_inventory._device_type` prefer `to_string()`**
+   and only fall back to the ordinal table. Since this bridge returns resolvable
+   names, G1 proves the *names* are right; it does **not** exercise the ordinal
+   fallback at all. State it that way in the design gate.
+
+**Ruling 4 was load-bearing, and the demo proves it.** `LED.State` is Integer,
+writable, with **zero allowed values and no limits** — indistinguishable from a
+continuous actuator by value shape alone. Only the `StateDevice` device-type
+exclusion keeps it auto-classified. A "numeric ⇒ continuous" detector would have
+broken the stock demo config, not just M5.
+
+## G2 — Opt-in additivity, then a valid narrowing
+
+Start from `design/33-block5-demo-safety-config.yaml` (set `workspace_dir`).
+
+```
+python -m microclaw --safety-config demo-base.yaml authorization-map > g2-base.txt 2>&1
+```
+
+Expected: a `complete` map, unchanged from Block 9b's demo evidence, with **no**
+`typed_continuous_actuator` entry. This is the "a config with no typed_actuators
+behaves exactly as before" claim, on a live bridge.
+
+Now copy it to `demo-typed.yaml` and add, under `rig_profile`, a **narrowing** entry
+for the G1 stage property (adjust name/bounds to what G1 reported; `stage.z` is
+0..200 in that file):
+
+```
+  typed_actuators:
+    - device: Z
+      property: Position
+      kind: absolute-position
+      units: um
+      minimum: 0.0
+      maximum: 150.0
+```
+
+```
+python -m microclaw --safety-config demo-typed.yaml authorization-map > g2-typed.txt 2>&1
+```
+
+Expected: `complete`; one `typed_continuous_actuator` entry whose `detail` shows
+`units=um`, the identity conversion, and `effective canonical bound 0..150 um`;
+`capability: absolute-position`; `source: declared`.
+
+## G3 — The narrowing rule refuses a widening
+
+Change `maximum` to `5000.0` and re-run. Expected: **startup refusal**
+
+```
+Typed absolute-position Z.Position bounds 0..5000 um widen the declared core focus z
+bounds 0.0..200.0 um; a typed axis entry may only narrow them.
+```
+
+The G1 typed entry stays as written above (`Z.Position`, `0..150` inside `stage.z`
+`0..200`) — G1 confirmed those are the real names and that `Z.Position` carries no
+driver limits, so this step isolates the narrowing rule with nothing else firing.
+
+### G3b — the technical-range outer check, mechanism only
+
+`Z.Position` reports **no** driver limits, so the outer sanity check cannot fire on
+it. The only demo properties carrying a `technical_range` are on `Camera`. Exercise
+the code path with a deliberately nonsensical declaration, and label it as such in
+the evidence:
+
+```
+  typed_actuators:
+    - device: Camera
+      property: Exposure          # driver technical range 0..10000
+      kind: absolute-position
+      units: um
+      minimum: 0.0
+      maximum: 20000.0
+```
+
+Expected: startup refusal naming `outside the driver-reported technical range
+0..10000` and the phrase `never inferred safe limits`.
+
+**This is a code-path probe, not a rig declaration** — an exposure property is not a
+position actuator, and nothing should conclude from it that such a declaration is
+sensible. The semantically meaningful version of this check exists only on M5's
+`Power (mW)` (0–75) in G7. Record both G3a and G3b messages verbatim; they are the
+block's two distinct guards and they must not collapse into one.
+
+## G4 — The continuous-refusal net on a real driver
+
+G1 established that this demo config has **no galvo and no DAC**, so this step is
+re-scoped to the continuous devices it does have.
+
+**The subject must not be one the legacy alias heuristic already catches.**
+`check_device_property`/`_known_continuous_raw_pair` already match
+`<focus>.Position` and `<camera>.Exposure`, and both paths raise through the same
+`or`, so a refusal on those proves nothing new — they would fail on `main` too. Use
+properties that only `_continuous_introspection` can reach:
+
+`demo-cat-velocity.yaml` — copy of `demo-base.yaml`, no `typed_actuators`, with:
+
+```
+  categorical_properties:
+    - {device: XY, property: Velocity}    # XYStageDevice, Float, writable, unenumerated
+```
+
+`demo-cat-gain.yaml` — copy of `demo-base.yaml`, no `typed_actuators`, with:
+
+```
+  categorical_properties:
+    - {device: Camera, property: Gain}    # CameraDevice, Integer, limits -5..8
+```
+
+```
+python -m microclaw --safety-config demo-cat-velocity.yaml authorization-map > g4-velocity.txt 2>&1
+python -m microclaw --safety-config demo-cat-gain.yaml authorization-map > g4-gain.txt 2>&1
+```
+
+Expected in both: startup refusal, `is a known continuous actuator (confirmed by the
+live rig) and cannot be classified as categorical`, directing the operator to
+`rig_profile.typed_actuators`.
+
+`XY.Velocity` is the load-bearing one: it is not a position property, matches no
+alias set, and is refused purely on device type plus property shape. It is also the
+case design/33 cares most about — a continuous property whose semantics microclaw
+cannot name, which is why Phase 2 excludes rather than bounds it. `Camera.Gain`
+corroborates on a second device type.
+
+**Optional controls, if you want the contrast on record:** the same runs with
+`{device: Z, property: Position}` and `{device: Camera, property: Exposure}` are
+refused by the *legacy* heuristic. Same message, older code path. Label them as
+controls, not as evidence for this block.
+
+**What this step no longer claims.** It confirms the net for `XYStageDevice` (6) and
+`CameraDevice` (2), both already in the previously verified region. Ordinals **12
+(SignalIODevice) and 16 (GalvoDevice) remain unconfirmed over the bridge** and no
+demo run can fix that. Record them as open.
+
+**The StateDevice non-regression is already discharged by G2-base**: that map carries
+twelve `auto:state-device` entries (`Dichroic`, `Emission`, `Excitation`, `LED`,
+`Objective`, `Path` — `Label` and `State` each), including `LED.State`, which is
+Integer with zero allowed values and no limits. Re-running it is unnecessary; cite
+`g2-base.txt`.
+
+## G5 — Preset expansion and denylist precedence
+
+**The preset half is not dischargeable on this demo config.** G1 enumerated all six
+config groups: every `Channel` and `Channel-Multiband` preset touches only
+`Dichroic`/`Emission`/`Excitation`/`LED` `Label` plus `Core.Shutter`; `LightPath` and
+`Objective` touch only `State`; `Camera` and `System` touch camera settings. **No
+demo preset touches `Z.Position`**, so no preset can collide with the typed pair
+without editing the MM configuration itself. Record the preset-exclusion claim as
+covered by the off-rig test only. (Optional: add a `Channel` preset in the MM GUI
+that sets `Z.Position` and re-run — this mutates the demo config, so only do it if
+you are happy to restore it.)
+
+**The denylist half is dischargeable here.** `demo-conflict.yaml` — copy of the
+working `demo-typed.yaml` (`Z.Position`, `0..150`), keeping its `typed_actuators`
+block and adding the same pair as an exclusion:
+
+```
+  excluded_properties:
+    - {device: Z, property: Position}
+```
+
+```
+python -m microclaw --safety-config demo-conflict.yaml authorization-map > g5-conflict.txt 2>&1
+```
+
+Expected: startup refusal, `Raw property Z.Position cannot be both typed-continuous
+and explicitly excluded.`
+
+Repeat with the legacy denylist instead — same file, `excluded_properties` back to
+`[]`, and a **top-level** (not under `rig_profile`) block:
+
+```
+forbidden_properties:
+  - {device: Z, property: Position}
+```
+
+Expected: the same refusal. Both halves of `denied_pairs` must fail closed; the
+review round found the typed declaration silently overriding the denylist, so this
+step is the live proof of that fix.
+
+## G6 — Live write behaviour through the raw property path
+
+**Use `set_device_property`, not `move_stage_z`.** The first attempt at this step
+asked the agent in plain language to "set the z-stage to 100 um"; it reasonably chose
+`move_stage_z`, the Phase-1 dedicated tool, which is bounded by `check_z` against
+`stage.z_max` and never consults the typed registry. That run exercised Phase 1, not
+this block. Name the tool in the prompt.
+
+With the accepted `demo-typed.yaml` (`Z.Position`, `0..150`, inside `stage.z 0..200`),
+in one `serve` session, prompt in this order and keep the saved
+`*_microclaw_history.jsonl` as the evidence:
+
+1. `Use the set_device_property tool to set device Z property Position to 120`
+   → succeeds. Note that `categorical_properties` is empty, so the derived
+   `allowed_properties` allowlist is empty too: this write is admitted **only**
+   because the typed declaration is its own authorization.
+2. `Use set_device_property to set Z.Position to 175`
+   → refused before the write with
+   `Typed actuator Z.Position has canonical value 175 um; allowed absolute range is
+   0..150 um.`
+   This is the load-bearing observation: 175 is **inside** `stage.z_max` 200, so no
+   Phase-1 guard would have stopped it. The refusal can only come from this block.
+3. `What is the current Z position?`
+   → still 120. A refusal that arrives after the hardware moved is not a refusal.
+4. Control — `Use set_device_property to set XY.Velocity to 1.0`
+   → refused by the authorization map as excluded, confirming the raw path stays
+   closed for an undeclared continuous property.
+
+### Recorded asymmetry — for the design gate, not a defect
+
+A typed entry on the core focus device narrows **only the raw property path**. The
+dedicated tool keeps the declared axis range: with `stage.z_max: 200` and a typed
+`Z.Position 0..150`, `move_stage_z(200)` is still allowed while
+`set_device_property(Z, Position, 175)` is refused. That is correct — 200 is the
+reviewed bound for the axis and the narrowing rule guarantees the typed entry can
+never be *wider* — but it is a real expectation trap: declaring a typed actuator does
+not retroactively tighten the axis. Record it in design/33 and in the example config
+comment.
+
+## G7 — M5 only. Not dischargeable on the demo core.
+
+### What the M5 inventory settled first (2026-07-30, `m5_inventory/`)
+
+30 devices, 395 properties, **zero enumeration failures**. Live driver introspection
+confirms, for the first time:
+
+- `iBeamSmartCW-1."Power (mW)"` — Float, writable, unenumerated, **technical range
+  0.0–75.0**. The 0–75 figure design/33 recorded from the Block 7b session is now
+  measured through the bridge, and the migration guard *can* fire on this driver.
+- `iChrome-MLE-TCP."Laser 4: 3. Level %"` — Float, **0.0–100.0**. A genuine percent
+  property.
+
+**The currently deployed M5 profile therefore passes correctly.** It declares only
+the iChrome `Level %`, so `(0.0, 100.0) == (0.0, 100.0)` and no migration error is
+raised. The defective declaration design/33 recorded belongs to an earlier config
+generation; illumination was migrated to the iChrome engine during Block 7b. Silence
+here is the right answer, not a missed refusal — record it that way.
+
+### G7a — reproduce the defect
+
+`m5-safety-ibeam.yaml` — copy of `m5-safety.yaml`, keeping `max_power_percent: 100.0`,
+with the historical declaration restored:
+
+```
+  power_properties:
+    - {device: iChrome-MLE-TCP, property: "Laser 4: 3. Level %"}
+    - {device: iBeamSmartCW-1, property: "Power (mW)"}
+```
+
+Expected: startup refusal naming `iBeamSmartCW-1.Power (mW)`, its `0.0..75.0` range,
+and the `units: native` / `full_scale` instruction.
+
+### G7b — the migrated declaration
+
+`m5-safety-migrated.yaml` — declare the representation in **both** places (the code
+requires them to agree) and choose a ceiling that means something:
+
+```
+rig_profile:
+  typed_actuators:
+    - device: iBeamSmartCW-1
+      property: "Power (mW)"
+      kind: illumination-power
+      units: native
+      full_scale: 75.0
+      minimum: 0.0
+      maximum: 40.0            # canonical percent -> 30 mW
+illumination:
+  max_power_percent: 40.0
+  power_properties:
+    - {device: iChrome-MLE-TCP, property: "Laser 4: 3. Level %"}
+    - {device: iBeamSmartCW-1, property: "Power (mW)", units: native, full_scale: 75.0}
+```
+
+Expected: `complete`, with the typed entry's `detail` showing
+`units=native; raw native/full_scale 75 -> percent; effective canonical bound 0..40 percent`.
+
+**Migration alone does not make the cap meaningful.** With `units: native` and
+`max_power_percent` left at 100, raw 75 mW converts to exactly 100 % and is still
+permitted. The units fix makes the ceiling *expressible*; the operator must then pick
+a real one. Note also that `max_power_percent` is global, so lowering it to 40 also
+caps the iChrome `Level %` at 40 % — which is the point of a canonical unit: one cap
+that means the same thing across mixed-unit drivers.
+
+### G7c — live writes. Operator's call; real emission.
+
+Only with the beam blocked or the shutter closed, and only if the operator wants it:
+write at the canonical bound (passes), just above it (refused pre-write), and a
+ratchet-violating increase (refused). After **any** write that reports failure, read
+the property back before retrying — a `Serial timeout` on M5 has been measured to
+raise while the value landed. The static G7a/G7b halves already prove the units
+conversion and the refusal; G7c adds the live cap and ratchet only.
+
+### G7d — no collateral change
+
+Confirm the migrated map is otherwise identical to `g7-before.txt`: same categorical
+entries, same 20-device excluded inventory, `iChrome-MLE-TCP.State` still refused.
+
+### G7 RESULT — a/b/d PASS, 2026-07-30
+
+- **G7a PASS** (`g7a.txt`): `Illumination power iBeamSmartCW-1.Power (mW) declares no
+  units and its driver technical range is 0.0..75.0, not 0..100 percent. The existing
+  max_power_percent cap may be inoperative; declare units: native and full_scale ...`
+  The measured M5 defect is refused at startup for the first time.
+- **G7b PASS** (`g7b.txt`): `complete`, 58 entries, typed entry detail
+  `units=native; raw native/full_scale 75 -> percent; effective canonical bound 0..40 percent`.
+- **G7d PASS** (coordinator-computed from `g7-before.txt` vs `g7b.txt`): the entry-set
+  diff is **exactly** the two new rows for the newly declared device
+  (`dedicated-illumination` + `typed_continuous_actuator`), plus `iBeamSmartCW-1`
+  correctly leaving the excluded inventory (22 → 21). Categorical entries byte-identical;
+  `iChrome-MLE-TCP.State` still not admitted. No collateral change.
+- **G7c** deferred: live emission, operator's call.
+
+### G7c RESULT — PASS, 2026-07-30. The two claims no demo core could reach.
+
+Live M5, `m5-safety-migrated.yaml`, beam not emitting (`Laser Operation` read `Off`
+throughout and was verified before and after every write).
+
+**The ratchet evaluates in canonical percent.** From a device sitting at 5.0 mW, a
+write of 30 mW was refused with `Power increase 6.7% → 40.0% exceeds the 3.0×
+per-write ratchet.` The 6.7 % is the load-bearing number: it is 5/75, so
+`check_illumination` converted the **device read** from native mW into canonical
+percent before taking the ratio. Had the conversion not fired it would have printed
+`5.0% → 40.0%`. This exercises the `old = old * 100 / scale` branch that runs only
+when `previous_percent` is absent, and it had no off-rig or demo equivalent.
+
+**The typed cap and the ratchet are independent guards.** 31 mW was refused with
+`Typed actuator iBeamSmartCW-1.Power (mW) has canonical value 41.3333 percent;
+allowed absolute range is 0..40 percent.` — while 30 → 31 mW is 1.03×, comfortably
+inside the ratchet. The earlier case was the reverse. Neither guard collapsed into
+the other, which is the property G3a/G3b established statically and this confirms
+under live writes.
+
+**The bound is inclusive and the round trip is exact.** 30 mW = 40.0 % passed at
+exactly the ceiling, with no float drift into 40.000…1.
+
+### G7d RESULT — PASS, plus a free determinism check
+
+`g7d.txt` re-ran the migrated config in a separate connection: 58 entries,
+**entry set, verdict and preset sets byte-identical to `g7b.txt`**. The migrated map
+is deterministic across connections, not merely correct once. Combined with the
+coordinator-computed `g7-before.txt` vs `g7b.txt` diff, the only change the migration
+makes to the M5 map is the two rows for the newly declared device.
+
+### Not a Phase 2 defect, observed during G7c
+
+`iBeamSmartCW-1."Laser Operation"` is a String `On`/`Off` control that is **not** in
+`illumination.shutters`, so microclaw neither confirm-gates it nor drives it off at
+teardown. It stayed `Off` only because nothing wrote it. This is the closeout's
+"illumination gate is inert on an undeclared light source" finding appearing on M5;
+it is an M5 config gap and belongs to that separate branch.
+
+## G8 — the GenericDevice gap (read-only, added 2026-07-30)
+
+The M5 inventory shows every hazardous continuous actuator on this rig is a
+**GenericDevice**, which `_continuous_introspection` does not cover:
+
+| Property | Type | Driver range |
+|---|---|---|
+| `iBeamSmartCW-1."Power (mW)"` | Float | 0–75 |
+| `iBeamSmartCW-Booster."Fine A (%)"` | Float | 0–100 |
+| `PWM.Position0` | Integer | 0–255 |
+| `Servos.Position0` | Integer | 0–65535 |
+| `Laser Trigger."Duration0 (us)"` | Integer | 0–1048575 |
+
+Off-rig, the same property on a `GenericDevice` is **admitted as categorical and
+written unbounded**, while on a `StageDevice` it is refused. Confirm on the rig:
+
+`m5-generic-categorical.yaml` — copy of `m5-safety.yaml` with the existing
+`categorical_properties` kept and one entry added:
+
+```
+    - {device: iBeamSmartCW-1, property: "Power (mW)"}
+```
+
+```
+python -m microclaw --safety-config m5-generic-categorical.yaml authorization-map > g8.txt 2>&1
+```
+
+Predicted: the map returns **complete** and admits the pair — a Class-3B laser power
+property authorized as "categorical/discrete" with no numeric bound. If it instead
+refuses, the analysis above is wrong and the fix is unnecessary; either result is
+worth having.
+
+Note what this is *not*: the default remains fail-closed. `g7-before.txt` shows all
+of these devices in the excluded inventory today. The gap opens only when an operator
+affirmatively mis-declares one — which is exactly the mistake this net exists to catch.
+
+### G8 RESULT — the gap is real, measured on M5, 2026-07-30
+
+`g8.txt`: the map returns **`complete`** and emits
+
+```
+generic-property | iBeamSmartCW-1 | Power (mW) | reviewed_categorical_property | source: declared | detail: None
+```
+
+A Class-3B laser power set-point — Float, 0–75 mW, live-confirmed — authorized as a
+discrete/categorical property with **no numeric bound**, in a map that reports itself
+complete. This is the exact condition this gate's own stop list names: *"any map
+reporting `complete` while a write path in it is unbounded."*
+
+Two things keep it from being a merge-blocking regression. It is **not new** — on
+`main` the same mis-declaration is equally unbounded for every device type, because
+there is no net at all — and the **default stays fail-closed**: `g7-before.txt` shows
+all of these devices in the excluded inventory. The gap opens only when an operator
+affirmatively declares one categorical.
+
+What it does mean is that the net, as merged, would cover none of the hazardous
+continuous hardware on the only production rig this project has evidence from.
+
+### The pre-init finding removes most of the objection (2026-07-30)
+
+The "configuration" properties I worried would be false-positives — `PWM."Number of
+PWM"` 1–5, `TTL."Number of channels"` 1–4, `Servos."Number of Servos"` 1–7, `Analog
+Input."Number of channels"` 1–8, `Laser Trigger."Number of lasers"` 1–8 — are **all
+`pre_init: true`** in the M5 inventory. That is why they are absent from the Device
+Property Browser: MM surfaces pre-init properties in the Hardware Configuration
+Wizard, not at runtime. They are MicroFPGA device-adapter properties, not EMU.
+
+So `_continuous_introspection` should skip `is_property_pre_init` — precedented by
+`rig_inventory._is_power`, which already does — and a GenericDevice widening then
+refuses only the real actuators: `PWM.Position0` (0–255), `Servos.Position0..3`
+(0–65535), `Laser Trigger.Duration0..3` (0–1 048 575) and `Sequence0..3`,
+`iBeamSmartCW-1."Power (mW)"` and `Fine A/B (%)`.
+
+**One residual false positive stands: `TTL.State0`** — Integer, not pre-init, no
+limits, not enumerated, and genuinely discrete. A GenericDevice rule refuses it as
+continuous. That is arguably correct fail-closed behaviour (microclaw cannot tell a
+digital state from a level on a Generic device), but the operator's only remedy is
+`excluded_properties`, so the refusal message **must** name exclusion as an
+alternative. It currently names only `typed_actuators`.
+
+## Demo coverage summary (settled by G1, 2026-07-30)
+
+| Step | On the demo core | Subject |
+|---|---|---|
+| G1 inventory | **done, PASS** | 14 devices, fingerprint matches Block 9b |
+| G2 additivity + narrowing | **runnable** | `Z.Position`, `0..150` inside `stage.z 0..200` |
+| G3a widening refusal | **runnable** | same entry at `maximum: 5000` |
+| G3b technical range | **runnable, mechanism only** | `Camera.Exposure` (0..10000); not a sensible declaration |
+| G4 refusal net | **runnable, partial** | `Z.Position` load-bearing, `Camera.Exposure` corroborating |
+| G4 StateDevice non-regression | **runnable** | `LED.State` is the sharp case |
+| G5 denylist conflict | **runnable** | typed pair also in `forbidden_properties` |
+| G5 preset collision | **not runnable** | no demo preset touches `Z.Position` |
+| G6 live write | **runnable** | inside bound, above bound, no motion on refusal |
+| G7 illumination units | **M5 only** | needs a real non-percent power property |
+
+**What a full demo pass still does not buy.** Record these as open at merge; none is
+dischargeable by any amount of demo work:
+
+1. **Device-type ordinals 12 (SignalIODevice) and 16 (GalvoDevice)** — this config has
+   neither device, and `core_device_assignments.galvo` is empty. These are the two
+   ordinals added for review finding 5.
+2. **A channel preset colliding with a typed pair** — off-rig test only.
+3. **The XY axis ambiguity** — the demo XY device exposes no writable position
+   property, only `Velocity`, so `check_xy(num, num)` is unreachable here.
+4. **The entire illumination-units path** — the block's headline fix. `demo` has no
+   declared power property at all.
+5. **The ratchet evaluated in canonical percent** — same reason.
+
+Items 4 and 5 are why the M5 half of this gate is not optional: the measured defect
+this block exists to fix cannot be observed on a demo core.
+
+## Demo gate RESULT — PASS, 2026-07-30, evidence `block14p2_20260730`
+
+Windows demo core, MMCore 12.5.0, Device API 75, branch `design33/typed-actuator-registry`.
+Every demo-dischargeable step passed. **This does not discharge G7.**
+
+| Step | Result | Evidence |
+|---|---|---|
+| G1 inventory | PASS | 14 devices, 0 enumeration failures, fingerprint `627f2349…` identical to the Block 9b gate |
+| G2 additivity | PASS | `g2-base.txt` complete, 41 entries, **zero** typed entries |
+| G2 narrowing | PASS | `g2-typed.txt` complete, 42 entries; the diff against base is **exactly one entry** and nothing else moved |
+| G3a widening | PASS | `g2-typed-g3.txt` — `bounds 0..5000 um widen the declared core focus z bounds 0.0..200.0 um` |
+| G3b technical range | PASS | `g2-typed-g3b.txt` — `outside the driver-reported technical range 0..10000` |
+| G4 refusal net | PASS | `g4-velocity.txt`, `g4-gain.txt` |
+| G4 non-regression | PASS | `g2-base.txt` carries all twelve `auto:state-device` entries incl. `LED.State` |
+| G5 denylist | PASS | `g5-conflict.txt` (`excluded_properties`), `g5-conflict-forbidden-prop.txt` (`forbidden_properties`) |
+| G6 live raw write | PASS | `20260730_075812_..._microclaw_history.jsonl` |
+| G7 illumination units | **OPEN** | M5 only |
+
+**The two observations that carry the block.**
+
+`XY.Velocity` was refused as a continuous actuator. It matches no alias set and is not
+a position property, so only `_continuous_introspection` could have produced that
+refusal — this is the first live evidence that the new device-type-scoped detector
+works over the bridge.
+
+`set_device_property(Z, Position, 175)` was refused with `allowed absolute range is
+0..150 um` while `stage.z_max` was **200**. No Phase-1 guard would have stopped that
+write; the refusal can only come from this block. `get_z_position` read back 120 both
+before and after, so nothing moved on the refusal. The preceding write of 120
+succeeded even though `categorical_properties` — and therefore the derived
+`allowed_properties` allowlist — was empty, confirming live that a typed declaration
+is its own authorization.
+
+**Two things the gate reproduced that are not this block's defects.**
+
+The `XY.Velocity` refusal arrived with the generic hint `This may be a hardware error
+(device busy, stage at limit, device not found) or a connection problem.` That is the
+misleading-hint limitation design/33 already records against Block 5, independently
+reproduced here.
+
+`g5-conflict.txt` also raised the pre-existing Phase-1 error about excluding a
+property that aliases a built-in motion path. Expected, and unrelated to the typed
+conflict on the line above it.
+
+**Still open after this gate, and not dischargeable by any demo run:** device-type
+ordinals 12 and 16; a preset colliding with a typed pair; the XY axis ambiguity; the
+entire illumination-units path; and the ratchet in canonical percent. The last two are
+the measured defect this block exists to fix.
+
+## Round-3 fix and the remaining re-gate
+
+`47295f2` closes the G8 gap: `GenericDevice` added to the refusal net, `pre_init`
+properties exempted, guaranteed mode fails closed when introspection of a **declared**
+pair fails, and the refusal message now names `rig_profile.excluded_properties`.
+
+Coordinator-verified off-rig against the exact M5 inventory rows — `Power (mW)`,
+`PWM.Position0`, `Laser Trigger.Duration0 (us)` and `TTL.State0` refused;
+`PWM."Number of PWM"` (pre-init) and all seven of M5's real StateDevice declarations
+still admitted; introspection failure fatal in guaranteed mode and best-effort in
+degraded. Suite 1184 passed / 99 skipped / 3 warnings.
+
+**Remaining rig work — read-only, two runs:**
+
+1. Re-run G8 (`m5-generic-categorical.yaml`, unchanged) → now expect a **startup
+   refusal** naming `iBeamSmartCW-1.Power (mW)`, offering both `typed_actuators` and
+   `excluded_properties`.
+2. Re-run the unmodified `m5-safety.yaml` → expect a `complete` map **identical to
+   `g7-before.txt`** (57 entries). This is the non-regression check that the widening
+   did not disturb the deployed profile, and it is the one that must not be skipped.
+
+## RE-GATE RESULT — PASS, 2026-07-30. Gate complete.
+
+**G8 re-run (`m5-generic-categorical.yaml`, unchanged from the run that admitted it):**
+
+```
+Live rig authorization failed:
+- Raw property iBeamSmartCW-1.Power (mW) is a known continuous actuator (confirmed by
+  the live rig) and cannot be classified as categorical; declare it in
+  rig_profile.typed_actuators with exact semantics, units, and safe canonical bounds,
+  or place it in rig_profile.excluded_properties if it is intentionally unavailable
+  for writes.
+```
+
+The same config that produced a `complete` map admitting an unbounded Class-3B laser
+power set-point now fails closed, and the message names both remedies.
+
+**Non-regression (`m5-safety.yaml`, the deployed profile), `g7-before-new.txt`:**
+57 entries, `complete`, and the **entry set, verdict and preset sets are identical**
+to `g7-before.txt` from before the widening. Adding `GenericDevice` to the refusal net
+— on a rig where 11 of 30 devices are `GenericDevice` or `SerialDevice` — changed
+nothing about the profile actually in use. The `pre_init` exemption is what makes that
+true, and it was derived from this rig's own inventory.
+
+## Final gate verdict
+
+| Step | Verdict |
+|---|---|
+| G1 inventory (demo + M5) | PASS |
+| G2 additivity + narrowing | PASS |
+| G3a widening / G3b technical range | PASS, distinct guards |
+| G4 refusal net (demo) | PASS |
+| G4 StateDevice non-regression | PASS |
+| G5 denylist precedence | PASS (preset half off-rig only) |
+| G6 live raw write (demo) | PASS |
+| G7a defect refused (M5) | PASS |
+| G7b migrated map (M5) | PASS |
+| G7c live cap + ratchet in canonical percent (M5) | PASS |
+| G7d no collateral change + determinism (M5) | PASS |
+| G8 GenericDevice gap → fixed and re-verified (M5) | PASS |
+| Deployed-profile non-regression (M5) | PASS |
+
+**Open, and carried into the design gate rather than claimed closed:** device-type
+ordinals 12 and 16 unconfirmed over the bridge (neither rig has a galvo or DAC); a
+channel preset colliding with a typed pair, off-rig test only; the XY axis ambiguity,
+unreachable on both rigs because neither exposes a writable XY position property;
+`TTL.State0` as a deliberate documented false positive.
+
+## Stop conditions
+
+Stop and do not merge on: a device type reported as a bare ordinal; any StateDevice
+losing auto-classification; a typed bound accepted that widens a declared axis; a
+refusal that arrives after hardware motion; the units migration silenced by any
+declaration other than a correct `native`/`full_scale`; or any map reporting
+`complete` while a write path in it is unbounded.
+
+## Known limitations to record in the design gate, not to fix here
+
+- **A typed entry on an XY stage has no axis.** The schema carries no axis field, so
+  a typed `absolute-position` entry on the core XY device is validated against
+  **both** the X and Y declared ranges, and at runtime `check_xy` is called with the
+  written value on both axes. That is conservative — the written axis is always
+  checked against its own bound, so it can only over-refuse — but a rig with
+  asymmetric X/Y travel will see legal writes refused. Adding an `axis` field is
+  Phase 2 follow-up work, not a defect of this branch.
+- **`DEVICE_TYPE_NAMES` grew from 6 entries to 16.** Ordinals 7–16 are the published
+  mmcorej enum; only 2–6 have ever been confirmed against this bridge. G4 is what
+  upgrades that from published to observed. Correct the comment above the table with
+  the gate's evidence before merge — it currently under-describes what the table
+  claims.

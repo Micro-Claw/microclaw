@@ -371,7 +371,9 @@ class UntrustedHookAdapter:
             if ctx["baseline_stale"]:
                 try:
                     raw = ctx["core"].get_property(ctx["device"], ctx["property"])
-                    current = float(raw)
+                    current = ctx["guard"].illumination_to_percent(
+                        ctx["device"], ctx["property"], raw
+                    )
                     if not math.isfinite(current):
                         raise ValueError(f"non-finite value {raw!r}")
                 except Exception as exc:
@@ -396,15 +398,18 @@ class UntrustedHookAdapter:
                 self._refuse(metadata, action, "authorized illumination write budget exhausted")
                 return None
             try:
+                raw_new = ctx["guard"].illumination_from_percent(
+                    ctx["device"], ctx["property"], new
+                )
                 ctx["guard"].check_illumination(
-                    ctx["core"], ctx["device"], ctx["property"], str(new),
+                    ctx["core"], ctx["device"], ctx["property"], str(raw_new),
                     confirm_fn=None, previous_percent=old,
                 )
             except Exception as exc:
                 self._refuse(metadata, action, f"SafetyGuard refused illumination: {exc}")
                 return None
             try:
-                ctx["core"].set_property(ctx["device"], ctx["property"], str(new))
+                ctx["core"].set_property(ctx["device"], ctx["property"], str(raw_new))
             except Exception as exc:
                 ctx["baseline_stale"] = True
                 self._record(

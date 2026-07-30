@@ -73,12 +73,41 @@ class ForbiddenProperty:
     property: str
 
 
+TypedActuatorKind = Literal["absolute-position", "illumination-power"]
+TypedActuatorUnits = Literal["um", "percent", "native"]
+
+
+@dataclass(frozen=True)
+class TypedActuatorId:
+    """Exact raw-property identity; unlike ActuatorId it is not an axis source."""
+
+    device: str
+    property: str
+
+
+@dataclass(frozen=True)
+class TypedActuatorPolicy:
+    kind: TypedActuatorKind
+    units: TypedActuatorUnits
+    minimum: float
+    maximum: float
+    full_scale: float | None = None
+
+
 @dataclass
 class IlluminationProperty:
     device: str
     property: str
     on_value: str = "On"
     off_value: str = "Off"
+
+
+@dataclass
+class TypedPowerProperty(ForbiddenProperty):
+    """Illumination property's raw representation (canonical policy is percent)."""
+
+    units: Literal["percent", "native"] | None = None
+    full_scale: float | None = None
 
 
 @dataclass
@@ -103,7 +132,7 @@ class IlluminationConstraints:
     """
 
     shutters: list[IlluminationProperty] = field(default_factory=list)
-    power_properties: list[ForbiddenProperty] = field(default_factory=list)
+    power_properties: list[TypedPowerProperty] = field(default_factory=list)
     max_power_percent: Optional[float] = None
     max_power_step_factor: Optional[float] = None
     require_confirm_on_enable: bool = True
@@ -319,6 +348,7 @@ class ParsedSafetyConfig:
     rig_profile: RigProfile = field(
         default_factory=lambda: RigProfile("guaranteed", frozenset(), frozenset())
     )
+    typed_actuators: dict[TypedActuatorId, TypedActuatorPolicy] = field(default_factory=dict)
 
     @classmethod
     def from_yaml(cls, path: str) -> ParsedSafetyConfig:
@@ -360,7 +390,7 @@ class ParsedSafetyConfig:
                 "shutters", "power_properties", "max_power_percent",
                 "max_power_step_factor", "require_confirm_on_enable",
             },
-            "rig_profile": {"mode", "categorical_properties", "excluded_properties"},
+            "rig_profile": {"mode", "categorical_properties", "excluded_properties", "typed_actuators"},
         }
         for key in cfg.keys() - top_keys:
             problem(str(key), "unknown top-level key")
@@ -488,7 +518,7 @@ class ParsedSafetyConfig:
                 for key in item.keys() - allowed:
                     problem(f"{location}.{key}", "unknown key")
                 for key, item_value in item.items():
-                    if key in allowed and key not in {"min_um", "max_um"}:
+                    if key in allowed and key not in {"min_um", "max_um", "minimum", "maximum", "full_scale"}:
                         typed(f"{location}.{key}", item_value, str)
                 result.append(item)
             return result
@@ -511,7 +541,11 @@ class ParsedSafetyConfig:
         )
         power_cfg = object_list(
             "illumination.power_properties", ill_cfg.get("power_properties"),
-            {"device", "property"},
+            {"device", "property", "units", "full_scale"},
+        )
+        typed_cfg = object_list(
+            "rig_profile.typed_actuators", rig_cfg.get("typed_actuators"),
+            {"device", "property", "kind", "units", "minimum", "maximum", "full_scale"},
         )
         named_cfg = object_list(
             "named_stages", cfg.get("named_stages"), {"device", "min_um", "max_um"}
@@ -522,6 +556,7 @@ class ParsedSafetyConfig:
             ("rig_profile.excluded_properties", excluded_cfg),
             ("illumination.shutters", shutters_cfg),
             ("illumination.power_properties", power_cfg),
+            ("rig_profile.typed_actuators", typed_cfg),
         ):
             seen_pairs: set[tuple[str, str]] = set()
             for index, item in enumerate(items):
@@ -533,6 +568,56 @@ class ParsedSafetyConfig:
                     if pair in seen_pairs:
                         problem(f"{name}[{index}]", f"duplicate device/property pair {pair!r}")
                     seen_pairs.add(pair)
+        typed_policies: dict[TypedActuatorId, TypedActuatorPolicy] = {}
+        for index, item in enumerate(typed_cfg):
+            location = f"rig_profile.typed_actuators[{index}]"
+            for key in ("device", "property", "kind", "units", "minimum", "maximum"):
+                if key not in item:
+                    problem(f"{location}.{key}", "missing required key")
+            kind, units = item.get("kind"), item.get("units")
+            if kind not in ("absolute-position", "illumination-power"):
+                problem(f"{location}.kind", f"unsupported kind {kind!r}; expected 'absolute-position' or 'illumination-power'")
+            allowed_units = {"absolute-position": {"um"}, "illumination-power": {"percent", "native"}}.get(kind, set())
+            if units not in allowed_units:
+                problem(f"{location}.units", f"unsupported units {units!r} for kind {kind!r}; expected one of {sorted(allowed_units)!r}")
+            numbers = {}
+            for key in ("minimum", "maximum", "full_scale"):
+                if key in item:
+                    try:
+                        numbers[key] = _finite_number(item[key], f"{location}.{key}", ValueError)
+                    except ValueError as exc:
+                        problem(f"{location}.{key}", str(exc))
+            if "minimum" in numbers and "maximum" in numbers and numbers["minimum"] > numbers["maximum"]:
+                problem(location, "minimum must not exceed maximum")
+            if kind == "illumination-power" and units == "native":
+                if numbers.get("full_scale", 0) <= 0:
+                    problem(f"{location}.full_scale", "native illumination-power requires a finite value greater than zero")
+            elif "full_scale" in item:
+                problem(f"{location}.full_scale", "is only valid for illumination-power with units: native")
+            identity = TypedActuatorId(item.get("device"), item.get("property"))
+            if identity in typed_policies:
+                problem(location, f"duplicate device/property pair {(identity.device, identity.property)!r}")
+            elif (kind in ("absolute-position", "illumination-power") and units in allowed_units
+                  and "minimum" in numbers and "maximum" in numbers):
+                typed_policies[identity] = TypedActuatorPolicy(
+                    kind, units, numbers["minimum"], numbers["maximum"], numbers.get("full_scale")
+                )
+        for index, item in enumerate(power_cfg):
+            location = f"illumination.power_properties[{index}]"
+            units = item.get("units")
+            if units is not None and units not in ("percent", "native"):
+                problem(f"{location}.units", "unsupported units; expected 'percent' or 'native'")
+            if "full_scale" in item:
+                try:
+                    item["full_scale"] = _finite_number(item["full_scale"], f"{location}.full_scale", ValueError)
+                    if item["full_scale"] <= 0:
+                        problem(f"{location}.full_scale", "must be greater than zero")
+                except ValueError as exc:
+                    problem(f"{location}.full_scale", str(exc))
+            if units == "native" and "full_scale" not in item:
+                problem(f"{location}.full_scale", "units: native requires full_scale")
+            if units != "native" and "full_scale" in item:
+                problem(f"{location}.full_scale", "is only valid with units: native")
         ranges = _stage_ranges(stage_cfg, named_cfg, problem)
 
         mode = rig_cfg.get("mode", "guaranteed")
@@ -598,7 +683,7 @@ class ParsedSafetyConfig:
                     IlluminationProperty(**s) for s in shutters_cfg
                 ],
                 power_properties=[
-                    ForbiddenProperty(**p)
+                    TypedPowerProperty(**p)
                     for p in power_cfg
                 ],
                 max_power_percent=ill_cfg.get("max_power_percent"),
@@ -615,6 +700,7 @@ class ParsedSafetyConfig:
             rig_profile=RigProfile(
                 mode, frozenset(categorical_pairs), frozenset(excluded_pairs)
             ),
+            typed_actuators=typed_policies,
         )
 
 
@@ -633,6 +719,7 @@ class SafetyGuard:
         # (see authorization.validate_live_rig). Empty until startup fills it,
         # so nothing widens without a live rig saying so.
         self._auto_classified: frozenset[tuple[str, str]] = frozenset()
+        self._typed_actuators: dict[TypedActuatorId, TypedActuatorPolicy] = {}
 
     def admit_auto_classified(self, pairs: Iterable[tuple[str, str]]) -> None:
         """Admit exactly the pairs the live authorization map auto-classified.
@@ -644,6 +731,29 @@ class SafetyGuard:
         self._auto_classified = frozenset(
             (str(device), str(prop)) for device, prop in pairs
         )
+
+    def admit_typed_actuators(
+        self, policies: dict[TypedActuatorId, TypedActuatorPolicy]
+    ) -> None:
+        """Install exact registry entries already validated against the live rig."""
+        self._typed_actuators = dict(policies)
+
+    def check_typed_actuator(self, device: str, prop: str, value: str) -> None:
+        """Convert a declared raw write and bound its canonical absolute effect."""
+        policy = self._typed_actuators.get(TypedActuatorId(device, prop))
+        if policy is None:
+            return
+        raw = _finite_number_text(value, f"Typed actuator {device}.{prop}")
+        canonical = raw
+        if policy.kind == "illumination-power" and policy.units == "native":
+            assert policy.full_scale is not None
+            canonical = raw * 100.0 / policy.full_scale
+        if not policy.minimum <= canonical <= policy.maximum:
+            unit = "um" if policy.kind == "absolute-position" else "percent"
+            raise SafetyViolation(
+                f"Typed actuator {device}.{prop} has canonical value {canonical:g} {unit}; "
+                f"allowed absolute range is {policy.minimum:g}..{policy.maximum:g} {unit}."
+            )
 
     @property
     def analysis_min_snr(self) -> float | None:
@@ -767,14 +877,16 @@ class SafetyGuard:
         """Guard a raw `set_property` write on a guarded axis, then apply the
         denylist/allowlist from check_property.
 
-        HEURISTIC, NOT A GATE. It re-applies the numeric guards only when the
+        The exact typed registry is the completeness gate. The legacy alias
+        heuristic below remains defence in depth and re-applies numeric guards when the
         target is the *current* focus/camera/XY device and the property name is
-        one of the small alias sets above. It does NOT protect a second Z drive,
+        one of the small alias sets above. By itself it does NOT protect a second Z drive,
         a driver whose position property is named differently ("Position (um)",
         "PositionZ", ASI/PI names), or relative-move/offset properties. Ordinary
         raw writes require allowlist mode; configured illumination pairs instead
         use their exact code-owned typed capability and check_illumination.
         """
+        typed_pair = TypedActuatorId(device, prop) in self._typed_actuators
         illumination_pair = self.is_illumination_enable(device, prop) or any(
             item.device == device and item.property == prop
             for item in self._c.illumination.power_properties
@@ -782,13 +894,37 @@ class SafetyGuard:
         # Illumination pairs are code-owned typed capabilities. Startup's live
         # map authorizes the exact pair; check_illumination below owns its
         # confirmation/cap/ratchet rather than the categorical allowlist.
-        if not illumination_pair:
+        if not illumination_pair and not typed_pair:
             self.check_property(device, prop)      # denylist/allowlist first
+        elif typed_pair:
+            # Typed declarations carry their own authorization and therefore
+            # bypass the categorical allowlist, but explicit exclusions still win.
+            for fp in self._c.forbidden_properties:
+                if fp.device == device and fp.property == prop:
+                    raise SafetyViolation(
+                        f"Property '{device}.{prop}' is forbidden by safety config."
+                    )
+        self.check_typed_actuator(device, prop, value)
         p = prop.lower()
         focus = core.get_focus_device()
         cam = core.get_camera_device()
         xy = core.get_xy_stage_device()
-        if device == focus and p in self._MOTION_PROPS:
+        typed_policy = self._typed_actuators.get(TypedActuatorId(device, prop))
+        typed_position = (
+            typed_policy is not None and typed_policy.kind == "absolute-position"
+        )
+        if typed_position and device == focus:
+            self.check_z(_finite_number_text(value, f"Position property {device}.{prop}"))
+        elif typed_position and device == xy:
+            num = _finite_number_text(value, f"Position property {device}.{prop}")
+            self.check_xy(num, num)
+        elif typed_position and any(
+            limits.device == device for limits in self._c.named_stages
+        ):
+            self.check_named_stage(
+                device, _finite_number_text(value, f"Position property {device}.{prop}")
+            )
+        elif device == focus and p in self._MOTION_PROPS:
             num = _finite_number_text(value, f"Position property {device}.{prop}")
             self.check_z(num)
         elif device == cam and p in self._EXPOSURE_PROPS:
@@ -835,6 +971,20 @@ class SafetyGuard:
     def max_illumination_power_step_factor(self) -> Optional[float]:
         return self._c.illumination.max_power_step_factor
 
+    def illumination_to_percent(self, device: str, prop: str, raw_value) -> float:
+        """Convert a declared illumination raw value to canonical percent."""
+        raw = _finite_number_text(raw_value, f"Illumination power {device}.{prop}")
+        power = self.is_illumination_power(device, prop)
+        scale = getattr(power, "full_scale", None)
+        return raw * 100.0 / scale if getattr(power, "units", None) == "native" else raw
+
+    def illumination_from_percent(self, device: str, prop: str, percent) -> float:
+        """Convert canonical percent to the property's declared raw representation."""
+        canonical = _finite_number(percent, "Canonical illumination power")
+        power = self.is_illumination_power(device, prop)
+        scale = getattr(power, "full_scale", None)
+        return canonical * scale / 100.0 if getattr(power, "units", None) == "native" else canonical
+
     def check_illumination(
         self, core, device: str, prop: str, value: str, confirm_fn=None,
         previous_percent: float | None = None,
@@ -864,7 +1014,9 @@ class SafetyGuard:
 
         if not self.is_illumination_power(device, prop):
             return
-        new = _finite_number_text(value, f"Illumination power {device}.{prop}")
+        power = self.is_illumination_power(device, prop)
+        scale = getattr(power, "full_scale", None) if getattr(power, "units", None) == "native" else None
+        new = self.illumination_to_percent(device, prop, value)
         if ill.max_power_percent is not None:
             _finite_number(
                 ill.max_power_percent, "Configured illumination.max_power_percent"
@@ -888,6 +1040,8 @@ class SafetyGuard:
                     f"Current illumination power {device}.{prop}",
                 )
             )
+            if scale is not None and previous_percent is None:
+                old = old * 100.0 / scale
             if old > 0 and new / old > ill.max_power_step_factor:
                 raise SafetyViolation(
                     f"Power increase {old:.1f}% → {new:.1f}% exceeds the "
