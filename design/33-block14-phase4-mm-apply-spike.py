@@ -91,11 +91,25 @@ def config_settings(config: Any) -> list[Any]:
     )
 
 
-def expand(core: Any, group: str, preset: str) -> dict[str, Any]:
+def expand(
+    core: Any, group: str, preset: str, surface: dict[str, Any]
+) -> dict[str, Any]:
     config = core.get_config_data(group, preset)
     settings = config_settings(config)
+    if "config" not in surface:
+        surface["config"] = {
+            "observed_at": {"group": group, "preset": preset},
+            "type": type(config).__name__,
+            "members": sorted(str(name) for name in dir(config)),
+        }
     rows = []
     for index, setting in enumerate(settings):
+        if "setting" not in surface:
+            surface["setting"] = {
+                "observed_at": {"group": group, "preset": preset, "index": index},
+                "type": type(setting).__name__,
+                "members": sorted(str(name) for name in dir(setting)),
+            }
         device, device_source = call_or_field(
             setting, ("device", "device_label", "get_device_label", "getDeviceLabel")
         )
@@ -116,11 +130,11 @@ def expand(core: Any, group: str, preset: str) -> dict[str, Any]:
                 "value": value_source,
             },
             "type": type(setting).__name__,
-            "dir": sorted(str(name) for name in dir(setting)),
+            "surface_ref": "sections.expansion_surface.setting",
         })
     return {
         "config_type": type(config).__name__,
-        "config_dir": sorted(str(name) for name in dir(config)),
+        "config_surface_ref": "sections.expansion_surface.config",
         "settings": rows,
     }
 
@@ -454,19 +468,28 @@ def shutter_names(core: Any, channel_rows: list[dict[str, Any]]) -> list[str]:
     return sorted(names)
 
 
-def loaded_shutter_names(core: Any) -> tuple[list[str], list[dict[str, str]]]:
-    """Identify loaded shutter devices using the shutter-specific read API."""
+def loaded_shutter_names(core: Any) -> tuple[list[str], list[dict[str, Any]]]:
+    """Identify loaded shutters solely from MM's reported device type."""
     names = []
-    rejected = []
+    classifications = []
     for device in vector(core.get_loaded_devices()):
-        if device == "Core":
-            continue
         try:
-            primitive_bool(core.get_shutter_open(device), f"get_shutter_open({device!r})")
-            names.append(device)
+            device_type = str(core.get_device_type(device))
+            is_shutter = device_type == "ShutterDevice"
+            classifications.append({
+                "device": device,
+                "device_type": device_type,
+                "is_shutter": is_shutter,
+            })
+            if is_shutter:
+                names.append(device)
         except Exception as exc:
-            rejected.append({"device": device, "error": clean_exception(exc)})
-    return sorted(names), rejected
+            classifications.append({
+                "device": device,
+                "device_type_error": clean_exception(exc),
+                "is_shutter": False,
+            })
+    return sorted(names), classifications
 
 
 def observe_shutters(core: Any, names: list[str]) -> dict[str, Any]:
@@ -521,12 +544,14 @@ def core_effect_probe(
 
 
 def shutter_retarget_probe(core: Any, before: dict[str, Any]) -> dict[str, Any]:
-    names, rejected = loaded_shutter_names(core)
+    names, classifications = loaded_shutter_names(core)
     original = str(core.get_shutter_device())
     result: dict[str, Any] = {
-        "enumeration_method": "loaded devices accepted by get_shutter_open(device)",
-        "shutter_devices": names,
-        "non_shutter_devices": rejected,
+        "enumeration_method": "get_device_type(device) == 'ShutterDevice'",
+        "shutter_devices": [
+            {"device": name, "device_type": "ShutterDevice"} for name in names
+        ],
+        "loaded_device_classifications": classifications,
         "original_active_shutter": original,
         "targets": [],
     }
@@ -537,11 +562,16 @@ def shutter_retarget_probe(core: Any, before: dict[str, Any]) -> dict[str, Any]:
             continue
         restore(core, before)
         item = {"target": target, "before": observe_shutters(core, names)}
-        core.set_property("Core", "Shutter", target)
+        try:
+            core.set_property("Core", "Shutter", target)
+            item["permitted"] = True
+        except Exception as exc:
+            item["permitted"] = False
+            item["error"] = clean_exception(exc)
         item["after"] = observe_shutters(core, names)
         item["previously_active_open_after"] = item["after"]["open"][original]
         result["targets"].append(item)
-    core.set_property("Core", "Shutter", original)
+    result["restore"] = restore(core, before)
     result["restore_observation"] = observe_shutters(core, names)
     result["restore_verified"] = result["restore_observation"]["active_shutter"] == original
     if not result["restore_verified"]:
@@ -549,11 +579,13 @@ def shutter_retarget_probe(core: Any, before: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def numeric_readback_probe(core: Any, before: dict[str, Any]) -> dict[str, Any]:
+def numeric_readback_probe(
+    core: Any, before: dict[str, Any], surface: dict[str, Any]
+) -> dict[str, Any]:
     requested = "10"
     preset = "float"
     core.define_config(NUMERIC_SCRATCH_GROUP, preset, "Camera", "Exposure", requested)
-    rows = expand(core, NUMERIC_SCRATCH_GROUP, preset)["settings"]
+    rows = expand(core, NUMERIC_SCRATCH_GROUP, preset, surface)["settings"]
     if len(rows) != 1:
         raise RuntimeError(f"Numeric scratch expansion has {len(rows)} settings, expected 1")
     restore(core, before)
@@ -632,26 +664,47 @@ def main() -> int:
         ev.show("20-call baseline", baseline)
 
         ev.section("Q1 Expansion shape and consecutive reads")
+        expansion_surface: dict[str, Any] = {}
         presets = vector(core.get_available_configs("Channel"))
         expansions: dict[str, Any] = {}
         all_rows: list[dict[str, Any]] = []
         for preset in presets:
-            first = expand(core, "Channel", preset)
-            second = expand(core, "Channel", preset)
+            first = expand(core, "Channel", preset, expansion_surface)
+            second = expand(core, "Channel", preset, expansion_surface)
             equal = first["settings"] == second["settings"]
             expansions[preset] = {"first": first, "second": second, "consecutive_equal": equal}
             all_rows.extend(first["settings"])
             ev.show(preset, expansions[preset])
         ev.data["sections"]["expansion"] = expansions
+        ev.data["sections"]["expansion_surface"] = expansion_surface
+        ev.show("First observed expansion object surfaces", expansion_surface)
 
         ev.section("Q1 Read-only expansion of every config group")
         all_group_expansions: dict[str, Any] = {}
         for group in existing_groups:
-            group_presets: dict[str, Any] = {}
-            for preset in vector(core.get_available_configs(group)):
-                group_presets[preset] = expand(core, group, preset)
-            all_group_expansions[group] = group_presets
-            ev.show(group, group_presets)
+            group_result: dict[str, Any] = {"presets": {}}
+            try:
+                group_presets = vector(core.get_available_configs(group))
+                group_result["enumeration"] = {"ok": True, "names": group_presets}
+            except Exception as exc:
+                group_result["enumeration"] = {
+                    "ok": False, "error": clean_exception(exc),
+                }
+                all_group_expansions[group] = group_result
+                ev.show(group, group_result)
+                continue
+            for preset in group_presets:
+                try:
+                    group_result["presets"][preset] = {
+                        "ok": True,
+                        "expansion": expand(core, group, preset, expansion_surface),
+                    }
+                except Exception as exc:
+                    group_result["presets"][preset] = {
+                        "ok": False, "error": clean_exception(exc),
+                    }
+            all_group_expansions[group] = group_result
+            ev.show(group, group_result)
         ev.data["sections"]["all_group_expansion"] = all_group_expansions
 
         ev.section("Q2/Q4/Q5 Replay equivalence, waits, and read-back fidelity")
@@ -714,7 +767,7 @@ def main() -> int:
         ev.section("Q5b Numeric read-back fidelity")
         restore(core, pre)
         numeric_scratch_may_exist = True
-        numeric_readback = numeric_readback_probe(core, pre)
+        numeric_readback = numeric_readback_probe(core, pre, expansion_surface)
         ev.data["sections"]["numeric_readback"] = numeric_readback
         ev.show("Numeric read-back", numeric_readback)
 
@@ -727,7 +780,7 @@ def main() -> int:
         }
         scratch_may_exist = True
         define_scratch(core, "bad", triplet)
-        partial["expanded"] = expand(core, SCRATCH_GROUP, "bad")
+        partial["expanded"] = expand(core, SCRATCH_GROUP, "bad", expansion_surface)
         expanded_rows = partial["expanded"]["settings"]
         if (
             len(expanded_rows) != 3
@@ -763,10 +816,10 @@ def main() -> int:
         ev.show("Partial failure", partial)
 
         ev.section("Q7 TOCTOU re-read")
-        before_edit = expand(core, SCRATCH_GROUP, "bad")
+        before_edit = expand(core, SCRATCH_GROUP, "bad", expansion_surface)
         first = triplet[0]
         core.define_config(SCRATCH_GROUP, "bad", first["device"], first["property"], first["before"])
-        after_edit = expand(core, SCRATCH_GROUP, "bad")
+        after_edit = expand(core, SCRATCH_GROUP, "bad", expansion_surface)
         toctou = {
             "before": before_edit,
             "after": after_edit,

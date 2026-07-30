@@ -182,6 +182,10 @@ Shutter and LED Shutter, retarget each non-active shutter without snapping or a
 direct shutter-open call, record the active shutter, `Core.AutoShutter`, and every
 shutter's open state before and after, and verify restoration of the original active
 shutter. In particular, record whether the previously active shutter remains open.
+Whether the retargeted shutter would emit on the next exposure is an inference from
+`Core.AutoShutter = 1`, not a measured light event: this probe deliberately never
+snaps. Phase 4 may treat `Core.Shutter` as illumination-relevant on that basis, but
+must not describe the evidence as measured emission.
 
 Inspect `Q5b Numeric read-back fidelity` for the separate Camera.Exposure scratch
 group. Record requested `"10"` against the exact string read back after both
