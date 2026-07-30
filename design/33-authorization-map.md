@@ -739,6 +739,109 @@ review rounds `e0645f1` and `47295f2`). Gated on the Micro-Manager demo core and
   ratchet, the independence of the two guards, and the `GenericDevice`/`pre_init`
   shapes. *Validated*: nothing scientific — this block makes no scientific claim.
 
+## Phase 4 landed (2026-07-30)
+
+Shipped as Block 14 Phase 4 (merge `5458483`; executor implementation `3fc7dcd`;
+gated subject `9799164`; gate-record closeout `bb6290f`). The measurement spike and
+executor gate record are in
+[`33-block14-phase4-gate-prompts.md`](33-block14-phase4-gate-prompts.md). The spike
+ran on the Micro-Manager demo core; G7–G9, the G11 shutter-retarget limb, and the
+interactive prompt limb used that same demo core, while injected failure,
+rollback-failure, and cancellation used deterministic fakes.
+
+### What Phase 4 actually implements
+
+- **Capture, authorize, replay.** `set_channel` freshly captures one immutable
+  `Channel` expansion, authorizes every effect before the first mutation, then
+  replays those exact values instead of delegating to `set_config`. The startup and
+  applied expansion SHA-256 values are retained and `expansion_drift` reports a
+  changed live definition; the startup hash is a diagnostic, never an authorization
+  token.
+- **Per-effect routing.** Reviewed categorical effects use the categorical guard;
+  declared typed-continuous effects use their typed guard; illumination enable and
+  power use the illumination guard; camera exposure uses the built-in exposure
+  guard (and the existing built-in axis routes remain guarded). `Core.Shutter` is
+  the sole admitted `Core.*` effect: its target must be a declared illumination
+  shutter and each captured write requires illumination-class human confirmation.
+  Every other `Core.*` effect is excluded.
+- **Ordered, verified apply.** Effects retain expansion order. Each real-device
+  write is followed by `wait_for_device` and read-back; `Core` is a pseudo-device,
+  so it has no device wait. Read-back is exact for non-floats and numeric for Float
+  properties, accepting equivalent driver formatting rather than requiring equal
+  strings.
+- **Fail-fast rollback with an honest error boundary.** Forward execution stops at
+  the first failed set, wait, or verification and rolls back every attempted write,
+  including the ambiguous write that raised, in reverse order with the same
+  wait-and-verify discipline. `ChannelPlanPartialApplicationError` means execution
+  was partial but all attempted rollback steps verified;
+  `ChannelPlanSafeStateError` says `SAFE STATE NOT VERIFIED` and names rollback
+  failures instead of claiming recovery.
+- **Cancellation is a write-boundary operation only.** It is polled before each
+  forward write; cancellation then enters the same rollback path. It cannot
+  interrupt an in-flight bridge set, wait, or read-back.
+- **Prompt cost.** The deliberate per-captured-`Core.Shutter` prompt frequency and
+  its one-line reversal are already recorded in
+  [the TOCTOU section above](#preset-mutability-is-a-time-of-checktime-of-use-gap);
+  Phase 4 does not implement that reversal.
+
+### Measured basis
+
+- On the demo core, ordered replay and `set_config` produced empty complete-state
+  diffs for the three non-vacuous presets DAPI, FITC, and Rhodamine, and matched
+  `getCurrentConfig("Channel")` bookkeeping; the fourth, Cy5, was already current
+  and is explicitly not evidence.
+- In the demo apply-time failure spike, `set_config` continued after setting 2
+  failed, raised only afterward, and left settings 1 and 3 applied:
+  `Camera.AllowMultiROI` `0`→`1` and `Emission.ClosedPosition` `0`→`1`. The ordered
+  property loop stopped at setting 2 and left only setting 1 applied before restore.
+- The demo camera driver reformatted a requested exposure string `"10"` as
+  `"10.0000"` on read-back. The executor's type-aware comparison handles that
+  shape, but equivalent reformatting by production drivers is unmeasured.
+- Twenty serialized demo-core `get_property` calls measured a **0.13 ms minimum**
+  and **0.14 ms median** round trip. That 0.13 ms floor made a set/wait/read sequence
+  per write affordable on this configuration; it does not predict real-adapter
+  latency.
+- Editing a scratch preset made a subsequent `get_config_data` return the changed
+  definition (`reread_changed: true`). G9 then changed `Dichroic.Label` to
+  `89402bs`, observed unequal startup/applied hashes and `expansion_drift: true`,
+  and applied the freshly authorized value. This is live re-read evidence, not a
+  claim that a startup snapshot stays authoritative.
+
+### Excluded from Phase 4, each with its reason
+
+- **Every configuration group except `Channel`** — Phase 4 measured other groups
+  only for effect inventory; it did not authorize or implement their application.
+- **`Core.ChannelGroup` resolution** — the group stays behind the named `Channel`
+  constant because `Core.ChannelGroup` is writable and preset-set, and on M5 its
+  observed choices lead into `System` presets that can arm lasers. It is not a safe
+  source of executor authority.
+- **Every non-Shutter `Core.*` effect** — no other pseudo-device effect has a
+  measured, typed authorization route; inventory is not permission.
+- **LED Shutter as a declared illumination gate** — its allowed labels were
+  inventoried, but no measured on/off pair establishes which values emit. It was
+  used only as the initially active target in the demo retarget gate.
+- **The map-less legacy delegation path** — compatibility sessions without an
+  authorization map still call `set_config`, so they retain the preset-definition
+  TOCTOU gap and are outside the Phase 4 completeness claim.
+
+### Honesty audit
+
+- **Implemented:** fresh immutable capture; pre-mutation authorization; the routing
+  table above; ordered set/wait/read; type-aware verification; drift reporting;
+  reverse rollback and the two error classes; write-boundary cancellation.
+- **Rig-plumbing-verified:** capture/replay, authorization/refusal, order,
+  set→wait→read calls, read-back, drift reporting, shutter confirmation/retarget,
+  restoration, and the browser prompt path on demo devices. The demo devices never
+  became busy, so real-hardware per-write wait semantics remain unmeasured.
+- **Scientifically provisional:** the demo spike measured replay equivalence,
+  `set_config` partial failure, reversibility, live definition re-read, the 0.13 ms
+  bridge floor, and `"10"`→`"10.0000"` demo-driver formatting. Failure after every
+  write, failed rollback, Float-format acceptance in the executor, and cancellation
+  were exercised only by deterministic fakes. Numeric reformatting on real drivers
+  is unmeasured. M5 has no `Channel` group, so none of the executor is M5-verified.
+- **Validated:** nothing scientific. Phase 4 claims no scientific result and does
+  not validate a safe illumination state, exposure, dose, timing, or device policy.
+
 ## Phase 3 landed (2026-07-27)
 
 Shipped as Block 5 (merge `3438b90`; implementation `ff41de7`; coordinator-review
