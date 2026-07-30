@@ -93,7 +93,7 @@ reading their output.
 ```powershell
 git status --short --branch > block14p4-git-status.txt 2>&1
 git rev-parse HEAD > block14p4-commit.txt 2>&1
-New-Item -ItemType Directory -Force block14p4_30072026 > block14p4-mkdir.txt 2>&1
+New-Item -ItemType Directory -Force block14p4_30072026 | Out-Null
 python -m py_compile design\33-block14-phase4-mm-apply-spike.py > block14p4_30072026\g0-compile.txt 2>&1
 ```
 
@@ -350,7 +350,7 @@ already exists. The checked-in profile already has `reviewed: true`; startup ref
 a safety profile without that acknowledgement.
 
 ```powershell
-New-Item -ItemType Directory -Force block14p4-executor_30072026 > block14p4-executor_30072026\mkdir.txt 2>&1
+New-Item -ItemType Directory -Force block14p4-executor_30072026 | Out-Null
 Copy-Item design\33-block14-phase4-demo-safety-config.yaml block14p4-executor_30072026\demo-safety-config.yaml
 notepad block14p4-executor_30072026\demo-safety-config.yaml
 Test-Path C:\path\you\put\in\workspace_dir > block14p4-executor_30072026\workspace-exists.txt 2>&1
