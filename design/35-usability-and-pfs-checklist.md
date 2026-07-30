@@ -103,6 +103,13 @@ while the shipped kit is in flight.
       boundaries are safety and rollback boundaries.
 - [ ] One worktree per concurrent agent. Never `git add -A`. Never
       `pip install -e .` while another agent is live in a shared directory.
+- [ ] **Coordinator edits go on a branch too — including ledger and checklist
+      updates.** "The coordinator alone edits the run ledger" says *who* may edit
+      this file, not that those edits may bypass branch-first. Commits `3914735`
+      and `fab00fb` (2026-07-30) went straight to `main` and should not have;
+      they are left in place because rewriting pushed history is worse than the
+      irregularity. Every coordinator edit after those two is branched and merged
+      like any other change.
 - [ ] **Commit coordinator edits to this file before assigning the next block.**
       Process failure caught by block 1's implementer, 2026-07-30: corrections and
       ledger rows lived only as uncommitted working-tree changes on `main`, so an
