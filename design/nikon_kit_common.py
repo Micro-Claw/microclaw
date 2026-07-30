@@ -177,7 +177,7 @@ def restore_pfs(core: Any, initial: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def force_pfs_off(core: Any) -> dict[str, Any]:
+def force_pfs_off(core: Any, _initial: dict[str, Any] | None = None) -> dict[str, Any]:
     result = {"contract": "force TIPFSStatus.State Off", "target": "Off", "ok": False}
     try:
         core.set_property("TIPFSStatus", "State", "Off")
@@ -221,8 +221,9 @@ class MotionGuard:
 
     def check_position(self, z: float) -> None:
         if not self.minimum <= z <= self.ceiling:
-            raise Refusal(f"ABORTED: measured TIZDrive {z} um is outside the confirmed "
-                          f"envelope [{self.minimum}, {self.ceiling}] um.")
+            raise Refusal(f"Z ENVELOPE BREACH — ABORTED: measured TIZDrive {z} um is "
+                          f"outside the confirmed envelope [{self.minimum}, "
+                          f"{self.ceiling}] um.")
 
     def approve(self, current: float, target: float) -> None:
         self.check_position(current)

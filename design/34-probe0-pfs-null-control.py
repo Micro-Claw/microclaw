@@ -37,6 +37,18 @@ def body(core, payload, log):
     core.set_property("TIPFSStatus", "State", "On")
     armed = time.monotonic()
     samples = [kit.observation(core, armed)]
+    enabled = samples[0]["continuous_focus_enabled"]
+    never_armed = samples[0]["state"] != "On" or enabled is False
+    if never_armed:
+        verdict = "never armed — inconclusive"
+        payload["observations"] = samples
+        payload["verdict"] = {"case": args.case, "name": verdict,
+                              "requires_rerun": True,
+                              "reason": "PFS was not armed on the first read after the On command."}
+        message = (f"Verdict [{args.case}]: {verdict}. This case must be re-run and "
+                   "must not be interpreted.")
+        log.extend([f"Case: {args.case}", f"FullFocusTimeoutMs: {timeout}"])
+        raise kit.Refusal(message)
     for deadline in (1, 2, 5, 10, 30):
         time.sleep(max(0, armed + deadline - time.monotonic()))
         sample = kit.observation(core, armed); samples.append(sample)
@@ -44,7 +56,8 @@ def body(core, payload, log):
     payload["observations"] = samples
     fell = any(a["state"] == "On" and b["state"] == "Off" for a, b in zip(samples, samples[1:]))
     verdict = "autonomous timeout observed" if fell else "remained armed through window"
-    payload["verdict"] = {"case": args.case, "name": verdict}
+    payload["verdict"] = {"case": args.case, "name": verdict,
+                          "requires_rerun": False}
     log.extend([f"Case: {args.case}", f"FullFocusTimeoutMs: {timeout}", f"Verdict [{args.case}]: {verdict}"])
 
 if __name__ == "__main__":
