@@ -28,10 +28,10 @@ This is a program of work, not one atomic change. Its completion boundaries are:
    reachable actuator. An arbitrary property or preset effect that cannot yet be
    classified is excluded in this phase; allowlisting its name alone does not
    admit it.
-2. **Extended typed continuous-actuator registry:** add driver-specific
-   semantics and unit conversions beyond the built-in adapters, route those
-   writes through typed guards, and continue to exclude every unclassified
-   continuous write.
+2. **Extended typed continuous-actuator registry (landed):** driver-specific
+   semantics and unit conversions beyond the built-in adapters, routed through
+   typed guards, still excluding every unclassified continuous write
+   (Phase 2 / Block 14; merge `47f6702`). See "Phase 2 landed" below.
 3. **Acquisition/dose extension (landed):** design/32 Finding 2's frame,
    duration, byte, illuminated-time, and cumulative-session budgets are now
    authorization policies (Phase 3 / Block 5; merge `3438b90`).
@@ -567,6 +567,149 @@ below.
   principle that auto-classification must not override an explicit operator
   narrowing, whatever the device turns out to do.
 
+## Phase 2 landed (2026-07-30)
+
+Shipped as Block 14 Phase 2 (merge `47f6702`; implementation `9bf7599`, coordinator
+review rounds `e0645f1` and `47295f2`). Gated on the Micro-Manager demo core and on
+**M5**; the gate record and all evidence pointers are in
+[`33-block14-phase2-gate-prompts.md`](33-block14-phase2-gate-prompts.md).
+
+### What Phase 2 actually implements
+
+- **Schema.** `rig_profile.typed_actuators` — an optional, strict list of exact
+  `(device, property)` entries declaring `kind`, `units`, canonical `minimum`/`maximum`
+  and, where the kind requires it, `full_scale`. `schema_version` stays at **2**: a
+  valid schema-2 file that declares no typed actuators parses exactly as before.
+- **Two kinds only, both backed by measurement.** `absolute-position` (canonical µm)
+  and `illumination-power` (canonical percent, `units: percent | native` with
+  `full_scale`). Relative/offset moves, velocity, voltage/DAC, camera ROI and
+  MicroFPGA pulse duration are excluded, each because no measured conversion exists —
+  see "Excluded from Phase 2" below.
+- **No built-in driver table.** Semantics are operator-declared and then validated
+  against live driver introspection. There is no ASI/PI/Thorlabs property-name
+  catalogue; a device the operator has not declared stays excluded.
+- **Live validation.** Each declared entry is checked against the connected rig for
+  device and property existence, writability, numeric type, and non-enumeration.
+  Driver-reported limits are used **only** as an outer sanity check on a declared
+  bound, never as an inferred safe limit.
+- **The seam is closed.** `check_device_property`'s alias heuristic is no longer what
+  completeness rests on. A declared-categorical pair that the live rig reports as a
+  continuous actuator is a startup error, scoped by MM device type:
+  `StageDevice`, `XYStageDevice`, `CameraDevice`, `GalvoDevice`, `SignalIODevice`
+  and `GenericDevice`, excluding `pre_init` properties. `StateDevice` is deliberately
+  out — see the auto-classification interaction below.
+- **A typed axis entry may only narrow.** When a typed `absolute-position` entry names
+  the live core focus device, the core XY device, or a device with a `named_stages`
+  entry, its bounds must lie within that axis's declared range, and the built-in axis
+  guard still applies to the write in addition to the typed bound.
+- **Exclusion beats declaration.** A pair in both `typed_actuators` and either
+  `forbidden_properties` or `excluded_properties` is a startup conflict, and the
+  denylist is still consulted at runtime. This is the Block 3b vacuum rule applied to
+  a new declaration mechanism.
+- **Presets.** A preset effect landing on a typed pair is classified and the preset is
+  excluded, for the same reason illumination pairs are: no channel-plan executor
+  exists to apply it under the typed guard. That remains Phase 4.
+- **Fail-closed introspection.** In guaranteed mode, failing to introspect a pair the
+  operator declared categorical is a startup error rather than a silent admission.
+  Degraded mode keeps best-effort admission.
+
+### M5 field findings (guaranteed mode)
+
+- **The units defect is confirmed and fixed.** `iBeamSmartCW-1."Power (mW)"` reports a
+  driver range of **0.0–75.0** — measured through the bridge for the first time,
+  where previously it was a note carried from a session. A config declaring it with
+  `max_power_percent: 100.0` now fails startup with an actionable migration message;
+  the migrated declaration (`units: native`, `full_scale: 75.0`) produces a complete
+  map with `effective canonical bound 0..40 percent`.
+- **Migration makes the ceiling expressible, not automatically meaningful.** With
+  `units: native` and `max_power_percent` left at 100, raw 75 mW converts to exactly
+  100 % and is still permitted. The operator must then choose a real ceiling. Because
+  `max_power_percent` is global, one canonical percent cap now means the same thing
+  across mixed-unit drivers — which is the point of the canonical unit.
+- **The ratchet evaluates in canonical percent, proved live.** From a device at
+  5.0 mW, a write of 30 mW was refused as `6.7% → 40.0%` against the 3× ratchet. The
+  6.7 % is 5/75: the device read was converted from native mW before the ratio was
+  taken. This is the one claim that had no off-rig or demo equivalent.
+- **The typed cap and the ratchet are independent.** 31 mW was refused by the typed
+  cap at 41.33 % while being only 1.03× on the ratchet; the 30 mW case was the
+  reverse. Neither guard subsumes the other. 30 mW = 40.0 % passed at exactly the
+  inclusive bound with no float drift.
+- **Every hazardous continuous actuator on M5 is a `GenericDevice`.** `PWM.Position0`
+  (0–255), `Servos.Position0..3` (0–65535), `Laser Trigger."Duration0 (us)"`
+  (0–1 048 575), `iBeamSmartCW-1."Power (mW)"` and `Fine A/B (%)`. The gate caught
+  that the first version of the refusal net omitted that device type, and demonstrated
+  the consequence on the rig: a `complete` map admitting an unbounded Class-3B laser
+  power set-point as "categorical". Widening the net closed it while leaving the
+  deployed profile's map **byte-identical** — 57 entries before and after.
+- **The `pre_init` exemption is what makes that widening safe.** `PWM."Number of PWM"`,
+  `TTL."Number of channels"`, `Servos."Number of Servos"`, `Analog Input."Number of
+  channels"` and `Laser Trigger."Number of lasers"` are all numeric, writable,
+  unenumerated **and pre-init** — which is also why they never appear in MM's Device
+  Property Browser. Without the exemption the widening would have refused them as
+  continuous actuators with no typed kind available to declare them.
+- **`iBeamSmartCW-1."Laser Operation"` is an undeclared light control.** A String
+  `On`/`Off` property absent from `illumination.shutters`, so it is neither
+  confirm-gated nor swept off at teardown. This is the "illumination gate is inert on
+  an undeclared light source" finding above, appearing on M5. It is an M5 profile gap,
+  not a Phase 2 defect, and belongs to that separate branch.
+
+### Demo-core findings
+
+- Opt-in additivity was proved by diff, not assertion: the base and typed maps differ
+  by **exactly one entry** (41 → 42) with nothing else moved.
+- A typed entry narrows **only the raw property path**. With `stage.z_max: 200` and a
+  typed `Z.Position 0..150`, `move_stage_z(200)` is still allowed while
+  `set_device_property(Z, Position, 175)` is refused. Correct — 200 is the reviewed
+  axis bound and the narrowing rule guarantees the typed entry can never be wider —
+  but declaring a typed actuator does **not** retroactively tighten the axis, and
+  operators will expect otherwise.
+- A typed declaration is its own authorization: the 120 µm write succeeded with
+  `categorical_properties` empty, hence an empty derived `allowed_properties`.
+- `LED.State` on the demo config is Integer with zero allowed values and no limits —
+  indistinguishable from a continuous actuator by value shape alone. Only the
+  `StateDevice` device-type exclusion keeps Block 3b's auto-classification working. A
+  "numeric ⇒ continuous" detector would have broken the stock demo config.
+
+### Excluded from Phase 2, each with its reason
+
+- **Relative/offset moves** — not absolute effects; a guard on the written number
+  would not bound the resulting position.
+- **Velocity** — needs its own semantics and a stopping policy, not a position bound.
+- **Voltage/DAC** — no measured conversion to a physical effect.
+- **Camera ROI** — a separate geometry capability, already tracked.
+- **MicroFPGA pulse duration** — `Laser Trigger."Duration0 (us)"` is now *refused* as
+  an unclassified continuous actuator rather than silently admitted, but it is still
+  not *declarable*. Bounding it safely requires expressing dose as level × duration,
+  as this document already rules, plus M5 measurements of that product. A future
+  typed kind, not this block.
+
+### Limits of the verdict
+
+- **Device-type ordinals 12 (`SignalIODevice`) and 16 (`GalvoDevice`) are unconfirmed
+  over the bridge.** Neither the demo config nor M5 has a galvo or a DAC. Both
+  resolvers prefer `to_string()` and only fall back to the ordinal table, and on both
+  rigs every type resolved by name — so the gate proves the *names* are right and
+  never exercises the fallback at all. The table's newly added region is published
+  enum, not observed behaviour.
+- **A channel preset colliding with a typed pair is off-rig test only.** No demo
+  preset touches a typed-declarable property, and constructing one would mean editing
+  the MM configuration.
+- **The XY axis ambiguity is unreachable on both rigs.** A typed entry carries no
+  axis, so an entry on an XY device is validated against both X and Y declared ranges
+  and `check_xy` is called with the written value on both axes. That can only
+  over-refuse, never under-refuse, but a rig with asymmetric X/Y travel will see legal
+  writes refused. Neither rig exposes a writable XY position property, so this is
+  reasoned, not measured. Adding an `axis` field is the obvious follow-up.
+- **`TTL.State0` is a deliberate false positive.** Integer, not pre-init, no limits,
+  unenumerated, and genuinely a digital state. It is refused as continuous because
+  microclaw cannot distinguish a digital state from a level on a `GenericDevice`. The
+  remedy is `excluded_properties`, which the refusal message names.
+- **Tiers.** *Implemented*: the schema, parsing, live validation, the typed guard, the
+  narrowing rule, exclusion precedence. *Rig-plumbing-verified*: every one of those on
+  at least one live core. *Measured*: the `Power (mW)` 0–75 range, the canonical-percent
+  ratchet, the independence of the two guards, and the `GenericDevice`/`pre_init`
+  shapes. *Validated*: nothing scientific — this block makes no scientific claim.
+
 ## Phase 3 landed (2026-07-27)
 
 Shipped as Block 5 (merge `3438b90`; implementation `ff41de7`; coordinator-review
@@ -632,10 +775,10 @@ or the appropriateness of M5's declared limits.
 
 ### Known limitations / follow-ups
 
-- **Illumination power units:** `illumination.max_power_percent` is compared to the
-  raw property value, but a laser reporting `Power (mW)` (e.g. iBeam, 0–75 mW) is not
-  a percentage — so an absolute cap in mW is not expressible today (the ratchet is
-  unit-agnostic and unaffected). A units-aware illumination policy is future work.
+- **Illumination power units — FIXED by Phase 2 (`47f6702`).** Retained because the
+  measurement below is what justified the fix. `illumination.max_power_percent` was
+  compared to the raw property value, so a laser reporting `Power (mW)` (iBeam,
+  0–75 mW) was not a percentage and an absolute cap in mW was not expressible.
   **Measured consequence, 2026-07-28:** M5 declared `max_power_percent: 100.0` against
   `iBeamSmartCW-1.Power (mW)`, whose driver range is 0–75. A raw 75 is always below
   100, so on that rig the configured ceiling **could never refuse a write** and only

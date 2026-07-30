@@ -50,7 +50,8 @@ Progress markers: `[ ]` not started, `[-]` active, `[x]` complete, `[!]` blocked
 | 11 | `design26/generated-adapter-run-b` | | | required | | |
 | 12 | `design26/few-shot-run-c` (optional) | | | required | | |
 | 13 | `design32/hook-worker-isolation` | | | regression required | | |
-| 14 | `design33/extended-authorization` | | | required per phase | | |
+| 14 (Phase 2) | `design33/typed-actuator-registry` | `4295639` | `9bf7599` → `e0645f1` → `47295f2` (3 review rounds); 1184/99/3 (mac) | **demo PASS + M5 PASS 2026-07-30.** Demo: base/typed maps differ by exactly one entry; `XY.Velocity` refused by the new introspection net; `set_device_property(Z, Position, 175)` refused at 175 while `stage.z_max` was 200 — a bound no Phase-1 guard could produce — with no motion on the refusal. M5: the measured `Power (mW)` 0–75 defect refused for the first time; migrated map complete and deterministic across two connections; **ratchet proved to evaluate a native-mW device read in canonical percent (`6.7% → 40.0%` from 5 mW)**; typed cap and ratchet shown independent (31 mW refused by the cap at 1.03× on the ratchet). **G8 caught a real gap:** every hazardous continuous actuator on M5 is a `GenericDevice`, which the first net omitted — a `complete` map admitted an unbounded Class-3B laser power set-point. Fixed in round 3 with a `pre_init` exemption derived from M5's own inventory; the deployed profile's map is byte-identical before and after (57 entries). | `47f6702` | Gate done: design/33 "Phase 2 landed" — schema, the two measured kinds, M5 + demo findings, the five explicit exclusions with reasons, and four stated limits of the verdict |
+| 14 (Phases 4, 5) | `design33/channel-plan-executor`, `design33/first-launch-setup` | | | required per phase | | not started |
 | 15 | `design32/context-audit-store` | `0fd6811` (main, 1138/99/3) | `c86326d` → `dacab18` (2 review rounds, 7 defects); 1160/99/3 | **demo gate PASS 2026-07-29, all 8 steps** (`design/32-block15-demo-gate-prompts.md`). G1 established the load-bearing claim on the 4th attempt — the API accepts a compacted history (checkpoint `user` immediately followed by a real `user` prompt), 5 compactions / 4 such turns / no errors / floor held — and that an artifact stays in the durable allowlist after its declaring turn leaves the model view (byte-exact download, sha256 `35ac7b1e…`). G3 was the **first live execution of the store-backed `/api/history`**; every off-rig test takes the compatibility fallback. G7: default deletes nothing. Review caught 2 blockers invisible off-rig — compaction could fold away *every* verbatim turn, and the checkpoint saved 12% while destroying recent context. 4 of the 7 problems hit were the gate's own scaffolding. | `cafebd4` | Gate done: design/32 §5 "Landed: Block 15" — final audit/checkpoint schema, the two properties the sketch lacked (verbatim floor, checkpoint size bound), thresholds, retention, paging; states plainly that the shipped 120k/90k marks are **unexercised** (the gate ran at 1500/800) and that cache behaviour is asserted by test, not measured. Attribution finding recorded as an open observation with my diagnosis explicitly refuted. Three pre-existing findings filed to design/15, /32, /33 |
 
 ## Why this order
@@ -1195,8 +1196,16 @@ Post-merge design gate:
 
 Do not combine these into one branch. Repeat the branch/review/rig/design gate for each.
 
-- [ ] **Phase 2, `design33/typed-actuator-registry`:** add only measured driver-specific
+- [x] **Phase 2, `design33/typed-actuator-registry`:** add only measured driver-specific
       continuous semantics/unit conversions and typed guards. Exclude unknown writes.
+      — **MERGED `47f6702`, 2026-07-30.** `rig_profile.typed_actuators` with two
+      measured kinds (`absolute-position` µm; `illumination-power` percent, incl.
+      `units: native` + `full_scale`), no built-in driver table, live validation, a
+      narrowing-only rule for declared axes, exclusion-beats-declaration, and a
+      device-type-scoped refusal net for mis-declared continuous properties.
+      Gate: demo core G1–G6, M5 G7a–d + G8 + deployed-profile non-regression, all
+      PASS (`design/33-block14-phase2-gate-prompts.md`). Three review rounds; the
+      gate caught a `GenericDevice` gap that no off-rig test would have found.
 - [ ] **Phase 4, `design33/channel-plan-executor`:** capture one immutable expansion,
       authorize and apply those exact writes with ordering, waits, read-back, cancellation,
       rollback/safe-state behavior, and injected failure after every write. Disable gated
