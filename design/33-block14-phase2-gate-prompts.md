@@ -261,16 +261,44 @@ Expected: the same refusal. Both halves of `denied_pairs` must fail closed; the
 review round found the typed declaration silently overriding the denylist, so this
 step is the live proof of that fix.
 
-## G6 — Live write behaviour through the real tool path
+## G6 — Live write behaviour through the raw property path
 
-With the accepted `demo-typed.yaml` (0..150 µm), in one `serve` or CLI session:
+**Use `set_device_property`, not `move_stage_z`.** The first attempt at this step
+asked the agent in plain language to "set the z-stage to 100 um"; it reasonably chose
+`move_stage_z`, the Phase-1 dedicated tool, which is bounded by `check_z` against
+`stage.z_max` and never consults the typed registry. That run exercised Phase 1, not
+this block. Name the tool in the prompt.
 
-1. write the typed property to a value inside the bound → succeeds;
-2. write it above 150 → refused **before** the write, quoting the canonical bound;
-3. confirm the stage did not move on the refusal (read the position back).
+With the accepted `demo-typed.yaml` (`Z.Position`, `0..150`, inside `stage.z 0..200`),
+in one `serve` session, prompt in this order and keep the saved
+`*_microclaw_history.jsonl` as the evidence:
 
-Step 3 is the point: an authorization refusal that arrives after the hardware moved
-is not a refusal.
+1. `Use the set_device_property tool to set device Z property Position to 120`
+   → succeeds. Note that `categorical_properties` is empty, so the derived
+   `allowed_properties` allowlist is empty too: this write is admitted **only**
+   because the typed declaration is its own authorization.
+2. `Use set_device_property to set Z.Position to 175`
+   → refused before the write with
+   `Typed actuator Z.Position has canonical value 175 um; allowed absolute range is
+   0..150 um.`
+   This is the load-bearing observation: 175 is **inside** `stage.z_max` 200, so no
+   Phase-1 guard would have stopped it. The refusal can only come from this block.
+3. `What is the current Z position?`
+   → still 120. A refusal that arrives after the hardware moved is not a refusal.
+4. Control — `Use set_device_property to set XY.Velocity to 1.0`
+   → refused by the authorization map as excluded, confirming the raw path stays
+   closed for an undeclared continuous property.
+
+### Recorded asymmetry — for the design gate, not a defect
+
+A typed entry on the core focus device narrows **only the raw property path**. The
+dedicated tool keeps the declared axis range: with `stage.z_max: 200` and a typed
+`Z.Position 0..150`, `move_stage_z(200)` is still allowed while
+`set_device_property(Z, Position, 175)` is refused. That is correct — 200 is the
+reviewed bound for the axis and the narrowing rule guarantees the typed entry can
+never be *wider* — but it is a real expectation trap: declaring a typed actuator does
+not retroactively tighten the axis. Record it in design/33 and in the example config
+comment.
 
 ## G7 — M5 only. Not dischargeable on the demo core.
 
