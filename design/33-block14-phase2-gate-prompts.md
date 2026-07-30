@@ -349,6 +349,55 @@ dischargeable by any amount of demo work:
 Items 4 and 5 are why the M5 half of this gate is not optional: the measured defect
 this block exists to fix cannot be observed on a demo core.
 
+## Demo gate RESULT — PASS, 2026-07-30, evidence `block14p2_20260730`
+
+Windows demo core, MMCore 12.5.0, Device API 75, branch `design33/typed-actuator-registry`.
+Every demo-dischargeable step passed. **This does not discharge G7.**
+
+| Step | Result | Evidence |
+|---|---|---|
+| G1 inventory | PASS | 14 devices, 0 enumeration failures, fingerprint `627f2349…` identical to the Block 9b gate |
+| G2 additivity | PASS | `g2-base.txt` complete, 41 entries, **zero** typed entries |
+| G2 narrowing | PASS | `g2-typed.txt` complete, 42 entries; the diff against base is **exactly one entry** and nothing else moved |
+| G3a widening | PASS | `g2-typed-g3.txt` — `bounds 0..5000 um widen the declared core focus z bounds 0.0..200.0 um` |
+| G3b technical range | PASS | `g2-typed-g3b.txt` — `outside the driver-reported technical range 0..10000` |
+| G4 refusal net | PASS | `g4-velocity.txt`, `g4-gain.txt` |
+| G4 non-regression | PASS | `g2-base.txt` carries all twelve `auto:state-device` entries incl. `LED.State` |
+| G5 denylist | PASS | `g5-conflict.txt` (`excluded_properties`), `g5-conflict-forbidden-prop.txt` (`forbidden_properties`) |
+| G6 live raw write | PASS | `20260730_075812_..._microclaw_history.jsonl` |
+| G7 illumination units | **OPEN** | M5 only |
+
+**The two observations that carry the block.**
+
+`XY.Velocity` was refused as a continuous actuator. It matches no alias set and is not
+a position property, so only `_continuous_introspection` could have produced that
+refusal — this is the first live evidence that the new device-type-scoped detector
+works over the bridge.
+
+`set_device_property(Z, Position, 175)` was refused with `allowed absolute range is
+0..150 um` while `stage.z_max` was **200**. No Phase-1 guard would have stopped that
+write; the refusal can only come from this block. `get_z_position` read back 120 both
+before and after, so nothing moved on the refusal. The preceding write of 120
+succeeded even though `categorical_properties` — and therefore the derived
+`allowed_properties` allowlist — was empty, confirming live that a typed declaration
+is its own authorization.
+
+**Two things the gate reproduced that are not this block's defects.**
+
+The `XY.Velocity` refusal arrived with the generic hint `This may be a hardware error
+(device busy, stage at limit, device not found) or a connection problem.` That is the
+misleading-hint limitation design/33 already records against Block 5, independently
+reproduced here.
+
+`g5-conflict.txt` also raised the pre-existing Phase-1 error about excluding a
+property that aliases a built-in motion path. Expected, and unrelated to the typed
+conflict on the line above it.
+
+**Still open after this gate, and not dischargeable by any demo run:** device-type
+ordinals 12 and 16; a preset colliding with a typed pair; the XY axis ambiguity; the
+entire illumination-units path; and the ratchet in canonical percent. The last two are
+the measured defect this block exists to fix.
+
 ## Stop conditions
 
 Stop and do not merge on: a device type reported as a bare ordinal; any StateDevice
