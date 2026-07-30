@@ -1206,22 +1206,32 @@ Do not combine these into one branch. Repeat the branch/review/rig/design gate f
       Gate: demo core G1–G6, M5 G7a–d + G8 + deployed-profile non-regression, all
       PASS (`design/33-block14-phase2-gate-prompts.md`). Three review rounds; the
       gate caught a `GenericDevice` gap that no off-rig test would have found.
-- [ ] **Phase 4, `design33/channel-plan-executor`:** capture one immutable expansion,
+- [x] **Phase 4, `design33/channel-plan-executor`:** capture one immutable expansion,
       authorize and apply those exact writes with ordering, waits, read-back, cancellation,
       rollback/safe-state behavior, and injected failure after every write. Disable gated
-      presets if MM semantics cannot be reproduced safely.
+      presets if MM semantics cannot be reproduced safely. — merged as `5458483`.
+      The demo-core measurement spike established ordered replay equivalence including
+      configuration bookkeeping, live definition re-read, numeric read-back formatting,
+      and `set_config`'s non-fail-fast partial application; the landed executor freshly
+      captures and pre-authorizes each `Channel` plan, applies it in order with per-device
+      waits and type-aware verification, and rolls back fail-fast with distinct verified-
+      rollback and unverified-safe-state errors. Demo executor and interactive gates
+      passed; injected failure and cancellation were deterministic-fake tests, M5 has no
+      `Channel` group, and no scientific validation is claimed.
 - [ ] **Phase 5, `design33/first-launch-setup`:** restricted enumeration only, no agent or
       mutation tools, no inferred limits; consume Block 9b's versioned inventory, guide
       the human through every unresolved decision, write an unreviewed profile,
       disconnect, and require human review and normal restart. Do not duplicate a second
       incompatible enumeration format.
 - [ ] For every phase, run its design/33 rig tests before merge and stop on any unenumerable
-      effect or pre-validation write. — **Phase 2 discharged**; unticked because it spans
-      Phases 4 and 5, which are not started.
+      effect or pre-validation write. — **Phases 2 and 4 discharged**; remains unticked
+      explicitly because Phase 5 has not started.
 - [ ] After every phase merge, update design/33 with supported drivers/presets, measured
       waits/failure cleanup, setup contact semantics, and remaining excluded paths before
-      beginning the next phase. — **Phase 2 discharged** (design/33 "Phase 2 landed",
-      merge `14df6b3`); unticked for the same reason.
+      beginning the next phase. — **Phases 2 and 4 discharged** (design/33 "Phase 2
+      landed", merge `14df6b3`; "Phase 4 landed", added in `5bb6849` after phase
+      merge `5458483`); remains unticked
+      explicitly because Phase 5 has not started.
 
 ## 15. Design/32 Finding 5 — bounded context and append-only audit
 
