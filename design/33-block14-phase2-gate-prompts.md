@@ -12,6 +12,10 @@ install has produced convincing false failures on this project before.
 Keep every output file. One dated evidence directory per run,
 `block14p2_<DDMMYYYY>`.
 
+**CLI shape.** `--port` and `--safety-config` are **global** options and must come
+*before* the subcommand; only `--mm-config` and `--out` belong to `inspect-rig`.
+Under uv, prefix each command with `uv run` (`uv run python -m microclaw ...`).
+
 ## What this gate can and cannot settle
 
 **Demo core (reachable now)** settles: bridge-typed returns for the new device-type
@@ -37,7 +41,7 @@ off-rig-fake-only until G2 and G4 run.
 ## G1 — Discover, don't guess (uses Block 9b)
 
 ```
-python -m microclaw inspect-rig --port 4827 --config "C:\Program Files\Micro-Manager-2.0\MMConfig_demo.cfg" --out block14p2_inventory > g1.txt 2>&1
+python -m microclaw --port 4827 inspect-rig --mm-config "C:\Program Files\Micro-Manager-2.0\MMConfig_demo.cfg" --out block14p2_inventory > g1.txt 2>&1
 ```
 
 From `block14p2_inventory\inventory.json`, record for the demo core:
