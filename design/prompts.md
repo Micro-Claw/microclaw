@@ -3618,3 +3618,105 @@ framing. The passing run refuted that: the window contained the earlier turn
 verbatim, tool_use blocks and all, and the framing change did nothing. Kept the
 change on its own merits, recorded the observation as open with a sharper probe
 to settle it, and did not let a plausible story stand in for a cause.]
+
+---
+
+Let's knock off block 14, phase 2 on the checklist in
+design/26-29-32-33-implementation-checklist.md, as it isn't blocked by anything.
+You are the coordinator. You will decide what to do next what blocks to hand off
+to other agents to complete. Please hand me the prompt and I will pass it to an
+agent. Then I will tell you when the agent is done.
+
+[Phase 2's checklist row says "add only *measured* driver-specific continuous
+semantics". The honest measured set was small -- two unit families, not a driver
+catalogue -- so the ruling that shaped the whole block was: ship no built-in
+per-driver table, make semantics operator-declared and then validated against
+live introspection, and let introspection only ever REFUSE, never admit. The
+second ruling saved the block later: scope the continuous detector by MM device
+type, because StateDevice `State` is Integer-with-limits and a naive "numeric =>
+continuous" rule would have failed every filter wheel on M5.]
+
+The agent is done ... 1 failed, 1168 passed. The sole failure is pre-existing:
+test_readme_png_is_not_stale.
+
+[It was not pre-existing. `main` passes 1160/99/3 here and that test shells out
+to derive_icons.py --check, which re-renders the icon and is sensitive to the
+sandbox's rendering libraries. Corrected the record so no ledger row would claim
+main was broken -- it recurred in all three rounds and was environmental every
+time. The review itself found six defects, two of them invisible to the agent's
+own tests because every fake core returned "" from get_focus_device(): a typed
+declaration silently defeated forbidden_properties, and a typed axis entry could
+declare bounds WIDER than the declared stage range on the same physical axis
+while the map still said complete. Verified each by probe rather than by reading.]
+
+OK. I'm just trying with the demo config for now ... which devices should I use?
+
+[Z/Position, and it was the only usable choice -- the demo XY device exposes no
+writable position property, only Velocity, which is an excluded kind. Two of my
+own gate steps were wrong and the operator's confusion is what exposed them.
+G4 as written used Z.Position and Camera.Exposure, both already caught by the
+LEGACY alias heuristic, so a refusal would have proven nothing and would have
+passed on main too; rewrote it onto XY.Velocity, which matches no alias set and
+can only be refused by the new code. G5's preset half was undischargeable at all:
+G1's config-group dump showed no demo preset touches a typed-declarable property.]
+
+Note that G6 seems to not have worked.
+
+[G6 tested the wrong path, and that was my instruction's fault. I wrote "write
+the typed property" in prose, the operator asked in natural language, and the
+agent reasonably chose move_stage_z -- the Phase-1 dedicated tool, bounded by
+check_z, which never consults the typed registry. Naming the tool fixed it, and
+the re-run produced the block's load-bearing demo observation:
+set_device_property(Z, Position, 175) refused at 175 while stage.z_max was 200,
+a bound no Phase-1 guard could produce. It also surfaced an expectation trap
+worth documenting: a typed entry narrows only the raw path, so move_stage_z(200)
+stays legal. Declaring a typed actuator does not retroactively tighten the axis.]
+
+I am now on the M5 and I started the G7 run ... The expected results don't seem
+to be happening, and microclaw starts up fine.
+
+[Correct behaviour, not a missed refusal. The deployed M5 profile declares only
+iChrome "Laser 4: 3. Level %", a genuine 0-100 percent property; the 0-75 mW
+defect belonged to an earlier config generation that Block 7b had already
+migrated away from. Ran inspect-rig on M5 to settle it, which also measured
+Power (mW) at 0.0-75.0 through the bridge for the first time -- previously that
+number was a note carried from a session, not an observation.]
+
+Where do PWM."Number of PWM" and TTL."Number of channels" sit? I don't see them
+in the Device Property Browser. Are these EMU?
+
+[pre_init, not EMU -- MM surfaces pre-init properties in the Hardware
+Configuration Wizard, not at runtime. This question decided the block. I had
+already found that the refusal net omitted GenericDevice, which on M5 is every
+hazardous continuous actuator (PWM.Position0, Servos.Position0..3, Laser
+Trigger.Duration0, and the iBeam power lines), and my objection to widening was
+that "Number of X" config properties would become false positives. All of them
+turned out to be pre_init, so exempting pre-init removed the objection. The
+operator's confusion about a GUI was the evidence that unblocked a design
+decision.]
+
+Updated g8.
+
+[The gap confirmed on the rig: a `complete` map admitting iBeamSmartCW-1.Power
+(mW) -- a Class-3B laser set-point, Float 0-75 -- as a categorical property with
+no numeric bound. Exactly this gate's own stop condition. Not a regression (main
+is worse, having no net at all) and not reachable without an operator
+mis-declaring, but the net as merged would have covered none of the hardware that
+matters on the only production rig this project has evidence from. Round 3 added
+GenericDevice, the pre-init exemption, fail-closed introspection on declared
+pairs, and exclusion named in the refusal message. The re-gate left the deployed
+profile's map byte-identical at 57 entries.]
+
+I've added a .jsonl history file for g7c.
+
+[G7c is the run that justified insisting on M5 at all. From a device at 5.0 mW a
+write of 30 mW was refused as "6.7% -> 40.0%" against the 3x ratchet -- and 6.7
+is 5/75, which proves check_illumination converted the DEVICE READ from native mW
+into canonical percent before taking the ratio. Had the conversion not fired it
+would have printed 5.0%. Then 31 mW was refused by the typed cap at 41.33% while
+being only 1.03x on the ratchet, and the earlier case was the reverse: the two
+guards are independent, neither subsumes the other. Neither claim had any off-rig
+or demo equivalent. Also observed: iBeamSmartCW-1."Laser Operation" is a real
+On/Off light control absent from illumination.shutters, so it is neither
+confirm-gated nor swept at teardown -- the "inert illumination gate" finding from
+the last closeout, showing up on M5.]
