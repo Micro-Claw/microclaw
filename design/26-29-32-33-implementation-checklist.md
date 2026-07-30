@@ -1229,7 +1229,8 @@ Do not combine these into one branch. Repeat the branch/review/rig/design gate f
 - [ ] After every phase merge, update design/33 with supported drivers/presets, measured
       waits/failure cleanup, setup contact semantics, and remaining excluded paths before
       beginning the next phase. — **Phases 2 and 4 discharged** (design/33 "Phase 2
-      landed", merge `14df6b3`; "Phase 4 landed", merge `5458483`); remains unticked
+      landed", merge `14df6b3`; "Phase 4 landed", added in `5bb6849` after phase
+      merge `5458483`); remains unticked
       explicitly because Phase 5 has not started.
 
 ## 15. Design/32 Finding 5 — bounded context and append-only audit
