@@ -306,43 +306,103 @@ Even a clean demo result authorizes only the next design decision. It does not p
 M5 safety and does not discharge cancellation, rollback/safe-state implementation,
 or injected failure after every executor write.
 
+### SPIKE DISPOSITION — PASS
+
+Four runs were completed. The evidence directories are
+`block14p4_30072026`, `block14p4r2_30072026`, `block14p4r3_30072026`, and the
+round-4 copy `block14p4r4_30072026`. Rounds 3 (`7512f24`) and 4 (`4bd79fc`)
+produced identical findings.
+
+None of the stop conditions fired:
+
+- no non-demo guard bypass was used;
+- every setting and every configuration group was enumerated;
+- consecutive expansions did not drift except during the intentional Q7 edit;
+- every replay difference was preserved as a full structural diff;
+- every `Core.*` effect was inventoried and `Core.Shutter` retargeting was measured
+  non-vacuously;
+- apply-time partial failure was reached for both `set_config` and ordered replay;
+- exceptions retained their named operation and cleaned message rather than being
+  swallowed or reduced to JNI noise;
+- both scratch groups were deleted and independently verified absent;
+- the final property residue was empty; and
+- the human-readable evidence included the single machine-readable JSON blob.
+
+Round 2's Q3b abort was a probe defect in DeviceType proxy conversion. It was fixed
+and re-run; it was not a measurement failure and is not an unresolved stop condition.
+The measurement spike therefore passes, and the executor gate below is cleared to
+run.
+
 ---
 
 ## Executor implementation gate (G7+)
 
-Use `design/33-block14-phase4-demo-safety-config.yaml`, after replacing
-`workspace_dir`, with stock `MMConfig_demo.cfg`. Record the implementation commit,
-console transcript, authorization-map JSON, and a complete property snapshot before
-and after each mutation. Do not use another config group.
+Use stock `MMConfig_demo.cfg`. First copy the reviewed demo profile somewhere
+writable and replace its placeholder `workspace_dir` with a real directory that
+already exists. The checked-in profile already has `reviewed: true`; startup refuses
+a safety profile without that acknowledgement.
+
+```powershell
+New-Item -ItemType Directory -Force block14p4-executor_30072026 > block14p4-executor_30072026\mkdir.txt 2>&1
+Copy-Item design\33-block14-phase4-demo-safety-config.yaml block14p4-executor_30072026\demo-safety-config.yaml
+notepad block14p4-executor_30072026\demo-safety-config.yaml
+Test-Path C:\path\you\put\in\workspace_dir > block14p4-executor_30072026\workspace-exists.txt 2>&1
+```
+
+In the commands below, replace `<profile>` with the copied YAML path. Both
+`--safety-config` and `--port` are global options and must precede any subcommand.
+The Phase 2 gate used the same CLI shape, but it was not previously restated here:
+
+```powershell
+microclaw --safety-config <profile> --port 4827
+```
+
+With no subcommand, that command starts an interactive agent session. Record the
+implementation commit and keep all executor evidence in the dated directory.
 
 ### G7 — authorized captured apply
 *Role: OPERATOR (rig).*
 
-Start microclaw with the Phase 4 profile and apply DAPI, FITC, and Rhodamine through
-`set_channel`. Accept the `Core.Shutter` illumination-class prompt. For each result,
-record `writes`, both expansion SHA-256 values, `expansion_drift: false`, the ordered
-set/wait/read sequence, and `getCurrentConfig("Channel")`. PASS requires exact label
-read-back, numeric type-aware comparison where present, and no call to `set_config`.
+Before running the probe, select **LED Shutter** as the active shutter in the MM GUI;
+the probe hard-aborts otherwise. Then run exactly:
+
+```powershell
+python design\33-block14-phase4-executor-probe.py --config <profile> --port 4827 --evidence block14p4-executor_30072026\executor-evidence.txt > block14p4-executor_30072026\executor-console.txt 2>&1
+```
+
+The probe runs G11 first so its retarget cannot be made vacuous by G7. Its G7 limb
+then applies DAPI, FITC, and Rhodamine through `tools.set_channel` with scripted
+confirmation accepted. For every apply it records full before/after snapshots and
+structural diffs, `writes`, both expansion SHA-256 values,
+`expansion_drift: false`, the ordered set/wait/read sequence, per-effect requested
+and read-back values, and `get_current_config("Channel")`. Its core shim makes any
+`set_config` invocation a named gate violation. PASS requires exit code zero, exact
+categorical read-back (and executor type-aware numeric comparison where present),
+zero `set_config_violations`, and empty final residue.
 
 ### G8 — refused apply before mutation
 *Role: OPERATOR (rig).*
 
-First request a preset absent from `channels.allowed`. Then, in the MM GUI, add an
-undeclared or excluded property to an allowed preset and request it again. PASS
-requires a named refusal before the first property write and an unchanged full
-property snapshot. Restore the preset definition in the GUI afterward.
+This is another limb of the same probe invocation. It first requests a preset absent
+from `channels.allowed`, requiring `SafetyViolation` and zero writes. It then captures
+the original DAPI expansion, uses `define_config` to inject the undeclared
+`Camera.AllowMultiROI` effect, and requires a named `RigAuthorizationError` before
+any write. The probe rebuilds the original definition afterward and requires its
+ordered expansion to match exactly. A mismatch fails loudly with instructions to
+reload stock `MMConfig_demo.cfg`; no GUI edit or conversational judgment is part of
+this limb.
 
 ### G9 — startup/apply drift detector
 *Role: OPERATOR (rig).*
 
-After startup, change only an already-authorized categorical value in DAPI, apply
-DAPI, and restore the definition. PASS requires `expansion_drift: true`, unequal
-startup/applied hashes shown in the result, authorization of the freshly captured
-value, and application of that captured value only. Repeat with an unsafe new pair;
-that limb must refuse before mutation rather than treating the startup hash as an
-authorization token.
+This is also in the probe. It captures DAPI, selects a different allowed value for
+an already-authorized categorical effect, rebuilds the definition with
+`define_config`, and applies it. PASS requires `expansion_drift: true`, unequal
+startup/applied hashes, and read-back of the freshly captured value. It then restores
+and verifies the original expansion exactly. G8's injected unsafe-pair limb is the
+corresponding proof that a startup hash is not an authorization token.
 
-### G10 — injected partial failure and rollback
+### G10 — injected partial failure and rollback — off-rig pytest
 *Role: OPERATOR (off-rig pytest).*
 
 Run the off-rig executor failure fixture at the pinned commit:
@@ -362,20 +422,14 @@ failure into a live property write.
 ### G11 — shutter-retarget confirmation and cancellation boundary
 *Role: OPERATOR (rig retarget limb + off-rig pytest for cancellation).*
 
-Before starting microclaw, select **LED Shutter** as the active shutter in the MM
-GUI. Record that pre-run active-shutter value in the evidence; it must be
-`LED Shutter`, so the retarget cannot pass vacuously. Start microclaw with the
-checked-in `design/33-block14-phase4-demo-safety-config.yaml`, then apply `FITC`
-through `set_channel`. Its captured plan writes
-`Core.Shutter = White Light Shutter`, a real retarget to the only shutter declared
-by that profile.
+The rig retarget limb is deterministic and is run first by the executor probe. It
+reads the active shutter before any apply and refuses unless it is exactly
+`LED Shutter`, with instructions to select it in the MM GUI and restart. It runs FITC
+once with `CONFIRM_FN` false, requiring a named refusal and zero property changes,
+then true, requiring `Core.Shutter = White Light Shutter`, verified read-back, and
+both shutters closed. It restores and verifies the original active shutter.
 
-Decline the first illumination-class prompt: no property may change. Repeat from
-the same precondition and accept: the active shutter must change from
-`LED Shutter` to `White Light Shutter`, both shutters must remain closed, no snap
-or exposure may occur, and the executor result must show successful read-back
-verification of the captured `Core.Shutter` value. Preserve the before/after full
-property snapshots and prompt result with the evidence. Separately run:
+G11's cancellation limb is the second **off-rig pytest** run:
 
 ```powershell
 python -m pytest tests\test_channel_plan_executor.py -k cancellation_between_writes -vv
@@ -383,6 +437,26 @@ python -m pytest tests\test_channel_plan_executor.py -k cancellation_between_wri
 
 PASS requires cancellation only at a write boundary followed by rollback. The gate
 must not describe this as an in-flight bridge-call interrupt.
+
+### Explicit interactive prompt limb — human path only
+*Role: OPERATOR (rig, interactive).*
+
+This is the sole interactive executor limb. Its only purpose is to prove that the
+real human-facing prompt renders and blocks. Start the agent session:
+
+```powershell
+microclaw --safety-config <profile> --port 4827
+```
+
+Type exactly `Set the channel to DAPI.`. Decline the illumination prompt and confirm
+from the MM GUI that nothing changed. Type exactly `Set the channel to DAPI.` again
+and accept the prompt; confirm that DAPI applied. Save the session output in the
+dated evidence directory.
+
+This limb tests prompt rendering and the human path. The probe tests executor logic.
+A natural-language transcript is not evidence for any behavior covered by the
+probe, including authorization, zero-write refusal, ordering, read-back, drift,
+restoration, or `set_config` exclusion.
 
 **Future profile item, not a prerequisite for this gate:** before a profile may
 declare LED Shutter itself as an illumination gate, use read-only calls to record
