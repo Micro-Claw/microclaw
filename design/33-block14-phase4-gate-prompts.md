@@ -484,3 +484,38 @@ emit. The measured list currently establishes `Closed` at position 0 plus the
 wavelength labels, but not a safe `on_value`/`off_value` pair. That missing
 characterization is why the checked-in profile declares only White Light Shutter;
 it does not block the retarget test above.
+
+## Executor gate results — 30 July 2026
+
+Evidence directory: `block14p4-executor_30072026`. Subject commit: `9799164`.
+The copied demo profile was byte-identical to the checked-in profile except for
+the required `workspace_dir` replacement.
+
+| Gate | Result | Evidence file / exact observation | Phase 4 consequence |
+|---|---|---|---|
+| G7 authorized captured apply | PASS | DAPI, FITC, and Rhodamine each made 4 writes. Each recorded `expansion_drift: false`, equal startup/applied hashes, matching `get_current_config("Channel")`, zero read-back mismatches, zero `set_config_violations`, zero final residue, and top-level exit code 0. | The captured-plan executor applies the three non-vacuous demo presets in order without delegating to `set_config`. |
+| G8 refused apply before mutation | PASS | An absent preset raised `SafetyViolation` naming the allowed list. Injected `Camera.AllowMultiROI` raised `RigAuthorizationError: Channel effect Camera.AllowMultiROI is unclassified or excluded.` Both refusals recorded zero writes and zero state diff; the DAPI definition was restored exactly. | Both the channel allowlist and fresh-effect authorization fail closed before mutation. |
+| G9 live definition drift | PASS | The edited `Dichroic.Label` value was `89402bs`; `expansion_drift: true`; startup hash `dfe8bb46…` differed from applied hash `08a581a3…`; the fresh value landed and read back; the original definition was restored exactly. | The executor re-captures and authorizes the live expansion rather than treating the startup hash as an authorization token. |
+| G10 injected failure / rollback | PASS | 4 tests passed on win32 / Python 3.12.13: failure after each of the three write positions plus the failing-rollback limb. | Every forward-write boundary and the unverified-safe-state path are pinned off rig. |
+| G11 retarget and cancellation | PASS | The probe recorded active `LED Shutter` as its precondition. Decline produced zero writes and zero diff. Accept selected `White Light Shutter`, left both shutters closed, and verified read-back; the original shutter was restored. The cancellation limb passed 1 test on win32 / Python 3.12.13. | Confirmation precedes mutation, accepted retargeting is verified, restoration is clean, and cancellation rolls back only at a write boundary. |
+| Interactive human limb | PASS | History contains `set_channel`. Decline surfaced `RigAuthorizationError`; accept returned `Channel set to 'DAPI'` with 4 writes. The confirmations JSONL contains two illumination records—declined, then approved—with loopback identity. | The browser confirmation path rendered, blocked, recorded the human decision, and resumed only after approval. |
+
+### Executor observations (not defects)
+
+- The executor authorizes the entire captured plan before applying any of it.
+  Consequently, declining the fourth of four effects produced zero writes; the
+  declined sequence contains reads only. This is the intended pre-mutation
+  authorization boundary.
+- For each real device the recorded operation sequence is set → wait → read. For
+  `Core` it is set → read with no wait, which is correct because `Core` is a
+  pseudo-device and cannot go busy.
+- After the interactive decline, the agent did not silently retry. It asked the
+  operator for approval and re-issued `set_channel` only after the operator
+  explicitly requested the prompt again. This is desirable refusal handling and
+  is preserved in the gate record.
+
+### EXECUTOR DISPOSITION — PASS
+
+G7–G11 and the explicit interactive limb all pass. The executor gate is complete
+for the stock demo configuration, subject to the M5 limitations and future-profile
+work recorded above.

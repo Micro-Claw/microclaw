@@ -61,6 +61,31 @@ def hint_for_error(exc: Exception) -> str:
     time it reaches us.
     """
     text = str(exc)
+    # Keep this module independent of authorization.py: tools.py imports this
+    # module while authorization exceptions travel through the tool wrapper.
+    # Exact class-name matching avoids turning that relationship into a circular
+    # import.  Check the safe-state subtype before its partial-application parent.
+    error_type = type(exc).__name__
+    if error_type == "ChannelPlanSafeStateError":
+        return (
+            "Rollback failed, so the rig's state is unverified. Stop and surface "
+            "this error to the operator; do not continue operating the rig or "
+            "retry the plan."
+        )
+    if error_type == "ChannelPlanPartialApplicationError":
+        return (
+            "Some writes landed and rollback was attempted. Read the error's "
+            "applied, attempted, and rolled-back pair lists to determine the "
+            "resulting state; do not blindly retry the plan."
+        )
+    if error_type == "RigAuthorizationError":
+        return (
+            "This is an authorization decision, not a hardware fault. The write "
+            "was refused by the rig's authorization map or declined by the "
+            "operator, so no hardware diagnosis is warranted. Retrying the "
+            "identical call will fail identically; the profile or the operator's "
+            "answer must change first."
+        )
     in_hook = "exception in image processor" in text
     where = (
         " It was raised inside the hook, mid-acquisition, so the stage has "
