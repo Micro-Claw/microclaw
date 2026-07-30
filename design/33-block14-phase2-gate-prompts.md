@@ -249,6 +249,37 @@ is not a refusal.
 4. Confirm the M5 map is otherwise unchanged: same categorical entries, same
    excluded inventory, `iChrome-MLE-TCP.State` still refused.
 
+## Demo coverage summary (settled by G1, 2026-07-30)
+
+| Step | On the demo core | Subject |
+|---|---|---|
+| G1 inventory | **done, PASS** | 14 devices, fingerprint matches Block 9b |
+| G2 additivity + narrowing | **runnable** | `Z.Position`, `0..150` inside `stage.z 0..200` |
+| G3a widening refusal | **runnable** | same entry at `maximum: 5000` |
+| G3b technical range | **runnable, mechanism only** | `Camera.Exposure` (0..10000); not a sensible declaration |
+| G4 refusal net | **runnable, partial** | `Z.Position` load-bearing, `Camera.Exposure` corroborating |
+| G4 StateDevice non-regression | **runnable** | `LED.State` is the sharp case |
+| G5 denylist conflict | **runnable** | typed pair also in `forbidden_properties` |
+| G5 preset collision | **not runnable** | no demo preset touches `Z.Position` |
+| G6 live write | **runnable** | inside bound, above bound, no motion on refusal |
+| G7 illumination units | **M5 only** | needs a real non-percent power property |
+
+**What a full demo pass still does not buy.** Record these as open at merge; none is
+dischargeable by any amount of demo work:
+
+1. **Device-type ordinals 12 (SignalIODevice) and 16 (GalvoDevice)** — this config has
+   neither device, and `core_device_assignments.galvo` is empty. These are the two
+   ordinals added for review finding 5.
+2. **A channel preset colliding with a typed pair** — off-rig test only.
+3. **The XY axis ambiguity** — the demo XY device exposes no writable position
+   property, only `Velocity`, so `check_xy(num, num)` is unreachable here.
+4. **The entire illumination-units path** — the block's headline fix. `demo` has no
+   declared power property at all.
+5. **The ratchet evaluated in canonical percent** — same reason.
+
+Items 4 and 5 are why the M5 half of this gate is not optional: the measured defect
+this block exists to fix cannot be observed on a demo core.
+
 ## Stop conditions
 
 Stop and do not merge on: a device type reported as a bare ordinal; any StateDevice
