@@ -13,7 +13,9 @@ That is not a promise that future startup checks cannot uncover another issue.
 
 ## Fill the worksheet
 
-1. Open `design/34-nikon-stopgap-worksheet.yaml` in a plain-text editor.
+1. Make a working copy of `design/34-nikon-stopgap-worksheet.yaml` named
+   `safety_config.yaml`, then open that copy in a plain-text editor. This
+   worksheet is the config; there is no second draft/template to transfer into.
 2. Fill every blank after a colon. Measure or deliberately decide each value for
    the microscope as it is configured today. Do not copy the observed Z,
    TIPFSOffset, exposure, ROI, or binning values from the old session: they show
@@ -22,23 +24,28 @@ That is not a promise that future startup checks cannot uncover another issue.
    for the installed objective and sample holder. Confirm it locally at the rig.
 4. Keep units as written: distances are micrometres, exposure and illumination
    are milliseconds, duration is seconds, and bytes are uncompressed raw bytes.
-5. Send the completed worksheet back for review before trying to start
-   Microclaw. Do not change `reviewed: false` in the worksheet.
+5. Send the completed `safety_config.yaml` back for review before trying to
+   start Microclaw. Do not change `reviewed: false` yet.
 
-## Make the running config
+## Review and run the completed config
 
-The worksheet itself is intentionally invalid YAML for Microclaw's strict
-schema. After the completed worksheet has been reviewed, copy each answer into
-the matching place in `design/34-nikon-stopgap-draft.yaml`:
+The unfilled worksheet intentionally fails the strict parser on its blank stage
+and named-stage bounds. After every answer in your `safety_config.yaml` has been
+reviewed:
 
-- Replace every `{unbounded: true, reason: "Draft only: ..."}` with the finite
-  number from the worksheet.
-- Replace every `null` camera/acquisition value with the finite number from the
-  worksheet.
-- Read the complete resulting file. Only you, the rig operator, may change
+- Search the entire file for a colon followed only by a comment. There must be
+  no unanswered value.
+- Read the complete file. Only you, the rig operator, may then change
   `reviewed: false` to `reviewed: true`.
-- Save the result as `safety_config.yaml` at the location used by your launcher,
-  or pass its full path with your usual `--safety-config` option.
+- Put that same completed `safety_config.yaml` at the location used by your
+  launcher, or pass its full path with your usual `--safety-config` option.
+
+Important limitation: the offline YAML parser alone does **not** reject blank
+`camera.max_exposure_ms` or the nine blank `acquisition` fields. Normal
+guaranteed-mode live startup does reject them by name, but if live authorization
+were bypassed, null exposure/acquisition limits would not be enforced. Therefore
+all ten fields must be visibly filled before review; “the file parsed” is not
+evidence that they were supplied.
 
 In PowerShell, record the exact version before running:
 

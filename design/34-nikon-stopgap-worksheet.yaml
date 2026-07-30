@@ -1,9 +1,10 @@
 # Nikon Ti stopgap safety worksheet -- THIS FILE IS NOT RUNNABLE.
 #
-# Fill every blank below with a value measured or deliberately chosen for this
+# This worksheet IS the config the operator fills and eventually runs. Fill
+# every blank below with a value measured or deliberately chosen for this
 # microscope, objective, and sample holder. Observed session values are not
-# safety limits. When complete, transfer the answers into
-# design/34-nikon-stopgap-draft.yaml and follow the run sheet.
+# safety limits. Do not make a second copy from a template: a missed blank here
+# must remain visible and prevent review/startup as described below.
 
 schema_version: 2
 reviewed: false
@@ -32,9 +33,19 @@ stage:
   z_max:  # HARD CEILING: operator must confirm collision-safe TIZDrive maximum; 2462.15 um was only observed.
 
 camera:
+  # IMPORTANT SCHEMA LIMITATION: the offline YAML parser accepts this blank as
+  # null. Guaranteed-mode LIVE startup refuses a reachable camera with no finite
+  # exposure maximum, but the runtime exposure check itself would not enforce a
+  # null limit if live validation were bypassed. Fill this; never treat an
+  # offline parse result alone as approval to run.
   max_exposure_ms:  # Decide a sample-safe AndorIxon exposure cap; the observed 10 ms is not a limit.
 
 acquisition:
+  # IMPORTANT SCHEMA LIMITATION: the offline YAML parser accepts null for all
+  # nine fields below. Guaranteed-mode LIVE startup refuses each non-finite or
+  # non-positive field by name, but runtime acquisition checks do not enforce
+  # null maxima and null confirmation thresholds do not prompt if live
+  # validation is bypassed. Fill every field before changing reviewed to true.
   max_frames:  # Decide the largest unattended frame count safe for sample, storage, and workflow.
   max_duration_s:  # Decide the maximum acquisition duration before microclaw must refuse.
   max_bytes:  # Decide the maximum raw payload (width x height x bytes/pixel x frames) storage budget.
