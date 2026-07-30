@@ -7,7 +7,6 @@ import hashlib
 import json
 import math
 from numbers import Real
-from pathlib import Path
 import sys
 from typing import Any, Iterable
 
@@ -57,27 +56,59 @@ def _live_emu_laser_enables(
 
     This is startup discovery only: asking ImageJ for its application directory
     and reading EMU's config file do not write hardware.  In particular, do not
-    use the per-user cached MM path here; a stale path is not evidence about the
-    live installation being authorized.
+    treat a per-user cached/guessed MM path as authoritative here; a stale path
+    is not evidence about the live installation being authorized.
     """
-    from microclaw.emu_manager import build_emu_map, read_emu_config
+    from microclaw.emu_manager import (
+        _emu_config_path,
+        _has_emu,
+        build_emu_map,
+        read_emu_config,
+        resolve_mm_app_dir,
+    )
 
-    get_mm_app_dir = getattr(ctrl, "get_mm_app_dir", None)
-    if not callable(get_mm_app_dir):
-        # Lightweight/offline controller implementations predate EMU discovery.
+    if not callable(getattr(ctrl, "get_mm_app_dir", None)):
+        # Read-only/offline controller implementations have no live JVM whose
+        # installation can be authorized.
         return [], []
     try:
-        mm_app_dir = get_mm_app_dir()
+        # Startup validation is read-only, including with respect to the
+        # per-user locator cache. Normal tool callers retain write-through.
+        resolution = resolve_mm_app_dir(ctrl, cache_live=False)
     except Exception as exc:
         return [], [
             "Could not locate the live Micro-Manager installation for EMU semantic "
             f"laser-enable discovery: {_clean_exception_message(exc)}"
         ]
-    if not mm_app_dir:
-        return [], []
-    config_path = Path(mm_app_dir) / "EMU" / "config.uicfg"
+    mm_app_dir = resolution.path
+    if mm_app_dir is None:
+        return [], [
+            "Could not establish the live Micro-Manager installation for EMU "
+            f"semantic laser-enable discovery (live probe: {resolution.live_probe}; "
+            "no validated fallback). Verify the running ImageJ/Micro-Manager "
+            "application directory before restarting."
+        ]
+
+    config_path = _emu_config_path(mm_app_dir)
     if not config_path.exists():
-        return [], []
+        if resolution.source == "live" and not _has_emu(mm_app_dir):
+            return [], []
+        return [], [
+            f"Could not establish EMU semantics for the live installation: "
+            f"{mm_app_dir} was located via {resolution.source!r} "
+            f"(live probe: {resolution.live_probe}) but has no readable "
+            "EMU/config.uicfg. A fallback path cannot prove that the connected "
+            "installation is non-EMU."
+        ]
+
+    problems: list[str] = []
+    if resolution.source != "live":
+        problems.append(
+            f"EMU/config.uicfg was found through {resolution.source} fallback at "
+            f"{mm_app_dir}, but the live Micro-Manager path was "
+            f"{resolution.live_probe}. The semantic map is checked conservatively, "
+            "but this fallback cannot prove it belongs to the connected JVM."
+        )
     try:
         config = read_emu_config(mm_app_dir, loaded_devices)
         lasers = build_emu_map(config["properties"])["lasers"]
@@ -88,7 +119,6 @@ def _live_emu_laser_enables(
         ]
 
     enables: list[tuple[int, str, str]] = []
-    problems: list[str] = []
     for slot, laser in sorted(lasers.items()):
         enable = laser.get("enable")
         if enable is None:

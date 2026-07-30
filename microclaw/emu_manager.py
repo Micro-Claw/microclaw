@@ -1,4 +1,5 @@
 from __future__ import annotations
+from dataclasses import dataclass
 import glob
 import json
 import platform
@@ -90,22 +91,45 @@ def _looks_like_mm_dir(p: Path) -> bool:
     return (p / "mmplugins").is_dir() or (p / "plugins").is_dir()
 
 
-def find_mm_app_dir(ctrl: "MicroscopeController | None" = None) -> Path | None:
-    """Return the µManager app directory.
+@dataclass(frozen=True)
+class MMAppDirResolution:
+    """A located MM directory plus how strongly it identifies the live JVM."""
+
+    path: Path | None
+    source: str
+    live_probe: str
+
+
+def resolve_mm_app_dir(
+    ctrl: "MicroscopeController | None" = None,
+    *,
+    cache_live: bool = True,
+) -> MMAppDirResolution:
+    """Resolve the MM directory while retaining live/fallback provenance.
 
     Order: (1) authoritative Java call via ctrl, (2) cache, (3) path guessing.
-    ctrl is optional so offline callers keep working.
+    A cache or guess is useful for offline tools, but is not proof that it
+    belongs to a connected JVM. Startup authorization uses that distinction.
     """
+    live_probe = "not_attempted"
     # 1. Ask the running MM JVM (authoritative). Validate before trusting it
     #    over the cache, then write through so offline calls stay fresh.
     if ctrl is not None:
-        app_dir = ctrl.get_mm_app_dir()
+        try:
+            app_dir = ctrl.get_mm_app_dir()
+        except Exception:
+            app_dir = None
+            live_probe = "error"
         if app_dir:
             p = Path(app_dir)
             if p.exists() and _looks_like_mm_dir(p):
-                save_mm_app_dir(str(p))
-                return p
+                if cache_live:
+                    save_mm_app_dir(str(p))
+                return MMAppDirResolution(p, "live", "validated")
             # Bogus live answer (e.g. user-home ImageJ dir): fall through.
+            live_probe = "invalid"
+        elif live_probe != "error":
+            live_probe = "unavailable"
 
     # 2. Cache.
     if _EMU_CACHE.exists():
@@ -114,17 +138,22 @@ def find_mm_app_dir(ctrl: "MicroscopeController | None" = None) -> Path | None:
             cached_dir = cached.get("mm_app_dir")
             if cached_dir:
                 p = Path(cached_dir)
-                if p.exists():
-                    return p
+                if p.exists() and _looks_like_mm_dir(p):
+                    return MMAppDirResolution(p, "cache", live_probe)
         except (json.JSONDecodeError, OSError):
             pass
 
     # 3. Path guessing (offline fallback).
     for candidate in _candidate_mm_dirs():
         if _has_emu(candidate):
-            return candidate
+            return MMAppDirResolution(candidate, "guess", live_probe)
 
-    return None
+    return MMAppDirResolution(None, "none", live_probe)
+
+
+def find_mm_app_dir(ctrl: "MicroscopeController | None" = None) -> Path | None:
+    """Return the best MM directory, preserving the established public API."""
+    return resolve_mm_app_dir(ctrl).path
 
 
 def save_mm_app_dir(mm_app_dir: str) -> None:
@@ -335,18 +364,31 @@ def read_emu_config(
     config_path = _emu_config_path(Path(mm_app_dir))
     raw = json.loads(config_path.read_text(encoding="utf-8"))
 
+    if not isinstance(raw, dict):
+        raise ValueError("EMU config root must be a mapping")
+
     current_name = raw.get("defaultConfigurationName", "")
     configs = raw.get("pluginConfigurations", [])
+    if not isinstance(configs, list) or not all(isinstance(c, dict) for c in configs):
+        raise ValueError("EMU pluginConfigurations must be a list of mappings")
+    if not configs:
+        raise ValueError("EMU config has no plugin configuration")
 
     # Find the active configuration (matching defaultConfigurationName).
     active = next(
         (c for c in configs if c.get("configurationName") == current_name),
-        configs[0] if configs else {},
+        configs[0],
     )
+    properties = active.get("properties")
+    if not isinstance(properties, dict):
+        raise ValueError("active EMU plugin configuration properties must be a mapping")
+    settings = active.get("settings", {})
+    if not isinstance(settings, dict):
+        raise ValueError("active EMU plugin configuration settings must be a mapping")
 
     return {
         "config_name": active.get("configurationName", ""),
         "plugin_name": active.get("pluginName", ""),
-        "properties": _parse_properties(active.get("properties", {}), device_labels),
-        "plugin_settings": active.get("settings", {}),
+        "properties": _parse_properties(properties, device_labels),
+        "plugin_settings": settings,
     }
