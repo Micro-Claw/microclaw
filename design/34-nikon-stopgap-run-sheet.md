@@ -1,10 +1,22 @@
 # Nikon Ti stopgap: operator run sheet
 
-Use Microclaw commit `b7175948701e2e3fbf265eba28981276ed85d194` for this
-shipment. Do not use the old July 16 commit `722184a`: the safety-config format
-has become stricter since then, and these files target the newer schema. Pinning
-this exact commit keeps every returned message interpretable even if `main`
-changes while the remote tests are in flight.
+Use the tag `nikon-shipment-1` for this shipment:
+
+```powershell
+git fetch --tags
+git checkout nikon-shipment-1
+```
+
+Do not use the old July 16 commit `722184a`: the safety-config format has become
+stricter since then, and these files target the newer schema. Do not use `main`
+either — it moves while your tests are in flight, and pinning keeps every message
+you send back interpretable.
+
+The tag is used instead of a bare commit hash on purpose. This run sheet, the
+worksheet, and the probe kit all live in the same repository, so any hash written
+into this file necessarily names a commit older than the file itself. The tag is
+applied after all of them landed, so it is the one name that resolves to a
+checkout containing everything you were sent.
 
 Confidence about the upcoming block 2 check is high: its checklist scope checks
 laser enables reported by EMU against `illumination.shutters`. This rig reported
@@ -37,8 +49,52 @@ reviewed:
   no unanswered value.
 - Read the complete file. Only you, the rig operator, may then change
   `reviewed: false` to `reviewed: true`.
-- Put that same completed `safety_config.yaml` at the location used by your
-  launcher, or pass its full path with your usual `--safety-config` option.
+
+### Step 1 — tell Microclaw where the file is
+
+Keep your completed `safety_config.yaml` somewhere you can name, for example
+`C:\microclaw\safety_config.yaml`, and pass that path explicitly. (Microclaw also
+has a per-user default location, which `microclaw init` creates and reports, but
+you do **not** need `init` for this shipment — you already have the file.)
+
+**`--safety-config` must come BEFORE the subcommand.** This is the single easiest
+thing to get wrong:
+
+```powershell
+microclaw --safety-config C:\microclaw\safety_config.yaml authorization-map
+```
+
+Putting it after the subcommand — `microclaw authorization-map --safety-config ...`
+— fails with an "unrecognized arguments" error. If you see that message, it is
+almost always this, not a problem with your file.
+
+### Step 2 — check the config without running a session
+
+Run this first. It connects **read-only**, prints what the config permits, and
+exits. It moves no hardware and takes no images:
+
+```powershell
+microclaw --safety-config C:\microclaw\safety_config.yaml authorization-map > nikon-authmap.txt 2>&1
+```
+
+What "it worked" looks like: the command exits without a refusal and
+`nikon-authmap.txt` lists the devices and permitted operations. You should expect
+to see your stage and named-stage ranges, and to see **no** entry permitting
+`TIPFSStatus`. That absence is correct and intended — see the PFS section below.
+
+Send `nikon-authmap.txt` back whether it succeeds or fails. It is the single most
+useful file you can return.
+
+### Step 3 — start a session
+
+Only after step 2 succeeds:
+
+```powershell
+microclaw --safety-config C:\microclaw\safety_config.yaml serve > nikon-serve.txt 2>&1
+```
+
+This serves the interactive web GUI on localhost and prints the address to open.
+Stop it with Ctrl+C when you are finished.
 
 Important limitation: the offline YAML parser alone does **not** reject blank
 `camera.max_exposure_ms` or the nine blank `acquisition` fields. Normal
@@ -47,15 +103,18 @@ were bypassed, null exposure/acquisition limits would not be enforced. Therefore
 all ten fields must be visibly filled before review; “the file parsed” is not
 evidence that they were supplied.
 
-In PowerShell, record the exact version before running:
+In PowerShell, record the exact version before running, from inside the repository
+you checked out:
 
 ```powershell
 git rev-parse HEAD > nikon-microclaw-version.txt 2>&1
+git describe --tags >> nikon-microclaw-version.txt 2>&1
 ```
 
-The file must contain exactly
-`b7175948701e2e3fbf265eba28981276ed85d194`. If it does not, stop and send that
-file back.
+`nikon-microclaw-version.txt` should name the tag `nikon-shipment-1`. Send this
+file back with every other result — we interpret your evidence against it. If
+`git describe` reports anything other than `nikon-shipment-1`, stop and send the
+file back before running anything else.
 
 ## If startup refuses
 
