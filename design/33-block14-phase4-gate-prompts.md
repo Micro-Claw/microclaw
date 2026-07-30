@@ -1,9 +1,13 @@
 # Block 14 Phase 4 measurement gate — MM configuration apply semantics
 
 Branch under test: `design33/channel-plan-executor` (record the commit below).
-This is a **measurement spike only**. It neither implements nor approves a
-channel-plan executor. Run it against the Micro-Manager demo configuration on the
-rig's Windows machine with MM's ZMQ server already listening on port 4827.
+
+This document holds **two gates**, in order. G0–G6 are the **measurement spike**,
+which neither implements nor approves an executor; it establishes what MM's own
+apply semantics are. G7–G11 are the **executor implementation gate**, which tests
+the code written against those measurements. Both run against the Micro-Manager
+demo configuration on the rig's Windows machine with MM's ZMQ server listening on
+port 4827.
 
 All commands below are PowerShell-safe. Run them from the repo root. Do **not** run
 `pip install -e .`: the probe intentionally imports only pycro-manager and uses the
@@ -59,7 +63,25 @@ approve either.
 
 ---
 
+## Who does what
+
+Every step below is tagged with its role, because most of them are not rig work and
+reading them as instructions to the operator wasted a session's attention once.
+
+- **OPERATOR (rig):** G0, G1, and G7–G9 plus G11's retarget limb. These touch the
+  demo core and must run on the Micro-Manager machine.
+- **OPERATOR (off-rig pytest):** G10 and G11's cancellation limb. Deterministic fake
+  fixtures — the demo adapters cannot safely inject transport failure into a live
+  write, so this is where failure injection lives.
+- **COORDINATOR (desk work on the evidence file):** G2–G6. Nothing to run and
+  nothing to do on the rig; these read sections of `mm-apply-evidence.txt` produced
+  by G1 and record verdicts in the results table.
+
+So the operator's spike-phase work is G0 and G1 only. G2–G6 are discharged by
+reading their output.
+
 ## G0 — Pin the subject and make an evidence directory
+*Role: OPERATOR (rig).*
 
 ```powershell
 git status --short --branch > block14p4-git-status.txt 2>&1
@@ -81,6 +103,7 @@ Stop if compilation fails, the branch is not `design33/channel-plan-executor`, o
 the recorded commit is not the coordinator-approved spike commit.
 
 ## G1 — Run the one-shot measurement
+*Role: OPERATOR (rig).*
 
 Start Micro-Manager with `MMConfig_demo.cfg`, start its ZMQ server on port 4827, and
 leave the GUI alone for the duration of the run. Then run exactly:
@@ -100,14 +123,16 @@ residue or failure to prove scratch-group deletion. Do not rerun until the opera
 has inspected the reported current state and decided how to recover it.
 
 ## G2 — Expansion shape
+*Role: COORDINATOR (desk work).*
 
 Inspect `Q1 Expansion shape and consecutive reads` in the evidence file. For every
 name returned by `get_available_configs("Channel")`, record:
 
 1. the exact indexed `(device, property, value)` sequence from each read;
 2. `consecutive_equal`;
-3. the concrete config/setting types, full sorted `dir()` output, and the accessor
-   names that actually worked; and
+3. the concrete config/setting types and the accessor names that actually worked
+   (the full sorted `dir()` of each object is recorded once in
+   `sections.expansion_surface`, not per setting); and
 4. every setting whose device is `Core`.
 
 What this settles: Phase 4's captured-plan representation and bridge access must be
@@ -139,6 +164,7 @@ Round 2 also recorded the concrete expansion bridge surface:
 Java/Python naming parity.
 
 ## G3 — Replay equivalence, waits, and read-back
+*Role: COORDINATOR (desk work).*
 
 For each preset, inspect `Q2/Q4/Q5`. The load-bearing fields are:
 
@@ -173,6 +199,7 @@ executor design must resolve explicitly. Record the full diff rather than summar
 it as “looks the same.”
 
 ## G4 — every `Core.*` pseudo-device effect, including `Core.Shutter`
+*Role: COORDINATOR (desk work).*
 
 Inspect `Q3 All Core.* pseudo-device effects`. The probe restores the pristine
 pre-run snapshot before Q3 and between effects. Record every distinct Core property
@@ -204,6 +231,7 @@ group. Record requested `"10"` against the exact string read back after both
 from the partial-failure scratch group.
 
 ## G5 — Partial failure and reversibility
+*Role: COORDINATOR (desk work).*
 
 Inspect `Q6 Partial failure and reversibility`. The scratch config contains three
 ordered, distinct, writable enumerated properties on **three distinct devices**;
@@ -224,6 +252,7 @@ but this run has not exercised apply-time partial failure; mark this step FAIL a
 revise the probe before drawing an executor conclusion.
 
 ## G6 — TOCTOU realism and final hygiene
+*Role: COORDINATOR (desk work).*
 
 Inspect `Q7 TOCTOU re-read` and `Cleanup and residue verification`. The former must
 show the scratch definition before and after replacing one value and must report
@@ -287,6 +316,7 @@ console transcript, authorization-map JSON, and a complete property snapshot bef
 and after each mutation. Do not use another config group.
 
 ### G7 — authorized captured apply
+*Role: OPERATOR (rig).*
 
 Start microclaw with the Phase 4 profile and apply DAPI, FITC, and Rhodamine through
 `set_channel`. Accept the `Core.Shutter` illumination-class prompt. For each result,
@@ -295,6 +325,7 @@ set/wait/read sequence, and `getCurrentConfig("Channel")`. PASS requires exact l
 read-back, numeric type-aware comparison where present, and no call to `set_config`.
 
 ### G8 — refused apply before mutation
+*Role: OPERATOR (rig).*
 
 First request a preset absent from `channels.allowed`. Then, in the MM GUI, add an
 undeclared or excluded property to an allowed preset and request it again. PASS
@@ -302,6 +333,7 @@ requires a named refusal before the first property write and an unchanged full
 property snapshot. Restore the preset definition in the GUI afterward.
 
 ### G9 — startup/apply drift detector
+*Role: OPERATOR (rig).*
 
 After startup, change only an already-authorized categorical value in DAPI, apply
 DAPI, and restore the definition. PASS requires `expansion_drift: true`, unequal
@@ -311,6 +343,7 @@ that limb must refuse before mutation rather than treating the startup hash as a
 authorization token.
 
 ### G10 — injected partial failure and rollback
+*Role: OPERATOR (off-rig pytest).*
 
 Run the off-rig executor failure fixture at the pinned commit:
 
@@ -327,6 +360,7 @@ the Phase 4 failure injection: the demo adapters cannot safely inject transport
 failure into a live property write.
 
 ### G11 — shutter-retarget confirmation and cancellation boundary
+*Role: OPERATOR (rig retarget limb + off-rig pytest for cancellation).*
 
 Before starting microclaw, select **LED Shutter** as the active shutter in the MM
 GUI. Record that pre-run active-shutter value in the evidence; it must be
