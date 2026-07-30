@@ -7,6 +7,7 @@ import hashlib
 import json
 import math
 from numbers import Real
+from pathlib import Path
 import sys
 from typing import Any, Iterable
 
@@ -47,6 +48,63 @@ def _acquisition_tool_names() -> list[str]:
 
 class RigAuthorizationError(RuntimeError):
     """The connected rig cannot satisfy the declared authorization profile."""
+
+
+def _live_emu_laser_enables(
+    ctrl: Any, loaded_devices: list[str]
+) -> tuple[list[tuple[int, str, str]], list[str]]:
+    """Read semantic EMU laser enables from the running MM installation.
+
+    This is startup discovery only: asking ImageJ for its application directory
+    and reading EMU's config file do not write hardware.  In particular, do not
+    use the per-user cached MM path here; a stale path is not evidence about the
+    live installation being authorized.
+    """
+    from microclaw.emu_manager import build_emu_map, read_emu_config
+
+    get_mm_app_dir = getattr(ctrl, "get_mm_app_dir", None)
+    if not callable(get_mm_app_dir):
+        # Lightweight/offline controller implementations predate EMU discovery.
+        return [], []
+    try:
+        mm_app_dir = get_mm_app_dir()
+    except Exception as exc:
+        return [], [
+            "Could not locate the live Micro-Manager installation for EMU semantic "
+            f"laser-enable discovery: {_clean_exception_message(exc)}"
+        ]
+    if not mm_app_dir:
+        return [], []
+    config_path = Path(mm_app_dir) / "EMU" / "config.uicfg"
+    if not config_path.exists():
+        return [], []
+    try:
+        config = read_emu_config(mm_app_dir, loaded_devices)
+        lasers = build_emu_map(config["properties"])["lasers"]
+    except Exception as exc:
+        return [], [
+            f"Could not resolve EMU semantic laser enables from {config_path}: "
+            f"{_clean_exception_message(exc)}"
+        ]
+
+    enables: list[tuple[int, str, str]] = []
+    problems: list[str] = []
+    for slot, laser in sorted(lasers.items()):
+        enable = laser.get("enable")
+        if enable is None:
+            continue
+        device = enable.get("device")
+        prop = enable.get("property")
+        if not isinstance(device, str) or not device or not isinstance(prop, str) or not prop:
+            semantic = f"Laser {slot} enable"
+            problems.append(
+                f"EMU semantic {semantic!r} is allocated but its exact Micro-Manager "
+                "device/property could not be resolved from the live loaded-device "
+                "inventory; refusing to claim that illumination declarations are complete."
+            )
+            continue
+        enables.append((slot, device, prop))
+    return enables, problems
 
 
 # This is deliberately the one preset group microclaw executes. It is fixed,
@@ -535,6 +593,9 @@ def validate_live_rig(
     illumination_pairs = {
         (item.device, item.property) for item in illumination.shutters
     } | illumination_power_pairs
+    illumination_shutter_pairs = {
+        (item.device, item.property) for item in illumination.shutters
+    }
 
     # Device inventory is read once here: auto-classification needs it before
     # the categorical entries are emitted. The enumeration error is still
@@ -545,6 +606,35 @@ def validate_live_rig(
     except Exception as exc:
         loaded_devices = []
         loaded_devices_error = f"Could not enumerate connected devices: {exc}"
+
+    emu_enables, emu_discovery_problems = _live_emu_laser_enables(
+        ctrl, loaded_devices
+    )
+    emu_warnings = list(emu_discovery_problems)
+    for slot, device, prop in emu_enables:
+        if (device, prop) in illumination_shutter_pairs:
+            continue
+        emu_warnings.append(
+            f"EMU laser slot {slot} semantically identifies exact enable "
+            f"{device}.{prop}, but it is missing from "
+            "constraints.illumination.shutters. Add the verified declaration using:\n"
+            "  illumination:\n"
+            "    shutters:\n"
+            f"      - device: {device!r}\n"
+            f"        property: {prop!r}\n"
+            "Establish and declare on_value/off_value too if this hardware does not "
+            "use the schema defaults; no values were inferred from the semantic map."
+        )
+    if guaranteed:
+        errors.extend(emu_warnings)
+    else:
+        for warning in emu_warnings:
+            print(
+                "WARNING: " + warning + " Completeness guarantee is suspended in "
+                "degraded_trusted_plugins mode; unresolved or undeclared EMU enables "
+                "are not silently authorized as illumination.",
+                file=sys.stderr,
+            )
 
     typed_pairs = {(identity.device, identity.property) for identity in parsed_config.typed_actuators}
     denied_pairs = {

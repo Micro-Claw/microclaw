@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -100,6 +101,9 @@ class Controller:
 
     def is_connected(self):
         return True
+
+    def get_mm_app_dir(self):
+        return None
 
 
 def edge(value):
@@ -378,6 +382,121 @@ def illumination_policy(*, maximum=30.0, step=3.0):
         max_power_percent=maximum,
         max_power_step_factor=step,
     )
+
+
+def emu_controller(tmp_path, raw_properties):
+    """Representative off-rig live-installation fixture (demo has no EMU)."""
+    mm_dir = tmp_path / "Micro-Manager-2.0"
+    config_dir = mm_dir / "EMU"
+    config_dir.mkdir(parents=True)
+    (config_dir / "config.uicfg").write_text(json.dumps({
+        "defaultConfigurationName": "test",
+        "pluginConfigurations": [{
+            "configurationName": "test",
+            "pluginName": "htSMLM",
+            "properties": raw_properties,
+        }],
+    }), encoding="utf-8")
+    core = Core()
+    ctrl = Controller(core)
+    ctrl.get_mm_app_dir = lambda: str(mm_dir)
+    return ctrl
+
+
+def test_guaranteed_refuses_undeclared_semantic_emu_enable_actionably(tmp_path):
+    ctrl = emu_controller(tmp_path, {
+        "Laser 2 enable": "Luxx638-Laser Operation Select",
+    })
+    ctrl.core.loaded_extra = ["Luxx638"]
+
+    with pytest.raises(RigAuthorizationError) as caught:
+        validate_live_rig(ctrl, parsed())
+
+    message = str(caught.value)
+    assert "Luxx638" in message
+    assert "Laser Operation Select" in message
+    assert "constraints.illumination.shutters" in message
+    assert "illumination:\n    shutters:" in message
+    assert "no values were inferred" in message
+
+
+def test_exact_declared_emu_enable_uses_existing_illumination_protections(tmp_path):
+    ctrl = emu_controller(tmp_path, {
+        "Laser 2 enable": "Luxx638-Laser Operation Select",
+        "Laser 2 enable - On value": "Armed",
+        "Laser 2 enable - Off value": "Safe",
+    })
+    ctrl.core.loaded_extra = ["Luxx638"]
+    illumination = IlluminationConstraints(shutters=[IlluminationProperty(
+        "Luxx638", "Laser Operation Select", on_value="Armed", off_value="Safe"
+    )])
+    config = parsed(illumination=illumination)
+    guard = SafetyGuard(config.constraints)
+
+    report = validate_live_rig(ctrl, config, guard=guard)
+    assert report.complete is True
+    entry = next(e for e in report.entries if e.device == "Luxx638"
+                 and e.property == "Laser Operation Select")
+    assert entry.path == "dedicated-illumination"
+    with pytest.raises(SafetyViolation, match="declined"):
+        guard.check_illumination(
+            ctrl.core, "Luxx638", "Laser Operation Select", "Armed"
+        )
+    ctrl.core.set_property = lambda device, prop, value: setattr(
+        ctrl.core, "last_write", (device, prop, value)
+    )
+    assert guard.shutter_all(ctrl.core) == ["Luxx638.Laser Operation Select"]
+    assert ctrl.core.last_write == ("Luxx638", "Laser Operation Select", "Safe")
+
+
+def test_degraded_warns_without_authorizing_undeclared_emu_enable(tmp_path, capsys):
+    ctrl = emu_controller(tmp_path, {"Laser 0 enable": "Laser-A-Enable"})
+    ctrl.core.loaded_extra = ["Laser-A"]
+    report = validate_live_rig(
+        ctrl, parsed(mode="degraded_trusted_plugins")
+    )
+    warning = capsys.readouterr().err
+    assert report.complete is None
+    assert "Laser-A.Enable" in warning
+    assert "constraints.illumination.shutters" in warning
+    assert "Completeness guarantee is suspended" in warning
+    assert not any(e.device == "Laser-A" and e.property == "Enable"
+                   and e.path == "dedicated-illumination" for e in report.entries)
+
+
+def test_every_semantic_emu_laser_slot_is_checked(tmp_path):
+    ctrl = emu_controller(tmp_path, {
+        "Laser 0 enable": "Laser-A-Enable",
+        "Laser 3 enable": "Laser-B-Gate",
+    })
+    ctrl.core.loaded_extra = ["Laser-A", "Laser-B"]
+    with pytest.raises(RigAuthorizationError) as caught:
+        validate_live_rig(ctrl, parsed(illumination=IlluminationConstraints(
+            shutters=[IlluminationProperty("Laser-A", "Enable")]
+        )))
+    message = str(caught.value)
+    assert "Laser-B.Gate" in message
+    assert "Laser-A.Enable" not in message
+
+
+def test_unresolved_semantic_emu_enable_fails_without_false_pair_claim(tmp_path):
+    ctrl = emu_controller(tmp_path, {
+        "Laser 1 enable": "Unknown-Laser-Enable",
+    })
+    with pytest.raises(RigAuthorizationError) as caught:
+        validate_live_rig(ctrl, parsed())
+    message = str(caught.value)
+    assert "'Laser 1 enable' is allocated" in message
+    assert "could not be resolved" in message
+    assert "Unknown.Laser-Enable" not in message
+
+
+def test_malformed_emu_config_fails_safely_in_guaranteed_mode(tmp_path):
+    ctrl = emu_controller(tmp_path, {})
+    config_path = tmp_path / "Micro-Manager-2.0" / "EMU" / "config.uicfg"
+    config_path.write_text("not json", encoding="utf-8")
+    with pytest.raises(RigAuthorizationError, match="Could not resolve EMU semantic"):
+        validate_live_rig(ctrl, parsed())
 
 
 @pytest.mark.parametrize(
