@@ -379,6 +379,21 @@ conversion and the refusal; G7c adds the live cap and ratchet only.
 Confirm the migrated map is otherwise identical to `g7-before.txt`: same categorical
 entries, same 20-device excluded inventory, `iChrome-MLE-TCP.State` still refused.
 
+### G7 RESULT — a/b/d PASS, 2026-07-30
+
+- **G7a PASS** (`g7a.txt`): `Illumination power iBeamSmartCW-1.Power (mW) declares no
+  units and its driver technical range is 0.0..75.0, not 0..100 percent. The existing
+  max_power_percent cap may be inoperative; declare units: native and full_scale ...`
+  The measured M5 defect is refused at startup for the first time.
+- **G7b PASS** (`g7b.txt`): `complete`, 58 entries, typed entry detail
+  `units=native; raw native/full_scale 75 -> percent; effective canonical bound 0..40 percent`.
+- **G7d PASS** (coordinator-computed from `g7-before.txt` vs `g7b.txt`): the entry-set
+  diff is **exactly** the two new rows for the newly declared device
+  (`dedicated-illumination` + `typed_continuous_actuator`), plus `iBeamSmartCW-1`
+  correctly leaving the excluded inventory (22 → 21). Categorical entries byte-identical;
+  `iChrome-MLE-TCP.State` still not admitted. No collateral change.
+- **G7c** deferred: live emission, operator's call.
+
 ## G8 — the GenericDevice gap (read-only, added 2026-07-30)
 
 The M5 inventory shows every hazardous continuous actuator on this rig is a
@@ -415,13 +430,27 @@ Note what this is *not*: the default remains fail-closed. `g7-before.txt` shows 
 of these devices in the excluded inventory today. The gap opens only when an operator
 affirmatively mis-declares one — which is exactly the mistake this net exists to catch.
 
-The Integer "configuration" properties on the same devices (`PWM."Number of PWM"`
-1–5, `TTL."Number of channels"` 1–4, `Servos."Number of Servos"` 1–7) are why this
-widening needs a decision rather than a reflex: they are numeric, writable and
-unenumerated too, so a GenericDevice rule refuses them as "continuous actuators"
-with no typed kind available to declare them. Their remedy would be
-`excluded_properties`, and the refusal message must therefore name exclusion as an
-alternative, which it currently does not.
+### The pre-init finding removes most of the objection (2026-07-30)
+
+The "configuration" properties I worried would be false-positives — `PWM."Number of
+PWM"` 1–5, `TTL."Number of channels"` 1–4, `Servos."Number of Servos"` 1–7, `Analog
+Input."Number of channels"` 1–8, `Laser Trigger."Number of lasers"` 1–8 — are **all
+`pre_init: true`** in the M5 inventory. That is why they are absent from the Device
+Property Browser: MM surfaces pre-init properties in the Hardware Configuration
+Wizard, not at runtime. They are MicroFPGA device-adapter properties, not EMU.
+
+So `_continuous_introspection` should skip `is_property_pre_init` — precedented by
+`rig_inventory._is_power`, which already does — and a GenericDevice widening then
+refuses only the real actuators: `PWM.Position0` (0–255), `Servos.Position0..3`
+(0–65535), `Laser Trigger.Duration0..3` (0–1 048 575) and `Sequence0..3`,
+`iBeamSmartCW-1."Power (mW)"` and `Fine A/B (%)`.
+
+**One residual false positive stands: `TTL.State0`** — Integer, not pre-init, no
+limits, not enumerated, and genuinely discrete. A GenericDevice rule refuses it as
+continuous. That is arguably correct fail-closed behaviour (microclaw cannot tell a
+digital state from a level on a Generic device), but the operator's only remedy is
+`excluded_properties`, so the refusal message **must** name exclusion as an
+alternative. It currently names only `typed_actuators`.
 
 ## Demo coverage summary (settled by G1, 2026-07-30)
 
