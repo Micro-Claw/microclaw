@@ -25,19 +25,18 @@ initialization or PFS-coordinated Z movement. Five things should nonetheless
 become explicit Phase 5 inputs or acceptance criteria:
 
 1. Treat Block 9b's inventory as versioned rather than frozen, and validate the
-   payload's `schema` against a shared supported-version constant or parser
-   contract rather than duplicating an inline producer string. Both source
+   payload's `schema` with the producer-owned
+   `microclaw.rig_inventory.validate_inventory_schema` contract rather than
+   duplicating an inline producer string. Both source
    documents say Phase 5 is unblocked — the checklist states Phase 5 "depends
    on Block 9b's inventory, which shipped, so it is unblocked whenever wanted"
    (checklist `:1338`), and design/33 says the format is not frozen but "the
    schema is versioned so a finding can bump it" (`:439`). Phase 5 should declare
    the exact supported version set and refuse an unrecognized version, not wait
    for the cross-rig gate — which needs a second live rig and could otherwise defer
-   Phase 5 indefinitely. **Note the design text is already stale on this point:**
-   `:392` documents the schema as `microclaw.rig-inventory/v1`, while
-   `microclaw/rig_inventory.py:380` emits `microclaw.rig-inventory/v2` (bumped in
-   `5c54e55`, design never updated). An implementer treating design/33 as the
-   version spec would pin the wrong string outright. The owed live
+   Phase 5 indefinitely. The former producer/design version mismatch is closed:
+   design/33 now points to the producer-owned validator and supported set, and
+   the producer emits from that same contract. The owed live
    credential-redaction check remains a Block 9b inventory-producer gate, not a
    Phase 5 safety input: the inventory already lands on disk, and Phase 5 should
    structurally prohibit copying observed current or allowed values into the
@@ -198,12 +197,7 @@ current:
    section records Phase 2 merged at `47f6702` and Phase 4 at `5458483`
    (checklist `:1199`, `:1209`). Only Phase 5 remains unstarted, and the closeout
    line should say so.
-2. **Inventory schema version.** design/33 `:392` documents the schema as
-   `microclaw.rig-inventory/v1`; `microclaw/rig_inventory.py:380` has emitted
-   `microclaw.rig-inventory/v2` since `5c54e55` (2026-07-29, "Fix rig inventory
-   candidate relationships"), which bumped the version without updating the
-   design. This is the more consequential of the two: the closeout line is
-   narrative, but `:392` reads as the contract Phase 5 should pin, and pinning
-   `v1` would reject every inventory the shipped producer writes. Update `:392`,
-   and have Phase 5 read the supported set from the producer rather than from
-   prose.
+2. **Inventory schema version (closed).** design/33 now points to
+   `microclaw.rig_inventory.validate_inventory_schema` and
+   `SUPPORTED_INVENTORY_SCHEMAS`; the producer emits from the same constant, so
+   Phase 5 can refuse unsupported payloads without pinning a prose literal.

@@ -389,9 +389,11 @@ this failure class has now cost three blocks.
 already has a reviewed config does not need discovery. Supplying one is optional
 and only annotates a comparison.
 
-**Inventory schema** — `microclaw.rig-inventory/v1`, deterministic, with three
-structurally separate regions. Phase 5 must preserve that separation rather than
-flattening it:
+**Inventory schema** — deterministic and governed by
+`microclaw.rig_inventory.validate_inventory_schema` and
+`SUPPORTED_INVENTORY_SCHEMAS`; consumers must use that producer-owned contract
+and refuse unsupported versions. It has three structurally separate regions.
+Phase 5 must preserve that separation rather than flattening it:
 
 | Region | Meaning |
 |---|---|
