@@ -1,11 +1,28 @@
 # Nikon Ti stopgap: operator run sheet
 
-Use the tag `nikon-shipment-1` for this shipment:
+Use the **tag** `nikon-shipment-1` for this shipment:
 
 ```powershell
 git fetch --tags
 git checkout nikon-shipment-1
 ```
+
+`nikon-shipment-1` is a tag, **not a branch.** On GitHub it appears under
+*Releases / Tags*, not in the branch dropdown — if you look for it in the branch
+list you will not find it, and nothing is wrong.
+
+**Expect a "detached HEAD" message from that checkout.** It looks alarming and
+mentions discarding commits and undoing the operation. It is normal and expected
+here: it simply means you are viewing an exact fixed version rather than a moving
+branch, which is precisely what we want. You are not going to commit anything, so
+none of that advice applies to you. Confirm it worked with:
+
+```powershell
+git describe --tags
+```
+
+That must print exactly `nikon-shipment-1`. If it does, the checkout succeeded
+regardless of what the longer message said.
 
 Do not use the old July 16 commit `722184a`: the safety-config format has become
 stricter since then, and these files target the newer schema. Do not use `main`
