@@ -251,6 +251,19 @@ authorize one expansion and ask Micro-Manager to re-read another at apply time.
 If Micro-Manager does not expose enough semantics to reproduce a preset safely,
 gated presets must be disabled rather than replayed approximately.
 
+Phase 4 deliberately treats `Core.Shutter` retargeting conservatively. The target
+label must name a device declared in `illumination.shutters`, and selecting it
+requires the same human confirmation class as enabling illumination. Retargeting
+does not itself open a shutter, but with AutoShutter it selects which reviewed light
+source fires on the next exposure. Demo evidence covers only idle retargeting; this
+policy is intentionally revisitable after dark/beam-blocked measurements on real
+drivers. Every other `Core.*` effect remains excluded.
+
+The executor polls cancellation between property writes only. Each pyjavaz bridge
+round trip owns a single lock, so an in-flight set, device wait, or read-back cannot
+be killed by another thread. A stop therefore takes effect at the next write
+boundary and triggers rollback; it is not a mid-write interrupt.
+
 ## Plugins are a different boundary
 
 Plugins are a different boundary. An arbitrary Java hardware-motion plugin can

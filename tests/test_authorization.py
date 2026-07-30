@@ -330,6 +330,21 @@ def test_present_but_unreadable_preset_has_one_sanitized_reason():
     assert "java.lang" not in message
 
 
+def test_read_only_preset_setting_is_refused():
+    class Setting:
+        def get_read_only(self): return True
+        def get_device_label(self): return "Wheel"
+        def get_property_name(self): return "Label"
+        def get_property_value(self): return "DAPI"
+    core = Core()
+    core.presets["ReadOnly"] = [Setting()]
+    with pytest.raises(RigAuthorizationError, match="read-only setting"):
+        validate_live_rig(
+            Controller(core),
+            parsed(channels=["ReadOnly"], categorical={("Wheel", "Label")}),
+        )
+
+
 def test_fully_reviewed_categorical_preset_is_authorized_and_runtime_gated():
     core = Core()
     core.presets["DAPI"] = [
@@ -440,16 +455,17 @@ def test_unclassified_and_over_limit_illumination_writes_fail():
         guard.check_illumination(ctrl.core, "Laser", "Power", "50")
 
 
-def test_illumination_preset_stays_excluded_without_channel_plan_executor():
+def test_illumination_preset_is_authorized_for_channel_plan_executor():
     core = Core()
     core.presets["LaserOn"] = [
         {"device": "Laser", "property": "Enable", "value": "On"}
     ]
-    with pytest.raises(RigAuthorizationError, match="channel-plan executor"):
-        validate_live_rig(
-            Controller(core),
-            parsed(channels=["LaserOn"], illumination=illumination_policy()),
-        )
+    report = validate_live_rig(
+        Controller(core),
+        parsed(channels=["LaserOn"], illumination=illumination_policy()),
+    )
+    assert report.authorized_presets == {"LaserOn"}
+    assert report.channel_expansion_hashes["LaserOn"]
 
 
 def test_cli_and_web_validate_before_prompt_or_session_exposure(monkeypatch):

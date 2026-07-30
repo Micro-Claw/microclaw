@@ -276,3 +276,69 @@ is missing.
 Even a clean demo result authorizes only the next design decision. It does not prove
 M5 safety and does not discharge cancellation, rollback/safe-state implementation,
 or injected failure after every executor write.
+
+---
+
+## Executor implementation gate (G7+)
+
+Use `design/33-block14-phase4-demo-safety-config.yaml`, after replacing
+`workspace_dir`, with stock `MMConfig_demo.cfg`. Record the implementation commit,
+console transcript, authorization-map JSON, and a complete property snapshot before
+and after each mutation. Do not use another config group.
+
+### G7 — authorized captured apply
+
+Start microclaw with the Phase 4 profile and apply DAPI, FITC, and Rhodamine through
+`set_channel`. Accept the `Core.Shutter` illumination-class prompt. For each result,
+record `writes`, both expansion SHA-256 values, `expansion_drift: false`, the ordered
+set/wait/read sequence, and `getCurrentConfig("Channel")`. PASS requires exact label
+read-back, numeric type-aware comparison where present, and no call to `set_config`.
+
+### G8 — refused apply before mutation
+
+First request a preset absent from `channels.allowed`. Then, in the MM GUI, add an
+undeclared or excluded property to an allowed preset and request it again. PASS
+requires a named refusal before the first property write and an unchanged full
+property snapshot. Restore the preset definition in the GUI afterward.
+
+### G9 — startup/apply drift detector
+
+After startup, change only an already-authorized categorical value in DAPI, apply
+DAPI, and restore the definition. PASS requires `expansion_drift: true`, unequal
+startup/applied hashes shown in the result, authorization of the freshly captured
+value, and application of that captured value only. Repeat with an unsafe new pair;
+that limb must refuse before mutation rather than treating the startup hash as an
+authorization token.
+
+### G10 — injected partial failure and rollback
+
+Run the off-rig executor failure fixture at the pinned commit:
+
+```powershell
+python -m pytest tests\test_channel_plan_executor.py -k "failure_after_each_position or failing_rollback" -vv
+```
+
+PASS requires injection at every write position, no later forward write, reverse
+rollback of every attempted write (including the ambiguous write that raised), and
+an explicit partial-application error naming applied, attempted, and rolled-back
+pairs. The failing-rollback limb must say `SAFE STATE NOT VERIFIED` and name the
+rollback failure; it must not claim clean recovery. This deterministic fake gate is
+the Phase 4 failure injection: the demo adapters cannot safely inject transport
+failure into a live property write.
+
+### G11 — shutter-retarget confirmation and cancellation boundary
+
+Temporarily create a scratch preset **inside the fixed Channel group** containing
+the measured Channel-Multiband shape (`Core.Shutter = LED Shutter` plus `LED.Label`)
+with both demo shutters declared; never execute the Channel-Multiband group itself.
+Decline the first
+illumination-class prompt: no property may change. Repeat and accept: while idle,
+the selected shutter changes, both shutters remain closed, and the previous target
+is restored after evidence capture. Do not snap or expose. Separately run:
+
+```powershell
+python -m pytest tests\test_channel_plan_executor.py -k cancellation_between_writes -vv
+```
+
+PASS requires cancellation only at a write boundary followed by rollback. The gate
+must not describe this as an in-flight bridge-call interrupt.

@@ -1,0 +1,53 @@
+# Phase 4 executor gate profile for stock MMConfig_demo.cfg only.
+# It is not a real-rig profile. Set workspace_dir before use.
+schema_version: 2
+reviewed: true
+
+rig_profile:
+  mode: guaranteed
+  categorical_properties: []
+  excluded_properties: []
+  typed_actuators: []
+
+stage:
+  x_min: -10000.0
+  x_max: 10000.0
+  y_min: -10000.0
+  y_max: 10000.0
+  z_min: 0.0
+  z_max: 200.0
+
+camera:
+  max_exposure_ms: 1000.0
+
+acquisition:
+  max_frames: 10000
+  max_duration_s: 3600
+  max_bytes: 50000000000
+  max_illuminated_ms: 600000
+  max_session_illuminated_ms: 1800000
+  confirm_above_frames: 500
+  confirm_above_duration_s: 300
+  confirm_above_bytes: 5000000000
+  confirm_above_illuminated_ms: 60000
+
+illumination:
+  require_confirm_on_enable: true
+  max_power_percent: 100.0
+  max_power_step_factor: 3.0
+  # White Light Shutter is a DemoCamera shutter. LED Shutter is the Utilities
+  # State Device Shutter; its measured writable selection property is what the
+  # demo System/Startup preset uses to bind it to LED.
+  shutters:
+    - {device: White Light Shutter, property: State, on_value: "1", off_value: "0"}
+    - {device: LED Shutter, property: State Device, on_value: "LED", off_value: ""}
+  power_properties: []
+
+channels:
+  allowed: [Cy5, DAPI, FITC, Rhodamine]
+
+plugins:
+  blocked: []
+  allow_hardware_motion: false
+
+workspace_dir: /REPLACE/with/a/real/directory

@@ -407,7 +407,7 @@ def run_agent_iter(
                 result_block = {"type": "tool_result", "tool_use_id": block.id,
                                 "is_error": True, "content": result_json}
             else:
-                result_json = execute_tool(block.name, block.input, ctrl, guard)
+                result_json = execute_tool(block.name, block.input, ctrl, guard, cancel=cancel)
                 result_block = {"type": "tool_result", "tool_use_id": block.id,
                                 "content": result_json}
             tool_results.append(result_block)
