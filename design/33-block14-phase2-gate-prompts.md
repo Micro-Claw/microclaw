@@ -168,41 +168,58 @@ block's two distinct guards and they must not collapse into one.
 ## G4 — The continuous-refusal net on a real driver
 
 G1 established that this demo config has **no galvo and no DAC**, so this step is
-re-scoped to the continuous devices it does have. Declare each of these under
-`categorical_properties`, one config per run:
+re-scoped to the continuous devices it does have.
+
+**The subject must not be one the legacy alias heuristic already catches.**
+`check_device_property`/`_known_continuous_raw_pair` already match
+`<focus>.Position` and `<camera>.Exposure`, and both paths raise through the same
+`or`, so a refusal on those proves nothing new — they would fail on `main` too. Use
+properties that only `_continuous_introspection` can reach:
+
+`demo-cat-velocity.yaml` — copy of `demo-base.yaml`, no `typed_actuators`, with:
 
 ```
   categorical_properties:
-    - {device: Z, property: Position}          # StageDevice, Float, no driver limits
+    - {device: XY, property: Velocity}    # XYStageDevice, Float, writable, unenumerated
 ```
+
+`demo-cat-gain.yaml` — copy of `demo-base.yaml`, no `typed_actuators`, with:
+
 ```
   categorical_properties:
-    - {device: Camera, property: Exposure}     # CameraDevice, Float, limits 0..10000
+    - {device: Camera, property: Gain}    # CameraDevice, Integer, limits -5..8
 ```
 
 ```
-python -m microclaw --safety-config demo-cat-z.yaml authorization-map > g4-z.txt 2>&1
-python -m microclaw --safety-config demo-cat-exposure.yaml authorization-map > g4-exposure.txt 2>&1
+python -m microclaw --safety-config demo-cat-velocity.yaml authorization-map > g4-velocity.txt 2>&1
+python -m microclaw --safety-config demo-cat-gain.yaml authorization-map > g4-gain.txt 2>&1
 ```
 
 Expected in both: startup refusal, `is a known continuous actuator (confirmed by the
 live rig) and cannot be classified as categorical`, directing the operator to
-`rig_profile.typed_actuators`. `Z.Position` is the load-bearing one — it is refused
-purely on device type and property shape, with **no driver limits to lean on**.
+`rig_profile.typed_actuators`.
 
-`Camera.Exposure` would also trip the pre-existing alias heuristic, so run `Z` first
-and treat `Camera` as corroboration, not as independent evidence.
+`XY.Velocity` is the load-bearing one: it is not a position property, matches no
+alias set, and is refused purely on device type plus property shape. It is also the
+case design/33 cares most about — a continuous property whose semantics microclaw
+cannot name, which is why Phase 2 excludes rather than bounds it. `Camera.Gain`
+corroborates on a second device type.
 
-**What this step no longer claims.** It confirms the net for `StageDevice` (5) and
+**Optional controls, if you want the contrast on record:** the same runs with
+`{device: Z, property: Position}` and `{device: Camera, property: Exposure}` are
+refused by the *legacy* heuristic. Same message, older code path. Label them as
+controls, not as evidence for this block.
+
+**What this step no longer claims.** It confirms the net for `XYStageDevice` (6) and
 `CameraDevice` (2), both already in the previously verified region. Ordinals **12
 (SignalIODevice) and 16 (GalvoDevice) remain unconfirmed over the bridge** and no
 demo run can fix that. Record them as open.
 
-Then the non-regression, which matters just as much: re-run G2's base config and
-confirm the demo **StateDevices** still auto-classify (`source: "auto:state-device"`).
-G1 makes this sharp — `LED.State` is Integer with zero allowed values and no limits,
-so only the device-type exclusion saves it. A refusal here means the net has
-swallowed discrete devices and the block must not merge.
+**The StateDevice non-regression is already discharged by G2-base**: that map carries
+twelve `auto:state-device` entries (`Dichroic`, `Emission`, `Excitation`, `LED`,
+`Objective`, `Path` — `Label` and `State` each), including `LED.State`, which is
+Integer with zero allowed values and no limits. Re-running it is unnecessary; cite
+`g2-base.txt`.
 
 ## G5 — Preset expansion and denylist precedence
 
@@ -210,15 +227,39 @@ swallowed discrete devices and the block must not merge.
 config groups: every `Channel` and `Channel-Multiband` preset touches only
 `Dichroic`/`Emission`/`Excitation`/`LED` `Label` plus `Core.Shutter`; `LightPath` and
 `Objective` touch only `State`; `Camera` and `System` touch camera settings. **No
-demo preset touches `Z.Position`**, so no preset can be made to collide with the
-typed pair without editing the MM configuration itself. Record the preset-exclusion
-claim as covered by the off-rig test only. (Optional: if you want live evidence, add
-a `Channel` preset in the MM GUI that sets `Z.Position` and re-run — this mutates the
-demo config, so only do it if you are happy to restore it.)
+demo preset touches `Z.Position`**, so no preset can collide with the typed pair
+without editing the MM configuration itself. Record the preset-exclusion claim as
+covered by the off-rig test only. (Optional: add a `Channel` preset in the MM GUI
+that sets `Z.Position` and re-run — this mutates the demo config, so only do it if
+you are happy to restore it.)
 
-The denylist half **is** dischargeable here. Add the typed pair to
-`forbidden_properties` alongside its `typed_actuators` entry. Expected: `cannot be
-both typed-continuous and explicitly excluded`.
+**The denylist half is dischargeable here.** `demo-conflict.yaml` — copy of the
+working `demo-typed.yaml` (`Z.Position`, `0..150`), keeping its `typed_actuators`
+block and adding the same pair as an exclusion:
+
+```
+  excluded_properties:
+    - {device: Z, property: Position}
+```
+
+```
+python -m microclaw --safety-config demo-conflict.yaml authorization-map > g5-conflict.txt 2>&1
+```
+
+Expected: startup refusal, `Raw property Z.Position cannot be both typed-continuous
+and explicitly excluded.`
+
+Repeat with the legacy denylist instead — same file, `excluded_properties` back to
+`[]`, and a **top-level** (not under `rig_profile`) block:
+
+```
+forbidden_properties:
+  - {device: Z, property: Position}
+```
+
+Expected: the same refusal. Both halves of `denied_pairs` must fail closed; the
+review round found the typed declaration silently overriding the denylist, so this
+step is the live proof of that fix.
 
 ## G6 — Live write behaviour through the real tool path
 
