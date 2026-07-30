@@ -275,6 +275,29 @@ class TestHintForError:
         from microclaw.errors import hint_for_error
         assert "port 4827" in hint_for_error(ConnectionError("connection refused"))
 
+    def test_rig_authorization_refusal_is_not_called_hardware(self):
+        from microclaw.authorization import RigAuthorizationError
+        from microclaw.errors import _HARDWARE_HINT, hint_for_error
+        hint = hint_for_error(RigAuthorizationError("operator declined"))
+        assert hint != _HARDWARE_HINT
+        assert "authorization decision" in hint
+        assert "Retrying the identical call will fail identically" in hint
+
+    def test_partial_channel_plan_points_at_the_recorded_pair_lists(self):
+        from microclaw.authorization import ChannelPlanPartialApplicationError
+        from microclaw.errors import hint_for_error
+        hint = hint_for_error(ChannelPlanPartialApplicationError("applied=[]"))
+        assert "applied, attempted, and rolled-back" in hint
+        assert "do not blindly retry" in hint
+
+    def test_failed_channel_plan_rollback_requires_operator_attention(self):
+        from microclaw.authorization import ChannelPlanSafeStateError
+        from microclaw.errors import hint_for_error
+        hint = hint_for_error(ChannelPlanSafeStateError("SAFE STATE NOT VERIFIED"))
+        assert "state is unverified" in hint
+        assert "surface this error to the operator" in hint
+        assert "do not continue" in hint
+
     def test_an_unrecognised_error_still_gets_the_hardware_hint(self):
         from microclaw.errors import hint_for_error
         hint = hint_for_error(Exception("Stage XY reported an unknown fault"))

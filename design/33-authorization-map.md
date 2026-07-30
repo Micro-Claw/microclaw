@@ -251,6 +251,35 @@ authorize one expansion and ask Micro-Manager to re-read another at apply time.
 If Micro-Manager does not expose enough semantics to reproduce a preset safely,
 gated presets must be disabled rather than replayed approximately.
 
+Phase 4 deliberately treats `Core.Shutter` retargeting conservatively. The target
+label must name a device declared in `illumination.shutters`, and selecting it
+requires the same human confirmation class as enabling illumination. Retargeting
+does not itself open a shutter, but with AutoShutter it selects which reviewed light
+source fires on the next exposure. Demo evidence covers only idle retargeting; this
+policy is intentionally revisitable after dark/beam-blocked measurements on real
+drivers. Every other `Core.*` effect remains excluded.
+
+That policy has a deliberate confirmation-frequency cost. The executor does not
+skip a captured write merely because its value already matches the current value,
+and all four presets in the checked-in Phase 4 demo profile name the same shutter.
+Consequently every `set_channel` on that configuration raises an
+illumination-class prompt, even when the shutter is not actually being retargeted.
+This follows from the chosen rule—admit `Core.Shutter` only when its target is a
+declared shutter, and confirm every admitted write—but prompt fatigue is itself a
+safety risk if operators learn to click through. The policy stands for Phase 4.
+If revisited, the exact narrowing is to request confirmation only when the captured
+`Core.Shutter` value differs from its current value; no such narrowing is
+implemented here.
+
+The executor polls cancellation between property writes only. Each pyjavaz bridge
+round trip owns a single lock, so an in-flight set, device wait, or read-back cannot
+be killed by another thread. A stop therefore takes effect at the next write
+boundary and triggers rollback; it is not a mid-write interrupt.
+
+This closes the preset-definition TOCTOU gap only for sessions with a rig profile
+and therefore an authorization map. A map-less legacy session still delegates the
+apply to Micro-Manager with `set_config` and retains the gap for compatibility.
+
 ## Plugins are a different boundary
 
 Plugins are a different boundary. An arbitrary Java hardware-motion plugin can

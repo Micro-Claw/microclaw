@@ -120,14 +120,19 @@ def test_declared_bound_outside_technical_range_is_refused():
         validate_live_rig(ctrl, parsed)
 
 
-def test_preset_effect_on_typed_pair_is_classified_then_excluded():
+def test_preset_effect_on_typed_pair_is_authorized_for_executor():
     core = LiveCore()
     core.presets["Move"] = [{"device": "Z", "property": "Position (um)", "value": "10"}]
     policy = TypedActuatorPolicy("absolute-position", "um", 0, 100)
     ctrl, parsed = _direct(core, typed={TypedActuatorId("Z", "Position (um)"): policy})
     parsed.constraints.allowed_channels = ["Move"]
-    with pytest.raises(RigAuthorizationError, match="typed continuous.*deferred channel-plan executor"):
-        validate_live_rig(ctrl, parsed)
+    report = validate_live_rig(ctrl, parsed)
+    assert report.authorized_presets == {"Move"}
+    assert any(
+        entry.path == "channel-preset:Move"
+        and entry.classification == "typed_continuous_actuator"
+        for entry in report.entries
+    )
 
 
 def test_m5_native_power_shape_requires_units_migration():

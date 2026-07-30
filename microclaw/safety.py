@@ -950,6 +950,14 @@ class SafetyGuard:
             None,
         )
 
+    def is_illumination_shutter_device(self, device: str) -> bool:
+        """Return whether a device is a declared illumination shutter target."""
+        return any(item.device == device for item in self._c.illumination.shutters)
+
+    def is_typed_actuator(self, device: str, prop: str) -> bool:
+        """Return whether an exact raw pair has a validated typed policy."""
+        return TypedActuatorId(device, prop) in self._typed_actuators
+
     def is_illumination_power(
         self, device: str, prop: str
     ) -> Optional[ForbiddenProperty]:

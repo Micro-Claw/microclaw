@@ -376,9 +376,11 @@ class TestNamedStages:
 
 
 class TestSetChannel:
-    def test_allowed_channel(self, mock_ctrl, default_guard):
+    def test_mapless_legacy_controller_delegates_to_set_config(self, mock_ctrl, default_guard):
+        mock_ctrl.authorization_map = None
         set_channel(mock_ctrl, default_guard, preset="DAPI")
         mock_ctrl.core.set_config.assert_called_once_with("Channel", "DAPI")
+        mock_ctrl.core.wait_for_config.assert_called_once_with("Channel", "DAPI")
 
     def test_forbidden_channel(self, mock_ctrl, default_guard):
         with pytest.raises(SafetyViolation, match="allowed list"):

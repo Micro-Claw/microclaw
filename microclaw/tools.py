@@ -445,18 +445,32 @@ def move_named_stage(
 
 # --- Channel / Config ---
 
-def set_channel(ctrl: MicroscopeController, guard: SafetyGuard, preset: str) -> dict:
-    from microclaw.authorization import authorize_channel
+def _has_channel_authorization_map(ctrl: MicroscopeController) -> bool:
+    """Whether this session can use the capture/authorize/replay executor.
+
+    A legacy session with no rig_profile has no authorization map. It keeps MM
+    delegation for compatibility, including MM's preset-definition re-read.
+    """
+    return getattr(ctrl, "authorization_map", None) is not None
+
+def set_channel(
+    ctrl: MicroscopeController, guard: SafetyGuard, preset: str, *, cancel=None
+) -> dict:
+    from microclaw.authorization import CHANNEL_CONFIG_GROUP, execute_channel_plan
 
     guard.check_channel(preset)
-    authorize_channel(ctrl, preset)
-    ctrl.core.set_config("Channel", preset)
-    ctrl.core.wait_for_config("Channel", preset)
+    if _has_channel_authorization_map(ctrl):
+        return execute_channel_plan(
+            ctrl, guard, preset, confirm_fn=CONFIRM_FN, cancel=cancel
+        )
+    ctrl.core.set_config(CHANNEL_CONFIG_GROUP, preset)
+    ctrl.core.wait_for_config(CHANNEL_CONFIG_GROUP, preset)
     return {"status": f"Channel set to '{preset}'."}
 
 
 def get_available_channels(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
-    channels = _str_vector(ctrl.core.get_available_configs("Channel"))
+    from microclaw.authorization import CHANNEL_CONFIG_GROUP
+    channels = _str_vector(ctrl.core.get_available_configs(CHANNEL_CONFIG_GROUP))
     return {"channels": channels}
 
 
@@ -4595,6 +4609,7 @@ def execute_tool(
     tool_input: dict,
     ctrl: MicroscopeController,
     guard: SafetyGuard,
+    cancel=None,
 ) -> str | list:
     """Execute a tool and return content for the tool_result block.
 
@@ -4611,7 +4626,10 @@ def execute_tool(
         ):
             from microclaw.authorization import authorize_path
             authorize_path(ctrl, f"acquisition-tool:{name}")
-        result = fn(ctrl, guard, **tool_input)
+        if name == "set_channel":
+            result = fn(ctrl, guard, cancel=cancel, **tool_input)
+        else:
+            result = fn(ctrl, guard, **tool_input)
         return result if isinstance(result, list) else json.dumps(result)
     except SafetyViolation as e:
         return json.dumps({"error": f"Safety constraint prevented this action: {e}"})

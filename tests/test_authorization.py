@@ -440,16 +440,17 @@ def test_unclassified_and_over_limit_illumination_writes_fail():
         guard.check_illumination(ctrl.core, "Laser", "Power", "50")
 
 
-def test_illumination_preset_stays_excluded_without_channel_plan_executor():
+def test_illumination_preset_is_authorized_for_channel_plan_executor():
     core = Core()
     core.presets["LaserOn"] = [
         {"device": "Laser", "property": "Enable", "value": "On"}
     ]
-    with pytest.raises(RigAuthorizationError, match="channel-plan executor"):
-        validate_live_rig(
-            Controller(core),
-            parsed(channels=["LaserOn"], illumination=illumination_policy()),
-        )
+    report = validate_live_rig(
+        Controller(core),
+        parsed(channels=["LaserOn"], illumination=illumination_policy()),
+    )
+    assert report.authorized_presets == {"LaserOn"}
+    assert report.channel_expansion_hashes["LaserOn"]
 
 
 def test_cli_and_web_validate_before_prompt_or_session_exposure(monkeypatch):

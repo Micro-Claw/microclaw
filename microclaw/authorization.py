@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+import hashlib
+import json
 import math
 from numbers import Real
 import sys
@@ -47,6 +49,27 @@ class RigAuthorizationError(RuntimeError):
     """The connected rig cannot satisfy the declared authorization profile."""
 
 
+# This is deliberately the one preset group microclaw executes. It is fixed,
+# rather than read from Core.ChannelGroup, because that property is writable and
+# preset-controlled; on M5 its measured allowed values were only ["", "System"].
+# Revisiting the decision requires changing this constant and re-gating expansion,
+# authorization, and apply semantics for every newly exposed group (especially
+# System, whose M5 Startup preset arms four lasers with TTL = 1).
+CHANNEL_CONFIG_GROUP = "Channel"
+
+
+class ChannelPlanError(RuntimeError):
+    """A captured channel plan could not be safely completed."""
+
+
+class ChannelPlanPartialApplicationError(ChannelPlanError):
+    """A plan failed after writes landed; the message records rollback."""
+
+
+class ChannelPlanSafeStateError(ChannelPlanPartialApplicationError):
+    """Rollback itself failed, so the executor cannot claim a clean state."""
+
+
 @dataclass(frozen=True)
 class AuthorizationEntry:
     path: str
@@ -72,6 +95,7 @@ class AuthorizationMap:
     entries: list[AuthorizationEntry] = field(default_factory=list)
     excluded_presets: dict[str, list[str]] = field(default_factory=dict)
     authorized_presets: frozenset[str] = frozenset()
+    channel_expansion_hashes: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         out = asdict(self)
@@ -142,7 +166,7 @@ def _config_settings(config: Any) -> list[Any]:
 
 
 def _expand_preset(core: Any, preset: str) -> list[tuple[str, str, str | None]]:
-    config = core.get_config_data("Channel", preset)
+    config = core.get_config_data(CHANNEL_CONFIG_GROUP, preset)
     effects = []
     for setting in _config_settings(config):
         device = _setting_value(
@@ -160,6 +184,11 @@ def _expand_preset(core: Any, preset: str) -> list[tuple[str, str, str | None]]:
             )
         effects.append((device, prop, value))
     return effects
+
+
+def _expansion_hash(effects: Iterable[tuple[str, str, str | None]]) -> str:
+    encoded = json.dumps(list(effects), ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def _clean_exception_message(exc: Exception) -> str:
@@ -696,7 +725,7 @@ def validate_live_rig(
 
     allowed_channels = parsed_config.constraints.allowed_channels
     try:
-        available_presets = _strings(core.get_available_configs("Channel"))
+        available_presets = _strings(core.get_available_configs(CHANNEL_CONFIG_GROUP))
     except Exception as exc:
         available_presets = None
         errors.append(
@@ -718,10 +747,12 @@ def validate_live_rig(
         presets = [preset for preset in allowed_channels if preset in available]
     authorized_presets: set[str] = set()
     excluded_presets: dict[str, list[str]] = {}
+    channel_expansion_hashes: dict[str, str] = {}
     for preset in presets:
         reasons = []
         try:
             effects = _expand_preset(core, preset)
+            channel_expansion_hashes[preset] = _expansion_hash(effects)
         except Exception as exc:
             effects = []
             reasons.append(_clean_exception_message(exc))
@@ -730,17 +761,23 @@ def validate_live_rig(
             if pair in profile.excluded_properties:
                 classification = "excluded"
                 reasons.append(f"{device}.{prop} is excluded")
+            elif device == "Core":
+                if prop == "Shutter" and (
+                    guard.is_illumination_shutter_device(value)
+                    if guard is not None else value in {
+                        item.device for item in illumination.shutters
+                    }
+                ):
+                    classification = "built_in_typed_capability"
+                else:
+                    classification = "excluded"
+                    reasons.append(f"{device}.{prop} core-device retarget is excluded")
             elif pair in typed_pairs:
-                classification = "excluded"
-                reasons.append(
-                    f"{device}.{prop} is typed continuous but presets cannot invoke the typed guard without the deferred channel-plan executor"
-                )
+                classification = "typed_continuous_actuator"
             elif pair in illumination_pairs:
-                classification = "excluded"
-                reasons.append(
-                    f"{device}.{prop} is typed illumination but presets cannot "
-                    "invoke check_illumination without the deferred channel-plan executor"
-                )
+                classification = "built_in_typed_capability"
+            elif _known_continuous_raw_pair(core, pair):
+                classification = "built_in_typed_capability"
             elif pair in categorical_pairs:
                 # Auto-classified StateDevice positions count here too: a
                 # preset that only moves filter wheels must not need the
@@ -899,6 +936,7 @@ def validate_live_rig(
         entries=entries,
         excluded_presets=excluded_presets,
         authorized_presets=frozenset(authorized_presets),
+        channel_expansion_hashes=channel_expansion_hashes,
     )
     ctrl.authorization_map = report
     return report
@@ -913,6 +951,12 @@ def authorize_property_write(ctrl: Any, device: str, prop: str) -> None:
     matches = [
         entry for entry in report.entries
         if entry.device == device and entry.property == prop
+        # Preset entries authorize only the captured channel-plan route. A raw
+        # write must have its own reachable map entry so the map and guard
+        # remain independent gates.
+        and entry.path in {
+            "generic-property", "dedicated-illumination", "all-property-paths"
+        }
     ]
     admitted = {
         "reviewed_categorical_property", "built_in_typed_capability",
@@ -935,6 +979,160 @@ def authorize_channel(ctrl: Any, preset: str) -> None:
         raise RigAuthorizationError(
             f"Channel preset {preset!r} is excluded: {'; '.join(reasons)}"
         )
+
+
+def _cancelled(cancel: Any) -> bool:
+    if cancel is None:
+        return False
+    check = getattr(cancel, "is_set", None)
+    if callable(check):
+        return bool(check())
+    if callable(cancel):
+        return bool(cancel())
+    return bool(cancel)
+
+
+def _verify_property(core: Any, device: str, prop: str, expected: str) -> None:
+    actual = str(core.get_property(device, prop))
+    if _property_type_name(core, device, prop) == "Float":
+        try:
+            equal = math.isclose(float(actual), float(expected), rel_tol=1e-9, abs_tol=1e-9)
+        except (TypeError, ValueError):
+            equal = False
+    else:
+        equal = actual == str(expected)
+    if not equal:
+        raise ChannelPlanError(
+            f"Read-back verification failed for {device}.{prop}: requested {expected!r}, got {actual!r}."
+        )
+
+
+def _wait_for_plan_device(core: Any, device: str) -> None:
+    # Core is MM's pseudo-device, not an adapter that can become busy. The
+    # measured replay surface has no Core wait; every real device is awaited.
+    if device != "Core":
+        core.wait_for_device(device)
+
+
+def _authorize_channel_effect(
+    ctrl: Any, guard: Any, device: str, prop: str, value: str, confirm_fn: Any
+) -> None:
+    """Route one captured effect through the same exact-pair policies as raw writes."""
+    core = ctrl.core
+    if device == "Core":
+        if prop != "Shutter":
+            raise RigAuthorizationError(f"Channel effect Core.{prop} is excluded.")
+        if not guard.is_illumination_shutter_device(value):
+            raise RigAuthorizationError(
+                f"Core.Shutter target {value!r} is not a declared illumination shutter."
+            )
+        if confirm_fn is None or not confirm_fn(
+            f"SELECT ILLUMINATION SHUTTER: Core.Shutter = {value!r}\n"
+            "This selects which declared light source AutoShutter may fire on the next exposure.",
+            kind="illumination",
+        ):
+            raise RigAuthorizationError(f"User declined Core.Shutter retarget to {value!r}.")
+        return
+
+    pair = (device, prop)
+    report = getattr(ctrl, "authorization_map", None)
+    matches = [] if report is None else [
+        entry for entry in report.entries
+        if entry.device == device and entry.property == prop
+    ]
+    if report is not None and (
+        not matches or any(entry.classification == "excluded" for entry in matches)
+    ):
+        raise RigAuthorizationError(f"Channel effect {device}.{prop} is unclassified or excluded.")
+
+    if guard.is_illumination_enable(device, prop) or guard.is_illumination_power(device, prop):
+        guard.check_illumination(core, device, prop, value, confirm_fn=confirm_fn)
+    elif guard.is_typed_actuator(device, prop):
+        guard.check_device_property(core, device, prop, value)
+    elif _known_continuous_raw_pair(core, pair):
+        key = prop.lower().replace("_", "").replace(" ", "")
+        if device == str(core.get_camera_device() or "") and key == "exposure":
+            guard.check_exposure(float(value))
+        elif device == str(core.get_focus_device() or ""):
+            guard.check_z(float(value))
+        elif device == str(core.get_xy_stage_device() or ""):
+            number = float(value)
+            guard.check_xy(
+                number if key.startswith("x") else core.get_x_position(),
+                number if key.startswith("y") else core.get_y_position(),
+            )
+        else:  # Defensive: _known_continuous_raw_pair currently has no other limb.
+            raise RigAuthorizationError(f"Stage effect {device}.{prop} has no axis guard.")
+    else:
+        guard.check_property(device, prop)
+
+
+def execute_channel_plan(
+    ctrl: Any, guard: Any, preset: str, *, confirm_fn: Any = None, cancel: Any = None
+) -> dict:
+    """Capture, authorize, and replay exactly one immutable Channel expansion.
+
+    Cancellation is polled only between writes. The pyjavaz bridge holds one lock
+    across each round trip, so an in-flight set/wait/read cannot be interrupted.
+    """
+    authorize_channel(ctrl, preset)
+    effects = tuple(
+        (device, prop, "" if value is None else str(value))
+        for device, prop, value in _expand_preset(ctrl.core, preset)
+    )
+    for effect in effects:
+        _authorize_channel_effect(ctrl, guard, *effect, confirm_fn)
+
+    report = getattr(ctrl, "authorization_map", None)
+    startup_hash = None if report is None else report.channel_expansion_hashes.get(preset)
+    fresh_hash = _expansion_hash(effects)
+    drifted = startup_hash is not None and startup_hash != fresh_hash
+    originals = [str(ctrl.core.get_property(device, prop)) for device, prop, _ in effects]
+    attempted: list[tuple[str, str, str]] = []
+    applied: list[tuple[str, str, str]] = []
+    try:
+        for device, prop, value in effects:
+            if _cancelled(cancel):
+                raise ChannelPlanError("Channel plan cancelled between writes.")
+            attempted.append((device, prop, value))
+            ctrl.core.set_property(device, prop, value)
+            _wait_for_plan_device(ctrl.core, device)
+            _verify_property(ctrl.core, device, prop, value)
+            applied.append((device, prop, value))
+    except Exception as exc:
+        rolled_back: list[str] = []
+        rollback_failures: list[str] = []
+        for index in range(len(attempted) - 1, -1, -1):
+            device, prop, _ = attempted[index]
+            try:
+                ctrl.core.set_property(device, prop, originals[index])
+                _wait_for_plan_device(ctrl.core, device)
+                _verify_property(ctrl.core, device, prop, originals[index])
+                rolled_back.append(f"{device}.{prop}")
+            except Exception as rollback_exc:
+                rollback_failures.append(
+                    f"{device}.{prop}: {_clean_exception_message(rollback_exc)}"
+                )
+        applied_names = [f"{d}.{p}" for d, p, _ in applied]
+        attempted_names = [f"{d}.{p}" for d, p, _ in attempted]
+        message = (
+            f"Channel plan {preset!r} stopped after {len(applied)}/{len(effects)} writes: "
+            f"{_clean_exception_message(exc)}; applied={applied_names}; "
+            f"attempted={attempted_names}; rolled_back={rolled_back}"
+        )
+        if rollback_failures:
+            raise ChannelPlanSafeStateError(
+                message + f"; SAFE STATE NOT VERIFIED; rollback_failures={rollback_failures}"
+            ) from exc
+        raise ChannelPlanPartialApplicationError(message) from exc
+
+    return {
+        "status": f"Channel set to '{preset}'.",
+        "writes": len(effects),
+        "expansion_drift": drifted,
+        "startup_expansion_sha256": startup_hash,
+        "applied_expansion_sha256": fresh_hash,
+    }
 
 
 def authorize_path(ctrl: Any, path: str) -> None:
