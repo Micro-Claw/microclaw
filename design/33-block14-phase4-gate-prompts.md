@@ -9,10 +9,17 @@ the code written against those measurements. Both run against the Micro-Manager
 demo configuration on the rig's Windows machine with MM's ZMQ server listening on
 port 4827.
 
-All commands below are PowerShell-safe. Run them from the repo root. Do **not** run
-`pip install -e .`: the probe intentionally imports only pycro-manager and uses the
-rig's existing installation. Keep every output file in one dated evidence directory.
-There are no Unix pipelines; PowerShell redirects both streams with `> ... 2>&1`.
+All commands below are PowerShell-safe. Run them from the repo root. Keep every
+output file in one dated evidence directory. There are no Unix pipelines; PowerShell
+redirects both streams with `> ... 2>&1`.
+
+**Installation differs between the two gates.** The G0–G6 spike imports only
+pycro-manager, never microclaw, so it needs no install and works against whatever
+the rig already has. The G7+ executor gate exercises microclaw itself, so the
+package under test must be *this branch*: with the usual editable install
+(`pip install -e .`), checking out the branch is sufficient and no reinstall is
+needed. If this rig has a non-editable install, reinstall before G7 — a stale
+install has produced convincing false failures on this project before.
 
 The probe mutates device properties and creates two temporary configuration groups.
 It hard-aborts unless a loaded device reports the `DemoCamera` adapter, captures a
