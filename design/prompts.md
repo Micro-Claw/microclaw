@@ -3720,3 +3720,99 @@ or demo equivalent. Also observed: iBeamSmartCW-1."Laser Operation" is a real
 On/Off light control absent from illumination.shutters, so it is neither
 confirm-gated nor swept at teardown -- the "inert illumination gate" finding from
 the last closeout, showing up on M5.]
+
+---
+
+Let's start block 14, phase 4 on the checklist in
+design/26-29-32-33-implementation-checklist.md, as it isn't blocked by anything.
+You are the coordinator. [...] Let's do as much of this as we can on the demo rig,
+and then later we will check it on M5.
+
+[The ruling that shaped the block: measure MM's own apply semantics BEFORE writing
+an executor. The design says outright that if MM cannot expose enough semantics to
+reproduce a preset safely, gated presets must be *disabled* rather than replayed
+approximately -- so "can a replay be equivalent" was a precondition, not a detail.
+Four spike rounds on the demo core answered it, and three of the four findings
+would have been guessed wrong: (1) ordered replay IS observably equivalent to
+set_config, including getCurrentConfig bookkeeping, which is computed from property
+values rather than stored; (2) set_config is neither atomic nor fail-fast -- with a
+bad value at setting 2 of 3 it applied settings 1 AND 3 and raised afterward, so
+our fail-fast replay is safer than what it replaced, not merely equivalent; (3)
+numeric read-back reformats ("10" -> "10.0000"), so exact-string verification would
+have rejected values MM itself produced; (4) round trips are 0.13 ms, so per-write
+read-back is affordable outright.]
+
+An M5 inventory from earlier today is at [...]/m5_inventory
+
+[Three findings from a read-only inventory, none of which the demo core could
+teach. M5 has NO `Channel` config group at all -- only `System` -- so set_channel
+is inert there and no live executor test exists on that rig, now or later. Every
+System preset writes `Laser N: 4. Use TTL = 1` on four lasers, which is the
+concrete argument against the tempting scope creep of generalizing the executor to
+arbitrary config groups. And real presets set camera `Exposure`, which the stock
+demo presets do not: authorization.py filed the camera under `dedicated-exposure`
+with property=None, so an exposure effect inside a preset matched nothing and fell
+through to "unclassified", meaning an executor that ignored built-in typed
+capabilities would have shipped and changed nothing.]
+
+Let's be really careful about hardcoding stuff, and make sure to point it out very
+explicitly so we can undo it later if it's a problem.
+
+[`Core.ChannelGroup` is MM's own designation of the channel group, it is WRITABLE
+and set by a preset (demo System/Startup sets it to 'Channel'), and on M5 its
+allowed values are ["", "System"] -- the laser-arming group. Resolving the group
+dynamically is the reading that looks more correct and is a trap. The "Channel"
+literal was already hardcoded on main in two call sites with no explanation; the
+block replaced both with one named constant carrying the reason, the M5 evidence,
+and what to change to revisit. Making an existing constraint legible is easier to
+undo than leaving it implicit.]
+
+[Coordinator review caught four things no off-rig test would have. (1) bool() on
+bridge returns: `bool(core.device_busy(d))` on a proxy is unconditionally True, so
+"the core is busy immediately after set_config" would have been a fabricated
+finding -- the exact Block 9b failure class. (2) My own miss, caught only by a
+failed rig run: I asked for get_device_type and approved `str(core.get_device_type(...))`,
+which formats the proxy, so nothing ever equalled "ShutterDevice". rig_inventory
+has a documented helper for precisely this. (3) Preset classifications leaked into
+authorize_property_write -- verified by running it, raw Core.Shutter and
+Camera.Exposure both PERMITTED purely because a preset expansion added admitted
+entries. The map stopped independently refusing; only the allowlist still did.
+Fixed by scoping the raw-write gate to non-preset paths. (4) The gate config
+declared `LED Shutter."State Device"` as an illumination shutter, but that is the
+Utilities shutter's BINDING, not a gate -- shutter_all would have written "" to it
+on teardown, unbinding the shutter instead of closing light.]
+
+[Safety-policy call taken to the user rather than decided quietly: Core.Shutter
+retargets which light source AutoShutter fires on the next exposure without opening
+anything. Chosen policy is declared-shutter AND confirm. I deliberately did NOT
+narrow it to confirm-only-when-changed even though every demo preset names the same
+shutter, so every set_channel prompts: prompt fatigue is a real safety risk, but
+narrowing a policy the user had chosen one turn earlier is theirs to do. Recorded in
+design/33 with the one-line reversal named.]
+
+[Three gate-document defects the operator hit, all mine: G2-G6 read as instructions
+to run something when they are coordinator desk work on the evidence file (now
+role-tagged, and the header no longer claims the doc is "a measurement spike only"
+after G7-G11 were added); `New-Item -ItemType Directory > dir\file.txt` cannot work
+because PowerShell opens the redirect target first, and every other gate doc in the
+repo already used `| Out-Null`; and the interactive limb was written for the REPL,
+which cannot authenticate because of the open design/15 finding -- moved to `serve`,
+which is the path the operator actually uses and installs a different confirm
+implementation (session.confirm, not _require_confirmation).]
+
+[The executor gate itself exposed one code defect worth fixing after a passing gate:
+a DECLINED confirmation reached the model with hint "This may be a hardware error
+(device busy, stage at limit...)", because hint_for_error had no limb for policy
+refusals. Its own docstring warns that a hint naming the wrong subsystem is worse
+than none. Phase 4 is what makes RigAuthorizationError a routine outcome of an
+ordinary set_channel, so the fix belonged here. Also observed and recorded as
+desirable: after the decline the agent did NOT silently retry -- it asked the
+operator and re-issued set_channel only when told to.]
+
+[Process note: the design-gate runner worked in the primary checkout rather than its
+own worktree, leaving main checked out on a feature branch. No harm with one agent,
+but that is the rule that exists because a shared directory once put ungated code on
+main. Also: the executor authorizes the whole captured plan before applying any of
+it, which is why declining the fourth of four effects produced zero writes -- worth
+keeping, since a per-write authorize-then-apply loop would have written three
+properties before asking.]
