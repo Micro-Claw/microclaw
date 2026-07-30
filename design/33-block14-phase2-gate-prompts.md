@@ -614,6 +614,53 @@ degraded. Suite 1184 passed / 99 skipped / 3 warnings.
    `g7-before.txt`** (57 entries). This is the non-regression check that the widening
    did not disturb the deployed profile, and it is the one that must not be skipped.
 
+## RE-GATE RESULT — PASS, 2026-07-30. Gate complete.
+
+**G8 re-run (`m5-generic-categorical.yaml`, unchanged from the run that admitted it):**
+
+```
+Live rig authorization failed:
+- Raw property iBeamSmartCW-1.Power (mW) is a known continuous actuator (confirmed by
+  the live rig) and cannot be classified as categorical; declare it in
+  rig_profile.typed_actuators with exact semantics, units, and safe canonical bounds,
+  or place it in rig_profile.excluded_properties if it is intentionally unavailable
+  for writes.
+```
+
+The same config that produced a `complete` map admitting an unbounded Class-3B laser
+power set-point now fails closed, and the message names both remedies.
+
+**Non-regression (`m5-safety.yaml`, the deployed profile), `g7-before-new.txt`:**
+57 entries, `complete`, and the **entry set, verdict and preset sets are identical**
+to `g7-before.txt` from before the widening. Adding `GenericDevice` to the refusal net
+— on a rig where 11 of 30 devices are `GenericDevice` or `SerialDevice` — changed
+nothing about the profile actually in use. The `pre_init` exemption is what makes that
+true, and it was derived from this rig's own inventory.
+
+## Final gate verdict
+
+| Step | Verdict |
+|---|---|
+| G1 inventory (demo + M5) | PASS |
+| G2 additivity + narrowing | PASS |
+| G3a widening / G3b technical range | PASS, distinct guards |
+| G4 refusal net (demo) | PASS |
+| G4 StateDevice non-regression | PASS |
+| G5 denylist precedence | PASS (preset half off-rig only) |
+| G6 live raw write (demo) | PASS |
+| G7a defect refused (M5) | PASS |
+| G7b migrated map (M5) | PASS |
+| G7c live cap + ratchet in canonical percent (M5) | PASS |
+| G7d no collateral change + determinism (M5) | PASS |
+| G8 GenericDevice gap → fixed and re-verified (M5) | PASS |
+| Deployed-profile non-regression (M5) | PASS |
+
+**Open, and carried into the design gate rather than claimed closed:** device-type
+ordinals 12 and 16 unconfirmed over the bridge (neither rig has a galvo or DAC); a
+channel preset colliding with a typed pair, off-rig test only; the XY axis ambiguity,
+unreachable on both rigs because neither exposes a writable XY position property;
+`TTL.State0` as a deliberate documented false positive.
+
 ## Stop conditions
 
 Stop and do not merge on: a device type reported as a bare ordinal; any StateDevice
