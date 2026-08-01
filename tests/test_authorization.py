@@ -294,15 +294,20 @@ def test_live_core_and_named_identity_conflict_is_rejected():
 
 
 def test_known_continuous_raw_property_is_demoted_and_write_stays_refused(capsys):
-    ctrl = Controller()
+    core = Core()
+    core.device_properties["Z"] = ["Position"]
+    ctrl = Controller(core)
+    config = parsed(categorical={("Z", "Position")})
+    guard = SafetyGuard(config.constraints)
+    guard.check_property("Z", "Position")  # admitted by parsed declaration
     report = validate_live_rig(
-        ctrl, parsed(categorical={("Z", "Position")})
+        ctrl, config, guard=guard
     )
     assert report.complete is True
     assert [(item.kind, item.blocking) for item in report.diagnostics] == [
         ("live_check", False)
     ]
-    assert "Z.Position" in report.diagnostics[0].message
+    assert "Z.Position is a known continuous actuator" in report.diagnostics[0].message
     assert any(
         entry.device == "Z" and entry.property == "Position"
         and entry.classification == "excluded"
@@ -310,6 +315,8 @@ def test_known_continuous_raw_property_is_demoted_and_write_stays_refused(capsys
     )
     with pytest.raises(RigAuthorizationError, match="excluded"):
         authorize_property_write(ctrl, "Z", "Position")
+    with pytest.raises(SafetyViolation, match="demoted by live authorization"):
+        guard.check_property("Z", "Position")
     stderr = capsys.readouterr().err
     assert "AUTHORIZATION CLAIMS DEMOTED" in stderr
     assert "Z.Position" in stderr
@@ -584,13 +591,22 @@ def test_validated_live_non_emu_installation_is_accepted(tmp_path):
     assert report.diagnostics == ()
 
 
-def test_demo_continuous_claims_all_demote_end_to_end(capsys):
+def test_round_1_demo_shape_starts_with_all_claims_demoted(
+    tmp_path, capsys
+):
     core = Core()
     core.loaded_extra = ["Camera"]
     core.camera = "Camera"
     continuous = {
         ("Camera", "Exposure"), ("Camera", "Gain"), ("Camera", "Offset"),
+        ("Camera", "ReadoutTime"), ("Camera", "StripeWidth"),
+        *(("Camera", f"TestProperty{index}") for index in range(1, 7)),
         ("XY", "Velocity"), ("Z", "Position"),
+    }
+    core.device_properties = {
+        "Camera": sorted(prop for device, prop in continuous if device == "Camera"),
+        "XY": sorted(prop for device, prop in continuous if device == "XY"),
+        "Z": sorted(prop for device, prop in continuous if device == "Z"),
     }
     core.get_allowed_property_values = lambda device, prop: []
     core.get_property_type = lambda device, prop: "Float"
@@ -598,13 +614,31 @@ def test_demo_continuous_claims_all_demote_end_to_end(capsys):
     core.get_property_lower_limit = lambda device, prop: 0.0
     core.get_property_upper_limit = lambda device, prop: 100.0
     ctrl = Controller(core)
+    mm_dir = tmp_path / "Micro-Manager-Demo"
+    (mm_dir / "plugins").mkdir(parents=True)
+    (mm_dir / "plugins" / "Emu.jar").write_text("", encoding="utf-8")
+    ctrl.get_mm_app_dir = lambda: str(mm_dir)
+    config = parsed(
+        categorical=continuous,
+        channels=["10X", "Camera-left", "HighRes"],
+    )
+    guard = SafetyGuard(config.constraints)
 
-    report = validate_live_rig(ctrl, parsed(categorical=continuous))
+    report = validate_live_rig(ctrl, config, guard=guard)
 
     assert report.complete is True
-    assert len(report.diagnostics) == 5
+    continuous_diagnostics = [
+        item for item in report.diagnostics
+        if "is a known continuous actuator" in item.message
+    ]
+    assert len(continuous_diagnostics) == len(continuous)
+    assert len(report.diagnostics) == len(continuous) + 1
     assert all(not item.blocking for item in report.diagnostics)
     for device, prop in continuous:
+        assert any(
+            f"{device}.{prop} is a known continuous actuator" in item.message
+            for item in continuous_diagnostics
+        )
         assert any(
             entry.device == device and entry.property == prop
             and entry.classification == "excluded"
@@ -612,26 +646,68 @@ def test_demo_continuous_claims_all_demote_end_to_end(capsys):
         )
         with pytest.raises(RigAuthorizationError, match="excluded"):
             authorize_property_write(ctrl, device, prop)
+        with pytest.raises(SafetyViolation, match="demoted by live authorization"):
+            guard.check_property(device, prop)
+    assert report.authorized_presets == set()
+    assert set(report.excluded_presets) == {"10X", "Camera-left", "HighRes"}
+    assert any(
+        'channels.allowed lists preset(s) not present in the "Channel" group'
+        in item.message for item in report.diagnostics
+    )
     stderr = capsys.readouterr().err
-    assert all(f"{device}.{prop}" in stderr for device, prop in continuous)
+    assert all(
+        f"{device}.{prop} is a known continuous actuator" in stderr
+        for device, prop in continuous
+    )
+    assert "EMU" not in stderr
 
 
-def test_declared_unloaded_device_and_absent_exclusion_demote(capsys):
+def test_declared_unloaded_device_demotes_via_device_absence(capsys):
     ctrl = Controller()
-    report = validate_live_rig(ctrl, parsed(
-        categorical={("NotLoaded", "Mode")},
-        excluded={("ReadOnlySensor", "NotAProperty")},
-    ))
+    report = validate_live_rig(
+        ctrl, parsed(categorical={("NotLoaded", "Mode")})
+    )
     assert report.complete is True
-    assert len(report.diagnostics) == 2
-    assert all(not item.blocking for item in report.diagnostics)
+    assert len(report.diagnostics) == 1
+    assert "declared device 'NotLoaded' is not loaded" in report.diagnostics[0].message
     with pytest.raises(RigAuthorizationError, match="excluded"):
         authorize_property_write(ctrl, "NotLoaded", "Mode")
+    assert "declared device 'NotLoaded' is not loaded" in capsys.readouterr().err
+
+
+def test_declared_absent_property_demotes_via_property_absence(capsys):
+    core = Core()
+    core.loaded_extra = ["Selector"]
+    core.device_properties["Selector"] = ["State"]
+    ctrl = Controller(core)
+    config = parsed(categorical={("Selector", "Mode")})
+    guard = SafetyGuard(config.constraints)
+    report = validate_live_rig(ctrl, config, guard=guard)
+    assert report.complete is True
+    assert len(report.diagnostics) == 1
+    assert "property Selector.Mode is not present" in report.diagnostics[0].message
+    with pytest.raises(RigAuthorizationError, match="excluded"):
+        authorize_property_write(ctrl, "Selector", "Mode")
+    with pytest.raises(SafetyViolation, match="demoted by live authorization"):
+        guard.check_property("Selector", "Mode")
+    assert "property Selector.Mode is not present" in capsys.readouterr().err
+
+
+def test_absent_excluded_property_demotes_via_property_absence(capsys):
+    ctrl = Controller()
+    report = validate_live_rig(
+        ctrl, parsed(excluded={("ReadOnlySensor", "NotAProperty")})
+    )
+    assert report.complete is True
+    assert len(report.diagnostics) == 1
+    assert "property ReadOnlySensor.NotAProperty is not present" in (
+        report.diagnostics[0].message
+    )
     with pytest.raises(RigAuthorizationError, match="excluded"):
         authorize_property_write(ctrl, "ReadOnlySensor", "NotAProperty")
-    stderr = capsys.readouterr().err
-    assert "NotLoaded.Mode" in stderr
-    assert "ReadOnlySensor.NotAProperty" in stderr
+    assert "property ReadOnlySensor.NotAProperty is not present" in (
+        capsys.readouterr().err
+    )
 
 
 def test_guaranteed_mode_introspection_failure_still_refuses_process():

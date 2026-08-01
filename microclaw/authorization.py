@@ -558,6 +558,7 @@ def validate_live_rig(
         )
     errors: list[str] = []
     demotions: list[ConfigDiagnostic] = []
+    demoted_property_pairs: set[tuple[str, str]] = set()
     entries: list[AuthorizationEntry] = []
 
     if "stage-position" not in BUILTIN_TYPED_CAPABILITIES:
@@ -803,6 +804,7 @@ def validate_live_rig(
                         f"{device}.{prop}: {_clean_exception_message(exc)}"
                     )
         if absent_reason is not None:
+            demoted_property_pairs.add((device, prop))
             demotions.append(ConfigDiagnostic(
                 "live_check",
                 f"Categorical claim for {device}.{prop} was dropped because the "
@@ -829,6 +831,7 @@ def validate_live_rig(
                     f"{device}.{prop}: {_clean_exception_message(exc)}"
                 )
         if continuous:
+            demoted_property_pairs.add((device, prop))
             demotions.append(ConfigDiagnostic(
                 "live_check",
                 f"Raw property {device}.{prop} is a known continuous actuator (confirmed by the live rig) and cannot be classified as categorical; "
@@ -1163,8 +1166,11 @@ def validate_live_rig(
 
     # A raw write passes two gates: this map and SafetyGuard.check_property's
     # categorical allowlist (built from the declared pairs at config-parse
-    # time). Hand the guard exactly the pairs auto-classified above — nothing
-    # else — so an auto-classified write is admitted by both.
+    # time). Retract live-demoted declarations before handing over exactly the
+    # auto-classified additions, so both gates independently refuse a demoted
+    # pair and admit an accepted one.
+    if guard is not None:
+        guard.deny_demoted_properties(demoted_property_pairs)
     if guard is not None and auto_pairs:
         guard.admit_auto_classified(auto_pairs)
     if guard is not None:

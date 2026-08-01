@@ -720,6 +720,10 @@ class SafetyGuard:
         # so nothing widens without a live rig saying so.
         self._auto_classified: frozenset[tuple[str, str]] = frozenset()
         self._typed_actuators: dict[TypedActuatorId, TypedActuatorPolicy] = {}
+        # Config parsing initially admits every categorical declaration. Live
+        # validation can prove a claim absent or continuous and retract it;
+        # this deny set wins over both configured and auto-classified allows.
+        self._demoted_properties: frozenset[tuple[str, str]] = frozenset()
 
     def admit_auto_classified(self, pairs: Iterable[tuple[str, str]]) -> None:
         """Admit exactly the pairs the live authorization map auto-classified.
@@ -737,6 +741,14 @@ class SafetyGuard:
     ) -> None:
         """Install exact registry entries already validated against the live rig."""
         self._typed_actuators = dict(policies)
+
+    def deny_demoted_properties(
+        self, pairs: Iterable[tuple[str, str]]
+    ) -> None:
+        """Retract categorical claims rejected by live authorization."""
+        self._demoted_properties = frozenset(
+            (str(device), str(prop)) for device, prop in pairs
+        )
 
     def check_typed_actuator(self, device: str, prop: str, value: str) -> None:
         """Convert a declared raw write and bound its canonical absolute effect."""
@@ -851,6 +863,11 @@ class SafetyGuard:
             )
 
     def check_property(self, device: str, prop: str) -> None:
+        if (device, prop) in self._demoted_properties:
+            raise SafetyViolation(
+                f"Property '{device}.{prop}' was demoted by live authorization "
+                "and is not permitted for raw writes."
+            )
         allow = self._c.allowed_properties
         if allow is not None:
             # Allowlist mode: the only hard gate for raw property writes.
