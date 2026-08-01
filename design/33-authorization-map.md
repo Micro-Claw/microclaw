@@ -972,13 +972,30 @@ caught: StateDevice auto-classification is the mechanism in both. The difference
 is that there the widening was refused, and here it was permitted and then
 ungated.
 
-Proposed resolution, for its own branch: at startup, cross-check every EMU laser
-enable against `illumination.shutters` and refuse — or at minimum warn loudly —
-when a declared enable is absent from the shutter list. That reuses the
-"Where the cross-check runs" machinery above rather than adding a surface. The
-weaker alternative (warn only) is still worth more than today's silence, because
-the current behaviour actively discourages declaration: everything appears to
-work without it.
+**Closed by design/35 Block 2** (`ef72b15` + `e9817ad`, merged as `a1b7579`,
+M5/demo gate PASS 2026-08-01). At startup, `validate_live_rig` reads the live
+installation's EMU semantic map and cross-checks every exact laser-enable
+device/property against `illumination.shutters`. Guaranteed mode refuses an
+undeclared, unresolved, malformed, or provenance-uncertain map. Explicit
+`degraded_trusted_plugins` mode warns, continues with completeness suspended,
+and does not silently authorize the missing pair as illumination.
+
+The refusal names the EMU slot, exact device, exact property, logical
+`constraints.illumination.shutters` location, and editable top-level YAML shape.
+It never invents on/off values. On M5 the old deployed profile refused for three
+missing iChrome enables; live EMU metadata established `on: "1"`, `off: "0"`;
+the corrected profile completed with all five configured shutter pairs on the
+existing `dedicated-illumination` path. Three browser confirmations were
+declined with exact `0` read-back. One separately approved enable read back `1`,
+and deployed `serve` Ctrl-C cleanup named and independently returned all five to
+`0`. A separate demo installation with EMU artifacts but no readable
+`config.uicfg` refused rather than claiming semantic completeness.
+
+The boundary remains exact: this cross-check proves every *discovered semantic
+EMU enable* is declared and therefore confirmation-gated and swept off. It does
+not prove discovery found every physical emission path. It also runs at normal
+startup, downstream of Phase 5's enumeration window; Block 4 must describe and
+contain that separate limit.
 
 Related, and recorded in design/32 §4: a clean generated hook saves with no
 confirmation either, because that gate is conditional on the advisory lint. In

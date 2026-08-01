@@ -130,7 +130,7 @@ Rig-facing commands must be PowerShell/cmd-safe (the rig is Windows): prefer
 | 0b | Remote kit | — | `design34/nikon-stopgap-config` | `b717594` | `ead2fb9` (`6ac2ab2` rejected) | 0c ships it | `96a0a91` | pending |
 | 0c | Remote kit | 0a, 0b | — (ship + wait) | | | **operator returns evidence** | n/a | |
 | 1 | Usability | 0a and 0b assigned | `design33/phase5-doc-reconciliation` | `b717594` | `dd359a3` | n/a | `20b92e2` | done — block *is* the gate |
-| 2 | Usability | 1 | `design33/undeclared-light-source-gate` | | | required | | |
+| 2 | Usability | 1 | `design33/undeclared-light-source-gate` | `98842cf` | `ef72b15` + `e9817ad` | **PASS** — M5 refusal/declaration/confirm/cleanup + separate demo fail-closed run | `a1b7579` | done — design/33 landed semantics + residual boundary |
 | 3 | Usability | 2 | `design33/config-diagnostics` | | | optional | | |
 | 4 | Usability | 3 | `design33/first-launch-setup` | | | **required** | | |
 | 5 | Usability | 4 | `design33/deployed-config-hygiene` | | | required | | |
@@ -440,32 +440,32 @@ prerequisite. Today the authorization map can permit a write to a property that
 not driven off at session exit. Nothing cross-checks the two subsystems
 (design/33 `:960`–`:980`).
 
-- [ ] At startup, inside the existing `validate_live_rig` cross-check machinery
+- [x] At startup, inside the existing `validate_live_rig` cross-check machinery
       (design/33 `:340`–`:346`) — not as a new surface — cross-check every EMU
       laser enable against `illumination.shutters`.
-- [ ] **Refuse in guaranteed mode.** Warning alone is acceptable only under
+- [x] **Refuse in guaranteed mode.** Warning alone is acceptable only under
       `degraded_trusted_plugins`, which explicitly suspends the completeness
       claim. Do not ship warn-only as the guaranteed-mode behaviour.
-- [ ] The refusal message must name the exact device, property, and the exact
+- [x] The refusal message must name the exact device, property, and the exact
       YAML block the operator must add. This block is as much a usability item as
       a safety one: a fail-closed refusal that does not say what to declare
       converts one silent hazard into one silent blocker.
-- [ ] Extend the same cross-check to any other subsystem that names an emission
+- [x] Extend the same cross-check to any other subsystem that names an emission
       path by semantic role, if one exists. Do not assume EMU is the only one;
       report what you find rather than widening silently.
-- [ ] Note explicitly in the block report: this gate runs at **startup**, so it
+- [x] Note explicitly in the block report: this gate runs at **startup**, so it
       does not cover Phase 5's own enumeration. That window is block 4's problem
       and is not closed here.
 
 Rig gate (M5, the rig that has the EMU):
 
-- [ ] With the *current* deployed M5 config, show whether startup now refuses,
+- [x] With the *current* deployed M5 config, show whether startup now refuses,
       and if so, that the message names the missing declaration precisely.
-- [ ] Add the named declaration; show startup succeeds and the enable is now
+- [x] Add the named declaration; show startup succeeds and the enable is now
       confirm-gated on enable and driven to `off_value` on every exit path.
-- [ ] Show the demo config's behaviour too: `illumination.shutters` is empty
+- [x] Show the demo config's behaviour too: `illumination.shutters` is empty
       there, which is the configuration that made this finding visible.
-- [ ] If the demo core exposes no semantic laser-enable candidate, exercise the
+- [x] If the demo core exposes no semantic laser-enable candidate, exercise the
       refusal with a representative off-rig inventory fixture. Do not claim the
       demo run itself tested a condition it cannot represent.
 
@@ -476,7 +476,7 @@ merge so the rig is not left down.
 
 Post-merge design gate:
 
-- [ ] Record in design/33 that the finding is closed, the exact refusal
+- [x] Record in design/33 that the finding is closed, the exact refusal
       semantics, and the residual limit: the cross-check proves declared enables
       are shuttered, **not** that discovery found every physical emission path.
 
@@ -1064,6 +1064,14 @@ This is an inventory, not permission to close with unresolved blank work. Block
   `env > keyring > file` order applies to `serve` only; `run_session` never calls
   `load_api_key`, so a browser-stored key is invisible to the REPL. A usability
   item — consider folding into block 3 or 5 if it is cheap.
+- **A failed hardware write was described as definitely not landed.** Block 2's
+  M5 G4 first enable returned iChrome serial timeout 17; the agent then said the
+  laser "was not enabled." That conclusion was unjustified: a write that raises
+  may have landed, so state is unknown until read-back or cleanup. The separately
+  confirmed retry later read `1`, and `serve` cleanup independently returned all
+  five shutters to `0`, so Block 2's gate remains green. Fix the failure wording
+  and require state verification in the appropriate tool/agent safety follow-up;
+  do not fold it silently into Block 3's policy-refusal taxonomy.
 - **`run_timelapse` declares no artifact**, so its dataset cannot be downloaded
   through `/api/artifact` (the adaptive runners do declare one).
 - **Historical calibration-artifact authoring gap** (design/29): no supported way
