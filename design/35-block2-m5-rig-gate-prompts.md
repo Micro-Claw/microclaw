@@ -335,6 +335,24 @@ post-server read-backs are `0`; and the saved history contains the corresponding
 refusal without read-back is not enough. Do not proceed to an accepted enable
 until the coordinator reviews G3.
 
+### G3 result — PASS (2026-08-01, M5)
+
+Evidence: `block2-m5-20260801-111742`. All three exact enable attempts reached
+the browser's illumination confirmation and were declined, with distinct
+loopback confirmation-audit records. The history contains each exact
+`set_device_property` call, its safety refusal, and an immediate
+`get_device_property` result of `"0"`. Server shutdown reported all five declared
+shutters driven off, and the independent post-server probe read `0` from all
+five.
+
+Windows PowerShell 5.1 `Start-Transcript` captured the shell commands and
+pipeline termination but not the child process's live server output. The
+operator therefore retained a copy-paste console transcript. It agrees with the
+machine-readable session history, the three confirmation-audit JSON records,
+and the independent hardware read-back; those independent sources make the
+copy-paste artifact corroborating evidence rather than the sole evidence. Future
+gates should not promise that `Start-Transcript` captures child-process output.
+
 ## G4 — accepted enable and deployed `serve` cleanup
 
 Run only with explicit operator authorization and the rig in the safe condition
@@ -382,6 +400,29 @@ Copy the G4 session history JSONL into the evidence directory. **PASS:** the
 accepted enable reads exactly `<ON_VALUE>`, the server shutdown reports cleanup,
 and every post-shutdown shutter read-back is exactly `<OFF_VALUE>`.
 
+### G4 result — PASS with a separate failed-write wording finding (2026-08-01, M5)
+
+The operator selected `iChrome-MLE-TCP.Laser 2: 1. Enable`. The first approved
+write reached the device but returned serial timeout 17. A second, distinct
+browser illumination confirmation was approved before the retry; the retry
+succeeded and independent tool read-back returned the exact raw value `"1"`.
+Ctrl-C stopped `serve`, cleanup named all five configured shutters, and the
+independent post-server probe read `0` from every one. This also supplies G6's
+deployed web-server Ctrl-C evidence.
+
+The first-timeout response contains a separate safety-language defect: the
+agent said the laser "was not enabled" after a hardware write raised. A failed
+write may have landed, so the only justified state at that point was unknown
+until read-back or cleanup. This branch did not introduce that behavior and the
+Block 2 mechanism under test still passed, but the finding must be carried
+forward; do not quote that sentence as gate evidence. The later exact `1`
+read-back and five exact `0` cleanup read-backs are the state evidence.
+
+As in G3, the PowerShell transcript omitted the child server's live output. The
+copy-paste transcript is corroborated by two approved confirmation-audit
+records, the session history's successful write and exact `1` read-back, the
+server cleanup line, and the independent five-property `0` read-back.
+
 ## G5 — terminal-REPL exit paths: not live-runnable on this M5
 
 Do not run the terminal REPL: its `run_session` path does not call
@@ -403,12 +444,20 @@ filename. Record G6 as **covered by G4**, with links to the accepted browser
 confirmation, enabled read-back, server Ctrl-C transcript, cleanup report, and
 five-property independent off read-back.
 
-## G7 — Demo behavior
+### G5/G6 result — correctly scoped (2026-08-01)
 
-In Micro-Manager, close the M5 hardware configuration and load the stock Demo
-configuration according to the lab's normal procedure. Confirm no physical M5
-hardware remains controlled. Copy the reviewed demo profile and replace only
-its `workspace_dir` placeholder with an existing directory:
+G5 was not run on M5: both terminal-REPL exit variants are unavailable through
+M5's deployed browser-stored credential path, exactly as this gate requires the
+operator to report. G6 is covered by G4: the accepted enable ran through
+`serve`, Ctrl-C stopped that server, cleanup named all five shutters, and the
+independent probe read all five at `0`. No second emissive cycle is owed.
+
+## G7 — Demo behavior — run on the demo machine, not M5
+
+Do not reconfigure M5 merely to discharge a demo condition. Run this section on
+the separate demo machine with stock `MMConfig_demo.cfg`. Fetch the same pushed
+branch and record its HEAD. Copy the reviewed demo profile and replace only its
+`workspace_dir` placeholder with an existing directory:
 
 ```powershell
 $DemoConfig = Join-Path $Evidence "demo-safety.yaml"
@@ -432,9 +481,14 @@ Record which of these actually occurred:
 Do not describe the Demo run as testing a missing-declaration condition it did
 not expose. G0's off-rig fixture is the deterministic refusal evidence.
 
-## G8 — package and verdict
+## G8 — coordinator intake, manifest, and verdict
 
-Create a manifest and archive without deleting the original evidence:
+The operator discharges G8 by returning the evidence folders, as happened for
+`block2-m5-20260730-161938` and `block2-m5-20260801-111742`; do not make them
+re-copy or re-run evidence merely to satisfy this section. The coordinator
+checks completeness, creates or verifies a manifest, and archives the returned
+folders without deleting the originals. Where packaging happens on Windows,
+these commands are suitable:
 
 ```powershell
 Get-ChildItem -File -Recurse $Evidence | Get-FileHash -Algorithm SHA256 | Format-List Path,Hash > "$Evidence\manifest-sha256.txt"
