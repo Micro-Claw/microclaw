@@ -128,7 +128,7 @@ Rig-facing commands must be PowerShell/cmd-safe (the rig is Windows): prefer
 | 1 | Usability | 0a and 0b assigned | `design33/phase5-doc-reconciliation` | `b717594` | `dd359a3` | n/a | `20b92e2` | done — block *is* the gate |
 | 2 | Usability | 1 | `design33/undeclared-light-source-gate` | `98842cf` | `ef72b15` + `e9817ad` | **PASS** — M5 refusal/declaration/confirm/cleanup + separate demo fail-closed run | `a1b7579` | done — design/33 landed semantics + residual boundary |
 | 3 | Usability | 2 | `design33/config-diagnostics` | `e8d6ee1` | `dce17a4` + `65bfd7c` | n/a — no rig surface | `0cb871f` | done — error taxonomy + offline-validation contract |
-| 4 | Usability | 3 | `design33/first-launch-setup` | `bc303a2` | round 2 `808e77c` | round 1 **FAIL**; **round 2 pushed 2026-08-01, awaiting rig** | | |
+| 4 | Usability | 3 | `design33/first-launch-setup` | `bc303a2` | round 2 `808e77c` | round 1 **FAIL**; round 2 demo **PASS** (G0–G3, G5, G6) with nine findings → **round 3 assigned**; M5 G4 not yet run | | |
 | 4r1a | Usability | 4 | `design33/first-launch-setup` | `15d8d1b` | `c5746b9` (`d203753` rejected) | folded into block 4 round 2 | n/a — merges via block 4 | |
 | 4r1b | Usability | 4 | `design35/startup-refusal-severity` | `15d8d1b` | `2558583` (`16cc416` rejected alone) | folded into block 4 round 2 | `385049d` into block branch | |
 | 4b | Usability | 4 merged | `design33/bounded-numeric-actuator` | | | **required** | | |
@@ -772,6 +772,82 @@ they changed the scope:
 Resolved 2026-08-01: add a `bounded-numeric` kind (Block 4b) and run this gate
 now rather than folding a `safety.py` schema change into it.
 
+### Rig gate round 2 — demo machine, 2026-08-01: **PASS, with nine findings**
+
+Evidence: `block4-demo-20260801-144809`. Every mechanical gate the demo machine
+can run passed. G0 identity pinned both round-2 commits by `merge-base`
+(`contains-interview-fix.txt`, `contains-severity-fix.txt` both `0`). G1
+produced a profile that the offline validator refused while `reviewed: false`
+and passed once reviewed, and the reviewed profile started a live session. G2
+and G3 each printed `False` for the must-not-exist artifact, so an unresolved
+choice cannot be silently accepted and the acknowledgement gate exits before
+connecting; G5 rides on G2. G6 showed the round-1 refusal shape demoting instead
+of refusing — `Camera.Exposure` declared categorical and eleven absent
+`channels.allowed` presets were dropped, and startup continued. Round-1 finding
+1 is also fixed: Microclaw wrote its own UTF-8 interview transcripts, and they
+are the only readable record of the run.
+
+**M5 (G4) has not been run.** It is deliberately held until round 3 lands, so
+the one trip to a real rig with real hazards is not spent on an interview we
+already know we are changing.
+
+The interview is now 24 questions, and the operator's finding is that most of
+what remains is still asking a human for something Micro-Manager already knows.
+Nine findings, all round 3, all on `design33/first-launch-setup`:
+
+1. **Illumination ON/OFF values have no defaults.** MM reports the allowed-value
+   domain for `Core.AutoShutter` and `White Light Shutter.State` (`0, 1`);
+   propose min as OFF and max as ON, Enter-acceptable. The *classification*
+   question (e/p/x/u) keeps having no default. Note the operator inverted the
+   naive proposal for `Core.AutoShutter` (ON=`0`, OFF=`1`), so the proposal must
+   be plainly overridable and the transcript must record which was used.
+2. **XY and Z travel have no defaults.** Propose the driver-reported limits where
+   MM reports them, with explicit confirmation. Where MM reports none — which is
+   the demo rig's case for both stages — say so in the prompt and require the
+   human value, rather than asking a bare question the operator cannot source.
+3. **Maximum camera exposure has no default.** MM reports `Camera.Exposure`
+   limits (`0`–`10000` ms on the demo rig); propose the upper limit.
+4. **`max_bytes` should be derived, not asked.** Compute it from the answered
+   frame cap and the camera's own full-frame geometry and pixel depth.
+5. **`max_illuminated_ms` is mis-explained.** It is per *plan*, not per frame —
+   `AcquisitionPlan.illuminated_ms` is `frames × exposure_ms_per_frame`
+   (`acquisition.py:20`). The label must say so, and the default follows from the
+   caps already answered rather than from one frame's exposure.
+6. **`max_session_illuminated_ms` is not understood.** It is a cumulative
+   illumination-dose ledger across every acquisition in one Microclaw *process*,
+   reset on restart — not a sample-lifetime dose cap. The parenthetical says
+   "not durable across restarts" without ever saying what it accumulates.
+7. **Budget questions are ordered by kind, not by subject.** Each hard cap and
+   its human-confirmation threshold must be adjacent.
+8. **The raw-byte confirmation threshold should not be a question.** Frames and
+   duration already gate the same quantity. Guaranteed mode requires all nine
+   `_ACQUISITION_POLICY_FIELDS` to be finite and positive
+   (`authorization.py:1056`), so round 3 derives the value instead of asking;
+   **deleting the key from the schema is deferred to Block 4b**, which is the
+   block already opening `safety.py`.
+9. **`microclaw` without `serve` cannot reach the API.** The operator ran the
+   runbook's command, reached the REPL, and the first instruction died in
+   `TypeError: Could not resolve authentication method`; adding `serve` worked.
+   This is the carried-forward design/15 item — `run_session` never calls
+   `credentials.load_api_key`, so a browser-stored key is invisible to the REPL.
+   The register said "fold into block 3 or 5 if cheap"; it has now cost a gate
+   step, so it lands here. The runbook's command is wrong either way and is
+   corrected on the branch.
+
+**Scope change the operator made deliberately, recorded here because it reverses
+a standing rule.** Findings 2 and 3 make driver technical ranges the *proposed
+defaults* for stage travel and maximum exposure — the two most hazardous axes in
+the file — where this block's own item text says never to convert a
+`technical_range` into a safety bound. The existing post-merge item already
+scoped that rule for classification metadata; it now also covers hazardous-axis
+bounds, on these conditions: the value is labelled as the driver's technical
+range and not as a reviewed bound, Enter-accepting it is an explicit operator
+act, and the transcript records accepted-default versus typed-value per answer.
+`_bounds` (`first_launch.py:186`) already does exactly this for typed
+absolute-position actuators, so round 3 extends a shipped pattern rather than
+inventing one. Design/33 and the block item text must be corrected to what
+ships.
+
 Post-merge design gate:
 
 - [ ] Update design/33 with the setup contact semantics actually measured, every
@@ -854,6 +930,18 @@ exactly why it needs a kind that feeds no ledger.
       bounds. Follow the existing typed-actuator precedent (`authorization.py`
       rejects typed bounds exceeding the driver technical range) rather than
       inventing a new rule.
+- [ ] **Decide `acquisition.confirm_above_bytes`'s fate** — deferred here from
+      Block 4 round 3 finding 8, because this is the block already opening
+      `safety.py`. The operator's position is that it should not exist: an
+      estimated byte count is a function of frames and geometry, so the frame and
+      duration confirmations already gate it. Round 3 only stopped *asking* for
+      it (guaranteed mode requires all nine `_ACQUISITION_POLICY_FIELDS` finite
+      and positive, `authorization.py:1056`, so it is derived to a non-binding
+      value instead). Deleting it touches `safety.py`, `config.py`,
+      `authorization.py`, `tools.py:112`, and `safety_config.example.yaml`, and
+      deployed configs — M5's included — already set the key, so choose between
+      removal and accepted-but-ignored deprecation rather than assuming removal.
+      `max_bytes` itself stays; it is a hard cap and round 3 derives its default.
 - [ ] Off-rig tests: the alias refusal above; clamp at both edges and outside;
       a declared unit round-tripping into the profile unaltered; setup emitting
       the kind from the real demo inventory fixture; and a regression that
@@ -1297,8 +1385,9 @@ This is an inventory, not permission to close with unresolved blank work. Block
   saves are enforced. Independent security fix.
 - **REPL API-key precedence mismatch** (design/15). The documented
   `env > keyring > file` order applies to `serve` only; `run_session` never calls
-  `load_api_key`, so a browser-stored key is invisible to the REPL. A usability
-  item — consider folding into block 3 or 5 if it is cheap.
+  `load_api_key`, so a browser-stored key is invisible to the REPL. **Assigned to
+  block 4 round 3** (2026-08-01) after it broke a step of the block 4 demo gate;
+  it is no longer merely a candidate for a later block.
 - **A failed hardware write was described as definitely not landed.** Block 2's
   M5 G4 first enable returned iChrome serial timeout 17; the agent then said the
   laser "was not enabled." That conclusion was unjustified: a write that raises
