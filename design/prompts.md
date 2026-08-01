@@ -3816,3 +3816,60 @@ main. Also: the executor authorizes the whole captured plan before applying any 
 it, which is why declining the fourth of four effects produced zero writes -- worth
 keeping, since a per-write authorize-then-apply loop would have written three
 properties before asking.]
+
+---
+
+You are the coordinator for 35-usability-and-pfs-checklist.md. You will decide
+what to do next, what blocks to hand off to other agents to complete. Please hand
+me the prompt and I will pass it to an agent. Then I will tell you when the agent
+is done. You will check it and decide what to do next.
+
+[Block 2, `design33/undeclared-light-source-gate`, closed the highest-priority
+open authorization finding. Coordinator review rejected the first otherwise-
+green implementation because `get_mm_app_dir() -> None` silently meant "no
+EMU", despite also meaning the live Java probes failed. The correction retained
+live/cache/guess provenance: a validated live non-EMU install is accepted;
+fallback identity uncertainty, malformed maps, and installed EMU artifacts with
+no readable config refuse in guaranteed mode and warn only with completeness
+suspended in `degraded_trusted_plugins`. No device-name laser heuristics were
+added.]
+
+Can you write this to a md like we have for the other rig checks? Can you include
+explicit commands and/or prompts for each of these steps?
+
+[The coordinator-authored runbook became
+`design/35-block2-m5-rig-gate-prompts.md` on the implementation branch. The gate
+itself corrected the document several times: PowerShell/uv split `python -c` at
+real property-name colons, bridge StrVectors needed explicit materialization,
+the terminal REPL could not see the browser-stored API key, and PowerShell 5.1
+`Start-Transcript` did not capture the child server's live output. The final
+procedure used small saved read-only scripts, the deployed `serve` browser
+confirmation path, session JSONL and confirmation audits, copy-pasted console
+output as corroboration, and independent hardware read-back.]
+
+[M5's old deployed profile refused exactly three missing semantic enables:
+semantic slots 1/2/3 mapped to physical iChrome Laser 3/2/1 `1. Enable`.
+Live EMU metadata established `on="1"`, `off="0"`; semantic slot 0 mapped to the
+already-declared physical Laser 4 enable. Adding only those three rows made the
+guaranteed authorization map complete, with all five configured gates on the
+existing dedicated-illumination path. Three browser confirmations were declined
+and read back `0`. One separately approved Laser 2 enable first returned serial
+timeout 17, then succeeded after a second browser confirmation and read back
+`1`; Ctrl-C shutdown named all five gates and an independent probe read every
+one at `0`.]
+
+[That serial timeout exposed a separate safety-language defect: the agent said
+the laser "was not enabled" after a write raised, although a failed write may
+have landed and state was unknown. The later exact reads made the Block 2 gate
+green, but the unjustified claim is carried forward independently rather than
+folded into Block 3's policy-refusal taxonomy.]
+
+[The separate demo machine had a validated live Micro-Manager path and installed
+EMU/htSMLM artifacts but no readable `EMU/config.uicfg`; guaranteed mode refused
+rather than claim semantic completeness. This was the implementation's intended
+artifact-without-config outcome, not evidence of a particular demo laser. The
+off-rig fixture supplied the deterministic undeclared-enable case. Block 2 merged
+as `a1b7579`; design/33 and the design/35 ledger/checklist reconciled on main as
+`02dc274`. Residual limits are explicit: discovered enables being declared does
+not prove every physical emission path was discovered, and the startup check is
+downstream of Block 4's enumeration window.]
