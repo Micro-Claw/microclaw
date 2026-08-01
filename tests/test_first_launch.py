@@ -301,6 +301,41 @@ def test_every_hazardous_field_still_refuses_blank():
     )
 
 
+@pytest.mark.parametrize("prop", [
+    "Camera", "Focus", "XYStage", "Shutter", "AutoFocus", "Galvo",
+    "ImageProcessor", "SLM", "ChannelGroup", "Initialize",
+])
+def test_core_device_assignments_are_never_writable(prop):
+    """M5 offers four devices for Core.Focus; a write re-aims the reviewed z bounds."""
+    item = {
+        "device": "Core", "property": prop, "device_type": "CoreDevice",
+        "state_labels": [],
+        "record": {
+            "name": prop, "current_value": "", "allowed_values": ["", "PIZStage"],
+            "read_only": False, "pre_init": False, "has_limits": False,
+            "reported_type": "String",
+        },
+    }
+    role, evidence, bounds = _metadata_default(item)
+    assert role == "x"
+    assert "device-assignment" in evidence
+    assert bounds is None
+
+
+def test_core_autoshutter_is_not_swept_up_as_structural():
+    """It is a real illumination control and keeps its own classification path."""
+    item = {
+        "device": "Core", "property": "AutoShutter", "device_type": "CoreDevice",
+        "state_labels": [],
+        "record": {
+            "name": "AutoShutter", "current_value": "1", "allowed_values": ["0", "1"],
+            "read_only": False, "pre_init": False, "has_limits": False,
+            "reported_type": "Integer",
+        },
+    }
+    assert _metadata_default(item)[0] == "c"
+
+
 def _with_state_device(label, *, illuminating=False):
     """An inventory carrying one StateDevice whose State reports no allowed values."""
     inventory = _inventory()
@@ -428,11 +463,12 @@ def test_real_demo_inventory_bulk_pass_is_exactly_23_questions_without_geometry(
         # Six moved from excluded to categorical when StateDevice positions began
         # reading their state labels: Dichroic, Emission, Excitation, LED,
         # Objective and Path .State — every one a selector whose .Label was
-        # already categorical. The question count is unchanged; they are bulk
-        # proposals either way.
-        "categorical_properties": 48,
+        # already categorical. Ten then moved the other way when Core's
+        # device-assignment properties stopped being writable. The question count
+        # is unchanged throughout; these are bulk proposals either way.
+        "categorical_properties": 38,
         "typed_actuators": 0,
-        "excluded_properties": 28,
+        "excluded_properties": 38,
     }
     assert len(config["channels"]["allowed"]) == 14
 

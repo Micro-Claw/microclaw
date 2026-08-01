@@ -291,8 +291,38 @@ def _property_index(inventory: dict) -> dict[str, dict]:
     }
 
 
+# Core's device-assignment properties name *which physical device* plays each
+# role.  They are structural identity, not controls: `stage.z_min/z_max` is
+# reviewed against whatever `Core.Focus` pointed at during setup, and M5 offers
+# four alternatives for it, so a single write silently re-aims every reviewed
+# bound at a different mechanism.  `Core.Shutter` likewise moves the illumination
+# gate, `Core.ChannelGroup` changes what `channels.allowed` names, and
+# `Core.Initialize` re-initializes the system.  `Core.AutoShutter` is deliberately
+# absent: it is a real illumination control and is classified as one.
+_CORE_STRUCTURAL_PROPERTIES = frozenset({
+    "camera", "focus", "xystage", "autofocus", "galvo",
+    "imageprocessor", "slm", "shutter", "channelgroup", "initialize",
+})
+
+
+def _core_structural(item: dict) -> bool:
+    return (
+        item.get("device_type") == "CoreDevice"
+        and str(item.get("property") or "").casefold().replace(" ", "").replace("_", "")
+        in _CORE_STRUCTURAL_PROPERTIES
+    )
+
+
 def _metadata_default(item: dict) -> tuple[str, str, tuple[float, float] | None]:
     record = item["record"]
+    if _core_structural(item):
+        return (
+            "x",
+            "Core device-assignment property: it names which physical device fills "
+            "this role, so writing it would re-aim every reviewed stage bound, "
+            "illumination gate and channel declaration at a different device",
+            None,
+        )
     if record.get("read_only") is True or record.get("pre_init") is True:
         reasons = []
         if record.get("read_only") is True:
