@@ -284,6 +284,7 @@ def _property_index(inventory: dict) -> dict[str, dict]:
         f'{device["label"]}.{prop["name"]}': {
             "device": device["label"], "property": prop["name"],
             "device_type": device.get("device_type"), "record": prop,
+            "state_labels": device.get("state_labels") or [],
         }
         for device in inventory["facts"].get("devices", [])
         for prop in device.get("properties", [])
@@ -314,7 +315,35 @@ def _metadata_default(item: dict) -> tuple[str, str, tuple[float, float] | None]
                 f"MM reports numeric technical range {low} to {high}; excluded until physical semantics are supplied",
                 (float(low), float(high)),
             )
+    if _state_device_positions(item):
+        labels = item["state_labels"]
+        return (
+            "c",
+            f"MM reports no allowed values for this StateDevice position property, but the "
+            f"device reports {len(labels)} state label(s) ({', '.join(map(str, labels))}), "
+            f"so its domain is positions 0 to {len(labels) - 1}",
+            None,
+        )
     return "x", "MM reports no discrete value domain or numeric limits", None
+
+
+def _state_device_positions(item: dict) -> bool:
+    """Whether this is a StateDevice's integer position with a known domain.
+
+    MM publishes no `allowed_values` for a StateDevice's `State`, only for its
+    `Label`, so the generic metadata rule excluded every filter wheel, turret and
+    slider position on M5 — three of which the hand-authored config declares
+    categorical.  The domain is not missing, it is reported as the device's state
+    labels, which the inventory already records.
+    """
+    return (
+        item.get("device_type") == "StateDevice"
+        and str(item.get("property") or "").casefold() == "state"
+        and item["record"].get("read_only") is False
+        and item["record"].get("pre_init") is False
+        and not (item["record"].get("allowed_values") or [])
+        and bool(item.get("state_labels"))
+    )
 
 
 def _technical_bounds(item: dict | None) -> tuple[float, float] | None:
@@ -514,6 +543,19 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
     powers = {
         x["path"] for x in candidates.get("suspected_continuous_actuators", [])
         if not x.get("rejected_non_emitting")
+    }
+    # From the candidate's own device field, never by splitting the path: iChrome
+    # property names contain dots ("All: 1. Enable"), so a rsplit mis-derives it.
+    illumination_devices = {
+        x["device"]
+        for x in (
+            *candidates.get("illumination_enable_properties", []),
+            *(
+                x for x in candidates.get("suspected_continuous_actuators", [])
+                if not x.get("rejected_non_emitting")
+            ),
+        )
+        if x.get("device")
     }
     duplicate_sets = [
         {row["path"] for row in group.get("representations", [])}
@@ -723,6 +765,15 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
             notes.append(f"MM METADATA EXCLUSION: {path}; {evidence}.")
             continue
         recommendation = " (known TTL.State0 false-positive shape; exclusion is recommended but requires your confirmation)" if path.casefold().endswith("ttl.state0") else ""
+        # A StateDevice position on a device that also surfaced illumination
+        # candidates is a laser engine's selector, not a filter wheel's. Block 3b's
+        # rig gate caught exactly this widening, so the proposal is never taken in
+        # bulk there — it is asked, every time.
+        if _state_device_positions(item) and device in illumination_devices:
+            recommendation = (
+                f" ({device} also surfaced illumination candidates, so this position "
+                "property is never accepted in bulk; confirm it explicitly)"
+            )
         needs_question = not bulk or path in revisit or bool(recommendation)
         role = "x" if default_role == "n" else default_role
         if needs_question:

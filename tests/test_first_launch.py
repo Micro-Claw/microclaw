@@ -301,6 +301,81 @@ def test_every_hazardous_field_still_refuses_blank():
     )
 
 
+def _with_state_device(label, *, illuminating=False):
+    """An inventory carrying one StateDevice whose State reports no allowed values."""
+    inventory = _inventory()
+    device = {
+        "label": label, "device_type": "StateDevice",
+        "state_labels": ["Filter-1", "Filter-2", "Filter-3"],
+        "properties": [
+            {"name": "State", "current_value": "0", "allowed_values": [],
+             "read_only": False, "pre_init": False, "has_limits": False,
+             "reported_type": "Integer"},
+        ],
+    }
+    if illuminating:
+        device["properties"].append({
+            "name": "Laser 1: 2. Emission", "current_value": "0", "allowed_values": [],
+            "read_only": False, "pre_init": False, "has_limits": True,
+            "reported_type": "Integer",
+            "technical_range": {"lower": 0.0, "upper": 1.0, "source": "driver_reported"},
+        })
+        inventory["heuristic_candidates"]["illumination_enable_properties"].append({
+            "path": f"{label}.Laser 1: 2. Emission", "device": label,
+            "property": "Laser 1: 2. Emission", "device_type": "StateDevice",
+        })
+    inventory["facts"]["devices"].append(device)
+    inventory["heuristic_candidates"]["unclassified_writable_properties"].extend(
+        f'{label}.{p["name"]}' for p in device["properties"]
+    )
+    return inventory
+
+
+def test_state_device_position_is_categorical_from_its_state_labels():
+    """M5's filter wheels: MM publishes allowed values for Label, never for State."""
+    output = []
+    answers = iter(["", ""] + list(_answers())[2:])
+    config, _ = interview(
+        _with_state_device("Thorlabs Filter Wheel"),
+        ask=lambda _: next(answers), say=output.append,
+    )
+    assert {"device": "Thorlabs Filter Wheel", "property": "State"} in (
+        config["rig_profile"]["categorical_properties"]
+    )
+    assert {"device": "Thorlabs Filter Wheel", "property": "State"} not in (
+        config["rig_profile"]["excluded_properties"]
+    )
+
+
+def test_state_device_position_on_an_illuminating_device_is_never_taken_in_bulk():
+    """Block 3b's gate caught this widening on a laser engine; do not repeat it."""
+    prompts = []
+
+    def ask(prompt):
+        prompts.append(prompt)
+        if "Accept all MM-derived" in prompt or "names to revisit" in prompt:
+            return ""
+        if prompt.startswith("Illumination candidate"):
+            return "x"
+        if prompt.startswith("Writable property") and "iChrome-MLE-TCP.State" in prompt:
+            return "x"
+        if "minimum" in prompt:
+            return "0"
+        if "no default" in prompt or "there is no default" in prompt:
+            return "100"
+        return ""
+
+    config, _ = interview(
+        _with_state_device("iChrome-MLE-TCP", illuminating=True), ask=ask, say=lambda _: None,
+    )
+    forced = [p for p in prompts if "never accepted in bulk" in p]
+    assert len(forced) == 1 and "iChrome-MLE-TCP.State" in forced[0]
+    # The operator declined, and bulk acceptance never overrode that.
+    assert {"device": "iChrome-MLE-TCP", "property": "State"} in (
+        config["rig_profile"]["excluded_properties"]
+    )
+
+
 def test_metadata_proposal_glossary_defaults_and_bulk_revisit():
     answers = iter(["", "Camera.Binning", "x"] + list(_answers())[2:])
     output = []
@@ -350,9 +425,14 @@ def test_real_demo_inventory_bulk_pass_is_exactly_23_questions_without_geometry(
         key: len(config["rig_profile"][key])
         for key in ("categorical_properties", "typed_actuators", "excluded_properties")
     } == {
-        "categorical_properties": 42,
+        # Six moved from excluded to categorical when StateDevice positions began
+        # reading their state labels: Dichroic, Emission, Excitation, LED,
+        # Objective and Path .State — every one a selector whose .Label was
+        # already categorical. The question count is unchanged; they are bulk
+        # proposals either way.
+        "categorical_properties": 48,
         "typed_actuators": 0,
-        "excluded_properties": 34,
+        "excluded_properties": 28,
     }
     assert len(config["channels"]["allowed"]) == 14
 
