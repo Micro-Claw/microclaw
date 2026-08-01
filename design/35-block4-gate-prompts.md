@@ -1,9 +1,17 @@
 # design/35 Block 4 — first-launch setup rig gate
 
-Gate for `design33/first-launch-setup`, implementation commits `fb04a8e` and
-`e9fa769`. The branch is pushed at `origin/design33/first-launch-setup`; **do
-not merge until this gate passes and the coordinator reviews the evidence.** Do
-not open a PR.
+Gate for `design33/first-launch-setup`, implementation commits `c5746b9`
+(first-launch interview) and `2558583` (startup refusal severity). The branch is
+pushed at `origin/design33/first-launch-setup`; **do not merge until this gate
+passes and the coordinator reviews the evidence.** Do not open a PR.
+
+**This is gate round 2.** Round 1 ran on the demo machine on 2026-08-01 and
+failed: `Start-Transcript` captured nothing, the interview asked ~90 questions
+with no defaults or explanations, and the profile it produced would not start —
+19 continuous-actuator refusals, one missing-preset refusal, and a missing-EMU
+refusal. All five findings are fixed on this branch. The demo interview is now
+24 questions, every one of them a hazard or budget question, and Microclaw
+writes its own transcript.
 
 This gate is unusual in that **the connection itself is the thing under test.**
 `microclaw first-launch-setup` contacts hardware before any safety config
@@ -104,8 +112,10 @@ git fetch origin design33/first-launch-setup > "$Evidence\git-fetch.txt" 2>&1
 git switch design33/first-launch-setup > "$Evidence\git-switch.txt" 2>&1
 git pull --ff-only > "$Evidence\git-pull.txt" 2>&1
 git rev-parse HEAD > "$Evidence\head.txt" 2>&1
-git merge-base --is-ancestor e9fa769a85ef28e497c4cb25f7938018ece9867d HEAD
-$LASTEXITCODE > "$Evidence\contains-implementation-tip.txt"
+git merge-base --is-ancestor c5746b9 HEAD
+$LASTEXITCODE > "$Evidence\contains-interview-fix.txt"
+git merge-base --is-ancestor 2558583 HEAD
+$LASTEXITCODE > "$Evidence\contains-severity-fix.txt"
 git status --short > "$Evidence\status.txt" 2>&1
 python -V > "$Evidence\python.txt" 2>&1
 pip install -e . > "$Evidence\pip-install.txt" 2>&1
@@ -117,7 +127,9 @@ A normal branch checkout, not a detached HEAD: you stay on
 `design\35-block4-gate-prompts.md` in front of you. The `runbook.md` copy is for
 the evidence archive, so the returned bundle records which revision was run.
 
-`contains-implementation-tip.txt` must read `0`. Reinstalling here is correct —
+`contains-interview-fix.txt` and `contains-severity-fix.txt` must **both** read
+`0`. If either reads `1` you are on round-1 code and the gate will fail the way
+it failed before; re-pull before going further. Reinstalling here is correct —
 this is a dedicated rig machine, not a shared worktree.
 
 ## G1 — demo core, complete pass
@@ -352,10 +364,46 @@ Record the answer to one question explicitly: **did any setup run leave a file
 at `--out` that was not a validator-accepted profile?** The expected answer is
 no.
 
+## G6 — a claim the rig cannot corroborate demotes, it does not refuse
+
+New in round 2, and the specific behaviour that turns round 1's three refusal
+classes into startup warnings. Run on the demo machine, after G1 has produced a
+reviewed profile that starts.
+
+Take a **copy** of the reviewed demo profile and hand-edit three things into it:
+
+1. add `Camera.Exposure` to `rig_profile.categorical_properties` — the rig
+   reports it continuous, so the claim is false;
+2. add a preset name to top-level `channels.allowed` that does not exist in the
+   Micro-Manager `Channel` group, e.g. `NotAPreset`;
+3. leave EMU alone — the demo machine has `Emu.jar` and no `EMU/config.uicfg`,
+   which is the stock non-EMU shape and is already the case.
+
+```powershell
+uv run microclaw --port $Port --safety-config "$Evidence\demo-profile.demoted.yaml" > "$Evidence\g6-demotions.txt" 2>&1
+```
+
+Expected, and all three must hold:
+
+- The process **starts**. It does not exit with `Live rig authorization failed`.
+- `g6-demotions.txt` contains a block delimited by
+  `!! AUTHORIZATION CLAIMS DEMOTED — STARTUP CONTINUES WITH LESS AUTHORITY !!`,
+  naming `Camera.Exposure` and `NotAPreset` and stating for each what was dropped
+  and how to correct it.
+- There is **no** EMU diagnostic of any kind.
+
+Then prove the demotion has teeth rather than being cosmetic. In the session that
+started, attempt a raw property write to `Camera.Exposure` and capture the
+result. It must be **refused** — a demoted property is not writable. A run where
+the process starts but the write succeeds is a gate failure, not a pass.
+
+Record explicitly: **did the process start, were all three claims reported, and
+was the write to the demoted property refused?**
+
 ## What to return
 
-**Two** archives — one `$Evidence` directory per machine, demo and M5 — plus a
-short written summary answering:
+**Three** archives — one `$Evidence` directory per machine, demo and M5, plus
+the G6 outputs — and a short written summary answering:
 
 1. Did the demo pass complete, validate, and start a session? (G1)
 2. Which of the nine G2 attempts were refused, and was any accepted? (G2)
@@ -366,9 +414,26 @@ short written summary answering:
    does the Micro-Manager log show initialized during the setup window?
 6. Did any refusal leave a file behind? (G5)
 6b. Is `$Deployed` byte-identical to its pre-gate hash? (G4)
-7. Anything in the interview that was unclear, tedious, or that you would have
+7. Did the process start with all three claims demoted, and was the write to the
+   demoted property refused? (G6)
+8. **How many questions did the demo interview actually ask?** Count them. The
+   expected answer is 24, all hazard or budget questions. Round 1 asked about 90
+   and that was the headline complaint, so this number is the block's primary
+   acceptance measure.
+9. Anything in the interview that was unclear, tedious, or that you would have
    answered wrongly without knowing the rig — this block exists to make an
    operator able to author a config, so usability observations are evidence.
+   In particular: after setup, no continuous property is writable at all (see
+   the note below). Say whether that blocked anything you wanted to do.
+
+One known limitation to judge on the rig, not a defect to report as a failure:
+the safety schema has exactly two typed-actuator kinds, `absolute-position`
+(units `um`) and `illumination-power` (`percent`/`native`). A bounded numeric
+like `Camera.Gain` or `Camera.Exposure` fits neither, so setup excludes every
+such property rather than inventing a unit for it — the demo profile therefore
+contains **zero** typed actuators. Micro-Manager's real ranges are still shown
+as evidence during the interview. Whether that gap needs its own block is a
+coordinator decision waiting on what you observe here.
 
 Do not judge whether the evidence is sufficient; return it and the coordinator
 will. A step you could not complete is a defect in this gate document, not
