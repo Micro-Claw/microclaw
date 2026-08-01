@@ -128,9 +128,9 @@ Rig-facing commands must be PowerShell/cmd-safe (the rig is Windows): prefer
 | 1 | Usability | 0a and 0b assigned | `design33/phase5-doc-reconciliation` | `b717594` | `dd359a3` | n/a | `20b92e2` | done — block *is* the gate |
 | 2 | Usability | 1 | `design33/undeclared-light-source-gate` | `98842cf` | `ef72b15` + `e9817ad` | **PASS** — M5 refusal/declaration/confirm/cleanup + separate demo fail-closed run | `a1b7579` | done — design/33 landed semantics + residual boundary |
 | 3 | Usability | 2 | `design33/config-diagnostics` | `e8d6ee1` | `dce17a4` + `65bfd7c` | n/a — no rig surface | `0cb871f` | done — error taxonomy + offline-validation contract |
-| 4 | Usability | 3 | `design33/first-launch-setup` | `bc303a2` | `fb04a8e` + `e9fa769` | round 1 **FAIL** (demo, 2026-08-01) — 5 findings; round 2 pending | | |
-| 4r1a | Usability | 4 | `design33/first-launch-setup` | `15d8d1b` | | re-gate with 4r1b | | |
-| 4r1b | Usability | 4 | `design35/startup-refusal-severity` | `15d8d1b` | `16cc416` + `2558583` (`16cc416` rejected alone) | re-gate with 4r1a | pending — merges into block branch | |
+| 4 | Usability | 3 | `design33/first-launch-setup` | `bc303a2` | round 2 `808e77c` | round 1 **FAIL**; **round 2 pushed 2026-08-01, awaiting rig** | | |
+| 4r1a | Usability | 4 | `design33/first-launch-setup` | `15d8d1b` | `c5746b9` (`d203753` rejected) | folded into block 4 round 2 | n/a — merges via block 4 | |
+| 4r1b | Usability | 4 | `design35/startup-refusal-severity` | `15d8d1b` | `2558583` (`16cc416` rejected alone) | folded into block 4 round 2 | `385049d` into block branch | |
 | 5 | Usability | 4 | `design33/deployed-config-hygiene` | | | required | | |
 | 6 | Nikon | probe S = pre-fix baseline; post-fix run owed | `design34/measured-position-readback` | | | required | | |
 | 7a | Nikon | scope: none; rig gate: probe 0 | `design34/continuous-focus-capability` | | | **required** | | |
@@ -726,6 +726,41 @@ they stand, so they are in this block's scope.**
 Round-1 assignments: 1–2 → `design33/first-launch-setup` (the block branch);
 3–5 → `design35/startup-refusal-severity`, branched from it and merged back
 before the re-gate.
+
+### Round 2 — pushed 2026-08-01, awaiting the rig
+
+Both implementations were rejected once and accepted on their second pass.
+Coordinator-measured results on the **real** round-1 demo inventory, not a
+fixture — a synthetic fixture with invented technical ranges produced a wrong
+diagnosis during round-1 review and cost a cycle; measure against
+`block4-demo-20260801-131435/demo-inventory/inventory.json`:
+
+- Interview: **~90 → 24 questions**, all of them hazard or budget questions
+  (10 acquisition budgets, 6 stage travel bounds, 4 illumination ON/OFF, 2
+  illumination candidates, 2 bulk-accept overhead). Zero property questions and
+  zero preset questions remain.
+- Generated profile: 42 categorical, 0 typed actuators, 34 excluded; passes the
+  offline validator, and validates with **zero** blocking diagnostics once the
+  operator sets `reviewed: true`. This is the round-trip round 1 could not do.
+- Startup: the round-1 failure shape (13 present-and-continuous properties
+  declared categorical, absent `channels.allowed` presets, `Emu.jar` with no
+  `config.uicfg`) now **starts**, demotes all 13 via the continuous path, and
+  refuses the write at both gates.
+- Merged tree `385049d`: 1279 passed / 99 skipped / 3 expected warnings — the
+  exact sum of the two branches, no regressions.
+
+**Open design gap, deliberately not fixed in this block.** The schema has exactly
+two typed-actuator kinds, `absolute-position` (units `um`) and
+`illumination-power` (`percent`/`native`) — `safety.py:76`, `:580`. A bounded
+numeric like `Camera.Gain` fits neither, so setup excludes every such property
+rather than inventing a unit, which is what the block's own item text requires
+("never invent bounds or geometry"). The consequence is that **after
+first-launch setup no continuous property is writable at all**, which is
+narrower than the round-1 instruction that continuous actuators are "fine to use
+over an appropriate range." Closing it means a third typed kind — a generic
+bounded numeric carrying MM's range and its real unit. G6/question 9 of the
+runbook asks the operator whether the gap blocks real work; scope a block from
+what comes back rather than guessing now.
 
 Post-merge design gate:
 
