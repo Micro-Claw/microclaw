@@ -128,7 +128,7 @@ Rig-facing commands must be PowerShell/cmd-safe (the rig is Windows): prefer
 | 1 | Usability | 0a and 0b assigned | `design33/phase5-doc-reconciliation` | `b717594` | `dd359a3` | n/a | `20b92e2` | done — block *is* the gate |
 | 2 | Usability | 1 | `design33/undeclared-light-source-gate` | `98842cf` | `ef72b15` + `e9817ad` | **PASS** — M5 refusal/declaration/confirm/cleanup + separate demo fail-closed run | `a1b7579` | done — design/33 landed semantics + residual boundary |
 | 3 | Usability | 2 | `design33/config-diagnostics` | `e8d6ee1` | `dce17a4` + `65bfd7c` | n/a — no rig surface | `0cb871f` | done — error taxonomy + offline-validation contract |
-| 4 | Usability | 3 | `design33/first-launch-setup` | `bc303a2` | round 2 `808e77c` | round 1 **FAIL**; round 2 demo **PASS** (G0–G3, G5, G6) with nine findings → **round 3 assigned**; M5 G4 not yet run | | |
+| 4 | Usability | 3 | `design33/first-launch-setup` | `bc303a2` | round 3 `55b277c` (runbook re-pinned at `0ab9055`) | round 1 **FAIL**; round 2 demo **PASS** with nine findings; **round 3 pushed 2026-08-01, awaiting demo re-run and M5 G4** | | |
 | 4r1a | Usability | 4 | `design33/first-launch-setup` | `15d8d1b` | `c5746b9` (`d203753` rejected) | folded into block 4 round 2 | n/a — merges via block 4 | |
 | 4r1b | Usability | 4 | `design35/startup-refusal-severity` | `15d8d1b` | `2558583` (`16cc416` rejected alone) | folded into block 4 round 2 | `385049d` into block branch | |
 | 4b | Usability | 4 merged | `design33/bounded-numeric-actuator` | | | **required** | | |
@@ -863,6 +863,45 @@ The coordinator raised the reversal with the operator, who reaffirmed it the
 same day: a driver range is a reasonable thing to *propose*, the confirmation
 question stays, and proposing it does not hurt. Recorded as a settled decision,
 not an open question — do not re-litigate it in a later block.
+
+### Round 3 — pushed 2026-08-01, awaiting the rig
+
+Implementation `3a9522d` was reviewed and returned; `55b277c` fixes all three
+findings and was verified independently (**1294 passed / 99 skipped / 3 expected
+warnings**, from a round-2 baseline of 1279). Runbook re-pinned at `0ab9055`;
+both `--is-ancestor` checks confirmed green before the push.
+
+Measured on the **real** captured round-2 inventory, not a fixture: 24 → 23
+questions replaying that file, and 22 once it is augmented through the new
+producer geometry code. Every remaining question is a hazard or budget question;
+six of them are the stage-travel bounds the demo rig genuinely cannot source
+(`Z.Position` reports `has_limits: false` and the `XY` device exposes no position
+property at all), and those now say so in the prompt instead of asking blind.
+
+No safety-config schema change; `INVENTORY_SCHEMA` stays at
+`microclaw.rig-inventory/v2` with camera geometry added as optional `facts`,
+deliberately excluded from the fingerprint because current ROI and binning are
+acquisition state rather than rig identity.
+
+The three round-3 review findings, kept because two were invisible on the demo
+rig and would have first appeared on M5:
+
+1. **The byte cap ignored binning.** `unbinned_full_frame_pixels` was computed in
+   the producer, tested, and never read by the consumer, which used the current
+   *binned* dimensions. `estimated_bytes` is computed at plan time from live
+   geometry (`tools.py:4487`), so a cap frozen at setup-time binned size refuses
+   legitimate full-frame work after a binning change — 4× too small at binning 2,
+   16× at binning 4. The demo rig runs binning 1, so no demo evidence could have
+   caught it.
+2. **The API key was resolved after connecting and after `validate_live_rig`.**
+   Round-1 finding 1's exact shape: a precondition needing no hardware checked
+   after hardware contact. Now resolved before the controller is constructed, and
+   the test asserts the controller was never built rather than merely that the
+   REPL was not reached.
+3. **Numeric proposals emitted no accepted-versus-overridden audit line** —
+   present for ON/OFF values, absent for stage travel and maximum exposure, which
+   are the two hazardous axes the audit condition exists for. Now emitted by both
+   `_positive_default` and `_bounds`.
 
 Post-merge design gate:
 
