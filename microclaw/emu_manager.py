@@ -73,12 +73,22 @@ def find_plugin_jars(mm_app_dir: Path) -> dict[str, list[str]]:
 
 
 def _has_emu(mm_app_dir: Path) -> bool:
-    """True if the MM app dir contains an EMU or htSMLM JAR, or the config file."""
+    """True if the MM app dir has the EMU plugin installed.
+
+    This is intentionally only a locator hint.  Emu.jar ships with stock
+    Micro-Manager, so this does not mean that the connected rig uses EMU.
+    Authorization must use :func:`_has_emu_config` instead.
+    """
     jars = find_plugin_jars(mm_app_dir)
     return (
         bool(jars["EMU"] or jars["htSMLM"])
         or _emu_config_path(mm_app_dir).exists()
     )
+
+
+def _has_emu_config(mm_app_dir: Path) -> bool:
+    """True only when this installation contains a configured EMU profile."""
+    return _emu_config_path(mm_app_dir).is_file()
 
 
 def _looks_like_mm_dir(p: Path) -> bool:

@@ -2,7 +2,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from microclaw.authorization import RigAuthorizationError, validate_live_rig
+from microclaw.authorization import (
+    RigAuthorizationError, authorize_property_write, validate_live_rig,
+)
 from microclaw.safety import (
     AcquisitionConstraints, CameraConstraints, IlluminationConstraints,
     ActuatorId, ForbiddenProperty, ParsedSafetyConfig, RangeEdge, RangePolicy,
@@ -103,8 +105,10 @@ def _direct(core, *, categorical=(), excluded=(), forbidden=(), typed=None,
 
 def test_second_z_or_driver_specific_focus_name_cannot_be_categorical():
     ctrl, parsed = _direct(LiveCore(), categorical={("Z", "Position (um)")})
-    with pytest.raises(RigAuthorizationError, match="known continuous actuator"):
-        validate_live_rig(ctrl, parsed)
+    report = validate_live_rig(ctrl, parsed)
+    assert report.diagnostics and not report.diagnostics[0].blocking
+    with pytest.raises(RigAuthorizationError, match="excluded"):
+        authorize_property_write(ctrl, "Z", "Position (um)")
 
 
 def test_state_device_integer_state_with_limits_is_not_continuous():
@@ -214,17 +218,20 @@ def test_percent_power_is_refused_when_driver_range_is_not_percent():
 @pytest.mark.parametrize("kind", ["GalvoDevice", "SignalIODevice"])
 def test_numeric_actuating_device_property_cannot_be_categorical(kind):
     ctrl, parsed = _direct(LiveCore(kind, "Amplitude", 10), categorical={("Z", "Amplitude")})
-    with pytest.raises(RigAuthorizationError, match="known continuous actuator"):
-        validate_live_rig(ctrl, parsed)
+    report = validate_live_rig(ctrl, parsed)
+    assert "known continuous actuator" in report.diagnostics[0].message
+    with pytest.raises(RigAuthorizationError, match="excluded"):
+        authorize_property_write(ctrl, "Z", "Amplitude")
 
 
 def test_m5_generic_laser_power_cannot_be_declared_categorical():
     core = LiveCore("GenericDevice", "Power (mW)", 75, prop_type="Float",
                     device="iBeamSmartCW-1")
     ctrl, parsed = _direct(core, categorical={("iBeamSmartCW-1", "Power (mW)")})
-    with pytest.raises(RigAuthorizationError,
-                       match=r"iBeamSmartCW-1\.Power \(mW\).*known continuous actuator"):
-        validate_live_rig(ctrl, parsed)
+    report = validate_live_rig(ctrl, parsed)
+    assert "iBeamSmartCW-1.Power (mW)" in report.diagnostics[0].message
+    with pytest.raises(RigAuthorizationError, match="excluded"):
+        authorize_property_write(ctrl, "iBeamSmartCW-1", "Power (mW)")
 
 
 def test_m5_generic_pre_init_configuration_property_remains_declarable():
@@ -237,14 +244,15 @@ def test_m5_generic_pre_init_configuration_property_remains_declarable():
                for e in report.entries)
 
 
-def test_m5_ttl_state_false_positive_is_deliberately_fail_closed():
+def test_m5_ttl_state_false_positive_is_demoted_and_still_fail_closed():
     core = LiveCore("GenericDevice", "State0", 0,
                     prop_type="Integer", limits=False, device="TTL")
     ctrl, parsed = _direct(core, categorical={("TTL", "State0")})
-    with pytest.raises(RigAuthorizationError) as exc:
-        validate_live_rig(ctrl, parsed)
-    assert "TTL.State0 is a known continuous actuator" in str(exc.value)
-    assert "excluded_properties" in str(exc.value)
+    report = validate_live_rig(ctrl, parsed)
+    assert "TTL.State0 is a known continuous actuator" in report.diagnostics[0].message
+    assert "excluded_properties" in report.diagnostics[0].message
+    with pytest.raises(RigAuthorizationError, match="excluded"):
+        authorize_property_write(ctrl, "TTL", "State0")
 
 
 def test_declared_categorical_introspection_failure_is_fatal_in_guaranteed_mode():
@@ -273,6 +281,9 @@ def test_unmodified_m5_state_device_declarations_remain_categorical():
     core = LiveCore("StateDevice", "unused")
     core.get_loaded_devices = lambda: sorted({device for device, _ in declarations})
     core.get_device_type = lambda device: "StateDevice"
+    core.get_device_property_names = lambda device: [
+        prop for declared_device, prop in declarations if declared_device == device
+    ]
     ctrl, parsed = _direct(core, categorical=declarations)
     report = validate_live_rig(ctrl, parsed)
     admitted = {(e.device, e.property) for e in report.entries

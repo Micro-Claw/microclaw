@@ -10,6 +10,7 @@ from numbers import Real
 import sys
 from typing import Any, Iterable
 
+from microclaw.config import ConfigDiagnostic
 from microclaw.safety import (
     ActuatorId,
     BUILTIN_TYPED_CAPABILITIES,
@@ -48,6 +49,12 @@ def _acquisition_tool_names() -> list[str]:
 class RigAuthorizationError(RuntimeError):
     """The connected rig cannot satisfy the declared authorization profile."""
 
+    def __init__(
+        self, message: str, diagnostics: Iterable[ConfigDiagnostic] = ()
+    ) -> None:
+        super().__init__(message)
+        self.diagnostics = tuple(diagnostics)
+
 
 def _live_emu_laser_enables(
     ctrl: Any, loaded_devices: list[str]
@@ -61,7 +68,7 @@ def _live_emu_laser_enables(
     """
     from microclaw.emu_manager import (
         _emu_config_path,
-        _has_emu,
+        _has_emu_config,
         build_emu_map,
         read_emu_config,
         resolve_mm_app_dir,
@@ -91,7 +98,10 @@ def _live_emu_laser_enables(
 
     config_path = _emu_config_path(mm_app_dir)
     if not config_path.exists():
-        if resolution.source == "live" and not _has_emu(mm_app_dir):
+        # Emu.jar is present in nearly every stock MM installation.  Only an
+        # actual config says this rig uses EMU; a validated live path without
+        # one is therefore an ordinary non-EMU rig.
+        if resolution.source == "live" and not _has_emu_config(mm_app_dir):
             return [], []
         return [], [
             f"Could not establish EMU semantics for the live installation: "
@@ -184,6 +194,7 @@ class AuthorizationMap:
     excluded_presets: dict[str, list[str]] = field(default_factory=dict)
     authorized_presets: frozenset[str] = frozenset()
     channel_expansion_hashes: dict[str, str] = field(default_factory=dict)
+    diagnostics: tuple[ConfigDiagnostic, ...] = ()
 
     def to_dict(self) -> dict:
         out = asdict(self)
@@ -546,6 +557,7 @@ def validate_live_rig(
             file=sys.stderr,
         )
     errors: list[str] = []
+    demotions: list[ConfigDiagnostic] = []
     entries: list[AuthorizationEntry] = []
 
     if "stage-position" not in BUILTIN_TYPED_CAPABILITIES:
@@ -772,9 +784,38 @@ def validate_live_rig(
                     f"{policy.minimum:g}..{policy.maximum:g} {canonical_unit}"),
             source="declared",
         ))
+    admitted_categorical_pairs: set[tuple[str, str]] = set()
+    loaded_device_set = set(loaded_devices)
     for device, prop in sorted(profile.categorical_properties):
         if (device, prop) in typed_pairs:
             errors.append(f"Raw property {device}.{prop} cannot be both typed-continuous and categorical.")
+        absent_reason = None
+        if loaded_devices_error is None and device not in loaded_device_set:
+            absent_reason = f"declared device {device!r} is not loaded"
+        elif loaded_devices_error is None:
+            try:
+                if prop not in _strings(core.get_device_property_names(device)):
+                    absent_reason = f"property {device}.{prop} is not present"
+            except Exception as exc:
+                if guaranteed:
+                    errors.append(
+                        f"Could not introspect declared categorical property "
+                        f"{device}.{prop}: {_clean_exception_message(exc)}"
+                    )
+        if absent_reason is not None:
+            demotions.append(ConfigDiagnostic(
+                "live_check",
+                f"Categorical claim for {device}.{prop} was dropped because the "
+                f"{absent_reason}; it is not authorized for writes. Load the exact "
+                "device/property in Micro-Manager, or remove this exact entry from "
+                "`rig_profile.categorical_properties`.",
+                False,
+            ))
+            entries.append(AuthorizationEntry(
+                path="generic-property", classification="excluded", device=device,
+                property=prop, detail=absent_reason, source="declared",
+            ))
+            continue
         try:
             continuous = (_known_continuous_raw_pair(core, (device, prop))
                           or _continuous_introspection(core, device, prop))
@@ -788,18 +829,23 @@ def validate_live_rig(
                     f"{device}.{prop}: {_clean_exception_message(exc)}"
                 )
         if continuous:
-            errors.append(
+            demotions.append(ConfigDiagnostic(
+                "live_check",
                 f"Raw property {device}.{prop} is a known continuous actuator (confirmed by the live rig) and cannot be classified as categorical; "
                 "declare it in rig_profile.typed_actuators with exact semantics, units, and safe canonical bounds, or place it in "
-                "rig_profile.excluded_properties if it is intentionally unavailable for writes."
-            )
+                "rig_profile.excluded_properties if it is intentionally unavailable for writes. The categorical claim was dropped and this property is not authorized for writes.",
+                False,
+            ))
         entries.append(AuthorizationEntry(
             path="generic-property",
-            classification="reviewed_categorical_property",
+            classification=("excluded" if continuous else "reviewed_categorical_property"),
             device=device,
             property=prop,
+            detail=("declared categorical claim demoted because the live rig proves this property is continuous" if continuous else None),
             source="declared",
         ))
+        if not continuous:
+            admitted_categorical_pairs.add((device, prop))
 
     # Additive to the declared pairs above: an MM StateDevice (filter wheel,
     # slider, turret) needs no declaration for its own discrete position —
@@ -817,7 +863,7 @@ def validate_live_rig(
             detail=_AUTO_STATE_DEVICE_DETAIL,
             source=AUTO_STATE_DEVICE_SOURCE,
         ))
-    categorical_pairs = set(profile.categorical_properties) | auto_pairs
+    categorical_pairs = admitted_categorical_pairs | auto_pairs
 
     for device, prop in sorted(illumination_pairs):
         entries.append(AuthorizationEntry(
@@ -871,11 +917,31 @@ def validate_live_rig(
                 "path that Phase 1 cannot remove independently from every dedicated, "
                 "autofocus, and acquisition path."
             )
+        absent_reason = None
+        if loaded_devices_error is None and device not in loaded_device_set:
+            absent_reason = f"declared device {device!r} is not loaded"
+        elif loaded_devices_error is None:
+            try:
+                if prop not in _strings(core.get_device_property_names(device)):
+                    absent_reason = f"property {device}.{prop} is not present"
+            except Exception:
+                # The exclusion remains enforced without widening authority.
+                pass
+        if absent_reason is not None:
+            demotions.append(ConfigDiagnostic(
+                "live_check",
+                f"Excluded-property claim for {device}.{prop} was not corroborated "
+                f"because the {absent_reason}. The property remains unauthorized. "
+                "Correct the exact device/property name, or remove this exact entry "
+                "from `rig_profile.excluded_properties`.",
+                False,
+            ))
         entries.append(AuthorizationEntry(
             path="all-property-paths",
             classification="excluded",
             device=device,
             property=prop,
+            detail=absent_reason,
         ))
 
     allowed_channels = parsed_config.constraints.allowed_channels
@@ -895,13 +961,21 @@ def validate_live_rig(
         available = set(available_presets)
         missing = [preset for preset in allowed_channels if preset not in available]
         if missing:
-            errors.append(
+            demotions.append(ConfigDiagnostic(
+                "live_check",
                 "channels.allowed lists preset(s) not present in the \"Channel\" "
-                "group: " + ", ".join(repr(preset) for preset in missing) + "."
-            )
+                "group: " + ", ".join(repr(preset) for preset in missing)
+                + ". The missing preset claim(s) were dropped and are not authorized. Add each preset to Micro-Manager's Channel group, or remove its exact name from top-level `channels.allowed`.",
+                False,
+            ))
         presets = [preset for preset in allowed_channels if preset in available]
     authorized_presets: set[str] = set()
-    excluded_presets: dict[str, list[str]] = {}
+    excluded_presets: dict[str, list[str]] = {
+        preset: [
+            "preset is absent from Micro-Manager's Channel group; add it there or remove its exact name from top-level `channels.allowed`"
+        ]
+        for preset in (missing if allowed_channels is not None and available_presets is not None else [])
+    }
     channel_expansion_hashes: dict[str, str] = {}
     for preset in presets:
         reasons = []
@@ -1068,9 +1142,24 @@ def validate_live_rig(
         ))
 
     if errors:
-        raise RigAuthorizationError(
-            "Live rig authorization failed:\n- " + "\n- ".join(errors)
+        # Severity taxonomy: every legacy validator error is a process refusal.
+        # Each represents missing proof/completeness or an authority conflict;
+        # ignoring it would widen authority. Narrowing claim mismatches are
+        # created explicitly above as non-blocking live_check diagnostics.
+        blocking_diagnostics = tuple(
+            ConfigDiagnostic("live_check", message, True)
+            for message in errors
         )
+        raise RigAuthorizationError(
+            "Live rig authorization failed:\n- " + "\n- ".join(errors),
+            (*blocking_diagnostics, *demotions),
+        )
+
+    if demotions:
+        print("\n!! AUTHORIZATION CLAIMS DEMOTED — STARTUP CONTINUES WITH LESS AUTHORITY !!", file=sys.stderr)
+        for diagnostic in demotions:
+            print(f"- {diagnostic.message}", file=sys.stderr)
+        print("!! END DEMOTED AUTHORIZATION CLAIMS !!\n", file=sys.stderr)
 
     # A raw write passes two gates: this map and SafetyGuard.check_property's
     # categorical allowlist (built from the declared pairs at config-parse
@@ -1093,6 +1182,7 @@ def validate_live_rig(
         excluded_presets=excluded_presets,
         authorized_presets=frozenset(authorized_presets),
         channel_expansion_hashes=channel_expansion_hashes,
+        diagnostics=tuple(demotions),
     )
     ctrl.authorization_map = report
     return report
