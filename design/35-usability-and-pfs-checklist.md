@@ -128,7 +128,7 @@ Rig-facing commands must be PowerShell/cmd-safe (the rig is Windows): prefer
 | 1 | Usability | 0a and 0b assigned | `design33/phase5-doc-reconciliation` | `b717594` | `dd359a3` | n/a | `20b92e2` | done — block *is* the gate |
 | 2 | Usability | 1 | `design33/undeclared-light-source-gate` | `98842cf` | `ef72b15` + `e9817ad` | **PASS** — M5 refusal/declaration/confirm/cleanup + separate demo fail-closed run | `a1b7579` | done — design/33 landed semantics + residual boundary |
 | 3 | Usability | 2 | `design33/config-diagnostics` | `e8d6ee1` | `dce17a4` + `65bfd7c` | n/a — no rig surface | `0cb871f` | done — error taxonomy + offline-validation contract |
-| 4 | Usability | 3 | `design33/first-launch-setup` | `bc303a2` | round 4 `ac8d909` (runbook re-pinned at `b2f30c9`) | r1 **FAIL**; r2 demo **PASS**; r3 demo **PASS** (G1–G3); M5 G4 **completes and validates**, 5 findings; **round 4 pushed, awaiting re-gate** | | |
+| 4 | Usability | 3 | `design33/first-launch-setup` | `bc303a2` | round 4 `5c82d1e` (runbook re-pinned at `b059f33`) | r1 **FAIL**; r2/r3 demo **PASS**; M5 G4 validates but **the profile could not move a filter wheel**; StateDevice fix pushed, **awaiting round-5 re-gate incl. new G4b** | | |
 | 4r1a | Usability | 4 | `design33/first-launch-setup` | `15d8d1b` | `c5746b9` (`d203753` rejected) | folded into block 4 round 2 | n/a — merges via block 4 | |
 | 4r1b | Usability | 4 | `design35/startup-refusal-severity` | `15d8d1b` | `2558583` (`16cc416` rejected alone) | folded into block 4 round 2 | `385049d` into block branch | |
 | 4b | Usability | 4 merged | `design33/bounded-numeric-actuator` | | | **required** | | |
@@ -1031,6 +1031,56 @@ Two coordinator corrections on top of the accepted implementation:
    expected to refuse a blank produced a refusal — so the next default does not
    look like a regression. The widened paren-suffix behaviour also gained a
    producer-side test, where it lives.
+
+### Round 4 field failure — M5, 2026-08-01: **the profile would not move a filter wheel**
+
+Evidence: `block4-m5-20260801-173136`. The gate itself passed and the generated
+profile validated, but a normal session under it refused
+`Thorlabs Filter Wheel.State` with "excluded from the authorization map"
+(`20260801_173733_005364_..._filter-wheel-refused_history.jsonl`). The rig became
+less capable than it is under its hand-authored config, which no static gate step
+had asked about.
+
+**Cause, and it is not the auto-classification vacuum it first looks like.**
+Micro-Manager publishes `allowed_values` for a StateDevice's `Label` and never
+for its `State` — the state is an integer position. `_metadata_default` therefore
+fell through to "no discrete value domain or numeric limits" and wrote an
+*explicit* exclusion, which is a stronger statement than silence: design/33 Block
+3b's auto-classifier fills vacuums only, and setup had stopped leaving one. The
+domain was never missing; the inventory records it as the device's
+`state_labels`, which setup did not read.
+
+Scope on M5: four StateDevices — both Thorlabs filter wheels, the ELL6, and
+`iChrome-MLE-TCP`. The deployed hand-authored config declares the first three
+categorical. On the demo rig the same rule had excluded six more: Dichroic,
+Emission, Excitation, LED, Objective and Path `.State`, each one a selector whose
+`.Label` was already categorical.
+
+Fixed by the coordinator at `5c82d1e` (1309 passed / 99 skipped / 3 expected
+warnings). A StateDevice's `State` with no allowed values but N state labels now
+defaults to categorical over positions 0..N-1.
+
+**One deliberate exception, because Block 3b's rig gate already caught this exact
+widening once.** `iChrome-MLE-TCP` is a StateDevice *and* a laser engine — it
+surfaced illumination candidates, and the deployed config pointedly does not
+declare its `State`. A StateDevice position on a device that surfaced any
+illumination candidate is therefore never accepted in bulk; it is asked every
+time, with the reason in the prompt. Filter wheels take the proposal, laser
+engines ask.
+
+**Process finding, coordinator's own.** `g4-vs-deployed.diff` in the *previous*
+M5 bundle already contained this: `- {device: Thorlabs Filter Wheel, property:
+State}   # 6 pos: Filter-1..6` against `+# MM METADATA EXCLUSION: ... no discrete
+value domain`. The gate asks for every generated-vs-deployed difference to be
+explained in one direction or the other; the bundle was reviewed without opening
+that file, and it cost a rig session. The runbook now says to read the exclusion
+comments and not only the declarations.
+
+**New gate step G4b.** Every earlier step was static — generate, validate,
+compare. None of them asked whether the profile can actually run the rig, which
+is why a profile that passed every check could not move a wheel. G4b sets
+`reviewed: true` on a copy, starts a session, and moves a filter wheel by both
+`State` and `Label`.
 
 Post-merge design gate:
 
