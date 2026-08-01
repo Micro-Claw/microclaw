@@ -48,7 +48,35 @@ setup text says so itself, and the operator classification step exists because
 of it. It does not close the pre-validation enumeration window; it documents
 it. It does not exercise continuous focus, which Block 4 hard-excludes.
 
-## G0 — setup, identity, and immutable backup
+## Which machine runs what, and what already exists on it
+
+G1–G3 run on the **demo machine**. G4 runs on **M5**. They are different
+machines, so G0 runs once on each, into its own evidence directory, and the two
+bundles come back separately.
+
+**There is no pre-existing safety config on the demo machine, and none is
+needed.** That is the point of the block: `microclaw first-launch-setup` runs
+before any config exists — `main()` dispatches it without loading one — and G1
+generates the machine's first profile. Nothing in G1–G3 reads a deployed config,
+and `$Deployed` below does not exist there. If the demo machine happens to have
+an old hand-authored config lying around, ignore it; do not use it as a
+reference and do not let setup overwrite it (`--out` always points inside the
+evidence directory).
+
+**M5 is different: it already runs under a hand-authored reviewed config.** That
+file is `$Deployed`. It was not produced by setup — it predates this command and
+was written by hand from `safety_config.example.yaml`, which is why Block 5
+exists to fix the fictional acquisition budgets it inherited. G4's comparison is
+therefore *generated profile vs. the existing hand-authored one*, which is a
+real comparison precisely because the two were produced by different means. It
+is the only place in this gate where a deployed config is read, it is read
+read-only, and nothing in this gate writes to it.
+
+If you cannot locate a deployed M5 config, stop and tell me rather than
+substituting the example file — a comparison against `safety_config.example.yaml`
+would compare the generated profile against fiction and prove nothing.
+
+## G0 — setup and identity (run on each machine)
 
 Replace every angle-bracket value before running anything. This runbook is on
 the implementation branch, so the checkout below leaves it in the working tree
@@ -61,8 +89,8 @@ $Repo         = "<absolute repo path>"
 $Port         = 4827
 $Stamp        = Get-Date -Format "yyyyMMdd-HHmmss"
 $EvidenceRoot = "<absolute evidence parent OUTSIDE the repo>"
-$Evidence     = Join-Path $EvidenceRoot "block4-$Stamp"
-$Deployed     = "<absolute deployed M5 safety YAML>"
+$Machine      = "<demo or m5>"
+$Evidence     = Join-Path $EvidenceRoot "block4-$Machine-$Stamp"
 
 Set-Location $Repo
 New-Item -ItemType Directory -Path $Evidence | Out-Null
@@ -76,7 +104,6 @@ git status --short > "$Evidence\status.txt" 2>&1
 python -V > "$Evidence\python.txt" 2>&1
 pip install -e . > "$Evidence\pip-install.txt" 2>&1
 Copy-Item "design\35-block4-gate-prompts.md" (Join-Path $Evidence "runbook.md")
-Copy-Item $Deployed (Join-Path $Evidence "deployed-m5.reference.yaml")
 ```
 
 A normal branch checkout, not a detached HEAD: you stay on
@@ -84,9 +111,8 @@ A normal branch checkout, not a detached HEAD: you stay on
 `design\35-block4-gate-prompts.md` in front of you. The `runbook.md` copy is for
 the evidence archive, so the returned bundle records which revision was run.
 
-`contains-implementation-tip.txt` must read `0`. The deployed copy is a
-**read-only reference for the G4 comparison** — nothing in this gate writes to
-`$Deployed`.
+`contains-implementation-tip.txt` must read `0`. Reinstalling here is correct —
+this is a dedicated rig machine, not a shared worktree.
 
 ## G1 — demo core, complete pass
 
@@ -225,6 +251,18 @@ already initialized by the configuration load**, and capture the Micro-Manager
 log for the setup window so the unavoidable-initialization list in design/33 can
 be replaced with measurement rather than inference.
 
+Take the read-only reference copy of the existing hand-authored config first.
+This is the only step that reads `$Deployed`, and it never writes to it:
+
+```powershell
+$Deployed = "<absolute deployed M5 safety YAML — the hand-authored file M5 runs under today>"
+Copy-Item $Deployed (Join-Path $Evidence "deployed-m5.reference.yaml")
+Get-FileHash $Deployed -Algorithm SHA256 > "$Evidence\deployed-m5.sha256.txt"
+```
+
+Re-hash `$Deployed` at the end of G4 and confirm it is unchanged — the gate must
+leave the config M5 actually runs under byte-identical.
+
 ```powershell
 $M5Out   = Join-Path $Evidence "m5-profile.yaml"
 $M5Cfg   = "<absolute loaded M5 .cfg path>"
@@ -289,7 +327,8 @@ no.
 
 ## What to return
 
-One archive of `$Evidence`, plus a short written summary answering:
+**Two** archives — one `$Evidence` directory per machine, demo and M5 — plus a
+short written summary answering:
 
 1. Did the demo pass complete, validate, and start a session? (G1)
 2. Which of the nine G2 attempts were refused, and was any accepted? (G2)
@@ -299,6 +338,7 @@ One archive of `$Evidence`, plus a short written summary answering:
 5. Were the M5 devices already initialized by the configuration load, and what
    does the Micro-Manager log show initialized during the setup window?
 6. Did any refusal leave a file behind? (G5)
+6b. Is `$Deployed` byte-identical to its pre-gate hash? (G4)
 7. Anything in the interview that was unclear, tedious, or that you would have
    answered wrongly without knowing the rig — this block exists to make an
    operator able to author a config, so usability observations are evidence.
