@@ -19,7 +19,9 @@ class UnreviewedSafetyConfig(Exception):
 class ConfigDiagnostic:
     """One machine-readable result from an offline config check."""
 
-    kind: Literal["schema", "review", "guaranteed_mode", "live_check"]
+    kind: Literal[
+        "schema", "review", "guaranteed_mode", "degraded_mode", "live_check",
+    ]
     message: str
     blocking: bool
 
@@ -62,7 +64,11 @@ def validate_safety_config(path: str | Path | None = None) -> ConfigValidationRe
             (ConfigDiagnostic("schema", f"Could not parse {p}: {exc}", True),),
         )
 
-    reviewed = loaded.get("reviewed") is True if isinstance(loaded, dict) else None
+    reviewed = (
+        loaded["reviewed"]
+        if isinstance(loaded, dict) and type(loaded.get("reviewed")) is bool
+        else None
+    )
     if reviewed is False:
         diagnostics.append(ConfigDiagnostic(
             "review",
@@ -77,14 +83,15 @@ def validate_safety_config(path: str | Path | None = None) -> ConfigValidationRe
         diagnostics.append(ConfigDiagnostic("schema", str(exc), True))
         return ConfigValidationResult(p, None, reviewed, tuple(diagnostics))
 
+    acquisition = parsed.constraints.acquisition
+    acquisition_fields = (
+        "max_frames", "max_duration_s", "max_bytes", "max_illuminated_ms",
+        "max_session_illuminated_ms", "confirm_above_frames",
+        "confirm_above_duration_s", "confirm_above_bytes",
+        "confirm_above_illuminated_ms",
+    )
     if parsed.rig_profile.mode == "guaranteed":
-        acquisition = parsed.constraints.acquisition
-        for name in (
-            "max_frames", "max_duration_s", "max_bytes", "max_illuminated_ms",
-            "max_session_illuminated_ms", "confirm_above_frames",
-            "confirm_above_duration_s", "confirm_above_bytes",
-            "confirm_above_illuminated_ms",
-        ):
+        for name in acquisition_fields:
             if getattr(acquisition, name) is None:
                 diagnostics.append(ConfigDiagnostic(
                     "guaranteed_mode",
@@ -100,14 +107,37 @@ def validate_safety_config(path: str | Path | None = None) -> ConfigValidationRe
                 "finite positive maximum.",
                 True,
             ))
-        diagnostics.append(ConfigDiagnostic(
-            "live_check",
+        live_message = (
             "Offline validation cannot enumerate the rig. Live startup must still verify "
             "that every reachable stage has a closed declared range, every reachable "
             "actuator has policy, and reachable camera and illumination declarations "
-            "match hardware.",
-            False,
-        ))
+            "match hardware."
+        )
+    else:
+        unenforced = [
+            f"acquisition.{name}"
+            for name in acquisition_fields
+            if getattr(acquisition, name) is None
+        ]
+        if parsed.constraints.camera.max_exposure_ms is None:
+            unenforced.append("camera.max_exposure_ms")
+        if unenforced:
+            diagnostics.append(ConfigDiagnostic(
+                "degraded_mode",
+                "Degraded mode permits these null caps at live startup, and runtime "
+                "checks do not enforce a limit when it is null: " + ", ".join(unenforced)
+                + ". Set reviewed finite positive limits to enforce them; leaving them "
+                "null deliberately suspends these protections.",
+                False,
+            ))
+        live_message = (
+            "Offline validation cannot enumerate the rig. Degraded-mode live startup "
+            "must still enumerate connected devices, validate declared properties and "
+            "channel presets, and build the authorization map; its completeness claim "
+            "remains explicitly suspended for trusted plugin and unclassified paths."
+        )
+
+    diagnostics.append(ConfigDiagnostic("live_check", live_message, False))
 
     return ConfigValidationResult(p, parsed, reviewed, tuple(diagnostics))
 

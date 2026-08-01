@@ -231,6 +231,14 @@ def test_offline_validator_reports_unreviewed_as_expected_next_action(tmp_path):
     assert "`reviewed: true`" in review.message
 
 
+def test_offline_validator_does_not_call_missing_reviewed_intentional(tmp_path):
+    result = validate_safety_config(_write(tmp_path, REAL.replace("reviewed: true\n", "")))
+    assert result.reviewed is None
+    assert [item.kind for item in result.diagnostics] == ["schema"]
+    assert "missing required key" in result.diagnostics[0].message
+    assert "intentionally unreviewed" not in result.diagnostics[0].message
+
+
 def test_offline_validator_reports_review_and_all_schema_problems_together(tmp_path):
     text = REAL.replace("reviewed: true", "reviewed: false").replace(
         "stage: {x_min: -100.0, x_max: 100.0, y_min: -100.0, y_max: 100.0}",
@@ -266,6 +274,38 @@ def test_offline_clean_nulls_are_reported_as_live_startup_blockers(tmp_path):
         "confirm_above_illuminated_ms",
     ):
         assert any(f"acquisition.{field}" in item.message for item in blockers)
+
+
+def test_degraded_null_caps_are_nonblocking_but_never_silent(tmp_path):
+    text = REAL.replace("mode: guaranteed", "mode: degraded_trusted_plugins")
+    text = text.replace("max_exposure_ms: 500.0", "max_exposure_ms: null")
+    fields = (
+        "max_frames", "max_duration_s", "max_bytes", "max_illuminated_ms",
+        "max_session_illuminated_ms", "confirm_above_frames",
+        "confirm_above_duration_s", "confirm_above_bytes",
+        "confirm_above_illuminated_ms",
+    )
+    for field in fields:
+        text = text.replace(f"{field}: " + {
+            "max_frames": "10000", "max_duration_s": "3600",
+            "max_bytes": "50000000000", "max_illuminated_ms": "600000",
+            "max_session_illuminated_ms": "1800000",
+            "confirm_above_frames": "500", "confirm_above_duration_s": "300",
+            "confirm_above_bytes": "5000000000",
+            "confirm_above_illuminated_ms": "60000",
+        }[field], f"{field}: null")
+    result = validate_safety_config(_write(tmp_path, text))
+    assert result.can_start_live_validation
+    assert [item.kind for item in result.diagnostics] == [
+        "degraded_mode", "live_check",
+    ]
+    warning, live_check = result.diagnostics
+    assert not warning.blocking
+    assert "runtime checks do not enforce" in warning.message
+    assert "camera.max_exposure_ms" in warning.message
+    assert all(f"acquisition.{field}" in warning.message for field in fields)
+    assert "completeness claim" in live_check.message
+    assert "explicitly suspended" in live_check.message
 
 
 def test_check_config_cli_is_thin_offline_presenter(tmp_path, monkeypatch, capsys):

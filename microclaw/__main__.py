@@ -329,6 +329,7 @@ def check_config(args):
             "schema": "SCHEMA ERROR",
             "review": "REVIEW REQUIRED",
             "guaranteed_mode": "GUARANTEED-MODE REQUIREMENT",
+            "degraded_mode": "DEGRADED-MODE WARNING",
             "live_check": "LIVE CHECK REQUIRED",
         }[item.kind]
         print(f"{label}: {item.message}")
