@@ -344,28 +344,61 @@ before accepting a prompt, constructing the serving app, or invoking
 `run_agent_iter`/`execute_tool`. Keeping this in one shared function prevents the
 CLI and web paths from acquiring subtly different safety gates.
 
-## Populating the profile: a first-launch setup mode (later work)
+## Populating the profile: first-launch setup (implemented; rig gate pending)
 
-Populating the declared profile through a first-launch interactive prompt is
-**new, later work**; the current `microclaw init` only copies the example YAML
-and opens it for hand editing. The future flow needs an explicit setup mode to
-resolve its bootstrap problem:
+`microclaw first-launch-setup --out <safety_config.yaml>` implements the
+restricted interactive path. `microclaw init` still copies the example YAML;
+the setup command instead resolves the bootstrap problem as follows:
 
 1. Connect only for device enumeration, without starting the agent or exposing
    any mutation tools.
-2. Walk the operator through the detected devices and write an unreviewed rig
-   profile with no inferred safety limits.
-3. Disconnect and require the operator to enter limits and mark the file
-   reviewed.
+2. Disconnect, then walk the operator through the inventory's separate facts,
+   heuristic-candidate, and human-decision regions. Require explicit decisions
+   and human-entered limits, and write an unreviewed profile. Observed current
+   values, allowed values, and driver technical ranges are never defaults or
+   profile values.
+3. Require the operator to review the complete file and mark it reviewed.
 4. Restart normally, validate the file before controller construction, then
    perform the authoritative live-device cross-check before enabling tools.
 
 Even enumeration is hardware contact, and loading a Micro-Manager configuration
 may initialize devices. Setup mode therefore cannot promise that the safety file
 precedes the *first hardware contact*; it promises that no agent-directed or
-tool-directed hardware action is possible before review. Its implementation
-should use the least-active connection path Micro-Manager supports and document
-any unavoidable device initialization.
+tool-directed hardware action is possible before review. The implemented
+least-active path constructs only pycro-manager's remote `Core` shadow (not
+`MicroscopeController`, which also constructs `Studio`), verifies the Core
+connection, runs Block 9b's query-only `enumerate_rig`, writes the unchanged
+inventory format, releases the Core shadow, and closes the ZMQ bridge before the
+first interview question. It never loads a Micro-Manager configuration.
+
+The initialization boundary it cannot avoid is outside Python's control: the
+operator has already loaded the Micro-Manager configuration into the running JVM,
+which may have initialized every configured adapter/device, and constructing the
+remote Core shadow plus the version/enumeration queries contacts that initialized
+Core and drivers. On an undeclared emission path this may initialize and emit
+before a config exists; the normal-startup completeness cross-check is downstream
+and does not cover the window. No narrower per-device initialization list can be
+claimed mechanically from MMCore queries; the pending demo/M5 gates must record
+what their live Micro-Manager logs and devices actually initialize.
+
+The interview requires an explicit classification for every surfaced emission,
+enable, and power candidate and explicitly says discovery is not exhaustive.
+Unknown writability, enumeration failures, unsupported ROI/pulse kinds,
+unrecognised device types, and ambiguous XY position properties remain excluded
+or unresolved rather than inferred. Duplicate percent/native representations
+are one required choice. Continuous-focus enables are hard-excluded, the core
+focus/autofocus/offset relationship remains one review question, and PFS-offset
+workflows remain unsupported. Preset effects and typed-property collisions are
+shown before each preset decision. Generated guaranteed profiles always contain
+`categorical_properties`, including when empty.
+
+The generated file always carries `reviewed: false` and is passed to the shared
+offline `validate_safety_config` implementation. Setup accepts only the expected
+unreviewed diagnostic, never hot-loads the file, and directs the operator through
+disconnect → manual review → `reviewed: true` → normal restart. Its setup text
+also states that `max_session_illuminated_ms` is a per-process, non-durable
+ledger cap. The operator-driven M5 transcript and live demo-core start remain the
+Block 4 rig gate; automated input fixtures do not stand in for that human proof.
 
 ### Landed: Block 9b — read-only rig inventory (merge `041f6f8`, 2026-07-29)
 

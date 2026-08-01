@@ -550,82 +550,82 @@ list as the acceptance surface over it.
 
 Inputs and boundaries:
 
-- [ ] Consume `microclaw inspect-rig`'s inventory. Validate its `schema` against
+- [x] Consume `microclaw inspect-rig`'s inventory. Validate its `schema` against
       the shared supported-version contract from block 1 and **refuse an
       unrecognised version**. Do not wait for the Block 9b cross-rig gate — that
       needs a second live rig and could defer this block indefinitely.
-- [ ] Preserve the inventory's three regions (`facts`, `heuristic_candidates`,
+- [x] Preserve the inventory's three regions (`facts`, `heuristic_candidates`,
       `human_decisions`) rather than flattening them. Never convert a
       driver-reported `technical_range` into a safety bound.
-- [ ] **Copy only structural identifiers and explicit operator decisions into the
+- [x] **Copy only structural identifiers and explicit operator decisions into the
       profile. Never copy observed current or allowed property values.** This is
       inherited, not preference: Block 9b emits no YAML aid at all precisely
       because a config-shaped derivative invites mistaking an observed property
       for a reviewed decision (design/33 `:373`–`:378`). Phase 5 is the sanctioned
       place where inventory becomes config, so it carries that rationale.
-- [ ] Always write `reviewed: false`, disconnect, and require manual review then a
+- [x] Always write `reviewed: false`, disconnect, and require manual review then a
       normal restart. **Do not hot-load the generated profile.**
-- [ ] Never expose the agent, mutation tools, or inferred authorization during
+- [x] Never expose the agent, mutation tools, or inferred authorization during
       setup.
 
 Ordering honesty — the one place a dangling item collides physically:
 
-- [ ] Use the **least-active Micro-Manager connection path** available, and
+- [x] Use the **least-active Micro-Manager connection path** available, and
       document every device initialization it cannot avoid.
-- [ ] State the ordering guarantee accurately in the setup text: *no agent- or
+- [x] State the ordering guarantee accurately in the setup text: *no agent- or
       tool-directed hardware action before review*, **not** "no hardware contact
       before review" (design/33 `:363`–`:369`).
-- [ ] Say plainly that on a rig whose emission path is undeclared, enumeration
+- [x] Say plainly that on a rig whose emission path is undeclared, enumeration
       may initialize and emit before any config exists to gate it. Block 2's
       cross-check runs at startup and is downstream of this window; it does not
       close it.
 
 Human-decision requirements — each must fail closed, never infer:
 
-- [ ] Require explicit operator classification of **every** illumination enable,
+- [x] Require explicit operator classification of **every** illumination enable,
       emission, and power candidate the inventory surfaces. Do not claim
       heuristic discovery exhausted the physical emission paths.
-- [ ] Require a human decision for the unresolved M5 `iChrome-MLE-TCP.Label` /
+- [x] Require a human decision for the unresolved M5 `iChrome-MLE-TCP.Label` /
       `State` case and any equivalent ambiguity. Emit `categorical_properties`
       whenever guaranteed mode is in force **even when empty** (design/33 `:476`)
       — that key is the surface such a decision is recorded on.
-- [ ] Preserve duplicate percent/native-unit actuator representations as an
+- [x] Preserve duplicate percent/native-unit actuator representations as an
       unresolved choice. Phase 2 shipped `units: native` + `full_scale`, so the
       mW variant is now expressible: the decision is *which* representation to
       declare, not "neither."
-- [ ] Emit exclusions or unresolved review instructions for actuator kinds the
+- [x] Emit exclusions or unresolved review instructions for actuator kinds the
       current schema cannot express (camera ROI; MicroFPGA pulse duration; any
       unrecognised device type). **Never invent bounds or geometry.**
-- [ ] Refuse to generate ambiguous XY typed-actuator entries; defer the proposed
+- [x] Refuse to generate ambiguous XY typed-actuator entries; defer the proposed
       `axis` schema extension rather than guessing.
-- [ ] May recommend exclusion for the known `TTL.State0` GenericDevice false
+- [x] May recommend exclusion for the known `TTL.State0` GenericDevice false
       positive, but must require human confirmation.
-- [ ] Surface config-preset effects and typed-property collisions from the
+- [x] Surface config-preset effects and typed-property collisions from the
       inventory.
-- [ ] Render refusals in Phase 5's own wording. Do not reuse `execute_tool`'s —
+- [x] Render refusals in Phase 5's own wording. Do not reuse `execute_tool`'s —
       block 3 fixes that message, but the setup flow's audience is different.
 
 Continuous focus — hard exclusion until blocks 7a–7b land (and 7c if required):
 
-- [ ] **Do not classify `TIPFSStatus.State` or any equivalent continuous-focus /
+- [x] **Do not classify `TIPFSStatus.State` or any equivalent continuous-focus /
       autofocus enable as a categorical property.** Emit an exclusion or an
       unresolved review instruction.
-- [ ] Preserve the observed relationship among core focus stage, autofocus
+- [x] Preserve the observed relationship among core focus stage, autofocus
       device, and offset stage as a **review question**. Do not flatten them into
       independent controls and do not infer a movement policy.
-- [ ] Never copy an observed focus-engagement or approach position (the Nikon
+- [x] Never copy an observed focus-engagement or approach position (the Nikon
       2440–2450 µm figure) into a safety bound. Where safe Z limits depend on
       objective or sample-holder context that the schema cannot express, leave
       the policy unresolved rather than collapsing it into one apparently
       universal range.
-- [ ] Mark PFS-offset workflows unsupported even when the offset has reviewed
+- [x] Mark PFS-offset workflows unsupported even when the offset has reviewed
       bounds, until block 6's settling work lands.
 
 Setup text must explain, not just gate:
 
-- [ ] What `max_session_illuminated_ms` actually means — the ledger is per
+- [x] What `max_session_illuminated_ms` actually means — the ledger is per
       process and is not durable across restarts.
-- [ ] That configuration edits require a restart, and why the disconnect →
+- [x] That configuration edits require a restart, and why the disconnect →
       review → restart flow exists.
 
 Rig gate:

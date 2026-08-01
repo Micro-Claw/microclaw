@@ -12,7 +12,6 @@ from importlib import resources
 from pathlib import Path
 from pstats import SortKey
 
-from microclaw.agent import run_agent
 from microclaw.authorization import RigAuthorizationError, validate_live_rig
 from microclaw.assets import load_page
 from microclaw.controller import MicroscopeController
@@ -29,6 +28,10 @@ from microclaw.conversation import (
 )
 from microclaw.paths import default_safety_config
 from microclaw.safety import SafetyGuard
+
+# Compatibility seam for tests/embedders. Restricted commands leave this as
+# None; only the interactive REPL imports and installs the agent callable.
+run_agent = None
 
 
 def write_history(fn, history, save=True):
@@ -215,6 +218,12 @@ def run_session(args):
 
 
 def _repl(args, ctrl, guard, history, store):
+    global run_agent
+    if run_agent is None:
+        # Kept lazy so restricted commands such as first-launch setup never
+        # import or expose the agent implementation.
+        from microclaw.agent import run_agent as agent_runner
+        run_agent = agent_runner
     while True:
         try:
             user_input = input("You: ").strip()
@@ -343,6 +352,72 @@ def check_config(args):
     raise SystemExit(1)
 
 
+def first_launch_setup(args):
+    """Enumerate through Core only, disconnect, interview, and write a draft."""
+    from microclaw.first_launch import (
+        SetupRefusal, disconnect_core, interview, load_inventory, write_profile,
+    )
+    from microclaw.rig_inventory import enumerate_rig, write_inventory_outputs
+
+    target = Path(args.out)
+    if target.exists() and not args.force:
+        sys.exit(
+            f"SETUP REFUSAL: {target} already exists. Preserve the reviewed work, "
+            "choose another --out path, or pass --force deliberately."
+        )
+    try:
+        if args.inventory:
+            inventory = load_inventory(args.inventory)
+            print("Using an existing inspect-rig inventory; no hardware connection was opened.")
+        else:
+            from pycromanager import Core
+            print(
+                "Connecting to the already-running Micro-Manager Core for read-only "
+                "enumeration (no Studio, agent, or tool dispatcher)...",
+                file=sys.stderr,
+            )
+            core = None
+            try:
+                core = Core(port=args.port)
+                # This query verifies the bridge and is also part of enumerate_rig.
+                core.get_version_info()
+                inventory = enumerate_rig(core, mm_config=args.mm_config)
+                evidence_dir = Path(args.evidence_out or (str(target) + ".inventory"))
+                inventory_path, review_path = write_inventory_outputs(inventory, evidence_dir)
+                print(f"Inventory: {inventory_path}")
+                print(f"Review: {review_path}")
+            except OSError as exc:
+                raise SetupRefusal(
+                    f"SETUP REFUSAL: Could not read Micro-Manager config {args.mm_config}: {exc}"
+                ) from exc
+            finally:
+                if core is not None:
+                    disconnect_core(core, args.port)
+                    print("Disconnected from Micro-Manager before the interview.")
+        config, notes = interview(inventory)
+        result = write_profile(config, notes, target)
+    except (EOFError, KeyboardInterrupt):
+        sys.exit(
+            "SETUP REFUSAL: The interview ended before every decision was answered. "
+            "No profile was generated or loaded; rerun setup to start a complete interview."
+        )
+    except SetupRefusal as exc:
+        sys.exit(str(exc))
+    blockers = [item for item in result.diagnostics if item.blocking]
+    if result.parsed is None or any(item.kind != "review" for item in blockers):
+        details = "\n".join(f"- {item.message}" for item in blockers)
+        sys.exit(
+            "SETUP REFUSAL: The shared safety-config validator rejected the generated "
+            f"profile; it was not loaded.\n{details}"
+        )
+    print(f"Wrote unreviewed safety profile: {target}")
+    print(
+        "Disconnected. Manually review every declaration and limit, keep unsupported "
+        "items excluded, then set `reviewed: true` and perform a normal restart. "
+        "The generated profile has not been hot-loaded."
+    )
+
+
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="Microclaw: AI agent for Micro-Manager")
@@ -451,6 +526,20 @@ def main():
     )
     ir.add_argument("--mm-config", default=None, help="Path to the already-loaded MM .cfg (record/hash only).")
     ir.add_argument("--out", required=True, help="Directory for inventory.json and review.md.")
+    fl = sub.add_parser(
+        "first-launch-setup",
+        help="Enumerate and interview for an unreviewed rig safety profile.",
+        description=(
+            "Restricted setup: Core-only read enumeration, explicit operator decisions, "
+            "an unreviewed profile, disconnect, manual review, and normal restart. It "
+            "constructs no agent, server, plugin, or mutation-tool dispatcher."
+        ),
+    )
+    fl.add_argument("--out", required=True, help="Generated unreviewed safety YAML path.")
+    fl.add_argument("--inventory", default=None, help="Consume an existing inspect-rig inventory.json without connecting.")
+    fl.add_argument("--mm-config", default=None, help="Already-loaded MM .cfg path (record/hash only; never applied).")
+    fl.add_argument("--evidence-out", default=None, help="Inventory evidence directory (default: <out>.inventory).")
+    fl.add_argument("--force", action="store_true", help="Overwrite an existing output profile deliberately.")
     sv.add_argument(
         "--allow-remote",
         action="store_true",
@@ -511,6 +600,10 @@ def main():
 
     if args.command == "check-config":
         check_config(args)
+        return
+
+    if args.command == "first-launch-setup":
+        first_launch_setup(args)
         return
 
     if args.command == "serve":
