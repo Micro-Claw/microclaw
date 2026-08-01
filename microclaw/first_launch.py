@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import subprocess
 import tempfile
 from datetime import datetime, timezone
@@ -17,7 +18,7 @@ import yaml
 
 from microclaw import __version__
 from microclaw.config import ConfigValidationResult, validate_safety_config
-from microclaw.rig_inventory import validate_inventory_schema
+from microclaw.rig_inventory import _TRAILING_UNIT, validate_inventory_schema
 
 
 class SetupRefusal(ValueError):
@@ -336,19 +337,52 @@ def _technical_bounds(item: dict | None) -> tuple[float, float] | None:
 
 def _on_off_proposal(item: dict) -> tuple[str, str] | None:
     values = [str(value) for value in (item["record"].get("allowed_values") or [])]
-    if len(values) != 2:
+    if len(values) == 2:
+        try:
+            ordered = sorted(values, key=float)
+            if float(ordered[0]) != float(ordered[1]):
+                return ordered[1], ordered[0]
+        except ValueError:
+            pass
+        on_matches = [value for value in values if value.strip().casefold() in {"on", "1", "true", "open", "enabled", "yes"}]
+        if len(on_matches) == 1:
+            on = on_matches[0]
+            return on, next(value for value in values if value != on)
         return None
-    try:
-        ordered = sorted(values, key=float)
-        if float(ordered[0]) != float(ordered[1]):
-            return ordered[1], ordered[0]
-    except ValueError:
-        pass
-    on_matches = [value for value in values if value.strip().casefold() in {"on", "1", "true", "open", "enabled", "yes"}]
-    if len(on_matches) == 1:
-        on = on_matches[0]
-        return on, next(value for value in values if value != on)
+
+    record = item["record"]
+    integer = str(record.get("reported_type") or "").casefold() in {
+        "integer", "int", "long", "short",
+    }
+    bounds = _technical_bounds(item)
+    if not values and integer and bounds == (0.0, 1.0):
+        low, high = bounds
+        return str(int(high)), str(int(low))
     return None
+
+
+_EMISSION_DEFAULT_NAME = re.compile(r"laser|power|emission|enable", re.I)
+
+
+def _emission_role_default(item: dict) -> str | None:
+    """Default to the safer gate only for a narrow binary emission shape."""
+    if not _EMISSION_DEFAULT_NAME.search(item["property"]):
+        return None
+    proposal = _on_off_proposal(item)
+    if proposal is None:
+        return None
+    normalized = {value.strip().casefold() for value in proposal}
+    if normalized in ({"on", "off"}, {"0", "1"}):
+        return "e"
+    return None
+
+
+def _power_units_default(prop: str) -> str | None:
+    match = _TRAILING_UNIT.search(prop)
+    if match is None:
+        return None
+    unit = match.group("unit")[1:-1].strip().casefold()
+    return "p" if unit == "%" else "n"
 
 
 def _device_property(
@@ -622,7 +656,8 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
         if is_illumination:
             role = _choice(
                 f"Illumination candidate {path}. Discovery is not exhaustive; classify this surfaced candidate explicitly.",
-                {"e": "emission/enable", "p": "power", "x": "exclude", "u": "unresolved"}, ask, say,
+                {"e": "emission/enable", "p": "power", "o": "not an illumination path; classify as an ordinary property", "x": "exclude", "u": "unresolved"}, ask, say,
+                default=_emission_role_default(item),
             )
             if role == "e":
                 proposal = _on_off_proposal(item)
@@ -640,16 +675,39 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
                     ),
                 })
             elif role == "p":
-                units = _choice(f"Representation units for {path}", {"p": "percent", "n": "native"}, ask, say)
+                units = _choice(
+                    f"Representation units for {path}",
+                    {"p": "percent", "n": "native"}, ask, say,
+                    default=_power_units_default(prop),
+                )
                 row = {"device": device, "property": prop, "units": "percent" if units == "p" else "native"}
                 if units == "n":
-                    row["full_scale"] = _positive(f"Operator-confirmed native full scale for {path}", ask, say)
+                    full_scale_prompt = (
+                        f"Operator-confirmed native full scale for {path}: the native value "
+                        "corresponding to 100% output (for a 0-75 mW laser, 75). "
+                        "This is not a minimum; 0 is always writable"
+                    )
+                    bounds = _technical_bounds(item)
+                    row["full_scale"] = (
+                        _positive_default(full_scale_prompt, bounds[1], ask, say)
+                        if bounds is not None else _positive(full_scale_prompt, ask, say)
+                    )
                 power_properties.append(row)
-            else:
+            elif role in {"x", "u"}:
                 excluded.append({"device": device, "property": prop})
                 wording = "OPERATOR EXCLUSION" if role == "x" else "UNRESOLVED ILLUMINATION"
                 notes.append(f"{wording}: {path}; no illumination authorization was inferred.")
-            continue
+            else:
+                notes.append(
+                    f"OPERATOR RECLASSIFICATION: {path} is not an illumination path; "
+                    "classified as an ordinary property on operator instruction."
+                )
+                say(
+                    f"OPERATOR RECLASSIFICATION: {path} removed from the illumination set "
+                    "on operator instruction; continuing through ordinary-property classification."
+                )
+            if role != "o":
+                continue
 
         default_role, evidence, default_bounds = defaults[path]
         if default_role == "x" and bulk and path not in revisit:

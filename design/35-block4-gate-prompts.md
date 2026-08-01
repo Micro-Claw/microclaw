@@ -255,8 +255,8 @@ turn and record the exact response to each:
 3. Type a token that is not on the offered list (e.g. `yes`).
 4. Type an uppercase or mixed-case form of a valid choice.
 
-At the first required **number with no MM-derived default** (a budget or native
-full scale), attempt each and record the response:
+At the first required **number with no MM-derived default** (an acquisition
+budget), attempt each and record the response:
 
 5. Press Enter with nothing typed.
 6. Type `0`.
@@ -266,6 +266,20 @@ full scale), attempt each and record the response:
 
 At a bounds pair, enter a minimum **greater than** the maximum and record the
 response.
+
+Also capture the round-4 proposal paths, accepting once with Enter and then
+re-running to type a different valid value. For ON/OFF and full-scale values,
+the transcript must say `PROPOSAL ACCEPTED` on the first run and
+`OPERATOR OVERRIDE` on the second:
+
+- an integer 0–1 enable property proposes ON `1` and OFF `0` (not `1.0`/`0.0`);
+- a native power property with an MM range proposes the upper bound as
+  `full_scale`; verify the prompt explains that it is the native value at 100%
+  output, not a minimum, and still refuses zero and negatives;
+- `(%)` proposes percent and another parsed unit such as `(mW)` proposes native;
+- a binary `laser`/`power`/`emission`/`enable` property proposes
+  emission/enable, while a continuous power property and `Thorlabs ELL6.State`
+  do not.
 
 Then abandon the interview with Ctrl-C, and record both the refusal text and
 that no file exists at `--out`:
@@ -346,6 +360,17 @@ Answer as the rig's actual reviewer. Specifically record:
 - Every illumination candidate surfaced and how it was classified. The five EMU
   semantic laser enables must each appear and must each be classified
   explicitly.
+- For the iChrome integer 0–1 enable/emission properties, capture the proposed
+  emission/enable role and the string-valued ON `1` / OFF `0` proposals. Accept
+  at least one and override at least one so both audit outcomes are present.
+- Classify `Thorlabs ELL6.State` using `o=not an illumination path; classify as
+  an ordinary property`. Confirm the transcript records operator
+  reclassification and the generated profile contains it as an ordinary
+  categorical property, not an illumination shutter and not an exclusion.
+- For each `Fine A (%)` / `Fine B (%)` and `Power (mW)` entry, capture the unit
+  default. Accept one percent and one native proposal, override another, and
+  confirm each native full-scale proposal equals the reported range upper
+  bound (75 or 150 on this inventory).
 - Whether `TTL.State0` was recommended for exclusion and that confirmation was
   still required rather than applied automatically.
 - Whether `iChrome-MLE-TCP.Label` / `State` was surfaced, and what was decided.

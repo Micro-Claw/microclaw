@@ -54,7 +54,9 @@ _GATING_CONTEXT = re.compile(r"use\s*ttl|analog\s*mode|ttl\s*enable|ttl\s*high|m
 _SECRET_NAME = re.compile(r"password|passwd|secret|token|credential|api.?key|private.?key", re.I)
 _REDACTED = "<redacted>"
 _PROP_TYPES = {0: "Undef", 1: "String", 2: "Float", 3: "Integer"}
-_TRAILING_UNIT = re.compile(r"\s*(?P<unit>\[[^\[\]]+\])\s*$")
+_TRAILING_UNIT = re.compile(
+    r"\s*(?P<unit>\[[^\[\]]+\]|\([^()]+\))\s*$"
+)
 
 
 class _NonPrimitiveResult(TypeError):

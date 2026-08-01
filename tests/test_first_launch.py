@@ -13,8 +13,8 @@ from microclaw.config import (
 )
 from microclaw.first_launch import (
     CONTACT_ACKNOWLEDGEMENT, InterviewTranscript, SetupRefusal, disconnect_core,
-    _metadata_default, _on_off_proposal, _proposed_text, interview, load_inventory,
-    write_profile,
+    _emission_role_default, _metadata_default, _on_off_proposal,
+    _power_units_default, _proposed_text, interview, load_inventory, write_profile,
 )
 from microclaw.rig_inventory import INVENTORY_SCHEMA
 from microclaw.rig_inventory import _camera_geometry
@@ -379,7 +379,9 @@ def test_illumination_numeric_domain_proposes_on_off_and_audits_override():
     assert shutter == {"device": "Laser", "property": "Emission", "on_value": "0", "off_value": "1"}
     assert any("OPERATOR OVERRIDE: Laser.Emission ON value = '0' (proposed '1')" in line for line in output)
     assert any("OPERATOR OVERRIDE: Laser.Emission OFF value = '1' (proposed '0')" in line for line in output)
-    assert "there is no default" in next(p for p in prompts if p.startswith("Illumination candidate Laser.Emission"))
+    assert "default e; press Enter to accept" in next(
+        p for p in prompts if p.startswith("Illumination candidate Laser.Emission")
+    )
 
 
 def test_illumination_value_proposal_acceptance_is_audited():
@@ -397,6 +399,113 @@ def test_illumination_value_proposal_acceptance_is_audited():
 ])
 def test_on_off_proposal_uses_vocabulary_only_when_unambiguous(values, expected):
     assert _on_off_proposal({"record": {"allowed_values": values}}) == expected
+
+
+def test_real_ichrome_integer_range_proposes_string_one_and_zero():
+    item = {"property": "All: 1. Enable", "record": {
+        "allowed_values": [], "has_limits": True, "reported_type": "Integer",
+        "technical_range": {"lower": 0.0, "upper": 1.0},
+    }}
+    assert _on_off_proposal(item) == ("1", "0")
+    assert _emission_role_default(item) == "e"
+
+
+@pytest.mark.parametrize(("item", "expected"), [
+    ({"property": "Thorlabs ELL6.State", "record": {"allowed_values": ["0", "1"]}}, None),
+    ({"property": "Power (mW)", "record": {
+        "allowed_values": [], "has_limits": True, "reported_type": "Float",
+        "technical_range": {"lower": 0.0, "upper": 75.0},
+    }}, None),
+])
+def test_emission_default_excludes_state_and_continuous_power(item, expected):
+    assert _emission_role_default(item) is expected
+
+
+@pytest.mark.parametrize(("prop", "expected"), [
+    ("Fine A (%)", "p"), ("Power (mW)", "n"),
+    ("Laser Power [mW]", "n"), ("Laser Power", None),
+])
+def test_power_unit_default_comes_from_trailing_unit(prop, expected):
+    assert _power_units_default(prop) == expected
+
+
+def test_reclassified_illumination_candidate_uses_ordinary_metadata_flow():
+    inventory = _inventory()
+    emission = next(
+        prop for device in inventory["facts"]["devices"] if device["label"] == "Laser"
+        for prop in device["properties"] if prop["name"] == "Emission"
+    )
+    emission["allowed_values"] = ["0", "1"]
+    prompts, output = [], []
+
+    def ask(prompt):
+        prompts.append(prompt)
+        if "Accept all MM-derived" in prompt or "names to revisit" in prompt:
+            return ""
+        if prompt.startswith("Illumination candidate Laser.Emission"):
+            return "o"
+        if prompt.startswith("Illumination candidate Laser.Power"):
+            return "x"
+        if "minimum" in prompt: return "0"
+        if "maximum" in prompt: return "100"
+        if "proposed:" in prompt: return ""
+        return "1"
+
+    config, notes = interview(inventory, ask=ask, say=output.append)
+    assert {"device": "Laser", "property": "Emission"} in config["rig_profile"]["categorical_properties"]
+    assert not config["illumination"]["shutters"]
+    assert any("OPERATOR RECLASSIFICATION: Laser.Emission" in line for line in output)
+    assert any("on operator instruction" in note for note in notes)
+
+
+def test_native_full_scale_range_default_and_override_are_audited():
+    inventory = _inventory()
+    output = []
+
+    def ask(prompt):
+        if "Accept all MM-derived" in prompt or "names to revisit" in prompt: return ""
+        if prompt.startswith("Illumination candidate Laser.Emission"): return "x"
+        if prompt.startswith("Illumination candidate Laser.Power"): return "p"
+        if "Representation units" in prompt: return "n"
+        if "native full scale" in prompt: return "75"
+        if "minimum" in prompt: return "0"
+        if "maximum" in prompt: return "100"
+        if "proposed:" in prompt: return ""
+        return "1"
+
+    config, _ = interview(inventory, ask=ask, say=output.append)
+    assert config["illumination"]["power_properties"] == [{
+        "device": "Laser", "property": "Power %", "units": "native", "full_scale": 75,
+    }]
+    assert any("OPERATOR OVERRIDE:" in line and "proposed 2450" in line for line in output)
+    assert any("not a minimum; 0 is always writable" in line for line in output)
+
+
+def test_native_full_scale_without_range_keeps_no_default_question():
+    inventory = _inventory()
+    power = next(
+        prop for device in inventory["facts"]["devices"] if device["label"] == "Laser"
+        for prop in device["properties"] if prop["name"] == "Power %"
+    )
+    power.update(has_limits=False, reported_type="String")
+    power.pop("technical_range", None)
+    prompts = []
+
+    def ask(prompt):
+        prompts.append(prompt)
+        if "Accept all MM-derived" in prompt or "names to revisit" in prompt: return ""
+        if prompt.startswith("Illumination candidate Laser.Emission"): return "x"
+        if prompt.startswith("Illumination candidate Laser.Power"): return "p"
+        if "Representation units" in prompt: return "n"
+        if "native full scale" in prompt: return "75"
+        if "minimum" in prompt: return "0"
+        if "maximum" in prompt: return "100"
+        if "proposed:" in prompt: return ""
+        return "1"
+
+    interview(inventory, ask=ask, say=lambda _: None)
+    full_scale = next(prompt for prompt in prompts if "native full scale" in prompt)
+    assert "required; no default" in full_scale
 
 
 def test_stage_driver_ranges_are_offered_per_axis():
