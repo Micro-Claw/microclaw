@@ -4,7 +4,8 @@
 commits `cc34ab5` (round-4 hazard proposals: ON/OFF from a two-point technical
 range, `full_scale` defaulted from the driver range, a non-illumination exit in
 the candidate menu, a narrow emission/enable default, percent-versus-native from
-the unit suffix) and `ac8d909` (a bare trailing `%` also defaults to percent).
+the unit suffix) and `5c82d1e` (StateDevice positions classified from their state
+labels, after the round-4 profile could not move M5's filter wheels).
 Every earlier round's commit is an ancestor of both. The branch is
 pushed at `origin/design33/first-launch-setup`; **do not merge until this gate
 passes and the coordinator reviews the evidence.** Do not open a PR.
@@ -18,6 +19,14 @@ REPL. G4 then ran on M5 against that same round-3 code (`27211c1`): it completed
 and produced a profile the validator accepted, but exposed that the proposal
 machinery read the wrong evidence field, so 83 of M5's 112 questions still needed
 a typed answer. The round-4 commits above cut that to roughly a quarter.
+
+Round 4's own M5 run (`block4-m5-20260801-173136`) then passed the gate but
+produced a profile that **refused to move either filter wheel**: Micro-Manager
+publishes `allowed_values` for a StateDevice's `Label` and never for its `State`,
+so setup's generic rule excluded every wheel, turret and slider position. The
+domain was in the inventory all along as the device's state labels. `5c82d1e`
+reads them. The deployed-vs-generated diff had already recorded this and it was
+not read closely enough — **open `g4-vs-deployed.diff` before declaring G4 done.**
 
 **G6 is not repeated.** `authorization.py` has been byte-identical since round 2,
 so the demotion evidence from `block4-demo-20260801-144809` still stands.
@@ -123,7 +132,7 @@ git pull --ff-only > "$Evidence\git-pull.txt" 2>&1
 git rev-parse HEAD > "$Evidence\head.txt" 2>&1
 git merge-base --is-ancestor cc34ab5 HEAD
 $LASTEXITCODE > "$Evidence\contains-round4-proposals.txt"
-git merge-base --is-ancestor ac8d909 HEAD
+git merge-base --is-ancestor 5c82d1e HEAD
 $LASTEXITCODE > "$Evidence\contains-round4-fixes.txt"
 git status --short > "$Evidence\status.txt" 2>&1
 python -V > "$Evidence\python.txt" 2>&1
@@ -138,7 +147,8 @@ the evidence archive, so the returned bundle records which revision was run.
 
 `contains-round4-proposals.txt` and `contains-round4-fixes.txt` must **both** read
 `0`. If either reads `1` you are on pre-round-4 code — the interview will still
-ask you to type ON/OFF values and laser full scales that Micro-Manager reports;
+ask you to type ON/OFF values and laser full scales that Micro-Manager reports,
+and the profile it writes will not be able to move a filter wheel by `State`;
 re-pull before going further. Reinstalling here is correct —
 this is a dedicated rig machine, not a shared worktree.
 
@@ -406,6 +416,36 @@ already known to carry limits copied from the fictional example, which is
 block 5's work, so expect differences there and do not treat them as setup
 defects.
 
+Every `rig_profile` line present on one side and absent on the other is a
+finding, **including exclusions**. Round 4's bundle recorded
+`- {device: Thorlabs Filter Wheel, property: State}` against
+`+# MM METADATA EXCLUSION: ...` and nobody read it; the next session could not
+move a filter wheel. Read the exclusion comments, not only the declarations.
+
+### G4b — the generated profile can actually run the rig
+
+The comparison above is static. This step is the one that catches a profile that
+validates and then cannot do the work. Copy the generated profile, set
+`reviewed: true` on the copy, and start a normal session under it — **never**
+under `$Deployed`, and never writing to it.
+
+With the session running, exercise the two controls this round changed:
+
+- **Move a filter wheel by `State`, then by `Label`.** Both must be permitted,
+  and the wheel must physically move. This is the round-4 regression; a refusal
+  naming `excluded from the authorization map` means `5c82d1e` is not in your
+  checkout.
+- **Move the ELL6 slider.** It should be categorical after you answer `o` to its
+  illumination-candidate question.
+
+Then confirm nothing widened that should not have: the interview must have
+**asked** about `iChrome-MLE-TCP.State` rather than proposing it in bulk, because
+that device also surfaced illumination candidates. Whatever you answered, record
+it — answering `x` reproduces the deployed config's position.
+
+Capture the session history JSONL into the evidence directory. Put the rig back
+in its operator-approved safe state before finishing.
+
 Do **not** deploy the generated profile. Block 5 owns the deployed config.
 
 ## G5 — no file survives a refusal
@@ -472,11 +512,13 @@ the G6 outputs — and a short written summary answering:
 6b. Is `$Deployed` byte-identical to its pre-gate hash? (G4)
 7. Did the process start with all three claims demoted, and was the write to the
    demoted property refused? (G6)
-8. **How many questions did the demo interview actually ask?** Count them. The
-   expected answer is 22 for the fresh round-3 inventory (23 when replaying the
-   captured round-2 inventory without optional geometry facts). Round 1 asked about 90
-   and that was the headline complaint, so this number is the block's primary
-   acceptance measure.
+8. **How many questions did the interview ask, and how many did you have to
+   type an answer to?** Both numbers. The typed count is now the meaningful one:
+   the demo machine should ask 22 and need about 12 typed; M5 should ask about
+   112 and need roughly a quarter typed, against 83 in round 4. Round 1 asked
+   about 90 with nothing proposed, and that was the headline complaint.
+8b. **Did a filter wheel move, by `State` and by `Label`?** (G4b) This is the
+   round-4 regression and the reason this round exists.
 9. Anything in the interview that was unclear, tedious, or that you would have
    answered wrongly without knowing the rig — this block exists to make an
    operator able to author a config, so usability observations are evidence.
