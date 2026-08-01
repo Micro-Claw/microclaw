@@ -208,6 +208,25 @@ def test_camera_geometry_is_optional_fact_and_excluded_from_fingerprint():
     )
 
 
+def test_camera_geometry_reads_a_non_iterable_bridge_rectangle_roi():
+    """The demo rig returned java_awt_Rectangle, which list() cannot consume."""
+    class Rectangle:
+        x, y, width, height = 10, 20, 512, 256
+
+        def __iter__(self):
+            raise TypeError("'java_awt_Rectangle' object is not iterable")
+
+    class RectangleCore(ReadOnlyRecordingCore):
+        def _get_roi(self): return Rectangle()
+
+    inventory = enumerate_rig(RectangleCore())
+    assert inventory["facts"]["camera_geometry"]["roi"] == [10, 20, 512, 256]
+    assert [
+        failure for failure in inventory["facts"]["enumeration_failures"]
+        if failure["field"] == "roi"
+    ] == []
+
+
 def test_camera_geometry_uses_current_binning_to_report_unbinned_pixels():
     class CameraCore(ReadOnlyRecordingCore):
         def _get_loaded_devices(self): return ["Camera"]

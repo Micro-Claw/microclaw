@@ -745,9 +745,18 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
         "this proposal is implied by the frame/exposure and duration caps and does not bind before them",
         max_illuminated, ask, say,
     )
-    acquisition["confirm_above_illuminated_ms"] = _positive(
-        "human-confirmation threshold total shutter-open time in one acquisition (ms; operator must confirm before an acquisition exceeding it runs)",
-        ask, say,
+    # This is the only confirmation that tracks light on the sample, and it is
+    # the one the frame threshold cannot stand in for: few frames at a long
+    # exposure trip no frame count.  So it gets a real-world anchor rather than a
+    # value derived from the frame threshold, which would never fire first.
+    minute_ms = 60 * 1000
+    acquisition["confirm_above_illuminated_ms"] = _positive_default(
+        "human-confirmation threshold total shutter-open time in one acquisition (ms): "
+        "above this, Microclaw asks you to confirm before the acquisition runs. It is the "
+        "only confirmation that measures light on the sample, so it catches a few frames at "
+        "a long exposure, which the frame threshold cannot. Real-world anchor: one minute "
+        "continuously open = 60 × 1000 ms",
+        min(minute_ms, acquisition["max_illuminated_ms"]), ask, say,
     )
     day_ms = 24 * 60 * 60 * 1000
     acquisition["max_session_illuminated_ms"] = _positive_default(

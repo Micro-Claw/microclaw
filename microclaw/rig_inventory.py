@@ -103,8 +103,18 @@ def _strings_result(value: Any) -> list[str]:
 
 
 def _roi_result(value: Any) -> list[int]:
-    """Return the Core ROI as four stable integer coordinates."""
-    values = list(value)
+    """Return the Core ROI as four stable integer coordinates.
+
+    Over the ZMQ bridge `get_roi` hands back a `java.awt.Rectangle`, which is not
+    Python-iterable — the house failure mode for bridge collections.  Read its
+    public fields, which keep their raw Java names, before falling back to any
+    genuinely sequence-shaped return.
+    """
+    fields = [getattr(value, name, None) for name in ("x", "y", "width", "height")]
+    if all(field is not None and not callable(field) for field in fields):
+        values: list = fields
+    else:
+        values = list(value)
     if len(values) != 4:
         raise ValueError(f"expected four ROI values, got {len(values)}")
     result = [_primitive(item) for item in values]

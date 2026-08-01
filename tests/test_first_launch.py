@@ -283,6 +283,10 @@ def test_every_hazardous_field_still_refuses_blank():
         expected = 1 if fragment in {
             "maximum camera exposure", "total shutter-open time in one acquisition",
             "shutter-open time accumulated",
+            # Defaulted deliberately after the 2026-08-01 demo run: a
+            # blank-refusing dose question the operator could not interpret was
+            # answered 5e15, disabling the only confirmation measuring light.
+            "human-confirmation threshold total shutter-open time",
         } else 2
         assert sum(fragment in prompt for prompt in prompts) >= expected, fragment
     assert len([line for line in output if line.startswith("SETUP REFUSAL:")]) >= len(required)
