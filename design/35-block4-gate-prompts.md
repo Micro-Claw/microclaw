@@ -5,13 +5,17 @@ Gate for `design33/first-launch-setup`, implementation commits `c5746b9`
 pushed at `origin/design33/first-launch-setup`; **do not merge until this gate
 passes and the coordinator reviews the evidence.** Do not open a PR.
 
-**This is gate round 2.** Round 1 ran on the demo machine on 2026-08-01 and
+**This is gate round 3.** Round 2 passed the mechanical gates on the demo
+machine on 2026-08-01, but 24 questions still asked for values Micro-Manager
+already knew. Round 3 offers or derives those values, explains where MM has no
+source, and fixes stored-key authentication in the terminal REPL. Round 1
+ran on the demo machine on 2026-08-01 and
 failed: `Start-Transcript` captured nothing, the interview asked ~90 questions
 with no defaults or explanations, and the profile it produced would not start —
 19 continuous-actuator refusals, one missing-preset refusal, and a missing-EMU
-refusal. All five findings are fixed on this branch. The demo interview is now
-24 questions, every one of them a hazard or budget question, and Microclaw
-writes its own transcript.
+refusal. All findings are fixed on this branch. A legacy round-2 inventory asks
+23 questions because it lacks the new optional camera-geometry facts; a fresh
+inventory asks 22. Microclaw writes its own transcript.
 
 This gate is unusual in that **the connection itself is the thing under test.**
 `microclaw first-launch-setup` contacts hardware before any safety config
@@ -158,6 +162,12 @@ Record:
 - The disconnect message, and that it appeared before the first interview
   question.
 - The generated `demo-profile.yaml` in full.
+- For one numeric ON/OFF candidate, press Enter for one proposed value and type
+  an override for the other. Confirm the transcript contains `PROPOSAL
+  ACCEPTED` and `OPERATOR OVERRIDE` audit lines with the candidate and value.
+- Capture the offered exposure, illuminated-time, and full-day session-brake
+  defaults. Confirm the raw-byte arithmetic is printed and no raw-byte
+  confirmation-threshold question appears.
 
 Then the validator and the review/restart cycle:
 
@@ -180,7 +190,7 @@ $LASTEXITCODE >> "$Evidence\g1-check-config-reviewed.txt"
 Expected: offline checks pass, exit `0`. Then start a normal session under it:
 
 ```powershell
-microclaw --port $Port --safety-config (Join-Path $Evidence "demo-profile.reviewed.yaml")
+microclaw --port $Port --safety-config (Join-Path $Evidence "demo-profile.reviewed.yaml") serve
 ```
 
 The session must reach its prompt. Ask it one read-only question, then exit.
@@ -195,6 +205,21 @@ This captures the failure without hiding a prompt that needs an answer.
 **If live startup refuses a config that `check-config` passed, that is a
 finding and the gate stops** — that mismatch is exactly what block 3 exists to
 prevent.
+
+Now prove the terminal REPL uses the same stored key as `serve`. In the browser,
+store the Anthropic key, stop `serve`, remove `ANTHROPIC_API_KEY` from this
+PowerShell process if it is set, and run the command without `serve`:
+
+```powershell
+Remove-Item Env:ANTHROPIC_API_KEY -ErrorAction SilentlyContinue
+microclaw --port $Port --safety-config (Join-Path $Evidence "demo-profile.reviewed.yaml")
+```
+
+Before the REPL prompt, it must print one provenance line such as `Anthropic API
+key: …xxxx (from keyring)` (or `from file` on a machine without a usable
+keyring). Ask one read-only question, then exit. A missing-key run must instead
+stop before the REPL and plainly name the environment variable, system keyring,
+and Microclaw credential file as the three locations checked.
 
 ## G2 — the unresolved choice cannot be silently accepted
 
@@ -417,7 +442,8 @@ the G6 outputs — and a short written summary answering:
 7. Did the process start with all three claims demoted, and was the write to the
    demoted property refused? (G6)
 8. **How many questions did the demo interview actually ask?** Count them. The
-   expected answer is 24, all hazard or budget questions. Round 1 asked about 90
+   expected answer is 22 for the fresh round-3 inventory (23 when replaying the
+   captured round-2 inventory without optional geometry facts). Round 1 asked about 90
    and that was the headline complaint, so this number is the block's primary
    acceptance measure.
 9. Anything in the interview that was unclear, tedious, or that you would have

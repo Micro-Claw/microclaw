@@ -908,6 +908,39 @@ def test_cli_and_web_fail_before_exposure_on_partial_direct_dose_policy(monkeypa
         ))
 
 
+@pytest.mark.parametrize(("source", "key", "shown"), [
+    ("env", "sk-ant-from-env-1234", "…1234 (from env)"),
+    ("keyring", "sk-ant-from-store-5678", "…5678 (from keyring)"),
+])
+def test_repl_resolves_api_key_through_shared_loader(monkeypatch, capsys, source, key, shown):
+    from microclaw import __main__ as cli
+    from microclaw import agent, credentials
+
+    installed = []
+    monkeypatch.setattr(cli, "load_safety_config_or_exit", lambda path: parsed())
+    monkeypatch.setattr(cli, "MicroscopeController", lambda port, guard: Controller())
+    monkeypatch.setattr(credentials, "load_api_key", lambda: (key, source))
+    monkeypatch.setattr(agent, "set_api_key", installed.append)
+    monkeypatch.setattr(cli, "_repl", lambda *args: None)
+    cli.run_session(SimpleNamespace(
+        safety_config=None, port=1, save_history=False, history_retention_days=None,
+    ))
+    assert installed == [key]
+    assert f"Anthropic API key: {shown}" in capsys.readouterr().out
+
+
+def test_repl_refuses_missing_api_key_before_repl(monkeypatch):
+    from microclaw import __main__ as cli
+    from microclaw import credentials
+
+    monkeypatch.setattr(cli, "load_safety_config_or_exit", lambda path: parsed())
+    monkeypatch.setattr(cli, "MicroscopeController", lambda port, guard: Controller())
+    monkeypatch.setattr(credentials, "load_api_key", lambda: (None, None))
+    monkeypatch.setattr(cli, "_repl", lambda *args: pytest.fail("REPL exposed"))
+    with pytest.raises(SystemExit, match="environment variable, the system keyring, and the Microclaw credential file"):
+        cli.run_session(SimpleNamespace(safety_config=None, port=1, save_history=False))
+
+
 def test_read_only_enumeration_prints_map_without_agent_or_repl(monkeypatch):
     from microclaw import __main__ as cli
 

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from pathlib import Path
 import re
 from typing import Any, Callable
@@ -99,6 +100,58 @@ def _strings_result(value: Any) -> list[str]:
             raise _NonPrimitiveResult(f"non-primitive result type: {type(value).__name__}")
         values = [get(i) for i in range(int(_primitive(size())))]
     return [str(_primitive(item)) for item in values]
+
+
+def _roi_result(value: Any) -> list[int]:
+    """Return the Core ROI as four stable integer coordinates."""
+    values = list(value)
+    if len(values) != 4:
+        raise ValueError(f"expected four ROI values, got {len(values)}")
+    result = [_primitive(item) for item in values]
+    if not all(type(item) is int for item in result):
+        raise _NonPrimitiveResult("ROI values must be integers")
+    return result
+
+
+def _camera_geometry(core: Any, camera_label: str, devices: list[dict], failures: list[dict]) -> dict:
+    """Collect optional current camera geometry without aborting enumeration."""
+    scope = f"camera_geometry:{camera_label}"
+    width = _query(failures, scope, "image_width", lambda: _primitive(core.get_image_width()))
+    height = _query(failures, scope, "image_height", lambda: _primitive(core.get_image_height()))
+    bytes_per_pixel = _query(
+        failures, scope, "bytes_per_pixel", lambda: _primitive(core.get_bytes_per_pixel())
+    )
+    bit_depth = _query(failures, scope, "image_bit_depth", lambda: _primitive(core.get_image_bit_depth()))
+    roi = _query(failures, scope, "roi", lambda: _roi_result(core.get_roi()))
+    camera_device = next((item for item in devices if item["label"] == camera_label), None)
+    binning_record = next(
+        (
+            prop for prop in (camera_device or {}).get("properties", [])
+            if prop["name"].casefold() == "binning"
+        ),
+        None,
+    )
+    binning = None
+    if binning_record is not None:
+        try:
+            parsed_binning = float(binning_record.get("current_value"))
+            if math.isfinite(parsed_binning) and parsed_binning > 0 and parsed_binning.is_integer():
+                binning = int(parsed_binning)
+        except (TypeError, ValueError):
+            pass
+    unbinned = None
+    if type(width) is int and type(height) is int and binning is not None:
+        unbinned = {"width": width * binning, "height": height * binning}
+    return {
+        "device": camera_label,
+        "image_width": width,
+        "image_height": height,
+        "bytes_per_pixel": bytes_per_pixel,
+        "image_bit_depth": bit_depth,
+        "roi": roi,
+        "binning": binning,
+        "unbinned_full_frame_pixels": unbinned,
+    }
 
 
 def _property_type(core: Any, device: str, prop: str) -> str:
@@ -307,6 +360,11 @@ def enumerate_rig(core: Any, *, mm_config: str | Path | None = None) -> dict:
             "properties": properties, "state_labels": sorted(state_labels),
         })
 
+    camera_geometry = None
+    camera_label = assignments.get("camera")
+    if camera_label:
+        camera_geometry = _camera_geometry(core, camera_label, devices, failures)
+
     groups = []
     for group in _query(failures, "core", "configuration_groups", lambda: sorted(_strings_result(core.get_available_config_groups())), []):
         presets = _query(failures, f"config_group:{group}", "presets", lambda g=group: sorted(_strings_result(core.get_available_configs(g))), [])
@@ -378,6 +436,8 @@ def enumerate_rig(core: Any, *, mm_config: str | Path | None = None) -> dict:
         "configuration_groups": groups,
         "enumeration_failures": failures,
     }
+    if camera_geometry is not None:
+        facts["camera_geometry"] = camera_geometry
     config_record = None
     if mm_config is not None:
         p = Path(mm_config)
@@ -387,7 +447,12 @@ def enumerate_rig(core: Any, *, mm_config: str | Path | None = None) -> dict:
     # the fingerprint while keeping the full text in facts/review.md.
     fingerprint_payload = {
         "schema": FINGERPRINT_SCHEMA,
-        "facts": _fingerprint_facts(facts),
+        # Current ROI/binning geometry is acquisition state, not rig identity.
+        # Keep it as evidence without making routine camera reconfiguration look
+        # like a different physical rig.
+        "facts": _fingerprint_facts({
+            key: value for key, value in facts.items() if key != "camera_geometry"
+        }),
     }
     fingerprint = hashlib.sha256(json.dumps(fingerprint_payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     return {

@@ -12,6 +12,7 @@ from importlib import resources
 from pathlib import Path
 from pstats import SortKey
 
+from microclaw import credentials
 from microclaw.authorization import RigAuthorizationError, validate_live_rig
 from microclaw.assets import load_page
 from microclaw.controller import MicroscopeController
@@ -195,6 +196,18 @@ def run_session(args):
         validate_live_rig(ctrl, parsed_safety, guard=guard)
     except RigAuthorizationError as exc:
         sys.exit(str(exc))
+
+    key, source = credentials.load_api_key()
+    if key is None:
+        sys.exit(
+            "No Anthropic API key found. Looked in the ANTHROPIC_API_KEY "
+            "environment variable, the system keyring, and the Microclaw credential file."
+        )
+    # Keep the agent import lazy for restricted commands, but use the same key
+    # injection path as the browser server before any API-backed session starts.
+    from microclaw.agent import set_api_key
+    set_api_key(key)
+    print(f"Anthropic API key: {credentials.mask(key)} (from {source})")
     print("Connected. Type your instructions (type 'exit' or press Ctrl-C to quit).\n")
 
     history_fn_name = f"{datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f')}_microclaw_history.jsonl"

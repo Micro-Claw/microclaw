@@ -1,5 +1,6 @@
 import json
 import hashlib
+import copy
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,9 +13,11 @@ from microclaw.config import (
 )
 from microclaw.first_launch import (
     CONTACT_ACKNOWLEDGEMENT, InterviewTranscript, SetupRefusal, disconnect_core,
-    _metadata_default, interview, load_inventory, write_profile,
+    _metadata_default, _on_off_proposal, _proposed_text, interview, load_inventory,
+    write_profile,
 )
 from microclaw.rig_inventory import INVENTORY_SCHEMA
+from microclaw.rig_inventory import _camera_geometry
 
 REAL_DEMO_INVENTORY = Path(__file__).parent / "fixtures" / "block4_demo_inventory_20260801.json"
 
@@ -85,11 +88,11 @@ def _inventory():
 def _answers():
     # Bulk defaults/no revisits; emission role/on/off; power role/units; TTL
     # unresolved; core Z bounds;
-    # nine explicit acquisition budgets; illumination cap and ratchet.
+    # grouped acquisition budgets (derived fields accept proposals); illumination cap and ratchet.
     return iter([
-        "", "", "e", "OPERATOR_ON", "OPERATOR_OFF", "p", "p", "",
-        "0", "200", "500",
-        "100", "60", "1000000", "5000", "10000", "50", "30", "500000", "1000",
+        "", "", "e", "OPERATOR_ON", "OPERATOR_OFF", "p", "p",
+        "0", "200", "",
+        "500", "100", "60", "50", "", "1000000", "", "1000000",
         "25", "2",
     ])
 
@@ -142,7 +145,7 @@ def test_interview_copies_only_identifiers_and_explicit_answers(tmp_path):
     }
     rendered = yaml.safe_dump(config)
     assert "OBSERVED" not in rendered
-    assert "2440" not in rendered and "2450" not in rendered
+    assert config["camera"]["max_exposure_ms"] == 2450
     assert any("PFS-offset workflows remain unsupported" in note for note in notes)
     assert any("ambiguous XY" in line for line in output)
     result = write_profile(config, notes, tmp_path / "profile.yaml")
@@ -268,16 +271,20 @@ def test_every_hazardous_field_still_refuses_blank():
     interview(inventory, ask=ask, say=output.append)
     required = [
         "Illumination candidate Laser.Emission", "Illumination candidate Laser.Power",
-        "ON value", "OFF value", "core XY x travel", "core XY y travel",
-        "core focus z travel", "maximum camera exposure", "hard maximum frames",
+        "ON value", "OFF value", "XY stage XY x travel", "XY stage XY y travel",
+        "focus stage Z z travel", "maximum camera exposure", "hard maximum frames",
         "hard maximum acquisition duration", "hard maximum raw payload bytes",
-        "hard maximum illuminated time per acquisition", "hard maximum illuminated time in this process",
+        "total shutter-open time in one acquisition", "shutter-open time accumulated",
         "human-confirmation threshold frames", "human-confirmation threshold duration",
-        "human-confirmation threshold raw bytes", "human-confirmation threshold illuminated time",
+        "human-confirmation threshold total shutter-open time",
         "maximum illumination power", "maximum consecutive power step factor",
     ]
     for fragment in required:
-        assert sum(fragment in prompt for prompt in prompts) >= 2, fragment
+        expected = 1 if fragment in {
+            "maximum camera exposure", "total shutter-open time in one acquisition",
+            "shutter-open time accumulated",
+        } else 2
+        assert sum(fragment in prompt for prompt in prompts) >= expected, fragment
     assert len([line for line in output if line.startswith("SETUP REFUSAL:")]) >= len(required)
 
 
@@ -316,13 +323,15 @@ def test_each_mm_metadata_shape_has_a_fail_closed_default(record, role, evidence
     assert actual_bounds == bounds
 
 
-def test_real_demo_inventory_bulk_pass_is_exactly_24_questions():
+def test_real_demo_inventory_bulk_pass_is_exactly_23_questions_without_geometry():
     inventory = json.loads(REAL_DEMO_INVENTORY.read_text(encoding="utf-8"))
     prompts = []
     config, _ = interview(
         inventory, ask=_answer_real_interview(prompts), say=lambda _: None,
     )
-    assert len(prompts) == 24
+    assert len(prompts) == 23
+    assert any("hard maximum raw payload bytes" in prompt for prompt in prompts)
+    assert not any("confirmation threshold raw bytes" in prompt for prompt in prompts)
     assert not any(prompt.startswith("Preset ") for prompt in prompts)
     assert {
         key: len(config["rig_profile"][key])
@@ -333,6 +342,141 @@ def test_real_demo_inventory_bulk_pass_is_exactly_24_questions():
         "excluded_properties": 34,
     }
     assert len(config["channels"]["allowed"]) == 14
+
+
+def test_illumination_numeric_domain_proposes_on_off_and_audits_override():
+    inventory = _inventory()
+    emission = next(
+        prop for device in inventory["facts"]["devices"] if device["label"] == "Laser"
+        for prop in device["properties"] if prop["name"] == "Emission"
+    )
+    emission["allowed_values"] = ["0", "1"]
+    prompts, output = [], []
+
+    def ask(prompt):
+        prompts.append(prompt)
+        if "Accept all MM-derived" in prompt or "names to revisit" in prompt:
+            return ""
+        if prompt.startswith("Illumination candidate Laser.Emission"):
+            return "e"
+        if "ON value for Laser.Emission" in prompt:
+            return "0"  # intentionally invert the proposal
+        if "OFF value for Laser.Emission" in prompt:
+            return "1"
+        if prompt.startswith("Illumination candidate Laser.Power"):
+            return "x"
+        if "minimum" in prompt: return "0"
+        if "maximum" in prompt: return "100"
+        if "proposed:" in prompt: return ""
+        return "1"
+
+    config, _ = interview(inventory, ask=ask, say=output.append)
+    shutter = config["illumination"]["shutters"][0]
+    assert shutter == {"device": "Laser", "property": "Emission", "on_value": "0", "off_value": "1"}
+    assert any("OPERATOR OVERRIDE: Laser.Emission ON value = '0' (proposed '1')" in line for line in output)
+    assert any("OPERATOR OVERRIDE: Laser.Emission OFF value = '1' (proposed '0')" in line for line in output)
+    assert "there is no default" in next(p for p in prompts if p.startswith("Illumination candidate Laser.Emission"))
+
+
+def test_illumination_value_proposal_acceptance_is_audited():
+    output = []
+    assert _proposed_text(
+        "Exact ON", "1", lambda prompt: "", output.append, audit_name="Lamp.State ON value",
+    ) == "1"
+    assert output == ["PROPOSAL ACCEPTED: Lamp.State ON value = '1'."]
+
+
+@pytest.mark.parametrize(("values", "expected"), [
+    (["Closed", "Open"], ("Open", "Closed")),
+    (["Off", "On", "Auto"], None),
+    (["Maybe", "Unknown"], None),
+])
+def test_on_off_proposal_uses_vocabulary_only_when_unambiguous(values, expected):
+    assert _on_off_proposal({"record": {"allowed_values": values}}) == expected
+
+
+def test_stage_driver_ranges_are_offered_per_axis():
+    inventory = _inventory()
+    inventory["facts"]["core_device_assignments"]["xy_stage"] = "XY"
+    xy = next(device for device in inventory["facts"]["devices"] if device["label"] == "XY")
+    xy["properties"][0].update(
+        has_limits=True, reported_type="Float",
+        technical_range={"lower": -10, "upper": 20},
+    )
+    xy["properties"].append({
+        "name": "YPosition", "current_value": "0", "allowed_values": [],
+        "read_only": False, "pre_init": False, "has_limits": True,
+        "reported_type": "Float", "technical_range": {"lower": -30, "upper": 40},
+    })
+    inventory["facts"]["devices"].append({
+        "label": "Z", "device_type": "StageDevice", "state_labels": [],
+        "properties": [{
+            "name": "Position", "current_value": "0", "allowed_values": [],
+            "read_only": False, "pre_init": False, "has_limits": True,
+            "reported_type": "Float", "technical_range": {"lower": 1, "upper": 99},
+        }],
+    })
+    prompts = []
+    base = _answer_real_interview(prompts)
+    def ask(prompt):
+        if "MM driver technical range" in prompt:
+            prompts.append(prompt)
+            return ""
+        return base(prompt)
+    config, _ = interview(inventory, ask=ask, say=lambda _: None)
+    assert config["stage"] == {
+        "x_min": -10, "x_max": 20, "y_min": -30, "y_max": 40,
+        "z_min": 1, "z_max": 99,
+    }
+    assert sum("MM driver technical range" in prompt for prompt in prompts) == 6
+
+
+def test_real_demo_limit_sources_exposure_default_and_budget_order():
+    inventory = json.loads(REAL_DEMO_INVENTORY.read_text(encoding="utf-8"))
+    prompts, output = [], []
+    interview(inventory, ask=_answer_real_interview(prompts), say=output.append)
+    assert any("no X travel limits for XY stage device XY" in line for line in output)
+    assert any("no Y travel limits for XY stage device XY" in line for line in output)
+    assert any("no Z travel limits for focus stage device Z" in line for line in output)
+    exposure = next(prompt for prompt in prompts if "maximum camera exposure" in prompt)
+    assert "proposed: 10000" in exposure
+    ordered = [
+        "maximum camera exposure", "hard maximum frames", "confirmation threshold frames",
+        "hard maximum acquisition duration", "confirmation threshold duration",
+        "hard maximum total shutter-open time", "confirmation threshold total shutter-open time",
+        "hard maximum shutter-open time accumulated", "hard maximum raw payload bytes",
+    ]
+    positions = [next(i for i, prompt in enumerate(prompts) if text in prompt) for text in ordered]
+    assert positions == sorted(positions)
+
+
+def test_real_demo_geometry_from_producer_removes_byte_question_and_derives_inert_threshold():
+    inventory = json.loads(REAL_DEMO_INVENTORY.read_text(encoding="utf-8"))
+
+    class GeometryCore:
+        def get_image_width(self): return 512
+        def get_image_height(self): return 512
+        def get_bytes_per_pixel(self): return 2
+        def get_image_bit_depth(self): return 16
+        def get_roi(self): return (0, 0, 512, 512)
+
+    devices = copy.deepcopy(inventory["facts"]["devices"])
+    camera = inventory["facts"]["core_device_assignments"]["camera"]
+    inventory["facts"]["camera_geometry"] = _camera_geometry(GeometryCore(), camera, devices, [])
+    prompts, output = [], []
+    fallback = _answer_real_interview(prompts)
+    def accept_proposals(prompt):
+        if "proposed:" in prompt:
+            prompts.append(prompt)
+            return ""
+        return fallback(prompt)
+    config, notes = interview(inventory, ask=accept_proposals, say=output.append)
+    assert len(prompts) == 22
+    assert not any("hard maximum raw payload bytes" in prompt for prompt in prompts)
+    assert config["acquisition"]["max_bytes"] == 512 * 512 * 2 * config["acquisition"]["max_frames"]
+    assert config["acquisition"]["confirm_above_bytes"] == config["acquisition"]["max_bytes"]
+    assert any("512 × 512 pixels × 2 bytes/pixel" in line for line in output)
+    assert any("BYTE CONFIRMATION INERT" in note for note in notes)
 
 
 def test_bulk_accept_and_individual_review_produce_same_real_demo_profile():

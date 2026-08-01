@@ -48,9 +48,9 @@ reviewed: true and perform a normal restart. Configuration is loaded and the
 live authorization map is built only at process startup, so edits require a
 restart; setup never hot-loads its output.
 
-max_session_illuminated_ms caps the illumination-dose ledger accumulated by one
-Microclaw process. That ledger is not durable across restarts: restarting starts
-a new process ledger, so this value is not a lifetime or cross-restart dose cap.
+max_session_illuminated_ms is an in-process runaway-loop brake. It accumulates
+shutter-open time from every acquisition in one Microclaw process and resets to
+zero at restart; it is not a sample-lifetime or cross-restart dose guarantee.
 
 Heuristic candidates are questions, not proof. Discovery may miss physical
 emission paths. Micro-Manager writability and value-domain metadata provide
@@ -171,6 +171,36 @@ def _positive(prompt: str, ask: Input, say: Output) -> float:
         say("SETUP REFUSAL: Enter a finite number greater than zero. No driver-reported or example limit will be inferred.")
 
 
+def _positive_default(prompt: str, proposed: float, ask: Input, say: Output) -> float:
+    while True:
+        raw = ask(f"{prompt} [proposed: {proposed:g}; press Enter to accept]: ").strip()
+        if not raw:
+            return proposed
+        try:
+            value = float(raw)
+        except ValueError:
+            value = math.nan
+        if math.isfinite(value) and value > 0:
+            return value
+        say("SETUP REFUSAL: Enter a finite number greater than zero or press Enter to accept the proposal.")
+
+
+def _proposed_text(
+    prompt: str, proposed: str | None, ask: Input, say: Output, *, audit_name: str,
+) -> str:
+    if proposed is None:
+        value = _text(prompt, ask, say)
+        say(f"OPERATOR VALUE TYPED: {audit_name} = {value!r}; no proposal was available.")
+        return value
+    while True:
+        raw = ask(f"{prompt} [MM allowed-value proposal: {proposed}; press Enter to accept]: ").strip()
+        if not raw:
+            say(f"PROPOSAL ACCEPTED: {audit_name} = {proposed!r}.")
+            return proposed
+        say(f"OPERATOR OVERRIDE: {audit_name} = {raw!r} (proposed {proposed!r}).")
+        return raw
+
+
 def _finite(prompt: str, ask: Input, say: Output) -> float:
     while True:
         raw = _text(prompt, ask, say)
@@ -275,6 +305,53 @@ def _metadata_default(item: dict) -> tuple[str, str, tuple[float, float] | None]
                 (float(low), float(high)),
             )
     return "x", "MM reports no discrete value domain or numeric limits", None
+
+
+def _technical_bounds(item: dict | None) -> tuple[float, float] | None:
+    if item is None:
+        return None
+    record = item["record"]
+    numeric = str(record.get("reported_type") or "").casefold() in {
+        "float", "double", "integer", "int", "long", "short",
+    }
+    span = record.get("technical_range") or {}
+    low, high = span.get("lower"), span.get("upper")
+    if (
+        record.get("has_limits") is True and numeric
+        and isinstance(low, (int, float)) and isinstance(high, (int, float))
+        and math.isfinite(float(low)) and math.isfinite(float(high))
+    ):
+        return float(low), float(high)
+    return None
+
+
+def _on_off_proposal(item: dict) -> tuple[str, str] | None:
+    values = [str(value) for value in (item["record"].get("allowed_values") or [])]
+    if len(values) != 2:
+        return None
+    try:
+        ordered = sorted(values, key=float)
+        if float(ordered[0]) != float(ordered[1]):
+            return ordered[1], ordered[0]
+    except ValueError:
+        pass
+    on_matches = [value for value in values if value.strip().casefold() in {"on", "1", "true", "open", "enabled", "yes"}]
+    if len(on_matches) == 1:
+        on = on_matches[0]
+        return on, next(value for value in values if value != on)
+    return None
+
+
+def _device_property(
+    properties: dict[str, dict], device: str | None, names: set[str],
+) -> dict | None:
+    if not device:
+        return None
+    for path, item in properties.items():
+        normalized = item["property"].casefold().replace("_", "").replace(" ", "")
+        if item["device"] == device and normalized in names:
+            return item
+    return None
 
 
 def _builtin_policy(item: dict, assignments: dict) -> str | None:
@@ -539,10 +616,19 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
                 {"e": "emission/enable", "p": "power", "x": "exclude", "u": "unresolved"}, ask, say,
             )
             if role == "e":
+                proposal = _on_off_proposal(item)
                 shutters.append({
                     "device": device, "property": prop,
-                    "on_value": _text(f"Exact operator-confirmed ON value for {path}", ask, say),
-                    "off_value": _text(f"Exact operator-confirmed OFF value for {path}", ask, say),
+                    "on_value": _proposed_text(
+                        f"Exact operator-confirmed ON value for {path}",
+                        proposal[0] if proposal else None, ask, say,
+                        audit_name=f"{path} ON value",
+                    ),
+                    "off_value": _proposed_text(
+                        f"Exact operator-confirmed OFF value for {path}",
+                        proposal[1] if proposal else None, ask, say,
+                        audit_name=f"{path} OFF value",
+                    ),
                 })
             elif role == "p":
                 units = _choice(f"Representation units for {path}", {"p": "percent", "n": "native"}, ask, say)
@@ -602,31 +688,92 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
 
     # Structural core assignments select which human-entered limits are needed.
     stage: dict[str, float] = {}
-    if assignments.get("xy_stage"):
-        stage["x_min"], stage["x_max"] = _bounds("core XY x travel (um)", ask, say)
-        stage["y_min"], stage["y_max"] = _bounds("core XY y travel (um)", ask, say)
-    if assignments.get("focus"):
-        stage["z_min"], stage["z_max"] = _bounds("core focus z travel (um)", ask, say)
+    xy_device = assignments.get("xy_stage")
+    if xy_device:
+        x_default = _technical_bounds(_device_property(properties, xy_device, {"x", "xposition"}))
+        y_default = _technical_bounds(_device_property(properties, xy_device, {"y", "yposition"}))
+        if x_default is None:
+            say(f"LIMIT SOURCE: Micro-Manager reports no X travel limits for XY stage device {xy_device}; the operator must supply them.")
+        if y_default is None:
+            say(f"LIMIT SOURCE: Micro-Manager reports no Y travel limits for XY stage device {xy_device}; the operator must supply them.")
+        stage["x_min"], stage["x_max"] = _bounds(f"XY stage {xy_device} x travel (um)", ask, say, x_default)
+        stage["y_min"], stage["y_max"] = _bounds(f"XY stage {xy_device} y travel (um)", ask, say, y_default)
+    focus_device = assignments.get("focus")
+    if focus_device:
+        z_default = _technical_bounds(_device_property(properties, focus_device, {"position", "z", "zposition"}))
+        if z_default is None:
+            say(f"LIMIT SOURCE: Micro-Manager reports no Z travel limits for focus stage device {focus_device}; the operator must supply them.")
+        stage["z_min"], stage["z_max"] = _bounds(f"focus stage {focus_device} z travel (um)", ask, say, z_default)
     # The shared offline guaranteed-mode validator requires this finite cap even
     # when it cannot prove a camera is reachable. Never emit a null that passes
     # schema parsing only to be refused at normal live startup.
-    camera = {
-        "max_exposure_ms": _positive(
-            "Human-reviewed maximum camera exposure in ms (required by guaranteed-mode offline validation)",
-            ask, say,
-        )
-    }
+    camera_device = assignments.get("camera")
+    exposure_default = _technical_bounds(_device_property(properties, camera_device, {"exposure"}))
+    exposure_prompt = (
+        f"Human-reviewed maximum camera exposure for {camera_device} in ms "
+        "(required by guaranteed-mode offline validation)"
+    )
+    camera = {"max_exposure_ms": (
+        _positive_default(exposure_prompt, exposure_default[1], ask, say)
+        if exposure_default is not None else _positive(exposure_prompt, ask, say)
+    )}
 
     acquisition = {}
-    labels = {
-        "max_frames": "hard maximum frames", "max_duration_s": "hard maximum acquisition duration (s)",
-        "max_bytes": "hard maximum raw payload bytes", "max_illuminated_ms": "hard maximum illuminated time per acquisition (ms)",
-        "max_session_illuminated_ms": "hard maximum illuminated time in this process ledger (ms; not durable across restarts)",
-        "confirm_above_frames": "human-confirmation threshold frames", "confirm_above_duration_s": "human-confirmation threshold duration (s)",
-        "confirm_above_bytes": "human-confirmation threshold raw bytes", "confirm_above_illuminated_ms": "human-confirmation threshold illuminated time (ms)",
-    }
-    for key, label in labels.items():
-        acquisition[key] = _positive(label, ask, say)
+    acquisition["max_frames"] = _positive("hard maximum frames", ask, say)
+    acquisition["confirm_above_frames"] = _positive(
+        "human-confirmation threshold frames (operator must confirm before an acquisition exceeding it runs)", ask, say,
+    )
+    acquisition["max_duration_s"] = _positive("hard maximum acquisition duration (s)", ask, say)
+    acquisition["confirm_above_duration_s"] = _positive(
+        "human-confirmation threshold duration in s (operator must confirm before an acquisition exceeding it runs)", ask, say,
+    )
+    max_illuminated = min(
+        acquisition["max_frames"] * camera["max_exposure_ms"],
+        acquisition["max_duration_s"] * 1000,
+    )
+    acquisition["max_illuminated_ms"] = _positive_default(
+        "hard maximum total shutter-open time in one acquisition (ms): frames × exposure; "
+        "this proposal is implied by the frame/exposure and duration caps and does not bind before them",
+        max_illuminated, ask, say,
+    )
+    acquisition["confirm_above_illuminated_ms"] = _positive(
+        "human-confirmation threshold total shutter-open time in one acquisition (ms; operator must confirm before an acquisition exceeding it runs)",
+        ask, say,
+    )
+    day_ms = 24 * 60 * 60 * 1000
+    acquisition["max_session_illuminated_ms"] = _positive_default(
+        "hard maximum shutter-open time accumulated across every acquisition in one Microclaw process; "
+        "restart resets it to zero. Runaway-loop brake, not a dose guarantee. Real-world anchor: "
+        "one full day continuously open = 24 × 60 × 60 × 1000 ms",
+        day_ms, ask, say,
+    )
+    geometry = facts.get("camera_geometry")
+    width = geometry.get("image_width") if isinstance(geometry, dict) else None
+    height = geometry.get("image_height") if isinstance(geometry, dict) else None
+    bytes_per_pixel = geometry.get("bytes_per_pixel") if isinstance(geometry, dict) else None
+    if all(type(value) in (int, float) and value > 0 for value in (width, height, bytes_per_pixel)):
+        bytes_per_frame = width * height * bytes_per_pixel
+        proposed_bytes = bytes_per_frame * acquisition["max_frames"]
+        binning = geometry.get("binning")
+        roi = geometry.get("roi")
+        acquisition["max_bytes"] = proposed_bytes
+        say(
+            f"DERIVED hard maximum raw payload bytes: {width:g} × {height:g} pixels × "
+            f"{bytes_per_pixel:g} bytes/pixel × {acquisition['max_frames']:g} frames = "
+            f"{proposed_bytes:g}. Basis is current ROI {roi} and binning {binning}; "
+            "a later larger ROI or lower binning may hit this visible fail-closed cap."
+        )
+    else:
+        say(
+            f"DERIVATION SOURCE: inventory has no complete current camera geometry for {camera_device}; "
+            "Microclaw cannot derive raw payload bytes, so the operator must supply the hard cap."
+        )
+        acquisition["max_bytes"] = _positive("hard maximum raw payload bytes", ask, say)
+    acquisition["confirm_above_bytes"] = acquisition["max_bytes"]
+    notes.append(
+        "BYTE CONFIRMATION INERT: acquisition.confirm_above_bytes equals max_bytes; "
+        "frame and duration confirmations gate the same geometry-derived quantity before the hard byte cap refuses it."
+    )
 
     illumination: dict = {
         "require_confirm_on_enable": True,
