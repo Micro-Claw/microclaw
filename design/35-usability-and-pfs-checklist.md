@@ -132,7 +132,7 @@ Rig-facing commands must be PowerShell/cmd-safe (the rig is Windows): prefer
 | 1 | Usability | 0a and 0b assigned | `design33/phase5-doc-reconciliation` | `b717594` | `dd359a3` | n/a | `20b92e2` | done — block *is* the gate |
 | 2 | Usability | 1 | `design33/undeclared-light-source-gate` | `98842cf` | `ef72b15` + `e9817ad` | **PASS** — M5 refusal/declaration/confirm/cleanup + separate demo fail-closed run | `a1b7579` | done — design/33 landed semantics + residual boundary |
 | 3 | Usability | 2 | `design33/config-diagnostics` | `e8d6ee1` | `dce17a4` + `65bfd7c` | n/a — no rig surface | `0cb871f` | done — error taxonomy + offline-validation contract |
-| 4 | Usability | 3 | `design33/first-launch-setup` | `bc303a2` | | **required** | | |
+| 4 | Usability | 3 | `design33/first-launch-setup` | `bc303a2` | `fb04a8e` + `e9fa769` | **required** — `design/35-block4-gate-prompts.md`, pushed, not merged | | |
 | 5 | Usability | 4 | `design33/deployed-config-hygiene` | | | required | | |
 | 6 | Nikon | probe S = pre-fix baseline; post-fix run owed | `design34/measured-position-readback` | | | required | | |
 | 7a | Nikon | scope: none; rig gate: probe 0 | `design34/continuous-focus-capability` | | | **required** | | |
@@ -628,7 +628,35 @@ Setup text must explain, not just gate:
 - [ ] That configuration edits require a restart, and why the disconnect →
       review → restart flow exists.
 
-Rig gate:
+Coordinator review, 2026-08-01. Implementation `fb04a8e` was reviewed and
+returned; `e9fa769` fixes all four findings and was verified independently
+(1258 passed / 99 skipped / 3 expected warnings). The findings, kept because
+they are the shape of defect this block invites:
+
+1. The hardware-contact honesty text was printed *after* enumeration and
+   disconnect, so the operator read the warning when declining was no longer
+   possible. Now printed before `Core()` behind an exact typed acknowledgement.
+2. Any single `enumeration_failures` row refused the whole run, including
+   cosmetic coordinates (`current_value`, adapter metadata). `rig_inventory`'s
+   own contract is that "one bad attribute cannot end the sweep"; the consumer
+   had reinstated it, and the register predicts live M5 *will* produce such
+   rows — so the M5 gate item was unreachable as written. Refusal is now
+   restricted to classification coordinates; the rest become header review
+   notes.
+3. A validator-rejected profile was left at `--out`, and `--force` was then
+   needed to retry. Now validated in an adjacent temporary and published
+   atomically.
+4. A bridge failure was reported as an unreadable Micro-Manager config.
+
+Sanctioned exception to the "rig facts never in `microclaw/`" standing
+constraint: `first_launch.py` matches the `ttl.state0` path shape and the
+`pfs`/`perfect focus` name fragments. Both are explicitly authorized by the
+item text above ("the known `TTL.State0` false positive"; "`TIPFSStatus.State`
+or any equivalent"), both are shape heuristics behind a required human
+confirmation or a hard exclusion, and neither carries a bound or a geometry.
+Record this in the post-merge design gate rather than silently keeping it.
+
+Rig gate — run `design/35-block4-gate-prompts.md`:
 
 - [ ] Run on the demo core first: a complete pass producing a profile that then
       passes block 3's offline validator and, after a human sets `reviewed:
