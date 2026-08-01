@@ -131,7 +131,7 @@ Rig-facing commands must be PowerShell/cmd-safe (the rig is Windows): prefer
 | 0c | Remote kit | 0a, 0b | — (ship + wait) | | | **operator returns evidence** | n/a | |
 | 1 | Usability | 0a and 0b assigned | `design33/phase5-doc-reconciliation` | `b717594` | `dd359a3` | n/a | `20b92e2` | done — block *is* the gate |
 | 2 | Usability | 1 | `design33/undeclared-light-source-gate` | `98842cf` | `ef72b15` + `e9817ad` | **PASS** — M5 refusal/declaration/confirm/cleanup + separate demo fail-closed run | `a1b7579` | done — design/33 landed semantics + residual boundary |
-| 3 | Usability | 2 | `design33/config-diagnostics` | | | optional | | |
+| 3 | Usability | 2 | `design33/config-diagnostics` | `ac61e2b` | | optional | | |
 | 4 | Usability | 3 | `design33/first-launch-setup` | | | **required** | | |
 | 5 | Usability | 4 | `design33/deployed-config-hygiene` | | | required | | |
 | 6 | Nikon | probe S = pre-fix baseline; post-fix run owed | `design34/measured-position-readback` | | | required | | |
@@ -480,19 +480,32 @@ Post-merge design gate:
       semantics, and the residual limit: the cross-check proves declared enables
       are shuttered, **not** that discovery found every physical emission path.
 
-## 3. Actionable refusals and offline config diagnostics — usability
+## 3. [-] Actionable refusals and offline config diagnostics — usability
 
 Branch: `design33/config-diagnostics`
 
 This is the block that most directly answers "the safety config has made
 microclaw hard to use," independently of Phase 5. It has no new hardware surface.
 
-- [ ] **Fix the misleading refusal hint** (design/33 `:827`): `execute_tool`
+**Correction (coordinator, 2026-08-01): the first item below is already done on
+`main` and must not be re-implemented.** Verified at `ac61e2b`:
+`microclaw/errors.py:81`–`:88` special-cases `RigAuthorizationError` ahead of
+`_HARDWARE_HINT` and returns an authorization-decision hint. It landed
+incidentally in `bb6290f` (Block 14 Phase 4 gate record), not under this block,
+which is why the block text still describes the defect. The implementer's job on
+that item is to **verify the fix covers every path a refusal reaches an
+operator** — `hint_for_error` is the tool-result path; check the `serve`/web
+path (`microclaw/webserve.py:291`) and the CLI paths
+(`microclaw/__main__.py:191`, `:274`) separately — and to add the regression test
+if none exists. Report what was already covered rather than restating the block
+text as work performed.
+
+- [x] **Fix the misleading refusal hint** (design/33 `:827`): `execute_tool`
       attaches `This may be a hardware error (device busy, stage at limit, device
       not found) or a connection problem.` to a `RigAuthorizationError`. A policy
       refusal is presented as a hardware fault, which sends operators to debug
       the microscope. Distinguish the two error classes at the point of
-      attachment.
+      attachment. — pre-fixed in `bb6290f`; see the correction above.
 - [ ] Every authorization refusal must state: what was refused, which declaration
       would have permitted it, and where that declaration goes in the file.
       Refusals that cannot name a legal declaration (an excluded property, an
