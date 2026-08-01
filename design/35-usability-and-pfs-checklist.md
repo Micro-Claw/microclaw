@@ -131,7 +131,8 @@ Rig-facing commands must be PowerShell/cmd-safe (the rig is Windows): prefer
 | 4 | Usability | 3 | `design33/first-launch-setup` | `bc303a2` | round 2 `808e77c` | round 1 **FAIL**; **round 2 pushed 2026-08-01, awaiting rig** | | |
 | 4r1a | Usability | 4 | `design33/first-launch-setup` | `15d8d1b` | `c5746b9` (`d203753` rejected) | folded into block 4 round 2 | n/a — merges via block 4 | |
 | 4r1b | Usability | 4 | `design35/startup-refusal-severity` | `15d8d1b` | `2558583` (`16cc416` rejected alone) | folded into block 4 round 2 | `385049d` into block branch | |
-| 5 | Usability | 4 | `design33/deployed-config-hygiene` | | | required | | |
+| 4b | Usability | 4 merged | `design33/bounded-numeric-actuator` | | | **required** | | |
+| 5 | Usability | 4b | `design33/deployed-config-hygiene` | | | required | | |
 | 6 | Nikon | probe S = pre-fix baseline; post-fix run owed | `design34/measured-position-readback` | | | required | | |
 | 7a | Nikon | scope: none; rig gate: probe 0 | `design34/continuous-focus-capability` | | | **required** | | |
 | 7b | Nikon | 7a | `design34/continuous-focus-policy` | | | **required** | | |
@@ -749,18 +750,27 @@ diagnosis during round-1 review and cost a cycle; measure against
 - Merged tree `385049d`: 1279 passed / 99 skipped / 3 expected warnings — the
   exact sum of the two branches, no regressions.
 
-**Open design gap, deliberately not fixed in this block.** The schema has exactly
+**Open design gap — scoped as Block 4b, not fixed here.** The schema has exactly
 two typed-actuator kinds, `absolute-position` (units `um`) and
 `illumination-power` (`percent`/`native`) — `safety.py:76`, `:580`. A bounded
 numeric like `Camera.Gain` fits neither, so setup excludes every such property
 rather than inventing a unit, which is what the block's own item text requires
-("never invent bounds or geometry"). The consequence is that **after
-first-launch setup no continuous property is writable at all**, which is
-narrower than the round-1 instruction that continuous actuators are "fine to use
-over an appropriate range." Closing it means a third typed kind — a generic
-bounded numeric carrying MM's range and its real unit. G6/question 9 of the
-runbook asks the operator whether the gap blocks real work; scope a block from
-what comes back rather than guessing now.
+("never invent bounds or geometry"). `Camera.Gain` is therefore unreachable
+after setup, and gain is a basic imaging control.
+
+Two corrections to the first statement of this gap, both worth keeping because
+they changed the scope:
+
+- **Exposure is not part of it.** It is already adjustable via `set_exposure`
+  (`tools.py:211`) under `check_exposure` against `camera.max_exposure_ms`; only
+  the *raw property* route is blocked, deliberately, because exposure is
+  dose-bearing and belongs on the metered path.
+- So "no continuous property is writable at all" was wrong. The accurate
+  statement is that no continuous property is writable **as a raw property
+  write**, and the one genuinely unreachable control is gain.
+
+Resolved 2026-08-01: add a `bounded-numeric` kind (Block 4b) and run this gate
+now rather than folding a `safety.py` schema change into it.
 
 Post-merge design gate:
 
@@ -794,6 +804,73 @@ Post-merge design gate:
          (`_has_emu_config`).
       Defer writing this until the re-gate passes, so the taxonomy and the
       measured rig evidence are reconciled in one pass rather than twice.
+
+## 4b. [ ] The `bounded-numeric` typed actuator — gain and its kin
+
+Branch: `design33/bounded-numeric-actuator`. Depends on Block 4 merging.
+Assign against a clean `main`, not against the block 4 branch — decided
+2026-08-01 rather than folding it into the re-gate, because it changes
+`safety.py`, which every downstream block depends on.
+
+Found by Block 4's round-2 review. Setup excludes every bounded numeric because
+the schema has exactly two typed-actuator kinds — `absolute-position` (units
+must be `um`) and `illumination-power` (`percent`/`native`), `safety.py:76`,
+`:580`. `Camera.Gain` fits neither, so it is unreachable after first-launch
+setup. Gain is a basic imaging control: it sets the amplification applied to the
+detected signal, and an operator who cannot set it cannot balance signal against
+read noise and clipping.
+
+**Exposure is deliberately not in scope, and must stay out.** It is already
+adjustable through `set_exposure` (`tools.py:211`), gated by
+`SafetyGuard.check_exposure` against `camera.max_exposure_ms` (`safety.py:816`),
+and `_known_continuous_raw_pair` (`authorization.py:307`) blocks the raw
+`<camera>.Exposure` property route on purpose. Exposure is dose-bearing —
+longer integration means more light on the sample — so it belongs on the metered
+path. Gain is post-detection amplification and is not dose-bearing, which is
+exactly why it needs a kind that feeds no ledger.
+
+- [ ] Add `kind: bounded-numeric` to the typed-actuator schema, requiring
+      `units` (an operator-supplied string, **recorded and echoed, never
+      interpreted**), `minimum`, and `maximum`. The kind names the safety
+      contract, matching the existing two: `absolute-position` clamps and feeds
+      stage bounds; `illumination-power` clamps and feeds the dose ledger;
+      `bounded-numeric` clamps and feeds nothing.
+- [ ] Clamp-only enforcement in `SafetyGuard.check_typed_actuator`: no canonical
+      conversion, no `full_scale`, no ledger participation. A write outside
+      `[minimum, maximum]` is refused; a write inside it is permitted.
+- [ ] **Hard refusal if the declared pair aliases a built-in capability** —
+      `_known_continuous_raw_pair` (focus position, XY, camera exposure) or any
+      `illumination_pairs` member. Without this the new kind is a backdoor
+      around `camera.max_exposure_ms`, the stage bounds, and the illumination
+      ratchet. This is the single most important test in the block.
+- [ ] First-launch setup: a bounded numeric MM characterises (`has_limits` plus
+      a numeric `reported_type`) defaults to this kind, with MM's technical
+      range as the Enter-acceptable default bounds and the operator supplying
+      the unit. This is what Block 4 could not express and had to exclude — it
+      restores the round-1 instruction that continuous actuators are fine to use
+      over an appropriate range, without inventing a physical kind.
+- [ ] Decide and document guaranteed-vs-degraded behaviour for a
+      `bounded-numeric` whose live driver range is narrower than the declared
+      bounds. Follow the existing typed-actuator precedent (`authorization.py`
+      rejects typed bounds exceeding the driver technical range) rather than
+      inventing a new rule.
+- [ ] Off-rig tests: the alias refusal above; clamp at both edges and outside;
+      a declared unit round-tripping into the profile unaltered; setup emitting
+      the kind from the real demo inventory fixture; and a regression that
+      `Camera.Exposure` still cannot be declared `bounded-numeric`.
+
+Rig gate:
+
+- [ ] Set `Camera.Gain` through Microclaw on the demo machine and on a real
+      camera, at a value inside the declared range and at one outside it, and
+      show the second is refused. Capture an image at two gain settings and
+      confirm the change is visible in the data.
+- [ ] Confirm no exposure or illumination path became writable as a side effect.
+
+Post-merge design gate:
+
+- [ ] Record the three-kind taxonomy and the not-dose-bearing rationale in
+      design/33, alongside the refusal-severity taxonomy from Block 4.
 
 ## 5. Deployed-config hygiene and the `init` path — rig config review
 
