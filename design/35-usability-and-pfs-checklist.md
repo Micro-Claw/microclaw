@@ -75,47 +75,43 @@ while the kit is in flight.
 
 ## How to use this file
 
-Unchanged from the previous checklist. One **coordinator** owns the file; a
-separate **implementation agent** owns one implementation branch at a time, in
-its own git worktree. Track 0 is the explicit exception to numbered order: 0a
-and 0b may run concurrently in separate worktrees, and block 1 may start once
-both have implementers assigned. The coordinator alone edits the run ledger.
-Block 0c is coordination, not an implementation slot, so Track A continues
-while the shipped kit is in flight.
+**The process lives in `CLAUDE.md` §"The block workflow", which is
+authoritative.** Read it before assigning or reviewing anything. It is in
+`CLAUDE.md` rather than here because it loads automatically every session,
+whereas this file has to be opened — and the workflow was repeatedly
+mis-executed across sessions while it lived only in checklists and memory. If
+this file and `CLAUDE.md` ever disagree about *process*, `CLAUDE.md` wins and
+this file gets corrected. This file remains authoritative for *what* the blocks
+are, their order, their gates, and the ledger.
 
-- [ ] Coordinator starts each block from updated `main`, creates the named
-      branch, and records the starting commit in the run ledger.
-- [ ] Coordinator gives the implementer only that block, the named design
-      sections, and the acceptance evidence the block requires.
-- [ ] Implementer codes, tests, commits, and returns the commit, test output,
-      risks, and any design assumption that proved false. **It does not merge its
-      own branch.**
-- [ ] Coordinator reviews the diff and the evidence. If a rig gate is listed, the
-      implementation flow stops there and the gate runs before any merge.
-- [ ] **Push the block's branch to `origin` for rig review before merging to
-      `main`.** Do not open a PR; integration testing happens on the lab machine
-      first.
-- [ ] Coordinator merges only a green block, updates `main`, records the merge.
-- [ ] After every merge, perform the block's **post-merge design gate**. If
-      documentation must change, merge a small docs branch before starting the
-      next implementation block.
-- [ ] Do not combine blocks because they touch the same files. The branch
-      boundaries are safety and rollback boundaries.
-- [ ] One worktree per concurrent agent. Never `git add -A`. Never
-      `pip install -e .` while another agent is live in a shared directory.
-- [ ] **Coordinator edits go on a branch too — including ledger and checklist
-      updates.** "The coordinator alone edits the run ledger" says *who* may edit
-      this file, not that those edits may bypass branch-first. Commits `3914735`
-      and `fab00fb` (2026-07-30) went straight to `main` and should not have;
-      they are left in place because rewriting pushed history is worse than the
-      irregularity. Every coordinator edit after those two is branched and merged
-      like any other change.
-- [ ] **Commit coordinator edits to this file before assigning the next block.**
-      Process failure caught by block 1's implementer, 2026-07-30: corrections and
-      ledger rows lived only as uncommitted working-tree changes on `main`, so an
-      agent in a worktree branched from the pre-edit commit correctly reported that
-      the items it was told to implement did not exist. Worktrees see committed
-      history, not the coordinator's editor buffer.
+What this file adds, specific to these blocks:
+
+- One **coordinator** owns this file; one **implementation agent** owns one
+  implementation branch at a time, in its own worktree. Track 0 is the explicit
+  exception to numbered order: 0a and 0b may run concurrently in separate
+  worktrees, and block 1 may start once both have implementers assigned. Block
+  0c is coordination, not an implementation slot, so Track A continues while the
+  shipped kit is in flight.
+- Do not combine blocks because they touch the same files. The branch boundaries
+  are safety and rollback boundaries.
+- **Coordinator edits go on a branch too — including ledger and checklist
+  updates.** "The coordinator alone edits the run ledger" says *who* may edit
+  this file, not that those edits may bypass branch-first. Commits `3914735`
+  and `fab00fb` (2026-07-30) went straight to `main` and should not have; they
+  are left in place because rewriting pushed history is worse than the
+  irregularity.
+- **Commit coordinator edits to this file before assigning the next block.**
+  Process failure caught by block 1's implementer, 2026-07-30: corrections and
+  ledger rows lived only as uncommitted working-tree changes on `main`, so an
+  agent in a worktree branched from the pre-edit commit correctly reported that
+  the items it was told to implement did not exist. Worktrees see committed
+  history, not the coordinator's editor buffer.
+- **A block's rig-gate runbook belongs on the block's branch.** Block 2 kept its
+  runbook on `main` and Block 4 initially copied that; both were wrong. The user
+  checks the branch out on the rig, so the runbook must be there. The
+  self-reference this was thought to avoid — a commit staling the runbook's own
+  recorded hash — is solved by pinning with `git merge-base --is-ancestor`
+  (`cf13c1a`), not by branch placement. Coordinator bookkeeping stays on `main`.
 
 Progress markers: `[ ]` not started, `[-]` active, `[x]` complete, `[!]` blocked.
 

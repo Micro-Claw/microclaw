@@ -3926,3 +3926,39 @@ and the offline-validation contract in `design/33-authorization-map.md`,
 including the standing limit that offline validation checks the *document*,
 never the rig: offline and live coverage are complementary and non-overlapping,
 and the live exposure check is itself gated on a reachable camera being found.]
+
+[Block 4 coordination, `design33/first-launch-setup`. Implementation `fb04a8e`
+returned green; coordinator review rejected it on four findings and `e9fa769`
+fixed all four. The two that mattered: the hardware-contact honesty text was
+printed *after* enumeration and disconnect, so the operator read the warning
+once declining was impossible -- now behind an exact typed acknowledgement
+before `Core()`; and a single `enumeration_failures` row of any kind refused the
+whole run, including cosmetic coordinates like `current_value` and adapter
+metadata, which contradicts `rig_inventory`'s own "one bad attribute cannot end
+the sweep" contract and would have made the M5 gate item unreachable, since the
+carried-forward register predicts live M5 produces exactly those rows. Refusal
+now keys on classification coordinates only; the rest become header review
+notes. The other two: a validator-rejected profile was left at `--out`, and a
+bridge failure was reported as an unreadable MM config.]
+
+[Process, not code. The gate runbook was first committed to `main`, so G0's
+checkout would have removed it from the operator's working tree; it was then
+"fixed" by copying it into the evidence directory, which was still wrong. The
+user asked why a runbook they check out on the rig would live anywhere but the
+branch, and the justification given -- a self-reference where committing the
+runbook stales its own recorded hash -- did not survive checking: `cf13c1a` had
+already solved that by pinning with `git merge-base --is-ancestor` instead of an
+exact tip hash, and the merge-conflict argument was circular, since conflicts
+only arise from keeping the file in two places. The runbook now lives only on
+`design33/first-launch-setup` (`56874a3`), G0 is a plain branch checkout, and
+Block 2's placement is recorded as the mistake not to repeat.]
+
+[The ten-step block workflow -- coordinator owns the list, delegate to a runner
+in its own worktree, review and loop, push code *and* runbook to the branch,
+user gates on the rig, fix sized to the finding and loop, merge, push `main`,
+delete the branch both places, record here, run the post-merge design gate --
+now lives in `CLAUDE.md` and is authoritative over any checklist or memory that
+disagrees. It was moved there because it had been mis-executed across several
+sessions while living only in checklists and memory: `CLAUDE.md` loads
+automatically, a checklist has to be opened, and a memory that already stated
+the runbook rule was recalled and still not applied.]
