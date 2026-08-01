@@ -128,7 +128,7 @@ Rig-facing commands must be PowerShell/cmd-safe (the rig is Windows): prefer
 | 1 | Usability | 0a and 0b assigned | `design33/phase5-doc-reconciliation` | `b717594` | `dd359a3` | n/a | `20b92e2` | done — block *is* the gate |
 | 2 | Usability | 1 | `design33/undeclared-light-source-gate` | `98842cf` | `ef72b15` + `e9817ad` | **PASS** — M5 refusal/declaration/confirm/cleanup + separate demo fail-closed run | `a1b7579` | done — design/33 landed semantics + residual boundary |
 | 3 | Usability | 2 | `design33/config-diagnostics` | `e8d6ee1` | `dce17a4` + `65bfd7c` | n/a — no rig surface | `0cb871f` | done — error taxonomy + offline-validation contract |
-| 4 | Usability | 3 | `design33/first-launch-setup` | `bc303a2` | round 3 `49a2c28` (runbook re-pinned at `27211c1`) | round 1 **FAIL**; round 2 demo **PASS** + 9 findings; round 3 demo **PASS** (G1–G3) + 2 fixes; **M5 G4 completes and validates, 5 findings → round 4** | | |
+| 4 | Usability | 3 | `design33/first-launch-setup` | `bc303a2` | round 4 `ac8d909` (runbook re-pinned at `b2f30c9`) | r1 **FAIL**; r2 demo **PASS**; r3 demo **PASS** (G1–G3); M5 G4 **completes and validates**, 5 findings; **round 4 pushed, awaiting re-gate** | | |
 | 4r1a | Usability | 4 | `design33/first-launch-setup` | `15d8d1b` | `c5746b9` (`d203753` rejected) | folded into block 4 round 2 | n/a — merges via block 4 | |
 | 4r1b | Usability | 4 | `design35/startup-refusal-severity` | `15d8d1b` | `2558583` (`16cc416` rejected alone) | folded into block 4 round 2 | `385049d` into block branch | |
 | 4b | Usability | 4 merged | `design33/bounded-numeric-actuator` | | | **required** | | |
@@ -994,6 +994,43 @@ Five findings, round 4:
 5. **Percent-versus-native was asked 13 times with no default** although the
    property name carries the answer: `Fine A (%)` is percent, `Power (mW)` is
    native. `_TRAILING_UNIT` in `rig_inventory.py` already parses that suffix.
+
+### Round 4 — pushed 2026-08-01, awaiting the re-gate
+
+Implementation `cc34ab5` accepted on the first pass — the first round of this
+block where nothing had to be returned. Coordinator-verified at **1305 passed /
+99 skipped / 3 expected warnings**, then **1307** after two small corrections
+(`ac8d909`). Runbook re-pinned at `b2f30c9`, both `--is-ancestor` checks green.
+
+Measured on the real M5 inventory: the prompt count is unchanged, but the answers
+an operator must **type** fall from 83 to roughly a quarter of that — the
+remainder are now Enter-acceptable proposals. The demo inventory is unchanged at
+22 prompts and 12 typed, and its generated profile is byte-identical in shape (42
+categorical, 0 typed actuators, 34 excluded). Independently re-derived here:
+`iBeamSmartCW-1.Power (mW)` now takes `full_scale: 75.0` from the driver range,
+which is the specific wrong declaration the M5 run produced by hand.
+
+One interaction checked before accepting, because it would have made finding 3's
+fix useless: **the live undeclared-emission refusal keys off the EMU laser map
+(`_live_emu_laser_enables`, `authorization.py:692`), not a name regex.** So a
+candidate reclassified out of the illumination set with the new `o` option
+becomes an ordinary categorical property without tripping Block 2's gate.
+`Thorlabs ELL6` is not an EMU slot, so the ELL6 slider is now controllable.
+
+Two coordinator corrections on top of the accepted implementation:
+
+1. `_power_units_default` matched only bracketed or parenthesised suffixes, so
+   M5's four `Laser N: 3. Level %` properties — a bare trailing percent, and the
+   rig's real 402 nm activation line — still had no default. Handled in the
+   consumer only, deliberately **not** by widening `_TRAILING_UNIT`: that regex is
+   the producer's duplicate-representation detector and needs a delimited suffix
+   to split a base name on.
+2. `test_every_hazardous_field_still_refuses_blank` asserted total refusals
+   against `len(required)`, which held only by coincidence and broke the moment a
+   field gained a default. Rewritten to assert the intent — every field still
+   expected to refuse a blank produced a refusal — so the next default does not
+   look like a regression. The widened paren-suffix behaviour also gained a
+   producer-side test, where it lives.
 
 Post-merge design gate:
 
