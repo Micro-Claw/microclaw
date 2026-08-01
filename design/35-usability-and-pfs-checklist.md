@@ -128,7 +128,7 @@ Rig-facing commands must be PowerShell/cmd-safe (the rig is Windows): prefer
 | 1 | Usability | 0a and 0b assigned | `design33/phase5-doc-reconciliation` | `b717594` | `dd359a3` | n/a | `20b92e2` | done — block *is* the gate |
 | 2 | Usability | 1 | `design33/undeclared-light-source-gate` | `98842cf` | `ef72b15` + `e9817ad` | **PASS** — M5 refusal/declaration/confirm/cleanup + separate demo fail-closed run | `a1b7579` | done — design/33 landed semantics + residual boundary |
 | 3 | Usability | 2 | `design33/config-diagnostics` | `e8d6ee1` | `dce17a4` + `65bfd7c` | n/a — no rig surface | `0cb871f` | done — error taxonomy + offline-validation contract |
-| 4 | Usability | 3 | `design33/first-launch-setup` | `bc303a2` | round 3 `55b277c` (runbook re-pinned at `0ab9055`) | round 1 **FAIL**; round 2 demo **PASS** with nine findings; **round 3 pushed 2026-08-01, awaiting demo re-run and M5 G4** | | |
+| 4 | Usability | 3 | `design33/first-launch-setup` | `bc303a2` | round 3 `49a2c28` (runbook re-pinned at `27211c1`) | round 1 **FAIL**; round 2 demo **PASS** + 9 findings; round 3 demo **PASS** (G1–G3) + 2 fixes; **M5 G4 outstanding** | | |
 | 4r1a | Usability | 4 | `design33/first-launch-setup` | `15d8d1b` | `c5746b9` (`d203753` rejected) | folded into block 4 round 2 | n/a — merges via block 4 | |
 | 4r1b | Usability | 4 | `design35/startup-refusal-severity` | `15d8d1b` | `2558583` (`16cc416` rejected alone) | folded into block 4 round 2 | `385049d` into block branch | |
 | 4b | Usability | 4 merged | `design33/bounded-numeric-actuator` | | | **required** | | |
@@ -902,6 +902,46 @@ rig and would have first appeared on M5:
    present for ON/OFF values, absent for stage travel and maximum exposure, which
    are the two hazardous axes the audit condition exists for. Now emitted by both
    `_positive_default` and `_bounds`.
+
+### Rig gate round 3 — demo machine, 2026-08-01: **PASS (G1–G3), two fixes made**
+
+Evidence: `block4-demo-20260801-161051`, run at `0ab9055` with both pins `0`.
+G1 round-tripped: profile written, refused by the validator while unreviewed
+(exit 1), passed once reviewed (exit 0). G2 and G3 both printed `False`. G6 was
+skipped deliberately — `authorization.py` is byte-identical across all of round
+3, so the round-2 demotion evidence still stands.
+
+Every round-3 feature fired in the transcript: `PROPOSAL ACCEPTED` audit lines on
+both illumination ON/OFF pairs and on the exposure default, `LIMIT SOURCE` lines
+naming the devices whose travel limits MM does not report, and the byte
+derivation on the **unbinned** basis (`512 × 512 × 2 × 5000`).
+
+Two findings, both fixed by the coordinator on the branch as small corrections
+(`49a2c28`), suite re-measured at **1295 passed / 99 skipped / 3 expected
+warnings**:
+
+1. **A mandatory question the operator could not interpret disabled a safety
+   control.** `confirm_above_illuminated_ms` had no default, and the generated
+   profile records `5000000000000000` — a number typed to make the question go
+   away. That is the *only* confirmation measuring light on the sample, so the
+   effect of an unexplained question was to switch off the dose warning. It now
+   proposes `min(60 s of continuous shutter-open, max_illuminated_ms)`.
+   **Deliberately not removed, unlike the byte threshold:** bytes are frames ×
+   fixed geometry, so the frame threshold already covers them, but illuminated
+   time is frames × *exposure*, and a few frames at a long exposure trip no frame
+   count. A default derived from `confirm_above_frames × max_exposure_ms` was
+   rejected for exactly that reason — it would never fire first, making the field
+   inert. The corresponding entry in the blank-refusal test moved to the
+   defaulted set with the reason recorded inline.
+2. **`get_roi` returned a non-iterable `java.awt.Rectangle`.** Recorded as
+   `'java_awt_Rectangle' object is not iterable` in `enumeration_failures`, so
+   every inventory carried `roi: null` and the derivation line printed
+   `ROI None`. This is the house bridge-collection failure mode. `_roi_result`
+   now reads the rectangle's public fields before falling back to iteration.
+   Non-blocking throughout — the byte derivation never depended on the ROI.
+
+The count stays 22 on a fresh inventory; what changed is that one fewer question
+requires the operator to invent a number.
 
 Post-merge design gate:
 
