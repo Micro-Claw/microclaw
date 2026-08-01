@@ -131,7 +131,7 @@ Rig-facing commands must be PowerShell/cmd-safe (the rig is Windows): prefer
 | 0c | Remote kit | 0a, 0b | — (ship + wait) | | | **operator returns evidence** | n/a | |
 | 1 | Usability | 0a and 0b assigned | `design33/phase5-doc-reconciliation` | `b717594` | `dd359a3` | n/a | `20b92e2` | done — block *is* the gate |
 | 2 | Usability | 1 | `design33/undeclared-light-source-gate` | `98842cf` | `ef72b15` + `e9817ad` | **PASS** — M5 refusal/declaration/confirm/cleanup + separate demo fail-closed run | `a1b7579` | done — design/33 landed semantics + residual boundary |
-| 3 | Usability | 2 | `design33/config-diagnostics` | `e8d6ee1` | | optional | | |
+| 3 | Usability | 2 | `design33/config-diagnostics` | `e8d6ee1` | `dce17a4` + `65bfd7c` | n/a — no rig surface | `0cb871f` | done — error taxonomy + offline-validation contract |
 | 4 | Usability | 3 | `design33/first-launch-setup` | | | **required** | | |
 | 5 | Usability | 4 | `design33/deployed-config-hygiene` | | | required | | |
 | 6 | Nikon | probe S = pre-fix baseline; post-fix run owed | `design34/measured-position-readback` | | | required | | |
@@ -480,7 +480,7 @@ Post-merge design gate:
       semantics, and the residual limit: the cross-check proves declared enables
       are shuttered, **not** that discovery found every physical emission path.
 
-## 3. [-] Actionable refusals and offline config diagnostics — usability
+## 3. [x] Actionable refusals and offline config diagnostics — usability
 
 Branch: `design33/config-diagnostics`
 
@@ -506,29 +506,30 @@ text as work performed.
       refusal is presented as a hardware fault, which sends operators to debug
       the microscope. Distinguish the two error classes at the point of
       attachment. — pre-fixed in `bb6290f`; see the correction above.
-- [ ] Every authorization refusal must state: what was refused, which declaration
+- [x] Every authorization refusal must state: what was refused, which declaration
       would have permitted it, and where that declaration goes in the file.
       Refusals that cannot name a legal declaration (an excluded property, an
       unclassifiable actuator kind) must say *that*, rather than implying an
       edit exists.
-- [ ] Add an **offline** config check — no Micro-Manager connection — that parses
+- [x] Add an **offline** config check — no Micro-Manager connection — that parses
       the file under the strict schema and reports every problem at once rather
       than exiting on the first. There is currently no way to check a config
       without a live rig: `authorization-map` and `inspect-rig` both connect, and
       `load_safety_config_or_exit` (`microclaw/config.py:46`) exits on the first
       failure.
-- [ ] Report unreviewed (`reviewed: false`) as a distinct, expected state with
+- [x] Report unreviewed (`reviewed: false`) as a distinct, expected state with
       the next action, not as a parse failure.
-- [ ] Phase 5 (block 4) must reuse this validator to check what it wrote. Design
+- [x] Phase 5 (block 4) must reuse this validator to check what it wrote. Design
       the interface for that caller now; do not build a second parser.
-- [ ] Optional and clearly marked as defence-in-depth, not a Phase 5 obligation:
+- [-] Optional and clearly marked as defence-in-depth, not a Phase 5 obligation:
       detect limits still equal to `safety_config.example.yaml`'s fictional
       values and say so. This targets the `microclaw init` copy-the-example path,
-      which block 5 also touches.
+      which block 5 also touches. **Skipped in Block 3** as the optional item it
+      is marked; carried to block 5, which owns that path.
 
 Post-merge design gate:
 
-- [ ] Record the error taxonomy and the offline-validation contract in design/33.
+- [x] Record the error taxonomy and the offline-validation contract in design/33.
       State that offline validation checks the *document*, never the rig: a
       config can pass it and still be refused by the live cross-check.
 

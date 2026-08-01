@@ -830,6 +830,8 @@ or the appropriateness of M5's declared limits.
   attaches `This may be a hardware error (device busy, stage at limit, device not
   found) or a connection problem.` to a `RigAuthorizationError`. This predates
   Block 5 and deserves a separate error-reporting cleanup.
+  **CLOSED** — fixed incidentally in `bb6290f`, verified and regression-tested
+  under checklist v2 Block 3. See "Error taxonomy and offline validation" below.
 - **Camera ROI** is excluded (no typed ROI capability) — tracked for a later phase.
 - **`degraded_trusted_plugins`** remains the sanctioned escape hatch: it suspends the
   completeness guarantee for sessions where the allowlist ceremony is not warranted.
@@ -1068,3 +1070,85 @@ Two consequences for this design:
    goes as level × duration, and `Laser Trigger` is an excluded device — microclaw can
    neither write it nor bound it. A future Phase 2 typed actuator for pulse duration
    should express dose as the product rather than adding a second independent cap.
+
+## Error taxonomy and offline validation (checklist v2 Block 3, merged `0cb871f`, 2026-08-01)
+
+Two usability defects closed, plus a new offline entry point that Block 4
+(Phase 5 first-launch setup) reuses.
+
+### The refusal taxonomy
+
+`hint_for_error` (`microclaw/errors.py`) now dispatches on error class *before*
+falling back to `_HARDWARE_HINT`, so a policy refusal is never presented as a
+hardware fault. The `RigAuthorizationError` limb states plainly that the write
+was refused by the authorization map or declined by the operator, that no
+hardware diagnosis is warranted, and that retrying the identical call will fail
+identically. That specific fix landed incidentally in `bb6290f` rather than
+under this block; Block 3 verified its coverage across the tool path, the
+`serve`/web path, and the CLI paths, and added the missing regression test for
+the `authorization-map` CLI path.
+
+Every `RigAuthorizationError` raise site now answers three questions: what was
+refused, which declaration would have permitted it, and where that declaration
+goes in the file. **A refusal that cannot name a legal declaration must say so
+explicitly** rather than implying an edit exists. Three such classes exist and
+are worded as dead ends on purpose:
+
+- an **explicitly excluded** property or write path — unavailable until the
+  exclusion is deliberately removed, which is a config-review act, not a
+  refusal-driven edit;
+- an **unclassifiable** actuator kind — needs its hardware semantics established
+  before any declaration is meaningful;
+- an **operator decline** — no declaration overrides a human saying no.
+
+### The offline-validation contract
+
+`validate_safety_config` (`microclaw/config.py`) returns a structured
+`ConfigValidationResult` — `path`, `parsed`, `reviewed`, and a tuple of
+`ConfigDiagnostic(kind, message, blocking)` over
+`schema | review | guaranteed_mode | degraded_mode | live_check`. The
+`microclaw check-config [path]` CLI is a thin presenter over it; Phase 5 calls
+the function directly to check what it wrote. There is no second parser —
+`ParsedSafetyConfig.from_yaml` already accumulates schema errors and this builds
+on that accumulation.
+
+**Offline validation checks the document, never the rig. A config can pass it
+and still be refused by the live cross-check**, because offline and live
+coverage are complementary and non-overlapping:
+
+- the **strict schema** rejects blank/null `stage.*` edges and
+  `named_stages[*].min_um/max_um`, but accepts `camera.max_exposure_ms: null`
+  and all nine `acquisition` budgets as null;
+- **guaranteed-mode `validate_live_rig`** rejects exactly what the schema
+  misses, but only for hardware it can reach — the exposure check is gated on a
+  reachable camera being found.
+
+So the validator reports the guaranteed-mode live requirements it *cannot*
+verify rather than returning clean. It emits a non-blocking `live_check`
+diagnostic in **every** profile mode, so a programmatic consumer can never
+confuse "checked and clean" with "nothing was checked."
+
+`reviewed: false` is a distinct, expected state with a next action, not a parse
+failure. An **absent** `reviewed` key is deliberately not the same thing: it
+yields `reviewed=None` and a schema missing-key error, because a file that never
+mentions review is malformed rather than intentionally unreviewed.
+
+### Degraded mode is where a null cap actually bites
+
+Runtime enforcement is uniformly `if limit is not None and value > limit`
+(`microclaw/safety.py`), so a null limit that reaches runtime is simply
+unenforced. Guaranteed mode's refusal is the only thing that normally stops one
+arriving. Under `degraded_trusted_plugins` that refusal is suspended, so null
+acquisition budgets and a null `camera.max_exposure_ms` are permitted at startup
+*and* unenforced during the run.
+
+The validator therefore emits a non-blocking `degraded_mode` diagnostic naming
+every null cap and saying that leaving them null deliberately suspends those
+protections. Non-blocking is correct — degraded mode is a sanctioned, documented
+suspension of the completeness claim — but silence was not.
+
+### Not done here
+
+The optional fictional-example-value detector (flagging limits still equal to
+`safety_config.example.yaml`) was **skipped** as marked defence-in-depth. The
+`microclaw init` copy-the-example path that motivates it is Block 5's subject.
