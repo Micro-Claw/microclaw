@@ -813,10 +813,21 @@ Nine findings, all round 3, all on `design33/first-launch-setup`:
    `AcquisitionPlan.illuminated_ms` is `frames × exposure_ms_per_frame`
    (`acquisition.py:20`). The label must say so, and the default follows from the
    caps already answered rather than from one frame's exposure.
-6. **`max_session_illuminated_ms` is not understood.** It is a cumulative
-   illumination-dose ledger across every acquisition in one Microclaw *process*,
-   reset on restart — not a sample-lifetime dose cap. The parenthetical says
-   "not durable across restarts" without ever saying what it accumulates.
+6. **`max_session_illuminated_ms` is not understood, and probably should not
+   bind.** It is a cumulative illumination-dose ledger across every acquisition
+   in one Microclaw *process*, reset on restart — not a sample-lifetime dose cap.
+   The parenthetical says "not durable across restarts" without ever saying what
+   it accumulates. Operator decision, 2026-08-01: **do not make an operator who
+   has been imaging for a while restart to keep working.** A cap whose only
+   remedy is a restart that resets it to zero is not a dose guarantee; its one
+   real function is a brake on a runaway in-process loop, and that brake must not
+   fire on a legitimate long session. The coordinator's first proposal — default
+   it to one worst-case acquisition per process — was exactly the failure mode
+   the operator is describing and was withdrawn. There is no answered quantity
+   that says how many acquisitions a sitting contains, so no derivation exists;
+   round 3 proposes a stated generous anchor instead and says it is an anchor.
+   **Whether the key deserves to exist at all is Block 4b's**, with the other
+   `safety.py` budget decisions.
 7. **Budget questions are ordered by kind, not by subject.** Each hard cap and
    its human-confirmation threshold must be adjacent.
 8. **The raw-byte confirmation threshold should not be a question.** Frames and
@@ -847,6 +858,11 @@ act, and the transcript records accepted-default versus typed-value per answer.
 absolute-position actuators, so round 3 extends a shipped pattern rather than
 inventing one. Design/33 and the block item text must be corrected to what
 ships.
+
+The coordinator raised the reversal with the operator, who reaffirmed it the
+same day: a driver range is a reasonable thing to *propose*, the confirmation
+question stays, and proposing it does not hurt. Recorded as a settled decision,
+not an open question — do not re-litigate it in a later block.
 
 Post-merge design gate:
 
@@ -942,6 +958,18 @@ exactly why it needs a kind that feeds no ledger.
       deployed configs — M5's included — already set the key, so choose between
       removal and accepted-but-ignored deprecation rather than assuming removal.
       `max_bytes` itself stays; it is a hard cap and round 3 derives its default.
+- [ ] **Decide whether `acquisition.max_session_illuminated_ms` deserves to
+      exist**, deferred here from Block 4 round 3 finding 6 for the same reason
+      as the byte threshold. The operator's position is that it should not force
+      a restart on someone who has been imaging for a while, and that a cap reset
+      by restarting the process is not a dose guarantee. Its one defensible
+      function is a brake on a runaway in-process loop
+      (`AcquisitionLedger.reserve`, `acquisition.py:34`). Round 3 only proposes a
+      generous anchor so it cannot fire on a legitimate session. The options are
+      removal, keeping it as an explicitly optional key that guaranteed mode
+      stops requiring, or keeping it with the brake framing stated in the config
+      and the refusal message. Decide with the byte-threshold item, in one pass
+      over `_ACQUISITION_POLICY_FIELDS`.
 - [ ] Off-rig tests: the alias refusal above; clamp at both edges and outside;
       a declared unit round-tripping into the profile unaltered; setup emitting
       the kind from the real demo inventory fixture; and a regression that
