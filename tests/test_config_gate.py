@@ -16,6 +16,7 @@ from microclaw.config import (
     UnreviewedSafetyConfig,
     load_safety_config,
     load_safety_config_or_exit,
+    validate_safety_config,
 )
 from microclaw.safety import ParsedSafetyConfig, SafetyConfigError, SafetyConstraints
 
@@ -207,6 +208,118 @@ def test_exit_on_invalid_schema_names_file_and_all_errors(tmp_path):
     message = str(exc.value)
     assert str(p) in message
     assert "stagee" in message and "stage.x_mim" in message
+
+
+# ---- offline diagnostics ----
+
+def test_offline_validator_returns_parsed_config_for_phase5_reuse(tmp_path):
+    result = validate_safety_config(_write(tmp_path, REAL))
+    assert result.parsed is not None
+    assert result.reviewed is True
+    assert result.can_start_live_validation
+    assert [item.kind for item in result.diagnostics] == ["live_check"]
+    assert "cannot enumerate the rig" in result.diagnostics[0].message
+
+
+def test_offline_validator_reports_unreviewed_as_expected_next_action(tmp_path):
+    result = validate_safety_config(_write(tmp_path, REAL.replace("true", "false")))
+    assert result.parsed is not None
+    assert result.reviewed is False
+    assert not result.can_start_live_validation
+    review = next(item for item in result.diagnostics if item.kind == "review")
+    assert "review every limit" in review.message.lower()
+    assert "`reviewed: true`" in review.message
+
+
+def test_offline_validator_does_not_call_missing_reviewed_intentional(tmp_path):
+    result = validate_safety_config(_write(tmp_path, REAL.replace("reviewed: true\n", "")))
+    assert result.reviewed is None
+    assert [item.kind for item in result.diagnostics] == ["schema"]
+    assert "missing required key" in result.diagnostics[0].message
+    assert "intentionally unreviewed" not in result.diagnostics[0].message
+
+
+def test_offline_validator_reports_review_and_all_schema_problems_together(tmp_path):
+    text = REAL.replace("reviewed: true", "reviewed: false").replace(
+        "stage: {x_min: -100.0, x_max: 100.0, y_min: -100.0, y_max: 100.0}",
+        "stage: {x_mim: bad}\nstagee: {}",
+    )
+    result = validate_safety_config(_write(tmp_path, text))
+    assert result.reviewed is False
+    assert result.parsed is None
+    assert [item.kind for item in result.diagnostics] == ["review", "schema"]
+    message = result.diagnostics[1].message
+    assert "stage.x_mim" in message and "stagee" in message
+
+
+def test_offline_clean_nulls_are_reported_as_live_startup_blockers(tmp_path):
+    text = REAL.replace("max_exposure_ms: 500.0", "max_exposure_ms: null")
+    for line in (
+        "max_frames: 10000", "max_duration_s: 3600", "max_bytes: 50000000000",
+        "max_illuminated_ms: 600000", "max_session_illuminated_ms: 1800000",
+        "confirm_above_frames: 500", "confirm_above_duration_s: 300",
+        "confirm_above_bytes: 5000000000", "confirm_above_illuminated_ms: 60000",
+    ):
+        text = text.replace(line, line.split(":", 1)[0] + ": null")
+    p = _write(tmp_path, text)
+    assert ParsedSafetyConfig.from_yaml(str(p))  # strict schema accepts this split
+    result = validate_safety_config(p)
+    blockers = [item for item in result.diagnostics if item.blocking]
+    assert len(blockers) == 10
+    assert any("camera.max_exposure_ms" in item.message for item in blockers)
+    for field in (
+        "max_frames", "max_duration_s", "max_bytes", "max_illuminated_ms",
+        "max_session_illuminated_ms", "confirm_above_frames",
+        "confirm_above_duration_s", "confirm_above_bytes",
+        "confirm_above_illuminated_ms",
+    ):
+        assert any(f"acquisition.{field}" in item.message for item in blockers)
+
+
+def test_degraded_null_caps_are_nonblocking_but_never_silent(tmp_path):
+    text = REAL.replace("mode: guaranteed", "mode: degraded_trusted_plugins")
+    text = text.replace("max_exposure_ms: 500.0", "max_exposure_ms: null")
+    fields = (
+        "max_frames", "max_duration_s", "max_bytes", "max_illuminated_ms",
+        "max_session_illuminated_ms", "confirm_above_frames",
+        "confirm_above_duration_s", "confirm_above_bytes",
+        "confirm_above_illuminated_ms",
+    )
+    for field in fields:
+        text = text.replace(f"{field}: " + {
+            "max_frames": "10000", "max_duration_s": "3600",
+            "max_bytes": "50000000000", "max_illuminated_ms": "600000",
+            "max_session_illuminated_ms": "1800000",
+            "confirm_above_frames": "500", "confirm_above_duration_s": "300",
+            "confirm_above_bytes": "5000000000",
+            "confirm_above_illuminated_ms": "60000",
+        }[field], f"{field}: null")
+    result = validate_safety_config(_write(tmp_path, text))
+    assert result.can_start_live_validation
+    assert [item.kind for item in result.diagnostics] == [
+        "degraded_mode", "live_check",
+    ]
+    warning, live_check = result.diagnostics
+    assert not warning.blocking
+    assert "runtime checks do not enforce" in warning.message
+    assert "camera.max_exposure_ms" in warning.message
+    assert all(f"acquisition.{field}" in warning.message for field in fields)
+    assert "completeness claim" in live_check.message
+    assert "explicitly suspended" in live_check.message
+
+
+def test_check_config_cli_is_thin_offline_presenter(tmp_path, monkeypatch, capsys):
+    from microclaw import __main__ as cli
+
+    monkeypatch.setattr(
+        cli, "MicroscopeController",
+        lambda *a, **k: pytest.fail("offline validator connected to Micro-Manager"),
+    )
+    cli.check_config(SimpleNamespace(path=_write(tmp_path, REAL), safety_config=None))
+    output = capsys.readouterr().out
+    assert "Schema: valid" in output
+    assert "LIVE CHECK REQUIRED" in output
+    assert "Offline checks passed" in output
 
 
 # ---- paths ----

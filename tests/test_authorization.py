@@ -756,6 +756,24 @@ def test_read_only_enumeration_prints_map_without_agent_or_repl(monkeypatch):
     assert '"dedicated-stage"' in rendered
 
 
+def test_authorization_map_cli_preserves_actionable_refusal(monkeypatch):
+    from microclaw import __main__ as cli
+
+    refusal = (
+        "Property write Laser.Enable was refused. Declare it under "
+        "`illumination.shutters` in the top-level `illumination` section."
+    )
+    monkeypatch.setattr(cli, "load_safety_config_or_exit", lambda path: parsed())
+    monkeypatch.setattr(cli, "MicroscopeController", lambda port, guard: Controller())
+    monkeypatch.setattr(
+        cli, "validate_live_rig",
+        lambda *a, **k: (_ for _ in ()).throw(RigAuthorizationError(refusal)),
+    )
+    with pytest.raises(SystemExit) as exc:
+        cli.print_authorization_map(SimpleNamespace(safety_config=None, port=1))
+    assert str(exc.value) == refusal
+
+
 # --- design/33 fast-follow: MM StateDevice auto-classification -----------------
 #
 # A filter wheel / slider / turret is a discrete device; requiring a

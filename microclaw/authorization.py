@@ -268,7 +268,10 @@ def _expand_preset(core: Any, preset: str) -> list[tuple[str, str, str | None]]:
         )
         if not device or not prop:
             raise RigAuthorizationError(
-                f"Channel preset {preset!r} contains an unreadable setting; refusing it."
+                f"Channel preset {preset!r} contains an unreadable setting, so its "
+                "effects cannot be authorized. No safety-config declaration can permit "
+                "an effect whose device/property identity is unknown; repair or recreate "
+                "the preset in Micro-Manager, then restart validation."
             )
         effects.append((device, prop, value))
     return effects
@@ -546,13 +549,25 @@ def validate_live_rig(
     entries: list[AuthorizationEntry] = []
 
     if "stage-position" not in BUILTIN_TYPED_CAPABILITIES:
-        errors.append("Code registry is missing the built-in stage-position capability.")
+        errors.append(
+            "Code registry is missing the built-in stage-position capability; no "
+            "safety-config declaration can repair this installation error."
+        )
     if "exposure" not in BUILTIN_TYPED_CAPABILITIES:
-        errors.append("Code registry is missing the built-in exposure capability.")
+        errors.append(
+            "Code registry is missing the built-in exposure capability; no "
+            "safety-config declaration can repair this installation error."
+        )
     if "illumination" not in BUILTIN_TYPED_CAPABILITIES:
-        errors.append("Code registry is missing the built-in illumination capability.")
+        errors.append(
+            "Code registry is missing the built-in illumination capability; no "
+            "safety-config declaration can repair this installation error."
+        )
     if "acquisition-dose" not in BUILTIN_TYPED_CAPABILITIES:
-        errors.append("Code registry is missing the built-in acquisition-dose capability.")
+        errors.append(
+            "Code registry is missing the built-in acquisition-dose capability; no "
+            "safety-config declaration can repair this installation error."
+        )
 
     xy_device = str(core.get_xy_stage_device() or "")
     focus_device = str(core.get_focus_device() or "")
@@ -567,6 +582,9 @@ def validate_live_rig(
         errors.append(
             "Core/named actuator declaration conflict for live device(s): "
             + ", ".join(conflicts)
+            + ". Remove each duplicate item from top-level `named_stages`; Core XY/focus "
+            "devices are permitted by the matching `stage.x_*`, `stage.y_*`, or "
+            "`stage.z_*` edges."
         )
 
     reachable_axes = []
@@ -584,17 +602,32 @@ def validate_live_rig(
         policy = parsed_config.ranges.get(identity)
         if policy is None:
             if guaranteed:
+                location = (
+                    f"an item for device {live_device!r} under top-level `named_stages`"
+                    if identity.source == "named"
+                    else f"both `stage.{identity.axis}_min` and `stage.{identity.axis}_max`"
+                )
                 errors.append(
                     f"Reachable {identity.axis or 'z'} stage actuator {live_device!r} "
-                    "has no declared range policy."
+                    f"has no declared range policy. The declaration that permits it is {location}."
                 )
             continue
         if guaranteed and (
             policy.minimum.bound is None or policy.maximum.bound is None
         ):
+            location = (
+                f"the `min_um` and `max_um` keys for device {live_device!r} "
+                "under top-level `named_stages`"
+                if identity.source == "named"
+                else (
+                    f"`stage.{identity.axis}_min` and `stage.{identity.axis}_max` "
+                    "at the top level"
+                )
+            )
             errors.append(
                 f"Reachable stage actuator {live_device!r} axis "
-                f"{identity.axis or 'z'} has an open range edge in guaranteed mode."
+                f"{identity.axis or 'z'} has an open range edge in guaranteed mode. "
+                f"Set finite reviewed bounds in {location}."
             )
         entries.append(AuthorizationEntry(
             path="dedicated-stage",
@@ -607,7 +640,9 @@ def validate_live_rig(
     if camera_device:
         if guaranteed and parsed_config.constraints.camera.max_exposure_ms is None:
             errors.append(
-                f"Reachable camera {camera_device!r} has no finite exposure maximum."
+                f"Reachable camera {camera_device!r} has no finite exposure maximum. "
+                "Set `camera.max_exposure_ms` in the top-level `camera` section to "
+                "this rig's reviewed finite positive limit."
             )
         entries.append(AuthorizationEntry(
             path="dedicated-exposure",
@@ -953,7 +988,8 @@ def validate_live_rig(
         if guaranteed and not valid:
             errors.append(
                 f"Acquisition authorization requires finite positive "
-                f"acquisition.{field_name}; got {value!r}."
+                f"acquisition.{field_name}; got {value!r}. Set that key in the "
+                "top-level `acquisition` section to this rig's reviewed budget."
             )
         entries.append(AuthorizationEntry(
             path=f"acquisition-policy:{field_name}",
@@ -1088,7 +1124,14 @@ def authorize_property_write(ctrl: Any, device: str, prop: str) -> None:
         or not any(entry.classification in admitted for entry in matches)
     ):
         raise RigAuthorizationError(
-            f"Property write {device}.{prop} is excluded from the authorization map."
+            f"Property write {device}.{prop} was refused because it is excluded from "
+            "the authorization map. No legal declaration can be named from this runtime "
+            "refusal alone: an explicitly excluded property must stay unavailable until "
+            "its exclusion is deliberately removed, and an unclassified property needs "
+            "its hardware semantics established first. Then declare this exact pair in "
+            "the matching top-level list: `rig_profile.categorical_properties`, "
+            "`rig_profile.typed_actuators`, `illumination.shutters`, or "
+            "`illumination.power_properties`."
         )
 
 
@@ -1097,7 +1140,13 @@ def authorize_channel(ctrl: Any, preset: str) -> None:
     if report is not None and preset not in report.authorized_presets:
         reasons = report.excluded_presets.get(preset, ["preset was not authorized at startup"])
         raise RigAuthorizationError(
-            f"Channel preset {preset!r} is excluded: {'; '.join(reasons)}"
+            f"Channel preset {preset!r} was refused: {'; '.join(reasons)}. The preset "
+            "itself must appear under top-level `channels.allowed`, and every expanded "
+            "effect must be permitted where its kind is declared: "
+            "`rig_profile.categorical_properties`, `rig_profile.typed_actuators`, "
+            "`illumination.shutters`, or `illumination.power_properties`. An explicitly "
+            "excluded or unclassifiable effect has no legal declaration until that "
+            "exclusion is removed or its hardware semantics are established."
         )
 
 
@@ -1141,17 +1190,28 @@ def _authorize_channel_effect(
     core = ctrl.core
     if device == "Core":
         if prop != "Shutter":
-            raise RigAuthorizationError(f"Channel effect Core.{prop} is excluded.")
+            raise RigAuthorizationError(
+                f"Channel effect Core.{prop} was refused. Only Core.Shutter retargeting "
+                "has a legal channel-effect declaration; no safety-config declaration "
+                f"can permit Core.{prop}. Remove that effect from the Micro-Manager preset."
+            )
         if not guard.is_illumination_shutter_device(value):
             raise RigAuthorizationError(
-                f"Core.Shutter target {value!r} is not a declared illumination shutter."
+                f"Core.Shutter retarget to {value!r} was refused. Declare the target "
+                "device's exact device/property/on_value/off_value mapping as an item "
+                "under top-level `illumination.shutters`; Core.Shutter selects that "
+                "declared device and is not itself the item to add."
             )
         if confirm_fn is None or not confirm_fn(
             f"SELECT ILLUMINATION SHUTTER: Core.Shutter = {value!r}\n"
             "This selects which declared light source AutoShutter may fire on the next exposure.",
             kind="illumination",
         ):
-            raise RigAuthorizationError(f"User declined Core.Shutter retarget to {value!r}.")
+            raise RigAuthorizationError(
+                f"Core.Shutter retarget to {value!r} was refused because the operator "
+                "declined it. No safety-config declaration overrides an operator decline; "
+                "request the action again only if the operator intends to approve it."
+            )
         return
 
     pair = (device, prop)
@@ -1163,7 +1223,15 @@ def _authorize_channel_effect(
     if report is not None and (
         not matches or any(entry.classification == "excluded" for entry in matches)
     ):
-        raise RigAuthorizationError(f"Channel effect {device}.{prop} is unclassified or excluded.")
+        raise RigAuthorizationError(
+            f"Channel effect {device}.{prop} was refused because it is unclassified or "
+            "excluded. A discrete non-illumination effect goes under top-level "
+            "`rig_profile.categorical_properties`; a bounded continuous actuator goes "
+            "under `rig_profile.typed_actuators`; illumination goes under "
+            "`illumination.shutters` or `illumination.power_properties`. If the property "
+            "is explicitly excluded or its actuator kind is not established, no legal "
+            "declaration can permit it yet."
+        )
 
     if guard.is_illumination_enable(device, prop) or guard.is_illumination_power(device, prop):
         guard.check_illumination(core, device, prop, value, confirm_fn=confirm_fn)
@@ -1182,7 +1250,12 @@ def _authorize_channel_effect(
                 number if key.startswith("y") else core.get_y_position(),
             )
         else:  # Defensive: _known_continuous_raw_pair currently has no other limb.
-            raise RigAuthorizationError(f"Stage effect {device}.{prop} has no axis guard.")
+            raise RigAuthorizationError(
+                f"Stage effect {device}.{prop} was refused because Microclaw could not "
+                "associate the known continuous property with an axis guard. No "
+                "safety-config declaration can repair this internal classification; "
+                "keep the effect unavailable and report the device/property to Microclaw."
+            )
     else:
         guard.check_property(device, prop)
 
@@ -1263,5 +1336,7 @@ def authorize_path(ctrl: Any, path: str) -> None:
     entries = [entry for entry in report.entries if entry.path == path]
     if not entries or any(entry.classification == "excluded" for entry in entries):
         raise RigAuthorizationError(
-            f"The {path} write path is excluded from the Phase-1 authorization map."
+            f"The {path} write path was refused because it is excluded from the Phase-1 "
+            "authorization map. No safety-config declaration permits an excluded code "
+            "path; use a supported typed/categorical tool path instead."
         )
