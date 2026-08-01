@@ -1,26 +1,26 @@
 # design/35 Block 4 — first-launch setup rig gate
 
-Gate for `design33/first-launch-setup`, implementation commits `3a9522d`
-(round-3 derived defaults and REPL credential resolution) and `55b277c`
-(round-3 review fixes: unbinned byte basis, key resolved before any hardware
-contact, audit lines on numeric defaults), plus `49a2c28` after the 2026-08-01
-demo re-run: the dose-confirmation threshold gained a default, and `get_roi`'s
-`java.awt.Rectangle` is now readable. Round 2's `c5746b9` and `2558583` are
-ancestors of all three. The branch is
+**This is gate round 5**, after the 2026-08-01 M5 G4 run. Implementation
+commits `cc34ab5` (round-4 hazard proposals: ON/OFF from a two-point technical
+range, `full_scale` defaulted from the driver range, a non-illumination exit in
+the candidate menu, a narrow emission/enable default, percent-versus-native from
+the unit suffix) and `ac8d909` (a bare trailing `%` also defaults to percent).
+Every earlier round's commit is an ancestor of both. The branch is
 pushed at `origin/design33/first-launch-setup`; **do not merge until this gate
 passes and the coordinator reviews the evidence.** Do not open a PR.
 
-**This is gate round 3.** Round 2 passed the mechanical gates on the demo
-machine on 2026-08-01, but 24 questions still asked for values Micro-Manager
-already knew. Round 3 offers or derives those values, explains where MM has no
-source, and fixes stored-key authentication in the terminal REPL. Round 1
-ran on the demo machine on 2026-08-01 and
-failed: `Start-Transcript` captured nothing, the interview asked ~90 questions
-with no defaults or explanations, and the profile it produced would not start —
-19 continuous-actuator refusals, one missing-preset refusal, and a missing-EMU
-refusal. All findings are fixed on this branch. A legacy round-2 inventory asks
-23 questions because it lacks the new optional camera-geometry facts; a fresh
-inventory asks 22. Microclaw writes its own transcript.
+What the earlier rounds established, so this run knows what is already settled:
+round 1 failed on the demo machine (empty `Start-Transcript` evidence, ~90
+questions with no defaults, and a profile that would not start). Round 2 passed
+the demo machine's mechanical gates. Round 3 passed G1–G3 on the demo machine at
+`0ab9055` and added derived defaults plus stored-key resolution in the terminal
+REPL. G4 then ran on M5 against that same round-3 code (`27211c1`): it completed
+and produced a profile the validator accepted, but exposed that the proposal
+machinery read the wrong evidence field, so 83 of M5's 112 questions still needed
+a typed answer. The round-4 commits above cut that to roughly a quarter.
+
+**G6 is not repeated.** `authorization.py` has been byte-identical since round 2,
+so the demotion evidence from `block4-demo-20260801-144809` still stands.
 
 This gate is unusual in that **the connection itself is the thing under test.**
 `microclaw first-launch-setup` contacts hardware before any safety config
@@ -121,10 +121,10 @@ git fetch origin design33/first-launch-setup > "$Evidence\git-fetch.txt" 2>&1
 git switch design33/first-launch-setup > "$Evidence\git-switch.txt" 2>&1
 git pull --ff-only > "$Evidence\git-pull.txt" 2>&1
 git rev-parse HEAD > "$Evidence\head.txt" 2>&1
-git merge-base --is-ancestor 3a9522d HEAD
-$LASTEXITCODE > "$Evidence\contains-round3-defaults.txt"
-git merge-base --is-ancestor 49a2c28 HEAD
-$LASTEXITCODE > "$Evidence\contains-round3-fixes.txt"
+git merge-base --is-ancestor cc34ab5 HEAD
+$LASTEXITCODE > "$Evidence\contains-round4-proposals.txt"
+git merge-base --is-ancestor ac8d909 HEAD
+$LASTEXITCODE > "$Evidence\contains-round4-fixes.txt"
 git status --short > "$Evidence\status.txt" 2>&1
 python -V > "$Evidence\python.txt" 2>&1
 pip install -e . > "$Evidence\pip-install.txt" 2>&1
@@ -136,10 +136,10 @@ A normal branch checkout, not a detached HEAD: you stay on
 `design\35-block4-gate-prompts.md` in front of you. The `runbook.md` copy is for
 the evidence archive, so the returned bundle records which revision was run.
 
-`contains-round3-defaults.txt` and `contains-round3-fixes.txt` must **both** read
-`0`. If either reads `1` you are on round-2 code — the interview will still ask
-for values Micro-Manager can supply, and the terminal REPL will still fail to
-find a stored key; re-pull before going further. Reinstalling here is correct —
+`contains-round4-proposals.txt` and `contains-round4-fixes.txt` must **both** read
+`0`. If either reads `1` you are on pre-round-4 code — the interview will still
+ask you to type ON/OFF values and laser full scales that Micro-Manager reports;
+re-pull before going further. Reinstalling here is correct —
 this is a dedicated rig machine, not a shared worktree.
 
 ## G1 — demo core, complete pass
