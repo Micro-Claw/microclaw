@@ -1,7 +1,10 @@
 # design/35 Block 4 — first-launch setup rig gate
 
-Gate for `design33/first-launch-setup`, implementation commits `c5746b9`
-(first-launch interview) and `2558583` (startup refusal severity). The branch is
+Gate for `design33/first-launch-setup`, implementation commits `3a9522d`
+(round-3 derived defaults and REPL credential resolution) and `55b277c`
+(round-3 review fixes: unbinned byte basis, key resolved before any hardware
+contact, audit lines on numeric defaults). Round 2's `c5746b9` and `2558583` are
+ancestors of both. The branch is
 pushed at `origin/design33/first-launch-setup`; **do not merge until this gate
 passes and the coordinator reviews the evidence.** Do not open a PR.
 
@@ -116,10 +119,10 @@ git fetch origin design33/first-launch-setup > "$Evidence\git-fetch.txt" 2>&1
 git switch design33/first-launch-setup > "$Evidence\git-switch.txt" 2>&1
 git pull --ff-only > "$Evidence\git-pull.txt" 2>&1
 git rev-parse HEAD > "$Evidence\head.txt" 2>&1
-git merge-base --is-ancestor c5746b9 HEAD
-$LASTEXITCODE > "$Evidence\contains-interview-fix.txt"
-git merge-base --is-ancestor 2558583 HEAD
-$LASTEXITCODE > "$Evidence\contains-severity-fix.txt"
+git merge-base --is-ancestor 3a9522d HEAD
+$LASTEXITCODE > "$Evidence\contains-round3-defaults.txt"
+git merge-base --is-ancestor 55b277c HEAD
+$LASTEXITCODE > "$Evidence\contains-round3-fixes.txt"
 git status --short > "$Evidence\status.txt" 2>&1
 python -V > "$Evidence\python.txt" 2>&1
 pip install -e . > "$Evidence\pip-install.txt" 2>&1
@@ -131,9 +134,10 @@ A normal branch checkout, not a detached HEAD: you stay on
 `design\35-block4-gate-prompts.md` in front of you. The `runbook.md` copy is for
 the evidence archive, so the returned bundle records which revision was run.
 
-`contains-interview-fix.txt` and `contains-severity-fix.txt` must **both** read
-`0`. If either reads `1` you are on round-1 code and the gate will fail the way
-it failed before; re-pull before going further. Reinstalling here is correct —
+`contains-round3-defaults.txt` and `contains-round3-fixes.txt` must **both** read
+`0`. If either reads `1` you are on round-2 code — the interview will still ask
+for values Micro-Manager can supply, and the terminal REPL will still fail to
+find a stored key; re-pull before going further. Reinstalling here is correct —
 this is a dedicated rig machine, not a shared worktree.
 
 ## G1 — demo core, complete pass
