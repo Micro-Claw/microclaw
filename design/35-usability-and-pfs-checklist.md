@@ -128,7 +128,7 @@ Rig-facing commands must be PowerShell/cmd-safe (the rig is Windows): prefer
 | 1 | Usability | 0a and 0b assigned | `design33/phase5-doc-reconciliation` | `b717594` | `dd359a3` | n/a | `20b92e2` | done — block *is* the gate |
 | 2 | Usability | 1 | `design33/undeclared-light-source-gate` | `98842cf` | `ef72b15` + `e9817ad` | **PASS** — M5 refusal/declaration/confirm/cleanup + separate demo fail-closed run | `a1b7579` | done — design/33 landed semantics + residual boundary |
 | 3 | Usability | 2 | `design33/config-diagnostics` | `e8d6ee1` | `dce17a4` + `65bfd7c` | n/a — no rig surface | `0cb871f` | done — error taxonomy + offline-validation contract |
-| 4 | Usability | 3 | `design33/first-launch-setup` | `bc303a2` | round 4 `5c82d1e` (runbook re-pinned at `b059f33`) | r1 **FAIL**; r2/r3 demo **PASS**; M5 G4 validates but **the profile could not move a filter wheel**; StateDevice fix pushed, **awaiting round-5 re-gate incl. new G4b** | | |
+| 4 | Usability | 3 | `design33/first-launch-setup` | `bc303a2` | round 4 `5c82d1e` (runbook re-pinned at `b059f33`) | r1 **FAIL**; r2/r3 demo **PASS**; M5 G4 validates but **the profile could not move a filter wheel**; StateDevice fix `5c82d1e`; **G4b PASS on M5 — wheel moves**; awaiting the evidence bundle and the deployed-vs-generated review | | |
 | 4r1a | Usability | 4 | `design33/first-launch-setup` | `15d8d1b` | `c5746b9` (`d203753` rejected) | folded into block 4 round 2 | n/a — merges via block 4 | |
 | 4r1b | Usability | 4 | `design35/startup-refusal-severity` | `15d8d1b` | `2558583` (`16cc416` rejected alone) | folded into block 4 round 2 | `385049d` into block branch | |
 | 4b | Usability | 4 merged | `design33/bounded-numeric-actuator` | | | **required** | | |
@@ -1080,7 +1080,11 @@ comments and not only the declarations.
 compare. None of them asked whether the profile can actually run the rig, which
 is why a profile that passed every check could not move a wheel. G4b sets
 `reviewed: true` on a copy, starts a session, and moves a filter wheel by both
-`State` and `Label`.
+`State` and `Label`. Operator-confirmed **PASS on M5, 2026-08-01**: regenerated
+from the captured `b2f30c9` inventory via `--inventory` (no second pre-config
+enumeration window), and the filter wheel moved. Outstanding before merge: the
+evidence bundle, and the deployed-vs-generated comparison actually read this
+time — the StateDevice entries moving to categorical should narrow it.
 
 Post-merge design gate:
 
