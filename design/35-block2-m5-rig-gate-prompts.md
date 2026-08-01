@@ -477,9 +477,27 @@ Record which of these actually occurred:
   resolved against Demo devices: record the exact fail-closed refusal.
 - A resolvable semantic enable existed: apply the same declaration rule, but do
   not claim it represents physical Demo illumination without evidence.
+- The validated live installation contains EMU/htSMLM artifacts but has no
+  readable `EMU/config.uicfg`: guaranteed mode must refuse because it cannot
+  establish the semantic map. Record this as a fail-closed discovery result,
+  not as evidence of a particular undeclared enable.
 
 Do not describe the Demo run as testing a missing-declaration condition it did
 not expose. G0's off-rig fixture is the deterministic refusal evidence.
+
+### G7 result — PASS, fail-closed artifact-without-config case (2026-08-01)
+
+Evidence: `block2-demo-20260801-113852`, clean worktree at `232d2a8`. The
+separate demo machine validated its live Micro-Manager installation at
+`C:\PROGRA~1\MICRO-~1.0`, found EMU/htSMLM artifacts, and found no readable
+`EMU/config.uicfg`. `authorization-map` exited 1 and refused to claim semantic
+completeness. That is the fourth outcome above and the intended guaranteed-mode
+behavior from the implementation's provenance decision table.
+
+This run does not establish an undeclared physical enable on the Demo core and
+is not described as doing so. The 68-test G0 fixture supplies the deterministic
+missing-declaration evidence. The `uv` uninstall/install and cross-filesystem
+hardlink messages are environment setup output, not authorization findings.
 
 ## G8 — coordinator intake, manifest, and verdict
 
@@ -510,3 +528,23 @@ Return the evidence directory/archive and a verdict table for G0–G7. Overall:
 
 Regardless of verdict: do not merge, do not edit the checklist or ledger, and
 return every deviation and safety stop to the coordinator.
+
+### Overall gate verdict — PASS (coordinator, 2026-08-01)
+
+G0–G4 and G7 passed. G5 was correctly not run because M5's deployed
+browser-stored credential is unavailable to the terminal REPL. G6 is covered by
+G4's accepted `serve` cycle and Ctrl-C shutdown. The returned evidence folders
+discharge operator G8 intake; coordinator manifest/archive handling does not
+require another rig run.
+
+The gate proves the exact M5 semantic enables refuse while undeclared, succeed
+when declared, route through browser confirmation, and are all driven to
+reviewed off value `0` on deployed server shutdown. Residual limits remain:
+semantic discovery does not prove every physical emission path was found, and
+Block 2 startup validation does not cover Block 4's earlier enumeration window.
+
+Two out-of-scope findings are retained rather than hidden: PowerShell 5.1
+`Start-Transcript` does not capture this child server's live output, and the
+agent made an unjustified "was not enabled" claim after a serial-timeout write.
+Neither invalidates the independent confirmation audits, histories, or hardware
+read-backs that make this Block 2 gate green.
