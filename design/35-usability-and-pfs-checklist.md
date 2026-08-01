@@ -130,7 +130,7 @@ Rig-facing commands must be PowerShell/cmd-safe (the rig is Windows): prefer
 | 3 | Usability | 2 | `design33/config-diagnostics` | `e8d6ee1` | `dce17a4` + `65bfd7c` | n/a — no rig surface | `0cb871f` | done — error taxonomy + offline-validation contract |
 | 4 | Usability | 3 | `design33/first-launch-setup` | `bc303a2` | `fb04a8e` + `e9fa769` | round 1 **FAIL** (demo, 2026-08-01) — 5 findings; round 2 pending | | |
 | 4r1a | Usability | 4 | `design33/first-launch-setup` | `15d8d1b` | | re-gate with 4r1b | | |
-| 4r1b | Usability | 4 | `design35/startup-refusal-severity` | `15d8d1b` | | re-gate with 4r1a | merges into block branch | |
+| 4r1b | Usability | 4 | `design35/startup-refusal-severity` | `15d8d1b` | `16cc416` + `2558583` (`16cc416` rejected alone) | re-gate with 4r1a | pending — merges into block branch | |
 | 5 | Usability | 4 | `design33/deployed-config-hygiene` | | | required | | |
 | 6 | Nikon | probe S = pre-fix baseline; post-fix run owed | `design34/measured-position-readback` | | | required | | |
 | 7a | Nikon | scope: none; rig gate: probe 0 | `design34/continuous-focus-capability` | | | **required** | | |
@@ -743,7 +743,22 @@ Post-merge design gate:
       version and must be corrected to whatever ships.
 - [ ] **Record the startup refusal-severity taxonomy** from findings 3–5 in
       design/33 §authorization: which diagnostics refuse the process, which
-      demote a claim and warn, and the rule that decides.
+      demote a claim and warn, and the rule that decides. Four specific
+      contradictions the implementer flagged, all to be corrected to what
+      shipped in `design35/startup-refusal-severity`:
+      1. design/33 says a categorical raw write proven continuous is a startup
+         error; it now demotes to `excluded` and startup continues.
+      2. It describes declared/live property mismatches generally as startup
+         failures; an absent declared device or property now demotes.
+      3. Its channel-validation framing implies any preset mismatch fails
+         startup; an absent preset name now demotes, while an unreadable or
+         unsafely-expanding *present* preset still refuses.
+      4. It does not distinguish the EMU plugin being installed from the rig
+         being EMU-configured. `Emu.jar` presence is now only a path-location
+         hint (`_has_emu`); `EMU/config.uicfg` establishes EMU use
+         (`_has_emu_config`).
+      Defer writing this until the re-gate passes, so the taxonomy and the
+      measured rig evidence are reconciled in one pass rather than twice.
 
 ## 5. Deployed-config hygiene and the `init` path — rig config review
 
