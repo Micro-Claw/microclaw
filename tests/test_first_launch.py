@@ -382,9 +382,9 @@ def test_state_device_position_is_categorical_from_its_state_labels():
     )
 
 
-def test_state_device_position_on_an_illuminating_device_is_never_taken_in_bulk():
-    """Block 3b's gate caught this widening on a laser engine; do not repeat it."""
-    prompts = []
+def test_state_device_position_on_an_illuminating_device_fails_closed_silently():
+    """M5's laser engine: placeholder labels answer nothing, so do not ask."""
+    prompts, output = [], []
 
     def ask(prompt):
         prompts.append(prompt)
@@ -392,23 +392,21 @@ def test_state_device_position_on_an_illuminating_device_is_never_taken_in_bulk(
             return ""
         if prompt.startswith("Illumination candidate"):
             return "x"
-        if prompt.startswith("Writable property") and "iChrome-MLE-TCP.State" in prompt:
-            return "x"
         if "minimum" in prompt:
             return "0"
         if "no default" in prompt or "there is no default" in prompt:
             return "100"
         return ""
 
-    config, _ = interview(
-        _with_state_device("iChrome-MLE-TCP", illuminating=True), ask=ask, say=lambda _: None,
+    config, notes = interview(
+        _with_state_device("iChrome-MLE-TCP", illuminating=True), ask=ask, say=output.append,
     )
-    forced = [p for p in prompts if "never accepted in bulk" in p]
-    assert len(forced) == 1 and "iChrome-MLE-TCP.State" in forced[0]
-    # The operator declined, and bulk acceptance never overrode that.
+    assert not [p for p in prompts if "iChrome-MLE-TCP.State" in p], "must not ask"
     assert {"device": "iChrome-MLE-TCP", "property": "State"} in (
         config["rig_profile"]["excluded_properties"]
     )
+    assert any("ILLUMINATING-DEVICE POSITION EXCLUDED" in note for note in notes)
+    assert any("Revisit it by exact name" in line for line in output)
 
 
 def test_metadata_proposal_glossary_defaults_and_bulk_revisit():

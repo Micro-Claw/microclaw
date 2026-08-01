@@ -796,14 +796,29 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
             continue
         recommendation = " (known TTL.State0 false-positive shape; exclusion is recommended but requires your confirmation)" if path.casefold().endswith("ttl.state0") else ""
         # A StateDevice position on a device that also surfaced illumination
-        # candidates is a laser engine's selector, not a filter wheel's. Block 3b's
-        # rig gate caught exactly this widening, so the proposal is never taken in
-        # bulk there — it is asked, every time.
-        if _state_device_positions(item) and device in illumination_devices:
-            recommendation = (
-                f" ({device} also surfaced illumination candidates, so this position "
-                "property is never accepted in bulk; confirm it explicitly)"
+        # candidates is a laser engine's selector, not a filter wheel's, and
+        # Block 3b's rig gate caught exactly that widening once. An earlier
+        # version forced a question here; M5 answered it by accepting a
+        # proposal the operator could not interpret, because the labels are
+        # placeholders ("State-0", "State-1", "State-2") that say nothing about
+        # what the positions do. An unanswerable question is worse than a
+        # default, so this fails closed instead and stays revisitable by name.
+        if (
+            _state_device_positions(item) and device in illumination_devices
+            and bulk and path not in revisit
+        ):
+            excluded.append({"device": device, "property": prop})
+            notes.append(
+                f"ILLUMINATING-DEVICE POSITION EXCLUDED: {path}; {device} also surfaced "
+                "illumination candidates, and its state labels do not establish what the "
+                "positions do. Declare it deliberately if this rig needs it."
             )
+            say(
+                f"EXCLUDED: {path} is a position property on {device}, which also surfaced "
+                "illumination candidates. Its labels do not say what the positions do, so no "
+                "authorization is inferred. Revisit it by exact name if you need it."
+            )
+            continue
         needs_question = not bulk or path in revisit or bool(recommendation)
         role = "x" if default_role == "n" else default_role
         if needs_question:

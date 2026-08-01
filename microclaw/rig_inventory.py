@@ -270,10 +270,25 @@ def _is_power(record: dict) -> bool:
         return False
 
 
-def _is_enable(record: dict) -> bool:
+def _is_enable(record: dict, device: dict | None = None) -> bool:
     if record.get("read_only") is not False or record.get("pre_init") is not False:
         return False
     if not _ENABLE_NAME.search(record["name"]):
+        return False
+    # A StateDevice's `State` is its position, and `\bstate\b` in the name pattern
+    # was dragging every wheel, turret and slider into the illumination interview
+    # to be classified as an emission path. Measured on both rigs: the only such
+    # match is M5's `Thorlabs ELL6.State` (labels "Position 0"/"Position 1"), a
+    # false positive, while every genuine gate is caught by its own name —
+    # `Enable`, `Emission`, `Laser Operation`. This is not narrowing the pattern:
+    # a ShutterDevice's `State` still matches, including the demo rig's
+    # `White Light Shutter.State`, which reports no state labels at all.
+    if (
+        device is not None
+        and device.get("device_type") == "StateDevice"
+        and record["name"].casefold() == "state"
+        and device.get("state_labels")
+    ):
         return False
     allowed = record.get("allowed_values") or []
     if allowed:
@@ -403,7 +418,7 @@ def enumerate_rig(core: Any, *, mm_config: str | Path | None = None) -> dict:
                 base["gating_context"] = gating
                 base["rejected_non_emitting"] = device["device_type"] in _NON_EMITTING_TYPES
                 powers.append(base)
-            if _is_enable(prop):
+            if _is_enable(prop, device):
                 enables.append(base)
 
     emitting_powers = [p for p in powers if not p["rejected_non_emitting"]]
