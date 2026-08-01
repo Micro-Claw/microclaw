@@ -128,7 +128,7 @@ Rig-facing commands must be PowerShell/cmd-safe (the rig is Windows): prefer
 | 1 | Usability | 0a and 0b assigned | `design33/phase5-doc-reconciliation` | `b717594` | `dd359a3` | n/a | `20b92e2` | done — block *is* the gate |
 | 2 | Usability | 1 | `design33/undeclared-light-source-gate` | `98842cf` | `ef72b15` + `e9817ad` | **PASS** — M5 refusal/declaration/confirm/cleanup + separate demo fail-closed run | `a1b7579` | done — design/33 landed semantics + residual boundary |
 | 3 | Usability | 2 | `design33/config-diagnostics` | `e8d6ee1` | `dce17a4` + `65bfd7c` | n/a — no rig surface | `0cb871f` | done — error taxonomy + offline-validation contract |
-| 4 | Usability | 3 | `design33/first-launch-setup` | `bc303a2` | round 3 `49a2c28` (runbook re-pinned at `27211c1`) | round 1 **FAIL**; round 2 demo **PASS** + 9 findings; round 3 demo **PASS** (G1–G3) + 2 fixes; **M5 G4 outstanding** | | |
+| 4 | Usability | 3 | `design33/first-launch-setup` | `bc303a2` | round 3 `49a2c28` (runbook re-pinned at `27211c1`) | round 1 **FAIL**; round 2 demo **PASS** + 9 findings; round 3 demo **PASS** (G1–G3) + 2 fixes; **M5 G4 completes and validates, 5 findings → round 4** | | |
 | 4r1a | Usability | 4 | `design33/first-launch-setup` | `15d8d1b` | `c5746b9` (`d203753` rejected) | folded into block 4 round 2 | n/a — merges via block 4 | |
 | 4r1b | Usability | 4 | `design35/startup-refusal-severity` | `15d8d1b` | `2558583` (`16cc416` rejected alone) | folded into block 4 round 2 | `385049d` into block branch | |
 | 4b | Usability | 4 merged | `design33/bounded-numeric-actuator` | | | **required** | | |
@@ -942,6 +942,58 @@ warnings**:
 
 The count stays 22 on a fresh inventory; what changed is that one fewer question
 requires the operator to invent a number.
+
+### Rig gate G4 — M5, 2026-08-01: **completes, profile validates, five findings**
+
+Evidence: `block4-m5-20260801-162818`, run at `27211c1` with both pins `0`. Setup
+enumerated a real rig with three iBeam lasers, a four-line iChrome MLE, a
+Hamamatsu camera, and an ELL6 slider; the generated profile passed `check-config`
+(exit 0). No refusal, no crash, no pre-validation write. **The block's hard
+question — can an operator produce a working profile for a hazardous rig without
+hand-authoring it — is answered yes.**
+
+What M5 exposed is that the proposal machinery is keyed on the wrong evidence
+field, and that the illumination menu has no exit for a non-illumination device.
+Five findings, round 4:
+
+1. **`_on_off_proposal` reads only `allowed_values`, so it is blind on M5's
+   biggest device.** Every iChrome enable/emission property reports
+   `allowed_values: []` with `technical_range 0.0–1.0` and `reported_type
+   Integer` — that is how `_is_enable` catches them in the first place
+   (`rig_inventory.py`, the `span.lower == 0.0 and span.upper == 1.0` branch).
+   Result: **22 hand-typed `1`/`0` answers**, each logged `no proposal was
+   available`. Single largest question-count win in the block.
+2. **`full_scale` was misread as a minimum, and produced a wrong dose
+   declaration.** The operator typed `0`, was refused ("finite number greater
+   than zero"), and typed `0.01` to get past it. The profile now declares
+   `iBeamSmartCW-1.Power (mW)` with `full_scale: 0.01` beside two physically
+   identical lasers at `75.0`. MM reports `technical_range 0.0–75.0` for that
+   exact property, so the correct value was available and unused. The error
+   direction is fail-closed — canonical percent inflates, so writes are refused
+   rather than under-metered — but the operator meets it as a mystery refusal.
+   The operator's question "why can I not set a laser's power to 0" is answered:
+   nothing asked for a minimum, and 0 is always writable
+   (`illumination_to_percent(0) == 0`). The question needs a default and a label
+   that says it names the value equal to 100% output.
+3. **The illumination menu has no route for "not illumination, but I need it".**
+   `Thorlabs ELL6.State` is a lens slider — a 1-D stage, no illumination effect.
+   It surfaced as an illumination candidate because `_ENABLE_NAME` matches
+   `\bstate\b`, and the only options were emission/power/exclude/unresolved. The
+   operator chose `u`, so it is excluded. Mitigating fact worth recording: the
+   same device's `Label` property (`Position 0`/`Position 1`) *was* bulk-accepted
+   as categorical, so the slider is controllable — the two are duplicate
+   representations of one mechanism. The menu gap is still real.
+4. **Operator decision: default the classification to emission/enable** when the
+   property name matches `laser|power|emission|enable` *and* the value domain is
+   exactly two on/off-shaped values. Deliberate third loosening of "require
+   explicit operator classification of every illumination candidate". Accepted
+   because the error direction is toward *more* gating, and the two-value
+   condition means a continuous power property can never take the default. Note
+   the rule is narrower than `_ENABLE_NAME`: `state`, `shutter`, `operation`, and
+   `output` are excluded, so `Thorlabs ELL6.State` correctly gets no default.
+5. **Percent-versus-native was asked 13 times with no default** although the
+   property name carries the answer: `Fine A (%)` is percent, `Power (mW)` is
+   native. `_TRAILING_UNIT` in `rig_inventory.py` already parses that suffix.
 
 Post-merge design gate:
 
