@@ -314,6 +314,17 @@ def test_possible_duplicate_unit_representations_are_observations_only():
     assert inventory["human_decisions"] == {"source": None, "comparison": None}
 
 
+def test_duplicate_unit_representations_also_split_parenthesised_suffixes():
+    """The shared unit regex was widened for `(mW)`; cover it where it lives."""
+    inventory = enumerate_rig(CandidateShapeCore({
+        "iBeamLike": ["Laser Power (%)", "Laser Power (mW)"],
+    }))
+    duplicates = inventory["heuristic_candidates"]["possible_duplicate_power_representations"]
+    assert len(duplicates) == 1
+    assert duplicates[0]["property_base"] == "Laser Power"
+    assert [row["unit_suffix"] for row in duplicates[0]["representations"]] == ["(%)", "(mW)"]
+
+
 def test_power_enable_grouping_retains_one_sided_device_candidates():
     inventory = enumerate_rig(CandidateShapeCore({
         "PowerOnly": ["Laser Power"],

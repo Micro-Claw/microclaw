@@ -279,17 +279,26 @@ def test_every_hazardous_field_still_refuses_blank():
         "human-confirmation threshold total shutter-open time",
         "maximum illumination power", "maximum consecutive power step factor",
     ]
+    # Fields that now carry an Enter-acceptable proposal. A blank is an accepted
+    # answer there, so the prompt appears once and produces no refusal; every
+    # other field must re-ask, which means it appears at least twice.
+    defaulted = {
+        "maximum camera exposure", "total shutter-open time in one acquisition",
+        "shutter-open time accumulated",
+        # Defaulted deliberately after the 2026-08-01 demo run: a blank-refusing
+        # dose question the operator could not interpret was answered 5e15,
+        # disabling the only confirmation measuring light.
+        "human-confirmation threshold total shutter-open time",
+    }
     for fragment in required:
-        expected = 1 if fragment in {
-            "maximum camera exposure", "total shutter-open time in one acquisition",
-            "shutter-open time accumulated",
-            # Defaulted deliberately after the 2026-08-01 demo run: a
-            # blank-refusing dose question the operator could not interpret was
-            # answered 5e15, disabling the only confirmation measuring light.
-            "human-confirmation threshold total shutter-open time",
-        } else 2
-        assert sum(fragment in prompt for prompt in prompts) >= expected, fragment
-    assert len([line for line in output if line.startswith("SETUP REFUSAL:")]) >= len(required)
+        assert sum(fragment in prompt for prompt in prompts) >= (
+            1 if fragment in defaulted else 2
+        ), fragment
+    # Assert the intent rather than a coincidence: every field still expected to
+    # refuse a blank produced a refusal.
+    assert len([line for line in output if line.startswith("SETUP REFUSAL:")]) >= (
+        len(required) - len(defaulted)
+    )
 
 
 def test_metadata_proposal_glossary_defaults_and_bulk_revisit():
@@ -424,6 +433,8 @@ def test_emission_default_excludes_state_and_continuous_power(item, expected):
 @pytest.mark.parametrize(("prop", "expected"), [
     ("Fine A (%)", "p"), ("Power (mW)", "n"),
     ("Laser Power [mW]", "n"), ("Laser Power", None),
+    # M5's real iChrome activation line: a bare trailing percent.
+    ("Laser 4: 3. Level %", "p"),
 ])
 def test_power_unit_default_comes_from_trailing_unit(prop, expected):
     assert _power_units_default(prop) == expected

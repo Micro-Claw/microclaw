@@ -379,10 +379,18 @@ def _emission_role_default(item: dict) -> str | None:
 
 def _power_units_default(prop: str) -> str | None:
     match = _TRAILING_UNIT.search(prop)
-    if match is None:
-        return None
-    unit = match.group("unit")[1:-1].strip().casefold()
-    return "p" if unit == "%" else "n"
+    if match is not None:
+        unit = match.group("unit")[1:-1].strip().casefold()
+        return "p" if unit == "%" else "n"
+    # M5's iChrome activation line is `Laser 4: 3. Level %` — a bare trailing
+    # percent with no bracket or parenthesis, which the shared unit regex does
+    # not match.  It is still unambiguous, so answer it rather than asking four
+    # more times.  Deliberately not folded into `_TRAILING_UNIT`: that regex is
+    # the producer's duplicate-representation detector, which needs a delimited
+    # suffix to split a base name on.
+    if prop.rstrip().endswith("%"):
+        return "p"
+    return None
 
 
 def _device_property(
