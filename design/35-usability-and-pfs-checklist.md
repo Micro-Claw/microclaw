@@ -132,7 +132,7 @@ Rig-facing commands must be PowerShell/cmd-safe (the rig is Windows): prefer
 | 1 | Usability | 0a and 0b assigned | `design33/phase5-doc-reconciliation` | `b717594` | `dd359a3` | n/a | `20b92e2` | done — block *is* the gate |
 | 2 | Usability | 1 | `design33/undeclared-light-source-gate` | `98842cf` | `ef72b15` + `e9817ad` | **PASS** — M5 refusal/declaration/confirm/cleanup + separate demo fail-closed run | `a1b7579` | done — design/33 landed semantics + residual boundary |
 | 3 | Usability | 2 | `design33/config-diagnostics` | `e8d6ee1` | `dce17a4` + `65bfd7c` | n/a — no rig surface | `0cb871f` | done — error taxonomy + offline-validation contract |
-| 4 | Usability | 3 | `design33/first-launch-setup` | `bc303a2` | `fb04a8e` + `e9fa769` | **required** — `design/35-block4-gate-prompts.md`, pushed, not merged | | |
+| 4 | Usability | 3 | `design33/first-launch-setup` | `bc303a2` | `fb04a8e` + `e9fa769` | **required** — runbook `design/35-block4-gate-prompts.md` *on the branch*, pushed, not merged | | |
 | 5 | Usability | 4 | `design33/deployed-config-hygiene` | | | required | | |
 | 6 | Nikon | probe S = pre-fix baseline; post-fix run owed | `design34/measured-position-readback` | | | required | | |
 | 7a | Nikon | scope: none; rig gate: probe 0 | `design34/continuous-focus-capability` | | | **required** | | |
@@ -656,7 +656,18 @@ or any equivalent"), both are shape heuristics behind a required human
 confirmation or a hard exclusion, and neither carries a bound or a geometry.
 Record this in the post-merge design gate rather than silently keeping it.
 
-Rig gate — run `design/35-block4-gate-prompts.md`:
+Rig gate — run `design/35-block4-gate-prompts.md`, **which lives on
+`design33/first-launch-setup`, not here.** A gate runbook belongs on the branch
+the operator checks out, so it is in front of them for the whole run and cannot
+drift from the code it tests; it reaches `main` when the block merges. Block 2
+kept its runbook on `main` instead, which was a mistake this file should not
+repeat: the self-reference it was avoiding — a commit making the runbook's own
+recorded hash stale — is already solved by pinning with `git merge-base
+--is-ancestor` rather than an exact tip hash (`cf13c1a`).
+
+Coordinator bookkeeping (this checklist, the ledger, evidence records) stays on
+`main`. The runbook is the operator's working document, and it is the only
+Block 4 artifact that moves.
 
 - [ ] Run on the demo core first: a complete pass producing a profile that then
       passes block 3's offline validator and, after a human sets `reviewed:
