@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import sys
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import yaml
 
@@ -11,6 +13,103 @@ from microclaw.safety import ParsedSafetyConfig, SafetyConfigError
 
 class UnreviewedSafetyConfig(Exception):
     """The safety config still carries the example's fictional limits."""
+
+
+@dataclass(frozen=True)
+class ConfigDiagnostic:
+    """One machine-readable result from an offline config check."""
+
+    kind: Literal["schema", "review", "guaranteed_mode", "live_check"]
+    message: str
+    blocking: bool
+
+
+@dataclass(frozen=True)
+class ConfigValidationResult:
+    """Document findings without contacting Micro-Manager."""
+
+    path: Path
+    parsed: ParsedSafetyConfig | None
+    reviewed: bool | None
+    diagnostics: tuple[ConfigDiagnostic, ...]
+
+    @property
+    def can_start_live_validation(self) -> bool:
+        return self.parsed is not None and self.reviewed is True and not any(
+            item.blocking for item in self.diagnostics
+        )
+
+
+def validate_safety_config(path: str | Path | None = None) -> ConfigValidationResult:
+    """Check a config document and guaranteed-mode prerequisites, entirely offline.
+
+    Live inventory remains necessary to prove that every reachable actuator has
+    policy and to apply requirements conditional on reachable hardware.
+    """
+    p = Path(path) if path else default_safety_config()
+    diagnostics: list[ConfigDiagnostic] = []
+    if not p.exists():
+        return ConfigValidationResult(
+            p, None, None,
+            (ConfigDiagnostic("schema", f"No safety config at {p}.", True),),
+        )
+
+    try:
+        loaded = yaml.safe_load(p.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, yaml.YAMLError) as exc:
+        return ConfigValidationResult(
+            p, None, None,
+            (ConfigDiagnostic("schema", f"Could not parse {p}: {exc}", True),),
+        )
+
+    reviewed = loaded.get("reviewed") is True if isinstance(loaded, dict) else None
+    if reviewed is False:
+        diagnostics.append(ConfigDiagnostic(
+            "review",
+            "This config is intentionally unreviewed. Review every limit for this "
+            "microscope, then set `reviewed: true` in the top level of the file.",
+            True,
+        ))
+
+    try:
+        parsed = ParsedSafetyConfig.from_yaml(str(p))
+    except (OSError, UnicodeError, yaml.YAMLError, SafetyConfigError) as exc:
+        diagnostics.append(ConfigDiagnostic("schema", str(exc), True))
+        return ConfigValidationResult(p, None, reviewed, tuple(diagnostics))
+
+    if parsed.rig_profile.mode == "guaranteed":
+        acquisition = parsed.constraints.acquisition
+        for name in (
+            "max_frames", "max_duration_s", "max_bytes", "max_illuminated_ms",
+            "max_session_illuminated_ms", "confirm_above_frames",
+            "confirm_above_duration_s", "confirm_above_bytes",
+            "confirm_above_illuminated_ms",
+        ):
+            if getattr(acquisition, name) is None:
+                diagnostics.append(ConfigDiagnostic(
+                    "guaranteed_mode",
+                    f"Guaranteed mode requires a finite positive `acquisition.{name}` "
+                    "at live startup; replace null with this rig's reviewed budget.",
+                    True,
+                ))
+        if parsed.constraints.camera.max_exposure_ms is None:
+            diagnostics.append(ConfigDiagnostic(
+                "guaranteed_mode",
+                "`camera.max_exposure_ms` is null. If a camera is reachable, "
+                "guaranteed-mode live startup will refuse it; set this rig's reviewed "
+                "finite positive maximum.",
+                True,
+            ))
+        diagnostics.append(ConfigDiagnostic(
+            "live_check",
+            "Offline validation cannot enumerate the rig. Live startup must still verify "
+            "that every reachable stage has a closed declared range, every reachable "
+            "actuator has policy, and reachable camera and illumination declarations "
+            "match hardware.",
+            False,
+        ))
+
+    return ConfigValidationResult(p, parsed, reviewed, tuple(diagnostics))
 
 
 def load_safety_config(path: str | Path | None = None) -> ParsedSafetyConfig:

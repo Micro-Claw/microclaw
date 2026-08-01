@@ -16,7 +16,9 @@ from microclaw.agent import run_agent
 from microclaw.authorization import RigAuthorizationError, validate_live_rig
 from microclaw.assets import load_page
 from microclaw.controller import MicroscopeController
-from microclaw.config import load_safety_config, load_safety_config_or_exit
+from microclaw.config import (
+    load_safety_config, load_safety_config_or_exit, validate_safety_config,
+)
 from microclaw.conversation import (
     AuditLog,
     ConversationStore,
@@ -314,6 +316,32 @@ def inspect_rig(args):
     print(f"Review: {review_path}")
 
 
+def check_config(args):
+    """Present the reusable offline validator without connecting to a rig."""
+    result = validate_safety_config(args.path or args.safety_config)
+    print(f"Safety config: {result.path}")
+    if result.parsed is not None:
+        print("Schema: valid")
+    if result.reviewed is True:
+        print("Review: reviewed")
+    for item in result.diagnostics:
+        label = {
+            "schema": "SCHEMA ERROR",
+            "review": "REVIEW REQUIRED",
+            "guaranteed_mode": "GUARANTEED-MODE REQUIREMENT",
+            "live_check": "LIVE CHECK REQUIRED",
+        }[item.kind]
+        print(f"{label}: {item.message}")
+    if result.can_start_live_validation:
+        print(
+            "Offline checks passed. This does not authorize the rig; run normal "
+            "live startup next."
+        )
+        return
+    print("Config is not ready for live startup.")
+    raise SystemExit(1)
+
+
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="Microclaw: AI agent for Micro-Manager")
@@ -399,6 +427,18 @@ def main():
             "surface. It never constructs an agent, app, or mutation-tool dispatcher."
         ),
     )
+    cc = sub.add_parser(
+        "check-config",
+        help="Validate a safety config without connecting to Micro-Manager.",
+        description=(
+            "Checks the strict document schema, review state, and offline-detectable "
+            "guaranteed-mode requirements. It never connects to the rig."
+        ),
+    )
+    cc.add_argument(
+        "path", nargs="?", default=None,
+        help="Config path (default: --safety-config or the per-user file).",
+    )
     ir = sub.add_parser(
         "inspect-rig",
         help="Enumerate a rig read-only and write inventory evidence.",
@@ -466,6 +506,10 @@ def main():
 
     if args.command == "inspect-rig":
         inspect_rig(args)
+        return
+
+    if args.command == "check-config":
+        check_config(args)
         return
 
     if args.command == "serve":
