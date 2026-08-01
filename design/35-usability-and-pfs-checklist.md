@@ -128,7 +128,9 @@ Rig-facing commands must be PowerShell/cmd-safe (the rig is Windows): prefer
 | 1 | Usability | 0a and 0b assigned | `design33/phase5-doc-reconciliation` | `b717594` | `dd359a3` | n/a | `20b92e2` | done — block *is* the gate |
 | 2 | Usability | 1 | `design33/undeclared-light-source-gate` | `98842cf` | `ef72b15` + `e9817ad` | **PASS** — M5 refusal/declaration/confirm/cleanup + separate demo fail-closed run | `a1b7579` | done — design/33 landed semantics + residual boundary |
 | 3 | Usability | 2 | `design33/config-diagnostics` | `e8d6ee1` | `dce17a4` + `65bfd7c` | n/a — no rig surface | `0cb871f` | done — error taxonomy + offline-validation contract |
-| 4 | Usability | 3 | `design33/first-launch-setup` | `bc303a2` | `fb04a8e` + `e9fa769` | **required** — runbook `design/35-block4-gate-prompts.md` *on the branch*, pushed, not merged | | |
+| 4 | Usability | 3 | `design33/first-launch-setup` | `bc303a2` | `fb04a8e` + `e9fa769` | round 1 **FAIL** (demo, 2026-08-01) — 5 findings; round 2 pending | | |
+| 4r1a | Usability | 4 | `design33/first-launch-setup` | `15d8d1b` | | re-gate with 4r1b | | |
+| 4r1b | Usability | 4 | `design35/startup-refusal-severity` | `15d8d1b` | | re-gate with 4r1a | merges into block branch | |
 | 5 | Usability | 4 | `design33/deployed-config-hygiene` | | | required | | |
 | 6 | Nikon | probe S = pre-fix baseline; post-fix run owed | `design34/measured-position-readback` | | | required | | |
 | 7a | Nikon | scope: none; rig gate: probe 0 | `design34/continuous-focus-capability` | | | **required** | | |
@@ -678,6 +680,53 @@ Block 4 artifact that moves.
       (design/33 `:796`).
 - [ ] Stop on any unenumerable effect or any pre-validation write.
 
+### Rig gate round 1 — demo machine, 2026-08-01: **FAIL**
+
+Evidence: `block4-demo-20260801-131435`. The interview completed and wrote a
+profile; the profile then failed to start a session. Five findings, all returned
+to implementers. Findings 1–2 are Block 4's own surface; findings 3–5 are the
+startup validator, which Block 4 merely exposed — **the gate cannot pass while
+they stand, so they are in this block's scope.**
+
+1. **`Start-Transcript` captured nothing.** Windows PowerShell 5.1 transcripts
+   record the PowerShell output stream, not a child process's console writes, so
+   every `g*.txt` is an empty shell. The operator had to hand-produce
+   `*-copy-paste.txt` files for the run to be readable at all. The runbook chose
+   `Start-Transcript` deliberately (`:25`) because redirecting an interactive
+   session hides the prompts — correct reasoning, wrong remedy. **Microclaw must
+   write its own interview transcript**; non-interactive invocations use
+   `> file.txt 2>&1`.
+2. **The interview asks ~90 questions, explains nothing, and offers no
+   defaults.** The operator was asked to classify every `Camera.TestProperty1..6`
+   with no statement of what "categorical" or "excluded" mean. **Micro-Manager
+   already answers most of this**: `is_property_read_only`, `is_property_pre_init`,
+   `get_allowed_property_values`, `has_property_limits`, and the technical range
+   are what the Device Property Browser renders as enabled/disabled and as a
+   combo box vs a slider. The inventory already records all of them
+   (`rig_inventory.py:170`–`:185`). Setup must use them as **defaults**, reserving
+   type-it-yourself refusal for the genuinely hazardous decisions.
+3. **A continuous actuator must not prevent launch.** Nineteen properties the
+   operator had classified `categorical` were rejected at startup as "a known
+   continuous actuator … cannot be classified as categorical"
+   (`authorization.py:790`), each one fatal. Many actuators are continuous and are
+   fine within an appropriate range. Fail closed **on the property, not on the
+   process.**
+4. **A missing EMU configuration must not prevent launch.** `_has_emu`
+   (`emu_manager.py:75`) returns true when `Emu.jar` is merely *present* — and it
+   ships with every Micro-Manager. So the "this is a non-EMU rig" early-out at
+   `authorization.py:94` is unreachable on a stock install, and any rig without
+   `EMU/config.uicfg` is refused. **Almost no one uses EMU**; M2 and M5 are the
+   rare exceptions. Jar presence is not evidence that a rig is EMU-configured.
+5. **Generalise: none of these should have blocked launch.** Every refusal in
+   this run was a claim the config made that the rig could not corroborate —
+   never an undeclared hazard. A claim the rig cannot corroborate must be
+   **dropped and reported**, which strictly narrows authority. Block 2's
+   undeclared-emission-path gate is the opposite shape and stays fail-closed.
+
+Round-1 assignments: 1–2 → `design33/first-launch-setup` (the block branch);
+3–5 → `design35/startup-refusal-severity`, branched from it and merged back
+before the re-gate.
+
 Post-merge design gate:
 
 - [ ] Update design/33 with the setup contact semantics actually measured, every
@@ -685,6 +734,16 @@ Post-merge design gate:
       the cases it refuses, and the exact ordering guarantee. Retire the "later
       work" framing at `:347`.
 - [ ] Tick the two Phase-wide Block 14 rows carried into block 1.
+- [ ] **Reconcile the "never a default" rule with finding 2.** The rule as
+      written ("Driver technical ranges, current values, allowed values … are
+      never used as safety limits or answer defaults") is now scoped: MM's own
+      writability and value-domain metadata *is* the classification default;
+      technical ranges remain barred from becoming safety bounds on hazardous
+      axes. design/33 and this file's block 4 item text both say the unscoped
+      version and must be corrected to whatever ships.
+- [ ] **Record the startup refusal-severity taxonomy** from findings 3–5 in
+      design/33 §authorization: which diagnostics refuse the process, which
+      demote a claim and warn, and the rule that decides.
 
 ## 5. Deployed-config hygiene and the `init` path — rig config review
 
