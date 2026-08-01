@@ -185,6 +185,18 @@ def run_session(args):
     parsed_safety = load_safety_config_or_exit(args.safety_config)
     guard = SafetyGuard(parsed_safety.constraints)
 
+    key, source = credentials.load_api_key()
+    if key is None:
+        sys.exit(
+            "No Anthropic API key found. Looked in the ANTHROPIC_API_KEY "
+            "environment variable, the system keyring, and the Microclaw credential file."
+        )
+    # Keep the agent import lazy for restricted commands, but use the same key
+    # injection path as the browser server before any hardware contact.
+    from microclaw.agent import set_api_key
+    set_api_key(key)
+    print(f"Anthropic API key: {credentials.mask(key)} (from {source})")
+
     print("Connecting to Micro-Manager...")
     ctrl = MicroscopeController(port=args.port, guard=guard)
     if not ctrl.is_connected():
@@ -197,17 +209,6 @@ def run_session(args):
     except RigAuthorizationError as exc:
         sys.exit(str(exc))
 
-    key, source = credentials.load_api_key()
-    if key is None:
-        sys.exit(
-            "No Anthropic API key found. Looked in the ANTHROPIC_API_KEY "
-            "environment variable, the system keyring, and the Microclaw credential file."
-        )
-    # Keep the agent import lazy for restricted commands, but use the same key
-    # injection path as the browser server before any API-backed session starts.
-    from microclaw.agent import set_api_key
-    set_api_key(key)
-    print(f"Anthropic API key: {credentials.mask(key)} (from {source})")
     print("Connected. Type your instructions (type 'exit' or press Ctrl-C to quit).\n")
 
     history_fn_name = f"{datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f')}_microclaw_history.jsonl"

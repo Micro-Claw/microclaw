@@ -175,12 +175,14 @@ def _positive_default(prompt: str, proposed: float, ask: Input, say: Output) -> 
     while True:
         raw = ask(f"{prompt} [proposed: {proposed:g}; press Enter to accept]: ").strip()
         if not raw:
+            say(f"PROPOSAL ACCEPTED: {prompt} = {proposed:g}.")
             return proposed
         try:
             value = float(raw)
         except ValueError:
             value = math.nan
         if math.isfinite(value) and value > 0:
+            say(f"OPERATOR OVERRIDE: {prompt} = {value:g} (proposed {proposed:g}).")
             return value
         say("SETUP REFUSAL: Enter a finite number greater than zero or press Enter to accept the proposal.")
 
@@ -192,13 +194,12 @@ def _proposed_text(
         value = _text(prompt, ask, say)
         say(f"OPERATOR VALUE TYPED: {audit_name} = {value!r}; no proposal was available.")
         return value
-    while True:
-        raw = ask(f"{prompt} [MM allowed-value proposal: {proposed}; press Enter to accept]: ").strip()
-        if not raw:
-            say(f"PROPOSAL ACCEPTED: {audit_name} = {proposed!r}.")
-            return proposed
-        say(f"OPERATOR OVERRIDE: {audit_name} = {raw!r} (proposed {proposed!r}).")
-        return raw
+    raw = ask(f"{prompt} [MM allowed-value proposal: {proposed}; press Enter to accept]: ").strip()
+    if not raw:
+        say(f"PROPOSAL ACCEPTED: {audit_name} = {proposed!r}.")
+        return proposed
+    say(f"OPERATOR OVERRIDE: {audit_name} = {raw!r} (proposed {proposed!r}).")
+    return raw
 
 
 def _finite(prompt: str, ask: Input, say: Output) -> float:
@@ -230,6 +231,10 @@ def _bounds(
                         f"[MM driver technical range: {proposed}; press Enter to accept]: "
                     ).strip()
                     if not raw:
+                        say(
+                            f"PROPOSAL ACCEPTED: Human-reviewed {edge} for "
+                            f"{label} = {proposed:g}."
+                        )
                         values.append(proposed)
                         break
                     try:
@@ -237,6 +242,10 @@ def _bounds(
                     except ValueError:
                         value = math.nan
                     if math.isfinite(value):
+                        say(
+                            f"OPERATOR OVERRIDE: Human-reviewed {edge} for "
+                            f"{label} = {value:g} (proposed {proposed:g})."
+                        )
                         values.append(value)
                         break
                     say("SETUP REFUSAL: Enter a finite number or press Enter to accept the shown MM driver bound.")
@@ -748,20 +757,31 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
         day_ms, ask, say,
     )
     geometry = facts.get("camera_geometry")
-    width = geometry.get("image_width") if isinstance(geometry, dict) else None
-    height = geometry.get("image_height") if isinstance(geometry, dict) else None
+    current_width = geometry.get("image_width") if isinstance(geometry, dict) else None
+    current_height = geometry.get("image_height") if isinstance(geometry, dict) else None
     bytes_per_pixel = geometry.get("bytes_per_pixel") if isinstance(geometry, dict) else None
+    unbinned = geometry.get("unbinned_full_frame_pixels") if isinstance(geometry, dict) else None
+    unbinned_width = unbinned.get("width") if isinstance(unbinned, dict) else None
+    unbinned_height = unbinned.get("height") if isinstance(unbinned, dict) else None
+    if all(type(value) in (int, float) and value > 0 for value in (unbinned_width, unbinned_height)):
+        width, height = unbinned_width, unbinned_height
+        geometry_basis = "unbinned full-frame dimensions"
+    else:
+        width, height = current_width, current_height
+        geometry_basis = "current binned dimensions because binning is unknown"
     if all(type(value) in (int, float) and value > 0 for value in (width, height, bytes_per_pixel)):
         bytes_per_frame = width * height * bytes_per_pixel
         proposed_bytes = bytes_per_frame * acquisition["max_frames"]
         binning = geometry.get("binning")
         roi = geometry.get("roi")
+        bit_depth = geometry.get("image_bit_depth")
         acquisition["max_bytes"] = proposed_bytes
         say(
             f"DERIVED hard maximum raw payload bytes: {width:g} × {height:g} pixels × "
             f"{bytes_per_pixel:g} bytes/pixel × {acquisition['max_frames']:g} frames = "
-            f"{proposed_bytes:g}. Basis is current ROI {roi} and binning {binning}; "
-            "a later larger ROI or lower binning may hit this visible fail-closed cap."
+            f"{proposed_bytes:g}. Basis: {geometry_basis}; setup observed ROI {roi}, "
+            f"binning {binning}, and pixel-type depth {bit_depth} bits. A later larger ROI "
+            "or pixel type with more bytes per pixel may hit this visible fail-closed cap."
         )
     else:
         say(

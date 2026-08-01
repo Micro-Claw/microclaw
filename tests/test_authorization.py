@@ -866,11 +866,13 @@ def test_illumination_preset_is_authorized_for_channel_plan_executor():
 def test_cli_and_web_validate_before_prompt_or_session_exposure(monkeypatch):
     from microclaw import __main__ as cli
     from microclaw import webserve
+    from microclaw import credentials
 
     incomplete = parsed(ranges={})
     prompted = []
     monkeypatch.setattr(cli, "load_safety_config_or_exit", lambda path: incomplete)
     monkeypatch.setattr(cli, "MicroscopeController", lambda port, guard: Controller())
+    monkeypatch.setattr(credentials, "load_api_key", lambda: ("k", "env"))
     monkeypatch.setattr("builtins.input", lambda prompt: prompted.append(prompt))
     args = SimpleNamespace(safety_config=None, port=1, save_history=False)
     with pytest.raises(SystemExit, match="Live rig authorization failed"):
@@ -889,11 +891,13 @@ def test_cli_and_web_validate_before_prompt_or_session_exposure(monkeypatch):
 def test_cli_and_web_fail_before_exposure_on_partial_direct_dose_policy(monkeypatch):
     from microclaw import __main__ as cli
     from microclaw import webserve
+    from microclaw import credentials
 
     incomplete = parsed(acquisition=AcquisitionConstraints(max_frames=100))
     prompted = []
     monkeypatch.setattr(cli, "load_safety_config_or_exit", lambda path: incomplete)
     monkeypatch.setattr(cli, "MicroscopeController", lambda port, guard: Controller())
+    monkeypatch.setattr(credentials, "load_api_key", lambda: ("k", "env"))
     monkeypatch.setattr("builtins.input", lambda prompt: prompted.append(prompt))
     with pytest.raises(SystemExit, match="acquisition.max_duration_s"):
         cli.run_session(SimpleNamespace(safety_config=None, port=1, save_history=False))
@@ -934,11 +938,16 @@ def test_repl_refuses_missing_api_key_before_repl(monkeypatch):
     from microclaw import credentials
 
     monkeypatch.setattr(cli, "load_safety_config_or_exit", lambda path: parsed())
-    monkeypatch.setattr(cli, "MicroscopeController", lambda port, guard: Controller())
+    constructed = []
+    monkeypatch.setattr(
+        cli, "MicroscopeController",
+        lambda port, guard: constructed.append((port, guard)) or Controller(),
+    )
     monkeypatch.setattr(credentials, "load_api_key", lambda: (None, None))
     monkeypatch.setattr(cli, "_repl", lambda *args: pytest.fail("REPL exposed"))
     with pytest.raises(SystemExit, match="environment variable, the system keyring, and the Microclaw credential file"):
         cli.run_session(SimpleNamespace(safety_config=None, port=1, save_history=False))
+    assert constructed == []
 
 
 def test_read_only_enumeration_prints_map_without_agent_or_repl(monkeypatch):

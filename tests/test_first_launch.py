@@ -423,12 +423,14 @@ def test_stage_driver_ranges_are_offered_per_axis():
             prompts.append(prompt)
             return ""
         return base(prompt)
-    config, _ = interview(inventory, ask=ask, say=lambda _: None)
+    output = []
+    config, _ = interview(inventory, ask=ask, say=output.append)
     assert config["stage"] == {
         "x_min": -10, "x_max": 20, "y_min": -30, "y_max": 40,
         "z_min": 1, "z_max": 99,
     }
     assert sum("MM driver technical range" in prompt for prompt in prompts) == 6
+    assert sum(line.startswith("PROPOSAL ACCEPTED: Human-reviewed") for line in output) == 6
 
 
 def test_real_demo_limit_sources_exposure_default_and_budget_order():
@@ -440,6 +442,10 @@ def test_real_demo_limit_sources_exposure_default_and_budget_order():
     assert any("no Z travel limits for focus stage device Z" in line for line in output)
     exposure = next(prompt for prompt in prompts if "maximum camera exposure" in prompt)
     assert "proposed: 10000" in exposure
+    assert any(
+        line.startswith("OPERATOR OVERRIDE: Human-reviewed maximum camera exposure for Camera")
+        for line in output
+    )
     ordered = [
         "maximum camera exposure", "hard maximum frames", "confirmation threshold frames",
         "hard maximum acquisition duration", "confirmation threshold duration",
@@ -477,6 +483,40 @@ def test_real_demo_geometry_from_producer_removes_byte_question_and_derives_iner
     assert config["acquisition"]["confirm_above_bytes"] == config["acquisition"]["max_bytes"]
     assert any("512 × 512 pixels × 2 bytes/pixel" in line for line in output)
     assert any("BYTE CONFIRMATION INERT" in note for note in notes)
+
+
+def test_byte_cap_uses_unbinned_full_frame_geometry_and_names_pixel_depth():
+    inventory = json.loads(REAL_DEMO_INVENTORY.read_text(encoding="utf-8"))
+    inventory["facts"]["camera_geometry"] = {
+        "device": "Camera", "image_width": 512, "image_height": 512,
+        "bytes_per_pixel": 2, "image_bit_depth": 16,
+        "roi": [0, 0, 512, 512], "binning": 4,
+        "unbinned_full_frame_pixels": {"width": 2048, "height": 2048},
+    }
+    prompts, output = [], []
+    base = _answer_real_interview(prompts)
+    config, _ = interview(inventory, ask=base, say=output.append)
+    expected = 2048 * 2048 * 2 * config["acquisition"]["max_frames"]
+    assert config["acquisition"]["max_bytes"] == expected
+    arithmetic = next(line for line in output if line.startswith("DERIVED hard maximum raw payload bytes"))
+    assert "2048 × 2048 pixels" in arithmetic
+    assert "unbinned full-frame dimensions" in arithmetic
+    assert "pixel-type depth 16 bits" in arithmetic
+
+
+def test_byte_cap_falls_back_to_current_dimensions_when_binning_unknown():
+    inventory = json.loads(REAL_DEMO_INVENTORY.read_text(encoding="utf-8"))
+    inventory["facts"]["camera_geometry"] = {
+        "device": "Camera", "image_width": 300, "image_height": 200,
+        "bytes_per_pixel": 4, "image_bit_depth": 32,
+        "roi": [0, 0, 300, 200], "binning": None,
+        "unbinned_full_frame_pixels": None,
+    }
+    prompts, output = [], []
+    config, _ = interview(inventory, ask=_answer_real_interview(prompts), say=output.append)
+    assert config["acquisition"]["max_bytes"] == 300 * 200 * 4 * config["acquisition"]["max_frames"]
+    arithmetic = next(line for line in output if line.startswith("DERIVED hard maximum raw payload bytes"))
+    assert "current binned dimensions because binning is unknown" in arithmetic
 
 
 def test_bulk_accept_and_individual_review_produce_same_real_demo_profile():
