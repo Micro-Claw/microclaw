@@ -50,7 +50,9 @@ it. It does not exercise continuous focus, which Block 4 hard-excludes.
 
 ## G0 — setup, identity, and immutable backup
 
-Replace every angle-bracket value before running anything.
+Replace every angle-bracket value before running anything. Start from an
+up-to-date `main` (`git switch main; git pull`) — that is where this runbook
+lives.
 
 ```powershell
 $Repo         = "<absolute repo path>"
@@ -62,6 +64,10 @@ $Deployed     = "<absolute deployed M5 safety YAML>"
 
 Set-Location $Repo
 New-Item -ItemType Directory -Path $Evidence | Out-Null
+# This runbook lives on main, not on the implementation branch, so that editing
+# it never invalidates a hash written inside itself. The detach below therefore
+# removes it from the working tree — keep a copy first and read that one.
+Copy-Item "design\35-block4-gate-prompts.md" (Join-Path $Evidence "runbook.md")
 git fetch origin design33/first-launch-setup > "$Evidence\git-fetch.txt" 2>&1
 git switch --detach origin/design33/first-launch-setup > "$Evidence\git-switch.txt" 2>&1
 git rev-parse HEAD > "$Evidence\head.txt" 2>&1
