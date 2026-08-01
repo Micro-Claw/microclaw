@@ -1,12 +1,17 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
 
-from microclaw.config import validate_safety_config
+from microclaw import __main__ as cli
+from microclaw.config import (
+    ConfigDiagnostic, ConfigValidationResult, validate_safety_config,
+)
 from microclaw.first_launch import (
-    SetupRefusal, disconnect_core, interview, load_inventory, write_profile,
+    CONTACT_ACKNOWLEDGEMENT, SetupRefusal, disconnect_core, interview,
+    load_inventory, write_profile,
 )
 from microclaw.rig_inventory import INVENTORY_SCHEMA
 
@@ -75,6 +80,16 @@ def _answers():
     ])
 
 
+def _args(tmp_path, **overrides):
+    values = {
+        "out": tmp_path / "profile.yaml", "force": False,
+        "inventory": None, "mm_config": None, "evidence_out": tmp_path / "evidence",
+        "port": 4827,
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
 def test_interview_copies_only_identifiers_and_explicit_answers(tmp_path):
     answers = _answers()
     output = []
@@ -122,13 +137,48 @@ def test_inventory_regions_and_producer_version_fail_closed(tmp_path):
         load_inventory(path)
 
 
-def test_unenumerable_effect_stops_before_any_question():
+@pytest.mark.parametrize("scope,field", [
+    ("core", "loaded_devices"),
+    ("device:Laser", "device_type"),
+    ("device:Laser", "property_names"),
+    ("property:Laser.Emission", "read_only"),
+    ("property:Laser.Emission", "pre_init"),
+    ("property:Laser.Emission", "allowed_values"),
+    ("property:Laser.Power %", "has_limits"),
+    ("property:Laser.Power %", "reported_type"),
+    ("config_group:Channel", "presets"),
+    ("preset:Channel.DAPI", "setting_0_property"),
+])
+def test_classification_failure_stops_before_any_question(scope, field):
     inventory = _inventory()
     inventory["facts"]["enumeration_failures"] = [
-        {"scope": "property:Laser.Emission", "field": "read_only", "error": "offline"}
+        {"scope": scope, "field": field, "error": "offline"}
     ]
     with pytest.raises(SetupRefusal, match="No profile was generated"):
         interview(inventory, ask=lambda _: pytest.fail("interview must not start"))
+
+
+def test_observational_failures_become_header_review_notes(tmp_path):
+    inventory = _inventory()
+    inventory["facts"]["enumeration_failures"] = [
+        {"scope": "property:Laser.Power %", "field": "current_value", "error": "offline"},
+        {"scope": "property:Laser.Power %", "field": "lower_limit", "error": "offline"},
+        {"scope": "device:Laser", "field": "adapter_name", "error": "offline"},
+        {"scope": "core_assignments", "field": "galvo", "error": "offline"},
+    ]
+    answers = _answers()
+    config, notes = interview(inventory, ask=lambda _: next(answers), say=lambda _: None)
+    assert len([note for note in notes if note.startswith("ENUMERATION REVIEW NOTE:")]) == 4
+    path = tmp_path / "profile.yaml"
+    write_profile(config, notes, path)
+    text = path.read_text(encoding="utf-8")
+    for coordinate in (
+        "property:Laser.Power % / current_value",
+        "property:Laser.Power % / lower_limit",
+        "device:Laser / adapter_name",
+        "core_assignments / galvo",
+    ):
+        assert coordinate in text
 
 
 def test_blank_and_bad_numbers_refuse_in_phase5_wording():
@@ -152,8 +202,105 @@ def test_disconnect_releases_core_and_bridge(monkeypatch):
 
 def test_generated_profile_uses_shared_validator(monkeypatch, tmp_path):
     seen = []
-    expected = validate_safety_config(tmp_path / "missing")
-    monkeypatch.setattr("microclaw.first_launch.validate_safety_config", lambda path: seen.append(path) or expected)
-    write_profile({"reviewed": True}, [], tmp_path / "draft.yaml")
-    assert seen == [tmp_path / "draft.yaml"]
-    assert yaml.safe_load((tmp_path / "draft.yaml").read_text())["reviewed"] is False
+    expected = ConfigValidationResult(
+        tmp_path / "temporary", object(), False,
+        (ConfigDiagnostic("review", "review it", True),),
+    )
+    monkeypatch.setattr(
+        "microclaw.first_launch.validate_safety_config",
+        lambda path: seen.append(path) or expected,
+    )
+    target = tmp_path / "draft.yaml"
+    result = write_profile({"reviewed": True}, [], target)
+    assert len(seen) == 1 and seen[0] != target and seen[0].parent == target.parent
+    assert result.path == target
+    assert yaml.safe_load(target.read_text())["reviewed"] is False
+
+
+def test_rejected_temporary_profile_leaves_no_target_or_temporary(monkeypatch, tmp_path):
+    target = tmp_path / "draft.yaml"
+    target.write_text("stale rejected draft", encoding="utf-8")
+    rejected = ConfigValidationResult(
+        tmp_path / "temporary", None, False,
+        (ConfigDiagnostic("schema", "invalid generated document", True),),
+    )
+    monkeypatch.setattr(
+        "microclaw.first_launch.validate_safety_config", lambda path: rejected,
+    )
+    with pytest.raises(SetupRefusal, match=r"no file was written at .*draft.yaml"):
+        write_profile({"reviewed": True}, [], target)
+    assert not target.exists()
+    assert list(tmp_path.glob(".draft.yaml.*.tmp")) == []
+
+
+def test_live_contact_warning_and_exact_acknowledgement_precede_core(monkeypatch, tmp_path, capsys):
+    constructed = []
+
+    def core(*, port):
+        output = capsys.readouterr().out
+        assert "Enumeration is hardware contact" in output
+        assert "no agent- or tool-directed hardware action" in output
+        constructed.append(port)
+        return SimpleNamespace(get_version_info=lambda: "MMCore", _close=lambda: None)
+
+    monkeypatch.setattr("pycromanager.Core", core)
+    monkeypatch.setattr("builtins.input", lambda prompt: CONTACT_ACKNOWLEDGEMENT)
+    monkeypatch.setattr("microclaw.rig_inventory.enumerate_rig", lambda core, mm_config: _inventory())
+    monkeypatch.setattr("microclaw.rig_inventory.write_inventory_outputs", lambda inv, out: (Path(out) / "inventory.json", Path(out) / "review.md"))
+    answers = _answers()
+    monkeypatch.setattr("microclaw.first_launch.interview", lambda inv: interview(inv, ask=lambda _: next(answers), say=lambda _: None))
+    cli.first_launch_setup(_args(tmp_path))
+    assert constructed == [4827]
+
+
+def test_wrong_contact_acknowledgement_exits_without_constructing_core(monkeypatch, tmp_path):
+    monkeypatch.setattr("pycromanager.Core", lambda **kwargs: pytest.fail("Core must not be constructed"))
+    monkeypatch.setattr("builtins.input", lambda prompt: "yes")
+    with pytest.raises(SystemExit, match="Exited without connecting"):
+        cli.first_launch_setup(_args(tmp_path))
+
+
+def test_existing_inventory_shows_honesty_text_without_contact_ack(monkeypatch, tmp_path, capsys):
+    inventory_path = tmp_path / "inventory.json"
+    inventory_path.write_text(json.dumps(_inventory()), encoding="utf-8")
+    monkeypatch.setattr("builtins.input", lambda prompt: pytest.fail("contact acknowledgement must not be requested"))
+    answers = _answers()
+    monkeypatch.setattr("microclaw.first_launch.interview", lambda inv: interview(inv, ask=lambda _: next(answers), say=lambda _: None))
+    cli.first_launch_setup(_args(tmp_path, inventory=inventory_path))
+    output = capsys.readouterr().out
+    assert "Enumeration is hardware contact" in output
+    assert "normal restart" in output
+    assert "no hardware connection was opened" in output
+
+
+@pytest.mark.parametrize("failure,expected,unexpected", [
+    ("connection", "Could not connect to the already-running Micro-Manager Core", "config None"),
+    ("enumeration", "Read-only rig enumeration failed", "config None"),
+])
+def test_bridge_and_enumeration_errors_are_not_mislabeled(
+    monkeypatch, tmp_path, failure, expected, unexpected,
+):
+    monkeypatch.setattr("builtins.input", lambda prompt: CONTACT_ACKNOWLEDGEMENT)
+    if failure == "connection":
+        monkeypatch.setattr("pycromanager.Core", lambda **kwargs: (_ for _ in ()).throw(OSError("bridge down")))
+    else:
+        monkeypatch.setattr(
+            "pycromanager.Core",
+            lambda **kwargs: SimpleNamespace(get_version_info=lambda: "MMCore", _close=lambda: None),
+        )
+        monkeypatch.setattr(
+            "microclaw.rig_inventory.enumerate_rig",
+            lambda core, mm_config: (_ for _ in ()).throw(OSError("driver sweep failed")),
+        )
+    with pytest.raises(SystemExit) as exc:
+        cli.first_launch_setup(_args(tmp_path))
+    assert expected in str(exc.value)
+    assert unexpected not in str(exc.value)
+
+
+def test_unreadable_mm_config_has_scoped_message_before_core(monkeypatch, tmp_path):
+    missing = tmp_path / "missing.cfg"
+    monkeypatch.setattr("pycromanager.Core", lambda **kwargs: pytest.fail("Core must not be constructed"))
+    with pytest.raises(SystemExit) as exc:
+        cli.first_launch_setup(_args(tmp_path, mm_config=missing))
+    assert f"Could not read Micro-Manager config {missing}" in str(exc.value)

@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import json
 import math
+import os
 from pathlib import Path
+import tempfile
 from typing import Callable
 
 import yaml
@@ -54,6 +56,8 @@ Heuristic candidates are questions, not proof. Discovery may miss physical
 emission paths. Driver technical ranges, current values, allowed values, and
 observed focus positions are never used as safety limits or answer defaults.
 """
+
+CONTACT_ACKNOWLEDGEMENT = "I ACKNOWLEDGE HARDWARE CONTACT"
 
 
 def _choice(prompt: str, choices: dict[str, str], ask: Input, say: Output) -> str:
@@ -150,13 +154,61 @@ def _continuous_focus(device: str, prop: str, assignments: dict) -> bool:
     )
 
 
+def _classification_failure(failure: dict) -> bool:
+    """Whether a failed inventory query removes input an interview decision needs.
+
+    The rules follow the inventory coordinates consumed by candidate generation
+    and this interview, rather than treating every producer query as equally
+    safety-classifying.
+    """
+    scope = str(failure.get("scope") or "")
+    field = str(failure.get("field") or "")
+    if scope == "core" and field == "loaded_devices":
+        return True
+    if scope.startswith("device:"):
+        return field in {"device_type", "property_names"}
+    if scope.startswith("property:"):
+        # These are precisely the inputs used to establish writability,
+        # categorical/enable shape, and typed/power shape. Driver lower/upper
+        # limits are deliberately absent: technical ranges never become policy.
+        return field in {
+            "read_only", "pre_init", "allowed_values", "has_limits",
+            "reported_type",
+        }
+    if scope.startswith("config_group:") and field == "presets":
+        return True
+    if scope.startswith("preset:"):
+        # Every failure inside a preset scope can hide an effect coordinate.
+        return True
+    return False
+
+
+def _nonclassifying_failure_note(failure: dict) -> str:
+    """Explain why an observed failure is reviewable rather than terminal."""
+    scope = str(failure.get("scope") or "")
+    field = str(failure.get("field") or "")
+    coordinate = f"{scope} / {field}"
+    if scope.startswith("property:") and field == "current_value":
+        reason = "observed current values are never copied or used as interview defaults"
+    elif scope.startswith("property:") and field in {"lower_limit", "upper_limit"}:
+        reason = "driver technical-range edges are never converted into safety bounds"
+    elif scope.startswith("device:") and field in {
+        "adapter_library", "adapter_name", "description", "state_labels",
+    }:
+        reason = "adapter metadata and observed state labels do not authorize a property"
+    elif scope == "core_assignments":
+        reason = "the missing observed core assignment is not inferred; the generated profile authorizes no absent built-in axis"
+    else:
+        reason = "this observational coordinate is not consumed by a safety classification or copied into policy"
+    return f"ENUMERATION REVIEW NOTE: {coordinate} failed; setup continued because {reason}."
+
+
 def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tuple[dict, list[str]]:
     """Walk every unresolved inventory decision and return config plus notes."""
     validate_inventory_schema(inventory.get("schema"))
     for region in ("facts", "heuristic_candidates", "human_decisions"):
         if not isinstance(inventory.get(region), dict):
             raise SetupRefusal(f"SETUP REFUSAL: Required inventory region {region!r} is missing.")
-    say(INTRO)
     facts, candidates = inventory["facts"], inventory["heuristic_candidates"]
     assignments = facts.get("core_device_assignments", {})
     properties = _property_index(inventory)
@@ -180,15 +232,21 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
     decided: set[str] = set()
 
     failures = facts.get("enumeration_failures", [])
-    if failures or unknown:
+    blocking_failures = [item for item in failures if _classification_failure(item)]
+    if blocking_failures or unknown:
         coordinates = [
-            f"{item.get('scope')} / {item.get('field')}" for item in failures
+            f"{item.get('scope')} / {item.get('field')}" for item in blocking_failures
         ] + [f"{path} / writability" for path in unknown]
         raise SetupRefusal(
             "SETUP REFUSAL: Enumeration left effects or writability unenumerable: "
             + "; ".join(coordinates)
             + ". No profile was generated; inspect the inventory evidence and resolve the read failure before setup."
         )
+    notes.extend(
+        _nonclassifying_failure_note(item)
+        for item in failures
+        if not _classification_failure(item)
+    )
 
     # A duplicate representation is one decision, not two independent approvals.
     for group in duplicate_sets:
@@ -394,7 +452,7 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
 
 
 def write_profile(config: dict, notes: list[str], path: str | Path) -> ConfigValidationResult:
-    """Write an unreviewed profile and check it with the shared validator."""
+    """Validate an adjacent temporary draft, then atomically publish it."""
     config = dict(config)
     config["reviewed"] = False
     target = Path(path)
@@ -405,8 +463,35 @@ def write_profile(config: dict, notes: list[str], path: str | Path) -> ConfigVal
         "# Disconnect -> review every declaration/limit -> set reviewed: true -> normal restart.",
     ]
     header.extend("# " + line for line in notes)
-    target.write_text("\n".join(header) + "\n" + yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
-    return validate_safety_config(target)
+    text = "\n".join(header) + "\n" + yaml.safe_dump(config, sort_keys=False)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=target.parent,
+            prefix=f".{target.name}.", suffix=".tmp", delete=False,
+        ) as handle:
+            handle.write(text)
+            temporary = Path(handle.name)
+        result = validate_safety_config(temporary)
+        blockers = [item for item in result.diagnostics if item.blocking]
+        if result.parsed is None or any(item.kind != "review" for item in blockers):
+            details = "\n".join(f"- {item.message}" for item in blockers)
+            # --force authorizes replacement of a pre-existing output. If the
+            # replacement is invalid, do not leave either that stale path or
+            # the rejected temporary looking like the product of this run.
+            target.unlink(missing_ok=True)
+            raise SetupRefusal(
+                "SETUP REFUSAL: The shared safety-config validator rejected the "
+                f"generated profile; no file was written at {target}.\n{details}"
+            )
+        os.replace(temporary, target)
+        temporary = None
+        return ConfigValidationResult(
+            target, result.parsed, result.reviewed, result.diagnostics
+        )
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def disconnect_core(core: object, port: int) -> None:

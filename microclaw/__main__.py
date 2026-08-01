@@ -355,7 +355,8 @@ def check_config(args):
 def first_launch_setup(args):
     """Enumerate through Core only, disconnect, interview, and write a draft."""
     from microclaw.first_launch import (
-        SetupRefusal, disconnect_core, interview, load_inventory, write_profile,
+        CONTACT_ACKNOWLEDGEMENT, INTRO, SetupRefusal, disconnect_core, interview,
+        load_inventory, write_profile,
     )
     from microclaw.rig_inventory import enumerate_rig, write_inventory_outputs
 
@@ -366,11 +367,29 @@ def first_launch_setup(args):
             "choose another --out path, or pass --force deliberately."
         )
     try:
+        print(INTRO)
         if args.inventory:
             inventory = load_inventory(args.inventory)
             print("Using an existing inspect-rig inventory; no hardware connection was opened.")
         else:
             from pycromanager import Core
+            if args.mm_config:
+                try:
+                    Path(args.mm_config).read_bytes()
+                except OSError as exc:
+                    raise SetupRefusal(
+                        f"SETUP REFUSAL: Could not read Micro-Manager config "
+                        f"{args.mm_config}: {exc}"
+                    ) from exc
+            acknowledgement = input(
+                "To proceed with hardware-contacting enumeration, type exactly "
+                f"{CONTACT_ACKNOWLEDGEMENT!r}: "
+            ).strip()
+            if acknowledgement != CONTACT_ACKNOWLEDGEMENT:
+                raise SetupRefusal(
+                    "SETUP REFUSAL: Hardware-contact acknowledgement did not match. "
+                    "Exited without connecting to Micro-Manager or generating a profile."
+                )
             print(
                 "Connecting to the already-running Micro-Manager Core for read-only "
                 "enumeration (no Studio, agent, or tool dispatcher)...",
@@ -378,18 +397,32 @@ def first_launch_setup(args):
             )
             core = None
             try:
-                core = Core(port=args.port)
-                # This query verifies the bridge and is also part of enumerate_rig.
-                core.get_version_info()
-                inventory = enumerate_rig(core, mm_config=args.mm_config)
+                try:
+                    core = Core(port=args.port)
+                    # This query verifies the bridge and is also part of enumerate_rig.
+                    core.get_version_info()
+                except Exception as exc:
+                    raise SetupRefusal(
+                        "SETUP REFUSAL: Could not connect to the already-running "
+                        f"Micro-Manager Core on port {args.port}: {exc}"
+                    ) from exc
+                try:
+                    inventory = enumerate_rig(core, mm_config=args.mm_config)
+                except Exception as exc:
+                    raise SetupRefusal(
+                        "SETUP REFUSAL: Read-only rig enumeration failed before a "
+                        f"complete inventory could be produced: {exc}"
+                    ) from exc
                 evidence_dir = Path(args.evidence_out or (str(target) + ".inventory"))
-                inventory_path, review_path = write_inventory_outputs(inventory, evidence_dir)
+                try:
+                    inventory_path, review_path = write_inventory_outputs(inventory, evidence_dir)
+                except OSError as exc:
+                    raise SetupRefusal(
+                        f"SETUP REFUSAL: Could not write inventory evidence to "
+                        f"{evidence_dir}: {exc}"
+                    ) from exc
                 print(f"Inventory: {inventory_path}")
                 print(f"Review: {review_path}")
-            except OSError as exc:
-                raise SetupRefusal(
-                    f"SETUP REFUSAL: Could not read Micro-Manager config {args.mm_config}: {exc}"
-                ) from exc
             finally:
                 if core is not None:
                     disconnect_core(core, args.port)
@@ -403,13 +436,6 @@ def first_launch_setup(args):
         )
     except SetupRefusal as exc:
         sys.exit(str(exc))
-    blockers = [item for item in result.diagnostics if item.blocking]
-    if result.parsed is None or any(item.kind != "review" for item in blockers):
-        details = "\n".join(f"- {item.message}" for item in blockers)
-        sys.exit(
-            "SETUP REFUSAL: The shared safety-config validator rejected the generated "
-            f"profile; it was not loaded.\n{details}"
-        )
     print(f"Wrote unreviewed safety profile: {target}")
     print(
         "Disconnected. Manually review every declaration and limit, keep unsupported "

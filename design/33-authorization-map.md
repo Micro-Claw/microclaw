@@ -369,7 +369,12 @@ least-active path constructs only pycro-manager's remote `Core` shadow (not
 `MicroscopeController`, which also constructs `Studio`), verifies the Core
 connection, runs Block 9b's query-only `enumerate_rig`, writes the unchanged
 inventory format, releases the Core shadow, and closes the ZMQ bridge before the
-first interview question. It never loads a Micro-Manager configuration.
+first interview question. It never loads a Micro-Manager configuration. Before
+constructing that Core shadow it displays the complete contact/ordering warning
+and requires the operator to type an exact hardware-contact acknowledgement;
+any other response exits without connecting. Consuming an existing inventory
+shows the same ordering and review/restart explanation but requires no contact
+acknowledgement because it opens no connection.
 
 The initialization boundary it cannot avoid is outside Python's control: the
 operator has already loaded the Micro-Manager configuration into the running JVM,
@@ -383,18 +388,28 @@ what their live Micro-Manager logs and devices actually initialize.
 
 The interview requires an explicit classification for every surfaced emission,
 enable, and power candidate and explicitly says discovery is not exhaustive.
-Unknown writability, enumeration failures, unsupported ROI/pulse kinds,
-unrecognised device types, and ambiguous XY position properties remain excluded
-or unresolved rather than inferred. Duplicate percent/native representations
+Unknown writability and classification-blocking enumeration failures refuse
+generation; unsupported ROI/pulse kinds, unrecognised device types, and
+ambiguous XY position properties remain excluded or unresolved rather than
+inferred. Duplicate percent/native representations
 are one required choice. Continuous-focus enables are hard-excluded, the core
 focus/autofocus/offset relationship remains one review question, and PFS-offset
 workflows remain unsupported. Preset effects and typed-property collisions are
 shown before each preset decision. Generated guaranteed profiles always contain
 `categorical_properties`, including when empty.
 
+Enumeration failures are classified by coordinate. Missing loaded devices,
+device type/property names, writability/type inputs, preset lists, or any preset
+effect refuses generation. Failures of observational values, driver technical
+range edges, adapter metadata, or core assignments do not answer a safety
+decision and therefore become named review notes in the generated header rather
+than reinstating an all-or-nothing sweep. Unknown writability remains terminal.
+
 The generated file always carries `reviewed: false` and is passed to the shared
-offline `validate_safety_config` implementation. Setup accepts only the expected
-unreviewed diagnostic, never hot-loads the file, and directs the operator through
+offline `validate_safety_config` implementation through an adjacent temporary
+file. Only a schema-valid draft with the expected unreviewed diagnostic is moved
+atomically to the requested path; rejection removes the temporary and leaves no
+new output file. Setup never hot-loads the file and directs the operator through
 disconnect → manual review → `reviewed: true` → normal restart. Its setup text
 also states that `max_session_illuminated_ms` is a per-process, non-durable
 ledger cap. The operator-driven M5 transcript and live demo-core start remain the
