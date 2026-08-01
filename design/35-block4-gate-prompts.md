@@ -3,8 +3,10 @@
 Gate for `design33/first-launch-setup`, implementation commits `3a9522d`
 (round-3 derived defaults and REPL credential resolution) and `55b277c`
 (round-3 review fixes: unbinned byte basis, key resolved before any hardware
-contact, audit lines on numeric defaults). Round 2's `c5746b9` and `2558583` are
-ancestors of both. The branch is
+contact, audit lines on numeric defaults), plus `49a2c28` after the 2026-08-01
+demo re-run: the dose-confirmation threshold gained a default, and `get_roi`'s
+`java.awt.Rectangle` is now readable. Round 2's `c5746b9` and `2558583` are
+ancestors of all three. The branch is
 pushed at `origin/design33/first-launch-setup`; **do not merge until this gate
 passes and the coordinator reviews the evidence.** Do not open a PR.
 
@@ -121,7 +123,7 @@ git pull --ff-only > "$Evidence\git-pull.txt" 2>&1
 git rev-parse HEAD > "$Evidence\head.txt" 2>&1
 git merge-base --is-ancestor 3a9522d HEAD
 $LASTEXITCODE > "$Evidence\contains-round3-defaults.txt"
-git merge-base --is-ancestor 55b277c HEAD
+git merge-base --is-ancestor 49a2c28 HEAD
 $LASTEXITCODE > "$Evidence\contains-round3-fixes.txt"
 git status --short > "$Evidence\status.txt" 2>&1
 python -V > "$Evidence\python.txt" 2>&1
