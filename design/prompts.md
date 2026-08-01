@@ -3873,3 +3873,56 @@ as `a1b7579`; design/33 and the design/35 ledger/checklist reconciled on main as
 `02dc274`. Residual limits are explicit: discovered enables being declared does
 not prove every physical emission path was discovered, and the startup check is
 downstream of Block 4's enumeration window.]
+
+[Block 3, `design33/config-diagnostics`, merged `0cb871f`. Coordinator review
+before assignment found the block's own first item already fixed on `main`:
+`microclaw/errors.py` special-cases `RigAuthorizationError` ahead of the generic
+hardware hint, landed incidentally in `bb6290f` under the Phase 4 gate record
+rather than under this block. The checklist item was ticked with a correction
+note and the implementer was told to verify coverage across the tool, `serve`,
+and CLI refusal paths and add the missing regression test instead of
+re-implementing it.]
+
+[The block's substance was the refusal wording and a new offline validator.
+Every `RigAuthorizationError` raise site now names the declaration that would
+have permitted the write, or states explicitly that none exists -- three such
+dead-end classes are worded on purpose: an explicitly excluded property, an
+unclassifiable actuator kind, and an operator decline. `validate_safety_config`
+in `microclaw/config.py` returns a structured `ConfigValidationResult` over
+`schema | review | guaranteed_mode | degraded_mode | live_check` diagnostics,
+with `microclaw check-config [path]` as a thin presenter. It builds on
+`ParsedSafetyConfig.from_yaml`'s existing error accumulation rather than adding
+a second parser, and Block 4 calls the function directly to check what it
+writes.]
+
+[Coordinator review rejected the first otherwise-green implementation for the
+inverse of the defect the block exists to remove. The validator gated its entire
+diagnostic block on `rig_profile.mode == "guaranteed"`, so a
+`degraded_trusted_plugins` config with all nine acquisition budgets and
+`camera.max_exposure_ms` null returned an empty diagnostics tuple and
+`can_start_live_validation: True` -- verified directly, not inferred. That is not
+the "passes offline, refuses live" shape, because degraded live startup permits
+those nulls; it is worse in one specific way. Runtime enforcement is uniformly
+`if limit is not None and value > limit`, so in degraded mode those caps are
+genuinely unenforced during the run, and guaranteed mode's refusal is the only
+thing that normally stops a null reaching runtime at all. The correction emits
+`live_check` in every profile mode -- so a programmatic consumer can never
+confuse "checked and clean" with "nothing was checked" -- plus a non-blocking
+`degraded_mode` diagnostic naming each null cap. Non-blocking is correct;
+silence was not.]
+
+[Two smaller outcomes. An absent `reviewed` key is now distinguished from an
+explicit `reviewed: false`: the first yields `reviewed=None` and a schema
+missing-key error, because a file that never mentions review is malformed rather
+than intentionally unreviewed. The optional fictional-example-value detector was
+skipped as the optional item it was marked, and carried to Block 5, which owns
+the `microclaw init` copy-the-example path that motivates it.]
+
+[Suite 1234 passed / 99 skipped / 3 warnings, verified independently by the
+coordinator along with the degraded, missing-key, and clean cases, rather than
+accepted from the implementer's report. No rig surface, so no rig gate. Branch
+pushed to `origin` before merge, no PR. Design gate recorded the error taxonomy
+and the offline-validation contract in `design/33-authorization-map.md`,
+including the standing limit that offline validation checks the *document*,
+never the rig: offline and live coverage are complementary and non-overlapping,
+and the live exposure check is itself gated on a reachable camera being found.]
