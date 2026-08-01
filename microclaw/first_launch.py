@@ -1,21 +1,20 @@
-"""Restricted first-launch inventory interview and unreviewed profile writer.
-
-The interview consumes the one versioned rig-inventory format.  Inventory
-values are evidence, never defaults: only identifiers and answers typed by the
-operator are copied to the YAML document.
-"""
+"""Restricted first-launch inventory interview and unreviewed profile writer."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
-from pathlib import Path
+import subprocess
 import tempfile
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable
 
 import yaml
 
+from microclaw import __version__
 from microclaw.config import ConfigValidationResult, validate_safety_config
 from microclaw.rig_inventory import validate_inventory_schema
 
@@ -53,17 +52,94 @@ Microclaw process. That ledger is not durable across restarts: restarting starts
 a new process ledger, so this value is not a lifetime or cross-restart dose cap.
 
 Heuristic candidates are questions, not proof. Discovery may miss physical
-emission paths. Driver technical ranges, current values, allowed values, and
-observed focus positions are never used as safety limits or answer defaults.
+emission paths. Micro-Manager writability and value-domain metadata provide
+classification proposals. Driver technical ranges provide reviewable defaults
+only for ordinary typed properties; they never silently authorize hazardous
+axes. Current values and observed focus positions are never copied as policy.
 """
 
 CONTACT_ACKNOWLEDGEMENT = "I ACKNOWLEDGE HARDWARE CONTACT"
 
+GLOSSARY = """\
+PROPERTY CLASSIFICATION GLOSSARY
 
-def _choice(prompt: str, choices: dict[str, str], ask: Input, say: Output) -> str:
+Categorical: Microclaw may write this property, but only using one of the
+discrete values Micro-Manager reports (for example, a mode or binning choice).
+
+Typed absolute position: Microclaw may write numeric positions only within the
+shown lower and upper bounds. Review those bounds as safety policy.
+
+Excluded: Microclaw will not be permitted to write this property.
+
+Unresolved: Microclaw will not be permitted to write this property until a
+human resolves its meaning and updates the profile after setup.
+"""
+
+
+def _commit_identity() -> str:
+    try:
+        return subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=Path(__file__).resolve().parent,
+            capture_output=True, text=True, check=True, timeout=5,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+
+
+def inventory_sha256(path: str | Path) -> str:
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+class InterviewTranscript:
+    """Flush every setup exchange to durable evidence as it happens."""
+
+    def __init__(self, path: str | Path):
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._handle = self.path.open("w", encoding="utf-8", newline="\n")
+        self._write("MICROCLAW FIRST-LAUNCH INTERVIEW TRANSCRIPT")
+        self._write(f"UTC timestamp: {datetime.now(timezone.utc).isoformat()}")
+        self._write(f"Microclaw version: {__version__}")
+        self._write(f"Microclaw commit: {_commit_identity()}")
+
+    def _write(self, text: str) -> None:
+        self._handle.write(text + ("" if text.endswith("\n") else "\n"))
+        self._handle.flush()
+
+    def identify_inventory(self, path: str | Path) -> None:
+        source = Path(path).resolve()
+        self._write(f"Inventory path: {source}")
+        self._write(f"Inventory sha256: {inventory_sha256(source)}")
+        self._write("")
+
+    def say(self, text: str, *, stream=None) -> None:
+        print(text, file=stream, flush=True)
+        self._write(text)
+
+    def ask(self, prompt: str) -> str:
+        self._handle.write(prompt)
+        self._handle.flush()
+        answer = input(prompt)
+        self._write(answer)
+        return answer
+
+    def outcome(self, text: str) -> None:
+        self._write(text)
+
+    def close(self) -> None:
+        self._handle.close()
+
+
+def _choice(
+    prompt: str, choices: dict[str, str], ask: Input, say: Output,
+    *, default: str | None = None,
+) -> str:
     rendered = ", ".join(f"{key}={value}" for key, value in choices.items())
     while True:
-        answer = ask(f"{prompt}\nChoose one ({rendered}); there is no default: ").strip().lower()
+        suffix = f"default {default}; press Enter to accept" if default else "there is no default"
+        answer = ask(f"{prompt}\nChoose one ({rendered}); {suffix}: ").strip().lower()
+        if not answer and default is not None:
+            return default
         if answer in choices:
             return answer
         say("SETUP REFUSAL: An explicit listed choice is required; blank or unrecognised input is never accepted.")
@@ -101,10 +177,34 @@ def _finite(prompt: str, ask: Input, say: Output) -> float:
         say("SETUP REFUSAL: Enter a finite number. No driver-reported or example limit will be inferred.")
 
 
-def _bounds(label: str, ask: Input, say: Output) -> tuple[float, float]:
+def _bounds(
+    label: str, ask: Input, say: Output,
+    default: tuple[float, float] | None = None,
+) -> tuple[float, float]:
     while True:
-        low = _finite(f"Human-reviewed minimum for {label}", ask, say)
-        high = _finite(f"Human-reviewed maximum for {label}", ask, say)
+        if default is None:
+            low = _finite(f"Human-reviewed minimum for {label}", ask, say)
+            high = _finite(f"Human-reviewed maximum for {label}", ask, say)
+        else:
+            values = []
+            for edge, proposed in zip(("minimum", "maximum"), default):
+                while True:
+                    raw = ask(
+                        f"Human-reviewed {edge} for {label} "
+                        f"[MM driver technical range: {proposed}; press Enter to accept]: "
+                    ).strip()
+                    if not raw:
+                        values.append(proposed)
+                        break
+                    try:
+                        value = float(raw)
+                    except ValueError:
+                        value = math.nan
+                    if math.isfinite(value):
+                        values.append(value)
+                        break
+                    say("SETUP REFUSAL: Enter a finite number or press Enter to accept the shown MM driver bound.")
+            low, high = values
         if low <= high:
             return low, high
         say("SETUP REFUSAL: The minimum exceeds the maximum; enter both bounds again.")
@@ -142,6 +242,29 @@ def _property_index(inventory: dict) -> dict[str, dict]:
         for device in inventory["facts"].get("devices", [])
         for prop in device.get("properties", [])
     }
+
+
+def _metadata_default(item: dict) -> tuple[str, str, tuple[float, float] | None]:
+    record = item["record"]
+    if record.get("read_only") is True or record.get("pre_init") is True:
+        reasons = []
+        if record.get("read_only") is True:
+            reasons.append("read-only")
+        if record.get("pre_init") is True:
+            reasons.append("pre-init-only")
+        return "x", "MM reports " + " and ".join(reasons), None
+    allowed = record.get("allowed_values") or []
+    if allowed:
+        return "c", "MM reports allowed values " + ", ".join(map(str, allowed)), None
+    numeric = str(record.get("reported_type") or "").casefold() in {
+        "float", "double", "integer", "int", "long", "short",
+    }
+    span = record.get("technical_range") or {}
+    if record.get("has_limits") is True and numeric:
+        low, high = span.get("lower"), span.get("upper")
+        if isinstance(low, (int, float)) and isinstance(high, (int, float)):
+            return "a", f"MM reports numeric technical range {low} to {high}", (float(low), float(high))
+    return "u", "MM reports no discrete value domain or numeric limits", None
 
 
 def _continuous_focus(device: str, prop: str, assignments: dict) -> bool:
@@ -248,6 +371,43 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
         if not _classification_failure(item)
     )
 
+    # The inventory facts contain MM's complete property browser metadata.
+    # Include greyed-out/read-only and pre-init rows so they become explicit
+    # exclusions without burdening the operator with questions.
+    all_candidates = sorted(set(properties) | set(writable) | enables | powers)
+    defaults: dict[str, tuple[str, str, tuple[float, float] | None]] = {}
+    say(GLOSSARY)
+    say("DERIVED PROPERTY PROPOSAL (from Micro-Manager metadata)")
+    labels = {"c": "categorical", "a": "typed absolute position", "x": "excluded", "u": "unresolved"}
+    for path in all_candidates:
+        item = properties.get(path)
+        if item is None:
+            raise SetupRefusal(f"SETUP REFUSAL: Candidate {path} has no matching fact record.")
+        default = _metadata_default(item)
+        defaults[path] = default
+        if path in enables or path in powers:
+            say(f"{path} [illumination candidate: explicit hazard classification required; {default[1]}]")
+        else:
+            say(f"{path} [{labels[default[0]]}: {default[1]}]")
+
+    bulk = _choice(
+        "Accept all MM-derived defaults for ordinary properties? You can revisit entries by exact name next.",
+        {"y": "accept proposal", "n": "review every ordinary property"}, ask, say,
+        default="y",
+    ) == "y"
+    revisit_raw = ask(
+        "Exact ordinary property names to revisit, separated by commas "
+        "[press Enter for none]: "
+    ).strip()
+    revisit = {name.strip() for name in revisit_raw.split(",") if name.strip()}
+    ordinary = set(all_candidates) - enables - powers
+    unknown_revisits = sorted(revisit - ordinary)
+    if unknown_revisits:
+        raise SetupRefusal(
+            "SETUP REFUSAL: Revisit name(s) did not exactly match an ordinary "
+            "property: " + ", ".join(unknown_revisits)
+        )
+
     # A duplicate representation is one decision, not two independent approvals.
     for group in duplicate_sets:
         present = sorted(group & (powers | set(writable)))
@@ -273,7 +433,6 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
                 "SETUP REFUSAL: Duplicate representation choice did not exactly name one candidate; neither representation was declared."
             )
 
-    all_candidates = sorted(set(writable) | enables | powers)
     for path in all_candidates:
         if path in decided:
             continue
@@ -341,15 +500,30 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
                 notes.append(f"{wording}: {path}; no illumination authorization was inferred.")
             continue
 
+        default_role, evidence, default_bounds = defaults[path]
+        if default_role == "x":
+            excluded.append({"device": device, "property": prop})
+            notes.append(f"MM METADATA EXCLUSION: {path}; {evidence}.")
+            continue
         recommendation = " (known TTL.State0 false-positive shape; exclusion is recommended but requires your confirmation)" if path.casefold().endswith("ttl.state0") else ""
-        role = _choice(
-            f"Writable property {path}{recommendation}",
-            {"c": "categorical", "a": "typed absolute position", "x": "exclude", "u": "unresolved"}, ask, say,
-        )
+        needs_question = not bulk or path in revisit or default_role == "u" or bool(recommendation)
+        role = default_role
+        if needs_question:
+            role = _choice(
+                f"Writable property {path} [{labels[default_role]}: {evidence}]{recommendation}",
+                {"c": "categorical", "a": "typed absolute position", "x": "exclude", "u": "unresolved"}, ask, say,
+                default=default_role,
+            )
         if role == "c":
             categorical.append({"device": device, "property": prop})
         elif role == "a":
-            low, high = _bounds(path + " in um", ask, say)
+            if not needs_question and default_bounds is not None:
+                low, high = default_bounds
+            else:
+                low, high = _bounds(
+                    path + " in um", ask, say,
+                    default_bounds if role == default_role else None,
+                )
             typed.append({
                 "device": device, "property": prop, "kind": "absolute-position",
                 "units": "um", "minimum": low, "maximum": high,

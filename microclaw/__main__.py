@@ -355,22 +355,26 @@ def check_config(args):
 def first_launch_setup(args):
     """Enumerate through Core only, disconnect, interview, and write a draft."""
     from microclaw.first_launch import (
-        CONTACT_ACKNOWLEDGEMENT, INTRO, SetupRefusal, disconnect_core, interview,
-        load_inventory, write_profile,
+        CONTACT_ACKNOWLEDGEMENT, INTRO, InterviewTranscript, SetupRefusal,
+        disconnect_core, interview, load_inventory, write_profile,
     )
     from microclaw.rig_inventory import enumerate_rig, write_inventory_outputs
 
     target = Path(args.out)
-    if target.exists() and not args.force:
-        sys.exit(
-            f"SETUP REFUSAL: {target} already exists. Preserve the reviewed work, "
-            "choose another --out path, or pass --force deliberately."
-        )
+    evidence_dir = Path(args.evidence_out or (str(target) + ".inventory"))
+    transcript = InterviewTranscript(evidence_dir / "first-launch-transcript.txt")
     try:
-        print(INTRO)
+        if target.exists() and not args.force:
+            raise SetupRefusal(
+                f"SETUP REFUSAL: {target} already exists. Preserve the reviewed work, "
+                "choose another --out path, or pass --force deliberately."
+            )
+        transcript.say(INTRO)
         if args.inventory:
             inventory = load_inventory(args.inventory)
-            print("Using an existing inspect-rig inventory; no hardware connection was opened.")
+            inventory_path = Path(args.inventory)
+            transcript.identify_inventory(inventory_path)
+            transcript.say("Using an existing inspect-rig inventory; no hardware connection was opened.")
         else:
             from pycromanager import Core
             if args.mm_config:
@@ -381,7 +385,7 @@ def first_launch_setup(args):
                         f"SETUP REFUSAL: Could not read Micro-Manager config "
                         f"{args.mm_config}: {exc}"
                     ) from exc
-            acknowledgement = input(
+            acknowledgement = transcript.ask(
                 "To proceed with hardware-contacting enumeration, type exactly "
                 f"{CONTACT_ACKNOWLEDGEMENT!r}: "
             ).strip()
@@ -390,10 +394,10 @@ def first_launch_setup(args):
                     "SETUP REFUSAL: Hardware-contact acknowledgement did not match. "
                     "Exited without connecting to Micro-Manager or generating a profile."
                 )
-            print(
+            transcript.say(
                 "Connecting to the already-running Micro-Manager Core for read-only "
                 "enumeration (no Studio, agent, or tool dispatcher)...",
-                file=sys.stderr,
+                stream=sys.stderr,
             )
             core = None
             try:
@@ -413,7 +417,6 @@ def first_launch_setup(args):
                         "SETUP REFUSAL: Read-only rig enumeration failed before a "
                         f"complete inventory could be produced: {exc}"
                     ) from exc
-                evidence_dir = Path(args.evidence_out or (str(target) + ".inventory"))
                 try:
                     inventory_path, review_path = write_inventory_outputs(inventory, evidence_dir)
                 except OSError as exc:
@@ -421,27 +424,33 @@ def first_launch_setup(args):
                         f"SETUP REFUSAL: Could not write inventory evidence to "
                         f"{evidence_dir}: {exc}"
                     ) from exc
-                print(f"Inventory: {inventory_path}")
-                print(f"Review: {review_path}")
+                transcript.identify_inventory(inventory_path)
+                transcript.say(f"Inventory: {inventory_path}")
+                transcript.say(f"Review: {review_path}")
             finally:
                 if core is not None:
                     disconnect_core(core, args.port)
-                    print("Disconnected from Micro-Manager before the interview.")
-        config, notes = interview(inventory)
-        result = write_profile(config, notes, target)
+                    transcript.say("Disconnected from Micro-Manager before the interview.")
+        config, notes = interview(inventory, ask=transcript.ask, say=transcript.say)
+        write_profile(config, notes, target)
+        transcript.say(f"Wrote unreviewed safety profile: {target}")
+        transcript.say(
+            "Disconnected. Manually review every declaration and limit, keep unsupported "
+            "items excluded, then set `reviewed: true` and perform a normal restart. "
+            "The generated profile has not been hot-loaded."
+        )
     except (EOFError, KeyboardInterrupt):
-        sys.exit(
+        message = (
             "SETUP REFUSAL: The interview ended before every decision was answered. "
             "No profile was generated or loaded; rerun setup to start a complete interview."
         )
+        transcript.outcome(message)
+        sys.exit(message)
     except SetupRefusal as exc:
+        transcript.outcome(str(exc))
         sys.exit(str(exc))
-    print(f"Wrote unreviewed safety profile: {target}")
-    print(
-        "Disconnected. Manually review every declaration and limit, keep unsupported "
-        "items excluded, then set `reviewed: true` and perform a normal restart. "
-        "The generated profile has not been hot-loaded."
-    )
+    finally:
+        transcript.close()
 
 
 def main():

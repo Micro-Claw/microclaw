@@ -1,4 +1,5 @@
 import json
+import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,17 +11,20 @@ from microclaw.config import (
     ConfigDiagnostic, ConfigValidationResult, validate_safety_config,
 )
 from microclaw.first_launch import (
-    CONTACT_ACKNOWLEDGEMENT, SetupRefusal, disconnect_core, interview,
-    load_inventory, write_profile,
+    CONTACT_ACKNOWLEDGEMENT, InterviewTranscript, SetupRefusal, disconnect_core,
+    interview, load_inventory, write_profile,
 )
 from microclaw.rig_inventory import INVENTORY_SCHEMA
 
 
 def _inventory():
-    def prop(name, *, current="OBSERVED", allowed=None, technical=False):
+    def prop(
+        name, *, current="OBSERVED", allowed=None, technical=False,
+        read_only=False, pre_init=False,
+    ):
         row = {
             "name": name, "current_value": current, "allowed_values": allowed or [],
-            "read_only": False, "pre_init": False, "has_limits": technical,
+            "read_only": read_only, "pre_init": pre_init, "has_limits": technical,
             "reported_type": "Float",
         }
         if technical:
@@ -34,11 +38,17 @@ def _inventory():
         ]},
         {"label": "TTL", "device_type": "GenericDevice", "properties": [prop("State0")]},
         {"label": "TIPFSStatus", "device_type": "AutoFocusDevice", "properties": [prop("State", allowed=["Off", "On"])]},
-        {"label": "Camera", "device_type": "CameraDevice", "properties": [prop("ROI") ]},
+        {"label": "Camera", "device_type": "CameraDevice", "properties": [
+            prop("ROI"), prop("Binning", allowed=["1", "2", "4", "8"]),
+            prop("Exposure", technical=True), prop("Serial", read_only=True),
+        ]},
         {"label": "XY", "device_type": "XYStageDevice", "properties": [prop("XPosition") ]},
         {"label": "Mystery", "device_type": "FutureDevice", "properties": [prop("Amplitude") ]},
     ]
-    paths = [f'{d["label"]}.{p["name"]}' for d in devices for p in d["properties"]]
+    paths = [
+        f'{d["label"]}.{p["name"]}' for d in devices for p in d["properties"]
+        if p["read_only"] is False and p["pre_init"] is False
+    ]
     return {
         "schema": INVENTORY_SCHEMA,
         "mm_config": None,
@@ -70,10 +80,11 @@ def _inventory():
 
 
 def _answers():
-    # Emission role/on/off; power role/units; TTL unresolved; core Z bounds;
+    # Bulk defaults/no revisits; emission role/on/off; power role/units; TTL
+    # unresolved; core Z bounds;
     # nine explicit acquisition budgets; illumination cap and ratchet.
     return iter([
-        "e", "OPERATOR_ON", "OPERATOR_OFF", "p", "p", "u",
+        "", "", "e", "OPERATOR_ON", "OPERATOR_OFF", "p", "p", "",
         "0", "200", "500",
         "100", "60", "1000000", "5000", "10000", "50", "30", "500000", "1000",
         "25", "2",
@@ -95,14 +106,20 @@ def test_interview_copies_only_identifiers_and_explicit_answers(tmp_path):
     output = []
     config, notes = interview(_inventory(), ask=lambda _: next(answers), say=output.append)
     assert config["reviewed"] is False
-    assert config["rig_profile"]["categorical_properties"] == []
+    assert config["rig_profile"]["categorical_properties"] == [
+        {"device": "Camera", "property": "Binning"},
+    ]
+    assert config["rig_profile"]["typed_actuators"] == [{
+        "device": "Camera", "property": "Exposure", "kind": "absolute-position",
+        "units": "um", "minimum": 2440.0, "maximum": 2450.0,
+    }]
     assert config["illumination"]["shutters"][0]["on_value"] == "OPERATOR_ON"
     assert {x["property"] for x in config["rig_profile"]["excluded_properties"]} >= {
         "State0", "State", "ROI", "XPosition", "Amplitude",
     }
     rendered = yaml.safe_dump(config)
     assert "OBSERVED" not in rendered
-    assert "2440" not in rendered and "2450" not in rendered
+    assert "2440" in rendered and "2450" in rendered
     assert any("PFS-offset workflows remain unsupported" in note for note in notes)
     assert any("ambiguous XY" in line for line in output)
     result = write_profile(config, notes, tmp_path / "profile.yaml")
@@ -119,7 +136,9 @@ def test_empty_guaranteed_categorical_key_is_emitted(tmp_path):
     write_profile(config, notes, path)
     loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
     assert loaded["rig_profile"]["mode"] == "guaranteed"
-    assert loaded["rig_profile"]["categorical_properties"] == []
+    assert loaded["rig_profile"]["categorical_properties"] == [
+        {"device": "Camera", "property": "Binning"},
+    ]
     assert loaded["reviewed"] is False
 
 
@@ -182,11 +201,25 @@ def test_observational_failures_become_header_review_notes(tmp_path):
 
 
 def test_blank_and_bad_numbers_refuse_in_phase5_wording():
-    answers = iter(["", "e", "", "ON", "OFF", "p", "p", "u", "bad", "0", "200"] + ["1"] * 12)
+    answers = iter(["", "", "", "e", "", "ON", "OFF", "p", "p", "", "bad", "0", "200"] + ["1"] * 12)
     output = []
     interview(_inventory(), ask=lambda _: next(answers), say=output.append)
     assert any(line.startswith("SETUP REFUSAL:") for line in output)
     assert any("No driver-reported or example limit" in line for line in output)
+
+
+def test_metadata_proposal_glossary_defaults_and_bulk_revisit():
+    answers = iter(["", "Camera.Binning", "x"] + list(_answers())[2:])
+    output = []
+    config, _ = interview(_inventory(), ask=lambda _: next(answers), say=output.append)
+    assert any("PROPERTY CLASSIFICATION GLOSSARY" in line for line in output)
+    assert any(
+        "Camera.Binning [categorical: MM reports allowed values 1, 2, 4, 8]" in line
+        for line in output
+    )
+    assert {x["property"] for x in config["rig_profile"]["excluded_properties"]} >= {
+        "Binning", "Serial",
+    }
 
 
 def test_disconnect_releases_core_and_bridge(monkeypatch):
@@ -198,6 +231,39 @@ def test_disconnect_releases_core_and_bridge(monkeypatch):
     monkeypatch.setitem(Bridge._cached_bridges_by_port, 9988, ref)
     disconnect_core(core, 9988)
     assert events == ["core", "bridge"]
+
+
+def test_transcript_flushes_identity_inventory_and_each_exchange(monkeypatch, tmp_path):
+    inventory_path = tmp_path / "inventory.json"
+    inventory_path.write_bytes(b'{"schema":"example"}\n')
+    path = tmp_path / "first-launch-transcript.txt"
+    transcript = InterviewTranscript(path)
+    transcript.identify_inventory(inventory_path)
+    transcript.say("SETUP DEFERRAL: example")
+    monkeypatch.setattr("builtins.input", lambda prompt: "verbatim answer")
+    assert transcript.ask("Verbatim prompt: ") == "verbatim answer"
+    transcript.outcome("FINAL OUTCOME: stopped")
+    transcript.close()
+
+    text = path.read_text(encoding="utf-8")
+    assert "UTC timestamp:" in text
+    assert "Microclaw version:" in text
+    assert "Microclaw commit:" in text
+    assert f"Inventory path: {inventory_path.resolve()}" in text
+    assert f"Inventory sha256: {hashlib.sha256(inventory_path.read_bytes()).hexdigest()}" in text
+    assert "SETUP DEFERRAL: example\nVerbatim prompt: verbatim answer\nFINAL OUTCOME: stopped" in text
+
+
+def test_transcript_keeps_last_prompt_when_input_aborts(monkeypatch, tmp_path):
+    path = tmp_path / "partial.txt"
+    transcript = InterviewTranscript(path)
+    monkeypatch.setattr(
+        "builtins.input", lambda prompt: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+    with pytest.raises(KeyboardInterrupt):
+        transcript.ask("Prompt before abort: ")
+    transcript.close()
+    assert path.read_text(encoding="utf-8").endswith("Prompt before abort: ")
 
 
 def test_generated_profile_uses_shared_validator(monkeypatch, tmp_path):
@@ -246,9 +312,19 @@ def test_live_contact_warning_and_exact_acknowledgement_precede_core(monkeypatch
     monkeypatch.setattr("pycromanager.Core", core)
     monkeypatch.setattr("builtins.input", lambda prompt: CONTACT_ACKNOWLEDGEMENT)
     monkeypatch.setattr("microclaw.rig_inventory.enumerate_rig", lambda core, mm_config: _inventory())
-    monkeypatch.setattr("microclaw.rig_inventory.write_inventory_outputs", lambda inv, out: (Path(out) / "inventory.json", Path(out) / "review.md"))
+    def write_outputs(inv, out):
+        out = Path(out)
+        out.mkdir(parents=True, exist_ok=True)
+        inventory_path = out / "inventory.json"
+        inventory_path.write_text(json.dumps(inv), encoding="utf-8")
+        return inventory_path, out / "review.md"
+
+    monkeypatch.setattr("microclaw.rig_inventory.write_inventory_outputs", write_outputs)
     answers = _answers()
-    monkeypatch.setattr("microclaw.first_launch.interview", lambda inv: interview(inv, ask=lambda _: next(answers), say=lambda _: None))
+    monkeypatch.setattr(
+        "microclaw.first_launch.interview",
+        lambda inv, **kwargs: interview(inv, ask=lambda _: next(answers), say=lambda _: None),
+    )
     cli.first_launch_setup(_args(tmp_path))
     assert constructed == [4827]
 
@@ -258,6 +334,10 @@ def test_wrong_contact_acknowledgement_exits_without_constructing_core(monkeypat
     monkeypatch.setattr("builtins.input", lambda prompt: "yes")
     with pytest.raises(SystemExit, match="Exited without connecting"):
         cli.first_launch_setup(_args(tmp_path))
+    transcript = (tmp_path / "evidence" / "first-launch-transcript.txt").read_text(encoding="utf-8")
+    assert "type exactly" in transcript
+    assert "yes" in transcript
+    assert "SETUP REFUSAL: Hardware-contact acknowledgement did not match" in transcript
 
 
 def test_existing_inventory_shows_honesty_text_without_contact_ack(monkeypatch, tmp_path, capsys):
@@ -265,7 +345,10 @@ def test_existing_inventory_shows_honesty_text_without_contact_ack(monkeypatch, 
     inventory_path.write_text(json.dumps(_inventory()), encoding="utf-8")
     monkeypatch.setattr("builtins.input", lambda prompt: pytest.fail("contact acknowledgement must not be requested"))
     answers = _answers()
-    monkeypatch.setattr("microclaw.first_launch.interview", lambda inv: interview(inv, ask=lambda _: next(answers), say=lambda _: None))
+    monkeypatch.setattr(
+        "microclaw.first_launch.interview",
+        lambda inv, **kwargs: interview(inv, ask=lambda _: next(answers), say=lambda _: None),
+    )
     cli.first_launch_setup(_args(tmp_path, inventory=inventory_path))
     output = capsys.readouterr().out
     assert "Enumeration is hardware contact" in output

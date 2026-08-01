@@ -21,10 +21,14 @@ never used on the deployed path.
 
 Commands are PowerShell-safe and run from the repository root. The global
 `--port` and `--safety-config` options come **before** the subcommand. Keep
-commands and output in one dated evidence directory. Interactive steps use
-`Start-Transcript`; redirecting an interactive session to a file hides the
-prompts the operator must answer, and this gate exists to prove a human
-answered them.
+commands and output in one dated evidence directory. Do not use PowerShell
+`Start-Transcript` for child processes: Windows PowerShell 5.1 records its own
+output stream, not a child's console writes, and produced empty evidence in
+round 1. Non-interactive commands use `> file.txt 2>&1`. Interactive setup must
+remain attached to the console so prompts are visible; Microclaw itself writes
+and flushes `first-launch-transcript.txt` under each `--evidence-out` directory.
+That application-owned file, not selected/copy-pasted terminal text, is the
+evidence of prompts, answers, refusals, deferrals, and final outcome.
 
 ## What this gate settles
 
@@ -122,10 +126,11 @@ should be running against the rig.
 ```powershell
 $DemoOut = Join-Path $Evidence "demo-profile.yaml"
 $DemoCfg = "<absolute MMConfig_demo.cfg path>"
-Start-Transcript -Path (Join-Path $Evidence "g1-demo-setup.txt")
 microclaw --port $Port first-launch-setup --out $DemoOut --mm-config $DemoCfg --evidence-out (Join-Path $Evidence "demo-inventory")
-Stop-Transcript
 ```
+
+Collect `$Evidence\demo-inventory\first-launch-transcript.txt`. It must contain
+the identity header, inventory path/hash, and complete interview.
 
 Answer every question honestly for the demo config. Where the demo hardware has
 no real hazard, still enter values you would defend — this run is also a
@@ -161,12 +166,18 @@ $LASTEXITCODE >> "$Evidence\g1-check-config-reviewed.txt"
 Expected: offline checks pass, exit `0`. Then start a normal session under it:
 
 ```powershell
-Start-Transcript -Path (Join-Path $Evidence "g1-session-start.txt")
 microclaw --port $Port --safety-config (Join-Path $Evidence "demo-profile.reviewed.yaml")
-Stop-Transcript
 ```
 
 The session must reach its prompt. Ask it one read-only question, then exit.
+Keep this successful interactive session attached to the console. If it instead
+dies during config validation, rerun it non-interactively to capture the error:
+
+```powershell
+microclaw --port $Port --safety-config (Join-Path $Evidence "demo-profile.reviewed.yaml") > "$Evidence\g1-session-start-error.txt" 2>&1
+```
+
+This captures the failure without hiding a prompt that needs an answer.
 **If live startup refuses a config that `check-config` passed, that is a
 finding and the gate stops** — that mismatch is exactly what block 3 exists to
 prevent.
@@ -174,27 +185,33 @@ prevent.
 ## G2 — the unresolved choice cannot be silently accepted
 
 **A human types every input in this step.** Do not pipe a file, do not use a
-here-string, do not script the answers. The evidence is the transcript.
+here-string, and do not script the answers. The evidence is Microclaw's flushed
+interview transcript.
 
 ```powershell
-Start-Transcript -Path (Join-Path $Evidence "g2-refusals.txt")
-microclaw --port $Port first-launch-setup --out (Join-Path $Evidence "g2-should-not-exist.yaml") --inventory (Join-Path $Evidence "demo-inventory\inventory.json")
+microclaw --port $Port first-launch-setup --out (Join-Path $Evidence "g2-should-not-exist.yaml") --inventory (Join-Path $Evidence "demo-inventory\inventory.json") --evidence-out (Join-Path $Evidence "g2-evidence")
 ```
 
 Using `--inventory` here is deliberate: it replays the demo inventory with no
 connection, so the refusal behaviour can be probed repeatedly without touching
 hardware.
 
-At the **first** decision prompt, attempt each of these in turn and record the
-exact response to each:
+At the proposal, first verify that pressing Enter accepts the visibly shown
+bulk default and that the next prompt lets you revisit an ordinary entry by its
+exact displayed name. At a revisited property, verify that Enter accepts its
+displayed classification and, for a numeric property, its displayed technical
+bounds.
+
+Then, at the first **hazard decision with no default**, attempt each of these in
+turn and record the exact response to each:
 
 1. Press Enter with nothing typed.
 2. Type a single space.
 3. Type a token that is not on the offered list (e.g. `yes`).
 4. Type an uppercase or mixed-case form of a valid choice.
 
-At the first prompt that asks for a **number** (a bound, a budget, a full
-scale), attempt each and record the response:
+At the first required **number with no MM-derived default** (a budget or native
+full scale), attempt each and record the response:
 
 5. Press Enter with nothing typed.
 6. Type `0`.
@@ -209,20 +226,19 @@ Then abandon the interview with Ctrl-C, and record both the refusal text and
 that no file exists at `--out`:
 
 ```powershell
-Test-Path (Join-Path $Evidence "g2-should-not-exist.yaml")
-Stop-Transcript
+Test-Path (Join-Path $Evidence "g2-should-not-exist.yaml") > "$Evidence\g2-output-exists.txt" 2>&1
 ```
 
 `Test-Path` must print `False`. Every attempt above must be refused in Phase 5's
 own wording and must re-ask; **none may be accepted, and none may fall through
-to a default.** If any input is silently accepted, the gate fails and the
-coordinator must be told which one.
+to a default where none is displayed. Collect
+`$Evidence\g2-evidence\first-launch-transcript.txt`; it must remain readable
+after Ctrl-C and contain every attempted answer and re-prompt.
 
 ## G3 — the acknowledgement gate exits before connecting
 
 ```powershell
-Start-Transcript -Path (Join-Path $Evidence "g3-acknowledgement.txt")
-microclaw --port $Port first-launch-setup --out (Join-Path $Evidence "g3-should-not-exist.yaml") --mm-config $DemoCfg
+microclaw --port $Port first-launch-setup --out (Join-Path $Evidence "g3-should-not-exist.yaml") --mm-config $DemoCfg --evidence-out (Join-Path $Evidence "g3-evidence")
 ```
 
 At the acknowledgement prompt, type something that is not the exact phrase — a
@@ -230,12 +246,20 @@ lowercase version of it, or `yes`. Record that setup refuses, that **no
 connection message was printed**, and that no file was created:
 
 ```powershell
-Test-Path (Join-Path $Evidence "g3-should-not-exist.yaml")
-Stop-Transcript
+Test-Path (Join-Path $Evidence "g3-should-not-exist.yaml") > "$Evidence\g3-output-exists.txt" 2>&1
 ```
 
+Collect `$Evidence\g3-evidence\first-launch-transcript.txt`; it must contain the
+intro, acknowledgement prompt and answer, and final setup refusal even though
+no inventory was produced.
+
 Run it once more and type the exact phrase, to confirm the accepting path still
-works; abandon that run at the first question with Ctrl-C.
+works; use a distinct evidence directory so the refusal transcript is not
+overwritten, then abandon that run at the first question with Ctrl-C:
+
+```powershell
+microclaw --port $Port first-launch-setup --out (Join-Path $Evidence "g3-accept-should-not-exist.yaml") --mm-config $DemoCfg --evidence-out (Join-Path $Evidence "g3-accept-evidence")
+```
 
 ## G4 — M5, a real rig with real hazards
 
@@ -266,10 +290,11 @@ leave the config M5 actually runs under byte-identical.
 ```powershell
 $M5Out   = Join-Path $Evidence "m5-profile.yaml"
 $M5Cfg   = "<absolute loaded M5 .cfg path>"
-Start-Transcript -Path (Join-Path $Evidence "g4-m5-setup.txt")
 microclaw --port $Port first-launch-setup --out $M5Out --mm-config $M5Cfg --evidence-out (Join-Path $Evidence "m5-inventory")
-Stop-Transcript
 ```
+
+Collect `$Evidence\m5-inventory\first-launch-transcript.txt` as the complete M5
+interview record.
 
 Answer as the rig's actual reviewer. Specifically record:
 
