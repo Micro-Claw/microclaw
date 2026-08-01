@@ -49,6 +49,94 @@ class RigAuthorizationError(RuntimeError):
     """The connected rig cannot satisfy the declared authorization profile."""
 
 
+def _live_emu_laser_enables(
+    ctrl: Any, loaded_devices: list[str]
+) -> tuple[list[tuple[int, str, str]], list[str]]:
+    """Read semantic EMU laser enables from the running MM installation.
+
+    This is startup discovery only: asking ImageJ for its application directory
+    and reading EMU's config file do not write hardware.  In particular, do not
+    treat a per-user cached/guessed MM path as authoritative here; a stale path
+    is not evidence about the live installation being authorized.
+    """
+    from microclaw.emu_manager import (
+        _emu_config_path,
+        _has_emu,
+        build_emu_map,
+        read_emu_config,
+        resolve_mm_app_dir,
+    )
+
+    if not callable(getattr(ctrl, "get_mm_app_dir", None)):
+        # Read-only/offline controller implementations have no live JVM whose
+        # installation can be authorized.
+        return [], []
+    try:
+        # Startup validation is read-only, including with respect to the
+        # per-user locator cache. Normal tool callers retain write-through.
+        resolution = resolve_mm_app_dir(ctrl, cache_live=False)
+    except Exception as exc:
+        return [], [
+            "Could not locate the live Micro-Manager installation for EMU semantic "
+            f"laser-enable discovery: {_clean_exception_message(exc)}"
+        ]
+    mm_app_dir = resolution.path
+    if mm_app_dir is None:
+        return [], [
+            "Could not establish the live Micro-Manager installation for EMU "
+            f"semantic laser-enable discovery (live probe: {resolution.live_probe}; "
+            "no validated fallback). Verify the running ImageJ/Micro-Manager "
+            "application directory before restarting."
+        ]
+
+    config_path = _emu_config_path(mm_app_dir)
+    if not config_path.exists():
+        if resolution.source == "live" and not _has_emu(mm_app_dir):
+            return [], []
+        return [], [
+            f"Could not establish EMU semantics for the live installation: "
+            f"{mm_app_dir} was located via {resolution.source!r} "
+            f"(live probe: {resolution.live_probe}) but has no readable "
+            "EMU/config.uicfg. A fallback path cannot prove that the connected "
+            "installation is non-EMU."
+        ]
+
+    problems: list[str] = []
+    if resolution.source != "live":
+        problems.append(
+            f"EMU/config.uicfg was found through {resolution.source} fallback at "
+            f"{mm_app_dir}, but the live Micro-Manager path was "
+            f"{resolution.live_probe}. The semantic map is checked conservatively, "
+            "but this fallback cannot prove it belongs to the connected JVM."
+        )
+    try:
+        config = read_emu_config(mm_app_dir, loaded_devices)
+        lasers = build_emu_map(config["properties"])["lasers"]
+    except Exception as exc:
+        return [], [
+            f"Could not resolve EMU semantic laser enables from {config_path}: "
+            f"{_clean_exception_message(exc)}"
+        ]
+
+    enables: list[tuple[int, str, str]] = []
+    for slot, laser in sorted(lasers.items()):
+        enable = laser.get("enable")
+        if enable is None:
+            continue
+        device = enable.get("device")
+        prop = enable.get("property")
+        if not isinstance(device, str) or not device or not isinstance(prop, str) or not prop:
+            semantic = f"Laser {slot} enable"
+            problems.append(
+                f"EMU semantic {semantic!r} is allocated but its exact Micro-Manager "
+                "device/property could not be resolved from the live loaded-device "
+                "inventory; refusing to claim that illumination declarations are complete."
+            )
+            continue
+        enables.append((slot, device, prop))
+    return enables, problems
+
+
 # This is deliberately the one preset group microclaw executes. It is fixed,
 # rather than read from Core.ChannelGroup, because that property is writable and
 # preset-controlled; on M5 its measured allowed values were only ["", "System"].
@@ -535,6 +623,9 @@ def validate_live_rig(
     illumination_pairs = {
         (item.device, item.property) for item in illumination.shutters
     } | illumination_power_pairs
+    illumination_shutter_pairs = {
+        (item.device, item.property) for item in illumination.shutters
+    }
 
     # Device inventory is read once here: auto-classification needs it before
     # the categorical entries are emitted. The enumeration error is still
@@ -545,6 +636,35 @@ def validate_live_rig(
     except Exception as exc:
         loaded_devices = []
         loaded_devices_error = f"Could not enumerate connected devices: {exc}"
+
+    emu_enables, emu_discovery_problems = _live_emu_laser_enables(
+        ctrl, loaded_devices
+    )
+    emu_warnings = list(emu_discovery_problems)
+    for slot, device, prop in emu_enables:
+        if (device, prop) in illumination_shutter_pairs:
+            continue
+        emu_warnings.append(
+            f"EMU laser slot {slot} semantically identifies exact enable "
+            f"{device}.{prop}, but it is missing from "
+            "constraints.illumination.shutters. Add the verified declaration using:\n"
+            "  illumination:\n"
+            "    shutters:\n"
+            f"      - device: {device!r}\n"
+            f"        property: {prop!r}\n"
+            "Establish and declare on_value/off_value too if this hardware does not "
+            "use the schema defaults; no values were inferred from the semantic map."
+        )
+    if guaranteed:
+        errors.extend(emu_warnings)
+    else:
+        for warning in emu_warnings:
+            print(
+                "WARNING: " + warning + " Completeness guarantee is suspended in "
+                "degraded_trusted_plugins mode; unresolved or undeclared EMU enables "
+                "are not silently authorized as illumination.",
+                file=sys.stderr,
+            )
 
     typed_pairs = {(identity.device, identity.property) for identity in parsed_config.typed_actuators}
     denied_pairs = {
