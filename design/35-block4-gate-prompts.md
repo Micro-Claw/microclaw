@@ -4,8 +4,9 @@
 commits `cc34ab5` (round-4 hazard proposals: ON/OFF from a two-point technical
 range, `full_scale` defaulted from the driver range, a non-illumination exit in
 the candidate menu, a narrow emission/enable default, percent-versus-native from
-the unit suffix) and `5c82d1e` (StateDevice positions classified from their state
-labels, after the round-4 profile could not move M5's filter wheels).
+the unit suffix) and `b67fd08` (StateDevice positions classified from their state labels so
+filter wheels move; Core device-assignment properties never writable; a
+StateDevice position no longer surfaced as an emission candidate).
 Every earlier round's commit is an ancestor of both. The branch is
 pushed at `origin/design33/first-launch-setup`; **do not merge until this gate
 passes and the coordinator reviews the evidence.** Do not open a PR.
@@ -132,7 +133,7 @@ git pull --ff-only > "$Evidence\git-pull.txt" 2>&1
 git rev-parse HEAD > "$Evidence\head.txt" 2>&1
 git merge-base --is-ancestor cc34ab5 HEAD
 $LASTEXITCODE > "$Evidence\contains-round4-proposals.txt"
-git merge-base --is-ancestor 5c82d1e HEAD
+git merge-base --is-ancestor b67fd08 HEAD
 $LASTEXITCODE > "$Evidence\contains-round4-fixes.txt"
 git status --short > "$Evidence\status.txt" 2>&1
 python -V > "$Evidence\python.txt" 2>&1
