@@ -26,7 +26,9 @@ commands and output in one dated evidence directory. Do not use PowerShell
 output stream, not a child's console writes, and produced empty evidence in
 round 1. Non-interactive commands use `> file.txt 2>&1`. Interactive setup must
 remain attached to the console so prompts are visible; Microclaw itself writes
-and flushes `first-launch-transcript.txt` under each `--evidence-out` directory.
+and flushes a timestamped `first-launch-transcript-*.txt` under each
+`--evidence-out` directory. Timestamping is deliberate: a later refused or
+aborted attempt must never truncate evidence from an earlier run.
 That application-owned file, not selected/copy-pasted terminal text, is the
 evidence of prompts, answers, refusals, deferrals, and final outcome.
 
@@ -129,7 +131,7 @@ $DemoCfg = "<absolute MMConfig_demo.cfg path>"
 microclaw --port $Port first-launch-setup --out $DemoOut --mm-config $DemoCfg --evidence-out (Join-Path $Evidence "demo-inventory")
 ```
 
-Collect `$Evidence\demo-inventory\first-launch-transcript.txt`. It must contain
+Collect the single `$Evidence\demo-inventory\first-launch-transcript-*.txt`. It must contain
 the identity header, inventory path/hash, and complete interview.
 
 Answer every question honestly for the demo config. Where the demo hardware has
@@ -232,7 +234,7 @@ Test-Path (Join-Path $Evidence "g2-should-not-exist.yaml") > "$Evidence\g2-outpu
 `Test-Path` must print `False`. Every attempt above must be refused in Phase 5's
 own wording and must re-ask; **none may be accepted, and none may fall through
 to a default where none is displayed. Collect
-`$Evidence\g2-evidence\first-launch-transcript.txt`; it must remain readable
+`$Evidence\g2-evidence\first-launch-transcript-*.txt`; it must remain readable
 after Ctrl-C and contain every attempted answer and re-prompt.
 
 ## G3 — the acknowledgement gate exits before connecting
@@ -249,7 +251,7 @@ connection message was printed**, and that no file was created:
 Test-Path (Join-Path $Evidence "g3-should-not-exist.yaml") > "$Evidence\g3-output-exists.txt" 2>&1
 ```
 
-Collect `$Evidence\g3-evidence\first-launch-transcript.txt`; it must contain the
+Collect `$Evidence\g3-evidence\first-launch-transcript-*.txt`; it must contain the
 intro, acknowledgement prompt and answer, and final setup refusal even though
 no inventory was produced.
 
@@ -293,7 +295,7 @@ $M5Cfg   = "<absolute loaded M5 .cfg path>"
 microclaw --port $Port first-launch-setup --out $M5Out --mm-config $M5Cfg --evidence-out (Join-Path $Evidence "m5-inventory")
 ```
 
-Collect `$Evidence\m5-inventory\first-launch-transcript.txt` as the complete M5
+Collect `$Evidence\m5-inventory\first-launch-transcript-*.txt` as the complete M5
 interview record.
 
 Answer as the rig's actual reviewer. Specifically record:

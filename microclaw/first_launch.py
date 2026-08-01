@@ -9,6 +9,7 @@ import os
 import subprocess
 import tempfile
 from datetime import datetime, timezone
+from difflib import get_close_matches
 from pathlib import Path
 from typing import Callable
 
@@ -53,9 +54,9 @@ a new process ledger, so this value is not a lifetime or cross-restart dose cap.
 
 Heuristic candidates are questions, not proof. Discovery may miss physical
 emission paths. Micro-Manager writability and value-domain metadata provide
-classification proposals. Driver technical ranges provide reviewable defaults
-only for ordinary typed properties; they never silently authorize hazardous
-axes. Current values and observed focus positions are never copied as policy.
+classification proposals. Driver technical ranges are shown as review evidence
+for bounded numeric properties, but do not silently invent a physical kind or
+unit. Current values and observed focus positions are never copied as policy.
 """
 
 CONTACT_ACKNOWLEDGEMENT = "I ACKNOWLEDGE HARDWARE CONTACT"
@@ -96,7 +97,7 @@ class InterviewTranscript:
     def __init__(self, path: str | Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._handle = self.path.open("w", encoding="utf-8", newline="\n")
+        self._handle = self.path.open("x", encoding="utf-8", newline="\n")
         self._write("MICROCLAW FIRST-LAUNCH INTERVIEW TRANSCRIPT")
         self._write(f"UTC timestamp: {datetime.now(timezone.utc).isoformat()}")
         self._write(f"Microclaw version: {__version__}")
@@ -128,6 +129,11 @@ class InterviewTranscript:
 
     def close(self) -> None:
         self._handle.close()
+
+
+def new_interview_transcript(directory: str | Path) -> InterviewTranscript:
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+    return InterviewTranscript(Path(directory) / f"first-launch-transcript-{stamp}.txt")
 
 
 def _choice(
@@ -263,8 +269,47 @@ def _metadata_default(item: dict) -> tuple[str, str, tuple[float, float] | None]
     if record.get("has_limits") is True and numeric:
         low, high = span.get("lower"), span.get("upper")
         if isinstance(low, (int, float)) and isinstance(high, (int, float)):
-            return "a", f"MM reports numeric technical range {low} to {high}", (float(low), float(high))
-    return "u", "MM reports no discrete value domain or numeric limits", None
+            return (
+                "n",
+                f"MM reports numeric technical range {low} to {high}; excluded until physical semantics are supplied",
+                (float(low), float(high)),
+            )
+    return "x", "MM reports no discrete value domain or numeric limits", None
+
+
+def _builtin_policy(item: dict, assignments: dict) -> str | None:
+    """Return the dedicated policy owning a built-in raw-property alias."""
+    device, prop = item["device"], item["property"]
+    key = prop.casefold().replace("_", "").replace(" ", "")
+    if device == assignments.get("camera") and key == "exposure":
+        return "camera.max_exposure_ms"
+    if device == assignments.get("focus") and key == "position":
+        return "stage z travel bounds"
+    if device == assignments.get("xy_stage") and key in {"x", "y", "xposition", "yposition"}:
+        return "stage XY travel bounds"
+    return None
+
+
+def _revisit_entries(ask: Input, say: Output, valid: set[str]) -> set[str]:
+    while True:
+        raw = ask(
+            "Exact property or preset names to revisit, separated by commas "
+            "[press Enter for none]: "
+        ).strip()
+        requested = {name.strip() for name in raw.split(",") if name.strip()}
+        unknown = sorted(requested - valid)
+        if not unknown:
+            return requested
+        details = []
+        for name in unknown:
+            matches = get_close_matches(name, sorted(valid), n=3, cutoff=0.45)
+            details.append(
+                repr(name) + (f" (near: {', '.join(matches)})" if matches else "")
+            )
+        say(
+            "SETUP REFUSAL: Revisit name(s) did not exactly match a displayed "
+            "property or preset: " + "; ".join(details) + ". Re-enter the list."
+        )
 
 
 def _continuous_focus(device: str, prop: str, assignments: dict) -> bool:
@@ -371,18 +416,24 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
         if not _classification_failure(item)
     )
 
-    # The inventory facts contain MM's complete property browser metadata.
-    # Include greyed-out/read-only and pre-init rows so they become explicit
-    # exclusions without burdening the operator with questions.
-    all_candidates = sorted(set(properties) | set(writable) | enables | powers)
+    all_candidates = sorted(set(writable) | enables | powers)
     defaults: dict[str, tuple[str, str, tuple[float, float] | None]] = {}
     say(GLOSSARY)
     say("DERIVED PROPERTY PROPOSAL (from Micro-Manager metadata)")
-    labels = {"c": "categorical", "a": "typed absolute position", "x": "excluded", "u": "unresolved"}
+    labels = {
+        "c": "categorical", "a": "typed absolute position", "x": "excluded",
+        "u": "unresolved", "n": "bounded numeric, excluded pending typed semantics",
+    }
+    dedicated: set[str] = set()
     for path in all_candidates:
         item = properties.get(path)
         if item is None:
             raise SetupRefusal(f"SETUP REFUSAL: Candidate {path} has no matching fact record.")
+        owner = _builtin_policy(item, assignments)
+        if owner is not None:
+            say(f"{path} [dedicated policy: {owner}; not duplicated in rig_profile]")
+            dedicated.add(path)
+            continue
         default = _metadata_default(item)
         defaults[path] = default
         if path in enables or path in powers:
@@ -390,23 +441,28 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
         else:
             say(f"{path} [{labels[default[0]]}: {default[1]}]")
 
+    preset_proposals = []
+    for group in facts.get("configuration_groups", []):
+        for preset in group.get("presets", []):
+            name = f"{group.get('name')}.{preset.get('name')}"
+            effects = [
+                f'{effect.get("device")}.{effect.get("property")}'
+                for effect in preset.get("effects", [])
+            ]
+            preset_proposals.append((name, preset, effects))
+            say(
+                f"{name} [preset allowed: MM configuration reports structural paths "
+                + (", ".join(effects) or "none") + "]"
+            )
+
     bulk = _choice(
-        "Accept all MM-derived defaults for ordinary properties? You can revisit entries by exact name next.",
+        "Accept all MM-derived defaults for ordinary properties and non-colliding presets? You can revisit entries by exact name next.",
         {"y": "accept proposal", "n": "review every ordinary property"}, ask, say,
         default="y",
     ) == "y"
-    revisit_raw = ask(
-        "Exact ordinary property names to revisit, separated by commas "
-        "[press Enter for none]: "
-    ).strip()
-    revisit = {name.strip() for name in revisit_raw.split(",") if name.strip()}
-    ordinary = set(all_candidates) - enables - powers
-    unknown_revisits = sorted(revisit - ordinary)
-    if unknown_revisits:
-        raise SetupRefusal(
-            "SETUP REFUSAL: Revisit name(s) did not exactly match an ordinary "
-            "property: " + ", ".join(unknown_revisits)
-        )
+    ordinary = set(defaults) - enables - powers
+    preset_names_for_revisit = {name for name, _, _ in preset_proposals}
+    revisit = _revisit_entries(ask, say, ordinary | preset_names_for_revisit) if bulk else set()
 
     # A duplicate representation is one decision, not two independent approvals.
     for group in duplicate_sets:
@@ -434,7 +490,7 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
             )
 
     for path in all_candidates:
-        if path in decided:
+        if path in decided or path in dedicated:
             continue
         item = properties.get(path)
         if item is None:
@@ -501,29 +557,40 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
             continue
 
         default_role, evidence, default_bounds = defaults[path]
-        if default_role == "x":
+        if default_role == "x" and bulk and path not in revisit:
             excluded.append({"device": device, "property": prop})
             notes.append(f"MM METADATA EXCLUSION: {path}; {evidence}.")
             continue
         recommendation = " (known TTL.State0 false-positive shape; exclusion is recommended but requires your confirmation)" if path.casefold().endswith("ttl.state0") else ""
-        needs_question = not bulk or path in revisit or default_role == "u" or bool(recommendation)
-        role = default_role
+        needs_question = not bulk or path in revisit or bool(recommendation)
+        role = "x" if default_role == "n" else default_role
         if needs_question:
             role = _choice(
                 f"Writable property {path} [{labels[default_role]}: {evidence}]{recommendation}",
                 {"c": "categorical", "a": "typed absolute position", "x": "exclude", "u": "unresolved"}, ask, say,
-                default=default_role,
+                default="x" if default_role == "n" else default_role,
             )
         if role == "c":
             categorical.append({"device": device, "property": prop})
         elif role == "a":
-            if not needs_question and default_bounds is not None:
-                low, high = default_bounds
-            else:
-                low, high = _bounds(
-                    path + " in um", ask, say,
-                    default_bounds if role == default_role else None,
+            unit = _text(
+                f"Physical unit for {path}; the current typed schema supports only um",
+                ask, say,
+            ).casefold()
+            if unit not in {"um", "µm"}:
+                say(
+                    f"SETUP DEFERRAL: {path} uses operator-supplied unit {unit!r}, "
+                    "which the current typed schema cannot express; it remains excluded."
                 )
+                excluded.append({"device": device, "property": prop})
+                notes.append(
+                    f"UNSUPPORTED TYPED UNIT: {path} excluded; operator supplied {unit!r}."
+                )
+                continue
+            if default_bounds is not None:
+                low, high = _bounds(path + " in um", ask, say, default_bounds)
+            else:
+                low, high = _bounds(path + " in um", ask, say)
             typed.append({
                 "device": device, "property": prop, "kind": "absolute-position",
                 "units": "um", "minimum": low, "maximum": high,
@@ -572,18 +639,19 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
 
     preset_names = []
     typed_paths = {f'{x["device"]}.{x["property"]}' for x in typed}
-    for group in facts.get("configuration_groups", []):
-        for preset in group.get("presets", []):
-            effects = [f'{e.get("device")}.{e.get("property")}' for e in preset.get("effects", [])]
-            collisions = sorted(set(effects) & typed_paths)
-            say(
-                f"Preset {group.get('name')}.{preset.get('name')} affects structural paths: "
+    for name, preset, effects in preset_proposals:
+        collisions = sorted(set(effects) & typed_paths)
+        needs_question = not bulk or name in revisit or bool(collisions)
+        decision = "y"
+        if needs_question:
+            decision = _choice(
+                f"Preset {name} affects structural paths: "
                 + (", ".join(effects) or "none observed")
-                + (f"; TYPED-PROPERTY COLLISION: {', '.join(collisions)}" if collisions else "")
+                + (f"; TYPED-PROPERTY COLLISION: {', '.join(collisions)}" if collisions else ""),
+                {"y": "allow", "n": "exclude"}, ask, say, default="y",
             )
-            decision = _choice("Allow this preset name in the generated profile?", {"y": "allow", "n": "exclude"}, ask, say)
-            if decision == "y":
-                preset_names.append(preset["name"])
+        if decision == "y":
+            preset_names.append(preset["name"])
 
     prior = inventory["human_decisions"]
     if prior.get("source") or prior.get("comparison"):

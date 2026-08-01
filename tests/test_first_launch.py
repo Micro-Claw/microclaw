@@ -12,9 +12,11 @@ from microclaw.config import (
 )
 from microclaw.first_launch import (
     CONTACT_ACKNOWLEDGEMENT, InterviewTranscript, SetupRefusal, disconnect_core,
-    interview, load_inventory, write_profile,
+    _metadata_default, interview, load_inventory, write_profile,
 )
 from microclaw.rig_inventory import INVENTORY_SCHEMA
+
+REAL_DEMO_INVENTORY = Path(__file__).parent / "fixtures" / "block4_demo_inventory_20260801.json"
 
 
 def _inventory():
@@ -40,7 +42,8 @@ def _inventory():
         {"label": "TIPFSStatus", "device_type": "AutoFocusDevice", "properties": [prop("State", allowed=["Off", "On"])]},
         {"label": "Camera", "device_type": "CameraDevice", "properties": [
             prop("ROI"), prop("Binning", allowed=["1", "2", "4", "8"]),
-            prop("Exposure", technical=True), prop("Serial", read_only=True),
+            prop("Exposure", technical=True), prop("Gain", technical=True),
+            prop("Serial", read_only=True),
         ]},
         {"label": "XY", "device_type": "XYStageDevice", "properties": [prop("XPosition") ]},
         {"label": "Mystery", "device_type": "FutureDevice", "properties": [prop("Amplitude") ]},
@@ -101,6 +104,29 @@ def _args(tmp_path, **overrides):
     return SimpleNamespace(**values)
 
 
+def _answer_real_interview(prompts, *, bulk=True):
+    def ask(prompt):
+        prompts.append(prompt)
+        if "Accept all MM-derived" in prompt:
+            return "" if bulk else "n"
+        if "names to revisit" in prompt:
+            return ""
+        if prompt.startswith("Illumination candidate"):
+            return "e"
+        if "ON value" in prompt:
+            return "ON"
+        if "OFF value" in prompt:
+            return "OFF"
+        if "minimum" in prompt:
+            return "0"
+        if "maximum" in prompt:
+            return "100"
+        if prompt.startswith("Writable property") or prompt.startswith("Preset "):
+            return ""
+        return "1"
+    return ask
+
+
 def test_interview_copies_only_identifiers_and_explicit_answers(tmp_path):
     answers = _answers()
     output = []
@@ -109,17 +135,14 @@ def test_interview_copies_only_identifiers_and_explicit_answers(tmp_path):
     assert config["rig_profile"]["categorical_properties"] == [
         {"device": "Camera", "property": "Binning"},
     ]
-    assert config["rig_profile"]["typed_actuators"] == [{
-        "device": "Camera", "property": "Exposure", "kind": "absolute-position",
-        "units": "um", "minimum": 2440.0, "maximum": 2450.0,
-    }]
+    assert config["rig_profile"]["typed_actuators"] == []
     assert config["illumination"]["shutters"][0]["on_value"] == "OPERATOR_ON"
     assert {x["property"] for x in config["rig_profile"]["excluded_properties"]} >= {
         "State0", "State", "ROI", "XPosition", "Amplitude",
     }
     rendered = yaml.safe_dump(config)
     assert "OBSERVED" not in rendered
-    assert "2440" in rendered and "2450" in rendered
+    assert "2440" not in rendered and "2450" not in rendered
     assert any("PFS-offset workflows remain unsupported" in note for note in notes)
     assert any("ambiguous XY" in line for line in output)
     result = write_profile(config, notes, tmp_path / "profile.yaml")
@@ -208,6 +231,56 @@ def test_blank_and_bad_numbers_refuse_in_phase5_wording():
     assert any("No driver-reported or example limit" in line for line in output)
 
 
+def test_every_hazardous_field_still_refuses_blank():
+    inventory = _inventory()
+    inventory["facts"]["core_device_assignments"]["xy_stage"] = "XY"
+    seen = set()
+    prompts = []
+    output = []
+
+    def valid(prompt):
+        if prompt.startswith("Illumination candidate Laser.Emission"):
+            return "e"
+        if prompt.startswith("Illumination candidate Laser.Power"):
+            return "p"
+        if "Representation units" in prompt:
+            return "p"
+        if "ON value" in prompt:
+            return "ON"
+        if "OFF value" in prompt:
+            return "OFF"
+        if "minimum" in prompt:
+            return "0"
+        if "maximum" in prompt:
+            return "100"
+        return "1"
+
+    def ask(prompt):
+        prompts.append(prompt)
+        if "Accept all MM-derived" in prompt or "names to revisit" in prompt:
+            return ""
+        no_default = "there is no default" in prompt or "required; no default" in prompt
+        if no_default and prompt not in seen:
+            seen.add(prompt)
+            return ""
+        return valid(prompt)
+
+    interview(inventory, ask=ask, say=output.append)
+    required = [
+        "Illumination candidate Laser.Emission", "Illumination candidate Laser.Power",
+        "ON value", "OFF value", "core XY x travel", "core XY y travel",
+        "core focus z travel", "maximum camera exposure", "hard maximum frames",
+        "hard maximum acquisition duration", "hard maximum raw payload bytes",
+        "hard maximum illuminated time per acquisition", "hard maximum illuminated time in this process",
+        "human-confirmation threshold frames", "human-confirmation threshold duration",
+        "human-confirmation threshold raw bytes", "human-confirmation threshold illuminated time",
+        "maximum illumination power", "maximum consecutive power step factor",
+    ]
+    for fragment in required:
+        assert sum(fragment in prompt for prompt in prompts) >= 2, fragment
+    assert len([line for line in output if line.startswith("SETUP REFUSAL:")]) >= len(required)
+
+
 def test_metadata_proposal_glossary_defaults_and_bulk_revisit():
     answers = iter(["", "Camera.Binning", "x"] + list(_answers())[2:])
     output = []
@@ -217,9 +290,141 @@ def test_metadata_proposal_glossary_defaults_and_bulk_revisit():
         "Camera.Binning [categorical: MM reports allowed values 1, 2, 4, 8]" in line
         for line in output
     )
-    assert {x["property"] for x in config["rig_profile"]["excluded_properties"]} >= {
-        "Binning", "Serial",
+    assert {x["property"] for x in config["rig_profile"]["excluded_properties"]} >= {"Binning"}
+
+
+@pytest.mark.parametrize(("record", "role", "evidence", "bounds"), [
+    ({"read_only": True, "pre_init": False}, "x", "read-only", None),
+    ({"read_only": False, "pre_init": True}, "x", "pre-init-only", None),
+    ({
+        "read_only": False, "pre_init": False, "allowed_values": ["A", "B"],
+    }, "c", "allowed values A, B", None),
+    ({
+        "read_only": False, "pre_init": False, "allowed_values": [],
+        "has_limits": True, "reported_type": "Float",
+        "technical_range": {"lower": -5.0, "upper": 8.0},
+    }, "n", "numeric technical range -5.0 to 8.0", (-5.0, 8.0)),
+    ({
+        "read_only": False, "pre_init": False, "allowed_values": [],
+        "has_limits": False, "reported_type": "String",
+    }, "x", "no discrete value domain or numeric limits", None),
+])
+def test_each_mm_metadata_shape_has_a_fail_closed_default(record, role, evidence, bounds):
+    actual_role, actual_evidence, actual_bounds = _metadata_default({"record": record})
+    assert actual_role == role
+    assert evidence in actual_evidence
+    assert actual_bounds == bounds
+
+
+def test_real_demo_inventory_bulk_pass_is_exactly_24_questions():
+    inventory = json.loads(REAL_DEMO_INVENTORY.read_text(encoding="utf-8"))
+    prompts = []
+    config, _ = interview(
+        inventory, ask=_answer_real_interview(prompts), say=lambda _: None,
+    )
+    assert len(prompts) == 24
+    assert not any(prompt.startswith("Preset ") for prompt in prompts)
+    assert {
+        key: len(config["rig_profile"][key])
+        for key in ("categorical_properties", "typed_actuators", "excluded_properties")
+    } == {
+        "categorical_properties": 42,
+        "typed_actuators": 0,
+        "excluded_properties": 34,
     }
+    assert len(config["channels"]["allowed"]) == 14
+
+
+def test_bulk_accept_and_individual_review_produce_same_real_demo_profile():
+    inventory = json.loads(REAL_DEMO_INVENTORY.read_text(encoding="utf-8"))
+    individual_prompts = []
+    bulk, _ = interview(
+        inventory, ask=_answer_real_interview([]), say=lambda _: None,
+    )
+    individual, _ = interview(
+        inventory, ask=_answer_real_interview(individual_prompts, bulk=False), say=lambda _: None,
+    )
+    assert bulk == individual
+    assert not any("names to revisit" in prompt for prompt in individual_prompts)
+
+
+def test_bounded_numeric_needs_named_revisit_and_operator_unit_to_be_typed():
+    supplied_units = []
+    prompts = []
+
+    inventory = _inventory()
+    inventory["facts"]["configuration_groups"] = [{
+        "name": "Test", "presets": [{
+            "name": "TouchesGain",
+            "effects": [{"device": "Camera", "property": "Gain", "value": "3"}],
+        }],
+    }]
+
+    def ask(prompt):
+        prompts.append(prompt)
+        if "Accept all MM-derived" in prompt:
+            return ""
+        if "names to revisit" in prompt:
+            return "Camera.Gain"
+        if prompt.startswith("Writable property Camera.Gain"):
+            return "a"
+        if prompt.startswith("Physical unit for Camera.Gain"):
+            supplied_units.append("um")
+            return "um"
+        if "MM driver technical range" in prompt:
+            return ""
+        if prompt.startswith("Illumination candidate Laser.Emission"):
+            return "e"
+        if prompt.startswith("Illumination candidate Laser.Power"):
+            return "p"
+        if "Representation units" in prompt:
+            return "p"
+        if "ON value" in prompt:
+            return "ON"
+        if "OFF value" in prompt:
+            return "OFF"
+        if "minimum" in prompt:
+            return "0"
+        if "maximum" in prompt:
+            return "200"
+        if prompt.startswith("Preset Test.TouchesGain"):
+            return ""
+        return "1"
+
+    config, _ = interview(inventory, ask=ask, say=lambda _: None)
+    assert config["rig_profile"]["typed_actuators"] == [{
+        "device": "Camera", "property": "Gain", "kind": "absolute-position",
+        "units": "um", "minimum": 2440.0, "maximum": 2450.0,
+    }]
+    assert supplied_units == ["um"]
+    assert all(
+        row["units"] in supplied_units
+        for row in config["rig_profile"]["typed_actuators"]
+    )
+    assert any(
+        prompt.startswith("Preset Test.TouchesGain") and "TYPED-PROPERTY COLLISION" in prompt
+        for prompt in prompts
+    )
+
+
+def test_revisit_typo_reprompts_with_near_match():
+    answers = iter(["Camera.Binnin", "Camera.Binning"])
+    output = []
+
+    def ask(prompt):
+        if "Accept all MM-derived" in prompt:
+            return ""
+        if "names to revisit" in prompt:
+            return next(answers)
+        if prompt.startswith("Writable property Camera.Binning"):
+            return ""
+        return _answer_real_interview([])(prompt)
+
+    interview(_inventory(), ask=ask, say=output.append)
+    assert any(
+        line.startswith("SETUP REFUSAL: Revisit name") and "Camera.Binning" in line
+        for line in output
+    )
 
 
 def test_disconnect_releases_core_and_bridge(monkeypatch):
@@ -334,10 +539,63 @@ def test_wrong_contact_acknowledgement_exits_without_constructing_core(monkeypat
     monkeypatch.setattr("builtins.input", lambda prompt: "yes")
     with pytest.raises(SystemExit, match="Exited without connecting"):
         cli.first_launch_setup(_args(tmp_path))
-    transcript = (tmp_path / "evidence" / "first-launch-transcript.txt").read_text(encoding="utf-8")
+    transcript_path, = (tmp_path / "evidence").glob("first-launch-transcript-*.txt")
+    transcript = transcript_path.read_text(encoding="utf-8")
     assert "type exactly" in transcript
     assert "yes" in transcript
     assert "SETUP REFUSAL: Hardware-contact acknowledgement did not match" in transcript
+
+
+def test_existing_output_refusal_preserves_previous_transcript(tmp_path):
+    target = tmp_path / "existing.yaml"
+    target.write_text("reviewed work\n", encoding="utf-8")
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    prior = evidence / "first-launch-transcript-prior.txt"
+    prior.write_text("PRIOR RUN\n", encoding="utf-8")
+    inventory_path = tmp_path / "inventory.json"
+    inventory_path.write_text(json.dumps(_inventory()), encoding="utf-8")
+
+    with pytest.raises(SystemExit, match="already exists"):
+        cli.first_launch_setup(_args(
+            tmp_path, out=target, evidence_out=evidence, inventory=inventory_path,
+        ))
+    assert prior.read_text(encoding="utf-8") == "PRIOR RUN\n"
+    assert list(evidence.iterdir()) == [prior]
+
+
+def test_bad_evidence_directory_is_a_setup_refusal(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "microclaw.first_launch.new_interview_transcript",
+        lambda path: (_ for _ in ()).throw(OSError("read-only evidence path")),
+    )
+    with pytest.raises(SystemExit, match="SETUP REFUSAL: Could not create interview evidence"):
+        cli.first_launch_setup(_args(tmp_path, inventory=tmp_path / "unused.json"))
+
+
+def test_eof_mid_interview_leaves_readable_partial_transcript(monkeypatch, tmp_path):
+    inventory_path = tmp_path / "inventory.json"
+    inventory_path.write_text(json.dumps(_inventory()), encoding="utf-8")
+    answers = iter([""])
+
+    def abort_after_bulk(prompt):
+        try:
+            return next(answers)
+        except StopIteration:
+            raise EOFError
+
+    monkeypatch.setattr("builtins.input", abort_after_bulk)
+    with pytest.raises(SystemExit, match="interview ended"):
+        cli.first_launch_setup(_args(tmp_path, inventory=inventory_path))
+
+    transcript_path, = (tmp_path / "evidence").glob("first-launch-transcript-*.txt")
+    text = transcript_path.read_text(encoding="utf-8")
+    assert "Accept all MM-derived defaults" in text
+    assert "Exact property or preset names to revisit" in text
+    assert text.endswith(
+        "SETUP REFUSAL: The interview ended before every decision was answered. "
+        "No profile was generated or loaded; rerun setup to start a complete interview.\n"
+    )
 
 
 def test_existing_inventory_shows_honesty_text_without_contact_ack(monkeypatch, tmp_path, capsys):

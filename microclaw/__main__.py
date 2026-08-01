@@ -356,19 +356,27 @@ def first_launch_setup(args):
     """Enumerate through Core only, disconnect, interview, and write a draft."""
     from microclaw.first_launch import (
         CONTACT_ACKNOWLEDGEMENT, INTRO, InterviewTranscript, SetupRefusal,
-        disconnect_core, interview, load_inventory, write_profile,
+        disconnect_core, interview, load_inventory, new_interview_transcript,
+        write_profile,
     )
     from microclaw.rig_inventory import enumerate_rig, write_inventory_outputs
 
     target = Path(args.out)
     evidence_dir = Path(args.evidence_out or (str(target) + ".inventory"))
-    transcript = InterviewTranscript(evidence_dir / "first-launch-transcript.txt")
+    transcript: InterviewTranscript | None = None
     try:
         if target.exists() and not args.force:
             raise SetupRefusal(
                 f"SETUP REFUSAL: {target} already exists. Preserve the reviewed work, "
                 "choose another --out path, or pass --force deliberately."
             )
+        try:
+            transcript = new_interview_transcript(evidence_dir)
+        except OSError as exc:
+            raise SetupRefusal(
+                f"SETUP REFUSAL: Could not create interview evidence in "
+                f"{evidence_dir}: {exc}"
+            ) from exc
         transcript.say(INTRO)
         if args.inventory:
             inventory = load_inventory(args.inventory)
@@ -444,13 +452,16 @@ def first_launch_setup(args):
             "SETUP REFUSAL: The interview ended before every decision was answered. "
             "No profile was generated or loaded; rerun setup to start a complete interview."
         )
-        transcript.outcome(message)
+        if transcript is not None:
+            transcript.outcome(message)
         sys.exit(message)
     except SetupRefusal as exc:
-        transcript.outcome(str(exc))
+        if transcript is not None:
+            transcript.outcome(str(exc))
         sys.exit(str(exc))
     finally:
-        transcript.close()
+        if transcript is not None:
+            transcript.close()
 
 
 def main():
