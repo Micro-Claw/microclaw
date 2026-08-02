@@ -364,6 +364,15 @@ def _validate_typed_live(
         reported = _property_type_name(core, identity.device, identity.property)
         if reported not in {"Float", "Integer"}:
             errors.append(f"Typed actuator {pair} is not numeric (driver reports {reported}).")
+        device_kind = device_type_name(core, identity.device)
+        normalized_prop = identity.property.casefold().replace("_", "").replace(" ", "")
+        if policy.kind == "bounded-numeric" and device_kind in {"StageDevice", "XYStageDevice"} and (
+            "position" in normalized_prop or normalized_prop in {"x", "y"}
+        ):
+            errors.append(
+                f"Typed bounded-numeric {pair} aliases a {device_kind} position property; "
+                "stage motion must retain its dedicated core or named-stage safety gate."
+            )
         if bool(core.has_property_limits(identity.device, identity.property)):
             lower = float(core.get_property_lower_limit(identity.device, identity.property))
             upper = float(core.get_property_upper_limit(identity.device, identity.property))

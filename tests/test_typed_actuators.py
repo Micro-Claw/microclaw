@@ -63,16 +63,17 @@ def test_bounded_numeric_clamps_edges_echoes_verbatim_units_and_rejects_full_sca
             "    - {device: Camera, property: Gain, kind: bounded-numeric, units: e-/ADU, minimum: -5, maximum: 8, full_scale: 10}\n")
 
 
-def test_bounded_numeric_does_not_enter_stage_or_dose_guards():
-    core = LiveCore(focus="Z")
+def test_camera_gain_bounded_numeric_does_not_enter_stage_or_dose_guards():
+    core = LiveCore("CameraDevice", "Gain", 100, device="Camera")
+    core.get_camera_device = lambda: "Camera"
     guard = SafetyGuard(SafetyConstraints(
         stage=StageConstraints(z_min=0, z_max=1),
         acquisition=AcquisitionConstraints(max_session_illuminated_ms=1),
         allowed_properties=[],
     ))
-    guard.admit_typed_actuators({TypedActuatorId("Z", "Position (um)"):
+    guard.admit_typed_actuators({TypedActuatorId("Camera", "Gain"):
         TypedActuatorPolicy("bounded-numeric", "turns", 0, 100)})
-    guard.check_device_property(core, "Z", "Position (um)", "50")
+    guard.check_device_property(core, "Camera", "Gain", "50")
 
 
 @pytest.mark.parametrize("section", [
@@ -185,6 +186,18 @@ def test_camera_exposure_cannot_be_declared_bounded_numeric():
     policy = TypedActuatorPolicy("bounded-numeric", "ms", 0, 50)
     ctrl, parsed = _direct(core, typed={TypedActuatorId("Camera", "Exposure"): policy})
     with pytest.raises(RigAuthorizationError, match="aliases a built-in.*exposure"):
+        validate_live_rig(ctrl, parsed)
+
+
+@pytest.mark.parametrize("kind,prop", [
+    ("StageDevice", "Position (um)"),
+    ("XYStageDevice", "XPosition"),
+])
+def test_stage_position_cannot_be_declared_bounded_numeric(kind, prop):
+    core = LiveCore(kind, prop, 100, device="AuxStage")
+    policy = TypedActuatorPolicy("bounded-numeric", "um", 0, 50)
+    ctrl, parsed = _direct(core, typed={TypedActuatorId("AuxStage", prop): policy})
+    with pytest.raises(RigAuthorizationError, match="stage motion must retain"):
         validate_live_rig(ctrl, parsed)
 
 

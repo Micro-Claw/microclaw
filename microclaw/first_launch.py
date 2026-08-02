@@ -315,6 +315,29 @@ def _core_structural(item: dict) -> bool:
     )
 
 
+def _bounded_numeric_unit(item: dict) -> str | None:
+    """Propose only a name-carried or explicitly reviewed native representation."""
+    prop = str(item.get("property") or item.get("record", {}).get("name") or "")
+    match = _TRAILING_UNIT.search(prop)
+    if match is not None:
+        unit = match.group("unit")[1:-1].strip()
+        # Camera array indices such as OUTPUT TRIGGER DELAY[0] are delimited
+        # suffixes but are not units and grant no operator-meaningful semantics.
+        if re.search(r"[A-Za-zµ%]", unit):
+            return unit
+    device = str(item.get("device") or "")
+    normalized = prop.casefold().replace(" ", "")
+    if normalized == "gain":
+        return "native"
+    if device == "Laser Trigger" and re.fullmatch(r"sequence[0-3]", normalized):
+        return "native"
+    if device == "Servos" and re.fullmatch(r"position[0-3]", normalized):
+        return "native"
+    if device == "PWM" and normalized == "position0":
+        return "native"
+    return None
+
+
 def _metadata_default(item: dict) -> tuple[str, str, tuple[float, float] | None]:
     record = item["record"]
     if _core_structural(item):
@@ -342,9 +365,25 @@ def _metadata_default(item: dict) -> tuple[str, str, tuple[float, float] | None]
     if record.get("has_limits") is True and numeric:
         low, high = span.get("lower"), span.get("upper")
         if isinstance(low, (int, float)) and isinstance(high, (int, float)):
+            if item.get("device_type") in {"StageDevice", "XYStageDevice"} and (
+                "position" in str(item.get("property") or "").casefold()
+                or str(item.get("property") or "").casefold().strip() in {"x", "y"}
+            ):
+                return (
+                    "x",
+                    "MM identifies a stage position property; bounded-numeric cannot bypass the fail-closed named/core stage policy",
+                    None,
+                )
+            unit = _bounded_numeric_unit(item)
+            if unit is None:
+                return (
+                    "x",
+                    f"MM reports numeric technical range {low} to {high}, but the property name supplies no operator-meaningful unit; no write authority is inferred",
+                    None,
+                )
             return (
                 "n",
-                f"MM reports numeric technical range {low} to {high}; excluded until physical semantics are supplied",
+                f"MM reports numeric technical range {low} to {high} and property unit {unit!r}",
                 (float(low), float(high)),
             )
     if _state_device_positions(item):
@@ -657,12 +696,41 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
                 + (", ".join(effects) or "none") + "]"
             )
 
+    ordinary = set(defaults) - enables - powers
+    def bulk_makes_writable(path: str) -> bool:
+        if defaults[path][0] not in {"c", "n"}:
+            return False
+        item = properties[path]
+        kind = item["device_type"]
+        lower_name = item["property"].casefold()
+        if _continuous_focus(item["device"], item["property"], assignments):
+            return False
+        if ((kind == "CameraDevice" and "roi" in lower_name)
+                or ("pulse" in lower_name and any(
+                    word in lower_name for word in ("duration", "width", "time")
+                ))):
+            return False
+        if kind == "XYStageDevice" and (
+            "position" in lower_name or lower_name.strip(" _-()[]") in {"x", "y"}
+        ):
+            return False
+        if kind not in {
+            "CameraDevice", "ShutterDevice", "StageDevice", "XYStageDevice",
+            "StateDevice", "GenericDevice", "CoreDevice", "AutoFocusDevice",
+        }:
+            return False
+        if _state_device_positions(item) and item["device"] in illumination_devices:
+            return False
+        return True
+
+    writable_default_count = sum(bulk_makes_writable(path) for path in ordinary)
     bulk = _choice(
-        "Accept all MM-derived defaults for ordinary properties and non-colliding presets? You can revisit entries by exact name next.",
+        f"Accept all MM-derived defaults for ordinary properties and non-colliding presets? "
+        f"This will make {writable_default_count} ordinary properties writable; defaults "
+        "proposed as excluded remain excluded. You can revisit entries by exact name next.",
         {"y": "accept proposal", "n": "review every ordinary property"}, ask, say,
         default="y",
     ) == "y"
-    ordinary = set(defaults) - enables - powers
     preset_names_for_revisit = {name for name, _, _ in preset_proposals}
     revisit = _revisit_entries(ask, say, ordinary | preset_names_for_revisit) if bulk else set()
 
@@ -855,9 +923,11 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
                 "units": "um", "minimum": low, "maximum": high,
             })
         elif role == "n":
-            unit = _text(
-                f"Operator-supplied unit string for {path}; recorded and enforced verbatim",
-                ask, say,
+            proposed_unit = _bounded_numeric_unit(item)
+            assert proposed_unit is not None
+            unit = _proposed_text(
+                f"Operator-confirmed unit string for {path}; recorded and enforced verbatim",
+                proposed_unit, ask, say, audit_name=f"{path} unit string",
             )
             low, high = _bounds(path + f" in {unit}", ask, say, default_bounds)
             typed.append({
