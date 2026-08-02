@@ -597,6 +597,10 @@ Human-decision requirements — each must fail closed, never infer:
 - [x] Emit exclusions or unresolved review instructions for actuator kinds the
       current schema cannot express (camera ROI; MicroFPGA pulse duration; any
       unrecognised device type). **Never invent bounds or geometry.**
+      **Superseded in part by Block 4b — read the condition, not the list.** The
+      exclusion was conditioned on the *schema* being unable to express the
+      kind, and 4b's `bounded-numeric` removes that condition for MicroFPGA
+      pulse duration. See the operator ruling recorded in block 4b.
 - [x] Refuse to generate ambiguous XY typed-actuator entries; defer the proposed
       `axis` schema extension rather than guessing.
 - [x] May recommend exclusion for the known `TTL.State0` GenericDevice false
@@ -1285,6 +1289,29 @@ reopened.
   2026-08-02 and is now Block 4d.** See the scope-split note above block 4b. Do
   not rename anything here; `bounded-numeric` lands under the existing
   `rig_profile.typed_actuators` key, and 4d moves it with the rest.
+
+**Operator ruling, 2026-08-02 — MicroFPGA trigger duration belongs in this
+kind, and the coordinator was wrong to return it as a required exclusion.**
+Round 1's review cited block 4's "actuator kinds the current schema cannot
+express (camera ROI; MicroFPGA pulse duration; …)" as forbidding
+`Laser Trigger.Duration0`–`Duration3 (us)`. That misreads the item: the
+exclusion is conditioned on schema inexpressiveness, and **`bounded-numeric` is
+the removal of that condition.** An item that excludes something *because it
+cannot be expressed* stops applying in the block that expresses it.
+
+The physics, from the operator and corroborated against
+`https://mufpga.github.io/principle_trigger.html`: trigger duration sets how
+long the laser is on within a camera exposure, so it is an illumination control
+layered on top of power, and it must be adjustable independently of the other
+illumination parameters. One qualifier recorded for whoever sets the bound: in
+`FOLLOW` mode the laser tracks the exposure signal, so laser-on time cannot
+exceed the frame; in `RISING`/`FALLING` mode the doc describes a pulse of
+`duration` µs on each edge, which is not inherently clipped at the end of the
+exposure window. Its bounds therefore follow the settled proposed-default
+precedent used for stage travel and maximum exposure — driver range offered,
+Enter-acceptable, accepted-versus-typed recorded in the transcript — and are not
+given a special case. The same ruling covers `Laser Trigger.Sequence0`–`3`,
+`Servos.Position0`–`3` and `PWM.Position0`.
 
 - [ ] Off-rig tests: the alias refusal above; clamp at both edges and outside;
       a declared unit round-tripping into the profile unaltered; setup emitting
