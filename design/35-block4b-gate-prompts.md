@@ -1,22 +1,20 @@
-# design/35 Block 4b — bounded-numeric actuator rig gate
+# design/35 Block 4b — split bounded-numeric actuator rig gate
 
-This gate verifies commit `50b1cbd` (bounded-numeric clamp-only typed actuators,
-stage-position alias refusal, unit-aware setup proposals, and the two
-acquisition-policy deprecations). The branch is
-`design33/bounded-numeric-actuator`. Do not merge it and do not deploy a
-generated profile as the rig's permanent configuration during this gate.
+This gate verifies the bounded-numeric clamp on the branch
+`design33/bounded-numeric-actuator`. Demo and M5 are merge-blocking. M2 is owed
+but explicitly **not merge-blocking** because M2 access is not schedulable. M5's
+Hamamatsu inventory has no gain-like property; the real gain control is the M2
+Andor iXon.
 
-Run the demo section on the Micro-Manager demo machine and the real-camera
-section on the real rig. A qualified operator must remain at the real rig and
-use its normal optical containment and emergency-stop procedure. Stop on any
-unexpected emission or motion.
+Do not deploy a generated profile as a rig's permanent configuration. A
+qualified operator must remain at either real rig and use its normal optical
+containment and emergency-stop procedure. Stop on unexpected light or motion.
+Commands are PowerShell/cmd-safe: preserve output with `> out.txt 2>&1` and do
+not substitute Unix pipelines.
 
-Commands below are PowerShell/cmd-safe. Run them from the repository root.
-Non-interactive output uses `> file.txt 2>&1`; do not replace this with a Unix
-pipeline. Microclaw's own history and first-launch transcript files are part of
-the evidence.
+## G0 — branch, implementation, and evidence setup
 
-## G0 — branch and implementation pin (both machines)
+Run this on each machine used below. The implementation pin is `65a38cd`.
 
 ```powershell
 git fetch origin > git-fetch.txt 2>&1
@@ -24,21 +22,9 @@ git switch design33/bounded-numeric-actuator > git-switch.txt 2>&1
 git pull --ff-only > git-pull.txt 2>&1
 git status --short > status.txt 2>&1
 git rev-parse HEAD > head.txt 2>&1
-git merge-base --is-ancestor 50b1cbd HEAD
+git merge-base --is-ancestor 65a38cd HEAD
 echo $LASTEXITCODE > implementation-ancestor-exit.txt
 python -m pytest -q > pytest.txt 2>&1
-```
-
-The ancestor command must return exit code 0. Preserve the output files. The
-tree must be clean before continuing. The suite is an off-rig regression check,
-not the rig gate itself.
-
-## G1 — generate and review the machine-specific profile
-
-Create a new evidence directory; never overwrite the deployed safety config.
-Use a different directory name on each machine.
-
-```powershell
 $Stamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $Evidence = "block4b-$Stamp"
 New-Item -ItemType Directory -Path $Evidence
@@ -48,141 +34,119 @@ Copy-Item "design\35-block4b-gate-prompts.md" (Join-Path $Evidence "runbook.md")
 microclaw first-launch-setup --out $Draft --evidence-out $Inventory
 ```
 
-Read the contact warning before typing the exact acknowledgement. In the
-property interview, locate the active camera's `Gain` property. It must be
-proposed as `typed bounded numeric`, show Micro-Manager's technical minimum and
-maximum as Enter-acceptable bounds, and offer an Enter-acceptable unit proposal
-derived from the property name (or the general `native` fallback when the name
-carries no unit).
-Accept it only if it is meaningful for this camera; otherwise type the unit used
-by the camera documentation (for example `dB` or `e-/ADU`) exactly as you want
-it displayed. The generated entry must preserve the accepted text byte-for-byte:
-
-```yaml
-rig_profile:
-  typed_actuators:
-    - device: <active camera label>
-      property: Gain
-      kind: bounded-numeric
-      units: <operator text, unchanged>
-      minimum: <reviewed lower bound>
-      maximum: <reviewed upper bound>
-```
-
-Confirm that `Camera.Exposure` (using the actual active camera label) is not a
-bounded-numeric entry. It remains on the dedicated exposure path. Confirm no
-illumination shutter or power property appears as bounded-numeric.
-
-The generated profile is deliberately `reviewed: false`. Save a copy, review
-every declaration and limit, set only the copy to `reviewed: true`, and validate
-it:
+The ancestor command and suite must pass and the tree must be clean. Review
+every generated declaration and limit. The draft is deliberately
+`reviewed: false`; copy it, change only the reviewed copy to `reviewed: true`,
+and validate it:
 
 ```powershell
 $Reviewed = Join-Path $Evidence "profile.reviewed.yaml"
-$CheckOutput = Join-Path $Evidence "check-config.txt"
-$CheckExit = Join-Path $Evidence "check-config-exit.txt"
 Copy-Item $Draft $Reviewed
-# Edit profile.reviewed.yaml now: review every line, then change reviewed to true.
-microclaw check-config $Reviewed > $CheckOutput 2>&1
-echo $LASTEXITCODE > $CheckExit
+# Review every line, then change reviewed to true.
+microclaw check-config $Reviewed > check-config.txt 2>&1
+echo $LASTEXITCODE > check-config-exit.txt
 ```
 
-The validator must exit 0. Confirm the generated `acquisition` section omits
-both `confirm_above_bytes` and `max_session_illuminated_ms`. If you deliberately
-add a session brake for the gate, its comment must state that it is an
-in-process runaway-loop brake, restarting resets it to zero, and it is not a
-sample-lifetime dose guarantee.
+The validator must exit 0. In every section confirm the generated profile has
+not admitted the active camera's raw `Exposure` property or any illumination
+shutter, enable, or power property as bounded-numeric. Exercise one applicable
+raw exposure write beyond `camera.max_exposure_ms` and one applicable raw
+illumination write; preserve their dedicated-gate refusal or confirmation
+messages. These checks must not turn on illumination.
 
-## G2 — demo camera Gain clamp and observable image change
+## G1 — demo machine, merge-blocking: Camera.Gain end to end
 
-Run this only on the demo machine, using its reviewed profile:
+Generate the demo profile with G0. It must declare `Camera.Gain` as
+`bounded-numeric`, preserve the accepted unit, and use reviewed minimum and
+maximum bounds. `Camera.Exposure` and every illumination path must remain on
+their dedicated policies.
+
+Start Microclaw with the reviewed profile:
 
 ```powershell
-microclaw --safety-config $Reviewed
+microclaw --safety-config $Reviewed > demo-session.txt 2>&1
 ```
 
-At the Microclaw prompt, perform these requests one at a time and preserve the
-generated history JSONL plus the terminal transcript:
+At the Microclaw prompt, preserve history JSONL and request:
 
-1. “Read the active camera label and its current Gain property. Do not change
-   anything.” Verify the label is the one declared in `typed_actuators`.
-2. “Set `<camera>.Gain` to `<inside-low>` using `set_device_property`.” Choose a
-   value inside the declared interval, near its lower end. It must succeed.
-3. “Capture one image and save it under the current evidence directory as
-   `demo-gain-low.tif`. Do not change exposure, illumination, ROI, binning, or
-   any other setting.”
-4. “Set `<camera>.Gain` to `<inside-high>` using `set_device_property`.” Choose
-   a different in-range value near the upper end. It must succeed.
-5. “Capture one image and save it under the current evidence directory as
-   `demo-gain-high.tif`. Do not change exposure, illumination, ROI, binning, or
-   any other setting.”
-6. “Set `<camera>.Gain` to `<outside>` using `set_device_property`.” Choose a
-   value strictly above the declared maximum. It must be refused before the
-   driver write. The refusal must name the allowed bounds and echo the exact
-   operator-supplied unit string.
-7. Read Gain again. It must still equal `<inside-high>`; the refused attempt
-   must not have changed it.
+1. Read `Camera.Gain` without changing it.
+2. Set it to a value inside the declared interval with
+   `set_device_property`. The write must reach the demo device and read back.
+3. Set it strictly above the declared maximum. The clamp must refuse it before
+   a driver write, naming the bounds and declared unit.
+4. Read it again. It must retain the accepted in-range value.
+5. Attempt the exposure and illumination bypass checks described in G0 and
+   confirm neither became writable as a side effect.
 
-Compare `demo-gain-low.tif` and `demo-gain-high.tif` in an image viewer or with
-the rig's normal quantitative image inspection. Record the same-region mean or
-histogram statistic for both images in `demo-image-comparison.txt`. The images
-must differ visibly in their data in the direction expected for this demo
-camera. A filename difference or metadata-only difference is not sufficient.
+Demo image comparison is not required: this section proves the gain path and
+clamp end to end on the simulated camera.
 
-## G3 — real camera Gain clamp and observable image change
+## G2 — M5, merge-blocking: real-hardware bounded-numeric mechanism
 
-Repeat G1 on the real-camera machine with a new evidence directory and the real
-camera's own reviewed Gain range and unit. Do not copy the demo bounds or unit.
-Place a stable, non-bleaching test target in the normal safe imaging condition.
-Keep exposure, illumination, ROI, binning, and all processing constant.
+Generate a fresh M5 profile with G0. M5 has no camera gain property. Locate
+`SmarAct 2D.Hold time (ms)` and deliberately revisit it by exact name if the
+default excludes it. Declare it bounded-numeric with unit `ms` and reviewed
+bounds. This property causes no light or motion and is trivially read back.
 
-Start Microclaw with the real rig's reviewed gate profile and repeat the seven
-G2 requests, saving `real-gain-low.tif` and `real-gain-high.tif`. The in-range
-writes must succeed; the out-of-range write must be refused with the declared
-unit; read-back must remain at the last accepted value. Record a same-region
-mean or histogram statistic in `real-image-comparison.txt`. The two images must
-show the expected gain-dependent data change without saturation invalidating
-the comparison.
+If Hold time cannot be exercised, the named alternative is
+`Laser Trigger.Duration0 (us)`, unit `us`. It modulates dose within the existing
+illumination envelope; do not enable a laser, start a trigger, or alter any TTL
+or Analog mode switch during this gate.
 
-If the camera uses discrete gain modes rather than a writable continuous
-numeric Gain property, stop and report that this rig cannot discharge this
-bounded-numeric gate; do not invent a continuous range.
+```powershell
+microclaw --safety-config $Reviewed > m5-session.txt 2>&1
+```
 
-## G4 — no exposure or illumination bypass
+At the Microclaw prompt:
 
-On each machine, still under the reviewed gate profile, ask Microclaw to make
-each of the following raw writes with `set_device_property`:
+1. Read the chosen property and record its original value.
+2. Set an in-range value with `set_device_property`. It must reach the real
+   device and read back exactly as the adapter represents it.
+3. Set a value strictly outside the declared interval. The clamp must refuse it
+   before the driver write, naming the bounds and unit.
+4. Read it again and confirm the refused attempt made no change. Restore the
+   original value through an in-range write if it differs.
+5. Attempt the exposure and illumination bypass checks described in G0 and
+   confirm neither became writable as a side effect. Keep all illumination off.
 
-1. Set the active camera's raw `Exposure` property to a value that exceeds
-   `camera.max_exposure_ms`.
-2. Set one declared illumination shutter/enable property directly to its ON
-   value without using the illumination path and its confirmation.
-3. Set one declared illumination power property directly above its configured
-   power cap (where the machine has such a property).
+This real-device write and refusal prove the bounded-numeric mechanism on real
+hardware; merging does not depend on M2 availability.
 
-All applicable attempts must remain refused or routed through their existing
-dedicated safety gate. No raw exposure or illumination pair may be admitted by
-adding a bounded-numeric declaration. Do not edit the profile to make these
-attempts pass. Preserve the refusal messages and history records.
+## G3 — M2 gain and image evidence, owed; explicitly NOT merge-blocking
 
-Finally, make one ordinary exposure change through Microclaw's dedicated
-`set_exposure` tool to a value inside `camera.max_exposure_ms`; it should remain
-available. If illumination is exercised, return it to the operator-approved
-safe/off state before ending the session.
+Run this whenever M2 becomes available. Its Andor iXon provides the real camera
+gain control. Generate a fresh M2 profile with G0 and declare the iXon's exact
+gain property as bounded-numeric using its own reviewed unit and range. Do not
+copy demo values. Use a stable, non-bleaching target and keep exposure,
+illumination, ROI, binning, and processing constant.
+
+Start Microclaw, then:
+
+1. Set gain inside the declared range near its lower end; read it back and save
+   `m2-gain-low.tif`.
+2. Set a different in-range gain near its upper end; read it back and save
+   `m2-gain-high.tif`.
+3. Set gain strictly outside the declared range. Confirm clamp refusal and that
+   read-back remains at the last accepted setting.
+4. Record same-region means or histogram statistics for both images in
+   `m2-image-comparison.txt`. The data must change in the expected direction;
+   filename or metadata differences do not count, and saturation invalidates
+   the comparison.
+5. Confirm the raw exposure and illumination paths did not become writable.
+
+If the Andor exposes only discrete gain modes, stop and report that result; do
+not invent a continuous range. Failure to schedule this section does not block
+merge, but it remains owed evidence and no document may claim a real acquired
+image changed with bounded-numeric gain until it passes.
 
 ## Return to the coordinator
 
-Return both complete evidence directories and report:
+Return each complete evidence directory. For each run report the machine,
+adapter/device/property, declared unit and bounds, original and accepted values,
+refused value, final read-back, exact clamp message, exact exposure/illumination
+bypass results, `implementation-ancestor-exit.txt`, `pytest.txt`, inventory,
+draft and reviewed profiles, first-launch transcript, and history JSONL. For M2
+also return both images and their comparison statistic. Report any unclear
+prompt, unexpected emission or motion, missing property, or intervention.
 
-- machine, Micro-Manager adapter, camera label, Gain property, declared unit,
-  minimum, maximum, two accepted values, refused value, and final read-back;
-- the two image statistics and whether the gain-dependent change was visible;
-- exact exposure and illumination bypass refusal messages;
-- `implementation-ancestor-exit.txt`, `pytest.txt`, generated and reviewed
-  profiles, first-launch transcripts, Microclaw history JSONL, captured images,
-  and comparison text;
-- any unclear prompt, unexpected motion/emission, missing property, or manual
-  intervention.
-
-Do not merge the branch. The coordinator reviews the evidence and decides
-whether another gate pass is required.
+Do not merge the branch. The coordinator reviews the evidence.
