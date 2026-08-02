@@ -1220,15 +1220,17 @@ Do not combine these into one branch. Repeat the branch/review/rig/design gate f
       rollback and unverified-safe-state errors. Demo executor and interactive gates
       passed; injected failure and cancellation were deterministic-fake tests, M5 has no
       `Channel` group, and no scientific validation is claimed.
-- [ ] **Phase 5, `design33/first-launch-setup`:** restricted enumeration only, no agent or
+- [x] **Phase 5, `design33/first-launch-setup`:** restricted enumeration only, no agent or
       mutation tools, no inferred limits; consume Block 9b's versioned inventory, guide
       the human through every unresolved decision, write an unreviewed profile,
       disconnect, and require human review and normal restart. Do not duplicate a second
-      incompatible enumeration format.
+      incompatible enumeration format. — **Landed 2026-08-02** as checklist v2 Block 4,
+      merged `6266807` after five rig-gate rounds. "No inferred limits" held; the rule
+      barring driver ranges as *answer defaults* was deliberately scoped, see design/33
+      §"Phase 5 landed".
 - [x] For every phase, run its design/33 rig tests before merge and stop on any unenumerable
-      effect or pre-validation write. — **Phases 2 and 4 discharged**; requirements
-      for Phase 5 are carried forward in
-      `design/35-usability-and-pfs-checklist.md`.
+      effect or pre-validation write. — **Phases 2, 4 and 5 discharged** — Phase 5's rig gate ran five rounds
+      on the demo core and M5 (checklist v2 Block 4).
 - [x] After every phase merge, update design/33 with supported drivers/presets, measured
       waits/failure cleanup, setup contact semantics, and remaining excluded paths before
       beginning the next phase. — **Phases 2 and 4 discharged** (design/33 "Phase 2
