@@ -14,7 +14,7 @@ not substitute Unix pipelines.
 
 ## G0 — branch, implementation, and evidence setup
 
-Run this on each machine used below. The implementation pin is `865f536`.
+Run this on each machine used below. The implementation pin is `3cfba0e`.
 
 ```powershell
 git fetch origin > git-fetch.txt 2>&1
