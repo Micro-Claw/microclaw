@@ -172,6 +172,13 @@ def test_declared_bound_outside_technical_range_is_refused():
         validate_live_rig(ctrl, parsed)
 
 
+def test_bounded_numeric_declared_bound_outside_driver_range_is_refused():
+    policy = TypedActuatorPolicy("bounded-numeric", "e-/ADU", 0, 250)
+    ctrl, parsed = _direct(LiveCore(), typed={TypedActuatorId("Z", "Position (um)"): policy})
+    with pytest.raises(RigAuthorizationError, match="driver-reported technical range"):
+        validate_live_rig(ctrl, parsed)
+
+
 def test_camera_exposure_cannot_be_declared_bounded_numeric():
     core = LiveCore("CameraDevice", "Exposure", 100, device="Camera")
     core.get_camera_device = lambda: "Camera"
