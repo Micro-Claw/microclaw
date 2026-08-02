@@ -132,7 +132,8 @@ Rig-facing commands must be PowerShell/cmd-safe (the rig is Windows): prefer
 | 4r1a | Usability | 4 | `design33/first-launch-setup` | `15d8d1b` | `c5746b9` (`d203753` rejected) | folded into block 4 round 2 | n/a — merges via block 4 | |
 | 4r1b | Usability | 4 | `design35/startup-refusal-severity` | `15d8d1b` | `2558583` (`16cc416` rejected alone) | folded into block 4 round 2 | `385049d` into block branch | |
 | 4b | Usability | 4 merged | `design33/bounded-numeric-actuator` | | | **required** | | |
-| 5 | Usability | 4b | `design33/deployed-config-hygiene` | | | required | | |
+| 4c | Usability | 4 merged | `design33/setup-named-stages` | | | **required** | | |
+| 5 | Usability | 4b, 4c | `design33/deployed-config-hygiene` | | | required | | |
 | 6 | Nikon | probe S = pre-fix baseline; post-fix run owed | `design34/measured-position-readback` | | | required | | |
 | 7a | Nikon | scope: none; rig gate: probe 0 | `design34/continuous-focus-capability` | | | **required** | | |
 | 7b | Nikon | 7a | `design34/continuous-focus-policy` | | | **required** | | |
@@ -1251,6 +1252,23 @@ exactly why it needs a kind that feeds no ledger.
       stops requiring, or keeping it with the brake framing stated in the config
       and the refusal message. Decide with the byte-threshold item, in one pass
       over `_ACQUISITION_POLICY_FIELDS`.
+- [ ] **Rename and regroup the property-authorization schema.** Operator
+      finding, 2026-08-02: `rig_profile` reads as a description of the rig, but
+      the rig's description is the inventory — `rig_profile` is the raw-property
+      *write-authorization map*. Worse, it is not the whole map: stage travel is
+      in top-level `stage`, exposure in `camera`, illumination in `illumination`
+      (the four built-in typed capabilities, deliberately not duplicated), while a
+      typed `illumination-power` actuator must appear in **both**
+      `rig_profile.typed_actuators` and `illumination.power_properties` or startup
+      refuses. `typed_actuators` is not even a field of the `RigProfile` object
+      (`safety.py:200`) — it lives under that YAML key for historical reasons
+      only. Proposed shape: `property_authorization` with `allowed_categorical`,
+      `allowed_numeric`, `denied`. **A rename breaks every deployed config,
+      M5's included**, so decide migration (accept both keys for a release,
+      or a one-shot rewriter) rather than assuming a clean cut. Interim, owed
+      regardless: a schema map in design/33 saying which section owns which
+      write path, which is post-merge design-gate work for Block 4.
+
 - [ ] Off-rig tests: the alias refusal above; clamp at both edges and outside;
       a declared unit round-tripping into the profile unaltered; setup emitting
       the kind from the real demo inventory fixture; and a regression that
@@ -1268,6 +1286,47 @@ Post-merge design gate:
 
 - [ ] Record the three-kind taxonomy and the not-dose-bearing rationale in
       design/33, alongside the refusal-severity taxonomy from Block 4.
+
+## 4c. [ ] Reachable non-core stages — `named_stages` is never emitted
+
+Branch: `design33/setup-named-stages`. Depends on 4b only for ordering, not
+mechanism: **no schema change is needed**, `named_stages` already exists
+(`safety.py:159`).
+
+Found 2026-08-02 while answering an operator question about how
+`named_stages` differs from `typed_actuators`. `first_launch.py:1027` hardcodes
+`"named_stages": []` and the interview never asks. `check_named_stage`
+(`safety.py:1090`) fails closed — a stage with no entry may not be moved at all —
+so **every single-axis stage that is not the core focus device is unreachable
+after setup.** On M5 that is three of five: `SmarAct 1D`, `Thorlabs ELL17/ELL20`
+and `Thorlabs ELL20`, with only `PIZStage` (core focus) and `SmarAct 2D` (core
+XY) usable. The deployed config also has `named_stages: []`, so this is not a
+regression — it is a reach gap neither authoring path ever closed, and it runs
+directly against the operator's stated goal of controlling everything safely.
+
+The three write paths for stage-like motion are genuinely distinct and the block
+must not collapse them:
+
+- Core focus / core XY → `stage.*` bounds, tools `move_stage_z` / `move_stage_xy`.
+  The raw-property route is blocked on purpose by `_known_continuous_raw_pair`.
+- Any other single-axis stage → `named_stages`, tool `move_named_stage`, keyed by
+  device label, always µm, through MMCore's stage API.
+- A raw numeric property that is positional but not reachable through the stage
+  API → `rig_profile.typed_actuators`, kind `absolute-position`, keyed by
+  device **and property**.
+
+- [ ] Ask for travel bounds for every loaded `StageDevice` that is not the core
+      focus device, and emit `named_stages` entries. Propose the driver
+      technical range where MM reports one, exactly as the core stages now do,
+      and say so plainly where it reports none.
+- [ ] Do not emit an entry for the core focus device: `stage.z_min/z_max` owns it
+      and `authorization.py:598` refuses the duplicate.
+- [ ] Decide what to do about an `XYStageDevice` that is not the core XY stage.
+      `named_stages` is single-axis by construction, so this may be an honest
+      exclusion with a printed reason rather than a silent omission.
+- [ ] Rig gate: move a non-core stage on M5 through `move_named_stage`, at a
+      value inside the declared range and at one outside it, and show the second
+      is refused.
 
 ## 5. Deployed-config hygiene and the `init` path — rig config review
 
