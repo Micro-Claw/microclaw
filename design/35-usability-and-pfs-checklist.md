@@ -131,7 +131,7 @@ Rig-facing commands must be PowerShell/cmd-safe (the rig is Windows): prefer
 | 4 | Usability | 3 | `design33/first-launch-setup` (deleted) | `bc303a2` | `a742d73` | 5 rounds: demo r1 **FAIL**, r2/r3 **PASS**; M5 G4 + **G4b PASS** 2026-08-02 | `6266807` | **done** — design/33 §"Phase 5 landed" |
 | 4r1a | Usability | 4 | `design33/first-launch-setup` | `15d8d1b` | `c5746b9` (`d203753` rejected) | folded into block 4 round 2 | n/a — merges via block 4 | |
 | 4r1b | Usability | 4 | `design35/startup-refusal-severity` | `15d8d1b` | `2558583` (`16cc416` rejected alone) | folded into block 4 round 2 | `385049d` into block branch | |
-| 4b | Usability | 4 merged | `design33/bounded-numeric-actuator` | | | **required** | | |
+| 4b | Usability | 4 merged | `design33/bounded-numeric-actuator` | `578874e` | | **required (demo + M5); M2 gain owed, non-blocking** | | |
 | 4c | Usability | 4b merged | `design33/setup-named-stages` | | | **required** | | |
 | 4d | Usability | 4c merged | `design33/property-authorization-rename` | | | **required** | | |
 | 5 | Usability | 4b, 4c, 4d | `design33/deployed-config-hygiene` | | | required | | |
@@ -597,6 +597,10 @@ Human-decision requirements — each must fail closed, never infer:
 - [x] Emit exclusions or unresolved review instructions for actuator kinds the
       current schema cannot express (camera ROI; MicroFPGA pulse duration; any
       unrecognised device type). **Never invent bounds or geometry.**
+      **Superseded in part by Block 4b — read the condition, not the list.** The
+      exclusion was conditioned on the *schema* being unable to express the
+      kind, and 4b's `bounded-numeric` removes that condition for MicroFPGA
+      pulse duration. See the operator ruling recorded in block 4b.
 - [x] Refuse to generate ambiguous XY typed-actuator entries; defer the proposed
       `axis` schema extension rather than guessing.
 - [x] May recommend exclusion for the known `TTL.State0` GenericDevice false
@@ -1286,18 +1290,75 @@ reopened.
   not rename anything here; `bounded-numeric` lands under the existing
   `rig_profile.typed_actuators` key, and 4d moves it with the rest.
 
+**Operator ruling, 2026-08-02 — MicroFPGA trigger duration belongs in this
+kind, and the coordinator was wrong to return it as a required exclusion.**
+Round 1's review cited block 4's "actuator kinds the current schema cannot
+express (camera ROI; MicroFPGA pulse duration; …)" as forbidding
+`Laser Trigger.Duration0`–`Duration3 (us)`. That misreads the item: the
+exclusion is conditioned on schema inexpressiveness, and **`bounded-numeric` is
+the removal of that condition.** An item that excludes something *because it
+cannot be expressed* stops applying in the block that expresses it.
+
+The physics, from the operator and corroborated against
+`https://mufpga.github.io/principle_trigger.html`: trigger duration sets how
+long the laser is on within a camera exposure, so it is an illumination control
+layered on top of power, and it must be adjustable independently of the other
+illumination parameters. One qualifier recorded for whoever sets the bound: in
+`FOLLOW` mode the laser tracks the exposure signal, so laser-on time cannot
+exceed the frame; in `RISING`/`FALLING` mode the doc describes a pulse of
+`duration` µs on each edge, which is not inherently clipped at the end of the
+exposure window. Its bounds therefore follow the settled proposed-default
+precedent used for stage travel and maximum exposure — driver range offered,
+Enter-acceptable, accepted-versus-typed recorded in the transcript — and are not
+given a special case. The same ruling covers `Laser Trigger.Sequence0`–`3`,
+`Servos.Position0`–`3` and `PWM.Position0`.
+
 - [ ] Off-rig tests: the alias refusal above; clamp at both edges and outside;
       a declared unit round-tripping into the profile unaltered; setup emitting
       the kind from the real demo inventory fixture; and a regression that
       `Camera.Exposure` still cannot be declared `bounded-numeric`.
 
-Rig gate:
+Rig gate — **split into a merge-blocking part and an owed part, operator
+decision 2026-08-02.** The original single item required `Camera.Gain` "on the
+demo machine and on a real camera". That cannot be run as written: M5's
+Hamamatsu exposes **no gain property at all** (verified across the whole
+`block4-m5-20260802-100850` inventory — zero matches for any gain-like name),
+and the demo camera is simulated. The real camera with a gain control is M2's
+Andor iXon, and M2 access is not schedulable.
 
-- [ ] Set `Camera.Gain` through Microclaw on the demo machine and on a real
-      camera, at a value inside the declared range and at one outside it, and
-      show the second is refused. Capture an image at two gain settings and
-      confirm the change is visible in the data.
-- [ ] Confirm no exposure or illumination path became writable as a side effect.
+The precedent for merging anyway is in this file already: block 4 refused to
+wait on Block 9b's cross-rig gate because "that needs a second live rig and
+could defer this block indefinitely". Same situation, same answer — but the
+owed run is tracked in the carried-forward register, not dropped.
+
+Merge-blocking, on hardware we can reach:
+
+- [ ] **Demo machine — the gain path end to end.** Generate a profile declaring
+      `Camera.Gain`, set it through Microclaw inside the declared range, and set
+      it outside; show the second is refused by the clamp and the first is not.
+- [ ] **M5 — the mechanism on real hardware.** A bounded-numeric write must be
+      shown to reach a real device, clamp at its declared bound, and refuse
+      outside it. Any declared bounded numeric whose effect can be read back
+      qualifies; `SmarAct 2D.Hold time (ms)` is the least invasive candidate (no
+      light, no motion, trivially read back), with `Laser Trigger.Duration0 (us)`
+      as the alternative if a control the operator already exercises is
+      preferred. This step exists so that merging without M2 does not leave the
+      kind unproven on real hardware — only *gain* waits.
+- [ ] Confirm no exposure or illumination path became writable as a side effect,
+      on both machines.
+
+Owed, does **not** block 4b's merge or blocks 4c/4d/5:
+
+- [ ] **M2 (Andor iXon) — gain on a real camera.** Set EM gain inside and
+      outside the declared range, show the second is refused, and capture an
+      image at two gain settings confirming the change is visible in the data.
+      Run it when M2 is next available.
+
+**What merging without the M2 run does not claim.** That a `bounded-numeric`
+declaration produces a *visible physical change in acquired data* on a real
+camera is unproven until M2 runs. The clamp, the refusals, the alias guards and
+the setup emission are all proven without it. Do not write the stronger claim
+into design/33's post-merge record.
 
 Post-merge design gate:
 
@@ -1796,6 +1857,14 @@ This is an inventory, not permission to close with unresolved blank work. Block
   (`microclaw/rig_inventory.py:39`), so off-rig tests prove the substitution
   fires, not that the vocabulary matches real driver naming (`Passphrase`,
   `Community String`, `Login`).
+- **Block 4b's M2 gain gate is owed.** `bounded-numeric` merged with its clamp,
+  refusals and setup emission proven on the demo machine and its mechanism
+  proven on M5, but "gain on a real camera, with the change visible in the
+  acquired data" needs M2's Andor iXon, which is not schedulable. Operator
+  decision 2026-08-02: **this does not block 4c, 4d or 5.** Run it when M2 is
+  next available and record the evidence against block 4b. Until then, no
+  document may claim a bounded-numeric write was shown to change real acquired
+  data. M5 cannot substitute — its Hamamatsu exposes no gain property.
 - **Clean hook save is not enforced in code** (design/32 §4). The gate is
   conditional on the advisory lint firing, while the system prompt claims hook
   saves are enforced. Independent security fix.
