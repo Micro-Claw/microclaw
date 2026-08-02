@@ -4015,5 +4015,5 @@ pass the second time -- the returned findings are recorded in the checklist.
 
 Deferred out of this block, deliberately: `bounded-numeric` and the
 `rig_profile` rename to 4b, `named_stages` to 4c (three of M5's five stages are
-unreachable until it lands), deployed-config hygiene to 5. Operator asked for 4c
-before 5, since moveable stages matter more day to day than config hygiene.]
+unreachable until it lands), deployed-config hygiene to 5. Order set by the operator:
+4b, then 4c, then 5. Both precede 5; "4c before 5" ordered those two only.]
