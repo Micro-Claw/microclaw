@@ -14,7 +14,7 @@ not substitute Unix pipelines.
 
 ## G0 — branch, implementation, and evidence setup
 
-Run this on each machine used below. The implementation pin is `65a38cd`.
+Run this on each machine used below. The implementation pin is `865f536`.
 
 ```powershell
 git fetch origin > git-fetch.txt 2>&1
@@ -22,7 +22,7 @@ git switch design33/bounded-numeric-actuator > git-switch.txt 2>&1
 git pull --ff-only > git-pull.txt 2>&1
 git status --short > status.txt 2>&1
 git rev-parse HEAD > head.txt 2>&1
-git merge-base --is-ancestor 65a38cd HEAD
+git merge-base --is-ancestor 865f536 HEAD
 echo $LASTEXITCODE > implementation-ancestor-exit.txt
 python -m pytest -q > pytest.txt 2>&1
 $Stamp = Get-Date -Format "yyyyMMdd-HHmmss"
