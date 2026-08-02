@@ -131,7 +131,7 @@ Rig-facing commands must be PowerShell/cmd-safe (the rig is Windows): prefer
 | 4 | Usability | 3 | `design33/first-launch-setup` (deleted) | `bc303a2` | `a742d73` | 5 rounds: demo r1 **FAIL**, r2/r3 **PASS**; M5 G4 + **G4b PASS** 2026-08-02 | `6266807` | **done** — design/33 §"Phase 5 landed" |
 | 4r1a | Usability | 4 | `design33/first-launch-setup` | `15d8d1b` | `c5746b9` (`d203753` rejected) | folded into block 4 round 2 | n/a — merges via block 4 | |
 | 4r1b | Usability | 4 | `design35/startup-refusal-severity` | `15d8d1b` | `2558583` (`16cc416` rejected alone) | folded into block 4 round 2 | `385049d` into block branch | |
-| 4b | Usability | 4 merged | `design33/bounded-numeric-actuator` | `578874e` | | **required (demo + M5); M2 gain owed, non-blocking** | | |
+| 4b | Usability | 4 merged | `design33/bounded-numeric-actuator` | `578874e` | `3cfba0e` | G1 demo **PASS** (3 rounds); G2 M5 pending; M2 gain owed, non-blocking | | |
 | 4c | Usability | 4b merged | `design33/setup-named-stages` | | | **required** | | |
 | 4d | Usability | 4c merged | `design33/property-authorization-rename` | | | **required** | | |
 | 5 | Usability | 4b, 4c, 4d | `design33/deployed-config-hygiene` | | | required | | |
@@ -1449,6 +1449,36 @@ precisely so it can be tighter than the hardware's, so an agent planning against
 driver limits plans against authority the guard will refuse. It now returns
 `declared_policy` alongside. Invisible in this run only because the accepted
 bounds equalled the driver range.
+
+### Rig gate G1 round 3 — demo machine, 2026-08-02: **PASS**
+
+Evidence: `block4b-20260802-150128/g1-rerun`. Both mechanical checks print
+`True`, so the step is evidenced by the tool call rather than the transcript.
+
+The clamp fired, and the message is the block's contract in one line:
+
+    Safety constraint prevented this action: Typed actuator Camera.Gain has
+    canonical value 10 native; allowed absolute range is -5..8 native.
+
+That is `check_typed_actuator` raising with the operator-declared unit echoed
+verbatim — the "recorded and echoed, never interpreted" requirement shown on
+hardware rather than in a unit test.
+
+Full sequence, all five G1 steps:
+
+1. `get_device_property_info` returned
+   `declared_policy: {kind: bounded-numeric, units: native, minimum: -5.0,
+   maximum: 8.0}` beside the driver range — `3cfba0e` working on a rig.
+2. In-range write `Camera.Gain = '-1'` succeeded.
+3. Out-of-range write `'10'` refused by the guard, naming bounds and unit.
+4. Read-back returned `-1`: the refused attempt changed nothing.
+5. No side effects — `set_exposure(12000)` still refused against
+   `max_exposure_ms`, and the `White Light Shutter.State` enable still required
+   a confirmation (approved this run, recorded in the confirmations ledger) and
+   was driven back to `0`.
+
+**G1 is closed. The remaining merge-blocking step is G2 on M5**; G3 (M2 gain
+imagery) stays owed and non-blocking.
 
 Post-merge design gate:
 
