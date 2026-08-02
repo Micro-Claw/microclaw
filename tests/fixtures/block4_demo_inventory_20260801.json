@@ -1,0 +1,2240 @@
+{
+  "facts": {
+    "configuration_groups": [
+      {
+        "name": "Camera",
+        "presets": [
+          {
+            "effects": [
+              {
+                "device": "Camera",
+                "property": "Binning",
+                "setting_index": 0,
+                "value": "1"
+              },
+              {
+                "device": "Camera",
+                "property": "BitDepth",
+                "setting_index": 1,
+                "value": "12"
+              }
+            ],
+            "name": "HighRes"
+          },
+          {
+            "effects": [
+              {
+                "device": "Camera",
+                "property": "Binning",
+                "setting_index": 0,
+                "value": "4"
+              },
+              {
+                "device": "Camera",
+                "property": "BitDepth",
+                "setting_index": 1,
+                "value": "8"
+              }
+            ],
+            "name": "LowRes"
+          },
+          {
+            "effects": [
+              {
+                "device": "Camera",
+                "property": "Binning",
+                "setting_index": 0,
+                "value": "2"
+              },
+              {
+                "device": "Camera",
+                "property": "BitDepth",
+                "setting_index": 1,
+                "value": "10"
+              }
+            ],
+            "name": "MedRes"
+          }
+        ]
+      },
+      {
+        "name": "Channel",
+        "presets": [
+          {
+            "effects": [
+              {
+                "device": "Dichroic",
+                "property": "Label",
+                "setting_index": 0,
+                "value": "400DCLP"
+              },
+              {
+                "device": "Emission",
+                "property": "Label",
+                "setting_index": 1,
+                "value": "Chroma-HQ700"
+              },
+              {
+                "device": "Excitation",
+                "property": "Label",
+                "setting_index": 2,
+                "value": "Chroma-HQ570"
+              },
+              {
+                "device": "Core",
+                "property": "Shutter",
+                "setting_index": 3,
+                "value": "White Light Shutter"
+              }
+            ],
+            "name": "Cy5"
+          },
+          {
+            "effects": [
+              {
+                "device": "Dichroic",
+                "property": "Label",
+                "setting_index": 0,
+                "value": "400DCLP"
+              },
+              {
+                "device": "Emission",
+                "property": "Label",
+                "setting_index": 1,
+                "value": "Chroma-HQ620"
+              },
+              {
+                "device": "Excitation",
+                "property": "Label",
+                "setting_index": 2,
+                "value": "Chroma-D360"
+              },
+              {
+                "device": "Core",
+                "property": "Shutter",
+                "setting_index": 3,
+                "value": "White Light Shutter"
+              }
+            ],
+            "name": "DAPI"
+          },
+          {
+            "effects": [
+              {
+                "device": "Dichroic",
+                "property": "Label",
+                "setting_index": 0,
+                "value": "Q505LP"
+              },
+              {
+                "device": "Emission",
+                "property": "Label",
+                "setting_index": 1,
+                "value": "Chroma-HQ535"
+              },
+              {
+                "device": "Excitation",
+                "property": "Label",
+                "setting_index": 2,
+                "value": "Chroma-HQ480"
+              },
+              {
+                "device": "Core",
+                "property": "Shutter",
+                "setting_index": 3,
+                "value": "White Light Shutter"
+              }
+            ],
+            "name": "FITC"
+          },
+          {
+            "effects": [
+              {
+                "device": "Dichroic",
+                "property": "Label",
+                "setting_index": 0,
+                "value": "Q585LP"
+              },
+              {
+                "device": "Emission",
+                "property": "Label",
+                "setting_index": 1,
+                "value": "Chroma-HQ700"
+              },
+              {
+                "device": "Excitation",
+                "property": "Label",
+                "setting_index": 2,
+                "value": "Chroma-HQ570"
+              },
+              {
+                "device": "Core",
+                "property": "Shutter",
+                "setting_index": 3,
+                "value": "White Light Shutter"
+              }
+            ],
+            "name": "Rhodamine"
+          }
+        ]
+      },
+      {
+        "name": "Channel-Multiband",
+        "presets": [
+          {
+            "effects": [
+              {
+                "device": "Dichroic",
+                "property": "Label",
+                "setting_index": 0,
+                "value": "89402bs"
+              },
+              {
+                "device": "Emission",
+                "property": "Label",
+                "setting_index": 1,
+                "value": "89402m"
+              },
+              {
+                "device": "Excitation",
+                "property": "Label",
+                "setting_index": 2,
+                "value": "Empty"
+              },
+              {
+                "device": "LED",
+                "property": "Label",
+                "setting_index": 3,
+                "value": "635nm"
+              },
+              {
+                "device": "Core",
+                "property": "Shutter",
+                "setting_index": 4,
+                "value": "LED Shutter"
+              }
+            ],
+            "name": "Cy5"
+          },
+          {
+            "effects": [
+              {
+                "device": "Dichroic",
+                "property": "Label",
+                "setting_index": 0,
+                "value": "89402bs"
+              },
+              {
+                "device": "Emission",
+                "property": "Label",
+                "setting_index": 1,
+                "value": "89402m"
+              },
+              {
+                "device": "Excitation",
+                "property": "Label",
+                "setting_index": 2,
+                "value": "Empty"
+              },
+              {
+                "device": "LED",
+                "property": "Label",
+                "setting_index": 3,
+                "value": "385nm"
+              },
+              {
+                "device": "Core",
+                "property": "Shutter",
+                "setting_index": 4,
+                "value": "LED Shutter"
+              }
+            ],
+            "name": "DAPI"
+          },
+          {
+            "effects": [
+              {
+                "device": "Dichroic",
+                "property": "Label",
+                "setting_index": 0,
+                "value": "89402bs"
+              },
+              {
+                "device": "Emission",
+                "property": "Label",
+                "setting_index": 1,
+                "value": "89402m"
+              },
+              {
+                "device": "Excitation",
+                "property": "Label",
+                "setting_index": 2,
+                "value": "Empty"
+              },
+              {
+                "device": "LED",
+                "property": "Label",
+                "setting_index": 3,
+                "value": "470nm"
+              },
+              {
+                "device": "Core",
+                "property": "Shutter",
+                "setting_index": 4,
+                "value": "LED Shutter"
+              }
+            ],
+            "name": "FITC"
+          },
+          {
+            "effects": [
+              {
+                "device": "Dichroic",
+                "property": "Label",
+                "setting_index": 0,
+                "value": "89402bs"
+              },
+              {
+                "device": "Emission",
+                "property": "Label",
+                "setting_index": 1,
+                "value": "89402m"
+              },
+              {
+                "device": "Excitation",
+                "property": "Label",
+                "setting_index": 2,
+                "value": "Empty"
+              },
+              {
+                "device": "LED",
+                "property": "Label",
+                "setting_index": 3,
+                "value": "550nm"
+              },
+              {
+                "device": "Core",
+                "property": "Shutter",
+                "setting_index": 4,
+                "value": "LED Shutter"
+              }
+            ],
+            "name": "Rhodamine"
+          }
+        ]
+      },
+      {
+        "name": "LightPath",
+        "presets": [
+          {
+            "effects": [
+              {
+                "device": "Path",
+                "property": "State",
+                "setting_index": 0,
+                "value": "1"
+              }
+            ],
+            "name": "Camera-left"
+          },
+          {
+            "effects": [
+              {
+                "device": "Path",
+                "property": "State",
+                "setting_index": 0,
+                "value": "2"
+              }
+            ],
+            "name": "Camera-right"
+          },
+          {
+            "effects": [
+              {
+                "device": "Path",
+                "property": "State",
+                "setting_index": 0,
+                "value": "0"
+              }
+            ],
+            "name": "Eyepiece"
+          }
+        ]
+      },
+      {
+        "name": "Objective",
+        "presets": [
+          {
+            "effects": [
+              {
+                "device": "Objective",
+                "property": "State",
+                "setting_index": 0,
+                "value": "1"
+              }
+            ],
+            "name": "10X"
+          },
+          {
+            "effects": [
+              {
+                "device": "Objective",
+                "property": "State",
+                "setting_index": 0,
+                "value": "3"
+              }
+            ],
+            "name": "20X"
+          },
+          {
+            "effects": [
+              {
+                "device": "Objective",
+                "property": "State",
+                "setting_index": 0,
+                "value": "0"
+              }
+            ],
+            "name": "40X"
+          }
+        ]
+      },
+      {
+        "name": "System",
+        "presets": [
+          {
+            "effects": [
+              {
+                "device": "Camera",
+                "property": "BitDepth",
+                "setting_index": 0,
+                "value": "16"
+              },
+              {
+                "device": "Camera",
+                "property": "ScanMode",
+                "setting_index": 1,
+                "value": "1"
+              },
+              {
+                "device": "Objective",
+                "property": "Label",
+                "setting_index": 2,
+                "value": "Nikon 10X S Fluor"
+              },
+              {
+                "device": "Camera",
+                "property": "Binning",
+                "setting_index": 3,
+                "value": "1"
+              },
+              {
+                "device": "LED Shutter",
+                "property": "State Device",
+                "setting_index": 4,
+                "value": "LED"
+              },
+              {
+                "device": "Core",
+                "property": "ChannelGroup",
+                "setting_index": 5,
+                "value": "Channel"
+              }
+            ],
+            "name": "Startup"
+          }
+        ]
+      }
+    ],
+    "core_device_assignments": {
+      "autofocus": "Autofocus",
+      "camera": "Camera",
+      "focus": "Z",
+      "galvo": "",
+      "image_processor": "",
+      "shutter": "White Light Shutter",
+      "slm": "",
+      "xy_stage": "XY"
+    },
+    "core_identity": {
+      "api_version": "Device API version 75, Module API version 10",
+      "version": "MMCore version 12.5.0"
+    },
+    "devices": [
+      {
+        "adapter": {
+          "description": "Demo auto focus",
+          "library": "DemoCamera",
+          "name": "DAutoFocus"
+        },
+        "device_type": "AutoFocusDevice",
+        "label": "Autofocus",
+        "properties": [
+          {
+            "allowed_values": [],
+            "current_value": "Demo auto-focus adapter",
+            "has_limits": false,
+            "name": "Description",
+            "pre_init": false,
+            "read_only": true,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "",
+            "has_limits": false,
+            "name": "HubID",
+            "pre_init": false,
+            "read_only": true,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "DAutoFocus",
+            "has_limits": false,
+            "name": "Name",
+            "pre_init": false,
+            "read_only": true,
+            "reported_type": "String"
+          }
+        ],
+        "state_labels": []
+      },
+      {
+        "adapter": {
+          "description": "Demo camera",
+          "library": "DemoCamera",
+          "name": "DCam"
+        },
+        "device_type": "CameraDevice",
+        "label": "Camera",
+        "properties": [
+          {
+            "allowed_values": [
+              "0",
+              "1"
+            ],
+            "current_value": "0",
+            "has_limits": false,
+            "name": "AllowMultiROI",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Integer"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "2000",
+            "has_limits": false,
+            "name": "AsyncPropertyDelayMS",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Integer"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "",
+            "has_limits": false,
+            "name": "AsyncPropertyFollower",
+            "pre_init": false,
+            "read_only": true,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "",
+            "has_limits": false,
+            "name": "AsyncPropertyLeader",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "0.5000",
+            "has_limits": true,
+            "name": "BeadBlurRate",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Float",
+            "technical_range": {
+              "lower": 0.1,
+              "source": "driver_reported",
+              "upper": 1.0
+            }
+          },
+          {
+            "allowed_values": [],
+            "current_value": "1.0000",
+            "has_limits": true,
+            "name": "BeadBrightness",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Float",
+            "technical_range": {
+              "lower": 0.125,
+              "source": "driver_reported",
+              "upper": 8.0
+            }
+          },
+          {
+            "allowed_values": [],
+            "current_value": "100",
+            "has_limits": true,
+            "name": "BeadDensity",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Integer",
+            "technical_range": {
+              "lower": 10.0,
+              "source": "driver_reported",
+              "upper": 500.0
+            }
+          },
+          {
+            "allowed_values": [],
+            "current_value": "2.0000",
+            "has_limits": true,
+            "name": "BeadSize",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Float",
+            "technical_range": {
+              "lower": 1.0,
+              "source": "driver_reported",
+              "upper": 10.0
+            }
+          },
+          {
+            "allowed_values": [
+              "1",
+              "2",
+              "4",
+              "8"
+            ],
+            "current_value": "1",
+            "has_limits": false,
+            "name": "Binning",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Integer"
+          },
+          {
+            "allowed_values": [
+              "10",
+              "11",
+              "12",
+              "14",
+              "16",
+              "32",
+              "8"
+            ],
+            "current_value": "16",
+            "has_limits": false,
+            "name": "BitDepth",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Integer"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "0.0000",
+            "has_limits": true,
+            "name": "CCDTemperature",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Float",
+            "technical_range": {
+              "lower": -100.0,
+              "source": "driver_reported",
+              "upper": 10.0
+            }
+          },
+          {
+            "allowed_values": [],
+            "current_value": "0.0000",
+            "has_limits": false,
+            "name": "CCDTemperature RO",
+            "pre_init": false,
+            "read_only": true,
+            "reported_type": "Float"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "V1.0",
+            "has_limits": false,
+            "name": "CameraID",
+            "pre_init": false,
+            "read_only": true,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "DemoCamera-MultiMode",
+            "has_limits": false,
+            "name": "CameraName",
+            "pre_init": false,
+            "read_only": true,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "Demo Camera Device Adapter",
+            "has_limits": false,
+            "name": "Description",
+            "pre_init": false,
+            "read_only": true,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [
+              "0",
+              "1"
+            ],
+            "current_value": "0",
+            "has_limits": false,
+            "name": "DisplayImageNumber",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Integer"
+          },
+          {
+            "allowed_values": [
+              "0",
+              "1"
+            ],
+            "current_value": "0",
+            "has_limits": false,
+            "name": "DropPixels",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Integer"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "10.0000",
+            "has_limits": true,
+            "name": "Exposure",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Float",
+            "technical_range": {
+              "lower": 0.0,
+              "source": "driver_reported",
+              "upper": 10000.0
+            }
+          },
+          {
+            "allowed_values": [
+              "0",
+              "1"
+            ],
+            "current_value": "0",
+            "has_limits": false,
+            "name": "FastImage",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Integer"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "0.0020",
+            "has_limits": true,
+            "name": "FractionOfPixelsToDropOrSaturate",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Float",
+            "technical_range": {
+              "lower": 0.0,
+              "source": "driver_reported",
+              "upper": 0.1
+            }
+          },
+          {
+            "allowed_values": [],
+            "current_value": "0",
+            "has_limits": true,
+            "name": "Gain",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Integer",
+            "technical_range": {
+              "lower": -5.0,
+              "source": "driver_reported",
+              "upper": 8.0
+            }
+          },
+          {
+            "allowed_values": [],
+            "current_value": "",
+            "has_limits": false,
+            "name": "HubID",
+            "pre_init": false,
+            "read_only": true,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "10000.0000",
+            "has_limits": false,
+            "name": "MaximumExposureMs",
+            "pre_init": true,
+            "read_only": false,
+            "reported_type": "Float"
+          },
+          {
+            "allowed_values": [
+              "Artificial Waves",
+              "Color Test Pattern",
+              "Fluorescent Beads",
+              "Noise"
+            ],
+            "current_value": "Artificial Waves",
+            "has_limits": false,
+            "name": "Mode",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "0",
+            "has_limits": true,
+            "name": "MultiROIFillValue",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Integer",
+            "technical_range": {
+              "lower": 0.0,
+              "source": "driver_reported",
+              "upper": 65536.0
+            }
+          },
+          {
+            "allowed_values": [],
+            "current_value": "DCam",
+            "has_limits": false,
+            "name": "Name",
+            "pre_init": false,
+            "read_only": true,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "0",
+            "has_limits": false,
+            "name": "Offset",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Integer"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "512",
+            "has_limits": false,
+            "name": "OnCameraCCDXSize",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Integer"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "512",
+            "has_limits": false,
+            "name": "OnCameraCCDYSize",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Integer"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "1.0000",
+            "has_limits": true,
+            "name": "Photon Conversion Factor",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Float",
+            "technical_range": {
+              "lower": 0.01,
+              "source": "driver_reported",
+              "upper": 10.0
+            }
+          },
+          {
+            "allowed_values": [],
+            "current_value": "50.0000",
+            "has_limits": true,
+            "name": "Photon Flux",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Float",
+            "technical_range": {
+              "lower": 2.0,
+              "source": "driver_reported",
+              "upper": 5000.0
+            }
+          },
+          {
+            "allowed_values": [
+              "16bit",
+              "32bit",
+              "32bitRGB",
+              "64bitRGB",
+              "8bit"
+            ],
+            "current_value": "16bit",
+            "has_limits": false,
+            "name": "PixelType",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "2.5000",
+            "has_limits": true,
+            "name": "ReadNoise (electrons)",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Float",
+            "technical_range": {
+              "lower": 0.25,
+              "source": "driver_reported",
+              "upper": 50.0
+            }
+          },
+          {
+            "allowed_values": [],
+            "current_value": "0.0000",
+            "has_limits": false,
+            "name": "ReadoutTime",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Float"
+          },
+          {
+            "allowed_values": [
+              "0",
+              "1"
+            ],
+            "current_value": "0",
+            "has_limits": false,
+            "name": "RotateImages",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Integer"
+          },
+          {
+            "allowed_values": [
+              "0",
+              "1"
+            ],
+            "current_value": "0",
+            "has_limits": false,
+            "name": "SaturatePixels",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Integer"
+          },
+          {
+            "allowed_values": [
+              "1",
+              "2",
+              "3"
+            ],
+            "current_value": "1",
+            "has_limits": false,
+            "name": "ScanMode",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Integer"
+          },
+          {
+            "allowed_values": [
+              "",
+              "Dereference Null Pointer",
+              "Divide by Zero"
+            ],
+            "current_value": "",
+            "has_limits": false,
+            "name": "SimulateCrash",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "1.0000",
+            "has_limits": true,
+            "name": "StripeWidth",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Float",
+            "technical_range": {
+              "lower": 0.0,
+              "source": "driver_reported",
+              "upper": 10.0
+            }
+          },
+          {
+            "allowed_values": [],
+            "current_value": "0.0000",
+            "has_limits": true,
+            "name": "TestProperty1",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Float",
+            "technical_range": {
+              "lower": -0.1,
+              "source": "driver_reported",
+              "upper": 0.1
+            }
+          },
+          {
+            "allowed_values": [],
+            "current_value": "0.0000",
+            "has_limits": true,
+            "name": "TestProperty2",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Float",
+            "technical_range": {
+              "lower": -200.0,
+              "source": "driver_reported",
+              "upper": 200.0
+            }
+          },
+          {
+            "allowed_values": [],
+            "current_value": "0.0000",
+            "has_limits": true,
+            "name": "TestProperty3",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Float",
+            "technical_range": {
+              "lower": 0.0,
+              "source": "driver_reported",
+              "upper": 0.003
+            }
+          },
+          {
+            "allowed_values": [],
+            "current_value": "0.0000",
+            "has_limits": true,
+            "name": "TestProperty4",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Float",
+            "technical_range": {
+              "lower": -40000.0,
+              "source": "driver_reported",
+              "upper": 40000.0
+            }
+          },
+          {
+            "allowed_values": [],
+            "current_value": "0.0000",
+            "has_limits": false,
+            "name": "TestProperty5",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Float"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "0.0000",
+            "has_limits": true,
+            "name": "TestProperty6",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Float",
+            "technical_range": {
+              "lower": 0.0,
+              "source": "driver_reported",
+              "upper": 6000000.0
+            }
+          },
+          {
+            "allowed_values": [
+              "0",
+              "1"
+            ],
+            "current_value": "0",
+            "has_limits": false,
+            "name": "TransposeCorrection",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Integer"
+          },
+          {
+            "allowed_values": [
+              "0",
+              "1"
+            ],
+            "current_value": "0",
+            "has_limits": false,
+            "name": "TransposeMirrorX",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Integer"
+          },
+          {
+            "allowed_values": [
+              "0",
+              "1"
+            ],
+            "current_value": "0",
+            "has_limits": false,
+            "name": "TransposeMirrorY",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Integer"
+          },
+          {
+            "allowed_values": [
+              "0",
+              "1"
+            ],
+            "current_value": "0",
+            "has_limits": false,
+            "name": "TransposeXY",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Integer"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "",
+            "has_limits": false,
+            "name": "TriggerDevice",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [
+              "No",
+              "Yes"
+            ],
+            "current_value": "No",
+            "has_limits": false,
+            "name": "UseExposureSequences",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "String"
+          }
+        ],
+        "state_labels": []
+      },
+      {
+        "adapter": {
+          "description": "Core device",
+          "library": "",
+          "name": "Core"
+        },
+        "device_type": "CoreDevice",
+        "label": "Core",
+        "properties": [
+          {
+            "allowed_values": [
+              "",
+              "Autofocus"
+            ],
+            "current_value": "Autofocus",
+            "has_limits": false,
+            "name": "AutoFocus",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [
+              "0",
+              "1"
+            ],
+            "current_value": "1",
+            "has_limits": false,
+            "name": "AutoShutter",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Integer"
+          },
+          {
+            "allowed_values": [
+              "",
+              "Camera"
+            ],
+            "current_value": "Camera",
+            "has_limits": false,
+            "name": "Camera",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [
+              "",
+              "Camera",
+              "Channel",
+              "Channel-Multiband",
+              "LightPath",
+              "Objective",
+              "System"
+            ],
+            "current_value": "",
+            "has_limits": false,
+            "name": "ChannelGroup",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [
+              "",
+              "Z"
+            ],
+            "current_value": "Z",
+            "has_limits": false,
+            "name": "Focus",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [
+              ""
+            ],
+            "current_value": "",
+            "has_limits": false,
+            "name": "Galvo",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [
+              ""
+            ],
+            "current_value": "",
+            "has_limits": false,
+            "name": "ImageProcessor",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [
+              "0",
+              "1"
+            ],
+            "current_value": "1",
+            "has_limits": false,
+            "name": "Initialize",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Integer"
+          },
+          {
+            "allowed_values": [
+              ""
+            ],
+            "current_value": "",
+            "has_limits": false,
+            "name": "SLM",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [
+              "",
+              "LED Shutter",
+              "White Light Shutter"
+            ],
+            "current_value": "White Light Shutter",
+            "has_limits": false,
+            "name": "Shutter",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "5000",
+            "has_limits": false,
+            "name": "TimeoutMs",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Integer"
+          },
+          {
+            "allowed_values": [
+              "",
+              "XY"
+            ],
+            "current_value": "XY",
+            "has_limits": false,
+            "name": "XYStage",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "String"
+          }
+        ],
+        "state_labels": []
+      },
+      {
+        "adapter": {
+          "description": "DHub",
+          "library": "DemoCamera",
+          "name": "DHub"
+        },
+        "device_type": "HubDevice",
+        "label": "DHub",
+        "properties": [],
+        "state_labels": []
+      },
+      {
+        "adapter": {
+          "description": "Demo filter wheel",
+          "library": "DemoCamera",
+          "name": "DWheel"
+        },
+        "device_type": "StateDevice",
+        "label": "Dichroic",
+        "properties": [
+          {
+            "allowed_values": [
+              "0",
+              "1",
+              "2",
+              "3",
+              "4",
+              "5",
+              "6",
+              "7",
+              "8",
+              "9"
+            ],
+            "current_value": "0",
+            "has_limits": false,
+            "name": "ClosedPosition",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Integer"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "Demo filter wheel driver",
+            "has_limits": false,
+            "name": "Description",
+            "pre_init": false,
+            "read_only": true,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "",
+            "has_limits": false,
+            "name": "HubID",
+            "pre_init": false,
+            "read_only": true,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [
+              "400DCLP",
+              "89402bs",
+              "Q505LP",
+              "Q585LP",
+              "State-4",
+              "State-5",
+              "State-6",
+              "State-7",
+              "State-8",
+              "State-9"
+            ],
+            "current_value": "400DCLP",
+            "has_limits": false,
+            "name": "Label",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "DWheel",
+            "has_limits": false,
+            "name": "Name",
+            "pre_init": false,
+            "read_only": true,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "0",
+            "has_limits": false,
+            "name": "State",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Integer"
+          }
+        ],
+        "state_labels": [
+          "400DCLP",
+          "89402bs",
+          "Q505LP",
+          "Q585LP",
+          "State-4",
+          "State-5",
+          "State-6",
+          "State-7",
+          "State-8",
+          "State-9"
+        ]
+      },
+      {
+        "adapter": {
+          "description": "Demo filter wheel",
+          "library": "DemoCamera",
+          "name": "DWheel"
+        },
+        "device_type": "StateDevice",
+        "label": "Emission",
+        "properties": [
+          {
+            "allowed_values": [
+              "0",
+              "1",
+              "2",
+              "3",
+              "4",
+              "5",
+              "6",
+              "7",
+              "8",
+              "9"
+            ],
+            "current_value": "0",
+            "has_limits": false,
+            "name": "ClosedPosition",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Integer"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "Demo filter wheel driver",
+            "has_limits": false,
+            "name": "Description",
+            "pre_init": false,
+            "read_only": true,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "",
+            "has_limits": false,
+            "name": "HubID",
+            "pre_init": false,
+            "read_only": true,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [
+              "89402m",
+              "Chroma-D460",
+              "Chroma-HQ535",
+              "Chroma-HQ620",
+              "Chroma-HQ700",
+              "State-5",
+              "State-6",
+              "State-7",
+              "State-8",
+              "State-9"
+            ],
+            "current_value": "Chroma-HQ620",
+            "has_limits": false,
+            "name": "Label",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "DWheel",
+            "has_limits": false,
+            "name": "Name",
+            "pre_init": false,
+            "read_only": true,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "0",
+            "has_limits": false,
+            "name": "State",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Integer"
+          }
+        ],
+        "state_labels": [
+          "89402m",
+          "Chroma-D460",
+          "Chroma-HQ535",
+          "Chroma-HQ620",
+          "Chroma-HQ700",
+          "State-5",
+          "State-6",
+          "State-7",
+          "State-8",
+          "State-9"
+        ]
+      },
+      {
+        "adapter": {
+          "description": "Demo filter wheel",
+          "library": "DemoCamera",
+          "name": "DWheel"
+        },
+        "device_type": "StateDevice",
+        "label": "Excitation",
+        "properties": [
+          {
+            "allowed_values": [
+              "0",
+              "1",
+              "2",
+              "3",
+              "4",
+              "5",
+              "6",
+              "7",
+              "8",
+              "9"
+            ],
+            "current_value": "0",
+            "has_limits": false,
+            "name": "ClosedPosition",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Integer"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "Demo filter wheel driver",
+            "has_limits": false,
+            "name": "Description",
+            "pre_init": false,
+            "read_only": true,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "",
+            "has_limits": false,
+            "name": "HubID",
+            "pre_init": false,
+            "read_only": true,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [
+              "Chroma-D360",
+              "Chroma-HQ480",
+              "Chroma-HQ570",
+              "Chroma-HQ620",
+              "Empty",
+              "State-4",
+              "State-5",
+              "State-6",
+              "State-7",
+              "State-8"
+            ],
+            "current_value": "Chroma-D360",
+            "has_limits": false,
+            "name": "Label",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "DWheel",
+            "has_limits": false,
+            "name": "Name",
+            "pre_init": false,
+            "read_only": true,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "0",
+            "has_limits": false,
+            "name": "State",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Integer"
+          }
+        ],
+        "state_labels": [
+          "Chroma-D360",
+          "Chroma-HQ480",
+          "Chroma-HQ570",
+          "Chroma-HQ620",
+          "Empty",
+          "State-4",
+          "State-5",
+          "State-6",
+          "State-7",
+          "State-8"
+        ]
+      },
+      {
+        "adapter": {
+          "description": "Demo State Device",
+          "library": "DemoCamera",
+          "name": "DStateDevice"
+        },
+        "device_type": "StateDevice",
+        "label": "LED",
+        "properties": [
+          {
+            "allowed_values": [
+              "0",
+              "1",
+              "2",
+              "3",
+              "4",
+              "5",
+              "6",
+              "7",
+              "8",
+              "9"
+            ],
+            "current_value": "0",
+            "has_limits": false,
+            "name": "ClosedPosition",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Integer"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "Demo state device driver",
+            "has_limits": false,
+            "name": "Description",
+            "pre_init": false,
+            "read_only": true,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "",
+            "has_limits": false,
+            "name": "HubID",
+            "pre_init": false,
+            "read_only": true,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [
+              "385nm",
+              "470nm",
+              "550nm",
+              "635nm",
+              "Closed",
+              "State-5",
+              "State-6",
+              "State-7",
+              "State-8",
+              "State-9"
+            ],
+            "current_value": "Closed",
+            "has_limits": false,
+            "name": "Label",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "DStateDevice",
+            "has_limits": false,
+            "name": "Name",
+            "pre_init": false,
+            "read_only": true,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "10",
+            "has_limits": false,
+            "name": "Number of positions",
+            "pre_init": true,
+            "read_only": false,
+            "reported_type": "Integer"
+          },
+          {
+            "allowed_values": [
+              "Off",
+              "On"
+            ],
+            "current_value": "Off",
+            "has_limits": false,
+            "name": "Sequence",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "0",
+            "has_limits": false,
+            "name": "State",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Integer"
+          }
+        ],
+        "state_labels": [
+          "385nm",
+          "470nm",
+          "550nm",
+          "635nm",
+          "Closed",
+          "State-5",
+          "State-6",
+          "State-7",
+          "State-8",
+          "State-9"
+        ]
+      },
+      {
+        "adapter": {
+          "description": "State device used as a shutter",
+          "library": "Utilities",
+          "name": "State Device Shutter"
+        },
+        "device_type": "ShutterDevice",
+        "label": "LED Shutter",
+        "properties": [
+          {
+            "allowed_values": [],
+            "current_value": "State device that is used as a shutter",
+            "has_limits": false,
+            "name": "Description",
+            "pre_init": false,
+            "read_only": true,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "State Device Shutter",
+            "has_limits": false,
+            "name": "Name",
+            "pre_init": false,
+            "read_only": true,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [
+              "Dichroic",
+              "Emission",
+              "Excitation",
+              "LED",
+              "None",
+              "Objective",
+              "Path"
+            ],
+            "current_value": "LED",
+            "has_limits": false,
+            "name": "State Device",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "String"
+          }
+        ],
+        "state_labels": []
+      },
+      {
+        "adapter": {
+          "description": "Demo objective turret",
+          "library": "DemoCamera",
+          "name": "DObjective"
+        },
+        "device_type": "StateDevice",
+        "label": "Objective",
+        "properties": [
+          {
+            "allowed_values": [],
+            "current_value": "Demo objective turret driver",
+            "has_limits": false,
+            "name": "Description",
+            "pre_init": false,
+            "read_only": true,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "",
+            "has_limits": false,
+            "name": "HubID",
+            "pre_init": false,
+            "read_only": true,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [
+              "Nikon 10X S Fluor",
+              "Nikon 20X Plan Fluor ELWD",
+              "Nikon 40X Plan Fluor ELWD",
+              "Objective-2",
+              "Objective-4",
+              "Objective-5"
+            ],
+            "current_value": "Nikon 10X S Fluor",
+            "has_limits": false,
+            "name": "Label",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "DObjective",
+            "has_limits": false,
+            "name": "Name",
+            "pre_init": false,
+            "read_only": true,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "1",
+            "has_limits": false,
+            "name": "State",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Integer"
+          },
+          {
+            "allowed_values": [
+              "+",
+              "-"
+            ],
+            "current_value": "-",
+            "has_limits": false,
+            "name": "Trigger",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "String"
+          }
+        ],
+        "state_labels": [
+          "Nikon 10X S Fluor",
+          "Nikon 20X Plan Fluor ELWD",
+          "Nikon 40X Plan Fluor ELWD",
+          "Objective-2",
+          "Objective-4",
+          "Objective-5"
+        ]
+      },
+      {
+        "adapter": {
+          "description": "Demo light path",
+          "library": "DemoCamera",
+          "name": "DLightPath"
+        },
+        "device_type": "StateDevice",
+        "label": "Path",
+        "properties": [
+          {
+            "allowed_values": [],
+            "current_value": "Demo light-path driver",
+            "has_limits": false,
+            "name": "Description",
+            "pre_init": false,
+            "read_only": true,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "",
+            "has_limits": false,
+            "name": "HubID",
+            "pre_init": false,
+            "read_only": true,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [
+              "State-0",
+              "State-1",
+              "State-2"
+            ],
+            "current_value": "State-0",
+            "has_limits": false,
+            "name": "Label",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "DLightPath",
+            "has_limits": false,
+            "name": "Name",
+            "pre_init": false,
+            "read_only": true,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "0",
+            "has_limits": false,
+            "name": "State",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Integer"
+          }
+        ],
+        "state_labels": [
+          "State-0",
+          "State-1",
+          "State-2"
+        ]
+      },
+      {
+        "adapter": {
+          "description": "Demo shutter",
+          "library": "DemoCamera",
+          "name": "DShutter"
+        },
+        "device_type": "ShutterDevice",
+        "label": "White Light Shutter",
+        "properties": [
+          {
+            "allowed_values": [],
+            "current_value": "Demo shutter driver",
+            "has_limits": false,
+            "name": "Description",
+            "pre_init": false,
+            "read_only": true,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "",
+            "has_limits": false,
+            "name": "HubID",
+            "pre_init": false,
+            "read_only": true,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "DShutter",
+            "has_limits": false,
+            "name": "Name",
+            "pre_init": false,
+            "read_only": true,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [
+              "0",
+              "1"
+            ],
+            "current_value": "0",
+            "has_limits": false,
+            "name": "State",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Integer"
+          }
+        ],
+        "state_labels": []
+      },
+      {
+        "adapter": {
+          "description": "Demo XY stage",
+          "library": "DemoCamera",
+          "name": "DXYStage"
+        },
+        "device_type": "XYStageDevice",
+        "label": "XY",
+        "properties": [
+          {
+            "allowed_values": [],
+            "current_value": "Demo XY stage driver",
+            "has_limits": false,
+            "name": "Description",
+            "pre_init": false,
+            "read_only": true,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "",
+            "has_limits": false,
+            "name": "HubID",
+            "pre_init": false,
+            "read_only": true,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "DXYStage",
+            "has_limits": false,
+            "name": "Name",
+            "pre_init": false,
+            "read_only": true,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [
+              "0",
+              "1"
+            ],
+            "current_value": "0",
+            "has_limits": false,
+            "name": "TransposeMirrorX",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Integer"
+          },
+          {
+            "allowed_values": [
+              "0",
+              "1"
+            ],
+            "current_value": "0",
+            "has_limits": false,
+            "name": "TransposeMirrorY",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Integer"
+          },
+          {
+            "allowed_values": [
+              "No",
+              "Yes"
+            ],
+            "current_value": "Yes",
+            "has_limits": false,
+            "name": "UsesCallbacks",
+            "pre_init": true,
+            "read_only": false,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "10.0000",
+            "has_limits": false,
+            "name": "Velocity",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Float"
+          }
+        ],
+        "state_labels": []
+      },
+      {
+        "adapter": {
+          "description": "Demo stage",
+          "library": "DemoCamera",
+          "name": "DStage"
+        },
+        "device_type": "StageDevice",
+        "label": "Z",
+        "properties": [
+          {
+            "allowed_values": [],
+            "current_value": "Demo stage driver",
+            "has_limits": false,
+            "name": "Description",
+            "pre_init": false,
+            "read_only": true,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "",
+            "has_limits": false,
+            "name": "HubID",
+            "pre_init": false,
+            "read_only": true,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "DStage",
+            "has_limits": false,
+            "name": "Name",
+            "pre_init": false,
+            "read_only": true,
+            "reported_type": "String"
+          },
+          {
+            "allowed_values": [],
+            "current_value": "0.0000",
+            "has_limits": false,
+            "name": "Position",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "Float"
+          },
+          {
+            "allowed_values": [
+              "No",
+              "Yes"
+            ],
+            "current_value": "No",
+            "has_limits": false,
+            "name": "UseSequences",
+            "pre_init": false,
+            "read_only": false,
+            "reported_type": "String"
+          }
+        ],
+        "state_labels": []
+      }
+    ],
+    "enumeration_failures": []
+  },
+  "heuristic_candidates": {
+    "illumination_enable_properties": [
+      {
+        "channel_description": null,
+        "device": "Core",
+        "device_type": "CoreDevice",
+        "path": "Core.AutoShutter",
+        "property": "AutoShutter"
+      },
+      {
+        "channel_description": null,
+        "device": "White Light Shutter",
+        "device_type": "ShutterDevice",
+        "path": "White Light Shutter.State",
+        "property": "State"
+      }
+    ],
+    "illumination_power_enable_groups": [
+      {
+        "device": "Core",
+        "enable_paths": [
+          "Core.AutoShutter"
+        ],
+        "power_paths": [],
+        "reviewer_instruction": "Determine which, if any, enable property gates each power property; no relationship is inferred here."
+      },
+      {
+        "device": "White Light Shutter",
+        "enable_paths": [
+          "White Light Shutter.State"
+        ],
+        "power_paths": [],
+        "reviewer_instruction": "Determine which, if any, enable property gates each power property; no relationship is inferred here."
+      }
+    ],
+    "possible_duplicate_power_representations": [],
+    "properties_with_unknown_writability": [],
+    "suspected_continuous_actuators": [],
+    "unclassified_writable_properties": [
+      "Camera.AllowMultiROI",
+      "Camera.AsyncPropertyDelayMS",
+      "Camera.AsyncPropertyLeader",
+      "Camera.BeadBlurRate",
+      "Camera.BeadBrightness",
+      "Camera.BeadDensity",
+      "Camera.BeadSize",
+      "Camera.Binning",
+      "Camera.BitDepth",
+      "Camera.CCDTemperature",
+      "Camera.DisplayImageNumber",
+      "Camera.DropPixels",
+      "Camera.Exposure",
+      "Camera.FastImage",
+      "Camera.FractionOfPixelsToDropOrSaturate",
+      "Camera.Gain",
+      "Camera.Mode",
+      "Camera.MultiROIFillValue",
+      "Camera.Offset",
+      "Camera.OnCameraCCDXSize",
+      "Camera.OnCameraCCDYSize",
+      "Camera.Photon Conversion Factor",
+      "Camera.Photon Flux",
+      "Camera.PixelType",
+      "Camera.ReadNoise (electrons)",
+      "Camera.ReadoutTime",
+      "Camera.RotateImages",
+      "Camera.SaturatePixels",
+      "Camera.ScanMode",
+      "Camera.SimulateCrash",
+      "Camera.StripeWidth",
+      "Camera.TestProperty1",
+      "Camera.TestProperty2",
+      "Camera.TestProperty3",
+      "Camera.TestProperty4",
+      "Camera.TestProperty5",
+      "Camera.TestProperty6",
+      "Camera.TransposeCorrection",
+      "Camera.TransposeMirrorX",
+      "Camera.TransposeMirrorY",
+      "Camera.TransposeXY",
+      "Camera.TriggerDevice",
+      "Camera.UseExposureSequences",
+      "Core.AutoFocus",
+      "Core.AutoShutter",
+      "Core.Camera",
+      "Core.ChannelGroup",
+      "Core.Focus",
+      "Core.Galvo",
+      "Core.ImageProcessor",
+      "Core.Initialize",
+      "Core.SLM",
+      "Core.Shutter",
+      "Core.TimeoutMs",
+      "Core.XYStage",
+      "Dichroic.ClosedPosition",
+      "Dichroic.Label",
+      "Dichroic.State",
+      "Emission.ClosedPosition",
+      "Emission.Label",
+      "Emission.State",
+      "Excitation.ClosedPosition",
+      "Excitation.Label",
+      "Excitation.State",
+      "LED Shutter.State Device",
+      "LED.ClosedPosition",
+      "LED.Label",
+      "LED.Sequence",
+      "LED.State",
+      "Objective.Label",
+      "Objective.State",
+      "Objective.Trigger",
+      "Path.Label",
+      "Path.State",
+      "White Light Shutter.State",
+      "XY.TransposeMirrorX",
+      "XY.TransposeMirrorY",
+      "XY.Velocity",
+      "Z.Position",
+      "Z.UseSequences"
+    ]
+  },
+  "human_decisions": {
+    "comparison": null,
+    "source": null
+  },
+  "live_inventory_fingerprint": {
+    "algorithm": "sha256",
+    "value": "43e3a1876b5591ee41aa8a166f800079d891933d2a68ff5e654f5a71012e8782"
+  },
+  "mm_config": {
+    "path": "C:\\Program Files\\Micro-Manager-2.0\\MMConfig_demo.cfg",
+    "sha256": "67b4587c3b69c7480ffbd3209f9123b12a0c6d4003a59099523b9c53b36d8c11"
+  },
+  "schema": "microclaw.rig-inventory/v2"
+}

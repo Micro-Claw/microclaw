@@ -1,0 +1,573 @@
+# design/35 Block 4 — first-launch setup rig gate
+
+**This is gate round 5**, after the 2026-08-01 M5 G4 run. Implementation
+commits `cc34ab5` (round-4 hazard proposals: ON/OFF from a two-point technical
+range, `full_scale` defaulted from the driver range, a non-illumination exit in
+the candidate menu, a narrow emission/enable default, percent-versus-native from
+the unit suffix) and `b67fd08` (StateDevice positions classified from their state labels so
+filter wheels move; Core device-assignment properties never writable; a
+StateDevice position no longer surfaced as an emission candidate).
+Every earlier round's commit is an ancestor of both. The branch is
+pushed at `origin/design33/first-launch-setup`; **do not merge until this gate
+passes and the coordinator reviews the evidence.** Do not open a PR.
+
+What the earlier rounds established, so this run knows what is already settled:
+round 1 failed on the demo machine (empty `Start-Transcript` evidence, ~90
+questions with no defaults, and a profile that would not start). Round 2 passed
+the demo machine's mechanical gates. Round 3 passed G1–G3 on the demo machine at
+`0ab9055` and added derived defaults plus stored-key resolution in the terminal
+REPL. G4 then ran on M5 against that same round-3 code (`27211c1`): it completed
+and produced a profile the validator accepted, but exposed that the proposal
+machinery read the wrong evidence field, so 83 of M5's 112 questions still needed
+a typed answer. The round-4 commits above cut that to roughly a quarter.
+
+Round 4's own M5 run (`block4-m5-20260801-173136`) then passed the gate but
+produced a profile that **refused to move either filter wheel**: Micro-Manager
+publishes `allowed_values` for a StateDevice's `Label` and never for its `State`,
+so setup's generic rule excluded every wheel, turret and slider position. The
+domain was in the inventory all along as the device's state labels. `5c82d1e`
+reads them. The deployed-vs-generated diff had already recorded this and it was
+not read closely enough — **open `g4-vs-deployed.diff` before declaring G4 done.**
+
+**G6 is not repeated.** `authorization.py` has been byte-identical since round 2,
+so the demotion evidence from `block4-demo-20260801-144809` still stands.
+
+**This round needs a fresh enumeration on M5. Do not reuse a captured
+`inventory.json` via `--inventory`.** One of the round-5 fixes is in the
+*producer*: `_is_enable` no longer surfaces a StateDevice's `State` as an
+emission candidate. A captured inventory already contains the old candidate list,
+so replaying it reproduces the old interview — measured, on the round-4 bundle:
+replayed, `Thorlabs ELL6.State` is still asked and lands in
+`illumination.shutters`; freshly enumerated, it is not asked at all and lands in
+`categorical_properties`. Reuse remains correct for G2, which is testing refusal
+rather than classification.
+
+**G1–G3 are not repeated on the demo machine this round.** The changes since
+round 3 are classification-only and were measured offline against the captured
+demo inventory: 22 prompts, 12 of them typed, 38 categorical and 38 excluded,
+with no `Core.*` property categorical. The demo rig exercises no hazard these
+changes touch. If a demo pass is wanted for the record, it is G1 only.
+
+This gate is unusual in that **the connection itself is the thing under test.**
+`microclaw first-launch-setup` contacts hardware before any safety config
+exists to gate it. On a rig whose emission path is undeclared, enumeration may
+initialize and emit. G1–G3 run on the demo core, where that risk is nil. G4 runs
+on M5, where it is not: a qualified M5 operator must be present, the rig's
+normal optical containment and emergency-stop procedure must be established
+first, and the run must be treated as potentially emissive from the moment the
+acknowledgement is typed. Stop immediately on anything unexpected and put the
+rig in its operator-approved safe state.
+
+The generated profile is **never** written over the deployed M5 config. Every
+`--out` in this document points inside the evidence directory. `--force` is
+never used on the deployed path.
+
+Commands are PowerShell-safe and run from the repository root. The global
+`--port` and `--safety-config` options come **before** the subcommand. Keep
+commands and output in one dated evidence directory. Do not use PowerShell
+`Start-Transcript` for child processes: Windows PowerShell 5.1 records its own
+output stream, not a child's console writes, and produced empty evidence in
+round 1. Non-interactive commands use `> file.txt 2>&1`. Interactive setup must
+remain attached to the console so prompts are visible; Microclaw itself writes
+and flushes a timestamped `first-launch-transcript-*.txt` under each
+`--evidence-out` directory. Timestamping is deliberate: a later refused or
+aborted attempt must never truncate evidence from an earlier run.
+That application-owned file, not selected/copy-pasted terminal text, is the
+evidence of prompts, answers, refusals, deferrals, and final outcome.
+
+## What this gate settles
+
+1. A complete setup pass on a real Micro-Manager produces a profile that block
+   3's offline validator accepts, and that starts a session once a human sets
+   `reviewed: true`.
+2. **An unresolved choice cannot be silently accepted by a human at the
+   keyboard.** This is the item Phase 3's gate never established, and it is the
+   reason automated input fixtures do not discharge it.
+3. The hardware-contact acknowledgement exits before connecting when it is not
+   given exactly.
+4. On a real rig with real hazards, setup produces a profile whose differences
+   from the deployed M5 config are enumerable and explainable.
+5. Refusals leave no file at `--out`, and unenumerable classification
+   coordinates stop generation entirely.
+
+## What this gate does not settle
+
+It does not prove heuristic discovery found every physical emission path — the
+setup text says so itself, and the operator classification step exists because
+of it. It does not close the pre-validation enumeration window; it documents
+it. It does not exercise continuous focus, which Block 4 hard-excludes.
+
+## Which machine runs what, and what already exists on it
+
+G1–G3 run on the **demo machine**. G4 runs on **M5**. They are different
+machines, so G0 runs once on each, into its own evidence directory, and the two
+bundles come back separately.
+
+**There is no pre-existing safety config on the demo machine, and none is
+needed.** That is the point of the block: `microclaw first-launch-setup` runs
+before any config exists — `main()` dispatches it without loading one — and G1
+generates the machine's first profile. Nothing in G1–G3 reads a deployed config,
+and `$Deployed` below does not exist there. If the demo machine happens to have
+an old hand-authored config lying around, ignore it; do not use it as a
+reference and do not let setup overwrite it (`--out` always points inside the
+evidence directory).
+
+**M5 is different: it already runs under a reviewed config.** That file is
+`$Deployed`, and it is read read-only; nothing in this gate writes to it.
+
+**Its provenance is disputed, and that limits what the comparison proves.**
+Earlier versions of this runbook called it hand-authored from
+`safety_config.example.yaml` and argued the comparison was strong "precisely
+because the two were produced by different means". The operator states it was
+generated by an earlier version of Microclaw. If that is right, agreement
+between the two files is not corroboration — it can just be two runs of related
+code making the same choice — and the "different means" argument is void.
+
+So treat the comparison as a **difference-finder, not an oracle.** A difference
+is a prompt to ask which side is correct on the merits; neither side wins by
+being the deployed one. This is not a weakening of the step: the Core
+device-assignment finding it produced on 2026-08-01 stands entirely on its own
+argument — writing `Core.Focus` re-aims reviewed stage bounds at a different
+device — and would be a defect even with no deployed config to compare against.
+
+Do not substitute `safety_config.example.yaml` if `$Deployed` cannot be found;
+comparing against fiction proves nothing. Say so and carry on with the rest.
+
+## G0 — setup and identity (run on each machine)
+
+Replace every angle-bracket value before running anything. This runbook is on
+the implementation branch, so the checkout below leaves it in the working tree
+and it stays readable for the whole gate. What pins the implementation is the
+`--is-ancestor` check, not a branch tip hash, so amending this document does not
+invalidate the check inside it.
+
+```powershell
+$Repo         = "<absolute repo path>"
+$Port         = 4827
+$Stamp        = Get-Date -Format "yyyyMMdd-HHmmss"
+$EvidenceRoot = "<absolute evidence parent OUTSIDE the repo>"
+$Machine      = "<demo or m5>"
+$Evidence     = Join-Path $EvidenceRoot "block4-$Machine-$Stamp"
+
+Set-Location $Repo
+New-Item -ItemType Directory -Path $Evidence | Out-Null
+git fetch origin design33/first-launch-setup > "$Evidence\git-fetch.txt" 2>&1
+git switch design33/first-launch-setup > "$Evidence\git-switch.txt" 2>&1
+git pull --ff-only > "$Evidence\git-pull.txt" 2>&1
+git rev-parse HEAD > "$Evidence\head.txt" 2>&1
+git merge-base --is-ancestor cc34ab5 HEAD
+$LASTEXITCODE > "$Evidence\contains-round4-proposals.txt"
+git merge-base --is-ancestor b67fd08 HEAD
+$LASTEXITCODE > "$Evidence\contains-round4-fixes.txt"
+git status --short > "$Evidence\status.txt" 2>&1
+python -V > "$Evidence\python.txt" 2>&1
+pip install -e . > "$Evidence\pip-install.txt" 2>&1
+Copy-Item "design\35-block4-gate-prompts.md" (Join-Path $Evidence "runbook.md")
+```
+
+A normal branch checkout, not a detached HEAD: you stay on
+`design33/first-launch-setup` for the whole gate, and this runbook is at
+`design\35-block4-gate-prompts.md` in front of you. The `runbook.md` copy is for
+the evidence archive, so the returned bundle records which revision was run.
+
+`contains-round4-proposals.txt` and `contains-round4-fixes.txt` must **both** read
+`0`. If either reads `1` you are on pre-round-4 code — the interview will still
+ask you to type ON/OFF values and laser full scales that Micro-Manager reports,
+and the profile it writes will not be able to move a filter wheel by `State`;
+re-pull before going further. Reinstalling here is correct —
+this is a dedicated rig machine, not a shared worktree.
+
+## G1 — demo core, complete pass
+
+Load `MMConfig_demo.cfg` in Micro-Manager and start its ZMQ server. Nothing else
+should be running against the rig.
+
+```powershell
+$DemoOut = Join-Path $Evidence "demo-profile.yaml"
+$DemoCfg = "<absolute MMConfig_demo.cfg path>"
+microclaw --port $Port first-launch-setup --out $DemoOut --mm-config $DemoCfg --evidence-out (Join-Path $Evidence "demo-inventory")
+```
+
+Collect the single `$Evidence\demo-inventory\first-launch-transcript-*.txt`. It must contain
+the identity header, inventory path/hash, and complete interview.
+
+Answer every question honestly for the demo config. Where the demo hardware has
+no real hazard, still enter values you would defend — this run is also a
+usability observation, so note anywhere the question was unclear.
+
+Record:
+
+- Whether the contact warning appeared **before** the acknowledgement prompt and
+  before any connection message.
+- Every question asked, in order, and whether any of them offered a default.
+- The disconnect message, and that it appeared before the first interview
+  question.
+- The generated `demo-profile.yaml` in full.
+- For one numeric ON/OFF candidate, press Enter for one proposed value and type
+  an override for the other. Confirm the transcript contains `PROPOSAL
+  ACCEPTED` and `OPERATOR OVERRIDE` audit lines with the candidate and value.
+- Capture the offered exposure, illuminated-time, and full-day session-brake
+  defaults. Confirm the raw-byte arithmetic is printed and no raw-byte
+  confirmation-threshold question appears.
+
+Then the validator and the review/restart cycle:
+
+```powershell
+microclaw check-config $DemoOut > "$Evidence\g1-check-config-unreviewed.txt" 2>&1
+$LASTEXITCODE >> "$Evidence\g1-check-config-unreviewed.txt"
+```
+
+This must report `REVIEW REQUIRED` and exit non-zero — the generated file is
+unreviewed by construction. Now read every line of the profile, edit
+`reviewed: false` to `reviewed: true` **by hand**, and re-check:
+
+```powershell
+Copy-Item $DemoOut (Join-Path $Evidence "demo-profile.reviewed.yaml")
+# edit reviewed: true in demo-profile.reviewed.yaml, then:
+microclaw check-config (Join-Path $Evidence "demo-profile.reviewed.yaml") > "$Evidence\g1-check-config-reviewed.txt" 2>&1
+$LASTEXITCODE >> "$Evidence\g1-check-config-reviewed.txt"
+```
+
+Expected: offline checks pass, exit `0`. Then start a normal session under it:
+
+```powershell
+microclaw --port $Port --safety-config (Join-Path $Evidence "demo-profile.reviewed.yaml") serve
+```
+
+The session must reach its prompt. Ask it one read-only question, then exit.
+Keep this successful interactive session attached to the console. If it instead
+dies during config validation, rerun it non-interactively to capture the error:
+
+```powershell
+microclaw --port $Port --safety-config (Join-Path $Evidence "demo-profile.reviewed.yaml") > "$Evidence\g1-session-start-error.txt" 2>&1
+```
+
+This captures the failure without hiding a prompt that needs an answer.
+**If live startup refuses a config that `check-config` passed, that is a
+finding and the gate stops** — that mismatch is exactly what block 3 exists to
+prevent.
+
+Now prove the terminal REPL uses the same stored key as `serve`. In the browser,
+store the Anthropic key, stop `serve`, remove `ANTHROPIC_API_KEY` from this
+PowerShell process if it is set, and run the command without `serve`:
+
+```powershell
+Remove-Item Env:ANTHROPIC_API_KEY -ErrorAction SilentlyContinue
+microclaw --port $Port --safety-config (Join-Path $Evidence "demo-profile.reviewed.yaml")
+```
+
+Before the REPL prompt, it must print one provenance line such as `Anthropic API
+key: …xxxx (from keyring)` (or `from file` on a machine without a usable
+keyring). Ask one read-only question, then exit. A missing-key run must instead
+stop before the REPL and plainly name the environment variable, system keyring,
+and Microclaw credential file as the three locations checked.
+
+## G2 — the unresolved choice cannot be silently accepted
+
+**A human types every input in this step.** Do not pipe a file, do not use a
+here-string, and do not script the answers. The evidence is Microclaw's flushed
+interview transcript.
+
+```powershell
+microclaw --port $Port first-launch-setup --out (Join-Path $Evidence "g2-should-not-exist.yaml") --inventory (Join-Path $Evidence "demo-inventory\inventory.json") --evidence-out (Join-Path $Evidence "g2-evidence")
+```
+
+Using `--inventory` here is deliberate: it replays the demo inventory with no
+connection, so the refusal behaviour can be probed repeatedly without touching
+hardware.
+
+At the proposal, first verify that pressing Enter accepts the visibly shown
+bulk default and that the next prompt lets you revisit an ordinary entry by its
+exact displayed name. At a revisited property, verify that Enter accepts its
+displayed classification and, for a numeric property, its displayed technical
+bounds.
+
+Then, at the first **hazard decision with no default**, attempt each of these in
+turn and record the exact response to each:
+
+1. Press Enter with nothing typed.
+2. Type a single space.
+3. Type a token that is not on the offered list (e.g. `yes`).
+4. Type an uppercase or mixed-case form of a valid choice.
+
+At the first required **number with no MM-derived default** (an acquisition
+budget), attempt each and record the response:
+
+5. Press Enter with nothing typed.
+6. Type `0`.
+7. Type `-1`.
+8. Type `abc`.
+9. Type `inf`.
+
+At a bounds pair, enter a minimum **greater than** the maximum and record the
+response.
+
+Also capture the round-4 proposal paths, accepting once with Enter and then
+re-running to type a different valid value. For ON/OFF and full-scale values,
+the transcript must say `PROPOSAL ACCEPTED` on the first run and
+`OPERATOR OVERRIDE` on the second:
+
+- an integer 0–1 enable property proposes ON `1` and OFF `0` (not `1.0`/`0.0`);
+- a native power property with an MM range proposes the upper bound as
+  `full_scale`; verify the prompt explains that it is the native value at 100%
+  output, not a minimum, and still refuses zero and negatives;
+- `(%)` proposes percent and another parsed unit such as `(mW)` proposes native;
+- a binary `laser`/`power`/`emission`/`enable` property proposes
+  emission/enable, while a continuous power property and `Thorlabs ELL6.State`
+  do not.
+
+Then abandon the interview with Ctrl-C, and record both the refusal text and
+that no file exists at `--out`:
+
+```powershell
+Test-Path (Join-Path $Evidence "g2-should-not-exist.yaml") > "$Evidence\g2-output-exists.txt" 2>&1
+```
+
+`Test-Path` must print `False`. Every attempt above must be refused in Phase 5's
+own wording and must re-ask; **none may be accepted, and none may fall through
+to a default where none is displayed. Collect
+`$Evidence\g2-evidence\first-launch-transcript-*.txt`; it must remain readable
+after Ctrl-C and contain every attempted answer and re-prompt.
+
+## G3 — the acknowledgement gate exits before connecting
+
+```powershell
+microclaw --port $Port first-launch-setup --out (Join-Path $Evidence "g3-should-not-exist.yaml") --mm-config $DemoCfg --evidence-out (Join-Path $Evidence "g3-evidence")
+```
+
+At the acknowledgement prompt, type something that is not the exact phrase — a
+lowercase version of it, or `yes`. Record that setup refuses, that **no
+connection message was printed**, and that no file was created:
+
+```powershell
+Test-Path (Join-Path $Evidence "g3-should-not-exist.yaml") > "$Evidence\g3-output-exists.txt" 2>&1
+```
+
+Collect `$Evidence\g3-evidence\first-launch-transcript-*.txt`; it must contain the
+intro, acknowledgement prompt and answer, and final setup refusal even though
+no inventory was produced.
+
+Run it once more and type the exact phrase, to confirm the accepting path still
+works; use a distinct evidence directory so the refusal transcript is not
+overwritten, then abandon that run at the first question with Ctrl-C:
+
+```powershell
+microclaw --port $Port first-launch-setup --out (Join-Path $Evidence "g3-accept-should-not-exist.yaml") --mm-config $DemoCfg --evidence-out (Join-Path $Evidence "g3-accept-evidence")
+```
+
+## G4 — M5, a real rig with real hazards
+
+**Qualified M5 operator present. Containment and emergency stop established.
+Treat the run as emissive from the acknowledgement onward.** Load the real M5
+configuration in Micro-Manager as normal.
+
+Before typing the acknowledgement, read the contact warning aloud and confirm it
+is accurate for this rig — it claims initialization may already have occurred
+when the configuration was loaded, and that emission before any config exists is
+possible on an undeclared path. **Record whether the M5 devices were in fact
+already initialized by the configuration load**, and capture the Micro-Manager
+log for the setup window so the unavoidable-initialization list in design/33 can
+be replaced with measurement rather than inference.
+
+Take the read-only reference copy of the config M5 runs under today first.
+This is the only step that reads `$Deployed`, and it never writes to it:
+
+```powershell
+$Deployed = "<absolute deployed M5 safety YAML — the file M5 runs under today>"
+Copy-Item $Deployed (Join-Path $Evidence "deployed-m5.reference.yaml")
+Get-FileHash $Deployed -Algorithm SHA256 > "$Evidence\deployed-m5.sha256.txt"
+```
+
+Re-hash `$Deployed` at the end of G4 and confirm it is unchanged — the gate must
+leave the config M5 actually runs under byte-identical.
+
+```powershell
+$M5Out   = Join-Path $Evidence "m5-profile.yaml"
+$M5Cfg   = "<absolute loaded M5 .cfg path>"
+microclaw --port $Port first-launch-setup --out $M5Out --mm-config $M5Cfg --evidence-out (Join-Path $Evidence "m5-inventory")
+```
+
+Collect `$Evidence\m5-inventory\first-launch-transcript-*.txt` as the complete M5
+interview record.
+
+Answer as the rig's actual reviewer. Specifically record:
+
+- Every illumination candidate surfaced and how it was classified. The five EMU
+  semantic laser enables must each appear and must each be classified
+  explicitly.
+- For the iChrome integer 0–1 enable/emission properties, capture the proposed
+  emission/enable role and the string-valued ON `1` / OFF `0` proposals. Accept
+  at least one and override at least one so both audit outcomes are present.
+- Classify `Thorlabs ELL6.State` using `o=not an illumination path; classify as
+  an ordinary property`. Confirm the transcript records operator
+  reclassification and the generated profile contains it as an ordinary
+  categorical property, not an illumination shutter and not an exclusion.
+- For each `Fine A (%)` / `Fine B (%)` and `Power (mW)` entry, capture the unit
+  default. Accept one percent and one native proposal, override another, and
+  confirm each native full-scale proposal equals the reported range upper
+  bound (75 or 150 on this inventory).
+- Whether `TTL.State0` was recommended for exclusion and that confirmation was
+  still required rather than applied automatically.
+- Whether `iChrome-MLE-TCP.Label` / `State` was surfaced, and what was decided.
+- Every deferral or exclusion emitted, verbatim.
+- Any `ENUMERATION REVIEW NOTE:` lines in the generated header — these are the
+  observational read failures setup continued past. M5 is expected to produce
+  some; capture them and confirm none of them is a classification coordinate.
+- Whether setup refused outright on an unenumerable classification coordinate.
+  If it did, capture the full refusal and the inventory evidence and **stop** —
+  that is the honest fail-closed path, and the coordinator decides what happens
+  next.
+
+Then validate and compare:
+
+```powershell
+microclaw check-config $M5Out > "$Evidence\g4-check-config.txt" 2>&1
+$LASTEXITCODE >> "$Evidence\g4-check-config.txt"
+```
+
+Now the comparison the checklist asks for. This is a **review**, not a diff to
+be minimised:
+
+```powershell
+git diff --no-index (Join-Path $Evidence "deployed-m5.reference.yaml") $M5Out > "$Evidence\g4-vs-deployed.diff" 2>&1
+```
+
+For **every** difference, write one line saying which side is right and why —
+**on the merits, not on which file it came from.** Neither side is the reference
+(see the provenance note above). A generated value more conservative than the
+deployed one may be a finding about the deployed config; a deployed value setup
+could not reproduce may be a finding about setup; and the two agreeing proves
+nothing on its own if both came from Microclaw.
+Pay particular attention to the acquisition budgets: the deployed M5 config is
+already known to carry limits copied from the fictional example, which is
+block 5's work, so expect differences there and do not treat them as setup
+defects.
+
+Every `rig_profile` line present on one side and absent on the other is a
+finding, **including exclusions**. Round 4's bundle recorded
+`- {device: Thorlabs Filter Wheel, property: State}` against
+`+# MM METADATA EXCLUSION: ...` and nobody read it; the next session could not
+move a filter wheel. Read the exclusion comments, not only the declarations.
+
+### G4b — the generated profile can actually run the rig
+
+The comparison above is static. This step is the one that catches a profile that
+validates and then cannot do the work. Copy the generated profile, set
+`reviewed: true` on the copy, and start a normal session under it — **never**
+under `$Deployed`, and never writing to it.
+
+With the session running, exercise the two controls this round changed:
+
+- **Move a filter wheel by `State`, then by `Label`.** Both must be permitted,
+  and the wheel must physically move. This is the round-4 regression; a refusal
+  naming `excluded from the authorization map` means `5c82d1e` is not in your
+  checkout.
+- **Move the ELL6 slider.** It should now be categorical with no question at all.
+  It used to surface as an illumination candidate because the enable pattern
+  matches the bare word `state`; a StateDevice's `State` reporting state labels
+  is its position, so it no longer does. If you are still asked to classify it as
+  an emission path, that is a finding.
+- **`iChrome-MLE-TCP.State` should not be asked either, and should come out
+  excluded** with a printed reason. Its labels are `State-0/1/2`, which establish
+  nothing about what the positions do, and it sits on a device that surfaced
+  illumination candidates. Revisit it by exact name only if this rig needs it.
+
+Then confirm nothing widened that should not have: the interview must have
+**asked** about `iChrome-MLE-TCP.State` rather than proposing it in bulk, because
+that device also surfaced illumination candidates. Whatever you answered, record
+it — answering `x` reproduces the deployed config's position.
+
+Capture the session history JSONL into the evidence directory. Put the rig back
+in its operator-approved safe state before finishing.
+
+Do **not** deploy the generated profile. Block 5 owns the deployed config.
+
+## G5 — no file survives a refusal
+
+Already covered in G2 and G3 for the interview and acknowledgement paths. One
+more, for the validator path: take the generated demo profile, hand-edit the
+copy to something the strict schema rejects, and confirm `check-config` reports
+it. Then confirm that a setup run that ends in refusal leaves `--out` absent —
+G2's `Test-Path` result is that evidence.
+
+Record the answer to one question explicitly: **did any setup run leave a file
+at `--out` that was not a validator-accepted profile?** The expected answer is
+no.
+
+## G6 — a claim the rig cannot corroborate demotes, it does not refuse
+
+New in round 2, and the specific behaviour that turns round 1's three refusal
+classes into startup warnings. Run on the demo machine, after G1 has produced a
+reviewed profile that starts.
+
+Take a **copy** of the reviewed demo profile and hand-edit three things into it:
+
+1. add `Camera.Exposure` to `rig_profile.categorical_properties` — the rig
+   reports it continuous, so the claim is false;
+2. add a preset name to top-level `channels.allowed` that does not exist in the
+   Micro-Manager `Channel` group, e.g. `NotAPreset`;
+3. leave EMU alone — the demo machine has `Emu.jar` and no `EMU/config.uicfg`,
+   which is the stock non-EMU shape and is already the case.
+
+```powershell
+uv run microclaw --port $Port --safety-config "$Evidence\demo-profile.demoted.yaml" > "$Evidence\g6-demotions.txt" 2>&1
+```
+
+Expected, and all three must hold:
+
+- The process **starts**. It does not exit with `Live rig authorization failed`.
+- `g6-demotions.txt` contains a block delimited by
+  `!! AUTHORIZATION CLAIMS DEMOTED — STARTUP CONTINUES WITH LESS AUTHORITY !!`,
+  naming `Camera.Exposure` and `NotAPreset` and stating for each what was dropped
+  and how to correct it.
+- There is **no** EMU diagnostic of any kind.
+
+Then prove the demotion has teeth rather than being cosmetic. In the session that
+started, attempt a raw property write to `Camera.Exposure` and capture the
+result. It must be **refused** — a demoted property is not writable. A run where
+the process starts but the write succeeds is a gate failure, not a pass.
+
+Record explicitly: **did the process start, were all three claims reported, and
+was the write to the demoted property refused?**
+
+## What to return
+
+**Three** archives — one `$Evidence` directory per machine, demo and M5, plus
+the G6 outputs — and a short written summary answering:
+
+1. Did the demo pass complete, validate, and start a session? (G1)
+2. Which of the nine G2 attempts were refused, and was any accepted? (G2)
+3. Did the acknowledgement gate exit before connecting? (G3)
+4. What did the M5 run classify, defer, and refuse — and what did the comparison
+   against the deployed config show, difference by difference? (G4)
+5. Were the M5 devices already initialized by the configuration load, and what
+   does the Micro-Manager log show initialized during the setup window?
+6. Did any refusal leave a file behind? (G5)
+6b. Is `$Deployed` byte-identical to its pre-gate hash? (G4)
+7. Did the process start with all three claims demoted, and was the write to the
+   demoted property refused? (G6)
+8. **How many questions did the interview ask, and how many did you have to
+   type an answer to?** Both numbers. The typed count is now the meaningful one:
+   the demo machine should ask 22 and need about 12 typed; M5 should ask about
+   112 and need roughly a quarter typed, against 83 in round 4. Round 1 asked
+   about 90 with nothing proposed, and that was the headline complaint.
+8b. **Did a filter wheel move, by `State` and by `Label`?** (G4b) This is the
+   round-4 regression and the reason this round exists.
+9. Anything in the interview that was unclear, tedious, or that you would have
+   answered wrongly without knowing the rig — this block exists to make an
+   operator able to author a config, so usability observations are evidence.
+   In particular: after setup, no continuous property is writable at all (see
+   the note below). Say whether that blocked anything you wanted to do.
+
+One known limitation to judge on the rig, not a defect to report as a failure:
+the safety schema has exactly two typed-actuator kinds, `absolute-position`
+(units `um`) and `illumination-power` (`percent`/`native`). A bounded numeric
+like `Camera.Gain` or `Camera.Exposure` fits neither, so setup excludes every
+such property rather than inventing a unit for it — the demo profile therefore
+contains **zero** typed actuators. Micro-Manager's real ranges are still shown
+as evidence during the interview. Whether that gap needs its own block is a
+coordinator decision waiting on what you observe here.
+
+Do not judge whether the evidence is sufficient; return it and the coordinator
+will. A step you could not complete is a defect in this gate document, not
+operator error.

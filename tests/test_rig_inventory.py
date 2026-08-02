@@ -56,6 +56,8 @@ class ReadOnlyRecordingCore:
             "get_device_library", "get_device_name", "get_device_description",
             "get_available_config_groups", "get_available_configs", "get_config_data",
             "get_version_info", "get_api_version_info",
+            "get_image_width", "get_image_height", "get_bytes_per_pixel",
+            "get_image_bit_depth", "get_roi",
         }
         if name not in approved:
             raise AssertionError(f"unapproved bridge attribute access: {name}")
@@ -99,6 +101,11 @@ class ReadOnlyRecordingCore:
         return [{"device": "Wheel", "property": "State", "value": "1"}]
     def _get_version_info(self): return "MMCore 11"
     def _get_api_version_info(self): return "Device API 72"
+    def _get_image_width(self): return 512
+    def _get_image_height(self): return 256
+    def _get_bytes_per_pixel(self): return 2
+    def _get_image_bit_depth(self): return 16
+    def _get_roi(self): return (10, 20, 512, 256)
 
 
 class FreshPropertyTypeCore(ReadOnlyRecordingCore):
@@ -183,6 +190,60 @@ def test_partial_failures_continue_and_are_per_scope():
     assert len(inventory["facts"]["enumeration_failures"]) == 2
 
 
+def test_camera_geometry_is_optional_fact_and_excluded_from_fingerprint():
+    inventory = enumerate_rig(ReadOnlyRecordingCore())
+    assert inventory["schema"] == INVENTORY_SCHEMA
+    assert inventory["facts"]["camera_geometry"] == {
+        "device": "Camera", "image_width": 512, "image_height": 256,
+        "bytes_per_pixel": 2, "image_bit_depth": 16,
+        "roi": [10, 20, 512, 256], "binning": None,
+        "unbinned_full_frame_pixels": None,
+    }
+
+    changed = ReadOnlyRecordingCore()
+    changed._get_image_width = lambda: 128
+    assert (
+        enumerate_rig(changed)["live_inventory_fingerprint"]
+        == inventory["live_inventory_fingerprint"]
+    )
+
+
+def test_camera_geometry_reads_a_non_iterable_bridge_rectangle_roi():
+    """The demo rig returned java_awt_Rectangle, which list() cannot consume."""
+    class Rectangle:
+        x, y, width, height = 10, 20, 512, 256
+
+        def __iter__(self):
+            raise TypeError("'java_awt_Rectangle' object is not iterable")
+
+    class RectangleCore(ReadOnlyRecordingCore):
+        def _get_roi(self): return Rectangle()
+
+    inventory = enumerate_rig(RectangleCore())
+    assert inventory["facts"]["camera_geometry"]["roi"] == [10, 20, 512, 256]
+    assert [
+        failure for failure in inventory["facts"]["enumeration_failures"]
+        if failure["field"] == "roi"
+    ] == []
+
+
+def test_camera_geometry_uses_current_binning_to_report_unbinned_pixels():
+    class CameraCore(ReadOnlyRecordingCore):
+        def _get_loaded_devices(self): return ["Camera"]
+        def _get_device_type(self, device): return 2
+        def _get_device_property_names(self, device): return ["Binning"]
+        def _get_property(self, device, prop): return "2"
+        def _is_property_read_only(self, device, prop): return False
+        def _get_allowed_property_values(self, device, prop): return ["1", "2", "4"]
+        def _has_property_limits(self, device, prop): return False
+        def _get_state_labels(self, device): return []
+        def _get_available_config_groups(self): return []
+
+    geometry = enumerate_rig(CameraCore())["facts"]["camera_geometry"]
+    assert geometry["binning"] == 2
+    assert geometry["unbinned_full_frame_pixels"] == {"width": 1024, "height": 512}
+
+
 def test_deterministic_order_hash_and_credential_redaction(tmp_path):
     one = enumerate_rig(ReadOnlyRecordingCore())
     two = enumerate_rig(ReadOnlyRecordingCore())
@@ -251,6 +312,17 @@ def test_possible_duplicate_unit_representations_are_observations_only():
     assert duplicates[0]["property_base"] == "Laser Power Set-point Select"
     assert [row["unit_suffix"] for row in duplicates[0]["representations"]] == ["[%]", "[mW]"]
     assert inventory["human_decisions"] == {"source": None, "comparison": None}
+
+
+def test_duplicate_unit_representations_also_split_parenthesised_suffixes():
+    """The shared unit regex was widened for `(mW)`; cover it where it lives."""
+    inventory = enumerate_rig(CandidateShapeCore({
+        "iBeamLike": ["Laser Power (%)", "Laser Power (mW)"],
+    }))
+    duplicates = inventory["heuristic_candidates"]["possible_duplicate_power_representations"]
+    assert len(duplicates) == 1
+    assert duplicates[0]["property_base"] == "Laser Power"
+    assert [row["unit_suffix"] for row in duplicates[0]["representations"]] == ["(%)", "(mW)"]
 
 
 def test_power_enable_grouping_retains_one_sided_device_candidates():
