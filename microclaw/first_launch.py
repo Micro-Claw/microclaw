@@ -315,8 +315,8 @@ def _core_structural(item: dict) -> bool:
     )
 
 
-def _bounded_numeric_unit(item: dict) -> str | None:
-    """Propose only a name-carried or explicitly reviewed native representation."""
+def _bounded_numeric_unit(item: dict) -> str:
+    """Propose a name-carried unit, falling back to MM's native representation."""
     prop = str(item.get("property") or item.get("record", {}).get("name") or "")
     match = _TRAILING_UNIT.search(prop)
     if match is not None:
@@ -325,17 +325,7 @@ def _bounded_numeric_unit(item: dict) -> str | None:
         # suffixes but are not units and grant no operator-meaningful semantics.
         if re.search(r"[A-Za-zµ%]", unit):
             return unit
-    device = str(item.get("device") or "")
-    normalized = prop.casefold().replace(" ", "")
-    if normalized == "gain":
-        return "native"
-    if device == "Laser Trigger" and re.fullmatch(r"sequence[0-3]", normalized):
-        return "native"
-    if device == "Servos" and re.fullmatch(r"position[0-3]", normalized):
-        return "native"
-    if device == "PWM" and normalized == "position0":
-        return "native"
-    return None
+    return "native"
 
 
 def _metadata_default(item: dict) -> tuple[str, str, tuple[float, float] | None]:
@@ -375,12 +365,6 @@ def _metadata_default(item: dict) -> tuple[str, str, tuple[float, float] | None]
                     None,
                 )
             unit = _bounded_numeric_unit(item)
-            if unit is None:
-                return (
-                    "x",
-                    f"MM reports numeric technical range {low} to {high}, but the property name supplies no operator-meaningful unit; no write authority is inferred",
-                    None,
-                )
             return (
                 "n",
                 f"MM reports numeric technical range {low} to {high} and property unit {unit!r}",

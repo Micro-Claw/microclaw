@@ -438,7 +438,7 @@ def test_metadata_proposal_glossary_defaults_and_bulk_revisit():
         "read_only": False, "pre_init": False, "allowed_values": [],
         "has_limits": True, "reported_type": "Float",
         "technical_range": {"lower": -5.0, "upper": 8.0},
-    }, "x", "supplies no operator-meaningful unit", None),
+    }, "n", "property unit 'native'", (-5.0, 8.0)),
     ({
         "read_only": False, "pre_init": False, "allowed_values": [],
         "has_limits": False, "reported_type": "String",
@@ -457,14 +457,17 @@ def test_each_mm_metadata_shape_has_a_fail_closed_default(record, role, evidence
     ("Laser Trigger", "Sequence0", "native"),
     ("Servos", "Position3", "native"),
     ("PWM", "Position0", "native"),
-    ("Camera", "OUTPUT TRIGGER DELAY[0]", None),
-    ("Camera", "BUFFER ROWBYTES", None),
+    ("Camera", "OUTPUT TRIGGER DELAY[0]", "native"),
+    ("Camera", "BUFFER ROWBYTES", "native"),
+    ("Operator Assigned Label", "EMGain", "native"),
+    ("Operator Assigned Label", "Gain (EM)", "EM"),
+    ("Operator Assigned Label", "Pre-Amp Gain", "native"),
 ])
-def test_bounded_numeric_unit_proposals_are_narrow(device, prop, unit):
+def test_bounded_numeric_unit_proposals_use_name_suffix_or_native(device, prop, unit):
     assert _bounded_numeric_unit({"device": device, "property": prop}) == unit
 
 
-def test_stage_position_and_unitless_numeric_default_to_excluded():
+def test_stage_position_is_excluded_before_unitless_numeric_defaults_to_native():
     record = {
         "read_only": False, "pre_init": False, "allowed_values": [],
         "has_limits": True, "reported_type": "Integer",
@@ -481,8 +484,37 @@ def test_stage_position_and_unitless_numeric_default_to_excluded():
         "device": "Camera", "property": "BUFFER ROWBYTES",
         "device_type": "CameraDevice", "record": record,
     })
-    assert (role, bounds) == ("x", None)
-    assert "no operator-meaningful unit" in reason
+    assert (role, bounds) == ("n", (0.0, 28000.0))
+    assert "property unit 'native'" in reason
+
+
+@pytest.mark.parametrize("camera_label", ["Camera", "HamamatsuHam_DCAM"])
+def test_camera_exposure_is_owned_by_alias_policy_before_numeric_unit_default(camera_label):
+    inventory = _inventory()
+    camera = next(
+        device for device in inventory["facts"]["devices"]
+        if device["label"] == "Camera"
+    )
+    camera["label"] = camera_label
+    inventory["facts"]["core_device_assignments"]["camera"] = camera_label
+    candidates = inventory["heuristic_candidates"]["unclassified_writable_properties"]
+    for index, candidate in enumerate(candidates):
+        if candidate.startswith("Camera."):
+            candidates[index] = camera_label + candidate[len("Camera"):]
+
+    output = []
+    config, _ = interview(
+        inventory, ask=_answer_real_interview([]), say=output.append,
+    )
+    path = f"{camera_label}.Exposure"
+    assert any(
+        line == f"{path} [dedicated policy: camera.max_exposure_ms; not duplicated in rig_profile]"
+        for line in output
+    )
+    assert not any(
+        row["device"] == camera_label and row["property"] == "Exposure"
+        for row in config["rig_profile"]["typed_actuators"]
+    )
 
 
 def test_real_demo_inventory_bulk_pass_emits_bounded_numeric_defaults():
@@ -491,8 +523,8 @@ def test_real_demo_inventory_bulk_pass_emits_bounded_numeric_defaults():
     config, _ = interview(
         inventory, ask=_answer_real_interview(prompts), say=lambda _: None,
     )
-    assert len(prompts) == 28
-    assert "make 40 ordinary properties writable" in prompts[0]
+    assert len(prompts) == 70
+    assert "make 54 ordinary properties writable" in prompts[0]
     assert "defaults proposed as excluded remain excluded" in prompts[0]
     assert any("hard maximum raw payload bytes" in prompt for prompt in prompts)
     assert not any("confirmation threshold raw bytes" in prompt for prompt in prompts)
@@ -505,12 +537,20 @@ def test_real_demo_inventory_bulk_pass_emits_bounded_numeric_defaults():
         # reading their state labels: Dichroic, Emission, Excitation, LED,
         # Objective and Path .State — every one a selector whose .Label was
         # already categorical. Ten then moved the other way when Core's
-        # device-assignment properties stopped being writable. The question count
-        # is unchanged throughout; these are bulk proposals either way.
+        # device-assignment properties stopped being writable. Unitless bounded
+        # numerics now move from excluded to typed bounded-numeric.
         "categorical_properties": 38,
-            "typed_actuators": 2,
-            "excluded_properties": 36,
+        "typed_actuators": 16,
+        "excluded_properties": 22,
     }
+    assert {
+        (row["device"], row["property"], row["units"])
+        for row in config["rig_profile"]["typed_actuators"]
+    } >= {("Camera", "Gain", "native")}
+    assert not any(
+        row["device"] == "Camera" and row["property"] == "Exposure"
+        for row in config["rig_profile"]["typed_actuators"]
+    )
     assert len(config["channels"]["allowed"]) == 14
 
 
@@ -758,7 +798,7 @@ def test_real_demo_geometry_from_producer_removes_byte_question():
             return ""
         return fallback(prompt)
     config, notes = interview(inventory, ask=accept_proposals, say=output.append)
-    assert len(prompts) == 27
+    assert len(prompts) == 69
     assert not any("hard maximum raw payload bytes" in prompt for prompt in prompts)
     assert config["acquisition"]["max_bytes"] == 512 * 512 * 2 * config["acquisition"]["max_frames"]
     assert "confirm_above_bytes" not in config["acquisition"]
