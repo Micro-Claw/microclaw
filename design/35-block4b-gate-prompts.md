@@ -1,7 +1,8 @@
 # design/35 Block 4b — bounded-numeric actuator rig gate
 
-This gate verifies commit `1031961` (bounded-numeric clamp-only typed actuators
-and the two acquisition-policy deprecations). The branch is
+This gate verifies commit `a4d5fd7` (bounded-numeric clamp-only typed actuators,
+stage-position alias refusal, unit-aware setup proposals, and the two
+acquisition-policy deprecations). The branch is
 `design33/bounded-numeric-actuator`. Do not merge it and do not deploy a
 generated profile as the rig's permanent configuration during this gate.
 
@@ -23,7 +24,7 @@ git switch design33/bounded-numeric-actuator > git-switch.txt 2>&1
 git pull --ff-only > git-pull.txt 2>&1
 git status --short > status.txt 2>&1
 git rev-parse HEAD > head.txt 2>&1
-git merge-base --is-ancestor 1031961 HEAD
+git merge-base --is-ancestor a4d5fd7 HEAD
 echo $LASTEXITCODE > implementation-ancestor-exit.txt
 python -m pytest -q > pytest.txt 2>&1
 ```
@@ -50,10 +51,11 @@ microclaw first-launch-setup --out $Draft --evidence-out $Inventory
 Read the contact warning before typing the exact acknowledgement. In the
 property interview, locate the active camera's `Gain` property. It must be
 proposed as `typed bounded numeric`, show Micro-Manager's technical minimum and
-maximum as Enter-acceptable bounds, and require an operator-supplied unit
-string. Enter the unit used by the camera documentation (for example `dB` or
-`e-/ADU`) exactly as you want it displayed. The generated entry must preserve
-that text byte-for-byte:
+maximum as Enter-acceptable bounds, and offer an Enter-acceptable unit proposal
+derived from the property name (or the reviewed `native` Gain convention).
+Accept it only if it is meaningful for this camera; otherwise type the unit used
+by the camera documentation (for example `dB` or `e-/ADU`) exactly as you want
+it displayed. The generated entry must preserve the accepted text byte-for-byte:
 
 ```yaml
 rig_profile:
