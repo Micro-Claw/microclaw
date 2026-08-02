@@ -128,7 +128,7 @@ Rig-facing commands must be PowerShell/cmd-safe (the rig is Windows): prefer
 | 1 | Usability | 0a and 0b assigned | `design33/phase5-doc-reconciliation` | `b717594` | `dd359a3` | n/a | `20b92e2` | done — block *is* the gate |
 | 2 | Usability | 1 | `design33/undeclared-light-source-gate` | `98842cf` | `ef72b15` + `e9817ad` | **PASS** — M5 refusal/declaration/confirm/cleanup + separate demo fail-closed run | `a1b7579` | done — design/33 landed semantics + residual boundary |
 | 3 | Usability | 2 | `design33/config-diagnostics` | `e8d6ee1` | `dce17a4` + `65bfd7c` | n/a — no rig surface | `0cb871f` | done — error taxonomy + offline-validation contract |
-| 4 | Usability | 3 | `design33/first-launch-setup` | `bc303a2` | round 4 `5c82d1e` (runbook re-pinned at `b059f33`) | r1 **FAIL**; r2/r3 demo **PASS**; M5 G4 validates but **the profile could not move a filter wheel**; StateDevice fix `5c82d1e`; **G4b PASS on M5 — wheel moves**; awaiting the evidence bundle and the deployed-vs-generated review | | |
+| 4 | Usability | 3 | `design33/first-launch-setup` | `bc303a2` | round 4 `5c82d1e` (runbook re-pinned at `b059f33`) | r1 **FAIL**; r2/r3 demo **PASS**; M5 G4 validates but **the profile could not move a filter wheel**; **G4b PASS on M5 — wheel moves**; review then found 3 more issues, fixed at `b67fd08`; **awaiting re-gate** | | |
 | 4r1a | Usability | 4 | `design33/first-launch-setup` | `15d8d1b` | `c5746b9` (`d203753` rejected) | folded into block 4 round 2 | n/a — merges via block 4 | |
 | 4r1b | Usability | 4 | `design35/startup-refusal-severity` | `15d8d1b` | `2558583` (`16cc416` rejected alone) | folded into block 4 round 2 | `385049d` into block branch | |
 | 4b | Usability | 4 merged | `design33/bounded-numeric-actuator` | | | **required** | | |
@@ -1085,6 +1085,65 @@ from the captured `b2f30c9` inventory via `--inventory` (no second pre-config
 enumeration window), and the filter wheel moved. Outstanding before merge: the
 evidence bundle, and the deployed-vs-generated comparison actually read this
 time — the StateDevice entries moving to categorical should narrow it.
+
+### The deployed-vs-generated review, 2026-08-01 — three more findings
+
+Evidence: `filter-wheel-moved` (session history plus `m5-profile2.yaml`). The
+wheel move is real — `set_device_property Thorlabs Filter Wheel.State = '3'`
+returned a success status, so the write cleared the authorization map. G4b holds.
+
+Then the comparison that should have run a round earlier produced three things.
+
+1. **`Core.*` device-assignment properties were declared categorical — an
+   authorization hole, fixed at `fa9e2ee`.** The generated profile made
+   `Core.Camera`, `Core.Focus`, `Core.XYStage`, `Core.Shutter`, `Core.AutoFocus`,
+   `Core.Galvo`, `Core.ImageProcessor`, `Core.SLM`, `Core.ChannelGroup` and
+   `Core.Initialize` writable. These name *which physical device* fills each
+   role. M5 offers four devices for `Core.Focus` (`PIZStage`, `SmarAct 1D`,
+   `Thorlabs ELL17/ELL20`, `Thorlabs ELL20`), and `stage.z_min/z_max` are
+   enforced against whatever Core says the focus device is — so one categorical
+   write re-aims every reviewed bound at a different mechanism. `Core.Shutter`
+   likewise moves Block 2's illumination gate and `Core.ChannelGroup` changes
+   what `channels.allowed` names. Now never writable. `Core.AutoShutter` is
+   deliberately excluded from the rule: it is a real illumination control.
+2. **`Thorlabs ELL6.State` should never have surfaced as an illumination
+   candidate, fixed at `b67fd08`.** The `o` option added in round 4 was a
+   band-aid: it made the operator undo a bad guess. Root cause is `_ENABLE_NAME`
+   matching the bare word `state`, which drags every wheel, turret and slider
+   into the illumination interview. A StateDevice's `State` reporting state
+   labels is its position, so it no longer matches. **Measured on both captured
+   inventories before changing the heuristic: exactly one candidate is dropped
+   across both rigs — the ELL6 false positive — and all 21 genuine M5 gates plus
+   the demo's `White Light Shutter.State` (a ShutterDevice, no state labels) are
+   retained.** The pattern is not narrowed for any other device type.
+3. **The forced question on `iChrome-MLE-TCP.State` was unanswerable, so it now
+   fails closed instead.** Round 4 made a StateDevice position on an illuminating
+   device refuse bulk acceptance and ask. M5 answered by accepting the proposal,
+   widening authority on a laser engine — because the labels are `State-0`,
+   `State-1`, `State-2`, which say nothing about what the positions do. Same
+   failure mode as the `5e15` dose threshold: **an unanswerable mandatory question
+   produces a worse outcome than a default.** Such a position is now excluded with
+   the reason printed, and stays revisitable by exact name.
+
+Two operator corrections to record, both accepted:
+
+- **The deployed M5 config's provenance is disputed.** This file and the runbook
+  both called it hand-authored from `safety_config.example.yaml`, and the runbook
+  argued the comparison was strong "precisely because the two were produced by
+  different means". The operator states it was generated by an earlier Microclaw.
+  The comparison is therefore a **difference-finder, not an oracle** — agreement
+  between the two files is not corroboration. Finding 1 is unaffected: it stands
+  on its own argument and would be a defect with no deployed config at all.
+  Corrected in the runbook at `9e9dc81`; design/33 must not repeat the claim.
+- **The operator wants maximum reach: "control everything on the microscope,
+  safely."** This is the standing goal for the remaining usability work, and it
+  reframes exclusion-by-default as a cost rather than a free safety win. Block 4b
+  (`bounded-numeric`) is part of the answer; the classification rules above are
+  another. Where evidence establishes a domain, prefer reach; where it does not —
+  `State-0/1/2` on a laser engine — prefer exclusion with a printed reason and a
+  named way back in, never an unanswerable question.
+
+Suite at `b67fd08`: **1320 passed / 99 skipped / 3 expected warnings.**
 
 Post-merge design gate:
 
