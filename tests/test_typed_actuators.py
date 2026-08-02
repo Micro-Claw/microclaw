@@ -381,3 +381,43 @@ def test_loaded_device_inventory_is_reused_for_all_typed_entries():
     with pytest.raises(RigAuthorizationError, match="Other.*does not exist"):
         validate_live_rig(ctrl, parsed)
     assert core.loaded_calls == 1
+
+
+def test_property_info_reports_the_declared_bound_not_only_the_driver_range(tmp_path):
+    """Block 4b's G1 showed the agent advising from the driver range alone.
+
+    A reviewed bound exists precisely so it can be tighter than the hardware's.
+    If introspection reports only `lower_limit`/`upper_limit`, a caller plans
+    against authority the guard will refuse.
+    """
+    from microclaw.tools import get_device_property_info
+
+    parsed = _yaml(tmp_path,
+        "  typed_actuators:\n"
+        "    - {device: Camera, property: Gain, kind: bounded-numeric, units: native, minimum: 0, maximum: 4}\n")
+    guard = SafetyGuard(parsed.constraints)
+    guard.admit_typed_actuators(parsed.typed_actuators)
+
+    core = SimpleNamespace(
+        is_property_read_only=lambda d, p: False,
+        is_property_pre_init=lambda d, p: False,
+        get_property_type=lambda d, p: "Float",
+        get_allowed_property_values=lambda d, p: SimpleNamespace(size=lambda: 0),
+        has_property_limits=lambda d, p: True,
+        get_property_lower_limit=lambda d, p: -5.0,
+        get_property_upper_limit=lambda d, p: 8.0,
+        get_property=lambda d, p: "0",
+    )
+    ctrl = SimpleNamespace(core=core)
+
+    info = get_device_property_info(ctrl, guard, "Camera", "Gain")
+    assert info["declared_policy"] == {
+        "kind": "bounded-numeric", "units": "native",
+        "minimum": 0.0, "maximum": 4.0,
+    }
+    # The driver range is still reported, and is deliberately wider here.
+    assert (info["lower_limit"], info["upper_limit"]) == (-5.0, 8.0)
+
+    assert "declared_policy" not in get_device_property_info(
+        ctrl, guard, "Camera", "Binning"
+    )

@@ -998,6 +998,19 @@ class SafetyGuard:
         """Return whether an exact raw pair has a validated typed policy."""
         return TypedActuatorId(device, prop) in self._typed_actuators
 
+    def typed_actuator_policy(
+        self, device: str, prop: str
+    ) -> TypedActuatorPolicy | None:
+        """The reviewed policy for a raw pair, for introspection surfaces.
+
+        A driver's technical range is not the reviewed bound: the whole point of
+        declaring a typed actuator is that an operator may bound it more tightly
+        than the hardware allows. Anything that reports limits to a caller must
+        report this alongside the driver's, or it advertises authority the guard
+        will refuse.
+        """
+        return self._typed_actuators.get(TypedActuatorId(device, prop))
+
     def is_illumination_power(
         self, device: str, prop: str
     ) -> Optional[ForbiddenProperty]:

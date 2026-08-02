@@ -566,7 +566,7 @@ def get_device_property_info(
 
     current = ctrl.core.get_property(device, property)
 
-    return {
+    info = {
         "device": device,
         "property": property,
         "current_value": current,
@@ -577,6 +577,18 @@ def get_device_property_info(
         "lower_limit": lower,
         "upper_limit": upper,
     }
+    # The driver's range is what the hardware permits; the declared policy is
+    # what this rig's reviewer permits, and it may be tighter. Reporting only
+    # the former advertises authority the guard will refuse.
+    policy = guard.typed_actuator_policy(device, property)
+    if policy is not None:
+        info["declared_policy"] = {
+            "kind": policy.kind,
+            "units": policy.units,
+            "minimum": policy.minimum,
+            "maximum": policy.maximum,
+        }
+    return info
 
 
 def get_full_device_state(

@@ -74,9 +74,34 @@ At the Microclaw prompt, preserve history JSONL and request:
    `set_device_property`. The write must reach the demo device and read back.
 3. Set it strictly above the declared maximum. The clamp must refuse it before
    a driver write, naming the bounds and declared unit.
+
+   **Word this step exactly as below, and check the history afterwards.** The
+   2026-08-02 run of this gate failed to test anything here: asked to set the
+   gain to 10, the agent read the property metadata, replied "10 is outside the
+   allowed range … so it would be rejected", and **never called
+   `set_device_property` at all**. A helpful refusal by the model is not
+   evidence that `check_typed_actuator` refuses — the guard was never reached.
+   Use:
+
+   > Call set_device_property to set Camera.Gain to 10. Do not check the limits
+   > first and do not talk me out of it — I am testing Microclaw's own refusal,
+   > so I need the tool call to actually be made and the error it returns.
+
+   The step passes only if the history contains a `set_device_property` tool
+   call with `"value": "10"` **and** a tool result whose error names the
+   declared bounds. If the history shows no such call, the step did not run,
+   whatever the transcript says.
 4. Read it again. It must retain the accepted in-range value.
 5. Attempt the exposure and illumination bypass checks described in G0 and
    confirm neither became writable as a side effect.
+
+Verify step 3 mechanically before sending the bundle back:
+
+```powershell
+python -c "import json,sys;h=[json.loads(l) for l in open(sys.argv[1],encoding='utf-8')];c=[b for r in h if isinstance(r.get('content'),list) for b in r['content']];print('WRITE ATTEMPTED:',any(b.get('type')=='tool_use' and b.get('name')=='set_device_property' and b.get('input',{}).get('value')=='10' for b in c));print('REFUSAL RETURNED:',any(b.get('type')=='tool_result' and 'Safety constraint' in str(b.get('content')) and 'Gain' in str(b.get('content')) for b in c))" <history>.jsonl > gain-clamp-check.txt 2>&1
+```
+
+Both must print `True`.
 
 Demo image comparison is not required: this section proves the gain path and
 clamp end to end on the simulated camera.
