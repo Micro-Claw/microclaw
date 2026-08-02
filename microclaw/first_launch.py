@@ -703,7 +703,9 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
             "StateDevice", "GenericDevice", "CoreDevice", "AutoFocusDevice",
         }:
             return False
-        if _state_device_positions(item) and item["device"] in illumination_devices:
+        if item["device"] in illumination_devices and (
+            _state_device_positions(item) or defaults[path][0] == "n"
+        ):
             return False
         return True
 
@@ -849,29 +851,45 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
             notes.append(f"MM METADATA EXCLUSION: {path}; {evidence}.")
             continue
         recommendation = " (known TTL.State0 false-positive shape; exclusion is recommended but requires your confirmation)" if path.casefold().endswith("ttl.state0") else ""
-        # A StateDevice position on a device that also surfaced illumination
-        # candidates is a laser engine's selector, not a filter wheel's, and
+        # A StateDevice position or bounded-numeric default on a device that
+        # also surfaced illumination candidates can change the meaning of the
+        # declared emission envelope. The laser engine's selector is not a
+        # filter wheel's, and
         # Block 3b's rig gate caught exactly that widening once. An earlier
         # version forced a question here; M5 answered it by accepting a
         # proposal the operator could not interpret, because the labels are
         # placeholders ("State-0", "State-1", "State-2") that say nothing about
         # what the positions do. An unanswerable question is worse than a
         # default, so this fails closed instead and stays revisitable by name.
-        if (
-            _state_device_positions(item) and device in illumination_devices
-            and bulk and path not in revisit
-        ):
+        illuminating_device_default = device in illumination_devices and (
+            _state_device_positions(item) or default_role == "n"
+        )
+        if illuminating_device_default and bulk and path not in revisit:
             excluded.append({"device": device, "property": prop})
-            notes.append(
-                f"ILLUMINATING-DEVICE POSITION EXCLUDED: {path}; {device} also surfaced "
-                "illumination candidates, and its state labels do not establish what the "
-                "positions do. Declare it deliberately if this rig needs it."
-            )
-            say(
-                f"EXCLUDED: {path} is a position property on {device}, which also surfaced "
-                "illumination candidates. Its labels do not say what the positions do, so no "
-                "authorization is inferred. Revisit it by exact name if you need it."
-            )
+            if _state_device_positions(item):
+                notes.append(
+                    f"ILLUMINATING-DEVICE POSITION EXCLUDED: {path}; {device} also surfaced "
+                    "illumination candidates, and its state labels do not establish what the "
+                    "positions do. Declare it deliberately if this rig needs it."
+                )
+                say(
+                    f"EXCLUDED: {path} is a position property on {device}, which also surfaced "
+                    "illumination candidates. Its labels do not say what the positions do, so no "
+                    "authorization is inferred. Revisit it by exact name if you need it."
+                )
+            else:
+                notes.append(
+                    f"ILLUMINATING-DEVICE BOUNDED NUMERIC EXCLUDED: {path}; {device} also "
+                    "surfaced illumination candidates, so numeric metadata alone does not "
+                    "establish that this property preserves the declared illumination envelope. "
+                    "Declare it deliberately if this rig needs it."
+                )
+                say(
+                    f"EXCLUDED: {path} is a bounded numeric on {device}, which also surfaced "
+                    "illumination candidates. Numeric metadata does not establish that it "
+                    "preserves the declared illumination envelope, so no authorization is "
+                    "inferred. Revisit it by exact name if you need it."
+                )
             continue
         needs_question = not bulk or path in revisit or bool(recommendation)
         role = default_role

@@ -416,6 +416,69 @@ def test_state_device_position_on_an_illuminating_device_fails_closed_silently()
     assert any("Revisit it by exact name" in line for line in output)
 
 
+def test_real_m5_laser_engine_bounded_numerics_follow_inventory_illumination_set():
+    """Pin the M5 mode switches without relying on device or property-name rules."""
+    inventory = _inventory()
+    engine = next(d for d in inventory["facts"]["devices"] if d["label"] == "Laser")
+    engine["label"] = "iChrome-MLE-TCP"
+    for candidate_group in ("illumination_enable_properties", "suspected_continuous_actuators"):
+        for candidate in inventory["heuristic_candidates"][candidate_group]:
+            if candidate["device"] == "Laser":
+                candidate["device"] = engine["label"]
+                candidate["path"] = engine["label"] + "." + candidate["property"]
+    writable = inventory["heuristic_candidates"]["unclassified_writable_properties"]
+    writable[:] = [
+        engine["label"] + path[len("Laser"):] if path.startswith("Laser.") else path
+        for path in writable
+    ]
+
+    mode_properties = [
+        "All: 4. TTL High Active", "All: 5. TTL Master Mode", "All: 6. Analog Mode",
+        *(f"Laser {laser}: {field}" for laser in range(1, 5)
+          for field in ("4. Use TTL", "5. Analog Mode")),
+    ]
+    for prop in mode_properties:
+        engine["properties"].append({
+            "name": prop, "current_value": "0", "allowed_values": [],
+            "read_only": False, "pre_init": False, "has_limits": True,
+            "reported_type": "Integer",
+            "technical_range": {"lower": 0.0, "upper": 1.0, "source": "driver_reported"},
+        })
+        writable.append(f"{engine['label']}.{prop}")
+
+    trigger = {
+        "label": "Laser Trigger", "device_type": "GenericDevice", "properties": [],
+    }
+    for index in range(4):
+        prop = f"Duration{index} (us)"
+        trigger["properties"].append({
+            "name": prop, "current_value": "1", "allowed_values": [],
+            "read_only": False, "pre_init": False, "has_limits": True,
+            "reported_type": "Integer",
+            "technical_range": {"lower": 1.0, "upper": 100.0, "source": "driver_reported"},
+        })
+        writable.append(f"Laser Trigger.{prop}")
+    inventory["facts"]["devices"].append(trigger)
+
+    prompts, output = [], []
+    config, notes = interview(
+        inventory, ask=_answer_real_interview(prompts), say=output.append,
+    )
+    declared = {(row["device"], row["property"]) for row in config["rig_profile"]["typed_actuators"]}
+    excluded = {(row["device"], row["property"]) for row in config["rig_profile"]["excluded_properties"]}
+    assert {(engine["label"], prop) for prop in mode_properties} <= excluded
+    assert not ({(engine["label"], prop) for prop in mode_properties} & declared)
+    assert {
+        ("Laser Trigger", f"Duration{index} (us)", "us") for index in range(4)
+    } <= {
+        (row["device"], row["property"], row["units"])
+        for row in config["rig_profile"]["typed_actuators"]
+    }
+    assert sum("ILLUMINATING-DEVICE BOUNDED NUMERIC EXCLUDED" in note for note in notes) == 11
+    assert sum("Revisit it by exact name" in line for line in output) >= 11
+    assert not any(any(prop in prompt for prop in mode_properties) for prompt in prompts)
+
+
 def test_metadata_proposal_glossary_defaults_and_bulk_revisit():
     answers = iter(["", "Camera.Binning", "x"] + list(_answers())[2:])
     output = []
