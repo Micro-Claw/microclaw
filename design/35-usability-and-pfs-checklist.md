@@ -128,7 +128,7 @@ Rig-facing commands must be PowerShell/cmd-safe (the rig is Windows): prefer
 | 1 | Usability | 0a and 0b assigned | `design33/phase5-doc-reconciliation` | `b717594` | `dd359a3` | n/a | `20b92e2` | done — block *is* the gate |
 | 2 | Usability | 1 | `design33/undeclared-light-source-gate` | `98842cf` | `ef72b15` + `e9817ad` | **PASS** — M5 refusal/declaration/confirm/cleanup + separate demo fail-closed run | `a1b7579` | done — design/33 landed semantics + residual boundary |
 | 3 | Usability | 2 | `design33/config-diagnostics` | `e8d6ee1` | `dce17a4` + `65bfd7c` | n/a — no rig surface | `0cb871f` | done — error taxonomy + offline-validation contract |
-| 4 | Usability | 3 | `design33/first-launch-setup` | `bc303a2` | round 4 `5c82d1e` (runbook re-pinned at `b059f33`) | r1 **FAIL**; r2/r3 demo **PASS**; M5 G4 validates but **the profile could not move a filter wheel**; **G4b PASS on M5 — wheel moves**; review then found 3 more issues, fixed at `b67fd08`; **awaiting re-gate** | | |
+| 4 | Usability | 3 | `design33/first-launch-setup` (deleted) | `bc303a2` | `a742d73` | 5 rounds: demo r1 **FAIL**, r2/r3 **PASS**; M5 G4 + **G4b PASS** 2026-08-02 | `6266807` | **done** — design/33 §"Phase 5 landed" |
 | 4r1a | Usability | 4 | `design33/first-launch-setup` | `15d8d1b` | `c5746b9` (`d203753` rejected) | folded into block 4 round 2 | n/a — merges via block 4 | |
 | 4r1b | Usability | 4 | `design35/startup-refusal-severity` | `15d8d1b` | `2558583` (`16cc416` rejected alone) | folded into block 4 round 2 | `385049d` into block branch | |
 | 4b | Usability | 4 merged | `design33/bounded-numeric-actuator` | | | **required** | | |
@@ -533,7 +533,7 @@ Post-merge design gate:
       State that offline validation checks the *document*, never the rig: a
       config can pass it and still be refused by the live cross-check.
 
-## 4. [-] Block 14 Phase 5 — first-launch setup — **rig gate required**
+## 4. [x] Block 14 Phase 5 — first-launch setup — **CLOSED 2026-08-02**
 
 Branch: `design33/first-launch-setup`
 
@@ -1148,19 +1148,19 @@ Suite at `b67fd08`: **1320 passed / 99 skipped / 3 expected warnings.**
 
 Post-merge design gate:
 
-- [ ] Update design/33 with the setup contact semantics actually measured, every
+- [x] Update design/33 with the setup contact semantics actually measured, every
       unavoidable device initialization observed, the decisions the flow demands,
       the cases it refuses, and the exact ordering guarantee. Retire the "later
       work" framing at `:347`.
-- [ ] Tick the two Phase-wide Block 14 rows carried into block 1.
-- [ ] **Reconcile the "never a default" rule with finding 2.** The rule as
+- [x] Tick the two Phase-wide Block 14 rows carried into block 1.
+- [x] **Reconcile the "never a default" rule with finding 2.** The rule as
       written ("Driver technical ranges, current values, allowed values … are
       never used as safety limits or answer defaults") is now scoped: MM's own
       writability and value-domain metadata *is* the classification default;
       technical ranges remain barred from becoming safety bounds on hazardous
       axes. design/33 and this file's block 4 item text both say the unscoped
       version and must be corrected to whatever ships.
-- [ ] **Record the startup refusal-severity taxonomy** from findings 3–5 in
+- [x] **Record the startup refusal-severity taxonomy** from findings 3–5 in
       design/33 §authorization: which diagnostics refuse the process, which
       demote a claim and warn, and the rule that decides. Four specific
       contradictions the implementer flagged, all to be corrected to what
@@ -1178,6 +1178,12 @@ Post-merge design gate:
          (`_has_emu_config`).
       Defer writing this until the re-gate passes, so the taxonomy and the
       measured rig evidence are reconciled in one pass rather than twice.
+
+**Block order after 4, decided with the operator 2026-08-02: 4c, then 4b, then
+5.** 4c makes three of M5's five stages moveable, which matters more day to day
+than gain or config hygiene. **They must not run concurrently** despite looking
+independent: 4b adds the `bounded-numeric` default to the interview and 4c adds
+per-stage travel questions, so both edit `first_launch.py`.
 
 ## 4b. [ ] The `bounded-numeric` typed actuator — gain and its kin
 
@@ -1287,7 +1293,7 @@ Post-merge design gate:
 - [ ] Record the three-kind taxonomy and the not-dose-bearing rationale in
       design/33, alongside the refusal-severity taxonomy from Block 4.
 
-## 4c. [ ] Reachable non-core stages — `named_stages` is never emitted
+## 4c. [-] Reachable non-core stages — `named_stages` is never emitted
 
 Branch: `design33/setup-named-stages`. Depends on 4b only for ordering, not
 mechanism: **no schema change is needed**, `named_stages` already exists

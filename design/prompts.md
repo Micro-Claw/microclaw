@@ -3962,3 +3962,58 @@ disagrees. It was moved there because it had been mis-executed across several
 sessions while living only in checklists and memory: `CLAUDE.md` loads
 automatically, a checklist has to be opened, and a memory that already stated
 the runbook rule was recalled and still not applied.]
+
+[Block 4 (checklist v2, first-launch setup) closed 2026-08-02, merged `6266807`
+after five gate rounds. Coordination notes for a cold session.
+
+The block's shape: three demo rounds and two M5 rounds, and the *last* two
+findings were the serious ones. Rounds 1-3 were usability -- ~90 questions with
+no defaults, then 24, then 22 of which about half were Enter-acceptable. Rounds
+4-5 were correctness, and neither defect was reachable from the demo rig.
+Generalisable lesson: **a simulated rig cannot fail the ways a real one does.**
+The demo camera runs at binning 1 (hiding a byte cap that was wrong by binning
+squared), publishes allowed values where real adapters publish none (hiding the
+StateDevice classification defect), and has one focus device where M5 has four
+(hiding that a writable `Core.Focus` re-aims every reviewed stage bound).
+
+Three process failures worth not repeating.
+
+1. **The comparison step produced the answer a round before anyone read it.**
+   `g4-vs-deployed.diff` in the round-4 bundle contained
+   `- {device: Thorlabs Filter Wheel, property: State}` against
+   `+# MM METADATA EXCLUSION: ... no discrete value domain`. The bundle was
+   reviewed without opening that file, and the next rig session could not move a
+   filter wheel. Read the diffs a gate asks for, including the exclusion
+   comments, not only the declarations.
+2. **A gate made entirely of static checks passed a profile that could not run
+   the rig.** Generate, validate, compare -- none of them asks whether the thing
+   works. G4b was added for exactly this: set `reviewed: true`, start a session,
+   move the hardware. Every future config-authoring gate needs a step of that
+   shape.
+3. **Unanswerable mandatory questions produce worse safety outcomes than
+   defaults.** Twice, measurably: a full-scale question read as a minimum
+   declared a 75 mW laser at 0.01 mW, and an unexplained dose threshold was
+   answered `5000000000000000`, disabling the only confirmation that measures
+   light. Where evidence establishes a domain, propose it; where it does not,
+   exclude with a printed reason and a named way back in. Do not ask a question
+   the operator has no way to answer.
+
+Two operator corrections that changed the work rather than just the wording.
+The "never use a driver range as a default" rule was reversed for bounds, on the
+operator's explicit reaffirmation after the coordinator flagged it -- with the
+value labelled as a driver range, Enter-acceptance as an explicit act, and
+accepted-versus-typed recorded per answer. And M5's deployed config, which the
+runbook called an independently hand-authored reference, is per the operator an
+earlier Microclaw's output; the comparison is a difference-finder, not an oracle.
+
+Coordinator fixes made directly on the branch rather than delegated, all small
+and all verified against captured rig data rather than fixtures: the dose-
+confirmation default, the `java.awt.Rectangle` ROI read, the StateDevice
+classification, the Core device-assignment exclusion, and the enable-detector
+correction. The implementation agent's own two rounds were accepted on the first
+pass the second time -- the returned findings are recorded in the checklist.
+
+Deferred out of this block, deliberately: `bounded-numeric` and the
+`rig_profile` rename to 4b, `named_stages` to 4c (three of M5's five stages are
+unreachable until it lands), deployed-config hygiene to 5. Operator asked for 4c
+before 5, since moveable stages matter more day to day than config hygiene.]

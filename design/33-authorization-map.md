@@ -344,7 +344,7 @@ before accepting a prompt, constructing the serving app, or invoking
 `run_agent_iter`/`execute_tool`. Keeping this in one shared function prevents the
 CLI and web paths from acquiring subtly different safety gates.
 
-## Populating the profile: first-launch setup (implemented; rig gate pending)
+## Populating the profile: first-launch setup (landed and rig-gated 2026-08-02)
 
 `microclaw first-launch-setup --out <safety_config.yaml>` implements the
 restricted interactive path. `microclaw init` still copies the example YAML;
@@ -354,9 +354,10 @@ the setup command instead resolves the bootstrap problem as follows:
    any mutation tools.
 2. Disconnect, then walk the operator through the inventory's separate facts,
    heuristic-candidate, and human-decision regions. Require explicit decisions
-   and human-entered limits, and write an unreviewed profile. Observed current
-   values, allowed values, and driver technical ranges are never defaults or
-   profile values.
+   and human-entered limits, and write an unreviewed profile. **Observed current
+   values are never defaults or profile values. Allowed values and driver
+   technical ranges are — see "Phase 5 landed" below, which scopes this rule to
+   what shipped after five gate rounds.**
 3. Require the operator to review the complete file and mark it reviewed.
 4. Restart normally, validate the file before controller construction, then
    perform the authoritative live-device cross-check before enabling tools.
@@ -1200,3 +1201,220 @@ suspension of the completeness claim — but silence was not.
 The optional fictional-example-value detector (flagging limits still equal to
 `safety_config.example.yaml`) was **skipped** as marked defence-in-depth. The
 `microclaw init` copy-the-example path that motivates it is Block 5's subject.
+
+## Phase 5 landed: first-launch setup (2026-08-02, checklist v2 Block 4)
+
+Merged `6266807` after five gate rounds — three on the demo core, two on M5 —
+and 1320 passed / 99 skipped / 3 expected warnings. This section records what was
+*measured*, and corrects the parts of this document and of
+`33-block14-phase5-dangling-impact-summary.md` that the measurements contradict.
+Where they disagree with the prose above, this section wins.
+
+### The rule "driver ranges are never defaults" is now scoped, not absolute
+
+As written above and in the dangling-impact summary, that rule barred technical
+ranges and allowed values from being *answer defaults* as well as safety bounds.
+Round 1 failed the gate partly because of it: the interview asked ~90 questions
+with no proposals, and the operator was asked to classify
+`Camera.TestProperty1..6` with no statement of what the words meant.
+
+What shipped, and what the rule now means:
+
+- **Micro-Manager's writability and value-domain metadata is the classification
+  default.** `read_only`, `pre_init`, `allowed_values`, `has_limits` and the
+  reported type decide the proposed classification. This is the same information
+  the Device Property Browser renders as enabled/disabled and as combo box versus
+  slider.
+- **Driver technical ranges are proposed, Enter-acceptable defaults for bounds**,
+  including on stage travel and maximum exposure — the two most hazardous axes in
+  the file. Operator decision, 2026-08-01, reaffirmed when the coordinator
+  flagged the reversal. Conditions: the value is labelled as the driver's
+  technical range and never as a reviewed bound; accepting it is an explicit
+  keystroke; and the transcript records accepted-default versus typed-value for
+  every such answer (`PROPOSAL ACCEPTED` / `OPERATOR OVERRIDE`).
+- **Observed current values remain barred entirely**, as does any inferred
+  physical kind or unit. That part of the original rule is unchanged.
+
+The rationale for the reversal is empirical rather than convenience. An
+unanswerable mandatory question does not produce caution, it produces a made-up
+answer: M5's operator, asked for a "native full scale" with no proposal, read it
+as a minimum, was refused for entering `0`, and entered `0.01` — declaring a
+75 mW laser at a full scale of 0.01 mW. The same run answered an unexplained
+illuminated-time confirmation threshold with `5000000000000000`, disabling the
+only confirmation that measures light on the sample. **A default the operator can
+see and override is safer than a question they cannot answer.**
+
+### Refusal severity: which diagnostics refuse the process, which demote a claim
+
+Round 1's generated profile validated offline and then would not start. Nineteen
+properties the operator had classified `categorical` were each fatal, as was one
+missing preset and a missing EMU configuration. None of them was an undeclared
+hazard; every one was a claim the config made that the rig could not corroborate.
+
+The rule that now decides severity: **a claim the rig cannot corroborate is
+dropped and reported, which strictly narrows authority. An undeclared hazard
+still refuses the process.** Block 2's undeclared-emission gate is the second
+shape and stays fail-closed.
+
+Four statements elsewhere in this document are corrected by what shipped in
+`design35/startup-refusal-severity`:
+
+1. A categorical raw write proven continuous by the live rig was described as a
+   startup error. It now demotes to `excluded` and startup continues.
+2. Declared/live property mismatches were described generally as startup
+   failures. An absent declared device or property now demotes.
+3. The channel-validation framing implied any preset mismatch fails startup. An
+   absent preset name now demotes; an unreadable or unsafely-expanding *present*
+   preset still refuses.
+4. This document did not distinguish the EMU plugin being installed from the rig
+   being EMU-configured. `Emu.jar` ships with every Micro-Manager, so its
+   presence is now only a path-location hint (`_has_emu`); `EMU/config.uicfg`
+   establishes EMU use (`_has_emu_config`).
+
+### Three deliberate loosenings of "require explicit operator classification"
+
+The dangling-impact summary requires explicit operator classification of *every*
+illumination enable, emission and power candidate. Three narrow exceptions
+shipped, each because the alternative was measurably worse:
+
+1. **ON/OFF values are proposed** from a two-value domain — from `allowed_values`,
+   or from a two-point integer `technical_range`, which is how M5's iChrome
+   reports its eleven enable/emission pairs. Without it the operator hand-typed
+   22 `1`/`0` answers, each logged `no proposal was available`. The
+   *classification* question keeps having no default.
+2. **The classification itself defaults to `emission/enable`** when the property
+   name matches `laser|power|emission|enable` *and* the domain is exactly two
+   on/off-shaped values. Deliberately narrower than the enable detector:
+   `state`, `shutter`, `operation` and `output` do not qualify. The error
+   direction is toward more gating, and the two-value condition means a
+   continuous power property can never take it.
+3. **Percent-versus-native is proposed from the property's unit suffix** —
+   `(%)` and a bare trailing `%` mean percent, any other parsed unit means
+   native — and **`full_scale` defaults to the driver's upper technical range**.
+
+### A StateDevice's `State` is a position, not an emission candidate
+
+Two corrections that only a live rig produced, both from M5.
+
+**Classification.** Micro-Manager publishes `allowed_values` for a StateDevice's
+`Label` and never for its `State`, which is an integer position. The generic
+"no discrete value domain" rule therefore wrote an *explicit exclusion* for every
+filter wheel, turret and slider position — and an explicit exclusion is stronger
+than silence, so it also defeats the Phase 1 fast-follow auto-classifier, which
+fills vacuums only. The consequence was found by using the rig, not by any gate
+step: a profile that passed every check could not move a filter wheel. The domain
+was never missing; it is the device's `state_labels`, which the inventory already
+records. A StateDevice's `State` with no allowed values but N state labels now
+defaults to categorical over positions 0..N-1.
+
+**Detection.** `_ENABLE_NAME` matches the bare word `state`, which dragged every
+wheel, turret and slider into the illumination interview to be classified as an
+emission path. The pattern is deliberately broad and was **not** narrowed
+generally; instead a StateDevice's `State` that reports state labels no longer
+matches. Measured across both captured inventories before the change: exactly one
+candidate is dropped — M5's `Thorlabs ELL6.State`, a lens slider — while all 21
+genuine M5 gates and the demo rig's `White Light Shutter.State` (a ShutterDevice,
+no state labels) are retained.
+
+**The laser-engine exception.** A StateDevice position on a device that also
+surfaced illumination candidates is excluded, with the reason printed and the
+path revisitable by exact name. M5's `iChrome-MLE-TCP` is both a StateDevice and
+a laser engine, and its labels are `State-0`, `State-1`, `State-2` — which
+establish nothing about what the positions do. An earlier version forced a
+question here; the operator accepted the proposal, widening authority on a laser
+engine, because the question was unanswerable. This is the Phase 1 fast-follow's
+laser-engine widening in a new form, and it fails closed for the same reason.
+
+### Core's device-assignment properties are never writable
+
+`Core.Camera`, `Core.Focus`, `Core.XYStage`, `Core.Shutter`, `Core.AutoFocus`,
+`Core.Galvo`, `Core.ImageProcessor`, `Core.SLM`, `Core.ChannelGroup` and
+`Core.Initialize` were being declared categorical, because Micro-Manager reports
+them writable with a discrete domain.
+
+They are structural identity, not controls. `stage.z_min/z_max` is enforced
+against whatever device Core names as the focus device, and M5 offers four
+(`PIZStage`, `SmarAct 1D`, `Thorlabs ELL17/ELL20`, `Thorlabs ELL20`), so one
+categorical write re-aims every reviewed bound at a different mechanism.
+`Core.Shutter` likewise moves the illumination gate, and `Core.ChannelGroup`
+changes what `channels.allowed` names. The same coupling runs through
+`_known_continuous_raw_pair`, which resolves focus, XY and camera live from Core.
+Setup now excludes all ten. `Core.AutoShutter` is deliberately not in the set: it
+is a real illumination control and keeps its own classification path.
+
+### Which section owns which write path
+
+Recorded here because the operator asked and the schema does not say. This is the
+interim standing in for the rename scoped as checklist Block 4b: `rig_profile`
+reads as a description of the rig, but the rig's description is the inventory —
+`rig_profile` is the raw-property write-authorization map, and it is not even the
+whole map.
+
+| Write path | Declared in | Bounded by | Tool |
+|---|---|---|---|
+| Raw property, discrete domain | `rig_profile.categorical_properties` | MM's own value domain | `set_device_property` |
+| Raw property, numeric | `rig_profile.typed_actuators` (kind + units + min/max) | the declared canonical range | `set_device_property` |
+| Raw property, never | `rig_profile.excluded_properties` | — | refused |
+| Core focus position | `stage.z_min/z_max` | reviewed µm bounds | `move_stage_z` |
+| Core XY position | `stage.x_min/x_max`, `y_min/y_max` | reviewed µm bounds | `move_stage_xy` |
+| Any other single-axis stage | `named_stages` (per device label) | reviewed µm bounds | `move_named_stage` |
+| Camera exposure | `camera.max_exposure_ms` | reviewed ms cap | `set_exposure` |
+| Illumination enable | `illumination.shutters` | blocking human confirmation | gated write |
+| Illumination power | `illumination.power_properties` | `max_power_percent`, step ratchet | gated write |
+| Acquisition dose | `acquisition.*` | per-plan and per-process budgets | acquisition tools |
+
+Three consequences worth stating explicitly, because each has already confused a
+reader or an implementer:
+
+- The last three rows of `rig_profile` are *generic* raw properties. The built-in
+  typed capabilities — `stage-position`, `exposure`, `illumination`,
+  `acquisition-dose` — own their own sections and are deliberately not duplicated
+  into `rig_profile`. `_known_continuous_raw_pair` blocks the raw-property route
+  for the core focus position, the core XY position, and camera exposure so the
+  two cannot diverge.
+- A typed actuator of kind `illumination-power` is the one thing declared twice
+  on purpose: it must appear in both `rig_profile.typed_actuators` and
+  `illumination.power_properties`, or startup refuses, so the percent cap and the
+  ratchet stay active.
+- `named_stages` and `typed_actuators` differ by *which API the motion goes
+  through*, not by hardware kind. `named_stages` bounds a device moved through
+  MMCore's stage API, keyed by device label, always µm. `typed_actuators` bounds
+  a raw property write, keyed by device *and* property, carrying its own unit.
+  The same stage can need both if both routes are wanted. Setup currently emits
+  no `named_stages` at all, so every single-axis stage that is not the core focus
+  device is unreachable after setup — three of M5's five. That is checklist
+  Block 4c.
+
+### What the rig gates established, and what they did not
+
+Measured on M5 at `a742d73`: 53 categorical, 0 typed actuators, 79 excluded, 21
+illumination shutters, 13 power properties; the generated profile passed offline
+validation, started a session, moved a filter wheel by `State`, and switched the
+Hamamatsu's `Sensor Cooler` to `ON` with `CCDTemperature` reading back −8 °C. On
+the demo core: 22 prompts, 12 needing a typed answer, and a profile that
+round-trips validator → review → session.
+
+Not established: that heuristic discovery found every physical emission path —
+the setup text says so itself and the operator classification step exists because
+of it; that the pre-validation enumeration window is closed, which this documents
+rather than closes; and anything about continuous focus, which Block 4 hard
+excludes.
+
+**A note on the deployed-versus-generated comparison.** The gate treated M5's
+deployed config as an independently hand-authored reference and argued the
+comparison was strong "precisely because the two were produced by different
+means". The operator states it was generated by an earlier Microclaw. The
+comparison is therefore a difference-finder, not an oracle: agreement between the
+two files is not corroboration. The Core device-assignment finding it produced is
+unaffected — it stands on its own argument and would be a defect with no deployed
+config in existence.
+
+### Sanctioned rig-fact exception in `microclaw/`
+
+The standing rule is that rig facts live in gate docs, design notes and rig
+profiles, never in `microclaw/`. `first_launch.py` breaks it twice, deliberately
+and with authorization from the block's item text: it matches the `ttl.state0`
+path shape (the known GenericDevice false positive, behind a required human
+confirmation) and the `pfs`/`perfect focus` name fragments (a hard exclusion).
+Neither carries a bound or a geometry, and both are shape heuristics rather than
+values. Recorded here rather than left silent.
