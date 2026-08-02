@@ -1,6 +1,6 @@
 # design/35 Block 4b — bounded-numeric actuator rig gate
 
-This gate verifies commit `a4d5fd7` (bounded-numeric clamp-only typed actuators,
+This gate verifies commit `50b1cbd` (bounded-numeric clamp-only typed actuators,
 stage-position alias refusal, unit-aware setup proposals, and the two
 acquisition-policy deprecations). The branch is
 `design33/bounded-numeric-actuator`. Do not merge it and do not deploy a
@@ -24,7 +24,7 @@ git switch design33/bounded-numeric-actuator > git-switch.txt 2>&1
 git pull --ff-only > git-pull.txt 2>&1
 git status --short > status.txt 2>&1
 git rev-parse HEAD > head.txt 2>&1
-git merge-base --is-ancestor a4d5fd7 HEAD
+git merge-base --is-ancestor 50b1cbd HEAD
 echo $LASTEXITCODE > implementation-ancestor-exit.txt
 python -m pytest -q > pytest.txt 2>&1
 ```
@@ -52,7 +52,8 @@ Read the contact warning before typing the exact acknowledgement. In the
 property interview, locate the active camera's `Gain` property. It must be
 proposed as `typed bounded numeric`, show Micro-Manager's technical minimum and
 maximum as Enter-acceptable bounds, and offer an Enter-acceptable unit proposal
-derived from the property name (or the reviewed `native` Gain convention).
+derived from the property name (or the general `native` fallback when the name
+carries no unit).
 Accept it only if it is meaningful for this camera; otherwise type the unit used
 by the camera documentation (for example `dB` or `e-/ADU`) exactly as you want
 it displayed. The generated entry must preserve the accepted text byte-for-byte:
