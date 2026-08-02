@@ -1179,13 +1179,14 @@ Post-merge design gate:
       Defer writing this until the re-gate passes, so the taxonomy and the
       measured rig evidence are reconciled in one pass rather than twice.
 
-**Block order after 4, decided with the operator 2026-08-02: 4c, then 4b, then
-5.** 4c makes three of M5's five stages moveable, which matters more day to day
-than gain or config hygiene. **They must not run concurrently** despite looking
-independent: 4b adds the `bounded-numeric` default to the interview and 4c adds
-per-stage travel questions, so both edit `first_launch.py`.
+**Block order after 4, set by the operator 2026-08-02: 4b, then 4c, then 5.**
+Both 4b and 4c come before 5; the operator's earlier "4c before 5" ordered those
+two only and did not move 4c ahead of 4b. **They must not run concurrently**
+despite looking independent: 4b adds the `bounded-numeric` default to the
+interview and 4c adds per-stage travel questions, so both edit
+`first_launch.py`.
 
-## 4b. [ ] The `bounded-numeric` typed actuator — gain and its kin
+## 4b. [-] The `bounded-numeric` typed actuator — gain and its kin
 
 Branch: `design33/bounded-numeric-actuator`. Depends on Block 4 merging.
 Assign against a clean `main`, not against the block 4 branch — decided
@@ -1293,7 +1294,7 @@ Post-merge design gate:
 - [ ] Record the three-kind taxonomy and the not-dose-bearing rationale in
       design/33, alongside the refusal-severity taxonomy from Block 4.
 
-## 4c. [-] Reachable non-core stages — `named_stages` is never emitted
+## 4c. [ ] Reachable non-core stages — `named_stages` is never emitted
 
 Branch: `design33/setup-named-stages`. Depends on 4b only for ordering, not
 mechanism: **no schema change is needed**, `named_stages` already exists
