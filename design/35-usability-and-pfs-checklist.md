@@ -132,8 +132,9 @@ Rig-facing commands must be PowerShell/cmd-safe (the rig is Windows): prefer
 | 4r1a | Usability | 4 | `design33/first-launch-setup` | `15d8d1b` | `c5746b9` (`d203753` rejected) | folded into block 4 round 2 | n/a — merges via block 4 | |
 | 4r1b | Usability | 4 | `design35/startup-refusal-severity` | `15d8d1b` | `2558583` (`16cc416` rejected alone) | folded into block 4 round 2 | `385049d` into block branch | |
 | 4b | Usability | 4 merged | `design33/bounded-numeric-actuator` | | | **required** | | |
-| 4c | Usability | 4 merged | `design33/setup-named-stages` | | | **required** | | |
-| 5 | Usability | 4b, 4c | `design33/deployed-config-hygiene` | | | required | | |
+| 4c | Usability | 4b merged | `design33/setup-named-stages` | | | **required** | | |
+| 4d | Usability | 4c merged | `design33/property-authorization-rename` | | | **required** | | |
+| 5 | Usability | 4b, 4c, 4d | `design33/deployed-config-hygiene` | | | required | | |
 | 6 | Nikon | probe S = pre-fix baseline; post-fix run owed | `design34/measured-position-readback` | | | required | | |
 | 7a | Nikon | scope: none; rig gate: probe 0 | `design34/continuous-focus-capability` | | | **required** | | |
 | 7b | Nikon | 7a | `design34/continuous-focus-policy` | | | **required** | | |
@@ -1179,12 +1180,24 @@ Post-merge design gate:
       Defer writing this until the re-gate passes, so the taxonomy and the
       measured rig evidence are reconciled in one pass rather than twice.
 
-**Block order after 4, set by the operator 2026-08-02: 4b, then 4c, then 5.**
-Both 4b and 4c come before 5; the operator's earlier "4c before 5" ordered those
-two only and did not move 4c ahead of 4b. **They must not run concurrently**
-despite looking independent: 4b adds the `bounded-numeric` default to the
-interview and 4c adds per-stage travel questions, so both edit
+**Block order after 4, set by the operator 2026-08-02: 4b, then 4c, then 4d,
+then 5.** Both 4b and 4c come before 5; the operator's earlier "4c before 5"
+ordered those two only and did not move 4c ahead of 4b. **They must not run
+concurrently** despite looking independent: 4b adds the `bounded-numeric`
+default to the interview and 4c adds per-stage travel questions, so both edit
 `first_launch.py`.
+
+**Scope split, operator ruling 2026-08-02 — the schema rename leaves 4b and
+becomes Block 4d.** Commit `05d5751` had scoped `rig_profile` →
+`property_authorization` into 4b alongside the new typed-actuator kind. Both are
+real, but one branch cannot carry them: the rename breaks every deployed config
+including M5's, so a failed 4b rig gate ("the gain write was refused") would be
+ambiguous between the new kind and the renamed keys, and rolling back either
+would drag the other — exactly the branch-boundary rule in `CLAUDE.md`. 4b now
+ships the kind and the two acquisition-policy decisions; 4d ships the rename,
+after 4c, before 5. The design/33 schema map (which section owns which write
+path) is owed regardless and stays where it was assigned, in Block 4's
+post-merge design gate.
 
 ## 4b. [-] The `bounded-numeric` typed actuator — gain and its kin
 
@@ -1235,46 +1248,43 @@ exactly why it needs a kind that feeds no ledger.
       bounds. Follow the existing typed-actuator precedent (`authorization.py`
       rejects typed bounds exceeding the driver technical range) rather than
       inventing a new rule.
-- [ ] **Decide `acquisition.confirm_above_bytes`'s fate** — deferred here from
-      Block 4 round 3 finding 8, because this is the block already opening
-      `safety.py`. The operator's position is that it should not exist: an
-      estimated byte count is a function of frames and geometry, so the frame and
-      duration confirmations already gate it. Round 3 only stopped *asking* for
-      it (guaranteed mode requires all nine `_ACQUISITION_POLICY_FIELDS` finite
-      and positive, `authorization.py:1056`, so it is derived to a non-binding
-      value instead). Deleting it touches `safety.py`, `config.py`,
-      `authorization.py`, `tools.py:112`, and `safety_config.example.yaml`, and
-      deployed configs — M5's included — already set the key, so choose between
-      removal and accepted-but-ignored deprecation rather than assuming removal.
-      `max_bytes` itself stays; it is a hard cap and round 3 derives its default.
-- [ ] **Decide whether `acquisition.max_session_illuminated_ms` deserves to
-      exist**, deferred here from Block 4 round 3 finding 6 for the same reason
-      as the byte threshold. The operator's position is that it should not force
-      a restart on someone who has been imaging for a while, and that a cap reset
-      by restarting the process is not a dose guarantee. Its one defensible
+**Both acquisition-policy decisions below were settled by the operator
+2026-08-02: deprecate, do not delete.** Deleting either key stops every deployed
+config that sets it — M5's included — from loading, which is a rig outage
+bought for a schema tidy. The implementer executes the decision; it is not
+reopened.
+
+- [ ] **`acquisition.confirm_above_bytes` — accepted-but-ignored deprecation.**
+      Deferred here from Block 4 round 3 finding 8, because this is the block
+      already opening `safety.py`. The operator's position is that it should not
+      exist: an estimated byte count is a function of frames and geometry, so the
+      frame and duration confirmations already gate it. Round 3 only stopped
+      *asking* for it (guaranteed mode requires all nine
+      `_ACQUISITION_POLICY_FIELDS` finite and positive, `authorization.py:1056`,
+      so it is derived to a non-binding value instead). Ship: the key still
+      parses and still validates if present, it leaves the guaranteed-mode
+      required set, and it no longer gates in `tools.py:112`. A config that sets
+      it keeps loading; first-launch setup stops emitting it, and
+      `safety_config.example.yaml` marks it deprecated rather than dropping it
+      silently. `max_bytes` itself stays; it is a hard cap and round 3 derives
+      its default.
+- [ ] **`acquisition.max_session_illuminated_ms` — optional, with the brake
+      framing stated.** Deferred here from Block 4 round 3 finding 6 for the same
+      reason as the byte threshold. The operator's position is that it should not
+      force a restart on someone who has been imaging for a while, and that a cap
+      reset by restarting the process is not a dose guarantee. Its one defensible
       function is a brake on a runaway in-process loop
-      (`AcquisitionLedger.reserve`, `acquisition.py:34`). Round 3 only proposes a
-      generous anchor so it cannot fire on a legitimate session. The options are
-      removal, keeping it as an explicitly optional key that guaranteed mode
-      stops requiring, or keeping it with the brake framing stated in the config
-      and the refusal message. Decide with the byte-threshold item, in one pass
-      over `_ACQUISITION_POLICY_FIELDS`.
-- [ ] **Rename and regroup the property-authorization schema.** Operator
-      finding, 2026-08-02: `rig_profile` reads as a description of the rig, but
-      the rig's description is the inventory — `rig_profile` is the raw-property
-      *write-authorization map*. Worse, it is not the whole map: stage travel is
-      in top-level `stage`, exposure in `camera`, illumination in `illumination`
-      (the four built-in typed capabilities, deliberately not duplicated), while a
-      typed `illumination-power` actuator must appear in **both**
-      `rig_profile.typed_actuators` and `illumination.power_properties` or startup
-      refuses. `typed_actuators` is not even a field of the `RigProfile` object
-      (`safety.py:200`) — it lives under that YAML key for historical reasons
-      only. Proposed shape: `property_authorization` with `allowed_categorical`,
-      `allowed_numeric`, `denied`. **A rename breaks every deployed config,
-      M5's included**, so decide migration (accept both keys for a release,
-      or a one-shot rewriter) rather than assuming a clean cut. Interim, owed
-      regardless: a schema map in design/33 saying which section owns which
-      write path, which is post-merge design-gate work for Block 4.
+      (`AcquisitionLedger.reserve`, `acquisition.py:34`). Ship: guaranteed mode
+      stops requiring it; unset means no session ledger cap and that must be
+      stated where the operator can see it; when it *is* set, both the config
+      comment and the refusal message say plainly that this is an in-process
+      runaway brake and that a restart resets it to zero. Do this in one pass
+      over `_ACQUISITION_POLICY_FIELDS` with the byte threshold, and say in the
+      block report what the required set now contains.
+- The `rig_profile` → `property_authorization` **rename left this block on
+  2026-08-02 and is now Block 4d.** See the scope-split note above block 4b. Do
+  not rename anything here; `bounded-numeric` lands under the existing
+  `rig_profile.typed_actuators` key, and 4d moves it with the rest.
 
 - [ ] Off-rig tests: the alias refusal above; clamp at both edges and outside;
       a declared unit round-tripping into the profile unaltered; setup emitting
@@ -1334,6 +1344,37 @@ must not collapse them:
 - [ ] Rig gate: move a non-core stage on M5 through `move_named_stage`, at a
       value inside the declared range and at one outside it, and show the second
       is refused.
+
+## 4d. [ ] Rename and regroup the property-authorization schema
+
+Branch: `design33/property-authorization-rename`. Depends on 4c merging. Split
+out of 4b by operator ruling 2026-08-02 (see the scope-split note above 4b): a
+config-breaking rename must not share a branch or a rig gate with a new
+actuator kind.
+
+Operator finding, 2026-08-02: `rig_profile` reads as a description of the rig,
+but the rig's description is the inventory — `rig_profile` is the raw-property
+*write-authorization map*. Worse, it is not the whole map: stage travel is in
+top-level `stage`, exposure in `camera`, illumination in `illumination` (the
+four built-in typed capabilities, deliberately not duplicated), while a typed
+`illumination-power` actuator must appear in **both**
+`rig_profile.typed_actuators` and `illumination.power_properties` or startup
+refuses. `typed_actuators` is not even a field of the `RigProfile` object
+(`safety.py:200`) — it lives under that YAML key for historical reasons only.
+
+- [ ] Proposed shape: `property_authorization` with `allowed_categorical`,
+      `allowed_numeric`, `denied`. Confirm the grouping against what 4b's third
+      kind and 4c's `named_stages` work actually left behind before committing
+      to those three names.
+- [ ] **A rename breaks every deployed config, M5's included.** Decide migration
+      — accept both keys for a release, or ship a one-shot rewriter — rather
+      than assuming a clean cut. Whichever is chosen, no rig may be left unable
+      to start by the merge.
+- [ ] First-launch setup emits the new shape; the offline validator names the
+      new paths in its diagnostics; both old-key and new-key configs are covered
+      by tests.
+- [ ] Rig gate: start a session on M5 under its **existing** deployed config
+      (whatever the migration promises), and under a regenerated one.
 
 ## 5. Deployed-config hygiene and the `init` path — rig config review
 
