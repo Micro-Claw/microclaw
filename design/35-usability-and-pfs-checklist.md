@@ -1360,10 +1360,59 @@ camera is unproven until M2 runs. The clamp, the refusals, the alias guards and
 the setup emission are all proven without it. Do not write the stronger claim
 into design/33's post-merge record.
 
+### Rig gate G1 round 1 — demo machine, 2026-08-02: **FAIL, one finding, fixed**
+
+Evidence: `block4b-20260802-133325`. G0 passed and the interview produced a
+profile that `check-config` accepted (exit 0), but the reviewed profile would
+not start a session:
+
+    Live rig authorization failed:
+    - Allowed channel preset 'Cy5' is not fully classified: Core.Shutter is excluded
+    - ... same for 'DAPI', 'FITC', 'Rhodamine'
+
+**This is not a Block 4b regression.** Block 4's `fa9e2ee` correctly made every
+`Core.*` device-assignment property non-writable — one categorical write to
+`Core.Focus` re-aims every reviewed stage bound. But setup recorded that as an
+*explicit* entry in `rig_profile.excluded_properties`, and
+`authorization.py:993` tests `pair in profile.excluded_properties` **before**
+reaching the purpose-built rule two branches below it (`:996`–`:1006`): a
+channel preset may retarget `Core.Shutter` when the device it selects is itself
+a declared illumination shutter, because the gate then still covers whatever it
+switches to. The explicit entry shadowed that allowance.
+
+The demo rig's four fluorescence presets each set `Core.Shutter = 'White Light
+Shutter'`, and the generated profile declares `White Light Shutter.State` under
+`illumination.shutters` — so all four should have authorized.
+
+Why no earlier gate caught it: `fa9e2ee` landed *after* Block 4's round-3 demo
+gate, and its own profiles show `Core.Shutter` as **categorical**, which is why
+their live sessions started. The only gate run after `fa9e2ee` was M5's G4b, and
+**M5 has no `Channel` group** — only `System` — so no preset could expand there.
+A latent defect with a one-rig blind spot on each side.
+
+It is in 4b's scope by the precedent Block 4 set for its own round-1 findings
+3–5: a startup-validator defect the block merely exposed still blocks the block's
+gate. Fixed by the coordinator at `865f536` (1343 passed / 99 skipped / 3
+expected warnings): setup records Core device-assignment properties in the
+header notes but never as explicit exclusions. **Silence is not permission** —
+guaranteed mode is an allowlist, so an undeclared property stays unwritable, and
+a retarget to an *undeclared* device still refuses with `core-device retarget is
+excluded`. Verified by replaying the operator's own captured inventory: the ten
+`Core.*` structural entries leave `excluded_properties` (`Core.TimeoutMs` stays,
+excluded on its own merits), while `Camera.Gain`, the 16 bounded numerics and
+`channels.allowed` are unchanged. Runbook re-pinned at `865f536`.
+
+The same explicit-exclusion-versus-vacuum shape as Block 4's round-4 field
+failure on StateDevice positions. Worth stating as a general rule in the
+post-merge design gate: **setup must not write an explicit exclusion for a
+property the authorization layer already owns with a conditional rule.**
+
 Post-merge design gate:
 
 - [ ] Record the three-kind taxonomy and the not-dose-bearing rationale in
       design/33, alongside the refusal-severity taxonomy from Block 4.
+- [ ] Record the explicit-exclusion-versus-vacuum rule from G1 round 1, and the
+      `Core.Shutter` preset allowance it was shadowing.
 
 ## 4c. [ ] Reachable non-core stages — `named_stages` is never emitted
 
