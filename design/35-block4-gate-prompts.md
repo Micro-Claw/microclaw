@@ -32,6 +32,22 @@ not read closely enough — **open `g4-vs-deployed.diff` before declaring G4 don
 **G6 is not repeated.** `authorization.py` has been byte-identical since round 2,
 so the demotion evidence from `block4-demo-20260801-144809` still stands.
 
+**This round needs a fresh enumeration on M5. Do not reuse a captured
+`inventory.json` via `--inventory`.** One of the round-5 fixes is in the
+*producer*: `_is_enable` no longer surfaces a StateDevice's `State` as an
+emission candidate. A captured inventory already contains the old candidate list,
+so replaying it reproduces the old interview — measured, on the round-4 bundle:
+replayed, `Thorlabs ELL6.State` is still asked and lands in
+`illumination.shutters`; freshly enumerated, it is not asked at all and lands in
+`categorical_properties`. Reuse remains correct for G2, which is testing refusal
+rather than classification.
+
+**G1–G3 are not repeated on the demo machine this round.** The changes since
+round 3 are classification-only and were measured offline against the captured
+demo inventory: 22 prompts, 12 of them typed, 38 categorical and 38 excluded,
+with no `Core.*` property categorical. The demo rig exercises no hazard these
+changes touch. If a demo pass is wanted for the record, it is G1 only.
+
 This gate is unusual in that **the connection itself is the thing under test.**
 `microclaw first-launch-setup` contacts hardware before any safety config
 exists to gate it. On a rig whose emission path is undeclared, enumeration may
