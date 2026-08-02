@@ -53,7 +53,7 @@ def test_reviewed_true_loads(tmp_path):
     assert c.constraints.stage.x_max == 100.0
 
 
-def test_missing_acquisition_section_names_file_and_all_nine_fields(tmp_path):
+def test_missing_acquisition_section_names_file_and_required_fields(tmp_path):
     p = _write(tmp_path, REAL[:REAL.index("acquisition:")])
     with pytest.raises(SafetyConfigError) as exc:
         ParsedSafetyConfig.from_yaml(str(p))
@@ -61,8 +61,7 @@ def test_missing_acquisition_section_names_file_and_all_nine_fields(tmp_path):
     assert str(p) in message
     for key in (
         "max_frames", "max_duration_s", "max_bytes", "max_illuminated_ms",
-        "max_session_illuminated_ms", "confirm_above_frames",
-        "confirm_above_duration_s", "confirm_above_bytes",
+        "confirm_above_frames", "confirm_above_duration_s",
         "confirm_above_illuminated_ms",
     ):
         assert key in message
@@ -73,7 +72,19 @@ def test_partial_acquisition_section_aggregates_every_missing_key(tmp_path):
     with pytest.raises(SafetyConfigError) as exc:
         ParsedSafetyConfig.from_yaml(str(_write(tmp_path, text)))
     message = str(exc.value)
-    assert message.count("missing required key") == 8
+    assert message.count("missing required key") == 6
+
+
+def test_deprecated_optional_acquisition_keys_still_load(tmp_path):
+    text = REAL.replace("  max_session_illuminated_ms: 1800000\n", "")
+    text = text.replace("  confirm_above_bytes: 5000000000\n", "")
+    parsed = ParsedSafetyConfig.from_yaml(str(_write(tmp_path, text)))
+    assert parsed.constraints.acquisition.max_session_illuminated_ms is None
+    assert parsed.constraints.acquisition.confirm_above_bytes is None
+
+    parsed = ParsedSafetyConfig.from_yaml(str(_write(tmp_path, REAL)))
+    assert parsed.constraints.acquisition.max_session_illuminated_ms == 1_800_000
+    assert parsed.constraints.acquisition.confirm_above_bytes == 5_000_000_000
 
 
 @pytest.mark.parametrize("bad", ["nope", "true", ".nan", ".inf", "0", "-1"])
@@ -265,12 +276,11 @@ def test_offline_clean_nulls_are_reported_as_live_startup_blockers(tmp_path):
     assert ParsedSafetyConfig.from_yaml(str(p))  # strict schema accepts this split
     result = validate_safety_config(p)
     blockers = [item for item in result.diagnostics if item.blocking]
-    assert len(blockers) == 10
+    assert len(blockers) == 8
     assert any("camera.max_exposure_ms" in item.message for item in blockers)
     for field in (
         "max_frames", "max_duration_s", "max_bytes", "max_illuminated_ms",
-        "max_session_illuminated_ms", "confirm_above_frames",
-        "confirm_above_duration_s", "confirm_above_bytes",
+        "confirm_above_frames", "confirm_above_duration_s",
         "confirm_above_illuminated_ms",
     ):
         assert any(f"acquisition.{field}" in item.message for item in blockers)
@@ -303,7 +313,12 @@ def test_degraded_null_caps_are_nonblocking_but_never_silent(tmp_path):
     assert not warning.blocking
     assert "runtime checks do not enforce" in warning.message
     assert "camera.max_exposure_ms" in warning.message
-    assert all(f"acquisition.{field}" in warning.message for field in fields)
+    required_fields = set(fields) - {
+        "max_session_illuminated_ms", "confirm_above_bytes",
+    }
+    assert all(f"acquisition.{field}" in warning.message for field in required_fields)
+    assert "acquisition.max_session_illuminated_ms" not in warning.message
+    assert "acquisition.confirm_above_bytes" not in warning.message
     assert "completeness claim" in live_check.message
     assert "explicitly suspended" in live_check.message
 

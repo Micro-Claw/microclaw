@@ -86,8 +86,7 @@ def validate_safety_config(path: str | Path | None = None) -> ConfigValidationRe
     acquisition = parsed.constraints.acquisition
     acquisition_fields = (
         "max_frames", "max_duration_s", "max_bytes", "max_illuminated_ms",
-        "max_session_illuminated_ms", "confirm_above_frames",
-        "confirm_above_duration_s", "confirm_above_bytes",
+        "confirm_above_frames", "confirm_above_duration_s",
         "confirm_above_illuminated_ms",
     )
     if parsed.rig_profile.mode == "guaranteed":

@@ -49,9 +49,11 @@ reviewed: true and perform a normal restart. Configuration is loaded and the
 live authorization map is built only at process startup, so edits require a
 restart; setup never hot-loads its output.
 
-max_session_illuminated_ms is an in-process runaway-loop brake. It accumulates
-shutter-open time from every acquisition in one Microclaw process and resets to
-zero at restart; it is not a sample-lifetime or cross-restart dose guarantee.
+If max_session_illuminated_ms is set, it is an in-process runaway-loop brake.
+It accumulates shutter-open time from every acquisition in one Microclaw process
+and resets to zero at restart; it is not a sample-lifetime or cross-restart dose
+guarantee. Setup leaves it unset, so there is no session ledger cap unless the
+operator deliberately adds one during review.
 
 Heuristic candidates are questions, not proof. Discovery may miss physical
 emission paths. Micro-Manager writability and value-domain metadata provide
@@ -622,7 +624,7 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
     say("DERIVED PROPERTY PROPOSAL (from Micro-Manager metadata)")
     labels = {
         "c": "categorical", "a": "typed absolute position", "x": "excluded",
-        "u": "unresolved", "n": "bounded numeric, excluded pending typed semantics",
+        "u": "unresolved", "n": "typed bounded numeric",
     }
     dedicated: set[str] = set()
     for path in all_candidates:
@@ -820,12 +822,12 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
             )
             continue
         needs_question = not bulk or path in revisit or bool(recommendation)
-        role = "x" if default_role == "n" else default_role
+        role = default_role
         if needs_question:
             role = _choice(
                 f"Writable property {path} [{labels[default_role]}: {evidence}]{recommendation}",
-                {"c": "categorical", "a": "typed absolute position", "x": "exclude", "u": "unresolved"}, ask, say,
-                default="x" if default_role == "n" else default_role,
+                {"c": "categorical", "a": "typed absolute position", "n": "typed bounded numeric", "x": "exclude", "u": "unresolved"}, ask, say,
+                default=default_role,
             )
         if role == "c":
             categorical.append({"device": device, "property": prop})
@@ -851,6 +853,16 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
             typed.append({
                 "device": device, "property": prop, "kind": "absolute-position",
                 "units": "um", "minimum": low, "maximum": high,
+            })
+        elif role == "n":
+            unit = _text(
+                f"Operator-supplied unit string for {path}; recorded and enforced verbatim",
+                ask, say,
+            )
+            low, high = _bounds(path + f" in {unit}", ask, say, default_bounds)
+            typed.append({
+                "device": device, "property": prop, "kind": "bounded-numeric",
+                "units": unit, "minimum": low, "maximum": high,
             })
         else:
             excluded.append({"device": device, "property": prop})
@@ -920,12 +932,11 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
         "continuously open = 60 × 1000 ms",
         min(minute_ms, acquisition["max_illuminated_ms"]), ask, say,
     )
-    day_ms = 24 * 60 * 60 * 1000
-    acquisition["max_session_illuminated_ms"] = _positive_default(
-        "hard maximum shutter-open time accumulated across every acquisition in one Microclaw process; "
-        "restart resets it to zero. Runaway-loop brake, not a dose guarantee. Real-world anchor: "
-        "one full day continuously open = 24 × 60 × 60 × 1000 ms",
-        day_ms, ask, say,
+    say(
+        "SESSION RUNAWAY BRAKE UNSET: acquisition.max_session_illuminated_ms is optional. "
+        "There is no session ledger cap unless you add one during review. If set, it is only "
+        "an in-process runaway-loop brake; restarting resets the ledger to zero, so it is not "
+        "a sample-lifetime dose guarantee."
     )
     geometry = facts.get("camera_geometry")
     current_width = geometry.get("image_width") if isinstance(geometry, dict) else None
@@ -960,11 +971,6 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
             "Microclaw cannot derive raw payload bytes, so the operator must supply the hard cap."
         )
         acquisition["max_bytes"] = _positive("hard maximum raw payload bytes", ask, say)
-    acquisition["confirm_above_bytes"] = acquisition["max_bytes"]
-    notes.append(
-        "BYTE CONFIRMATION INERT: acquisition.confirm_above_bytes equals max_bytes; "
-        "frame and duration confirmations gate the same geometry-derived quantity before the hard byte cap refuses it."
-    )
 
     illumination: dict = {
         "require_confirm_on_enable": True,

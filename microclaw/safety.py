@@ -73,8 +73,8 @@ class ForbiddenProperty:
     property: str
 
 
-TypedActuatorKind = Literal["absolute-position", "illumination-power"]
-TypedActuatorUnits = Literal["um", "percent", "native"]
+TypedActuatorKind = Literal["absolute-position", "illumination-power", "bounded-numeric"]
+TypedActuatorUnits = str
 
 
 @dataclass(frozen=True)
@@ -409,11 +409,14 @@ class ParsedSafetyConfig:
             problem("reviewed", "missing required key")
         if "rig_profile" not in cfg:
             problem("rig_profile", "missing required declared rig profile")
+        required_acquisition_keys = section_keys["acquisition"] - {
+            "max_session_illuminated_ms", "confirm_above_bytes",
+        }
         if "acquisition" not in cfg:
-            fields = ", ".join(sorted(section_keys["acquisition"]))
+            fields = ", ".join(sorted(required_acquisition_keys))
             problem(
                 "acquisition",
-                "missing required acquisition budget section; add all nine fields: "
+                "missing required acquisition budget section; add these fields: "
                 + fields,
             )
 
@@ -497,7 +500,7 @@ class ParsedSafetyConfig:
         if isinstance(exposure, float) and exposure <= 0:
             problem("camera.max_exposure_ms", "must be greater than zero")
         if "acquisition" in cfg:
-            for key in section_keys["acquisition"] - acquisition_cfg.keys():
+            for key in required_acquisition_keys - acquisition_cfg.keys():
                 problem(f"acquisition.{key}", "missing required key")
         for key, value in acquisition_cfg.items():
             if isinstance(value, float) and value <= 0:
@@ -575,10 +578,12 @@ class ParsedSafetyConfig:
                 if key not in item:
                     problem(f"{location}.{key}", "missing required key")
             kind, units = item.get("kind"), item.get("units")
-            if kind not in ("absolute-position", "illumination-power"):
-                problem(f"{location}.kind", f"unsupported kind {kind!r}; expected 'absolute-position' or 'illumination-power'")
-            allowed_units = {"absolute-position": {"um"}, "illumination-power": {"percent", "native"}}.get(kind, set())
-            if units not in allowed_units:
+            if kind not in ("absolute-position", "illumination-power", "bounded-numeric"):
+                problem(f"{location}.kind", f"unsupported kind {kind!r}; expected 'absolute-position', 'illumination-power', or 'bounded-numeric'")
+            allowed_units = {"absolute-position": {"um"}, "illumination-power": {"percent", "native"}}.get(kind)
+            if kind == "bounded-numeric" and (not isinstance(units, str) or not units):
+                problem(f"{location}.units", "bounded-numeric requires a non-empty operator-supplied unit string")
+            elif allowed_units is not None and units not in allowed_units:
                 problem(f"{location}.units", f"unsupported units {units!r} for kind {kind!r}; expected one of {sorted(allowed_units)!r}")
             numbers = {}
             for key in ("minimum", "maximum", "full_scale"):
@@ -597,10 +602,21 @@ class ParsedSafetyConfig:
             identity = TypedActuatorId(item.get("device"), item.get("property"))
             if identity in typed_policies:
                 problem(location, f"duplicate device/property pair {(identity.device, identity.property)!r}")
-            elif (kind in ("absolute-position", "illumination-power") and units in allowed_units
+            elif (kind in ("absolute-position", "illumination-power", "bounded-numeric")
+                  and (allowed_units is None or units in allowed_units)
                   and "minimum" in numbers and "maximum" in numbers):
                 typed_policies[identity] = TypedActuatorPolicy(
                     kind, units, numbers["minimum"], numbers["maximum"], numbers.get("full_scale")
+                )
+        illumination_pairs = {
+            (item.get("device"), item.get("property"))
+            for item in shutters_cfg + power_cfg
+        }
+        for identity, policy in typed_policies.items():
+            if policy.kind == "bounded-numeric" and (identity.device, identity.property) in illumination_pairs:
+                problem(
+                    "rig_profile.typed_actuators",
+                    f"bounded-numeric pair {(identity.device, identity.property)!r} aliases a declared illumination capability; illumination paths must retain their dedicated gate",
                 )
         for index, item in enumerate(power_cfg):
             location = f"illumination.power_properties[{index}]"
@@ -751,7 +767,7 @@ class SafetyGuard:
         )
 
     def check_typed_actuator(self, device: str, prop: str, value: str) -> None:
-        """Convert a declared raw write and bound its canonical absolute effect."""
+        """Convert when required and bound a declared raw write."""
         policy = self._typed_actuators.get(TypedActuatorId(device, prop))
         if policy is None:
             return
@@ -761,7 +777,9 @@ class SafetyGuard:
             assert policy.full_scale is not None
             canonical = raw * 100.0 / policy.full_scale
         if not policy.minimum <= canonical <= policy.maximum:
-            unit = "um" if policy.kind == "absolute-position" else "percent"
+            unit = policy.units if policy.kind == "bounded-numeric" else (
+                "um" if policy.kind == "absolute-position" else "percent"
+            )
             raise SafetyViolation(
                 f"Typed actuator {device}.{prop} has canonical value {canonical:g} {unit}; "
                 f"allowed absolute range is {policy.minimum:g}..{policy.maximum:g} {unit}."
@@ -849,6 +867,11 @@ class SafetyGuard:
                 raise SafetyViolation(
                     f"Acquisition {value_name}={values[value_name]:g} exceeds "
                     f"acquisition.{limit_name}={limit:g}."
+                    + (
+                        " This is an in-process runaway-loop brake, not a sample-lifetime "
+                        "dose guarantee; restarting Microclaw resets the ledger to zero."
+                        if limit_name == "max_session_illuminated_ms" else ""
+                    )
                 )
 
     @property

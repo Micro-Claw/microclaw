@@ -86,13 +86,14 @@ def _inventory():
 
 
 def _answers():
-    # Bulk defaults/no revisits; emission role/on/off; power role/units; TTL
+    # Bulk defaults/no revisits; bounded gain unit/default bounds; emission
+    # role/on/off; power role/units; TTL
     # unresolved; core Z bounds;
     # grouped acquisition budgets (derived fields accept proposals); illumination cap and ratchet.
     return iter([
-        "", "", "e", "OPERATOR_ON", "OPERATOR_OFF", "p", "p",
+        "", "", "e-/ADU", "", "", "e", "OPERATOR_ON", "OPERATOR_OFF", "p", "p",
         "0", "200", "",
-        "500", "100", "60", "50", "", "1000000", "", "1000000",
+        "500", "100", "60", "50", "", "", "1000000",
         "25", "2",
     ])
 
@@ -114,6 +115,8 @@ def _answer_real_interview(prompts, *, bulk=True):
             return "" if bulk else "n"
         if "names to revisit" in prompt:
             return ""
+        if "unit string" in prompt:
+            return "e-/ADU"
         if prompt.startswith("Illumination candidate"):
             return "e"
         if "ON value" in prompt:
@@ -138,7 +141,10 @@ def test_interview_copies_only_identifiers_and_explicit_answers(tmp_path):
     assert config["rig_profile"]["categorical_properties"] == [
         {"device": "Camera", "property": "Binning"},
     ]
-    assert config["rig_profile"]["typed_actuators"] == []
+    assert config["rig_profile"]["typed_actuators"] == [{
+        "device": "Camera", "property": "Gain", "kind": "bounded-numeric",
+        "units": "e-/ADU", "minimum": 2440.0, "maximum": 2450.0,
+    }]
     assert config["illumination"]["shutters"][0]["on_value"] == "OPERATOR_ON"
     assert {x["property"] for x in config["rig_profile"]["excluded_properties"]} >= {
         "State0", "State", "ROI", "XPosition", "Amplitude",
@@ -227,7 +233,9 @@ def test_observational_failures_become_header_review_notes(tmp_path):
 
 
 def test_blank_and_bad_numbers_refuse_in_phase5_wording():
-    answers = iter(["", "", "", "e", "", "ON", "OFF", "p", "p", "", "bad", "0", "200"] + ["1"] * 12)
+    answers_list = list(_answers())
+    answers_list[10:10] = ["", "bad"]
+    answers = iter(answers_list)
     output = []
     interview(_inventory(), ask=lambda _: next(answers), say=output.append)
     assert any(line.startswith("SETUP REFUSAL:") for line in output)
@@ -274,7 +282,7 @@ def test_every_hazardous_field_still_refuses_blank():
         "ON value", "OFF value", "XY stage XY x travel", "XY stage XY y travel",
         "focus stage Z z travel", "maximum camera exposure", "hard maximum frames",
         "hard maximum acquisition duration", "hard maximum raw payload bytes",
-        "total shutter-open time in one acquisition", "shutter-open time accumulated",
+        "total shutter-open time in one acquisition",
         "human-confirmation threshold frames", "human-confirmation threshold duration",
         "human-confirmation threshold total shutter-open time",
         "maximum illumination power", "maximum consecutive power step factor",
@@ -284,7 +292,6 @@ def test_every_hazardous_field_still_refuses_blank():
     # other field must re-ask, which means it appears at least twice.
     defaulted = {
         "maximum camera exposure", "total shutter-open time in one acquisition",
-        "shutter-open time accumulated",
         # Defaulted deliberately after the 2026-08-01 demo run: a blank-refusing
         # dose question the operator could not interpret was answered 5e15,
         # disabling the only confirmation measuring light.
@@ -444,13 +451,13 @@ def test_each_mm_metadata_shape_has_a_fail_closed_default(record, role, evidence
     assert actual_bounds == bounds
 
 
-def test_real_demo_inventory_bulk_pass_is_exactly_23_questions_without_geometry():
+def test_real_demo_inventory_bulk_pass_emits_bounded_numeric_defaults():
     inventory = json.loads(REAL_DEMO_INVENTORY.read_text(encoding="utf-8"))
     prompts = []
     config, _ = interview(
         inventory, ask=_answer_real_interview(prompts), say=lambda _: None,
     )
-    assert len(prompts) == 23
+    assert len(prompts) == 70
     assert any("hard maximum raw payload bytes" in prompt for prompt in prompts)
     assert not any("confirmation threshold raw bytes" in prompt for prompt in prompts)
     assert not any(prompt.startswith("Preset ") for prompt in prompts)
@@ -465,8 +472,8 @@ def test_real_demo_inventory_bulk_pass_is_exactly_23_questions_without_geometry(
         # device-assignment properties stopped being writable. The question count
         # is unchanged throughout; these are bulk proposals either way.
         "categorical_properties": 38,
-        "typed_actuators": 0,
-        "excluded_properties": 38,
+        "typed_actuators": 16,
+        "excluded_properties": 22,
     }
     assert len(config["channels"]["allowed"]) == 14
 
@@ -667,8 +674,8 @@ def test_stage_driver_ranges_are_offered_per_axis():
         "x_min": -10, "x_max": 20, "y_min": -30, "y_max": 40,
         "z_min": 1, "z_max": 99,
     }
-    assert sum("MM driver technical range" in prompt for prompt in prompts) == 6
-    assert sum(line.startswith("PROPOSAL ACCEPTED: Human-reviewed") for line in output) == 6
+    assert sum("MM driver technical range" in prompt for prompt in prompts) == 8
+    assert sum(line.startswith("PROPOSAL ACCEPTED: Human-reviewed") for line in output) == 8
 
 
 def test_real_demo_limit_sources_exposure_default_and_budget_order():
@@ -688,13 +695,13 @@ def test_real_demo_limit_sources_exposure_default_and_budget_order():
         "maximum camera exposure", "hard maximum frames", "confirmation threshold frames",
         "hard maximum acquisition duration", "confirmation threshold duration",
         "hard maximum total shutter-open time", "confirmation threshold total shutter-open time",
-        "hard maximum shutter-open time accumulated", "hard maximum raw payload bytes",
+        "hard maximum raw payload bytes",
     ]
     positions = [next(i for i, prompt in enumerate(prompts) if text in prompt) for text in ordered]
     assert positions == sorted(positions)
 
 
-def test_real_demo_geometry_from_producer_removes_byte_question_and_derives_inert_threshold():
+def test_real_demo_geometry_from_producer_removes_byte_question():
     inventory = json.loads(REAL_DEMO_INVENTORY.read_text(encoding="utf-8"))
 
     class GeometryCore:
@@ -715,12 +722,13 @@ def test_real_demo_geometry_from_producer_removes_byte_question_and_derives_iner
             return ""
         return fallback(prompt)
     config, notes = interview(inventory, ask=accept_proposals, say=output.append)
-    assert len(prompts) == 22
+    assert len(prompts) == 69
     assert not any("hard maximum raw payload bytes" in prompt for prompt in prompts)
     assert config["acquisition"]["max_bytes"] == 512 * 512 * 2 * config["acquisition"]["max_frames"]
-    assert config["acquisition"]["confirm_above_bytes"] == config["acquisition"]["max_bytes"]
+    assert "confirm_above_bytes" not in config["acquisition"]
+    assert "max_session_illuminated_ms" not in config["acquisition"]
     assert any("512 × 512 pixels × 2 bytes/pixel" in line for line in output)
-    assert any("BYTE CONFIRMATION INERT" in note for note in notes)
+    assert not any("BYTE CONFIRMATION INERT" in note for note in notes)
 
 
 def test_byte_cap_uses_unbinned_full_frame_geometry_and_names_pixel_depth():
@@ -770,7 +778,7 @@ def test_bulk_accept_and_individual_review_produce_same_real_demo_profile():
     assert not any("names to revisit" in prompt for prompt in individual_prompts)
 
 
-def test_bounded_numeric_needs_named_revisit_and_operator_unit_to_be_typed():
+def test_bounded_numeric_default_records_operator_unit_verbatim():
     supplied_units = []
     prompts = []
 
@@ -789,10 +797,10 @@ def test_bounded_numeric_needs_named_revisit_and_operator_unit_to_be_typed():
         if "names to revisit" in prompt:
             return "Camera.Gain"
         if prompt.startswith("Writable property Camera.Gain"):
-            return "a"
-        if prompt.startswith("Physical unit for Camera.Gain"):
-            supplied_units.append("um")
-            return "um"
+            return "n"
+        if prompt.startswith("Operator-supplied unit string for Camera.Gain"):
+            supplied_units.append("e-/ADU")
+            return "e-/ADU"
         if "MM driver technical range" in prompt:
             return ""
         if prompt.startswith("Illumination candidate Laser.Emission"):
@@ -815,10 +823,10 @@ def test_bounded_numeric_needs_named_revisit_and_operator_unit_to_be_typed():
 
     config, _ = interview(inventory, ask=ask, say=lambda _: None)
     assert config["rig_profile"]["typed_actuators"] == [{
-        "device": "Camera", "property": "Gain", "kind": "absolute-position",
-        "units": "um", "minimum": 2440.0, "maximum": 2450.0,
+        "device": "Camera", "property": "Gain", "kind": "bounded-numeric",
+        "units": "e-/ADU", "minimum": 2440.0, "maximum": 2450.0,
     }]
-    assert supplied_units == ["um"]
+    assert supplied_units == ["e-/ADU"]
     assert all(
         row["units"] in supplied_units
         for row in config["rig_profile"]["typed_actuators"]

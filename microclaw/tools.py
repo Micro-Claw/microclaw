@@ -109,7 +109,6 @@ def _authorize_acquisition(
         label for label, value, threshold in (
             ("frames", plan.frames, c.confirm_above_frames),
             ("duration", plan.estimated_duration_s, c.confirm_above_duration_s),
-            ("bytes", plan.estimated_bytes, c.confirm_above_bytes),
             ("illuminated time", plan.illuminated_ms, c.confirm_above_illuminated_ms),
         ) if threshold is not None and value > threshold
     ]

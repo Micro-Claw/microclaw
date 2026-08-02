@@ -10,7 +10,7 @@ from microclaw.safety import (
     ActuatorId, ForbiddenProperty, ParsedSafetyConfig, RangeEdge, RangePolicy,
     RigProfile, SafetyConfigError, SafetyConstraints, StageConstraints,
     SafetyGuard, SafetyViolation, TypedActuatorId, TypedActuatorPolicy,
-    TypedPowerProperty,
+    TypedPowerProperty, IlluminationProperty,
 )
 
 
@@ -42,6 +42,54 @@ def test_registry_schema_and_native_conversion_boundaries(tmp_path):
     ]
     assert guard.illumination_to_percent("Laser", "Power", 30) == 40
     assert guard.illumination_from_percent("Laser", "Power", 40) == 30
+
+
+def test_bounded_numeric_clamps_edges_echoes_verbatim_units_and_rejects_full_scale(tmp_path):
+    parsed = _yaml(tmp_path,
+        "  typed_actuators:\n"
+        "    - {device: Camera, property: Gain, kind: bounded-numeric, units: e-/ADU, minimum: -5, maximum: 8}\n")
+    policy = parsed.typed_actuators[TypedActuatorId("Camera", "Gain")]
+    assert policy.units == "e-/ADU"
+    guard = SafetyGuard(parsed.constraints)
+    guard.admit_typed_actuators(parsed.typed_actuators)
+    guard.check_typed_actuator("Camera", "Gain", "-5")
+    guard.check_typed_actuator("Camera", "Gain", "8")
+    for value in ("-5.001", "8.001"):
+        with pytest.raises(SafetyViolation, match=r"e-/ADU"):
+            guard.check_typed_actuator("Camera", "Gain", value)
+    with pytest.raises(SafetyConfigError, match="full_scale.*only valid"):
+        _yaml(tmp_path,
+            "  typed_actuators:\n"
+            "    - {device: Camera, property: Gain, kind: bounded-numeric, units: e-/ADU, minimum: -5, maximum: 8, full_scale: 10}\n")
+
+
+def test_bounded_numeric_does_not_enter_stage_or_dose_guards():
+    core = LiveCore(focus="Z")
+    guard = SafetyGuard(SafetyConstraints(
+        stage=StageConstraints(z_min=0, z_max=1),
+        acquisition=AcquisitionConstraints(max_session_illuminated_ms=1),
+        allowed_properties=[],
+    ))
+    guard.admit_typed_actuators({TypedActuatorId("Z", "Position (um)"):
+        TypedActuatorPolicy("bounded-numeric", "turns", 0, 100)})
+    guard.check_device_property(core, "Z", "Position (um)", "50")
+
+
+@pytest.mark.parametrize("section", [
+    "  shutters:\n    - {device: Camera, property: Gain}\n",
+    "  power_properties:\n    - {device: Camera, property: Gain, units: percent}\n",
+])
+def test_bounded_numeric_illumination_alias_is_offline_parse_refusal(tmp_path, section):
+    path = tmp_path / "safety.yaml"
+    path.write_text(
+        "schema_version: 2\nreviewed: true\n"
+        "rig_profile:\n  mode: guaranteed\n  categorical_properties: []\n  excluded_properties: []\n"
+        "  typed_actuators:\n    - {device: Camera, property: Gain, kind: bounded-numeric, units: dB, minimum: 0, maximum: 10}\n"
+        "illumination:\n" + section +
+        "acquisition: {max_frames: 1, max_duration_s: 1, max_bytes: 1, max_illuminated_ms: 1, confirm_above_frames: 1, confirm_above_duration_s: 1, confirm_above_illuminated_ms: 1}\n"
+    )
+    with pytest.raises(SafetyConfigError, match="aliases a declared illumination capability"):
+        ParsedSafetyConfig.from_yaml(str(path))
 
 
 @pytest.mark.parametrize("kind,units", [("velocity", "um"), ("absolute-position", "mm")])
@@ -121,6 +169,15 @@ def test_declared_bound_outside_technical_range_is_refused():
     policy = TypedActuatorPolicy("absolute-position", "um", 0, 250)
     ctrl, parsed = _direct(LiveCore(), typed={TypedActuatorId("Z", "Position (um)"): policy})
     with pytest.raises(RigAuthorizationError, match="driver-reported technical range"):
+        validate_live_rig(ctrl, parsed)
+
+
+def test_camera_exposure_cannot_be_declared_bounded_numeric():
+    core = LiveCore("CameraDevice", "Exposure", 100, device="Camera")
+    core.get_camera_device = lambda: "Camera"
+    policy = TypedActuatorPolicy("bounded-numeric", "ms", 0, 50)
+    ctrl, parsed = _direct(core, typed={TypedActuatorId("Camera", "Exposure"): policy})
+    with pytest.raises(RigAuthorizationError, match="aliases a built-in.*exposure"):
         validate_live_rig(ctrl, parsed)
 
 

@@ -247,10 +247,9 @@ def test_acquisition_report_names_all_policies_and_honest_session_scope():
         entry.path: entry.detail for entry in report.entries
         if entry.path.startswith("acquisition-policy:")
     }
-    assert len(policies) == 9
-    session = policies["acquisition-policy:max_session_illuminated_ms"]
-    assert "in-memory controller-session" in session
-    assert "resets on process restart" in session
+    assert len(policies) == 7
+    assert "acquisition-policy:max_session_illuminated_ms" not in policies
+    assert "acquisition-policy:confirm_above_bytes" not in policies
 
 
 def test_mda_remains_excluded_and_is_not_admitted_by_dose_policy():
