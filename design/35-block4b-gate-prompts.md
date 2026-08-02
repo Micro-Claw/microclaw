@@ -22,7 +22,7 @@ git switch design33/bounded-numeric-actuator > git-switch.txt 2>&1
 git pull --ff-only > git-pull.txt 2>&1
 git status --short > status.txt 2>&1
 git rev-parse HEAD > head.txt 2>&1
-git merge-base --is-ancestor 865f536 HEAD
+git merge-base --is-ancestor 3cfba0e HEAD
 echo $LASTEXITCODE > implementation-ancestor-exit.txt
 python -m pytest -q > pytest.txt 2>&1
 $Stamp = Get-Date -Format "yyyyMMdd-HHmmss"
