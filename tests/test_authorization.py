@@ -1276,3 +1276,37 @@ def test_a_ruling_on_one_device_leaves_other_state_devices_auto_classified():
     }
     authorize_property_write(ctrl, "Thorlabs Filter Wheel", "State")
     authorize_property_write(ctrl, "ELL6", "State")
+
+
+def test_preset_may_retarget_core_shutter_to_a_declared_shutter_device():
+    """The demo rig's four fluorescence channels, which Block 4b's G1 caught.
+
+    `Cy5`/`DAPI`/`FITC`/`Rhodamine` each set `Core.Shutter = 'White Light
+    Shutter'`, and `authorization.py` has a purpose-built rule permitting that
+    when the selected device is itself a declared illumination shutter — the
+    gate still covers whatever the preset switches to. First-launch setup was
+    writing an *explicit* `Core.Shutter` exclusion, which is tested first and
+    therefore shadowed the rule, refusing startup outright.
+    """
+    core = Core()
+    core.loaded_extra = ["White Light Shutter"]
+    core.presets["Cy5"] = [
+        {"device": "Core", "property": "Shutter", "value": "White Light Shutter"}
+    ]
+    illumination = IlluminationConstraints(shutters=[IlluminationProperty(
+        "White Light Shutter", "State", on_value="1", off_value="0"
+    )])
+    config = parsed(channels=["Cy5"], illumination=illumination)
+    report = validate_live_rig(Controller(core), config, guard=SafetyGuard(config.constraints))
+    assert report.authorized_presets == {"Cy5"}
+
+    # An explicit exclusion is what broke it, and it must still refuse a
+    # retarget to a device that is NOT a declared shutter.
+    core.presets["Bad"] = [
+        {"device": "Core", "property": "Shutter", "value": "Undeclared Shutter"}
+    ]
+    with pytest.raises(RigAuthorizationError, match="core-device retarget is excluded"):
+        validate_live_rig(
+            Controller(core),
+            parsed(channels=["Bad"], illumination=illumination),
+        )

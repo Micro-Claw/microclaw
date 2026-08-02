@@ -847,7 +847,21 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
 
         default_role, evidence, default_bounds = defaults[path]
         if default_role == "x" and bulk and path not in revisit:
-            excluded.append({"device": device, "property": prop})
+            # Core device-assignment properties are recorded but never written as
+            # an *explicit* exclusion. `authorization.py` owns them with a
+            # purpose-built rule: a channel preset may retarget `Core.Shutter`
+            # when the device it selects is itself a declared illumination
+            # shutter, so the gate still covers whatever it switches to. That
+            # allowance sits behind a generic `pair in excluded_properties`
+            # test, so an explicit entry shadows it and refuses every preset
+            # that names a shutter — which is how the demo rig's four
+            # fluorescence channels stopped working. Silence is not permission:
+            # guaranteed mode is an allowlist, so an undeclared property is
+            # still unwritable. This is the same explicit-exclusion-versus-
+            # vacuum defect Block 4's round-4 field failure hit on StateDevice
+            # positions.
+            if not _core_structural(item):
+                excluded.append({"device": device, "property": prop})
             notes.append(f"MM METADATA EXCLUSION: {path}; {evidence}.")
             continue
         recommendation = " (known TTL.State0 false-positive shape; exclusion is recommended but requires your confirmation)" if path.casefold().endswith("ttl.state0") else ""
@@ -937,7 +951,11 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
                 "units": unit, "minimum": low, "maximum": high,
             })
         else:
-            excluded.append({"device": device, "property": prop})
+            # Same rule as the bulk path above: a Core device-assignment
+            # property is recorded but never written as an explicit exclusion,
+            # so it cannot shadow authorization.py's Core.Shutter preset rule.
+            if not _core_structural(item):
+                excluded.append({"device": device, "property": prop})
             wording = "OPERATOR EXCLUSION" if role == "x" else "UNRESOLVED PROPERTY"
             notes.append(f"{wording}: {path}; no authorization was inferred.")
 

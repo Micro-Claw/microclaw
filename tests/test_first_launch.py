@@ -599,12 +599,18 @@ def test_real_demo_inventory_bulk_pass_emits_bounded_numeric_defaults():
         # Six moved from excluded to categorical when StateDevice positions began
         # reading their state labels: Dichroic, Emission, Excitation, LED,
         # Objective and Path .State — every one a selector whose .Label was
-        # already categorical. Ten then moved the other way when Core's
-        # device-assignment properties stopped being writable. Unitless bounded
-        # numerics now move from excluded to typed bounded-numeric.
+        # already categorical. Unitless bounded numerics then moved from
+        # excluded to typed bounded-numeric. Finally the ten Core
+        # device-assignment properties left excluded_properties entirely: they
+        # are still unwritable (guaranteed mode is an allowlist, so silence
+        # denies), but an *explicit* entry shadowed authorization.py's rule
+        # permitting a channel preset to retarget Core.Shutter to a declared
+        # illumination shutter, which refused the demo rig's four fluorescence
+        # channels at startup. Core.TimeoutMs stays — it is excluded for having
+        # no value domain, not for being structural.
         "categorical_properties": 38,
         "typed_actuators": 16,
-        "excluded_properties": 22,
+        "excluded_properties": 12,
     }
     assert {
         (row["device"], row["property"], row["units"])
