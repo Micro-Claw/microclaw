@@ -1407,12 +1407,59 @@ failure on StateDevice positions. Worth stating as a general rule in the
 post-merge design gate: **setup must not write an explicit exclusion for a
 property the authorization layer already owns with a conditional rule.**
 
+### Rig gate G1 round 2 — demo machine, 2026-08-02: **partial pass, one step never ran**
+
+Evidence: `block4b-20260802-150128`, at `ea3dd75` with both pins `0` and
+`check-config` exit 0.
+
+Round 1's fix holds on the rig: startup now succeeds, and the four fluorescence
+presets authorize. The only demotions are the ten `channels.allowed` names that
+genuinely live in other config groups — the correct behaviour for an absent
+preset.
+
+Proven:
+
+- **`Camera.Gain` is reachable and writable through Microclaw as a
+  `bounded-numeric`** — `set_device_property Camera.Gain = '2'` succeeded and
+  read back. This is the block's headline goal, evidenced on a rig.
+- Exposure stays on the metered path: `set_exposure(12000)` was refused by
+  `check_exposure` against `camera.max_exposure_ms=10000`.
+- The illumination confirmation gate still binds: a declined
+  `White Light Shutter.State` enable was refused.
+
+**Not proven, and it is the block's central claim: the clamp.** Asked to set the
+gain to 10, the agent called `get_device_property_info`, read the driver limits,
+answered "10 is outside the Camera Gain's allowed range … so it would be
+rejected", and **never called `set_device_property`.** The history contains
+exactly one gain write, `'2'`. `check_typed_actuator` was never reached, so
+nothing here is evidence about `bounded-numeric` enforcement.
+
+This is the self-confirming-probe weakness in a new costume — the same failure
+design/33 `:796` records against Phase 3, except the thing standing in for the
+mechanism is the model's helpfulness rather than a script's. **A refusal the
+agent reasons its way to is not the guard refusing.** The gate step is reworded
+to force the tool call, and now carries a mechanical history check that must
+print `WRITE ATTEMPTED: True` and `REFUSAL RETURNED: True`; a transcript alone
+cannot pass it.
+
+Secondary finding, fixed at `3cfba0e` (1344 passed / 99 skipped / 3 expected
+warnings): **`get_device_property_info` reported only the driver's
+`lower_limit`/`upper_limit`, never the declared policy.** A reviewed bound exists
+precisely so it can be tighter than the hardware's, so an agent planning against
+driver limits plans against authority the guard will refuse. It now returns
+`declared_policy` alongside. Invisible in this run only because the accepted
+bounds equalled the driver range.
+
 Post-merge design gate:
 
 - [ ] Record the three-kind taxonomy and the not-dose-bearing rationale in
       design/33, alongside the refusal-severity taxonomy from Block 4.
 - [ ] Record the explicit-exclusion-versus-vacuum rule from G1 round 1, and the
       `Core.Shutter` preset allowance it was shadowing.
+- [ ] Record the G1 round 2 rule: **an agent-mediated gate step must assert on
+      the tool call, not the transcript.** Any future rig step whose pass
+      condition is "microclaw refused" needs a mechanical check that the call
+      was actually made.
 
 ## 4c. [ ] Reachable non-core stages — `named_stages` is never emitted
 
