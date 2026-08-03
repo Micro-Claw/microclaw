@@ -151,7 +151,7 @@ assistant's narration when judging whether a guard fired.
 | 4e | Usability | 4b merged | `design33/emission-path-discovery` (deleted) | `85398e8` | `bc40f18` + `d631a4f` (`39f69dd` returned) | M2 G1/G2, M5 G3, demo G3 all **PASS** 2026-08-03 | `9b88394` | **done** — design/33 §"Block 4e landed" |
 | 4f | Usability | 4e merged | `design33/channel-group-presets` | | | **required** | | |
 | 4c | Usability | 4f merged | `design33/setup-named-stages` | | | **required** | | |
-| 4g | Platform | none — may run concurrently | `design32/hook-hash-newline` | `4472892` | | **required** (any Windows rig) | | |
+| 4g | Platform | none — may run concurrently | `design32/hook-hash-newline` | `95ae192` | `50e5f66` + `d0bb602` | **required** (any Windows machine) | | |
 | 4d | Usability | 4c merged | `design33/property-authorization-rename` | | | **required** | | |
 | 5 | Usability | 4b, 4e, 4f, 4c, 4d | `design33/deployed-config-hygiene` | | | required | | |
 | 6 | Nikon | probe S = pre-fix baseline; post-fix run owed | `design34/measured-position-readback` | | | required | | |
@@ -1969,7 +1969,9 @@ channels. Of the three rigs only demo has a `Channel` group; M5 has only
 Branch: `design32/hook-hash-newline`. Depends on nothing; touches files no other
 queued block touches (`hook_manager.py`, `completed_dataset.py`), so it may run
 concurrently with 4f/4c in its own worktree. **Assigned 2026-08-03 from
-`4472892`.** Baselines measured by the coordinator: macOS **1345 passed / 99
+`95ae192`.** (This line and the ledger first said `4472892`, the commit
+before the assignment merge; the implementer flagged the discrepancy and was
+right — the branch base is `95ae192`.) Baselines measured by the coordinator: macOS **1345 passed / 99
 skipped / 3 expected warnings**; Windows **1311 passed / 23 failed / 115
 skipped**, the 23 being this block's subject.
 
@@ -2013,9 +2015,55 @@ accepted — but the feature does not work where it has to work.
 - [ ] Add a test that fails on POSIX today, by writing a `\r\n` file and
       round-tripping it. The current suite passes on POSIX precisely because it
       never exercises the difference, which is why this survived four blocks.
-- [ ] Rig gate on any Windows machine: save a hook, then load it through the
+- [-] Rig gate on any Windows machine: save a hook, then load it through the
       offline path and describe it. Both must succeed, and `pytest.txt` must
       show these 23 tests passing.
+
+### Implementation — pushed 2026-08-03, awaiting the Windows gate
+
+`50e5f66` accepted on its first round, plus a coordinator addition at
+`d0bb602`. Suite **1347 passed / 99 skipped / 3 expected warnings**, from a
+branch-point baseline of 1345 — the two new tests and no regressions.
+
+The convention chosen: **saved hooks are UTF-8 encoded once, written as bytes,
+and the pin is the sha256 of exactly those bytes.** One shared verifier,
+`verify_saved_hook_bytes`, is now used by all four sites that had drifted apart
+— `save_hook`, `load_hook_class`, `describe_saved_hook`, and
+`_load_saved_adapter`. That is the part that matters: the defect was never one
+bad call site, it was three sites and two conventions.
+
+**Migration: old pins are neither accepted nor silently rewritten.** A legacy
+newline-normalized pin is *detected* (`_legacy_text_sha256`) and reported
+distinctly — `legacy_newline_pin: true` in describe, and a load error naming
+review-and-re-save rather than the generic tampering message. Re-saving after
+review establishes a byte-exact pin. Note the blast radius is smaller than it
+looks: on POSIX the old pin already equalled the byte hash, because no
+translation occurred, so only hooks *saved on Windows* need migrating.
+
+Recovery is real, not nominal: `read_hook_from_file` reads the existing file and
+`save_hook` re-pins it, so a Windows user with an unloadable hook has a path
+that does not require regenerating the code. Verified by the coordinator.
+
+**The before/after claim was verified independently rather than accepted.** Both
+new tests were run against `main`'s code: both fail there, and pass on the
+branch. That is the whole proof obligation for this block, since the macOS suite
+was green through every one of the four blocks that shipped the defect.
+
+The audit came back clean and specific: `hook_decisions.py` writes and hashes the
+same bytes object; `rig_inventory.py` → `first_launch.inventory_sha256` writes
+first and hashes the resulting file, with no pre-write string digest to
+disagree with it; the text-written manifests in `tools.py` and
+`completed_dataset.py` record hashes of other artifacts and never claim to hash
+themselves. No second instance of the defect exists.
+
+**Coordinator addition, `d0bb602`.** G2 as written depended on the gate machine
+happening to own a hook pinned under the old convention; if it owns none — and
+nothing guarantees the demo machine does — the migration path would ship
+untested. Added `design/35-block4g-legacy-migration-check.py`, which builds a
+throwaway registry in a temp directory, plants a legacy-pinned hook, and walks
+refusal → review → re-save → reload. Run by the coordinator against the branch:
+all twelve checks pass, both refusal messages actionable. G2 is now the
+opportunistic step and G2a the guaranteed one.
 
 ## 4c. [ ] Reachable non-core stages — `named_stages` is never emitted
 
