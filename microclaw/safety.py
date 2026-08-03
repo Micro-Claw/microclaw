@@ -646,7 +646,11 @@ class ParsedSafetyConfig:
         if "property_authorization" in cfg:
             for key in {"denied"} - authorization_cfg.keys():
                 problem(f"property_authorization.{key}", "missing required key")
-        if mode == "guaranteed" and categorical_value is None:
+        if (
+            "property_authorization" in cfg
+            and mode == "guaranteed"
+            and categorical_value is None
+        ):
             problem(
                 "property_authorization.allowed_categorical",
                 "required in guaranteed mode, even when empty; denylist-only configs must migrate",

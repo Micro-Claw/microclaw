@@ -65,6 +65,7 @@ def test_old_authorization_key_is_refused_by_strict_schema(tmp_path):
     message = result.diagnostics[0].message
     assert "rig_profile: unknown top-level key" in message
     assert "property_authorization: missing required property authorization map" in message
+    assert message.count("\n") == 2
 
 
 def test_missing_acquisition_section_names_file_and_required_fields(tmp_path):
