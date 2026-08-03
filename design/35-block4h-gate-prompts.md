@@ -1,8 +1,9 @@
 # design/35 Block 4h — confirmation visibility gate
 
 This gate verifies branch `design33/confirmation-visibility`. The complete
-implementation is pinned at `3efecaf`; later runbook-only commits are valid
-descendants. Run this gate on the **demo machine only**. The `Core.Shutter`
+implementation is pinned at `518a90a`; later runbook-only commits are valid
+descendants. (`3efecaf` is an earlier, incomplete part of it -- pinning that
+alone would pass on a tree missing the redaction fix.) Run this gate on the **demo machine only**. The `Core.Shutter`
 retarget is a selection, not an emission, so optical containment is not needed.
 
 The narration is deliberately not the mechanical oracle. Preserve it as useful
@@ -17,7 +18,7 @@ git switch design33/confirmation-visibility > git-switch.txt 2>&1
 git pull --ff-only > git-pull.txt 2>&1
 git status --short > status.txt 2>&1
 git rev-parse HEAD > head.txt 2>&1
-git merge-base --is-ancestor 3efecaf HEAD
+git merge-base --is-ancestor 518a90a HEAD
 echo $LASTEXITCODE > implementation-ancestor-exit.txt
 python -m pytest -q > pytest.txt 2>&1
 $Stamp = Get-Date -Format "yyyyMMdd-HHmmss"
@@ -29,8 +30,10 @@ Copy-Item status.txt,head.txt,implementation-ancestor-exit.txt,pytest.txt $Evide
 
 The ancestor command must exit `0` and the tree must be clean. Preserve
 `pytest.txt`. The Windows suite's hard condition is **0 failed**. Expect about
-**1342 passed / 115 skipped** based on the last demo run; report a small passed
-count difference instead of failing solely on that count.
+**1345 passed / 115 skipped**: macOS measures 1361 on this branch and Windows
+skips 16 of those rather than running them. Report a small difference in the
+*passed* count instead of failing solely on it -- a derived cross-platform count
+was wrong once already in Block 4g.
 
 Use the same reviewed demo safety profile that authorized the Block 4f DAPI
 selection. Start Microclaw normally and retain its history JSONL and separate
