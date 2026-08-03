@@ -132,7 +132,8 @@ Rig-facing commands must be PowerShell/cmd-safe (the rig is Windows): prefer
 | 4r1a | Usability | 4 | `design33/first-launch-setup` | `15d8d1b` | `c5746b9` (`d203753` rejected) | folded into block 4 round 2 | n/a — merges via block 4 | |
 | 4r1b | Usability | 4 | `design35/startup-refusal-severity` | `15d8d1b` | `2558583` (`16cc416` rejected alone) | folded into block 4 round 2 | `385049d` into block branch | |
 | 4b | Usability | 4 merged | `design33/bounded-numeric-actuator` | `578874e` | `3cfba0e` | G1 demo **PASS** (3 rounds); G2 M5 pending; M2 gain owed, non-blocking | | |
-| 4c | Usability | 4b merged | `design33/setup-named-stages` | | | **required** | | |
+| 4e | Usability | 4b merged | `design33/emission-path-discovery` | | | **required** | | |
+| 4c | Usability | 4e merged | `design33/setup-named-stages` | | | **required** | | |
 | 4d | Usability | 4c merged | `design33/property-authorization-rename` | | | **required** | | |
 | 5 | Usability | 4b, 4c, 4d | `design33/deployed-config-hygiene` | | | required | | |
 | 6 | Nikon | probe S = pre-fix baseline; post-fix run owed | `design34/measured-position-readback` | | | required | | |
@@ -1184,8 +1185,10 @@ Post-merge design gate:
       Defer writing this until the re-gate passes, so the taxonomy and the
       measured rig evidence are reconciled in one pass rather than twice.
 
-**Block order after 4, set by the operator 2026-08-02: 4b, then 4c, then 4d,
-then 5.** Both 4b and 4c come before 5; the operator's earlier "4c before 5"
+**Block order after 4: 4b, then 4e, then 4c, then 4d, then 5.** The operator
+set 4b/4c/4d/5 on 2026-08-02 and inserted **4e ahead of 4c on 2026-08-03**,
+after M2's gate found two live emission-path defects: the stage work should
+not be built on top of a known illumination gap. Both 4b and 4c come before 5; the operator's earlier "4c before 5"
 ordered those two only and did not move 4c ahead of 4b. **They must not run
 concurrently** despite looking independent: 4b adds the `bounded-numeric`
 default to the interview and 4c adds per-stage travel questions, so both edit
@@ -1480,16 +1483,137 @@ Full sequence, all five G1 steps:
 **G1 is closed. The remaining merge-blocking step is G2 on M5**; G3 (M2 gain
 imagery) stays owed and non-blocking.
 
+### Rig gate G3 — M2 (Andor iXon), 2026-08-03: **mechanism PASS, imagery owed**
+
+Evidence: `block4b-m2-20260803-081901`. Run early rather than deferred, because
+M2 became available. The bounded-numeric mechanism is proven on a real
+scientific camera:
+
+    Safety constraint prevented this action: Typed actuator Andor.Gain has
+    canonical value 1200 native; allowed absolute range is 3..1000 native.
+
+In-range writes of `25` and `600` each succeeded and read back; the refused
+`1200` left the value at `600`; gain was restored to `100`. `declared_policy`
+was reported beside the driver's `3..1000`. **G3's clamp and read-back steps are
+closed.** Outstanding is only the two-gain image comparison, blocked by a full
+`C:` drive on the rig — not by microclaw.
+
+**The gate could not run at all until the operator hand-edited the profile**,
+which is finding 3 below and was 4b's own defect.
+
+Three findings. Only the third is 4b's; the first two became **Block 4e**, and
+the fourth is registered as carried-forward.
+
+1. `Cobolt561.Laser`, the core shutter device's enable, was never discovered.
+   → Block 4e.
+2. A three-state shutter's `Auto` is writable with no confirmation. → Block 4e.
+3. **`Andor.Gain` was excluded by default — 4b's own round-4 rule, too broad.**
+   Round 4 excluded every bounded numeric on a device that surfaced any
+   illumination candidate. Andor surfaces its own `Shutter (External)` and
+   `Shutter (Internal)`, so the camera's gain was excluded — the block's
+   headline deliverable, on the first real camera it met. The rule's actual
+   hazard is a laser engine whose numerics redefine the emission envelope, and a
+   camera's numerics cannot gate light at the sample. Fixed at `5a6c6e2` by
+   scoping the bounded-numeric limb to devices MM does **not** type as
+   non-emitting, reusing `rig_inventory._NON_EMITTING_TYPES` rather than a new
+   name rule; the StateDevice-position limb is untouched. Measured on all three
+   real inventories: demo 16 and M5 36 unchanged with no iChrome switch
+   re-armed, M2 now declares `Andor.Gain`. Suite 1345.
+4. A full disk surfaced as `struct.error: unpack requires a buffer of 4 bytes`
+   with the hint `This may be a hardware error (device busy, stage at limit,
+   device not found) or a connection problem.` → carried-forward register.
+
 Post-merge design gate:
 
 - [ ] Record the three-kind taxonomy and the not-dose-bearing rationale in
       design/33, alongside the refusal-severity taxonomy from Block 4.
+- [ ] Record the round-4/G3 lesson: a rule keyed on "this device surfaced an
+      illumination candidate" catches cameras, which surface their own shutters.
+      Device *type* is the discriminator, not the presence of a candidate.
 - [ ] Record the explicit-exclusion-versus-vacuum rule from G1 round 1, and the
       `Core.Shutter` preset allowance it was shadowing.
 - [ ] Record the G1 round 2 rule: **an agent-mediated gate step must assert on
       the tool call, not the transcript.** Any future rig step whose pass
       condition is "microclaw refused" needs a mechanical check that the call
       was actually made.
+
+## 4e. [ ] Emission-path discovery and multi-state shutters — rig gate required
+
+Branch: `design33/emission-path-discovery`. Depends on 4b merging. Inserted
+ahead of 4c by operator decision 2026-08-03.
+
+Found by Block 4b's G3 on **M2, the first time that rig was ever enumerated**.
+Neither defect is 4b's code; both are discovery and illumination-schema
+surface, and both are live on a rig with four lasers. Evidence:
+`block4b-m2-20260803-081901`.
+
+### 1. A ShutterDevice's enable was never discovered
+
+`Cobolt561.Laser` — allowed values `Off`/`On`, device type **`ShutterDevice`** —
+was not surfaced as an illumination candidate, so setup never offered it and the
+generated profile declared no shutter for it. The operator added it by hand
+(`profile.reviewed.fixed.gain-allowed.yaml`).
+
+This is not a marginal miss: `Core.Shutter`'s allowed values on M2 are
+`['', 'Cobolt561']`, so **the undiscovered device is the rig's core shutter.**
+`_ENABLE_NAME` (`rig_inventory.py:48`) has no `laser` token and the property is
+named exactly `Laser`; the Luxx lasers were caught only because theirs are named
+`Laser Operation Select`, which matches `operation`.
+
+- [ ] Use the structural signal, not another name token: **Micro-Manager types
+      the device as a `ShutterDevice`.** A two-value on/off-shaped property on a
+      ShutterDevice is an emission gate by MM's own classification, and needs no
+      regex. Widening `_ENABLE_NAME` with `laser` would fix M2 and miss the next
+      vendor; the device type will not.
+- [ ] Measure the change against all three captured inventories before adopting
+      it, and report exactly which candidates appear and disappear per rig. The
+      pattern must not be narrowed for any other device type — the comment at
+      `rig_inventory.py:47` records why.
+- [ ] Consider whether the device named by `Core.Shutter` deserves a stronger
+      check than discovery: if the core shutter device has no declared shutter
+      property at all, that is a fail-closed condition, not a heuristic miss.
+
+### 2. A three-state shutter's middle value bypasses the confirmation gate
+
+`Andor.Shutter (Internal)` and `(External)` take `Open` / `Auto` / `Closed`. The
+generated profile declares them with `on_value: Open`, `off_value: Closed`.
+**Measured directly against `SafetyGuard` on 2026-08-03:**
+
+    'Open'   -> refused when the human declines   (gate works)
+    'Closed' -> permitted, no confirmation        (correct)
+    'Auto'   -> permitted, NO CONFIRMATION ASKED
+
+`check_illumination` (`safety.py:1064`) gates only `value == shutter.on_value`,
+and `check_raw_property_write` skips the categorical allowlist for illumination
+pairs — so a third value has no gate at all. On an Andor, `Auto` is the state
+that opens the shutter on **every exposure**: the value that emits most
+routinely is the one no human has to approve.
+
+- [ ] Operator decision 2026-08-03: **confirm-gate any value that is not
+      `off_value`**, rather than only exact `on_value`. Strictly more gating, no
+      schema change, and it fixes every multi-state shutter rather than Andor's.
+- [ ] Check the same asymmetry everywhere a declared value is compared for
+      equality rather than for membership — `shutter_all`, the ratchet, and the
+      EMU map. Report what you find rather than widening silently.
+- [ ] Off-rig tests must pin all three limbs (`on`, `off`, and a third value),
+      because the third is the one that had no coverage.
+
+Rig gate (M2 has the multi-state shutter and the Cobolt; M5 has neither):
+
+- [ ] Show `Cobolt561.Laser` is discovered and offered by setup without a hand
+      edit, and that the generated profile declares it.
+- [ ] Show a write of `Auto` to `Andor.Shutter (Internal)` now requires
+      confirmation, and that declining it refuses the write.
+- [ ] Confirm no previously-working illumination declaration stopped working on
+      M5 or the demo rig.
+
+Post-merge design gate:
+
+- [ ] Record in design/33 that illumination discovery keys off MM device typing
+      and not only property names, and that shutter gating is
+      not-`off_value` rather than exact-`on_value`. State the residual: this
+      still proves declared paths are gated, never that discovery found every
+      physical emission path.
 
 ## 4c. [ ] Reachable non-core stages — `named_stages` is never emitted
 
@@ -1991,6 +2115,18 @@ This is an inventory, not permission to close with unresolved blank work. Block
   next available and record the evidence against block 4b. Until then, no
   document may claim a bounded-numeric write was shown to change real acquired
   data. M5 cannot substitute — its Hamamatsu exposes no gain property.
+- **A full disk is reported as a hardware or connection fault.** M2, 2026-08-03
+  (`block4b-m2-20260803-081901/memory-issues.txt`): `run_timelapse` failed four
+  times with `error: unpack requires a buffer of 4 bytes` — ndstorage's index
+  unpacker hitting a truncated write on a pycromanager notification thread —
+  carrying `_HARDWARE_HINT`. The operator went looking at the microscope and
+  then deleted files, when the answer was free space. Two fixes, neither
+  scheduled: a storage-layer failure must not claim a hardware or connection
+  cause (Block 3's taxonomy, same shape as its `RigAuthorizationError` finding),
+  and microclaw already computes `estimated_bytes` for `max_bytes` — it can
+  compare that against free space on `save_dir` and refuse with a clear message
+  before the acquisition starts. Note `run_timelapse` also declares no artifact,
+  so its dataset is not downloadable; that is a separate register row.
 - **Clean hook save is not enforced in code** (design/32 §4). The gate is
   conditional on the advisory lint firing, while the system prompt claims hook
   saves are enforced. Independent security fix.
