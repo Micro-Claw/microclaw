@@ -34,13 +34,23 @@ git status --short > "$Evidence\status.txt" 2>&1
 git rev-parse HEAD > "$Evidence\head.txt" 2>&1
 git merge-base --is-ancestor 6262acb HEAD > "$Evidence\implementation-ancestor.txt" 2>&1
 echo $LASTEXITCODE > "$Evidence\implementation-ancestor-exit.txt"
+git merge-base --is-ancestor 577acc4 HEAD > "$Evidence\installer-fix-ancestor.txt" 2>&1
+echo $LASTEXITCODE > "$Evidence\installer-fix-ancestor-exit.txt"
 python -m pytest -q > "$Evidence\pytest.txt" 2>&1
 echo $LASTEXITCODE > "$Evidence\pytest-exit.txt"
 Copy-Item "design\35-block5-gate-prompts.md" "$Evidence\runbook.md"
 ```
 
-It worked when both exit files contain `0`, pytest has no failures, and
-`status.txt` is empty. Send back the complete evidence directory.
+Two ancestry pins, not one: `6262acb` is the `init`/detector/flush implementation
+and `577acc4` is the installer-boundary fix that followed review. Both are pinned
+by ancestry rather than by an exact tip hash, so amending this runbook cannot
+invalidate its own pin.
+
+It worked when every `*-exit.txt` above contains `0`, pytest reports no failures,
+and `status.txt` is empty. The expected suite result is **1377 passed, 99 skipped,
+3 warnings**; the 3 warnings are one `StarletteDeprecationWarning` and two
+`phase_cross_correlation` empty-image warnings, all pre-existing. Send back the
+complete evidence directory.
 
 ## G1 — demo machine, installer boundary, `init` redirect, and escape hatch
 
@@ -49,16 +59,27 @@ exist. First prove the installer does not invoke either command that can contact
 the rig, and prints setup only as a post-install instruction:
 
 ```powershell
-Select-String -Path "install.bat" -Pattern '^"%MC_EXE%" init$','^"%MC_EXE%" first-launch-setup' > "$Evidence\installer-rig-command-lines.txt" 2>&1
-echo $LASTEXITCODE > "$Evidence\installer-rig-command-lines-exit.txt"
-Select-String -Path "install.bat" -Pattern 'Run pycro-manager server on port 4827','echo     "%MC_EXE%" init' > "$Evidence\installer-next-steps.txt" 2>&1
-echo $LASTEXITCODE > "$Evidence\installer-next-steps-exit.txt"
+$RigCmds = @(Select-String -Path "install.bat" -Pattern '^"%MC_EXE%" init$','^"%MC_EXE%" first-launch-setup')
+$RigCmds > "$Evidence\installer-rig-command-lines.txt"
+$RigCmds.Count > "$Evidence\installer-rig-command-count.txt"
+$NextSteps = @(Select-String -Path "install.bat" -Pattern 'Run pycro-manager server on port 4827','echo     "%MC_EXE%" init')
+$NextSteps > "$Evidence\installer-next-steps.txt"
+$NextSteps.Count > "$Evidence\installer-next-steps-count.txt"
 ```
 
-It worked when the rig-command match exits `1` because installation invokes
-neither live setup command, while next-steps exits `0` and shows the ZMQ
-prerequisite before the printed `init` command. This is structural evidence, not
-a request to reinstall Microclaw on the rig.
+It worked when `installer-rig-command-count.txt` is `0` — installation invokes
+neither live setup command — and `installer-next-steps-count.txt` is `2`, with
+`installer-next-steps.txt` showing the ZMQ prerequisite at a lower line number
+than the printed `init` command. This is structural evidence, not a request to
+reinstall Microclaw on the rig.
+
+**Why counts and not exit codes.** `Select-String` is a cmdlet, and PowerShell
+sets `$LASTEXITCODE` only from *native* executables. Reading it after a cmdlet
+returns whatever the last `git`, `python`, or `microclaw` call left behind, so a
+match check written that way records a stale number and proves nothing. Every
+match step in this runbook therefore reports a count. Steps that invoke
+`microclaw`, `python`, or `git` are native and keep using `$LASTEXITCODE`
+correctly.
 
 Now exercise the human-facing command normally, without redirecting it. **Answer
 `N` at the prompt**; this step proves that declining writes nothing:
@@ -130,16 +151,20 @@ acquisition:
 '@ | Set-Content -Encoding utf8 $Distinct
 microclaw check-config $Distinct > "$Evidence\distinct-check.txt" 2>&1
 echo $LASTEXITCODE > "$Evidence\distinct-check-exit.txt"
-Select-String -Path "$Evidence\example-check.txt" -Pattern "EXAMPLE-LIMIT REVIEW" > "$Evidence\example-warning-match.txt" 2>&1
-echo $LASTEXITCODE > "$Evidence\example-warning-match-exit.txt"
-Select-String -Path "$Evidence\distinct-check.txt" -Pattern "EXAMPLE-LIMIT REVIEW" > "$Evidence\distinct-warning-match.txt" 2>&1
-echo $LASTEXITCODE > "$Evidence\distinct-warning-match-exit.txt"
+$ExampleWarn = @(Select-String -Path "$Evidence\example-check.txt" -Pattern "EXAMPLE-LIMIT REVIEW")
+$ExampleWarn > "$Evidence\example-warning-match.txt"
+$ExampleWarn.Count > "$Evidence\example-warning-count.txt"
+$DistinctWarn = @(Select-String -Path "$Evidence\distinct-check.txt" -Pattern "EXAMPLE-LIMIT REVIEW")
+$DistinctWarn > "$Evidence\distinct-warning-match.txt"
+$DistinctWarn.Count > "$Evidence\distinct-warning-count.txt"
 ```
 
-It worked when the example match exits `0`, the distinct config validates with
-exit `0`, and the distinct match exits `1` because no example-limit diagnostic is
-present. The negative control is only an offline validator fixture; its values do
-not describe the demo rig and it must not be used to start a session.
+It worked when `example-warning-count.txt` is `1`, the distinct config validates
+with exit `0`, and `distinct-warning-count.txt` is `0` because no example-limit
+diagnostic is present. That zero is the discriminating result of this step: it is
+what shows the detector is reading the config rather than always firing. The
+negative control is only an offline validator fixture; its values do not describe
+the demo rig and it must not be used to start a session.
 
 ## G3 — demo machine, redirected server banner
 
@@ -157,21 +182,39 @@ Ctrl+C. Do not substitute the synthetic G2 negative control for `$DemoConfig`.
 
 ```powershell
 (Get-Item "$Evidence\serve-redirected.txt").Length > "$Evidence\serve-redirected-bytes.txt"
-Select-String -Path "$Evidence\serve-redirected.txt" -Pattern "Microclaw GUI:","http://127.0.0.1:8000" > "$Evidence\serve-url-match.txt" 2>&1
-echo $LASTEXITCODE > "$Evidence\serve-url-match-exit.txt"
+$UrlMatch = @(Select-String -Path "$Evidence\serve-redirected.txt" -Pattern "Microclaw GUI:")
+$UrlMatch > "$Evidence\serve-url-match.txt"
+$UrlMatch.Count > "$Evidence\serve-url-count.txt"
 ```
 
-It worked when the byte count is greater than zero and the match exits `0` while
-the server is still a long-running process until Ctrl+C. Captured stdout is the
-required artifact in this one step because flushing that banner is the defect
-being tested.
+It worked when the byte count is greater than zero and `serve-url-count.txt` is
+`1`, both recorded from a run that was a long-running process until Ctrl+C.
+Captured stdout is the required artifact in this one step because flushing that
+banner is the defect being tested — that is the deliberate exception to this
+project's rule of preferring an artifact the normal workflow already produces.
 
-## G4 — M5, report deployed example budgets without editing them
+## G4 — M5, report the deployed budgets without editing them
 
 This step is read-only. The coordinator owns the four Block 4d key renames and the
 operator-owned budget edit. Run this check after the deployed file has the current
-schema keys but before its copied budgets are replaced; do not edit it in this
-runbook. Bind its exact normal-launcher path once:
+schema keys but before its budgets are revised; do not edit it in this runbook.
+
+**Read this before interpreting the result — the premise changed.** The checklist
+and design/33 `:790` say M5's budgets were copied from the fictional example. The
+coordinator replayed the captured `m5-deployed-before.yaml` (Block 4d evidence)
+through this block's detector on 2026-08-03, and **that is no longer true**: every
+acquisition budget and the exposure cap have since been edited away from the
+example, not toward measured values but to numbers that effectively do not bind —
+`max_duration_s: 1e21`, `max_illuminated_ms: 1000001720`, `max_bytes: 1.06e12`,
+`camera.max_exposure_ms: 10000.0172`. Only `acquisition.confirm_above_illuminated_ms`
+and `stage.z_min` still match the example, and both are plausibly coincidental.
+
+So this step is **not** expected to show a config full of example values. Its job
+is to record what the deployed budgets actually are, so the coordinator-sequenced
+editing session starts from measured fact rather than from a stale claim. A small
+match count here is the expected result, not a failure.
+
+Bind the deployed file's exact normal-launcher path once:
 
 ```powershell
 $DeployedConfig = "C:\replace-once\with\M5-deployed-safety-config.yaml"
@@ -179,15 +222,25 @@ Get-FileHash -Algorithm SHA256 $DeployedConfig > "$Evidence\m5-deployed.sha256.t
 Copy-Item $DeployedConfig "$Evidence\m5-deployed-before-budget-review.yaml"
 microclaw check-config $DeployedConfig > "$Evidence\m5-deployed-check.txt" 2>&1
 echo $LASTEXITCODE > "$Evidence\m5-deployed-check-exit.txt"
-Select-String -Path "$Evidence\m5-deployed-check.txt" -Pattern "EXAMPLE-LIMIT REVIEW","acquisition.","camera.max_exposure_ms" > "$Evidence\m5-example-budget-match.txt" 2>&1
-echo $LASTEXITCODE > "$Evidence\m5-example-budget-match-exit.txt"
+$M5Warn = @(Select-String -Path "$Evidence\m5-deployed-check.txt" -Pattern "EXAMPLE-LIMIT REVIEW")
+$M5Warn > "$Evidence\m5-example-budget-match.txt"
+$M5Warn.Count > "$Evidence\m5-example-budget-count.txt"
 ```
 
-It worked when the diagnostic names keys actually present in the copied deployed
-file and says matching values require rig review but are not by themselves a
-refusal. The select match exits `0`. Preserve the original hash and copy. Do not
-change acquisition or exposure budgets here; the operator chooses real values in
-the coordinator-sequenced editing session.
+Also record the deployed budgets themselves, which are the numbers the editing
+session actually needs:
+
+```powershell
+Select-String -Path $DeployedConfig -Pattern "max_","confirm_above_" > "$Evidence\m5-deployed-budgets.txt"
+```
+
+It worked when `m5-deployed-check.txt` names only keys actually present in the
+deployed file, says a matching value requires rig review but is not by itself a
+refusal, and `m5-deployed-budgets.txt` records the current numbers. Any count is
+an acceptable result here — see the premise note above; report the number rather
+than judging it. Preserve the original hash and copy. **Do not change acquisition
+or exposure budgets here**; the operator chooses real values in the
+coordinator-sequenced editing session.
 
 Send back the complete evidence directory, the exact `$DemoConfig` and
 `$DeployedConfig` paths used, and any unexpected diagnostic verbatim.
