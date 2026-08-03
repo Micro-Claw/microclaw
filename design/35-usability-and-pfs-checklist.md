@@ -131,7 +131,7 @@ Rig-facing commands must be PowerShell/cmd-safe (the rig is Windows): prefer
 | 4 | Usability | 3 | `design33/first-launch-setup` (deleted) | `bc303a2` | `a742d73` | 5 rounds: demo r1 **FAIL**, r2/r3 **PASS**; M5 G4 + **G4b PASS** 2026-08-02 | `6266807` | **done** — design/33 §"Phase 5 landed" |
 | 4r1a | Usability | 4 | `design33/first-launch-setup` | `15d8d1b` | `c5746b9` (`d203753` rejected) | folded into block 4 round 2 | n/a — merges via block 4 | |
 | 4r1b | Usability | 4 | `design35/startup-refusal-severity` | `15d8d1b` | `2558583` (`16cc416` rejected alone) | folded into block 4 round 2 | `385049d` into block branch | |
-| 4b | Usability | 4 merged | `design33/bounded-numeric-actuator` | `578874e` | `5a6c6e2` | G1 demo **PASS**; G3 M2 **PASS** (owed run closed early); **G2 M5 is the only step left** | | |
+| 4b | Usability | 4 merged | `design33/bounded-numeric-actuator` (deleted) | `578874e` | `5a6c6e2` | G1 demo **PASS**; G3 M2 **PASS** incl. imagery; G2 M5 in-range **PASS**, refusal step retired | `04164fd` | pending |
 | 4e | Usability | 4b merged | `design33/emission-path-discovery` | | | **required** | | |
 | 4c | Usability | 4e merged | `design33/setup-named-stages` | | | **required** | | |
 | 4d | Usability | 4c merged | `design33/property-authorization-rename` | | | **required** | | |
@@ -1206,7 +1206,7 @@ after 4c, before 5. The design/33 schema map (which section owns which write
 path) is owed regardless and stays where it was assigned, in Block 4's
 post-merge design gate.
 
-## 4b. [-] The `bounded-numeric` typed actuator — gain and its kin
+## 4b. [x] The `bounded-numeric` typed actuator — gain and its kin — **MERGED 2026-08-03**
 
 Branch: `design33/bounded-numeric-actuator`. Depends on Block 4 merging.
 Assign against a clean `main`, not against the block 4 branch — decided
