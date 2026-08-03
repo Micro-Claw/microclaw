@@ -47,7 +47,32 @@ Every value in `block4g-roundtrip.txt` must be `true`, including
 `offline_load` and `describe_matches_manifest`, and the exit file must contain
 `0`.
 
+## G2a — synthetic legacy pin, always runnable
+
+**Run this one first, and run it whether or not G2 below is possible.** G2 needs
+the gate machine to happen to own a hook saved under the old convention; if it
+owns none, the migration path would ship to every operator untested. This step
+removes that dependency. It builds a throwaway registry in a temp directory,
+plants a hook pinned the old way, and walks the whole migration — refusal,
+review, re-save, reload. It reads and writes nothing outside that temp
+directory and touches no hardware.
+
+```powershell
+python design\35-block4g-legacy-migration-check.py > legacy-synthetic.txt 2>&1
+echo $LASTEXITCODE > legacy-synthetic-exit.txt
+Copy-Item legacy-synthetic.txt,legacy-synthetic-exit.txt $Evidence
+```
+
+The exit file must contain `0` and every check in `legacy-synthetic.txt` must be
+`true`. The two `*_message` entries are recorded text, not booleans — they must
+each contain `legacy newline-normalized` and `re-save`, and neither may read
+`NO REFUSAL`.
+
 ## G2 — existing old-convention manifest and deliberate migration
+
+**Skip this step and say so if the machine has no hook saved under the old
+convention** — G2a has already covered the mechanism, and inventing a legacy
+hook by hand-editing a real manifest would test the edit, not the code.
 
 Choose an existing hook whose manifest was pinned under the old convention and
 whose file has not otherwise been edited. Set its exact manifest name here:
@@ -88,7 +113,9 @@ turn generic tampering into trust.
 
 Return the complete `$Evidence` directory plus `git-fetch.txt`,
 `git-switch.txt`, and `git-pull.txt`. Report the machine, exact pytest summary
-and warnings, every G1 boolean, the old hook name, its exact before-load error,
-and its after-migration description. Report any intervention or ambiguity.
+and warnings, every G1 boolean, every G2a check, and — if G2 ran — the old hook
+name, its exact before-load error, and its after-migration description. If G2
+was skipped for want of a legacy-pinned hook, say so plainly; that is an
+expected outcome, not a gap. Report any intervention or ambiguity.
 
 Do not merge the branch. The coordinator reviews the evidence.
