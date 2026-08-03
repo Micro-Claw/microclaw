@@ -149,7 +149,7 @@ assistant's narration when judging whether a guard fired.
 | 4r1b | Usability | 4 | `design35/startup-refusal-severity` | `15d8d1b` | `2558583` (`16cc416` rejected alone) | folded into block 4 round 2 | `385049d` into block branch | |
 | 4b | Usability | 4 merged | `design33/bounded-numeric-actuator` (deleted) | `578874e` | `5a6c6e2` | G1 demo **PASS**; G3 M2 **PASS** incl. imagery; G2 M5 in-range **PASS**, refusal step retired | `04164fd` | **done** — design/33 §"Block 4b landed" |
 | 4e | Usability | 4b merged | `design33/emission-path-discovery` (deleted) | `85398e8` | `bc40f18` + `d631a4f` (`39f69dd` returned) | M2 G1/G2, M5 G3, demo G3 all **PASS** 2026-08-03 | `9b88394` | **done** — design/33 §"Block 4e landed" |
-| 4f | Usability | 4e merged | `design33/channel-group-presets` | `f95c8ca` | `84c4d70` + `d4985e6` | M2 G1 **PASS** 2026-08-03; demo G2 owed | | |
+| 4f | Usability | 4e merged | `design33/channel-group-presets` (deleted) | `f95c8ca` | `84c4d70` + `d4985e6` | M2 G1 + demo G2 **PASS** 2026-08-03 | `9010158` | **done** — design/33 §"Block 4f landed" |
 | 4c | Usability | 4f merged | `design33/setup-named-stages` | | | **required** | | |
 | 4g | Platform | none — may run concurrently | `design32/hook-hash-newline` (deleted) | `95ae192` | `50e5f66` + `d0bb602` + `971cdb6` + `f768cc3` | round 3 **PASS** 2026-08-03 (rounds 1–2 failed test-side) | `936230f` | **done** — design/32 §4 |
 | 4d | Usability | 4c merged | `design33/property-authorization-rename` | | | **required** | | |
@@ -1922,7 +1922,7 @@ Post-merge design gate:
       still proves declared paths are gated, never that discovery found every
       physical emission path.
 
-## 4f. [ ] `channels.allowed` is generated from the wrong config group
+## 4f. [x] `channels.allowed` is generated from the wrong config group — **MERGED 2026-08-03**
 
 Branch: `design33/channel-group-presets`. Depends on 4e merging. Created by
 operator decision 2026-08-03 from Block 4e's M2 gate, which is the same way 4e
@@ -1946,22 +1946,22 @@ group" — wrong, because those presets are camera settings that were never
 channels. Of the three rigs only demo has a `Channel` group; M5 has only
 `System` (already recorded) and M2 only `Camera`.
 
-- [ ] Emit `channels.allowed` only from the group `authorization` actually
+- [x] Emit `channels.allowed` only from the group `authorization` actually
       reads. If that group is absent, emit an empty list and say so in the
       setup text and in the review notes — an empty, honest key beats six
       claims the rig will drop.
-- [ ] The demotion message must stop advising an edit that cannot be right. It
+- [x] The demotion message must stop advising an edit that cannot be right. It
       currently assumes the preset belongs in the `Channel` group; on a rig with
       no such group the correct action is different. Distinguish "this preset is
       missing from a group that exists" from "the group does not exist here".
-- [ ] Decide what setup should do with presets in **other** groups. They are
+- [x] Decide what setup should do with presets in **other** groups. They are
       real and useful; they are simply not channels. Report a decision — surface
       them as review notes, or say plainly that microclaw does not drive them —
       rather than silently discarding.
-- [ ] Do not generalize beyond the `Channel` name without changing
+- [x] Do not generalize beyond the `Channel` name without changing
       `authorization.py` too; producer and consumer must name the same group or
       this defect recurs inverted.
-- [-] Rig gate: generate a profile on M2 (or M5) and show `channels.allowed` no
+- [x] Rig gate: generate a profile on M2 (or M5) and show `channels.allowed` no
       longer claims presets the authorizer will drop, and that startup produces
       no preset demotion. On demo, show the real `Channel` presets still appear
       and fluorescence channels still work.
@@ -2048,6 +2048,37 @@ an explicit exclusion there would shadow `authorization.py`'s purpose-built rule
 permitting a preset to retarget `Core.Shutter` to a declared shutter, which is
 exactly what broke demo's four fluorescence channels in 4b. Demo's G2 is safe to
 run.
+
+### Rig gate G2 — demo, 2026-08-03: **PASS. Block 4f's gate is complete.**
+
+Evidence: `block4f-demo-20260803-123329`, at `d4985e6`, pin `0`, clean tree,
+suite **1342 passed / 0 failed / 115 skipped**.
+
+`EXACT CHANNEL PRESETS: True` with `['Cy5', 'DAPI', 'FITC', 'Rhodamine']` — the
+four real `Channel` presets and nothing from the other five groups. The demotion
+check is empty. The selection was genuinely exercised rather than asserted:
+`get_available_channels` returned exactly those four, `set_channel {"preset":
+"DAPI"}` succeeded with `writes: 4` and `expansion_drift: false`, and the
+startup and applied expansion hashes match. The channel-plan executor from
+design/33 Phase 4 works against the narrowed allowlist.
+
+**This run also produced a finding that is not 4f's code — see block 4h.** The
+operator asked why they had been prompted to open the shutter when setting DAPI;
+the agent replied "I didn't, actually — I never prompted you," and the
+confirmations JSONL records an approved `illumination` confirmation at that
+moment. The prompt was real and correct: DAPI's effects include `Core.Shutter =
+'White Light Shutter'`, and `_authorize_channel_effect` (`authorization.py:1314`)
+requires a blocking confirmation for that retarget. The model simply cannot see
+it.
+
+Post-merge design gate:
+
+- [x] Recorded in design/33 §"Block 4f landed": the producer emits
+      `channels.allowed` from `CHANNEL_CONFIG_GROUP` alone; an absent or empty
+      group yields an explicit `[]` and never an omitted key, because omission
+      means *all* live presets are authorized; and the live diagnostic now
+      distinguishes a preset missing from an existing `Channel` group from a rig
+      that has no such group.
 
 ## 4g. [x] Saved hooks are unusable on Windows — **MERGED 2026-08-03**
 

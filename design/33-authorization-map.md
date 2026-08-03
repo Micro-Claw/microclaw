@@ -1550,3 +1550,38 @@ something; a name-based exclusion would also have put rig facts in
 the consequence — a property declared a shutter is written to its `off_value` by
 `shutter_all` on **every session exit**, which for `Autostart` means rewriting
 persistent laser configuration. The operator excluded both.
+
+### Block 4f landed: `channels.allowed` names the group the authorizer reads (2026-08-03)
+
+Block 4f merged as `9010158` after a first-round implementation and two
+first-time gate passes, on M2 and the demo rig.
+
+**The producer and the consumer now name the same group.** First-launch setup
+emits `channels.allowed` from `CHANNEL_CONFIG_GROUP` alone — the same constant
+`validate_live_rig` reads, and deliberately not `Core.ChannelGroup`, which is
+writable. Before this, setup collected preset names from *every* configuration
+group, so it generated profiles guaranteed to warn on the rig that generated
+them: six dropped presets on M2, ten on the demo rig. Demo **has** a `Channel`
+group, which is what establishes that this was over-claiming everywhere rather
+than a missing-group special case.
+
+**An absent or empty group yields an explicit empty list, never an omitted
+key.** `allowed_channels` is `Optional`, and `None` means *all* live `Channel`
+presets are authorized (`safety.py:216`, `authorization.py:973`). So the
+intuitive implementation — omit the key when there is nothing to put in it —
+would have silently *widened* authority on exactly the rigs this block fixes.
+Setup always writes the key, and says in the profile header why `[]` is there
+and what omitting it would have meant.
+
+**Presets in other groups are reported, not discarded.** They are real and
+useful; they are simply not channels. Each non-`Channel` group is listed in the
+generated review notes as presets microclaw does not drive. Group filtering
+happens before any name enters the allowlist, so a rig whose groups share preset
+names — demo's `Channel` and `Channel-Multiband` share all four — cannot leak
+the wrong group's preset.
+
+**The live diagnostic distinguishes two different operator situations.** A
+preset missing from a `Channel` group that exists is still answered with "add it
+to that group". A rig with no `Channel` group at all is answered differently:
+the old wording told operators to add objectives, light paths and camera modes
+to a Channel group, which is never the right repair.
