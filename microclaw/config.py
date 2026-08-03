@@ -20,7 +20,7 @@ class ConfigDiagnostic:
     """One machine-readable result from an offline config check."""
 
     kind: Literal[
-        "schema", "review", "deprecation", "guaranteed_mode", "degraded_mode", "live_check",
+        "schema", "review", "guaranteed_mode", "degraded_mode", "live_check",
     ]
     message: str
     blocking: bool
@@ -69,15 +69,6 @@ def validate_safety_config(path: str | Path | None = None) -> ConfigValidationRe
         if isinstance(loaded, dict) and type(loaded.get("reviewed")) is bool
         else None
     )
-    if isinstance(loaded, dict) and "rig_profile" in loaded:
-        diagnostics.append(ConfigDiagnostic(
-            "deprecation",
-            "`rig_profile` is deprecated; rename it to `property_authorization`, "
-            "then rename `categorical_properties` to `allowed_categorical`, "
-            "`typed_actuators` to `allowed_numeric`, and `excluded_properties` "
-            "to `denied` (`mode` keeps its name).",
-            False,
-        ))
     if reviewed is False:
         diagnostics.append(ConfigDiagnostic(
             "review",

@@ -52,11 +52,11 @@ def _parse(path):
         else:
             mode = "guaranteed"
             categorical = legacy_allowed or []
-        profile = {"mode": mode, "excluded_properties": []}
+        profile = {"mode": mode, "denied": []}
         if categorical is not None:
-            profile["categorical_properties"] = categorical
+            profile["allowed_categorical"] = categorical
         document.setdefault(
-            "rig_profile",
+            "property_authorization",
             profile,
         )
         document.setdefault("acquisition", {
@@ -150,10 +150,10 @@ class TestFromYaml:
         "  confirm_above_illuminated_ms: 60000\n"
     )
     _PROFILE = (
-        "rig_profile:\n"
+        "property_authorization:\n"
         "  mode: guaranteed\n"
-        "  categorical_properties: []\n"
-        "  excluded_properties: []\n"
+        "  allowed_categorical: []\n"
+        "  denied: []\n"
         + _ACQUISITION
     )
 
@@ -192,19 +192,6 @@ class TestFromYaml:
         with pytest.raises(SafetyConfigError, match="property_authorization.allowed_categorical"):
             ParsedSafetyConfig.from_yaml(str(cfg))
 
-    def test_both_authorization_keys_are_a_hard_error_naming_both(self, tmp_path):
-        cfg = tmp_path / "safety.yaml"
-        cfg.write_text(
-            "schema_version: 2\nreviewed: true\n"
-            "rig_profile: {mode: guaranteed, categorical_properties: [], excluded_properties: []}\n"
-            "property_authorization: {mode: guaranteed, allowed_categorical: [], denied: []}\n"
-            + self._ACQUISITION
-        )
-        with pytest.raises(SafetyConfigError) as exc:
-            ParsedSafetyConfig.from_yaml(str(cfg))
-        assert "rig_profile" in str(exc.value)
-        assert "property_authorization" in str(exc.value)
-
     def test_shipped_example_parses_through_the_strict_schema(self):
         """The packaged example must survive strict validation (design/32 1b).
 
@@ -239,10 +226,10 @@ class TestFromYaml:
         cfg = tmp_path / "safety.yaml"
         cfg.write_text(
             "schema_version: 2\nreviewed: true\n"
-            "rig_profile:\n"
+            "property_authorization:\n"
             "  mode: guaranteed\n"
-            "  categorical_properties: []\n"
-            "  excluded_properties: []\n"
+            "  allowed_categorical: []\n"
+            "  denied: []\n"
             "stage: {x_min: -10, x_max: 10, z_min: 0, z_max: 200}\n"
             + self._ACQUISITION
         )
@@ -264,10 +251,10 @@ class TestFromYaml:
         cfg = tmp_path / "safety.yaml"
         cfg.write_text(
             "schema_version: 2\nreviewed: true\n"
-            "rig_profile:\n"
+            "property_authorization:\n"
             "  mode: guaranteed\n"
-            "  categorical_properties: []\n"
-            "  excluded_properties: []\n"
+            "  allowed_categorical: []\n"
+            "  denied: []\n"
             "stage:\n"
             "  x_min: -10\n"
             "  x_max: {unbounded: true, reason: travel is mechanically stopped}\n"
@@ -287,12 +274,12 @@ class TestFromYaml:
         assert parsed.constraints.stage.x_max is None
         assert parsed.constraints.named_stages == [NamedStageLimits("TIRF", None, None)]
 
-    def test_guaranteed_mode_requires_categorical_properties(self, tmp_path):
+    def test_guaranteed_mode_requires_allowed_categorical(self, tmp_path):
         cfg = tmp_path / "safety.yaml"
         cfg.write_text(
             "schema_version: 2\nreviewed: true\n"
             "forbidden_properties: [{device: Core, property: Initialize}]\n"
-            "rig_profile: {mode: guaranteed, excluded_properties: []}\n"
+            "property_authorization: {mode: guaranteed, denied: []}\n"
         )
         with pytest.raises(SafetyConfigError, match="denylist-only configs must migrate"):
             ParsedSafetyConfig.from_yaml(str(cfg))
@@ -302,9 +289,9 @@ class TestFromYaml:
         cfg.write_text(
             "schema_version: 2\nreviewed: true\n"
             "forbidden_properties: [{device: Core, property: Initialize}]\n"
-            "rig_profile:\n"
+            "property_authorization:\n"
             "  mode: degraded_trusted_plugins\n"
-            "  excluded_properties:\n"
+            "  denied:\n"
             "    - {device: Core, property: Initialize}\n"
             + self._ACQUISITION
         )
@@ -316,13 +303,13 @@ class TestFromYaml:
         cfg = tmp_path / "safety.yaml"
         cfg.write_text(
             "schema_version: 2\nreviewed: true\n"
-            "rig_profile: {categorical_properties: [], excluded_properties: []}\n"
+            "property_authorization: {allowed_categorical: [], denied: []}\n"
             + self._ACQUISITION
         )
         assert ParsedSafetyConfig.from_yaml(str(cfg)).property_authorization.mode == "guaranteed"
         cfg.write_text(
             "schema_version: 2\nreviewed: true\n"
-            "rig_profile: {mode: trusted, categorical_properties: [], excluded_properties: []}\n"
+            "property_authorization: {mode: trusted, allowed_categorical: [], denied: []}\n"
             + self._ACQUISITION
         )
         with pytest.raises(SafetyConfigError, match="degraded_trusted_plugins"):
@@ -332,12 +319,12 @@ class TestFromYaml:
         cfg = tmp_path / "safety.yaml"
         cfg.write_text(
             "schema_version: 2\nreviewed: true\n"
-            "rig_profile:\n"
+            "property_authorization:\n"
             "  mode: guaranteed\n"
-            "  categorical_properties:\n"
+            "  allowed_categorical:\n"
             "    - {device: DCam, property: Binning}\n"
             "    - {device: DCam, property: Binning}\n"
-            "  excluded_properties: [{device: DCam, property: Binning}]\n"
+            "  denied: [{device: DCam, property: Binning}]\n"
         )
         with pytest.raises(SafetyConfigError) as exc:
             ParsedSafetyConfig.from_yaml(str(cfg))
@@ -688,11 +675,11 @@ class TestAllowlistMode:
     def test_from_yaml_loads_allowed_properties(self, tmp_path):
         cfg = tmp_path / "safety.yaml"
         cfg.write_text(
-            "rig_profile:\n"
+            "property_authorization:\n"
             "  mode: guaranteed\n"
-            "  categorical_properties:\n"
+            "  allowed_categorical:\n"
             "    - {device: DCam, property: Binning}\n"
-            "  excluded_properties: []\n"
+            "  denied: []\n"
         )
         constraints = _parse(str(cfg))
         assert constraints.allowed_properties == [ForbiddenProperty("DCam", "Binning")]

@@ -9,14 +9,14 @@
 schema_version: 2
 reviewed: false
 
-rig_profile:
+property_authorization:
   mode: guaranteed
   # The labelled Nikon turrets are expected to be MM StateDevices, whose own
   # Label/State pair is auto-classified after live inspection. No additional
   # non-StateDevice categorical property is known from the supplied evidence.
-  categorical_properties: []
-  typed_actuators: []
-  excluded_properties:
+  allowed_categorical: []
+  allowed_numeric: []
+  denied:
     - {device: Core, property: Initialize}
     # TIPFSStatus is Core.AutoFocus. Microclaw must not arm or disarm PFS by a
     # raw property write until blocks 7a-7b provide a typed continuous-focus

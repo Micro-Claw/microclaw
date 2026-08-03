@@ -413,18 +413,28 @@ def test_mm_config_path_is_outside_fingerprint(tmp_path):
     assert one["live_inventory_fingerprint"] == two["live_inventory_fingerprint"]
 
 
-def _demo_config(tmp_path):
+def _current_demo_source():
+    """Translate immutable historical gate evidence into the current schema."""
     source = Path("design/33-block5-demo-safety-config.yaml").read_text(encoding="utf-8")
+    return (source
+            .replace("rig_profile:", "property_authorization:")
+            .replace("categorical_properties", "allowed_categorical")
+            .replace("typed_actuators", "allowed_numeric")
+            .replace("excluded_properties", "denied"))
+
+
+def _demo_config(tmp_path):
+    source = _current_demo_source()
     path = tmp_path / "demo-safety.yaml"
     path.write_text(source.replace("/REPLACE/with/a/real/directory", str(tmp_path)), encoding="utf-8")
     return load_safety_config(path)
 
 
 def _demo_config_with_wheel_ruling(tmp_path):
-    source = Path("design/33-block5-demo-safety-config.yaml").read_text(encoding="utf-8")
+    source = _current_demo_source()
     source = source.replace(
-        "categorical_properties: []",
-        "categorical_properties:\n    - {device: Wheel, property: Label}",
+        "allowed_categorical: []",
+        "allowed_categorical:\n    - {device: Wheel, property: Label}",
     )
     path = tmp_path / "demo-safety-wheel-ruling.yaml"
     path.write_text(source.replace("/REPLACE/with/a/real/directory", str(tmp_path)), encoding="utf-8")

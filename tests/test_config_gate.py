@@ -53,22 +53,18 @@ def test_reviewed_true_loads(tmp_path):
     assert c.constraints.stage.x_max == 100.0
 
 
-def test_old_authorization_key_is_accepted_with_complete_nonblocking_migration_message(tmp_path):
+def test_old_authorization_key_is_refused_by_strict_schema(tmp_path):
     legacy = REAL.replace(
         "property_authorization: {mode: guaranteed, allowed_categorical: [], denied: []}",
         "rig_profile: {mode: guaranteed, categorical_properties: [], typed_actuators: [], excluded_properties: []}",
     )
     result = validate_safety_config(_write(tmp_path, legacy))
-    assert result.parsed is not None
-    assert result.can_start_live_validation
-    diagnostic = next(item for item in result.diagnostics if item.kind == "deprecation")
-    assert diagnostic.blocking is False
-    for name in (
-        "rig_profile", "property_authorization", "categorical_properties",
-        "allowed_categorical", "typed_actuators", "allowed_numeric",
-        "excluded_properties", "denied", "mode",
-    ):
-        assert name in diagnostic.message
+    assert result.parsed is None
+    assert not result.can_start_live_validation
+    assert [item.kind for item in result.diagnostics] == ["schema"]
+    message = result.diagnostics[0].message
+    assert "rig_profile: unknown top-level key" in message
+    assert "property_authorization: missing required property authorization map" in message
 
 
 def test_missing_acquisition_section_names_file_and_required_fields(tmp_path):

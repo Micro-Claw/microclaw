@@ -243,13 +243,6 @@ property_authorization:
   denied: []
 ```
 
-Older schema-2 files using `rig_profile` remain accepted during the 0.1.x
-release line so an upgrade followed immediately by a restart is safe. The
-offline `microclaw check-config` command reports the exact key renames;
-`rig_profile` may be removed no earlier than 0.2.0. A file containing both
-`rig_profile` and `property_authorization` is refused rather than guessing which
-authorization map the operator intended.
-
 `allowed_categorical` is the reviewed list of discrete (non-continuous)
 device properties the AI may write directly. Filter wheels, sliders and turrets
 do not belong on it: any device Micro-Manager types as a **StateDevice** has its

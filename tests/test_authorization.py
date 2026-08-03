@@ -1009,7 +1009,7 @@ def test_authorization_map_cli_preserves_actionable_refusal(monkeypatch):
 # --- design/33 fast-follow: MM StateDevice auto-classification -----------------
 #
 # A filter wheel / slider / turret is a discrete device; requiring a
-# categorical_properties declaration for each one was disproportionate (the M5
+# allowed_categorical declaration for each one was disproportionate (the M5
 # authoring exposed the friction). Auto-classification is additive and is driven
 # ONLY by the MM device type plus the reviewed config -- never by device names.
 

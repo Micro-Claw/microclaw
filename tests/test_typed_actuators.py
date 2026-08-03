@@ -18,8 +18,8 @@ def _yaml(tmp_path, body):
     path = tmp_path / "safety.yaml"
     path.write_text(
         "schema_version: 2\nreviewed: true\n"
-        "rig_profile:\n  mode: guaranteed\n  categorical_properties: []\n"
-        "  excluded_properties: []\n" + body +
+        "property_authorization:\n  mode: guaranteed\n  allowed_categorical: []\n"
+        "  denied: []\n" + body +
         "acquisition:\n  max_frames: 1\n  max_duration_s: 1\n  max_bytes: 1\n"
         "  max_illuminated_ms: 1\n  max_session_illuminated_ms: 1\n"
         "  confirm_above_frames: 1\n  confirm_above_duration_s: 1\n"
@@ -30,7 +30,7 @@ def _yaml(tmp_path, body):
 
 def test_registry_schema_and_native_conversion_boundaries(tmp_path):
     parsed = _yaml(tmp_path,
-        "  typed_actuators:\n"
+        "  allowed_numeric:\n"
         "    - {device: Laser, property: Power, kind: illumination-power, units: native, full_scale: 75, minimum: 0, maximum: 40}\n")
     guard = SafetyGuard(parsed.constraints)
     guard.admit_typed_actuators(parsed.property_authorization.allowed_numeric)
@@ -46,7 +46,7 @@ def test_registry_schema_and_native_conversion_boundaries(tmp_path):
 
 def test_bounded_numeric_clamps_edges_echoes_verbatim_units_and_rejects_full_scale(tmp_path):
     parsed = _yaml(tmp_path,
-        "  typed_actuators:\n"
+        "  allowed_numeric:\n"
         "    - {device: Camera, property: Gain, kind: bounded-numeric, units: e-/ADU, minimum: -5, maximum: 8}\n")
     policy = parsed.property_authorization.allowed_numeric[TypedActuatorId("Camera", "Gain")]
     assert policy.units == "e-/ADU"
@@ -59,7 +59,7 @@ def test_bounded_numeric_clamps_edges_echoes_verbatim_units_and_rejects_full_sca
             guard.check_typed_actuator("Camera", "Gain", value)
     with pytest.raises(SafetyConfigError, match="full_scale.*only valid"):
         _yaml(tmp_path,
-            "  typed_actuators:\n"
+            "  allowed_numeric:\n"
             "    - {device: Camera, property: Gain, kind: bounded-numeric, units: e-/ADU, minimum: -5, maximum: 8, full_scale: 10}\n")
 
 
@@ -84,8 +84,8 @@ def test_bounded_numeric_illumination_alias_is_offline_parse_refusal(tmp_path, s
     path = tmp_path / "safety.yaml"
     path.write_text(
         "schema_version: 2\nreviewed: true\n"
-        "rig_profile:\n  mode: guaranteed\n  categorical_properties: []\n  excluded_properties: []\n"
-        "  typed_actuators:\n    - {device: Camera, property: Gain, kind: bounded-numeric, units: dB, minimum: 0, maximum: 10}\n"
+        "property_authorization:\n  mode: guaranteed\n  allowed_categorical: []\n  denied: []\n"
+        "  allowed_numeric:\n    - {device: Camera, property: Gain, kind: bounded-numeric, units: dB, minimum: 0, maximum: 10}\n"
         "illumination:\n" + section +
         "acquisition: {max_frames: 1, max_duration_s: 1, max_bytes: 1, max_illuminated_ms: 1, confirm_above_frames: 1, confirm_above_duration_s: 1, confirm_above_illuminated_ms: 1}\n"
     )
@@ -97,13 +97,13 @@ def test_bounded_numeric_illumination_alias_is_offline_parse_refusal(tmp_path, s
 def test_unknown_kind_and_unit_are_file_anchored_parse_errors(tmp_path, kind, units):
     with pytest.raises(SafetyConfigError) as exc:
         _yaml(tmp_path,
-            f"  typed_actuators:\n    - {{device: Z, property: P, kind: {kind}, units: {units}, minimum: 0, maximum: 1}}\n")
+            f"  allowed_numeric:\n    - {{device: Z, property: P, kind: {kind}, units: {units}, minimum: 0, maximum: 1}}\n")
     assert str(tmp_path / "safety.yaml") in str(exc.value)
     assert "unsupported" in str(exc.value)
 
 
 def test_no_registry_remains_empty_and_opt_in(tmp_path):
-    parsed = _yaml(tmp_path, "  typed_actuators: []\n")
+    parsed = _yaml(tmp_path, "  allowed_numeric: []\n")
     assert parsed.property_authorization.allowed_numeric == {}
     assert parsed.constraints.allowed_properties == []
 
@@ -393,7 +393,7 @@ def test_property_info_reports_the_declared_bound_not_only_the_driver_range(tmp_
     from microclaw.tools import get_device_property_info
 
     parsed = _yaml(tmp_path,
-        "  typed_actuators:\n"
+        "  allowed_numeric:\n"
         "    - {device: Camera, property: Gain, kind: bounded-numeric, units: native, minimum: 0, maximum: 4}\n")
     guard = SafetyGuard(parsed.constraints)
     guard.admit_typed_actuators(parsed.property_authorization.allowed_numeric)

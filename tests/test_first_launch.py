@@ -688,7 +688,7 @@ def test_real_demo_inventory_bulk_pass_emits_bounded_numeric_defaults():
         # Objective and Path .State — every one a selector whose .Label was
         # already categorical. Unitless bounded numerics then moved from
         # excluded to typed bounded-numeric. Finally the ten Core
-        # device-assignment properties left excluded_properties entirely: they
+        # device-assignment properties left denied entirely: they
         # are still unwritable (guaranteed mode is an allowlist, so silence
         # denies), but an *explicit* entry shadowed authorization.py's rule
         # permitting a channel preset to retarget Core.Shutter to a declared
