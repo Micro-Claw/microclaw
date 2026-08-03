@@ -2962,6 +2962,56 @@ Post-merge design gate:
       twelve places. State that the old key was removed without a migration
       path, by operator ruling, so a later reader does not reconstruct one.
 
+### Rig gate G0–G2 — demo machine, 2026-08-03: **G0 and G2 PASS; G1 unverified**
+
+Evidence: `block4d-demo-20260803-163136`. Run at `029b5f4`, the exact pushed tip
+including both coordinator corrections; ancestor check `0`, `status.txt` empty.
+
+Suite on the demo machine: **1355 passed / 115 skipped / 3 warnings**, against
+the coordinator's 1371 / 99 / 3 on macOS. Different split, identical total of
+1470 — sixteen tests skip on Windows. No failures. Recorded because a reader
+comparing only the passed count would read a regression that is not there.
+
+- **G2 PASS.** Both the offline validator and the live entry point refuse an
+  old-key config, both nonzero, both naming `rig_profile: unknown top-level key`
+  and `property_authorization: missing required property authorization map`.
+  That is the clean cut working end to end, with no migration path offered.
+- **G1 partial.** Interview exits `0`; the generated profile carries only the
+  four new key names; the unreviewed draft is refused for the review reason
+  alone with `Schema: valid`; the reviewed profile passes `check-config` at `0`.
+  Microclaw's own interview transcripts landed in `demo-inventory/` and are
+  intact. **But `demo-new-key-session.txt` is 0 bytes and no session history
+  reached the synced folder, so the one thing G1 exists to prove — that a
+  generated new-key profile starts a live session — has no evidence.** The
+  operator reports the process did run and needed Ctrl+C to exit, which is
+  suggestive (a startup refusal exits rather than hanging) but is not the
+  banner. G1 is not marked passed on it.
+
+Two runbook defects behind that, both fixed on the branch (`c579791`, `5aa0879`,
+`e37db88`; the `--is-ancestor` pin survives all three):
+
+1. **Redirecting an interactive or long-running process loses the output
+   twice.** `> file 2>&1` on the interview left the console blank so the
+   operator could not see the questions, and on `serve` the file was left empty
+   at Ctrl+C. This is Block 4 round-1 finding 1 recurring in a new place: that
+   finding established that microclaw must write its own transcript and that
+   `> file 2>&1` is for *non-interactive* invocations only, and this runbook
+   redirected both interactive commands anyway. The interview is now not
+   redirected at all — its authoritative record is the transcript microclaw
+   writes into `--evidence-out`, which worked on this run — and every `serve`
+   uses `2>&1 | Tee-Object -FilePath …`, which is visible live and written
+   incrementally.
+2. **`--no-browser` makes "reaches its normal prompt" unsatisfiable**, and that
+   was the acceptance criterion on every `serve` step. There is no browser and
+   no prompt; the success signal is the `Microclaw GUI: http://<host>:<port>`
+   banner at `webserve.py:876`, which prints only after the config is loaded,
+   the live rig validated, and the authorization map built. Every criterion now
+   names the banner. The wording was inherited from earlier runbooks, so this is
+   worth carrying forward rather than treating as local to 4d.
+
+G1's last two lines are owed a re-run before M5. Neither fix changes product
+code, so G0 and G2 stand.
+
 ### Round 2 — pushed 2026-08-03, awaiting the rigs
 
 Implementation `fd4c5b6` + `c063f16`, runbook `9fbd464`, plus two coordinator
