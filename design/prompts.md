@@ -4405,3 +4405,61 @@ note implied that declaring a stage confers support; the G1 runbook step said
 operator could not act on; a demo-side out-of-range check (G1b) was added so the
 guard's refusal half is proven on a simulated stage before any M5 trip; and the
 temporary demo `.cfg` was being saved into the checkout.
+
+## Block 4d — `rig_profile` → `property_authorization` (merged 2026-08-03, `5f56679`)
+
+Two implementation rounds, then a gate that cost two extra demo trips for
+reasons that had nothing to do with the code.
+
+**The scope reversal is the main thing to carry.** Round 1 implemented what the
+coordinator ruled: dual-key acceptance, a deprecation diagnostic, a stated
+horizon. The operator then said they own every machine, will replace the configs
+by hand, and want no record the old key ever existed. Round 2 deleted the bridge.
+Both round-1 review findings were voided by that ruling and are kept in the
+checklist anyway, because the shape of one of them recurs: **a refusal message
+that names a key the operator's file does not contain is the same defect the
+block existed to fix, mirrored.** Any future rename should check its error text
+against the config the reader actually has.
+
+The coordinator's dual-key ruling was not wrong on its own terms — "no rig may be
+left unable to start by the merge" is a good instinct — but it was a
+generic-deployment assumption applied to a fleet of four machines with one owner.
+Ask who actually runs the software before designing a migration for them.
+
+**Three gate lessons, none about the schema:**
+
+1. **Do not capture a long-running process's stdout as acceptance evidence.**
+   Two attempts produced 0-byte files. Microclaw's startup banner is a bare
+   `print()`, Python block-buffers stdout the moment it is not a console, `serve`
+   then blocks forever, and Ctrl+C discards the buffer — and `uvicorn` runs at
+   `log_level="warning"`, so there is no second source. The coordinator's first
+   fix (`PYTHONUNBUFFERED` + `Tee-Object` + a `Test-NetConnection` probe from a
+   second window) was scaffolding to defend `--no-browser`, a flag no ordinary
+   session has ever used. The operator's correction was right: run the normal
+   command and take the session's history JSONL as evidence. Net −38 runbook
+   lines. **Prefer an artifact the normal workflow already produces over a probe
+   invented for the gate.**
+2. **That JSONL is written lazily on first append** (`conversation.py:153`), so
+   an idle session that starts and stops writes nothing. Gates that want it must
+   ask for one message.
+3. **A placeholder repeated across several commands will be missed in one.**
+   `<deployed-config>` was substituted into three commands and not the fourth, so
+   that step's exit `1` was file-not-found rather than the refusal it was meant
+   to prove. Bind such a path to a variable once.
+
+**The offline replay closed a rig gap again.** G3's rename-then-restart half was
+never run on M5 — correctly, because the runbook's own warning is that renaming
+the deployed config pre-merge strands the rig on an unmerged branch. Instead the
+coordinator took the returned `m5-deployed-before.yaml`, verified its sha256
+against the recorded hash, applied the four renames, and diffed with line endings
+normalised: exactly four lines change, all keys, and the result validates at exit
+`0`. Replaying a captured artifact substituted for a rig trip for the second
+block running.
+
+**One suite failure was accepted, with grounds stated.**
+`test_browser_opens_only_once_the_port_accepts` failed M5's G0. Accepting a red
+suite needs an argument, not a shrug: the branch touches `webserve.py` not at
+all, its only edit to that test file is a key rename in a different test, and the
+same commit passed on demo minutes earlier. The operator then re-ran it three
+times in isolation — three passes at ~2.3 s — confirming load-induced flake.
+Confirm before fixing, and confirm before dismissing.

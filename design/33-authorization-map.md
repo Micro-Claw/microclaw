@@ -397,7 +397,7 @@ are one required choice. Continuous-focus enables are hard-excluded, the core
 focus/autofocus/offset relationship remains one review question, and PFS-offset
 workflows remain unsupported. Preset effects and typed-property collisions are
 shown before each preset decision. Generated guaranteed profiles always contain
-`categorical_properties`, including when empty.
+`allowed_categorical`, including when empty.
 
 Enumeration failures are classified by coordinate. Missing loaded devices,
 device type/property names, writability/type inputs, preset lists, or any preset
@@ -520,11 +520,11 @@ in guaranteed mode.
 
 ### What Phase 1 actually implements
 
-- **Schema.** `rig_profile: {mode, categorical_properties, excluded_properties}`.
+- **Schema.** `property_authorization: {mode, allowed_categorical, denied}`.
   There is **no separate actuator manifest** — the declared stage/focus **ranges**
   (`ParsedSafetyConfig.ranges`, from design/32) are the stage-position completeness
-  target. `excluded_properties` is required whenever `rig_profile` is present (both
-  modes); `categorical_properties` is required in guaranteed mode (may be empty).
+  target. `denied` is required whenever `property_authorization` is present (both
+  modes); `allowed_categorical` is required in guaranteed mode (may be empty).
 - **Built-in typed capabilities** are a code constant, not config-declared:
   `BUILTIN_TYPED_CAPABILITIES = {stage-position, exposure, illumination}`.
   Illumination (configured `illumination.shutters`/`power_properties`) is a Phase-1
@@ -577,7 +577,7 @@ below.
   Nothing else on that device is admitted — `Speed`, `Delay`, mode and serial
   properties stay unclassified and are refused.
 - **Auto-classification fills vacuums only.** If the operator has ruled on either
-  position property — `categorical_properties`, `excluded_properties`, or the
+  position property — `allowed_categorical`, `denied`, or the
   `forbidden_properties` denylist — auto-classification skips that device's whole
   discrete position. Declaring one position property is a *narrowing*, not an
   invitation to admit the other. The rule is scoped to the position pair, not the
@@ -597,7 +597,7 @@ below.
   is a real widening over Block 3, and is what lets a map stay `complete` after
   the declarations are removed.
 - **Both gates.** A raw write passes the map *and* `SafetyGuard.check_property`,
-  whose allowlist is derived from `categorical_properties` at parse time.
+  whose allowlist is derived from `allowed_categorical` at parse time.
   `validate_live_rig(ctrl, parsed_config, guard=...)` hands the guard exactly the
   auto-classified pairs via `admit_auto_classified()`. The read-only
   `authorization-map` enumerator deliberately passes no guard.
@@ -626,7 +626,7 @@ below.
   of the carve-out therefore protects nothing on this rig, and the whole shutter
   carve-out rests on the `illumination:` block being complete. A light-gating
   StateDevice absent from `illumination:` *and* unmentioned anywhere in
-  `rig_profile` would still auto-classify. That is the intended design, but on a
+  `property_authorization` would still auto-classify. That is the intended design, but on a
   rig with no core shutter it is a sharper edge than it looks.
 - **`iChrome-MLE-TCP.State` does NOT gate emission — suspicion retracted.** During
   the gate a laser slot read `enabled=1` shortly after a `State` 1→2→1 write, and
@@ -642,7 +642,7 @@ below.
   operator comment saying as much — and `Label` is a bare categorical write on a
   multi-laser engine with no confirmation, cap, or ratchet. That predates Block 3b
   and is unaffected by it. Lower priority given the finding above, but a device
-  whose states nobody can name is a poor thing to leave in `categorical_properties`.
+  whose states nobody can name is a poor thing to leave in `allowed_categorical`.
 - **The vacuum-filling rule does not depend on any of this.** It stands on the
   principle that auto-classification must not override an explicit operator
   narrowing, whatever the device turns out to do.
@@ -656,7 +656,7 @@ review rounds `e0645f1` and `47295f2`). Gated on the Micro-Manager demo core and
 
 ### What Phase 2 actually implements
 
-- **Schema.** `rig_profile.typed_actuators` — an optional, strict list of exact
+- **Schema.** `property_authorization.allowed_numeric` — an optional, strict list of exact
   `(device, property)` entries declaring `kind`, `units`, canonical `minimum`/`maximum`
   and, where the kind requires it, `full_scale`. `schema_version` stays at **2**: a
   valid schema-2 file that declares no typed actuators parses exactly as before.
@@ -682,8 +682,8 @@ review rounds `e0645f1` and `47295f2`). Gated on the Micro-Manager demo core and
   the live core focus device, the core XY device, or a device with a `named_stages`
   entry, its bounds must lie within that axis's declared range, and the built-in axis
   guard still applies to the write in addition to the typed bound.
-- **Exclusion beats declaration.** A pair in both `typed_actuators` and either
-  `forbidden_properties` or `excluded_properties` is a startup conflict, and the
+- **Exclusion beats declaration.** A pair in both `allowed_numeric` and either
+  `forbidden_properties` or `denied` is a startup conflict, and the
   denylist is still consulted at runtime. This is the Block 3b vacuum rule applied to
   a new declaration mechanism.
 - **Presets.** A preset effect landing on a typed pair is classified and the preset is
@@ -744,7 +744,7 @@ review rounds `e0645f1` and `47295f2`). Gated on the Micro-Manager demo core and
   but declaring a typed actuator does **not** retroactively tighten the axis, and
   operators will expect otherwise.
 - A typed declaration is its own authorization: the 120 µm write succeeded with
-  `categorical_properties` empty, hence an empty derived `allowed_properties`.
+  `allowed_categorical` empty, hence an empty derived `allowed_properties`.
 - `LED.State` on the demo config is Integer with zero allowed values and no limits —
   indistinguishable from a continuous actuator by value shape alone. Only the
   `StateDevice` device-type exclusion keeps Block 3b's auto-classification working. A
@@ -783,7 +783,7 @@ review rounds `e0645f1` and `47295f2`). Gated on the Micro-Manager demo core and
 - **`TTL.State0` is a deliberate false positive.** Integer, not pre-init, no limits,
   unenumerated, and genuinely a digital state. It is refused as continuous because
   microclaw cannot distinguish a digital state from a level on a `GenericDevice`. The
-  remedy is `excluded_properties`, which the refusal message names.
+  remedy is `denied`, which the refusal message names.
 - **Tiers.** *Implemented*: the schema, parsing, live validation, the typed guard, the
   narrowing rule, exclusion precedence. *Rig-plumbing-verified*: every one of those on
   at least one live core. *Measured*: the `Power (mW)` 0–75 range, the canonical-percent
@@ -1300,7 +1300,7 @@ refuse startup.
 **Explicit exclusion is not a safe substitute for leaving a conditionally
 owned property undeclared.** Setup must not add an explicit exclusion for a
 property whose authorization is already decided by a conditional rule. An
-explicit `excluded_properties` row is checked first and shadows that rule. This
+explicit `denied` row is checked first and shadows that rule. This
 has now failed twice: Block 4's round-4 StateDevice position rows shadowed the
 auto-classifier, and Block 4b's first demo round shadowed the `Core.Shutter`
 preset allowance (the `device == "Core"` branch of the channel-preset loop in
@@ -1420,17 +1420,18 @@ illumination control and keeps its own classification path.
 
 ### Which section owns which write path
 
-Recorded here because the operator asked and the schema does not say. This is the
-interim standing in for the rename scoped as checklist Block 4b: `rig_profile`
-reads as a description of the rig, but the rig's description is the inventory —
-`rig_profile` is the raw-property write-authorization map, and it is not even the
-whole map.
+Recorded here because the operator asked and the schema does not say. The key was
+called `rig_profile` until checklist Block 4d renamed it (2026-08-03), and the
+reason for the rename is the reason this section had to exist: `rig_profile` read
+as a description of the rig, but the rig's description is the inventory. The name
+`property_authorization` says what it is — the raw-property write-authorization
+map — and the table below says what it still is *not*, which is the whole map.
 
 | Write path | Declared in | Bounded by | Tool |
 |---|---|---|---|
-| Raw property, discrete domain | `rig_profile.categorical_properties` | MM's own value domain | `set_device_property` |
-| Raw property, numeric | `rig_profile.typed_actuators` (kind + units + min/max) | the declared canonical range | `set_device_property` |
-| Raw property, never | `rig_profile.excluded_properties` | — | refused |
+| Raw property, discrete domain | `property_authorization.allowed_categorical` | MM's own value domain | `set_device_property` |
+| Raw property, numeric | `property_authorization.allowed_numeric` (kind + units + min/max) | the declared canonical range | `set_device_property` |
+| Raw property, never | `property_authorization.denied` | — | refused |
 | Core focus position | `stage.z_min/z_max` | reviewed µm bounds | `move_stage_z` |
 | Core XY position | `stage.x_min/x_max`, `y_min/y_max` | reviewed µm bounds | `move_stage_xy` |
 | Any other single-axis stage | `named_stages` (per device label) | reviewed µm bounds | `move_named_stage` |
@@ -1442,24 +1443,78 @@ whole map.
 Three consequences worth stating explicitly, because each has already confused a
 reader or an implementer:
 
-- The last three rows of `rig_profile` are *generic* raw properties. The built-in
+- The last three rows of `property_authorization` are *generic* raw properties. The built-in
   typed capabilities — `stage-position`, `exposure`, `illumination`,
   `acquisition-dose` — own their own sections and are deliberately not duplicated
-  into `rig_profile`. `_known_continuous_raw_pair` blocks the raw-property route
+  into `property_authorization`. `_known_continuous_raw_pair` blocks the raw-property route
   for the core focus position, the core XY position, and camera exposure so the
   two cannot diverge.
 - A typed actuator of kind `illumination-power` is the one thing declared twice
-  on purpose: it must appear in both `rig_profile.typed_actuators` and
+  on purpose: it must appear in both `property_authorization.allowed_numeric` and
   `illumination.power_properties`, or startup refuses, so the percent cap and the
   ratchet stay active.
-- `named_stages` and `typed_actuators` differ by *which API the motion goes
+- `named_stages` and `allowed_numeric` differ by *which API the motion goes
   through*, not by hardware kind. `named_stages` bounds a device moved through
-  MMCore's stage API, keyed by device label, always µm. `typed_actuators` bounds
+  MMCore's stage API, keyed by device label, always µm. `allowed_numeric` bounds
   a raw property write, keyed by device *and* property, carrying its own unit.
-  The same stage can need both if both routes are wanted. Setup currently emits
-  no `named_stages` at all, so every single-axis stage that is not the core focus
-  device is unreachable after setup — three of M5's five. That is checklist
-  Block 4c.
+  The same stage can need both if both routes are wanted. Setup emitted no
+  `named_stages` at all until Block 4c (2026-08-03), which left every single-axis
+  stage that is not the core focus device unreachable — three of M5's five. It
+  now asks for their travel bounds and emits the entries; Block 4d's M5 gate
+  exercised the result, moving `SmarAct 1D` to 1400 µm under the renamed schema.
+
+### Block 4d landed — `property_authorization`, and the old key is gone
+
+Merged 2026-08-03. The schema is now:
+
+```yaml
+property_authorization:
+  mode: guaranteed            # or degraded_trusted_plugins
+  allowed_categorical: []     # was categorical_properties
+  allowed_numeric: []         # was typed_actuators
+  denied: []                  # was excluded_properties
+```
+
+**There is no migration path, and that is deliberate.** No dual-key acceptance,
+no deprecation window, no rewriter. A config still carrying `rig_profile` is
+refused with `rig_profile: unknown top-level key` alongside
+`property_authorization: missing required property authorization map` — two
+generic messages from the existing strict-key validation, with no bespoke
+"rename it to…" hint. That was an operator ruling: they own every machine running
+this system, replace the configs by hand, and asked that no record of the old key
+survive in the code. A reader who finds this surprising should not reconstruct a
+migration path from it.
+
+An earlier round *did* implement dual-key acceptance with a deprecation
+diagnostic and a horizon, and it was removed. Two findings against it are worth
+keeping because they generalise: refusal messages hardcoded the new key names, so
+an operator on the old key would have been told to add a section that then
+tripped the both-keys-present error; and the deprecation notice was raised only
+in `validate_safety_config`, which live startup never calls, so nobody running a
+working rig would ever have seen it.
+
+Two acknowledged warts, recorded rather than fixed:
+
+- **`mode` is filed under a property-authorization key but is not a
+  property-authorization field.** `config.py` reads it to decide whether
+  guaranteed mode is in force for the whole process. Promoting it to a top-level
+  key would have been a second independent config break, and the operator's
+  standing ruling is that a config-breaking rename gets its own branch and gate.
+- **An `illumination-power` actuator is still declared twice** — in both
+  `property_authorization.allowed_numeric` and `illumination.power_properties`,
+  or startup refuses. That is the deliberate design recorded above, not an
+  oversight, but it remains the one place the split map is redundant rather than
+  merely partitioned.
+
+`named_stages` deliberately did **not** move under the new key. It is a
+capability range policy consumed by `check_named_stage`, in the same family as
+`stage`, `camera.max_exposure_ms` and `illumination` — not a raw-property write
+authorization.
+
+Gate evidence: demo G0/G1/G2 pass; M5 G4 pass, with a live `snap_and_analyze`
+(2304×2304, SNR 3.45) and a bounded `move_named_stage` to 1400 µm achieving
+1399.9 µm. M5's real deployed config was proven parseable under the new schema by
+offline replay of the hash-verified file — exactly four lines change, all keys.
 
 ### What the rig gates established, and what they did not
 
@@ -1603,7 +1658,7 @@ plainly where it does not, and emits the entries.
 on hardware the demo rig cannot represent. Core focus and core XY keep `stage.*`
 and their dedicated tools; any other single-axis stage goes through
 `named_stages` and `move_named_stage`; a positional raw property that the stage
-API cannot reach remains a `typed_actuators` `absolute-position` entry. Both M5
+API cannot reach remains a `allowed_numeric` `absolute-position` entry. Both M5
 Thorlabs `Position (um)` properties were excluded from `bounded-numeric` with
 "MM identifies a stage position property; bounded-numeric cannot bypass the
 fail-closed named/core stage policy" — the demo's `Z.Position` reports no limits
