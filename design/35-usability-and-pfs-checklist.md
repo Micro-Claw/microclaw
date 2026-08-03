@@ -148,7 +148,7 @@ assistant's narration when judging whether a guard fired.
 | 4r1a | Usability | 4 | `design33/first-launch-setup` | `15d8d1b` | `c5746b9` (`d203753` rejected) | folded into block 4 round 2 | n/a — merges via block 4 | |
 | 4r1b | Usability | 4 | `design35/startup-refusal-severity` | `15d8d1b` | `2558583` (`16cc416` rejected alone) | folded into block 4 round 2 | `385049d` into block branch | |
 | 4b | Usability | 4 merged | `design33/bounded-numeric-actuator` (deleted) | `578874e` | `5a6c6e2` | G1 demo **PASS**; G3 M2 **PASS** incl. imagery; G2 M5 in-range **PASS**, refusal step retired | `04164fd` | **done** — design/33 §"Block 4b landed" |
-| 4e | Usability | 4b merged | `design33/emission-path-discovery` | `85398e8` | `bc40f18` + `d631a4f` (`39f69dd` returned) | M2 G1/G2 **PASS** 2026-08-03; G3 demo+M5 owed | | |
+| 4e | Usability | 4b merged | `design33/emission-path-discovery` | `85398e8` | `bc40f18` + `d631a4f` (`39f69dd` returned) | M2 G1/G2 **PASS**; M5 G3 **PASS** 2026-08-03; demo G3 owed | | |
 | 4f | Usability | 4e merged | `design33/channel-group-presets` | | | **required** | | |
 | 4c | Usability | 4f merged | `design33/setup-named-stages` | | | **required** | | |
 | 4g | Platform | none — may run concurrently | `design32/hook-hash-newline` | | | **required** (any Windows rig) | | |
@@ -1764,8 +1764,11 @@ Rig gate (M2 has the multi-state shutter and the Cobolt; M5 has neither):
       edit, and that the generated profile declares it.
 - [x] Show a write of `Auto` to `Andor.Shutter (Internal)` now requires
       confirmation, and that declining it refuses the write.
-- [ ] Confirm no previously-working illumination declaration stopped working on
-      M5 or the demo rig.
+- [-] Confirm no previously-working illumination declaration stopped working on
+      M5 or the demo rig. **M5 done** (21 → 21, no TTL/Analog switch armed);
+      **demo owed**, and it carries M5's unrun shutter-confirmation step: exercise
+      `White Light Shutter.State` (`['0','1']`, the same numeric shape as M5's
+      twelve) through confirmation, return it to `0`, and read it back.
 
 ### Rig gate G1/G2 — M2, 2026-08-03: **PASS**
 
@@ -1803,6 +1806,44 @@ shape already supplies.
 
 **G3 (M5 and demo non-regression) is still owed.** M2 alone does not close this
 block.
+
+### Rig gate G3 — M5, 2026-08-03: **non-regression PASS; the shutter step was not run**
+
+Evidence: `block4e-m5-20260803-112756`, at `d631a4f`, pin `0`, clean tree,
+`check-config` exit `0`, pytest exactly the known 23 Windows failures in the two
+known modules and no others — the first run judged against block 4g's baseline
+rather than against an unmeetable "suite must pass".
+
+**Discovery non-regression PASS.** The live producer emitted exactly 21 enable
+candidates and the profile declares exactly the 21 expected shutters, identical
+to the pre-change set. **No iChrome TTL or Analog mode switch became a shutter
+or an ordinary writable property** — the specific regression 4b round 3 caused
+and this change could have repeated. As recorded, M5 has zero `ShutterDevice`s
+so this outcome was guaranteed by the captured facts; it is confirmation that
+the change is inert there, not evidence of resilience.
+
+The session started on the generated reviewed profile and ordinary work still
+functions: a snap returned a valid focus metric and SNR, and a raw camera
+property write (`Sensor Cooler` → `ON`) was permitted and read back. Startup also
+reported `shutter: no shutter device configured`, consistent with the standing
+record that M5 has no core shutter.
+
+**The step that would have tested M5's real exposure was not performed.** The
+runbook asked for one previously-working declared shutter exercised through
+confirmation and returned to its reviewed off value; the session snapped an
+image and turned the sensor cooler on instead. Since discovery cannot affect
+M5, the `safety.py` gating change was M5's only exposure, and it is unmeasured
+there.
+
+**Not re-run on M5, by coordinator judgement — folded into the demo run
+instead.** The gating change was proven directly on M2 (`Auto` refused, with the
+confirmations JSONL). M5's 21 declared shutters are all two-valued, so no third
+value can arise for the new `!= off_value` limb to catch, and the only residual
+was the numeric-formatting variant on its twelve `1`/`0` shutters. Demo's
+`White Light Shutter.State` is also `['0', '1']`, so the identical numeric shape
+can be exercised there — with no laser and no optical containment required.
+Spending a second M5 trip on a strictly more hazardous version of a test the
+demo rig can run is not justified.
 
 ### Two findings from this run that are not Block 4e's code
 
