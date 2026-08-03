@@ -186,7 +186,7 @@ assistant's narration when judging whether a guard fired.
 | 4h | Usability | 4f merged | `design33/confirmation-visibility` (deleted) | `1599ff3` | `3efecaf` + `518a90a` + `e451a5c` | demo G1+G2 **PASS** 2026-08-03 | `e42b930` | **done** — design/21 §"F1 revisited" |
 | 4c | Usability | 4h merged | `design33/setup-named-stages` (deleted) | `3b99397` | `7f68f33` + `e537207` + `c34ee1e` + `d934dbf` (round 1 returned) | demo G1+G1b, M5 G2, demo re-gate all **PASS** 2026-08-03 | `8ce3401` | **done** — design/33 §"Block 4c landed" |
 | 4g | Platform | none — may run concurrently | `design32/hook-hash-newline` (deleted) | `95ae192` | `50e5f66` + `d0bb602` + `971cdb6` + `f768cc3` | round 3 **PASS** 2026-08-03 (rounds 1–2 failed test-side) | `936230f` | **done** — design/32 §4 |
-| 4d | Usability | 4c merged | `design33/property-authorization-rename` | `2f1852e` | | **required** | | |
+| 4d | Usability | 4c merged | `design33/property-authorization-rename` | `052179d` | | **required** | | |
 | 5 | Usability | 4b, 4e, 4f, 4h, 4c, 4d | `design33/deployed-config-hygiene` | | | required | | |
 | 6 | Nikon | probe S = pre-fix baseline; post-fix run owed | `design34/measured-position-readback` | | | required | | |
 | 7a | Nikon | scope: none; rig gate: probe 0 | `design34/continuous-focus-capability` | | | **required** | | |
@@ -2856,11 +2856,14 @@ refuses. `typed_actuators` is not even a field of the `RigProfile` object
       `check-config` and starts a session — so the M5 trip is spent only on the
       deployed file the demo core cannot represent. PowerShell/cmd-safe.
 
-**Assigned 2026-08-03 from `2f1852e`.** Coordinator-measured baseline at that
-commit: **1369 passed / 99 skipped / 3 expected warnings** (the pre-existing
-`StarletteDeprecationWarning` plus two `phase_cross_correlation` empty-image
-warnings). The implementer branches from the tip of `origin/main` at the
-assignment merge, in its own worktree.
+**Assigned 2026-08-03 from `052179d`**, the assignment merge itself. Baseline
+**1369 passed / 99 skipped / 3 expected warnings** was measured one commit
+earlier at `2f1852e`; `052179d` adds only this checklist edit, so the number
+carries. (An earlier version of this line and the ledger row both said
+`2f1852e`, which was the tip when the baseline was taken but not the commit any
+implementer could branch from — the implementer caught it.) The implementer
+branches from the tip of `origin/main` at the assignment merge, in its own
+worktree.
 
 Scope decisions carried into the assignment, so the implementer does not
 re-derive them and does not widen the break:
@@ -2921,6 +2924,41 @@ Post-merge design gate:
       property-authorization key; `illumination-power` declared twice) in
       `design/33-authorization-map.md`, which documents the old key names in
       twelve places.
+
+### Round 1 — returned 2026-08-03, two findings
+
+Implementation `5674b5f`, runbook `69e0e2f`. Independently re-measured by the
+coordinator in the implementer's worktree: **1372 passed / 99 skipped / 3
+expected warnings**, baseline plus three new tests. The rename itself is right:
+`git grep` on the branch shows every remaining old-name occurrence under
+`microclaw/` is either the deliberate legacy-key handling in `safety.py`/
+`config.py` or the guard's private `_typed_actuators` state, which is not a
+config key. `deployed-m5.reference.yaml` hashes correctly and parses. The
+runbook is good and covers all four startup cases with a before/after hash on
+the deployed file. Two defects, both of which land squarely on G3 — the M5 step
+that starts the deployed **old-key** config, which is the exact population the
+dual-key bridge exists to protect.
+
+1. **Every refusal message names a key the legacy operator's file does not
+   have, and following it breaks their rig.** The messages now hardcode
+   `property_authorization.*` (`authorization.py:826`, `:851`, `:952`, `:1266`,
+   `:1280`, `:1363`). An operator on `rig_profile` who reads "declare it in
+   `property_authorization.allowed_numeric`" and does so gets *both* keys, which
+   this block deliberately made a hard startup error. So the message converts a
+   running rig into one that will not start. This is the same defect the block
+   was written to fix — a message pointing at a key the file does not use —
+   mirrored onto the legacy side, and it is not hypothetical: the demotion
+   diagnostics at `:826`/`:851`/`:952` are the ones M5's startup already emits,
+   so G3's evidence would contain it.
+2. **A legacy config starts a live session with no deprecation notice at all.**
+   The diagnostic is raised in `validate_safety_config` (`config.py:72`), but
+   live startup goes `load_safety_config_or_exit` → `load_safety_config` →
+   `ParsedSafetyConfig.from_yaml` (`config.py:183`, `:153`) and never calls the
+   validator. It therefore fires only under `microclaw check-config`, which an
+   operator whose rig already starts has no reason to run. A deprecation nobody
+   is told about is not a migration path; the horizon then arrives as an
+   outage. The runbook is honest about this — G3 asserts the warning only on
+   `check-config` — so the gate would have passed with the gap standing.
 
 ## 5. [ ] Deployed-config hygiene and the `init` path — rig config review
 
