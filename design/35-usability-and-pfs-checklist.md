@@ -175,7 +175,7 @@ assistant's narration when judging whether a guard fired.
 | 4e | Usability | 4b merged | `design33/emission-path-discovery` (deleted) | `85398e8` | `bc40f18` + `d631a4f` (`39f69dd` returned) | M2 G1/G2, M5 G3, demo G3 all **PASS** 2026-08-03 | `9b88394` | **done** — design/33 §"Block 4e landed" |
 | 4f | Usability | 4e merged | `design33/channel-group-presets` (deleted) | `f95c8ca` | `84c4d70` + `d4985e6` | M2 G1 + demo G2 **PASS** 2026-08-03 | `9010158` | **done** — design/33 §"Block 4f landed" |
 | 4h | Usability | 4f merged | `design33/confirmation-visibility` (deleted) | `1599ff3` | `3efecaf` + `518a90a` + `e451a5c` | demo G1+G2 **PASS** 2026-08-03 | `e42b930` | **done** — design/21 §"F1 revisited" |
-| 4c | Usability | 4h merged | `design33/setup-named-stages` | `3b99397` | | **required** (M5) | | |
+| 4c | Usability | 4h merged | `design33/setup-named-stages` | `3b99397` | `7f68f33` + `e537207` + `c34ee1e` (round 1 returned) | **required** — demo G1 + M5 G2, pushed 2026-08-03 | | |
 | 4g | Platform | none — may run concurrently | `design32/hook-hash-newline` (deleted) | `95ae192` | `50e5f66` + `d0bb602` + `971cdb6` + `f768cc3` | round 3 **PASS** 2026-08-03 (rounds 1–2 failed test-side) | `936230f` | **done** — design/32 §4 |
 | 4d | Usability | 4c merged | `design33/property-authorization-rename` | | | **required** | | |
 | 5 | Usability | 4b, 4e, 4f, 4h, 4c, 4d | `design33/deployed-config-hygiene` | | | required | | |
@@ -2641,8 +2641,53 @@ The Enter-acceptable driver-range default is **not** reopened by this: proposing
 driver technical ranges for hazardous axes was settled by operator ruling
 2026-08-01 and that note explicitly forbids re-litigating it in a later block.
 
+### Round 2 — pushed 2026-08-03, awaiting the rigs
+
+Implementation `7f68f33`, runbook `e537207`, plus coordinator corrections
+`c34ee1e`. Branch `design33/setup-named-stages` is on `origin`, runbook included,
+pinned at `7f68f33` by `merge-base --is-ancestor` (re-verified green after the
+coordinator commit). Independently re-measured: **1368 passed / 99 skipped / 3
+expected warnings** — 1364 baseline, +2 for the implementer's decline and
+Nikon-offset tests, +2 for the coordinator's parametrized fragment test.
+
+The implementer's round-2 work, accepted as written: each non-core `StageDevice`
+now offers `y=declare bounds` / `x=exclude; leave unreachable`; a declined stage
+asks no bound questions, emits no entry, and produces an `OPERATOR EXCLUSION`
+note; the offset warnings were folded into the existing `CONTINUOUS-FOCUS REVIEW
+QUESTION` note rather than a competing one; and `Position (µm)` / `PositionUm`
+were added as explicit safe spellings rather than an unrestricted `position`
+prefix match, on the stated grounds that a prefix could select a different
+position-related property. That reasoning is accepted.
+
+Two coordinator corrections made directly on the branch rather than returned,
+both small and both operator-facing text or predicate breadth:
+
+1. **The named-stage offset predicate required an "offset" fragment *and* a
+   "pfs"-family fragment in the same label**, which is stricter than the typed
+   branch immediately above it (that one matches "offset" alone). A stage
+   labelled `Z Offset Stage` or `PFS Z` would have been authored with no warning.
+   Widened to match any one fragment, with a comment recording the asymmetry: a
+   false positive costs one review sentence, a false negative costs the operator
+   the warning that `achieved_um` may be stale. Covered by a new parametrized
+   test over both label shapes.
+2. **The no-offset-declared branch of the note said "PFS-offset workflows remain
+   unsupported until an offset stage is declared,"** which reads as *declaring
+   the stage confers support* and drops the actual gating condition. Reworded:
+   declaring one is a reviewed authorization to command it, not evidence that its
+   reported `achieved_um` means arrival, which remains outstanding until Block
+   6's settling/read-back work lands.
+
 Post-merge design gate:
 
+- [ ] Reconcile Block 4's ticked item "Mark PFS-offset workflows unsupported even
+      when the offset has reviewed bounds" and the design/33 impact row it came
+      from with what actually ships: setup **authors** the offset entry and marks
+      the *movement report* unverified. The item as worded no longer describes the
+      code, and it is ticked, so a later reader would otherwise take the stricter
+      reading — which is exactly what happened in round 1.
+- [ ] Record the residual on the offset warning: it is a **label-shape**
+      heuristic, so an offset stage named without any of the five fragments is
+      authored with no warning. It is a note, never a bound or a gate.
 - [ ] Record in design/33 that first-launch setup now authors `named_stages`,
       which devices it asks about and which it deliberately does not (core focus,
       and whatever the `XYStageDevice` ruling turns out to be), and the residual:
