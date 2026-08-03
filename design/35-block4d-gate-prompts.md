@@ -9,51 +9,39 @@ M5 configuration during this gate.
 All commands below are PowerShell-safe. Preserve the named raw files and their
 exit-code companions.
 
-**Every `serve` here runs `--no-browser`, so there is no browser prompt to wait
-for** and no interaction is expected. A successful startup prints
+**Start every session the normal way — the same command you always use.** No
+`--no-browser`, no output redirection, no transcript capture. The browser opens,
+you confirm there was no startup refusal, you send one trivial read-only message
+so the session writes its history, then you stop it with Ctrl+C.
 
-```
-Microclaw GUI: http://<host>:<port>  (Ctrl-C to stop)
-```
+**The session's `*_microclaw_history.jsonl` is the acceptance evidence.** It is
+written only after a live rig has been validated and the authorization map
+built, so its existence cannot be faked by a session that failed to start. Note
+that it is created lazily on the first write (`conversation.py:153`) — an idle
+session that is started and immediately stopped writes **no file at all**, which
+is why the 2026-08-03 demo run returned none. One message is what makes the
+artifact exist.
 
-and then stays running until you stop it with Ctrl+C. That line is printed only
-after the config is loaded, the live rig is validated, and the authorization map
-is built, so seeing it is proof all three succeeded — a refusal exits instead of
-hanging. "It reached the prompt" in an earlier draft of this runbook was
-unsatisfiable under `--no-browser` and is what left the 2026-08-03 demo run
-unable to say whether its session had started.
+Do not try to capture a running session's console output to a file. Two attempts
+at it on 2026-08-03 both produced 0 bytes: microclaw's startup banner is a bare
+`print()`, Python block-buffers stdout as soon as it is not a console, `serve`
+then blocks forever, and Ctrl+C discards the buffer. That is a real product
+defect, recorded in the checklist's carried-forward register and routed to block
+5 — it is not something this gate needs to work around.
 
-**`$env:PYTHONUNBUFFERED = "1"` in G0 is load-bearing — do not drop it.**
-Microclaw's startup banner is a plain `print()`, and Python block-buffers stdout
-as soon as it is redirected or piped rather than attached to a console. `serve`
-then blocks in the server loop forever, so that buffer is never flushed and
-Ctrl+C discards it — which is why the 2026-08-03 demo run produced a 0-byte
-session file twice, first under `> file 2>&1` and again under `Tee-Object`.
-There is no second source of output to fall back on either: `webserve.py:886` runs
-uvicorn at `log_level="warning"`, which suppresses its own "Uvicorn running on"
-line. Setting the variable makes the banner appear the moment it is printed.
+**Refusal steps are the exception and DO capture to a file.** There the message
+*is* the evidence, and capture works reliably because a refusing process exits,
+which flushes Python's buffer. Those steps keep `> file 2>&1`, as do all the
+short non-interactive commands (`git`, `pytest`, `check-config`,
+`Select-String`, `Get-FileHash`).
+
+**The setup interview is not redirected either.** Microclaw writes its own UTF-8
+transcript into `--evidence-out`, which is the authoritative record (the Block 4
+round-1 fix; it worked on the demo run even when the redirect did not). Only its
+exit code is captured.
 
 If you invoke microclaw through `uv run microclaw` rather than a bare
-`microclaw`, keep doing so — substitute it throughout; nothing here depends on
-which launcher is used.
-
-**Two commands are deliberately not redirected with `> file 2>&1`, and must not
-be "fixed" back.** A plain redirect on an interactive or long-running process
-sends everything to the file and leaves the console blank, so the operator
-cannot see the prompts they are meant to answer — and on Ctrl+C the file can be
-left empty, which is how the 2026-08-03 demo run lost its session evidence
-entirely. So:
-
-- **The setup interview is not redirected at all.** Microclaw writes its own
-  UTF-8 transcript into `--evidence-out`, which is the authoritative record
-  (this is the Block 4 round-1 fix, and it worked on the demo run even when the
-  redirect did not). Only its exit code is captured.
-- **Every `serve` uses `2>&1 | Tee-Object -FilePath …`**, which shows output live
-  *and* writes it incrementally, so Ctrl+C cannot leave an empty file.
-
-Short non-interactive commands — `git`, `pytest`, `check-config`,
-`Select-String`, `Get-FileHash` — keep the plain redirect; it works fine for
-those and every one of them captured correctly.
+`microclaw`, keep doing so — substitute it throughout.
 
 ## G0 — branch identity and suite
 
@@ -63,7 +51,6 @@ Run on both machines from the Microclaw checkout:
 $Stamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $Evidence = "block4d-$Stamp"
 New-Item -ItemType Directory -Path $Evidence
-$env:PYTHONUNBUFFERED = "1"
 git fetch origin > "$Evidence\git-fetch.txt" 2>&1
 echo $LASTEXITCODE > "$Evidence\git-fetch-exit.txt"
 git switch design33/property-authorization-rename > "$Evidence\git-switch.txt" 2>&1
@@ -118,29 +105,16 @@ Read the entire copied profile and change only `reviewed: false` to
 ```powershell
 microclaw check-config "$Evidence\demo-new-key.reviewed.yaml" > "$Evidence\demo-new-key-reviewed-check.txt" 2>&1
 echo $LASTEXITCODE > "$Evidence\demo-new-key-reviewed-check-exit.txt"
-microclaw --port $Port --safety-config "$Evidence\demo-new-key.reviewed.yaml" serve --no-browser 2>&1 | Tee-Object -FilePath "$Evidence\demo-new-key-session.txt"
+microclaw --port $Port --safety-config "$Evidence\demo-new-key.reviewed.yaml" serve
 ```
 
-**While that session is still running**, open a second PowerShell window, `cd`
-to the same checkout, and prove the server is actually listening. Substitute the
-literal evidence folder name for `<evidence>` — `$Evidence` is not defined in a
-new window:
+Send one trivial read-only message in the browser — "hello" is enough — so the
+session writes its history, then stop it with Ctrl+C.
 
-```powershell
-Test-NetConnection -ComputerName 127.0.0.1 -Port 8000 | Select-Object -ExpandProperty TcpTestSucceeded > "<evidence>\demo-new-key-listening.txt" 2>&1
-```
-
-This is the acceptance evidence, and it is deliberately independent of anything
-microclaw prints: a config that failed to load, a rig that failed live
-validation, or an authorization map that refused to build all exit before the
-port is ever bound, so `True` cannot be produced by a session that did not fully
-start.
-
-It worked when `check-config` exits `0`, `demo-new-key-listening.txt` contains
-`True`, and the session output shows the startup banner with no schema or
-authorization refusal above it. Then stop the session with Ctrl+C. Send back the
-reviewed profile, validator output, the listening file, full session output, and
-the session history JSONL if one was written.
+It worked when `check-config` exits `0`, the browser opens with no schema or
+authorization startup refusal, and the session writes a
+`*_microclaw_history.jsonl` containing your message. Send back the reviewed
+profile, validator output, and the session history JSONL.
 
 ## G2 — demo machine, old-key refusal
 
@@ -158,7 +132,7 @@ offline validator and live entry point:
 ```powershell
 microclaw check-config "$Evidence\demo-old-key.reviewed.yaml" > "$Evidence\demo-old-key-check.txt" 2>&1
 echo $LASTEXITCODE > "$Evidence\demo-old-key-check-exit.txt"
-microclaw --port $Port --safety-config "$Evidence\demo-old-key.reviewed.yaml" serve --no-browser 2>&1 | Tee-Object -FilePath "$Evidence\demo-old-key-session.txt"
+microclaw --port $Port --safety-config "$Evidence\demo-old-key.reviewed.yaml" serve > "$Evidence\demo-old-key-session.txt" 2>&1
 echo $LASTEXITCODE > "$Evidence\demo-old-key-session-exit.txt"
 ```
 
@@ -179,7 +153,7 @@ Get-FileHash -Algorithm SHA256 "<deployed-config>" > "$Evidence\m5-deployed-befo
 Copy-Item "<deployed-config>" "$Evidence\m5-deployed-before.yaml"
 microclaw check-config "<deployed-config>" > "$Evidence\m5-deployed-check.txt" 2>&1
 echo $LASTEXITCODE > "$Evidence\m5-deployed-check-exit.txt"
-microclaw --safety-config "<deployed-config>" serve --no-browser 2>&1 | Tee-Object -FilePath "$Evidence\m5-deployed-refusal.txt"
+microclaw --safety-config "<deployed-config>" serve > "$Evidence\m5-deployed-refusal.txt" 2>&1
 echo $LASTEXITCODE > "$Evidence\m5-deployed-refusal-exit.txt"
 ```
 
@@ -210,25 +184,19 @@ Get-FileHash -Algorithm SHA256 "<deployed-config>" > "$Evidence\m5-deployed-afte
 git diff --no-index -- "$Evidence\m5-deployed-before.yaml" "<deployed-config>" > "$Evidence\m5-four-key.diff" 2>&1
 microclaw check-config "<deployed-config>" > "$Evidence\m5-renamed-check.txt" 2>&1
 echo $LASTEXITCODE > "$Evidence\m5-renamed-check-exit.txt"
-microclaw --safety-config "<deployed-config>" serve --no-browser 2>&1 | Tee-Object -FilePath "$Evidence\m5-renamed-session.txt"
+microclaw --safety-config "<deployed-config>" serve
 ```
 
-**While that session is still running**, prove it is listening from a second
-PowerShell window, exactly as in G1 (substitute the literal evidence folder
-name):
+Send one trivial read-only message in the browser so the session writes its
+history, then stop it with Ctrl+C.
 
-```powershell
-Test-NetConnection -ComputerName 127.0.0.1 -Port 8000 | Select-Object -ExpandProperty TcpTestSucceeded > "<evidence>\m5-renamed-listening.txt" 2>&1
-```
-
-It worked when the before/after hashes differ, `check-config` exits `0`,
-`m5-renamed-listening.txt` contains `True`, and the session prints its startup
-banner. Inspect the file
-diff locally and confirm
-that only the four key names changed. Do not call motion, illumination,
-acquisition, or mutation tools. Stop with Ctrl+C. Send back the deployed path,
-both hashes, both refusal outputs, the renamed validator and session outputs,
-the exact four-key diff, and the session history JSONL.
+It worked when the before/after hashes differ, `check-config` exits `0`, the
+browser opens with no startup refusal, and the session writes a
+`*_microclaw_history.jsonl`. Inspect the file diff locally and confirm that only
+the four key names changed. Do not call motion, illumination, acquisition, or
+mutation tools. Send back the deployed path, both hashes, both refusal outputs,
+the renamed validator output, the exact four-key diff, and the session history
+JSONL.
 
 ## G4 — M5, regenerated new-key config
 
@@ -248,40 +216,31 @@ Copy-Item $Draft "$Evidence\m5-new-key.reviewed.yaml"
 
 It worked so far when setup exits `0` and the generated-shape output contains
 only the four new names. Read the full copied profile, resolve every review
-note,
-and change `reviewed: false` to `reviewed: true` only when the file is genuinely
-reviewed. Then run:
+note, and change `reviewed: false` to `reviewed: true` only when the file is
+genuinely reviewed. Then run:
 
 ```powershell
 microclaw check-config "$Evidence\m5-new-key.reviewed.yaml" > "$Evidence\m5-new-key-check.txt" 2>&1
 echo $LASTEXITCODE > "$Evidence\m5-new-key-check-exit.txt"
-microclaw --safety-config "$Evidence\m5-new-key.reviewed.yaml" serve --no-browser 2>&1 | Tee-Object -FilePath "$Evidence\m5-new-key-session.txt"
+microclaw --safety-config "$Evidence\m5-new-key.reviewed.yaml" serve
 ```
 
-**While that session is still running**, prove it is listening from a second
-PowerShell window, exactly as in G1 (substitute the literal evidence folder
-name):
+Send one trivial read-only message in the browser so the session writes its
+history, then stop it with Ctrl+C.
 
-```powershell
-Test-NetConnection -ComputerName 127.0.0.1 -Port 8000 | Select-Object -ExpandProperty TcpTestSucceeded > "<evidence>\m5-new-key-listening.txt" 2>&1
-```
-
-It worked when `check-config` exits `0`, `m5-new-key-listening.txt` contains
-`True`, and the session prints its startup
-banner. Do not call motion, illumination, acquisition,
-or mutation tools. Stop with Ctrl+C. Send back the full inventory and
-transcript,
-draft and reviewed profiles, shape and validator outputs, full session output,
-and history JSONL. Do not install the regenerated file as M5's deployed config.
+It worked when `check-config` exits `0`, the browser opens with no startup
+refusal, and the session writes a `*_microclaw_history.jsonl`. Do not call
+motion, illumination, acquisition, or mutation tools. Send back the full
+inventory and transcript, draft and reviewed profiles, shape and validator
+outputs, and the session history JSONL. Do not install the regenerated file as
+M5's deployed config.
 
 ## Return to the coordinator
 
 Return the complete demo and M5 evidence directories, not summaries. Explicitly
 report the outcome of the new-key startup, old-key refusal, unchanged deployed
 M5 refusal, hand-renamed deployed M5 startup, and regenerated M5 startup.
-Include
-every `*-exit.txt`, raw profile, transcript,
-validator output, session output/history, hash, `status.txt`, `head.txt`, and
-pytest output. Report any unclear interview prompt or any difference other than
+Include every `*-exit.txt`, raw profile, interview transcript, validator output,
+session history JSONL, hash, `status.txt`, `head.txt`, and pytest output. Report any unclear interview prompt or any difference other than
 the four schema key renames. Do not merge, push `main`, or alter the deployed M5
 configuration.
