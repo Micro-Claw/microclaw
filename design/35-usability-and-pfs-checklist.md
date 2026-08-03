@@ -2962,6 +2962,74 @@ Post-merge design gate:
       twelve places. State that the old key was removed without a migration
       path, by operator ruling, so a later reader does not reconstruct one.
 
+### Rig gate G3/G4 — M5, 2026-08-03: **G4 PASS; G3 partly run, gap closed offline; one unrelated suite failure**
+
+Evidence: `block4d-m5-20260803-170259`, run at `b455475`, ancestor check `0`,
+`status.txt` empty.
+
+**G4 PASS, and it proves more than the criterion asked.** A fresh M5 interview
+wrote a profile carrying only the four new key names; `check-config` exited `0`
+with `Schema: valid` / `Review: reviewed`; the session started against real
+hardware. The turn (`20260803_171126_836272_microclaw_history.jsonl`) ran
+`snap_and_analyze` on the Hamamatsu — ROI 2304×2304, Z 63.927 µm, SNR 3.45,
+`focus_metric_valid: true` — **and then `move_named_stage` on `SmarAct 1D` to
+1400 µm, achieving 1399.9 µm (−0.1 µm).** That is Block 4c's `named_stages`
+authorising and bounding a real motion *through the renamed schema*, on the rig
+that motivated 4c. The operator went past the runbook's "no motion" instruction
+to get it; it is their rig and their call, and the result is the strongest single
+piece of evidence in this block.
+
+**G3 was run in part.** `check-config` against a hash-verified copy of the
+genuine deployed config (`68d71aa5…`, matching the recorded hash) refused
+correctly, naming `rig_profile: unknown top-level key` and
+`property_authorization: missing required property authorization map`. Two steps
+did not produce evidence:
+
+1. **The live-refusal command shipped with the literal `<deployed-config>`
+   placeholder unsubstituted**, so its exit `1` is `No safety config at
+   <deployed-config>` — a file-not-found, not the old-key refusal. **This is a
+   defect in the runbook, not the run:** a placeholder that must be hand-edited
+   into four separate commands will eventually be missed in one of them, and it
+   was. Any future runbook should bind such a path to a variable once
+   (`$Deployed = "…"`) rather than repeating a placeholder. The step's intent is
+   covered regardless — G2 proved the identical live refusal on the demo machine,
+   and `check-config` proved it here on the real file.
+2. **The rename-then-restart half was not performed on the rig at all** — no
+   after-hash, no four-key diff, no renamed session. **This was the right
+   operator call**, and this file told them so: the runbook's own warning is that
+   renaming the deployed config before the merge strands M5 on an unmerged
+   branch. Doing it as a normal post-merge deployment step is strictly safer.
+
+**The gap that leaves is closed offline, against the genuine file.** The
+coordinator took `m5-deployed-before.yaml`, confirmed its sha256 against the
+recorded hash, applied the four renames, and diffed with line endings
+normalised: **exactly four lines change, all of them keys** (`:52`, `:54`,
+`:161`, `:378`), and the result passes `check-config` at exit `0` with
+`Schema: valid` / `Review: reviewed`. So M5's real deployed config is proven
+parseable under the new schema. What remains unproven is only that it passes
+*live* validation after renaming — and that is not a 4d question: live validation
+checks declarations against hardware and is wholly independent of key naming, so
+it would have behaved identically before this block.
+
+**One suite failure, and it is not this block's.**
+`tests/test_webserve.py::test_browser_opens_only_once_the_port_accepts` failed;
+1 failed / 1354 passed / 115 skipped. Grounds for accepting a red suite here,
+stated explicitly rather than waved through:
+
+- 4d does not touch `microclaw/webserve.py` at all, and its only edit to
+  `tests/test_webserve.py` is a config-key rename inside a *different* test.
+- The same commit passed this test on the demo machine minutes earlier.
+- The test is self-documentedly race-prone: its own comment records that it
+  "made the test a race against the scheduler, which it lost on a loaded rig",
+  from a previous hardening pass. `_open_when_ready` polls with a 15 s budget
+  (`webserve.py:788`); the thread exited having never connected, which is a
+  starvation signature on a rig busy driving cameras and stages.
+- Browser-open timing is orthogonal to a config-schema rename by construction.
+
+Per the standing "confirm before fixing" rule a single failure is a data point,
+not a diagnosis, so this is recorded as **suspected flaky pending one
+re-run**, and routed for hardening rather than fixed here.
+
 ### Rig gate G1 re-run — demo machine, 2026-08-03: **PASS. The demo gate is complete.**
 
 Evidence: `20260803_170006_552597_microclaw_history.jsonl` in
@@ -3585,6 +3653,17 @@ schedule them or record a reason at block 12.
 This is an inventory, not permission to close with unresolved blank work. Block
 12 assigns every row one of the explicit dispositions above.
 
+- **`tests/test_webserve.py::test_browser_opens_only_once_the_port_accepts` is
+  race-prone and has now failed a rig gate.** Failed on M5 during Block 4d's G0,
+  2026-08-03, on code that does not touch `webserve.py` and that passed the same
+  test on the demo machine minutes earlier. `_open_when_ready`
+  (`webserve.py:788`) polls a 15 s budget from a daemon thread; on a box busy
+  driving cameras and stages the thread exited having never connected. The test's
+  own comment records losing this same race once before, so a previous hardening
+  pass was insufficient. It will keep failing G0 for future blocks, where a red
+  suite is supposed to mean something. Either give the poll a load-independent
+  synchronisation point or mark it appropriately — do not simply raise the
+  timeout again.
 - **`microclaw serve` produces no output at all when piped or redirected, until
   it dies.** Found while gating Block 4d, 2026-08-03; **not fixed there, because
   4d is a schema rename and the defect is unrelated to it.** The startup banner
