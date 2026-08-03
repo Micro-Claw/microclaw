@@ -118,6 +118,22 @@ Progress markers: `[ ]` not started, `[-]` active, `[x]` complete, `[!]` blocked
 Rig-facing commands must be PowerShell/cmd-safe (the rig is Windows): prefer
 `> out.txt 2>&1` over Unix pipelines.
 
+### Where the rig evidence lives
+
+**Gate evidence bundles are not in this repository.** Every
+`block4-*`/`block4b-*`/`m5-*` folder named in the gate records below lives under
+`~/Documents/Documents - Beyonce/Projects/Micro-Claw/` on the coordinator's
+machine, alongside the saved run histories. A session that has not been told
+this cannot find them, and several review findings in this file were only
+catchable by replaying a captured `inventory.json` from one of those bundles.
+Recorded here because it was previously stated only in a spike comment
+(`design/29-block9-landmark-check.py:58`) and one older gate runbook.
+
+Two habits that follow from it, both of which caught real defects: replay the
+**captured** inventory rather than a synthetic fixture when judging an
+interview change, and read the tool-call history JSONL rather than the
+assistant's narration when judging whether a guard fired.
+
 ### Run ledger
 
 | Block | Track | Depends on | Branch | Start commit | Implementation commit | Rig evidence | Merge | Design reconciliation |
@@ -135,7 +151,7 @@ Rig-facing commands must be PowerShell/cmd-safe (the rig is Windows): prefer
 | 4e | Usability | 4b merged | `design33/emission-path-discovery` | | | **required** | | |
 | 4c | Usability | 4e merged | `design33/setup-named-stages` | | | **required** | | |
 | 4d | Usability | 4c merged | `design33/property-authorization-rename` | | | **required** | | |
-| 5 | Usability | 4b, 4c, 4d | `design33/deployed-config-hygiene` | | | required | | |
+| 5 | Usability | 4b, 4e, 4c, 4d | `design33/deployed-config-hygiene` | | | required | | |
 | 6 | Nikon | probe S = pre-fix baseline; post-fix run owed | `design34/measured-position-readback` | | | required | | |
 | 7a | Nikon | scope: none; rig gate: probe 0 | `design34/continuous-focus-capability` | | | **required** | | |
 | 7b | Nikon | 7a | `design34/continuous-focus-policy` | | | **required** | | |
@@ -1773,7 +1789,7 @@ refuses. `typed_actuators` is not even a field of the `RigProfile` object
 - [ ] Rig gate: start a session on M5 under its **existing** deployed config
       (whatever the migration promises), and under a regenerated one.
 
-## 5. Deployed-config hygiene and the `init` path — rig config review
+## 5. [ ] Deployed-config hygiene and the `init` path — rig config review
 
 Branch: `design33/deployed-config-hygiene`
 
