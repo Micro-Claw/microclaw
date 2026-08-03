@@ -2962,6 +2962,56 @@ Post-merge design gate:
       twelve places. State that the old key was removed without a migration
       path, by operator ruling, so a later reader does not reconstruct one.
 
+### Round 2 — pushed 2026-08-03, awaiting the rigs
+
+Implementation `fd4c5b6` + `c063f16`, runbook `9fbd464`, plus two coordinator
+corrections in `029b5f4`. Independently re-measured by the coordinator in the
+implementer's worktree: **1371 passed / 99 skipped / 3 expected warnings** —
+round 1's 1372 minus the two dual-key tests, plus one pinning what an old-key
+config now gets. `git grep` on the branch finds no remaining old key name under
+`microclaw/`, `tests/`, `README.md`, or the Nikon worksheet; what is left is the
+guard's private `_typed_actuators` state and its `admit_typed_actuators` method,
+which are internal API rather than config keys.
+
+The verbatim old-key refusal, which is what every machine will show once this
+merges:
+
+```
+Invalid safety config:
+<path>: rig_profile: unknown top-level key
+<path>: property_authorization: missing required property authorization map
+```
+
+Two things the implementer did that were not asked for and are right:
+
+- `c063f16` suppresses the derived `allowed_categorical: required in guaranteed
+  mode` error when the whole `property_authorization` section is absent, so a
+  missing map reports once instead of twice. Block 3's "report every problem at
+  once" is about not exiting early, not about emitting an error's own
+  consequences alongside it.
+- `test_rig_inventory.py:417` translates
+  `design/33-block5-demo-safety-config.yaml` key-by-key at test time rather than
+  editing it, with a docstring saying why. That is the correct resolution of the
+  instruction to leave historical gate evidence immutable — the evidence stays a
+  true record of what was run, and the test still exercises the current schema.
+
+Two coordinator corrections, both small enough to make directly on the branch
+rather than spend a round on (`029b5f4`; the runbook's `--is-ancestor` pin
+survives, which is the whole reason it is an ancestor check and not a tip hash):
+
+1. `tests/fixtures/safety_config.yaml` still carried the removed key, so the
+   tree contained a committed config that no longer parses. Nothing reads it —
+   its header's claim that `conftest.py` does is already false on `main` — but a
+   dead fixture that is also an invalid document is a trap for whoever wires it
+   up next. Keys migrated; the deadness is left as a separate observation.
+2. **G3 tells the operator to edit M5's deployed config in place, which strands
+   the rig on an unmerged branch.** From the moment that edit is saved until
+   this block merges, M5 will not start on any other checkout — including a
+   `git switch main` on the same machine. The runbook already saved a pre-edit
+   copy but never said it was a rollback or when to use it. It does now. This is
+   Block 2's "sequence the config edit with the merge so the rig is not left
+   down" in a new shape, and it is the ordering cost the clean cut buys.
+
 ### Round 1 — returned 2026-08-03, two findings — **both VOID, see "Clean cut"**
 
 **Neither finding is to be implemented.** Both are defects in how round 1 served
