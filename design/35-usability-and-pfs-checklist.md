@@ -175,7 +175,7 @@ assistant's narration when judging whether a guard fired.
 | 4e | Usability | 4b merged | `design33/emission-path-discovery` (deleted) | `85398e8` | `bc40f18` + `d631a4f` (`39f69dd` returned) | M2 G1/G2, M5 G3, demo G3 all **PASS** 2026-08-03 | `9b88394` | **done** — design/33 §"Block 4e landed" |
 | 4f | Usability | 4e merged | `design33/channel-group-presets` (deleted) | `f95c8ca` | `84c4d70` + `d4985e6` | M2 G1 + demo G2 **PASS** 2026-08-03 | `9010158` | **done** — design/33 §"Block 4f landed" |
 | 4h | Usability | 4f merged | `design33/confirmation-visibility` (deleted) | `1599ff3` | `3efecaf` + `518a90a` + `e451a5c` | demo G1+G2 **PASS** 2026-08-03 | `e42b930` | **done** — design/21 §"F1 revisited" |
-| 4c | Usability | 4h merged | `design33/setup-named-stages` | `3b99397` | `7f68f33` + `e537207` + `c34ee1e` (round 1 returned) | demo G1 **PASS** 2026-08-03; G1b + M5 G2 owed | | |
+| 4c | Usability | 4h merged | `design33/setup-named-stages` | `3b99397` | `7f68f33` + `e537207` + `c34ee1e` + `d934dbf` (round 1 returned) | demo G1 **PASS**; M5 G2 **PASS with one finding, fixed** 2026-08-03; re-gate owed | | |
 | 4g | Platform | none — may run concurrently | `design32/hook-hash-newline` (deleted) | `95ae192` | `50e5f66` + `d0bb602` + `971cdb6` + `f768cc3` | round 3 **PASS** 2026-08-03 (rounds 1–2 failed test-side) | `936230f` | **done** — design/32 §4 |
 | 4d | Usability | 4c merged | `design33/property-authorization-rename` | | | **required** | | |
 | 5 | Usability | 4b, 4e, 4f, 4h, 4c, 4d | `design33/deployed-config-hygiene` | | | required | | |
@@ -2723,6 +2723,67 @@ it stays as is.
 
 Still owed: **G2 on M5** — the real non-core stages, and the in-range/out-of-range
 pair on hardware.
+
+### Rig gate G2 — M5, 2026-08-03: **the acceptance criterion PASSED; one real finding, fixed**
+
+Evidence: `block4c-m5-20260803-150556`, run at `6ae99de`, clean tree, pytest `0`
+(1352 / 115 / 3 — same Windows numbers as G1).
+
+**The block's acceptance evidence is met on real hardware.** `SmarAct 1D` moved
+to 1200 µm and reported `achieved_um: 1199.9, error_um: -0.1`; the same device at
+3000 µm was refused with `Safety constraint prevented this action: SmarAct
+1D=3000.00 µm exceeds the maximum allowed (2000.00 µm).` and did not move. The
+history check printed `True` on both lines.
+
+All three expected non-core stages were authored — `SmarAct 1D` 0–2000 (MM
+reports no position property for it, so setup printed `LIMIT SOURCE` and required
+typed bounds), `Thorlabs ELL17/ELL20` 0–28000 and `Thorlabs ELL20` 0–60000 (both
+driver ranges, Enter-accepted and recorded as `PROPOSAL ACCEPTED`). Core focus
+`PIZStage` got **no** `named_stages` entry; its `Position` shows as "dedicated
+policy: stage z travel bounds; not duplicated in rig_profile". Draft-versus-
+reviewed is one line. And the three-write-path separation was exercised on a rig
+that can actually violate it: both Thorlabs `Position (um)` properties were
+excluded from `bounded-numeric` with "MM identifies a stage position property;
+bounded-numeric cannot bypass the fail-closed named/core stage policy" — the demo
+rig could not have tested that, because its `Z.Position` reports no limits and
+never reaches the bounded-numeric branch at all.
+
+**`m5-named-stage-check-exit.txt` was `1`, and that is not a code defect.** The
+operator passed `SmarAct1D` (no space) as the expected device — the same typo
+that made their first session call fail with `No device with label "SmarAct1D"`.
+The coordinator re-ran the committed check against the returned profile with the
+real label `SmarAct 1D`: both lines `True`, exit `0`. This is the third gate the
+"always return the raw artifact the check reads" rule has rescued.
+
+**Finding — the camera was reported as a continuous-focus offset stage.** The
+generated M5 profile carried `possible offset stage(s) ['HamamatsuHam_DCAM']`,
+and because that list was non-empty the note went on to assert servo motion, an
+unmeasured Z excursion, and stale `achieved_um` — about a camera. Cause:
+`HamamatsuHam_DCAM.CONVERSION FACTOR OFFSET`, an ADC conversion offset, matched
+`"offset" in property`.
+
+The name match is **pre-existing on `main`** and predates this block. What this
+block changed is the consequence: before round 2 the non-empty branch printed one
+generic sentence, and afterwards it printed specific and wrong physical claims.
+Fixed in `d934dbf`: a name match now only counts for a device that is a loaded
+stage, or for a typed actuator whose kind is itself `absolute-position` — an
+offset *stage* is positional. The regression test is derived from this gate's
+captured shape and was confirmed to fail against the pre-fix code rather than
+merely passing beside it. Suite 1369 / 99 / 3.
+
+Two observations that are not findings:
+
+- The XY-travel prompt was answered blank 14 times before a value was typed (7
+  times on the demo). Each blank produced its `SETUP REFUSAL`, which is correct —
+  M5's `SmarAct 2D` genuinely reports no limits, so there is nothing to propose
+  and the prompt already says "required; no default".
+- The agent recovered from the operator's wrong device label on its own: it read
+  the error, called `list_stages`, found `SmarAct 1D`, and reported the
+  correction plainly rather than retrying blind.
+
+Owed: a short re-gate of the offset-note fix. It needs no hazardous motion and no
+M5 trip — regenerating a profile on any rig with a camera offset property, or
+re-running the demo G1/G1b pass, is sufficient.
 
 Post-merge design gate:
 
