@@ -151,7 +151,7 @@ assistant's narration when judging whether a guard fired.
 | 4e | Usability | 4b merged | `design33/emission-path-discovery` | `85398e8` | `bc40f18` + `d631a4f` (`39f69dd` returned) | M2 G1/G2 **PASS**; M5 G3 **PASS** 2026-08-03; demo G3 owed | | |
 | 4f | Usability | 4e merged | `design33/channel-group-presets` | | | **required** | | |
 | 4c | Usability | 4f merged | `design33/setup-named-stages` | | | **required** | | |
-| 4g | Platform | none — may run concurrently | `design32/hook-hash-newline` | | | **required** (any Windows rig) | | |
+| 4g | Platform | none — may run concurrently | `design32/hook-hash-newline` | `4472892` | | **required** (any Windows rig) | | |
 | 4d | Usability | 4c merged | `design33/property-authorization-rename` | | | **required** | | |
 | 5 | Usability | 4b, 4e, 4f, 4c, 4d | `design33/deployed-config-hygiene` | | | required | | |
 | 6 | Nikon | probe S = pre-fix baseline; post-fix run owed | `design34/measured-position-readback` | | | required | | |
@@ -1928,7 +1928,10 @@ channels. Of the three rigs only demo has a `Channel` group; M5 has only
 
 Branch: `design32/hook-hash-newline`. Depends on nothing; touches files no other
 queued block touches (`hook_manager.py`, `completed_dataset.py`), so it may run
-concurrently with 4f/4c in its own worktree.
+concurrently with 4f/4c in its own worktree. **Assigned 2026-08-03 from
+`4472892`.** Baselines measured by the coordinator: macOS **1345 passed / 99
+skipped / 3 expected warnings**; Windows **1311 passed / 23 failed / 115
+skipped**, the 23 being this block's subject.
 
 Scheduled by operator decision 2026-08-03 rather than papered over with a
 known-failure baseline. **The 23 failures every Windows rig run has reported are
