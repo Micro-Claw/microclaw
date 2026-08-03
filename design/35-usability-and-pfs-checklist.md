@@ -176,7 +176,7 @@ assistant's narration when judging whether a guard fired.
 | 4b | Usability | 4 merged | `design33/bounded-numeric-actuator` (deleted) | `578874e` | `5a6c6e2` | G1 demo **PASS**; G3 M2 **PASS** incl. imagery; G2 M5 in-range **PASS**, refusal step retired | `04164fd` | **done** — design/33 §"Block 4b landed" |
 | 4e | Usability | 4b merged | `design33/emission-path-discovery` (deleted) | `85398e8` | `bc40f18` + `d631a4f` (`39f69dd` returned) | M2 G1/G2, M5 G3, demo G3 all **PASS** 2026-08-03 | `9b88394` | **done** — design/33 §"Block 4e landed" |
 | 4f | Usability | 4e merged | `design33/channel-group-presets` (deleted) | `f95c8ca` | `84c4d70` + `d4985e6` | M2 G1 + demo G2 **PASS** 2026-08-03 | `9010158` | **done** — design/33 §"Block 4f landed" |
-| 4h | Usability | 4f merged | `design33/confirmation-visibility` | `627b46b` | **in flight 2026-08-03, not yet pushed** | **required** (demo) | | |
+| 4h | Usability | 4f merged | `design33/confirmation-visibility` | `1599ff3` | `3efecaf` + `518a90a` + `e451a5c` | **required** (demo) | | |
 | 4c | Usability | 4h merged | `design33/setup-named-stages` | | | **required** | | |
 | 4g | Platform | none — may run concurrently | `design32/hook-hash-newline` (deleted) | `95ae192` | `50e5f66` + `d0bb602` + `971cdb6` + `f768cc3` | round 3 **PASS** 2026-08-03 (rounds 1–2 failed test-side) | `936230f` | **done** — design/32 §4 |
 | 4d | Usability | 4c merged | `design33/property-authorization-rename` | | | **required** | | |
@@ -2316,6 +2316,13 @@ than validate one. Evidence: `block4f-demo-20260803-123329`. **Assigned
 2026-08-03 from `627b46b`.** Baseline measured by the coordinator at that
 commit: **1358 passed / 99 skipped / 3 expected warnings**.
 
+**Ledger correction:** the start commit was first recorded as `627b46b`, the
+commit *before* the assignment merge. The branch base is `1599ff3`. This is the
+second time the same slip has been made — 4g had it too, and both times the
+implementer caught it. **"Start commit" means the assignment merge commit, i.e.
+`git rev-parse HEAD` on `main` after the ledger edit is merged, not the commit
+the edit was written on top of.**
+
 The operator asked why they had been prompted to open the shutter when setting
 DAPI. The agent answered **"I didn't, actually — I never prompted you to open
 the shutter,"** and said the only thing it had flagged was the long exposure.
@@ -2365,6 +2372,53 @@ transcript, so the fix improves the evidence quality of 4c, 4d and 5.
       that is true and say so; propose rather than fix if it grows the block.
 - [ ] Off-rig tests must cover approved and declined, and must assert on the
       returned structure rather than on wording.
+
+### Implementation — pushed 2026-08-03, awaiting the demo gate
+
+`3efecaf` accepted on its first round, plus coordinator commits `518a90a` and
+`e451a5c`. Suite **1361 passed / 99 skipped / 3 expected warnings**, from a
+baseline of 1358.
+
+`run_agent_iter` takes an optional `confirmation_records` list, snapshots its
+length either side of each tool dispatch, and attaches whatever was issued to
+that tool's result. `Session.audit_records` was indeed unused by production code
+— only tests read it — so it was wired up rather than duplicated. The CLI passes
+nothing and is unaffected. All eleven browser-routed `CONFIRM_FN` call sites are
+covered generically, including image-returning acquisitions: `_with_confirmations`
+injects into the text block of a list result, and both list-returning sites
+(`tools.py:1417`, `:1816`) emit `json.dumps(payload)` there, so the `json.loads`
+is safe today. **A future tool putting prose in that text block would raise**;
+it surfaces as a stream error rather than silent loss, and is worth a defensive
+guard if such a tool ever lands.
+
+Verified by the coordinator: `execute_tool` never raises
+(`tools.py:4628`) — a declined confirmation returns `{"error": ...}` — so the
+decline path is decorated too, which is what makes the gate's G2 possible.
+
+**One coordinator finding, fixed at `518a90a`.** The block added `summary` to
+the confirmation record, and `AuditLog.append` **returns a redacted copy while
+leaving its argument untouched**. The original raw record was appended to
+`audit_records` — which is now handed to the model — and printed to stdout,
+while only the JSONL got redaction. Demonstrated with a registered secret: the
+JSONL read `Save [REDACTED]` and both other paths carried the real value.
+This was harmless before the record carried a summary and is not harmless now,
+and stdout is not a private channel: rig runbooks capture the serve process's
+output to `*-session.txt` and ship it in evidence bundles. Now redacted once,
+before either consumer sees it, with the existing test extended to assert on
+`audit_records` and verified to fail without the fix.
+
+**Operator decision recorded:** `summary` is persisted to the confirmations
+JSONL. Without it, two confirmations of the same kind in one session are
+indistinguishable after the fact, which defeats the point of the audit row. The
+implementer proposed it, the coordinator accepted it, and the redaction path is
+what makes it safe.
+
+**Carried forward, not fixed here.** `_require_confirmation` (`tools.py:56`)
+prints, reads stdin and returns a bool; it writes no audit record, and the CLI
+passes no record collection to `run_agent_iter`. **A REPL session therefore has
+no confirmation trail at all.** The implementer correctly declined to fix it
+inside this block — it needs a CLI audit lifecycle rather than an extension of
+the browser session — and recommends a separate block. Not yet scheduled.
 
 Rig gate (demo — no hazard needed, the shutter retarget is a selection):
 
