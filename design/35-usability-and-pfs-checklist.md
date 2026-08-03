@@ -134,8 +134,8 @@ remote alone.
   their branches deleted locally and remotely, their ledger rows closed, their
   design gates reconciled, and their coordination notes recorded in
   `design/prompts.md`. `git log --oneline origin/main..main` was empty.
-- The intended order from here is **4c → 4d → 5**, then Track B. Block 4c was
-  assigned 2026-08-03; see its section.
+- The intended order from here is **4d → 5**, then Track B. Block 4c merged
+  2026-08-03 at `8ce3401`; 4d is next and is unassigned.
 
 Progress markers: `[ ]` not started, `[-]` active, `[x]` complete, `[!]` blocked.
 
@@ -175,7 +175,7 @@ assistant's narration when judging whether a guard fired.
 | 4e | Usability | 4b merged | `design33/emission-path-discovery` (deleted) | `85398e8` | `bc40f18` + `d631a4f` (`39f69dd` returned) | M2 G1/G2, M5 G3, demo G3 all **PASS** 2026-08-03 | `9b88394` | **done** — design/33 §"Block 4e landed" |
 | 4f | Usability | 4e merged | `design33/channel-group-presets` (deleted) | `f95c8ca` | `84c4d70` + `d4985e6` | M2 G1 + demo G2 **PASS** 2026-08-03 | `9010158` | **done** — design/33 §"Block 4f landed" |
 | 4h | Usability | 4f merged | `design33/confirmation-visibility` (deleted) | `1599ff3` | `3efecaf` + `518a90a` + `e451a5c` | demo G1+G2 **PASS** 2026-08-03 | `e42b930` | **done** — design/21 §"F1 revisited" |
-| 4c | Usability | 4h merged | `design33/setup-named-stages` | `3b99397` | `7f68f33` + `e537207` + `c34ee1e` + `d934dbf` (round 1 returned) | demo G1 **PASS**; M5 G2 **PASS with one finding, fixed** 2026-08-03; re-gate owed | | |
+| 4c | Usability | 4h merged | `design33/setup-named-stages` (deleted) | `3b99397` | `7f68f33` + `e537207` + `c34ee1e` + `d934dbf` (round 1 returned) | demo G1+G1b, M5 G2, demo re-gate all **PASS** 2026-08-03 | `8ce3401` | **done** — design/33 §"Block 4c landed" |
 | 4g | Platform | none — may run concurrently | `design32/hook-hash-newline` (deleted) | `95ae192` | `50e5f66` + `d0bb602` + `971cdb6` + `f768cc3` | round 3 **PASS** 2026-08-03 (rounds 1–2 failed test-side) | `936230f` | **done** — design/32 §4 |
 | 4d | Usability | 4c merged | `design33/property-authorization-rename` | | | **required** | | |
 | 5 | Usability | 4b, 4e, 4f, 4h, 4c, 4d | `design33/deployed-config-hygiene` | | | required | | |
@@ -667,6 +667,13 @@ Continuous focus — hard exclusion until blocks 7a–7b land (and 7c if require
       objective or sample-holder context that the schema cannot express, leave
       the policy unresolved rather than collapsing it into one apparently
       universal range.
+- [x] **Reworded by Block 4c, 2026-08-03 — read the correction with the item.**
+      "Unsupported" here means the *movement report* is not to be trusted, **not**
+      that the declaration is withheld: setup authors the offset stage under
+      `named_stages` and records what the report does not promise. See Block 4c
+      §"Correction to finding 1". As originally worded this item was read as a
+      requirement to omit the entry, which contradicted both the impact row it
+      derives from and Block 0b's shipped Nikon worksheet.
 - [x] Mark PFS-offset workflows unsupported even when the offset has reviewed
       bounds, until block 6's settling work lands.
 
@@ -2485,7 +2492,7 @@ Post-merge design gate:
       residual: the record proves a confirmation was issued and decided, not
       that the operator understood it.
 
-## 4c. [-] Reachable non-core stages — `named_stages` is never emitted
+## 4c. [x] Reachable non-core stages — `named_stages` is never emitted — **MERGED 2026-08-03**
 
 Branch: `design33/setup-named-stages`. Depends on 4b only for ordering, not
 mechanism: **no schema change is needed**, `named_stages` already exists
@@ -2554,19 +2561,19 @@ must not collapse them:
   API → `rig_profile.typed_actuators`, kind `absolute-position`, keyed by
   device **and property**.
 
-- [ ] Ask for travel bounds for every loaded `StageDevice` that is not the core
+- [x] Ask for travel bounds for every loaded `StageDevice` that is not the core
       focus device, and emit `named_stages` entries. Propose the driver
       technical range where MM reports one, exactly as the core stages now do,
       and say so plainly where it reports none.
-- [ ] Do not emit an entry for the core focus device: `stage.z_min/z_max` owns it
+- [x] Do not emit an entry for the core focus device: `stage.z_min/z_max` owns it
       and `authorization.py:598` refuses the duplicate.
-- [ ] Decide what to do about an `XYStageDevice` that is not the core XY stage.
+- [x] Decide what to do about an `XYStageDevice` that is not the core XY stage.
       `named_stages` is single-axis by construction, so this may be an honest
       exclusion with a printed reason rather than a silent omission.
-- [ ] Rig gate: move a non-core stage on M5 through `move_named_stage`, at a
+- [x] Rig gate: move a non-core stage on M5 through `move_named_stage`, at a
       value inside the declared range and at one outside it, and show the second
       is refused.
-- [ ] Deliver a gate runbook, `design/35-block4c-gate-prompts.md`, **on the
+- [x] Deliver a gate runbook, `design/35-block4c-gate-prompts.md`, **on the
       block's branch**, pinning the implementation with `git merge-base
       --is-ancestor <commit> HEAD` rather than an exact tip hash. It must include
       a demo-machine gate that needs no hazardous motion — a full interview
@@ -2787,16 +2794,16 @@ re-running the demo G1/G1b pass, is sufficient.
 
 Post-merge design gate:
 
-- [ ] Reconcile Block 4's ticked item "Mark PFS-offset workflows unsupported even
+- [x] Reconcile Block 4's ticked item "Mark PFS-offset workflows unsupported even
       when the offset has reviewed bounds" and the design/33 impact row it came
       from with what actually ships: setup **authors** the offset entry and marks
       the *movement report* unverified. The item as worded no longer describes the
       code, and it is ticked, so a later reader would otherwise take the stricter
       reading — which is exactly what happened in round 1.
-- [ ] Record the residual on the offset warning: it is a **label-shape**
+- [x] Record the residual on the offset warning: it is a **label-shape**
       heuristic, so an offset stage named without any of the five fragments is
       authored with no warning. It is a note, never a bound or a gate.
-- [ ] Record in design/33 that first-launch setup now authors `named_stages`,
+- [x] Record in design/33 that first-launch setup now authors `named_stages`,
       which devices it asks about and which it deliberately does not (core focus,
       and whatever the `XYStageDevice` ruling turns out to be), and the residual:
       a declared range is a reviewed travel bound, **not** evidence that the

@@ -4339,3 +4339,69 @@ and the CLI passes no collection to `run_agent_iter`, so a REPL session has no
 confirmation trail at all. The implementer declined to fix it inside this block
 — it needs a CLI audit lifecycle, not an extension of the browser session — and
 that judgement was accepted.
+
+## Block 4c — first-launch setup authors `named_stages` (merged `8ce3401`, 2026-08-03)
+
+Assigned from `3b99397`, baseline 1361 / 99 / 3. One implementation round was
+returned; the accepted work is `7f68f33` + runbook `e537207`, plus two
+coordinator commits (`c34ee1e`, `d934dbf`) made on the branch rather than
+returned. Gates: demo G1 **PASS**, demo G1b **PASS**, M5 G2 **PASS** with one
+real finding, demo re-gate **PASS**. Final suite on `main`: 1369 / 99 / 3.
+
+**What the coordinator got wrong, recorded because it cost a round.** Round 1
+returned a finding demanding that continuous-focus offset stages be *excluded*
+from `named_stages`, reading Block 4's "mark PFS-offset workflows unsupported
+even when the offset has reviewed bounds" as a requirement to omit the
+declaration. The operator challenged it and was right. Two sources said so and
+neither had been checked before writing the finding: the design/33 impact row the
+item derives from states that Phase 5 *can* collect reviewed `TIPFSOffset`
+bounds and that what a profile must not do is imply an in-range command was
+achieved or settled; and Block 0b's Nikon stopgap worksheet — authored under this
+same checklist a day earlier — already declares `TIPFSOffset` under
+`named_stages` while excluding only `TIPFSStatus.State`. Excluding it in setup
+would have contradicted the file that rig's operator is filling in. **The
+exclusion boundary is the continuous-focus enable, not the offset stage.** The
+finding was withdrawn before it reached the implementer.
+
+The generalisable lesson: a checklist item that is already ticked reads as
+settled, and the temptation is to enforce its wording rather than the finding
+underneath it. Read the design row an item derives from before turning it into a
+blocking finding — especially when the item is terse and the block that owns the
+underlying defect (here, Block 6) has not run yet.
+
+**What the M5 gate caught that no amount of review would have.** The generated
+M5 profile named the camera as a continuous-focus offset stage —
+`HamamatsuHam_DCAM.CONVERSION FACTOR OFFSET`, an ADC offset, matched on name
+alone — and the round-2 note then asserted servo motion, unmeasured Z excursion
+and stale `achieved_um` about a camera. The name match predates the block; the
+*consequence* was created by the coordinator's own round-2 rewrite, which
+replaced one vague sentence with specific physical claims. Fixed by requiring a
+loaded stage or an `absolute-position` typed actuator.
+
+Three process notes worth carrying:
+
+1. **Replaying a captured inventory substituted for a rig trip.** The offset-note
+   fix was verified by running M5's returned `inventory.json` through both the
+   pre-fix and post-fix interview: `['HamamatsuHam_DCAM']` with servo claims
+   before, note not emitted at all after. That is real rig data, offline — and it
+   is why the re-gate needed no M5 session. The demo re-gate could *not* have
+   demonstrated it: demo's `Camera.Offset` reports no limits, so it never becomes
+   a typed actuator and never entered the list in the first place. A green
+   re-gate on the wrong rig is not evidence.
+2. **A regression test must be shown to fail without its fix.** The camera-offset
+   test was confirmed red against the pre-fix code before the commit landed,
+   rather than merely passing beside it.
+3. **A failed mechanical check was operator invocation, not code, for the third
+   time.** `m5-named-stage-check-exit.txt` was `1` because `SmarAct1D` was passed
+   without its space — the same typo that made the session's first tool call
+   fail. The runbook's rule of returning the raw artifact each check reads let the
+   coordinator re-run it correctly. Keep that rule.
+
+Small corrections made directly on the branch rather than returned, all
+operator-facing text or predicate breadth: the offset predicate required two name
+fragments where the typed branch beside it required one; the no-offset-declared
+note implied that declaring a stage confers support; the G1 runbook step said
+"add a second DemoCamera single-axis stage" without naming `DStage`, which the
+operator could not act on; a demo-side out-of-range check (G1b) was added so the
+guard's refusal half is proven on a simulated stage before any M5 trip; and the
+temporary demo `.cfg` was being saved into the checkout.
