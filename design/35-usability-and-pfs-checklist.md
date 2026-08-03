@@ -2839,10 +2839,14 @@ refuses. `typed_actuators` is not even a field of the `RigProfile` object
       `allowed_numeric`, `denied`. Confirm the grouping against what 4b's third
       kind and 4c's `named_stages` work actually left behind before committing
       to those three names.
-- [ ] **A rename breaks every deployed config, M5's included.** Decide migration
+- [ ] ~~**A rename breaks every deployed config, M5's included.** Decide migration
       — accept both keys for a release, or ship a one-shot rewriter — rather
       than assuming a clean cut. Whichever is chosen, no rig may be left unable
-      to start by the merge.
+      to start by the merge.~~ **Waived by operator ruling, 2026-08-03: a clean
+      cut is what ships.** See "Clean cut" below. The item is struck rather than
+      deleted because "no rig may be left unable to start by the merge" is a
+      standing instinct this file should not appear to have abandoned silently —
+      it was overridden by the person who owns every affected rig, on the record.
 - [ ] First-launch setup emits the new shape; the offline validator names the
       new paths in its diagnostics; both old-key and new-key configs are covered
       by tests.
@@ -2889,14 +2893,12 @@ re-derive them and does not widen the break:
   authorization. 4c's work is what makes this answerable, and the block-4
   evidence note flagged it as an open choice; this is the answer. Say so in the
   migration note rather than leaving a reader to wonder why it did not move.
-- **Migration is dual-key acceptance, not a rewriter.** A one-shot rewriter
-  requires an operator action *between* pulling the merge and the next restart;
-  an operator who pulls and restarts first has a rig that will not start, which
-  the item above forbids. So: accept `rig_profile` and `property_authorization`,
-  treat the old key as deprecated, and make **both keys present in one file a
-  hard error** naming both. A rewriter subcommand is welcome as a convenience
-  but does not substitute for dual acceptance. State the deprecation horizon in
-  the docs.
+- ~~**Migration is dual-key acceptance, not a rewriter.**~~ **Reversed by
+  operator ruling, 2026-08-03 — see "Clean cut" below.** The coordinator's
+  original ruling was dual-key acceptance with a deprecation horizon; it was
+  implemented in round 1 and is being removed in round 2. Kept struck through
+  rather than deleted because round 1's code and both of its findings only make
+  sense against it.
 - **Verify against the real deployed M5 file, but do not commit it.**
   `block4-m5-20260802-100850/deployed-m5.reference.yaml` (sha256 beside it) is
   the config M5 is actually running; parse it with the branch's code and report
@@ -2917,15 +2919,57 @@ re-derive them and does not widen the break:
   `forbidden_properties` / `allowed_properties`; report whether they are still
   reachable under schema 2 so the new `denied` name is not confused with them.
 
+### Clean cut — operator ruling, 2026-08-03
+
+**`rig_profile` is deleted outright. There is no migration path, no deprecation
+window, and no special-case refusal for it.** The operator owns every machine
+running this system, will replace the configurations by hand, and stated it
+plainly: *"I do not care if there is any record of it ever existing. I do not
+like it, and it is not important to any of my operations. I will only ever use
+the new key."*
+
+What follows from that, so round 2 does not have to re-derive it:
+
+- The old key gets no bespoke handling and therefore no bespoke message. A
+  config still carrying it falls through the existing strict-key validation and
+  is refused as `rig_profile: unknown top-level key` plus
+  `property_authorization: missing required property authorization map`. Those
+  two together are already actionable; **do not** add a migration hint on top,
+  which would be exactly the record the ruling declines to keep.
+- **`schema_version` stays at 2.** Coordinator decision, stated so it can be
+  overridden: a bump to 3 is itself a form of recording that the old shape
+  existed, it adds a fifth edit to every config, and it buys precision the two
+  refusals above already deliver. The cost is that "version 2" now names two
+  incompatible document shapes in this file's history — acknowledged, and
+  cheaper than the alternative given the ruling.
+- **Every machine must be edited before it will start**, including the demo
+  machine and M2. That is the accepted consequence, not a defect to design
+  around.
+- **The remote Nikon is the one exception worth handling deliberately.**
+  `design/34-nikon-stopgap-worksheet.yaml` was shipped to that operator on
+  2026-08-03 under Block 0c and is still in flight, and they are days of
+  round-trip away with no ability to debug a refusal. Round 2 renames its keys
+  so the repo artifact is correct; **0c owes them the corrected file**, and that
+  is a coordination obligation this block cannot discharge on its own. Historical
+  gate-evidence configs elsewhere in `design/` are records of what was actually
+  run and are left alone.
+
 Post-merge design gate:
 
-- [ ] Record the final schema shape, the dual-key deprecation contract and its
-      horizon, and the two acknowledged warts (`mode` filed under a
-      property-authorization key; `illumination-power` declared twice) in
+- [ ] Record the final schema shape and the two acknowledged warts (`mode` filed
+      under a property-authorization key; `illumination-power` declared twice) in
       `design/33-authorization-map.md`, which documents the old key names in
-      twelve places.
+      twelve places. State that the old key was removed without a migration
+      path, by operator ruling, so a later reader does not reconstruct one.
 
-### Round 1 — returned 2026-08-03, two findings
+### Round 1 — returned 2026-08-03, two findings — **both VOID, see "Clean cut"**
+
+**Neither finding is to be implemented.** Both are defects in how round 1 served
+the *legacy-key operator*, and the operator ruling above deletes that population
+entirely. They are kept in full because they were the correct findings against
+the migration design in force when round 1 was written, and because the shape of
+finding 1 — a refusal naming a key the operator's file does not contain — is a
+hazard any future rename can reintroduce.
 
 Implementation `5674b5f`, runbook `69e0e2f`. Independently re-measured by the
 coordinator in the implementer's worktree: **1372 passed / 99 skipped / 3
