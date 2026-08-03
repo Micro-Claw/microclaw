@@ -44,13 +44,36 @@ summary.
 
 ## G1 — demo-machine interview, validation, and startup; no motion
 
-Make a temporary copy of the normal Micro-Manager demo configuration. In the
-Hardware Configuration Wizard add a second DemoCamera single-axis stage with a
-distinct label such as `Aux Z`, but leave the normal `Z` device assigned as
-Core focus. Save only the temporary configuration. This creates the non-core
-stage needed to exercise authoring without hazardous motion; do not move it in
-this gate. If the DemoCamera adapter cannot provide a second `StageDevice`, stop
-and return that fact rather than fabricating inventory.
+This gate needs one single-axis stage that is **not** the Core focus device. The
+stock demo configuration has none: its only `StageDevice` is `Z`, which is Core
+focus. So add a second one.
+
+`DemoCamera` is the name of the *device adapter library*, not of a camera. It
+supplies the whole demo rig — camera, wheels, shutter, and stages — as
+peripherals of its `DHub` device. The demo `Z` stage is that library's `DStage`
+device, described in the wizard as "Demo stage". Verified from the captured demo
+inventory: `label='Z'`, `library='DemoCamera'`, `adapter_name='DStage'`.
+
+In Micro-Manager:
+
+1. `Devices → Hardware Configuration Wizard → Create a copy of the current
+   configuration`, so the stock `MMConfig_demo.cfg` is never modified. Give the
+   copy a distinct filename; it is temporary and is not the machine's normal
+   configuration.
+2. On the "Add or remove devices" page, expand the **`DemoCamera`** library (it
+   appears under the `DHub` hub, with its peripherals listed beneath). Select
+   **`DStage`** — "Demo stage" — and click `Add`.
+3. When prompted for a label, name it exactly **`Aux Z`**. `DStage` may be
+   instantiated more than once; the label is what distinguishes them.
+4. Step through the remaining wizard pages **without changing anything else.**
+   In particular leave `Z` assigned as Core focus on the device-roles page — the
+   gate is testing a *non-core* stage, and reassigning Core focus to `Aux Z`
+   would test nothing.
+5. Save the temporary configuration and load it.
+
+Do not move `Aux Z` in this gate; it exists only so setup has a non-core stage to
+ask about. If `DStage` cannot be added a second time, stop and return that fact
+rather than fabricating inventory.
 
 ```powershell
 $Port = 4827
