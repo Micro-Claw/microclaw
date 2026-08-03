@@ -183,7 +183,8 @@ microclaw --safety-config "<deployed-config>" serve --no-browser 2>&1 | Tee-Obje
 ```
 
 It worked when the before/after hashes differ, `check-config` exits `0`, and the
-normal M5 session prints its startup banner line `Microclaw GUI: http://<host>:<port>  (Ctrl-C to stop)` and then stays running. Inspect the file diff locally and confirm
+normal M5 session prints its startup banner and stays running. Inspect the file
+diff locally and confirm
 that only the four key names changed. Do not call motion, illumination,
 acquisition, or mutation tools. Stop with Ctrl+C. Send back the deployed path,
 both hashes, both refusal outputs, the renamed validator and session outputs,
