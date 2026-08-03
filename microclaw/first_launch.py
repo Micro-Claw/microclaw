@@ -1197,18 +1197,30 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
         )
 
     autofocus, focus = assignments.get("autofocus"), assignments.get("focus")
-    offset_devices = sorted({
-        x["device"] for x in typed
-        if "offset" in x["device"].casefold() or "offset" in x["property"].casefold()
-    } | {
-        # Deliberately as broad as the typed branch above: a false positive costs
-        # one review sentence, while a missed offset stage costs the operator the
-        # warning that its achieved_um may be stale.  Requiring both an "offset"
-        # and a "pfs" fragment would miss a stage labelled either way alone.
-        x["device"] for x in named_stages
-        if any(shape in x["device"].casefold() for shape in (
+    # An offset *stage* is positional.  Name matching alone put M5's camera in
+    # this list via `CONVERSION FACTOR OFFSET`, an ADC offset, and the note then
+    # asserted servo motion and stale read-back about a camera (block 4c M5
+    # gate).  So a name match only counts for a device that is a loaded stage,
+    # or for a typed actuator that is itself positional.
+    stage_labels = {
+        str(item.get("label") or "") for item in facts.get("devices", [])
+        if item.get("device_type") in {"StageDevice", "XYStageDevice"}
+    }
+
+    def _offset_shaped(name: str) -> bool:
+        # As broad as the original property match: a false positive costs one
+        # review sentence, while a missed offset stage costs the operator the
+        # warning that its achieved_um may be stale.
+        return any(shape in name.casefold() for shape in (
             "offset", "pfs", "perfect focus", "autofocus", "focus lock",
         ))
+
+    offset_devices = sorted({
+        x["device"] for x in typed
+        if (_offset_shaped(x["device"]) or _offset_shaped(x["property"]))
+        and (x["device"] in stage_labels or x.get("kind") == "absolute-position")
+    } | {
+        x["device"] for x in named_stages if _offset_shaped(x["device"])
     })
     if autofocus or offset_devices:
         continuous_focus_note = (

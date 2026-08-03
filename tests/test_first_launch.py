@@ -1073,6 +1073,44 @@ def test_offset_stage_is_flagged_on_either_name_fragment_alone(label):
     assert "previous target as achieved_um" in review
 
 
+def test_camera_offset_property_is_not_reported_as_an_offset_stage():
+    """M5 shape: HamamatsuHam_DCAM.'CONVERSION FACTOR OFFSET' is an ADC offset.
+
+    Captured from the Block 4c M5 gate (`block4c-m5-20260803-150556`), where the
+    camera was named as a possible offset stage and the note then asserted servo
+    motion and stale read-back about it.
+    """
+    inventory = json.loads(REAL_DEMO_INVENTORY.read_text(encoding="utf-8"))
+    camera_label = inventory["facts"]["core_device_assignments"]["camera"]
+    camera = next(
+        device for device in inventory["facts"]["devices"]
+        if device["label"] == camera_label
+    )
+    camera["properties"].append({
+        "name": "CONVERSION FACTOR OFFSET", "read_only": False, "pre_init": False,
+        "reported_type": "Float", "has_limits": True, "allowed_values": [],
+        "current_value": "0", "technical_range": {"lower": -65536.0, "upper": 65535.0},
+    })
+    inventory["heuristic_candidates"]["unclassified_writable_properties"].append(
+        f"{camera_label}.CONVERSION FACTOR OFFSET"
+    )
+    config, notes = interview(
+        inventory, ask=_answer_real_interview([]), say=lambda _: None
+    )
+    # It is still authored as an ordinary bounded-numeric actuator; the fix is
+    # only that it stops being described as a continuous-focus offset stage.
+    assert [
+        (x["device"], x["kind"])
+        for x in config["rig_profile"]["typed_actuators"]
+        if x["property"] == "CONVERSION FACTOR OFFSET"
+    ] == [(camera_label, "bounded-numeric")]
+    review = next(note for note in notes if note.startswith(
+        "CONTINUOUS-FOCUS REVIEW QUESTION:"
+    ))
+    assert camera_label not in review
+    assert "No offset stage was declared" in review
+
+
 def test_real_demo_limit_sources_exposure_default_and_budget_order():
     inventory = json.loads(REAL_DEMO_INVENTORY.read_text(encoding="utf-8"))
     prompts, output = [], []
