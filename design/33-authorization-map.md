@@ -1492,3 +1492,61 @@ path shape (the known GenericDevice false positive, behind a required human
 confirmation) and the `pfs`/`perfect focus` name fragments (a hard exclusion).
 Neither carries a bound or a geometry, and both are shape heuristics rather than
 values. Recorded here rather than left silent.
+
+### Block 4e landed: discovery keys off device type, and shutter gating is not-`off_value` (2026-08-03)
+
+Block 4e merged as `9b88394` after two implementation rounds and three
+first-time gate passes on M2, M5 and the demo rig. Both defects it fixes were
+found by Block 4b's gate on **M2, the first time that rig was ever enumerated**,
+and neither was 4b's code.
+
+**Illumination discovery keys off Micro-Manager's device typing, not only
+property names.** `_ENABLE_NAME` (`rig_inventory.py:48`) is deliberately broad
+and stays so, but it is no longer the only route: a writable on/off-shaped
+property on a device Micro-Manager types as a `ShutterDevice` is an emission
+gate by MM's own classification, whatever the vendor called it. M2's
+`Cobolt561.Laser` — allowed values `Off`/`On`, and **the device `Core.Shutter`
+names, so the rig's core shutter** — matched no token and was invisible to
+setup; the Luxx lasers were caught only because theirs are named `Laser
+Operation Select`. Widening the regex with `laser` would have fixed M2 and
+missed the next vendor. The structural branch uses the same `len(allowed) <= 4`
+shape rule as the name branch: an earlier form required exactly two values,
+which would have made this block unable to discover the very three-value
+shutters its other half exists to gate.
+
+**Shutter gating is `value != off_value`, not `value == on_value`.** A declared
+shutter may have more states than its two declared endpoints, and only the
+reviewed off value is known non-emitting. `Andor.Shutter (Internal)` takes
+`Open`/`Auto`/`Closed`; measured on M2, `Auto` was permitted with **no
+confirmation at all** — and on an Andor, `Auto` is the state that opens the
+shutter on every exposure. The value that emits most routinely was the one no
+human had to approve. The audit for the same equality-versus-membership
+asymmetry found no other site needing the change: `shutter_all` writes each
+declared `off_value` directly, the power ratchet compares numbers and ratios,
+and the EMU map already uses exact `(device, property)` membership.
+
+**The residual is unchanged in kind and sharper in detail.** This proves
+*declared* paths are gated; it does not prove discovery found every physical
+emission path. Beyond the standing heuristic limits, the demo rig shows a
+stronger form: `LED Shutter` is a `ShutterDevice`, is selectable through
+`Core.Shutter`, and has **no writable gating property at all** — its emission
+runs through MMCore's shutter API. **Some emission paths have no property to
+discover**, so property-based discovery is structurally incomplete, not merely
+imperfect.
+
+That is also why the core shutter having no declared shutter property is **not**
+a fail-closed startup condition. It was considered and declined: on the stock
+demo rig the operator could supply no legal declaration, so refusing would be a
+claim the rig cannot corroborate — the shape Block 4 round-1 finding 5 ruled
+out, where a refusal must narrow authority rather than stop the process.
+
+**Deliberate false positives are named in the gate runbook, not excluded in
+code.** `Cobolt561.Autostart` and `Analog Impedance` are `Disabled`/`Enabled` and
+so match the on/off shape, while being power-up behaviour and modulation-input
+termination respectively. The module's breadth doctrine (`rig_inventory.py:43`)
+tolerates a false positive because a false negative says the rig cannot do
+something; a name-based exclusion would also have put rig facts in
+`microclaw/`. Instead the runbook named both, gave their meanings, and stated
+the consequence — a property declared a shutter is written to its `off_value` by
+`shutter_all` on **every session exit**, which for `Autostart` means rewriting
+persistent laser configuration. The operator excluded both.
