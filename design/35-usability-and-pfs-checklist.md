@@ -197,7 +197,7 @@ assistant's narration when judging whether a guard fired.
 | 4c | Usability | 4h merged | `design33/setup-named-stages` (deleted) | `3b99397` | `7f68f33` + `e537207` + `c34ee1e` + `d934dbf` (round 1 returned) | demo G1+G1b, M5 G2, demo re-gate all **PASS** 2026-08-03 | `8ce3401` | **done** — design/33 §"Block 4c landed" |
 | 4g | Platform | none — may run concurrently | `design32/hook-hash-newline` (deleted) | `95ae192` | `50e5f66` + `d0bb602` + `971cdb6` + `f768cc3` | round 3 **PASS** 2026-08-03 (rounds 1–2 failed test-side) | `936230f` | **done** — design/32 §4 |
 | 4d | Usability | 4c merged | `design33/property-authorization-rename` (deleted) | `052179d` | `fd4c5b6` + `c063f16` + `029b5f4` | demo G0/G1/G2 + M5 G4 **PASS** 2026-08-03; G3 closed by offline replay | `5f56679` | **done** — design/33 §"Block 4d landed" |
-| 5 | Usability | 4b, 4e, 4f, 4h, 4c, 4d | `design33/deployed-config-hygiene` | `a27997f` | | required | | |
+| 5 | Usability | 4b, 4e, 4f, 4h, 4c, 4d | `design33/deployed-config-hygiene` | `a27997f` | `6262acb` + `577acc4` + `c0344f2` (round 1 returned) | required — runbook on the branch | | |
 | 6 | Nikon | probe S = pre-fix baseline; post-fix run owed | `design34/measured-position-readback` | | | required | | |
 | 7a | Nikon | scope: none; rig gate: probe 0 | `design34/continuous-focus-capability` | | | **required** | | |
 | 7b | Nikon | 7a | `design34/continuous-focus-policy` | | | **required** | | |
@@ -3291,6 +3291,30 @@ first.
       **Coordinator + operator, not the implementer** — the file lives on M5, and
       the values are the operator's to set. Sequenced with 4d's four renames as
       one editing session, per the note above.
+
+      **The premise above is stale — corrected 2026-08-03 by replaying captured
+      evidence, and the correction makes this item more urgent, not less.** The
+      coordinator ran Block 4d's hash-verified `m5-deployed-before.yaml` (after
+      the four renames) through this block's new example-limit detector. M5's
+      budgets are *no longer* example copies. They have been edited to values
+      that do not meaningfully bind:
+
+      | key | M5 deployed | example |
+      |---|---|---|
+      | `acquisition.max_duration_s` | `1e21` | `3600` |
+      | `acquisition.max_illuminated_ms` | `1000001720` | `600000` |
+      | `acquisition.max_bytes` | `1.06e12` | `5e10` |
+      | `acquisition.max_frames` | `100000` | `10000` |
+      | `camera.max_exposure_ms` | `10000.0172` | `5000` |
+
+      Only `acquisition.confirm_above_illuminated_ms` (`60000`) and `stage.z_min`
+      (`0.0`) still equal the example, and both are plausibly coincidental. `1e21`
+      seconds is ~3×10¹³ years; `1000001720` ms is ~278 hours of illumination.
+      These read as limits raised until they stopped refusing something rather
+      than measured hardware bounds, which is a different and worse failure than
+      the fictional-example copy this item was written for. **Do not close this
+      item by observing that the example values are gone.** design/33 `:790` must
+      be corrected in the post-merge design gate.
 - [x] Decide what `microclaw init` becomes now that Phase 5 exists: redirect to
       setup, keep it as the hand-authoring path with a pointer, or keep both.
       Whichever — the copy-the-example path is what put fictional limits on a
