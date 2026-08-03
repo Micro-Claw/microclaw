@@ -148,7 +148,7 @@ assistant's narration when judging whether a guard fired.
 | 4r1a | Usability | 4 | `design33/first-launch-setup` | `15d8d1b` | `c5746b9` (`d203753` rejected) | folded into block 4 round 2 | n/a — merges via block 4 | |
 | 4r1b | Usability | 4 | `design35/startup-refusal-severity` | `15d8d1b` | `2558583` (`16cc416` rejected alone) | folded into block 4 round 2 | `385049d` into block branch | |
 | 4b | Usability | 4 merged | `design33/bounded-numeric-actuator` (deleted) | `578874e` | `5a6c6e2` | G1 demo **PASS**; G3 M2 **PASS** incl. imagery; G2 M5 in-range **PASS**, refusal step retired | `04164fd` | **done** — design/33 §"Block 4b landed" |
-| 4e | Usability | 4b merged | `design33/emission-path-discovery` | `85398e8` | `bc40f18` + `d631a4f` (`39f69dd` returned) | **required** (M2) | | |
+| 4e | Usability | 4b merged | `design33/emission-path-discovery` | `85398e8` | `bc40f18` + `d631a4f` (`39f69dd` returned) | M2 G1/G2 **PASS** 2026-08-03; G3 demo+M5 owed | | |
 | 4c | Usability | 4e merged | `design33/setup-named-stages` | | | **required** | | |
 | 4d | Usability | 4c merged | `design33/property-authorization-rename` | | | **required** | | |
 | 5 | Usability | 4b, 4e, 4c, 4d | `design33/deployed-config-hygiene` | | | required | | |
@@ -1758,12 +1758,78 @@ Coordinator corrections at `d631a4f`, both small:
 
 Rig gate (M2 has the multi-state shutter and the Cobolt; M5 has neither):
 
-- [ ] Show `Cobolt561.Laser` is discovered and offered by setup without a hand
+- [x] Show `Cobolt561.Laser` is discovered and offered by setup without a hand
       edit, and that the generated profile declares it.
-- [ ] Show a write of `Auto` to `Andor.Shutter (Internal)` now requires
+- [x] Show a write of `Auto` to `Andor.Shutter (Internal)` now requires
       confirmation, and that declining it refuses the write.
 - [ ] Confirm no previously-working illumination declaration stopped working on
       M5 or the demo rig.
+
+### Rig gate G1/G2 — M2, 2026-08-03: **PASS**
+
+Evidence: `block4e-m2-20260803-111417`, at `d631a4f`, ancestor pin exit `0`,
+`check-config` exit `0`.
+
+**G1 PASS.** The live producer emitted exactly the 12 enable candidates the
+coordinator had predicted offline by re-deriving `_is_enable` over the captured
+`facts.devices` — the offline method and the rig agree path-for-path. All three
+Cobolt properties were offered with explicit classification required, and the
+**unedited** draft declares `Cobolt561.Laser` `on: 'On'` / `off: 'Off'` from
+accepted MM proposals. The rig's core shutter is now reachable without a hand
+edit, which is the defect the block exists to fix.
+
+**The two named false positives were excluded, which is the F2 fix working.**
+`Cobolt561.Autostart` and `Analog Impedance` both landed in
+`excluded_properties`. The runbook naming them, their real meanings, and the
+`shutter_all`-writes-on-every-exit consequence is what made that the operator's
+informed choice rather than a coin flip.
+
+**G2 PASS, mechanically.** The agent called `set_device_property(Andor,
+'Shutter (Internal)', 'Auto')` — it did **not** refuse to forward, because
+`Auto` is a legal driver value, which is the 4b G2 lesson applied and confirmed.
+The tool result is `User declined to enable illumination Andor.Shutter
+(Internal).`, and the confirmations JSONL independently records
+`kind: illumination, decision: declined`. Before the change this value reached
+the device with no confirmation at all.
+
+The runbook's post-decline read-back was **not performed**. Not re-run: it is
+redundant on this path by construction — `check_illumination` raises at
+`tools.py:491`, before `core.set_property` at `:492`, so the write provably
+cannot have landed. Keep the read-back in future runbooks anyway for guards
+that sit after the hardware call; here it was asking for evidence the code
+shape already supplies.
+
+**G3 (M5 and demo non-regression) is still owed.** M2 alone does not close this
+block.
+
+### Two findings from this run that are not Block 4e's code
+
+1. **23 tests have never passed on Windows, and every gate runbook has told the
+   operator "the suite must pass".** The same 23 failures appear in
+   `block4b-m2-20260803-081901`, `-094116`, `block4b-m5-20260803-100405` and
+   `block4b-20260802-150128` — every rig including demo, back through 4b's whole
+   campaign — and all of them are in `tests/test_completed_dataset.py` and
+   `tests/test_describe_hook.py`. Nothing in either module is touched by 4e.
+   `pytest.txt` has been collected as gate evidence for four blocks and never
+   triaged, so **G0's precondition as written has been unsatisfiable on every
+   rig run to date.** Either the runbooks state a known-failure baseline or the
+   failures get fixed; a precondition nobody can meet trains operators to ignore
+   it. Windows skips 115 to macOS's 99, so the platform gap is wider than the
+   failures alone.
+
+2. **`channels.allowed` is generated from every config group, not the `Channel`
+   group.** `first_launch.py:1087`–`:1101` collects preset names from all
+   `preset_proposals` and writes them at `:1134`, while `authorization.py:151`
+   pins `CHANNEL_CONFIG_GROUP = "Channel"` deliberately (`:146`: not read from
+   `Core.ChannelGroup`, which is writable). M2 has exactly one group, `Camera`,
+   and no `Channel` group — so setup wrote its six camera presets
+   (`Beads_EM25`, `EM100_10MHz`, …) into `channels.allowed`, and startup demoted
+   all six. **Setup generated a profile guaranteed to warn on the rig it was
+   generated on**, and the demotion text tells the operator to "add each preset
+   to Micro-Manager's Channel group" — wrong advice, because those presets are
+   camera settings that were never channels. This is the same shape as the
+   recorded M5 finding that M5 has no `Channel` group either; of the three rigs,
+   only demo has one. Needs a home; it is a Block 4 surface, not 4e's.
 
 Post-merge design gate:
 
