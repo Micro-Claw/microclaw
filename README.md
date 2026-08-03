@@ -24,7 +24,8 @@ User (natural language) → AgentLoop (Anthropic API) → ToolRegistry → Safet
 
 ## Install (Windows)
 
-You do not need Python, or a terminal. The installer brings its own.
+You do not need Python. The installer brings its own; after installation, one
+terminal command starts the rig-specific safety setup.
 
 **1. Install Micro-Manager and turn on its server.**
 Install [Micro-Manager 2.0](https://micro-manager.org/Download_Micro-Manager_Latest_Release)
@@ -46,11 +47,13 @@ desktop. It takes a few minutes.
 > Windows may show a blue **"Windows protected your PC"** banner, because the file
 > came from the internet. Click **More info → Run anyway**.
 
-**4. Edit your safety limits.**
-The installer opens a `safety_config.yaml` for you. Its limits are **examples that
-match no real microscope**, and they are the last thing standing between the AI and
-your hardware. Set each one for your instrument, then change `reviewed: false` to
-`reviewed: true` at the top of the file. Microclaw refuses to start until you do.
+**4. Generate and review your safety profile.**
+With Micro-Manager and its ZMQ server running, open a terminal and run the exact
+setup command printed by the installer. It ends in `microclaw.exe init` and offers
+restricted read-only rig inspection. Setup disconnects and writes an unreviewed
+rig-specific profile. Review every declaration and limit, change `reviewed: false`
+to `reviewed: true`, run `microclaw check-config` on it, then restart Microclaw.
+Microclaw refuses to start until the profile is reviewed.
 
 **5. Double-click the Microclaw icon.**
 A console window opens — that is the server; closing it stops Microclaw — and a

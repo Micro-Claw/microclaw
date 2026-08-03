@@ -42,10 +42,26 @@ Copy-Item "design\35-block5-gate-prompts.md" "$Evidence\runbook.md"
 It worked when both exit files contain `0`, pytest has no failures, and
 `status.txt` is empty. Send back the complete evidence directory.
 
-## G1 — demo machine, `init` redirect and explicit escape hatch
+## G1 — demo machine, installer boundary, `init` redirect, and escape hatch
 
 Micro-Manager need not be running for this step. Use paths that do not already
-exist. First exercise the human-facing command normally, without redirecting it:
+exist. First prove the installer does not invoke either command that can contact
+the rig, and prints setup only as a post-install instruction:
+
+```powershell
+Select-String -Path "install.bat" -Pattern '^"%MC_EXE%" init$','^"%MC_EXE%" first-launch-setup' > "$Evidence\installer-rig-command-lines.txt" 2>&1
+echo $LASTEXITCODE > "$Evidence\installer-rig-command-lines-exit.txt"
+Select-String -Path "install.bat" -Pattern 'Run pycro-manager server on port 4827','echo     "%MC_EXE%" init' > "$Evidence\installer-next-steps.txt" 2>&1
+echo $LASTEXITCODE > "$Evidence\installer-next-steps-exit.txt"
+```
+
+It worked when the rig-command match exits `1` because installation invokes
+neither live setup command, while next-steps exits `0` and shows the ZMQ
+prerequisite before the printed `init` command. This is structural evidence, not
+a request to reinstall Microclaw on the rig.
+
+Now exercise the human-facing command normally, without redirecting it. **Answer
+`N` at the prompt**; this step proves that declining writes nothing:
 
 ```powershell
 $Redirect = Join-Path $Evidence "redirect-must-not-exist.yaml"
@@ -55,9 +71,8 @@ Stop-Transcript
 Test-Path $Redirect > "$Evidence\init-interactive-wrote.txt"
 ```
 
-Answer `n` at the offer. It worked when the transcript names
-`first-launch-setup`, human review, and restart, and `init-interactive-wrote.txt`
-is `False`.
+It worked when the transcript names `first-launch-setup`, human review, and
+restart, and `init-interactive-wrote.txt` is `False`.
 
 Now prove redirected input never waits for an answer. This process must return
 immediately without reading the piped line or writing a config:

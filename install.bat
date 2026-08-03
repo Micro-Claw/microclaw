@@ -7,7 +7,7 @@ rem  nothing outside %LOCALAPPDATA%\microclaw.
 rem
 rem  It installs `uv` (which downloads its own Python), builds an isolated
 rem  environment, installs Microclaw into it, puts a shortcut on the
-rem  desktop, and offers restricted first-launch safety setup.
+rem  desktop, and prints the restricted first-launch safety setup command.
 rem
 rem  Source of the code, in order:
 rem    1. %MICROCLAW_SRC%, if set -- a URL or a pip requirement.
@@ -42,12 +42,15 @@ call :finish         || goto :fail
 echo.
 echo   Done. There is now a Microclaw icon on your desktop.
 echo.
-echo   IMPORTANT: complete the first-launch setup offered above. It writes an
-echo   unreviewed rig-specific profile. Review every declaration and limit,
-echo   change `reviewed: false` to `reviewed: true`, then restart Microclaw.
-echo.
-echo   Before launching: open Micro-Manager and enable the ZMQ server under
+echo   Before first launch, open Micro-Manager and enable the ZMQ server under
 echo   Tools ^> Options ^> "Run pycro-manager server on port 4827".
+echo.
+echo   Then open a terminal and run this setup command:
+echo     "%MC_EXE%" init
+echo.
+echo   Setup writes an unreviewed rig-specific profile and disconnects. Review
+echo   every declaration and limit, change `reviewed: false` to `reviewed: true`,
+echo   run check-config, then restart Microclaw from the desktop icon.
 echo.
 pause
 exit /b 0
@@ -122,12 +125,10 @@ exit /b 0
 
 rem ---------------------------------------------------------------------
 :finish
-rem Shortcut first, `init` last: init opens an editor, and the file it opens
-rem should be the last thing on screen -- editing it is the user's next act.
+rem Installation ends at the shortcut. First-launch setup contacts the live rig,
+rem so it is a deliberate post-install action after Micro-Manager and ZMQ start.
 echo   [5/5] Creating the desktop shortcut...
 "%MC_EXE%" install-shortcut
-if errorlevel 1 exit /b 1
-"%MC_EXE%" init
 if errorlevel 1 exit /b 1
 exit /b 0
 
