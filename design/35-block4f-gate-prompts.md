@@ -35,10 +35,12 @@ microclaw first-launch-setup --out $Draft --evidence-out $Inventory
 ```
 
 The ancestor command must exit `0` and the tree must be clean. Preserve
-`pytest.txt`. Until Block 4g merges, the Windows condition is exactly the 23
-known failures in `test_completed_dataset.py` and `test_describe_hook.py`, and
-no others. If Block 4g is an ancestor of the tested branch, the suite must be
-clean; record that dependency in the returned evidence.
+`pytest.txt`. Until Block 4g merges, the expected Windows line is **23 failed,
+1315 passed, 115 skipped, 3 warnings**: exactly the 23 known failures in
+`test_completed_dataset.py` and `test_describe_hook.py`, and no others. If
+Block 4g is an ancestor of the tested branch, the suite must be clean (expected
+**1338 passed, 115 skipped, 3 warnings**); record that dependency in the
+returned evidence.
 
 Review the draft. Confirm its header explains any absent/empty `Channel` group
 and lists presets in other groups as non-channel presets that Microclaw does not
