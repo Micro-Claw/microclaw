@@ -174,7 +174,14 @@ particular, it should:
 - do not present reviewed bounds as proof that an asynchronous device achieved
   or settled at its target. PFS-offset use remains unsupported until the runtime
   path performs target-based polling with a timeout and observes the responding
-  focus drive where required;
+  focus drive where required. **Clarified by checklist v2 Block 4c
+  (2026-08-03): "unsupported" constrains what the profile may *claim*, not
+  whether the stage may be declared. Setup authors the offset stage under
+  `named_stages` — as this document's own row already allowed ("Phase 5 can
+  collect reviewed `TIPFSOffset` bounds") and as Block 0b's Nikon worksheet
+  already did — and carries the non-arrival caveat in its review notes. The
+  continuous-focus *enable* remains excluded. See design/33 §"Block 4c
+  landed".**;
 - emit `categorical_properties` whenever guaranteed mode is in force, even if
   empty (`:476`), since that is the surface on which an ambiguous `Label`/`State`
   decision is recorded;

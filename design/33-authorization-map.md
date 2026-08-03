@@ -1585,3 +1585,70 @@ preset missing from a `Channel` group that exists is still answered with "add it
 to that group". A rig with no `Channel` group at all is answered differently:
 the old wording told operators to add objectives, light paths and camera modes
 to a Channel group, which is never the right repair.
+
+### Block 4c landed: setup authors `named_stages` (2026-08-03)
+
+Block 4c merged as `8ce3401` after one returned round, a demo gate, an M5 gate
+that found a real defect, and a demo re-gate.
+
+**Every reachable non-core stage is now declarable, and none is declared
+silently.** `first_launch.py` hardcoded `"named_stages": []` and the interview
+never asked, so `check_named_stage`'s fail-closed rule — a stage with no entry
+may not be moved at all — made every single-axis stage that is not the core focus
+device unreachable after setup. On M5 that was three of five devices. Setup now
+asks each one, proposes the driver technical range where MM reports one and says
+plainly where it does not, and emits the entries.
+
+**The three write paths for stage-like motion stay distinct**, and M5 proved it
+on hardware the demo rig cannot represent. Core focus and core XY keep `stage.*`
+and their dedicated tools; any other single-axis stage goes through
+`named_stages` and `move_named_stage`; a positional raw property that the stage
+API cannot reach remains a `typed_actuators` `absolute-position` entry. Both M5
+Thorlabs `Position (um)` properties were excluded from `bounded-numeric` with
+"MM identifies a stage position property; bounded-numeric cannot bypass the
+fail-closed named/core stage policy" — the demo's `Z.Position` reports no limits
+and never reaches that branch, so this separation had never been exercised
+against a device that could violate it.
+
+**Declaring a stage is an operator act with a real alternative.** Each stage is
+offered `declare bounds` or `exclude; leave unreachable`; declining emits no
+entry, asks no bound questions, and records an `OPERATOR EXCLUSION` note. This
+matters because the pre-block state of these stages was unreachable: without an
+opt-out, the block would have widened authority with no way to refuse.
+
+**A non-core `XYStageDevice` is excluded with a printed reason.** `named_stages`
+is single-axis by construction, so setup states that it cannot express honest
+independent per-axis bounds rather than silently omitting the device.
+
+**A continuous-focus offset stage is authored, not withheld.** Operator ruling,
+2026-08-03. This corrects a reading of Block 4's item "mark PFS-offset workflows
+unsupported even when the offset has reviewed bounds" as a requirement to omit
+the declaration. The impact-summary row that item derives from says the opposite
+— Phase 5 *can* collect reviewed `TIPFSOffset` bounds; what a generated profile
+must not do is imply an in-range command was **achieved or settled** — and Block
+0b's Nikon stopgap worksheet already declares `TIPFSOffset` under `named_stages`
+while excluding only `TIPFSStatus.State`. **The exclusion boundary is the
+continuous-focus enable, not the offset stage.** What setup owes instead is
+honesty: the review note records that `move_named_stage` may report the previous
+target as `achieved_um` until the settling work lands, and that an offset write
+commands a servo, so the declared offset bound is not a bound on the resulting Z
+excursion.
+
+**Only a positional device may be named an offset stage.** The M5 gate produced
+`possible offset stage(s) ['HamamatsuHam_DCAM']` — the camera — because
+`CONVERSION FACTOR OFFSET`, an ADC offset, matched on name alone. The name match
+predates this block; what changed is that the note then asserted servo motion and
+stale read-back about a camera. A name match now counts only for a loaded stage
+or a typed actuator whose kind is `absolute-position`.
+
+Residuals, stated rather than implied:
+
+- The offset warning is a **label-shape heuristic** over `offset`, `pfs`,
+  `perfect focus`, `autofocus` and `focus lock`. An offset stage named with none
+  of them is authored with no warning. It is a note, never a bound or a gate.
+- A declared range is a **reviewed travel bound, not evidence that the device is
+  safe to move through it**, and on an offset stage it bounds the commanded
+  offset rather than the resulting focus-drive excursion.
+- The corrected offset note was verified by replaying M5's captured
+  `inventory.json` through both the pre-fix and post-fix code, not by a live M5
+  session. No operator has yet read the corrected note on that rig.
