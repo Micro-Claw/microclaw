@@ -2515,10 +2515,17 @@ re-derive them:
 - Two live cross-checks already exist and must both stay green on the generated
   profile: `authorization.py:598` refuses a `named_stages` item that duplicates
   the core XY or focus device, and `authorization.py:623` refuses a **reachable**
-  stage that has no declared range policy in guaranteed mode. The second is why
-  this block improves startup rather than only reach — but read it before
-  assuming it already fires for non-core stages, and report what it actually
-  does today.
+  stage that has no declared range policy in guaranteed mode. **Correction
+  (coordinator, 2026-08-03): the second does not fire for an undeclared non-core
+  stage, and the assignment text was wrong to imply it might.** The implementer
+  checked and the coordinator confirmed: `named_devices` is derived from the
+  parsed config's own `named_stages` entries, so `reachable_axes` contains core
+  XY, core focus, and *already-declared* named devices only. A loaded stage
+  nobody declared is invisible to that check. It validates declarations; it
+  cannot discover omissions. That is the fail-closed direction — an undeclared
+  stage is simply unreachable via `check_named_stage` — so it is not a defect,
+  and closing it is not this block's work. This block improves **reach**, not
+  startup validation.
 - `_metadata_default` (`first_launch.py:361`) already excludes a
   `StageDevice`/`XYStageDevice` position property from the `bounded-numeric`
   path, on the stated grounds that it must not bypass the fail-closed named/core
@@ -2567,6 +2574,48 @@ must not collapse them:
       offline validator and starts a session — so the one M5 trip is spent only
       on what the demo core cannot represent. Rig-facing commands must be
       PowerShell/cmd-safe.
+
+### Round 1 — returned 2026-08-03, two findings
+
+Implementation `53e77e5` + `aaebc09`, runbook `e8d4732`. Independently
+re-measured by the coordinator in the implementer's worktree: **1364 passed / 99
+skipped / 3 expected warnings**, exactly baseline plus three new tests. Replaying
+the captured M5 inventory through the new candidate rule produces the three
+expected stages (`SmarAct 1D`, `Thorlabs ELL17/ELL20`, `Thorlabs ELL20`), and the
+`Position (um)` spelling the implementer added does match the captured M5
+property names — `SmarAct 1D` has no position property at all and correctly falls
+to the typed-bounds path. The gate runbook's mechanical checks were validated
+against a real captured history JSONL (`block4h-demo-20260803-125647`): the
+`tool_use`/`tool_result` block shapes and the
+`Safety constraint prevented this action:` substring are what `execute_tool` and
+`agent.py` actually write, so the check will execute on the rig rather than
+silently reporting `False`.
+
+Two findings returned:
+
+1. **A continuous-focus offset stage would be authored as an ordinary named
+   stage.** On the Nikon, `Core.Focus` is `TIZDrive` and `TIPFSOffset` is a
+   separate `StageDevice`, so the new rule asks for its travel bounds and
+   proposes the driver's technical range as an Enter-acceptable default. One
+   keypress would then authorize `move_named_stage` on the PFS offset — which
+   Block 4's still-binding item says to **mark unsupported even when the offset
+   has reviewed bounds, until block 6's settling work lands**, which
+   `first_launch.py`'s own `CONTINUOUS-FOCUS REVIEW QUESTION` note already
+   states, and which Track B has open evidence against (offset moves returned the
+   previous target, and the servo drives Z in response, so an offset bound is an
+   unbounded Z excursion). The block text's "every loaded `StageDevice`" does not
+   override Block 4's exclusion.
+2. **No non-core stage can be declined.** `_bounds` accepts only a finite number
+   or Enter-to-accept, so every loaded non-core `StageDevice` becomes reachable
+   and the operator has no way to say "not this one" — they would have to invent
+   a degenerate range. Every other question in this interview has an exclusion
+   path, and the pre-block state of these stages was unreachable, so the change
+   widens authority with no opt-out.
+
+Nit, not blocking: `_device_property`'s enumerated name set matches
+`position(um)` but not `position(µm)` or `positionum`. The fallback is safe (it
+asks the human) but a normalized `position`-prefix match would propose the driver
+range on more rigs.
 
 Post-merge design gate:
 
