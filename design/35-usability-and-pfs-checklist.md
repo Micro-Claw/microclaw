@@ -149,7 +149,7 @@ assistant's narration when judging whether a guard fired.
 | 4r1b | Usability | 4 | `design35/startup-refusal-severity` | `15d8d1b` | `2558583` (`16cc416` rejected alone) | folded into block 4 round 2 | `385049d` into block branch | |
 | 4b | Usability | 4 merged | `design33/bounded-numeric-actuator` (deleted) | `578874e` | `5a6c6e2` | G1 demo **PASS**; G3 M2 **PASS** incl. imagery; G2 M5 in-range **PASS**, refusal step retired | `04164fd` | **done** — design/33 §"Block 4b landed" |
 | 4e | Usability | 4b merged | `design33/emission-path-discovery` (deleted) | `85398e8` | `bc40f18` + `d631a4f` (`39f69dd` returned) | M2 G1/G2, M5 G3, demo G3 all **PASS** 2026-08-03 | `9b88394` | **done** — design/33 §"Block 4e landed" |
-| 4f | Usability | 4e merged | `design33/channel-group-presets` | | | **required** | | |
+| 4f | Usability | 4e merged | `design33/channel-group-presets` | `f95c8ca` | | **required** | | |
 | 4c | Usability | 4f merged | `design33/setup-named-stages` | | | **required** | | |
 | 4g | Platform | none — may run concurrently | `design32/hook-hash-newline` | `95ae192` | `50e5f66` + `d0bb602` + `971cdb6` | M5 round 1 **FAIL** (fixtures); re-gate owed | | |
 | 4d | Usability | 4c merged | `design33/property-authorization-rename` | | | **required** | | |
@@ -1926,7 +1926,9 @@ Post-merge design gate:
 
 Branch: `design33/channel-group-presets`. Depends on 4e merging. Created by
 operator decision 2026-08-03 from Block 4e's M2 gate, which is the same way 4e
-itself was created from 4b's.
+itself was created from 4b's. **Assigned 2026-08-03.** Baseline measured by the
+coordinator at the start commit: **1350 passed / 99 skipped / 3 expected
+warnings**.
 
 `first_launch.py:1087`–`:1101` collects preset names from **every** config group
 in `preset_proposals` and writes them to `channels.allowed` (`:1134`).
