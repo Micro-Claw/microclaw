@@ -466,6 +466,12 @@ def test_confirmation_audit_summary_uses_secret_redaction(session, tmp_path):
     assert session.confirm("Save operator-secret", "knowledge") is False
 
     assert load_history(path).messages[0]["summary"] == "Save [REDACTED]"
+    # The same redacted copy must be what the model sees and what stdout
+    # prints. audit_records is handed to run_agent_iter and becomes the
+    # `confirmations` block in a tool result, and the serve process's stdout is
+    # captured into rig evidence bundles -- so an unredacted record here would
+    # leak in two directions while the JSONL looked clean.
+    assert session.audit_records[-1]["summary"] == "Save [REDACTED]"
 
 
 def test_the_browser_can_approve_a_pending_confirm(session, client, fast_confirm_poll):

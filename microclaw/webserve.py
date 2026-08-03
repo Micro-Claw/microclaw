@@ -356,10 +356,17 @@ class Session:
                 # redaction before this reaches the confirmations JSONL.
                 "summary": summary,
             }
-            self.audit_records.append(record)
+            # Redact once, then use that one copy everywhere. AuditLog.append
+            # returns a redacted *copy* and leaves its argument untouched, so
+            # appending the raw record here would put an unredacted summary in
+            # front of the model and into the serve process's stdout -- which
+            # rig runbooks capture to `*-session.txt` and ship in evidence
+            # bundles -- while only the JSONL got redacted. Harmless before this
+            # record carried a summary; not harmless now.
             confirmation_audit = getattr(self, "confirmation_audit", None)
             if confirmation_audit is not None:
-                confirmation_audit.append(record)
+                record = confirmation_audit.append(record)
+            self.audit_records.append(record)
             print("[microclaw] Confirmation audit: " + json.dumps(record, sort_keys=True))
             return decision == "approved"
 
