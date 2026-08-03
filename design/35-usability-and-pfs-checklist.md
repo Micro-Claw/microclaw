@@ -113,6 +113,32 @@ What this file adds, specific to these blocks:
   recorded hash — is solved by pinning with `git merge-base --is-ancestor`
   (`cf13c1a`), not by branch placement. Coordinator bookkeeping stays on `main`.
 
+### State at the 2026-08-03 session boundary — read this before assigning anything
+
+Recorded because the two facts below exist only in a closed conversation
+otherwise, and step 9's whole point is that a cold session resumes from the
+remote alone.
+
+- **Track 0's kit was shipped to the Nikon operator on 2026-08-03 and no
+  response has come back.** Do not re-prepare or re-ship it, and do not read the
+  empty 0c row as "unstarted". Round-trip latency to that operator is days and
+  it is the longest-latency item on the board, so it is expected to sit open
+  while Track A proceeds. When evidence arrives, 0c's checklist items are the
+  triage procedure.
+- **Block 4h was assigned on 2026-08-03 and an implementer is working it.** At
+  the session boundary its branch `design33/confirmation-visibility` existed
+  **locally only**, in a worktree at `/tmp/mc-4h`, with uncommitted changes to
+  `microclaw/agent.py`, `microclaw/webserve.py` and their tests — nothing
+  committed, nothing on `origin`. A cold session that finds no such branch on
+  the remote should look there before concluding the block was never started,
+  and should not re-assign it. `/tmp` is not durable across a reboot; if that
+  work is gone, re-assign from the block text, which is complete.
+- Everything else is closed and on `origin`: blocks 4e, 4f and 4g are merged,
+  their branches deleted locally and remotely, their ledger rows closed, their
+  design gates reconciled, and their coordination notes recorded in
+  `design/prompts.md`. `git log --oneline origin/main..main` was empty.
+- The intended order from here is **4h → 4c → 4d → 5**, then Track B.
+
 Progress markers: `[ ]` not started, `[-]` active, `[x]` complete, `[!]` blocked.
 
 Rig-facing commands must be PowerShell/cmd-safe (the rig is Windows): prefer
@@ -140,7 +166,7 @@ assistant's narration when judging whether a guard fired.
 |---|---|---|---|---|---|---|---|---|
 | 0a | Remote kit | — | `design34/nikon-probe-kit` | `b717594` | `42d8978` (`8696169` rejected) | **is the deliverable** | `ba695da` | pending |
 | 0b | Remote kit | — | `design34/nikon-stopgap-config` | `b717594` | `ead2fb9` (`6ac2ab2` rejected) | 0c ships it | `96a0a91` | pending |
-| 0c | Remote kit | 0a, 0b | — (ship + wait) | | | **operator returns evidence** | n/a | |
+| 0c | Remote kit | 0a, 0b | — (ship + wait) | | | **SHIPPED 2026-08-03 — awaiting the remote operator** | n/a | |
 | 1 | Usability | 0a and 0b assigned | `design33/phase5-doc-reconciliation` | `b717594` | `dd359a3` | n/a | `20b92e2` | done — block *is* the gate |
 | 2 | Usability | 1 | `design33/undeclared-light-source-gate` | `98842cf` | `ef72b15` + `e9817ad` | **PASS** — M5 refusal/declaration/confirm/cleanup + separate demo fail-closed run | `a1b7579` | done — design/33 landed semantics + residual boundary |
 | 3 | Usability | 2 | `design33/config-diagnostics` | `e8d6ee1` | `dce17a4` + `65bfd7c` | n/a — no rig surface | `0cb871f` | done — error taxonomy + offline-validation contract |
@@ -150,7 +176,7 @@ assistant's narration when judging whether a guard fired.
 | 4b | Usability | 4 merged | `design33/bounded-numeric-actuator` (deleted) | `578874e` | `5a6c6e2` | G1 demo **PASS**; G3 M2 **PASS** incl. imagery; G2 M5 in-range **PASS**, refusal step retired | `04164fd` | **done** — design/33 §"Block 4b landed" |
 | 4e | Usability | 4b merged | `design33/emission-path-discovery` (deleted) | `85398e8` | `bc40f18` + `d631a4f` (`39f69dd` returned) | M2 G1/G2, M5 G3, demo G3 all **PASS** 2026-08-03 | `9b88394` | **done** — design/33 §"Block 4e landed" |
 | 4f | Usability | 4e merged | `design33/channel-group-presets` (deleted) | `f95c8ca` | `84c4d70` + `d4985e6` | M2 G1 + demo G2 **PASS** 2026-08-03 | `9010158` | **done** — design/33 §"Block 4f landed" |
-| 4h | Usability | 4f merged | `design33/confirmation-visibility` | `627b46b` | | **required** (demo) | | |
+| 4h | Usability | 4f merged | `design33/confirmation-visibility` | `627b46b` | **in flight 2026-08-03, not yet pushed** | **required** (demo) | | |
 | 4c | Usability | 4h merged | `design33/setup-named-stages` | | | **required** | | |
 | 4g | Platform | none — may run concurrently | `design32/hook-hash-newline` (deleted) | `95ae192` | `50e5f66` + `d0bb602` + `971cdb6` + `f768cc3` | round 3 **PASS** 2026-08-03 (rounds 1–2 failed test-side) | `936230f` | **done** — design/32 §4 |
 | 4d | Usability | 4c merged | `design33/property-authorization-rename` | | | **required** | | |
