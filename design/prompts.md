@@ -4017,3 +4017,70 @@ Deferred out of this block, deliberately: `bounded-numeric` and the
 `rig_profile` rename to 4b, `named_stages` to 4c (three of M5's five stages are
 unreachable until it lands), deployed-config hygiene to 5. Order set by the operator:
 4b, then 4c, then 5. Both precede 5; "4c before 5" ordered those two only.]
+
+## Block 4b — the `bounded-numeric` typed actuator (merged `04164fd`, 2026-08-03)
+
+Branch `design33/bounded-numeric-actuator`, start `578874e`, implementation
+`5a6c6e2`. Four implementation rounds plus coordinator fixes; five gate runs
+across three rigs.
+
+Scoped down before assignment. The `rig_profile` → `property_authorization`
+rename had been folded into this block; it was split out as **4d** because a
+config-breaking rename cannot share a branch or a rig gate with a new actuator
+kind -- a failed gate would have been ambiguous between the two, and rolling
+back either would drag the other. The two acquisition-key decisions were
+settled up front as deprecate-not-delete, because deleting either stops every
+deployed config that sets it from loading.
+
+Four returned rounds, and the shape of what they caught is the point: **every
+finding that mattered came from replaying the two real captured inventories on
+the acceptance path, never from the test suite.** Round 1 tripled the interview
+(85 → 235 prompts on M5) and made non-core stage positions raw-writable,
+collapsing `named_stages`' fail-closed gate. Round 2 bought the reduction back
+with a hardcoded allowlist of M5 device labels (`Laser Trigger`, `Servos`,
+`PWM`) inside `microclaw/` -- and `Camera.Gain` was reachable only because the
+string `gain` was in it, so an Andor `EMGain` would have failed the block's own
+rig gate. Round 3 replaced it with a universal `native` unit proposal, which
+armed 11 iChrome TTL/Analog mode switches. Round 4 fixed that with a rule keyed
+on "device surfaced an illumination candidate" -- which then excluded
+`Andor.Gain` on M2, because a camera surfaces its own shutters. Device *type*,
+not the presence of a candidate, was the discriminator.
+
+One coordinator finding withdrawn on operator ruling. Round 1 returned
+`Laser Trigger.Duration0-3` as a required exclusion, citing Block 4's "actuator
+kinds the current schema cannot express (… MicroFPGA pulse duration …)". That
+misreads the item: the exclusion is conditioned on schema inexpressiveness, and
+**this block is the removal of that condition**. Trigger duration is an
+illumination timing control and must stay adjustable. An exclusion premised on
+"we cannot express this" stops applying in the block that expresses it.
+
+Two defects the gate caught that no test could. `Core.Shutter` was written as an
+*explicit* exclusion, which shadowed `authorization.py`'s purpose-built rule
+permitting a preset to retarget it to a declared shutter -- so the demo rig's
+four fluorescence channels refused startup. Not a 4b regression: Block 4's
+`fa9e2ee` landed after the last demo live-session gate, and M5 has no `Channel`
+group, so neither rig could expose it. And `get_device_property_info` reported
+only driver limits, never the declared policy, so an agent plans against
+authority the guard will refuse.
+
+**The gate-design lesson, twice.** G1 round 2 proved nothing: asked to set the
+gain out of range, the agent read the metadata, said it would be rejected, and
+never called the tool. Forced wording plus a mechanical history check fixed it
+on demo and on M2 -- then failed on M5, where the agent refused across eight
+restatements and argued, correctly, that "a guard that only gets exercised
+because the agent voluntarily forwards knowingly-invalid input isn't being
+tested." A guard test routed through the agent must present a value the agent
+*cannot* know is invalid -- a declared bound narrower than the driver range --
+or must not use the agent. The forced-call technique worked twice and failed
+once, which makes it unreliable either way.
+
+G2 was retired as redundant on operator decision: it existed as a stand-in for
+M2 being unavailable, and M2 then ran and closed the claim directly on a real
+Andor iXon, including a two-gain image difference of 2.1× in mean with neither
+frame saturated.
+
+M2's first enumeration also produced two findings that are **not** this block's
+code and became **4e**, scheduled ahead of 4c: `Cobolt561.Laser` -- the device
+`Core.Shutter` names -- was never discovered as a shutter, and a three-state
+shutter's middle value (`Auto`, which opens on every exposure) is writable with
+no confirmation at all. Both measured, both live.
