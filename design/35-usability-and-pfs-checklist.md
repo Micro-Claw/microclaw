@@ -151,7 +151,7 @@ assistant's narration when judging whether a guard fired.
 | 4e | Usability | 4b merged | `design33/emission-path-discovery` (deleted) | `85398e8` | `bc40f18` + `d631a4f` (`39f69dd` returned) | M2 G1/G2, M5 G3, demo G3 all **PASS** 2026-08-03 | `9b88394` | **done** — design/33 §"Block 4e landed" |
 | 4f | Usability | 4e merged | `design33/channel-group-presets` | | | **required** | | |
 | 4c | Usability | 4f merged | `design33/setup-named-stages` | | | **required** | | |
-| 4g | Platform | none — may run concurrently | `design32/hook-hash-newline` | `95ae192` | `50e5f66` + `d0bb602` | **required** (any Windows machine) | | |
+| 4g | Platform | none — may run concurrently | `design32/hook-hash-newline` | `95ae192` | `50e5f66` + `d0bb602` + `971cdb6` | M5 round 1 **FAIL** (fixtures); re-gate owed | | |
 | 4d | Usability | 4c merged | `design33/property-authorization-rename` | | | **required** | | |
 | 5 | Usability | 4b, 4e, 4f, 4c, 4d | `design33/deployed-config-hygiene` | | | required | | |
 | 6 | Nikon | probe S = pre-fix baseline; post-fix run owed | `design34/measured-position-readback` | | | required | | |
@@ -2018,6 +2018,48 @@ accepted — but the feature does not work where it has to work.
 - [-] Rig gate on any Windows machine: save a hook, then load it through the
       offline path and describe it. Both must succeed, and `pytest.txt` must
       show these 23 tests passing.
+
+### Windows gate round 1 — M5, 2026-08-03: **FAIL on the suite; the product code is right**
+
+Evidence: `block4g-m5-20260803-115506`, at `d0bb602`, pin `0`, clean tree.
+
+**G1 PASS and G2a PASS on real Windows.** A CRLF-sourced hook saved, loaded
+live, described, and loaded offline with `matches_manifest: true`; and the
+synthetic legacy-pin migration walked refusal → review → re-save → reload with
+all twelve checks true and both refusal messages actionable. The convention
+change works on the platform it was written for.
+
+**G0 FAIL: 1308 passed / 23 failed, against an expected 1336 / 0.** The same 23
+tests, and at first glance the same failure as before — which would have meant
+the fix did nothing. It did not mean that, and the distinction is the whole
+finding: the message had **changed** from `changed on disk since it was saved`
+to `uses a legacy newline-normalized hash`. The new code was running, doing
+exactly what it should, and correctly reporting that those hooks' pins did not
+match their bytes.
+
+**The two test fixtures had the same defect as the product code, and were not
+fixed with it.** `tests/test_completed_dataset.py`'s `offline_home.save` and
+`tests/test_describe_hook.py`'s `_install_saved` each wrote with `write_text`
+and pinned `sha256(code.encode())` — text out, string hashed. Between them they
+own all 23 failures: 19 and 4 respectively. On POSIX the two agree, so nothing
+was visible; on Windows the fixture's own hooks became legacy-pinned.
+
+Fixed by the coordinator at `971cdb6`, with a regression guard in each module.
+**Getting the guard right took two attempts and the failed one is worth
+recording:** feeding CRLF source in directly passes on POSIX whether or not the
+fixture is fixed, because it is Windows *translation* that makes bytes differ
+from the string, not the presence of CRLF. Both guards therefore simulate the
+translation, and each was verified to fail against its own un-fixed fixture.
+Suite 1347 → **1349 passed / 99 skipped / 3 expected warnings**; Windows should
+now show **1338 passed, 0 failed, 115 skipped**.
+
+**The lesson is about the acceptance criterion, not the code.** This block's
+stated purpose was to make 23 Windows tests pass, and the implementer reported
+the fix was "expected to repair" them — honestly hedged, since it could not be
+checked from macOS. The unstated assumption was that the tests exercised the
+product's save path; two of them built their own. **When a block's acceptance is
+"these named tests pass on a platform you cannot run," the fixtures those tests
+use are part of the surface under repair.**
 
 ### Implementation — pushed 2026-08-03, awaiting the Windows gate
 
