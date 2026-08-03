@@ -447,7 +447,7 @@ def move_named_stage(
 def _has_channel_authorization_map(ctrl: MicroscopeController) -> bool:
     """Whether this session can use the capture/authorize/replay executor.
 
-    A legacy session with no rig_profile has no authorization map. It keeps MM
+    A legacy session with no property_authorization has no authorization map. It keeps MM
     delegation for compatibility, including MM's preset-definition re-read.
     """
     return getattr(ctrl, "authorization_map", None) is not None

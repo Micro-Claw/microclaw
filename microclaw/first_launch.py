@@ -659,7 +659,7 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
             raise SetupRefusal(f"SETUP REFUSAL: Candidate {path} has no matching fact record.")
         owner = _builtin_policy(item, assignments)
         if owner is not None:
-            say(f"{path} [dedicated policy: {owner}; not duplicated in rig_profile]")
+            say(f"{path} [dedicated policy: {owner}; not duplicated in property_authorization]")
             dedicated.add(path)
             continue
         default = _metadata_default(item)
@@ -893,7 +893,7 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
             # purpose-built rule: a channel preset may retarget `Core.Shutter`
             # when the device it selects is itself a declared illumination
             # shutter, so the gate still covers whatever it switches to. That
-            # allowance sits behind a generic `pair in excluded_properties`
+            # allowance sits behind a generic `pair in denied`
             # test, so an explicit entry shadows it and refuses every preset
             # that names a shutter — which is how the demo rig's four
             # fluorescence channels stopped working. Silence is not permission:
@@ -1246,11 +1246,11 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
     config = {
         "schema_version": 2,
         "reviewed": False,
-        "rig_profile": {
+        "property_authorization": {
             "mode": "guaranteed",
-            "categorical_properties": sorted(categorical, key=lambda x: (x["device"], x["property"])),
-            "typed_actuators": sorted(typed, key=lambda x: (x["device"], x["property"])),
-            "excluded_properties": sorted(excluded, key=lambda x: (x["device"], x["property"])),
+            "allowed_categorical": sorted(categorical, key=lambda x: (x["device"], x["property"])),
+            "allowed_numeric": sorted(typed, key=lambda x: (x["device"], x["property"])),
+            "denied": sorted(excluded, key=lambda x: (x["device"], x["property"])),
         },
         "stage": stage,
         "acquisition": acquisition,

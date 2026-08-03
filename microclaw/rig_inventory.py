@@ -510,7 +510,8 @@ def enumerate_rig(core: Any, *, mm_config: str | Path | None = None) -> dict:
 
 
 def _declared_paths(parsed: Any, core: Any, loaded_devices: list[str]) -> set[str]:
-    paths = {f"{d}.{p}" for d, p in parsed.rig_profile.categorical_properties | parsed.rig_profile.excluded_properties}
+    authorization = parsed.property_authorization
+    paths = {f"{d}.{p}" for d, p in authorization.allowed_categorical | authorization.denied}
     paths |= {f"{x.device}.{x.property}" for x in parsed.constraints.forbidden_properties}
     illum = parsed.constraints.illumination
     illumination_pairs = {

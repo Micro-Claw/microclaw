@@ -9,11 +9,11 @@
 #
 # Schema 2 adds reviewed per-rig property decisions. The stage and named_stages
 # ranges below are themselves the declared stage-position actuator set.
-# Migrate schema 1 allowed_properties into categorical_properties below only
-# after reviewing each as discrete; use excluded_properties to remove a pair.
+# Migrate schema 1 allowed_properties into allowed_categorical below only
+# after reviewing each as discrete; use denied to remove a pair.
 schema_version: 2
 reviewed: false
-rig_profile:
+property_authorization:
   # Guaranteed mode is the normal fail-closed mode. The only alternative is
   # degraded_trusted_plugins, which explicitly suspends the completeness claim.
   mode: guaranteed
@@ -30,16 +30,16 @@ rig_profile:
   # illumination gate. List a pair here for every OTHER discrete property.
   #
   # Auto-classification fills vacuums only: naming a device's Label OR State
-  # here (or under excluded_properties) means you own BOTH. Declare the one you
+  # here (or under denied) means you own BOTH. Declare the one you
   # will actually write and the other stays refused -- so if you are unsure
   # whether a driver takes Label (string) or State (int), declaring one does not
   # quietly hand you the other.
-  categorical_properties: []
+  allowed_categorical: []
   # Exact raw continuous writes are opt-in and are checked against the live
   # driver's type/writability/range before this file is admitted. Bounds are in
   # canonical units, never inferred from driver technical limits.
-  typed_actuators: []
-  # typed_actuators:
+  allowed_numeric: []
+  # allowed_numeric:
   #   - device: AuxiliaryZ
   #     property: "Position (um)"
   #     kind: absolute-position
@@ -59,13 +59,13 @@ rig_profile:
   #     units: "e-/ADU"      # operator-supplied label; never parsed or converted
   #     minimum: 0.0
   #     maximum: 24.0        # clamp only; no stage bounds or dose ledger effect
-  # categorical_properties:
+  # allowed_categorical:
   #   # Worked example: a discrete selector that MM does not type as a
   #   # StateDevice, so it still needs the reviewed declaration.
   #   - {device: LaserSelector, property: Label}
   # Removed from every write path by the Stage-B authorization map. These are
   # exclusions, not legacy forbidden_properties denylist entries.
-  excluded_properties:
+  denied:
     - {device: Core, property: Initialize}
 #
 # ──────────────────────────────────────────────────────────────────────────────
@@ -113,7 +113,7 @@ analysis:
 # Channel names and their effects are coupled in guaranteed mode. To enable a
 # preset, list its name here AND classify every device/property effect it
 # expands to: either auto-classified (a StateDevice's own Label/State) or listed
-# under rig_profile.categorical_properties above. Otherwise startup refuses it.
+# under property_authorization.allowed_categorical above. Otherwise startup refuses it.
 # A preset that only moves filter wheels needs no declaration at all.
 # channels:
 #   allowed: [DAPI]

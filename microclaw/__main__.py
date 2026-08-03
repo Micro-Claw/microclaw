@@ -351,6 +351,7 @@ def check_config(args):
         label = {
             "schema": "SCHEMA ERROR",
             "review": "REVIEW REQUIRED",
+            "deprecation": "DEPRECATION WARNING",
             "guaranteed_mode": "GUARANTEED-MODE REQUIREMENT",
             "degraded_mode": "DEGRADED-MODE WARNING",
             "live_check": "LIVE CHECK REQUIRED",

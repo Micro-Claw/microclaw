@@ -23,7 +23,7 @@ from microclaw.safety import ParsedSafetyConfig, SafetyConfigError, SafetyConstr
 REAL = """
 schema_version: 2
 reviewed: true
-rig_profile: {mode: guaranteed, categorical_properties: [], excluded_properties: []}
+property_authorization: {mode: guaranteed, allowed_categorical: [], denied: []}
 stage: {x_min: -100.0, x_max: 100.0, y_min: -100.0, y_max: 100.0}
 camera: {max_exposure_ms: 500.0}
 acquisition:
@@ -51,6 +51,24 @@ def test_reviewed_true_loads(tmp_path):
     c = load_safety_config(_write(tmp_path, REAL))
     assert isinstance(c, ParsedSafetyConfig)
     assert c.constraints.stage.x_max == 100.0
+
+
+def test_old_authorization_key_is_accepted_with_complete_nonblocking_migration_message(tmp_path):
+    legacy = REAL.replace(
+        "property_authorization: {mode: guaranteed, allowed_categorical: [], denied: []}",
+        "rig_profile: {mode: guaranteed, categorical_properties: [], typed_actuators: [], excluded_properties: []}",
+    )
+    result = validate_safety_config(_write(tmp_path, legacy))
+    assert result.parsed is not None
+    assert result.can_start_live_validation
+    diagnostic = next(item for item in result.diagnostics if item.kind == "deprecation")
+    assert diagnostic.blocking is False
+    for name in (
+        "rig_profile", "property_authorization", "categorical_properties",
+        "allowed_categorical", "typed_actuators", "allowed_numeric",
+        "excluded_properties", "denied", "mode",
+    ):
+        assert name in diagnostic.message
 
 
 def test_missing_acquisition_section_names_file_and_required_fields(tmp_path):

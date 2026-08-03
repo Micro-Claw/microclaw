@@ -162,8 +162,10 @@ def test_drift_is_reported_but_fresh_unsafe_expansion_is_refused():
     assert execute_channel_plan(ctrl, guard, "P")["expansion_drift"] is True
     core.effects = [("Unknown", "Power", "100")]
     core.values[("Unknown", "Power")] = "0"
-    with pytest.raises(RigAuthorizationError, match="unclassified"):
+    with pytest.raises(RigAuthorizationError, match="unclassified") as exc:
         execute_channel_plan(ctrl, guard, "P")
+    assert "property_authorization.allowed_categorical" in str(exc.value)
+    assert "property_authorization.allowed_numeric" in str(exc.value)
 
 
 def test_typed_continuous_and_stage_routing():

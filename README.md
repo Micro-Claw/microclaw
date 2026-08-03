@@ -237,13 +237,20 @@ The file starts with a gate. Nothing runs until a human has read the limits and 
 # limit for THIS instrument, and changed the line below to `reviewed: true`.
 schema_version: 2
 reviewed: false
-rig_profile:
+property_authorization:
   mode: guaranteed
-  categorical_properties: []
-  excluded_properties: []
+  allowed_categorical: []
+  denied: []
 ```
 
-`categorical_properties` is the reviewed list of discrete (non-continuous)
+Older schema-2 files using `rig_profile` remain accepted during the 0.1.x
+release line so an upgrade followed immediately by a restart is safe. The
+offline `microclaw check-config` command reports the exact key renames;
+`rig_profile` may be removed no earlier than 0.2.0. A file containing both
+`rig_profile` and `property_authorization` is refused rather than guessing which
+authorization map the operator intended.
+
+`allowed_categorical` is the reviewed list of discrete (non-continuous)
 device properties the AI may write directly. Filter wheels, sliders and turrets
 do not belong on it: any device Micro-Manager types as a **StateDevice** has its
 own `Label`/`State` auto-classified as categorical at startup, and nothing else
@@ -255,7 +262,7 @@ effective map; auto-classified entries carry `"source": "auto:state-device"`,
 declared ones `"source": "declared"`.
 
 Auto-classification fills vacuums only. Naming a device's `Label` **or** `State`
-in `categorical_properties` or `excluded_properties` means you own both: declare
+in `allowed_categorical` or `denied` means you own both: declare
 the one you will actually write, and the other stays refused. So if you are not
 sure whether a driver takes `Label` (string) or `State` (int), declaring one does
 not quietly hand you the other.
@@ -310,12 +317,12 @@ reported as an early stop.
 # device/property effect Micro-Manager expands it to. Filter wheels, sliders and
 # turrets need no declaration — see the note below — so if DAPI only moves those,
 # the name is enough. Declare any other discrete effect, e.g. a laser selector:
-# Replace the empty rig_profile fragment above with:
-rig_profile:
+# Replace the empty property_authorization fragment above with:
+property_authorization:
   mode: guaranteed
-  categorical_properties:
+  allowed_categorical:
     - {device: LaserSelector, property: Label}
-  excluded_properties: []
+  denied: []
 channels:
   allowed: [DAPI]
 

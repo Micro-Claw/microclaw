@@ -8,7 +8,7 @@ from microclaw.authorization import (
 from microclaw.safety import (
     AcquisitionConstraints, CameraConstraints, IlluminationConstraints,
     ActuatorId, ForbiddenProperty, ParsedSafetyConfig, RangeEdge, RangePolicy,
-    RigProfile, SafetyConfigError, SafetyConstraints, StageConstraints,
+    PropertyAuthorization, SafetyConfigError, SafetyConstraints, StageConstraints,
     SafetyGuard, SafetyViolation, TypedActuatorId, TypedActuatorPolicy,
     TypedPowerProperty, IlluminationProperty,
 )
@@ -33,7 +33,7 @@ def test_registry_schema_and_native_conversion_boundaries(tmp_path):
         "  typed_actuators:\n"
         "    - {device: Laser, property: Power, kind: illumination-power, units: native, full_scale: 75, minimum: 0, maximum: 40}\n")
     guard = SafetyGuard(parsed.constraints)
-    guard.admit_typed_actuators(parsed.typed_actuators)
+    guard.admit_typed_actuators(parsed.property_authorization.allowed_numeric)
     guard.check_typed_actuator("Laser", "Power", "30")  # 40 percent exactly
     with pytest.raises(SafetyViolation, match="canonical value 40.0013"):
         guard.check_typed_actuator("Laser", "Power", "30.001")
@@ -48,10 +48,10 @@ def test_bounded_numeric_clamps_edges_echoes_verbatim_units_and_rejects_full_sca
     parsed = _yaml(tmp_path,
         "  typed_actuators:\n"
         "    - {device: Camera, property: Gain, kind: bounded-numeric, units: e-/ADU, minimum: -5, maximum: 8}\n")
-    policy = parsed.typed_actuators[TypedActuatorId("Camera", "Gain")]
+    policy = parsed.property_authorization.allowed_numeric[TypedActuatorId("Camera", "Gain")]
     assert policy.units == "e-/ADU"
     guard = SafetyGuard(parsed.constraints)
-    guard.admit_typed_actuators(parsed.typed_actuators)
+    guard.admit_typed_actuators(parsed.property_authorization.allowed_numeric)
     guard.check_typed_actuator("Camera", "Gain", "-5")
     guard.check_typed_actuator("Camera", "Gain", "8")
     for value in ("-5.001", "8.001"):
@@ -104,7 +104,7 @@ def test_unknown_kind_and_unit_are_file_anchored_parse_errors(tmp_path, kind, un
 
 def test_no_registry_remains_empty_and_opt_in(tmp_path):
     parsed = _yaml(tmp_path, "  typed_actuators: []\n")
-    assert parsed.typed_actuators == {}
+    assert parsed.property_authorization.allowed_numeric == {}
     assert parsed.constraints.allowed_properties == []
 
 
@@ -148,7 +148,7 @@ def _direct(core, *, categorical=(), excluded=(), forbidden=(), typed=None,
         acquisition=acquisition, allowed_channels=[], allowed_properties=[],
         forbidden_properties=list(forbidden), illumination=illumination or IlluminationConstraints())
     parsed = ParsedSafetyConfig(constraints, ranges or {},
-        RigProfile("guaranteed", frozenset(categorical), frozenset(excluded)), typed or {})
+        PropertyAuthorization("guaranteed", frozenset(categorical), typed or {}, frozenset(excluded)))
     return SimpleNamespace(core=core), parsed
 
 
@@ -327,7 +327,7 @@ def test_m5_ttl_state_false_positive_is_demoted_and_still_fail_closed():
     ctrl, parsed = _direct(core, categorical={("TTL", "State0")})
     report = validate_live_rig(ctrl, parsed)
     assert "TTL.State0 is a known continuous actuator" in report.diagnostics[0].message
-    assert "excluded_properties" in report.diagnostics[0].message
+    assert "property_authorization.denied" in report.diagnostics[0].message
     with pytest.raises(RigAuthorizationError, match="excluded"):
         authorize_property_write(ctrl, "TTL", "State0")
 
@@ -396,7 +396,7 @@ def test_property_info_reports_the_declared_bound_not_only_the_driver_range(tmp_
         "  typed_actuators:\n"
         "    - {device: Camera, property: Gain, kind: bounded-numeric, units: native, minimum: 0, maximum: 4}\n")
     guard = SafetyGuard(parsed.constraints)
-    guard.admit_typed_actuators(parsed.typed_actuators)
+    guard.admit_typed_actuators(parsed.property_authorization.allowed_numeric)
 
     core = SimpleNamespace(
         is_property_read_only=lambda d, p: False,

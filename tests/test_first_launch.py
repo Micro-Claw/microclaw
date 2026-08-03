@@ -140,15 +140,19 @@ def test_interview_copies_only_identifiers_and_explicit_answers(tmp_path):
     output = []
     config, notes = interview(_inventory(), ask=lambda _: next(answers), say=output.append)
     assert config["reviewed"] is False
-    assert config["rig_profile"]["categorical_properties"] == [
+    assert "rig_profile" not in config
+    assert set(config["property_authorization"]) == {
+        "mode", "allowed_categorical", "allowed_numeric", "denied",
+    }
+    assert config["property_authorization"]["allowed_categorical"] == [
         {"device": "Camera", "property": "Binning"},
     ]
-    assert config["rig_profile"]["typed_actuators"] == [{
+    assert config["property_authorization"]["allowed_numeric"] == [{
         "device": "Camera", "property": "Gain", "kind": "bounded-numeric",
         "units": "e-/ADU", "minimum": 2440.0, "maximum": 2450.0,
     }]
     assert config["illumination"]["shutters"][0]["on_value"] == "OPERATOR_ON"
-    assert {x["property"] for x in config["rig_profile"]["excluded_properties"]} >= {
+    assert {x["property"] for x in config["property_authorization"]["denied"]} >= {
         "State0", "State", "ROI", "XPosition", "Amplitude",
     }
     rendered = yaml.safe_dump(config)
@@ -173,8 +177,8 @@ def test_empty_guaranteed_categorical_key_is_emitted(tmp_path):
     path = tmp_path / "profile.yaml"
     write_profile(config, notes, path)
     loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
-    assert loaded["rig_profile"]["mode"] == "guaranteed"
-    assert loaded["rig_profile"]["categorical_properties"] == [
+    assert loaded["property_authorization"]["mode"] == "guaranteed"
+    assert loaded["property_authorization"]["allowed_categorical"] == [
         {"device": "Camera", "property": "Binning"},
     ]
     assert loaded["reviewed"] is False
@@ -425,10 +429,10 @@ def test_state_device_position_is_categorical_from_its_state_labels():
         ask=lambda _: next(answers), say=output.append,
     )
     assert {"device": "Thorlabs Filter Wheel", "property": "State"} in (
-        config["rig_profile"]["categorical_properties"]
+        config["property_authorization"]["allowed_categorical"]
     )
     assert {"device": "Thorlabs Filter Wheel", "property": "State"} not in (
-        config["rig_profile"]["excluded_properties"]
+        config["property_authorization"]["denied"]
     )
 
 
@@ -453,7 +457,7 @@ def test_state_device_position_on_an_illuminating_device_fails_closed_silently()
     )
     assert not [p for p in prompts if "iChrome-MLE-TCP.State" in p], "must not ask"
     assert {"device": "iChrome-MLE-TCP", "property": "State"} in (
-        config["rig_profile"]["excluded_properties"]
+        config["property_authorization"]["denied"]
     )
     assert any("ILLUMINATING-DEVICE POSITION EXCLUDED" in note for note in notes)
     assert any("Revisit it by exact name" in line for line in output)
@@ -488,13 +492,13 @@ def test_camera_gain_survives_its_own_shutter_being_an_illumination_candidate():
         inventory, ask=_answer_real_interview(prompts), say=lambda _: None,
     )
     typed = {
-        (t["device"], t["property"]) for t in config["rig_profile"]["typed_actuators"]
+        (t["device"], t["property"]) for t in config["property_authorization"]["allowed_numeric"]
         if t["kind"] == "bounded-numeric"
     }
     assert ("Camera", "Gain") in typed
     excluded = {
         (e["device"], e["property"])
-        for e in config["rig_profile"]["excluded_properties"]
+        for e in config["property_authorization"]["denied"]
     }
     assert ("Camera", "Gain") not in excluded
 
@@ -547,15 +551,15 @@ def test_real_m5_laser_engine_bounded_numerics_follow_inventory_illumination_set
     config, notes = interview(
         inventory, ask=_answer_real_interview(prompts), say=output.append,
     )
-    declared = {(row["device"], row["property"]) for row in config["rig_profile"]["typed_actuators"]}
-    excluded = {(row["device"], row["property"]) for row in config["rig_profile"]["excluded_properties"]}
+    declared = {(row["device"], row["property"]) for row in config["property_authorization"]["allowed_numeric"]}
+    excluded = {(row["device"], row["property"]) for row in config["property_authorization"]["denied"]}
     assert {(engine["label"], prop) for prop in mode_properties} <= excluded
     assert not ({(engine["label"], prop) for prop in mode_properties} & declared)
     assert {
         ("Laser Trigger", f"Duration{index} (us)", "us") for index in range(4)
     } <= {
         (row["device"], row["property"], row["units"])
-        for row in config["rig_profile"]["typed_actuators"]
+        for row in config["property_authorization"]["allowed_numeric"]
     }
     assert sum("ILLUMINATING-DEVICE BOUNDED NUMERIC EXCLUDED" in note for note in notes) == 11
     assert sum("Revisit it by exact name" in line for line in output) >= 11
@@ -571,7 +575,7 @@ def test_metadata_proposal_glossary_defaults_and_bulk_revisit():
         "Camera.Binning [categorical: MM reports allowed values 1, 2, 4, 8]" in line
         for line in output
     )
-    assert {x["property"] for x in config["rig_profile"]["excluded_properties"]} >= {"Binning"}
+    assert {x["property"] for x in config["property_authorization"]["denied"]} >= {"Binning"}
 
 
 @pytest.mark.parametrize(("record", "role", "evidence", "bounds"), [
@@ -654,12 +658,12 @@ def test_camera_exposure_is_owned_by_alias_policy_before_numeric_unit_default(ca
     )
     path = f"{camera_label}.Exposure"
     assert any(
-        line == f"{path} [dedicated policy: camera.max_exposure_ms; not duplicated in rig_profile]"
+        line == f"{path} [dedicated policy: camera.max_exposure_ms; not duplicated in property_authorization]"
         for line in output
     )
     assert not any(
         row["device"] == camera_label and row["property"] == "Exposure"
-        for row in config["rig_profile"]["typed_actuators"]
+        for row in config["property_authorization"]["allowed_numeric"]
     )
 
 
@@ -676,8 +680,8 @@ def test_real_demo_inventory_bulk_pass_emits_bounded_numeric_defaults():
     assert not any("confirmation threshold raw bytes" in prompt for prompt in prompts)
     assert not any(prompt.startswith("Preset ") for prompt in prompts)
     assert {
-        key: len(config["rig_profile"][key])
-        for key in ("categorical_properties", "typed_actuators", "excluded_properties")
+        key: len(config["property_authorization"][key])
+        for key in ("allowed_categorical", "allowed_numeric", "denied")
     } == {
         # Six moved from excluded to categorical when StateDevice positions began
         # reading their state labels: Dichroic, Emission, Excitation, LED,
@@ -691,17 +695,17 @@ def test_real_demo_inventory_bulk_pass_emits_bounded_numeric_defaults():
         # illumination shutter, which refused the demo rig's four fluorescence
         # channels at startup. Core.TimeoutMs stays — it is excluded for having
         # no value domain, not for being structural.
-        "categorical_properties": 38,
-        "typed_actuators": 16,
-        "excluded_properties": 12,
+        "allowed_categorical": 38,
+        "allowed_numeric": 16,
+        "denied": 12,
     }
     assert {
         (row["device"], row["property"], row["units"])
-        for row in config["rig_profile"]["typed_actuators"]
+        for row in config["property_authorization"]["allowed_numeric"]
     } >= {("Camera", "Gain", "native")}
     assert not any(
         row["device"] == "Camera" and row["property"] == "Exposure"
-        for row in config["rig_profile"]["typed_actuators"]
+        for row in config["property_authorization"]["allowed_numeric"]
     )
     assert config["channels"]["allowed"] == ["Cy5", "DAPI", "FITC", "Rhodamine"]
 
@@ -812,7 +816,7 @@ def test_reclassified_illumination_candidate_uses_ordinary_metadata_flow():
         return "1"
 
     config, notes = interview(inventory, ask=ask, say=output.append)
-    assert {"device": "Laser", "property": "Emission"} in config["rig_profile"]["categorical_properties"]
+    assert {"device": "Laser", "property": "Emission"} in config["property_authorization"]["allowed_categorical"]
     assert not config["illumination"]["shutters"]
     assert any("OPERATOR RECLASSIFICATION: Laser.Emission" in line for line in output)
     assert any("on operator instruction" in note for note in notes)
@@ -1101,7 +1105,7 @@ def test_camera_offset_property_is_not_reported_as_an_offset_stage():
     # only that it stops being described as a continuous-focus offset stage.
     assert [
         (x["device"], x["kind"])
-        for x in config["rig_profile"]["typed_actuators"]
+        for x in config["property_authorization"]["allowed_numeric"]
         if x["property"] == "CONVERSION FACTOR OFFSET"
     ] == [(camera_label, "bounded-numeric")]
     review = next(note for note in notes if note.startswith(
@@ -1255,14 +1259,14 @@ def test_bounded_numeric_default_records_operator_unit_verbatim():
         return "1"
 
     config, _ = interview(inventory, ask=ask, say=lambda _: None)
-    assert config["rig_profile"]["typed_actuators"] == [{
+    assert config["property_authorization"]["allowed_numeric"] == [{
         "device": "Camera", "property": "Gain", "kind": "bounded-numeric",
         "units": "e-/ADU", "minimum": 2440.0, "maximum": 2450.0,
     }]
     assert supplied_units == ["e-/ADU"]
     assert all(
         row["units"] in supplied_units
-        for row in config["rig_profile"]["typed_actuators"]
+        for row in config["property_authorization"]["allowed_numeric"]
     )
     assert any(
         prompt.startswith("Preset Channel.TouchesGain") and "TYPED-PROPERTY COLLISION" in prompt
