@@ -1,6 +1,8 @@
+import hashlib
 import json
 import pytest
 from microclaw.hook_manager import (
+    describe_saved_hook,
     lint_hook_code,
     load_hook_class,
     save_hook,
@@ -192,3 +194,32 @@ class TestHashPinnedLoad:
         entry = json.loads((self.dir / "manifest.json").read_text())["h"]
         assert "sha256" in entry
         assert entry["accepted_warnings"] == []
+
+    def test_legacy_windows_newline_pin_requires_explicit_resave(self, monkeypatch):
+        from microclaw import completed_dataset
+
+        monkeypatch.setattr(completed_dataset, "MANIFEST", self.dir / "manifest.json")
+        raw = _CLEAN_HOOK.replace("\n", "\r\n").encode("utf-8")
+        (self.dir / "h.py").write_bytes(raw)
+        (self.dir / "manifest.json").write_text(json.dumps({
+            "h": {
+                "description": "legacy Windows pin",
+                "path": str(self.dir / "h.py"),
+                "source": "user_provided",
+                "sha256": hashlib.sha256(_CLEAN_HOOK.encode()).hexdigest(),
+                "accepted_warnings": [],
+            }
+        }))
+
+        with pytest.raises(RuntimeError, match="legacy newline-normalized.*re-save"):
+            load_hook_class("h")
+        with pytest.raises(RuntimeError, match="legacy newline-normalized.*re-save"):
+            completed_dataset._load_saved_adapter("h")
+        described = describe_saved_hook("h")
+        assert described["provenance"]["legacy_newline_pin"] is True
+        assert described["resolve_refusal"] == {
+            "would_refuse": True,
+            "reasons": [
+                "saved hook uses a legacy newline-normalized hash; review and re-save it"
+            ],
+        }
