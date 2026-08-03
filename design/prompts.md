@@ -4282,3 +4282,60 @@ agent then denied issuing. The confirmation was real and correct: DAPI retargets
 `Core.Shutter`, which `_authorize_channel_effect` gates. The agent could not see
 it. **Asking the gate to exercise the thing rather than validate it is what
 surfaced a defect no mechanical check was looking for.**
+
+## Block 4h — confirmations are visible to the agent (merged `e42b930`, 2026-08-03)
+
+Branch `design33/confirmation-visibility`, start `1599ff3`, implementation
+`3efecaf` accepted on its first round plus two coordinator commits. One
+implementation round, one gate run, both exercises passing first time.
+
+**The block exists because a gate asked the operator to use the feature rather
+than validate it.** Block 4f's G2 could have been graded entirely on
+`channels.allowed` containing four names. It also asked for a real DAPI
+selection, the operator noticed a shutter prompt, asked the agent about it, and
+was told "I didn't, actually — I never prompted you." Every mechanical check in
+that gate passed. **No check was looking at the thing that was wrong**, and
+nothing but a human doing the task would have found it.
+
+**The agent was not lying and that is the point.** `CONFIRM_FN` is invoked
+inside tool code, `Session.confirm` renders the gate in the browser, and no tool
+result carried the decision back. From the model's side the harness asked. The
+fix is small — sample the session's record list either side of each dispatch and
+attach what was issued — and `Session.audit_records` already accumulated exactly
+those records while being read by nothing, so the block wired up an existing
+mechanism rather than adding one.
+
+**A declined confirmation is not a missing result.** The decline path was as
+important as the approval path and easy to overlook: the tool returns an error,
+and the confirmation record has to ride alongside it. It works because
+`execute_tool` never raises — worth checking before designing a gate around it,
+which is what made the runbook's G2 possible.
+
+**The coordinator finding was in the part the block added last.** Persisting
+`summary` to the audit row was the right call — without it two confirmations of
+the same kind are indistinguishable afterwards — but `AuditLog.append` returns a
+*redacted copy* and leaves its argument alone. The raw record went to the model
+and to stdout while only the JSONL was redacted, demonstrated with a registered
+secret. **stdout is not a private channel here:** rig runbooks capture it into
+`*-session.txt` and ship it in evidence bundles. Redact once, use the returned
+copy everywhere.
+
+**Gate-design note that generalises.** A block about narration being wrong
+cannot be graded on narration. The runbook passes or fails on the structured
+`confirmations` array and keeps the prose as colour — and it also spotted that
+re-selecting DAPI while `Core.Shutter` is already retargeted would correctly
+produce no confirmation, so G2 requires a fresh initial state.
+
+**Both mechanical checks failed to execute on the rig** — `python` was shadowed
+by the Windows Store alias in that shell, though `pytest` had just run. The gate
+passed anyway because the runbook returned the raw history JSONLs and the
+coordinator ran the checks here. Three rules follow, now recorded in the
+checklist: capture `$LASTEXITCODE` for every check, prefer a committed script
+under `design/` over an inline `python -c`, and always return the artifact the
+check reads.
+
+**Carried forward, unscheduled.** `_require_confirmation` writes no audit record
+and the CLI passes no collection to `run_agent_iter`, so a REPL session has no
+confirmation trail at all. The implementer declined to fix it inside this block
+— it needs a CLI audit lifecycle, not an extension of the browser session — and
+that judgement was accepted.
