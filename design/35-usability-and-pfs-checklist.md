@@ -3012,6 +3012,28 @@ Two runbook defects behind that, both fixed on the branch (`c579791`, `5aa0879`,
 G1's last two lines are owed a re-run before M5. Neither fix changes product
 code, so G0 and G2 stand.
 
+**Re-run 2026-08-03, still 0 bytes — the Tee-Object fix addressed the wrong
+layer.** `demo-new-key-session.txt` was not even touched (mtime unchanged), so
+nothing ever reached `Tee-Object`. The real cause is Python stdio buffering, not
+PowerShell: the banner is a bare `print()`, stdout block-buffers as soon as it is
+redirected or piped, `serve` then blocks forever, and Ctrl+C discards the buffer
+— and `webserve.py:886` runs uvicorn at `log_level="warning"`, so there is no
+second source of output either. That is also why G2 captured cleanly: a refusal
+*exits*, and Python flushes on exit.
+
+Fixed in the runbook at `6979301`: `$env:PYTHONUNBUFFERED = "1"` in G0, and — the
+part that actually matters — **the acceptance evidence for every `serve` step is
+now a `Test-NetConnection` probe from a second window, not captured stdout.** A
+config that failed to load, a rig that failed live validation, or an
+authorization map that refused to build all exit before the port is bound, so
+`TcpTestSucceeded: True` cannot be produced by a session that did not fully
+start. Proving the thing directly beats proving a message about the thing, and
+the earlier criterion had already failed twice.
+
+The underlying product defect — `microclaw serve` is silent under any redirect
+until it dies — is **not** fixed here; 4d is a schema rename. Recorded in the
+carried-forward register and routed to block 5.
+
 ### Round 2 — pushed 2026-08-03, awaiting the rigs
 
 Implementation `fd4c5b6` + `c063f16`, runbook `9fbd464`, plus two coordinator
@@ -3516,6 +3538,20 @@ schedule them or record a reason at block 12.
 This is an inventory, not permission to close with unresolved blank work. Block
 12 assigns every row one of the explicit dispositions above.
 
+- **`microclaw serve` produces no output at all when piped or redirected, until
+  it dies.** Found while gating Block 4d, 2026-08-03; **not fixed there, because
+  4d is a schema rename and the defect is unrelated to it.** The startup banner
+  (`webserve.py:876`) is a bare `print()`, Python block-buffers stdout the moment
+  it is not a console, and `serve` then blocks in the server loop forever, so the
+  buffer never flushes and Ctrl+C discards it. There is no fallback source:
+  `webserve.py:886` runs uvicorn at `log_level="warning"`, suppressing its own
+  "Uvicorn running on" line. So an operator who follows any of our own runbooks
+  and captures output to a log gets an empty file and cannot tell whether the
+  session started — which is exactly what happened twice on the Block 4d demo
+  gate, under two different capture methods. A `flush=True` on the banner is
+  probably the whole fix; the gate works around it with `PYTHONUNBUFFERED=1` plus
+  a `Test-NetConnection` probe, which is a workaround and not a fix. **Route to
+  block 5**, which owns the first-run and documentation path.
 - **Block 9b cross-rig inventory gate, four limbs.** Live M5 owes real
   enumeration failures, credential redaction, live config groups and state labels
   beyond `.cfg` contents, and bridge-typed returns. **Explicitly does not block
