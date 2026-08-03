@@ -17,6 +17,7 @@ from typing import Callable
 import yaml
 
 from microclaw import __version__
+from microclaw.authorization import CHANNEL_CONFIG_GROUP
 from microclaw.config import ConfigValidationResult, validate_safety_config
 from microclaw.rig_inventory import (
     _NON_EMITTING_TYPES, _TRAILING_UNIT, validate_inventory_schema,
@@ -669,9 +670,23 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
             say(f"{path} [{labels[default[0]]}: {default[1]}]")
 
     preset_proposals = []
+    other_preset_groups: list[tuple[str, list[str]]] = []
+    channel_group_present = False
     for group in facts.get("configuration_groups", []):
-        for preset in group.get("presets", []):
-            name = f"{group.get('name')}.{preset.get('name')}"
+        group_name = group.get("name")
+        group_presets = group.get("presets", [])
+        if group_name != CHANNEL_CONFIG_GROUP:
+            names = [preset.get("name") for preset in group_presets]
+            other_preset_groups.append((str(group_name), [str(name) for name in names]))
+            say(
+                f"CONFIGURATION GROUP {group_name!r}: {len(group_presets)} preset(s) "
+                f"are not channels. Microclaw drives only the {CHANNEL_CONFIG_GROUP!r} "
+                "group, so these presets will not be written to channels.allowed."
+            )
+            continue
+        channel_group_present = True
+        for preset in group_presets:
+            name = f"{group_name}.{preset.get('name')}"
             effects = [
                 f'{effect.get("device")}.{effect.get("property")}'
                 for effect in preset.get("effects", [])
@@ -681,6 +696,29 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
                 f"{name} [preset allowed: MM configuration reports structural paths "
                 + (", ".join(effects) or "none") + "]"
             )
+
+    if not channel_group_present:
+        message = (
+            f"CHANNEL AUTHORIZATION REVIEW: Micro-Manager has no {CHANNEL_CONFIG_GROUP!r} "
+            "configuration group. Setup will write channels.allowed: [] (authorize no "
+            "channel presets); omitting the key would authorize every live Channel preset."
+        )
+        say(message)
+        notes.append(message)
+    elif not preset_proposals:
+        message = (
+            f"CHANNEL AUTHORIZATION REVIEW: Micro-Manager's {CHANNEL_CONFIG_GROUP!r} "
+            "configuration group is empty. Setup will write channels.allowed: [] "
+            "(authorize no channel presets)."
+        )
+        say(message)
+        notes.append(message)
+    for group_name, names in other_preset_groups:
+        notes.append(
+            f"NON-CHANNEL PRESETS: configuration group {group_name!r} contains "
+            f"{len(names)} preset(s) ({', '.join(names) or 'none'}). Microclaw drives only "
+            f"the {CHANNEL_CONFIG_GROUP!r} group; these were not added to channels.allowed."
+        )
 
     ordinary = set(defaults) - enables - powers
     def bulk_makes_writable(path: str) -> bool:
