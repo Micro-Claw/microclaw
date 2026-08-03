@@ -804,8 +804,11 @@ or the appropriateness of M5's declared limits.
 - **Typed capability and policy rows (as Phase 3 landed).** `acquisition-dose`
   is a built-in typed capability. Phase 3 initially emitted nine
   `acquisition-policy:*` rows: five hard maxima and four `confirm_above_*`
-  thresholds. Block 4b subsequently reduced the guaranteed-mode required set to
-  seven; see "Block 4b landed" below.
+  thresholds. Block 4b subsequently deprecated two of those keys, so the map now
+  emits **seven** such rows and guaranteed mode requires those seven — the
+  deprecated keys get no row at all, rather than an optional one. Anyone
+  re-running the map against an older record should expect seven, not nine. See
+  "Block 4b landed" below.
 - **The Phase-1 acquisition claim was deleted, not extended.** The old
   `path="acquisition", capability="exposure"` row had exactly the defect this
   design forbids: it let per-frame exposure stand in for complete acquisition
@@ -1300,8 +1303,8 @@ property whose authorization is already decided by a conditional rule. An
 explicit `excluded_properties` row is checked first and shadows that rule. This
 has now failed twice: Block 4's round-4 StateDevice position rows shadowed the
 auto-classifier, and Block 4b's first demo round shadowed the `Core.Shutter`
-preset allowance (the conditional branch at `authorization.py:996` in the
-gated revision), which permits retargeting only to a declared illumination
+preset allowance (the `device == "Core"` branch of the channel-preset loop in
+`validate_live_rig`), which permits retargeting only to a declared illumination
 shutter. The general setup rule is to leave such a property in the
 authorization layer's vacuum. Silence is not permission: guaranteed mode is an
 allowlist, so an undeclared property remains unwritable when its condition is
