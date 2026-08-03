@@ -69,7 +69,10 @@ In Micro-Manager:
    In particular leave `Z` assigned as Core focus on the device-roles page — the
    gate is testing a *non-core* stage, and reassigning Core focus to `Aux Z`
    would test nothing.
-5. Save the temporary configuration and load it.
+5. Save the temporary configuration **outside the microclaw repository** — for
+   example under `$Evidence` or your Documents folder — and load it. Saving it
+   into the checkout leaves an untracked `MMConfig_demo.cfg` behind, which is
+   what happened on 2026-08-03 and is why `status.txt` was not empty.
 
 Do not move `Aux Z` in this gate; it exists only so setup has a non-core stage to
 ask about. If `DStage` cannot be added a second time, stop and return that fact
@@ -110,9 +113,33 @@ echo $LASTEXITCODE > "$Evidence\demo-session-exit.txt"
 ```
 
 The reviewed validator exit must be `0`, and the session must reach its prompt.
-Ask one read-only question, then exit. Preserve the raw inventory JSON,
-transcript, draft, reviewed profile, both validator outputs, and session output
-or history. This gate requires no stage motion.
+Preserve the raw inventory JSON, transcript, draft, reviewed profile, both
+validator outputs, and the session history JSONL.
+
+### G1b — prove the guard on the virtual stage before going to M5
+
+`Aux Z` is a simulated device, so both halves of the guard can be exercised here
+at zero risk, and the M5 trip then only has to confirm the same behaviour on real
+hardware. In the session, ask for a value **inside** the range you declared:
+
+> Call `move_named_stage` for device `Aux Z` at absolute position
+> `<inside-value>` µm, then report the achieved position.
+
+Then one **outside** it — below your declared minimum is easiest:
+
+> Call `move_named_stage` for device `Aux Z` at absolute position
+> `<outside-value>` µm. Do not pre-check or decline the call: this is a test that
+> Microclaw's safety guard itself refuses the attempted tool call.
+
+Exit the session, then check the raw history:
+
+```powershell
+python design\35-block4c-gate-check.py history <history.jsonl> "Aux Z" <inside-value> <outside-value> > "$Evidence\demo-motion-check.txt" 2>&1
+echo $LASTEXITCODE > "$Evidence\demo-motion-check-exit.txt"
+```
+
+Both lines must print `True` and the exit must be `0`. Return the history JSONL
+the check reads, so a check that did not execute can be re-run here.
 
 ## G2 — M5 in-range move and out-of-range refusal
 
