@@ -340,6 +340,27 @@ def test_power_enable_grouping_retains_one_sided_device_candidates():
     assert groups["EnableOnly"]["enable_paths"] == ["EnableOnly.Laser Enable"]
 
 
+def test_shutter_device_binary_gate_does_not_need_a_name_token():
+    core = CandidateShapeCore({"VendorGate": ["Laser"]})
+    core._get_device_type = lambda device: (
+        "ShutterDevice" if device == "VendorGate" else "GenericDevice"
+    )
+    core._get_allowed_property_values = lambda device, prop: ["Off", "On"]
+    inventory = enumerate_rig(core)
+    assert [
+        item["path"]
+        for item in inventory["heuristic_candidates"]["illumination_enable_properties"]
+    ] == ["VendorGate.Laser"]
+
+
+def test_non_shutter_binary_gate_still_requires_existing_name_heuristic():
+    core = CandidateShapeCore({"VendorGate": ["Laser"]})
+    core._get_device_type = lambda device: "GenericDevice"
+    core._get_allowed_property_values = lambda device, prop: ["Off", "On"]
+    inventory = enumerate_rig(core)
+    assert inventory["heuristic_candidates"]["illumination_enable_properties"] == []
+
+
 def test_review_groups_unclassified_writable_properties_by_device(tmp_path):
     inventory = enumerate_rig(CandidateShapeCore({
         "Camera": ["Gain", "Temperature"],

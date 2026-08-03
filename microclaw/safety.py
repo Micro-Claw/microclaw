@@ -118,8 +118,9 @@ class IlluminationConstraints:
     sample and endangers eyes. Before this class existed a Class-3B laser was
     one unconfirmed set_device_property away.
 
-      shutters                  properties that gate light; turning one to its
-                                on_value requires a blocking human confirmation.
+      shutters                  properties that gate light; setting one to any
+                                value other than off_value requires a blocking
+                                human confirmation.
       power_properties          properties that set emission power (percent).
       max_power_percent         refuse writes above this value.
       max_power_step_factor     bound the ratio between consecutive parent writes,
@@ -1061,7 +1062,10 @@ class SafetyGuard:
         """
         ill = self._c.illumination
         shutter = self.is_illumination_enable(device, prop)
-        if shutter and value == shutter.on_value and ill.require_confirm_on_enable:
+        # A shutter may have more than the configured on/off endpoints (for
+        # example an automatic mode that opens on every exposure).  Only the
+        # reviewed off value is known non-emitting; every other value is gated.
+        if shutter and value != shutter.off_value and ill.require_confirm_on_enable:
             # kind as an argument, not a prose prefix the frontend would have to
             # string-match: safety.py stays free to reword the summary.
             if confirm_fn is None or not confirm_fn(

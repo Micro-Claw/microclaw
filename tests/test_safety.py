@@ -835,6 +835,20 @@ class TestIlluminationGate:
             _core(), "Luxx638", "Laser Operation Select", "Off"
         )  # no confirm_fn supplied, still fine
 
+    def test_third_shutter_value_without_confirm_fn_is_refused(self):
+        guard = _laser_guard()
+        with pytest.raises(SafetyViolation, match="declined"):
+            guard.check_illumination(
+                _core(), "Luxx638", "Laser Operation Select", "Auto"
+            )
+
+    def test_third_shutter_value_confirmed_passes(self):
+        guard = _laser_guard()
+        guard.check_illumination(
+            _core(), "Luxx638", "Laser Operation Select", "Auto",
+            confirm_fn=lambda s, kind="action": True,
+        )
+
     def test_confirm_not_required_when_flag_off(self):
         guard = _laser_guard(require_confirm_on_enable=False)
         guard.check_illumination(
