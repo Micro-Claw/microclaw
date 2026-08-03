@@ -125,19 +125,17 @@ remote alone.
   it is the longest-latency item on the board, so it is expected to sit open
   while Track A proceeds. When evidence arrives, 0c's checklist items are the
   triage procedure.
-- **Block 4h was assigned on 2026-08-03 and an implementer is working it.** At
-  the session boundary its branch `design33/confirmation-visibility` existed
-  **locally only**, in a worktree at `/tmp/mc-4h`, with uncommitted changes to
-  `microclaw/agent.py`, `microclaw/webserve.py` and their tests — nothing
-  committed, nothing on `origin`. A cold session that finds no such branch on
-  the remote should look there before concluding the block was never started,
-  and should not re-assign it. `/tmp` is not durable across a reboot; if that
-  work is gone, re-assign from the block text, which is complete.
+- **Block 4h is closed** (superseded note, kept because the paragraph it replaces
+  described 4h as in flight at the 2026-08-03 boundary). It was implemented,
+  gated on the demo machine, merged at `e42b930`, its branch deleted locally and
+  remotely, and its design gate reconciled at `0fe0300`. Nothing is outstanding
+  in `/tmp/mc-4h`; that worktree may be removed.
 - Everything else is closed and on `origin`: blocks 4e, 4f and 4g are merged,
   their branches deleted locally and remotely, their ledger rows closed, their
   design gates reconciled, and their coordination notes recorded in
   `design/prompts.md`. `git log --oneline origin/main..main` was empty.
-- The intended order from here is **4h → 4c → 4d → 5**, then Track B.
+- The intended order from here is **4c → 4d → 5**, then Track B. Block 4c was
+  assigned 2026-08-03; see its section.
 
 Progress markers: `[ ]` not started, `[-]` active, `[x]` complete, `[!]` blocked.
 
@@ -177,7 +175,7 @@ assistant's narration when judging whether a guard fired.
 | 4e | Usability | 4b merged | `design33/emission-path-discovery` (deleted) | `85398e8` | `bc40f18` + `d631a4f` (`39f69dd` returned) | M2 G1/G2, M5 G3, demo G3 all **PASS** 2026-08-03 | `9b88394` | **done** — design/33 §"Block 4e landed" |
 | 4f | Usability | 4e merged | `design33/channel-group-presets` (deleted) | `f95c8ca` | `84c4d70` + `d4985e6` | M2 G1 + demo G2 **PASS** 2026-08-03 | `9010158` | **done** — design/33 §"Block 4f landed" |
 | 4h | Usability | 4f merged | `design33/confirmation-visibility` (deleted) | `1599ff3` | `3efecaf` + `518a90a` + `e451a5c` | demo G1+G2 **PASS** 2026-08-03 | `e42b930` | **done** — design/21 §"F1 revisited" |
-| 4c | Usability | 4h merged | `design33/setup-named-stages` | | | **required** | | |
+| 4c | Usability | 4h merged | `design33/setup-named-stages` | `3b99397` | | **required** (M5) | | |
 | 4g | Platform | none — may run concurrently | `design32/hook-hash-newline` (deleted) | `95ae192` | `50e5f66` + `d0bb602` + `971cdb6` + `f768cc3` | round 3 **PASS** 2026-08-03 (rounds 1–2 failed test-side) | `936230f` | **done** — design/32 §4 |
 | 4d | Usability | 4c merged | `design33/property-authorization-rename` | | | **required** | | |
 | 5 | Usability | 4b, 4e, 4f, 4h, 4c, 4d | `design33/deployed-config-hygiene` | | | required | | |
@@ -2487,11 +2485,45 @@ Post-merge design gate:
       residual: the record proves a confirmation was issued and decided, not
       that the operator understood it.
 
-## 4c. [ ] Reachable non-core stages — `named_stages` is never emitted
+## 4c. [-] Reachable non-core stages — `named_stages` is never emitted
 
 Branch: `design33/setup-named-stages`. Depends on 4b only for ordering, not
 mechanism: **no schema change is needed**, `named_stages` already exists
 (`safety.py:159`).
+
+**Assigned 2026-08-03 from `3b99397`.** Coordinator-measured baseline at that
+commit: **1361 passed / 99 skipped / 3 expected warnings** (the pre-existing
+`StarletteDeprecationWarning` plus two `phase_cross_correlation` empty-image
+warnings). The implementer branches from the tip of `origin/main` at the
+assignment merge, in its own worktree.
+
+Scope notes carried into the assignment, so the implementer does not have to
+re-derive them:
+
+- The interview's core-stage questions are the pattern to extend, not to
+  duplicate: `first_launch.py:1014`–`:1030` resolves `assignments["xy_stage"]`
+  and `assignments["focus"]`, looks up a driver technical range with
+  `_technical_bounds` / `_device_property`, says `LIMIT SOURCE: …` when MM
+  reports none, and calls `_bounds(...)` with the range as an
+  Enter-acceptable proposal. The named-stage questions must behave identically,
+  including the accepted-default-versus-typed-value transcript record.
+- The device list is already in the inventory: every `facts.devices` entry
+  carries `label` and `device_type` (`rig_inventory.py:384`–`:398`), so the
+  candidate set is the `StageDevice` labels minus `assignments["focus"]`.
+- `named_stages` is written at `first_launch.py:1174` as a hardcoded `[]`. That
+  literal is the defect.
+- Two live cross-checks already exist and must both stay green on the generated
+  profile: `authorization.py:598` refuses a `named_stages` item that duplicates
+  the core XY or focus device, and `authorization.py:623` refuses a **reachable**
+  stage that has no declared range policy in guaranteed mode. The second is why
+  this block improves startup rather than only reach — but read it before
+  assuming it already fires for non-core stages, and report what it actually
+  does today.
+- `_metadata_default` (`first_launch.py:361`) already excludes a
+  `StageDevice`/`XYStageDevice` position property from the `bounded-numeric`
+  path, on the stated grounds that it must not bypass the fail-closed named/core
+  stage policy. `named_stages` is that policy's authoring surface; keep the
+  exclusion and do not route stage motion through `typed_actuators`.
 
 Found 2026-08-02 while answering an operator question about how
 `named_stages` differs from `typed_actuators`. `first_launch.py:1027` hardcodes
@@ -2527,6 +2559,22 @@ must not collapse them:
 - [ ] Rig gate: move a non-core stage on M5 through `move_named_stage`, at a
       value inside the declared range and at one outside it, and show the second
       is refused.
+- [ ] Deliver a gate runbook, `design/35-block4c-gate-prompts.md`, **on the
+      block's branch**, pinning the implementation with `git merge-base
+      --is-ancestor <commit> HEAD` rather than an exact tip hash. It must include
+      a demo-machine gate that needs no hazardous motion — a full interview
+      producing a profile whose `named_stages` is non-empty and which passes the
+      offline validator and starts a session — so the one M5 trip is spent only
+      on what the demo core cannot represent. Rig-facing commands must be
+      PowerShell/cmd-safe.
+
+Post-merge design gate:
+
+- [ ] Record in design/33 that first-launch setup now authors `named_stages`,
+      which devices it asks about and which it deliberately does not (core focus,
+      and whatever the `XYStageDevice` ruling turns out to be), and the residual:
+      a declared range is a reviewed travel bound, **not** evidence that the
+      device is safe to move through it.
 
 ## 4d. [ ] Rename and regroup the property-authorization schema
 
