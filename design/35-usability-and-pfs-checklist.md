@@ -151,7 +151,7 @@ assistant's narration when judging whether a guard fired.
 | 4e | Usability | 4b merged | `design33/emission-path-discovery` (deleted) | `85398e8` | `bc40f18` + `d631a4f` (`39f69dd` returned) | M2 G1/G2, M5 G3, demo G3 all **PASS** 2026-08-03 | `9b88394` | **done** — design/33 §"Block 4e landed" |
 | 4f | Usability | 4e merged | `design33/channel-group-presets` | `f95c8ca` | | **required** | | |
 | 4c | Usability | 4f merged | `design33/setup-named-stages` | | | **required** | | |
-| 4g | Platform | none — may run concurrently | `design32/hook-hash-newline` | `95ae192` | `50e5f66` + `d0bb602` + `971cdb6` | M5 round 1 **FAIL** (fixtures); re-gate owed | | |
+| 4g | Platform | none — may run concurrently | `design32/hook-hash-newline` | `95ae192` | `50e5f66` + `d0bb602` + `971cdb6` + `f768cc3` | rounds 1–2 **FAIL** (both test-side); round 3 owed | | |
 | 4d | Usability | 4c merged | `design33/property-authorization-rename` | | | **required** | | |
 | 5 | Usability | 4b, 4e, 4f, 4c, 4d | `design33/deployed-config-hygiene` | | | required | | |
 | 6 | Nikon | probe S = pre-fix baseline; post-fix run owed | `design34/measured-position-readback` | | | required | | |
@@ -2062,6 +2062,41 @@ checked from macOS. The unstated assumption was that the tests exercised the
 product's save path; two of them built their own. **When a block's acceptance is
 "these named tests pass on a platform you cannot run," the fixtures those tests
 use are part of the surface under repair.**
+
+### Windows gate round 2 — M5, 2026-08-03: **22 of 23 repaired; one left, same shape**
+
+Evidence: `block4g-m5-20260803-120629`, at `971cdb6`, pin `0`, tree clean but for
+an untracked `uv.lock`. **1332 passed / 1 failed / 115 skipped**, from round 1's
+1308 / 23. The fixture fix repaired 22 of 23.
+
+The survivor was `test_describe_hook.py::test_hash_mismatch_is_described`, and
+it is **the same defect one level deeper**: round 1's fix corrected the fixture
+that *installs* a hook, while this test's own *tampering* step still did
+`path.write_text(changed)` and then asserted against
+`sha256(changed.encode())`. Windows translated the write; the assertion hashed
+the untranslated string. Fixed at `f768cc3` by tampering in bytes and asserting
+against those bytes.
+
+An audit of every remaining `write_text`/string-hash pair in the suite found one
+more instance, in the same file's `everything` fixture. It was **not** failing,
+because that test never asserts on the hash — made consistent anyway so a future
+`matches_manifest` assertion cannot fail on Windows alone. No other site in
+`tests/` pairs a text write with a string hash.
+
+**The expected Windows count in the runbook was also wrong, and the reason is
+worth recording.** It said 1338, derived by adding this block's new tests to the
+1311/23 baseline. That baseline was measured on Block 4e's branch, but **4g was
+cut from `main` before 4e merged**, so 4g's tree does not carry 4e's five tests.
+The runbook now states **1333 passed / 0 failed / 115 skipped**, taken directly
+from round 2's own observed run (1448 collected) rather than derived from a
+baseline measured on a different tree. Derived counts across divergent branches
+are worth less than the branch's own measurement.
+
+**Three rounds, and every failure has been on the test side.** The product code
+has been correct since `50e5f66` and has passed G1 and G2a on real Windows
+twice. That is worth stating plainly so the next reader does not conclude the
+convention change was shaky: what was shaky was the assumption that the tests
+proving it used the code path being repaired.
 
 ### Implementation — pushed 2026-08-03, awaiting the Windows gate
 
