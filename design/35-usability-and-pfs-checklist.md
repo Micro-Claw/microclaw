@@ -148,7 +148,7 @@ assistant's narration when judging whether a guard fired.
 | 4r1a | Usability | 4 | `design33/first-launch-setup` | `15d8d1b` | `c5746b9` (`d203753` rejected) | folded into block 4 round 2 | n/a — merges via block 4 | |
 | 4r1b | Usability | 4 | `design35/startup-refusal-severity` | `15d8d1b` | `2558583` (`16cc416` rejected alone) | folded into block 4 round 2 | `385049d` into block branch | |
 | 4b | Usability | 4 merged | `design33/bounded-numeric-actuator` (deleted) | `578874e` | `5a6c6e2` | G1 demo **PASS**; G3 M2 **PASS** incl. imagery; G2 M5 in-range **PASS**, refusal step retired | `04164fd` | **done** — design/33 §"Block 4b landed" |
-| 4e | Usability | 4b merged | `design33/emission-path-discovery` | | | **required** | | |
+| 4e | Usability | 4b merged | `design33/emission-path-discovery` | `85398e8` | | **required** (M2) | | |
 | 4c | Usability | 4e merged | `design33/setup-named-stages` | | | **required** | | |
 | 4d | Usability | 4c merged | `design33/property-authorization-rename` | | | **required** | | |
 | 5 | Usability | 4b, 4e, 4c, 4d | `design33/deployed-config-hygiene` | | | required | | |
@@ -1639,10 +1639,12 @@ Post-merge design gate:
       condition is "microclaw refused" needs a mechanical check that the call
       was actually made.
 
-## 4e. [ ] Emission-path discovery and multi-state shutters — rig gate required
+## 4e. [-] Emission-path discovery and multi-state shutters — rig gate required
 
 Branch: `design33/emission-path-discovery`. Depends on 4b merging. Inserted
-ahead of 4c by operator decision 2026-08-03.
+ahead of 4c by operator decision 2026-08-03. **Assigned 2026-08-03 from
+`85398e8`.** Baseline measured by the coordinator at that commit: **1345 passed
+/ 99 skipped / 3 expected warnings** in 12.9 s.
 
 Found by Block 4b's G3 on **M2, the first time that rig was ever enumerated**.
 Neither defect is 4b's code; both are discovery and illumination-schema
