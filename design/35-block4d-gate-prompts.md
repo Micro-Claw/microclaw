@@ -10,6 +10,24 @@ All commands below are PowerShell-safe. Preserve the named raw files and their
 exit-code companions. Stop each successful `serve` process with Ctrl+C only
 after its browser session has reached the prompt.
 
+**Two commands are deliberately not redirected with `> file 2>&1`, and must not
+be "fixed" back.** A plain redirect on an interactive or long-running process
+sends everything to the file and leaves the console blank, so the operator
+cannot see the prompts they are meant to answer — and on Ctrl+C the file can be
+left empty, which is how the 2026-08-03 demo run lost its session evidence
+entirely. So:
+
+- **The setup interview is not redirected at all.** Microclaw writes its own
+  UTF-8 transcript into `--evidence-out`, which is the authoritative record
+  (this is the Block 4 round-1 fix, and it worked on the demo run even when the
+  redirect did not). Only its exit code is captured.
+- **Every `serve` uses `2>&1 | Tee-Object -FilePath …`**, which shows output live
+  *and* writes it incrementally, so Ctrl+C cannot leave an empty file.
+
+Short non-interactive commands — `git`, `pytest`, `check-config`,
+`Select-String`, `Get-FileHash` — keep the plain redirect; it works fine for
+those and every one of them captured correctly.
+
 ## G0 — branch identity and suite
 
 Run on both machines from the Microclaw checkout:
@@ -51,7 +69,7 @@ appropriate to the simulator only.
 $Port = 4827
 $Draft = Join-Path $Evidence "demo-new-key.draft.yaml"
 $Inventory = Join-Path $Evidence "demo-inventory"
-microclaw --port $Port first-launch-setup --out $Draft --evidence-out $Inventory > "$Evidence\demo-interview.txt" 2>&1
+microclaw --port $Port first-launch-setup --out $Draft --evidence-out $Inventory
 echo $LASTEXITCODE > "$Evidence\demo-interview-exit.txt"
 Select-String -Path $Draft -Pattern "property_authorization","allowed_categorical","allowed_numeric","denied","rig_profile","categorical_properties","typed_actuators","excluded_properties" > "$Evidence\demo-generated-shape.txt" 2>&1
 echo $LASTEXITCODE > "$Evidence\demo-generated-shape-exit.txt"
@@ -72,7 +90,7 @@ Read the entire copied profile and change only `reviewed: false` to
 ```powershell
 microclaw check-config "$Evidence\demo-new-key.reviewed.yaml" > "$Evidence\demo-new-key-reviewed-check.txt" 2>&1
 echo $LASTEXITCODE > "$Evidence\demo-new-key-reviewed-check-exit.txt"
-microclaw --port $Port --safety-config "$Evidence\demo-new-key.reviewed.yaml" serve --no-browser > "$Evidence\demo-new-key-session.txt" 2>&1
+microclaw --port $Port --safety-config "$Evidence\demo-new-key.reviewed.yaml" serve --no-browser 2>&1 | Tee-Object -FilePath "$Evidence\demo-new-key-session.txt"
 ```
 
 It worked when `check-config` exits `0` and the browser session reaches its
@@ -96,7 +114,7 @@ offline validator and live entry point:
 ```powershell
 microclaw check-config "$Evidence\demo-old-key.reviewed.yaml" > "$Evidence\demo-old-key-check.txt" 2>&1
 echo $LASTEXITCODE > "$Evidence\demo-old-key-check-exit.txt"
-microclaw --port $Port --safety-config "$Evidence\demo-old-key.reviewed.yaml" serve --no-browser > "$Evidence\demo-old-key-session.txt" 2>&1
+microclaw --port $Port --safety-config "$Evidence\demo-old-key.reviewed.yaml" serve --no-browser 2>&1 | Tee-Object -FilePath "$Evidence\demo-old-key-session.txt"
 echo $LASTEXITCODE > "$Evidence\demo-old-key-session-exit.txt"
 ```
 
@@ -117,7 +135,7 @@ Get-FileHash -Algorithm SHA256 "<deployed-config>" > "$Evidence\m5-deployed-befo
 Copy-Item "<deployed-config>" "$Evidence\m5-deployed-before.yaml"
 microclaw check-config "<deployed-config>" > "$Evidence\m5-deployed-check.txt" 2>&1
 echo $LASTEXITCODE > "$Evidence\m5-deployed-check-exit.txt"
-microclaw --safety-config "<deployed-config>" serve --no-browser > "$Evidence\m5-deployed-refusal.txt" 2>&1
+microclaw --safety-config "<deployed-config>" serve --no-browser 2>&1 | Tee-Object -FilePath "$Evidence\m5-deployed-refusal.txt"
 echo $LASTEXITCODE > "$Evidence\m5-deployed-refusal-exit.txt"
 ```
 
@@ -148,7 +166,7 @@ Get-FileHash -Algorithm SHA256 "<deployed-config>" > "$Evidence\m5-deployed-afte
 git diff --no-index -- "$Evidence\m5-deployed-before.yaml" "<deployed-config>" > "$Evidence\m5-four-key.diff" 2>&1
 microclaw check-config "<deployed-config>" > "$Evidence\m5-renamed-check.txt" 2>&1
 echo $LASTEXITCODE > "$Evidence\m5-renamed-check-exit.txt"
-microclaw --safety-config "<deployed-config>" serve --no-browser > "$Evidence\m5-renamed-session.txt" 2>&1
+microclaw --safety-config "<deployed-config>" serve --no-browser 2>&1 | Tee-Object -FilePath "$Evidence\m5-renamed-session.txt"
 ```
 
 It worked when the before/after hashes differ, `check-config` exits `0`, and the
@@ -168,7 +186,7 @@ pass.
 ```powershell
 $Draft = Join-Path $Evidence "m5-new-key.draft.yaml"
 $Inventory = Join-Path $Evidence "m5-inventory"
-microclaw first-launch-setup --out $Draft --evidence-out $Inventory > "$Evidence\m5-interview.txt" 2>&1
+microclaw first-launch-setup --out $Draft --evidence-out $Inventory
 echo $LASTEXITCODE > "$Evidence\m5-interview-exit.txt"
 Select-String -Path $Draft -Pattern "property_authorization","allowed_categorical","allowed_numeric","denied","rig_profile","categorical_properties","typed_actuators","excluded_properties" > "$Evidence\m5-generated-shape.txt" 2>&1
 Copy-Item $Draft "$Evidence\m5-new-key.reviewed.yaml"
@@ -182,7 +200,7 @@ reviewed. Then run:
 ```powershell
 microclaw check-config "$Evidence\m5-new-key.reviewed.yaml" > "$Evidence\m5-new-key-check.txt" 2>&1
 echo $LASTEXITCODE > "$Evidence\m5-new-key-check-exit.txt"
-microclaw --safety-config "$Evidence\m5-new-key.reviewed.yaml" serve --no-browser > "$Evidence\m5-new-key-session.txt" 2>&1
+microclaw --safety-config "$Evidence\m5-new-key.reviewed.yaml" serve --no-browser 2>&1 | Tee-Object -FilePath "$Evidence\m5-new-key-session.txt"
 ```
 
 It worked when `check-config` exits `0` and the normal session reaches its
