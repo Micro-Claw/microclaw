@@ -148,7 +148,7 @@ assistant's narration when judging whether a guard fired.
 | 4r1a | Usability | 4 | `design33/first-launch-setup` | `15d8d1b` | `c5746b9` (`d203753` rejected) | folded into block 4 round 2 | n/a — merges via block 4 | |
 | 4r1b | Usability | 4 | `design35/startup-refusal-severity` | `15d8d1b` | `2558583` (`16cc416` rejected alone) | folded into block 4 round 2 | `385049d` into block branch | |
 | 4b | Usability | 4 merged | `design33/bounded-numeric-actuator` (deleted) | `578874e` | `5a6c6e2` | G1 demo **PASS**; G3 M2 **PASS** incl. imagery; G2 M5 in-range **PASS**, refusal step retired | `04164fd` | **done** — design/33 §"Block 4b landed" |
-| 4e | Usability | 4b merged | `design33/emission-path-discovery` | `85398e8` | | **required** (M2) | | |
+| 4e | Usability | 4b merged | `design33/emission-path-discovery` | `85398e8` | `bc40f18` + `d631a4f` (`39f69dd` returned) | **required** (M2) | | |
 | 4c | Usability | 4e merged | `design33/setup-named-stages` | | | **required** | | |
 | 4d | Usability | 4c merged | `design33/property-authorization-rename` | | | **required** | | |
 | 5 | Usability | 4b, 4e, 4c, 4d | `design33/deployed-config-hygiene` | | | required | | |
@@ -1701,6 +1701,60 @@ routinely is the one no human has to approve.
       EMU map. Report what you find rather than widening silently.
 - [ ] Off-rig tests must pin all three limbs (`on`, `off`, and a third value),
       because the third is the one that had no coverage.
+
+### Implementation rounds — pushed 2026-08-03, awaiting the rig
+
+`39f69dd` was reviewed and returned; `bc40f18` fixes all three findings, plus a
+coordinator correction at `d631a4f`. Suite **1350 passed / 99 skipped / 3
+expected warnings**, from a branch-point baseline of 1345.
+
+**A producer change is invisible to a plain interview replay, and this cost the
+coordinator a wrong conclusion before it was caught.** `interview()` consumes
+the inventory file's *stored* `heuristic_candidates` (`first_launch.py:594`,
+`:599`), so replaying a captured file measures the producer that captured it,
+not the one under test. Candidates must be re-derived by running `_is_enable`
+over `facts.devices` first. Re-derived independently by the coordinator under
+both revisions: demo 2 → 2, M5 21 → 21, M2 9 → 12, adding exactly
+`Cobolt561.Laser`, `Cobolt561.Autostart` and `Cobolt561.Analog Impedance`, none
+lost. Record this method for every future discovery block.
+
+The three returned findings:
+
+1. **The structural path was stricter than the shape rule beside it.** The
+   ShutterDevice branch accepted only `len(allowed) == 2` while the general rule
+   three lines below accepts `<= 4` — so the block fixed gating for multi-state
+   shutters while shipping discovery that could not find one. Measured free on
+   all three captured inventories: no ShutterDevice property on any rig has 3–4
+   allowed values with an `_ON_VALUES` member, so the candidate sets are
+   identical either way. `Andor.Shutter (Internal)` is caught today only because
+   it sits on a **CameraDevice** and is named "Shutter".
+2. **Two false positives needed naming in the runbook, not excluding in code.**
+   `Cobolt561.Autostart` and `Analog Impedance` are `Disabled`/`Enabled`, and
+   `enabled` is in `_ON_VALUES`. Surfacing them is correct under the module's
+   deliberate-breadth doctrine (`rig_inventory.py:43`), and a name-based
+   exclusion would be the rig-facts-in-`microclaw/` mistake. But if an operator
+   declares either as an emission gate, `shutter_all` (`safety.py:1121`) writes
+   its `off_value` on **every session exit**, rewriting persistent laser
+   configuration. The gate step now names both and states the consequence.
+3. **The `Core.Shutter` fail-closed decision was right, its stated reason was
+   circular** — it rested on three surfaced properties, two of which the change
+   itself created. The real evidence is on the demo rig: `LED Shutter` is a
+   `ShutterDevice`, is selectable through `Core.Shutter`, and has **no writable
+   gating property at all** — its emission runs through MMCore's shutter API.
+   A fail-closed check would refuse startup on the stock demo rig with no legal
+   declaration available, which is the shape Block 4 round-1 finding 5 ruled
+   out. Declining the check is therefore correct **and** it exposes the
+   residual: some emission paths have no property to discover.
+
+Coordinator corrections at `d631a4f`, both small:
+
+- Round 2 **replaced** the two-value ShutterDevice test with the three-value one
+  rather than adding it, leaving the block's headline defect shape
+  (`Cobolt561.Laser`, two values, no name token) with no unit test — the suite
+  count staying at 1349 was the tell. Both cases are now pinned.
+- The runbook pinned `7c0f25b`, which by then was only part of the
+  implementation, so `--is-ancestor` would have passed on a tree missing the
+  discovery widening. Re-pinned to `bc40f18`.
 
 Rig gate (M2 has the multi-state shutter and the Cobolt; M5 has neither):
 
