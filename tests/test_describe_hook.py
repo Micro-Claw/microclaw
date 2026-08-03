@@ -1,5 +1,6 @@
 import hashlib
 import json
+from pathlib import Path
 
 from microclaw import hook_manager
 from microclaw.hooks import PRECODED_HOOK_REGISTRY
@@ -8,7 +9,10 @@ from microclaw.tools import describe_hook, list_hooks
 
 def _install_saved(tmp_path, monkeypatch, name, code, *, pinned=True):
     path = tmp_path / f"{name}.py"
-    path.write_text(code, encoding="utf-8")
+    # Bytes written, same bytes pinned - see the note in test_completed_dataset's
+    # offline_home fixture for what writing text here cost.
+    source_bytes = code.encode("utf-8")
+    path.write_bytes(source_bytes)
     entry = {
         "description": "fixture",
         "path": str(path),
@@ -16,12 +20,34 @@ def _install_saved(tmp_path, monkeypatch, name, code, *, pinned=True):
         "accepted_warnings": ["accepted fixture warning"],
     }
     if pinned:
-        entry["sha256"] = hashlib.sha256(code.encode()).hexdigest()
+        entry["sha256"] = hashlib.sha256(source_bytes).hexdigest()
     manifest = tmp_path / "manifest.json"
     manifest.write_text(json.dumps({name: entry}), encoding="utf-8")
     monkeypatch.setattr(hook_manager, "HOOKS_DIR", tmp_path)
     monkeypatch.setattr(hook_manager, "MANIFEST", manifest)
     return path, entry
+
+
+def test_install_fixture_pins_the_bytes_it_writes_under_windows_translation(
+    tmp_path, monkeypatch,
+):
+    """Same guard as test_completed_dataset's, for the describe fixture.
+
+    These two fixtures produced all 23 Windows failures between them, and both
+    kept writing text after the product code stopped.
+    """
+    original_write_text = Path.write_text
+
+    def windows_write_text(path, data, *args, **kwargs):
+        if path.suffix == ".py":
+            data = data.replace("\n", "\r\n")
+        return original_write_text(path, data, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", windows_write_text)
+    _install_saved(tmp_path, monkeypatch, "pinned", "class Pinned:\n    pass\n")
+    described = hook_manager.describe_saved_hook("pinned")
+    assert described["provenance"]["matches_manifest"] is True
+    assert described["provenance"]["legacy_newline_pin"] is False
 
 
 def test_saved_parameters_defaults_required_and_source_never_executes(

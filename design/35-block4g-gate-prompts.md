@@ -26,9 +26,16 @@ Copy-Item implementation-ancestor-exit.txt,pytest.txt,head.txt,status.txt $Evide
 ```
 
 The ancestor command must exit `0`, the starting tree must be clean, and the
-suite must show **1336 passed, 0 failed, 115 skipped**. This is the recorded
+suite must show **1338 passed, 0 failed, 115 skipped**. This is the recorded
 Windows baseline of 1311 passed / 23 failed / 115 skipped, with all 23 defect
-failures repaired and two new tests added by this block. Preserve the warning
+failures repaired and four new tests added by this block.
+
+**Round 1 (M5, 2026-08-03) failed here at 1308 passed / 23 failed**, while G1 and
+G2a both passed — the product code was correct and two *test fixtures* still
+wrote text while pinning the untranslated string. If this count is wrong again,
+read the failure text: `changed on disk` and `legacy newline-normalized` are
+different findings, and the second means the pin and the bytes disagree in the
+fixture rather than in `hook_manager`. Preserve the warning
 summary and report any warning-count change.
 
 ## G1 — fresh save, live load, describe, and offline load
