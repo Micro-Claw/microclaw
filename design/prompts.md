@@ -4236,3 +4236,49 @@ throwaway registry and walks refusal -> review -> re-save -> reload. It passed
 on real Windows first time. And the migration was checked for a dead end: it is
 not one -- `read_hook_from_file` plus `save_hook` re-pins an existing file, so
 nobody has to regenerate code they never wrote.
+
+## Block 4f — `channels.allowed` from the Channel group only (merged `9010158`, 2026-08-03)
+
+Branch `design33/channel-group-presets`, start `f95c8ca`, implementation
+`84c4d70` accepted on its first round plus a coordinator commit `d4985e6`. Two
+gate runs, both first-time passes.
+
+Created out of Block 4e's M2 gate. That is now three consecutive blocks whose
+most valuable output was a finding about a *neighbouring* surface: 4b produced
+4e, 4e produced 4f and 4g, 4f produced 4h.
+
+**The block's real risk was the opposite of its symptom.** The visible defect
+was over-claiming — setup wrote every group's presets into `channels.allowed`
+and startup dropped them. But `allowed_channels` is `Optional` and `None` means
+*all* presets authorized, so the intuitive fix (omit the key when there is
+nothing to put in it) would have silently **widened** authority on exactly the
+rigs being repaired. That trap was called out in the assignment prompt with the
+two line references, the implementer handled it, and a test pins it. Worth
+repeating the general form: when a key's absence and its empty value mean
+opposite things, say so in the prompt rather than hoping the implementer reads
+the `Optional`.
+
+**Two coordinator interventions before the gate, both about the operator's
+experience rather than the code.** `main` was merged into the branch so the run
+would carry 4g's Windows repair and the `uv.lock` ignore -- without it the
+operator would have met 23 known failures and an untracked file on a gate whose
+own precondition is a clean suite and a clean tree. And the runbook's Windows
+expectation was rewritten to make **0 failed** the hard condition with the
+passed count merely informative, because a derived cross-platform count had
+already been wrong once in 4g. It was right this time (1342 exactly), which is
+the argument for stating the derivation rather than the number alone.
+
+**One pre-gate check that would have cost a rig trip if wrong.** 4b's G1 round 1
+was broken by an *explicit* `Core.Shutter` exclusion shadowing the rule that
+lets a preset retarget it. M2's generated profile mentions `Core.Shutter` in its
+header, so before releasing demo's G2 the coordinator confirmed it appears as a
+*note* only and not in `excluded_properties`. It did. Demo's four fluorescence
+presets then worked.
+
+**The demo gate asked for a real channel selection and got one**, which is why
+it produced 4h. `set_channel` returned `writes: 4` with matching startup and
+applied expansion hashes -- and the operator noticed a shutter confirmation the
+agent then denied issuing. The confirmation was real and correct: DAPI retargets
+`Core.Shutter`, which `_authorize_channel_effect` gates. The agent could not see
+it. **Asking the gate to exercise the thing rather than validate it is what
+surfaced a defect no mechanical check was looking for.**
