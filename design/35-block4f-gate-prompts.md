@@ -35,12 +35,19 @@ microclaw first-launch-setup --out $Draft --evidence-out $Inventory
 ```
 
 The ancestor command must exit `0` and the tree must be clean. Preserve
-`pytest.txt`. Until Block 4g merges, the expected Windows line is **23 failed,
-1315 passed, 115 skipped, 3 warnings**: exactly the 23 known failures in
-`test_completed_dataset.py` and `test_describe_hook.py`, and no others. If
-Block 4g is an ancestor of the tested branch, the suite must be clean (expected
-**1338 passed, 115 skipped, 3 warnings**); record that dependency in the
-returned evidence.
+`pytest.txt`.
+
+**Block 4g has merged and this branch now carries it** (`936230f` is an
+ancestor), so the Windows suite must be **clean: 0 failed**. That is the hard
+condition. The count should read about **1342 passed, 115 skipped, 3 warnings** —
+macOS measures 1358 passed / 99 skipped on this branch, and Windows skips 16 of
+those tests rather than running them. Treat a *passed* count that differs by a
+few as something to report rather than a failure: a derived cross-platform count
+was wrong once already in Block 4g, and the failure count is the claim that
+matters. Any failure at all is a stop.
+
+The `uv.lock` that previous rig runs showed as untracked is now gitignored, so
+`status.txt` should be empty.
 
 Review the draft. Confirm its header explains any absent/empty `Channel` group
 and lists presets in other groups as non-channel presets that Microclaw does not
