@@ -4084,3 +4084,95 @@ code and became **4e**, scheduled ahead of 4c: `Cobolt561.Laser` -- the device
 `Core.Shutter` names -- was never discovered as a shutter, and a three-state
 shutter's middle value (`Auto`, which opens on every exposure) is writable with
 no confirmation at all. Both measured, both live.
+
+## Block 4e — emission-path discovery and multi-state shutters (merged `9b88394`, 2026-08-03)
+
+Branch `design33/emission-path-discovery`, start `85398e8`, implementation
+`bc40f18` plus a coordinator correction at `d631a4f`. Two implementation rounds,
+three gate runs across three rigs, all first-time passes.
+
+Created out of Block 4b's M2 gate, the same way 4b's gate created nothing and
+4e's went on to create 4f and 4g. **A gate on a rig that has never been
+enumerated is worth more than another round on a familiar one**: M2's first
+enumeration produced both of this block's defects, and 4e's own gates then
+produced two more blocks. That is now three consecutive blocks whose most
+valuable output was a finding about a *neighbouring* surface.
+
+The code is small -- one condition in `_is_enable`, one comparison in
+`check_illumination` -- and the whole cost was in getting the two decisions
+right.
+
+**Structure beats names.** `Cobolt561.Laser` was undiscovered because
+`_ENABLE_NAME` has no `laser` token, and it is the device `Core.Shutter` names,
+so M2's core shutter was invisible to setup. The fix keys on Micro-Manager
+typing the device a `ShutterDevice` rather than adding another token -- widening
+the regex would have fixed M2 and missed the next vendor. Round 1 then made the
+structural path stricter than the general shape rule sitting three lines below
+it (`len(allowed) == 2` against `<= 4`) while *this block's other half* was
+about a three-value shutter. Measured free on all three inventories and
+relaxed. `Andor.Shutter (Internal)` is caught today only because it sits on a
+CameraDevice and is called "Shutter".
+
+**Gate against the value that is not off, not the value that is on.**
+`check_illumination` gated `value == on_value`, so a three-state shutter's
+middle value had no gate at all -- and on an Andor, `Auto` is the state that
+opens on every exposure. The value that emits most routinely was the one no
+human had to approve.
+
+**The review method that mattered.** `interview()` consumes the inventory's
+*stored* `heuristic_candidates`, so replaying a captured file measures the
+producer that captured it, not the one under test. The coordinator's first
+replay showed no delta at all and nearly produced a wrong rejection; candidates
+must be re-derived by running `_is_enable` over `facts.devices` first. Once
+re-derived, the offline prediction matched the live producer path-for-path on
+both M2 and M5. Record this for every future discovery block.
+
+**Two false positives were named, not excluded.** `Cobolt561.Autostart` and
+`Analog Impedance` are `Disabled`/`Enabled`, and `enabled` is in `_ON_VALUES`.
+A name-based exclusion would have been the rig-facts-in-`microclaw/` mistake, so
+instead the runbook named both, gave their real meanings, and stated the
+consequence -- if declared, `shutter_all` writes them on every session exit,
+rewriting persistent laser configuration. The operator excluded both. **Naming a
+false positive in the runbook is cheaper and more honest than suppressing it in
+code.**
+
+**The `Core.Shutter` fail-closed question was declined, and the first reason
+given was circular** -- it rested on three surfaced properties, two of which the
+change itself had created. The real evidence was already in hand on the demo
+rig: `LED Shutter` is a `ShutterDevice`, is selectable through `Core.Shutter`,
+and has **no writable gating property at all**; its emission runs through
+MMCore's shutter API. A fail-closed check would refuse startup on a stock demo
+rig with no legal declaration available -- the shape Block 4 round-1 finding 5
+ruled out. Declining is correct, and it is the block's stated residual: some
+emission paths have no property to discover.
+
+**Two coordinator corrections, both small, both the kind a summary hides.**
+Round 2 reported "added a three-value test" but had *replaced* the two-value
+one, leaving the block's headline defect shape untested -- the suite count
+staying at 1349 was the tell. And the runbook pinned `7c0f25b`, by then only
+part of the implementation, so `--is-ancestor` would have passed on a tree
+missing the discovery widening.
+
+**Gate results.** M2 G1/G2 PASS: the live producer emitted exactly the 12
+candidates predicted offline, the unedited draft declared `Cobolt561.Laser`, and
+`Auto` was refused with the confirmations JSONL corroborating. M5 G3 PASS but
+inert by construction -- M5 has zero ShutterDevices -- and its one meaningful
+step, exercising a declared shutter, was not run; it was folded into the demo
+run rather than spending a second M5 trip on a more hazardous version of a test
+the demo rig runs for free. Demo G3 PASS, and it is the best evidence in the
+block: approve-open, off-with-no-prompt, decline-open, read-back, all in one
+session on a numeric `1`/`0` shutter. **The middle limb is the one to keep** --
+it proves `!= off_value` did not turn the off-write into a prompt, which was the
+regression this change actually risked.
+
+**Findings handed onward.** `channels.allowed` is generated from every config
+group while `authorization.py` reads only `Channel`, so setup writes a profile
+guaranteed to warn on the rig that generated it -- 6 dropped presets on M2, 10
+on demo, which *has* a `Channel` group, so this is over-claiming everywhere and
+not a missing-group case. Became **4f**. And the 23 Windows test failures every
+rig run had reported for four blocks turned out to be one product defect --
+`save_hook` writes text-mode (`\r\n` on Windows) but pins the hash of the
+in-memory `\n` form, while two of the three readers hash raw bytes -- so saved
+hooks are unusable on Windows, which is every rig. Became **4g**. Both were
+found by reading gate evidence nobody had triaged: `pytest.txt` had been
+collected as evidence for four blocks and never opened.
