@@ -1028,6 +1028,35 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
         if z_default is None:
             say(f"LIMIT SOURCE: Micro-Manager reports no Z travel limits for focus stage device {focus_device}; the operator must supply them.")
         stage["z_min"], stage["z_max"] = _bounds(f"focus stage {focus_device} z travel (um)", ask, say, z_default)
+
+    named_stages = []
+    for device in sorted(facts.get("devices", []), key=lambda item: str(item.get("label") or "")):
+        label, device_type = str(device.get("label") or ""), device.get("device_type")
+        if device_type == "StageDevice" and label and label != focus_device:
+            default = _technical_bounds(
+                _device_property(properties, label, {"position", "z", "zposition"})
+            )
+            if default is None:
+                say(
+                    "LIMIT SOURCE: Micro-Manager reports no travel limits for "
+                    f"named stage device {label}; the operator must supply them."
+                )
+            minimum, maximum = _bounds(
+                f"named stage {label} travel (um)", ask, say, default
+            )
+            named_stages.append({
+                "device": label, "min_um": minimum, "max_um": maximum,
+            })
+        elif device_type == "XYStageDevice" and label != xy_device:
+            say(
+                f"SETUP DEFERRAL: XY stage device {label} is not the core XY stage. "
+                "Top-level named_stages represents only a single axis, so setup "
+                "cannot declare honest per-axis travel bounds and excludes this device."
+            )
+            notes.append(
+                f"UNSUPPORTED NON-CORE XY STAGE: {label} excluded; named_stages is "
+                "single-axis and no axis was guessed."
+            )
     # The shared offline guaranteed-mode validator requires this finite cap even
     # when it cannot prove a camera is reachable. Never emit a null that passes
     # schema parsing only to be refused at normal live startup.
@@ -1171,7 +1200,7 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
         "acquisition": acquisition,
         "channels": {"allowed": sorted(set(preset_names))},
         "illumination": illumination,
-        "named_stages": [],
+        "named_stages": named_stages,
         "plugins": {"blocked": [], "allow_hardware_motion": False},
     }
     config["camera"] = camera

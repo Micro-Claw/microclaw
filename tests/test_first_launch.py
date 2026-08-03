@@ -900,6 +900,90 @@ def test_stage_driver_ranges_are_offered_per_axis():
     assert sum(line.startswith("PROPOSAL ACCEPTED: Human-reviewed") for line in output) == 8
 
 
+def test_named_stage_bounds_are_authored_from_captured_inventory():
+    """The added device is derived from demo's captured Z record, not invented metadata."""
+    inventory = json.loads(REAL_DEMO_INVENTORY.read_text(encoding="utf-8"))
+    focus = next(
+        copy.deepcopy(device) for device in inventory["facts"]["devices"]
+        if device["label"] == inventory["facts"]["core_device_assignments"]["focus"]
+    )
+    focus["label"] = "Aux Z"
+    position = next(prop for prop in focus["properties"] if prop["name"] == "Position")
+    position.update(
+        has_limits=True, reported_type="Float",
+        technical_range={"lower": -125.0, "upper": 875.0},
+    )
+    inventory["facts"]["devices"].append(focus)
+    prompts, output = [], []
+    base = _answer_real_interview(prompts)
+    def ask(prompt):
+        if "named stage Aux Z" in prompt and "MM driver technical range" in prompt:
+            prompts.append(prompt)
+            return ""
+        return base(prompt)
+    config, _ = interview(
+        inventory, ask=ask, say=output.append
+    )
+    assert config["named_stages"] == [{
+        "device": "Aux Z", "min_um": -125.0, "max_um": 875.0,
+    }]
+    assert not any(
+        item["device"] == inventory["facts"]["core_device_assignments"]["focus"]
+        for item in config["named_stages"]
+    )
+    named_prompts = [prompt for prompt in prompts if "named stage Aux Z" in prompt]
+    assert len(named_prompts) == 2
+    assert all("MM driver technical range" in prompt for prompt in named_prompts)
+    assert sum(
+        line.startswith("PROPOSAL ACCEPTED: Human-reviewed")
+        and "named stage Aux Z" in line for line in output
+    ) == 2
+
+
+def test_named_stage_without_driver_range_requires_typed_bounds():
+    inventory = json.loads(REAL_DEMO_INVENTORY.read_text(encoding="utf-8"))
+    focus = next(
+        copy.deepcopy(device) for device in inventory["facts"]["devices"]
+        if device["label"] == inventory["facts"]["core_device_assignments"]["focus"]
+    )
+    focus["label"] = "Aux Z"
+    inventory["facts"]["devices"].append(focus)
+    prompts, output = [], []
+    config, _ = interview(
+        inventory, ask=_answer_real_interview(prompts), say=output.append
+    )
+    assert config["named_stages"] == [{
+        "device": "Aux Z", "min_um": 0.0, "max_um": 100.0,
+    }]
+    named_prompts = [prompt for prompt in prompts if "named stage Aux Z" in prompt]
+    assert len(named_prompts) == 2
+    assert all("MM driver technical range" not in prompt for prompt in named_prompts)
+    assert any(
+        "no travel limits for named stage device Aux Z" in line for line in output
+    )
+
+
+def test_non_core_xy_stage_is_explicitly_excluded():
+    inventory = json.loads(REAL_DEMO_INVENTORY.read_text(encoding="utf-8"))
+    xy = next(
+        copy.deepcopy(device) for device in inventory["facts"]["devices"]
+        if device["label"] == inventory["facts"]["core_device_assignments"]["xy_stage"]
+    )
+    xy["label"] = "Aux XY"
+    inventory["facts"]["devices"].append(xy)
+    output = []
+    config, notes = interview(
+        inventory, ask=_answer_real_interview([]), say=output.append
+    )
+    assert config["named_stages"] == []
+    assert any(
+        "XY stage device Aux XY is not the core XY stage" in line
+        and "named_stages represents only a single axis" in line
+        for line in output
+    )
+    assert any("UNSUPPORTED NON-CORE XY STAGE: Aux XY" in note for note in notes)
+
+
 def test_real_demo_limit_sources_exposure_default_and_budget_order():
     inventory = json.loads(REAL_DEMO_INVENTORY.read_text(encoding="utf-8"))
     prompts, output = [], []
