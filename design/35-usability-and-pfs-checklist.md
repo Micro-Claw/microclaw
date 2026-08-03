@@ -134,9 +134,9 @@ remote alone.
 - **`main` is at `777710c`, measured 1369 passed / 99 skipped / 3 expected
   warnings.** Re-measure anyway — that is step 1 — but a wildly different number
   means something else changed, not that this note was wrong.
-- **Nothing is assigned.** The next block is **4d**, and a new session starts at
-  workflow step 1: branch, ledger row, then delegate. Order from there is
-  **4d → 5**, then Track B.
+- **Block 4d was assigned 2026-08-03 from `2f1852e`** (this note's earlier text
+  said nothing was assigned; that was true at the boundary and is no longer).
+  Order from there is **4d → 5**, then Track B.
 - Two things 4d will need that are not in its block text. Its rig gate starts M5
   under its *existing deployed* config, and a copy of that file is in the block 4
   evidence bundle as `block4-m5-20260802-100850/deployed-m5.reference.yaml` with
@@ -186,7 +186,7 @@ assistant's narration when judging whether a guard fired.
 | 4h | Usability | 4f merged | `design33/confirmation-visibility` (deleted) | `1599ff3` | `3efecaf` + `518a90a` + `e451a5c` | demo G1+G2 **PASS** 2026-08-03 | `e42b930` | **done** — design/21 §"F1 revisited" |
 | 4c | Usability | 4h merged | `design33/setup-named-stages` (deleted) | `3b99397` | `7f68f33` + `e537207` + `c34ee1e` + `d934dbf` (round 1 returned) | demo G1+G1b, M5 G2, demo re-gate all **PASS** 2026-08-03 | `8ce3401` | **done** — design/33 §"Block 4c landed" |
 | 4g | Platform | none — may run concurrently | `design32/hook-hash-newline` (deleted) | `95ae192` | `50e5f66` + `d0bb602` + `971cdb6` + `f768cc3` | round 3 **PASS** 2026-08-03 (rounds 1–2 failed test-side) | `936230f` | **done** — design/32 §4 |
-| 4d | Usability | 4c merged | `design33/property-authorization-rename` | | | **required** | | |
+| 4d | Usability | 4c merged | `design33/property-authorization-rename` | `2f1852e` | | **required** | | |
 | 5 | Usability | 4b, 4e, 4f, 4h, 4c, 4d | `design33/deployed-config-hygiene` | | | required | | |
 | 6 | Nikon | probe S = pre-fix baseline; post-fix run owed | `design34/measured-position-readback` | | | required | | |
 | 7a | Nikon | scope: none; rig gate: probe 0 | `design34/continuous-focus-capability` | | | **required** | | |
@@ -2848,6 +2848,79 @@ refuses. `typed_actuators` is not even a field of the `RigProfile` object
       by tests.
 - [ ] Rig gate: start a session on M5 under its **existing** deployed config
       (whatever the migration promises), and under a regenerated one.
+- [ ] Deliver a gate runbook, `design/35-block4d-gate-prompts.md`, **on the
+      block's branch**, pinning the implementation with `git merge-base
+      --is-ancestor <commit> HEAD` rather than an exact tip hash. It must carry a
+      demo-machine gate that needs no hazardous motion — an old-key config still
+      starts, a full interview writes a new-key profile, that profile passes
+      `check-config` and starts a session — so the M5 trip is spent only on the
+      deployed file the demo core cannot represent. PowerShell/cmd-safe.
+
+**Assigned 2026-08-03 from `2f1852e`.** Coordinator-measured baseline at that
+commit: **1369 passed / 99 skipped / 3 expected warnings** (the pre-existing
+`StarletteDeprecationWarning` plus two `phase_cross_correlation` empty-image
+warnings). The implementer branches from the tip of `origin/main` at the
+assignment merge, in its own worktree.
+
+Scope decisions carried into the assignment, so the implementer does not
+re-derive them and does not widen the break:
+
+- **The fourth key is `mode`, and it is not a property-authorization field.**
+  `rig_profile` has four keys, not three: `config.py:92` reads
+  `parsed.rig_profile.mode` to decide whether guaranteed mode is in force for
+  the whole process, which governs far more than raw-property writes. Ruling:
+  `mode` moves under `property_authorization` with its siblings for this block,
+  because promoting it to a top-level key is a *second* independent config break
+  and the operator's 2026-08-02 ruling is precisely that a config-breaking
+  rename gets its own branch and its own gate. Record the mismatch as an
+  acknowledged wart in the design gate; do not silently leave it undecided and
+  do not fix it here.
+- **`allowed_numeric` is confirmed as the name for `typed_actuators`.** All three
+  kinds 4b left behind — `absolute-position`, `illumination-power`,
+  `bounded-numeric` (`safety.py:76`) — are numeric, so the name covers the set.
+  Do **not** rename the kind strings themselves; they are values, not keys, and
+  renaming them widens the migration for no usability gain.
+- **`named_stages` deliberately stays top-level.** It is a capability range
+  policy consumed by `check_named_stage`, in the same family as `stage`,
+  `camera.max_exposure_ms` and `illumination` — not a raw-property write
+  authorization. 4c's work is what makes this answerable, and the block-4
+  evidence note flagged it as an open choice; this is the answer. Say so in the
+  migration note rather than leaving a reader to wonder why it did not move.
+- **Migration is dual-key acceptance, not a rewriter.** A one-shot rewriter
+  requires an operator action *between* pulling the merge and the next restart;
+  an operator who pulls and restarts first has a rig that will not start, which
+  the item above forbids. So: accept `rig_profile` and `property_authorization`,
+  treat the old key as deprecated, and make **both keys present in one file a
+  hard error** naming both. A rewriter subcommand is welcome as a convenience
+  but does not substitute for dual acceptance. State the deprecation horizon in
+  the docs.
+- **Verify against the real deployed M5 file, but do not commit it.**
+  `block4-m5-20260802-100850/deployed-m5.reference.yaml` (sha256 beside it) is
+  the config M5 is actually running; parse it with the branch's code and report
+  the result. Rig facts stay out of the repo, so the committed regression
+  fixtures are synthetic old-key configs.
+- **Operator-facing refusal text names the old paths in at least seven places**
+  — `authorization.py:826`, `:851`, `:852`, `:952`, `:1266`, `:1267`, `:1280`,
+  `:1363`, `:1364` — plus `first_launch.py:662`, `README.md`, and
+  `safety_config.example.yaml`. Those messages exist to tell an operator what to
+  type; a rename that leaves them pointing at a key the file no longer uses is
+  the same defect this block is fixing. They ship with the package, so they are
+  implementation, not design gate.
+- **Out of scope, explicitly.** No semantics change to any check. Do not delete
+  `confirm_above_bytes` or `max_session_illuminated_ms` (4b/5 own those). Do not
+  change the requirement that an `illumination-power` actuator appear in both
+  `allowed_numeric` and `illumination.power_properties` — report it as still
+  open, do not fix it under cover of a rename. Do not touch
+  `forbidden_properties` / `allowed_properties`; report whether they are still
+  reachable under schema 2 so the new `denied` name is not confused with them.
+
+Post-merge design gate:
+
+- [ ] Record the final schema shape, the dual-key deprecation contract and its
+      horizon, and the two acknowledged warts (`mode` filed under a
+      property-authorization key; `illumination-power` declared twice) in
+      `design/33-authorization-map.md`, which documents the old key names in
+      twelve places.
 
 ## 5. [ ] Deployed-config hygiene and the `init` path — rig config review
 
