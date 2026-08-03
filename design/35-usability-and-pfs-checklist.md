@@ -151,7 +151,7 @@ assistant's narration when judging whether a guard fired.
 | 4e | Usability | 4b merged | `design33/emission-path-discovery` (deleted) | `85398e8` | `bc40f18` + `d631a4f` (`39f69dd` returned) | M2 G1/G2, M5 G3, demo G3 all **PASS** 2026-08-03 | `9b88394` | **done** — design/33 §"Block 4e landed" |
 | 4f | Usability | 4e merged | `design33/channel-group-presets` | `f95c8ca` | | **required** | | |
 | 4c | Usability | 4f merged | `design33/setup-named-stages` | | | **required** | | |
-| 4g | Platform | none — may run concurrently | `design32/hook-hash-newline` | `95ae192` | `50e5f66` + `d0bb602` + `971cdb6` | M5 round 1 **FAIL** (fixtures); re-gate owed | | |
+| 4g | Platform | none — may run concurrently | `design32/hook-hash-newline` (deleted) | `95ae192` | `50e5f66` + `d0bb602` + `971cdb6` + `f768cc3` | round 3 **PASS** 2026-08-03 (rounds 1–2 failed test-side) | `936230f` | **done** — design/32 §4 |
 | 4d | Usability | 4c merged | `design33/property-authorization-rename` | | | **required** | | |
 | 5 | Usability | 4b, 4e, 4f, 4c, 4d | `design33/deployed-config-hygiene` | | | required | | |
 | 6 | Nikon | probe S = pre-fix baseline; post-fix run owed | `design34/measured-position-readback` | | | required | | |
@@ -1966,7 +1966,7 @@ channels. Of the three rigs only demo has a `Channel` group; M5 has only
       no preset demotion. On demo, show the real `Channel` presets still appear
       and fluorescence channels still work.
 
-## 4g. [ ] Saved hooks are unusable on Windows — two hash conventions disagree
+## 4g. [x] Saved hooks are unusable on Windows — **MERGED 2026-08-03**
 
 Branch: `design32/hook-hash-newline`. Depends on nothing; touches files no other
 queued block touches (`hook_manager.py`, `completed_dataset.py`), so it may run
@@ -2004,20 +2004,20 @@ through describe, while loading fine through `hook_manager.load`. Every rig is
 Windows.** It fails safe — a genuine file is rejected, never a tampered one
 accepted — but the feature does not work where it has to work.
 
-- [ ] Pick one canonical convention and use it at every save, load, describe and
+- [x] Pick one canonical convention and use it at every save, load, describe and
       offline-adapter site. The on-disk bytes are the artifact the manifest
       claims to pin, so hashing raw bytes and writing bytes (or text with
       `newline=""`) is the obvious direction — but state the choice and apply it
       everywhere rather than patching the failing call site.
-- [ ] **Existing manifests carry hashes pinned under the old convention.** Decide
+- [x] **Existing manifests carry hashes pinned under the old convention.** Decide
       migration: re-pin on load with an explicit prompt, refuse with an
       actionable message, or accept both forms for a release. A hash the user
       consented to may not be silently rewritten — the manifest *is* the consent
       record.
-- [ ] Add a test that fails on POSIX today, by writing a `\r\n` file and
+- [x] Add a test that fails on POSIX today, by writing a `\r\n` file and
       round-tripping it. The current suite passes on POSIX precisely because it
       never exercises the difference, which is why this survived four blocks.
-- [-] Rig gate on any Windows machine: save a hook, then load it through the
+- [x] Rig gate on any Windows machine: save a hook, then load it through the
       offline path and describe it. Both must succeed, and `pytest.txt` must
       show these 23 tests passing.
 
@@ -2062,6 +2062,62 @@ checked from macOS. The unstated assumption was that the tests exercised the
 product's save path; two of them built their own. **When a block's acceptance is
 "these named tests pass on a platform you cannot run," the fixtures those tests
 use are part of the surface under repair.**
+
+### Windows gate round 2 — M5, 2026-08-03: **22 of 23 repaired; one left, same shape**
+
+Evidence: `block4g-m5-20260803-120629`, at `971cdb6`, pin `0`, tree clean but for
+an untracked `uv.lock`. **1332 passed / 1 failed / 115 skipped**, from round 1's
+1308 / 23. The fixture fix repaired 22 of 23.
+
+The survivor was `test_describe_hook.py::test_hash_mismatch_is_described`, and
+it is **the same defect one level deeper**: round 1's fix corrected the fixture
+that *installs* a hook, while this test's own *tampering* step still did
+`path.write_text(changed)` and then asserted against
+`sha256(changed.encode())`. Windows translated the write; the assertion hashed
+the untranslated string. Fixed at `f768cc3` by tampering in bytes and asserting
+against those bytes.
+
+An audit of every remaining `write_text`/string-hash pair in the suite found one
+more instance, in the same file's `everything` fixture. It was **not** failing,
+because that test never asserts on the hash — made consistent anyway so a future
+`matches_manifest` assertion cannot fail on Windows alone. No other site in
+`tests/` pairs a text write with a string hash.
+
+**The expected Windows count in the runbook was also wrong, and the reason is
+worth recording.** It said 1338, derived by adding this block's new tests to the
+1311/23 baseline. That baseline was measured on Block 4e's branch, but **4g was
+cut from `main` before 4e merged**, so 4g's tree does not carry 4e's five tests.
+The runbook now states **1333 passed / 0 failed / 115 skipped**, taken directly
+from round 2's own observed run (1448 collected) rather than derived from a
+baseline measured on a different tree. Derived counts across divergent branches
+are worth less than the branch's own measurement.
+
+**Three rounds, and every failure has been on the test side.** The product code
+has been correct since `50e5f66` and has passed G1 and G2a on real Windows
+twice. That is worth stating plainly so the next reader does not conclude the
+convention change was shaky: what was shaky was the assumption that the tests
+proving it used the code path being repaired.
+
+### Windows gate round 3 — M5, 2026-08-03: **PASS. Block 4g is complete.**
+
+Evidence: `block4g-m5-20260803-121241`, at `f768cc3`, pin `0`, **1333 passed /
+0 failed / 115 skipped** — exactly the count predicted from round 2's own run.
+All 23 Windows failures are repaired. The only `git status` entry is an
+untracked `uv.lock`, now gitignored on `main` (`b982808`).
+
+G1 and G2a were not re-run this round, deliberately: `microclaw/` is
+**byte-identical between `d0bb602`, where both passed on real Windows, and
+`f768cc3`** (verified by the coordinator with `git diff --stat d0bb602 f768cc3
+-- microclaw/`, empty). Rounds 2 and 3 changed only tests and the runbook, so
+that evidence carries forward — the same reasoning that let Block 4e skip G6 in
+round 3.
+
+**Post-merge design gate.** Not named when the block was scheduled; added at
+closeout because the block changes a documented contract. Recorded in
+`design/32-repository-review-top-five.md` §4, where hash pinning is described:
+the pin is the sha256 of the exact bytes on disk, one shared verifier owns the
+check, and a pre-existing newline-normalized pin is reported distinctly rather
+than as tampering.
 
 ### Implementation — pushed 2026-08-03, awaiting the Windows gate
 

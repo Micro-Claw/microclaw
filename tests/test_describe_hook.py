@@ -1,5 +1,6 @@
 import hashlib
 import json
+from pathlib import Path
 
 from microclaw import hook_manager
 from microclaw.hooks import PRECODED_HOOK_REGISTRY
@@ -8,7 +9,10 @@ from microclaw.tools import describe_hook, list_hooks
 
 def _install_saved(tmp_path, monkeypatch, name, code, *, pinned=True):
     path = tmp_path / f"{name}.py"
-    path.write_text(code, encoding="utf-8")
+    # Bytes written, same bytes pinned - see the note in test_completed_dataset's
+    # offline_home fixture for what writing text here cost.
+    source_bytes = code.encode("utf-8")
+    path.write_bytes(source_bytes)
     entry = {
         "description": "fixture",
         "path": str(path),
@@ -16,12 +20,34 @@ def _install_saved(tmp_path, monkeypatch, name, code, *, pinned=True):
         "accepted_warnings": ["accepted fixture warning"],
     }
     if pinned:
-        entry["sha256"] = hashlib.sha256(code.encode()).hexdigest()
+        entry["sha256"] = hashlib.sha256(source_bytes).hexdigest()
     manifest = tmp_path / "manifest.json"
     manifest.write_text(json.dumps({name: entry}), encoding="utf-8")
     monkeypatch.setattr(hook_manager, "HOOKS_DIR", tmp_path)
     monkeypatch.setattr(hook_manager, "MANIFEST", manifest)
     return path, entry
+
+
+def test_install_fixture_pins_the_bytes_it_writes_under_windows_translation(
+    tmp_path, monkeypatch,
+):
+    """Same guard as test_completed_dataset's, for the describe fixture.
+
+    These two fixtures produced all 23 Windows failures between them, and both
+    kept writing text after the product code stopped.
+    """
+    original_write_text = Path.write_text
+
+    def windows_write_text(path, data, *args, **kwargs):
+        if path.suffix == ".py":
+            data = data.replace("\n", "\r\n")
+        return original_write_text(path, data, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", windows_write_text)
+    _install_saved(tmp_path, monkeypatch, "pinned", "class Pinned:\n    pass\n")
+    described = hook_manager.describe_saved_hook("pinned")
+    assert described["provenance"]["matches_manifest"] is True
+    assert described["provenance"]["legacy_newline_pin"] is False
 
 
 def test_saved_parameters_defaults_required_and_source_never_executes(
@@ -130,14 +156,19 @@ def test_hash_mismatch_is_described(
     original = "class H:\n def analyze_frame(self, image, metadata): pass\n"
     path, entry = _install_saved(tmp_path, monkeypatch, "changed", original)
     changed = original.replace("pass", "return None")
-    path.write_text(changed, encoding="utf-8")
+    # Tamper in bytes, and assert against those same bytes below. Writing text
+    # here let Windows translate the newlines while the assertion hashed the
+    # untranslated string - the same two-convention defect this block repairs,
+    # surviving one more round in the tampering step after the install helper
+    # above was fixed.
+    path.write_bytes(changed.encode("utf-8"))
 
     result = describe_hook(mock_ctrl, unconstrained_guard, "changed")
     provenance = result["provenance"]
     assert result["class_name"] == "H"
     assert provenance["matches_manifest"] is False
     assert provenance["manifest_sha256"] == entry["sha256"]
-    assert provenance["actual_sha256"] == hashlib.sha256(changed.encode()).hexdigest()
+    assert provenance["actual_sha256"] == hashlib.sha256(changed.encode("utf-8")).hexdigest()
     assert result["resolve_refusal"] == {
         "would_refuse": True,
         "reasons": ["saved hook file sha256 does not match manifest"],
@@ -196,10 +227,14 @@ def test_describe_reports_exactly_what_resolve_hook_strips(monkeypatch, tmp_path
         "        return None\n"
     )
     path = tmp_path / "everything.py"
-    path.write_text(source, encoding="utf-8")
+    # Prophylactic, not a live failure: this test never asserts on the hash, so
+    # the text/string mismatch was harmless here. Made consistent anyway so a
+    # future matches_manifest assertion cannot fail on Windows alone.
+    source_bytes = source.encode("utf-8")
+    path.write_bytes(source_bytes)
     manifest = {"everything": {
         "description": "d", "path": str(path), "source": "user_provided",
-        "sha256": hashlib.sha256(source.encode()).hexdigest(),
+        "sha256": hashlib.sha256(source_bytes).hexdigest(),
         "accepted_warnings": [],
     }}
     (tmp_path / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")

@@ -28,6 +28,7 @@ from microclaw import __version__
 from microclaw.hook_decisions import write_hook_artifact
 from microclaw.hook_manager import (
     FORBIDDEN_SAVED_HOOK_PARAMS, MANIFEST, lint_hook_code, select_hook_class,
+    verify_saved_hook_bytes,
 )
 from microclaw.hooks import write_analysis_observation
 
@@ -67,15 +68,7 @@ def _load_saved_adapter(name: str):
     if name not in manifest:
         raise KeyError(f"No saved hook named {name!r}.")
     entry = manifest[name]
-    source = Path(entry["path"]).read_bytes()
-    if "sha256" not in entry:
-        raise RuntimeError(
-            f"Hook {name!r} predates hash-pinning; re-save it before running."
-        )
-    if _sha(source) != entry["sha256"]:
-        raise RuntimeError(
-            f"Hook {name!r} changed on disk since it was saved; refusing to load."
-        )
+    source = verify_saved_hook_bytes(name, entry)
     new = set(lint_hook_code(source.decode("utf-8"))) - set(entry.get("accepted_warnings", []))
     if new:
         raise RuntimeError(

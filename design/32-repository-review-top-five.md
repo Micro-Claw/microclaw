@@ -725,7 +725,28 @@ The repository accurately labels hook linting as advisory and trivially
 bypassable (`microclaw/hook_manager.py:21-28`). After confirmation, loading a
 hook runs its module top-level with `exec_module` in the main process
 (`microclaw/hook_manager.py:128-160`). The hash prevents post-approval changes,
-but it does not constrain the approved code. A generated or user-supplied hook
+but it does not constrain the approved code.
+
+**What the hash is, since Block 4g (2026-08-03).** The pin is the sha256 of the
+**exact bytes on disk**, and one shared verifier — `verify_saved_hook_bytes` —
+owns that check for every caller: save, live load, describe, and the offline
+adapter. Before 4g those four sites used two conventions: `save_hook` wrote in
+text mode but pinned the hash of the in-memory string, while two of the three
+readers hashed raw bytes. The two agree on POSIX and diverge on Windows, where
+text-mode writing translates `\n` to `\r\n` — so **every saved hook was
+unusable on Windows through the offline path and reported as tampered by
+describe**, on the only platform the rigs run, while loading fine through the
+third reader. It failed safe throughout: a genuine file was rejected, never a
+tampered one accepted.
+
+A pin recorded under the old convention is detected and reported **distinctly**
+(`legacy_newline_pin`), with a message directing review and re-save, rather than
+being folded into the generic tampering refusal. It is neither silently accepted
+nor silently rewritten, because the manifest is the record of what a human
+consented to. Recovery does not require regenerating the code: `read_hook_from_file`
+reads the existing file and `save_hook` re-pins it. POSIX-saved hooks are
+unaffected, since with no translation the old pin already equalled the byte
+hash. A generated or user-supplied hook
 can read credentials, use the network, modify files, hang, crash the process,
 exhaust memory, or access controller objects supplied to some hooks — and it
 does all of this *inside* the single process that also drives the microscope.

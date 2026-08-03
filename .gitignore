@@ -16,6 +16,14 @@ MANIFEST
 htmlcov/
 .tox/
 
+# uv's resolved lockfile. Deliberately untracked: the rigs install with
+# `pip install -e .` (CLAUDE.md §"Debugging checklist"), not `uv sync`, so a
+# committed lock would be pinned by nobody and drift silently. It appeared as an
+# untracked file in two Block 4g gate bundles and muddied the clean-tree
+# precondition, which is what prompted this. Reverse it if the rigs ever move to
+# `uv sync` — for an application uv's own advice is to commit it.
+uv.lock
+
 # Virtual environments
 .venv/
 venv/

@@ -42,9 +42,14 @@ def offline_home(tmp_path, monkeypatch):
 
     def save(name, code, **extra):
         path = hooks / f"{name}.py"
-        path.write_text(code, encoding="utf-8")
+        # Write bytes and pin those same bytes, exactly as save_hook does.
+        # Writing text here let Windows translate the newlines while the pin
+        # was taken from the untranslated string, so every hook this fixture
+        # built looked legacy-pinned on Windows and nowhere else.
+        source_bytes = code.encode("utf-8")
+        path.write_bytes(source_bytes)
         entry = {"path": str(path), "source": "user_provided",
-                 "sha256": hashlib.sha256(code.encode()).hexdigest(),
+                 "sha256": hashlib.sha256(source_bytes).hexdigest(),
                  "accepted_warnings": completed_dataset.lint_hook_code(code), **extra}
         data = json.loads(manifest.read_text()) if manifest.exists() else {}
         data[name] = entry
@@ -59,6 +64,66 @@ def run(saved, name, **kwargs):
         guard, str(dataset), name, {"time": 0}, "frames", {},
         str(root / kwargs.pop("output", f"out-{name}")), **kwargs,
     )
+
+
+def test_crlf_hook_uses_one_byte_hash_for_save_load_describe_and_offline(
+    tmp_path, monkeypatch,
+):
+    """Simulate Windows text translation so this regression runs on POSIX."""
+    from microclaw import hook_manager
+
+    hooks = tmp_path / "hooks"
+    manifest = hooks / "manifest.json"
+    monkeypatch.setattr(hook_manager, "HOOKS_DIR", hooks)
+    monkeypatch.setattr(hook_manager, "MANIFEST", manifest)
+    monkeypatch.setattr(completed_dataset, "MANIFEST", manifest)
+
+    code = (
+        "class CrLf:\r\n"
+        " def analyze_frame(self, image, metadata): return None\r\n"
+        " def analyze_saved_frame(self, image, metadata, context): return {'ok': True}\r\n"
+    )
+    original_write_text = Path.write_text
+
+    def windows_write_text(path, data, *args, **kwargs):
+        if path.suffix == ".py":
+            data = data.replace("\n", "\r\n")
+        return original_write_text(path, data, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", windows_write_text)
+    hook_manager.save_hook("crlf", code, "CRLF fixture", source="user_provided")
+
+    raw = (hooks / "crlf.py").read_bytes()
+    assert raw == code.encode("utf-8")
+    assert hook_manager.load_hook_class("crlf").__name__ == "CrLf"
+    described = hook_manager.describe_saved_hook("crlf")
+    assert described["provenance"]["matches_manifest"] is True
+    assert completed_dataset._load_saved_adapter("crlf")[0].__name__ == "CrLf"
+
+
+def test_fixture_pins_the_bytes_it_writes_under_windows_translation(
+    offline_home, monkeypatch,
+):
+    """The offline_home fixture must pin the bytes it wrote, not the string.
+
+    Simulated rather than supplied: on Windows it is text-mode *translation*
+    that makes the file bytes differ from the in-memory string, so feeding CRLF
+    in directly would pass on POSIX either way and guard nothing. This fixture
+    kept writing text after the product code stopped, which is why the Windows
+    gate still showed all 23 failures with the repair in place.
+    """
+    original_write_text = Path.write_text
+
+    def windows_write_text(path, data, *args, **kwargs):
+        if path.suffix == ".py":
+            data = data.replace("\n", "\r\n")
+        return original_write_text(path, data, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", windows_write_text)
+    save, *_ = offline_home
+    save("fixture_bytes", "class FixtureBytes:\n"
+         " def analyze_saved_frame(self, image, metadata, context): return {'ok': True}\n")
+    assert completed_dataset._load_saved_adapter("fixture_bytes")[0].__name__ == "FixtureBytes"
 
 
 def test_per_frame_selection_read_only_and_normalized_replay(offline_home):
