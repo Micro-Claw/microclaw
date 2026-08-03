@@ -340,12 +340,12 @@ def test_power_enable_grouping_retains_one_sided_device_candidates():
     assert groups["EnableOnly"]["enable_paths"] == ["EnableOnly.Laser Enable"]
 
 
-def test_shutter_device_binary_gate_does_not_need_a_name_token():
+def test_shutter_device_three_value_gate_does_not_need_a_name_token():
     core = CandidateShapeCore({"VendorGate": ["Laser"]})
     core._get_device_type = lambda device: (
         "ShutterDevice" if device == "VendorGate" else "GenericDevice"
     )
-    core._get_allowed_property_values = lambda device, prop: ["Off", "On"]
+    core._get_allowed_property_values = lambda device, prop: ["Closed", "Auto", "Open"]
     inventory = enumerate_rig(core)
     assert [
         item["path"]

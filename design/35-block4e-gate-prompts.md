@@ -6,16 +6,21 @@ operator must remain at the microscope, use the rig's normal optical containment
 and stop on unexpected light or motion. Do not make a generated profile permanent.
 Commands below are PowerShell/cmd-safe and preserve evidence without Unix pipes.
 
-Offline replay of the captured `microclaw.rig-inventory/v2` files settles part of
-G3 already. With the same deterministic acceptance responder before and after the
-change, demo stays at 69 questions, M5 stays at 230, and M2 changes from 118 to
-127. Demo and M5 gain and lose no illumination candidates or shutter declarations.
-M2 gains exactly `Cobolt561.Analog Impedance`, `Cobolt561.Autostart`, and
-`Cobolt561.Laser` as candidates and loses none; when all surfaced enable candidates
-are accepted as emission gates, those same three declarations are added. The
-operator must still classify each candidate from actual rig meaning. Offline replay
-cannot prove that a profile starts against the live Core, a real write reaches the
-guard, or teardown drives every declaration to its reviewed off value.
+Offline analysis of the captured `microclaw.rig-inventory/v2` files settles part
+of G3 already. Candidate counts were **re-derived by running `_is_enable` over
+`facts.devices`** under each revision before replaying the interview: `interview()`
+consumes the file's stored `heuristic_candidates`, so replaying a captured file
+through the interview alone cannot observe a producer change. Demo candidates stay
+2 -> 2, M5 stays 21 -> 21, and M2 changes 9 -> 12. With those re-derived
+candidates and the same deterministic acceptance responder, demo stays at 69
+questions, M5 stays at 230, and M2 changes from 118 to 127. Demo and M5 gain and
+lose no illumination candidates or shutter declarations. M2 gains exactly
+`Cobolt561.Analog Impedance`, `Cobolt561.Autostart`, and `Cobolt561.Laser` as
+candidates and loses none; when all surfaced enable candidates are accepted as
+emission gates, those same three declarations are added. The operator must still
+classify each candidate from actual rig meaning. Offline analysis cannot prove
+that a profile starts against the live Core, a real write reaches the guard, or
+teardown drives every declaration to its reviewed off value.
 
 ## G0 — branch and evidence setup on every machine
 
@@ -52,9 +57,14 @@ echo $LASTEXITCODE > check-config-exit.txt
 
 During setup, confirm that `Cobolt561.Laser` is offered as an illumination
 candidate without editing the inventory or profile. Classify it as an emission
-gate and accept or enter its verified `On` and `Off` values. Classify the other
-newly surfaced properties from their real meanings; do not assume that being a
-candidate authorizes them.
+gate and accept or enter its verified `On` and `Off` values. The expected
+classification of both `Cobolt561.Autostart` and `Cobolt561.Analog Impedance` is
+**not an emission gate**: Autostart controls power-up behavior, while Analog
+Impedance controls modulation-input termination. If the operator declares either
+one anyway, `shutter_all` will write its declared `off_value` on every session exit,
+potentially rewriting persistent laser configuration. The operator may overrule
+the expected classification only after checking the real rig with that consequence
+in mind; being a candidate does not authorize a property.
 
 Pass only if the unedited generated draft contains this exact declaration:
 
@@ -110,18 +120,33 @@ Demo expected shutters:
 - `White Light Shutter.State`
 
 `LED Shutter.State Device` remains outside the illumination set; its seven-state
-domain is not a binary on/off-shaped gate. Confirm the fluorescence channel
-presets still validate and can select their already-declared shutter under the
-existing confirmation path. Decline one illumination enable and mechanically
-verify its tool call and refusal in history JSONL as in G2.
+domain is not an on/off-shaped gate. More importantly, `LED Shutter` is itself a
+`ShutterDevice` and one of the devices selectable through `Core.Shutter`, but it
+has no writable gating property: its emission is controlled only through MMCore's
+shutter API. This is the residual limit of property-based discovery: some emission
+paths have no gating property at all. Therefore the absence of a declared property
+for the current core shutter must not cause startup refusal; the rig cannot supply
+a legal property declaration for this stock demo case. The safety claim is only
+that declared paths are gated, never that discovery found every physical path.
+Confirm the fluorescence channel presets still validate and can select their
+already-declared shutter under the existing confirmation path. Decline one
+illumination enable and mechanically verify its tool call and refusal in history
+JSONL as in G2.
 
 M5 expected shutters are the existing 21 paths: `Core.AutoShutter`; three each
 (`Enable Fine`, `Enable ext trigger`, `Laser Operation`) on `iBeamSmartCW-1`,
 `iBeamSmartCW-Booster`, and `iBeamSmartCW`; plus the eleven existing iChrome
 `Enable`/`Emission` paths. No iChrome TTL or Analog mode switch may newly become
-a shutter or ordinary writable property. With illumination optically contained,
-exercise one previously working declared shutter through confirmation, return it
-to its reviewed off value, and retain the tool history and read-back.
+a shutter or ordinary writable property. M5's unchanged 21 -> 21 discovery result
+is guaranteed by the captured facts, not a resilience measurement: M5 has zero
+`ShutterDevice`s, so this discovery change cannot affect it. The live M5 step tests
+the separate safety-gating change. With illumination optically contained, exercise
+one previously working declared shutter through confirmation, return it to its
+reviewed off value, and retain the tool history and read-back. The guard compares
+the requested value exactly with the declared `off_value`; a driver formatting
+variant such as `"0.0"` when the profile declares `"0"` now prompts for confirmation
+instead of passing silently. This is intentionally fail-safe, but check it across
+the numeric-valued members of M5's 21 declared shutters and report any occurrence.
 
 Offline replay settles candidate membership, question counts, and generated
 declaration deltas. These live steps settle startup authorization, actual guard

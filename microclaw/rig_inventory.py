@@ -275,13 +275,13 @@ def _is_enable(record: dict, device: dict | None = None) -> bool:
         return False
     allowed = record.get("allowed_values") or []
     # MM's device type is stronger evidence than a vendor-chosen property name:
-    # a binary on/off-shaped control on a ShutterDevice is an emission gate even
+    # an on/off-shaped control on a ShutterDevice is an emission gate even
     # when its name contains none of our deliberately broad discovery tokens.
     # Keep the name heuristic unchanged for every other device type.
     typed_shutter_gate = (
         device is not None
         and device.get("device_type") == "ShutterDevice"
-        and len(allowed) == 2
+        and len(allowed) <= 4
         and any(str(v).strip().lower() in _ON_VALUES for v in allowed)
     )
     if not typed_shutter_gate and not _ENABLE_NAME.search(record["name"]):
