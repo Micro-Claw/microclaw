@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from importlib import resources
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -20,7 +21,8 @@ class ConfigDiagnostic:
     """One machine-readable result from an offline config check."""
 
     kind: Literal[
-        "schema", "review", "guaranteed_mode", "degraded_mode", "live_check",
+        "schema", "review", "example_limits", "guaranteed_mode",
+        "degraded_mode", "live_check",
     ]
     message: str
     blocking: bool
@@ -83,6 +85,43 @@ def validate_safety_config(path: str | Path | None = None) -> ConfigValidationRe
         diagnostics.append(ConfigDiagnostic("schema", str(exc), True))
         return ConfigValidationResult(p, None, reviewed, tuple(diagnostics))
 
+    # Defence in depth for configs deliberately hand-authored from the packaged
+    # example. Compare the source documents rather than repeating any fictional
+    # number here, so this diagnostic cannot drift away from the example.
+    example_path = resources.files("microclaw").joinpath("safety_config.example.yaml")
+    example = yaml.safe_load(example_path.read_text(encoding="utf-8"))
+
+    def matching_leaves(actual, reference, prefix):
+        matches = []
+        if isinstance(actual, dict) and isinstance(reference, dict):
+            for key in actual.keys() & reference.keys():
+                matches.extend(matching_leaves(
+                    actual[key], reference[key], prefix + (str(key),)
+                ))
+        elif isinstance(actual, list) and isinstance(reference, list):
+            for index, (left, right) in enumerate(zip(actual, reference)):
+                matches.extend(matching_leaves(left, right, prefix + (str(index),)))
+        elif type(actual) in (int, float) and type(reference) in (int, float):
+            if actual == reference:
+                matches.append(".".join(prefix))
+        return matches
+
+    example_matches = []
+    for section in ("stage", "named_stages", "camera", "illumination", "acquisition"):
+        if section in loaded and section in example:
+            example_matches.extend(matching_leaves(
+                loaded[section], example[section], (section,)
+            ))
+    if example_matches:
+        diagnostics.append(ConfigDiagnostic(
+            "example_limits",
+            "These limit values still equal the packaged fictional hand-authoring "
+            "example: " + ", ".join(sorted(example_matches)) + ". A matching value "
+            "can be legitimate, so this is a review warning, not a refusal; verify "
+            "each named value against this rig.",
+            False,
+        ))
+
     acquisition = parsed.constraints.acquisition
     acquisition_fields = (
         "max_frames", "max_duration_s", "max_bytes", "max_illuminated_ms",
@@ -144,7 +183,8 @@ def validate_safety_config(path: str | Path | None = None) -> ConfigValidationRe
 def load_safety_config(path: str | Path | None = None) -> ParsedSafetyConfig:
     """Load THIS RIG's limits, refusing anything a human has not signed off on.
 
-    `path` of None means the per-user default (`microclaw init` writes it). That
+    `path` of None means the per-user default (normally generated through
+    `microclaw init` and first-launch setup). That
     is what a double-clicked desktop shortcut loads, sight unseen — so the
     `reviewed: true` line is the only thing between a novice and a stage driven
     under the example's fictional bounds (design/14 §6, design/17 v2).
@@ -182,7 +222,8 @@ def load_safety_config_or_exit(path: str | Path | None = None) -> ParsedSafetyCo
     except FileNotFoundError as e:
         sys.exit(
             f"No safety config at {e}.\n"
-            "Run `microclaw init` to create one, then edit it for this microscope."
+            "Run `microclaw init` for restricted first-launch setup, review the "
+            "generated profile, then restart Microclaw."
         )
     except UnreviewedSafetyConfig as e:
         sys.exit(

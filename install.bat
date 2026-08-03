@@ -7,7 +7,7 @@ rem  nothing outside %LOCALAPPDATA%\microclaw.
 rem
 rem  It installs `uv` (which downloads its own Python), builds an isolated
 rem  environment, installs Microclaw into it, puts a shortcut on the
-rem  desktop, and opens this machine's safety-limits file for editing.
+rem  desktop, and offers restricted first-launch safety setup.
 rem
 rem  Source of the code, in order:
 rem    1. %MICROCLAW_SRC%, if set -- a URL or a pip requirement.
@@ -42,10 +42,9 @@ call :finish         || goto :fail
 echo.
 echo   Done. There is now a Microclaw icon on your desktop.
 echo.
-echo   IMPORTANT: the safety-limits file that just opened contains EXAMPLE
-echo   limits. They match no real microscope. Edit every limit for your
-echo   instrument, then change `reviewed: false` to `reviewed: true`.
-echo   Microclaw refuses to start until you do.
+echo   IMPORTANT: complete the first-launch setup offered above. It writes an
+echo   unreviewed rig-specific profile. Review every declaration and limit,
+echo   change `reviewed: false` to `reviewed: true`, then restart Microclaw.
 echo.
 echo   Before launching: open Micro-Manager and enable the ZMQ server under
 echo   Tools ^> Options ^> "Run pycro-manager server on port 4827".

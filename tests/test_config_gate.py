@@ -144,6 +144,7 @@ def test_cli_and_web_build_guard_from_retained_parsed_contract(monkeypatch):
 
     monkeypatch.setattr(cli, "load_safety_config_or_exit", lambda path: parsed)
     monkeypatch.setattr(cli, "MicroscopeController", Disconnected)
+    monkeypatch.setattr(cli.credentials, "load_api_key", lambda: ("test-key", "env"))
     with pytest.raises(SystemExit, match="Could not connect"):
         cli.run_session(SimpleNamespace(safety_config=None, port=1))
 
@@ -243,8 +244,8 @@ def test_offline_validator_returns_parsed_config_for_phase5_reuse(tmp_path):
     assert result.parsed is not None
     assert result.reviewed is True
     assert result.can_start_live_validation
-    assert [item.kind for item in result.diagnostics] == ["live_check"]
-    assert "cannot enumerate the rig" in result.diagnostics[0].message
+    assert [item.kind for item in result.diagnostics] == ["example_limits", "live_check"]
+    assert "cannot enumerate the rig" in result.diagnostics[-1].message
 
 
 def test_offline_validator_reports_unreviewed_as_expected_next_action(tmp_path):
@@ -350,6 +351,34 @@ def test_check_config_cli_is_thin_offline_presenter(tmp_path, monkeypatch, capsy
     assert "Schema: valid" in output
     assert "LIVE CHECK REQUIRED" in output
     assert "Offline checks passed" in output
+
+
+def test_offline_validator_warns_for_packaged_example_limit_values(tmp_path):
+    result = validate_safety_config(_write(tmp_path, REAL))
+    warning = next(item for item in result.diagnostics if item.kind == "example_limits")
+    assert warning.blocking is False
+    assert "acquisition.max_frames" in warning.message
+    assert result.can_start_live_validation
+
+
+def test_offline_validator_does_not_false_positive_without_example_values(tmp_path):
+    distinct = REAL.replace("max_exposure_ms: 500.0", "max_exposure_ms: 501.0")
+    distinct = distinct.replace("max_frames: 10000", "max_frames: 10001")
+    distinct = distinct.replace("max_duration_s: 3600", "max_duration_s: 3601")
+    distinct = distinct.replace("max_bytes: 50000000000", "max_bytes: 50000000001")
+    distinct = distinct.replace("max_illuminated_ms: 600000", "max_illuminated_ms: 600001")
+    distinct = distinct.replace("confirm_above_frames: 500", "confirm_above_frames: 501")
+    distinct = distinct.replace("confirm_above_duration_s: 300", "confirm_above_duration_s: 301")
+    distinct = distinct.replace("confirm_above_bytes: 5000000000", "confirm_above_bytes: 5000000001")
+    distinct = distinct.replace("confirm_above_illuminated_ms: 60000", "confirm_above_illuminated_ms: 60001")
+    distinct = distinct.replace("max_session_illuminated_ms: 1800000", "max_session_illuminated_ms: 1800001")
+    distinct = distinct.replace("x_min: -100.0", "x_min: -101.0")
+    distinct = distinct.replace("x_max: 100.0", "x_max: 101.0")
+    distinct = distinct.replace("y_min: -100.0", "y_min: -101.0")
+    distinct = distinct.replace("y_max: 100.0", "y_max: 101.0")
+
+    result = validate_safety_config(_write(tmp_path, distinct))
+    assert not any(item.kind == "example_limits" for item in result.diagnostics)
 
 
 # ---- paths ----

@@ -56,8 +56,8 @@ def test_runs_the_subcommands_that_exist(bat):
         assert f'%MC_EXE%" {cmd}' in bat, f"install.bat no longer runs {cmd}"
 
 
-def test_shortcut_is_created_before_init_opens_an_editor(bat):
-    """init opens the safety file; it should be the last thing on screen."""
+def test_shortcut_is_created_before_init_offers_first_launch_setup(bat):
+    """init's setup offer should be the last interactive installer step."""
     assert bat.index("install-shortcut") < bat.index('%MC_EXE%" init')
 
 

@@ -167,7 +167,7 @@ def test_interview_copies_only_identifiers_and_explicit_answers(tmp_path):
     result = write_profile(config, notes, tmp_path / "profile.yaml")
     assert result.parsed is not None
     assert [(x.kind, x.blocking) for x in result.diagnostics] == [
-        ("review", True), ("live_check", False),
+        ("review", True), ("example_limits", False), ("live_check", False),
     ]
 
 
