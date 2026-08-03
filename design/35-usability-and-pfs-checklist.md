@@ -186,7 +186,7 @@ assistant's narration when judging whether a guard fired.
 | 4h | Usability | 4f merged | `design33/confirmation-visibility` (deleted) | `1599ff3` | `3efecaf` + `518a90a` + `e451a5c` | demo G1+G2 **PASS** 2026-08-03 | `e42b930` | **done** — design/21 §"F1 revisited" |
 | 4c | Usability | 4h merged | `design33/setup-named-stages` (deleted) | `3b99397` | `7f68f33` + `e537207` + `c34ee1e` + `d934dbf` (round 1 returned) | demo G1+G1b, M5 G2, demo re-gate all **PASS** 2026-08-03 | `8ce3401` | **done** — design/33 §"Block 4c landed" |
 | 4g | Platform | none — may run concurrently | `design32/hook-hash-newline` (deleted) | `95ae192` | `50e5f66` + `d0bb602` + `971cdb6` + `f768cc3` | round 3 **PASS** 2026-08-03 (rounds 1–2 failed test-side) | `936230f` | **done** — design/32 §4 |
-| 4d | Usability | 4c merged | `design33/property-authorization-rename` | `052179d` | `fd4c5b6` + `c063f16` | demo G0/G1/G2 **PASS** 2026-08-03; M5 G3/G4 owed | | |
+| 4d | Usability | 4c merged | `design33/property-authorization-rename` (deleted) | `052179d` | `fd4c5b6` + `c063f16` + `029b5f4` | demo G0/G1/G2 + M5 G4 **PASS** 2026-08-03; G3 closed by offline replay | `5f56679` | **done** — design/33 §"Block 4d landed" |
 | 5 | Usability | 4b, 4e, 4f, 4h, 4c, 4d | `design33/deployed-config-hygiene` | | | required | | |
 | 6 | Nikon | probe S = pre-fix baseline; post-fix run owed | `design34/measured-position-readback` | | | required | | |
 | 7a | Nikon | scope: none; rig gate: probe 0 | `design34/continuous-focus-capability` | | | **required** | | |
@@ -2818,7 +2818,7 @@ Post-merge design gate:
       a declared range is a reviewed travel bound, **not** evidence that the
       device is safe to move through it.
 
-## 4d. [ ] Rename and regroup the property-authorization schema
+## 4d. [x] Rename and regroup the property-authorization schema — **MERGED 2026-08-03**
 
 Branch: `design33/property-authorization-rename`. Depends on 4c merging. Split
 out of 4b by operator ruling 2026-08-02 (see the scope-split note above 4b): a
@@ -2835,7 +2835,7 @@ four built-in typed capabilities, deliberately not duplicated), while a typed
 refuses. `typed_actuators` is not even a field of the `RigProfile` object
 (`safety.py:200`) — it lives under that YAML key for historical reasons only.
 
-- [ ] Proposed shape: `property_authorization` with `allowed_categorical`,
+- [x] Proposed shape: `property_authorization` with `allowed_categorical`,
       `allowed_numeric`, `denied`. Confirm the grouping against what 4b's third
       kind and 4c's `named_stages` work actually left behind before committing
       to those three names.
@@ -2847,12 +2847,12 @@ refuses. `typed_actuators` is not even a field of the `RigProfile` object
       deleted because "no rig may be left unable to start by the merge" is a
       standing instinct this file should not appear to have abandoned silently —
       it was overridden by the person who owns every affected rig, on the record.
-- [ ] First-launch setup emits the new shape; the offline validator names the
+- [x] First-launch setup emits the new shape; the offline validator names the
       new paths in its diagnostics; both old-key and new-key configs are covered
       by tests.
-- [ ] Rig gate: start a session on M5 under its **existing** deployed config
+- [x] Rig gate: start a session on M5 under its **existing** deployed config
       (whatever the migration promises), and under a regenerated one.
-- [ ] Deliver a gate runbook, `design/35-block4d-gate-prompts.md`, **on the
+- [x] Deliver a gate runbook, `design/35-block4d-gate-prompts.md`, **on the
       block's branch**, pinning the implementation with `git merge-base
       --is-ancestor <commit> HEAD` rather than an exact tip hash. It must carry a
       demo-machine gate that needs no hazardous motion — an old-key config still
@@ -2956,7 +2956,7 @@ What follows from that, so round 2 does not have to re-derive it:
 
 Post-merge design gate:
 
-- [ ] Record the final schema shape and the two acknowledged warts (`mode` filed
+- [x] Record the final schema shape and the two acknowledged warts (`mode` filed
       under a property-authorization key; `illumination-power` declared twice) in
       `design/33-authorization-map.md`, which documents the old key names in
       twelve places. State that the old key was removed without a migration
@@ -3027,8 +3027,10 @@ stated explicitly rather than waved through:
 - Browser-open timing is orthogonal to a config-schema rename by construction.
 
 Per the standing "confirm before fixing" rule a single failure is a data point,
-not a diagnosis, so this is recorded as **suspected flaky pending one
-re-run**, and routed for hardening rather than fixed here.
+not a diagnosis, so the operator re-ran it. **Confirmed flaky, 2026-08-03: three
+consecutive passes in isolation at ~2.3 s each**, against a lost 15 s budget
+inside the full-suite run. It is load, not the machine and not the code. Routed
+for hardening rather than fixed here.
 
 ### Rig gate G1 re-run — demo machine, 2026-08-03: **PASS. The demo gate is complete.**
 
@@ -3660,7 +3662,8 @@ This is an inventory, not permission to close with unresolved blank work. Block
   (`webserve.py:788`) polls a 15 s budget from a daemon thread; on a box busy
   driving cameras and stages the thread exited having never connected. The test's
   own comment records losing this same race once before, so a previous hardening
-  pass was insufficient. It will keep failing G0 for future blocks, where a red
+  pass was insufficient. Re-run in isolation on that same machine it passed three
+  times for three at ~2.3 s, so the trigger is full-suite load, not the box. It will keep failing G0 for future blocks, where a red
   suite is supposed to mean something. Either give the poll a load-independent
   synchronisation point or mark it appropriately — do not simply raise the
   timeout again.
