@@ -4176,3 +4176,63 @@ in-memory `\n` form, while two of the three readers hash raw bytes -- so saved
 hooks are unusable on Windows, which is every rig. Became **4g**. Both were
 found by reading gate evidence nobody had triaged: `pytest.txt` had been
 collected as evidence for four blocks and never opened.
+
+## Block 4g — one byte-hash convention for saved hooks (merged `936230f`, 2026-08-03)
+
+Branch `design32/hook-hash-newline`, start `95ae192`, implementation `50e5f66`
+accepted on its first round, plus three coordinator commits. One
+implementation round, three Windows gate runs.
+
+**The block existed because gate evidence went unread for four blocks.** Every
+rig run since 4b had reported 23 failures in `pytest.txt`, on every machine
+including demo, and `pytest.txt` had been collected as evidence and never
+opened. Reading it once turned "23 flaky Windows tests" into a single product
+defect: `save_hook` wrote in text mode (`\n` -> `\r\n` on Windows) but pinned
+the hash of the in-memory string, while two of the three readers hashed raw
+bytes. Saved hooks were unusable on Windows, which is every rig.
+
+**The diagnosis was handed to the implementer rather than left to be
+re-derived**, along with a pre-cleared audit list, because the whole cost of
+this block was elsewhere. That was right: the implementation came back correct
+first time and never changed again. `microclaw/` is byte-identical from
+`50e5f66` through the gated tip; all three gate rounds tested the same product
+code.
+
+**Every one of the three gate failures was on the test side, and that is the
+block's real lesson.** Round 1 failed with all 23 still red — and the tell that
+the fix *was* working was that the message had changed from `changed on disk` to
+`legacy newline-normalized`. The new code was running and correctly reporting
+that those hooks' pins did not match their bytes. Two *test fixtures* had the
+same two-convention defect as the product code and had not been fixed with it;
+between them they owned all 23. Round 2 left exactly one failure, whose
+*tampering* step had the same shape one level deeper. Round 3 passed at exactly
+the predicted count.
+
+**When a block's acceptance is "these named tests pass on a platform you cannot
+run," the fixtures those tests use are part of the surface under repair.** The
+implementer hedged honestly — "expected to repair" — because it could not be
+checked from macOS. The unstated assumption was that the tests exercised the
+product's save path; two of them built their own.
+
+**A regression guard has to reproduce the mechanism, not the symptom.** The
+first guard the coordinator wrote fed CRLF source in directly and passed on
+POSIX whether or not the fixture was fixed -- it is Windows *translation* that
+makes bytes differ from the string, not the presence of CRLF. Both final guards
+simulate the translation, and each was verified to fail against its own un-fixed
+fixture before being kept. Verifying that a new test fails without the fix is
+the cheapest step in the whole loop and it caught a worthless test.
+
+**Derived counts across divergent branches are worth less than the branch's own
+measurement.** The runbook first expected 1338, arrived at by adding this
+block's tests to the 1311/23 Windows baseline -- but that baseline was measured
+on Block 4e's branch, and 4g was cut from `main` before 4e merged, so 4g's tree
+never carried 4e's five tests. Round 3's expectation was taken directly from
+round 2's own observed run instead, and matched exactly.
+
+**Two coordinator additions.** G2 as written depended on the gate machine
+happening to own a hook pinned the old way; nothing guaranteed that, so a
+`design/35-block4g-legacy-migration-check.py` spike now plants one in a
+throwaway registry and walks refusal -> review -> re-save -> reload. It passed
+on real Windows first time. And the migration was checked for a dead end: it is
+not one -- `read_hook_from_file` plus `save_hook` re-pins an existing file, so
+nobody has to regenerate code they never wrote.
