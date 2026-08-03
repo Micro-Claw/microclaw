@@ -20,7 +20,7 @@ from microclaw.safety import (
     PluginConstraints,
     RangeEdge,
     RangePolicy,
-    RigProfile,
+    PropertyAuthorization,
     SafetyConstraints,
     SafetyGuard,
     SafetyViolation,
@@ -160,7 +160,7 @@ def parsed(
     return ParsedSafetyConfig(
         constraints,
         ranges,
-        RigProfile(mode, frozenset(categorical), frozenset(excluded)),
+        PropertyAuthorization(mode, frozenset(categorical), denied=frozenset(excluded)),
     )
 
 
@@ -309,7 +309,10 @@ def test_known_continuous_raw_property_is_demoted_and_write_stays_refused(capsys
     assert [(item.kind, item.blocking) for item in report.diagnostics] == [
         ("live_check", False)
     ]
-    assert "Z.Position is a known continuous actuator" in report.diagnostics[0].message
+    message = report.diagnostics[0].message
+    assert "Z.Position is a known continuous actuator" in message
+    assert "property_authorization.allowed_numeric" in message
+    assert "property_authorization.denied" in message
     assert any(
         entry.device == "Z" and entry.property == "Position"
         and entry.classification == "excluded"
@@ -350,8 +353,10 @@ def test_missing_allowed_presets_are_demoted_and_not_authorized(capsys):
     assert report.authorized_presets == {"DAPI"}
     assert set(report.excluded_presets) == {"TRITC", "Brightfield"}
     for preset in ("TRITC", "Brightfield"):
-        with pytest.raises(RigAuthorizationError, match="absent"):
+        with pytest.raises(RigAuthorizationError, match="absent") as exc:
             authorize_channel(ctrl, preset)
+        assert "property_authorization.allowed_categorical" in str(exc.value)
+        assert "property_authorization.allowed_numeric" in str(exc.value)
     assert "AUTHORIZATION CLAIMS DEMOTED" in capsys.readouterr().err
 
 
@@ -395,8 +400,10 @@ def test_fully_reviewed_categorical_preset_is_authorized_and_runtime_gated():
     )
     authorize_channel(ctrl, "DAPI")
     authorize_property_write(ctrl, "Wheel", "Label")
-    with pytest.raises(RigAuthorizationError, match="excluded"):
+    with pytest.raises(RigAuthorizationError, match="excluded") as exc:
         authorize_property_write(ctrl, "Wheel", "Speed")
+    assert "property_authorization.allowed_categorical" in str(exc.value)
+    assert "property_authorization.allowed_numeric" in str(exc.value)
 
 
 def test_excluded_preset_effect_fails_and_is_not_runtime_authorized():
@@ -683,8 +690,9 @@ def test_declared_unloaded_device_demotes_via_device_absence(capsys):
     assert report.complete is True
     assert len(report.diagnostics) == 1
     assert "declared device 'NotLoaded' is not loaded" in report.diagnostics[0].message
-    with pytest.raises(RigAuthorizationError, match="excluded"):
+    with pytest.raises(RigAuthorizationError, match="excluded") as exc:
         authorize_property_write(ctrl, "NotLoaded", "Mode")
+    assert "property_authorization.allowed_categorical" in str(exc.value)
     assert "declared device 'NotLoaded' is not loaded" in capsys.readouterr().err
 
 
@@ -699,6 +707,7 @@ def test_declared_absent_property_demotes_via_property_absence(capsys):
     assert report.complete is True
     assert len(report.diagnostics) == 1
     assert "property Selector.Mode is not present" in report.diagnostics[0].message
+    assert "property_authorization.allowed_categorical" in report.diagnostics[0].message
     with pytest.raises(RigAuthorizationError, match="excluded"):
         authorize_property_write(ctrl, "Selector", "Mode")
     with pytest.raises(SafetyViolation, match="demoted by live authorization"):
@@ -716,6 +725,7 @@ def test_absent_excluded_property_demotes_via_property_absence(capsys):
     assert "property ReadOnlySensor.NotAProperty is not present" in (
         report.diagnostics[0].message
     )
+    assert "property_authorization.denied" in report.diagnostics[0].message
     with pytest.raises(RigAuthorizationError, match="excluded"):
         authorize_property_write(ctrl, "ReadOnlySensor", "NotAProperty")
     assert "property ReadOnlySensor.NotAProperty is not present" in (
@@ -999,7 +1009,7 @@ def test_authorization_map_cli_preserves_actionable_refusal(monkeypatch):
 # --- design/33 fast-follow: MM StateDevice auto-classification -----------------
 #
 # A filter wheel / slider / turret is a discrete device; requiring a
-# categorical_properties declaration for each one was disproportionate (the M5
+# allowed_categorical declaration for each one was disproportionate (the M5
 # authoring exposed the friction). Auto-classification is additive and is driven
 # ONLY by the MM device type plus the reviewed config -- never by device names.
 

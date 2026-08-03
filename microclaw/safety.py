@@ -199,12 +199,13 @@ BUILTIN_TYPED_CAPABILITIES = frozenset(
 
 
 @dataclass(frozen=True)
-class RigProfile:
-    """Reviewed per-rig property decisions; ranges declare stage actuators."""
+class PropertyAuthorization:
+    """Reviewed authorization policy for raw device-property writes."""
 
     mode: AuthorizationMode
-    categorical_properties: frozenset[tuple[str, str]]
-    excluded_properties: frozenset[tuple[str, str]]
+    allowed_categorical: frozenset[tuple[str, str]]
+    allowed_numeric: dict[TypedActuatorId, TypedActuatorPolicy] = field(default_factory=dict)
+    denied: frozenset[tuple[str, str]] = frozenset()
 
 
 @dataclass
@@ -346,10 +347,9 @@ class ParsedSafetyConfig:
 
     constraints: SafetyConstraints
     ranges: dict[ActuatorId, RangePolicy]
-    rig_profile: RigProfile = field(
-        default_factory=lambda: RigProfile("guaranteed", frozenset(), frozenset())
+    property_authorization: PropertyAuthorization = field(
+        default_factory=lambda: PropertyAuthorization("guaranteed", frozenset())
     )
-    typed_actuators: dict[TypedActuatorId, TypedActuatorPolicy] = field(default_factory=dict)
 
     @classmethod
     def from_yaml(cls, path: str) -> ParsedSafetyConfig:
@@ -373,7 +373,7 @@ class ParsedSafetyConfig:
         top_keys = {
             "schema_version", "reviewed", "stage", "camera", "analysis", "channels", "plugins",
             "illumination", "forbidden_properties",
-            "workspace_dir", "named_stages", "rig_profile", "acquisition",
+            "workspace_dir", "named_stages", "property_authorization", "acquisition",
         }
         section_keys = {
             "stage": {"x_min", "x_max", "y_min", "y_max", "z_min", "z_max"},
@@ -391,7 +391,7 @@ class ParsedSafetyConfig:
                 "shutters", "power_properties", "max_power_percent",
                 "max_power_step_factor", "require_confirm_on_enable",
             },
-            "rig_profile": {"mode", "categorical_properties", "excluded_properties", "typed_actuators"},
+            "property_authorization": {"mode", "allowed_categorical", "denied", "allowed_numeric"},
         }
         for key in cfg.keys() - top_keys:
             problem(str(key), "unknown top-level key")
@@ -399,17 +399,17 @@ class ParsedSafetyConfig:
         if "schema_version" not in cfg:
             problem(
                 "schema_version",
-                "missing required schema version; add `schema_version: 2`, a rig_profile, and give every declared range both edges",
+                "missing required schema version; add `schema_version: 2`, a property_authorization, and give every declared range both edges",
             )
         elif type(cfg["schema_version"]) is not int or cfg["schema_version"] != 2:
             problem(
                 "schema_version",
-                f"unsupported schema version {cfg['schema_version']!r}; expected 2 (schema 1 configs must add rig_profile and migrate to property allowlist mode)",
+                f"unsupported schema version {cfg['schema_version']!r}; expected 2 (schema 1 configs must add property_authorization and migrate to property allowlist mode)",
             )
         if "reviewed" not in cfg:
             problem("reviewed", "missing required key")
-        if "rig_profile" not in cfg:
-            problem("rig_profile", "missing required declared rig profile")
+        if "property_authorization" not in cfg:
+            problem("property_authorization", "missing required property authorization map")
         required_acquisition_keys = section_keys["acquisition"] - {
             "max_session_illuminated_ms", "confirm_above_bytes",
         }
@@ -439,7 +439,7 @@ class ParsedSafetyConfig:
         channels_cfg = mapping("channels")
         plugins_cfg = mapping("plugins")
         ill_cfg = mapping("illumination")
-        rig_cfg = mapping("rig_profile")
+        authorization_cfg = mapping("property_authorization")
 
         # `analysis.min_snr` is deliberately optional (omitting it retains the
         # uncalibrated package fallback — see the shipped example), so it is NOT
@@ -530,13 +530,13 @@ class ParsedSafetyConfig:
         forbidden_cfg = object_list(
             "forbidden_properties", cfg.get("forbidden_properties"), {"device", "property"}
         )
-        categorical_value = rig_cfg.get("categorical_properties")
+        categorical_value = authorization_cfg.get("allowed_categorical")
         categorical_cfg = object_list(
-            "rig_profile.categorical_properties", categorical_value,
+            "property_authorization.allowed_categorical", categorical_value,
             {"device", "property"},
         )
         excluded_cfg = object_list(
-            "rig_profile.excluded_properties", rig_cfg.get("excluded_properties"),
+            "property_authorization.denied", authorization_cfg.get("denied"),
             {"device", "property"},
         )
         shutters_cfg = object_list(
@@ -548,7 +548,7 @@ class ParsedSafetyConfig:
             {"device", "property", "units", "full_scale"},
         )
         typed_cfg = object_list(
-            "rig_profile.typed_actuators", rig_cfg.get("typed_actuators"),
+            "property_authorization.allowed_numeric", authorization_cfg.get("allowed_numeric"),
             {"device", "property", "kind", "units", "minimum", "maximum", "full_scale"},
         )
         named_cfg = object_list(
@@ -556,11 +556,11 @@ class ParsedSafetyConfig:
         )
         for name, items in (
             ("forbidden_properties", forbidden_cfg),
-            ("rig_profile.categorical_properties", categorical_cfg),
-            ("rig_profile.excluded_properties", excluded_cfg),
+            ("property_authorization.allowed_categorical", categorical_cfg),
+            ("property_authorization.denied", excluded_cfg),
             ("illumination.shutters", shutters_cfg),
             ("illumination.power_properties", power_cfg),
-            ("rig_profile.typed_actuators", typed_cfg),
+            ("property_authorization.allowed_numeric", typed_cfg),
         ):
             seen_pairs: set[tuple[str, str]] = set()
             for index, item in enumerate(items):
@@ -574,7 +574,7 @@ class ParsedSafetyConfig:
                     seen_pairs.add(pair)
         typed_policies: dict[TypedActuatorId, TypedActuatorPolicy] = {}
         for index, item in enumerate(typed_cfg):
-            location = f"rig_profile.typed_actuators[{index}]"
+            location = f"property_authorization.allowed_numeric[{index}]"
             for key in ("device", "property", "kind", "units", "minimum", "maximum"):
                 if key not in item:
                     problem(f"{location}.{key}", "missing required key")
@@ -616,7 +616,7 @@ class ParsedSafetyConfig:
         for identity, policy in typed_policies.items():
             if policy.kind == "bounded-numeric" and (identity.device, identity.property) in illumination_pairs:
                 problem(
-                    "rig_profile.typed_actuators",
+                    "property_authorization.allowed_numeric",
                     f"bounded-numeric pair {(identity.device, identity.property)!r} aliases a declared illumination capability; illumination paths must retain their dedicated gate",
                 )
         for index, item in enumerate(power_cfg):
@@ -637,18 +637,22 @@ class ParsedSafetyConfig:
                 problem(f"{location}.full_scale", "is only valid with units: native")
         ranges = _stage_ranges(stage_cfg, named_cfg, problem)
 
-        mode = rig_cfg.get("mode", "guaranteed")
+        mode = authorization_cfg.get("mode", "guaranteed")
         if mode not in ("guaranteed", "degraded_trusted_plugins"):
             problem(
-                "rig_profile.mode",
+                "property_authorization.mode",
                 "expected 'guaranteed' or 'degraded_trusted_plugins'",
             )
-        if "rig_profile" in cfg:
-            for key in {"excluded_properties"} - rig_cfg.keys():
-                problem(f"rig_profile.{key}", "missing required key")
-        if mode == "guaranteed" and categorical_value is None:
+        if "property_authorization" in cfg:
+            for key in {"denied"} - authorization_cfg.keys():
+                problem(f"property_authorization.{key}", "missing required key")
+        if (
+            "property_authorization" in cfg
+            and mode == "guaranteed"
+            and categorical_value is None
+        ):
             problem(
-                "rig_profile.categorical_properties",
+                "property_authorization.allowed_categorical",
                 "required in guaranteed mode, even when empty; denylist-only configs must migrate",
             )
         categorical_pairs = {
@@ -665,7 +669,7 @@ class ParsedSafetyConfig:
         }
         for pair in sorted(categorical_pairs & excluded_pairs):
             problem(
-                "rig_profile",
+                "property_authorization",
                 f"property {pair!r} cannot be both categorically authorized and excluded",
             )
 
@@ -714,10 +718,12 @@ class ParsedSafetyConfig:
         return cls(
             constraints=constraints,
             ranges=ranges,
-            rig_profile=RigProfile(
-                mode, frozenset(categorical_pairs), frozenset(excluded_pairs)
+            property_authorization=PropertyAuthorization(
+                mode,
+                frozenset(categorical_pairs),
+                typed_policies,
+                frozenset(excluded_pairs),
             ),
-            typed_actuators=typed_policies,
         )
 
 

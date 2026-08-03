@@ -173,7 +173,7 @@ class AuthorizationEntry:
     axis: str | None = None
     detail: str | None = None
     # Where a categorical decision came from: "declared" (an explicit
-    # rig_profile.categorical_properties entry) or "auto:state-device" (this
+    # property_authorization.allowed_categorical entry) or "auto:state-device" (this
     # module classified the device as an MM StateDevice at startup). None for
     # every other classification. The rig operator reads this field to verify
     # an auto-classification without diffing the config.
@@ -472,10 +472,10 @@ def _position_ruled_devices(parsed_config: ParsedSafetyConfig) -> set[str]:
     scoped to the position pair, not the device: excluding, say, `Wheel.Speed`
     must not silently kill the wheel's auto-classification.
     """
-    profile = parsed_config.rig_profile
+    profile = parsed_config.property_authorization
     ruled = (
-        set(profile.categorical_properties)
-        | set(profile.excluded_properties)
+        set(profile.allowed_categorical)
+        | set(profile.denied)
         | {
             (item.device, item.property)
             for item in parsed_config.constraints.forbidden_properties
@@ -552,7 +552,7 @@ def validate_live_rig(
     categorical allowlist. Omit it for read-only enumeration.
     """
     core = ctrl.core
-    profile = parsed_config.rig_profile
+    profile = parsed_config.property_authorization
     guaranteed = profile.mode == "guaranteed"
     if not guaranteed:
         print(
@@ -718,13 +718,13 @@ def validate_live_rig(
                 file=sys.stderr,
             )
 
-    typed_pairs = {(identity.device, identity.property) for identity in parsed_config.typed_actuators}
+    typed_pairs = {(identity.device, identity.property) for identity in profile.allowed_numeric}
     denied_pairs = {
         (item.device, item.property)
         for item in parsed_config.constraints.forbidden_properties
-    } | set(profile.excluded_properties)
+    } | set(profile.denied)
     for identity, policy in sorted(
-        parsed_config.typed_actuators.items(), key=lambda item: (item[0].device, item[0].property)
+        profile.allowed_numeric.items(), key=lambda item: (item[0].device, item[0].property)
     ):
         errors.extend(_validate_typed_live(core, identity, policy, loaded_devices))
         pair = (identity.device, identity.property)
@@ -800,7 +800,7 @@ def validate_live_rig(
         ))
     admitted_categorical_pairs: set[tuple[str, str]] = set()
     loaded_device_set = set(loaded_devices)
-    for device, prop in sorted(profile.categorical_properties):
+    for device, prop in sorted(profile.allowed_categorical):
         if (device, prop) in typed_pairs:
             errors.append(f"Raw property {device}.{prop} cannot be both typed-continuous and categorical.")
         absent_reason = None
@@ -823,7 +823,7 @@ def validate_live_rig(
                 f"Categorical claim for {device}.{prop} was dropped because the "
                 f"{absent_reason}; it is not authorized for writes. Load the exact "
                 "device/property in Micro-Manager, or remove this exact entry from "
-                "`rig_profile.categorical_properties`.",
+                "`property_authorization.allowed_categorical`.",
                 False,
             ))
             entries.append(AuthorizationEntry(
@@ -848,8 +848,8 @@ def validate_live_rig(
             demotions.append(ConfigDiagnostic(
                 "live_check",
                 f"Raw property {device}.{prop} is a known continuous actuator (confirmed by the live rig) and cannot be classified as categorical; "
-                "declare it in rig_profile.typed_actuators with exact semantics, units, and safe canonical bounds, or place it in "
-                "rig_profile.excluded_properties if it is intentionally unavailable for writes. The categorical claim was dropped and this property is not authorized for writes.",
+                "declare it in property_authorization.allowed_numeric with exact semantics, units, and safe canonical bounds, or place it in "
+                "property_authorization.denied if it is intentionally unavailable for writes. The categorical claim was dropped and this property is not authorized for writes.",
                 False,
             ))
         entries.append(AuthorizationEntry(
@@ -926,7 +926,7 @@ def validate_live_rig(
                         f"{lower!r}..{upper!r}, not 0..100 percent. The existing max_power_percent cap may be inoperative; "
                         "declare units: native and full_scale equal to the measured native full scale (M5 Power (mW): 75.0), or select a real percent property."
                     )
-    for device, prop in sorted(profile.excluded_properties):
+    for device, prop in sorted(profile.denied):
         if _known_continuous_raw_pair(core, (device, prop)):
             errors.append(
                 f"Excluded property {device}.{prop} aliases a built-in motion/exposure "
@@ -949,7 +949,7 @@ def validate_live_rig(
                 f"Excluded-property claim for {device}.{prop} was not corroborated "
                 f"because the {absent_reason}. The property remains unauthorized. "
                 "Correct the exact device/property name, or remove this exact entry "
-                "from `rig_profile.excluded_properties`.",
+                "from `property_authorization.denied`.",
                 False,
             ))
         entries.append(AuthorizationEntry(
@@ -1028,7 +1028,7 @@ def validate_live_rig(
             reasons.append(_clean_exception_message(exc))
         for device, prop, value in effects:
             pair = (device, prop)
-            if pair in profile.excluded_properties:
+            if pair in profile.denied:
                 classification = "excluded"
                 reasons.append(f"{device}.{prop} is excluded")
             elif device == "Core":
@@ -1212,7 +1212,7 @@ def validate_live_rig(
     if guard is not None and auto_pairs:
         guard.admit_auto_classified(auto_pairs)
     if guard is not None:
-        guard.admit_typed_actuators(parsed_config.typed_actuators)
+        guard.admit_typed_actuators(parsed_config.property_authorization.allowed_numeric)
 
     report = AuthorizationMap(
         mode=profile.mode,
@@ -1263,8 +1263,8 @@ def authorize_property_write(ctrl: Any, device: str, prop: str) -> None:
             "refusal alone: an explicitly excluded property must stay unavailable until "
             "its exclusion is deliberately removed, and an unclassified property needs "
             "its hardware semantics established first. Then declare this exact pair in "
-            "the matching top-level list: `rig_profile.categorical_properties`, "
-            "`rig_profile.typed_actuators`, `illumination.shutters`, or "
+            "the matching top-level list: `property_authorization.allowed_categorical`, "
+            "`property_authorization.allowed_numeric`, `illumination.shutters`, or "
             "`illumination.power_properties`."
         )
 
@@ -1277,7 +1277,7 @@ def authorize_channel(ctrl: Any, preset: str) -> None:
             f"Channel preset {preset!r} was refused: {'; '.join(reasons)}. The preset "
             "itself must appear under top-level `channels.allowed`, and every expanded "
             "effect must be permitted where its kind is declared: "
-            "`rig_profile.categorical_properties`, `rig_profile.typed_actuators`, "
+            "`property_authorization.allowed_categorical`, `property_authorization.allowed_numeric`, "
             "`illumination.shutters`, or `illumination.power_properties`. An explicitly "
             "excluded or unclassifiable effect has no legal declaration until that "
             "exclusion is removed or its hardware semantics are established."
@@ -1360,8 +1360,8 @@ def _authorize_channel_effect(
         raise RigAuthorizationError(
             f"Channel effect {device}.{prop} was refused because it is unclassified or "
             "excluded. A discrete non-illumination effect goes under top-level "
-            "`rig_profile.categorical_properties`; a bounded continuous actuator goes "
-            "under `rig_profile.typed_actuators`; illumination goes under "
+            "`property_authorization.allowed_categorical`; a bounded continuous actuator goes "
+            "under `property_authorization.allowed_numeric`; illumination goes under "
             "`illumination.shutters` or `illumination.power_properties`. If the property "
             "is explicitly excluded or its actuator kind is not established, no legal "
             "declaration can permit it yet."

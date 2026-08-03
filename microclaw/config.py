@@ -89,7 +89,7 @@ def validate_safety_config(path: str | Path | None = None) -> ConfigValidationRe
         "confirm_above_frames", "confirm_above_duration_s",
         "confirm_above_illuminated_ms",
     )
-    if parsed.rig_profile.mode == "guaranteed":
+    if parsed.property_authorization.mode == "guaranteed":
         for name in acquisition_fields:
             if getattr(acquisition, name) is None:
                 diagnostics.append(ConfigDiagnostic(

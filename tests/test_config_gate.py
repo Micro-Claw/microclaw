@@ -23,7 +23,7 @@ from microclaw.safety import ParsedSafetyConfig, SafetyConfigError, SafetyConstr
 REAL = """
 schema_version: 2
 reviewed: true
-rig_profile: {mode: guaranteed, categorical_properties: [], excluded_properties: []}
+property_authorization: {mode: guaranteed, allowed_categorical: [], denied: []}
 stage: {x_min: -100.0, x_max: 100.0, y_min: -100.0, y_max: 100.0}
 camera: {max_exposure_ms: 500.0}
 acquisition:
@@ -51,6 +51,21 @@ def test_reviewed_true_loads(tmp_path):
     c = load_safety_config(_write(tmp_path, REAL))
     assert isinstance(c, ParsedSafetyConfig)
     assert c.constraints.stage.x_max == 100.0
+
+
+def test_old_authorization_key_is_refused_by_strict_schema(tmp_path):
+    legacy = REAL.replace(
+        "property_authorization: {mode: guaranteed, allowed_categorical: [], denied: []}",
+        "rig_profile: {mode: guaranteed, categorical_properties: [], typed_actuators: [], excluded_properties: []}",
+    )
+    result = validate_safety_config(_write(tmp_path, legacy))
+    assert result.parsed is None
+    assert not result.can_start_live_validation
+    assert [item.kind for item in result.diagnostics] == ["schema"]
+    message = result.diagnostics[0].message
+    assert "rig_profile: unknown top-level key" in message
+    assert "property_authorization: missing required property authorization map" in message
+    assert message.count("\n") == 2
 
 
 def test_missing_acquisition_section_names_file_and_required_fields(tmp_path):
