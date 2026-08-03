@@ -3021,18 +3021,36 @@ redirected or piped, `serve` then blocks forever, and Ctrl+C discards the buffer
 second source of output either. That is also why G2 captured cleanly: a refusal
 *exits*, and Python flushes on exit.
 
-Fixed in the runbook at `6979301`: `$env:PYTHONUNBUFFERED = "1"` in G0, and — the
-part that actually matters — **the acceptance evidence for every `serve` step is
-now a `Test-NetConnection` probe from a second window, not captured stdout.** A
-config that failed to load, a rig that failed live validation, or an
-authorization map that refused to build all exit before the port is bound, so
-`TcpTestSucceeded: True` cannot be produced by a session that did not fully
-start. Proving the thing directly beats proving a message about the thing, and
-the earlier criterion had already failed twice.
+**Operator correction, 2026-08-03, and it was the right call.** The coordinator's
+first fix (`6979301`) kept `--no-browser` and bolted on `PYTHONUNBUFFERED` plus a
+`Test-NetConnection` probe from a second window. The operator's objection: this
+is a lot of scaffolding to keep a flag *no ordinary session has ever used*, the
+browser startup prompt is a non-event, and the session's history JSONL is already
+the artifact gates return. Correct on all three. The scaffolding existed to work
+around a defect the gate did not need to touch, and it had drifted from what
+running microclaw actually looks like — a gate should exercise the normal
+workflow, not a synthetic one.
+
+Rewritten at `b455475`, **net −38 lines**:
+
+- Every session step runs the plain `serve` command with no flag, no redirect,
+  no capture. `PYTHONUNBUFFERED`, `Tee-Object` and the port probe are all gone.
+- **The acceptance evidence is the session's `*_microclaw_history.jsonl`**,
+  which is written only after live-rig validation and authorization-map
+  construction and so cannot exist for a session that failed to start.
+- One caveat the runbook now states, because it is not guessable and it is
+  exactly why the demo run returned no JSONL: `AuditLog.append`
+  (`conversation.py:153`) creates the file **lazily on first write**, so an idle
+  session that is started and immediately stopped writes nothing. The gate
+  therefore asks for one trivial read-only message before Ctrl+C.
+- **Refusal steps keep `> file 2>&1`** and are called out as the deliberate
+  exception: there the message *is* the evidence, and capture is reliable
+  because a refusing process exits, which flushes the buffer.
 
 The underlying product defect — `microclaw serve` is silent under any redirect
 until it dies — is **not** fixed here; 4d is a schema rename. Recorded in the
-carried-forward register and routed to block 5.
+carried-forward register and routed to block 5. The gate no longer works around
+it; it simply stops depending on captured stdout.
 
 ### Round 2 — pushed 2026-08-03, awaiting the rigs
 
@@ -3549,9 +3567,10 @@ This is an inventory, not permission to close with unresolved blank work. Block
   and captures output to a log gets an empty file and cannot tell whether the
   session started — which is exactly what happened twice on the Block 4d demo
   gate, under two different capture methods. A `flush=True` on the banner is
-  probably the whole fix; the gate works around it with `PYTHONUNBUFFERED=1` plus
-  a `Test-NetConnection` probe, which is a workaround and not a fix. **Route to
-  block 5**, which owns the first-run and documentation path.
+  probably the whole fix. Block 4d's gate does not work around it; it stopped
+  depending on captured stdout and takes the session history JSONL as evidence
+  instead, so this stays an unfixed product defect and not a gate problem.
+  **Route to block 5**, which owns the first-run and documentation path.
 - **Block 9b cross-rig inventory gate, four limbs.** Live M5 owes real
   enumeration failures, credential redaction, live config groups and state labels
   beyond `.cfg` contents, and bridge-typed returns. **Explicitly does not block
