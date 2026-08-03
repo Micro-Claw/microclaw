@@ -115,36 +115,46 @@ What this file adds, specific to these blocks:
 
 ### State at the 2026-08-03 session boundary — read this before assigning anything
 
-Recorded because the two facts below exist only in a closed conversation
-otherwise, and step 9's whole point is that a cold session resumes from the
-remote alone.
+Refreshed after Block 4d merged. Recorded because these facts otherwise exist
+only in a closed conversation, and step 9's whole point is that a cold session
+resumes from the remote alone.
 
-- **Track 0's kit was shipped to the Nikon operator on 2026-08-03 and no
-  response has come back.** Do not re-prepare or re-ship it, and do not read the
-  empty 0c row as "unstarted". Round-trip latency to that operator is days and
-  it is the longest-latency item on the board, so it is expected to sit open
-  while Track A proceeds. When evidence arrives, 0c's checklist items are the
-  triage procedure.
-- **Everything in Track A up to and including 4c is closed and on `origin`.**
-  Blocks 4e, 4f, 4g, 4h and 4c are merged, their branches deleted locally *and*
-  remotely, their ledger rows closed, their design gates reconciled, and their
-  coordination notes recorded in `design/prompts.md`. At the boundary there were
-  no worktrees, no local block branches, and `git log --oneline
-  origin/main..main` was empty. Nothing is outstanding under `/tmp`.
-- **`main` is at `777710c`, measured 1369 passed / 99 skipped / 3 expected
+- **`main` is at `5b978d5`, measured 1371 passed / 99 skipped / 3 expected
   warnings.** Re-measure anyway — that is step 1 — but a wildly different number
   means something else changed, not that this note was wrong.
-- **Block 4d was assigned 2026-08-03 from `2f1852e`** (this note's earlier text
-  said nothing was assigned; that was true at the boundary and is no longer).
-  Order from there is **4d → 5**, then Track B.
-- Two things 4d will need that are not in its block text. Its rig gate starts M5
-  under its *existing deployed* config, and a copy of that file is in the block 4
-  evidence bundle as `block4-m5-20260802-100850/deployed-m5.reference.yaml` with
-  a sha256 beside it — the deployed config itself is on M5, not in this repo.
-  And 4c's ledger row is the precedent for what "both old-key and new-key configs
-  are covered by tests" has to survive: a generated profile now carries
-  `named_stages`, so the rename must move it or deliberately leave it at top
-  level.
+- **Nothing is assigned, and there are no open branches.** Everything in Track A
+  up to and including **4d** is closed and on `origin`: merged, branches deleted
+  locally *and* remotely, ledger rows closed, design gates reconciled,
+  coordination notes in `design/prompts.md`. At the boundary there were no
+  worktrees, no local block branches, and `git log --oneline origin/main..main`
+  was empty. Nothing is outstanding under `/tmp`.
+- **The next block is 5.** Order from there is **5**, then Track B.
+
+**Three operator actions are outstanding, and all three are consequences of
+Block 4d rather than work items.** A cold session that hears "my rig won't
+start" needs to reach for this list first:
+
+1. **Every deployed config must be hand-renamed or its rig will not start.**
+   4d deleted `rig_profile` with no migration path (operator ruling — see
+   §"Clean cut"). M5, M2 and the demo machine each need the same four key
+   renames: `rig_profile`→`property_authorization`,
+   `categorical_properties`→`allowed_categorical`,
+   `typed_actuators`→`allowed_numeric`, `excluded_properties`→`denied`. The
+   symptom is `rig_profile: unknown top-level key` plus
+   `property_authorization: missing required property authorization map`. That
+   is expected and is not a defect. M5's deployed file was proven to need
+   exactly four line changes and nothing else, by offline replay of the
+   hash-verified copy.
+2. **The Nikon operator holds a stale worksheet.** `design/34-nikon-stopgap-
+   worksheet.yaml` was corrected in the repo by 4d, but the copy shipped to them
+   on 2026-08-03 still uses the old key and they cannot debug the refusal. **0c
+   owes them the corrected file** with whatever goes out next.
+3. **Track 0's kit was shipped 2026-08-03 and no response has come back.** Do
+   not re-prepare or re-ship it, and do not read the empty 0c row as
+   "unstarted". Round-trip latency there is days and it is the
+   longest-latency item on the board, so it is expected to sit open while Track
+   A proceeds. When evidence arrives, 0c's checklist items are the triage
+   procedure.
 
 Progress markers: `[ ]` not started, `[-]` active, `[x]` complete, `[!]` blocked.
 
@@ -3246,6 +3256,34 @@ dual-key bridge exists to protect.
 ## 5. [ ] Deployed-config hygiene and the `init` path — rig config review
 
 Branch: `design33/deployed-config-hygiene`
+
+**What this block inherits, gathered here so a cold coordinator does not have to
+reconstruct it from the carried-forward register.** Three items were routed to
+block 5 by earlier blocks; all three are register rows, and the register is the
+authoritative wording:
+
+- **From Block 3, deliberately skipped there as its optional item:** detect
+  limits still equal to `safety_config.example.yaml`'s fictional values and say
+  so. Block 3 skipped it precisely because block 5 owns the copy-the-example
+  path that creates the problem.
+- **From Block 4d's gate:** `microclaw serve` produces no output at all when
+  piped or redirected until it dies — bare `print()` banner, block-buffered
+  stdout, a server loop that never returns, and uvicorn at `log_level="warning"`
+  suppressing the only other source. An operator following our own runbooks and
+  logging to a file gets an empty file. A `flush=True` on the banner is probably
+  the whole fix.
+- **From Block 4d's G0:** `tests/test_webserve.py::
+  test_browser_opens_only_once_the_port_accepts` is confirmed flaky under
+  full-suite load (failed M5's G0; three isolated passes at ~2.3 s after). It
+  will keep failing G0 for future blocks, where a red suite is supposed to mean
+  something. Do not simply raise the timeout again.
+
+**Sequencing note.** The first item below edits M5's deployed config, and that
+file *also* needs Block 4d's four key renames before M5 will start at all (see
+the boundary note's outstanding-actions list). Those are one editing session, not
+two — but the rename is required for the rig to run and the budget fix is a
+reviewed judgement call, so do not let the second silently ride along with the
+first.
 
 - [ ] Fix the deployed M5 config's acquisition budgets, which were copied from
       the fictional example including the exposure limit (design/33 `:790`). This
