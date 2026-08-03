@@ -119,6 +119,8 @@ def _answer_real_interview(prompts, *, bulk=True):
             return "" if "proposal:" in prompt else "e-/ADU"
         if prompt.startswith("Illumination candidate"):
             return "e"
+        if prompt.startswith("Named single-axis stage"):
+            return "y"
         if "ON value" in prompt:
             return "ON"
         if "OFF value" in prompt:
@@ -152,7 +154,11 @@ def test_interview_copies_only_identifiers_and_explicit_answers(tmp_path):
     rendered = yaml.safe_dump(config)
     assert "OBSERVED" not in rendered
     assert config["camera"]["max_exposure_ms"] == 2450
-    assert any("PFS-offset workflows remain unsupported" in note for note in notes)
+    assert any(
+        "No offset stage was declared" in note
+        and "not evidence that its reported achieved_um means arrival" in note
+        for note in notes
+    )
     assert any("ambiguous XY" in line for line in output)
     result = write_profile(config, notes, tmp_path / "profile.yaml")
     assert result.parsed is not None
@@ -898,6 +904,211 @@ def test_stage_driver_ranges_are_offered_per_axis():
     }
     assert sum("MM driver technical range" in prompt for prompt in prompts) == 8
     assert sum(line.startswith("PROPOSAL ACCEPTED: Human-reviewed") for line in output) == 8
+
+
+def test_named_stage_bounds_are_authored_from_captured_inventory():
+    """The added device uses the captured M5 Thorlabs property spelling/range."""
+    inventory = json.loads(REAL_DEMO_INVENTORY.read_text(encoding="utf-8"))
+    focus = next(
+        copy.deepcopy(device) for device in inventory["facts"]["devices"]
+        if device["label"] == inventory["facts"]["core_device_assignments"]["focus"]
+    )
+    focus["label"] = "Aux Z"
+    position = next(prop for prop in focus["properties"] if prop["name"] == "Position")
+    position.update(
+        name="Position (um)", has_limits=True, reported_type="Integer",
+        technical_range={"lower": 0.0, "upper": 28000.0},
+    )
+    inventory["facts"]["devices"].append(focus)
+    prompts, output = [], []
+    base = _answer_real_interview(prompts)
+    def ask(prompt):
+        if "named stage Aux Z" in prompt and "MM driver technical range" in prompt:
+            prompts.append(prompt)
+            return ""
+        return base(prompt)
+    config, _ = interview(
+        inventory, ask=ask, say=output.append
+    )
+    assert config["named_stages"] == [{
+        "device": "Aux Z", "min_um": 0.0, "max_um": 28000.0,
+    }]
+    assert not any(
+        item["device"] == inventory["facts"]["core_device_assignments"]["focus"]
+        for item in config["named_stages"]
+    )
+    named_prompts = [
+        prompt for prompt in prompts
+        if "Human-reviewed" in prompt and "named stage Aux Z" in prompt
+    ]
+    assert len(named_prompts) == 2
+    assert all("MM driver technical range" in prompt for prompt in named_prompts)
+    assert sum(
+        line.startswith("PROPOSAL ACCEPTED: Human-reviewed")
+        and "named stage Aux Z" in line for line in output
+    ) == 2
+
+
+def test_named_stage_without_driver_range_requires_typed_bounds():
+    inventory = json.loads(REAL_DEMO_INVENTORY.read_text(encoding="utf-8"))
+    focus = next(
+        copy.deepcopy(device) for device in inventory["facts"]["devices"]
+        if device["label"] == inventory["facts"]["core_device_assignments"]["focus"]
+    )
+    focus["label"] = "Aux Z"
+    inventory["facts"]["devices"].append(focus)
+    prompts, output = [], []
+    config, _ = interview(
+        inventory, ask=_answer_real_interview(prompts), say=output.append
+    )
+    assert config["named_stages"] == [{
+        "device": "Aux Z", "min_um": 0.0, "max_um": 100.0,
+    }]
+    named_prompts = [
+        prompt for prompt in prompts
+        if "Human-reviewed" in prompt and "named stage Aux Z" in prompt
+    ]
+    assert len(named_prompts) == 2
+    assert all("MM driver technical range" not in prompt for prompt in named_prompts)
+    assert any(
+        "no travel limits for named stage device Aux Z" in line for line in output
+    )
+
+
+def test_non_core_xy_stage_is_explicitly_excluded():
+    inventory = json.loads(REAL_DEMO_INVENTORY.read_text(encoding="utf-8"))
+    xy = next(
+        copy.deepcopy(device) for device in inventory["facts"]["devices"]
+        if device["label"] == inventory["facts"]["core_device_assignments"]["xy_stage"]
+    )
+    xy["label"] = "Aux XY"
+    inventory["facts"]["devices"].append(xy)
+    output = []
+    config, notes = interview(
+        inventory, ask=_answer_real_interview([]), say=output.append
+    )
+    assert config["named_stages"] == []
+    assert any(
+        "XY stage device Aux XY is not the core XY stage" in line
+        and "named_stages represents only a single axis" in line
+        for line in output
+    )
+    assert any("UNSUPPORTED NON-CORE XY STAGE: Aux XY" in note for note in notes)
+
+
+def test_named_stage_can_be_declined_and_remains_unreachable():
+    """The candidate is derived from the captured demo Z stage record."""
+    inventory = json.loads(REAL_DEMO_INVENTORY.read_text(encoding="utf-8"))
+    focus = next(
+        copy.deepcopy(device) for device in inventory["facts"]["devices"]
+        if device["label"] == inventory["facts"]["core_device_assignments"]["focus"]
+    )
+    focus["label"] = "Declined Z"
+    inventory["facts"]["devices"].append(focus)
+    prompts, output = [], []
+    base = _answer_real_interview(prompts)
+
+    def ask(prompt):
+        if prompt.startswith("Named single-axis stage Declined Z"):
+            prompts.append(prompt)
+            return "x"
+        return base(prompt)
+
+    config, notes = interview(inventory, ask=ask, say=output.append)
+    assert config["named_stages"] == []
+    assert not any("named stage Declined Z travel" in prompt for prompt in prompts)
+    assert any(
+        "OPERATOR EXCLUSION: named stage Declined Z" in note
+        and "remains unreachable" in note for note in notes
+    )
+    assert any(
+        "Named single-axis stage Declined Z" in prompt
+        and "exclude; leave unreachable" in prompt for prompt in prompts
+    )
+
+
+def test_nikon_pfs_offset_is_authored_with_unverified_motion_note():
+    """Nikon shape: captured demo Z record relabelled TIPFSOffset; Core.Focus stays Z."""
+    inventory = json.loads(REAL_DEMO_INVENTORY.read_text(encoding="utf-8"))
+    focus = next(
+        copy.deepcopy(device) for device in inventory["facts"]["devices"]
+        if device["label"] == inventory["facts"]["core_device_assignments"]["focus"]
+    )
+    focus["label"] = "TIPFSOffset"
+    inventory["facts"]["devices"].append(focus)
+    config, notes = interview(
+        inventory, ask=_answer_real_interview([]), say=lambda _: None
+    )
+    assert config["named_stages"] == [{
+        "device": "TIPFSOffset", "min_um": 0.0, "max_um": 100.0,
+    }]
+    review = next(note for note in notes if note.startswith(
+        "CONTINUOUS-FOCUS REVIEW QUESTION:"
+    ))
+    assert "TIPFSOffset" in review
+    assert "previous target as achieved_um" in review
+    assert "not evidence of arrival or settling" in review
+    assert "commanded servo offset, not the resulting Z excursion" in review
+    assert "mapping is unmeasured" in review
+
+
+@pytest.mark.parametrize("label", ["Z Offset Stage", "PFS Z"])
+def test_offset_stage_is_flagged_on_either_name_fragment_alone(label):
+    """Captured demo Z record relabelled; neither label carries both fragments."""
+    inventory = json.loads(REAL_DEMO_INVENTORY.read_text(encoding="utf-8"))
+    focus = next(
+        copy.deepcopy(device) for device in inventory["facts"]["devices"]
+        if device["label"] == inventory["facts"]["core_device_assignments"]["focus"]
+    )
+    focus["label"] = label
+    inventory["facts"]["devices"].append(focus)
+    config, notes = interview(
+        inventory, ask=_answer_real_interview([]), say=lambda _: None
+    )
+    assert [x["device"] for x in config["named_stages"]] == [label]
+    review = next(note for note in notes if note.startswith(
+        "CONTINUOUS-FOCUS REVIEW QUESTION:"
+    ))
+    assert label in review
+    assert "previous target as achieved_um" in review
+
+
+def test_camera_offset_property_is_not_reported_as_an_offset_stage():
+    """M5 shape: HamamatsuHam_DCAM.'CONVERSION FACTOR OFFSET' is an ADC offset.
+
+    Captured from the Block 4c M5 gate (`block4c-m5-20260803-150556`), where the
+    camera was named as a possible offset stage and the note then asserted servo
+    motion and stale read-back about it.
+    """
+    inventory = json.loads(REAL_DEMO_INVENTORY.read_text(encoding="utf-8"))
+    camera_label = inventory["facts"]["core_device_assignments"]["camera"]
+    camera = next(
+        device for device in inventory["facts"]["devices"]
+        if device["label"] == camera_label
+    )
+    camera["properties"].append({
+        "name": "CONVERSION FACTOR OFFSET", "read_only": False, "pre_init": False,
+        "reported_type": "Float", "has_limits": True, "allowed_values": [],
+        "current_value": "0", "technical_range": {"lower": -65536.0, "upper": 65535.0},
+    })
+    inventory["heuristic_candidates"]["unclassified_writable_properties"].append(
+        f"{camera_label}.CONVERSION FACTOR OFFSET"
+    )
+    config, notes = interview(
+        inventory, ask=_answer_real_interview([]), say=lambda _: None
+    )
+    # It is still authored as an ordinary bounded-numeric actuator; the fix is
+    # only that it stops being described as a continuous-focus offset stage.
+    assert [
+        (x["device"], x["kind"])
+        for x in config["rig_profile"]["typed_actuators"]
+        if x["property"] == "CONVERSION FACTOR OFFSET"
+    ] == [(camera_label, "bounded-numeric")]
+    review = next(note for note in notes if note.startswith(
+        "CONTINUOUS-FOCUS REVIEW QUESTION:"
+    ))
+    assert camera_label not in review
+    assert "No offset stage was declared" in review
 
 
 def test_real_demo_limit_sources_exposure_default_and_budget_order():

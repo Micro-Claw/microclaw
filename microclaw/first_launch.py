@@ -1028,6 +1028,53 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
         if z_default is None:
             say(f"LIMIT SOURCE: Micro-Manager reports no Z travel limits for focus stage device {focus_device}; the operator must supply them.")
         stage["z_min"], stage["z_max"] = _bounds(f"focus stage {focus_device} z travel (um)", ask, say, z_default)
+
+    named_stages = []
+    for device in sorted(facts.get("devices", []), key=lambda item: str(item.get("label") or "")):
+        label, device_type = str(device.get("label") or ""), device.get("device_type")
+        if device_type == "StageDevice" and label and label != focus_device:
+            decision = _choice(
+                f"Named single-axis stage {label}: declare reviewed travel bounds "
+                "or leave it unreachable",
+                {"y": "declare bounds", "x": "exclude; leave unreachable"},
+                ask, say, default="y",
+            )
+            if decision == "x":
+                notes.append(
+                    f"OPERATOR EXCLUSION: named stage {label}; no named_stages "
+                    "authorization was emitted, so the stage remains unreachable."
+                )
+                continue
+            default = _technical_bounds(
+                _device_property(
+                    properties, label,
+                    {
+                        "position", "position(um)", "position(µm)",
+                        "positionum", "z", "zposition",
+                    },
+                )
+            )
+            if default is None:
+                say(
+                    "LIMIT SOURCE: Micro-Manager reports no travel limits for "
+                    f"named stage device {label}; the operator must supply them."
+                )
+            minimum, maximum = _bounds(
+                f"named stage {label} travel (um)", ask, say, default
+            )
+            named_stages.append({
+                "device": label, "min_um": minimum, "max_um": maximum,
+            })
+        elif device_type == "XYStageDevice" and label != xy_device:
+            say(
+                f"SETUP DEFERRAL: XY stage device {label} is not the core XY stage. "
+                "Top-level named_stages represents only a single axis, so setup "
+                "cannot declare honest per-axis travel bounds and excludes this device."
+            )
+            notes.append(
+                f"UNSUPPORTED NON-CORE XY STAGE: {label} excluded; named_stages is "
+                "single-axis and no axis was guessed."
+            )
     # The shared offline guaranteed-mode validator requires this finite cap even
     # when it cannot prove a camera is reachable. Never emit a null that passes
     # schema parsing only to be refused at normal live startup.
@@ -1150,13 +1197,51 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
         )
 
     autofocus, focus = assignments.get("autofocus"), assignments.get("focus")
-    offset_devices = sorted({x["device"] for x in typed if "offset" in x["device"].casefold() or "offset" in x["property"].casefold()})
+    # An offset *stage* is positional.  Name matching alone put M5's camera in
+    # this list via `CONVERSION FACTOR OFFSET`, an ADC offset, and the note then
+    # asserted servo motion and stale read-back about a camera (block 4c M5
+    # gate).  So a name match only counts for a device that is a loaded stage,
+    # or for a typed actuator that is itself positional.
+    stage_labels = {
+        str(item.get("label") or "") for item in facts.get("devices", [])
+        if item.get("device_type") in {"StageDevice", "XYStageDevice"}
+    }
+
+    def _offset_shaped(name: str) -> bool:
+        # As broad as the original property match: a false positive costs one
+        # review sentence, while a missed offset stage costs the operator the
+        # warning that its achieved_um may be stale.
+        return any(shape in name.casefold() for shape in (
+            "offset", "pfs", "perfect focus", "autofocus", "focus lock",
+        ))
+
+    offset_devices = sorted({
+        x["device"] for x in typed
+        if (_offset_shaped(x["device"]) or _offset_shaped(x["property"]))
+        and (x["device"] in stage_labels or x.get("kind") == "absolute-position")
+    } | {
+        x["device"] for x in named_stages if _offset_shaped(x["device"])
+    })
     if autofocus or offset_devices:
-        notes.append(
+        continuous_focus_note = (
             "CONTINUOUS-FOCUS REVIEW QUESTION: jointly review core focus stage "
             f"{focus!r}, autofocus device {autofocus!r}, and possible offset stage(s) {offset_devices!r}. "
-            "No movement policy or engagement position was inferred; PFS-offset workflows are unsupported until settling/read-back work lands."
         )
+        if offset_devices:
+            continuous_focus_note += (
+                "A declared offset bound limits the commanded servo offset, not the resulting Z excursion; "
+                "that mapping is unmeasured. On this device class move_named_stage may report the previous "
+                "target as achieved_um because the adapter's Busy() clears before motion starts, so a reported "
+                "achieved position is not evidence of arrival or settling. Block 6 owns the settling/read-back fix."
+            )
+        else:
+            continuous_focus_note += (
+                "No offset stage was declared, and no movement policy or engagement position "
+                "was inferred. Declaring one later is a reviewed authorization to command it, "
+                "not evidence that its reported achieved_um means arrival: that remains "
+                "outstanding until Block 6's settling/read-back work lands."
+            )
+        notes.append(continuous_focus_note)
 
     config = {
         "schema_version": 2,
@@ -1171,7 +1256,7 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
         "acquisition": acquisition,
         "channels": {"allowed": sorted(set(preset_names))},
         "illumination": illumination,
-        "named_stages": [],
+        "named_stages": named_stages,
         "plugins": {"blocked": [], "allow_hardware_motion": False},
     }
     config["camera"] = camera
