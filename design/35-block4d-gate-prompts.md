@@ -23,6 +23,20 @@ hanging. "It reached the prompt" in an earlier draft of this runbook was
 unsatisfiable under `--no-browser` and is what left the 2026-08-03 demo run
 unable to say whether its session had started.
 
+**`$env:PYTHONUNBUFFERED = "1"` in G0 is load-bearing — do not drop it.**
+Microclaw's startup banner is a plain `print()`, and Python block-buffers stdout
+as soon as it is redirected or piped rather than attached to a console. `serve`
+then blocks in the server loop forever, so that buffer is never flushed and
+Ctrl+C discards it — which is why the 2026-08-03 demo run produced a 0-byte
+session file twice, first under `> file 2>&1` and again under `Tee-Object`.
+There is no second source of output to fall back on either: `webserve.py:886` runs
+uvicorn at `log_level="warning"`, which suppresses its own "Uvicorn running on"
+line. Setting the variable makes the banner appear the moment it is printed.
+
+If you invoke microclaw through `uv run microclaw` rather than a bare
+`microclaw`, keep doing so — substitute it throughout; nothing here depends on
+which launcher is used.
+
 **Two commands are deliberately not redirected with `> file 2>&1`, and must not
 be "fixed" back.** A plain redirect on an interactive or long-running process
 sends everything to the file and leaves the console blank, so the operator
@@ -49,6 +63,7 @@ Run on both machines from the Microclaw checkout:
 $Stamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $Evidence = "block4d-$Stamp"
 New-Item -ItemType Directory -Path $Evidence
+$env:PYTHONUNBUFFERED = "1"
 git fetch origin > "$Evidence\git-fetch.txt" 2>&1
 echo $LASTEXITCODE > "$Evidence\git-fetch-exit.txt"
 git switch design33/property-authorization-rename > "$Evidence\git-switch.txt" 2>&1
@@ -106,10 +121,26 @@ echo $LASTEXITCODE > "$Evidence\demo-new-key-reviewed-check-exit.txt"
 microclaw --port $Port --safety-config "$Evidence\demo-new-key.reviewed.yaml" serve --no-browser 2>&1 | Tee-Object -FilePath "$Evidence\demo-new-key-session.txt"
 ```
 
-It worked when `check-config` exits `0` and the session prints its startup
-banner and stays running, with no schema or authorization startup refusal above
-it. Stop it with Ctrl+C. Send back the reviewed profile, validator output, full
-session output, and the session history JSONL.
+**While that session is still running**, open a second PowerShell window, `cd`
+to the same checkout, and prove the server is actually listening. Substitute the
+literal evidence folder name for `<evidence>` — `$Evidence` is not defined in a
+new window:
+
+```powershell
+Test-NetConnection -ComputerName 127.0.0.1 -Port 8000 | Select-Object -ExpandProperty TcpTestSucceeded > "<evidence>\demo-new-key-listening.txt" 2>&1
+```
+
+This is the acceptance evidence, and it is deliberately independent of anything
+microclaw prints: a config that failed to load, a rig that failed live
+validation, or an authorization map that refused to build all exit before the
+port is ever bound, so `True` cannot be produced by a session that did not fully
+start.
+
+It worked when `check-config` exits `0`, `demo-new-key-listening.txt` contains
+`True`, and the session output shows the startup banner with no schema or
+authorization refusal above it. Then stop the session with Ctrl+C. Send back the
+reviewed profile, validator output, the listening file, full session output, and
+the session history JSONL if one was written.
 
 ## G2 — demo machine, old-key refusal
 
@@ -182,8 +213,17 @@ echo $LASTEXITCODE > "$Evidence\m5-renamed-check-exit.txt"
 microclaw --safety-config "<deployed-config>" serve --no-browser 2>&1 | Tee-Object -FilePath "$Evidence\m5-renamed-session.txt"
 ```
 
-It worked when the before/after hashes differ, `check-config` exits `0`, and the
-normal M5 session prints its startup banner and stays running. Inspect the file
+**While that session is still running**, prove it is listening from a second
+PowerShell window, exactly as in G1 (substitute the literal evidence folder
+name):
+
+```powershell
+Test-NetConnection -ComputerName 127.0.0.1 -Port 8000 | Select-Object -ExpandProperty TcpTestSucceeded > "<evidence>\m5-renamed-listening.txt" 2>&1
+```
+
+It worked when the before/after hashes differ, `check-config` exits `0`,
+`m5-renamed-listening.txt` contains `True`, and the session prints its startup
+banner. Inspect the file
 diff locally and confirm
 that only the four key names changed. Do not call motion, illumination,
 acquisition, or mutation tools. Stop with Ctrl+C. Send back the deployed path,
@@ -207,7 +247,8 @@ Copy-Item $Draft "$Evidence\m5-new-key.reviewed.yaml"
 ```
 
 It worked so far when setup exits `0` and the generated-shape output contains
-only the four new names. Read the full copied profile, resolve every review note,
+only the four new names. Read the full copied profile, resolve every review
+note,
 and change `reviewed: false` to `reviewed: true` only when the file is genuinely
 reviewed. Then run:
 
@@ -217,9 +258,19 @@ echo $LASTEXITCODE > "$Evidence\m5-new-key-check-exit.txt"
 microclaw --safety-config "$Evidence\m5-new-key.reviewed.yaml" serve --no-browser 2>&1 | Tee-Object -FilePath "$Evidence\m5-new-key-session.txt"
 ```
 
-It worked when `check-config` exits `0` and the normal session prints its
-startup banner and stays running. Do not call motion, illumination, acquisition,
-or mutation tools. Stop with Ctrl+C. Send back the full inventory and transcript,
+**While that session is still running**, prove it is listening from a second
+PowerShell window, exactly as in G1 (substitute the literal evidence folder
+name):
+
+```powershell
+Test-NetConnection -ComputerName 127.0.0.1 -Port 8000 | Select-Object -ExpandProperty TcpTestSucceeded > "<evidence>\m5-new-key-listening.txt" 2>&1
+```
+
+It worked when `check-config` exits `0`, `m5-new-key-listening.txt` contains
+`True`, and the session prints its startup
+banner. Do not call motion, illumination, acquisition,
+or mutation tools. Stop with Ctrl+C. Send back the full inventory and
+transcript,
 draft and reviewed profiles, shape and validator outputs, full session output,
 and history JSONL. Do not install the regenerated file as M5's deployed config.
 
@@ -227,7 +278,8 @@ and history JSONL. Do not install the regenerated file as M5's deployed config.
 
 Return the complete demo and M5 evidence directories, not summaries. Explicitly
 report the outcome of the new-key startup, old-key refusal, unchanged deployed
-M5 refusal, hand-renamed deployed M5 startup, and regenerated M5 startup. Include
+M5 refusal, hand-renamed deployed M5 startup, and regenerated M5 startup.
+Include
 every `*-exit.txt`, raw profile, transcript,
 validator output, session output/history, hash, `status.txt`, `head.txt`, and
 pytest output. Report any unclear interview prompt or any difference other than
