@@ -18,7 +18,9 @@ import yaml
 
 from microclaw import __version__
 from microclaw.config import ConfigValidationResult, validate_safety_config
-from microclaw.rig_inventory import _TRAILING_UNIT, validate_inventory_schema
+from microclaw.rig_inventory import (
+    _NON_EMITTING_TYPES, _TRAILING_UNIT, validate_inventory_schema,
+)
 
 
 class SetupRefusal(ValueError):
@@ -704,7 +706,8 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
         }:
             return False
         if item["device"] in illumination_devices and (
-            _state_device_positions(item) or defaults[path][0] == "n"
+            _state_device_positions(item)
+            or (defaults[path][0] == "n" and kind not in _NON_EMITTING_TYPES)
         ):
             return False
         return True
@@ -875,8 +878,18 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
         # placeholders ("State-0", "State-1", "State-2") that say nothing about
         # what the positions do. An unanswerable question is worse than a
         # default, so this fails closed instead and stays revisitable by name.
+        # The bounded-numeric limb deliberately does NOT apply to a device MM
+        # types as non-emitting. The hazard it guards is a laser engine whose
+        # numerics redefine what the declared emission envelope means (iChrome's
+        # `Use TTL`, `Analog Mode`, TTL polarity). A camera surfaces illumination
+        # candidates too — its own internal/external shutters — but its numerics
+        # cannot gate light at the sample, and excluding them cost M2's
+        # `Andor.Gain`, which is this block's entire point. StateDevice positions
+        # keep the unconditional form: that limb is about unreadable labels, not
+        # emission semantics.
         illuminating_device_default = device in illumination_devices and (
-            _state_device_positions(item) or default_role == "n"
+            _state_device_positions(item)
+            or (default_role == "n" and item["device_type"] not in _NON_EMITTING_TYPES)
         )
         if illuminating_device_default and bulk and path not in revisit:
             excluded.append({"device": device, "property": prop})

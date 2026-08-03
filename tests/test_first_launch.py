@@ -416,6 +416,46 @@ def test_state_device_position_on_an_illuminating_device_fails_closed_silently()
     assert any("Revisit it by exact name" in line for line in output)
 
 
+def test_camera_gain_survives_its_own_shutter_being_an_illumination_candidate():
+    """M2's shape: an Andor that surfaces its own shutters and still needs Gain.
+
+    The illuminating-device rule exists for a laser engine whose numerics
+    redefine the declared emission envelope. A camera surfaces illumination
+    candidates too — its internal and external shutters — but its numerics
+    cannot gate light at the sample. Applying the rule there excluded
+    `Andor.Gain` on M2, which is the entire point of this block.
+    """
+    inventory = _inventory()
+    camera = next(d for d in inventory["facts"]["devices"] if d["label"] == "Camera")
+    camera["properties"].append({
+        "name": "Shutter (Internal)", "current_value": "Closed",
+        "allowed_values": ["Auto", "Closed", "Open"],
+        "read_only": False, "pre_init": False, "has_limits": False,
+        "reported_type": "String",
+    })
+    candidates = inventory["heuristic_candidates"]
+    candidates["illumination_enable_properties"].append({
+        "path": "Camera.Shutter (Internal)", "device": "Camera",
+        "property": "Shutter (Internal)", "device_type": "CameraDevice",
+    })
+    candidates["unclassified_writable_properties"].append("Camera.Shutter (Internal)")
+
+    prompts = []
+    config, _ = interview(
+        inventory, ask=_answer_real_interview(prompts), say=lambda _: None,
+    )
+    typed = {
+        (t["device"], t["property"]) for t in config["rig_profile"]["typed_actuators"]
+        if t["kind"] == "bounded-numeric"
+    }
+    assert ("Camera", "Gain") in typed
+    excluded = {
+        (e["device"], e["property"])
+        for e in config["rig_profile"]["excluded_properties"]
+    }
+    assert ("Camera", "Gain") not in excluded
+
+
 def test_real_m5_laser_engine_bounded_numerics_follow_inventory_illumination_set():
     """Pin the M5 mode switches without relying on device or property-name rules."""
     inventory = _inventory()
