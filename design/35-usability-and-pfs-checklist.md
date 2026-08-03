@@ -175,7 +175,7 @@ assistant's narration when judging whether a guard fired.
 | 4e | Usability | 4b merged | `design33/emission-path-discovery` (deleted) | `85398e8` | `bc40f18` + `d631a4f` (`39f69dd` returned) | M2 G1/G2, M5 G3, demo G3 all **PASS** 2026-08-03 | `9b88394` | **done** — design/33 §"Block 4e landed" |
 | 4f | Usability | 4e merged | `design33/channel-group-presets` (deleted) | `f95c8ca` | `84c4d70` + `d4985e6` | M2 G1 + demo G2 **PASS** 2026-08-03 | `9010158` | **done** — design/33 §"Block 4f landed" |
 | 4h | Usability | 4f merged | `design33/confirmation-visibility` (deleted) | `1599ff3` | `3efecaf` + `518a90a` + `e451a5c` | demo G1+G2 **PASS** 2026-08-03 | `e42b930` | **done** — design/21 §"F1 revisited" |
-| 4c | Usability | 4h merged | `design33/setup-named-stages` | `3b99397` | `7f68f33` + `e537207` + `c34ee1e` (round 1 returned) | **required** — demo G1 + M5 G2, pushed 2026-08-03 | | |
+| 4c | Usability | 4h merged | `design33/setup-named-stages` | `3b99397` | `7f68f33` + `e537207` + `c34ee1e` (round 1 returned) | demo G1 **PASS** 2026-08-03; G1b + M5 G2 owed | | |
 | 4g | Platform | none — may run concurrently | `design32/hook-hash-newline` (deleted) | `95ae192` | `50e5f66` + `d0bb602` + `971cdb6` + `f768cc3` | round 3 **PASS** 2026-08-03 (rounds 1–2 failed test-side) | `936230f` | **done** — design/32 §4 |
 | 4d | Usability | 4c merged | `design33/property-authorization-rename` | | | **required** | | |
 | 5 | Usability | 4b, 4e, 4f, 4h, 4c, 4d | `design33/deployed-config-hygiene` | | | required | | |
@@ -2676,6 +2676,53 @@ both small and both operator-facing text or predicate breadth:
    declaring one is a reviewed authorization to command it, not evidence that its
    reported `achieved_um` means arrival, which remains outstanding until Block
    6's settling/read-back work lands.
+
+### Rig gate G1 — demo machine, 2026-08-03: **PASS**
+
+Evidence: `block4c-demo-20260803-145921`, run at `6ae99de`. Every mechanical
+check executed and recorded its own exit code: ancestor `0`, pytest `0`
+(**1352 passed / 115 skipped / 3 warnings** — 115 skipped is the standing Windows
+number, identical in the 4g and 4h gates, and 1352 is exactly 4h's 1345 plus this
+block's seven new tests), interview `0`, unreviewed `check-config` `1`, reviewed
+`check-config` `0`, session `0`, named-stage check `0`.
+
+The substance, read from the raw transcript and history rather than the summary:
+
+- The `y=declare bounds` / `x=exclude; leave unreachable` prompt was presented
+  for `Aux Z` and no other stage. Micro-Manager reports no travel limits for
+  `DStage`, so setup printed its `LIMIT SOURCE` line and required typed bounds;
+  the operator entered 200 and 20000.
+- `named_stages` contains exactly `Aux Z`, and **no entry for core focus `Z`**.
+  `Aux Z.Position` was independently excluded from raw property writes, so the
+  only route to that stage is `move_named_stage` — the three-write-path
+  separation this block was written to preserve.
+- The draft-versus-reviewed diff is a single line, `reviewed: false` → `true`.
+  Nothing else was hand-edited into the generated profile.
+- The corrected continuous-focus note shipped verbatim: with no offset stage
+  declared it now says declaring one later is a reviewed authorization to command
+  it, **not** evidence that its reported `achieved_um` means arrival.
+- The live session went further than G1 asked. `list_stages` reported `Aux Z`
+  under `other_single_axis`, and an in-range `move_named_stage` to 300 µm
+  returned `achieved_um: 300.0, error_um: 0.0`.
+
+Two runbook corrections made on the branch, neither a code defect:
+
+1. **The out-of-range half of the guard is now checked on the demo too (G1b).**
+   `Aux Z` is simulated, so both halves cost nothing here, and the M5 trip should
+   confirm real hardware rather than discover a mechanism failure. Added with the
+   same history check the M5 step uses.
+2. The temporary demo `.cfg` was saved into the checkout, leaving `?? MMConfig_demo.cfg`
+   in `status.txt`. The runbook now says to save it outside the repository.
+
+Noted, not fixed: `_choice` records nothing when a default is accepted by Enter,
+so the transcript shows the declare/exclude decision only implicitly — the bound
+questions that follow for an accepted stage, the `OPERATOR EXCLUSION` note for a
+declined one. Both directions are recoverable from the transcript, and
+special-casing this one prompt would diverge from every other `_choice` site, so
+it stays as is.
+
+Still owed: **G2 on M5** — the real non-core stages, and the in-range/out-of-range
+pair on hardware.
 
 Post-merge design gate:
 
