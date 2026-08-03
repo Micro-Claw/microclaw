@@ -7,8 +7,21 @@ Run the M5 gate only after the demo evidence passes. Do not replace the deployed
 M5 configuration during this gate.
 
 All commands below are PowerShell-safe. Preserve the named raw files and their
-exit-code companions. Stop each successful `serve` process with Ctrl+C only
-after its browser session has reached the prompt.
+exit-code companions.
+
+**Every `serve` here runs `--no-browser`, so there is no browser prompt to wait
+for** and no interaction is expected. A successful startup prints
+
+```
+Microclaw GUI: http://<host>:<port>  (Ctrl-C to stop)
+```
+
+and then stays running until you stop it with Ctrl+C. That line is printed only
+after the config is loaded, the live rig is validated, and the authorization map
+is built, so seeing it is proof all three succeeded — a refusal exits instead of
+hanging. "It reached the prompt" in an earlier draft of this runbook was
+unsatisfiable under `--no-browser` and is what left the 2026-08-03 demo run
+unable to say whether its session had started.
 
 **Two commands are deliberately not redirected with `> file 2>&1`, and must not
 be "fixed" back.** A plain redirect on an interactive or long-running process
@@ -93,10 +106,10 @@ echo $LASTEXITCODE > "$Evidence\demo-new-key-reviewed-check-exit.txt"
 microclaw --port $Port --safety-config "$Evidence\demo-new-key.reviewed.yaml" serve --no-browser 2>&1 | Tee-Object -FilePath "$Evidence\demo-new-key-session.txt"
 ```
 
-It worked when `check-config` exits `0` and the browser session reaches its
-normal prompt without a schema or authorization startup refusal. Stop it with
-Ctrl+C. Send back the reviewed profile, validator output, full session output,
-and the session history JSONL.
+It worked when `check-config` exits `0` and the session prints its startup
+banner and stays running, with no schema or authorization startup refusal above
+it. Stop it with Ctrl+C. Send back the reviewed profile, validator output, full
+session output, and the session history JSONL.
 
 ## G2 — demo machine, old-key refusal
 
@@ -170,7 +183,7 @@ microclaw --safety-config "<deployed-config>" serve --no-browser 2>&1 | Tee-Obje
 ```
 
 It worked when the before/after hashes differ, `check-config` exits `0`, and the
-normal M5 session reaches its prompt. Inspect the file diff locally and confirm
+normal M5 session prints its startup banner line `Microclaw GUI: http://<host>:<port>  (Ctrl-C to stop)` and then stays running. Inspect the file diff locally and confirm
 that only the four key names changed. Do not call motion, illumination,
 acquisition, or mutation tools. Stop with Ctrl+C. Send back the deployed path,
 both hashes, both refusal outputs, the renamed validator and session outputs,
@@ -203,8 +216,8 @@ echo $LASTEXITCODE > "$Evidence\m5-new-key-check-exit.txt"
 microclaw --safety-config "$Evidence\m5-new-key.reviewed.yaml" serve --no-browser 2>&1 | Tee-Object -FilePath "$Evidence\m5-new-key-session.txt"
 ```
 
-It worked when `check-config` exits `0` and the normal session reaches its
-prompt. Do not call motion, illumination, acquisition,
+It worked when `check-config` exits `0` and the normal session prints its
+startup banner and stays running. Do not call motion, illumination, acquisition,
 or mutation tools. Stop with Ctrl+C. Send back the full inventory and transcript,
 draft and reviewed profiles, shape and validator outputs, full session output,
 and history JSONL. Do not install the regenerated file as M5's deployed config.
