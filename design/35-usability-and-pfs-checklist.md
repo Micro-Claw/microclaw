@@ -131,7 +131,7 @@ Rig-facing commands must be PowerShell/cmd-safe (the rig is Windows): prefer
 | 4 | Usability | 3 | `design33/first-launch-setup` (deleted) | `bc303a2` | `a742d73` | 5 rounds: demo r1 **FAIL**, r2/r3 **PASS**; M5 G4 + **G4b PASS** 2026-08-02 | `6266807` | **done** — design/33 §"Phase 5 landed" |
 | 4r1a | Usability | 4 | `design33/first-launch-setup` | `15d8d1b` | `c5746b9` (`d203753` rejected) | folded into block 4 round 2 | n/a — merges via block 4 | |
 | 4r1b | Usability | 4 | `design35/startup-refusal-severity` | `15d8d1b` | `2558583` (`16cc416` rejected alone) | folded into block 4 round 2 | `385049d` into block branch | |
-| 4b | Usability | 4 merged | `design33/bounded-numeric-actuator` (deleted) | `578874e` | `5a6c6e2` | G1 demo **PASS**; G3 M2 **PASS** incl. imagery; G2 M5 in-range **PASS**, refusal step retired | `04164fd` | pending |
+| 4b | Usability | 4 merged | `design33/bounded-numeric-actuator` (deleted) | `578874e` | `5a6c6e2` | G1 demo **PASS**; G3 M2 **PASS** incl. imagery; G2 M5 in-range **PASS**, refusal step retired | `04164fd` | **done** — design/33 §"Block 4b landed" |
 | 4e | Usability | 4b merged | `design33/emission-path-discovery` | | | **required** | | |
 | 4c | Usability | 4e merged | `design33/setup-named-stages` | | | **required** | | |
 | 4d | Usability | 4c merged | `design33/property-authorization-rename` | | | **required** | | |
@@ -1159,13 +1159,13 @@ Post-merge design gate:
       the cases it refuses, and the exact ordering guarantee. Retire the "later
       work" framing at `:347`.
 - [x] Tick the two Phase-wide Block 14 rows carried into block 1.
-- [x] **Reconcile the "never a default" rule with finding 2.** The rule as
-      written ("Driver technical ranges, current values, allowed values … are
-      never used as safety limits or answer defaults") is now scoped: MM's own
-      writability and value-domain metadata *is* the classification default;
-      technical ranges remain barred from becoming safety bounds on hazardous
-      axes. design/33 and this file's block 4 item text both say the unscoped
-      version and must be corrected to whatever ships.
+- [x] **Reconcile the "never a default" rule with findings 2 and 3.** MM's own
+      writability and value-domain metadata *is* the classification default.
+      Driver technical ranges are also proposed for hazardous bounds, including
+      stage travel and maximum exposure, but are labelled as technical ranges,
+      require an explicit Enter acceptance, and record accepted-default versus
+      typed override in the audit transcript. Observed current values remain
+      barred. This is the scoped rule that shipped.
 - [x] **Record the startup refusal-severity taxonomy** from findings 3–5 in
       design/33 §authorization: which diagnostics refuse the process, which
       demote a claim and warn, and the rule that decides. Four specific
@@ -1607,18 +1607,18 @@ refusal step retired.**
 
 Post-merge design gate:
 
-- [ ] Record the three-kind taxonomy and the not-dose-bearing rationale in
+- [x] Record the three-kind taxonomy and the not-dose-bearing rationale in
       design/33, alongside the refusal-severity taxonomy from Block 4.
-- [ ] Record the G2 rule: a guard test routed through the agent must present a
+- [x] Record the G2 rule: a guard test routed through the agent must present a
       value the agent cannot know to be invalid, or must not use the agent.
       Remove the forced-call wording from future runbooks — it worked twice and
       failed once, which makes it unreliable evidence either way.
-- [ ] Record the round-4/G3 lesson: a rule keyed on "this device surfaced an
+- [x] Record the round-4/G3 lesson: a rule keyed on "this device surfaced an
       illumination candidate" catches cameras, which surface their own shutters.
       Device *type* is the discriminator, not the presence of a candidate.
-- [ ] Record the explicit-exclusion-versus-vacuum rule from G1 round 1, and the
+- [x] Record the explicit-exclusion-versus-vacuum rule from G1 round 1, and the
       `Core.Shutter` preset allowance it was shadowing.
-- [ ] Record the G1 round 2 rule: **an agent-mediated gate step must assert on
+- [x] Record the G1 round 2 rule: **an agent-mediated gate step must assert on
       the tool call, not the transcript.** Any future rig step whose pass
       condition is "microclaw refused" needs a mechanical check that the call
       was actually made.
