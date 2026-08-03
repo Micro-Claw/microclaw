@@ -1201,10 +1201,13 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
         x["device"] for x in typed
         if "offset" in x["device"].casefold() or "offset" in x["property"].casefold()
     } | {
+        # Deliberately as broad as the typed branch above: a false positive costs
+        # one review sentence, while a missed offset stage costs the operator the
+        # warning that its achieved_um may be stale.  Requiring both an "offset"
+        # and a "pfs" fragment would miss a stage labelled either way alone.
         x["device"] for x in named_stages
-        if "offset" in x["device"].casefold()
-        and any(shape in x["device"].casefold() for shape in (
-            "pfs", "perfect focus", "autofocus", "focus lock",
+        if any(shape in x["device"].casefold() for shape in (
+            "offset", "pfs", "perfect focus", "autofocus", "focus lock",
         ))
     })
     if autofocus or offset_devices:
@@ -1221,8 +1224,10 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
             )
         else:
             continuous_focus_note += (
-                "No offset-stage movement policy or engagement position was inferred; "
-                "PFS-offset workflows remain unsupported until an offset stage is declared."
+                "No offset stage was declared, and no movement policy or engagement position "
+                "was inferred. Declaring one later is a reviewed authorization to command it, "
+                "not evidence that its reported achieved_um means arrival: that remains "
+                "outstanding until Block 6's settling/read-back work lands."
             )
         notes.append(continuous_focus_note)
 

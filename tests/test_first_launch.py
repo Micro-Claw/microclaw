@@ -154,7 +154,11 @@ def test_interview_copies_only_identifiers_and_explicit_answers(tmp_path):
     rendered = yaml.safe_dump(config)
     assert "OBSERVED" not in rendered
     assert config["camera"]["max_exposure_ms"] == 2450
-    assert any("PFS-offset workflows remain unsupported" in note for note in notes)
+    assert any(
+        "No offset stage was declared" in note
+        and "not evidence that its reported achieved_um means arrival" in note
+        for note in notes
+    )
     assert any("ambiguous XY" in line for line in output)
     result = write_profile(config, notes, tmp_path / "profile.yaml")
     assert result.parsed is not None
@@ -1046,6 +1050,27 @@ def test_nikon_pfs_offset_is_authored_with_unverified_motion_note():
     assert "not evidence of arrival or settling" in review
     assert "commanded servo offset, not the resulting Z excursion" in review
     assert "mapping is unmeasured" in review
+
+
+@pytest.mark.parametrize("label", ["Z Offset Stage", "PFS Z"])
+def test_offset_stage_is_flagged_on_either_name_fragment_alone(label):
+    """Captured demo Z record relabelled; neither label carries both fragments."""
+    inventory = json.loads(REAL_DEMO_INVENTORY.read_text(encoding="utf-8"))
+    focus = next(
+        copy.deepcopy(device) for device in inventory["facts"]["devices"]
+        if device["label"] == inventory["facts"]["core_device_assignments"]["focus"]
+    )
+    focus["label"] = label
+    inventory["facts"]["devices"].append(focus)
+    config, notes = interview(
+        inventory, ask=_answer_real_interview([]), say=lambda _: None
+    )
+    assert [x["device"] for x in config["named_stages"]] == [label]
+    review = next(note for note in notes if note.startswith(
+        "CONTINUOUS-FOCUS REVIEW QUESTION:"
+    ))
+    assert label in review
+    assert "previous target as achieved_um" in review
 
 
 def test_real_demo_limit_sources_exposure_default_and_budget_order():
