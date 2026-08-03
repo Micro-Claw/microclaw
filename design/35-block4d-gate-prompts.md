@@ -125,6 +125,14 @@ It worked when both commands exit nonzero before a session starts and both
 outputs name `rig_profile` as unknown and `property_authorization` as missing.
 Preserve these outputs before editing anything.
 
+**Before editing, understand what this leaves behind.** The renamed file parses
+only on this branch. `main` does not have the rename yet, so from the moment you
+save the edit until this block merges, **M5 will not start on any other
+checkout** — including a `git switch main` on this same machine. That is
+recoverable, but only if the pre-edit copy survives: `m5-deployed-before.yaml`,
+saved above, is the rollback. Keep it, and if this branch is abandoned rather
+than merged, copy it back over `<deployed-config>` before leaving the rig.
+
 Now edit the operator's deployed file in place, changing exactly these four key
 names and no values or indentation:
 

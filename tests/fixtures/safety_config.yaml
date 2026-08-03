@@ -2,10 +2,10 @@
 # Reviewed by construction: these are a fixture's limits, not a rig's.
 schema_version: 2
 reviewed: true
-rig_profile:
+property_authorization:
   mode: guaranteed
-  categorical_properties: []
-  excluded_properties: []
+  allowed_categorical: []
+  denied: []
 stage:
   x_min: -1000.0
   x_max:  1000.0
