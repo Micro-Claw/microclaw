@@ -1558,10 +1558,61 @@ the fourth is registered as carried-forward.
    with the hint `This may be a hardware error (device busy, stage at limit,
    device not found) or a connection problem.` → carried-forward register.
 
+### Rig gate G2 — M5, 2026-08-03: **in-range PASS; refusal step retired as redundant**
+
+Evidence: `block4b-m5-20260803-100405`, at `eb3faa3`, pin `0`, `check-config`
+exit 0.
+
+Passed: the profile generates and validates on M5 — 36 bounded numerics, **none
+of the 11 iChrome TTL/Analog switches re-armed** by `5a6c6e2`'s narrowing, which
+is the specific regression that change risked. `SmarAct 2D.Hold time (ms)` was
+declared `ms 1..60000` without a revisit, and an in-range write of `500` reached
+the real device.
+
+**The out-of-range step never reached the guard, and the gate step was wrong,
+not the operator.** The agent refused across roughly eight restatements, citing
+its own instruction never to issue a setter call with a value it knows to be out
+of bounds, and argued:
+
+> a guard that only gets exercised because the agent voluntarily forwards
+> knowingly-invalid input isn't being tested
+
+That is correct, and it is the same objection this file already records against
+self-confirming probes. It also cannot be worked around on this property: the
+**declared bound equals the driver range**, so every out-of-bound value is also
+hardware-invalid and the agent's rule always fires. Note the agent complied on
+demo (G1) and on M2 (G3) — so the forced-call technique added to the runbook on
+2026-08-02 is *flaky*, which is worse than plainly wrong.
+
+**Retired as redundant, operator decision 2026-08-03.** G2 was written as a
+stand-in — "so that merging without M2 does not leave the kind unproven on real
+hardware — only *gain* waits". M2 then became available and closed that claim
+directly: `Andor.Gain = 1500` refused against `3..1000` on a real Andor iXon,
+read-back unchanged. Every claim G2 existed to establish now has evidence, from
+a better rig than the substitute. This is not a lowered bar; it is the bar met
+elsewhere.
+
+Two process findings, both carried into the design gate below:
+
+1. **An agent-mediated gate step must never ask the agent to do something it
+   knows is invalid.** Test a guard either by declaring a bound *narrower* than
+   the driver range, so the value is hardware-legal and the agent has no
+   grounds to refuse, or by not routing the test through the agent at all.
+2. The in-range read-back was asserted by the model ("the hold time stays at
+   500 ms") with no `get_device_property` call after the write. Same class as
+   the round-2 defect: assert on the tool call, not the narration.
+
+**4b's rig gate is complete: G1 demo PASS, G3 M2 PASS, G2 in-range PASS with its
+refusal step retired.**
+
 Post-merge design gate:
 
 - [ ] Record the three-kind taxonomy and the not-dose-bearing rationale in
       design/33, alongside the refusal-severity taxonomy from Block 4.
+- [ ] Record the G2 rule: a guard test routed through the agent must present a
+      value the agent cannot know to be invalid, or must not use the agent.
+      Remove the forced-call wording from future runbooks — it worked twice and
+      failed once, which makes it unreliable evidence either way.
 - [ ] Record the round-4/G3 lesson: a rule keyed on "this device surfaced an
       illumination candidate" catches cameras, which surface their own shutters.
       Device *type* is the discriminator, not the presence of a candidate.
