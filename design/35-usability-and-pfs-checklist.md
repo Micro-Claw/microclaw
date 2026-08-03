@@ -148,7 +148,7 @@ assistant's narration when judging whether a guard fired.
 | 4r1a | Usability | 4 | `design33/first-launch-setup` | `15d8d1b` | `c5746b9` (`d203753` rejected) | folded into block 4 round 2 | n/a — merges via block 4 | |
 | 4r1b | Usability | 4 | `design35/startup-refusal-severity` | `15d8d1b` | `2558583` (`16cc416` rejected alone) | folded into block 4 round 2 | `385049d` into block branch | |
 | 4b | Usability | 4 merged | `design33/bounded-numeric-actuator` (deleted) | `578874e` | `5a6c6e2` | G1 demo **PASS**; G3 M2 **PASS** incl. imagery; G2 M5 in-range **PASS**, refusal step retired | `04164fd` | **done** — design/33 §"Block 4b landed" |
-| 4e | Usability | 4b merged | `design33/emission-path-discovery` | `85398e8` | `bc40f18` + `d631a4f` (`39f69dd` returned) | M2 G1/G2 **PASS**; M5 G3 **PASS** 2026-08-03; demo G3 owed | | |
+| 4e | Usability | 4b merged | `design33/emission-path-discovery` (deleted) | `85398e8` | `bc40f18` + `d631a4f` (`39f69dd` returned) | M2 G1/G2, M5 G3, demo G3 all **PASS** 2026-08-03 | `9b88394` | **done** — design/33 §"Block 4e landed" |
 | 4f | Usability | 4e merged | `design33/channel-group-presets` | | | **required** | | |
 | 4c | Usability | 4f merged | `design33/setup-named-stages` | | | **required** | | |
 | 4g | Platform | none — may run concurrently | `design32/hook-hash-newline` | `4472892` | | **required** (any Windows rig) | | |
@@ -1641,7 +1641,7 @@ Post-merge design gate:
       condition is "microclaw refused" needs a mechanical check that the call
       was actually made.
 
-## 4e. [-] Emission-path discovery and multi-state shutters — rig gate required
+## 4e. [x] Emission-path discovery and multi-state shutters — **MERGED 2026-08-03**
 
 Branch: `design33/emission-path-discovery`. Depends on 4b merging. Inserted
 ahead of 4c by operator decision 2026-08-03. **Assigned 2026-08-03 from
@@ -1666,16 +1666,16 @@ This is not a marginal miss: `Core.Shutter`'s allowed values on M2 are
 named exactly `Laser`; the Luxx lasers were caught only because theirs are named
 `Laser Operation Select`, which matches `operation`.
 
-- [ ] Use the structural signal, not another name token: **Micro-Manager types
+- [x] Use the structural signal, not another name token: **Micro-Manager types
       the device as a `ShutterDevice`.** A two-value on/off-shaped property on a
       ShutterDevice is an emission gate by MM's own classification, and needs no
       regex. Widening `_ENABLE_NAME` with `laser` would fix M2 and miss the next
       vendor; the device type will not.
-- [ ] Measure the change against all three captured inventories before adopting
+- [x] Measure the change against all three captured inventories before adopting
       it, and report exactly which candidates appear and disappear per rig. The
       pattern must not be narrowed for any other device type — the comment at
       `rig_inventory.py:47` records why.
-- [ ] Consider whether the device named by `Core.Shutter` deserves a stronger
+- [x] Consider whether the device named by `Core.Shutter` deserves a stronger
       check than discovery: if the core shutter device has no declared shutter
       property at all, that is a fail-closed condition, not a heuristic miss.
 
@@ -1695,13 +1695,13 @@ pairs — so a third value has no gate at all. On an Andor, `Auto` is the state
 that opens the shutter on **every exposure**: the value that emits most
 routinely is the one no human has to approve.
 
-- [ ] Operator decision 2026-08-03: **confirm-gate any value that is not
+- [x] Operator decision 2026-08-03: **confirm-gate any value that is not
       `off_value`**, rather than only exact `on_value`. Strictly more gating, no
       schema change, and it fixes every multi-state shutter rather than Andor's.
-- [ ] Check the same asymmetry everywhere a declared value is compared for
+- [x] Check the same asymmetry everywhere a declared value is compared for
       equality rather than for membership — `shutter_all`, the ratchet, and the
       EMU map. Report what you find rather than widening silently.
-- [ ] Off-rig tests must pin all three limbs (`on`, `off`, and a third value),
+- [x] Off-rig tests must pin all three limbs (`on`, `off`, and a third value),
       because the third is the one that had no coverage.
 
 ### Implementation rounds — pushed 2026-08-03, awaiting the rig
@@ -1764,11 +1764,10 @@ Rig gate (M2 has the multi-state shutter and the Cobolt; M5 has neither):
       edit, and that the generated profile declares it.
 - [x] Show a write of `Auto` to `Andor.Shutter (Internal)` now requires
       confirmation, and that declining it refuses the write.
-- [-] Confirm no previously-working illumination declaration stopped working on
-      M5 or the demo rig. **M5 done** (21 → 21, no TTL/Analog switch armed);
-      **demo owed**, and it carries M5's unrun shutter-confirmation step: exercise
-      `White Light Shutter.State` (`['0','1']`, the same numeric shape as M5's
-      twelve) through confirmation, return it to `0`, and read it back.
+- [x] Confirm no previously-working illumination declaration stopped working on
+      M5 or the demo rig. **Both done** — M5 21 → 21 with no TTL/Analog switch
+      armed, demo 2 → 2 with the carried-over shutter-confirmation step run on
+      `White Light Shutter.State`.
 
 ### Rig gate G1/G2 — M2, 2026-08-03: **PASS**
 
@@ -1874,9 +1873,50 @@ demo rig can run is not justified.
    recorded M5 finding that M5 has no `Channel` group either; of the three rigs,
    only demo has one. Needs a home; it is a Block 4 surface, not 4e's.
 
+### Rig gate G3 — demo, 2026-08-03: **PASS. Block 4e's gate is complete.**
+
+Evidence: `block4e-demo-20260803-113715`, at `d631a4f`, pin `0`, clean tree,
+`check-config` exit `0`, pytest exactly the known 23 Windows failures and no
+others.
+
+Discovery is unchanged: 2 candidates in, and the profile declares exactly
+`Core.AutoShutter` and `White Light Shutter.State`. `LED Shutter.State Device`
+stayed out of the illumination set and was classified categorical, which is
+right — it is a device selector, not a gate. **No `Core.Shutter` exclusion was
+written**, so 4b's G1 round-1 defect (an explicit exclusion shadowing the
+preset-retargeting rule and breaking the four fluorescence channels) is not
+reintroduced, and those four `Channel` presets survived startup authorization
+un-demoted.
+
+**The carried-over shutter step ran in full, and it is the best evidence in the
+block**, because it exercised all three limbs against real hardware in one
+session:
+
+    State = 1  -> confirmation asked, APPROVED -> write succeeded
+    State = 0  -> no confirmation asked        -> write succeeded
+    State = 1  -> confirmation asked, DECLINED -> refused
+    read-back                                  -> "0"
+
+The middle line is the one that matters most and is easy to overlook: it proves
+the `!= off_value` change did **not** turn the off-write into a prompt, which
+was the specific regression this change risked on every numeric `1`/`0` shutter.
+The confirmations JSONL independently records one `approved` and one `declined`,
+and the read-back the M2 run omitted was performed here.
+
+Not exercised: selecting a fluorescence preset during the session. Only its
+*validation* is evidenced, by those four presets not being demoted at startup.
+Accepted rather than re-run — 4e changed no `Core.Shutter` handling and added no
+exclusion, and the retargeting path is what 4b's gate already covered.
+
+**This run also corroborated Block 4f on a rig that is not M2, and sharpened
+it.** Demo *has* a `Channel` group, and setup still wrote all 14 presets from all
+six groups into `channels.allowed`; startup demoted 10 of them. So 4f is not
+"rigs that lack a `Channel` group" — **setup over-claims on every rig**, and the
+missing-group case is only its most visible form.
+
 Post-merge design gate:
 
-- [ ] Record in design/33 that illumination discovery keys off MM device typing
+- [x] Record in design/33 that illumination discovery keys off MM device typing
       and not only property names, and that shutter gating is
       not-`off_value` rather than exact-`on_value`. State the residual: this
       still proves declared paths are gated, never that discovery found every
