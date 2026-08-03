@@ -150,10 +150,11 @@ assistant's narration when judging whether a guard fired.
 | 4b | Usability | 4 merged | `design33/bounded-numeric-actuator` (deleted) | `578874e` | `5a6c6e2` | G1 demo **PASS**; G3 M2 **PASS** incl. imagery; G2 M5 in-range **PASS**, refusal step retired | `04164fd` | **done** — design/33 §"Block 4b landed" |
 | 4e | Usability | 4b merged | `design33/emission-path-discovery` (deleted) | `85398e8` | `bc40f18` + `d631a4f` (`39f69dd` returned) | M2 G1/G2, M5 G3, demo G3 all **PASS** 2026-08-03 | `9b88394` | **done** — design/33 §"Block 4e landed" |
 | 4f | Usability | 4e merged | `design33/channel-group-presets` (deleted) | `f95c8ca` | `84c4d70` + `d4985e6` | M2 G1 + demo G2 **PASS** 2026-08-03 | `9010158` | **done** — design/33 §"Block 4f landed" |
-| 4c | Usability | 4f merged | `design33/setup-named-stages` | | | **required** | | |
+| 4h | Usability | 4f merged | `design33/confirmation-visibility` | `627b46b` | | **required** (demo) | | |
+| 4c | Usability | 4h merged | `design33/setup-named-stages` | | | **required** | | |
 | 4g | Platform | none — may run concurrently | `design32/hook-hash-newline` (deleted) | `95ae192` | `50e5f66` + `d0bb602` + `971cdb6` + `f768cc3` | round 3 **PASS** 2026-08-03 (rounds 1–2 failed test-side) | `936230f` | **done** — design/32 §4 |
 | 4d | Usability | 4c merged | `design33/property-authorization-rename` | | | **required** | | |
-| 5 | Usability | 4b, 4e, 4f, 4c, 4d | `design33/deployed-config-hygiene` | | | required | | |
+| 5 | Usability | 4b, 4e, 4f, 4h, 4c, 4d | `design33/deployed-config-hygiene` | | | required | | |
 | 6 | Nikon | probe S = pre-fix baseline; post-fix run owed | `design34/measured-position-readback` | | | required | | |
 | 7a | Nikon | scope: none; rig gate: probe 0 | `design34/continuous-focus-capability` | | | **required** | | |
 | 7b | Nikon | 7a | `design34/continuous-focus-policy` | | | **required** | | |
@@ -2278,6 +2279,82 @@ throwaway registry in a temp directory, plants a legacy-pinned hook, and walks
 refusal → review → re-save → reload. Run by the coordinator against the branch:
 all twelve checks pass, both refusal messages actionable. G2 is now the
 opportunistic step and G2a the guaranteed one.
+
+## 4h. [ ] The agent cannot see blocking confirmations, and denies them
+
+Branch: `design33/confirmation-visibility`. Depends on 4f merging. Created by
+operator decision 2026-08-03 from Block 4f's demo gate.
+
+Found because 4f's G2 asked the operator to *actually select* a channel rather
+than validate one. Evidence: `block4f-demo-20260803-123329`. **Assigned
+2026-08-03 from `627b46b`.** Baseline measured by the coordinator at that
+commit: **1358 passed / 99 skipped / 3 expected warnings**.
+
+The operator asked why they had been prompted to open the shutter when setting
+DAPI. The agent answered **"I didn't, actually — I never prompted you to open
+the shutter,"** and said the only thing it had flagged was the long exposure.
+The confirmations JSONL records an `illumination` confirmation `approved` at
+that moment.
+
+**The prompt was real and correct.** DAPI's preset effects include `Core.Shutter
+= 'White Light Shutter'`, and `_authorize_channel_effect`
+(`authorization.py:1314`) requires a blocking confirmation for that retarget —
+"SELECT ILLUMINATION SHUTTER … selects which declared light source AutoShutter
+may fire on the next exposure." The operator remembered accurately and the guard
+behaved correctly.
+
+**The model simply has no way to know.** `CONFIRM_FN` is invoked inside the tool
+(`tools.py:75`, eleven call sites), `serve` replaces it with `Session.confirm`
+so the gate reaches the browser (`webserve.py:332`), and the decision is written
+to a separate confirmations JSONL. **No tool result carries any of it back.**
+`set_channel` returns `status`, `writes`, `expansion_drift` and the expansion
+hashes — nothing about the human interaction that had to happen first. From the
+model's side the harness asked, not it.
+
+Why this is worth its own block rather than a note: microclaw's safety story is
+that a human confirms every emission event. An agent that then tells the
+operator, confidently and in good faith, that a confirmation they answered never
+happened, corrodes exactly the conversation the audit trail exists to support.
+No unsafe action occurs — this is a truthfulness defect, not a hazard — and
+every remaining block in this checklist is gated through an agent-mediated
+transcript, so the fix improves the evidence quality of 4c, 4d and 5.
+
+- [ ] **Return the confirmations issued during a tool call in that tool's
+      result**, with at least kind, decision, and enough of the summary for the
+      model to say what was approved. `Session.audit_records` (`webserve.py:317`,
+      appended at `:355`) already accumulates exactly these records and is
+      **read by nothing** — check before building a second mechanism.
+- [ ] The model must be able to answer "did you prompt me, and for what?"
+      correctly, including for a **declined** confirmation, where the tool
+      raises and the refusal text is what the model sees today.
+- [ ] **Decide what the audit row should contain, and report the decision.** It
+      currently records timestamp, identity, `confirmation_id`, `kind` and
+      `decision` — but not *what* was confirmed, so two illumination approvals in
+      one session are indistinguishable after the fact. Weigh that against the
+      summary containing device/property/value text and the existing secret
+      redaction (`_add_audit_secret`). Do not widen silently in either direction.
+- [ ] **Report what you find about the CLI path.** `_require_confirmation`
+      (`tools.py:56`) prints and returns; it appears to write no audit record at
+      all, so a REPL session may have no confirmation trail. Establish whether
+      that is true and say so; propose rather than fix if it grows the block.
+- [ ] Off-rig tests must cover approved and declined, and must assert on the
+      returned structure rather than on wording.
+
+Rig gate (demo — no hazard needed, the shutter retarget is a selection):
+
+- [ ] Reproduce 4f's exchange: set a channel whose preset retargets
+      `Core.Shutter`, approve it, then ask the agent whether it prompted and
+      what for. It must answer correctly, and the mechanical check must assert
+      on the tool result carrying the confirmation, not on the narration.
+- [ ] Repeat with a **declined** confirmation and show the agent describes that
+      accurately too.
+
+Post-merge design gate:
+
+- [ ] Record in design/33 (or design/21, which owns the browser confirmation
+      gate) what a tool result now reports about human confirmations, and the
+      residual: the record proves a confirmation was issued and decided, not
+      that the operator understood it.
 
 ## 4c. [ ] Reachable non-core stages — `named_stages` is never emitted
 
