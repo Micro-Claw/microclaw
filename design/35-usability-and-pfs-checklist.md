@@ -149,7 +149,7 @@ assistant's narration when judging whether a guard fired.
 | 4r1b | Usability | 4 | `design35/startup-refusal-severity` | `15d8d1b` | `2558583` (`16cc416` rejected alone) | folded into block 4 round 2 | `385049d` into block branch | |
 | 4b | Usability | 4 merged | `design33/bounded-numeric-actuator` (deleted) | `578874e` | `5a6c6e2` | G1 demo **PASS**; G3 M2 **PASS** incl. imagery; G2 M5 in-range **PASS**, refusal step retired | `04164fd` | **done** — design/33 §"Block 4b landed" |
 | 4e | Usability | 4b merged | `design33/emission-path-discovery` (deleted) | `85398e8` | `bc40f18` + `d631a4f` (`39f69dd` returned) | M2 G1/G2, M5 G3, demo G3 all **PASS** 2026-08-03 | `9b88394` | **done** — design/33 §"Block 4e landed" |
-| 4f | Usability | 4e merged | `design33/channel-group-presets` | `f95c8ca` | `84c4d70` + `d4985e6` | **required** (M2-or-M5 + demo) | | |
+| 4f | Usability | 4e merged | `design33/channel-group-presets` | `f95c8ca` | `84c4d70` + `d4985e6` | M2 G1 **PASS** 2026-08-03; demo G2 owed | | |
 | 4c | Usability | 4f merged | `design33/setup-named-stages` | | | **required** | | |
 | 4g | Platform | none — may run concurrently | `design32/hook-hash-newline` (deleted) | `95ae192` | `50e5f66` + `d0bb602` + `971cdb6` + `f768cc3` | round 3 **PASS** 2026-08-03 (rounds 1–2 failed test-side) | `936230f` | **done** — design/32 §4 |
 | 4d | Usability | 4c merged | `design33/property-authorization-rename` | | | **required** | | |
@@ -2018,6 +2018,36 @@ the failure count is the claim that matters.
 One thing checked because a wrong answer would have wasted a rig trip: G2's
 mechanical check asserts on a `set_channel` tool call, and `set_channel` is a
 real registered tool (`tools_schema.py:263`, `tools.py:455`).
+
+### Rig gate G1 — M2, 2026-08-03: **PASS**
+
+Evidence: `block4f-m2-20260803-122349`, at `d4985e6`, pin `0`, `check-config`
+exit `0`.
+
+Every mechanical check passed: `ALLOWED KEY PRESENT: True`, `ALLOWED EXACTLY
+EMPTY: True`, the generated profile carries `channels: {allowed: []}`, and the
+demotion check is **empty**. Compare the same rig under Block 4e
+(`block4e-m2-20260803-111417`), where startup printed
+`!! AUTHORIZATION CLAIMS DEMOTED !!` naming all six `Camera` presets. The
+session now connects clean.
+
+The profile header carries both required notes in the operator's own file — the
+absent `Channel` group with the `[]`-versus-omitted semantics spelled out, and
+the six `Camera` presets listed as non-channel presets microclaw does not drive.
+That was the difference between an honest empty key and an unexplained one.
+
+**The Windows suite was clean at exactly the predicted 1342 passed / 0 failed /
+115 skipped**, confirming both that merging `main` into the branch did its job
+and that this time the derived cross-platform count was right.
+
+**Checked before releasing demo's G2, because a wrong answer would have
+reproduced a known defect:** `Core.Shutter` appears in this profile's header as
+an exclusion *note* but is **not** an entry in `excluded_properties` (the only
+`Core` entry is `TimeoutMs`). That is Block 4b's G1 round-1 fix still holding —
+an explicit exclusion there would shadow `authorization.py`'s purpose-built rule
+permitting a preset to retarget `Core.Shutter` to a declared shutter, which is
+exactly what broke demo's four fluorescence channels in 4b. Demo's G2 is safe to
+run.
 
 ## 4g. [x] Saved hooks are unusable on Windows — **MERGED 2026-08-03**
 
