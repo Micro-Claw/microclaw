@@ -901,7 +901,7 @@ def test_stage_driver_ranges_are_offered_per_axis():
 
 
 def test_named_stage_bounds_are_authored_from_captured_inventory():
-    """The added device is derived from demo's captured Z record, not invented metadata."""
+    """The added device uses the captured M5 Thorlabs property spelling/range."""
     inventory = json.loads(REAL_DEMO_INVENTORY.read_text(encoding="utf-8"))
     focus = next(
         copy.deepcopy(device) for device in inventory["facts"]["devices"]
@@ -910,8 +910,8 @@ def test_named_stage_bounds_are_authored_from_captured_inventory():
     focus["label"] = "Aux Z"
     position = next(prop for prop in focus["properties"] if prop["name"] == "Position")
     position.update(
-        has_limits=True, reported_type="Float",
-        technical_range={"lower": -125.0, "upper": 875.0},
+        name="Position (um)", has_limits=True, reported_type="Integer",
+        technical_range={"lower": 0.0, "upper": 28000.0},
     )
     inventory["facts"]["devices"].append(focus)
     prompts, output = [], []
@@ -925,7 +925,7 @@ def test_named_stage_bounds_are_authored_from_captured_inventory():
         inventory, ask=ask, say=output.append
     )
     assert config["named_stages"] == [{
-        "device": "Aux Z", "min_um": -125.0, "max_um": 875.0,
+        "device": "Aux Z", "min_um": 0.0, "max_um": 28000.0,
     }]
     assert not any(
         item["device"] == inventory["facts"]["core_device_assignments"]["focus"]

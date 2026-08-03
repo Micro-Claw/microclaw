@@ -1034,7 +1034,10 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
         label, device_type = str(device.get("label") or ""), device.get("device_type")
         if device_type == "StageDevice" and label and label != focus_device:
             default = _technical_bounds(
-                _device_property(properties, label, {"position", "z", "zposition"})
+                _device_property(
+                    properties, label,
+                    {"position", "position(um)", "z", "zposition"},
+                )
             )
             if default is None:
                 say(
