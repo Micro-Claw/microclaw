@@ -197,7 +197,7 @@ assistant's narration when judging whether a guard fired.
 | 4c | Usability | 4h merged | `design33/setup-named-stages` (deleted) | `3b99397` | `7f68f33` + `e537207` + `c34ee1e` + `d934dbf` (round 1 returned) | demo G1+G1b, M5 G2, demo re-gate all **PASS** 2026-08-03 | `8ce3401` | **done** — design/33 §"Block 4c landed" |
 | 4g | Platform | none — may run concurrently | `design32/hook-hash-newline` (deleted) | `95ae192` | `50e5f66` + `d0bb602` + `971cdb6` + `f768cc3` | round 3 **PASS** 2026-08-03 (rounds 1–2 failed test-side) | `936230f` | **done** — design/32 §4 |
 | 4d | Usability | 4c merged | `design33/property-authorization-rename` (deleted) | `052179d` | `fd4c5b6` + `c063f16` + `029b5f4` | demo G0/G1/G2 + M5 G4 **PASS** 2026-08-03; G3 closed by offline replay | `5f56679` | **done** — design/33 §"Block 4d landed" |
-| 5 | Usability | 4b, 4e, 4f, 4h, 4c, 4d | `design33/deployed-config-hygiene` | | | required | | |
+| 5 | Usability | 4b, 4e, 4f, 4h, 4c, 4d | `design33/deployed-config-hygiene` | `7583e89` | | required | | |
 | 6 | Nikon | probe S = pre-fix baseline; post-fix run owed | `design34/measured-position-readback` | | | required | | |
 | 7a | Nikon | scope: none; rig gate: probe 0 | `design34/continuous-focus-capability` | | | **required** | | |
 | 7b | Nikon | 7a | `design34/continuous-focus-policy` | | | **required** | | |
@@ -3253,7 +3253,7 @@ dual-key bridge exists to protect.
    outage. The runbook is honest about this — G3 asserts the warning only on
    `check-config` — so the gate would have passed with the gap standing.
 
-## 5. [ ] Deployed-config hygiene and the `init` path — rig config review
+## 5. [-] Deployed-config hygiene and the `init` path — rig config review
 
 Branch: `design33/deployed-config-hygiene`
 
@@ -3288,10 +3288,24 @@ first.
 - [ ] Fix the deployed M5 config's acquisition budgets, which were copied from
       the fictional example including the exposure limit (design/33 `:790`). This
       is a rig-config review item with a human in the loop, not an inferred edit.
-- [ ] Decide what `microclaw init` becomes now that Phase 5 exists: redirect to
+      **Coordinator + operator, not the implementer** — the file lives on M5, and
+      the values are the operator's to set. Sequenced with 4d's four renames as
+      one editing session, per the note above.
+- [x] Decide what `microclaw init` becomes now that Phase 5 exists: redirect to
       setup, keep it as the hand-authoring path with a pointer, or keep both.
       Whichever — the copy-the-example path is what put fictional limits on a
       real rig, so it must not remain the *recommended* route.
+
+      **Operator ruling, 2026-08-03: redirect, keep an explicit escape hatch.**
+      `init` no longer copies the example by default. It prints the real path
+      (`first-launch-setup` → review → restart), offers to run
+      `first-launch-setup`, and copies the fictional example only under an
+      explicit opt-in flag for deliberate hand-authoring. `init` is **not**
+      deleted: design/17's installer and desktop-shortcut sequence calls it
+      (`design/17-install-and-desktop-shortcut.md:502`–`:505`, `:640`), and
+      operator notes say `init`. The decision is settled — do not re-litigate it
+      in the implementation or a later block. What remains for the implementer is
+      the wording, the flag name, and making the non-interactive path behave.
 - [ ] Update README and any first-run documentation to describe the real path:
       install → `inspect-rig` / setup → review → restart. Include the offline
       validator from block 3.
