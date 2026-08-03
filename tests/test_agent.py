@@ -293,6 +293,44 @@ class TestRunAgentIter:
         ]
         assert events[1]["id"] == "c1" == events[2]["tool_use_id"]
 
+    @pytest.mark.parametrize(
+        ("decision", "tool_payload"),
+        [
+            ("approved", {"status": "Channel set."}),
+            ("declined", {"error": "Safety constraint prevented this action."}),
+        ],
+    )
+    def test_tool_result_carries_confirmations_issued_during_dispatch(
+        self, mock_ctrl, guard, decision, tool_payload
+    ):
+        records = []
+        summary = "SELECT ILLUMINATION SHUTTER Core.Shutter = White Light Shutter"
+
+        def execute(*args, **kwargs):
+            records.append({
+                "timestamp": "2026-08-03T12:00:00+00:00",
+                "identity": "loopback",
+                "confirmation_id": "confirm-1",
+                "kind": "illumination",
+                "decision": decision,
+                "summary": summary,
+            })
+            return json.dumps(tool_payload)
+
+        scripted = [tool_use_response("set_channel", {"preset": "DAPI"}),
+                    text_response("done")]
+        with patch("microclaw.agent.execute_tool", side_effect=execute):
+            events = self._drain(
+                scripted, [], mock_ctrl, guard, confirmation_records=records
+            )
+
+        result = json.loads(next(e for e in events if e["type"] == "tool_result")["content"])
+        assert result["confirmations"] == [{
+            "kind": "illumination",
+            "decision": decision,
+            "summary": summary,
+        }]
+
     def test_it_appends_to_the_callers_list_in_place(self, mock_ctrl, guard):
         """serve passes session.history straight in, so a turn abandoned
         mid-flight still leaves its completed rounds where the server can save
