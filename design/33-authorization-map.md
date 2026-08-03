@@ -801,13 +801,14 @@ or the appropriateness of M5's declared limits.
 
 ### What Phase 3 actually implements
 
-- **Typed capability and policy rows.** `acquisition-dose` is a built-in typed
-  capability. The map emits nine `acquisition-policy:*` rows: the five hard
-  maxima (`max_frames`, `max_duration_s`, `max_bytes`, `max_illuminated_ms`,
-  `max_session_illuminated_ms`) and four `confirm_above_*` thresholds for frames,
-  estimated duration, estimated bytes, and illuminated time. Guaranteed mode
-  requires all nine values to be finite and strictly positive and fails closed
-  before any prompt, app construction, or tool dispatch.
+- **Typed capability and policy rows (as Phase 3 landed).** `acquisition-dose`
+  is a built-in typed capability. Phase 3 initially emitted nine
+  `acquisition-policy:*` rows: five hard maxima and four `confirm_above_*`
+  thresholds. Block 4b subsequently deprecated two of those keys, so the map now
+  emits **seven** such rows and guaranteed mode requires those seven — the
+  deprecated keys get no row at all, rather than an optional one. Anyone
+  re-running the map against an older record should expect seven, not nine. See
+  "Block 4b landed" below.
 - **The Phase-1 acquisition claim was deleted, not extended.** The old
   `path="acquisition", capability="exposure"` row had exactly the defect this
   design forbids: it let per-frame exposure stand in for complete acquisition
@@ -835,7 +836,8 @@ or the appropriateness of M5's declared limits.
 
 ### Rig evidence and limits of the verdict
 
-- M5 produced a complete map with nine policy and eight tool rows, no legacy
+- At the Phase 3 gate, M5 produced a complete map with nine policy and eight
+  tool rows, no legacy
   acquisition/exposure row, and no `acquisition-tool:run_mda`. The gate verified
   the plumbing against the live registry and config; it did not validate that
   the nine M5 budgets are appropriate. Finding B1-1 records that they are copied
@@ -1271,6 +1273,75 @@ Four statements elsewhere in this document are corrected by what shipped in
    presence is now only a path-location hint (`_has_emu`); `EMU/config.uicfg`
    establishes EMU use (`_has_emu_config`).
 
+### Block 4b landed: three typed-actuator contracts and setup boundaries (2026-08-03)
+
+Block 4b merged as `04164fd` after five gate runs across the demo rig, M2 and
+M5. The typed-actuator `kind` is a safety-contract name, not merely a value
+shape:
+
+| Kind | Contract |
+|---|---|
+| `absolute-position` | Clamp the raw property and feed the stage bounds. |
+| `illumination-power` | Clamp the raw property and feed the dose ledger. |
+| `bounded-numeric` | Clamp the raw property and feed nothing. |
+
+Gain is the motivating `bounded-numeric`: it is post-detection amplification,
+not integration time, and therefore is not dose-bearing. Exposure is
+deliberately excluded from this kind. It remains on the metered `set_exposure`
+path, while `_known_continuous_raw_pair` blocks the raw camera-exposure alias,
+because longer integration changes light dose at the sample.
+
+This taxonomy sits beside refusal severity because both prevent value shape
+from silently choosing authority. The kind decides which safety systems a
+declared actuator participates in; the severity rule above decides whether a
+live contradiction narrows a claim or reveals an undeclared hazard that must
+refuse startup.
+
+**Explicit exclusion is not a safe substitute for leaving a conditionally
+owned property undeclared.** Setup must not add an explicit exclusion for a
+property whose authorization is already decided by a conditional rule. An
+explicit `excluded_properties` row is checked first and shadows that rule. This
+has now failed twice: Block 4's round-4 StateDevice position rows shadowed the
+auto-classifier, and Block 4b's first demo round shadowed the `Core.Shutter`
+preset allowance (the `device == "Core"` branch of the channel-preset loop in
+`validate_live_rig`), which permits retargeting only to a declared illumination
+shutter. The general setup rule is to leave such a property in the
+authorization layer's vacuum. Silence is not permission: guaranteed mode is an
+allowlist, so an undeclared property remains unwritable when its condition is
+not met.
+
+**Device type, not candidate presence, separates emitting from non-emitting
+bounded numerics.** A camera surfaces its own internal and external shutter
+candidates; treating any device with an illumination candidate as an emitter
+therefore excluded M2's `Andor.Gain`. Setup now scopes the bounded-numeric
+exclusion limb to emitting device types by reusing
+`rig_inventory._NON_EMITTING_TYPES`. The StateDevice-position limb is
+deliberately not narrowed this way: it addresses unreadable position labels on
+a device that may also emit, not whether a numeric property itself represents
+emission.
+
+**Agent-mediated guards need an unknowable-invalid test value.** If a gate is
+routed through the agent, declare a policy bound narrower than the driver range
+and test a value outside policy but inside the hardware range, so the agent
+cannot know from driver metadata that the value is invalid. Otherwise exercise
+the guard without the agent. Forced-call wording reached the guard on the demo
+rig and M2 but failed on M5; it is unreliable evidence in both directions. The
+M5 agent's objection was correct: a guard exercised only because the agent
+volunteers knowingly-invalid input is not what the gate claims to test. In all
+agent-mediated steps, assert mechanically on the tool call and its result,
+never on the model's narration.
+
+**Two acquisition keys are deprecated without breaking deployed configs.**
+`confirm_above_bytes` is accepted and validated when present but ignored by the
+acquisition confirmation gate. `max_session_illuminated_ms` is optional; when
+set it is an in-process runaway-loop brake whose ledger resets on process
+restart, not a durable sample-dose guarantee. Guaranteed mode now requires
+exactly seven finite positive fields: `max_frames`, `max_duration_s`,
+`max_bytes`, `max_illuminated_ms`, `confirm_above_frames`,
+`confirm_above_duration_s`, and `confirm_above_illuminated_ms`. Deletion was
+rejected because deployed configs already set both old keys and must continue
+to load.
+
 ### Three deliberate loosenings of "require explicit operator classification"
 
 The dangling-impact summary requires explicit operator classification of *every*
@@ -1325,22 +1396,27 @@ question here; the operator accepted the proposal, widening authority on a laser
 engine, because the question was unanswerable. This is the Phase 1 fast-follow's
 laser-engine widening in a new form, and it fails closed for the same reason.
 
-### Core's device-assignment properties are never writable
+### Core's device-assignment properties are not generic raw writes
 
 `Core.Camera`, `Core.Focus`, `Core.XYStage`, `Core.Shutter`, `Core.AutoFocus`,
 `Core.Galvo`, `Core.ImageProcessor`, `Core.SLM`, `Core.ChannelGroup` and
 `Core.Initialize` were being declared categorical, because Micro-Manager reports
 them writable with a discrete domain.
 
-They are structural identity, not controls. `stage.z_min/z_max` is enforced
-against whatever device Core names as the focus device, and M5 offers four
+They are structural identity, not generic controls. `stage.z_min/z_max` is
+enforced against whatever device Core names as the focus device, and M5 offers four
 (`PIZStage`, `SmarAct 1D`, `Thorlabs ELL17/ELL20`, `Thorlabs ELL20`), so one
 categorical write re-aims every reviewed bound at a different mechanism.
 `Core.Shutter` likewise moves the illumination gate, and `Core.ChannelGroup`
 changes what `channels.allowed` names. The same coupling runs through
 `_known_continuous_raw_pair`, which resolves focus, XY and camera live from Core.
-Setup now excludes all ten. `Core.AutoShutter` is deliberately not in the set: it
-is a real illumination control and keeps its own classification path.
+Setup does not declare any of these ten as categorical or explicitly excluded;
+guaranteed mode's allowlist therefore leaves direct raw writes unauthorized
+without shadowing authorization's conditional rules. `Core.Shutter` has one
+narrow preset-apply allowance: it may retarget only to a declared illumination
+shutter and remains under that gate. The other device assignments have no such
+allowance. `Core.AutoShutter` is deliberately not in the set: it is a real
+illumination control and keeps its own classification path.
 
 ### Which section owns which write path
 
@@ -1400,14 +1476,12 @@ of it; that the pre-validation enumeration window is closed, which this document
 rather than closes; and anything about continuous focus, which Block 4 hard
 excludes.
 
-**A note on the deployed-versus-generated comparison.** The gate treated M5's
-deployed config as an independently hand-authored reference and argued the
-comparison was strong "precisely because the two were produced by different
-means". The operator states it was generated by an earlier Microclaw. The
-comparison is therefore a difference-finder, not an oracle: agreement between the
-two files is not corroboration. The Core device-assignment finding it produced is
-unaffected — it stands on its own argument and would be a defect with no deployed
-config in existence.
+**A note on the deployed-versus-generated comparison.** M5's deployed config
+was generated by an earlier Microclaw; it is not an independently hand-authored
+reference. The comparison is therefore a difference-finder, not an oracle:
+agreement between the two files is not corroboration. The Core device-assignment
+finding it produced is unaffected — it stands on its own argument and would be a
+defect with no deployed config in existence.
 
 ### Sanctioned rig-fact exception in `microclaw/`
 
