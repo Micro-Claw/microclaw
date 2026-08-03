@@ -2593,18 +2593,12 @@ silently reporting `False`.
 
 Two findings returned:
 
-1. **A continuous-focus offset stage would be authored as an ordinary named
-   stage.** On the Nikon, `Core.Focus` is `TIZDrive` and `TIPFSOffset` is a
-   separate `StageDevice`, so the new rule asks for its travel bounds and
-   proposes the driver's technical range as an Enter-acceptable default. One
-   keypress would then authorize `move_named_stage` on the PFS offset — which
-   Block 4's still-binding item says to **mark unsupported even when the offset
-   has reviewed bounds, until block 6's settling work lands**, which
-   `first_launch.py`'s own `CONTINUOUS-FOCUS REVIEW QUESTION` note already
-   states, and which Track B has open evidence against (offset moves returned the
-   previous target, and the servo drives Z in response, so an offset bound is an
-   unbounded Z excursion). The block text's "every loaded `StageDevice`" does not
-   override Block 4's exclusion.
+1. ~~**A continuous-focus offset stage would be authored as an ordinary named
+   stage**, and should be excluded.~~ **WITHDRAWN by operator ruling the same
+   day; see "Correction" below. It was never sent to the implementer as written.**
+   The observation that prompted it stands — on the Nikon, `Core.Focus` is
+   `TIZDrive` and `TIPFSOffset` is a separate `StageDevice`, so the new rule does
+   author it — but the remedy was wrong.
 2. **No non-core stage can be declined.** `_bounds` accepts only a finite number
    or Enter-to-accept, so every loaded non-core `StageDevice` becomes reachable
    and the operator has no way to say "not this one" — they would have to invent
@@ -2616,6 +2610,36 @@ Nit, not blocking: `_device_property`'s enumerated name set matches
 `position(um)` but not `position(µm)` or `positionum`. The fallback is safe (it
 asks the human) but a normalized `position`-prefix match would propose the driver
 range on more rigs.
+
+**Correction to finding 1 — operator ruling, 2026-08-03. Do not re-derive the
+withdrawn version in a later block.** The coordinator read Block 4's "mark
+PFS-offset workflows unsupported even when the offset has reviewed bounds" as a
+requirement to omit the `named_stages` entry. It is not, and two sources say so:
+
+- The design/33 impact row that item derives from states plainly that **"Phase 5
+  can collect reviewed `TIPFSOffset` bounds"**, and that what a generated profile
+  must not do is **imply that an in-range command was achieved or settled**. The
+  remedy column assigns the fix to runtime capability work (block 6), not to
+  setup.
+- Block 0b's stopgap worksheet — authored under this checklist and shipped to the
+  Nikon operator on 2026-08-03 — declares `TIPFSOffset` under `named_stages` with
+  blank operator-supplied bounds, while excluding only `TIPFSStatus.State`. **The
+  sanctioned exclusion boundary is the continuous-focus enable, not the offset
+  stage.** Excluding the offset in setup would have contradicted the file that
+  rig's operator is filling in right now.
+
+Operator ruling: offset stages are how that rig was controlled before this
+checklist began, and withholding the declaration removes working control to
+protect against a defect that is a *reporting* defect. So setup authors the entry
+like any other named stage. What it owes is honesty, not omission — a review note
+recording (a) that `move_named_stage` can report the previous target as
+`achieved_um` on this device class until block 6 lands, and (b) that an offset
+write commands a servo, so the declared offset bound is not a bound on the
+resulting TIZDrive excursion.
+
+The Enter-acceptable driver-range default is **not** reopened by this: proposing
+driver technical ranges for hazardous axes was settled by operator ruling
+2026-08-01 and that note explicitly forbids re-litigating it in a later block.
 
 Post-merge design gate:
 
