@@ -31,6 +31,41 @@ _BANNED_MODULES = {
 _BANNED_NAMES = {"eval", "exec", "compile", "__import__", "open"}
 
 
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _legacy_text_sha256(data: bytes) -> str | None:
+    """Return the pre-byte-pinning digest after universal-newline decoding."""
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    return _sha256(normalized.encode("utf-8"))
+
+
+def verify_saved_hook_bytes(name: str, entry: dict[str, Any]) -> bytes:
+    """Read and verify the exact saved artifact bytes against its consent pin."""
+    source = Path(entry["path"]).read_bytes()
+    if "sha256" not in entry:
+        raise RuntimeError(
+            f"Hook '{name}' predates hash-pinning; re-save it via "
+            "generate_and_save_hook to record a hash before running."
+        )
+    if _sha256(source) != entry["sha256"]:
+        if _legacy_text_sha256(source) == entry["sha256"]:
+            raise RuntimeError(
+                f"Hook '{name}' uses a legacy newline-normalized hash that does "
+                "not pin its on-disk bytes. Review and re-save it via "
+                "generate_and_save_hook before running."
+            )
+        raise RuntimeError(
+            f"Hook '{name}' changed on disk since it was saved; refusing to load."
+        )
+    return source
+
+
 def lint_hook_code(code: str) -> list[str]:
     """Return advisory warnings for patterns worth a human's attention.
 
@@ -115,7 +150,8 @@ def save_hook(name: str, code: str, description: str, source: str) -> None:
     """
     HOOKS_DIR.mkdir(parents=True, exist_ok=True)
     hook_path = HOOKS_DIR / f"{name}.py"
-    hook_path.write_text(code, encoding="utf-8")
+    source_bytes = code.encode("utf-8")
+    hook_path.write_bytes(source_bytes)
 
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8")) if MANIFEST.exists() else {}
     manifest[name] = {
@@ -125,7 +161,7 @@ def save_hook(name: str, code: str, description: str, source: str) -> None:
         # Pin the exact bytes the user confirmed, plus the advisory warnings they
         # saw and accepted, so load_hook_class can detect on-disk tampering
         # (TOCTOU) and re-surface any *new* warnings from a broadened lint.
-        "sha256": hashlib.sha256(code.encode()).hexdigest(),
+        "sha256": _sha256(source_bytes),
         "accepted_warnings": sorted(lint_hook_code(code)),
     }
     MANIFEST.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
@@ -162,16 +198,8 @@ def load_hook_class(name: str):
     if name not in manifest:
         raise KeyError(f"No saved hook named '{name}'.")
     entry = manifest[name]
-    code = Path(entry["path"]).read_text(encoding="utf-8")
-    if "sha256" not in entry:
-        raise RuntimeError(
-            f"Hook '{name}' predates hash-pinning; re-save it via "
-            "generate_and_save_hook to record a hash before running."
-        )
-    if hashlib.sha256(code.encode()).hexdigest() != entry["sha256"]:
-        raise RuntimeError(
-            f"Hook '{name}' changed on disk since it was saved; refusing to load."
-        )
+    source = verify_saved_hook_bytes(name, entry)
+    code = source.decode("utf-8")
     new_warnings = set(lint_hook_code(code)) - set(entry.get("accepted_warnings", []))
     if new_warnings:
         raise RuntimeError(
@@ -274,9 +302,15 @@ def describe_saved_hook(name: str) -> dict[str, Any]:
             "provenance": {**provenance, "actual_sha256": None,
                            "matches_manifest": False},
         }
-    actual_sha256 = hashlib.sha256(raw).hexdigest()
+    actual_sha256 = _sha256(raw)
+    legacy_newline_pin = (
+        entry.get("sha256") is not None
+        and entry["sha256"] != actual_sha256
+        and _legacy_text_sha256(raw) == entry["sha256"]
+    )
     provenance.update({
         "actual_sha256": actual_sha256,
+        "legacy_newline_pin": legacy_newline_pin,
         "matches_manifest": (
             entry.get("sha256") is not None
             and entry["sha256"] == actual_sha256
@@ -326,6 +360,10 @@ def describe_saved_hook(name: str) -> dict[str, Any]:
     refusal_reasons = []
     if entry.get("sha256") is None:
         refusal_reasons.append("saved hook has no manifest sha256 pin")
+    elif legacy_newline_pin:
+        refusal_reasons.append(
+            "saved hook uses a legacy newline-normalized hash; review and re-save it"
+        )
     elif entry["sha256"] != actual_sha256:
         refusal_reasons.append("saved hook file sha256 does not match manifest")
     if hookbase_subclass:

@@ -61,6 +61,41 @@ def run(saved, name, **kwargs):
     )
 
 
+def test_crlf_hook_uses_one_byte_hash_for_save_load_describe_and_offline(
+    tmp_path, monkeypatch,
+):
+    """Simulate Windows text translation so this regression runs on POSIX."""
+    from microclaw import hook_manager
+
+    hooks = tmp_path / "hooks"
+    manifest = hooks / "manifest.json"
+    monkeypatch.setattr(hook_manager, "HOOKS_DIR", hooks)
+    monkeypatch.setattr(hook_manager, "MANIFEST", manifest)
+    monkeypatch.setattr(completed_dataset, "MANIFEST", manifest)
+
+    code = (
+        "class CrLf:\r\n"
+        " def analyze_frame(self, image, metadata): return None\r\n"
+        " def analyze_saved_frame(self, image, metadata, context): return {'ok': True}\r\n"
+    )
+    original_write_text = Path.write_text
+
+    def windows_write_text(path, data, *args, **kwargs):
+        if path.suffix == ".py":
+            data = data.replace("\n", "\r\n")
+        return original_write_text(path, data, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", windows_write_text)
+    hook_manager.save_hook("crlf", code, "CRLF fixture", source="user_provided")
+
+    raw = (hooks / "crlf.py").read_bytes()
+    assert raw == code.encode("utf-8")
+    assert hook_manager.load_hook_class("crlf").__name__ == "CrLf"
+    described = hook_manager.describe_saved_hook("crlf")
+    assert described["provenance"]["matches_manifest"] is True
+    assert completed_dataset._load_saved_adapter("crlf")[0].__name__ == "CrLf"
+
+
 def test_per_frame_selection_read_only_and_normalized_replay(offline_home):
     save, *_ = offline_home
     save("frame", '''
