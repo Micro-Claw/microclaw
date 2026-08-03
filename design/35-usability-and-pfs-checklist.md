@@ -149,9 +149,11 @@ assistant's narration when judging whether a guard fired.
 | 4r1b | Usability | 4 | `design35/startup-refusal-severity` | `15d8d1b` | `2558583` (`16cc416` rejected alone) | folded into block 4 round 2 | `385049d` into block branch | |
 | 4b | Usability | 4 merged | `design33/bounded-numeric-actuator` (deleted) | `578874e` | `5a6c6e2` | G1 demo **PASS**; G3 M2 **PASS** incl. imagery; G2 M5 in-range **PASS**, refusal step retired | `04164fd` | **done** — design/33 §"Block 4b landed" |
 | 4e | Usability | 4b merged | `design33/emission-path-discovery` | `85398e8` | `bc40f18` + `d631a4f` (`39f69dd` returned) | M2 G1/G2 **PASS** 2026-08-03; G3 demo+M5 owed | | |
-| 4c | Usability | 4e merged | `design33/setup-named-stages` | | | **required** | | |
+| 4f | Usability | 4e merged | `design33/channel-group-presets` | | | **required** | | |
+| 4c | Usability | 4f merged | `design33/setup-named-stages` | | | **required** | | |
+| 4g | Platform | none — may run concurrently | `design32/hook-hash-newline` | | | **required** (any Windows rig) | | |
 | 4d | Usability | 4c merged | `design33/property-authorization-rename` | | | **required** | | |
-| 5 | Usability | 4b, 4e, 4c, 4d | `design33/deployed-config-hygiene` | | | required | | |
+| 5 | Usability | 4b, 4e, 4f, 4c, 4d | `design33/deployed-config-hygiene` | | | required | | |
 | 6 | Nikon | probe S = pre-fix baseline; post-fix run owed | `design34/measured-position-readback` | | | required | | |
 | 7a | Nikon | scope: none; rig gate: probe 0 | `design34/continuous-focus-capability` | | | **required** | | |
 | 7b | Nikon | 7a | `design34/continuous-focus-policy` | | | **required** | | |
@@ -1838,6 +1840,98 @@ Post-merge design gate:
       not-`off_value` rather than exact-`on_value`. State the residual: this
       still proves declared paths are gated, never that discovery found every
       physical emission path.
+
+## 4f. [ ] `channels.allowed` is generated from the wrong config group
+
+Branch: `design33/channel-group-presets`. Depends on 4e merging. Created by
+operator decision 2026-08-03 from Block 4e's M2 gate, which is the same way 4e
+itself was created from 4b's.
+
+`first_launch.py:1087`–`:1101` collects preset names from **every** config group
+in `preset_proposals` and writes them to `channels.allowed` (`:1134`).
+`authorization.py:151` pins `CHANNEL_CONFIG_GROUP = "Channel"` and reads only
+that group — deliberately, and not from `Core.ChannelGroup`, because that
+property is writable (`:146`).
+
+Measured on M2 (`block4e-m2-20260803-111417`): the rig has exactly one config
+group, `Camera`, and no `Channel` group. Setup wrote its six camera presets
+(`Beads_EM25`, `EM100_10MHz`, `EM100_17MHz`, `EM200_10MHz`, `EM200_17MHz`,
+`Vibrations_EM25`) into `channels.allowed`, and startup demoted all six. **Setup
+generated a profile guaranteed to warn on the rig that generated it**, and the
+demotion advises the operator to "add each preset to Micro-Manager's Channel
+group" — wrong, because those presets are camera settings that were never
+channels. Of the three rigs only demo has a `Channel` group; M5 has only
+`System` (already recorded) and M2 only `Camera`.
+
+- [ ] Emit `channels.allowed` only from the group `authorization` actually
+      reads. If that group is absent, emit an empty list and say so in the
+      setup text and in the review notes — an empty, honest key beats six
+      claims the rig will drop.
+- [ ] The demotion message must stop advising an edit that cannot be right. It
+      currently assumes the preset belongs in the `Channel` group; on a rig with
+      no such group the correct action is different. Distinguish "this preset is
+      missing from a group that exists" from "the group does not exist here".
+- [ ] Decide what setup should do with presets in **other** groups. They are
+      real and useful; they are simply not channels. Report a decision — surface
+      them as review notes, or say plainly that microclaw does not drive them —
+      rather than silently discarding.
+- [ ] Do not generalize beyond the `Channel` name without changing
+      `authorization.py` too; producer and consumer must name the same group or
+      this defect recurs inverted.
+- [ ] Rig gate: generate a profile on M2 (or M5) and show `channels.allowed` no
+      longer claims presets the authorizer will drop, and that startup produces
+      no preset demotion. On demo, show the real `Channel` presets still appear
+      and fluorescence channels still work.
+
+## 4g. [ ] Saved hooks are unusable on Windows — two hash conventions disagree
+
+Branch: `design32/hook-hash-newline`. Depends on nothing; touches files no other
+queued block touches (`hook_manager.py`, `completed_dataset.py`), so it may run
+concurrently with 4f/4c in its own worktree.
+
+Scheduled by operator decision 2026-08-03 rather than papered over with a
+known-failure baseline. **The 23 failures every Windows rig run has reported are
+one product defect, not test noise, and they are not a Block 4e regression** —
+the identical set appears in `block4b-m2-20260803-081901`, `-094116`,
+`block4b-m5-20260803-100405` and `block4b-20260802-150128`, i.e. every rig
+including demo, back through 4b's whole campaign.
+
+Root cause, from `block4e-m2-20260803-111417/pytest.txt`: every one of the 23
+fails with `Hook 'X' changed on disk since it was saved; refusing to load.`
+
+- `save_hook` (`hook_manager.py:118`) writes with `write_text(code)` — **text
+  mode**, so Windows translates `\n` to `\r\n` on disk — but pins
+  `sha256(code.encode())` (`:128`), the hash of the **in-memory `\n` form**.
+- `completed_dataset.py:70`/`:76` reads `read_bytes()` and hashes the **raw
+  on-disk bytes**. On Windows those differ, so the pin never matches.
+- `describe` (`hook_manager.py:267`, `:277`) hashes raw bytes too, and reports
+  `matches_manifest: False` for an untampered file.
+- `hook_manager.load` (`:165`, `:171`) reads *text* and hashes the normalized
+  form, so it matches. **That inconsistency is the bug**: three call sites, two
+  conventions, identical only on POSIX.
+
+Consequence, which is worse than the red tests: **on Windows a saved hook is
+permanently unloadable through the offline/dataset path and reports as tampered
+through describe, while loading fine through `hook_manager.load`. Every rig is
+Windows.** It fails safe — a genuine file is rejected, never a tampered one
+accepted — but the feature does not work where it has to work.
+
+- [ ] Pick one canonical convention and use it at every save, load, describe and
+      offline-adapter site. The on-disk bytes are the artifact the manifest
+      claims to pin, so hashing raw bytes and writing bytes (or text with
+      `newline=""`) is the obvious direction — but state the choice and apply it
+      everywhere rather than patching the failing call site.
+- [ ] **Existing manifests carry hashes pinned under the old convention.** Decide
+      migration: re-pin on load with an explicit prompt, refuse with an
+      actionable message, or accept both forms for a release. A hash the user
+      consented to may not be silently rewritten — the manifest *is* the consent
+      record.
+- [ ] Add a test that fails on POSIX today, by writing a `\r\n` file and
+      round-tripping it. The current suite passes on POSIX precisely because it
+      never exercises the difference, which is why this survived four blocks.
+- [ ] Rig gate on any Windows machine: save a hook, then load it through the
+      offline path and describe it. Both must succeed, and `pytest.txt` must
+      show these 23 tests passing.
 
 ## 4c. [ ] Reachable non-core stages — `named_stages` is never emitted
 
