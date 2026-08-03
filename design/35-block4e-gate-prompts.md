@@ -1,7 +1,10 @@
 # design/35 Block 4e — emission-path discovery and multi-state shutter gate
 
 This gate verifies branch `design33/emission-path-discovery`. The implementation
-pin is `7c0f25b`; later runbook-only commits are valid descendants. A qualified
+pin is `bc40f18`, which is the commit containing the whole implementation;
+`7c0f25b` is an earlier, incomplete part of it and pinning that alone would pass
+on a tree missing the discovery widening. Later commits are runbook and test
+only, and are valid descendants. A qualified
 operator must remain at the microscope, use the rig's normal optical containment,
 and stop on unexpected light or motion. Do not make a generated profile permanent.
 Commands below are PowerShell/cmd-safe and preserve evidence without Unix pipes.
@@ -30,7 +33,7 @@ git switch design33/emission-path-discovery > git-switch.txt 2>&1
 git pull --ff-only > git-pull.txt 2>&1
 git status --short > status.txt 2>&1
 git rev-parse HEAD > head.txt 2>&1
-git merge-base --is-ancestor 7c0f25b HEAD
+git merge-base --is-ancestor bc40f18 HEAD
 echo $LASTEXITCODE > implementation-ancestor-exit.txt
 python -m pytest -q > pytest.txt 2>&1
 $Stamp = Get-Date -Format "yyyyMMdd-HHmmss"
