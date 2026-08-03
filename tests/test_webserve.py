@@ -455,6 +455,23 @@ def test_confirmation_audit_is_durable_jsonl(session, tmp_path):
     assert len(records) == 1
     assert records[0]["kind"] == "illumination"
     assert records[0]["decision"] == "declined:no-stream"
+    assert records[0]["summary"] == "Enable illumination"
+
+
+def test_confirmation_audit_summary_uses_secret_redaction(session, tmp_path):
+    path = tmp_path / "confirmations.jsonl"
+    session.confirmation_audit = AuditLog(path)
+    webserve._add_audit_secret(session, "operator-secret")
+
+    assert session.confirm("Save operator-secret", "knowledge") is False
+
+    assert load_history(path).messages[0]["summary"] == "Save [REDACTED]"
+    # The same redacted copy must be what the model sees and what stdout
+    # prints. audit_records is handed to run_agent_iter and becomes the
+    # `confirmations` block in a tool result, and the serve process's stdout is
+    # captured into rig evidence bundles -- so an unredacted record here would
+    # leak in two directions while the JSONL looked clean.
+    assert session.audit_records[-1]["summary"] == "Save [REDACTED]"
 
 
 def test_the_browser_can_approve_a_pending_confirm(session, client, fast_confirm_poll):
@@ -542,11 +559,13 @@ def test_run_turn_binds_the_emit_channel_for_confirmations(session, client, monk
 
     def fake(msg, ctrl, guard, messages, model=None, **kw):
         seen["emit_bound"] = session._emit is not None
+        seen["confirmation_records"] = kw["confirmation_records"]
         yield {"type": "done", "reply": "ok"}
 
     monkeypatch.setattr(webserve, "run_agent_iter", fake)
     client.post("/api/prompt", json={"message": "hi"})
     assert seen["emit_bound"] is True
+    assert seen["confirmation_records"] is session.audit_records
     assert _settle(session)
     assert session._emit is None            # cleared in run_turn's finally
 

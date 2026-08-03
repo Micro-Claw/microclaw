@@ -351,11 +351,22 @@ class Session:
                 "confirmation_id": confirmation_id,
                 "kind": kind,
                 "decision": decision,
+                # Persist what was decided, not merely that an indistinguishable
+                # confirmation occurred. AuditLog applies its credential/secret
+                # redaction before this reaches the confirmations JSONL.
+                "summary": summary,
             }
-            self.audit_records.append(record)
+            # Redact once, then use that one copy everywhere. AuditLog.append
+            # returns a redacted *copy* and leaves its argument untouched, so
+            # appending the raw record here would put an unredacted summary in
+            # front of the model and into the serve process's stdout -- which
+            # rig runbooks capture to `*-session.txt` and ship in evidence
+            # bundles -- while only the JSONL got redacted. Harmless before this
+            # record carried a summary; not harmless now.
             confirmation_audit = getattr(self, "confirmation_audit", None)
             if confirmation_audit is not None:
-                confirmation_audit.append(record)
+                record = confirmation_audit.append(record)
+            self.audit_records.append(record)
             print("[microclaw] Confirmation audit: " + json.dumps(record, sort_keys=True))
             return decision == "approved"
 
@@ -574,6 +585,7 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
                                       if hasattr(session, "store") else None),
                     on_message=(session.store.append
                                 if hasattr(session, "store") else None),
+                    confirmation_records=session.audit_records,
                 ):
                     emit(event)
             except Exception as e:  # noqa: BLE001 — the stream is the only channel
@@ -842,10 +854,9 @@ def serve(args):
         _add_audit_secret(session, token)
     if pairing_code:
         _add_audit_secret(session, pairing_code)
-    # Route every in-code confirmation gate (save_knowledge, hook save, the
-    # illumination enable) to the browser, where the operator is. Installed
-    # once, not per turn: all three callsites read the module global at call
-    # time, so a single assignment covers them (design/21 F1). The CLI keeps
+    # Route every in-code confirmation gate to the browser, where the operator
+    # is. Installed once, not per turn: all callsites read the module global at
+    # call time, so a single assignment covers them (design/21 F1). The CLI keeps
     # the stdin default — a terminal is present there by definition.
     tools.CONFIRM_FN = session.confirm
     app = build_app(session, remote=remote, api_token=token,

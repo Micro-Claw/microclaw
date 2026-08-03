@@ -317,6 +317,7 @@ def run_agent_iter(
     cancel=None,
     context_provider: Callable[[list[dict]], list[dict]] | None = None,
     on_message: Callable[[dict], None] | None = None,
+    confirmation_records: list[dict] | None = None,
 ) -> Iterator[dict]:
     """Run one user turn, yielding an event per thing that happens.
 
@@ -328,6 +329,8 @@ def run_agent_iter(
     `context_provider` maps the full history to the bounded view sent to the
     model; identity is the default. `on_message` runs immediately after each
     append, allowing a durable audit to flush records as they are produced.
+    `confirmation_records`, when supplied by the browser session, is sampled
+    around each dispatch so that tool results report their human decisions.
 
     `cancel` is an optional `threading.Event`, polled at round boundaries and
     before each tool dispatch — never mid-tool. `execute_tool` blocks in Java and
@@ -407,7 +410,14 @@ def run_agent_iter(
                 result_block = {"type": "tool_result", "tool_use_id": block.id,
                                 "is_error": True, "content": result_json}
             else:
+                confirmation_start = (
+                    len(confirmation_records) if confirmation_records is not None else 0
+                )
                 result_json = execute_tool(block.name, block.input, ctrl, guard, cancel=cancel)
+                if confirmation_records is not None:
+                    issued = confirmation_records[confirmation_start:]
+                    if issued:
+                        result_json = _with_confirmations(result_json, issued)
                 result_block = {"type": "tool_result", "tool_use_id": block.id,
                                 "content": result_json}
             tool_results.append(result_block)
@@ -432,6 +442,28 @@ def run_agent_iter(
             "resume where this left off, or narrow the task."
         ),
     }
+
+
+def _with_confirmations(result: str | list, records: list[dict]) -> str | list:
+    """Attach confirmations issued during one dispatch to its model-visible result."""
+    confirmations = [
+        {key: record[key] for key in ("kind", "decision", "summary")}
+        for record in records
+    ]
+    if isinstance(result, list):
+        # Image-returning tools carry their structured result in the text block.
+        decorated = list(result)
+        for index, block in enumerate(decorated):
+            if block.get("type") == "text":
+                payload = json.loads(block["text"])
+                payload["confirmations"] = confirmations
+                decorated[index] = {**block, "text": json.dumps(payload)}
+                return decorated
+        return [{"type": "text", "text": json.dumps({"confirmations": confirmations})},
+                *decorated]
+    payload = json.loads(result)
+    payload["confirmations"] = confirmations
+    return json.dumps(payload)
 
 
 def run_agent(
