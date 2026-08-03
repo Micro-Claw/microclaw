@@ -186,7 +186,7 @@ assistant's narration when judging whether a guard fired.
 | 4h | Usability | 4f merged | `design33/confirmation-visibility` (deleted) | `1599ff3` | `3efecaf` + `518a90a` + `e451a5c` | demo G1+G2 **PASS** 2026-08-03 | `e42b930` | **done** — design/21 §"F1 revisited" |
 | 4c | Usability | 4h merged | `design33/setup-named-stages` (deleted) | `3b99397` | `7f68f33` + `e537207` + `c34ee1e` + `d934dbf` (round 1 returned) | demo G1+G1b, M5 G2, demo re-gate all **PASS** 2026-08-03 | `8ce3401` | **done** — design/33 §"Block 4c landed" |
 | 4g | Platform | none — may run concurrently | `design32/hook-hash-newline` (deleted) | `95ae192` | `50e5f66` + `d0bb602` + `971cdb6` + `f768cc3` | round 3 **PASS** 2026-08-03 (rounds 1–2 failed test-side) | `936230f` | **done** — design/32 §4 |
-| 4d | Usability | 4c merged | `design33/property-authorization-rename` | `052179d` | | **required** | | |
+| 4d | Usability | 4c merged | `design33/property-authorization-rename` | `052179d` | `fd4c5b6` + `c063f16` | demo G0/G1/G2 **PASS** 2026-08-03; M5 G3/G4 owed | | |
 | 5 | Usability | 4b, 4e, 4f, 4h, 4c, 4d | `design33/deployed-config-hygiene` | | | required | | |
 | 6 | Nikon | probe S = pre-fix baseline; post-fix run owed | `design34/measured-position-readback` | | | required | | |
 | 7a | Nikon | scope: none; rig gate: probe 0 | `design34/continuous-focus-capability` | | | **required** | | |
@@ -2961,6 +2961,35 @@ Post-merge design gate:
       `design/33-authorization-map.md`, which documents the old key names in
       twelve places. State that the old key was removed without a migration
       path, by operator ruling, so a later reader does not reconstruct one.
+
+### Rig gate G1 re-run — demo machine, 2026-08-03: **PASS. The demo gate is complete.**
+
+Evidence: `20260803_170006_552597_microclaw_history.jsonl` in
+`block4d-demo-20260803-163136`, from a plain
+`uv run microclaw --port $Port --safety-config demo-new-key.reviewed.yaml serve`.
+
+Startup was clean — `Connecting to Micro-Manager…`, the API key from keyring,
+`Microclaw GUI: http://127.0.0.1:8000`, and on exit
+`[microclaw] Illumination off: Core.AutoShutter, White Light Shutter.State`. No
+schema refusal, no authorization refusal, and **no demotion diagnostics at all**,
+against a profile the interview generated from scratch under the new key names.
+
+**The turn is what makes this conclusive.** The operator asked for a snap, and
+`snap_and_analyze` ran against the live demo camera and returned real pixels:
+ROI 512×512, exposure 10 ms, Z 50 µm, mean 327 over a 70–584 range,
+`saturated_fraction: 0.0`. So the generated profile is not merely parseable — the
+authorization map built from it **admitted a live tool call and the hardware
+executed it**. That is a stronger result than the banner-sighting the criterion
+originally asked for, and it came from running microclaw the ordinary way. The
+`SNR 0.95 < 3.1` warning in the tool result is the demo core's featureless
+simulated field and is expected.
+
+Also worth keeping: the banner *did* appear on the console. That confirms the
+buffering diagnosis rather than contradicting it — stdout is line-buffered on a
+TTY and block-buffered the moment it is redirected, so the message an operator
+sees interactively is exactly the one a log file loses.
+
+**Demo gate status: G0 PASS, G1 PASS, G2 PASS.** M5 (G3, G4) is what remains.
 
 ### Rig gate G0–G2 — demo machine, 2026-08-03: **G0 and G2 PASS; G1 unverified**
 
