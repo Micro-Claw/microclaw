@@ -149,7 +149,7 @@ assistant's narration when judging whether a guard fired.
 | 4r1b | Usability | 4 | `design35/startup-refusal-severity` | `15d8d1b` | `2558583` (`16cc416` rejected alone) | folded into block 4 round 2 | `385049d` into block branch | |
 | 4b | Usability | 4 merged | `design33/bounded-numeric-actuator` (deleted) | `578874e` | `5a6c6e2` | G1 demo **PASS**; G3 M2 **PASS** incl. imagery; G2 M5 in-range **PASS**, refusal step retired | `04164fd` | **done** — design/33 §"Block 4b landed" |
 | 4e | Usability | 4b merged | `design33/emission-path-discovery` (deleted) | `85398e8` | `bc40f18` + `d631a4f` (`39f69dd` returned) | M2 G1/G2, M5 G3, demo G3 all **PASS** 2026-08-03 | `9b88394` | **done** — design/33 §"Block 4e landed" |
-| 4f | Usability | 4e merged | `design33/channel-group-presets` | `f95c8ca` | | **required** | | |
+| 4f | Usability | 4e merged | `design33/channel-group-presets` | `f95c8ca` | `84c4d70` + `d4985e6` | **required** (M2-or-M5 + demo) | | |
 | 4c | Usability | 4f merged | `design33/setup-named-stages` | | | **required** | | |
 | 4g | Platform | none — may run concurrently | `design32/hook-hash-newline` (deleted) | `95ae192` | `50e5f66` + `d0bb602` + `971cdb6` + `f768cc3` | round 3 **PASS** 2026-08-03 (rounds 1–2 failed test-side) | `936230f` | **done** — design/32 §4 |
 | 4d | Usability | 4c merged | `design33/property-authorization-rename` | | | **required** | | |
@@ -1961,10 +1961,63 @@ channels. Of the three rigs only demo has a `Channel` group; M5 has only
 - [ ] Do not generalize beyond the `Channel` name without changing
       `authorization.py` too; producer and consumer must name the same group or
       this defect recurs inverted.
-- [ ] Rig gate: generate a profile on M2 (or M5) and show `channels.allowed` no
+- [-] Rig gate: generate a profile on M2 (or M5) and show `channels.allowed` no
       longer claims presets the authorizer will drop, and that startup produces
       no preset demotion. On demo, show the real `Channel` presets still appear
       and fluorescence channels still work.
+
+### Implementation — pushed 2026-08-03, awaiting the rigs
+
+`84c4d70` accepted on its first round, plus a coordinator commit at `d4985e6`.
+Branch suite **1358 passed / 99 skipped / 3 expected warnings** after `main` was
+merged in (see below); the implementer measured 1354 before that merge, which is
+1350 + four new tests. Note 1354 is *also* `main`'s count for an unrelated
+reason — `main` had gained 4g's four tests — so do not read the two as the same
+number.
+
+Coordinator-verified by replaying the three captured inventories through
+`interview()`, which is valid here because `channels.allowed` is written by the
+consumer from `facts.configuration_groups` already in the file (unlike 4e, whose
+change was in the producer):
+
+| Rig | before | after |
+|---|---|---|
+| demo | all 14 names across six groups | exactly `Cy5`, `DAPI`, `FITC`, `Rhodamine` |
+| M5 | four `System` presets | `[]`, with the review note |
+| M2 | six `Camera` presets | `[]` (see below) |
+
+M2 was **not** independently replayable: the coordinator's acceptance responder
+cannot answer the duplicate-representation question, and it fails identically on
+`main` and the branch. M2 takes the same `channel_group_present is False` branch
+as M5, which is confirmed, and the rig gate settles it live. Recorded rather
+than quietly counted as verified.
+
+**The semantic trap is handled correctly and pinned by a test.** Setup always
+emits the key: an absent or empty `Channel` group yields `allowed: []`, never an
+omitted key, because omission means *every* live `Channel` preset is authorized
+(`safety.py:216`, `authorization.py:973`). This was the one way this block could
+have silently widened authority on exactly the rigs it fixes.
+
+Also confirmed: presets in other groups are surfaced as review notes rather than
+discarded silently; group filtering happens before names enter the allowlist, so
+demo's `Channel` and `Channel-Multiband` sharing four preset names cannot leak
+the wrong group's preset; and the startup diagnostic now distinguishes "missing
+from a `Channel` group that exists" (where "add it to that group" is sound) from
+"this rig has no `Channel` group" (where it is not).
+
+**Coordinator changes at `d4985e6`.** `main` was merged into the branch so the
+gate carries 4g's Windows repair and the `uv.lock` ignore — without it the
+operator would have met a suite with 23 known failures and an untracked file, on
+a gate whose precondition is a clean tree and a clean suite. The runbook's
+Windows expectation was rewritten accordingly: **0 failed is the hard
+condition**, ~1342 passed is informative only, and a small deviation in the
+*passed* count is to be reported rather than treated as failure. That wording is
+deliberate — a derived cross-platform count was wrong once already in 4g, and
+the failure count is the claim that matters.
+
+One thing checked because a wrong answer would have wasted a rig trip: G2's
+mechanical check asserts on a `set_channel` tool call, and `set_channel` is a
+real registered tool (`tools_schema.py:263`, `tools.py:455`).
 
 ## 4g. [x] Saved hooks are unusable on Windows — **MERGED 2026-08-03**
 
