@@ -1,7 +1,7 @@
 # design/35 Block 4c — named-stage setup gate
 
 This runbook verifies branch `design33/setup-named-stages`. The implementation
-is pinned at `aaebc09`; later documentation or test commits are valid
+is pinned at `7f68f33`; later documentation or test commits are valid
 descendants. Run the demo gate first without hazardous hardware motion, then run
 the M5 motion gate with a qualified operator at the microscope. Do not make a
 generated profile permanent.
@@ -30,7 +30,7 @@ git status --short > "$Evidence\status.txt" 2>&1
 echo $LASTEXITCODE > "$Evidence\status-exit.txt"
 git rev-parse HEAD > "$Evidence\head.txt" 2>&1
 echo $LASTEXITCODE > "$Evidence\head-exit.txt"
-git merge-base --is-ancestor aaebc09 HEAD > "$Evidence\implementation-ancestor.txt" 2>&1
+git merge-base --is-ancestor 7f68f33 HEAD > "$Evidence\implementation-ancestor.txt" 2>&1
 echo $LASTEXITCODE > "$Evidence\implementation-ancestor-exit.txt"
 python -m pytest -q > "$Evidence\pytest.txt" 2>&1
 echo $LASTEXITCODE > "$Evidence\pytest-exit.txt"
@@ -65,6 +65,11 @@ echo $LASTEXITCODE > "$Evidence\demo-check-unreviewed-exit.txt"
 Copy-Item $Draft "$Evidence\demo-profile.reviewed.yaml"
 ```
 
+When setup asks whether to declare `Aux Z`, choose `y=declare bounds` for this
+gate. The alternative `x=exclude; leave unreachable` must be visible in the
+captured prompt; it is the operator opt-out, but choosing it here would correctly
+produce no entry and therefore would not exercise this gate.
+
 The profile check must print two `True` lines. `check-config` must reject only
 because setup intentionally writes `reviewed: false`. Inspect the raw draft and
 the complete transcript under `demo-inventory`: they must show the `Aux Z`
@@ -94,6 +99,12 @@ non-core single-axis stages (expected from captured evidence: `SmarAct 1D`,
 `Thorlabs ELL17/ELL20`, and `Thorlabs ELL20`) and must exclude core focus
 `PIZStage`. Review each travel range as a safety boundary, not as proof that all
 positions are physically safe.
+
+For this gate choose `y=declare bounds` for each expected non-core stage. In a
+production interview the operator may instead choose `x=exclude; leave
+unreachable`; the transcript and profile review notes must then name the
+declined stage and `named_stages` must omit it. Do not invent a degenerate range
+to decline a stage.
 
 ```powershell
 $Draft = Join-Path $Evidence "m5-profile.yaml"
@@ -139,6 +150,12 @@ Both lines must print `True` and the exit must be `0`. Preserve the raw history
 JSONL read by this check, plus the profile and transcript read by the profile
 check. Restore the stage to its original safe position if local practice
 requires it, using an authorized in-range move, and record that result.
+
+If a PFS/perfect-focus offset stage appears on any machine, retain the generated
+continuous-focus review note. It must say that `achieved_um` can be the previous
+target until Block 6 fixes settling/read-back, and that an offset command drives
+the focus servo: its declared bounds constrain the offset, not the resulting,
+currently unmeasured Z excursion. This warning does not exclude the stage.
 
 ## Return to the coordinator
 
