@@ -125,17 +125,26 @@ remote alone.
   it is the longest-latency item on the board, so it is expected to sit open
   while Track A proceeds. When evidence arrives, 0c's checklist items are the
   triage procedure.
-- **Block 4h is closed** (superseded note, kept because the paragraph it replaces
-  described 4h as in flight at the 2026-08-03 boundary). It was implemented,
-  gated on the demo machine, merged at `e42b930`, its branch deleted locally and
-  remotely, and its design gate reconciled at `0fe0300`. Nothing is outstanding
-  in `/tmp/mc-4h`; that worktree may be removed.
-- Everything else is closed and on `origin`: blocks 4e, 4f and 4g are merged,
-  their branches deleted locally and remotely, their ledger rows closed, their
-  design gates reconciled, and their coordination notes recorded in
-  `design/prompts.md`. `git log --oneline origin/main..main` was empty.
-- The intended order from here is **4d → 5**, then Track B. Block 4c merged
-  2026-08-03 at `8ce3401`; 4d is next and is unassigned.
+- **Everything in Track A up to and including 4c is closed and on `origin`.**
+  Blocks 4e, 4f, 4g, 4h and 4c are merged, their branches deleted locally *and*
+  remotely, their ledger rows closed, their design gates reconciled, and their
+  coordination notes recorded in `design/prompts.md`. At the boundary there were
+  no worktrees, no local block branches, and `git log --oneline
+  origin/main..main` was empty. Nothing is outstanding under `/tmp`.
+- **`main` is at `777710c`, measured 1369 passed / 99 skipped / 3 expected
+  warnings.** Re-measure anyway — that is step 1 — but a wildly different number
+  means something else changed, not that this note was wrong.
+- **Nothing is assigned.** The next block is **4d**, and a new session starts at
+  workflow step 1: branch, ledger row, then delegate. Order from there is
+  **4d → 5**, then Track B.
+- Two things 4d will need that are not in its block text. Its rig gate starts M5
+  under its *existing deployed* config, and a copy of that file is in the block 4
+  evidence bundle as `block4-m5-20260802-100850/deployed-m5.reference.yaml` with
+  a sha256 beside it — the deployed config itself is on M5, not in this repo.
+  And 4c's ledger row is the precedent for what "both old-key and new-key configs
+  are covered by tests" has to survive: a generated profile now carries
+  `named_stages`, so the rename must move it or deliberately leave it at top
+  level.
 
 Progress markers: `[ ]` not started, `[-]` active, `[x]` complete, `[!]` blocked.
 
