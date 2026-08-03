@@ -698,3 +698,50 @@ it is not the kind of thing a prompt bullet fixes.
 * The agent again ends replies by asking the user to choose an approach rather
   than committing. design/20 filed stalling as a prompt-shape question,
   orthogonal to everything else. It is still both of those things.
+
+## F1 revisited (Block 4h, 2026-08-03): the operator saw the prompt; the model did not
+
+F1 routed every confirmation to the browser, which is where the operator is.
+That was right, and it created a second problem nobody looked for until a rig
+gate asked the operator to *use* the feature rather than validate it.
+
+`CONFIRM_FN` is invoked from inside tool code and `Session.confirm` renders the
+gate in the browser, but **no tool result carried the decision back**. The model
+therefore had no evidence any of it happened. Observed on the demo rig during
+Block 4f: the operator approved a `Core.Shutter` retarget while setting the DAPI
+channel, asked the agent about the prompt, and was told
+
+> "I didn't, actually — I never prompted you to open the shutter."
+
+The prompt was real, correct, and recorded in the confirmations JSONL. The agent
+was not lying; from its side the harness had asked, and nothing in
+`set_channel`'s result mentioned it.
+
+**Since Block 4h, a tool result reports the confirmations issued during that
+dispatch.** `run_agent_iter` accepts the browser session's record list, samples
+its length either side of each tool call, and attaches whatever was issued:
+
+    "confirmations": [{"kind": "illumination",
+                       "decision": "approved",
+                       "summary": "SELECT ILLUMINATION SHUTTER: …"}]
+
+It rides alongside a normal result and alongside an `error` — a **declined**
+confirmation is not a missing result, and the model must be able to describe a
+refusal as accurately as an approval. `kind`, `decision` and `summary` are
+model-visible; identity, timestamp and confirmation id stay audit metadata.
+The durable confirmations JSONL now records the summary too, because without it
+two confirmations of the same kind in one session are indistinguishable after
+the fact.
+
+**One trap, recorded because the class of bug will recur.** `AuditLog.append`
+returns a *redacted copy* and leaves its argument untouched. Adding `summary` to
+the record therefore leaked it twice — into the model-visible payload and into
+the serve process's stdout — while only the JSONL was redacted. Rig runbooks
+capture that stdout into `*-session.txt` and ship it inside evidence bundles, so
+this was not a private channel. Redact once, then use the returned copy
+everywhere.
+
+**Residual, and it is the honest limit of the whole mechanism.** The record
+proves a confirmation was *issued and decided*. It does not prove the operator
+read it, understood what `Core.Shutter` retargeting means, or connected it to
+light reaching the sample. Nothing in a JSONL can establish that.

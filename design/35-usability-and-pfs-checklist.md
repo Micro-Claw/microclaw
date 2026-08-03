@@ -176,7 +176,7 @@ assistant's narration when judging whether a guard fired.
 | 4b | Usability | 4 merged | `design33/bounded-numeric-actuator` (deleted) | `578874e` | `5a6c6e2` | G1 demo **PASS**; G3 M2 **PASS** incl. imagery; G2 M5 in-range **PASS**, refusal step retired | `04164fd` | **done** — design/33 §"Block 4b landed" |
 | 4e | Usability | 4b merged | `design33/emission-path-discovery` (deleted) | `85398e8` | `bc40f18` + `d631a4f` (`39f69dd` returned) | M2 G1/G2, M5 G3, demo G3 all **PASS** 2026-08-03 | `9b88394` | **done** — design/33 §"Block 4e landed" |
 | 4f | Usability | 4e merged | `design33/channel-group-presets` (deleted) | `f95c8ca` | `84c4d70` + `d4985e6` | M2 G1 + demo G2 **PASS** 2026-08-03 | `9010158` | **done** — design/33 §"Block 4f landed" |
-| 4h | Usability | 4f merged | `design33/confirmation-visibility` | `1599ff3` | `3efecaf` + `518a90a` + `e451a5c` | **required** (demo) | | |
+| 4h | Usability | 4f merged | `design33/confirmation-visibility` (deleted) | `1599ff3` | `3efecaf` + `518a90a` + `e451a5c` | demo G1+G2 **PASS** 2026-08-03 | `e42b930` | **done** — design/21 §"F1 revisited" |
 | 4c | Usability | 4h merged | `design33/setup-named-stages` | | | **required** | | |
 | 4g | Platform | none — may run concurrently | `design32/hook-hash-newline` (deleted) | `95ae192` | `50e5f66` + `d0bb602` + `971cdb6` + `f768cc3` | round 3 **PASS** 2026-08-03 (rounds 1–2 failed test-side) | `936230f` | **done** — design/32 §4 |
 | 4d | Usability | 4c merged | `design33/property-authorization-rename` | | | **required** | | |
@@ -2306,7 +2306,7 @@ refusal → review → re-save → reload. Run by the coordinator against the br
 all twelve checks pass, both refusal messages actionable. G2 is now the
 opportunistic step and G2a the guaranteed one.
 
-## 4h. [ ] The agent cannot see blocking confirmations, and denies them
+## 4h. [x] The agent cannot see blocking confirmations, and denies them — **MERGED 2026-08-03**
 
 Branch: `design33/confirmation-visibility`. Depends on 4f merging. Created by
 operator decision 2026-08-03 from Block 4f's demo gate.
@@ -2352,25 +2352,25 @@ No unsafe action occurs — this is a truthfulness defect, not a hazard — and
 every remaining block in this checklist is gated through an agent-mediated
 transcript, so the fix improves the evidence quality of 4c, 4d and 5.
 
-- [ ] **Return the confirmations issued during a tool call in that tool's
+- [x] **Return the confirmations issued during a tool call in that tool's
       result**, with at least kind, decision, and enough of the summary for the
       model to say what was approved. `Session.audit_records` (`webserve.py:317`,
       appended at `:355`) already accumulates exactly these records and is
       **read by nothing** — check before building a second mechanism.
-- [ ] The model must be able to answer "did you prompt me, and for what?"
+- [x] The model must be able to answer "did you prompt me, and for what?"
       correctly, including for a **declined** confirmation, where the tool
       raises and the refusal text is what the model sees today.
-- [ ] **Decide what the audit row should contain, and report the decision.** It
+- [x] **Decide what the audit row should contain, and report the decision.** It
       currently records timestamp, identity, `confirmation_id`, `kind` and
       `decision` — but not *what* was confirmed, so two illumination approvals in
       one session are indistinguishable after the fact. Weigh that against the
       summary containing device/property/value text and the existing secret
       redaction (`_add_audit_secret`). Do not widen silently in either direction.
-- [ ] **Report what you find about the CLI path.** `_require_confirmation`
+- [x] **Report what you find about the CLI path.** `_require_confirmation`
       (`tools.py:56`) prints and returns; it appears to write no audit record at
       all, so a REPL session may have no confirmation trail. Establish whether
       that is true and say so; propose rather than fix if it grows the block.
-- [ ] Off-rig tests must cover approved and declined, and must assert on the
+- [x] Off-rig tests must cover approved and declined, and must assert on the
       returned structure rather than on wording.
 
 ### Implementation — pushed 2026-08-03, awaiting the demo gate
@@ -2420,18 +2420,69 @@ no confirmation trail at all.** The implementer correctly declined to fix it
 inside this block — it needs a CLI audit lifecycle rather than an extension of
 the browser session — and recommends a separate block. Not yet scheduled.
 
+### Rig gate G1/G2 — demo, 2026-08-03: **PASS. Block 4h is complete.**
+
+Evidence: `block4h-demo-20260803-125647`, at `e451a5c`, pin `0`, clean tree,
+suite **1345 passed / 0 failed / 115 skipped** — exactly the predicted count.
+
+Both tool results carry the structured record. Approved:
+`confirmations: [{kind: illumination, decision: approved, summary: "SELECT
+ILLUMINATION SHUTTER: Core.Shutter = 'White Light Shutter' …"}]` alongside the
+normal `status`/`writes`/expansion hashes. Declined: the same structure with
+`decision: declined`, **alongside** the `error` and `hint` — a declined
+confirmation is not a missing result, which is what the runbook required.
+
+**And the defect itself is fixed.** Asked "did you prompt me during that channel
+change, and what did I approve?", the agent named the kind, the decision and the
+shutter selection. Compare Block 4f's demo run, where the same question got "I
+didn't, actually — I never prompted you." The declined case is described
+correctly too, including that the decline blocked the whole `set_channel`.
+
+Worth noting rather than treating as a defect: in both answers the agent
+carefully distinguishes that it did **not** itself present the prompt — the
+harness did. That is accurate, and more honest than claiming authorship, while
+still answering the operator's real question.
+
+### Process finding: a mechanical check that cannot run still produces evidence
+
+**Both `*-result-check.txt` files contain a PowerShell error, not a result.**
+`python` was not resolvable in the shell that ran them — the Windows Store app
+alias intercepted it — although `pytest` ran fine moments earlier in the same
+session. The coordinator ran the checks against the returned histories instead,
+which is why this gate passed rather than costing a round trip.
+
+Three rules for future runbooks, because this one nearly turned a pass into an
+ambiguous result:
+
+1. **Capture `$LASTEXITCODE` for every mechanical check**, exactly as G0 does
+   for the ancestor test. A check that produced a file is not a check that ran.
+2. **Prefer a committed script under `design/` over an inline `python -c`.**
+   Block 4g's `35-block4g-legacy-migration-check.py` ran on Windows without
+   trouble; long single-line invocations are the fragile form, and they are also
+   unreadable when they fail.
+3. **Always return the raw artifact the check reads** — here the two history
+   JSONLs — so the coordinator can re-run a check that did not execute. This
+   run was recoverable only because the runbook asked for them.
+
+Post-merge design gate:
+
+- [x] Recorded in `design/21-sourced-and-still-wrong.md` §"F1 revisited": what a
+      tool result now reports about human confirmations, and the residual — the
+      record proves a confirmation was issued and decided, not that the operator
+      understood it.
+
 Rig gate (demo — no hazard needed, the shutter retarget is a selection):
 
-- [ ] Reproduce 4f's exchange: set a channel whose preset retargets
+- [x] Reproduce 4f's exchange: set a channel whose preset retargets
       `Core.Shutter`, approve it, then ask the agent whether it prompted and
       what for. It must answer correctly, and the mechanical check must assert
       on the tool result carrying the confirmation, not on the narration.
-- [ ] Repeat with a **declined** confirmation and show the agent describes that
+- [x] Repeat with a **declined** confirmation and show the agent describes that
       accurately too.
 
 Post-merge design gate:
 
-- [ ] Record in design/33 (or design/21, which owns the browser confirmation
+- [x] Record in design/33 (or design/21, which owns the browser confirmation
       gate) what a tool result now reports about human confirmations, and the
       residual: the record proves a confirmation was issued and decided, not
       that the operator understood it.
