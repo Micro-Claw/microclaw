@@ -26,16 +26,23 @@ Copy-Item implementation-ancestor-exit.txt,pytest.txt,head.txt,status.txt $Evide
 ```
 
 The ancestor command must exit `0`, the starting tree must be clean, and the
-suite must show **1338 passed, 0 failed, 115 skipped**. This is the recorded
-Windows baseline of 1311 passed / 23 failed / 115 skipped, with all 23 defect
-failures repaired and four new tests added by this block.
+suite must show **1333 passed, 0 failed, 115 skipped**.
 
-**Round 1 (M5, 2026-08-03) failed here at 1308 passed / 23 failed**, while G1 and
-G2a both passed — the product code was correct and two *test fixtures* still
-wrote text while pinning the untranslated string. If this count is wrong again,
-read the failure text: `changed on disk` and `legacy newline-normalized` are
+That number is taken directly from round 2's own run on this branch (1332
+passed / 1 failed / 115 skipped, 1448 collected), not derived from the
+pre-branch baseline — the 4g branch was cut before Block 4e merged, so it does
+not carry 4e's tests and any arithmetic from the 1311/23 baseline will be five
+out. An earlier version of this line said 1338 for exactly that reason.
+
+**Two earlier rounds failed here and neither meant the repair was wrong.** Round
+1 (M5) showed 1308 passed / 23 failed while G1 and G2a both passed: the product
+code was already correct and two *test fixtures* still wrote text while pinning
+the untranslated string. Round 2 showed a single remaining failure,
+`test_hash_mismatch_is_described`, whose *tampering* step had the same shape one
+level deeper. If the count is wrong again, read the failure text before
+concluding anything: `changed on disk` and `legacy newline-normalized` are
 different findings, and the second means the pin and the bytes disagree in the
-fixture rather than in `hook_manager`. Preserve the warning
+test rather than in `hook_manager`. Preserve the warning
 summary and report any warning-count change.
 
 ## G1 — fresh save, live load, describe, and offline load
