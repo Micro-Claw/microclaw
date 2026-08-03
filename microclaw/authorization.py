@@ -25,13 +25,8 @@ _ACQUISITION_POLICY_FIELDS = (
     ("max_duration_s", "per-plan estimated-duration maximum"),
     ("max_bytes", "per-plan estimated-byte maximum"),
     ("max_illuminated_ms", "per-plan illuminated-time maximum"),
-    (
-        "max_session_illuminated_ms",
-        "in-memory controller-session illuminated-time maximum; resets on process restart",
-    ),
     ("confirm_above_frames", "per-plan frame confirmation threshold"),
     ("confirm_above_duration_s", "per-plan estimated-duration confirmation threshold"),
-    ("confirm_above_bytes", "per-plan estimated-byte confirmation threshold"),
     ("confirm_above_illuminated_ms", "per-plan illuminated-time confirmation threshold"),
 )
 
@@ -369,6 +364,15 @@ def _validate_typed_live(
         reported = _property_type_name(core, identity.device, identity.property)
         if reported not in {"Float", "Integer"}:
             errors.append(f"Typed actuator {pair} is not numeric (driver reports {reported}).")
+        device_kind = device_type_name(core, identity.device)
+        normalized_prop = identity.property.casefold().replace("_", "").replace(" ", "")
+        if policy.kind == "bounded-numeric" and device_kind in {"StageDevice", "XYStageDevice"} and (
+            "position" in normalized_prop or normalized_prop in {"x", "y"}
+        ):
+            errors.append(
+                f"Typed bounded-numeric {pair} aliases a {device_kind} position property; "
+                "stage motion must retain its dedicated core or named-stage safety gate."
+            )
         if bool(core.has_property_limits(identity.device, identity.property)):
             lower = float(core.get_property_lower_limit(identity.device, identity.property))
             upper = float(core.get_property_upper_limit(identity.device, identity.property))
@@ -724,6 +728,13 @@ def validate_live_rig(
     ):
         errors.extend(_validate_typed_live(core, identity, policy, loaded_devices))
         pair = (identity.device, identity.property)
+        if policy.kind == "bounded-numeric" and (
+            pair in illumination_pairs or _known_continuous_raw_pair(core, pair)
+        ):
+            errors.append(
+                f"Typed bounded-numeric {identity.device}.{identity.property} aliases a built-in "
+                "stage, exposure, or illumination capability and cannot bypass its dedicated safety gate."
+            )
         if pair in denied_pairs:
             errors.append(
                 f"Raw property {identity.device}.{identity.property} cannot be both "
@@ -769,7 +780,9 @@ def validate_live_rig(
                     f"Typed illumination-power {identity.device}.{identity.property} units/full_scale disagree with "
                     "illumination.power_properties; declare the same raw representation in both places."
                 )
-        canonical_unit = "um" if policy.kind == "absolute-position" else "percent"
+        canonical_unit = policy.units if policy.kind == "bounded-numeric" else (
+            "um" if policy.kind == "absolute-position" else "percent"
+        )
         conversion = (
             f"raw native/full_scale {policy.full_scale:g} -> percent"
             if policy.kind == "illumination-power" and policy.units == "native"

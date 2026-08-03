@@ -18,7 +18,9 @@ import yaml
 
 from microclaw import __version__
 from microclaw.config import ConfigValidationResult, validate_safety_config
-from microclaw.rig_inventory import _TRAILING_UNIT, validate_inventory_schema
+from microclaw.rig_inventory import (
+    _NON_EMITTING_TYPES, _TRAILING_UNIT, validate_inventory_schema,
+)
 
 
 class SetupRefusal(ValueError):
@@ -49,9 +51,11 @@ reviewed: true and perform a normal restart. Configuration is loaded and the
 live authorization map is built only at process startup, so edits require a
 restart; setup never hot-loads its output.
 
-max_session_illuminated_ms is an in-process runaway-loop brake. It accumulates
-shutter-open time from every acquisition in one Microclaw process and resets to
-zero at restart; it is not a sample-lifetime or cross-restart dose guarantee.
+If max_session_illuminated_ms is set, it is an in-process runaway-loop brake.
+It accumulates shutter-open time from every acquisition in one Microclaw process
+and resets to zero at restart; it is not a sample-lifetime or cross-restart dose
+guarantee. Setup leaves it unset, so there is no session ledger cap unless the
+operator deliberately adds one during review.
 
 Heuristic candidates are questions, not proof. Discovery may miss physical
 emission paths. Micro-Manager writability and value-domain metadata provide
@@ -313,6 +317,19 @@ def _core_structural(item: dict) -> bool:
     )
 
 
+def _bounded_numeric_unit(item: dict) -> str:
+    """Propose a name-carried unit, falling back to MM's native representation."""
+    prop = str(item.get("property") or item.get("record", {}).get("name") or "")
+    match = _TRAILING_UNIT.search(prop)
+    if match is not None:
+        unit = match.group("unit")[1:-1].strip()
+        # Camera array indices such as OUTPUT TRIGGER DELAY[0] are delimited
+        # suffixes but are not units and grant no operator-meaningful semantics.
+        if re.search(r"[A-Za-zµ%]", unit):
+            return unit
+    return "native"
+
+
 def _metadata_default(item: dict) -> tuple[str, str, tuple[float, float] | None]:
     record = item["record"]
     if _core_structural(item):
@@ -340,9 +357,19 @@ def _metadata_default(item: dict) -> tuple[str, str, tuple[float, float] | None]
     if record.get("has_limits") is True and numeric:
         low, high = span.get("lower"), span.get("upper")
         if isinstance(low, (int, float)) and isinstance(high, (int, float)):
+            if item.get("device_type") in {"StageDevice", "XYStageDevice"} and (
+                "position" in str(item.get("property") or "").casefold()
+                or str(item.get("property") or "").casefold().strip() in {"x", "y"}
+            ):
+                return (
+                    "x",
+                    "MM identifies a stage position property; bounded-numeric cannot bypass the fail-closed named/core stage policy",
+                    None,
+                )
+            unit = _bounded_numeric_unit(item)
             return (
                 "n",
-                f"MM reports numeric technical range {low} to {high}; excluded until physical semantics are supplied",
+                f"MM reports numeric technical range {low} to {high} and property unit {unit!r}",
                 (float(low), float(high)),
             )
     if _state_device_positions(item):
@@ -622,7 +649,7 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
     say("DERIVED PROPERTY PROPOSAL (from Micro-Manager metadata)")
     labels = {
         "c": "categorical", "a": "typed absolute position", "x": "excluded",
-        "u": "unresolved", "n": "bounded numeric, excluded pending typed semantics",
+        "u": "unresolved", "n": "typed bounded numeric",
     }
     dedicated: set[str] = set()
     for path in all_candidates:
@@ -655,12 +682,44 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
                 + (", ".join(effects) or "none") + "]"
             )
 
+    ordinary = set(defaults) - enables - powers
+    def bulk_makes_writable(path: str) -> bool:
+        if defaults[path][0] not in {"c", "n"}:
+            return False
+        item = properties[path]
+        kind = item["device_type"]
+        lower_name = item["property"].casefold()
+        if _continuous_focus(item["device"], item["property"], assignments):
+            return False
+        if ((kind == "CameraDevice" and "roi" in lower_name)
+                or ("pulse" in lower_name and any(
+                    word in lower_name for word in ("duration", "width", "time")
+                ))):
+            return False
+        if kind == "XYStageDevice" and (
+            "position" in lower_name or lower_name.strip(" _-()[]") in {"x", "y"}
+        ):
+            return False
+        if kind not in {
+            "CameraDevice", "ShutterDevice", "StageDevice", "XYStageDevice",
+            "StateDevice", "GenericDevice", "CoreDevice", "AutoFocusDevice",
+        }:
+            return False
+        if item["device"] in illumination_devices and (
+            _state_device_positions(item)
+            or (defaults[path][0] == "n" and kind not in _NON_EMITTING_TYPES)
+        ):
+            return False
+        return True
+
+    writable_default_count = sum(bulk_makes_writable(path) for path in ordinary)
     bulk = _choice(
-        "Accept all MM-derived defaults for ordinary properties and non-colliding presets? You can revisit entries by exact name next.",
+        f"Accept all MM-derived defaults for ordinary properties and non-colliding presets? "
+        f"This will make {writable_default_count} ordinary properties writable; defaults "
+        "proposed as excluded remain excluded. You can revisit entries by exact name next.",
         {"y": "accept proposal", "n": "review every ordinary property"}, ask, say,
         default="y",
     ) == "y"
-    ordinary = set(defaults) - enables - powers
     preset_names_for_revisit = {name for name, _, _ in preset_proposals}
     revisit = _revisit_entries(ask, say, ordinary | preset_names_for_revisit) if bulk else set()
 
@@ -791,41 +850,81 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
 
         default_role, evidence, default_bounds = defaults[path]
         if default_role == "x" and bulk and path not in revisit:
-            excluded.append({"device": device, "property": prop})
+            # Core device-assignment properties are recorded but never written as
+            # an *explicit* exclusion. `authorization.py` owns them with a
+            # purpose-built rule: a channel preset may retarget `Core.Shutter`
+            # when the device it selects is itself a declared illumination
+            # shutter, so the gate still covers whatever it switches to. That
+            # allowance sits behind a generic `pair in excluded_properties`
+            # test, so an explicit entry shadows it and refuses every preset
+            # that names a shutter — which is how the demo rig's four
+            # fluorescence channels stopped working. Silence is not permission:
+            # guaranteed mode is an allowlist, so an undeclared property is
+            # still unwritable. This is the same explicit-exclusion-versus-
+            # vacuum defect Block 4's round-4 field failure hit on StateDevice
+            # positions.
+            if not _core_structural(item):
+                excluded.append({"device": device, "property": prop})
             notes.append(f"MM METADATA EXCLUSION: {path}; {evidence}.")
             continue
         recommendation = " (known TTL.State0 false-positive shape; exclusion is recommended but requires your confirmation)" if path.casefold().endswith("ttl.state0") else ""
-        # A StateDevice position on a device that also surfaced illumination
-        # candidates is a laser engine's selector, not a filter wheel's, and
+        # A StateDevice position or bounded-numeric default on a device that
+        # also surfaced illumination candidates can change the meaning of the
+        # declared emission envelope. The laser engine's selector is not a
+        # filter wheel's, and
         # Block 3b's rig gate caught exactly that widening once. An earlier
         # version forced a question here; M5 answered it by accepting a
         # proposal the operator could not interpret, because the labels are
         # placeholders ("State-0", "State-1", "State-2") that say nothing about
         # what the positions do. An unanswerable question is worse than a
         # default, so this fails closed instead and stays revisitable by name.
-        if (
-            _state_device_positions(item) and device in illumination_devices
-            and bulk and path not in revisit
-        ):
+        # The bounded-numeric limb deliberately does NOT apply to a device MM
+        # types as non-emitting. The hazard it guards is a laser engine whose
+        # numerics redefine what the declared emission envelope means (iChrome's
+        # `Use TTL`, `Analog Mode`, TTL polarity). A camera surfaces illumination
+        # candidates too — its own internal/external shutters — but its numerics
+        # cannot gate light at the sample, and excluding them cost M2's
+        # `Andor.Gain`, which is this block's entire point. StateDevice positions
+        # keep the unconditional form: that limb is about unreadable labels, not
+        # emission semantics.
+        illuminating_device_default = device in illumination_devices and (
+            _state_device_positions(item)
+            or (default_role == "n" and item["device_type"] not in _NON_EMITTING_TYPES)
+        )
+        if illuminating_device_default and bulk and path not in revisit:
             excluded.append({"device": device, "property": prop})
-            notes.append(
-                f"ILLUMINATING-DEVICE POSITION EXCLUDED: {path}; {device} also surfaced "
-                "illumination candidates, and its state labels do not establish what the "
-                "positions do. Declare it deliberately if this rig needs it."
-            )
-            say(
-                f"EXCLUDED: {path} is a position property on {device}, which also surfaced "
-                "illumination candidates. Its labels do not say what the positions do, so no "
-                "authorization is inferred. Revisit it by exact name if you need it."
-            )
+            if _state_device_positions(item):
+                notes.append(
+                    f"ILLUMINATING-DEVICE POSITION EXCLUDED: {path}; {device} also surfaced "
+                    "illumination candidates, and its state labels do not establish what the "
+                    "positions do. Declare it deliberately if this rig needs it."
+                )
+                say(
+                    f"EXCLUDED: {path} is a position property on {device}, which also surfaced "
+                    "illumination candidates. Its labels do not say what the positions do, so no "
+                    "authorization is inferred. Revisit it by exact name if you need it."
+                )
+            else:
+                notes.append(
+                    f"ILLUMINATING-DEVICE BOUNDED NUMERIC EXCLUDED: {path}; {device} also "
+                    "surfaced illumination candidates, so numeric metadata alone does not "
+                    "establish that this property preserves the declared illumination envelope. "
+                    "Declare it deliberately if this rig needs it."
+                )
+                say(
+                    f"EXCLUDED: {path} is a bounded numeric on {device}, which also surfaced "
+                    "illumination candidates. Numeric metadata does not establish that it "
+                    "preserves the declared illumination envelope, so no authorization is "
+                    "inferred. Revisit it by exact name if you need it."
+                )
             continue
         needs_question = not bulk or path in revisit or bool(recommendation)
-        role = "x" if default_role == "n" else default_role
+        role = default_role
         if needs_question:
             role = _choice(
                 f"Writable property {path} [{labels[default_role]}: {evidence}]{recommendation}",
-                {"c": "categorical", "a": "typed absolute position", "x": "exclude", "u": "unresolved"}, ask, say,
-                default="x" if default_role == "n" else default_role,
+                {"c": "categorical", "a": "typed absolute position", "n": "typed bounded numeric", "x": "exclude", "u": "unresolved"}, ask, say,
+                default=default_role,
             )
         if role == "c":
             categorical.append({"device": device, "property": prop})
@@ -852,8 +951,24 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
                 "device": device, "property": prop, "kind": "absolute-position",
                 "units": "um", "minimum": low, "maximum": high,
             })
+        elif role == "n":
+            proposed_unit = _bounded_numeric_unit(item)
+            assert proposed_unit is not None
+            unit = _proposed_text(
+                f"Operator-confirmed unit string for {path}; recorded and enforced verbatim",
+                proposed_unit, ask, say, audit_name=f"{path} unit string",
+            )
+            low, high = _bounds(path + f" in {unit}", ask, say, default_bounds)
+            typed.append({
+                "device": device, "property": prop, "kind": "bounded-numeric",
+                "units": unit, "minimum": low, "maximum": high,
+            })
         else:
-            excluded.append({"device": device, "property": prop})
+            # Same rule as the bulk path above: a Core device-assignment
+            # property is recorded but never written as an explicit exclusion,
+            # so it cannot shadow authorization.py's Core.Shutter preset rule.
+            if not _core_structural(item):
+                excluded.append({"device": device, "property": prop})
             wording = "OPERATOR EXCLUSION" if role == "x" else "UNRESOLVED PROPERTY"
             notes.append(f"{wording}: {path}; no authorization was inferred.")
 
@@ -920,12 +1035,11 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
         "continuously open = 60 × 1000 ms",
         min(minute_ms, acquisition["max_illuminated_ms"]), ask, say,
     )
-    day_ms = 24 * 60 * 60 * 1000
-    acquisition["max_session_illuminated_ms"] = _positive_default(
-        "hard maximum shutter-open time accumulated across every acquisition in one Microclaw process; "
-        "restart resets it to zero. Runaway-loop brake, not a dose guarantee. Real-world anchor: "
-        "one full day continuously open = 24 × 60 × 60 × 1000 ms",
-        day_ms, ask, say,
+    say(
+        "SESSION RUNAWAY BRAKE UNSET: acquisition.max_session_illuminated_ms is optional. "
+        "There is no session ledger cap unless you add one during review. If set, it is only "
+        "an in-process runaway-loop brake; restarting resets the ledger to zero, so it is not "
+        "a sample-lifetime dose guarantee."
     )
     geometry = facts.get("camera_geometry")
     current_width = geometry.get("image_width") if isinstance(geometry, dict) else None
@@ -960,11 +1074,6 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
             "Microclaw cannot derive raw payload bytes, so the operator must supply the hard cap."
         )
         acquisition["max_bytes"] = _positive("hard maximum raw payload bytes", ask, say)
-    acquisition["confirm_above_bytes"] = acquisition["max_bytes"]
-    notes.append(
-        "BYTE CONFIRMATION INERT: acquisition.confirm_above_bytes equals max_bytes; "
-        "frame and duration confirmations gate the same geometry-derived quantity before the hard byte cap refuses it."
-    )
 
     illumination: dict = {
         "require_confirm_on_enable": True,

@@ -73,7 +73,6 @@ def test_partial_completion_commits_actual_and_releases_the_rest():
     [
         ("confirm_above_frames", AcquisitionPlan(2, 1, 1, 2)),
         ("confirm_above_duration_s", AcquisitionPlan(1, 1, 2, 1)),
-        ("confirm_above_bytes", AcquisitionPlan(1, 1, 1, 2)),
         ("confirm_above_illuminated_ms", AcquisitionPlan(1, 2, 1, 1)),
     ],
 )
@@ -97,6 +96,25 @@ def test_each_confirmation_threshold_fires_above_and_not_below(
     at_threshold = AcquisitionPlan(1, 1, 1, 1)
     tools._authorize_acquisition(ctrl, _guard(**{field: 1}), at_threshold).close()
     assert calls == []
+
+
+def test_deprecated_confirm_above_bytes_does_not_gate_a_plan(monkeypatch):
+    from microclaw import tools
+    calls = []
+    monkeypatch.setattr(tools, "CONFIRM_FN", lambda *a, **k: calls.append(a) or True)
+    ctrl = MagicMock()
+    tools._authorize_acquisition(
+        ctrl, _guard(confirm_above_bytes=1), AcquisitionPlan(1, 1, 1, 2)
+    ).close()
+    assert calls == []
+
+
+def test_session_brake_refusal_explains_restart_reset():
+    with pytest.raises(SafetyViolation, match=r"runaway-loop brake.*restarting.*resets"):
+        _guard(max_session_illuminated_ms=1).check_acquisition(
+            frames=1, duration_s=1, bytes_=1, illuminated_ms=2,
+            session_illuminated_ms=0,
+        )
 
 
 def test_declined_confirmation_rolls_back_reservation_fully(monkeypatch):
