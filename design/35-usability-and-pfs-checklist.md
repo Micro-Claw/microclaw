@@ -131,7 +131,7 @@ Rig-facing commands must be PowerShell/cmd-safe (the rig is Windows): prefer
 | 4 | Usability | 3 | `design33/first-launch-setup` (deleted) | `bc303a2` | `a742d73` | 5 rounds: demo r1 **FAIL**, r2/r3 **PASS**; M5 G4 + **G4b PASS** 2026-08-02 | `6266807` | **done** — design/33 §"Phase 5 landed" |
 | 4r1a | Usability | 4 | `design33/first-launch-setup` | `15d8d1b` | `c5746b9` (`d203753` rejected) | folded into block 4 round 2 | n/a — merges via block 4 | |
 | 4r1b | Usability | 4 | `design35/startup-refusal-severity` | `15d8d1b` | `2558583` (`16cc416` rejected alone) | folded into block 4 round 2 | `385049d` into block branch | |
-| 4b | Usability | 4 merged | `design33/bounded-numeric-actuator` | `578874e` | `3cfba0e` | G1 demo **PASS** (3 rounds); G2 M5 pending; M2 gain owed, non-blocking | | |
+| 4b | Usability | 4 merged | `design33/bounded-numeric-actuator` | `578874e` | `5a6c6e2` | G1 demo **PASS**; G3 M2 **PASS** (owed run closed early); **G2 M5 is the only step left** | | |
 | 4e | Usability | 4b merged | `design33/emission-path-discovery` | | | **required** | | |
 | 4c | Usability | 4e merged | `design33/setup-named-stages` | | | **required** | | |
 | 4d | Usability | 4c merged | `design33/property-authorization-rename` | | | **required** | | |
@@ -1501,6 +1501,41 @@ closed.** Outstanding is only the two-gain image comparison, blocked by a full
 **The gate could not run at all until the operator hand-edited the profile**,
 which is finding 3 below and was 4b's own defect.
 
+### G3 round 2 — M2, 2026-08-03 at `eb3faa3`: **PASS, G3 is closed**
+
+Evidence: `block4b-m2-20260803-094116`, run after `5a6c6e2`. **`Andor.Gain` is
+now declared by default** — no hand-edit for gain, which is finding 3 confirmed
+fixed on the rig it was found on. 19 bounded numerics.
+
+The full sequence, in order:
+
+1. `get_device_property_info` reported `current_value 3`, driver `3..1000`, and
+   `declared_policy`.
+2. `m2-gain-low` captured at gain **3**.
+3. `Andor.Gain = 800` accepted.
+4. `m2-gain-high` captured at gain **800**.
+5. `Andor.Gain = 1500` **refused**: `canonical value 1500 native; allowed
+   absolute range is 3..1000 native`.
+6. Read-back `800` — the refusal changed nothing.
+7. Illumination unaffected: `Luxx638.Laser Operation Select` enabled under
+   confirmation, driven `Off`, and a later declined enable was refused.
+
+Image comparison, measured here from the two exported TIFFs:
+
+| | mean | median | p99 | max | saturated |
+|---|---|---|---|---|---|
+| gain 3 | 196.7 | 197 | 233 | 269 | 0 |
+| gain 800 | 418.5 | 346 | 1258 | 2909 | 0 |
+
+2.1× in mean and 5.4× at p99, neither frame saturated, in the expected direction
+for EM gain. **The change is visible in the data**, which is the one G3 claim
+that no off-rig test could make. The last disk-full run blocked exactly this
+step; it succeeded once space was free.
+
+**Both Block 4e findings reproduced unchanged at `eb3faa3`** — `Cobolt561.Laser`
+still undiscovered, `Andor.Shutter` still offered only `Open`/`Closed`. Expected:
+4e is scheduled, not implemented. This run is 4e's pre-fix baseline.
+
 Three findings. Only the third is 4b's; the first two became **Block 4e**, and
 the fourth is registered as carried-forward.
 
@@ -2107,6 +2142,10 @@ This is an inventory, not permission to close with unresolved blank work. Block
   (`microclaw/rig_inventory.py:39`), so off-rig tests prove the substitution
   fires, not that the vocabulary matches real driver naming (`Passphrase`,
   `Community String`, `Login`).
+- ~~**Block 4b's M2 gain gate is owed.**~~ **CLOSED 2026-08-03** by
+  `block4b-m2-20260803-094116`: gain declared by default, clamp refused 1500
+  against `3..1000`, and the two-gain images differ 2.1× in mean with neither
+  saturated. Kept here only so the row's history is legible. Original text:
 - **Block 4b's M2 gain gate is owed.** `bounded-numeric` merged with its clamp,
   refusals and setup emission proven on the demo machine and its mechanism
   proven on M5, but "gain on a real camera, with the change visible in the
