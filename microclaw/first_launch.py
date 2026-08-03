@@ -1033,10 +1033,25 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
     for device in sorted(facts.get("devices", []), key=lambda item: str(item.get("label") or "")):
         label, device_type = str(device.get("label") or ""), device.get("device_type")
         if device_type == "StageDevice" and label and label != focus_device:
+            decision = _choice(
+                f"Named single-axis stage {label}: declare reviewed travel bounds "
+                "or leave it unreachable",
+                {"y": "declare bounds", "x": "exclude; leave unreachable"},
+                ask, say, default="y",
+            )
+            if decision == "x":
+                notes.append(
+                    f"OPERATOR EXCLUSION: named stage {label}; no named_stages "
+                    "authorization was emitted, so the stage remains unreachable."
+                )
+                continue
             default = _technical_bounds(
                 _device_property(
                     properties, label,
-                    {"position", "position(um)", "z", "zposition"},
+                    {
+                        "position", "position(um)", "position(µm)",
+                        "positionum", "z", "zposition",
+                    },
                 )
             )
             if default is None:
@@ -1182,13 +1197,34 @@ def interview(inventory: dict, *, ask: Input = input, say: Output = print) -> tu
         )
 
     autofocus, focus = assignments.get("autofocus"), assignments.get("focus")
-    offset_devices = sorted({x["device"] for x in typed if "offset" in x["device"].casefold() or "offset" in x["property"].casefold()})
+    offset_devices = sorted({
+        x["device"] for x in typed
+        if "offset" in x["device"].casefold() or "offset" in x["property"].casefold()
+    } | {
+        x["device"] for x in named_stages
+        if "offset" in x["device"].casefold()
+        and any(shape in x["device"].casefold() for shape in (
+            "pfs", "perfect focus", "autofocus", "focus lock",
+        ))
+    })
     if autofocus or offset_devices:
-        notes.append(
+        continuous_focus_note = (
             "CONTINUOUS-FOCUS REVIEW QUESTION: jointly review core focus stage "
             f"{focus!r}, autofocus device {autofocus!r}, and possible offset stage(s) {offset_devices!r}. "
-            "No movement policy or engagement position was inferred; PFS-offset workflows are unsupported until settling/read-back work lands."
         )
+        if offset_devices:
+            continuous_focus_note += (
+                "A declared offset bound limits the commanded servo offset, not the resulting Z excursion; "
+                "that mapping is unmeasured. On this device class move_named_stage may report the previous "
+                "target as achieved_um because the adapter's Busy() clears before motion starts, so a reported "
+                "achieved position is not evidence of arrival or settling. Block 6 owns the settling/read-back fix."
+            )
+        else:
+            continuous_focus_note += (
+                "No offset-stage movement policy or engagement position was inferred; "
+                "PFS-offset workflows remain unsupported until an offset stage is declared."
+            )
+        notes.append(continuous_focus_note)
 
     config = {
         "schema_version": 2,

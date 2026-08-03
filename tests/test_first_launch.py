@@ -119,6 +119,8 @@ def _answer_real_interview(prompts, *, bulk=True):
             return "" if "proposal:" in prompt else "e-/ADU"
         if prompt.startswith("Illumination candidate"):
             return "e"
+        if prompt.startswith("Named single-axis stage"):
+            return "y"
         if "ON value" in prompt:
             return "ON"
         if "OFF value" in prompt:
@@ -931,7 +933,10 @@ def test_named_stage_bounds_are_authored_from_captured_inventory():
         item["device"] == inventory["facts"]["core_device_assignments"]["focus"]
         for item in config["named_stages"]
     )
-    named_prompts = [prompt for prompt in prompts if "named stage Aux Z" in prompt]
+    named_prompts = [
+        prompt for prompt in prompts
+        if "Human-reviewed" in prompt and "named stage Aux Z" in prompt
+    ]
     assert len(named_prompts) == 2
     assert all("MM driver technical range" in prompt for prompt in named_prompts)
     assert sum(
@@ -955,7 +960,10 @@ def test_named_stage_without_driver_range_requires_typed_bounds():
     assert config["named_stages"] == [{
         "device": "Aux Z", "min_um": 0.0, "max_um": 100.0,
     }]
-    named_prompts = [prompt for prompt in prompts if "named stage Aux Z" in prompt]
+    named_prompts = [
+        prompt for prompt in prompts
+        if "Human-reviewed" in prompt and "named stage Aux Z" in prompt
+    ]
     assert len(named_prompts) == 2
     assert all("MM driver technical range" not in prompt for prompt in named_prompts)
     assert any(
@@ -982,6 +990,62 @@ def test_non_core_xy_stage_is_explicitly_excluded():
         for line in output
     )
     assert any("UNSUPPORTED NON-CORE XY STAGE: Aux XY" in note for note in notes)
+
+
+def test_named_stage_can_be_declined_and_remains_unreachable():
+    """The candidate is derived from the captured demo Z stage record."""
+    inventory = json.loads(REAL_DEMO_INVENTORY.read_text(encoding="utf-8"))
+    focus = next(
+        copy.deepcopy(device) for device in inventory["facts"]["devices"]
+        if device["label"] == inventory["facts"]["core_device_assignments"]["focus"]
+    )
+    focus["label"] = "Declined Z"
+    inventory["facts"]["devices"].append(focus)
+    prompts, output = [], []
+    base = _answer_real_interview(prompts)
+
+    def ask(prompt):
+        if prompt.startswith("Named single-axis stage Declined Z"):
+            prompts.append(prompt)
+            return "x"
+        return base(prompt)
+
+    config, notes = interview(inventory, ask=ask, say=output.append)
+    assert config["named_stages"] == []
+    assert not any("named stage Declined Z travel" in prompt for prompt in prompts)
+    assert any(
+        "OPERATOR EXCLUSION: named stage Declined Z" in note
+        and "remains unreachable" in note for note in notes
+    )
+    assert any(
+        "Named single-axis stage Declined Z" in prompt
+        and "exclude; leave unreachable" in prompt for prompt in prompts
+    )
+
+
+def test_nikon_pfs_offset_is_authored_with_unverified_motion_note():
+    """Nikon shape: captured demo Z record relabelled TIPFSOffset; Core.Focus stays Z."""
+    inventory = json.loads(REAL_DEMO_INVENTORY.read_text(encoding="utf-8"))
+    focus = next(
+        copy.deepcopy(device) for device in inventory["facts"]["devices"]
+        if device["label"] == inventory["facts"]["core_device_assignments"]["focus"]
+    )
+    focus["label"] = "TIPFSOffset"
+    inventory["facts"]["devices"].append(focus)
+    config, notes = interview(
+        inventory, ask=_answer_real_interview([]), say=lambda _: None
+    )
+    assert config["named_stages"] == [{
+        "device": "TIPFSOffset", "min_um": 0.0, "max_um": 100.0,
+    }]
+    review = next(note for note in notes if note.startswith(
+        "CONTINUOUS-FOCUS REVIEW QUESTION:"
+    ))
+    assert "TIPFSOffset" in review
+    assert "previous target as achieved_um" in review
+    assert "not evidence of arrival or settling" in review
+    assert "commanded servo offset, not the resulting Z excursion" in review
+    assert "mapping is unmeasured" in review
 
 
 def test_real_demo_limit_sources_exposure_default_and_budget_order():
