@@ -89,6 +89,9 @@ class Core:
         assert group == "Channel"
         return list(self.presets)
 
+    def get_available_config_groups(self):
+        return ["Channel"]
+
     def get_loaded_devices(self):
         return [
             self.xy, self.focus, self.camera, "ReadOnlySensor", "SecondZ",
@@ -350,6 +353,17 @@ def test_missing_allowed_presets_are_demoted_and_not_authorized(capsys):
         with pytest.raises(RigAuthorizationError, match="absent"):
             authorize_channel(ctrl, preset)
     assert "AUTHORIZATION CLAIMS DEMOTED" in capsys.readouterr().err
+
+
+def test_missing_allowed_presets_on_rig_without_channel_group_get_honest_advice():
+    core = Core()
+    core.get_available_config_groups = lambda: ["Auxiliary"]
+    report = validate_live_rig(Controller(core), parsed(channels=["MissingPreset"]))
+    message = report.diagnostics[0].message
+    assert "has no Micro-Manager Channel group" in message
+    assert "add each preset" not in message.lower()
+    assert "explicit empty list" in message
+    assert "has no Micro-Manager Channel group" in report.excluded_presets["MissingPreset"][0]
 
 
 def test_present_but_unreadable_preset_has_one_sanitized_reason():

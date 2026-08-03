@@ -174,6 +174,43 @@ def test_empty_guaranteed_categorical_key_is_emitted(tmp_path):
     assert loaded["reviewed"] is False
 
 
+def test_absent_channel_group_emits_explicit_empty_allowlist_and_review_note(tmp_path):
+    answers = _answers()
+    output = []
+    config, notes = interview(_inventory(), ask=lambda _: next(answers), say=output.append)
+    assert config["channels"] == {"allowed": []}
+    assert "allowed" in config["channels"]  # omitted means all live presets are allowed
+    assert any("has no 'Channel' configuration group" in line for line in output)
+    assert any("omitting the key would authorize every live Channel preset" in note for note in notes)
+
+
+def test_only_channel_group_presets_are_allowed_and_other_groups_are_not_silent():
+    inventory = _inventory()
+    inventory["facts"]["configuration_groups"] = [
+        {"name": "Auxiliary", "presets": [{"name": "Shared", "effects": []}]},
+        {"name": "Channel", "presets": [{"name": "Shared", "effects": []}]},
+        {"name": "Secondary", "presets": [{"name": "Shared", "effects": []}]},
+    ]
+    answers = _answers()
+    output = []
+    config, notes = interview(inventory, ask=lambda _: next(answers), say=output.append)
+    assert config["channels"] == {"allowed": ["Shared"]}
+    assert any("configuration group 'Auxiliary'" in note for note in notes)
+    assert any("configuration group 'Secondary'" in note for note in notes)
+    assert sum("Channel.Shared [preset allowed" in line for line in output) == 1
+
+
+def test_empty_channel_group_explains_empty_allowlist():
+    inventory = _inventory()
+    inventory["facts"]["configuration_groups"] = [{"name": "Channel", "presets": []}]
+    answers = _answers()
+    output = []
+    config, notes = interview(inventory, ask=lambda _: next(answers), say=output.append)
+    assert config["channels"] == {"allowed": []}
+    assert any("'Channel' configuration group is empty" in line for line in output)
+    assert any("authorize no channel presets" in note for note in notes)
+
+
 def test_inventory_regions_and_producer_version_fail_closed(tmp_path):
     inventory = _inventory()
     inventory["schema"] = "microclaw.rig-inventory/v999"
@@ -660,7 +697,7 @@ def test_real_demo_inventory_bulk_pass_emits_bounded_numeric_defaults():
         row["device"] == "Camera" and row["property"] == "Exposure"
         for row in config["rig_profile"]["typed_actuators"]
     )
-    assert len(config["channels"]["allowed"]) == 14
+    assert config["channels"]["allowed"] == ["Cy5", "DAPI", "FITC", "Rhodamine"]
 
 
 def test_illumination_numeric_domain_proposes_on_off_and_audits_override():
@@ -969,7 +1006,7 @@ def test_bounded_numeric_default_records_operator_unit_verbatim():
 
     inventory = _inventory()
     inventory["facts"]["configuration_groups"] = [{
-        "name": "Test", "presets": [{
+        "name": "Channel", "presets": [{
             "name": "TouchesGain",
             "effects": [{"device": "Camera", "property": "Gain", "value": "3"}],
         }],
@@ -1002,7 +1039,7 @@ def test_bounded_numeric_default_records_operator_unit_verbatim():
             return "0"
         if "maximum" in prompt:
             return "200"
-        if prompt.startswith("Preset Test.TouchesGain"):
+        if prompt.startswith("Preset Channel.TouchesGain"):
             return ""
         return "1"
 
@@ -1017,7 +1054,7 @@ def test_bounded_numeric_default_records_operator_unit_verbatim():
         for row in config["rig_profile"]["typed_actuators"]
     )
     assert any(
-        prompt.startswith("Preset Test.TouchesGain") and "TYPED-PROPERTY COLLISION" in prompt
+        prompt.startswith("Preset Channel.TouchesGain") and "TYPED-PROPERTY COLLISION" in prompt
         for prompt in prompts
     )
 

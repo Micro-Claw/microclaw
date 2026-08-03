@@ -962,6 +962,10 @@ def validate_live_rig(
 
     allowed_channels = parsed_config.constraints.allowed_channels
     try:
+        available_groups = _strings(core.get_available_config_groups())
+    except Exception:
+        available_groups = None
+    try:
         available_presets = _strings(core.get_available_configs(CHANNEL_CONFIG_GROUP))
     except Exception as exc:
         available_presets = None
@@ -977,19 +981,40 @@ def validate_live_rig(
         available = set(available_presets)
         missing = [preset for preset in allowed_channels if preset not in available]
         if missing:
+            channel_group_exists = (
+                available_groups is None or CHANNEL_CONFIG_GROUP in available_groups
+            )
+            if channel_group_exists:
+                corrective_action = (
+                    "Add each preset to Micro-Manager's Channel group, or remove its "
+                    "exact name from top-level `channels.allowed`."
+                )
+                exclusion_reason = (
+                    "preset is absent from Micro-Manager's Channel group; add it there "
+                    "or remove its exact name from top-level `channels.allowed`"
+                )
+            else:
+                corrective_action = (
+                    "This rig has no Micro-Manager Channel group; remove these non-channel "
+                    "claims from top-level `channels.allowed` (use an explicit empty list "
+                    "to authorize no channels)."
+                )
+                exclusion_reason = (
+                    "preset cannot be a channel because this rig has no Micro-Manager "
+                    "Channel group; remove its exact name from top-level `channels.allowed`"
+                )
             demotions.append(ConfigDiagnostic(
                 "live_check",
                 "channels.allowed lists preset(s) not present in the \"Channel\" "
                 "group: " + ", ".join(repr(preset) for preset in missing)
-                + ". The missing preset claim(s) were dropped and are not authorized. Add each preset to Micro-Manager's Channel group, or remove its exact name from top-level `channels.allowed`.",
+                + ". The missing preset claim(s) were dropped and are not authorized. "
+                + corrective_action,
                 False,
             ))
         presets = [preset for preset in allowed_channels if preset in available]
     authorized_presets: set[str] = set()
     excluded_presets: dict[str, list[str]] = {
-        preset: [
-            "preset is absent from Micro-Manager's Channel group; add it there or remove its exact name from top-level `channels.allowed`"
-        ]
+        preset: [exclusion_reason]
         for preset in (missing if allowed_channels is not None and available_presets is not None else [])
     }
     channel_expansion_hashes: dict[str, str] = {}
