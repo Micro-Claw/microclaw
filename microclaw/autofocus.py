@@ -5,7 +5,7 @@ from typing import Callable, Optional
 
 import numpy as np
 
-from microclaw.image_analysis import normalized_laplacian_variance, snap_to_numpy
+from microclaw.image_analysis import snap_to_numpy, tenengrad
 
 
 @dataclass
@@ -79,7 +79,7 @@ def sweep_autofocus(
     z_end_um: float,
     z_step_um: float,
     settle_ms: int = 50,
-    metric_fn: Callable[[np.ndarray], float] = normalized_laplacian_variance,
+    metric_fn: Callable[[np.ndarray], float] = tenengrad,
     move_to_best: bool = True,
 ) -> SweepResult:
     """Sweep Z and measure the focus metric; move to best Z only if move_to_best."""
@@ -149,7 +149,7 @@ def coarse_then_fine_autofocus(
     coarse_step_um: float,
     fine_step_um: float,
     settle_ms: int = 50,
-    metric_fn: Callable[[np.ndarray], float] = normalized_laplacian_variance,
+    metric_fn: Callable[[np.ndarray], float] = tenengrad,
     min_contrast: float = MIN_CONTRAST,
 ) -> AutofocusResult:
     """Two-pass autofocus that reports BOTH passes and restores Z on a flat curve.
@@ -162,9 +162,16 @@ def coarse_then_fine_autofocus(
     peak pinned at a sweep boundary is likewise NOT convergence (design/28 F1),
     so the stage is left where it was without guessing why the curve failed.
 
-    The normalized Laplacian metric is polarity-insensitive and works for both
-    bright-on-dark and dark-on-bright structure. Callers may inject a different
-    callable for controlled experiments; autofocus does not guess from one frame.
+    The metric is `tenengrad` (design/36), which is maximised at focus and is
+    polarity-insensitive, so bright-on-dark and dark-on-bright structure both
+    score. It is NOT illumination-invariant — a sweep must therefore hold
+    illumination, exposure, ROI and binning fixed, which it does. It replaced
+    normalized_laplacian_variance, whose contrast normaliser made it a MINIMUM at
+    focus on real fields: on M5 that sent a widened sweep monotonically uphill to
+    69.9 µm while the operator's own best focus, at 49.9, scored lowest of all.
+
+    Callers may inject a different callable for controlled experiments;
+    autofocus does not guess a metric from one frame.
     """
     entry_z = float(ctrl.core.get_position())
     lo_bound = entry_z - z_range_um / 2
@@ -218,7 +225,7 @@ def single_sweep_autofocus(
     z_range_um: float,
     z_step_um: float,
     settle_ms: int = 50,
-    metric_fn: Callable[[np.ndarray], float] = normalized_laplacian_variance,
+    metric_fn: Callable[[np.ndarray], float] = tenengrad,
     min_contrast: float = MIN_CONTRAST,
 ) -> AutofocusResult:
     """One-pass autofocus with the same contrast gate and result shape as

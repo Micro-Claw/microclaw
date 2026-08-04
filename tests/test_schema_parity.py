@@ -58,3 +58,10 @@ def test_hook_capability_parameters_are_declared(name):
     assert "Power-only" in description
     assert "shutter enable" in description
     assert "confirmed once before" in description
+
+
+def test_run_autofocus_description_says_sweep_is_headless():
+    description = _SCHEMA_BY_NAME["run_autofocus"]["description"]
+    assert "sweep is headless" in description
+    assert "live view is paused for its duration and restored afterwards" in description
+    assert "viewer does not show the sweep as it happens" in description

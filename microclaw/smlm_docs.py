@@ -195,7 +195,7 @@ must be asked of the user explicitly and confirmed in their reply.
 3. Call get_available_channels() to confirm the excitation channel.
 4. Set exposure: set_exposure(exposure_ms) or pass exposure_ms to run_timelapse.
 5. Snap a wide-field image for reference: snap_and_analyze().
-   - Check focus (Laplacian variance metric). If low, suggest run_autofocus.
+   - Check focus (Tenengrad metric; higher = sharper). If low, suggest run_autofocus.
    - Check intensity. For dSTORM it should be high (all fluorophores ON).
 6. Remind the user to check the back focal plane (BFP) image for air bubbles in
    the immersion oil before starting. Air bubbles appear as dark occlusions in the

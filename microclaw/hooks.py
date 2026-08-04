@@ -8,7 +8,7 @@ import numpy as np
 
 from microclaw import __version__
 from microclaw.image_analysis import (
-    compute_stats, normalized_laplacian_variance, resolve_min_snr, snap_to_numpy,
+    compute_stats, resolve_min_snr, snap_to_numpy, tenengrad,
 )
 from microclaw.safety import SafetyViolation
 
@@ -275,7 +275,38 @@ class AutofocusHook(HookBase):
 
 
 class FocusFeedbackHook(HookBase):
-    """Corrects Z drift per frame during timelapse using Laplacian variance."""
+    """Corrects Z drift per frame during timelapse using a sharpness metric.
+
+    The metric is Tenengrad over total flux squared (design/36). Both halves
+    matter, and each fixes a different failure:
+
+      * Tenengrad, because the normalized Laplacian variance this used before is
+        MINIMISED at focus on real fields. This gate was therefore jogging Z
+        away from focus and reading the resulting rise as a recovery.
+      * Divided by flux, because Tenengrad scales with photon count, and a
+        timelapse bleaches. Without this, a dimming sample reads as a defocusing
+        one and the hook jogs Z for no reason — which is what the old comment
+        here was right to worry about.
+
+    Flux is `mean(I) - offset`, where the offset is measured ONCE, from a low
+    percentile of the first frame, and then held fixed. Both parts are load-
+    bearing:
+
+      * FIXED, because a per-frame background estimate rises as defocus spreads
+        light into the dark pixels, which collapses the denominator with
+        defocus — that is precisely the mechanism that inverted the old metric.
+        A constant offset leaves the denominator responding only to real
+        brightness change, because defocus spreads light but conserves it.
+      * A LOW PERCENTILE rather than the median, because on a densely labelled
+        field the median IS signal, and `mean - median` would then sit near zero
+        and make the ratio explode.
+
+    It assumes illumination and the camera offset hold still over the timelapse,
+    which is what the reference metric already assumes.
+    """
+
+    #: Percentile of the first frame taken as the camera pedestal (see above).
+    BACKGROUND_PERCENTILE = 5.0
 
     def __init__(
         self,
@@ -293,12 +324,24 @@ class FocusFeedbackHook(HookBase):
         self.z_step = z_step_um
         self.max_jogs = max_jogs
         self.reference_metric: float | None = None
+        self.background_offset: float | None = None
+
+    def _bleach_corrected_metric(self, image: np.ndarray) -> float:
+        """Tenengrad per unit flux², against the offset fixed by frame 1."""
+        img = image.astype(np.float64)
+        if img.ndim == 3:
+            img = img.mean(axis=-1)
+        if self.background_offset is None:
+            self.background_offset = float(
+                np.percentile(img, self.BACKGROUND_PERCENTILE)
+            )
+        flux = float(np.mean(img)) - self.background_offset
+        if flux <= 0:                    # nothing above the pedestal to be sharp
+            return 0.0
+        return tenengrad(img) / flux ** 2
 
     def image_process_fn(self, image: np.ndarray, metadata: dict, event_queue):
-        # Normalized metric (design/14 §10): photobleaching dims the frames
-        # over a timelapse, and a raw Laplacian variance would read that
-        # intensity loss as focus loss and jog Z for no reason.
-        metric = normalized_laplacian_variance(image)
+        metric = self._bleach_corrected_metric(image)
         if self.reference_metric is None:
             self.reference_metric = metric
             return image, metadata
@@ -313,7 +356,7 @@ class FocusFeedbackHook(HookBase):
                     self.ctrl.core.set_position(current_z + self.z_step)
                     self.ctrl.core.wait_for_device(focus_device)
                     jogs += 1
-                    new_metric = normalized_laplacian_variance(snap_to_numpy(self.ctrl))
+                    new_metric = self._bleach_corrected_metric(snap_to_numpy(self.ctrl))
                     if new_metric >= self.reference_metric * self.threshold:
                         self.reference_metric = new_metric
                         corrected, outcome = True, "recovered"

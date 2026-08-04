@@ -184,4 +184,13 @@ plugins:
   # Hardware-motion plugins (e.g. autofocus) are gated behind this single flag,
   # NOT a per-plugin list. Default off; a human flips it to opt in. The AI cannot
   # edit this file.
+  #
+  # TWO SETTINGS, ONE DECISION. This flag on its own will not start: an opaque
+  # motion plugin cannot be enumerated or intercepted, so guaranteed mode -- which
+  # promises exactly that coverage -- refuses it at startup. To allow one, set
+  # BOTH this flag and `property_authorization.mode: degraded_trusted_plugins`
+  # at the top of this file. Every limit here stays enforced either way; what
+  # changes is that the authorization map stops claiming completeness, and
+  # startup prints DEGRADED. `microclaw check-config` checks the pair offline,
+  # before you restart into a live refusal.
   allow_hardware_motion: false

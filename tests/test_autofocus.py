@@ -169,6 +169,103 @@ class TestCoarseThenFine:
                 assert all(lo - 1e-9 <= z <= hi + 1e-9 for z in sweep.z_positions)
 
 
+def make_rig_like_ctrl(best_z: float, um_per_sigma: float = 0.6, width: int = 160):
+    """As above, but the noise is added AFTER the blur, by the detector.
+
+    `make_ctrl_with_focus_at` blurs a noisy scene, which smooths the noise away
+    along with the signal and flatters any high-pass metric. A camera cannot do
+    that: the optics blur, then the sensor adds shot and read noise at a floor
+    that stays put. That difference is the whole of design/36 — it is why the
+    old metric passed every test in this file while inverting on two rigs.
+
+    The scene here is sparse fluorescent puncta on a dark field, the sample type
+    both failing sessions were imaging.
+    """
+    from scipy.ndimage import gaussian_filter
+
+    rng = np.random.default_rng(5)
+    scene = np.zeros((width, width))
+    for y, x in zip(rng.integers(8, width - 8, 70), rng.integers(8, width - 8, 70)):
+        scene[y, x] += 9000.0
+    scene = gaussian_filter(scene, 1.2)          # in-focus PSF
+
+    core = MagicMock()
+    core.get_focus_device.return_value = "DStage"
+    current_z = [50.0]
+    core.set_position.side_effect = lambda z: current_z.__setitem__(0, z)
+    core.get_position.side_effect = lambda: current_z[0]
+
+    def get_tagged_image():
+        defocus = abs(current_z[0] - best_z) / um_per_sigma
+        blurred = gaussian_filter(scene, defocus) if defocus > 0 else scene
+        detected = rng.poisson(blurred + 2.0) + 180.0 + rng.normal(0, 2.0, scene.shape)
+        tagged = MagicMock()
+        tagged.pix = np.clip(detected, 0, 65535).astype(np.uint16).tobytes()
+        tagged.tags = {"Width": width, "Height": width}
+        return tagged
+
+    core.get_tagged_image.side_effect = get_tagged_image
+    core.get_bytes_per_pixel.return_value = 2
+    core.get_number_of_components.return_value = 1
+    core.snap_image = MagicMock()
+    core.wait_for_device = MagicMock()
+    ctrl = MagicMock()
+    ctrl.core = core
+    return ctrl
+
+
+class TestAgainstADetectorNoiseFloor:
+    """design/36 — the M5 (2026-08-04) and Nestor sessions, in a test.
+
+    Both reported non-convergence with the peak pinned at a sweep boundary,
+    having walked the curve AWAY from the operator's verified manual focus. The
+    stage was correctly left alone both times (design/28 F1 did its job), so
+    nothing was damaged — but autofocus was unusable, and widening the range
+    made it worse, because a wider window reaches more defocus to score higher.
+    """
+
+    def test_sweep_finds_focus_not_the_boundary(self):
+        ctrl = make_rig_like_ctrl(best_z=52.0)
+        result = sweep_autofocus(ctrl, 45.0, 60.0, 1.0, settle_ms=0, move_to_best=False)
+        assert abs(result.best_z_um - 52.0) <= 1.0
+        assert result.peak_interior
+
+    def test_two_pass_converges_and_moves_to_focus(self):
+        ctrl = make_rig_like_ctrl(best_z=53.0)
+        result = coarse_then_fine_autofocus(
+            ctrl, z_range_um=20.0, coarse_step_um=2.5, fine_step_um=0.5, settle_ms=0
+        )
+        assert result.converged and result.moved
+        assert abs(result.final_z_um - 53.0) <= 1.0
+
+    def test_widening_the_range_still_converges(self):
+        # The M5 escalation: the operator widened 20 µm to 40 µm and the old
+        # metric climbed further uphill. A right-signed metric is monotone in
+        # the useful direction, so a wider window costs frames, not correctness.
+        ctrl = make_rig_like_ctrl(best_z=53.0)
+        result = coarse_then_fine_autofocus(
+            ctrl, z_range_um=40.0, coarse_step_um=2.5, fine_step_um=0.5, settle_ms=0
+        )
+        assert result.converged and result.moved
+        assert abs(result.final_z_um - 53.0) <= 1.5
+
+    def test_the_old_metric_walks_to_the_boundary_on_the_same_rig(self):
+        # The defect itself, reproduced end-to-end: same simulated microscope,
+        # same sweep, previous metric — the M5 result, including the refusal to
+        # move that made it visible instead of silently destructive.
+        from microclaw.image_analysis import normalized_laplacian_variance
+
+        ctrl = make_rig_like_ctrl(best_z=53.0)
+        result = coarse_then_fine_autofocus(
+            ctrl, z_range_um=20.0, coarse_step_um=2.5, fine_step_um=0.5, settle_ms=0,
+            metric_fn=normalized_laplacian_variance,
+        )
+        assert result.converged is False
+        assert result.coarse.peak_interior is False
+        assert abs(result.coarse.best_z_um - 53.0) > 5.0
+        assert ctrl.core.get_position() == pytest.approx(50.0)
+
+
 class TestSingleSweepAutofocus:
     def test_converges_on_real_peak(self):
         ctrl = make_ctrl_with_focus_at(52.0)

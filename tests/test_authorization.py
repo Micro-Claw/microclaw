@@ -420,13 +420,26 @@ def test_excluded_preset_effect_fails_and_is_not_runtime_authorized():
 
 
 def test_opaque_motion_plugin_requires_degraded_mode():
-    with pytest.raises(RigAuthorizationError, match="Opaque hardware-motion"):
+    with pytest.raises(RigAuthorizationError, match="opaque hardware-motion"):
         validate_live_rig(Controller(), parsed(plugin_motion=True))
     report = validate_live_rig(
         Controller(), parsed(plugin_motion=True, mode="degraded_trusted_plugins")
     )
     assert report.complete is None
     assert any(entry.classification == "trusted_degraded" for entry in report.entries)
+
+
+def test_the_motion_refusal_names_the_second_setting_the_operator_needs():
+    # The M5 session (2026-08-04): the operator set allow_hardware_motion, was
+    # refused at startup with a rule and no remedy, and had no way to learn from
+    # the message that a second line was required. A refusal that does not say
+    # what to do next costs a restart per guess, with the rig connected.
+    with pytest.raises(RigAuthorizationError) as excinfo:
+        validate_live_rig(Controller(), parsed(plugin_motion=True))
+    message = str(excinfo.value)
+    assert "degraded_trusted_plugins" in message
+    assert "allow_hardware_motion" in message
+    assert "not sufficient" in message.lower()
 
 
 def illumination_policy(*, maximum=30.0, step=3.0):

@@ -9,7 +9,7 @@ from PIL import Image
 
 
 class ImageStats(NamedTuple):
-    focus_metric: float          # normalized_laplacian_variance — the number tools report
+    focus_metric: float          # tenengrad — the number tools report
     focus_metric_valid: bool     # False when snr < min_snr: no signal to be sharp about
     background_level: float      # robust: median (the camera offset, Evolve512 ≈ 400)
     snr: float                   # the shared snr() definition below
@@ -75,11 +75,18 @@ def focus_invalid_warning(
     Returning a bare focus_metric float on an empty field is what let the Nestor
     agent rank the emptiest tile on the grid as the sharpest (design/25). This
     tells the agent, in the payload it reads, that the number is not comparable.
+
+    design/36 removed the inflation itself: an empty field now scores at its
+    noise floor, below any field with structure, because the metric no longer
+    divides by a contrast term that collapses when there is nothing there. The
+    gate stays anyway — a field with no signal has no sharpness to report, and
+    the number that comes back is a reading of the camera's noise, not of the
+    sample. It is a validity flag now, not a trap door.
     """
     return (
         f"SNR {snr_value:.2f} < {min_snr} — no signal in this field, so it has no "
-        f"sharpness to measure. Do NOT compare this focus_metric against other "
-        f"fields; an empty field inflates the metric rather than deflating it."
+        f"sharpness to measure. This focus_metric is a reading of the camera "
+        f"noise floor; do NOT compare it against fields that do have signal."
     )
 
 
@@ -95,17 +102,41 @@ def laplacian_variance(image: np.ndarray) -> float:
 def normalized_laplacian_variance(
     image: np.ndarray, background: float | None = None
 ) -> float:
-    """var(laplace(I - bg)) / mean(|I - bg|)² — scale-free w.r.t. illumination.
+    """DEPRECATED AS A FOCUS METRIC — it is minimised at focus on real frames.
 
-    Raw var(laplace(I)) fired both of its failure modes in amr_test at
-    CONSTANT focus (design/14 §10):
+    var(laplace(I - bg)) / mean(|I - bg|)². Kept exported because saved hooks
+    may import it, and because the M5 and Nestor sweep curves are only readable
+    against the function that produced them. Nothing in microclaw scores focus
+    with it any more; use `tenengrad`.
 
-        full frame, 1% laser  →  8602
-        full frame, 10% laser → 21142     2.5× from laser power alone
-        200×200 ROI, 5% laser → 29107     3.4× from cropping alone
+    Why it inverts (design/36, reproduced offline):
 
-    and the model read the rising number as improving image quality. The
-    camera offset (background) is subtracted first — the median unless given.
+      * The numerator is a bare Laplacian, the most noise-amplifying high-pass
+        there is: white noise of std σ contributes a constant 20σ² to it. On any
+        field whose detail is broader than a pixel, that constant dominates, so
+        the numerator is pinned at the noise floor and carries no focus signal.
+      * The denominator is a CONTRAST measure, and contrast falls with defocus:
+        `bg` is the per-frame median, so as the sample blurs, the spread light
+        lifts the median to meet it and mean(|I - bg|) collapses.
+
+    A pinned numerator over a collapsing denominator is a metric that RISES with
+    defocus. Both live sweeps show it: on M5 the curve bottomed out (1.95) at
+    the operator's manual best focus and climbed to 25.9 twenty µm away.
+
+    design/28 F2 declined to call this a sign bug, on the strength of a single
+    noiseless, isolated, flux-conserving PSF — the one case where the numerator
+    is not noise-limited, and the only case in which this function is correctly
+    signed. Add a camera noise floor, or make the structure extended rather than
+    point-like, and it inverts (`design/36-focus-metric-spike.py`).
+
+    The original amr_test complaint (design/14 §10) — that raw Laplacian
+    variance climbs 2.5× with laser power and 3.4× with an ROI crop at constant
+    focus — was real. But no per-frame normalisation can fix it: separating the
+    camera offset from out-of-focus haze is impossible from one frame, so every
+    available normaliser is itself focus-dependent and inverts the metric.
+    Comparability is a property of the comparison, not of the pixels, and it is
+    declared instead — see `tenengrad` and the `metric_valid_for` block that
+    tools report alongside it.
     """
     from scipy.ndimage import laplace
 
@@ -120,21 +151,63 @@ def normalized_laplacian_variance(
     return float(np.var(laplace(sig)) / mean ** 2)
 
 
+def tenengrad(image: np.ndarray) -> float:
+    """mean(|∇I|²) over Sobel gradients — THE focus metric (design/36).
+
+    Higher = sharper, and it is maximised at focus on every field type tested:
+    sparse puncta and extended structure, bright and 10–20× dimmer, where the
+    normalised Laplacian is maximised at maximum defocus on three of those four.
+
+    Two properties earn it the job over the metric it replaces:
+
+      * The Sobel kernel smooths across the differencing axis, so the noise
+        floor does not swamp broad structure the way a bare Laplacian does.
+      * There is no normaliser, so there is no focus-dependent denominator to
+        fight the numerator. A constant added to every pixel (camera offset, a
+        uniform haze, a background pedestal) differentiates away.
+
+    It is polarity-insensitive (the gradients are squared), so dark-on-bright
+    scores like bright-on-dark, and it is a per-pixel mean, so frame size does
+    not enter.
+
+    WHAT IT IS NOT: illumination-invariant. It scales roughly with the square of
+    photon count, so it is comparable only among frames sharing ROI, exposure,
+    binning and illumination. That is exactly the domain a Z sweep holds fixed.
+    Tools reporting this number carry a `metric_valid_for` block naming that
+    domain; do not compare across it. design/14 §10 tried to buy comparability
+    with a normaliser instead, and bought an inverted metric — see
+    `normalized_laplacian_variance`.
+    """
+    from scipy.ndimage import sobel
+
+    img = image.astype(np.float64)
+    if img.ndim == 3:
+        img = img.mean(axis=-1)
+    gy = sobel(img, axis=0)
+    gx = sobel(img, axis=1)
+    return float(np.mean(gx * gx + gy * gy))
+
+
 def compute_stats(
     image: np.ndarray,
     min_snr: float = UNCALIBRATED_MIN_SNR_FALLBACK,
 ) -> ImageStats:
-    """Per-image statistics, including the NORMALIZED focus metric and its gate.
+    """Per-image statistics, including the focus metric and its validity gate.
 
-    focus_metric is now normalized_laplacian_variance, not the raw
-    laplacian_variance — both tool payload sites already overrode the old raw
-    value with the normalized one (design/14 §10) because the raw number was not
-    comparable, so computing it here means one computation, one validity flag, and
-    no dead field to mistake for the live one (design/23 F7). The raw
-    laplacian_variance stays exported for anyone who wants it.
+    focus_metric is `tenengrad` (design/36). It was normalized_laplacian_variance
+    until two live sessions showed that metric bottoming out at the operator's
+    manual best focus; the normaliser that was meant to make it comparable across
+    illumination is what inverted it. Computing the one metric here means one
+    computation, one validity flag, and no dead field to mistake for the live one
+    (design/23 F7); the older metrics stay exported but score nothing.
 
-    focus_metric_valid is False below min_snr: an empty field inflates the metric
-    rather than deflating it (design/25), so its "sharpness" is not a measurement.
+    The number scales with photon count, so it is comparable only among frames
+    sharing ROI, exposure, binning and illumination. Tool payloads say so in
+    their `metric_valid_for` block; keep that block truthful wherever this is
+    reported.
+
+    focus_metric_valid is False below min_snr: a field with no signal has no
+    sharpness to measure (design/25).
     """
     bit_max = float(np.iinfo(image.dtype).max) if np.issubdtype(image.dtype, np.integer) else 1.0
     img = image.astype(np.float64)
@@ -143,7 +216,7 @@ def compute_stats(
     bg = float(np.median(img))           # computed once, shared by snr and the metric
     s = snr(image, background=bg)
     return ImageStats(
-        focus_metric=normalized_laplacian_variance(image, background=bg),
+        focus_metric=tenengrad(image),
         focus_metric_valid=s >= min_snr,
         background_level=round(bg, 1),
         snr=round(s, 2),

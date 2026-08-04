@@ -1161,7 +1161,19 @@ def validate_live_rig(
         ))
         if guaranteed:
             errors.append(
-                "Opaque hardware-motion plugins are forbidden in guaranteed mode."
+                "plugins.allow_hardware_motion is true, but opaque hardware-motion "
+                "plugins are forbidden in guaranteed mode: guaranteed mode promises "
+                "that every hardware effect is either typed and guarded or "
+                "explicitly excluded, and a plugin is arbitrary Java whose effects "
+                "microclaw can neither enumerate nor intercept — it can only check "
+                "where the axis ended up afterwards. Setting that flag is therefore "
+                "necessary but NOT sufficient. To run one, also set "
+                "property_authorization.mode: degraded_trusted_plugins in "
+                "safety_config.yaml (`microclaw check-config` prints the path and "
+                "will now catch this pair offline) — every limit in the file stays "
+                "enforced, but the authorization map's "
+                "completeness claim is suspended and startup will say so. To stay "
+                "in guaranteed mode, set plugins.allow_hardware_motion back to false."
             )
 
     if loaded_devices_error is not None and guaranteed:

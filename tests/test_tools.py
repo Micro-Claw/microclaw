@@ -50,6 +50,7 @@ from microclaw.tools import (
 
 class TestLiveView:
     def test_start_live_view(self, mock_ctrl, unconstrained_guard):
+        mock_ctrl.studio.live().is_live_mode_on.return_value = True
         result = start_live_view(mock_ctrl, unconstrained_guard)
         mock_ctrl.studio.live().set_live_mode_on.assert_called_with(True)
         assert "status" in result
@@ -58,6 +59,112 @@ class TestLiveView:
         result = stop_live_view(mock_ctrl, unconstrained_guard)
         mock_ctrl.studio.live().set_live_mode_on.assert_called_with(False)
         assert "status" in result
+
+
+class TestLiveViewReadiness:
+    """design/37 F4: `start_live_view` must not claim a stream it has not seen.
+
+    SCOPE, because the original F4 write-up got this wrong and this class was
+    built against it: these tests do NOT reproduce the M5 incident. On M5 the
+    start succeeded — `snap_and_analyze` reported "paused for the snap, then
+    restored", a branch that only runs when `_pause_live` saw live ON — and it
+    was `_pause_live`'s unchecked restore that failed. `javap` on MMJ_.jar 2.0.3
+    confirms `setLiveModeOn` sets `isLiveOn_` and calls `startLiveMode()`
+    synchronously, so a lagging flag is not a thing in this build.
+
+    What these tests DO cover is real and separate: MM's own failure path
+    (`startLiveMode` catching a sequence-start exception and calling
+    `setLiveModeOn(false)`) leaves the flag false with no error raised to us, so
+    a tool that returns "Live view started." without looking is lying by
+    construction. The delay in the fake below stands in for any state that is
+    not true immediately after the call — that failure path, or a bridge/MM
+    variant that does lag. See design/37 F4 for the restore fix, which is
+    separate and unwritten.
+    """
+
+    class DelayedStartLive:
+        """A start whose flag is not true immediately after the call.
+
+        Not a model of the M5 sequence (see the class docstring) — a model of
+        "the tool must observe, not assume."
+        """
+
+        def __init__(self, stale_reads=2):
+            self.stale_reads = stale_reads
+            self.pending_start = False
+            self.started_once = False
+            self.is_on = False
+
+        def set_live_mode_on(self, on):
+            if on and not self.started_once:
+                self.pending_start = True
+            else:
+                self.pending_start = False
+                self.is_on = on
+
+        def is_live_mode_on(self):
+            if self.pending_start:
+                if self.stale_reads:
+                    self.stale_reads -= 1
+                    return False
+                self.pending_start = False
+                self.started_once = True
+                self.is_on = True
+            return self.is_on
+
+        def snap(self):
+            # A snap taken while the start has not taken effect loses it. This
+            # is the hazard the wait removes; it is NOT what happened on M5,
+            # where the start had already taken effect.
+            if self.pending_start:
+                self.pending_start = False
+                self.is_on = False
+
+    @staticmethod
+    def _ctrl_with_live(live):
+        ctrl = MagicMock()
+        ctrl.studio.live.return_value = live
+        return ctrl
+
+    @staticmethod
+    def _snap(ctrl):
+        with tools._pause_live(ctrl):
+            ctrl.studio.live().snap()
+
+    def test_wait_prevents_following_snap_from_losing_delayed_start(
+        self, unconstrained_guard, monkeypatch
+    ):
+        monkeypatch.setattr(tools.time, "sleep", lambda _seconds: None)
+
+        # Counterfactual: the old implementation returned immediately. Its
+        # following snap saw stale false, declined to restore live, and left it off.
+        old_live = self.DelayedStartLive()
+        old_ctrl = self._ctrl_with_live(old_live)
+        old_live.set_live_mode_on(True)
+        self._snap(old_ctrl)
+        assert old_live.is_live_mode_on() is False
+
+        live = self.DelayedStartLive()
+        ctrl = self._ctrl_with_live(live)
+        result = start_live_view(ctrl, unconstrained_guard)
+        self._snap(ctrl)
+
+        assert result == {"status": "Live view started."}
+        assert live.is_live_mode_on() is True
+
+    def test_timeout_does_not_claim_stream_is_running(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        live = mock_ctrl.studio.live()
+        live.is_live_mode_on.return_value = False
+        clock = iter((10.0, 12.0))
+        monkeypatch.setattr(tools.time, "monotonic", lambda: next(clock))
+
+        result = start_live_view(mock_ctrl, unconstrained_guard)
+
+        assert "error" in result
+        assert "not running" in result["error"]
+        assert "started" not in result.get("status", "").lower()
 
 
 class TestGetPixelSize:
@@ -716,7 +823,7 @@ class TestSnapAndAnalyze:
         # A bare float invites cross-setting comparisons (design/14 §10).
         result = snap_and_analyze(mock_ctrl, unconstrained_guard)
         # "_gated": focus_metric now travels with focus_metric_valid + snr (design/25).
-        assert result["focus_metric_kind"] == "normalized_laplacian_variance_gated"
+        assert result["focus_metric_kind"] == "tenengrad_gated"
         assert set(result["metric_valid_for"]) == {"roi", "exposure_ms", "binning"}
 
     def test_metric_gate_comes_from_rig_config(self, mock_ctrl):
@@ -857,6 +964,59 @@ class TestRunAutofocus:
         assert result["entry_z_um"] == 50.0
         assert result["coarse"]["metric_curve"] == [0.1, 0.9, 0.1]
         assert result["fine"]["peak_interior"] is True
+
+    def test_live_paused_and_restored_across_the_sweep(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        # design/37 F5 asserted in behaviour, not only in the description. The
+        # schema now promises the operator that live view is paused for the
+        # sweep and restored afterwards; a promise in prose that no test pins to
+        # the code is how F5 happened in the first place.
+        # Observed from INSIDE the sweep. Asserting on the call list afterwards
+        # looks equivalent and is not: run_autofocus bounces live a second time
+        # for the thumbnail snap, so an after-the-fact assertion passes even
+        # with the sweep's _pause_live deleted. Verified by mutation.
+        live = mock_ctrl.studio.live()
+        live.is_live_mode_on.return_value = True
+        live.set_live_mode_on.reset_mock()
+        during: list[list] = []
+
+        def _sweep(*args, **kwargs):
+            during.append(list(live.set_live_mode_on.call_args_list))
+            return _FAKE_AF_RESULT
+
+        monkeypatch.setattr("microclaw.tools.coarse_then_fine_autofocus", _sweep)
+        monkeypatch.setattr(
+            "microclaw.tools.snap_to_numpy",
+            lambda ctrl: np.zeros((64, 64), dtype=np.uint16),
+        )
+        monkeypatch.setattr("microclaw.tools.make_thumbnail", lambda img: "")
+
+        run_autofocus(mock_ctrl, unconstrained_guard, z_range_um=10.0, z_step_um=1.0)
+
+        assert during, "the sweep never ran"
+        assert during[0] and during[0][-1] == call(False), \
+            "live must already be stopped when the sweep runs"
+        assert live.set_live_mode_on.call_args_list[-1] == call(True), \
+            "live must be restored after the sweep"
+
+    def test_the_sweep_never_touches_the_viewer(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        # The other half of the same promise: "the viewer does not show the
+        # sweep as it happens". snap_to_numpy_displayed is the only path that
+        # would paint it, so switching to it must fail here rather than turn the
+        # schema description into a lie the model keeps repeating.
+        _patch_autofocus(monkeypatch)
+
+        def _forbidden(ctrl):
+            raise AssertionError(
+                "run_autofocus used the DISPLAYED snap path; the schema tells "
+                "the operator the sweep is headless"
+            )
+
+        monkeypatch.setattr("microclaw.tools.snap_to_numpy_displayed", _forbidden)
+        run_autofocus(mock_ctrl, unconstrained_guard, z_range_um=10.0, z_step_um=1.0)
 
     def test_nonconverged_payload_says_stage_not_moved(self, mock_ctrl, unconstrained_guard, monkeypatch):
         flat = AutofocusResult(
@@ -1186,7 +1346,7 @@ class TestTileAcquisitionMarkPositions:
             protocol="snap",
         )["results"][0]
         assert tile["focus_metric_valid"] is False
-        assert "warning" in tile and "inflate" in tile["warning"]
+        assert "warning" in tile and "noise floor" in tile["warning"]
         assert "snr" in tile
 
     def test_snap_grid_uses_the_same_rig_gate(self, centered_ctrl, monkeypatch):
@@ -1244,7 +1404,7 @@ class TestTileAcquisitionMarkPositions:
             centered_ctrl, unconstrained_guard, rows=2, cols=2, step_um=100.0,
             protocol="snap",
         )
-        assert result["focus_metric_kind"] == "normalized_laplacian_variance_gated"
+        assert result["focus_metric_kind"] == "tenengrad_gated"
         assert "metric_valid_for" in result
         for tile in result["results"]:
             assert "metric_valid_for" not in tile
