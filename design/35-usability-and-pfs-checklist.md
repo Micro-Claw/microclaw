@@ -113,53 +113,63 @@ What this file adds, specific to these blocks:
   recorded hash — is solved by pinning with `git merge-base --is-ancestor`
   (`cf13c1a`), not by branch placement. Coordinator bookkeeping stays on `main`.
 
-### State at the 2026-08-03 session boundary — read this before assigning anything
+### State at the 2026-08-04 session boundary — read this before assigning anything
 
-Refreshed after Block 4d merged. Recorded because these facts otherwise exist
-only in a closed conversation, and step 9's whole point is that a cold session
-resumes from the remote alone.
+Refreshed after Block 5b merged and **Track A closed**. Recorded because these
+facts otherwise exist only in a closed conversation, and step 9's whole point is
+that a cold session resumes from the remote alone.
 
-- **`main` is at `5b978d5`, measured 1371 passed / 99 skipped / 3 expected
-  warnings.** Re-measure anyway — that is step 1 — but a wildly different number
-  means something else changed, not that this note was wrong.
-- **Nothing is assigned, and there are no open branches.** Everything in Track A
-  up to and including **4d** is closed and on `origin`: merged, branches deleted
-  locally *and* remotely, ledger rows closed, design gates reconciled,
-  coordination notes in `design/prompts.md`. At the boundary there were no
-  worktrees, no local block branches, and `git log --oneline origin/main..main`
-  was empty. Nothing is outstanding under `/tmp`.
-- **The next block is 5.** Order from there is **5**, then Track B.
+- **`main` is at `d7c1d13`, measured 1393 passed / 99 skipped / 3 expected
+  warnings on macOS.** Windows measures 1377 / 115 — the same 1492 collected,
+  with sixteen platform-conditional tests skipping instead of passing. Judge a
+  suite by failures and collected total, not the passed count. Re-measure anyway;
+  a wildly different *total* means something else changed.
+- **Nothing is assigned, and there are no open branches or worktrees.** Every
+  Track A block — 1, 2, 3, 4, 4b, 4c, 4d, 4e, 4f, 4g, 4h, 5, 5b — is merged,
+  gated, ledger-closed, design-reconciled, and written up in `design/prompts.md`.
+  Branches are deleted locally *and* on `origin`;
+  `git log --oneline origin/main..main` is empty. The only other branches on
+  `origin` are `port-to-jpype-acqj` and two `florian/*`, none of which belong to
+  this checklist.
+- **Track A has zero open checklist items.** Verified item by item at this
+  boundary, not assumed from the block headings — blocks 4 and 4b had merged and
+  gated but left their item boxes unticked, and those were reconciled here
+  against the ledger and the shipped code rather than blanket-ticked.
+- **The next block is 6** (`design34/measured-position-readback`), the first of
+  Track B. Order from there is 6, then 7a–7c and 8 as Track 0's evidence allows,
+  then Track C.
 
-**Three operator actions are outstanding, and all three are consequences of
-Block 4d rather than work items.** A cold session that hears "my rig won't
-start" needs to reach for this list first:
+**Two things are outstanding, and neither is a work item you can start.**
 
-1. **Every deployed config must be hand-renamed or its rig will not start.**
-   4d deleted `rig_profile` with no migration path (operator ruling — see
-   §"Clean cut"). M5, M2 and the demo machine each need the same four key
-   renames: `rig_profile`→`property_authorization`,
-   `categorical_properties`→`allowed_categorical`,
-   `typed_actuators`→`allowed_numeric`, `excluded_properties`→`denied`. The
-   symptom is `rig_profile: unknown top-level key` plus
-   `property_authorization: missing required property authorization map`. That
-   is expected and is not a defect. M5's deployed file was proven to need
-   exactly four line changes and nothing else, by offline replay of the
-   hash-verified copy.
-2. **The Nikon operator holds a stale worksheet.** `design/34-nikon-stopgap-
-   worksheet.yaml` was corrected in the repo by 4d, but the copy shipped to them
-   on 2026-08-03 still uses the old key and they cannot debug the refusal. **0c
-   owes them the corrected file** with whatever goes out next.
-3. **Track 0's kit was shipped 2026-08-03 and no response has come back.** Do
-   not re-prepare or re-ship it, and do not read the empty 0c row as
-   "unstarted". Round-trip latency there is days and it is the
-   longest-latency item on the board, so it is expected to sit open while Track
-   A proceeds. When evidence arrives, 0c's checklist items are the triage
-   procedure.
+1. **Track 0's kit was shipped 2026-08-03 and nothing has come back.** Do not
+   re-prepare or re-ship it, and do not read 0a/0b's unticked boxes as
+   "unstarted" — both are merged (`ba695da`, `96a0a91`); the boxes are the
+   authoring spec, not a queue. Round-trip latency is days and it is the
+   longest-latency item on the board. When evidence arrives, 0c's items are the
+   triage procedure. **Block 6 does not wait on it** — 6's two defects are
+   independent of the PFS question, and probe S only supplies 6's *baseline*.
+2. **Block 6 owes a post-fix rig run**, which is why its ledger row says
+   "required" rather than pointing at probe S alone.
 
-Progress markers: `[ ]` not started, `[-]` active, `[x]` complete, `[!]` blocked.
+**Two settled operator rulings that must not be re-litigated:**
 
-Rig-facing commands must be PowerShell/cmd-safe (the rig is Windows): prefer
-`> out.txt 2>&1` over Unix pipelines.
+- **M5's acquisition budgets are closed** (2026-08-04). High ceilings are the
+  operator's choice, set by a manual edit, and the `confirm_above_*` tier still
+  forces human confirmation. See block 5's first item. A coordinator who meets
+  M5's ~317,000-year duration cap should read that paragraph rather than
+  re-deriving the finding.
+- **`microclaw init` redirects to `first-launch-setup`** with `--from-example`
+  as the deliberate hand-authoring escape hatch, and `install.bat` runs the
+  guided flow behind a verified bridge. Blocks 5 and 5b both settled parts of
+  this; design/17 §"Block 5b" is authoritative.
+
+**One standing lesson this file keeps paying for.** Across Blocks 5 and 5b, every
+single defect the rig gates found was in a coordinator-authored **runbook**, not
+in the code — six of them, all the same shape: *a criterion that could not fail*
+(stale `$LASTEXITCODE` after a cmdlet, `Start-Transcript` not capturing a child
+process, match patterns that also matched the prompt or the intro text). One
+would have failed a passing run. **Run every match pattern over a real captured
+transcript before shipping a runbook**, and review the runbook like code.
 
 ### Where the rig evidence lives
 
@@ -746,18 +756,18 @@ Coordinator bookkeeping (this checklist, the ledger, evidence records) stays on
 `main`. The runbook is the operator's working document, and it is the only
 Block 4 artifact that moves.
 
-- [ ] Run on the demo core first: a complete pass producing a profile that then
+- [x] Run on the demo core first: a complete pass producing a profile that then
       passes block 3's offline validator and, after a human sets `reviewed:
       true`, starts a session.
-- [ ] Run on M5 and produce a profile for a real rig with real hazards. Compare
+- [x] Run on M5 and produce a profile for a real rig with real hazards. Compare
       against the deployed M5 config and report every difference — differences
       are findings in one direction or the other, not automatic failures.
-- [ ] **An operator-driven transcript is required evidence** showing that an
+- [x] **An operator-driven transcript is required evidence** showing that an
       unresolved choice cannot be silently accepted. Automate the mechanical
       workflow checks, but do not accept a self-confirming probe as evidence of
       the human boundary — that is exactly the weakness recorded against Phase 3
       (design/33 `:796`).
-- [ ] Stop on any unenumerable effect or any pre-validation write.
+- [x] Stop on any unenumerable effect or any pre-validation write.
 
 ### Rig gate round 1 — demo machine, 2026-08-01: **FAIL**
 
@@ -1301,27 +1311,27 @@ longer integration means more light on the sample — so it belongs on the meter
 path. Gain is post-detection amplification and is not dose-bearing, which is
 exactly why it needs a kind that feeds no ledger.
 
-- [ ] Add `kind: bounded-numeric` to the typed-actuator schema, requiring
+- [x] Add `kind: bounded-numeric` to the typed-actuator schema, requiring
       `units` (an operator-supplied string, **recorded and echoed, never
       interpreted**), `minimum`, and `maximum`. The kind names the safety
       contract, matching the existing two: `absolute-position` clamps and feeds
       stage bounds; `illumination-power` clamps and feeds the dose ledger;
       `bounded-numeric` clamps and feeds nothing.
-- [ ] Clamp-only enforcement in `SafetyGuard.check_typed_actuator`: no canonical
+- [x] Clamp-only enforcement in `SafetyGuard.check_typed_actuator`: no canonical
       conversion, no `full_scale`, no ledger participation. A write outside
       `[minimum, maximum]` is refused; a write inside it is permitted.
-- [ ] **Hard refusal if the declared pair aliases a built-in capability** —
+- [x] **Hard refusal if the declared pair aliases a built-in capability** —
       `_known_continuous_raw_pair` (focus position, XY, camera exposure) or any
       `illumination_pairs` member. Without this the new kind is a backdoor
       around `camera.max_exposure_ms`, the stage bounds, and the illumination
       ratchet. This is the single most important test in the block.
-- [ ] First-launch setup: a bounded numeric MM characterises (`has_limits` plus
+- [x] First-launch setup: a bounded numeric MM characterises (`has_limits` plus
       a numeric `reported_type`) defaults to this kind, with MM's technical
       range as the Enter-acceptable default bounds and the operator supplying
       the unit. This is what Block 4 could not express and had to exclude — it
       restores the round-1 instruction that continuous actuators are fine to use
       over an appropriate range, without inventing a physical kind.
-- [ ] Decide and document guaranteed-vs-degraded behaviour for a
+- [x] Decide and document guaranteed-vs-degraded behaviour for a
       `bounded-numeric` whose live driver range is narrower than the declared
       bounds. Follow the existing typed-actuator precedent (`authorization.py`
       rejects typed bounds exceeding the driver technical range) rather than
@@ -1332,7 +1342,7 @@ config that sets it — M5's included — from loading, which is a rig outage
 bought for a schema tidy. The implementer executes the decision; it is not
 reopened.
 
-- [ ] **`acquisition.confirm_above_bytes` — accepted-but-ignored deprecation.**
+- [x] **`acquisition.confirm_above_bytes` — accepted-but-ignored deprecation.**
       Deferred here from Block 4 round 3 finding 8, because this is the block
       already opening `safety.py`. The operator's position is that it should not
       exist: an estimated byte count is a function of frames and geometry, so the
@@ -1346,7 +1356,7 @@ reopened.
       `safety_config.example.yaml` marks it deprecated rather than dropping it
       silently. `max_bytes` itself stays; it is a hard cap and round 3 derives
       its default.
-- [ ] **`acquisition.max_session_illuminated_ms` — optional, with the brake
+- [x] **`acquisition.max_session_illuminated_ms` — optional, with the brake
       framing stated.** Deferred here from Block 4 round 3 finding 6 for the same
       reason as the byte threshold. The operator's position is that it should not
       force a restart on someone who has been imaging for a while, and that a cap
@@ -1387,7 +1397,7 @@ Enter-acceptable, accepted-versus-typed recorded in the transcript — and are n
 given a special case. The same ruling covers `Laser Trigger.Sequence0`–`3`,
 `Servos.Position0`–`3` and `PWM.Position0`.
 
-- [ ] Off-rig tests: the alias refusal above; clamp at both edges and outside;
+- [x] Off-rig tests: the alias refusal above; clamp at both edges and outside;
       a declared unit round-tripping into the profile unaltered; setup emitting
       the kind from the real demo inventory fixture; and a regression that
       `Camera.Exposure` still cannot be declared `bounded-numeric`.
@@ -1407,23 +1417,25 @@ owed run is tracked in the carried-forward register, not dropped.
 
 Merge-blocking, on hardware we can reach:
 
-- [ ] **Demo machine — the gain path end to end.** Generate a profile declaring
+- [x] **Demo machine — the gain path end to end.** Generate a profile declaring
       `Camera.Gain`, set it through Microclaw inside the declared range, and set
       it outside; show the second is refused by the clamp and the first is not.
-- [ ] **M5 — the mechanism on real hardware.** A bounded-numeric write must be
+- [x] **M5 — the mechanism on real hardware.** A bounded-numeric write must be
       shown to reach a real device, clamp at its declared bound, and refuse
-      outside it. Any declared bounded numeric whose effect can be read back
+      outside it. **In-range PASS; the refusal step was retired during the run**
+      (ledger row 4b) — the clamp half is proven on M5, the refusal half on demo and
+      M2. Any declared bounded numeric whose effect can be read back
       qualifies; `SmarAct 2D.Hold time (ms)` is the least invasive candidate (no
       light, no motion, trivially read back), with `Laser Trigger.Duration0 (us)`
       as the alternative if a control the operator already exercises is
       preferred. This step exists so that merging without M2 does not leave the
       kind unproven on real hardware — only *gain* waits.
-- [ ] Confirm no exposure or illumination path became writable as a side effect,
+- [x] Confirm no exposure or illumination path became writable as a side effect,
       on both machines.
 
 Owed, does **not** block 4b's merge or blocks 4c/4d/5:
 
-- [ ] **M2 (Andor iXon) — gain on a real camera.** Set EM gain inside and
+- [x] **M2 (Andor iXon) — gain on a real camera.** Set EM gain inside and
       outside the declared range, show the second is refused, and capture an
       image at two gain settings confirming the change is visible in the data.
       Run it when M2 is next available.
@@ -2851,7 +2863,7 @@ refuses. `typed_actuators` is not even a field of the `RigProfile` object
       `allowed_numeric`, `denied`. Confirm the grouping against what 4b's third
       kind and 4c's `named_stages` work actually left behind before committing
       to those three names.
-- [ ] ~~**A rename breaks every deployed config, M5's included.** Decide migration
+- [~] ~~**A rename breaks every deployed config, M5's included.** Decide migration
       — accept both keys for a release, or ship a one-shot rewriter — rather
       than assuming a clean cut. Whichever is chosen, no rig may be left unable
       to start by the merge.~~ **Waived by operator ruling, 2026-08-03: a clean
@@ -3287,12 +3299,24 @@ two — but the rename is required for the rig to run and the budget fix is a
 reviewed judgement call, so do not let the second silently ride along with the
 first.
 
-- [ ] Fix the deployed M5 config's acquisition budgets, which were copied from
+- [x] Fix the deployed M5 config's acquisition budgets, which were copied from
       the fictional example including the exposure limit (design/33 `:790`). This
       is a rig-config review item with a human in the loop, not an inferred edit.
       **Coordinator + operator, not the implementer** — the file lives on M5, and
       the values are the operator's to set. Sequenced with 4d's four renames as
       one editing session, per the note above.
+
+      **CLOSED by operator ruling, 2026-08-04. Do not re-open it in a later
+      block, and do not raise M5's budgets as a finding again.** The ruling:
+      *users may set these as high as they like; that is their problem. Setting
+      them requires a manual edit, so anyone who does it is aware of what they
+      are doing.* The premise the item was written on — values silently
+      inherited from a fictional example — no longer holds anyway (see the
+      measured table below): they were edited deliberately. The safety argument
+      that survives is that the `confirm_above_*` tier is separate, unchanged,
+      and still forces a human confirmation, so a high ceiling is not an absent
+      human. A coordinator meeting M5's ~317,000-year duration cap should read
+      this paragraph, not re-derive the finding.
 
       **The premise above is stale — corrected 2026-08-03 by replaying captured
       evidence, and the correction makes this item more urgent, not less.** The
