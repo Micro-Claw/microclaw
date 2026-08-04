@@ -1,10 +1,17 @@
 # design/36 — rig gate: does the focus metric peak at focus?
 
-This runbook verifies branch `fix/focus-metric-inversion`. The metric
-implementation is pinned at `408c447`, and the three design/37 fixes it now
-carries (F3 operator-established state, F4 `start_live_view` readiness, F5
-headless-sweep disclosure) at `c452328`. Both are ancestor checks: later
-runbook or correction commits on this branch are valid descendants.
+**This runbook now runs against `main`.** It was written for branch
+`fix/focus-metric-inversion`, which was merged at `eab9dd5` on 2026-08-04 and
+deleted. The metric implementation is pinned at `408c447` and the three
+design/37 fixes at `c452328`; both are ancestor checks and both are satisfied by
+any `main` at or after the merge.
+
+**G0–G1, G3 and G4 have already passed** (evidence
+`design36-20260804-152353`, recorded in design/36 and design/37). They are kept
+here because they are the regression set — re-run them if anything changes.
+**What is actually outstanding is G2 on the diffuse field, and G5**, which did
+not reproduce because this runbook mis-sequenced it. Both are corrected below;
+read their sections before running.
 
 Run G0–G3 on **M5**, on the same field type that failed on 2026-08-04 (640 nm,
 camera-triggered, the sample that produced `m5-autofocus-fail`). G4 is the
@@ -43,7 +50,7 @@ $Stamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $Evidence = "design36-$Stamp"
 New-Item -ItemType Directory -Path $Evidence
 git fetch origin > "$Evidence\git-fetch.txt" 2>&1
-git switch fix/focus-metric-inversion > "$Evidence\git-switch.txt" 2>&1
+git switch main > "$Evidence\git-switch.txt" 2>&1
 echo $LASTEXITCODE > "$Evidence\git-switch-exit.txt"
 git pull --ff-only > "$Evidence\git-pull.txt" 2>&1
 git status --short > "$Evidence\status.txt" 2>&1
