@@ -570,7 +570,7 @@ def test_run_turn_binds_the_emit_channel_for_confirmations(session, client, monk
     assert session._emit is None            # cleared in run_turn's finally
 
 
-def test_serve_wires_the_confirm_seam_to_the_session(monkeypatch):
+def test_serve_wires_confirm_and_flushes_startup_banner(monkeypatch):
     """Assert the connection, not a stub: the injection point existed, was
     documented, and was never connected to anything (design/21 F1). A test
     that only stubs CONFIRM_FN cannot notice that."""
@@ -587,9 +587,13 @@ def test_serve_wires_the_confirm_seam_to_the_session(monkeypatch):
     )
     monkeypatch.setattr(webserve, "Session", lambda args: fake)
     monkeypatch.setattr(uvicorn, "run", lambda *a, **k: None)
+    printed = []
+    monkeypatch.setattr("builtins.print", lambda *a, **k: printed.append((a, k)))
 
     serve(_args(host="127.0.0.1"))
     assert tools.CONFIRM_FN is fake.confirm
+    banner = next(item for item in printed if "Microclaw GUI:" in item[0][0])
+    assert banner[1].get("flush") is True
 
 
 # ---- model (v4c) ----
@@ -887,12 +891,29 @@ def test_browser_opens_only_once_the_port_accepts(monkeypatch):
     opened = []
     monkeypatch.setattr(webserve.webbrowser, "open", opened.append)
 
+    # The worker's deadline must measure its own polling work, not time it was
+    # starved by a loaded suite. Advancing this clock only from the worker's
+    # sleep makes scheduler delay irrelevant without widening the timeout.
+    elapsed = 0.0
+    lock = threading.Lock()
+
+    def clock():
+        with lock:
+            return elapsed
+
+    def worker_sleep(seconds):
+        nonlocal elapsed
+        time.sleep(seconds)
+        with lock:
+            elapsed += seconds
+
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
     port = sock.getsockname()[1]
     try:
         thread = webserve._open_when_ready(
-            "127.0.0.1", port, f"http://127.0.0.1:{port}"
+            "127.0.0.1", port, f"http://127.0.0.1:{port}",
+            clock=clock, sleep=worker_sleep,
         )
         time.sleep(0.3)
         assert opened == []          # bound, but not accepting yet
@@ -930,8 +951,8 @@ def test_serve_refuses_a_non_local_bind_without_allow_remote():
 def test_serve_without_a_safety_config_falls_back_to_the_per_user_default(tmp_path, monkeypatch):
     """No --safety-config is what a desktop shortcut passes (design/17 v3).
 
-    It means "the file `microclaw init` wrote", not "no limits". Absent, serve
-    must refuse and point at `microclaw init` rather than start unguarded.
+    It means the reviewed per-user profile, not "no limits". Absent, serve must
+    refuse and point at first-launch setup rather than start unguarded.
     """
     missing = tmp_path / "safety_config.yaml"
     monkeypatch.setattr(config, "default_safety_config", lambda: missing)

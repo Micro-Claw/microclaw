@@ -24,7 +24,8 @@ User (natural language) → AgentLoop (Anthropic API) → ToolRegistry → Safet
 
 ## Install (Windows)
 
-You do not need Python, or a terminal. The installer brings its own.
+You do not need Python. The installer brings its own; after installation, one
+terminal command starts the rig-specific safety setup.
 
 **1. Install Micro-Manager and turn on its server.**
 Install [Micro-Manager 2.0](https://micro-manager.org/Download_Micro-Manager_Latest_Release)
@@ -46,11 +47,13 @@ desktop. It takes a few minutes.
 > Windows may show a blue **"Windows protected your PC"** banner, because the file
 > came from the internet. Click **More info → Run anyway**.
 
-**4. Edit your safety limits.**
-The installer opens a `safety_config.yaml` for you. Its limits are **examples that
-match no real microscope**, and they are the last thing standing between the AI and
-your hardware. Set each one for your instrument, then change `reviewed: false` to
-`reviewed: true` at the top of the file. Microclaw refuses to start until you do.
+**4. Generate and review your safety profile.**
+With Micro-Manager and its ZMQ server running, open a terminal and run the exact
+setup command printed by the installer. It ends in `microclaw.exe init` and offers
+restricted read-only rig inspection. Setup disconnects and writes an unreviewed
+rig-specific profile. Review every declaration and limit, change `reviewed: false`
+to `reviewed: true`, run `microclaw check-config` on it, then restart Microclaw.
+Microclaw refuses to start until the profile is reviewed.
 
 **5. Double-click the Microclaw icon.**
 A console window opens — that is the server; closing it stops Microclaw — and a
@@ -82,16 +85,19 @@ An existing conda environment works fine too — `pip install -e ".[serve,test]"
 inside it does the same thing. Then:
 
 ```bash
-microclaw init     # writes this machine's safety limits, and opens them for editing
-microclaw          # starts a session once you've reviewed them
+microclaw inspect-rig --out rig-inventory
+microclaw first-launch-setup --inventory rig-inventory/inventory.json --out safety_config.yaml
+microclaw check-config safety_config.yaml
+microclaw --safety-config safety_config.yaml serve
 ```
 
-`microclaw init` creates a per-user `safety_config.yaml` (in `~/.config/microclaw/`,
-or `%APPDATA%\microclaw\` on Windows) and opens it. Its limits are the example's —
-fictional, matching no real hardware — so Microclaw **refuses to start** until you
-have edited them for your instrument and changed `reviewed: false` to
-`reviewed: true` at the top. Pass `--safety-config PATH` to use a file somewhere
-else; the same rule applies to it.
+`inspect-rig` records read-only inventory evidence. `first-launch-setup` consumes
+that inventory (or enumerates the running Core itself), disconnects, and writes an
+unreviewed rig-specific profile. Human-review the entire profile, change
+`reviewed: false` to `reviewed: true`, validate it offline with `check-config`, and
+restart Microclaw. `microclaw init` offers the same setup flow at the per-user
+path (`~/.config/microclaw/`, or `%APPDATA%\microclaw\` on Windows).
+`init --from-example` is only for deliberate hand-authoring from fictional values.
 
 You will also need an `ANTHROPIC_API_KEY`: set it in the environment, or let the
 browser GUI collect and store it (see [Browser GUI](#browser-gui)).
@@ -112,7 +118,7 @@ On macOS and Linux, substitute `~/.config/microclaw` and `~/.local/share/microcl
 
 | Flag | Default | Purpose |
 |---|---|---|
-| `--safety-config PATH` | the file `microclaw init` wrote | Hardware-limits file enforced before every tool call. Must carry `reviewed: true`, whether it's the default or an explicit path. |
+| `--safety-config PATH` | the reviewed per-user profile | Hardware-limits file enforced before every tool call. Must carry `reviewed: true`, whether it's the default or an explicit path. |
 | `--port N` | `4827` | ZMQ port to reach the running Micro-Manager instance. Match the port set in **Tools → Options**. |
 | `--model ID` | `$MICROCLAW_MODEL` or `claude-opus-4-8` | Anthropic model id. The `MICROCLAW_MODEL` environment variable overrides the built-in default; `--model` overrides both. |
 | `--profile` / `--no-profile` | off | cProfile the session and print stats on exit. |
@@ -143,7 +149,7 @@ pip install -e ".[serve]"
 microclaw serve                                  # → http://127.0.0.1:8000
 ```
 
-Uses the safety config `microclaw init` wrote. The session flags
+Uses the reviewed per-user safety profile by default. The session flags
 (`--safety-config`, `--port`, `--model`, `--save-history`) belong to the top-level
 parser, so if you pass them they go *before* `serve`:
 `microclaw --safety-config other.yaml serve`.
@@ -190,7 +196,7 @@ terminal, no flags. The console window it opens *is* the server: it shows the
 connection status and any startup error, and closing it stops Microclaw.
 
 The shortcut runs `serve` and nothing else. It is always loopback-only, and it
-loads the safety limits from the config `microclaw init` wrote — which must say
+loads the reviewed safety profile at the per-user path — which must say
 `reviewed: true`, or it refuses to start and tells you so.
 
 | Flag | Purpose |
@@ -223,7 +229,13 @@ that is the case.
 
 ## Safety configuration
 
-Run `microclaw init` to write this rig's `safety_config.yaml`, then edit it to set the real hardware limits. These are enforced before every tool call and cannot be overridden by the AI.
+Start with `microclaw inspect-rig` and `microclaw first-launch-setup`, or run
+`microclaw init` and accept its setup offer. Restricted setup writes an unreviewed
+rig-specific draft. Human-review every declaration and limit, set `reviewed: true`,
+run `microclaw check-config PATH` for offline validation, then restart Microclaw.
+These limits are enforced before every tool call and cannot be overridden by the
+AI. `microclaw init --from-example` is only for deliberate hand-authoring from the
+packaged fictional reference.
 
 Safety files use `schema_version: 2`. Stage and named-stage ranges declare the
 actuators the profile covers. Every declared axis needs two finite bounds in

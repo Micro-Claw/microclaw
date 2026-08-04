@@ -48,17 +48,27 @@ def test_installs_the_serve_extra_that_pyproject_defines(bat):
     assert "[serve]" in bat
 
 
-def test_runs_the_subcommands_that_exist(bat):
-    """install-shortcut and init are both real subcommands, spelled this way."""
+def test_runs_the_shortcut_subcommand_that_exists(bat):
+    """The installer creates the shortcut with the package's real subcommand."""
     main = (ROOT / "microclaw" / "__main__.py").read_text(encoding="utf-8")
-    for cmd in ("install-shortcut", "init"):
-        assert f'"{cmd}"' in main, f"{cmd} is not a subcommand any more"
-        assert f'%MC_EXE%" {cmd}' in bat, f"install.bat no longer runs {cmd}"
+    assert '"install-shortcut"' in main
+    assert '%MC_EXE%" install-shortcut' in bat
 
 
-def test_shortcut_is_created_before_init_opens_an_editor(bat):
-    """init opens the safety file; it should be the last thing on screen."""
-    assert bat.index("install-shortcut") < bat.index('%MC_EXE%" init')
+def test_installer_does_not_run_rig_contacting_setup(bat):
+    """An unreachable Micro-Manager must not hang or fail a completed install."""
+    finish = re.search(r"^:finish$(.*?)(?=^:\w+)", bat, re.M | re.S).group(1)
+    assert '%MC_EXE%" init' not in finish
+    assert '%MC_EXE%" first-launch-setup' not in finish
+
+
+def test_installer_prints_setup_only_after_micro_manager_instruction(bat):
+    """The post-install command is honest about its live ZMQ prerequisite."""
+    instruction = 'Run pycro-manager server on port 4827'
+    setup_command = 'echo     "%MC_EXE%" init'
+    assert instruction in bat
+    assert setup_command in bat
+    assert bat.index(instruction) < bat.index(setup_command)
 
 
 def test_installer_never_asks_for_admin(bat):

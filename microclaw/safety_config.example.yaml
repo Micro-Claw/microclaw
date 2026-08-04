@@ -4,6 +4,11 @@
 # limits are the last thing standing between the AI and your hardware, and they
 # are enforced before every tool call.
 #
+# This is a hand-authoring reference, not the recommended first-run path. Start
+# with `microclaw init` or `microclaw first-launch-setup --out PATH`; restricted
+# setup inventories the rig and produces an unreviewed draft for human review.
+# Copy this file only deliberately (`microclaw init --from-example`).
+#
 # Microclaw REFUSES TO START until you have gone through this file, set each
 # limit for THIS instrument, and changed the line below to `reviewed: true`.
 #

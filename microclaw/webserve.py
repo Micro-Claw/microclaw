@@ -785,7 +785,8 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
 
 
 def _open_when_ready(
-    host: str, port: int, url: str, timeout: float = 15.0
+    host: str, port: int, url: str, timeout: float = 15.0, *,
+    clock=time.monotonic, sleep=time.sleep,
 ) -> threading.Thread:
     """Open `url` in a browser once the server is accepting connections.
 
@@ -800,13 +801,13 @@ def _open_when_ready(
     """
 
     def wait():
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
+        deadline = clock() + timeout
+        while clock() < deadline:
             try:
                 with socket.create_connection((host, port), timeout=0.5):
                     break
             except OSError:
-                time.sleep(0.1)
+                sleep(0.1)
         else:
             return  # never came up; the traceback uvicorn prints is the real story
         try:
@@ -868,12 +869,13 @@ def serve(args):
             "for the TLS proxy only; do not expose this port.\n"
             f"Remote bearer token: {token}\n"
             "Browser pairing: open your proxy's HTTPS URL and append "
-            f"/#pair={pairing_code}\n"
+            f"/#pair={pairing_code}\n",
+            flush=True,
         )
-        print("Microclaw GUI: use the operator-supplied TLS proxy URL  (Ctrl-C to stop)")
+        print("Microclaw GUI: use the operator-supplied TLS proxy URL  (Ctrl-C to stop)", flush=True)
     else:
         url = f"http://{args.host}:{args.web_port}"
-        print(f"Microclaw GUI: {url}  (Ctrl-C to stop)")
+        print(f"Microclaw GUI: {url}  (Ctrl-C to stop)", flush=True)
     if not remote and not args.no_browser:
         # A wildcard bind is not an address a browser (or Windows' connect())
         # can reach; the loopback the server is also listening on is.
@@ -887,4 +889,4 @@ def serve(args):
     finally:
         shuttered = session.guard.shutter_all(session.ctrl.core)
         if shuttered:
-            print(f"[microclaw] Illumination off: {', '.join(shuttered)}")
+            print(f"[microclaw] Illumination off: {', '.join(shuttered)}", flush=True)

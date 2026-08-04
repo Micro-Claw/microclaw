@@ -1,4 +1,5 @@
 import sys
+import argparse
 import json
 import datetime
 import cProfile
@@ -105,13 +106,37 @@ def _open_in_editor(path):
 
 
 def init(args):
-    """Create the per-user safety config, and put it in front of the user.
-
-    Deliberately copies the example *unedited*, `reviewed: false` and all: the
-    limits it ships are fictional, and the only way past the gate in
-    `load_safety_config` is for a human to read the file and change that line.
-    """
+    """Direct first runs to setup; retain example copying as an explicit opt-in."""
     dest = Path(args.path) if args.path else default_safety_config()
+    if not args.from_example:
+        command = f"microclaw first-launch-setup --out \"{dest}\""
+        if args.force:
+            command += " --force"
+        print("Microclaw now creates rig-specific safety profiles through restricted setup:")
+        print(f"  {command}")
+        print("Setup inspects the rig read-only, writes an unreviewed draft, and disconnects.")
+        print("Human-review every declaration and limit, set `reviewed: true`, then restart Microclaw.")
+        if not sys.stdin.isatty():
+            print("Non-interactive input detected; setup was not started and no config was written.")
+            return None
+        try:
+            answer = input("Run first-launch setup now? [y/N] ").strip().lower()
+        except EOFError:
+            print("No interactive answer received; setup was not started and no config was written.")
+            return None
+        if answer not in {"y", "yes"}:
+            print("Setup was not started and no config was written.")
+            return None
+        setup_args = argparse.Namespace(
+            out=str(dest), inventory=None, mm_config=None, evidence_out=None,
+            force=args.force, port=args.port,
+        )
+        result = first_launch_setup(setup_args)
+        if dest.exists() and not args.no_edit:
+            print("Opening the generated unreviewed profile for human review.")
+            _open_in_editor(dest)
+        return result
+
     if dest.exists() and not args.force:
         print(f"Already present: {dest}")
         print("Left as it is — `--force` overwrites it with a fresh copy of the example.")
@@ -178,7 +203,7 @@ def install_shortcut(args):
 
 def run_session(args):
     """Interactive agent loop against a live Micro-Manager instance."""
-    # No --safety-config means the per-user default that `microclaw init` writes,
+    # No --safety-config means the reviewed per-user default that setup generates,
     # which is what a desktop shortcut loads. Either way the file must carry
     # `reviewed: true`, so a session still cannot start under the example's
     # fictional limits (design/14 §6, design/17 v2).
@@ -351,6 +376,7 @@ def check_config(args):
         label = {
             "schema": "SCHEMA ERROR",
             "review": "REVIEW REQUIRED",
+            "example_limits": "EXAMPLE-LIMIT REVIEW",
             "guaranteed_mode": "GUARANTEED-MODE REQUIREMENT",
             "degraded_mode": "DEGRADED-MODE WARNING",
             "live_check": "LIVE CHECK REQUIRED",
@@ -479,7 +505,6 @@ def first_launch_setup(args):
 
 
 def main():
-    import argparse
     parser = argparse.ArgumentParser(description="Microclaw: AI agent for Micro-Manager")
     # Agent-session options stay on the top-level parser so `microclaw --port ...`
     # (no subcommand) keeps launching a session, as before.
@@ -488,7 +513,7 @@ def main():
         default=None,
         help=(
             "Path to THIS RIG's safety-limits YAML. Defaults to the per-user file "
-            f"`microclaw init` writes ({default_safety_config()}). Either way it "
+            f"setup generates ({default_safety_config()}). Either way it "
             "must carry `reviewed: true`."
         ),
     )
@@ -514,16 +539,19 @@ def main():
 
     it = sub.add_parser(
         "init",
-        help="Create this machine's safety-limits file and open it for editing.",
+        help="Start the rig-specific first-launch safety setup.",
         description=(
-            "Copies the example safety config to a per-user location and opens it. "
-            "Its limits are fictional: edit them for this microscope and set "
-            "`reviewed: true`, or Microclaw will refuse to start."
+            "Offers to run first-launch-setup, followed by human review and restart. "
+            "Use --from-example only for deliberate hand-authoring from fictional limits."
         ),
     )
     it.add_argument("--path", default=None, help="Write somewhere other than the default.")
     it.add_argument("--force", action="store_true", help="Overwrite an existing file.")
     it.add_argument("--no-edit", action="store_true", help="Don't open an editor.")
+    it.add_argument(
+        "--from-example", action="store_true",
+        help="Deliberately copy the fictional hand-authoring example instead of setup.",
+    )
 
     sc = sub.add_parser(
         "install-shortcut",
@@ -531,8 +559,8 @@ def main():
         description=(
             "Writes a desktop shortcut that runs `microclaw serve` under this "
             "environment, with the Microclaw icon. It passes no other flags: the "
-            "GUI it opens is loopback-only, under the safety limits in the config "
-            "`microclaw init` wrote."
+            "GUI it opens is loopback-only, under the reviewed safety profile at "
+            "the per-user path."
         ),
     )
     sc.add_argument("--dest", default=None, help="Write to a directory other than the desktop.")
