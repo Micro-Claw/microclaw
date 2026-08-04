@@ -131,6 +131,19 @@ try {
 `appdata-restored.txt` must show your normal roaming path, not the gate
 directory. Check it before running G2 or G3 in the same window.
 
+**Expect `fresh-appdata` to fill up, and delete it before returning the bundle.**
+`uv` keeps its managed Python interpreters under `%APPDATA%\uv`, so the redirect
+also makes `uv` re-download a full CPython into the gate directory — measured on
+the 2026-08-04 demo run, which shipped `cpython-3.12.13-windows-x86_64-none`
+inside the evidence. That is harmless and expected, but it slows the step and
+bloats the bundle by tens of megabytes:
+
+```powershell
+Remove-Item -Recurse -Force "$Evidence\fresh-appdata"
+```
+
+Do this only **after** `appdata-restored.txt` has been written and checked.
+
 At each of the three prompts, press a key without starting Micro-Manager. After
 the command returns, select the complete command and console output, copy it,
 and save it as `$Evidence\installer-no-mm-manual-copy-paste.txt`.
@@ -226,7 +239,11 @@ $BadTranscript = Get-ChildItem $BadEvidence -Filter "first-launch-transcript-*.t
 Copy-Item $BadTranscript.FullName "$Evidence\three-bad-transcript.txt"
 $BadInputs = @(Select-String -Path $BadTranscript.FullName -Pattern '^wrong-(one|two|three)$')
 $BadInputs.Count > "$Evidence\three-bad-input-count.txt"
-$Connect = @(Select-String -Path $BadTranscript.FullName -SimpleMatch "Connecting to the already-running")
+# "Connecting to the already-running" also appears in setup's INTRO
+# (first_launch.py:42), so matching that phrase alone can never be zero and
+# would have failed this gate spuriously. Match the real connect message only
+# (__main__.py:446), which is the sole place this fragment occurs.
+$Connect = @(Select-String -Path $BadTranscript.FullName -SimpleMatch "Micro-Manager Core for read-only")
 $Connect.Count > "$Evidence\three-bad-connect-count.txt"
 ```
 
