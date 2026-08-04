@@ -450,7 +450,11 @@ each capture. The PLUGIN owns the Z motion.
 
   Safety gate: SafetyGuard.check_plugin_motion — requires
   plugins.allow_hardware_motion: true in safety_config.yaml (blocklist also
-  applies). PASSIVE guard on the result: after the plugin focuses, microclaw
+  applies). That flag is necessary but NOT sufficient: an opaque motion plugin
+  cannot be enumerated or intercepted, so guaranteed mode refuses it at startup
+  and the file must ALSO carry property_authorization.mode:
+  degraded_trusted_plugins. Both are human edits followed by a restart;
+  `microclaw check-config` reports the pair without connecting to the rig. PASSIVE guard on the result: after the plugin focuses, microclaw
   reads the new Z and calls check_z; if it is out of bounds the hook logs
   autofocus="unsafe_abort" and RAISES SafetyViolation — the whole acquisition
   aborts loudly, naming the Z and the limit ("skip this capture" does not

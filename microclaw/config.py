@@ -145,6 +145,27 @@ def validate_safety_config(path: str | Path | None = None) -> ConfigValidationRe
                 "finite positive maximum.",
                 True,
             ))
+        if parsed.constraints.plugins.allow_hardware_motion:
+            # Two settings, one decision, and until this diagnostic existed you
+            # only found that out by restarting into a live refusal — with the
+            # rig connected and a sample under the objective. Flipping one flag
+            # looks sufficient because the runtime gate it opens IS the only
+            # gate; the mode line is a separate, earlier refusal.
+            diagnostics.append(ConfigDiagnostic(
+                "guaranteed_mode",
+                "`plugins.allow_hardware_motion: true` cannot start in guaranteed "
+                "mode, and this flag alone is NOT enough to run a hardware-motion "
+                "plugin: guaranteed mode promises that every hardware effect is "
+                "either typed and guarded or explicitly excluded, and a plugin is "
+                "arbitrary Java whose effects microclaw can neither enumerate nor "
+                "intercept. To allow one, ALSO set `property_authorization.mode: "
+                "degraded_trusted_plugins`, which keeps every limit in this file "
+                "enforced but drops the completeness claim (startup then reports "
+                "the authorization map as DEGRADED). If you did not mean to run a "
+                "motion plugin, set allow_hardware_motion back to false and stay "
+                "in guaranteed mode.",
+                True,
+            ))
         live_message = (
             "Offline validation cannot enumerate the rig. Live startup must still verify "
             "that every reachable stage has a closed declared range, every reachable "

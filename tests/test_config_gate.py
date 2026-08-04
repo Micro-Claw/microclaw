@@ -302,6 +302,40 @@ def test_offline_clean_nulls_are_reported_as_live_startup_blockers(tmp_path):
         assert any(f"acquisition.{field}" in item.message for item in blockers)
 
 
+class TestHardwareMotionPluginNeedsBothSettings:
+    """The M5 session (2026-08-04): the operator wanted to try Micro-Manager's
+    own autofocus, set `plugins.allow_hardware_motion: true` as every message in
+    the product told them to, restarted with the rig connected, and was refused
+    — by a rule with no remedy in it. The second required setting appeared in no
+    error, no comment, and no tool description, and `check-config` passed the
+    file clean. Offline validation is where that costs nothing to learn.
+    """
+
+    MOTION = "plugins: {blocked: [], allow_hardware_motion: true}\n"
+
+    def test_guaranteed_plus_motion_blocks_offline(self, tmp_path):
+        result = validate_safety_config(_write(tmp_path, REAL + self.MOTION))
+        assert result.can_start_live_validation is False
+        blocker = next(
+            item for item in result.diagnostics
+            if item.blocking and "allow_hardware_motion" in item.message
+        )
+        # The remedy, not just the rule: both settings, and what it costs.
+        assert "degraded_trusted_plugins" in blocker.message
+        assert "DEGRADED" in blocker.message
+
+    def test_degraded_plus_motion_is_allowed(self, tmp_path):
+        text = REAL.replace("mode: guaranteed", "mode: degraded_trusted_plugins")
+        result = validate_safety_config(_write(tmp_path, text + self.MOTION))
+        assert result.can_start_live_validation is True
+
+    def test_guaranteed_without_motion_is_unaffected(self, tmp_path):
+        result = validate_safety_config(_write(
+            tmp_path, REAL + "plugins: {blocked: [], allow_hardware_motion: false}\n"
+        ))
+        assert result.can_start_live_validation is True
+
+
 def test_degraded_null_caps_are_nonblocking_but_never_silent(tmp_path):
     text = REAL.replace("mode: guaranteed", "mode: degraded_trusted_plugins")
     text = text.replace("max_exposure_ms: 500.0", "max_exposure_ms: null")

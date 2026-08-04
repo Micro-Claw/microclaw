@@ -716,7 +716,7 @@ class TestSnapAndAnalyze:
         # A bare float invites cross-setting comparisons (design/14 §10).
         result = snap_and_analyze(mock_ctrl, unconstrained_guard)
         # "_gated": focus_metric now travels with focus_metric_valid + snr (design/25).
-        assert result["focus_metric_kind"] == "normalized_laplacian_variance_gated"
+        assert result["focus_metric_kind"] == "tenengrad_gated"
         assert set(result["metric_valid_for"]) == {"roi", "exposure_ms", "binning"}
 
     def test_metric_gate_comes_from_rig_config(self, mock_ctrl):
@@ -1186,7 +1186,7 @@ class TestTileAcquisitionMarkPositions:
             protocol="snap",
         )["results"][0]
         assert tile["focus_metric_valid"] is False
-        assert "warning" in tile and "inflate" in tile["warning"]
+        assert "warning" in tile and "noise floor" in tile["warning"]
         assert "snr" in tile
 
     def test_snap_grid_uses_the_same_rig_gate(self, centered_ctrl, monkeypatch):
@@ -1244,7 +1244,7 @@ class TestTileAcquisitionMarkPositions:
             centered_ctrl, unconstrained_guard, rows=2, cols=2, step_um=100.0,
             protocol="snap",
         )
-        assert result["focus_metric_kind"] == "normalized_laplacian_variance_gated"
+        assert result["focus_metric_kind"] == "tenengrad_gated"
         assert "metric_valid_for" in result
         for tile in result["results"]:
             assert "metric_valid_for" not in tile

@@ -21,6 +21,7 @@ from microclaw.image_analysis import (
     snap_to_numpy,
     snap_to_numpy_displayed,
     snr,
+    tenengrad,
 )
 
 
@@ -357,6 +358,124 @@ class TestNormalizedLaplacianVariance:
         assert normalized_laplacian_variance(np.full((64, 64), 400.0)) == 0.0
 
 
+def defocus_series(kind, gain=1.0, defocus=(0.0, 0.5, 1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0),
+                   seed=11, shape=(284, 320), offset=180.0):
+    """A Z sweep as the camera sees it: blur the SCENE, then detect it.
+
+    Order matters, and it is the whole reason design/28 F2 reached the wrong
+    conclusion. Blurring an already-noisy frame smooths the noise away with the
+    signal, which flatters any high-pass metric. On a real rig, defocus happens
+    in the optics and the shot/read noise is added afterwards by the detector,
+    at a floor that does NOT blur — so a noise-amplifying metric stays pinned to
+    that floor while the signal it is meant to measure disappears underneath it.
+
+    Flux-conserving: `gaussian_filter` preserves the sum, so these frames differ
+    only in how the same photons are distributed. Anything that reads them as
+    "dimmer when defocused" is reading its own normaliser, not the sample.
+    """
+    from scipy.ndimage import gaussian_filter
+
+    rng = np.random.default_rng(seed)
+    if kind == "puncta":                       # sparse emitters on a dark field
+        scene = np.zeros(shape)
+        ys = rng.integers(8, shape[0] - 8, 140)
+        xs = rng.integers(8, shape[1] - 8, 140)
+        for y, x in zip(ys, xs):
+            scene[y, x] += 9000.0
+        scene = gaussian_filter(scene, 1.2)    # in-focus PSF
+    elif kind == "extended":                   # cell-like structure, all lit
+        scene = gaussian_filter(rng.normal(0, 1, shape), 6)
+        scene = gaussian_filter(np.clip(scene, 0, None) * 3000, 1.2)
+    else:
+        raise ValueError(kind)
+
+    frames = []
+    for d in defocus:
+        blurred = gaussian_filter(scene, d) if d > 0 else scene
+        detected = rng.poisson((blurred + 2.0) * gain).astype(np.float64)
+        frames.append(detected + offset + rng.normal(0, 2.0, shape))
+    return frames
+
+
+FIELD_TYPES = [
+    ("puncta", 1.0), ("puncta", 0.1), ("extended", 1.0), ("extended", 0.05),
+]
+
+
+class TestFocusMetricPeaksAtFocus:
+    """design/36 — the M5 session (2026-08-04) and the Nestor session before it.
+
+    Both swept Z, both got a curve that was LOWEST at the operator's own manual
+    best focus and climbed monotonically toward the sweep edges, and both
+    therefore reported no convergence and refused to move. On M5 the widened
+    ±20 µm sweep read 25.9 at its far edge against 1.95 at true focus.
+
+    These are the tests design/28 F2 said were missing: they establish the
+    premise (the old metric really does invert) on the same frames that show
+    the replacement is right-signed, instead of asserting only the second half.
+    """
+
+    @pytest.mark.parametrize("kind,gain", FIELD_TYPES)
+    def test_tenengrad_is_maximised_at_focus(self, kind, gain):
+        scores = [tenengrad(f) for f in defocus_series(kind, gain)]
+        assert scores[0] == max(scores), f"{kind}/{gain}: peak at defocus, not focus"
+
+    @pytest.mark.parametrize("kind,gain", FIELD_TYPES)
+    def test_tenengrad_falls_away_from_focus(self, kind, gain):
+        # Not merely a peak: a usable objective for a sweep that starts blurred.
+        scores = [tenengrad(f) for f in defocus_series(kind, gain)]
+        assert scores[0] > scores[2] > scores[-1]
+
+    @pytest.mark.parametrize("kind,gain", FIELD_TYPES[1:])
+    def test_the_old_metric_is_maximised_at_MAXIMUM_defocus(self, kind, gain):
+        # The defect, on the same frames. Three of the four field types put the
+        # old metric's argmax at the blurriest frame in the series — which is
+        # exactly what walked the M5 sweep to its boundary.
+        scores = [normalized_laplacian_variance(f) for f in defocus_series(kind, gain)]
+        assert scores[-1] == max(scores)
+
+    def test_the_old_metric_is_u_shaped_even_where_its_argmax_is_right(self):
+        # The one field type where the old metric's argmax survives (bright
+        # sparse puncta) still fails in practice: the curve turns around and
+        # climbs again, so a sweep whose window misses true focus — the M5 case,
+        # where the coarse step was 2.5 µm — reads the far edge as best.
+        scores = [normalized_laplacian_variance(f) for f in defocus_series("puncta", 1.0)]
+        trough = int(np.argmin(scores))
+        assert 0 < trough < len(scores) - 1
+        assert scores[-1] > scores[trough] * 3
+
+    def test_tenengrad_is_not_fooled_by_a_brighter_but_blurrier_field(self):
+        # The failure the old normaliser existed to prevent (design/14 §10),
+        # checked against the metric that replaced it. Illumination is NOT
+        # normalised away, so this only holds within a sweep's fixed
+        # illumination — which is why run_autofocus holds it fixed and the
+        # payload stamps metric_valid_for.
+        focused, blurred = defocus_series("puncta", 1.0, defocus=(0.0, 6.0))
+        assert tenengrad(focused) > tenengrad(blurred)
+
+    def test_polarity_insensitive(self):
+        # Dark structure on a bright field scores like its inverse.
+        focused, blurred = defocus_series("puncta", 1.0, defocus=(0.0, 6.0))
+        assert tenengrad(60000 - focused) > tenengrad(60000 - blurred)
+
+    def test_flat_image_is_zero(self):
+        assert tenengrad(np.zeros((64, 64))) == 0.0
+        assert tenengrad(np.full((64, 64), 400.0)) == 0.0
+
+    def test_a_constant_pedestal_does_not_change_the_score(self):
+        # No background subtraction is needed or wanted: a uniform offset (the
+        # camera pedestal, or a uniform haze) differentiates away exactly.
+        img = synthetic_puncta(read_noise=8.0).astype(np.float64)
+        assert tenengrad(img + 5000.0) == pytest.approx(tenengrad(img))
+
+    def test_frame_size_does_not_enter(self):
+        # A per-pixel mean, so a crop of statistically similar content scores
+        # the same. (Content still matters — cropping onto a bright feature is
+        # a real change, which is what metric_valid_for's roi key is for.)
+        img = defocus_series("extended", 1.0, defocus=(0.0,))[0]
+        assert tenengrad(img[40:240, 60:260]) == pytest.approx(tenengrad(img), rel=0.25)
+
+
 class TestSnr:
     """design/23 F7: one robust snr() definition, shared by compute_stats and
     detect_features. (p99.5 - bg) / (1.4826 * MAD)."""
@@ -417,16 +536,29 @@ class TestFocusMetricGate:
         assert stats.focus_metric_valid is True
         assert stats.snr >= UNCALIBRATED_MIN_SNR_FALLBACK
 
-    def test_empty_field_outranks_a_cell_on_the_raw_metric(self):
-        # The bug (design/25): the empty field's normalized metric is HIGHER than
-        # the cell's, so ranking by focus_metric alone picks the empty tile. The
-        # validity flag is the only thing that distinguishes them.
+    def test_empty_field_no_longer_outranks_a_cell(self):
+        # design/25 was the empty field's metric reading HIGHER than the cell's,
+        # so ranking tiles by focus_metric picked the emptiest one. design/36
+        # removed the cause: the inflation came from dividing by a contrast term
+        # that collapses when there is nothing in the field. Tenengrad has no
+        # such denominator, so an empty field now scores at its noise floor and
+        # ranks BELOW the cell — the validity flag is no longer the only thing
+        # standing between the agent and the wrong tile.
         rng = np.random.default_rng(0)
         empty = (400 + rng.normal(0, 10, (256, 256))).astype(np.uint16)
         cell = synthetic_puncta(shape=(256, 256), read_noise=8.0)
-        assert compute_stats(empty).focus_metric > compute_stats(cell).focus_metric
+        assert compute_stats(empty).focus_metric < compute_stats(cell).focus_metric
         assert compute_stats(empty).focus_metric_valid is False
         assert compute_stats(cell).focus_metric_valid is True
+
+    def test_the_old_metric_is_what_inverted_that_ranking(self):
+        # Guards the claim above: the same two fields, scored the old way, rank
+        # the wrong way round. If this ever stops failing to rank correctly, the
+        # design/36 narrative is wrong and should be re-derived, not patched.
+        rng = np.random.default_rng(0)
+        empty = (400 + rng.normal(0, 10, (256, 256))).astype(np.uint16)
+        cell = synthetic_puncta(shape=(256, 256), read_noise=8.0)
+        assert normalized_laplacian_variance(empty) > normalized_laplacian_variance(cell)
 
     def test_background_level_is_reported(self):
         stats = compute_stats(np.full((64, 64), 400, dtype=np.uint16))
@@ -434,7 +566,7 @@ class TestFocusMetricGate:
 
     def test_warning_names_the_snr_and_the_hazard(self):
         msg = focus_invalid_warning(2.4)
-        assert "2.4" in msg and "inflate" in msg
+        assert "2.4" in msg and "noise floor" in msg
 
 
 def test_make_thumbnail_returns_valid_png():

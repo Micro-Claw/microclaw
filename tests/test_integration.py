@@ -1410,7 +1410,7 @@ def test_snap_and_analyze_displays_and_stamps_metric(headless_mm, unconstrained_
     result = snap_and_analyze(headless_mm, unconstrained_guard)
     assert result["displayed_in_mm_viewer"] is True
     # "_gated": focus_metric now travels with focus_metric_valid + snr (design/25).
-    assert result["focus_metric_kind"] == "normalized_laplacian_variance_gated"
+    assert result["focus_metric_kind"] == "tenengrad_gated"
     assert set(result["metric_valid_for"]) == {"roi", "exposure_ms", "binning"}
     assert result["focus_metric"] >= 0.0
     assert "focus_metric_valid" in result

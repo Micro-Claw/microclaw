@@ -39,11 +39,11 @@ from microclaw.image_analysis import (
     detect_features,
     focus_invalid_warning,
     make_thumbnail,
-    normalized_laplacian_variance,
     snap_to_numpy,
     preview_window_open,
     resolve_min_snr,
     snap_to_numpy_displayed,
+    tenengrad,
 )
 from microclaw.safety import SafetyGuard, SafetyViolation
 from microclaw.acquisition import AcquisitionLedger, AcquisitionPlan, Reservation, plan_events
@@ -1318,7 +1318,7 @@ def _metric_stamp(ctrl: MicroscopeController) -> dict:
         # "_gated" records that focus_metric now travels with focus_metric_valid
         # and snr (design/25): the presence of a gate is self-describing in a saved
         # history, not silently inferred from whether the extra keys happen to be there.
-        "focus_metric_kind": "normalized_laplacian_variance_gated",
+        "focus_metric_kind": "tenengrad_gated",
         "metric_valid_for": {
             "roi": roi_list,
             "exposure_ms": exposure_ms,
@@ -1344,9 +1344,15 @@ def _focus_metric_payload(
     A bare float invites exactly the cross-setting comparison the amr_test model
     made — reading a laser-power increase as a focus improvement (design/14 §10);
     a bare float on an EMPTY field invites ranking it as the sharpest tile on the
-    grid (design/25). The metric is illumination-normalised, metric_valid_for
-    guards the residual ROI/exposure/binning dependence, and focus_metric_valid
-    guards "is there any signal to be sharp about at all?".
+    grid (design/25). metric_valid_for guards the ROI/exposure/binning
+    dependence, and focus_metric_valid guards "is there any signal to be sharp
+    about at all?".
+
+    The metric is NOT illumination-normalised (design/36 — the normaliser that
+    was supposed to make it so is what inverted it, so a frame's own pixels can
+    no longer buy comparability across a laser change). The agent prompt carries
+    the illumination half of the domain; metric_valid_for carries the half the
+    camera can report.
     """
     payload = {
         "focus_metric": _round_sig(stats.focus_metric),
@@ -1759,8 +1765,11 @@ def run_autofocus(
     structureless metric curve OR a peak pinned at the sweep edge (design/28 F1),
     and always reports entry_z_um so a bad result is trivially undone.
 
-    The normalized Laplacian metric is polarity-insensitive: bright puncta on a
-    dark field do not require an inverted or separately selected metric.
+    The metric is Tenengrad (design/36): maximised at focus, and
+    polarity-insensitive, so bright puncta on a dark field do not require an
+    inverted or separately selected metric. It replaced a normalized Laplacian
+    variance that was MINIMISED at focus on real fields, which is what made two
+    live sessions chase the sweep boundary away from the operator's own focus.
     """
     entry_z = ctrl.core.get_position()
     guard.check_z(entry_z - z_range_um / 2)
@@ -1812,7 +1821,7 @@ def run_autofocus(
 
     with _pause_live(ctrl):
         image = snap_to_numpy(ctrl)
-    payload["focus_metric_at_final"] = _round_sig(normalized_laplacian_variance(image))
+    payload["focus_metric_at_final"] = _round_sig(tenengrad(image))
     return [
         {"type": "text", "text": json.dumps(payload)},
         {
@@ -3920,8 +3929,10 @@ def list_mm_plugins(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
         "hint": (
             "Analyzer plugins run with hook_strategy='mm_plugin_analyzer' "
             "(allowed unless in plugins.blocked). Autofocus plugins run with "
-            "hook_strategy='autofocus_mm_plugin' and require "
-            "plugins.allow_hardware_motion: true in safety_config.yaml. "
+            "hook_strategy='autofocus_mm_plugin' and require BOTH "
+            "plugins.allow_hardware_motion: true AND property_authorization.mode: "
+            "degraded_trusted_plugins in safety_config.yaml, then a restart -- the "
+            "motion flag alone is refused at startup in guaranteed mode. "
             "Always confirm the classpath with the user before enabling a plugin hook."
         ),
     }

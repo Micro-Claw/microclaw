@@ -67,6 +67,20 @@ also put its maximum at an edge. The *contract* the model keys on (`converged`,
 
 ## Finding 2 — anomalous U-shaped focus curve; cause not established
 
+> **SUPERSEDED 2026-08-04 by [design/36](36-focus-metric-inversion.md).** It was
+> a metric-sign bug. The section below is kept as written, because how it
+> reached the wrong answer matters: the reasoning is sound except for one
+> clause — "the normalization denominator ... does not collapse merely because
+> the signal becomes spatially concentrated" — which is false, because `bg` is
+> the per-frame *median* and the median rises to meet the spreading light. The
+> synthetic that exonerated the metric was noiseless, and a noise floor is
+> exactly what pins the numerator flat while that denominator collapses. The
+> metric was minimised at focus. design/36 reproduces it offline, on four field
+> types, and replaces the metric with Tenengrad. Read the fix instruction below
+> ("Keep normalized Laplacian variance as the single default") as reversed;
+> the *process* instruction it ends with — compare candidates against real
+> Z-stacks with visual ground truth — was right, and is still owed.
+
 **Severity: high for this session, but not a demonstrated metric-sign bug.**
 
 The recorded `normalized_laplacian_variance` sweep was genuinely U-shaped:

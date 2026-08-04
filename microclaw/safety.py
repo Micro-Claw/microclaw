@@ -1227,6 +1227,10 @@ class SafetyGuard:
             raise SafetyViolation(
                 f"Plugin '{classpath}' moves hardware; set plugins.allow_hardware_motion: "
                 "true in safety_config.yaml to permit hardware-motion plugin hooks. "
+                "That flag is necessary but not sufficient: an opaque motion plugin is "
+                "also refused at startup in guaranteed mode, so the file needs "
+                "property_authorization.mode: degraded_trusted_plugins as well, and "
+                "microclaw must be restarted. `microclaw check-config` reports both. "
                 "microclaw guards the *result* (see check_z) but does not re-drive the "
                 "axis the plugin controls."
             )
