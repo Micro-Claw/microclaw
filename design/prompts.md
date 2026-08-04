@@ -4578,3 +4578,56 @@ one that fails wrongly.
 made `uv` re-download a whole CPython into the evidence bundle, because that is
 where it keeps managed interpreters. Environment redirection in a gate has a
 blast radius worth thinking through, and it needs a `finally`.
+
+## design/36 + design/37 — the focus metric was minimised at focus (merged 2026-08-04, `eab9dd5`)
+
+Not a checklist block. Raised by the operator returning a run history in which
+autofocus refused to converge on a field they had already focused by eye, plus a
+second, unrelated wall in the same session. Four changes landed: the metric fix,
+the plugin-authorization discoverability fix, and three follow-ups (F3/F4/F5)
+implemented by three runners in parallel worktrees.
+
+**A second sighting is not the same as a second opinion, and reasoning is not a
+reproduction.** design/28 F2 examined this exact failure once before, reasoned
+carefully, and ruled it "not a demonstrated metric-sign bug." The reasoning had
+one false clause — that `mean(|I - bg|)²` "does not collapse merely because the
+signal becomes spatially concentrated", which is false because `bg` is the
+per-frame *median*. What overturned it was not a better argument but a runnable
+reproduction that printed the numerator and denominator separately. **When a
+finding is closed on reasoning and then recurs, reproduce it rather than
+re-argue it.**
+
+**A synthetic that omits the detector will exonerate any high-pass metric.**
+design/28's test blurred a noiseless PSF; the real failure needs a noise floor
+that does *not* blur, because the optics blur and the sensor adds noise
+afterwards. Order of operations in a fixture was the whole difference between
+"this metric is fine" and "this metric is upside down." The spike prints both
+orders side by side so the next reader cannot miss it.
+
+**"Fix it in the place the finding names" is only as good as the finding.** F4's
+prompt sent a runner to `start_live_view` on my inferred mechanism. The runner
+disproved it with `javap` on the installed `MMJ_.jar`, reported that honestly,
+and built the thing it was asked for anyway. The evidence that relocated the
+defect — a `live_view` field in the payload, saying `"paused for the snap, then
+restored"` — was in the transcript when the prompt was written. **Read your own
+tools' payloads before theorising about them**, and when a runner's
+investigation contradicts the prompt, the prompt is what should change.
+
+**Mutation-test the test, including your own.** Reviewing F5 I added a
+live-bounce assertion, then broke the source to check it failed — and it did
+not, because `run_autofocus` bounces live a *second* time for the thumbnail
+snap, so an after-the-fact assertion proves only that *some* bounce happened. A
+test written by the person who just diagnosed the bug is not exempt.
+
+**Runbook criteria that cannot fail, again — now roughly the eighth.** G5 asked
+the operator to run in two turns a sequence that only fails when both calls land
+in one assistant batch, and told them the laser state "does not matter much"
+while asking them to see whether a viewer was streaming. It came back clean and
+meant nothing. The recurring shape is a step whose passing condition is
+satisfied by the setup rather than by the system under test.
+
+**Gate evidence can be strong and still not be the evidence you asked for.** G2
+passed beautifully — the metric peaked 2 nm from the operator's manual focus —
+on **beads**, three runs running, when the inversion was observed on a diffuse
+field. Beads are the one field type where even the broken metric's argmax was
+right. A passing gate on the easy sample is worth recording as exactly that.
