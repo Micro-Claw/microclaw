@@ -55,20 +55,40 @@ def test_runs_the_shortcut_subcommand_that_exists(bat):
     assert '%MC_EXE%" install-shortcut' in bat
 
 
-def test_installer_does_not_run_rig_contacting_setup(bat):
-    """An unreachable Micro-Manager must not hang or fail a completed install."""
+def test_installer_checks_bridge_before_running_setup(bat):
+    """Core setup is reachable only after the bounded readiness command succeeds."""
     finish = re.search(r"^:finish$(.*?)(?=^:\w+)", bat, re.M | re.S).group(1)
     assert '%MC_EXE%" init' not in finish
     assert '%MC_EXE%" first-launch-setup' not in finish
+    check = '"%MC_EXE%" check-bridge'
+    setup = '"%MC_EXE%" init --yes'
+    assert bat.count(check) == 1
+    assert bat.count(setup) == 1
+    assert bat.index(check) < bat.index(setup)
+    assert "if not errorlevel 1 goto :bridge_ready" in bat
 
 
-def test_installer_prints_setup_only_after_micro_manager_instruction(bat):
-    """The post-install command is honest about its live ZMQ prerequisite."""
+def test_installer_prints_setup_fallback_after_micro_manager_instruction(bat):
     instruction = 'Run pycro-manager server on port 4827'
     setup_command = 'echo     "%MC_EXE%" init'
     assert instruction in bat
     assert setup_command in bat
     assert bat.index(instruction) < bat.index(setup_command)
+
+
+def test_installer_retries_bridge_three_times_and_keeps_install_successful(bat):
+    assert 'set "MC_BRIDGE_ATTEMPTS=0"' in bat
+    assert "set /a MC_BRIDGE_ATTEMPTS+=1" in bat
+    assert "if %MC_BRIDGE_ATTEMPTS% LSS 3 goto :check_bridge" in bat
+    exhausted = bat.index("three readiness checks")
+    assert "goto :fail" not in bat[exhausted:bat.index(":bridge_ready")]
+    assert "Installation complete" in bat
+
+
+def test_upgrade_preserves_existing_profile_and_skips_first_launch(bat):
+    assert 'if exist "%APPDATA%\\microclaw\\safety_config.yaml" (' in bat
+    assert "Existing safety profile preserved" in bat
+    assert "goto :installed_done" in bat
 
 
 def test_installer_never_asks_for_admin(bat):

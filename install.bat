@@ -7,7 +7,7 @@ rem  nothing outside %LOCALAPPDATA%\microclaw.
 rem
 rem  It installs `uv` (which downloads its own Python), builds an isolated
 rem  environment, installs Microclaw into it, puts a shortcut on the
-rem  desktop, and prints the restricted first-launch safety setup command.
+rem  desktop, verifies the Micro-Manager bridge, and starts restricted setup.
 rem
 rem  Source of the code, in order:
 rem    1. %MICROCLAW_SRC%, if set -- a URL or a pip requirement.
@@ -40,18 +40,56 @@ call :install_pkg    || goto :fail
 call :finish         || goto :fail
 
 echo.
-echo   Done. There is now a Microclaw icon on your desktop.
+echo   Installation complete. There is now a Microclaw icon on your desktop.
 echo.
-echo   Before first launch, open Micro-Manager and enable the ZMQ server under
-echo   Tools ^> Options ^> "Run pycro-manager server on port 4827".
+if exist "%APPDATA%\microclaw\safety_config.yaml" (
+    echo   Existing safety profile preserved. Setup is not repeated during an upgrade.
+    goto :installed_done
+)
+echo   Now open Micro-Manager and tick:
+echo   Tools ^> Options ^> Run pycro-manager server on port 4827
 echo.
-echo   Then open a terminal and run this setup command:
+echo   Leave Micro-Manager open. This installer will verify the bridge and then
+echo   continue into first-launch setup in this same terminal.
+echo.
+set "MC_BRIDGE_ATTEMPTS=0"
+
+:check_bridge
+set /a MC_BRIDGE_ATTEMPTS+=1
+echo   Press any key when Micro-Manager is open and the ZMQ option is ticked.
+pause >nul
+"%MC_EXE%" check-bridge
+if not errorlevel 1 goto :bridge_ready
+echo.
+echo   The readiness check did not find an answering Micro-Manager ZMQ bridge
+echo   on port 4827. Check that Micro-Manager is open and the option is ticked.
+if %MC_BRIDGE_ATTEMPTS% LSS 3 goto :check_bridge
+
+echo.
+echo   Microclaw is installed, but first-launch setup was not started after
+echo   three readiness checks. When Micro-Manager and its ZMQ bridge are ready,
+echo   run:
 echo     "%MC_EXE%" init
+goto :review_steps
+
+:bridge_ready
 echo.
-echo   Setup writes an unreviewed rig-specific profile and disconnects. Review
-echo   every declaration and limit, change `reviewed: false` to `reviewed: true`,
-echo   run check-config, then restart Microclaw from the desktop icon.
+echo   The Micro-Manager bridge answered. Starting first-launch setup...
+"%MC_EXE%" init --yes
+if not errorlevel 1 goto :review_steps
 echo.
+echo   First-launch setup did not finish, but Microclaw is installed. Resolve
+echo   the message above and retry with:
+echo     "%MC_EXE%" init
+
+:review_steps
+echo.
+echo   After setup writes the unreviewed rig-specific profile, review every
+echo   declaration and limit, change `reviewed: false` to `reviewed: true`, run:
+echo     "%MC_EXE%" check-config
+echo   Then restart Microclaw from the desktop icon.
+echo.
+:installed_done
 pause
 exit /b 0
 
@@ -125,8 +163,6 @@ exit /b 0
 
 rem ---------------------------------------------------------------------
 :finish
-rem Installation ends at the shortcut. First-launch setup contacts the live rig,
-rem so it is a deliberate post-install action after Micro-Manager and ZMQ start.
 echo   [5/5] Creating the desktop shortcut...
 "%MC_EXE%" install-shortcut
 if errorlevel 1 exit /b 1

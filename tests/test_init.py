@@ -47,6 +47,20 @@ def test_init_interactive_offer_runs_setup_and_preserves_flags(tmp_path, monkeyp
     assert seen[0].port == 4827
 
 
+def test_init_yes_skips_offer_but_starts_setup(tmp_path, monkeypatch):
+    target = tmp_path / "safety.yaml"
+    seen = []
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: False)
+    monkeypatch.setattr("builtins.input", lambda _: (_ for _ in ()).throw(
+        AssertionError("--yes must skip only the preliminary offer")
+    ))
+    monkeypatch.setattr(cli, "first_launch_setup", lambda args: seen.append(args))
+
+    cli.init(_args(target, yes=True))
+
+    assert len(seen) == 1
+
+
 def test_init_from_example_is_explicit_and_no_edit_still_applies(tmp_path, monkeypatch):
     target = tmp_path / "safety.yaml"
     monkeypatch.setattr(cli, "_open_in_editor", lambda _: (_ for _ in ()).throw(

@@ -116,17 +116,19 @@ def init(args):
         print(f"  {command}")
         print("Setup inspects the rig read-only, writes an unreviewed draft, and disconnects.")
         print("Human-review every declaration and limit, set `reviewed: true`, then restart Microclaw.")
-        if not sys.stdin.isatty():
+        start_without_offer = getattr(args, "yes", False)
+        if not start_without_offer and not sys.stdin.isatty():
             print("Non-interactive input detected; setup was not started and no config was written.")
             return None
-        try:
-            answer = input("Run first-launch setup now? [y/N] ").strip().lower()
-        except EOFError:
-            print("No interactive answer received; setup was not started and no config was written.")
-            return None
-        if answer not in {"y", "yes"}:
-            print("Setup was not started and no config was written.")
-            return None
+        if not start_without_offer:
+            try:
+                answer = input("Run first-launch setup now? [y/N] ").strip().lower()
+            except EOFError:
+                print("No interactive answer received; setup was not started and no config was written.")
+                return None
+            if answer not in {"y", "yes"}:
+                print("Setup was not started and no config was written.")
+                return None
         setup_args = argparse.Namespace(
             out=str(dest), inventory=None, mm_config=None, evidence_out=None,
             force=args.force, port=args.port,
@@ -392,6 +394,16 @@ def check_config(args):
     raise SystemExit(1)
 
 
+def check_bridge(args):
+    """Exit successfully only after a bounded real bridge handshake and Core query."""
+    from microclaw.bridge_check import probe_bridge
+
+    ready, message = probe_bridge(args.port, 5.0)
+    print(message)
+    if not ready:
+        raise SystemExit(1)
+
+
 def first_launch_setup(args):
     """Enumerate through Core only, disconnect, interview, and write a draft."""
     from microclaw.first_launch import (
@@ -433,11 +445,20 @@ def first_launch_setup(args):
                         f"SETUP REFUSAL: Could not read Micro-Manager config "
                         f"{args.mm_config}: {exc}"
                     ) from exc
-            acknowledgement = transcript.ask(
-                "To proceed with hardware-contacting enumeration, type exactly "
-                f"{CONTACT_ACKNOWLEDGEMENT!r}: "
-            ).strip()
-            if acknowledgement != CONTACT_ACKNOWLEDGEMENT:
+            for attempt in range(1, 4):
+                acknowledgement = transcript.ask(
+                    "To proceed with hardware-contacting enumeration, type exactly "
+                    f"{CONTACT_ACKNOWLEDGEMENT!r}: "
+                ).strip()
+                if acknowledgement == CONTACT_ACKNOWLEDGEMENT:
+                    break
+                remaining = 3 - attempt
+                if remaining:
+                    transcript.say(
+                        "Hardware-contact acknowledgement did not match exactly; "
+                        f"{remaining} {'try' if remaining == 1 else 'tries'} remaining."
+                    )
+            else:
                 raise SetupRefusal(
                     "SETUP REFUSAL: Hardware-contact acknowledgement did not match. "
                     "Exited without connecting to Micro-Manager or generating a profile."
@@ -549,6 +570,10 @@ def main():
     it.add_argument("--force", action="store_true", help="Overwrite an existing file.")
     it.add_argument("--no-edit", action="store_true", help="Don't open an editor.")
     it.add_argument(
+        "--yes", action="store_true",
+        help="Start first-launch setup without the preliminary offer (the hardware-contact acknowledgement remains required).",
+    )
+    it.add_argument(
         "--from-example", action="store_true",
         help="Deliberately copy the fictional hand-authoring example instead of setup.",
     )
@@ -602,6 +627,10 @@ def main():
     cc.add_argument(
         "path", nargs="?", default=None,
         help="Config path (default: --safety-config or the per-user file).",
+    )
+    cb = sub.add_parser(
+        "check-bridge",
+        help="Check that the local Micro-Manager ZMQ bridge answers a real request.",
     )
     ir = sub.add_parser(
         "inspect-rig",
@@ -688,6 +717,10 @@ def main():
 
     if args.command == "check-config":
         check_config(args)
+        return
+
+    if args.command == "check-bridge":
+        check_bridge(args)
         return
 
     if args.command == "first-launch-setup":
