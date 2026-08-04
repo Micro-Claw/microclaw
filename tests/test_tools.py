@@ -50,6 +50,7 @@ from microclaw.tools import (
 
 class TestLiveView:
     def test_start_live_view(self, mock_ctrl, unconstrained_guard):
+        mock_ctrl.studio.live().is_live_mode_on.return_value = True
         result = start_live_view(mock_ctrl, unconstrained_guard)
         mock_ctrl.studio.live().set_live_mode_on.assert_called_with(True)
         assert "status" in result
@@ -58,6 +59,87 @@ class TestLiveView:
         result = stop_live_view(mock_ctrl, unconstrained_guard)
         mock_ctrl.studio.live().set_live_mode_on.assert_called_with(False)
         assert "status" in result
+
+
+class TestLiveViewReadiness:
+    class DelayedStartLive:
+        """Model a start whose state is stale until later bridge reads."""
+
+        def __init__(self, stale_reads=2):
+            self.stale_reads = stale_reads
+            self.pending_start = False
+            self.started_once = False
+            self.is_on = False
+
+        def set_live_mode_on(self, on):
+            if on and not self.started_once:
+                self.pending_start = True
+            else:
+                self.pending_start = False
+                self.is_on = on
+
+        def is_live_mode_on(self):
+            if self.pending_start:
+                if self.stale_reads:
+                    self.stale_reads -= 1
+                    return False
+                self.pending_start = False
+                self.started_once = True
+                self.is_on = True
+            return self.is_on
+
+        def snap(self):
+            # A camera snap cancels a start that has been requested but has not
+            # taken effect, matching the M5 failure sequence.
+            if self.pending_start:
+                self.pending_start = False
+                self.is_on = False
+
+    @staticmethod
+    def _ctrl_with_live(live):
+        ctrl = MagicMock()
+        ctrl.studio.live.return_value = live
+        return ctrl
+
+    @staticmethod
+    def _snap(ctrl):
+        with tools._pause_live(ctrl):
+            ctrl.studio.live().snap()
+
+    def test_wait_prevents_following_snap_from_losing_delayed_start(
+        self, unconstrained_guard, monkeypatch
+    ):
+        monkeypatch.setattr(tools.time, "sleep", lambda _seconds: None)
+
+        # Counterfactual: the old implementation returned immediately. Its
+        # following snap saw stale false, declined to restore live, and left it off.
+        old_live = self.DelayedStartLive()
+        old_ctrl = self._ctrl_with_live(old_live)
+        old_live.set_live_mode_on(True)
+        self._snap(old_ctrl)
+        assert old_live.is_live_mode_on() is False
+
+        live = self.DelayedStartLive()
+        ctrl = self._ctrl_with_live(live)
+        result = start_live_view(ctrl, unconstrained_guard)
+        self._snap(ctrl)
+
+        assert result == {"status": "Live view started."}
+        assert live.is_live_mode_on() is True
+
+    def test_timeout_does_not_claim_stream_is_running(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        live = mock_ctrl.studio.live()
+        live.is_live_mode_on.return_value = False
+        clock = iter((10.0, 12.0))
+        monkeypatch.setattr(tools.time, "monotonic", lambda: next(clock))
+
+        result = start_live_view(mock_ctrl, unconstrained_guard)
+
+        assert "error" in result
+        assert "not running" in result["error"]
+        assert "started" not in result.get("status", "").lower()
 
 
 class TestGetPixelSize:
