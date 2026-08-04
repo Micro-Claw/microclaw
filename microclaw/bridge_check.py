@@ -14,11 +14,19 @@ def probe_bridge(port: int, timeout: float) -> tuple[bool, str]:
             command, capture_output=True, text=True, timeout=timeout, check=False,
         )
     except subprocess.TimeoutExpired:
-        return False, f"no Micro-Manager ZMQ bridge answered on port {port} within {timeout:g} seconds"
+        return False, (
+            f"No working Micro-Manager ZMQ bridge answered on port {port} "
+            f"within {timeout:g} seconds."
+        )
     if result.returncode == 0:
         return True, result.stdout.strip()
-    detail = result.stderr.strip() or result.stdout.strip() or "the bridge did not answer"
-    return False, f"no working Micro-Manager ZMQ bridge was found on port {port}: {detail}"
+    # pyjavaz can print an unhandled socket-thread traceback to stderr while also
+    # returning its ordinary "bridge unavailable" failure. That implementation
+    # detail is diagnostic noise, not appropriate guided-install output.
+    return False, (
+        f"No working Micro-Manager ZMQ bridge answered on port {port} "
+        f"within {timeout:g} seconds."
+    )
 
 
 def _worker(port: int) -> int:

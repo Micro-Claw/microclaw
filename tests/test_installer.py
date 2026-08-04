@@ -87,7 +87,9 @@ def test_installer_retries_bridge_three_times_and_keeps_install_successful(bat):
 
 def test_upgrade_preserves_existing_profile_and_skips_first_launch(bat):
     assert 'if exist "%APPDATA%\\microclaw\\safety_config.yaml" (' in bat
-    assert "Existing safety profile preserved" in bat
+    assert '"%MC_EXE%" check-config >nul 2>&1' in bat
+    assert "Existing safety profile preserved, but it is not ready for launch" in bat
+    assert "Existing reviewed safety profile preserved" in bat
     assert "goto :installed_done" in bat
 
 

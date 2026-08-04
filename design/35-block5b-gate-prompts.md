@@ -50,9 +50,9 @@ Copy-Item "design\35-block5b-gate-prompts.md" "$Evidence\runbook.md"
 
 It worked when every `*-exit.txt` is `0`, `status.txt` is empty, and pytest has
 no failures. Judge the suite by failures and collected total, not passed count.
-Block 5b adds eight tests, so **1484 tests are collected**. The coordinator's macOS
-expectation is 1385 passed / 99 skipped; Windows should shift the same sixteen
-platform-conditional tests to approximately 1369 passed / 115 skipped. The three
+Block 5b adds sixteen tests, so **1492 tests are collected**. The coordinator's macOS
+expectation is 1393 passed / 99 skipped; Windows should shift the same sixteen
+platform-conditional tests to approximately 1377 passed / 115 skipped. The three
 known warnings remain one `StarletteDeprecationWarning` and two empty-image
 `phase_cross_correlation` warnings.
 
@@ -71,6 +71,21 @@ $Success = @(Select-String -Path "install.bat" -Pattern 'Installation complete',
 $Success > "$Evidence\installer-success-lines.txt"
 $Success.Count > "$Evidence\installer-success-count.txt"
 ```
+
+Capture the standalone readiness failure exactly as the installer will show it:
+
+```powershell
+mc check-bridge > "$Evidence\check-bridge-not-ready.txt" 2>&1
+echo $LASTEXITCODE > "$Evidence\check-bridge-not-ready-exit.txt"
+$FriendlyFailure = @(Select-String -Path "$Evidence\check-bridge-not-ready.txt" -SimpleMatch "No working Micro-Manager ZMQ bridge answered on port 4827 within 5 seconds.")
+$FriendlyFailure.Count > "$Evidence\check-bridge-friendly-count.txt"
+$Traceback = @(Select-String -Path "$Evidence\check-bridge-not-ready.txt" -Pattern "Traceback","Exception in thread")
+$Traceback.Count > "$Evidence\check-bridge-traceback-count.txt"
+```
+
+It worked when the native exit is nonzero, the friendly count is `1`, the
+traceback count is `0`, and the captured output contains only the short statement
+of the port and bounded check that did not answer.
 
 Give this fresh-install gate an isolated empty roaming-data directory so an
 existing demo safety profile cannot turn it into the upgrade path. This does not

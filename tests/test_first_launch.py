@@ -1583,7 +1583,76 @@ def test_live_enumeration_timeout_refuses_without_profile(monkeypatch, tmp_path)
     monkeypatch.setattr("builtins.input", lambda prompt: CONTACT_ACKNOWLEDGEMENT)
     monkeypatch.setattr("pycromanager.Core", lambda **kwargs: blocker.wait() or None)
 
-    with pytest.raises(SystemExit, match="did not finish.*within 0.01 seconds"):
+    with pytest.raises(SystemExit, match="did not finish.*within 0.01 seconds.*restart Micro-Manager"):
+        cli.first_launch_setup(_args(tmp_path))
+
+    assert not (tmp_path / "profile.yaml").exists()
+
+
+def test_disconnect_failure_is_not_mislabeled_as_evidence_write(monkeypatch, tmp_path):
+    monkeypatch.setattr("builtins.input", lambda prompt: CONTACT_ACKNOWLEDGEMENT)
+    monkeypatch.setattr(
+        "pycromanager.Core",
+        lambda **kwargs: SimpleNamespace(get_version_info=lambda: "MMCore"),
+    )
+    monkeypatch.setattr("microclaw.rig_inventory.enumerate_rig", lambda core, mm_config: _inventory())
+
+    def write_outputs(inv, out):
+        out = Path(out)
+        out.mkdir(parents=True, exist_ok=True)
+        inventory_path = out / "inventory.json"
+        inventory_path.write_text(json.dumps(inv), encoding="utf-8")
+        return inventory_path, out / "review.md"
+
+    monkeypatch.setattr("microclaw.rig_inventory.write_inventory_outputs", write_outputs)
+    monkeypatch.setattr(
+        "microclaw.first_launch.disconnect_core",
+        lambda core, port: (_ for _ in ()).throw(OSError("close failed")),
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        cli.first_launch_setup(_args(tmp_path))
+
+    assert "did not disconnect cleanly: close failed" in str(exc.value)
+    assert "Could not write inventory evidence" not in str(exc.value)
+
+
+def test_worker_base_exception_becomes_clean_refusal(monkeypatch, tmp_path):
+    monkeypatch.setattr("builtins.input", lambda prompt: CONTACT_ACKNOWLEDGEMENT)
+    monkeypatch.setattr(
+        "pycromanager.Core",
+        lambda **kwargs: (_ for _ in ()).throw(SystemExit("worker stopped")),
+    )
+
+    with pytest.raises(SystemExit, match="worker stopped unexpectedly: worker stopped"):
+        cli.first_launch_setup(_args(tmp_path))
+
+    assert not (tmp_path / "profile.yaml").exists()
+
+
+def test_empty_worker_outcome_becomes_clean_refusal(monkeypatch, tmp_path):
+    import queue
+
+    class EmptyOutcome:
+        def put(self, result):
+            pass
+
+        def get_nowait(self):
+            raise queue.Empty
+
+    monkeypatch.setattr(queue, "Queue", lambda **kwargs: EmptyOutcome())
+    monkeypatch.setattr("builtins.input", lambda prompt: CONTACT_ACKNOWLEDGEMENT)
+    monkeypatch.setattr(
+        "pycromanager.Core",
+        lambda **kwargs: SimpleNamespace(get_version_info=lambda: "MMCore", _close=lambda: None),
+    )
+    monkeypatch.setattr("microclaw.rig_inventory.enumerate_rig", lambda core, mm_config: _inventory())
+    monkeypatch.setattr(
+        "microclaw.rig_inventory.write_inventory_outputs",
+        lambda inv, out: (Path(out) / "inventory.json", Path(out) / "review.md"),
+    )
+
+    with pytest.raises(SystemExit, match="worker ended without a result"):
         cli.first_launch_setup(_args(tmp_path))
 
     assert not (tmp_path / "profile.yaml").exists()

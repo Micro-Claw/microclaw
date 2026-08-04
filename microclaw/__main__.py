@@ -6,6 +6,7 @@ import cProfile
 import os
 import pstats
 import io
+import math
 import subprocess
 import tempfile
 import webbrowser
@@ -132,6 +133,9 @@ def init(args):
         setup_args = argparse.Namespace(
             out=str(dest), inventory=None, mm_config=None, evidence_out=None,
             force=args.force, port=args.port,
+            enumeration_timeout=getattr(
+                args, "enumeration_timeout", LIVE_ENUMERATION_TIMEOUT_S,
+            ),
         )
         result = first_launch_setup(setup_args)
         if dest.exists() and not args.no_edit:
@@ -398,13 +402,25 @@ def check_bridge(args):
     """Exit successfully only after a bounded real bridge handshake and Core query."""
     from microclaw.bridge_check import probe_bridge
 
-    ready, message = probe_bridge(args.port, 5.0)
+    ready, message = probe_bridge(args.port, args.bridge_timeout)
     print(message)
     if not ready:
         raise SystemExit(1)
 
 
+# Captured M5 runs took 11, 14, and 13 seconds from transcript creation through
+# inventory write, including acknowledgement typing outside this timed window.
+# Its 30 devices / 395 properties therefore take roughly 3–9 seconds here; the
+# 30-second default is measured 3–10x margin and remains CLI-adjustable for rigs
+# with slower devices (for example serial-over-USB property queries).
 LIVE_ENUMERATION_TIMEOUT_S = 30.0
+
+
+def _positive_seconds(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed) or parsed <= 0:
+        raise argparse.ArgumentTypeError("timeout must be a finite number greater than zero")
+    return parsed
 
 
 def first_launch_setup(args):
@@ -490,24 +506,47 @@ def first_launch_setup(args):
                     result = ("ok", inventory, inventory_path, review_path)
                 except Exception as exc:
                     result = (stage, exc)
+                except BaseException as exc:
+                    result = ("worker", exc)
                 finally:
                     if core is not None:
+                        disconnect_stage = stage
+                        stage = "disconnect"
                         try:
                             disconnect_core(core, args.port)
                         except Exception as exc:
                             result = (stage, exc)
-                outcome.put(result)
+                        else:
+                            stage = disconnect_stage
+                try:
+                    outcome.put(result)
+                except BaseException:
+                    # The parent also handles an empty outcome, but never let an
+                    # exotic queue failure turn into an unhandled thread traceback.
+                    return
 
             live_thread = threading.Thread(target=enumerate_and_disconnect, daemon=True)
             live_thread.start()
-            live_thread.join(LIVE_ENUMERATION_TIMEOUT_S)
+            enumeration_timeout = getattr(
+                args, "enumeration_timeout", LIVE_ENUMERATION_TIMEOUT_S,
+            )
+            live_thread.join(enumeration_timeout)
             if live_thread.is_alive():
                 raise SetupRefusal(
                     "SETUP REFUSAL: Micro-Manager did not finish the read-only connection, "
                     f"enumeration, evidence write, and disconnect within "
-                    f"{LIVE_ENUMERATION_TIMEOUT_S:g} seconds. Exited without generating a profile."
+                    f"{enumeration_timeout:g} seconds. Exited without generating a profile. "
+                    "The abandoned connection may leave a stale bridge session; restart "
+                    "Micro-Manager before retrying."
                 )
-            result = outcome.get_nowait()
+            try:
+                result = outcome.get_nowait()
+            except queue.Empty:
+                raise SetupRefusal(
+                    "SETUP REFUSAL: The bounded Micro-Manager worker ended without a "
+                    "result. Exited without generating a profile; restart Micro-Manager "
+                    "before retrying."
+                ) from None
             if result[0] == "connection":
                 raise SetupRefusal(
                     "SETUP REFUSAL: Could not connect to the already-running "
@@ -522,6 +561,18 @@ def first_launch_setup(args):
                 raise SetupRefusal(
                     f"SETUP REFUSAL: Could not write inventory evidence to "
                     f"{evidence_dir}: {result[1]}"
+                ) from result[1]
+            if result[0] == "disconnect":
+                raise SetupRefusal(
+                    "SETUP REFUSAL: Read-only enumeration evidence was written, but "
+                    f"Micro-Manager did not disconnect cleanly: {result[1]}. Restart "
+                    "Micro-Manager before retrying."
+                ) from result[1]
+            if result[0] == "worker":
+                raise SetupRefusal(
+                    "SETUP REFUSAL: The bounded Micro-Manager worker stopped "
+                    f"unexpectedly: {result[1]}. Exited without generating a profile; "
+                    "restart Micro-Manager before retrying."
                 ) from result[1]
             _, inventory, inventory_path, review_path = result
             transcript.say("Disconnected from Micro-Manager before the interview.")
@@ -602,6 +653,11 @@ def main():
         help="Start first-launch setup without the preliminary offer (the hardware-contact acknowledgement remains required).",
     )
     it.add_argument(
+        "--enumeration-timeout", type=_positive_seconds, default=LIVE_ENUMERATION_TIMEOUT_S,
+        metavar="SECONDS",
+        help="Maximum live connect/enumerate/write/disconnect time (default: 30 seconds).",
+    )
+    it.add_argument(
         "--from-example", action="store_true",
         help="Deliberately copy the fictional hand-authoring example instead of setup.",
     )
@@ -660,6 +716,10 @@ def main():
         "check-bridge",
         help="Check that the local Micro-Manager ZMQ bridge answers a real request.",
     )
+    cb.add_argument(
+        "--bridge-timeout", type=_positive_seconds, default=5.0, metavar="SECONDS",
+        help="Maximum bridge handshake time (default: 5 seconds).",
+    )
     ir = sub.add_parser(
         "inspect-rig",
         help="Enumerate a rig read-only and write inventory evidence.",
@@ -685,6 +745,11 @@ def main():
     fl.add_argument("--mm-config", default=None, help="Already-loaded MM .cfg path (record/hash only; never applied).")
     fl.add_argument("--evidence-out", default=None, help="Inventory evidence directory (default: <out>.inventory).")
     fl.add_argument("--force", action="store_true", help="Overwrite an existing output profile deliberately.")
+    fl.add_argument(
+        "--enumeration-timeout", type=_positive_seconds, default=LIVE_ENUMERATION_TIMEOUT_S,
+        metavar="SECONDS",
+        help="Maximum live connect/enumerate/write/disconnect time (default: 30 seconds).",
+    )
     sv.add_argument(
         "--allow-remote",
         action="store_true",

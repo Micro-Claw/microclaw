@@ -43,7 +43,12 @@ echo.
 echo   Installation complete. There is now a Microclaw icon on your desktop.
 echo.
 if exist "%APPDATA%\microclaw\safety_config.yaml" (
-    echo   Existing safety profile preserved. Setup is not repeated during an upgrade.
+    "%MC_EXE%" check-config >nul 2>&1
+    if errorlevel 1 (
+        echo   Existing safety profile preserved, but it is not ready for launch.
+        goto :review_steps
+    )
+    echo   Existing reviewed safety profile preserved. Setup is not repeated during an upgrade.
     goto :installed_done
 )
 echo   Now open Micro-Manager and tick:
