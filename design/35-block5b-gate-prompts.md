@@ -1,7 +1,8 @@
 # design/35 Block 5b — guided install and acknowledgement retries
 
-This runbook verifies branch `design17/guided-install`. The implementation is
-pinned at `c2ee97c`; later runbook or correction commits are valid descendants.
+This runbook verifies branch `design17/guided-install`. The main implementation
+is pinned at `c2ee97c` and its bounded live-enumeration correction at `11000bd`;
+later runbook or correction commits are valid descendants.
 Run G0, G1, and G3 on the demo machine. Run G2 on M5 only after the demo gates
 pass. Preserve and return each complete evidence directory.
 
@@ -40,6 +41,8 @@ git status --short > "$Evidence\status.txt" 2>&1
 git rev-parse HEAD > "$Evidence\head.txt" 2>&1
 git merge-base --is-ancestor c2ee97c HEAD > "$Evidence\implementation-ancestor.txt" 2>&1
 echo $LASTEXITCODE > "$Evidence\implementation-ancestor-exit.txt"
+git merge-base --is-ancestor 11000bd HEAD > "$Evidence\bounded-live-ancestor.txt" 2>&1
+echo $LASTEXITCODE > "$Evidence\bounded-live-ancestor-exit.txt"
 py -m pytest -q > "$Evidence\pytest.txt" 2>&1
 echo $LASTEXITCODE > "$Evidence\pytest-exit.txt"
 Copy-Item "design\35-block5b-gate-prompts.md" "$Evidence\runbook.md"
@@ -47,9 +50,9 @@ Copy-Item "design\35-block5b-gate-prompts.md" "$Evidence\runbook.md"
 
 It worked when every `*-exit.txt` is `0`, `status.txt` is empty, and pytest has
 no failures. Judge the suite by failures and collected total, not passed count.
-Block 5b adds seven tests, so **1483 tests are collected**. The coordinator's macOS
-expectation is 1384 passed / 99 skipped; Windows should shift the same sixteen
-platform-conditional tests to approximately 1368 passed / 115 skipped. The three
+Block 5b adds eight tests, so **1484 tests are collected**. The coordinator's macOS
+expectation is 1385 passed / 99 skipped; Windows should shift the same sixteen
+platform-conditional tests to approximately 1369 passed / 115 skipped. The three
 known warnings remain one `StarletteDeprecationWarning` and two empty-image
 `phase_cross_correlation` warnings.
 
