@@ -188,7 +188,12 @@ Record the transcript's discriminating evidence without relying on a stale exit:
 ```powershell
 $AckTranscript = Get-ChildItem $AckEvidence -Filter "first-launch-transcript-*.txt" | Select-Object -First 1
 Copy-Item $AckTranscript.FullName "$Evidence\corrected-second-attempt-transcript.txt"
-$NearMiss = @(Select-String -Path $AckTranscript.FullName -SimpleMatch "I ACKNOWLEDGE HARDWARE CONTAC")
+# Anchored at end of line on purpose. The prompt echoes the required string, so
+# a substring match for the near miss also matches the prompt and the correct
+# answer -- it can never be zero, and so proves nothing. The typo line ends in
+# CONTAC; the correct line ends in CONTACT. Measured on the 2026-08-04 M5 run: a
+# substring match scored 2 with only one typo actually typed.
+$NearMiss = @(Select-String -Path $AckTranscript.FullName -Pattern "CONTAC$")
 $NearMiss.Count > "$Evidence\corrected-near-miss-count.txt"
 $Retry = @(Select-String -Path $AckTranscript.FullName -SimpleMatch "2 tries remaining")
 $Retry.Count > "$Evidence\corrected-retry-message-count.txt"
