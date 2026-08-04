@@ -586,6 +586,8 @@ TOOLS: list[dict[str, Any]] = [
             "applies to bright-on-dark puncta as well as dark-on-bright "
             "structure. It is not illumination-normalised, so do not change "
             "laser power, exposure or ROI part-way through a sweep. "
+            "The sweep is headless: live view is paused for its duration and "
+            "restored afterwards, and the viewer does not show the sweep as it happens. "
             "Default parameters for a 20× objective: z_range_um=20, z_step_um=0.5. "
             "Widen z_range_um if the result says the peak was at the boundary. "
             "If the focus is not converging, check if there are any sharp boundaries in the image. If so, alert the user."

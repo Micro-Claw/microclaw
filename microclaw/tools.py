@@ -1770,6 +1770,9 @@ def run_autofocus(
     inverted or separately selected metric. It replaced a normalized Laplacian
     variance that was MINIMISED at focus on real fields, which is what made two
     live sessions chase the sweep boundary away from the operator's own focus.
+
+    The sweep is headless: live view is paused for its duration and restored
+    afterwards, and the viewer does not show the sweep as it happens.
     """
     entry_z = ctrl.core.get_position()
     guard.check_z(entry_z - z_range_um / 2)
