@@ -858,6 +858,59 @@ class TestRunAutofocus:
         assert result["coarse"]["metric_curve"] == [0.1, 0.9, 0.1]
         assert result["fine"]["peak_interior"] is True
 
+    def test_live_paused_and_restored_across_the_sweep(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        # design/37 F5 asserted in behaviour, not only in the description. The
+        # schema now promises the operator that live view is paused for the
+        # sweep and restored afterwards; a promise in prose that no test pins to
+        # the code is how F5 happened in the first place.
+        # Observed from INSIDE the sweep. Asserting on the call list afterwards
+        # looks equivalent and is not: run_autofocus bounces live a second time
+        # for the thumbnail snap, so an after-the-fact assertion passes even
+        # with the sweep's _pause_live deleted. Verified by mutation.
+        live = mock_ctrl.studio.live()
+        live.is_live_mode_on.return_value = True
+        live.set_live_mode_on.reset_mock()
+        during: list[list] = []
+
+        def _sweep(*args, **kwargs):
+            during.append(list(live.set_live_mode_on.call_args_list))
+            return _FAKE_AF_RESULT
+
+        monkeypatch.setattr("microclaw.tools.coarse_then_fine_autofocus", _sweep)
+        monkeypatch.setattr(
+            "microclaw.tools.snap_to_numpy",
+            lambda ctrl: np.zeros((64, 64), dtype=np.uint16),
+        )
+        monkeypatch.setattr("microclaw.tools.make_thumbnail", lambda img: "")
+
+        run_autofocus(mock_ctrl, unconstrained_guard, z_range_um=10.0, z_step_um=1.0)
+
+        assert during, "the sweep never ran"
+        assert during[0] and during[0][-1] == call(False), \
+            "live must already be stopped when the sweep runs"
+        assert live.set_live_mode_on.call_args_list[-1] == call(True), \
+            "live must be restored after the sweep"
+
+    def test_the_sweep_never_touches_the_viewer(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        # The other half of the same promise: "the viewer does not show the
+        # sweep as it happens". snap_to_numpy_displayed is the only path that
+        # would paint it, so switching to it must fail here rather than turn the
+        # schema description into a lie the model keeps repeating.
+        _patch_autofocus(monkeypatch)
+
+        def _forbidden(ctrl):
+            raise AssertionError(
+                "run_autofocus used the DISPLAYED snap path; the schema tells "
+                "the operator the sweep is headless"
+            )
+
+        monkeypatch.setattr("microclaw.tools.snap_to_numpy_displayed", _forbidden)
+        run_autofocus(mock_ctrl, unconstrained_guard, z_range_um=10.0, z_step_um=1.0)
+
     def test_nonconverged_payload_says_stage_not_moved(self, mock_ctrl, unconstrained_guard, monkeypatch):
         flat = AutofocusResult(
             coarse=SweepResult([45.0, 50.0, 55.0], [1.0, 1.1, 1.05], 55.0, False),
