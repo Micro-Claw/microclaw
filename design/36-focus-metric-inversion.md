@@ -175,18 +175,30 @@ score nothing. Saved hooks may import them, and the two live sweep curves are
 only readable against the function that produced them. Their docstrings carry
 the warning.
 
+## Rig result (2026-08-04, follow-up session)
+
+**The fix converges on M5.** Two sweeps on beads, both converged with an
+interior peak and monotone falloff (coarse contrast 14.6, fine 560), and the
+second — re-run from the Z the first one chose — returned the same Z and did not
+move. An inverted metric cannot be idempotent. Details and the curves are in
+[design/37](37-m5-autofocus-session-findings.md#f1-is-fixed-on-the-rig).
+
+What that run does not cover: it imaged **beads**, the field type where even the
+old metric was closest to correct, not the diffuse field the failure was
+observed on. G2 below still stands for that field.
+
 ## What is still owed
 
-**This fix has not been validated on a rig.** Everything above is offline: a
-reproduction of the failure from first principles, agreement with the shape of
-two live curves, and a replacement that is right-signed across four synthetic
-field types. That is enough to justify the change and not enough to close it.
+**The reasoning behind the fix is still offline**: a reproduction of the failure
+from first principles, agreement with the shape of two live curves, and a
+replacement that is right-signed across four synthetic field types. The rig
+result above confirms it converges on beads. Neither of those is the same as
+watching it agree with a human on the field where it failed.
 
-The rig gate is `design/36-gate-prompts.md`, on this branch. It is a single
-sweep on the M5 field that failed, against the operator's own manual focus — the
-one comparison neither previous session was able to make against a working
-metric. Until it comes back, this document describes a defect that is understood
-and a fix that is untested where it matters.
+The rig gate is `design/36-gate-prompts.md`, on this branch. G2 is one sweep on
+the M5 field that failed, against the operator's own manual focus — the
+comparison neither failing session could make against a working metric, and the
+one the beads run did not substitute for.
 
 **Still not obtained: raw Z-stack frames.** design/28 F2 asked for a diagnostic
 acquisition that retains every frame of a sweep so the curve can be re-derived

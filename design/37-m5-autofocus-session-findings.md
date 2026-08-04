@@ -202,6 +202,123 @@ Raised here so it is not lost.
   `focus_metric_valid: true` was the right answer; the number it was validating
   was the problem, not the gate.
 
+---
+
+# Follow-up session, same day, 14:38
+
+Source: `20260804_143856_110549_microclaw_history.jsonl` and its
+`_confirmations.jsonl`, in the rig evidence folder
+`m5-autofocus-fail-follow-up`. Run on M5 with the design/36 build installed
+(`focus_metric_kind: tenengrad_gated` in every payload), on **beads**, 640 nm in
+camera-trigger Follow mode.
+
+## F1 is fixed on the rig
+
+Two autofocus runs, both converged, both moved or declined to move correctly:
+
+| run | entry Z | final Z | coarse peak | fine contrast | verdict |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 47.332 | **45.832** | interior, 44.832, contrast 14.6 | 560 | converged, moved 1.5 µm |
+| 2 | 45.834 | **45.834** | interior, contrast 2868 | 649 | converged, no move needed |
+
+The coarse curve is the shape the old metric could never produce —
+`[10770, 13000, 18530, 242200, 87570, 18090, 15800, 13440, 11710]`, a single
+interior maximum with monotone falloff on both sides, against the failing
+session's `[6.93, 4.75, 2.09, 4.23, 1.94, 3.04, 7.77, 11.94, 18.8]`, which was
+lowest in the middle. The fine pass peaks at 4.47×10⁷ against 1.9×10⁴ at the
+window edge: a 2365× peak.
+
+**Run 2 is the strongest single piece of evidence.** Re-running the sweep from
+the Z that run 1 chose returns the same Z and does not move. An inverted metric
+cannot be idempotent — it runs away from wherever you put it, which is exactly
+what widening the range did in the failing session.
+
+### What this does and does not establish
+
+It establishes that the metric peaks at a real focal plane on this rig, that
+the peak is sharp, and that convergence is stable. The operator watched it and
+confirmed it worked.
+
+It does **not** yet cover the field that originally failed. This session imaged
+**beads** — bright, sparse, point-like, the easiest possible case, and per
+design/36's table the one field type where even the old metric's argmax was
+right. The 2026-08-04 13:xx failure was on a diffuse field (mean 236 against a
+background of 182, i.e. broad structure everywhere, not points on black), which
+is where the old metric inverted hardest. Re-running a sweep on that region,
+with the new build, is cheap and is the remaining piece. G2 in
+`36-gate-prompts.md` stands.
+
+## F4 — `start_live_view` returns before live mode is running, and the next camera op kills the stream
+
+**Severity: medium (visible, confusing, and it made the operator debug our tool for us). OPEN.**
+
+Twice, the agent issued `start_live_view` and `snap_and_analyze` in one batch.
+Both times the operator was told the stream was up and it was not. The operator
+diagnosed it: *"Live view isn't running. The snap and analyze call after live
+view killed it."*
+
+The mechanism is in our code, and the transcript pins it down. Tool calls in a
+batch run **sequentially, in order** (`agent.py:395`), so `start_live_view` did
+complete before the snap. Every snap path runs inside `_pause_live`
+(`tools.py:181`), which reads `is_live_mode_on()`, stops live only if it was on,
+and **restores only if it was on**. Live ended up off — so `is_live_mode_on()`
+must have returned **false**, one call after `set_live_mode_on(True)`.
+
+That is the design/18 race again in a different costume: `set_live_mode_on` is
+posted to MM's Swing thread and `start_live_view` returns without waiting for
+it, so the state a following call reads is stale. `_pause_live` then concludes
+there was nothing to restore, and the snap's exclusive grab of the camera
+finishes off the half-started sequence.
+
+Suggested fix, matching what design/18 already did for the Preview window: make
+`start_live_view` wait (bounded poll) until `is_live_mode_on()` reads true
+before returning, so every subsequent call sees the true state. `_pause_live`
+needs no change if the state it reads is honest. Wants rig confirmation of the
+poll timing before it is called done — this analysis is derived from the
+transcript and the code, not measured on the rig.
+
+## F5 — `run_autofocus` is headless, and the agent told the operator otherwise
+
+**Severity: low (a false promise, no hardware consequence). OPEN.**
+
+Asked to show the sweep happening in live view, the agent said the routine
+"drives the display with its own Z-stepped snaps" and that watching it "*is* the
+sweep happening on screen." That is false. `run_autofocus` wraps both passes in
+`_pause_live` (`tools.py:1792`), and the sweep snaps through `snap_to_numpy`,
+whose docstring says plainly that it "does NOT touch the viewer" — repainting
+the viewer twenty times is churn. The viewer freezes for the duration and
+resumes afterwards, which is precisely what the operator reported: *"I couldn't
+see the live view until after autofocus finished."*
+
+Nothing in the tool description or the system prompt says the sweep is headless,
+so the agent invented a plausible and wrong account of our own tool. The cheap
+fix is one clause in `run_autofocus`'s schema description. Whether a sweep
+*should* be able to display is a separate question worth asking — an operator
+watching beads go through focus is genuinely useful — and is not free: it is one
+viewer repaint per Z step.
+
+## F3 corroborated — the same behaviour, a second time
+
+Live view was started unasked. The operator: *"Why did live view turn on in the
+first place?"* The agent: *"I turned it on... That's a habit I follow by
+default."* That is the second unrequested state change in two sessions, after
+the laser in F3, and the second time the operator has had to ask why their rig
+changed. It is the same gap — no model of state being the operator's — and it
+raises F3's recommended prompt change from a nicety to something worth doing.
+
+## Two things worth keeping
+
+- **The illumination gate is behaving exactly as designed.** All three laser
+  *enables* raised a confirmation and were approved by a human
+  (`_confirmations.jsonl`); the three *disables* passed ungated. That asymmetry
+  is F3's mechanism and it is also, for dose, correct.
+- **The authorization map produced forensic value.** The operator suspected
+  microclaw had written `Laser 1: 4. Use TTL`. It had not, and could not have:
+  the write was refused as excluded, on the record, and a later read-back
+  confirmed the property survived a laser disable untouched. An excluded
+  property is not just prevented, it is *provably* not ours. The cause of the
+  operator's earlier observation remains unexplained and is not microclaw's.
+
 ## Cross-references
 
 - [design/36](36-focus-metric-inversion.md) — F1's mechanism, fix, and rig gate.
