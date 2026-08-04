@@ -1,13 +1,18 @@
 # design/36 — rig gate: does the focus metric peak at focus?
 
-This runbook verifies branch `fix/focus-metric-inversion`. The implementation is
-pinned at `408c447`; later runbook or correction commits on this branch are
-valid descendants.
+This runbook verifies branch `fix/focus-metric-inversion`. The metric
+implementation is pinned at `408c447`, and the three design/37 fixes it now
+carries (F3 operator-established state, F4 `start_live_view` readiness, F5
+headless-sweep disclosure) at `c452328`. Both are ancestor checks: later
+runbook or correction commits on this branch are valid descendants.
 
 Run G0–G3 on **M5**, on the same field type that failed on 2026-08-04 (640 nm,
 camera-triggered, the sample that produced `m5-autofocus-fail`). G4 is the
-plugin-authorization gate and needs no sample. Preserve and return the complete
-evidence directory.
+plugin-authorization gate and needs no sample. G5 is a live-view probe that
+decides which fix to write for design/37 F4 — it has no pass/fail, and it is
+here so that one trip to the rig settles both questions.
+
+Preserve and return the complete evidence directory.
 
 **What is being tested is a claim about your microscope, not about the code.**
 Everything in design/36 so far is offline: the failure is reproduced from first
@@ -45,6 +50,8 @@ git status --short > "$Evidence\status.txt" 2>&1
 git rev-parse HEAD > "$Evidence\head.txt" 2>&1
 git merge-base --is-ancestor 408c447 HEAD > "$Evidence\implementation-ancestor.txt" 2>&1
 echo $LASTEXITCODE > "$Evidence\implementation-ancestor-exit.txt"
+git merge-base --is-ancestor c452328 HEAD > "$Evidence\design37-fixes-ancestor.txt" 2>&1
+echo $LASTEXITCODE > "$Evidence\design37-fixes-ancestor-exit.txt"
 ```
 
 Reinstall before anything else — a stale editable install has produced errors
@@ -56,7 +63,7 @@ py -m pytest tests -q > "$Evidence\pytest.txt" 2>&1
 echo $LASTEXITCODE > "$Evidence\pytest-exit.txt"
 ```
 
-**PASS:** ancestor exit 0, pytest exit 0.
+**PASS:** both ancestor exits 0, pytest exit 0.
 
 ## G1 — the offline reproduction, on this machine
 
@@ -183,6 +190,65 @@ was set, and startup refused with a rule and no remedy.
    guaranteed mode. Record which you chose in `$Evidence\g4-final-mode.txt`.
 
 ---
+
+## G5 — which way does the live-view restore fail? (design/37 F4)
+
+**This is a probe, not a pass/fail gate.** It does not test a fix; it decides
+which fix to write. Both outcomes below are useful, and neither is a failure.
+
+Twice in the 14:38 session you were told live view was running when it was not,
+and you diagnosed it yourself: *"the snap and analyze call after live view
+killed it."* We now know the start was fine — `snap_and_analyze` reported
+`"paused for the snap, then restored"`, which only happens when microclaw saw
+live **on** — so it is `_pause_live`'s restore that failed silently. MM's
+bytecode gives two ways that can happen, they need different fixes, and one of
+them cannot be detected from software at all. Hence asking you to look at a
+screen.
+
+Beads or any field with signal; the laser state does not matter much, but you
+want to be able to *see* whether the viewer is streaming.
+
+1. Start live view on its own and confirm on screen that it is streaming:
+
+   > Start live view. Do not snap or do anything else afterwards.
+
+   This branch now makes `start_live_view` wait and check, so if it comes back
+   with an **error** instead of "Live view started", stop and record that — it
+   means MM failed the start outright and reverted its own flag, which is one of
+   the two mechanisms below, caught one step earlier than expected. Save it to
+   `$Evidence\g5-start-error.txt` and carry on to step 2 anyway.
+
+2. Now take one snap under it, which is the sequence that failed:
+
+   > Snap and analyze the current field.
+
+3. **Look at the MM viewer**, then ask microclaw what it thinks:
+
+   > Is live view running right now? Read it, do not infer it.
+
+Record three things in `$Evidence\g5-live-restore.txt`:
+
+- **What the viewer is doing** — streaming, or frozen on a still image.
+- **What microclaw reported** for live mode (true/false).
+- **Whether Micro-Manager showed an error dialog** at any point, and its text.
+  This is the corroborating tell and it is easy to miss or dismiss.
+
+How to read it:
+
+| viewer | microclaw says | means | fix |
+| --- | --- | --- | --- |
+| frozen | **false** | the sequence-start threw; MM reverted the flag and told nobody | verify the restore and report it honestly |
+| frozen | **true** | MM skipped the start and left the flag set — *the flag is lying* | verifying the flag would not have caught it; needs a real liveness check |
+| streaming | true | it restored correctly this time — say so, and note what was different | not reproducible from software; needs more runs |
+
+The middle row is the one to watch for. If the flag reads true over a frozen
+viewer, then "poll until `is_live_mode_on()`" — the obvious fix, and the one
+already shipped for `start_live_view` — would report success and still leave you
+looking at a dead window. That is the design/18 lesson repeating: a window
+existing is not pixels painting.
+
+If you can spare it, run steps 1–3 twice. A restore that works once and fails
+once is itself the answer to the third row.
 
 ## Returning evidence
 
