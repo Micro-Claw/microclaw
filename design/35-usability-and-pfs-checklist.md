@@ -197,7 +197,7 @@ assistant's narration when judging whether a guard fired.
 | 4c | Usability | 4h merged | `design33/setup-named-stages` (deleted) | `3b99397` | `7f68f33` + `e537207` + `c34ee1e` + `d934dbf` (round 1 returned) | demo G1+G1b, M5 G2, demo re-gate all **PASS** 2026-08-03 | `8ce3401` | **done** — design/33 §"Block 4c landed" |
 | 4g | Platform | none — may run concurrently | `design32/hook-hash-newline` (deleted) | `95ae192` | `50e5f66` + `d0bb602` + `971cdb6` + `f768cc3` | round 3 **PASS** 2026-08-03 (rounds 1–2 failed test-side) | `936230f` | **done** — design/32 §4 |
 | 4d | Usability | 4c merged | `design33/property-authorization-rename` (deleted) | `052179d` | `fd4c5b6` + `c063f16` + `029b5f4` | demo G0/G1/G2 + M5 G4 **PASS** 2026-08-03; G3 closed by offline replay | `5f56679` | **done** — design/33 §"Block 4d landed" |
-| 5 | Usability | 4b, 4e, 4f, 4h, 4c, 4d | `design33/deployed-config-hygiene` | `a27997f` | `6262acb` + `577acc4` + `c0344f2` + `8028145` + `c48edc1` (round 1 returned) | demo G0–G3 **PASS** 2026-08-04; M5 G4 pending | | |
+| 5 | Usability | 4b, 4e, 4f, 4h, 4c, 4d | `design33/deployed-config-hygiene` | `a27997f` | `6262acb` + `577acc4` + `c0344f2` + `8028145` + `c48edc1` (round 1 returned) | demo G0–G3 + M5 G0/G4 all **PASS** 2026-08-04 | `d14c147` | **done** — design/33 §"Block 5 landed", design/17 §"Block 5: the first-run path moved" |
 | 6 | Nikon | probe S = pre-fix baseline; post-fix run owed | `design34/measured-position-readback` | | | required | | |
 | 7a | Nikon | scope: none; rig gate: probe 0 | `design34/continuous-focus-capability` | | | **required** | | |
 | 7b | Nikon | 7a | `design34/continuous-focus-policy` | | | **required** | | |
@@ -585,11 +585,12 @@ text as work performed.
       the next action, not as a parse failure.
 - [x] Phase 5 (block 4) must reuse this validator to check what it wrote. Design
       the interface for that caller now; do not build a second parser.
-- [-] Optional and clearly marked as defence-in-depth, not a Phase 5 obligation:
+- [x] Optional and clearly marked as defence-in-depth, not a Phase 5 obligation:
       detect limits still equal to `safety_config.example.yaml`'s fictional
       values and say so. This targets the `microclaw init` copy-the-example path,
       which block 5 also touches. **Skipped in Block 3** as the optional item it
-      is marked; carried to block 5, which owns that path.
+      is marked; carried to block 5, which owns that path. **Landed in Block 5**
+      as `check-config`'s non-blocking `example_limits` diagnostic.
 
 Post-merge design gate:
 
@@ -3253,7 +3254,7 @@ dual-key bridge exists to protect.
    outage. The runbook is honest about this — G3 asserts the warning only on
    `check-config` — so the gate would have passed with the gap standing.
 
-## 5. [-] Deployed-config hygiene and the `init` path — rig config review
+## 5. [x] Deployed-config hygiene and the `init` path — rig config review — **MERGED 2026-08-04**
 
 Branch: `design33/deployed-config-hygiene`
 
@@ -3330,12 +3331,14 @@ first.
       operator notes say `init`. The decision is settled — do not re-litigate it
       in the implementation or a later block. What remains for the implementer is
       the wording, the flag name, and making the non-interactive path behave.
-- [ ] Update README and any first-run documentation to describe the real path:
+- [x] Update README and any first-run documentation to describe the real path:
       install → `inspect-rig` / setup → review → restart. Include the offline
-      validator from block 3.
-- [ ] Re-check `safety_config.example.yaml`'s framing under the new flow. It
+      validator from block 3. Also `install.bat`, which is where the path
+      actually starts.
+- [x] Re-check `safety_config.example.yaml`'s framing under the new flow. It
       stays fictional by design; the question is whether it is still the first
-      thing a new operator meets.
+      thing a new operator meets. It is not: the header now names it a
+      hand-authoring reference and points at setup.
 
 ### Rig gate — demo machine, 2026-08-04: **G0–G3 PASS**
 
@@ -3386,22 +3389,58 @@ Two process notes worth carrying, because three of the four are the same shape �
   count: demo measured 1361 passed / 115 skipped against the coordinator's
   1377 / 99, and both collect 1476.
 
-Outstanding on demo: `init-interactive-copy-paste.txt` was not produced, so the
-interactive prompt itself is confirmed only by the operator having answered it.
-`init-interactive-wrote.txt` = `False` alone does not prove the prompt appeared,
-since a run that never prompted would also write nothing. Collect it with M5.
+The one gap — `init-interactive-copy-paste.txt` was not produced, so the prompt
+was confirmed only by the operator having answered it, and `wrote = False` alone
+does not prove a prompt appeared since a run that never prompted writes nothing
+either — was **closed by the coordinator on 2026-08-04** with a local pty run:
+the string `Run first-launch setup now? [y/N]` is emitted, `N` declines, and no
+file is written. Platform-independent Python, corroborated by the rig's own
+`wrote = False`, so it did not cost another operator trip.
+
+### Rig gate — M5, 2026-08-04: **G0 + G4 PASS**
+
+Evidence: `block5-m5-20260804-092508`, at runbook `c48edc1`. Suite 1361 passed /
+115 skipped / 3 warnings, no failures; clean tree; both ancestry pins `0`.
+
+M5's deployed config **already carries Block 4d's four key renames** — outstanding
+operator action 1 from the session-boundary note is therefore done for M5, and the
+file validates at `check-config` exit `0`.
+
+`check-config` reported exactly two example matches,
+`acquisition.confirm_above_illuminated_ms` and `stage.z_min` — **the same two the
+coordinator predicted by offline replay before the rig ran.** Replaying a captured
+artifact predicted a live result for the third block running.
+
+**The finding this gate exists to produce.** G4 recorded the deployed budgets, and
+they moved again between 2026-08-03 and 2026-08-04:
+
+| key | example | M5 08-03 | M5 08-04 |
+|---|---|---|---|
+| `max_frames` | 10000 | 100000 | 100000000 |
+| `max_duration_s` | 3600 | 1e21 | 1e13 |
+| `max_illuminated_ms` | 600000 | 1000001720 | 1000001720000 |
+| `max_bytes` | 5e10 | 1.0616832e12 | 1.0616832e15 |
+| `camera.max_exposure_ms` | 5000 | 10000.0172 | 10000.0172 |
+
+Three hard caps rose a further 1000× in a day. As deployed, `max_duration_s` is
+~317,000 years, `max_illuminated_ms` ~31.7 years of illumination, `max_bytes`
+~1.06 PB. **What still binds is the `confirm_above_*` tier**, which is unchanged
+and sane (1000 frames / 3600 s / 60000 ms) and forces a human confirmation; the
+automatic ceiling does not bind at all. Guaranteed mode requires the nine to be
+finite and positive, which they are, so nothing refuses. This is the block's first
+item and it remains **open and operator-owned**.
 
 Post-merge design gate:
 
-- [ ] Record the final first-run path in design/33 and design/17 (install and
+- [x] Record the final first-run path in design/33 and design/17 (install and
       desktop shortcut), which currently describes the `init`-centred flow.
       **`install.bat` no longer runs `init` at all** — design/17 v2's premise
       that installation puts a safety config in place is now false, and
       `:16`–`:20`, `:181`, `:228`–`:250`, `:281`–`:285`, `:502`–`:506` and `:640`
       each need reconciling. Implementer-reported, coordinator-owned.
-- [ ] Correct design/33 `:790`: M5's budgets are no longer example copies. See
+- [x] Correct design/33 `:790`: M5's budgets are no longer example copies. See
       the measured table in this block's first item.
-- [ ] design/33 `:347`–`:363` (esp. `:350`, "init still copies the example by
+- [x] design/33 `:347`–`:363` (esp. `:350`, "init still copies the example by
       default") and `:1201`–`:1205` ("not done here" for the example-limit
       detector, now implemented); impact summary `:110`, `:157`–`:160`.
 
@@ -3806,6 +3845,27 @@ This is an inventory, not permission to close with unresolved blank work. Block
   suite is supposed to mean something. Either give the poll a load-independent
   synchronisation point or mark it appropriately — do not simply raise the
   timeout again.
+  **RESOLVED in Block 5 (`d14c147`, 2026-08-04)**, by the first option and not
+  the second. `_open_when_ready` takes an injectable clock and sleep; the test
+  supplies a clock advanced *only* by the polling worker's own sleeps, so
+  scheduler starvation cannot consume the deadline. No timeout was widened,
+  production keeps the real 15 s budget, and the neighbouring give-up test still
+  exercises it. Passed G0 on demo and M5 on 2026-08-04.
+
+- **A config can pass `check-config` cleanly and still have budgets that do not
+  bind.** New in Block 5, and demonstrated by its own M5 gate. The
+  `example_limits` diagnostic answers "are these still the example's values?"; it
+  cannot answer "are these values sane." M5 passes at exit `0` while carrying an
+  acquisition duration cap of ~317,000 years and a ~31.7-year illumination cap,
+  because guaranteed mode requires only that the nine acquisition fields be
+  finite and positive. Deliberately **not** folded into Block 5, whose scope was
+  the example-copy path: an implausible-magnitude or non-binding-cap diagnostic
+  needs its own thinking about what "implausible" means per rig, and a
+  fail-closed refusal here would stop rigs that run today. Note the mitigation
+  that already exists — the `confirm_above_*` tier is a separate, sane, and
+  human-gating layer, so "the ceiling does not bind" is not the same as "nothing
+  stops a runaway." Block 12 must give this a disposition rather than closing it
+  by listing it.
 - **`microclaw serve` produces no output at all when piped or redirected, until
   it dies.** Found while gating Block 4d, 2026-08-03; **not fixed there, because
   4d is a schema rename and the defect is unrelated to it.** The startup banner
@@ -3821,6 +3881,8 @@ This is an inventory, not permission to close with unresolved blank work. Block
   depending on captured stdout and takes the session history JSONL as evidence
   instead, so this stays an unfixed product defect and not a gate problem.
   **Route to block 5**, which owns the first-run and documentation path.
+  **RESOLVED in Block 5 (`d14c147`, 2026-08-04):** both banner branches and the
+  shutdown line now flush; the demo gate captured 260 bytes containing the URL.
 - **Block 9b cross-rig inventory gate, four limbs.** Live M5 owes real
   enumeration failures, credential redaction, live config groups and state labels
   beyond `.cfg` contents, and bridge-typed returns. **Explicitly does not block

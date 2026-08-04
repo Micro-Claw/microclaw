@@ -18,6 +18,14 @@ Four increments, shippable in order, each useful alone:
    start until a human has edited it. This is what makes a zero-argument launch
    possible without weakening the design/14 §6 rule that nobody drives hardware
    under the example's fictional limits.
+
+   > **Superseded by Block 5, 2026-08-04 — read "Block 5: the first-run path
+   > moved" at the end of this document before relying on anything below about
+   > `init`.** Installation no longer produces a safety config at all: `init` is
+   > no longer run by `install.bat`, and by default it redirects to
+   > `first-launch-setup` rather than copying the example. The v2 premise — that
+   > installing puts a config in place — is now false. The design/14 §6 rule it
+   > protects is unchanged and is still enforced.
 3. **v3 — `microclaw install-shortcut`.** A subcommand that writes a Windows
    `.lnk` on the desktop, pointing at the installed `microclaw serve`, with the
    icon. No new dependencies.
@@ -226,6 +234,8 @@ def default_safety_config() -> Path:
 ```
 
 `microclaw init` copies the example there and opens it in the platform editor:
+**(Historical: this is the v2 implementation. Block 5 moved the default path to
+`first-launch-setup`; the copy below now runs only under `--from-example`.)**
 
 ```python
 def init(args):
@@ -505,6 +515,14 @@ elevation, everything confined to `%LOCALAPPDATA%`).
 `install-shortcut` runs *before* `init`, so the editor that `init` opens is the
 last thing on screen and the final instruction is the one the user acts on.
 
+> **Both sentences are false as of Block 5, 2026-08-04.** `install.bat` no longer
+> runs `init` at all, so there is no ordering between them and no editor opens
+> during installation; `init` no longer opens an editor on its default path
+> either. `tests/test_installer.py` now pins the opposite property — that
+> `:finish` invokes *neither* `init` nor `first-launch-setup` — because either
+> would contact the rig at a point where the installer has not yet told the user
+> to enable Micro-Manager's ZMQ server. See "Block 5: the first-run path moved".
+
 One wrinkle to check on a fresh machine: a `.bat` downloaded from a browser
 carries a Mark-of-the-Web alternate data stream, and Windows may show a SmartScreen
 "protected your PC" prompt on double-click. The README should say to expect it and
@@ -637,7 +655,7 @@ In code:
 |---|---|---|
 | v0 | `17-install-spike.py` — **done**, see Spike results | — |
 | v1 | icon in package, browser tab, README header, `derive_icons.py` — **done** | — |
-| v2 | `paths.py`, `microclaw init`, `reviewed:` gate, example in package — **done** | — |
+| v2 | `paths.py`, `microclaw init`, `reviewed:` gate, example in package — **done**; **default path superseded by Block 5 (2026-08-04): `init` redirects to `first-launch-setup`, the example copy is `--from-example`, and `install.bat` no longer runs it** | — |
 | v3 | `microclaw install-shortcut` (Windows only) — **done**, verified on the rig | v1, **v2**, v0 |
 | v4 | `install.bat`, uv dev install, README rewrite — **done**, unverified on hardware | v1–v3 |
 | v5 | flip `MICROCLAW_SRC` to the archive URL when the repo goes public | v4 |
@@ -645,3 +663,45 @@ In code:
 v1 and v2 are independent and can land in either order. v3 without v2 ships a
 one-click hardware launcher with no reviewed-limits gate, which is the one
 sequencing mistake available here.
+
+## Block 5: the first-run path moved (2026-08-04)
+
+Checklist v2 Block 5, merged `d14c147`. This section is authoritative wherever it
+contradicts the v2 material above, which is left in place as the record of how
+`init` was originally built.
+
+**What installation now does.** `install.bat` installs uv, builds the isolated
+environment, installs Microclaw, writes the desktop shortcut, and stops. It no
+longer runs `microclaw init`. It prints, in this order, the Micro-Manager ZMQ
+prerequisite and then the exact setup command to run afterwards.
+
+**Why the ordering had to change, since v2's ordering was deliberate.** Once
+`init` could open a live ZMQ connection, running it as the installer's last step
+became a defect rather than a convenience: the installer tells the user to enable
+the ZMQ server *after* it finishes, so at the moment of the offer the server is
+by construction not running. Measured during review — answering the offer with no
+Micro-Manager listening did not return within three minutes, because
+`Core(port=...)` blocks before the `SetupRefusal` handler around it can convert
+the failure into a message. `install.bat` also had `if errorlevel 1 exit /b 1`
+after `init`, so a merely unreachable rig would have reported a failed
+installation. v2's "shortcut first, `init` last, so the editor is the last thing
+on screen" reasoning was sound for a command that only copied a file; it does not
+survive that command acquiring a network dependency.
+
+**What `init` now does.** Prints the real path — `first-launch-setup` → human
+review → restart — and offers to run setup. `--from-example` copies the fictional
+example for deliberate hand-authoring. Non-interactive invocations print the path,
+write nothing, and exit `0`. `init` was kept rather than deleted because this
+document's installer sequence and operator habit both name it.
+
+**Unchanged.** The `reviewed:` gate, the design/14 §6 rule, the per-user config
+location, and the shortcut's `serve`-and-nothing-else behaviour. A double-clicked
+icon with no config still refuses and says so — but note that after a fresh
+install there is now *no* config until the user runs setup, where v2 guaranteed
+one existed. That refusal is the intended fail-closed state, not a regression.
+
+**Also landed here.** `serve`'s startup banner now flushes. It was a bare
+`print()` into a block-buffered stdout followed by a server loop that never
+returns, so an operator redirecting the console to a log got an empty file and
+could not tell whether the session had started. This document's own launch
+instructions produce such logs.

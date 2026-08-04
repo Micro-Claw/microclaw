@@ -4463,3 +4463,54 @@ all, its only edit to that test file is a key rename in a different test, and th
 same commit passed on demo minutes earlier. The operator then re-ran it three
 times in isolation — three passes at ~2.3 s — confirming load-induced flake.
 Confirm before fixing, and confirm before dismissing.
+
+## Block 5 — deployed-config hygiene and the `init` path (merged 2026-08-04, `d14c147`)
+
+Two implementation rounds and three coordinator runbook fixes. The code was
+strong; **every defect the rig gate found was in the runbook.** That is the thing
+to carry.
+
+**The review that mattered was of a file the runner changed but never ran.**
+Round 1 was green — suite +5, detector measured against captured configs with no
+false positives, flaky-test fix correctly diagnosed. The defect was that `init`,
+newly able to open a live ZMQ connection, was still invoked as `install.bat`'s
+last step — while the installer tells the user to enable ZMQ only *after* it
+finishes. Measured under a pty with no Micro-Manager: no return within three
+minutes, because `Core()` blocks before the `SetupRefusal` handler can run. The
+renamed installer test (`..._before_init_offers_first_launch_setup`) asserted the
+ordering was *correct*, so the suite blessed the defect. **A behaviour change can
+turn a neighbouring file's long-standing correct assumption into a defect; grep
+for callers of anything whose cost model changes.**
+
+**Four runbook defects, three of one shape.** Two of them — judging
+`Select-String` by `$LASTEXITCODE`, which PowerShell sets only from *native*
+executables, and using `Start-Transcript` to capture a child process's console
+writes — share the property that **they would have reported success no matter
+what the code did.** Both negative controls were affected. A gate judged by the
+wrong mechanism cannot fail, and that is worse than a gate that fails wrongly.
+The `Start-Transcript` one is the sharpest lesson available: it is *the identical
+finding* to Block 4 round 1, recorded in the checklist being coordinated, and the
+coordinator reintroduced it anyway. **Review the runbook like code; it is a
+deliverable, and a wrong instruction costs a rig trip.**
+
+The other two were substitution defects the operator caught: `uv run microclaw`
+hand-substituted into fifteen commands became `uv runmicroclaw` in one, and the
+fix that followed wrapped only `microclaw`, leaving `python -m pytest` bare and
+hardcoding `uv run` into the one `cmd /c` step. **Bind the invocation once, and
+remember the interpreter is an invocation too.**
+
+**Offline replay predicted a live rig result for the third block running.**
+Running Block 4d's captured `m5-deployed-before.yaml` through the new detector
+predicted exactly two example matches; M5 reproduced exactly those two. The same
+replay also falsified the block's own premise: design/33 `:790` says M5's budgets
+were copied from the fictional example, and they no longer are — they have been
+edited to values that do not bind, and three of them rose a further 1000× between
+the two gate days. **Check a block's premise against captured evidence before
+assigning it, not after.**
+
+**The feature shipped with a limit worth stating.** `check-config` now detects
+values still equal to the packaged example. It cannot detect values that are
+merely absurd — M5 passes cleanly at a ~317,000-year duration cap. Recording that
+in the design gate and the no-block register was more valuable than widening the
+block to chase it, because "what does implausible mean on an unfamiliar rig" is
+its own question and a fail-closed answer would stop rigs that run today.
