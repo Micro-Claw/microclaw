@@ -10,7 +10,7 @@ import anthropic
 import httpx
 import pytest
 from unittest.mock import MagicMock, patch
-from microclaw.agent import run_agent, run_agent_iter
+from microclaw.agent import SYSTEM_PROMPT, run_agent, run_agent_iter
 from microclaw.safety import SafetyConstraints, SafetyGuard
 
 
@@ -93,6 +93,19 @@ class TestSnapAndShowPrompt:
         with patch("microclaw.agent._get_client", return_value=make_mock_client(scripted)):
             reply, _ = run_agent("Take a picture", mock_ctrl, guard)
         assert "snap" in reply.lower() or "image" in reply.lower()
+
+
+class TestOperatorEstablishedStatePrompt:
+    def test_operator_state_requires_request_for_safe_and_ui_changes(self):
+        assert "Hardware and UI state the operator established or told you about is theirs" in SYSTEM_PROMPT
+        assert "do not change, restore, tidy, or \"make safe\" that state unasked" in SYSTEM_PROMPT
+        assert "even in a direction the safety guard permits; ask and wait first" in SYSTEM_PROMPT
+        assert "disabling their illumination and starting live view" in SYSTEM_PROMPT
+
+    def test_restart_does_not_trigger_physical_interaction_shuttering(self):
+        assert "Shutter the excitation before actual manual or physical interaction with the rig" in SYSTEM_PROMPT
+        assert "A microclaw restart is software-only and by itself meets neither condition" in SYSTEM_PROMPT
+        assert "offer to restore it afterward" in SYSTEM_PROMPT
 
 
 class TestZStackThenExportPrompt:
