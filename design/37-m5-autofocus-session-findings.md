@@ -248,7 +248,7 @@ is where the old metric inverted hardest. Re-running a sweep on that region,
 with the new build, is cheap and is the remaining piece. G2 in
 `36-gate-prompts.md` stands.
 
-## F4 — `start_live_view` returns before live mode is running, and the next camera op kills the stream
+## F4 — `_pause_live` claims it restored live view without checking, and it did not
 
 **Severity: medium (visible, confusing, and it made the operator debug our tool for us). OPEN.**
 
@@ -257,25 +257,67 @@ Both times the operator was told the stream was up and it was not. The operator
 diagnosed it: *"Live view isn't running. The snap and analyze call after live
 view killed it."*
 
-The mechanism is in our code, and the transcript pins it down. Tool calls in a
-batch run **sequentially, in order** (`agent.py:395`), so `start_live_view` did
-complete before the snap. Every snap path runs inside `_pause_live`
-(`tools.py:181`), which reads `is_live_mode_on()`, stops live only if it was on,
-and **restores only if it was on**. Live ended up off — so `is_live_mode_on()`
-must have returned **false**, one call after `set_live_mode_on(True)`.
+> **This section originally blamed `start_live_view` for returning before MM's
+> live mode had started — "the design/18 race in a different costume."** That was
+> wrong, and both halves of the evidence that overturns it were available when it
+> was written. It is corrected below rather than deleted, because the wrong
+> version was specific enough to send an implementer to the wrong file, and did.
 
-That is the design/18 race again in a different costume: `set_live_mode_on` is
-posted to MM's Swing thread and `start_live_view` returns without waiting for
-it, so the state a following call reads is stale. `_pause_live` then concludes
-there was nothing to restore, and the snap's exclusive grab of the camera
-finishes off the half-started sequence.
+### What the evidence actually says
 
-Suggested fix, matching what design/18 already did for the Preview window: make
-`start_live_view` wait (bounded poll) until `is_live_mode_on()` reads true
-before returning, so every subsequent call sees the true state. `_pause_live`
-needs no change if the state it reads is honest. Wants rig confirmation of the
-poll timing before it is called done — this analysis is derived from the
-transcript and the code, not measured on the rig.
+**The start succeeded.** `snap_and_analyze` reports a `live_view` field built
+from what `_pause_live` observed. In both incidents it reads
+`"paused for the snap, then restored"` — the branch that only runs when
+`_pause_live` saw live **on**. So the flag was true when the snap began, and any
+theory in which `start_live_view` returned too early is dead on arrival.
+
+**MM does not post the start to the Swing thread.** `javap` on the installed
+`MMJ_.jar` (2.0.3): `SnapLiveManager.setLiveModeOn` takes `liveModeLock_`, sets
+`isLiveOn_` with a `putfield`, and calls `startLiveMode()` — all synchronously,
+on the calling thread. `isLiveModeOn()` is a bare field read. There is no
+window in which the flag lags the call.
+
+So the fault is not in the start. It is in the **restore**: `_pause_live`
+(`tools.py:181`) ends with a fire-and-forget `set_live_mode_on(True)`, never
+looks at what happened, and the payload asserts `"then restored"` regardless.
+The operator was told twice, in the tool's own output, that something had been
+restored that had not been.
+
+### Which restore-failure, though
+
+The same bytecode gives two candidates, and the transcript cannot separate them:
+
+1. **`startContinuousSequenceAcquisition` throws** — the camera is still busy
+   from the snap. `startLiveMode` catches it, calls `ReportingUtils.showError`
+   (a dialog on the rig machine), and calls `setLiveModeOn(false)`. The flag
+   reverts to false and live is genuinely off.
+2. **The `amStartingSequenceAcquisition_` guard trips** — `startLiveMode` logs
+   *"Skipping startLiveMode as startContinuousSequenceAcquisition is in
+   process"* and **returns without starting**, leaving `isLiveOn_` **true**.
+
+These need different fixes, and the difference matters more than it looks:
+**under (2) the flag reads true while nothing streams**, so verifying the restore
+by polling `is_live_mode_on()` would report success and still show the operator a
+frozen viewer. That is design/18's lesson exactly — `getDisplay()` proves a
+window exists, not that pixels painted — and it is why "poll the flag" is not
+automatically the fix here.
+
+Distinguishing them is one rig probe, not an experiment: start live, snap under
+it, then read `is_live_mode_on()` and look at the screen. True-but-frozen is (2);
+false is (1). Whether an error dialog appeared is the corroborating tell.
+
+### What is being done about it
+
+`fix/start-live-view-readiness` makes `start_live_view` poll until the flag reads
+true and return an explicit error rather than an optimistic success on timeout.
+That change is **independently correct** — a start that silently fails via path
+(1) is real, and the tool should never claim a stream it has not observed — and
+it is kept. It is not, however, a fix for what happened on M5, which was the
+restore.
+
+The restore fix is not yet written. It touches what `_pause_live` promises to
+around eight call sites, and the honest version of that promise depends on which
+of (1) and (2) is occurring, so it waits on the probe.
 
 ## F5 — `run_autofocus` is headless, and the agent told the operator otherwise
 
