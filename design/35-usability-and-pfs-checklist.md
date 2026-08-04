@@ -198,7 +198,7 @@ assistant's narration when judging whether a guard fired.
 | 4g | Platform | none — may run concurrently | `design32/hook-hash-newline` (deleted) | `95ae192` | `50e5f66` + `d0bb602` + `971cdb6` + `f768cc3` | round 3 **PASS** 2026-08-03 (rounds 1–2 failed test-side) | `936230f` | **done** — design/32 §4 |
 | 4d | Usability | 4c merged | `design33/property-authorization-rename` (deleted) | `052179d` | `fd4c5b6` + `c063f16` + `029b5f4` | demo G0/G1/G2 + M5 G4 **PASS** 2026-08-03; G3 closed by offline replay | `5f56679` | **done** — design/33 §"Block 4d landed" |
 | 5 | Usability | 4b, 4e, 4f, 4h, 4c, 4d | `design33/deployed-config-hygiene` | `a27997f` | `6262acb` + `577acc4` + `c0344f2` + `8028145` + `c48edc1` (round 1 returned) | demo G0–G3 + M5 G0/G4 all **PASS** 2026-08-04 | `d14c147` | **done** — design/33 §"Block 5 landed", design/17 §"Block 5: the first-run path moved" |
-| 5b | Usability | 5 merged | `design17/guided-install` | `3d63a6c` | | required | | |
+| 5b | Usability | 5 merged | `design17/guided-install` (deleted) | `3d63a6c` | `c2ee97c` + `11000bd` + `eb94b2e` + runbook `644e592`/`c1cdc62`/`d585549` (round 1 returned) | demo G0/G1/G3 + M5 G0/G2 **PASS** 2026-08-04; operator confirmed full `install.bat` on M5 | `ab5e97c` | **done** — design/17 §"Block 5b: the installer guides the whole first run" |
 | 6 | Nikon | probe S = pre-fix baseline; post-fix run owed | `design34/measured-position-readback` | | | required | | |
 | 7a | Nikon | scope: none; rig gate: probe 0 | `design34/continuous-focus-capability` | | | **required** | | |
 | 7b | Nikon | 7a | `design34/continuous-focus-policy` | | | **required** | | |
@@ -3431,7 +3431,7 @@ automatic ceiling does not bind at all. Guaranteed mode requires the nine to be
 finite and positive, which they are, so nothing refuses. This is the block's first
 item and it remains **open and operator-owned**.
 
-## 5b. [-] Guided install and acknowledgement retries — operator usability
+## 5b. [x] Guided install and acknowledgement retries — **MERGED 2026-08-04**
 
 Branch: `design17/guided-install`
 
@@ -3439,11 +3439,11 @@ Raised by the operator on 2026-08-04 after testing Block 5's install path
 end-to-end on M5. Both items are usability, and the first deliberately re-enters
 territory Block 5 removed.
 
-- [ ] **`install.bat` drives the whole first run in one terminal.** After the
+- [x] **`install.bat` drives the whole first run in one terminal.** After the
       shortcut, it tells the user to start Micro-Manager and enable the ZMQ
       server, waits for confirmation, then **verifies** the bridge is actually
       up. Three attempts, then stop asking.
-- [ ] **The typed hardware-contact acknowledgement gets three tries.**
+- [x] **The typed hardware-contact acknowledgement gets three tries.**
       `I ACKNOWLEDGE HARDWARE CONTACT` (`__main__.py:436`–`:444`) is easy to
       mistype, and one typo currently discards the whole run.
 
@@ -3460,13 +3460,60 @@ non-negotiable:
 2. **A completed installation must never be reported as failed** because the
    microscope was not ready. Everything up to the shortcut succeeded.
 
+### Rig gate — 2026-08-04: **PASS**
+
+Demo `block5b-demo-20260804-124610`, M5 `block5b-m5-20260804-123946`, both at
+runbook `644e592`. Suite 1377 passed / 115 skipped on Windows against 1393 / 99
+on macOS — 1492 collected either way, zero failures.
+
+- **F1 has not returned.** `installer-no-mm-exit` = `0`: three failed readiness
+  checks with Micro-Manager deliberately closed, and the installer still reports
+  a complete installation.
+- **The operator-facing failure is one clean line.** Friendly-message count `1`,
+  traceback count `0`, where round 1 emitted eleven traceback markers.
+- **The real handshake works on a live rig.** M5's `check-bridge` returned
+  `MMCore version 12.5.0` at exit `0` — a bare TCP listener cannot produce a
+  version string, which closes the question the block was set.
+- **The acknowledgement retry works on M5.** Transcript L34 near miss, L35
+  `2 tries remaining`, L36 correct, setup exit `0`, draft written with
+  `reviewed: false`. The draft round-trips: `check-config` exit `1` unreviewed,
+  exit `0` reviewed.
+- **G3**: three bad attempts, correct countdown, `SETUP REFUSAL` without
+  connecting, no draft written.
+- **The 30 s enumeration cap is validated by a passing M5 run**, not only by
+  inference from timings.
+- **`install.bat` end-to-end on M5 was run by the operator and confirmed
+  working.** No evidence bundle was captured for that run; it is recorded here as
+  operator confirmation, which is what it is.
+
+**Every defect this gate found was in the runbook, again — three of them, all
+coordinator-authored, and all of the same shape as Block 5's: a criterion that
+could not fail.**
+
+1. G3 asserted `"Connecting to the already-running"` appears zero times when no
+   connection was made. That phrase is also in setup's INTRO
+   (`first_launch.py:42`), so it always scores at least `1` — measured `1` on the
+   real transcript. **G3 would have failed a passing run.** Now matches
+   `"Micro-Manager Core for read-only"`, unique to the real connect message.
+2. The near-miss check matched a substring of the prompt, which echoes the
+   required string, so it could never be `0` and proved nothing about whether a
+   typo occurred. Measured `2` with one typo typed. Now anchored on `CONTAC$`.
+3. G1's `$env:APPDATA` redirect had no `finally`, so an interrupted installer
+   would have silently redirected every later command in that window. Also, `uv`
+   keeps managed interpreters under `%APPDATA%\uv`, so the redirect made it
+   re-download a full CPython into the evidence bundle.
+
+Carry the lesson from Block 5 forward with an addition: **read every match
+pattern against a real transcript before shipping it.** Two of these three were
+only visible by running the pattern over captured output.
+
 Post-merge design gate:
 
-- [ ] Update design/17 §"Block 5: the first-run path moved" — its "installation
+- [x] Update design/17 §"Block 5: the first-run path moved" — its "installation
       ends at the shortcut" statement becomes conditional, and the reasoning for
       *why* the ordering changed must survive the rewrite rather than being
       deleted as obsolete.
-- [ ] Update README §"Install (Windows)" steps 4–5, which currently describe the
+- [x] Update README §"Install (Windows)" steps 4–5, which currently describe the
       manual path the operator validated on 2026-08-04.
 
 ---

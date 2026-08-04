@@ -4514,3 +4514,57 @@ merely absurd — M5 passes cleanly at a ~317,000-year duration cap. Recording t
 in the design gate and the no-block register was more valuable than widening the
 block to chase it, because "what does implausible mean on an unfamiliar rig" is
 its own question and a fail-closed answer would stop rigs that run today.
+
+## Block 5b — guided install and acknowledgement retries (merged 2026-08-04, `ab5e97c`)
+
+Raised by the operator after installing Block 5's shipped path end-to-end on M5.
+Two usability asks; one of them put back something Block 5 had deliberately
+removed.
+
+**"Undo the fix" was the right call, and recognising that mattered.** Block 5's F1
+removed `init` from `install.bat` because `Core()` blocked for over three minutes
+when the ZMQ server was, by construction, not yet running. The operator asked for
+the installer to run setup anyway — with a readiness check first. That removes the
+*cause* rather than the step, so it is not a revert, and the block was scoped
+around two invariants stated up front: no unbounded blocking call on any path with
+`Core()` unreachable until the check passes, and a completed installation never
+reported as failed. **When a request appears to undo an earlier fix, find the
+invariant the fix was protecting and carry that forward instead of arguing for the
+mechanism.**
+
+**Set the load-bearing question explicitly, and require evidence rather than an
+answer.** The prompt asked: is a successful TCP connect sufficient to guarantee
+`Core()` will not hang, or is a real handshake needed? The whole design depends on
+it. The implementer investigated pycromanager/mmpycorex/pyjavaz, concluded a
+listening socket is *not* sufficient, and wrote a test that stands up a mute
+listener and proves the probe rejects it while staying bounded. That is a better
+outcome than any answer the coordinator could have asserted.
+
+**Review the file the runner changed but never ran.** Both rounds' findings
+clustered in exactly one place. Round 1 was green and the implementation was
+sound, but `check-bridge` spliced the worker's stderr into its message, so the
+most-read line in a guided install — the first readiness failure, which is the
+*expected* state — was fifteen lines of pyjavaz traceback. Only visible by running
+the command.
+
+**Unrequested scope needs measuring, not deleting.** The implementer added a 30 s
+cap on live enumeration that nobody asked for. It closes a real race, so the right
+response was neither to accept the round number nor to strip it: replay captured
+M5 evidence (11/14/13 s including acknowledgement typing, which sits outside the
+window, for 30 devices / 395 properties), keep it, require a CLI escape hatch, and
+put the measurement in a comment beside the constant.
+
+**Three more runbook defects, all coordinator-authored, all "a criterion that
+cannot fail."** That is now six across Blocks 5 and 5b. The two new patterns were
+invisible by reading and obvious by measuring: `"Connecting to the
+already-running"` also appears in setup's INTRO, so G3 demanded a count of zero
+that could never occur and **would have failed a passing run**; and the near-miss
+string is a substring of the prompt, which echoes the required acknowledgement.
+**Run every match pattern over a real captured transcript before shipping the
+runbook.** A gate judged by the wrong mechanism cannot fail, which is worse than
+one that fails wrongly.
+
+**Also worth keeping:** redirecting `%APPDATA%` to isolate a fresh-install gate
+made `uv` re-download a whole CPython into the evidence bundle, because that is
+where it keeps managed interpreters. Environment redirection in a gate has a
+blast radius worth thinking through, and it needs a `finally`.

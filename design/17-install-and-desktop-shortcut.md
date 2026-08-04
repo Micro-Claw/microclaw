@@ -515,13 +515,17 @@ elevation, everything confined to `%LOCALAPPDATA%`).
 `install-shortcut` runs *before* `init`, so the editor that `init` opens is the
 last thing on screen and the final instruction is the one the user acts on.
 
-> **Both sentences are false as of Block 5, 2026-08-04.** `install.bat` no longer
-> runs `init` at all, so there is no ordering between them and no editor opens
-> during installation; `init` no longer opens an editor on its default path
-> either. `tests/test_installer.py` now pins the opposite property — that
-> `:finish` invokes *neither* `init` nor `first-launch-setup` — because either
-> would contact the rig at a point where the installer has not yet told the user
-> to enable Micro-Manager's ZMQ server. See "Block 5: the first-run path moved".
+> **Both sentences are false as of Block 5, 2026-08-04.** No editor opens during
+> installation, and `init` no longer opens one on its default path either.
+>
+> **Amended by Block 5b, 2026-08-04.** Block 5 removed `init` from `install.bat`
+> outright and pinned that absence in `tests/test_installer.py`. Block 5b put a
+> guided form of it back: the installer now waits for Micro-Manager, *verifies*
+> the ZMQ bridge with a bounded real-protocol handshake, and only then runs
+> `init --yes`. The constraint that mattered was never "the installer must not
+> run `init`" — it was "`Core()` must not be reached before the bridge is known
+> to answer, and a completed install must not be reported as failed." Those are
+> now enforced directly. See "Block 5b: the installer guides the whole first run".
 
 One wrinkle to check on a fresh machine: a `.bat` downloaded from a browser
 carries a Mark-of-the-Web alternate data stream, and Windows may show a SmartScreen
@@ -655,7 +659,7 @@ In code:
 |---|---|---|
 | v0 | `17-install-spike.py` — **done**, see Spike results | — |
 | v1 | icon in package, browser tab, README header, `derive_icons.py` — **done** | — |
-| v2 | `paths.py`, `microclaw init`, `reviewed:` gate, example in package — **done**; **default path superseded by Block 5 (2026-08-04): `init` redirects to `first-launch-setup`, the example copy is `--from-example`, and `install.bat` no longer runs it** | — |
+| v2 | `paths.py`, `microclaw init`, `reviewed:` gate, example in package — **done**; **default path superseded by Block 5 (2026-08-04): `init` redirects to `first-launch-setup` and the example copy is `--from-example`. Block 5b restored the installer's call to `init`, behind a verified-bridge gate** | — |
 | v3 | `microclaw install-shortcut` (Windows only) — **done**, verified on the rig | v1, **v2**, v0 |
 | v4 | `install.bat`, uv dev install, README rewrite — **done**, unverified on hardware | v1–v3 |
 | v5 | flip `MICROCLAW_SRC` to the archive URL when the repo goes public | v4 |
@@ -670,10 +674,12 @@ Checklist v2 Block 5, merged `d14c147`. This section is authoritative wherever i
 contradicts the v2 material above, which is left in place as the record of how
 `init` was originally built.
 
-**What installation now does.** `install.bat` installs uv, builds the isolated
-environment, installs Microclaw, writes the desktop shortcut, and stops. It no
-longer runs `microclaw init`. It prints, in this order, the Micro-Manager ZMQ
-prerequisite and then the exact setup command to run afterwards.
+**What installation did between Block 5 and Block 5b.** `install.bat` installed
+uv, built the environment, installed Microclaw, wrote the desktop shortcut, and
+stopped, printing the ZMQ prerequisite and then the setup command to run
+afterwards. **Block 5b superseded this**; see the Block 5b section below for what
+it does now. The paragraph is kept because the reasoning in the next one is why
+the readiness check exists.
 
 **Why the ordering had to change, since v2's ordering was deliberate.** Once
 `init` could open a live ZMQ connection, running it as the installer's last step
@@ -692,16 +698,88 @@ survive that command acquiring a network dependency.
 review → restart — and offers to run setup. `--from-example` copies the fictional
 example for deliberate hand-authoring. Non-interactive invocations print the path,
 write nothing, and exit `0`. `init` was kept rather than deleted because this
-document's installer sequence and operator habit both name it.
+document's installer sequence and operator habit both name it — a decision Block
+5b then vindicated, since the guided installer calls it. Block 5b added
+`--yes`, which skips only the preliminary offer; the typed hardware-contact
+acknowledgement is never skipped.
 
 **Unchanged.** The `reviewed:` gate, the design/14 §6 rule, the per-user config
 location, and the shortcut's `serve`-and-nothing-else behaviour. A double-clicked
-icon with no config still refuses and says so — but note that after a fresh
-install there is now *no* config until the user runs setup, where v2 guaranteed
-one existed. That refusal is the intended fail-closed state, not a regression.
+icon with no config still refuses and says so. Between Block 5 and Block 5b a
+fresh install left *no* config at all, where v2 guaranteed one existed; under
+Block 5b the guided run normally produces an unreviewed draft before the
+installer finishes, and leaves none only if the bridge never came up. Either way
+the icon's refusal on a missing or unreviewed profile is the intended fail-closed
+state, not a regression.
 
 **Also landed here.** `serve`'s startup banner now flushes. It was a bare
 `print()` into a block-buffered stdout followed by a server loop that never
 returns, so an operator redirecting the console to a log got an empty file and
 could not tell whether the session had started. This document's own launch
 instructions produce such logs.
+
+## Block 5b: the installer guides the whole first run (2026-08-04)
+
+Checklist v2 Block 5b, merged `ab5e97c`. Authoritative wherever it contradicts
+the Block 5 section above, which is kept because its reasoning is why the
+readiness check exists.
+
+**What installation does now.** `install.bat` installs uv, builds the isolated
+environment, installs Microclaw, and writes the desktop shortcut. It then tells
+the user to open Micro-Manager and tick **Tools → Options → Run pycro-manager
+server on port 4827**, waits, and **verifies the bridge itself** rather than
+trusting the confirmation. On success it runs `"%MC_EXE%" init --yes`, so the
+whole first run — install, setup, review instructions — happens in one terminal.
+
+Three attempts. After the third failed check the installer prints the manual
+`init` command and the review steps and **exits `0`**: the installation
+succeeded, and Micro-Manager being closed does not change that.
+
+**Why this is not a revert of Block 5.** Block 5 removed `init` from the
+installer because `Core()` blocked for over three minutes when the ZMQ server
+was, by construction, not yet running — and because `if errorlevel 1 exit /b 1`
+turned an unreachable rig into a failed installation. Block 5b removes the
+*cause* instead of the step. Two invariants replace the removal, and any future
+change here must preserve them:
+
+1. **No unbounded blocking call on any path, and `Core()` is never reached until
+   the readiness check has passed.**
+2. **A completed installation is never reported as failed** because the
+   microscope was not ready.
+
+**A listening socket is not sufficient, and this was established rather than
+assumed.** `microclaw check-bridge` (`microclaw/bridge_check.py`) runs a real
+`Core()` construction and version query in a **disposable subprocess with a hard
+timeout**, because pyjavaz has unbounded request waits that no in-process guard
+can interrupt. Inspection of pycromanager 1.0.2 / mmpycorex 0.3.16 / pyjavaz
+1.2.8 showed the client sends a connect command, expects a versioned reply, then
+issues object-construction requests that can wait indefinitely;
+`test_tcp_listener_without_zmq_handshake_is_not_ready` stands up a mute TCP
+listener and proves the probe rejects it and stays bounded. On M5 the ready case
+returns `MMCore version 12.5.0`, which a bare listener cannot produce.
+
+**Operator-facing output is a deliverable here.** The first readiness check
+usually fails — that is the expected state while the user is still ticking the
+box — so its message is the most-read line in the whole flow. It is exactly
+`No working Micro-Manager ZMQ bridge answered on port 4827 within 5 seconds.`
+pyjavaz prints an unhandled socket-thread traceback to stderr on failure; that is
+diagnostic noise and is deliberately not shown. The gate asserts a traceback
+count of zero.
+
+**Live enumeration is bounded too**, at 30 s by default, closing the race where
+the bridge drops between the check and setup. That number is measured, not
+chosen: captured M5 runs took 11, 14 and 13 s from transcript creation through
+inventory write *including* acknowledgement typing, which sits outside the timed
+window, so M5's 30 devices / 395 properties need roughly 3–9 s. Both timeouts are
+CLI-adjustable (`--bridge-timeout`, `--enumeration-timeout`) for rigs with slower
+devices, such as serial-over-USB property queries.
+
+**Upgrades.** An existing profile is validated offline rather than merely
+detected: a reviewed, valid one skips setup; an unreviewed or invalid one gets
+the review and `check-config` guidance instead of silence.
+
+**The typed acknowledgement gets three exact-match attempts** (`__main__.py`).
+Operator request — it is easy to mistype and one typo discarded the whole run.
+Exact match only: no case-folding, no prefixes, no fuzzy matching. `EOFError`
+fails immediately rather than consuming attempts. Every attempt is recorded in
+the interview transcript, which is the gate's evidence artifact.
