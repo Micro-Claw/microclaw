@@ -197,8 +197,28 @@ def _pause_live(ctrl: MicroscopeController):
             live.set_live_mode_on(True)
 
 
+# MM 2.0.3 updates its nominal live flag synchronously, but a failed start is
+# reported only by changing that flag back to false. Allow headroom for bridge
+# or MM-version latency while making that silent failure visible to the caller.
+_LIVE_MODE_WAIT_S = 2.0
+_LIVE_MODE_POLL_S = 0.02
+
+
 def start_live_view(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
-    ctrl.studio.live().set_live_mode_on(True)
+    live = ctrl.studio.live()
+    live.set_live_mode_on(True)
+    deadline = time.monotonic() + _LIVE_MODE_WAIT_S
+    while not bool(live.is_live_mode_on()):
+        if time.monotonic() >= deadline:
+            return {
+                "error": (
+                    "Live view did not start within "
+                    f"{_LIVE_MODE_WAIT_S:g} seconds; live mode is not running."
+                )
+            }
+        # pyjavaz serializes bridge calls; yield between probes so this poll
+        # cannot monopolize its single communication lock.
+        time.sleep(_LIVE_MODE_POLL_S)
     return {"status": "Live view started."}
 
 
