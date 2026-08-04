@@ -96,16 +96,53 @@ class TestSnapAndShowPrompt:
 
 
 class TestOperatorEstablishedStatePrompt:
-    def test_operator_state_requires_request_for_safe_and_ui_changes(self):
-        assert "Hardware and UI state the operator established or told you about is theirs" in SYSTEM_PROMPT
-        assert "do not change, restore, tidy, or \"make safe\" that state unasked" in SYSTEM_PROMPT
-        assert "even in a direction the safety guard permits; ask and wait first" in SYSTEM_PROMPT
-        assert "disabling their illumination and starting live view" in SYSTEM_PROMPT
+    """design/37 F3: two incidents on M5, both state changes nobody asked for.
 
-    def test_restart_does_not_trigger_physical_interaction_shuttering(self):
-        assert "Shutter the excitation before actual manual or physical interaction with the rig" in SYSTEM_PROMPT
-        assert "A microclaw restart is software-only and by itself meets neither condition" in SYSTEM_PROMPT
+    The operator's 640 nm laser was disabled to "get the rig into a safe state"
+    before a restart, and live view was started because it was "a habit I follow
+    by default". These assert the clauses that catch each. Prompt text is only
+    testable as text, so these are substring assertions (the pattern
+    tests/test_position_list.py:213 already uses) — rewording the prompt means
+    rewording these, deliberately.
+    """
+
+    def test_the_rig_state_is_the_operators_in_either_direction(self):
+        # Catches the laser: "make safe" is named, and so is the reasoning that
+        # licensed it — that the guard let the write through.
+        assert "the rig's state is the operator's" in SYSTEM_PROMPT
+        assert "do not change it in either direction unasked" in SYSTEM_PROMPT
+        assert "never restore, tidy, or \"make safe\" on their behalf" in SYSTEM_PROMPT
+        assert "not \"this is yours to do\"" in SYSTEM_PROMPT
+
+    def test_the_viewer_is_covered_by_the_rule_not_by_an_exception(self):
+        # Catches live view, and pins WHERE it is caught. The viewer is named
+        # inside the general rule rather than appended as a special case: live
+        # view was not state the operator established (it did not exist), so a
+        # rule scoped to what they set up cannot reach it — nor the next
+        # unrequested action after it.
+        rule = next(
+            line for line in SYSTEM_PROMPT.splitlines()
+            if "the rig's state is the operator's" in line
+        )
+        assert "the viewer" in rule
+        assert "anything they set up or can see" in rule
+        # ...and the same line must keep bookkeeping unblocked, or every ROI
+        # change made while carrying out a request starts asking permission.
+        assert "Do NOT ask permission for reversible bookkeeping" in rule
+        assert "that carries out what was asked" in rule
+
+    def test_a_restart_does_not_license_shuttering_their_excitation(self):
+        assert "A microclaw restart is software-only and by itself is neither" in SYSTEM_PROMPT
         assert "offer to restore it afterward" in SYSTEM_PROMPT
+
+    def test_eye_safety_still_triggers_on_the_operators_word(self):
+        # The rule must not require verifying that an interaction is real: the
+        # operator's word is the only evidence available, and the failure mode
+        # here is NOT shuttering. Phrase-matching ("I will now ...") is what
+        # misfired and is gone; taking their word for it is not.
+        assert "Shutter the excitation before manual or physical interaction with the rig" in SYSTEM_PROMPT
+        assert "take their word for it, do not wait to verify it" in SYSTEM_PROMPT
+        assert "do not look for a particular phrase" in SYSTEM_PROMPT
 
 
 class TestZStackThenExportPrompt:
