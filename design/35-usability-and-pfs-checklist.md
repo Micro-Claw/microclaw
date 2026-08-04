@@ -198,6 +198,7 @@ assistant's narration when judging whether a guard fired.
 | 4g | Platform | none — may run concurrently | `design32/hook-hash-newline` (deleted) | `95ae192` | `50e5f66` + `d0bb602` + `971cdb6` + `f768cc3` | round 3 **PASS** 2026-08-03 (rounds 1–2 failed test-side) | `936230f` | **done** — design/32 §4 |
 | 4d | Usability | 4c merged | `design33/property-authorization-rename` (deleted) | `052179d` | `fd4c5b6` + `c063f16` + `029b5f4` | demo G0/G1/G2 + M5 G4 **PASS** 2026-08-03; G3 closed by offline replay | `5f56679` | **done** — design/33 §"Block 4d landed" |
 | 5 | Usability | 4b, 4e, 4f, 4h, 4c, 4d | `design33/deployed-config-hygiene` | `a27997f` | `6262acb` + `577acc4` + `c0344f2` + `8028145` + `c48edc1` (round 1 returned) | demo G0–G3 + M5 G0/G4 all **PASS** 2026-08-04 | `d14c147` | **done** — design/33 §"Block 5 landed", design/17 §"Block 5: the first-run path moved" |
+| 5b | Usability | 5 merged | `design17/guided-install` | `3d63a6c` | | required | | |
 | 6 | Nikon | probe S = pre-fix baseline; post-fix run owed | `design34/measured-position-readback` | | | required | | |
 | 7a | Nikon | scope: none; rig gate: probe 0 | `design34/continuous-focus-capability` | | | **required** | | |
 | 7b | Nikon | 7a | `design34/continuous-focus-policy` | | | **required** | | |
@@ -3430,7 +3431,47 @@ automatic ceiling does not bind at all. Guaranteed mode requires the nine to be
 finite and positive, which they are, so nothing refuses. This is the block's first
 item and it remains **open and operator-owned**.
 
+## 5b. [-] Guided install and acknowledgement retries — operator usability
+
+Branch: `design17/guided-install`
+
+Raised by the operator on 2026-08-04 after testing Block 5's install path
+end-to-end on M5. Both items are usability, and the first deliberately re-enters
+territory Block 5 removed.
+
+- [ ] **`install.bat` drives the whole first run in one terminal.** After the
+      shortcut, it tells the user to start Micro-Manager and enable the ZMQ
+      server, waits for confirmation, then **verifies** the bridge is actually
+      up. Three attempts, then stop asking.
+- [ ] **The typed hardware-contact acknowledgement gets three tries.**
+      `I ACKNOWLEDGE HARDWARE CONTACT` (`__main__.py:436`–`:444`) is easy to
+      mistype, and one typo currently discards the whole run.
+
+**This does not revert Block 5's F1 fix — read why before touching
+`install.bat`.** F1 was that `init` ran at a point where the ZMQ server was
+*guaranteed* down, so `Core()` blocked (measured: no return in three minutes)
+and `if errorlevel 1 exit /b 1` could fail an otherwise-successful install. The
+operator's design removes the cause rather than the step: the bridge is
+confirmed up *before* setup is invoked. Two invariants carry forward and are
+non-negotiable:
+
+1. **No unbounded blocking call on any path.** The readiness check must be
+   bounded, and `Core()` must never be reached until the check has passed.
+2. **A completed installation must never be reported as failed** because the
+   microscope was not ready. Everything up to the shortcut succeeded.
+
 Post-merge design gate:
+
+- [ ] Update design/17 §"Block 5: the first-run path moved" — its "installation
+      ends at the shortcut" statement becomes conditional, and the reasoning for
+      *why* the ordering changed must survive the rewrite rather than being
+      deleted as obsolete.
+- [ ] Update README §"Install (Windows)" steps 4–5, which currently describe the
+      manual path the operator validated on 2026-08-04.
+
+---
+
+## 5. [x] Deployed-config hygiene — post-merge design gate (kept with block 5)
 
 - [x] Record the final first-run path in design/33 and design/17 (install and
       desktop shortcut), which currently describes the `init`-centred flow.
