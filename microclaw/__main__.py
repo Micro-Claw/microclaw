@@ -404,6 +404,9 @@ def check_bridge(args):
         raise SystemExit(1)
 
 
+LIVE_ENUMERATION_TIMEOUT_S = 30.0
+
+
 def first_launch_setup(args):
     """Enumerate through Core only, disconnect, interview, and write a draft."""
     from microclaw.first_launch import (
@@ -468,38 +471,63 @@ def first_launch_setup(args):
                 "enumeration (no Studio, agent, or tool dispatcher)...",
                 stream=sys.stderr,
             )
-            core = None
-            try:
+            import queue
+            import threading
+
+            outcome = queue.Queue(maxsize=1)
+
+            def enumerate_and_disconnect():
+                core = None
+                stage = "connection"
                 try:
                     core = Core(port=args.port)
                     # This query verifies the bridge and is also part of enumerate_rig.
                     core.get_version_info()
-                except Exception as exc:
-                    raise SetupRefusal(
-                        "SETUP REFUSAL: Could not connect to the already-running "
-                        f"Micro-Manager Core on port {args.port}: {exc}"
-                    ) from exc
-                try:
+                    stage = "enumeration"
                     inventory = enumerate_rig(core, mm_config=args.mm_config)
-                except Exception as exc:
-                    raise SetupRefusal(
-                        "SETUP REFUSAL: Read-only rig enumeration failed before a "
-                        f"complete inventory could be produced: {exc}"
-                    ) from exc
-                try:
+                    stage = "evidence"
                     inventory_path, review_path = write_inventory_outputs(inventory, evidence_dir)
-                except OSError as exc:
-                    raise SetupRefusal(
-                        f"SETUP REFUSAL: Could not write inventory evidence to "
-                        f"{evidence_dir}: {exc}"
-                    ) from exc
-                transcript.identify_inventory(inventory_path)
-                transcript.say(f"Inventory: {inventory_path}")
-                transcript.say(f"Review: {review_path}")
-            finally:
-                if core is not None:
-                    disconnect_core(core, args.port)
-                    transcript.say("Disconnected from Micro-Manager before the interview.")
+                    result = ("ok", inventory, inventory_path, review_path)
+                except Exception as exc:
+                    result = (stage, exc)
+                finally:
+                    if core is not None:
+                        try:
+                            disconnect_core(core, args.port)
+                        except Exception as exc:
+                            result = (stage, exc)
+                outcome.put(result)
+
+            live_thread = threading.Thread(target=enumerate_and_disconnect, daemon=True)
+            live_thread.start()
+            live_thread.join(LIVE_ENUMERATION_TIMEOUT_S)
+            if live_thread.is_alive():
+                raise SetupRefusal(
+                    "SETUP REFUSAL: Micro-Manager did not finish the read-only connection, "
+                    f"enumeration, evidence write, and disconnect within "
+                    f"{LIVE_ENUMERATION_TIMEOUT_S:g} seconds. Exited without generating a profile."
+                )
+            result = outcome.get_nowait()
+            if result[0] == "connection":
+                raise SetupRefusal(
+                    "SETUP REFUSAL: Could not connect to the already-running "
+                    f"Micro-Manager Core on port {args.port}: {result[1]}"
+                ) from result[1]
+            if result[0] == "enumeration":
+                raise SetupRefusal(
+                    "SETUP REFUSAL: Read-only rig enumeration failed before a "
+                    f"complete inventory could be produced: {result[1]}"
+                ) from result[1]
+            if result[0] == "evidence":
+                raise SetupRefusal(
+                    f"SETUP REFUSAL: Could not write inventory evidence to "
+                    f"{evidence_dir}: {result[1]}"
+                ) from result[1]
+            _, inventory, inventory_path, review_path = result
+            transcript.say("Disconnected from Micro-Manager before the interview.")
+            transcript.identify_inventory(inventory_path)
+            transcript.say(f"Inventory: {inventory_path}")
+            transcript.say(f"Review: {review_path}")
         config, notes = interview(inventory, ask=transcript.ask, say=transcript.say)
         write_profile(config, notes, target)
         transcript.say(f"Wrote unreviewed safety profile: {target}")

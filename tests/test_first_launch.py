@@ -1577,6 +1577,18 @@ def test_bridge_and_enumeration_errors_are_not_mislabeled(
     assert unexpected not in str(exc.value)
 
 
+def test_live_enumeration_timeout_refuses_without_profile(monkeypatch, tmp_path):
+    blocker = __import__("threading").Event()
+    monkeypatch.setattr(cli, "LIVE_ENUMERATION_TIMEOUT_S", 0.01)
+    monkeypatch.setattr("builtins.input", lambda prompt: CONTACT_ACKNOWLEDGEMENT)
+    monkeypatch.setattr("pycromanager.Core", lambda **kwargs: blocker.wait() or None)
+
+    with pytest.raises(SystemExit, match="did not finish.*within 0.01 seconds"):
+        cli.first_launch_setup(_args(tmp_path))
+
+    assert not (tmp_path / "profile.yaml").exists()
+
+
 def test_unreadable_mm_config_has_scoped_message_before_core(monkeypatch, tmp_path):
     missing = tmp_path / "missing.cfg"
     monkeypatch.setattr("pycromanager.Core", lambda **kwargs: pytest.fail("Core must not be constructed"))
