@@ -175,30 +175,64 @@ score nothing. Saved hooks may import them, and the two live sweep curves are
 only readable against the function that produced them. Their docstrings carry
 the warning.
 
-## Rig result (2026-08-04, follow-up session)
+## Rig result (2026-08-04, gates G0–G3, evidence `design36-20260804-152353`)
 
-**The fix converges on M5.** Two sweeps on beads, both converged with an
-interior peak and monotone falloff (coarse contrast 14.6, fine 560), and the
-second — re-run from the Z the first one chose — returned the same Z and did not
-move. An inverted metric cannot be idempotent. Details and the curves are in
-[design/37](37-m5-autofocus-session-findings.md#f1-is-fixed-on-the-rig).
+**G2 passed, and it passed on the comparison that had never been made.** The
+operator focused by eye on beads at Z = 43.219 µm and left the stage there. The
+sweep's peak landed on **43.221 µm** — 2 nm from their focus, inside one fine
+step — with both passes interior:
 
-What that run does not cover: it imaged **beads**, the field type where even the
-old metric was closest to correct, not the diffuse field the failure was
-observed on. G2 below still stands for that field.
+```
+coarse  [10130, 11500, 12940, 15570, 26010000, 16260, 12050, 11040, 9800]
+fine    [15730, 17840, 26980, 100700, 2275000, 24010000, 557200, 52670, ...]
+```
+
+A single interior spike ~1600× above its neighbours, at the operator's own
+focus. The failing session's curve at the same gate was
+`[6.93, 4.75, 2.09, 4.23, 1.94, 3.04, 7.77, 11.94, 18.8]` — lowest in the
+middle. It is now the other way up, which is what the gate asked for.
+
+**G3 passed**: widening to 40 µm returned 43.219, the same plane. The old
+metric's signature failure was that a wider window moved the answer further away
+(59.9 µm at ±10, 69.9 µm at ±20).
+
+**Confirmed on the rig, and previously only synthetic**: an empty field no
+longer outranks a real one. G5's dark-field snap scored **5057** against this
+field's **29,830,000** — about 5900× lower, where the old metric scored an empty
+field *higher* than a real one (design/25). That root-cause claim was argued from
+simulation in "The fix" below; it now has a measurement behind it.
+
+### Still owed: the diffuse field
+
+**G2 was run on beads** — the operator's first line was "I have beads in focus in
+the 640 nm channel", and the field carries saturated pixels (max 65535) against
+the failing field's max of 3459. Three of the four M5 runs to date have been
+beads, which per the table below is the one field type where even the old
+metric's argmax was right.
+
+So the strongest evidence for the fix — exact agreement with a human's focus —
+comes from the easiest sample. The diffuse field the inversion was *observed* on
+(bg 182, mean 236, max 3459, at stage 782.1/-6216.4) has still never been swept
+with this metric. That is the remaining piece, and it is one sweep.
+
+### Also observed: the coarse step can miss a bead peak entirely
+
+Not a defect in the metric, but visible in this data and worth stating. The bead
+peak is under 1 µm wide (fine curve: 2.3e6 → 2.4e7 → 5.6e5 across ±0.5 µm)
+against a **2.5 µm coarse step**. G2 and G3 found it only because the entry Z was
+already the focus, and the entry Z is always a coarse grid point. Had the
+operator been 1 µm off, every coarse sample would have read 10–16k, the curve
+would have looked flat, and `MIN_CONTRAST` would have refused — a safe failure,
+and a useless one. On point-like samples this autofocus effectively requires you
+to start nearly in focus. A coarse step derived from the objective's depth of
+field would fix it; that is not in this change.
 
 ## What is still owed
 
-**The reasoning behind the fix is still offline**: a reproduction of the failure
-from first principles, agreement with the shape of two live curves, and a
-replacement that is right-signed across four synthetic field types. The rig
-result above confirms it converges on beads. Neither of those is the same as
-watching it agree with a human on the field where it failed.
-
-The rig gate is `design/36-gate-prompts.md`, on this branch. G2 is one sweep on
-the M5 field that failed, against the operator's own manual focus — the
-comparison neither failing session could make against a working metric, and the
-one the beads run did not substitute for.
+**One sweep on the diffuse field.** G2 has now been run, and passed, against a
+human's manual focus — on beads. The field the inversion was actually observed
+on has not been swept with this metric on any of the four M5 runs. Everything
+about the fix predicts it will pass; nothing has measured it.
 
 **Still not obtained: raw Z-stack frames.** design/28 F2 asked for a diagnostic
 acquisition that retains every frame of a sweep so the curve can be re-derived

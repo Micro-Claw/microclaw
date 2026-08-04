@@ -312,12 +312,49 @@ false is (1). Whether an error dialog appeared is the corroborating tell.
 true and return an explicit error rather than an optimistic success on timeout.
 That change is **independently correct** — a start that silently fails via path
 (1) is real, and the tool should never claim a stream it has not observed — and
-it is kept. It is not, however, a fix for what happened on M5, which was the
+it is merged. It is not, however, a fix for what happened on M5, which was the
 restore.
 
-The restore fix is not yet written. It touches what `_pause_live` promises to
-around eight call sites, and the honest version of that promise depends on which
-of (1) and (2) is occurring, so it waits on the probe.
+### The G5 probe did not reproduce it, because the runbook broke the sequence
+
+G5 (evidence `design36-20260804-152353`) ran clean: start live, snap, read back
+— `live_view: true`, no error. That is **not** evidence the defect is gone.
+
+The runbook asked for the two steps as two separate operator turns. The failure
+needs them **adjacent in one batch**: in the M5 incident both `start_live_view`
+and `snap_and_analyze` were tool calls inside a single assistant turn, issued
+microseconds apart. A human turn between them is seconds. If mechanism (2) is
+the one occurring, `amStartingSequenceAcquisition_` is only briefly true, and
+seconds is long enough for the window to close.
+
+That is a coordinator-authored runbook defect, and it is the same class as the
+ones Blocks 5 and 5b kept producing: **a step whose criterion cannot fail.** The
+G5 in this branch is corrected to request both actions in one instruction.
+
+The probe was also run on a dark field (all lasers off, SNR 2.9). The runbook
+said the laser state "does not matter much" while also asking the operator to see
+whether the viewer was streaming — those cannot both be true. A dark stream and a
+frozen dark frame look nearly identical, and the operator's screen observation is
+correspondingly missing from the evidence.
+
+### The probe is no longer the blocker: use a real liveness check
+
+`CMMCore.isSequenceRunning()` exists on the bridge and microclaw calls it
+**nowhere**. It reports whether the camera is actually acquiring, which is a
+different fact from MM Studio's `isLiveOn_` flag, and it separates the two
+mechanisms without a human looking at a screen:
+
+| | `is_live_mode_on()` | `is_sequence_running()` |
+| --- | --- | --- |
+| healthy | true | true |
+| mechanism (1), start threw | false | false |
+| mechanism (2), start skipped | **true** | **false** |
+
+So the restore fix does not need to wait on the probe, and should not be built on
+the flag: `_pause_live` should verify the restore against the camera, and say
+what it observed rather than asserting `"then restored"`. That also retires the
+open question in design/18's shape — this is the one case where MM does give us
+a way to check the thing itself instead of a proxy for it.
 
 ## F5 — `run_autofocus` is headless, and the agent told the operator otherwise
 

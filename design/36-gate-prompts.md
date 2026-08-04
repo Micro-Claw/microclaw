@@ -201,30 +201,36 @@ and you diagnosed it yourself: *"the snap and analyze call after live view
 killed it."* We now know the start was fine — `snap_and_analyze` reported
 `"paused for the snap, then restored"`, which only happens when microclaw saw
 live **on** — so it is `_pause_live`'s restore that failed silently. MM's
-bytecode gives two ways that can happen, they need different fixes, and one of
-them cannot be detected from software at all. Hence asking you to look at a
-screen.
+bytecode gives two ways that can happen, and they need different fixes. Nothing
+microclaw currently reads can tell them apart — `live_view` in the payload is
+MM's own flag, and under one of the two mechanisms that flag is the thing that
+is lying. Hence asking you to look at a screen. (`CMMCore.isSequenceRunning()`
+would answer it in software, and is what the fix will use; microclaw does not
+call it yet, which is why this probe still needs your eyes.)
 
-Beads or any field with signal; the laser state does not matter much, but you
-want to be able to *see* whether the viewer is streaming.
+**Put the laser on and get signal in the field first.** The 2026-08-04 run of
+this probe was done dark, and a dark stream looks the same as a frozen dark
+frame — which is why the screen observation is missing from that evidence. You
+need to be able to *see* the difference.
 
-1. Start live view on its own and confirm on screen that it is streaming:
+1. **The two calls must land in one batch.** That is the whole probe: in the
+   incident, `start_live_view` and `snap_and_analyze` were tool calls inside a
+   single assistant turn, microseconds apart. Splitting them across two of your
+   turns puts seconds between them and the failure does not reproduce — which is
+   exactly what happened on 2026-08-04. So ask for both in **one** instruction
+   and do not answer anything in between:
 
-   > Start live view. Do not snap or do anything else afterwards.
+   > Start live view and then snap and analyze the current field, both in the
+   > same step.
 
-   This branch now makes `start_live_view` wait and check, so if it comes back
-   with an **error** instead of "Live view started", stop and record that — it
-   means MM failed the start outright and reverted its own flag, which is one of
-   the two mechanisms below, caught one step earlier than expected. Save it to
-   `$Evidence\g5-start-error.txt` and carry on to step 2 anyway.
-
-2. Now take one snap under it, which is the sequence that failed:
-
-   > Snap and analyze the current field.
-
-3. **Look at the MM viewer**, then ask microclaw what it thinks:
+2. **Look at the MM viewer**, then ask microclaw what it thinks:
 
    > Is live view running right now? Read it, do not infer it.
+
+If `start_live_view` returns an **error** rather than "Live view started",
+record that and carry on — it means MM failed the start outright and reverted
+its own flag, which is mechanism (1) below caught a step earlier than expected.
+Save it to `$Evidence\g5-start-error.txt`.
 
 Record three things in `$Evidence\g5-live-restore.txt`:
 
