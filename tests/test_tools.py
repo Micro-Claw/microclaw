@@ -62,8 +62,32 @@ class TestLiveView:
 
 
 class TestLiveViewReadiness:
+    """design/37 F4: `start_live_view` must not claim a stream it has not seen.
+
+    SCOPE, because the original F4 write-up got this wrong and this class was
+    built against it: these tests do NOT reproduce the M5 incident. On M5 the
+    start succeeded — `snap_and_analyze` reported "paused for the snap, then
+    restored", a branch that only runs when `_pause_live` saw live ON — and it
+    was `_pause_live`'s unchecked restore that failed. `javap` on MMJ_.jar 2.0.3
+    confirms `setLiveModeOn` sets `isLiveOn_` and calls `startLiveMode()`
+    synchronously, so a lagging flag is not a thing in this build.
+
+    What these tests DO cover is real and separate: MM's own failure path
+    (`startLiveMode` catching a sequence-start exception and calling
+    `setLiveModeOn(false)`) leaves the flag false with no error raised to us, so
+    a tool that returns "Live view started." without looking is lying by
+    construction. The delay in the fake below stands in for any state that is
+    not true immediately after the call — that failure path, or a bridge/MM
+    variant that does lag. See design/37 F4 for the restore fix, which is
+    separate and unwritten.
+    """
+
     class DelayedStartLive:
-        """Model a start whose state is stale until later bridge reads."""
+        """A start whose flag is not true immediately after the call.
+
+        Not a model of the M5 sequence (see the class docstring) — a model of
+        "the tool must observe, not assume."
+        """
 
         def __init__(self, stale_reads=2):
             self.stale_reads = stale_reads
@@ -89,8 +113,9 @@ class TestLiveViewReadiness:
             return self.is_on
 
         def snap(self):
-            # A camera snap cancels a start that has been requested but has not
-            # taken effect, matching the M5 failure sequence.
+            # A snap taken while the start has not taken effect loses it. This
+            # is the hazard the wait removes; it is NOT what happened on M5,
+            # where the start had already taken effect.
             if self.pending_start:
                 self.pending_start = False
                 self.is_on = False
