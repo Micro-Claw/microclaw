@@ -197,7 +197,7 @@ assistant's narration when judging whether a guard fired.
 | 4c | Usability | 4h merged | `design33/setup-named-stages` (deleted) | `3b99397` | `7f68f33` + `e537207` + `c34ee1e` + `d934dbf` (round 1 returned) | demo G1+G1b, M5 G2, demo re-gate all **PASS** 2026-08-03 | `8ce3401` | **done** — design/33 §"Block 4c landed" |
 | 4g | Platform | none — may run concurrently | `design32/hook-hash-newline` (deleted) | `95ae192` | `50e5f66` + `d0bb602` + `971cdb6` + `f768cc3` | round 3 **PASS** 2026-08-03 (rounds 1–2 failed test-side) | `936230f` | **done** — design/32 §4 |
 | 4d | Usability | 4c merged | `design33/property-authorization-rename` (deleted) | `052179d` | `fd4c5b6` + `c063f16` + `029b5f4` | demo G0/G1/G2 + M5 G4 **PASS** 2026-08-03; G3 closed by offline replay | `5f56679` | **done** — design/33 §"Block 4d landed" |
-| 5 | Usability | 4b, 4e, 4f, 4h, 4c, 4d | `design33/deployed-config-hygiene` | `a27997f` | `6262acb` + `577acc4` + `c0344f2` (round 1 returned) | required — runbook on the branch | | |
+| 5 | Usability | 4b, 4e, 4f, 4h, 4c, 4d | `design33/deployed-config-hygiene` | `a27997f` | `6262acb` + `577acc4` + `c0344f2` + `8028145` + `c48edc1` (round 1 returned) | demo G0–G3 **PASS** 2026-08-04; M5 G4 pending | | |
 | 6 | Nikon | probe S = pre-fix baseline; post-fix run owed | `design34/measured-position-readback` | | | required | | |
 | 7a | Nikon | scope: none; rig gate: probe 0 | `design34/continuous-focus-capability` | | | **required** | | |
 | 7b | Nikon | 7a | `design34/continuous-focus-policy` | | | **required** | | |
@@ -3337,10 +3337,73 @@ first.
       stays fictional by design; the question is whether it is still the first
       thing a new operator meets.
 
+### Rig gate — demo machine, 2026-08-04: **G0–G3 PASS**
+
+Evidence: `block5-demo-20260804-071555` (run 1) and `block5-demo-20260804-073354`
+(run 2, at the corrected runbook `8028145`). M5's G4 has not been run.
+
+What the product proved, all on run 2:
+
+- **The `serve` 0-byte-log defect is fixed.** `serve-redirected.txt` is 260 bytes
+  containing `Microclaw GUI: http://127.0.0.1:8000`. Block 4d got 0 bytes under
+  two different capture methods; that is what routed the item here.
+- **Installation no longer touches the rig.** `installer-rig-command-count` = `0`
+  and `installer-next-steps-count` = `2`, with the ZMQ prerequisite at
+  `install.bat:46` preceding the printed `init` at `:49`.
+- **The example-limit detector discriminates.** All 14 limits flagged on an
+  unmodified example copy; **zero** on the reviewed synthetic negative control;
+  exactly two (`acquisition.confirm_above_illuminated_ms`, `stage.z_min`) on the
+  demo machine's real reviewed profile — the same two the coordinator measured
+  offline on M5, and both plausibly coincidental.
+- `init` writes nothing on either the declined-interactive or the
+  non-interactive path, and `--from-example` still works with the unreviewed
+  gate intact (`check-config` exit `1` naming `REVIEW REQUIRED`).
+
+**Every defect this gate found was in the runbook, not the code.** Four, all
+coordinator-authored and all fixed on the branch:
+
+1. Six `Select-String` results were judged by `$LASTEXITCODE`, which PowerShell
+   sets only from *native* executables — both negative controls included. Now
+   match counts (`c0344f2`).
+2. The invocation was hand-substituted per command; run 1 typed `uv runmicroclaw`
+   in the fifteenth of fifteen and that step recorded a `uv` usage error instead
+   of its check. Now an `mc` function (`8028145`).
+3. `Start-Transcript` cannot capture a child process's console writes on Windows
+   PowerShell 5.1, so the interactive step produced an empty transcript —
+   **the identical finding to Block 4 round 1**, reintroduced by this runbook
+   after that block had already fixed it. Now the manual copy-paste remedy
+   (`8028145`).
+4. The `mc` fix wrapped only `microclaw`, leaving `python -m pytest` bare and
+   hardcoding `uv run` into the one `cmd /c` step. A `$Run` prefix now selects
+   both (`c48edc1`). Operator finding.
+
+Two process notes worth carrying, because three of the four are the same shape —
+**a runbook is a deliverable and needs reviewing like one**:
+
+- A gate whose evidence is judged by the wrong mechanism cannot fail. Findings 1
+  and 3 would both have reported success regardless of what the code did.
+- Judge a cross-platform suite by failures and collected total, not the passed
+  count: demo measured 1361 passed / 115 skipped against the coordinator's
+  1377 / 99, and both collect 1476.
+
+Outstanding on demo: `init-interactive-copy-paste.txt` was not produced, so the
+interactive prompt itself is confirmed only by the operator having answered it.
+`init-interactive-wrote.txt` = `False` alone does not prove the prompt appeared,
+since a run that never prompted would also write nothing. Collect it with M5.
+
 Post-merge design gate:
 
 - [ ] Record the final first-run path in design/33 and design/17 (install and
       desktop shortcut), which currently describes the `init`-centred flow.
+      **`install.bat` no longer runs `init` at all** — design/17 v2's premise
+      that installation puts a safety config in place is now false, and
+      `:16`–`:20`, `:181`, `:228`–`:250`, `:281`–`:285`, `:502`–`:506` and `:640`
+      each need reconciling. Implementer-reported, coordinator-owned.
+- [ ] Correct design/33 `:790`: M5's budgets are no longer example copies. See
+      the measured table in this block's first item.
+- [ ] design/33 `:347`–`:363` (esp. `:350`, "init still copies the example by
+      default") and `:1201`–`:1205` ("not done here" for the example-limit
+      detector, now implemented); impact summary `:110`, `:157`–`:160`.
 
 ---
 
