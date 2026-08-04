@@ -4,9 +4,24 @@ This runbook verifies branch `design33/deployed-config-hygiene`. The implementat
 is pinned at `6262acb`; later runbook or correction commits are valid descendants.
 Run the demo-machine gate first. Run M5 only after the demo evidence passes.
 
-All commands are PowerShell-safe. If this installation uses `uv run microclaw`,
-substitute that invocation throughout. Preserve the complete evidence directories.
+All commands are PowerShell-safe. Preserve the complete evidence directories.
 Bind a path once and reuse the variable; do not repeatedly substitute a placeholder.
+
+**Define the invocation once — do not hand-substitute it per command.** The first
+demo run of this gate (2026-08-04) substituted `uv run microclaw` into fourteen
+commands correctly and typed `uv runmicroclaw` in the fifteenth, so that step
+recorded a `uv` usage error instead of the check it was meant to perform. That is
+the Block 4d placeholder lesson, which this runbook's own header states and then
+broke for the invocation itself. Run **one** of these lines in G0 before anything
+else, and use `mc` everywhere afterwards:
+
+```powershell
+function mc { uv run microclaw @args }   # uv-managed installs (the demo machine)
+function mc { microclaw @args }          # a direct install on PATH
+```
+
+`$LASTEXITCODE` still comes from the real executable inside the function, so every
+exit-code check below stays valid.
 
 This gate normally prefers artifacts produced by the workflow itself: setup's
 inventory/interview files and `check-config` output. G3 deliberately captures a
@@ -47,10 +62,16 @@ by ancestry rather than by an exact tip hash, so amending this runbook cannot
 invalidate its own pin.
 
 It worked when every `*-exit.txt` above contains `0`, pytest reports no failures,
-and `status.txt` is empty. The expected suite result is **1377 passed, 99 skipped,
-3 warnings**; the 3 warnings are one `StarletteDeprecationWarning` and two
-`phase_cross_correlation` empty-image warnings, all pre-existing. Send back the
-complete evidence directory.
+and `status.txt` is empty.
+
+**Judge the suite by failures and by the total, not by the passed count.** The
+coordinator measures **1377 passed / 99 skipped** on macOS; the demo machine
+measured **1361 passed / 115 skipped** on 2026-08-04. Those are the same suite —
+1476 collected either way, with sixteen platform-conditional tests skipping on
+Windows instead of passing. A changed *total* means tests were lost or added; a
+shifted passed/skipped split across operating systems does not. The 3 warnings are
+one `StarletteDeprecationWarning` and two `phase_cross_correlation` empty-image
+warnings, all pre-existing. Send back the complete evidence directory.
 
 ## G1 — demo machine, installer boundary, `init` redirect, and escape hatch
 
@@ -86,21 +107,34 @@ Now exercise the human-facing command normally, without redirecting it. **Answer
 
 ```powershell
 $Redirect = Join-Path $Evidence "redirect-must-not-exist.yaml"
-Start-Transcript -Path "$Evidence\init-interactive-transcript.txt"
-microclaw init --path $Redirect --no-edit
-Stop-Transcript
+mc init --path $Redirect --no-edit
 Test-Path $Redirect > "$Evidence\init-interactive-wrote.txt"
 ```
 
-It worked when the transcript names `first-launch-setup`, human review, and
-restart, and `init-interactive-wrote.txt` is `False`.
+Then **select the console text of that command and its output, copy it, and save
+it** as `$Evidence\init-interactive-copy-paste.txt`. This is a manual step on
+purpose.
+
+It worked when `init-interactive-wrote.txt` is `False` and the pasted text shows
+the setup offer being declined.
+
+**Do not use `Start-Transcript` here.** Windows PowerShell 5.1 records its own
+output stream, not a child process's console writes, so it captures the command
+line and nothing else — an empty shell of a transcript. Block 4's round-1 gate
+established this (checklist finding 1, 2026-08-01) and the fix there was the same
+manual copy-paste; this runbook reintroduced `Start-Transcript` anyway and the
+2026-08-04 demo run produced exactly the predicted empty transcript. The
+*content* of the offer is already proven mechanically by the redirected
+non-interactive step below, which captures the identical four lines because they
+are printed before the interactivity check. What only a human can confirm here is
+that the prompt appeared and declining wrote nothing.
 
 Now prove redirected input never waits for an answer. This process must return
 immediately without reading the piped line or writing a config:
 
 ```powershell
 $NonInteractive = Join-Path $Evidence "noninteractive-must-not-exist.yaml"
-cmd /c "echo unused| microclaw init --path `"$NonInteractive`" --no-edit > `"$Evidence\init-noninteractive.txt`" 2>&1"
+cmd /c "echo unused| uv run microclaw init --path `"$NonInteractive`" --no-edit > `"$Evidence\init-noninteractive.txt`" 2>&1"
 echo $LASTEXITCODE > "$Evidence\init-noninteractive-exit.txt"
 Test-Path $NonInteractive > "$Evidence\init-noninteractive-wrote.txt"
 ```
@@ -112,10 +146,10 @@ Finally exercise the deliberate hand-authoring escape hatch:
 
 ```powershell
 $Example = Join-Path $Evidence "hand-authored-example.yaml"
-microclaw init --from-example --path $Example --no-edit > "$Evidence\init-from-example.txt" 2>&1
+mc init --from-example --path $Example --no-edit > "$Evidence\init-from-example.txt" 2>&1
 echo $LASTEXITCODE > "$Evidence\init-from-example-exit.txt"
 Get-FileHash -Algorithm SHA256 $Example > "$Evidence\init-from-example.sha256.txt"
-microclaw check-config $Example > "$Evidence\example-check.txt" 2>&1
+mc check-config $Example > "$Evidence\example-check.txt" 2>&1
 echo $LASTEXITCODE > "$Evidence\example-check-exit.txt"
 ```
 
@@ -149,7 +183,7 @@ acquisition:
   confirm_above_bytes: 5000000001
   confirm_above_illuminated_ms: 60001
 '@ | Set-Content -Encoding utf8 $Distinct
-microclaw check-config $Distinct > "$Evidence\distinct-check.txt" 2>&1
+mc check-config $Distinct > "$Evidence\distinct-check.txt" 2>&1
 echo $LASTEXITCODE > "$Evidence\distinct-check-exit.txt"
 $ExampleWarn = @(Select-String -Path "$Evidence\example-check.txt" -Pattern "EXAMPLE-LIMIT REVIEW")
 $ExampleWarn > "$Evidence\example-warning-match.txt"
@@ -172,9 +206,9 @@ Bind the reviewed safety profile used by the demo machine's normal workflow once
 
 ```powershell
 $DemoConfig = "C:\replace-once\with\reviewed-demo-safety-config.yaml"
-microclaw check-config $DemoConfig > "$Evidence\demo-config-check.txt" 2>&1
+mc check-config $DemoConfig > "$Evidence\demo-config-check.txt" 2>&1
 echo $LASTEXITCODE > "$Evidence\demo-config-check-exit.txt"
-microclaw --safety-config $DemoConfig serve > "$Evidence\serve-redirected.txt" 2>&1
+mc --safety-config $DemoConfig serve > "$Evidence\serve-redirected.txt" 2>&1
 ```
 
 Wait until the browser GUI is reachable, then stop the console command with
@@ -220,7 +254,7 @@ Bind the deployed file's exact normal-launcher path once:
 $DeployedConfig = "C:\replace-once\with\M5-deployed-safety-config.yaml"
 Get-FileHash -Algorithm SHA256 $DeployedConfig > "$Evidence\m5-deployed.sha256.txt" 2>&1
 Copy-Item $DeployedConfig "$Evidence\m5-deployed-before-budget-review.yaml"
-microclaw check-config $DeployedConfig > "$Evidence\m5-deployed-check.txt" 2>&1
+mc check-config $DeployedConfig > "$Evidence\m5-deployed-check.txt" 2>&1
 echo $LASTEXITCODE > "$Evidence\m5-deployed-check-exit.txt"
 $M5Warn = @(Select-String -Path "$Evidence\m5-deployed-check.txt" -Pattern "EXAMPLE-LIMIT REVIEW")
 $M5Warn > "$Evidence\m5-example-budget-match.txt"
