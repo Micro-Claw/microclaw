@@ -139,8 +139,14 @@ that a cold session resumes from the remote alone.
   Track B. Order from there is 6, then 7a–7c and 8 as Track 0's evidence allows,
   then Track C.
 
-**Two things are outstanding, and neither is a work item you can start.**
+**Three things are outstanding, and none is a work item you can start.**
 
+0. **0a and 0b's design-reconciliation cells say `pending`, and that is
+   deliberate.** Their gate is design/34, which currently states both PFS
+   hypotheses and commits to neither — and it cannot be reconciled until probe 0
+   answers. Those two cells close as part of 0c, not before. Do not read them as
+   forgotten bookkeeping, and do not close them by writing a conclusion the
+   evidence has not supplied.
 1. **Track 0's kit was shipped 2026-08-03 and nothing has come back.** Do not
    re-prepare or re-ship it, and do not read 0a/0b's unticked boxes as
    "unstarted" — both are merged (`ba695da`, `96a0a91`); the boxes are the

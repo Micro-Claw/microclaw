@@ -2,6 +2,16 @@ Using the approach described at https://boristane.com/blog/how-i-use-claude-code
 Every `----` indicates a new Claude session. They are kept deliberately short to
 mitigate hallucination.
 
+**Coverage note (2026-08-04).** The `## Block N` sections near the end are
+coordinator write-ups added under checklist v2's step 9. **Blocks 1, 2, 3 and 4
+have no section here** — they were coordinated before that practice started, not
+lost. Their record is in `design/35-usability-and-pfs-checklist.md`, which
+carries each one's gate results, findings and corrections inline in its block
+section; block 4's is unusually detailed (five gate rounds, nine findings). Do
+not reconstruct coordination "lessons" for those four from the checklist and
+write them here as if they were observed — a later reader cannot tell an
+inference from a witness account.
+
 ---
 
 I want to build a Python AI agent that lets a user control Micro-Manager 
