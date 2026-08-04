@@ -347,8 +347,11 @@ CLI and web paths from acquiring subtly different safety gates.
 ## Populating the profile: first-launch setup (landed and rig-gated 2026-08-02)
 
 `microclaw first-launch-setup --out <safety_config.yaml>` implements the
-restricted interactive path. `microclaw init` still copies the example YAML;
-the setup command instead resolves the bootstrap problem as follows:
+restricted interactive path. **Corrected by Block 5 (2026-08-04): `microclaw
+init` no longer copies the example YAML by default** — it prints the real
+first-run path, offers to run `first-launch-setup`, and copies the example only
+under an explicit `--from-example`. See "Block 5 landed" below. The setup command
+resolves the bootstrap problem as follows:
 
 1. Connect only for device enumeration, without starting the agent or exposing
    any mutation tools.
@@ -844,6 +847,29 @@ or the appropriateness of M5's declared limits.
   verbatim from the shipped example while `reviewed: true` sits beside a
   `# <-- REPLACE` marker on `camera.max_exposure_ms`. That is an open rig-config
   review item, not a Block 5 code defect.
+
+  **Superseded as to the values, 2026-08-04 — the item is still open and is now
+  sharper.** M5's budgets are no longer example copies. Measured on the deployed
+  file at checklist-v2 Block 5's M5 gate, and against Block 4d's captured copy
+  from the day before:
+
+  | key | example | M5 2026-08-03 | M5 2026-08-04 |
+  |---|---|---|---|
+  | `max_frames` | 10000 | 100000 | 100000000 |
+  | `max_duration_s` | 3600 | 1e21 | 1e13 |
+  | `max_illuminated_ms` | 600000 | 1000001720 | 1000001720000 |
+  | `max_bytes` | 5e10 | 1.0616832e12 | 1.0616832e15 |
+  | `camera.max_exposure_ms` | 5000 | 10000.0172 | 10000.0172 |
+
+  Three hard caps rose a further 1000× in one day. As deployed, `max_duration_s`
+  is ~317,000 years, `max_illuminated_ms` ~31.7 years of illumination, and
+  `max_bytes` ~1.06 PB. These read as limits raised until they stopped refusing
+  something, not as measured hardware bounds — a different and worse failure than
+  the example-copy this finding was written for. What still binds in practice is
+  the `confirm_above_*` tier, which is unchanged and sane (1000 frames, 3600 s,
+  60000 ms) and forces a human confirmation; the automatic ceiling does not bind
+  at all. Guaranteed mode requires these nine to be finite and positive, and they
+  are, so nothing refuses.
 - B5 rig-plumbing verification exercised the map, `execute_tool` dose gate,
   planner, reservation, live-geometry byte calculation, saved-frame accounting,
   and ledger through a real acquisition. The human confirmation gate was not
@@ -1203,6 +1229,8 @@ suspension of the completeness claim — but silence was not.
 The optional fictional-example-value detector (flagging limits still equal to
 `safety_config.example.yaml`) was **skipped** as marked defence-in-depth. The
 `microclaw init` copy-the-example path that motivates it is Block 5's subject.
+**Landed in Block 5, 2026-08-04** — see "Block 5 landed" below for what it
+detects and, more importantly, what it does not.
 
 ## Phase 5 landed: first-launch setup (2026-08-02, checklist v2 Block 4)
 
@@ -1707,3 +1735,56 @@ Residuals, stated rather than implied:
 - The corrected offset note was verified by replaying M5's captured
   `inventory.json` through both the pre-fix and post-fix code, not by a live M5
   session. No operator has yet read the corrected note on that rig.
+
+## Block 5 landed: deployed-config hygiene and the `init` path (2026-08-04)
+
+Checklist v2 Block 5. Merged `d14c147`; implementation `6262acb` + `577acc4`,
+runbook corrections `c0344f2` + `8028145` + `c48edc1`. Demo G0–G3 and M5 G0+G4
+passed 2026-08-04.
+
+**The first-run path.** `microclaw init` no longer copies the fictional example
+by default. It prints the real path — `first-launch-setup` → human review →
+restart — offers to run setup, and copies the example only under an explicit
+`--from-example`. Operator ruling, not an implementer's choice: `init` was kept
+rather than deleted because design/17's installer and shortcut sequence and
+operator habit both name it. Non-interactive invocations print the path, write
+nothing, and exit `0`, so a scripted install cannot block on a prompt.
+
+**Installation no longer contacts the rig.** `install.bat` previously ran
+`init` as its last step. Once `init` could open a live ZMQ connection that was a
+defect, because the installer tells the user to enable the ZMQ server only
+*after* it finishes: measured, answering the offer with no Micro-Manager running
+did not return within three minutes, since `Core()` blocks before the surrounding
+`SetupRefusal` handler can run. Installation now ends at the desktop shortcut and
+prints the setup command as a post-install instruction ordered after the ZMQ
+prerequisite.
+
+**Offline detection of unchanged example limits** (`config.py`, reported by
+`microclaw check-config` as an `example_limits` diagnostic). It compares the
+config's numeric leaves against the packaged example read at runtime, so the
+check cannot drift from the file it compares against. It is **non-blocking by
+design**: a real rig may legitimately share a value with the example.
+
+Measured discrimination, against captured configs rather than fixtures — an
+unmodified example copy flags all 14 numeric limits; the demo and M2 reviewed
+profiles and a synthetic reviewed control flag none; the demo machine's live
+profile and M5's deployed profile each flag exactly two,
+`acquisition.confirm_above_illuminated_ms` and `stage.z_min`, both coincidental.
+The coordinator's offline replay of M5 predicted those two before the rig ran,
+and the rig reproduced them.
+
+**The residual limit, stated plainly because the M5 gate demonstrated it.** This
+detector answers "are these values still the example's?" It cannot answer "are
+these values sane." M5 passes it with `check-config` exit `0` while carrying an
+acquisition duration cap of ~317,000 years. A clean `check-config` therefore does
+not mean a config's budgets bind — only that they are not the example's. An
+implausible-magnitude or non-binding-cap diagnostic is genuinely different work
+and is not in this block; it is recorded in checklist v2's no-block register.
+
+**`serve` writes its startup banner when redirected.** The banner was a bare
+`print()`, Python block-buffers stdout when it is not a console, `serve` then
+blocks in the server loop forever, and uvicorn ran at `log_level="warning"` so
+there was no second source — an operator following our own runbooks got a 0-byte
+log. Both banner branches and the illumination-off shutdown line now flush.
+Verified on the demo rig: 260 bytes containing the GUI URL, where Block 4d's gate
+got 0 bytes under two different capture methods.
