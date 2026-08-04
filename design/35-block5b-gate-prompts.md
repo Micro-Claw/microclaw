@@ -2,7 +2,8 @@
 
 This runbook verifies branch `design17/guided-install`. The main implementation
 is pinned at `c2ee97c` and its bounded live-enumeration correction at `11000bd`;
-later runbook or correction commits are valid descendants.
+round-1 guided-failure corrections are pinned at `eb94b2e`. Later runbook or
+correction commits are valid descendants.
 Run G0, G1, and G3 on the demo machine. Run G2 on M5 only after the demo gates
 pass. Preserve and return each complete evidence directory.
 
@@ -43,6 +44,8 @@ git merge-base --is-ancestor c2ee97c HEAD > "$Evidence\implementation-ancestor.t
 echo $LASTEXITCODE > "$Evidence\implementation-ancestor-exit.txt"
 git merge-base --is-ancestor 11000bd HEAD > "$Evidence\bounded-live-ancestor.txt" 2>&1
 echo $LASTEXITCODE > "$Evidence\bounded-live-ancestor-exit.txt"
+git merge-base --is-ancestor eb94b2e HEAD > "$Evidence\round1-correction-ancestor.txt" 2>&1
+echo $LASTEXITCODE > "$Evidence\round1-correction-ancestor-exit.txt"
 py -m pytest -q > "$Evidence\pytest.txt" 2>&1
 echo $LASTEXITCODE > "$Evidence\pytest-exit.txt"
 Copy-Item "design\35-block5b-gate-prompts.md" "$Evidence\runbook.md"
