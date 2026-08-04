@@ -24,17 +24,14 @@ User (natural language) → AgentLoop (Anthropic API) → ToolRegistry → Safet
 
 ## Install (Windows)
 
-You do not need Python; the installer brings its own. Installing is steps 1–3.
-**Steps 4 and 5 are what make Microclaw usable**, and they need your microscope
-in front of you — the installer deliberately does not touch your hardware, so
-nothing about your rig is known until you run setup yourself.
+You do not need Python; the installer brings its own. Have your microscope in
+front of you: after installing the files, `install.bat` walks you through opening
+Micro-Manager and the restricted first-launch setup in the same terminal.
 
-**1. Install Micro-Manager and turn on its server.**
+**1. Install Micro-Manager.**
 Install [Micro-Manager 2.0](https://micro-manager.org/Download_Micro-Manager_Latest_Release)
-(a build later than 2026.06.26, for full functionality),
-open it, and tick **Tools → Options → Run pycro-manager server on port 4827**.
-Nothing can drive your microscope until you do this, and no installer can do it
-for you.
+(a build later than 2026.06.26, for full functionality). You can leave it closed
+until the Microclaw installer asks you to open it.
 
 **2. Download Microclaw.**
 On this repository's page, click **Code → Download ZIP**, then right-click the
@@ -44,34 +41,36 @@ downloaded file and choose **Extract All**.
 
 It installs everything into `%LOCALAPPDATA%\microclaw` — no administrator rights,
 nothing else on your machine is touched — and puts a **Microclaw** icon on your
-desktop. It takes a few minutes. When it finishes it prints the command for step
-4; leave that window open, or copy the command.
+desktop. It takes a few minutes. Then it asks you to open Micro-Manager and tick
+**Tools → Options → Run pycro-manager server on port 4827**. After you confirm,
+the installer checks that the bridge really answers. It gives you three attempts;
+when the bridge is ready, first-launch setup continues in the same terminal.
 
 > Windows may show a blue **"Windows protected your PC"** banner, because the file
 > came from the internet. Click **More info → Run anyway**.
 
-> **The installer does not create your safety limits, and the desktop icon will
-> not work until you have done step 4.** That is deliberate: the limits describe
-> *your* microscope, reading them off the rig means connecting to it, and an
-> installer is the wrong moment to do that — Micro-Manager may not even be
-> running yet. Until setup has run, the icon opens a console that says
-> `No safety config` and tells you to run `microclaw init`.
+> If the bridge is still unavailable after three checks, installation remains
+> complete and the installer prints the manual setup command. Until setup has
+> run, the desktop icon opens a console that says `No safety config` and tells
+> you to run `microclaw init`.
 
 **4. Generate and review your safety profile.**
-Micro-Manager must be open with its ZMQ server enabled (step 1). Open a terminal
-— PowerShell or Command Prompt — and run the command the installer printed. It is:
+The installer starts setup automatically after its bridge check. Type the exact
+hardware-contact acknowledgement when asked; setup connects **read-only**,
+enumerates your devices, disconnects, and writes an unreviewed profile to
+`%APPDATA%\microclaw\safety_config.yaml`. It asks you to confirm the hazardous
+limits — stage travel, exposure, acquisition budgets — and it never invents one.
+It starts no agent and exposes no tools that move anything.
+
+If you need to run setup by hand, keep Micro-Manager open with its ZMQ server
+enabled and use this full path in PowerShell or Command Prompt:
 
 ```
 "%LOCALAPPDATA%\microclaw\env\Scripts\microclaw.exe" init
 ```
 
 The quotes matter, and the full path is needed because the installer does not put
-`microclaw` on your `PATH`. It offers to run first-launch setup; answer **y**.
-
-Setup connects **read-only**, enumerates your devices, disconnects, and writes an
-unreviewed profile to `%APPDATA%\microclaw\safety_config.yaml`. It asks you to
-confirm the hazardous limits — stage travel, exposure, acquisition budgets — and
-it never invents one. It starts no agent and exposes no tools that move anything.
+`microclaw` on your `PATH`. The manual command offers to run setup; answer **y**.
 
 Then **open that file and read it**. Every limit in it is a claim about your
 microscope that only you can check. When you are satisfied, change
@@ -91,7 +90,8 @@ browser window follows. It will ask for an Anthropic API key the first time.
 
 To upgrade, download the ZIP again and double-click `install.bat` again. It is
 safe to re-run: it upgrades in place, and leaves your safety limits and API key
-alone. You do **not** repeat step 4 on an upgrade. **Close Microclaw first** —
+alone. When it finds the existing safety profile it skips first-launch setup; you
+do **not** repeat step 4 on an upgrade. **Close Microclaw first** —
 while its console window is open, Windows holds the installed files locked and
 the upgrade will fail.
 

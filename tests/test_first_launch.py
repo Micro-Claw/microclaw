@@ -1413,6 +1413,77 @@ def test_wrong_contact_acknowledgement_exits_without_constructing_core(monkeypat
     assert "SETUP REFUSAL: Hardware-contact acknowledgement did not match" in transcript
 
 
+def test_corrected_second_contact_acknowledgement_connects_and_records_both_attempts(
+    monkeypatch, tmp_path,
+):
+    constructed = []
+    monkeypatch.setattr(
+        "pycromanager.Core",
+        lambda **kwargs: constructed.append(kwargs["port"]) or SimpleNamespace(
+            get_version_info=lambda: "MMCore", _close=lambda: None,
+        ),
+    )
+    attempts = iter(["I ACKNOWLEDGE HARDWARE CONTAC", CONTACT_ACKNOWLEDGEMENT])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(attempts))
+    monkeypatch.setattr("microclaw.rig_inventory.enumerate_rig", lambda core, mm_config: _inventory())
+    answers = _answers()
+    monkeypatch.setattr(
+        "microclaw.first_launch.interview",
+        lambda inv, **kwargs: interview(inv, ask=lambda _: next(answers), say=lambda _: None),
+    )
+    def write_outputs(inv, out):
+        out = Path(out)
+        out.mkdir(parents=True, exist_ok=True)
+        inventory_path = out / "inventory.json"
+        inventory_path.write_text(json.dumps(inv), encoding="utf-8")
+        return inventory_path, out / "review.md"
+
+    monkeypatch.setattr("microclaw.rig_inventory.write_inventory_outputs", write_outputs)
+    cli.first_launch_setup(_args(tmp_path))
+
+    assert constructed == [4827]
+    transcript_path, = (tmp_path / "evidence").glob("first-launch-transcript-*.txt")
+    transcript = transcript_path.read_text(encoding="utf-8")
+    assert "I ACKNOWLEDGE HARDWARE CONTAC\n" in transcript
+    assert CONTACT_ACKNOWLEDGEMENT in transcript
+    assert "2 tries remaining" in transcript
+
+
+def test_three_wrong_contact_acknowledgements_refuse_without_connecting(monkeypatch, tmp_path):
+    monkeypatch.setattr("pycromanager.Core", lambda **kwargs: pytest.fail("Core must not be constructed"))
+    calls = []
+
+    def wrong(prompt):
+        calls.append(prompt)
+        return f"wrong-{len(calls)}"
+
+    monkeypatch.setattr("builtins.input", wrong)
+    with pytest.raises(SystemExit, match="Exited without connecting"):
+        cli.first_launch_setup(_args(tmp_path))
+
+    assert len(calls) == 3
+    assert not (tmp_path / "profile.yaml").exists()
+    transcript_path, = (tmp_path / "evidence").glob("first-launch-transcript-*.txt")
+    transcript = transcript_path.read_text(encoding="utf-8")
+    assert all(f"wrong-{attempt}" in transcript for attempt in range(1, 4))
+
+
+def test_contact_acknowledgement_eof_refuses_immediately(monkeypatch, tmp_path):
+    monkeypatch.setattr("pycromanager.Core", lambda **kwargs: pytest.fail("Core must not be constructed"))
+    calls = []
+
+    def eof(prompt):
+        calls.append(prompt)
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", eof)
+    with pytest.raises(SystemExit, match="interview ended"):
+        cli.first_launch_setup(_args(tmp_path))
+
+    assert len(calls) == 1
+    assert not (tmp_path / "profile.yaml").exists()
+
+
 def test_existing_output_refusal_preserves_previous_transcript(tmp_path):
     target = tmp_path / "existing.yaml"
     target.write_text("reviewed work\n", encoding="utf-8")
@@ -1504,6 +1575,87 @@ def test_bridge_and_enumeration_errors_are_not_mislabeled(
         cli.first_launch_setup(_args(tmp_path))
     assert expected in str(exc.value)
     assert unexpected not in str(exc.value)
+
+
+def test_live_enumeration_timeout_refuses_without_profile(monkeypatch, tmp_path):
+    blocker = __import__("threading").Event()
+    monkeypatch.setattr(cli, "LIVE_ENUMERATION_TIMEOUT_S", 0.01)
+    monkeypatch.setattr("builtins.input", lambda prompt: CONTACT_ACKNOWLEDGEMENT)
+    monkeypatch.setattr("pycromanager.Core", lambda **kwargs: blocker.wait() or None)
+
+    with pytest.raises(SystemExit, match="did not finish.*within 0.01 seconds.*restart Micro-Manager"):
+        cli.first_launch_setup(_args(tmp_path))
+
+    assert not (tmp_path / "profile.yaml").exists()
+
+
+def test_disconnect_failure_is_not_mislabeled_as_evidence_write(monkeypatch, tmp_path):
+    monkeypatch.setattr("builtins.input", lambda prompt: CONTACT_ACKNOWLEDGEMENT)
+    monkeypatch.setattr(
+        "pycromanager.Core",
+        lambda **kwargs: SimpleNamespace(get_version_info=lambda: "MMCore"),
+    )
+    monkeypatch.setattr("microclaw.rig_inventory.enumerate_rig", lambda core, mm_config: _inventory())
+
+    def write_outputs(inv, out):
+        out = Path(out)
+        out.mkdir(parents=True, exist_ok=True)
+        inventory_path = out / "inventory.json"
+        inventory_path.write_text(json.dumps(inv), encoding="utf-8")
+        return inventory_path, out / "review.md"
+
+    monkeypatch.setattr("microclaw.rig_inventory.write_inventory_outputs", write_outputs)
+    monkeypatch.setattr(
+        "microclaw.first_launch.disconnect_core",
+        lambda core, port: (_ for _ in ()).throw(OSError("close failed")),
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        cli.first_launch_setup(_args(tmp_path))
+
+    assert "did not disconnect cleanly: close failed" in str(exc.value)
+    assert "Could not write inventory evidence" not in str(exc.value)
+
+
+def test_worker_base_exception_becomes_clean_refusal(monkeypatch, tmp_path):
+    monkeypatch.setattr("builtins.input", lambda prompt: CONTACT_ACKNOWLEDGEMENT)
+    monkeypatch.setattr(
+        "pycromanager.Core",
+        lambda **kwargs: (_ for _ in ()).throw(SystemExit("worker stopped")),
+    )
+
+    with pytest.raises(SystemExit, match="worker stopped unexpectedly: worker stopped"):
+        cli.first_launch_setup(_args(tmp_path))
+
+    assert not (tmp_path / "profile.yaml").exists()
+
+
+def test_empty_worker_outcome_becomes_clean_refusal(monkeypatch, tmp_path):
+    import queue
+
+    class EmptyOutcome:
+        def put(self, result):
+            pass
+
+        def get_nowait(self):
+            raise queue.Empty
+
+    monkeypatch.setattr(queue, "Queue", lambda **kwargs: EmptyOutcome())
+    monkeypatch.setattr("builtins.input", lambda prompt: CONTACT_ACKNOWLEDGEMENT)
+    monkeypatch.setattr(
+        "pycromanager.Core",
+        lambda **kwargs: SimpleNamespace(get_version_info=lambda: "MMCore", _close=lambda: None),
+    )
+    monkeypatch.setattr("microclaw.rig_inventory.enumerate_rig", lambda core, mm_config: _inventory())
+    monkeypatch.setattr(
+        "microclaw.rig_inventory.write_inventory_outputs",
+        lambda inv, out: (Path(out) / "inventory.json", Path(out) / "review.md"),
+    )
+
+    with pytest.raises(SystemExit, match="worker ended without a result"):
+        cli.first_launch_setup(_args(tmp_path))
+
+    assert not (tmp_path / "profile.yaml").exists()
 
 
 def test_unreadable_mm_config_has_scoped_message_before_core(monkeypatch, tmp_path):

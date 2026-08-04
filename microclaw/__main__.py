@@ -6,6 +6,7 @@ import cProfile
 import os
 import pstats
 import io
+import math
 import subprocess
 import tempfile
 import webbrowser
@@ -116,20 +117,25 @@ def init(args):
         print(f"  {command}")
         print("Setup inspects the rig read-only, writes an unreviewed draft, and disconnects.")
         print("Human-review every declaration and limit, set `reviewed: true`, then restart Microclaw.")
-        if not sys.stdin.isatty():
+        start_without_offer = getattr(args, "yes", False)
+        if not start_without_offer and not sys.stdin.isatty():
             print("Non-interactive input detected; setup was not started and no config was written.")
             return None
-        try:
-            answer = input("Run first-launch setup now? [y/N] ").strip().lower()
-        except EOFError:
-            print("No interactive answer received; setup was not started and no config was written.")
-            return None
-        if answer not in {"y", "yes"}:
-            print("Setup was not started and no config was written.")
-            return None
+        if not start_without_offer:
+            try:
+                answer = input("Run first-launch setup now? [y/N] ").strip().lower()
+            except EOFError:
+                print("No interactive answer received; setup was not started and no config was written.")
+                return None
+            if answer not in {"y", "yes"}:
+                print("Setup was not started and no config was written.")
+                return None
         setup_args = argparse.Namespace(
             out=str(dest), inventory=None, mm_config=None, evidence_out=None,
             force=args.force, port=args.port,
+            enumeration_timeout=getattr(
+                args, "enumeration_timeout", LIVE_ENUMERATION_TIMEOUT_S,
+            ),
         )
         result = first_launch_setup(setup_args)
         if dest.exists() and not args.no_edit:
@@ -392,6 +398,31 @@ def check_config(args):
     raise SystemExit(1)
 
 
+def check_bridge(args):
+    """Exit successfully only after a bounded real bridge handshake and Core query."""
+    from microclaw.bridge_check import probe_bridge
+
+    ready, message = probe_bridge(args.port, args.bridge_timeout)
+    print(message)
+    if not ready:
+        raise SystemExit(1)
+
+
+# Captured M5 runs took 11, 14, and 13 seconds from transcript creation through
+# inventory write, including acknowledgement typing outside this timed window.
+# Its 30 devices / 395 properties therefore take roughly 3–9 seconds here; the
+# 30-second default is measured 3–10x margin and remains CLI-adjustable for rigs
+# with slower devices (for example serial-over-USB property queries).
+LIVE_ENUMERATION_TIMEOUT_S = 30.0
+
+
+def _positive_seconds(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed) or parsed <= 0:
+        raise argparse.ArgumentTypeError("timeout must be a finite number greater than zero")
+    return parsed
+
+
 def first_launch_setup(args):
     """Enumerate through Core only, disconnect, interview, and write a draft."""
     from microclaw.first_launch import (
@@ -433,11 +464,20 @@ def first_launch_setup(args):
                         f"SETUP REFUSAL: Could not read Micro-Manager config "
                         f"{args.mm_config}: {exc}"
                     ) from exc
-            acknowledgement = transcript.ask(
-                "To proceed with hardware-contacting enumeration, type exactly "
-                f"{CONTACT_ACKNOWLEDGEMENT!r}: "
-            ).strip()
-            if acknowledgement != CONTACT_ACKNOWLEDGEMENT:
+            for attempt in range(1, 4):
+                acknowledgement = transcript.ask(
+                    "To proceed with hardware-contacting enumeration, type exactly "
+                    f"{CONTACT_ACKNOWLEDGEMENT!r}: "
+                ).strip()
+                if acknowledgement == CONTACT_ACKNOWLEDGEMENT:
+                    break
+                remaining = 3 - attempt
+                if remaining:
+                    transcript.say(
+                        "Hardware-contact acknowledgement did not match exactly; "
+                        f"{remaining} {'try' if remaining == 1 else 'tries'} remaining."
+                    )
+            else:
                 raise SetupRefusal(
                     "SETUP REFUSAL: Hardware-contact acknowledgement did not match. "
                     "Exited without connecting to Micro-Manager or generating a profile."
@@ -447,38 +487,98 @@ def first_launch_setup(args):
                 "enumeration (no Studio, agent, or tool dispatcher)...",
                 stream=sys.stderr,
             )
-            core = None
-            try:
+            import queue
+            import threading
+
+            outcome = queue.Queue(maxsize=1)
+
+            def enumerate_and_disconnect():
+                core = None
+                stage = "connection"
                 try:
                     core = Core(port=args.port)
                     # This query verifies the bridge and is also part of enumerate_rig.
                     core.get_version_info()
-                except Exception as exc:
-                    raise SetupRefusal(
-                        "SETUP REFUSAL: Could not connect to the already-running "
-                        f"Micro-Manager Core on port {args.port}: {exc}"
-                    ) from exc
-                try:
+                    stage = "enumeration"
                     inventory = enumerate_rig(core, mm_config=args.mm_config)
-                except Exception as exc:
-                    raise SetupRefusal(
-                        "SETUP REFUSAL: Read-only rig enumeration failed before a "
-                        f"complete inventory could be produced: {exc}"
-                    ) from exc
-                try:
+                    stage = "evidence"
                     inventory_path, review_path = write_inventory_outputs(inventory, evidence_dir)
-                except OSError as exc:
-                    raise SetupRefusal(
-                        f"SETUP REFUSAL: Could not write inventory evidence to "
-                        f"{evidence_dir}: {exc}"
-                    ) from exc
-                transcript.identify_inventory(inventory_path)
-                transcript.say(f"Inventory: {inventory_path}")
-                transcript.say(f"Review: {review_path}")
-            finally:
-                if core is not None:
-                    disconnect_core(core, args.port)
-                    transcript.say("Disconnected from Micro-Manager before the interview.")
+                    result = ("ok", inventory, inventory_path, review_path)
+                except Exception as exc:
+                    result = (stage, exc)
+                except BaseException as exc:
+                    result = ("worker", exc)
+                finally:
+                    if core is not None:
+                        disconnect_stage = stage
+                        stage = "disconnect"
+                        try:
+                            disconnect_core(core, args.port)
+                        except Exception as exc:
+                            result = (stage, exc)
+                        else:
+                            stage = disconnect_stage
+                try:
+                    outcome.put(result)
+                except BaseException:
+                    # The parent also handles an empty outcome, but never let an
+                    # exotic queue failure turn into an unhandled thread traceback.
+                    return
+
+            live_thread = threading.Thread(target=enumerate_and_disconnect, daemon=True)
+            live_thread.start()
+            enumeration_timeout = getattr(
+                args, "enumeration_timeout", LIVE_ENUMERATION_TIMEOUT_S,
+            )
+            live_thread.join(enumeration_timeout)
+            if live_thread.is_alive():
+                raise SetupRefusal(
+                    "SETUP REFUSAL: Micro-Manager did not finish the read-only connection, "
+                    f"enumeration, evidence write, and disconnect within "
+                    f"{enumeration_timeout:g} seconds. Exited without generating a profile. "
+                    "The abandoned connection may leave a stale bridge session; restart "
+                    "Micro-Manager before retrying."
+                )
+            try:
+                result = outcome.get_nowait()
+            except queue.Empty:
+                raise SetupRefusal(
+                    "SETUP REFUSAL: The bounded Micro-Manager worker ended without a "
+                    "result. Exited without generating a profile; restart Micro-Manager "
+                    "before retrying."
+                ) from None
+            if result[0] == "connection":
+                raise SetupRefusal(
+                    "SETUP REFUSAL: Could not connect to the already-running "
+                    f"Micro-Manager Core on port {args.port}: {result[1]}"
+                ) from result[1]
+            if result[0] == "enumeration":
+                raise SetupRefusal(
+                    "SETUP REFUSAL: Read-only rig enumeration failed before a "
+                    f"complete inventory could be produced: {result[1]}"
+                ) from result[1]
+            if result[0] == "evidence":
+                raise SetupRefusal(
+                    f"SETUP REFUSAL: Could not write inventory evidence to "
+                    f"{evidence_dir}: {result[1]}"
+                ) from result[1]
+            if result[0] == "disconnect":
+                raise SetupRefusal(
+                    "SETUP REFUSAL: Read-only enumeration evidence was written, but "
+                    f"Micro-Manager did not disconnect cleanly: {result[1]}. Restart "
+                    "Micro-Manager before retrying."
+                ) from result[1]
+            if result[0] == "worker":
+                raise SetupRefusal(
+                    "SETUP REFUSAL: The bounded Micro-Manager worker stopped "
+                    f"unexpectedly: {result[1]}. Exited without generating a profile; "
+                    "restart Micro-Manager before retrying."
+                ) from result[1]
+            _, inventory, inventory_path, review_path = result
+            transcript.say("Disconnected from Micro-Manager before the interview.")
+            transcript.identify_inventory(inventory_path)
+            transcript.say(f"Inventory: {inventory_path}")
+            transcript.say(f"Review: {review_path}")
         config, notes = interview(inventory, ask=transcript.ask, say=transcript.say)
         write_profile(config, notes, target)
         transcript.say(f"Wrote unreviewed safety profile: {target}")
@@ -549,6 +649,15 @@ def main():
     it.add_argument("--force", action="store_true", help="Overwrite an existing file.")
     it.add_argument("--no-edit", action="store_true", help="Don't open an editor.")
     it.add_argument(
+        "--yes", action="store_true",
+        help="Start first-launch setup without the preliminary offer (the hardware-contact acknowledgement remains required).",
+    )
+    it.add_argument(
+        "--enumeration-timeout", type=_positive_seconds, default=LIVE_ENUMERATION_TIMEOUT_S,
+        metavar="SECONDS",
+        help="Maximum live connect/enumerate/write/disconnect time (default: 30 seconds).",
+    )
+    it.add_argument(
         "--from-example", action="store_true",
         help="Deliberately copy the fictional hand-authoring example instead of setup.",
     )
@@ -603,6 +712,14 @@ def main():
         "path", nargs="?", default=None,
         help="Config path (default: --safety-config or the per-user file).",
     )
+    cb = sub.add_parser(
+        "check-bridge",
+        help="Check that the local Micro-Manager ZMQ bridge answers a real request.",
+    )
+    cb.add_argument(
+        "--bridge-timeout", type=_positive_seconds, default=5.0, metavar="SECONDS",
+        help="Maximum bridge handshake time (default: 5 seconds).",
+    )
     ir = sub.add_parser(
         "inspect-rig",
         help="Enumerate a rig read-only and write inventory evidence.",
@@ -628,6 +745,11 @@ def main():
     fl.add_argument("--mm-config", default=None, help="Already-loaded MM .cfg path (record/hash only; never applied).")
     fl.add_argument("--evidence-out", default=None, help="Inventory evidence directory (default: <out>.inventory).")
     fl.add_argument("--force", action="store_true", help="Overwrite an existing output profile deliberately.")
+    fl.add_argument(
+        "--enumeration-timeout", type=_positive_seconds, default=LIVE_ENUMERATION_TIMEOUT_S,
+        metavar="SECONDS",
+        help="Maximum live connect/enumerate/write/disconnect time (default: 30 seconds).",
+    )
     sv.add_argument(
         "--allow-remote",
         action="store_true",
@@ -688,6 +810,10 @@ def main():
 
     if args.command == "check-config":
         check_config(args)
+        return
+
+    if args.command == "check-bridge":
+        check_bridge(args)
         return
 
     if args.command == "first-launch-setup":
