@@ -90,31 +90,64 @@ It worked when the native exit is nonzero, the friendly count is `1`, the
 traceback count is `0`, and the captured output contains only the short statement
 of the port and bounded check that did not answer.
 
-Give this fresh-install gate an isolated empty roaming-data directory so an
-existing demo safety profile cannot turn it into the upgrade path. This does not
-move or edit the operator's real profile. Run the installer with Micro-Manager
-still absent, and restore the environment immediately afterwards:
+**Read this before running the step — it is the only step in this runbook that
+changes the machine.** There is no way to reach the three-attempt loop without
+running the real `install.bat`, so this is a genuine installation, and you should
+know exactly what it touches before you start it:
+
+- It **reinstalls Microclaw into `%LOCALAPPDATA%\microclaw\env`** and **rewrites
+  the desktop shortcut**. If you use that installed copy for anything, it is
+  replaced by this branch's build.
+- It does **not** touch your git checkout, and gate work that runs through
+  `uv run` from the checkout is unaffected.
+- The `$env:APPDATA` redirect below isolates **only the safety-profile existence
+  check**, because the safety profile lives under `%APPDATA%` while the
+  installation goes to `%LOCALAPPDATA%`. It keeps an existing demo profile from
+  diverting this run onto the upgrade path. It does not sandbox the install, and
+  it does not move or edit your real profile.
+
+If that is not acceptable on this machine, stop and say so rather than working
+around it — the coordinator would rather retarget the step than have it skipped
+quietly.
+
+The `try/finally` is load-bearing: if the installer fails or you interrupt it, an
+unrestored `$env:APPDATA` would silently redirect every later `mc` command in
+this window — including G2 and G3 — to the gate directory.
 
 ```powershell
 $OriginalAppData = $env:APPDATA
 $GateAppData = Join-Path $Evidence "fresh-appdata"
 New-Item -ItemType Directory -Path $GateAppData
-$env:APPDATA = (Resolve-Path $GateAppData).Path
-cmd /c install.bat
-echo $LASTEXITCODE > "$Evidence\installer-no-mm-exit.txt"
-$env:APPDATA = $OriginalAppData
+try {
+    $env:APPDATA = (Resolve-Path $GateAppData).Path
+    cmd /c install.bat
+    echo $LASTEXITCODE > "$Evidence\installer-no-mm-exit.txt"
+} finally {
+    $env:APPDATA = $OriginalAppData
+}
+"$env:APPDATA" > "$Evidence\appdata-restored.txt"
 ```
+
+`appdata-restored.txt` must show your normal roaming path, not the gate
+directory. Check it before running G2 or G3 in the same window.
 
 At each of the three prompts, press a key without starting Micro-Manager. After
 the command returns, select the complete command and console output, copy it,
 and save it as `$Evidence\installer-no-mm-manual-copy-paste.txt`.
 
 It worked when both command counts are `1`; the console shows three bounded
-checks, each says no working bridge was found on port 4827, then says Microclaw
-is installed and prints the full manual `init` command; and the recorded exit is
-`0`. The command must return in roughly fifteen seconds plus installation time,
-not wait indefinitely. `installer-success-count.txt` is supporting structure;
-judge the actual branch and exit from the manual evidence.
+checks, each saying **exactly** `No working Micro-Manager ZMQ bridge answered on
+port 4827 within 5 seconds.` with no traceback; then says Microclaw is installed
+and prints the full manual `init` command; and the recorded exit is `0`. The
+command must return in roughly fifteen seconds plus installation time, not wait
+indefinitely. `installer-success-count.txt` is supporting structure; judge the
+actual branch and exit from the manual evidence.
+
+**A non-zero `installer-no-mm-exit.txt` is a failure of this gate even though
+Micro-Manager was deliberately absent.** That is the whole point of the step: the
+installation succeeded, so the installer must say so and exit `0`. Reporting a
+failed install because the microscope was closed is the defect Block 5 recorded
+as F1, and this step exists to prove it has not come back.
 
 ## G2 — M5, real bridge happy path and corrected second acknowledgement
 
