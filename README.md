@@ -56,7 +56,8 @@ when the bridge is ready, first-launch setup continues in the same terminal.
 
 **4. Generate and review your safety profile.**
 The installer starts setup automatically after its bridge check. Type the exact
-hardware-contact acknowledgement when asked; setup connects **read-only**,
+hardware-contact acknowledgement when asked — it must match exactly, and you get
+three attempts, so a typo costs nothing. Setup then connects **read-only**,
 enumerates your devices, disconnects, and writes an unreviewed profile to
 `%APPDATA%\microclaw\safety_config.yaml`. It asks you to confirm the hazardous
 limits — stage travel, exposure, acquisition budgets — and it never invents one.
@@ -126,8 +127,14 @@ Under `uv`, prefix the commands below with `uv run` (`uv run microclaw ...`,
 `uv run pytest`). In an activated conda environment they work as written.
 
 **Then build a safety profile for this rig.** Micro-Manager must be running with
-its ZMQ server on (see step 1 of the Windows install). The short path is one
-command:
+**Tools → Options → Run pycro-manager server on port 4827** ticked. To check that
+without starting anything:
+
+```bash
+microclaw check-bridge          # exits 0 only when the bridge answers a real request
+```
+
+The short path is then one command:
 
 ```bash
 microclaw first-launch-setup --out safety_config.yaml   # read-only; disconnects before the interview
