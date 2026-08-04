@@ -138,7 +138,7 @@ The short path is then one command:
 
 ```bash
 microclaw first-launch-setup --out safety_config.yaml   # read-only; disconnects before the interview
-$EDITOR safety_config.yaml                              # review every limit, then set reviewed: true
+# Open safety_config.yaml in your editor. Review every limit, then set `reviewed: true`.
 microclaw check-config safety_config.yaml               # offline; exits 0 when it is ready
 microclaw --safety-config safety_config.yaml serve      # top-level flags go BEFORE the subcommand
 ```
@@ -152,11 +152,56 @@ microclaw inspect-rig --out rig-inventory
 microclaw first-launch-setup --inventory rig-inventory/inventory.json --out safety_config.yaml
 ```
 
-`microclaw init` runs the same setup at the per-user path
-(`~/.config/microclaw/safety_config.yaml`, or `%APPDATA%\microclaw\` on Windows),
-which is the file every command loads when you pass no `--safety-config`. Use it
-if you want the zero-argument launch to work; use an explicit path if you juggle
-several rigs.
+### Make it the default, and get the desktop icon
+
+The commands above pass `--safety-config` every time. Once the profile is
+reviewed and you want the same zero-argument launch the Windows installer
+produces, move it to the per-user path — the file every command loads when you
+pass no `--safety-config`:
+
+```powershell
+# Windows (PowerShell)
+New-Item -ItemType Directory -Force "$env:APPDATA\microclaw" | Out-Null
+Move-Item safety_config.yaml "$env:APPDATA\microclaw\safety_config.yaml"
+```
+
+```bash
+# macOS / Linux
+mkdir -p ~/.config/microclaw
+mv safety_config.yaml ~/.config/microclaw/safety_config.yaml
+```
+
+Confirm it landed where Microclaw looks, then launch with no flags:
+
+```bash
+microclaw check-config      # no path argument: validates the per-user profile
+microclaw serve             # browser GUI
+microclaw                   # REPL
+```
+
+`check-config` prints the path it resolved on its first line, which is the real
+check — that is also how to find the right directory if `XDG_CONFIG_HOME` is set
+on Linux and `~/.config` is not where Microclaw looks.
+
+Finally, put the same icon on your desktop that the Windows installer creates:
+
+```bash
+microclaw install-shortcut
+```
+
+**The shortcut points at the environment you run this from.** It resolves
+*this* interpreter's `microclaw`, so a shortcut made inside `.venv` breaks if you
+delete or rebuild that venv — re-run `install-shortcut` after moving the
+environment. `--dry-run` prints the target without writing anything. On macOS and
+Linux the command exits cleanly and tells you desktop shortcuts are Windows only;
+use `microclaw serve` from a terminal there.
+
+### Two shortcuts worth knowing
+
+`microclaw init` runs the same setup and writes straight to that per-user path,
+so it skips the move entirely. Use the explicit `--out` path above when you
+juggle several rigs and want the profile beside the checkout; use `init` when
+this machine drives one microscope.
 
 `microclaw init --from-example` copies the packaged fictional example for
 deliberate hand-authoring. Its limits match no real microscope, so `check-config`
