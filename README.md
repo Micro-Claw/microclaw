@@ -24,8 +24,10 @@ User (natural language) → AgentLoop (Anthropic API) → ToolRegistry → Safet
 
 ## Install (Windows)
 
-You do not need Python. The installer brings its own; after installation, one
-terminal command starts the rig-specific safety setup.
+You do not need Python; the installer brings its own. Installing is steps 1–3.
+**Steps 4 and 5 are what make Microclaw usable**, and they need your microscope
+in front of you — the installer deliberately does not touch your hardware, so
+nothing about your rig is known until you run setup yourself.
 
 **1. Install Micro-Manager and turn on its server.**
 Install [Micro-Manager 2.0](https://micro-manager.org/Download_Micro-Manager_Latest_Release)
@@ -42,18 +44,46 @@ downloaded file and choose **Extract All**.
 
 It installs everything into `%LOCALAPPDATA%\microclaw` — no administrator rights,
 nothing else on your machine is touched — and puts a **Microclaw** icon on your
-desktop. It takes a few minutes.
+desktop. It takes a few minutes. When it finishes it prints the command for step
+4; leave that window open, or copy the command.
 
 > Windows may show a blue **"Windows protected your PC"** banner, because the file
 > came from the internet. Click **More info → Run anyway**.
 
+> **The installer does not create your safety limits, and the desktop icon will
+> not work until you have done step 4.** That is deliberate: the limits describe
+> *your* microscope, reading them off the rig means connecting to it, and an
+> installer is the wrong moment to do that — Micro-Manager may not even be
+> running yet. Until setup has run, the icon opens a console that says
+> `No safety config` and tells you to run `microclaw init`.
+
 **4. Generate and review your safety profile.**
-With Micro-Manager and its ZMQ server running, open a terminal and run the exact
-setup command printed by the installer. It ends in `microclaw.exe init` and offers
-restricted read-only rig inspection. Setup disconnects and writes an unreviewed
-rig-specific profile. Review every declaration and limit, change `reviewed: false`
-to `reviewed: true`, run `microclaw check-config` on it, then restart Microclaw.
-Microclaw refuses to start until the profile is reviewed.
+Micro-Manager must be open with its ZMQ server enabled (step 1). Open a terminal
+— PowerShell or Command Prompt — and run the command the installer printed. It is:
+
+```
+"%LOCALAPPDATA%\microclaw\env\Scripts\microclaw.exe" init
+```
+
+The quotes matter, and the full path is needed because the installer does not put
+`microclaw` on your `PATH`. It offers to run first-launch setup; answer **y**.
+
+Setup connects **read-only**, enumerates your devices, disconnects, and writes an
+unreviewed profile to `%APPDATA%\microclaw\safety_config.yaml`. It asks you to
+confirm the hazardous limits — stage travel, exposure, acquisition budgets — and
+it never invents one. It starts no agent and exposes no tools that move anything.
+
+Then **open that file and read it**. Every limit in it is a claim about your
+microscope that only you can check. When you are satisfied, change
+`reviewed: false` to `reviewed: true` at the top. Confirm it is valid:
+
+```
+"%LOCALAPPDATA%\microclaw\env\Scripts\microclaw.exe" check-config
+```
+
+It reports every problem at once, needs no microscope connection, and exits `0`
+when the file is ready. A note that some limits still match the packaged example
+is a prompt to double-check those values, not a refusal.
 
 **5. Double-click the Microclaw icon.**
 A console window opens — that is the server; closing it stops Microclaw — and a
@@ -61,14 +91,22 @@ browser window follows. It will ask for an Anthropic API key the first time.
 
 To upgrade, download the ZIP again and double-click `install.bat` again. It is
 safe to re-run: it upgrades in place, and leaves your safety limits and API key
-alone. **Close Microclaw first** — while its console window is open, Windows
-holds the installed files locked and the upgrade will fail.
+alone. You do **not** repeat step 4 on an upgrade. **Close Microclaw first** —
+while its console window is open, Windows holds the installed files locked and
+the upgrade will fail.
 
 ### Running it later
 
-The desktop icon is the whole interface. If you'd rather use a terminal, the
-commands are `microclaw serve` for the browser GUI and `microclaw` for the REPL —
-see [CLI options](#cli-options).
+The desktop icon is the whole interface, and you should not need a terminal
+again. If you'd rather use one, note the installer does not put `microclaw` on
+your `PATH`, so spell out the same path as step 4:
+
+```
+"%LOCALAPPDATA%\microclaw\env\Scripts\microclaw.exe" serve   # browser GUI
+"%LOCALAPPDATA%\microclaw\env\Scripts\microclaw.exe"         # REPL
+```
+
+See [CLI options](#cli-options) for the flags, which go *before* the subcommand.
 
 ## Install from source (developers)
 
@@ -82,25 +120,45 @@ uv run pytest
 ```
 
 An existing conda environment works fine too — `pip install -e ".[serve,test]"`
-inside it does the same thing. Then:
+inside it does the same thing.
+
+Under `uv`, prefix the commands below with `uv run` (`uv run microclaw ...`,
+`uv run pytest`). In an activated conda environment they work as written.
+
+**Then build a safety profile for this rig.** Micro-Manager must be running with
+its ZMQ server on (see step 1 of the Windows install). The short path is one
+command:
+
+```bash
+microclaw first-launch-setup --out safety_config.yaml   # read-only; disconnects before the interview
+$EDITOR safety_config.yaml                              # review every limit, then set reviewed: true
+microclaw check-config safety_config.yaml               # offline; exits 0 when it is ready
+microclaw --safety-config safety_config.yaml serve      # top-level flags go BEFORE the subcommand
+```
+
+To keep the raw enumeration as evidence — useful when you want to diff what the
+rig reported against what you declared — split it in two. With `--inventory`,
+setup consumes the saved file and does not connect at all:
 
 ```bash
 microclaw inspect-rig --out rig-inventory
 microclaw first-launch-setup --inventory rig-inventory/inventory.json --out safety_config.yaml
-microclaw check-config safety_config.yaml
-microclaw --safety-config safety_config.yaml serve
 ```
 
-`inspect-rig` records read-only inventory evidence. `first-launch-setup` consumes
-that inventory (or enumerates the running Core itself), disconnects, and writes an
-unreviewed rig-specific profile. Human-review the entire profile, change
-`reviewed: false` to `reviewed: true`, validate it offline with `check-config`, and
-restart Microclaw. `microclaw init` offers the same setup flow at the per-user
-path (`~/.config/microclaw/`, or `%APPDATA%\microclaw\` on Windows).
-`init --from-example` is only for deliberate hand-authoring from fictional values.
+`microclaw init` runs the same setup at the per-user path
+(`~/.config/microclaw/safety_config.yaml`, or `%APPDATA%\microclaw\` on Windows),
+which is the file every command loads when you pass no `--safety-config`. Use it
+if you want the zero-argument launch to work; use an explicit path if you juggle
+several rigs.
+
+`microclaw init --from-example` copies the packaged fictional example for
+deliberate hand-authoring. Its limits match no real microscope, so `check-config`
+flags any you leave untouched.
 
 You will also need an `ANTHROPIC_API_KEY`: set it in the environment, or let the
-browser GUI collect and store it (see [Browser GUI](#browser-gui)).
+browser GUI collect and store it (see [Browser GUI](#browser-gui)). A key stored
+from the browser is visible to the REPL too — resolution is environment variable,
+then keyring, then `config.toml`, for both.
 
 ### Where things live
 
@@ -370,57 +428,3 @@ Integration tests require a running MM instance with the Demo configuration:
 ```bash
 MM_RUNNING=1 pytest -m integration
 ```
-
-## Available tools
-
-| Tool | Description |
-|---|---|
-| `snap_and_analyze` | Snap, display in the MM viewer, and return focus metric, intensity stats, and optional thumbnail (display only; use `run_timelapse` with `n_frames=1` to save) |
-| `start_live_view` / `stop_live_view` | Live camera preview |
-| `set_exposure` / `get_exposure` | Camera exposure |
-| `get_roi` / `set_roi` / `clear_roi` | Camera region of interest |
-| `get_pixel_size` | Effective pixel size at the sample plane (µm) |
-| `move_stage_xy` / `get_xy_position` | XY stage |
-| `move_stage_z` / `get_z_position` | Z (focus) stage |
-| `list_stages` / `get_stage_position` / `move_named_stage` | Any single-axis stage addressed by label (guarded by per-device `named_stages` limits) |
-| `calibrate_stage_to_camera` | Measure the stage↔camera affine (pixel size, rotation, axis flips) in ~4 snaps |
-| `find_features` / `center_feature` | Spot count, centroid, offset from centre; closed-loop centring |
-| `set_channel` / `get_available_channels` | Channel presets |
-| `set_device_property` / `get_device_property` | Raw device properties |
-| `list_devices` | List loaded devices |
-| `list_device_properties` | List all property names for a device |
-| `get_device_property_info` | Type, limits, and allowed values for a property |
-| `get_full_device_state` | All property values for a device |
-| `get_system_state` | Composite state snapshot |
-| `run_autofocus` | Software autofocus Z-sweep (reports both passes; refuses to move on a flat metric curve) |
-| `get_focus_lock_state` / `set_focus_lock` | Read/drive the hardware focus lock (via the EMU map) |
-| `run_zstack` | Z-stack acquisition |
-| `run_timelapse` | Timelapse acquisition |
-| `export_dataset_as_tiff` | Export NDTiff dataset to ImageJ TIFF |
-| `mark_position` | Mark current stage position (mirrored into MM's Position List Manager) |
-| `get_position_list` | Return all marked positions |
-| `go_to_position` | Move stage to a named position |
-| `delete_position` | Delete a named position |
-| `clear_position_list` | Clear all positions |
-| `save_position_list` | Save MM's native position list to an interoperable `.pos` file |
-| `load_position_list` | Transactionally load a native Micro-Manager position file |
-| `import_mm_positions` | Import positions from the MM GUI position list |
-| `run_multiposition_acquisition` | Visit each position and run snap/zstack/timelapse |
-| `run_tile_acquisition` | Acquire a rows×cols tile grid centered on current stage position |
-| `run_multiposition_with_autofocus` | Same, with software autofocus at each position. `protocol="timelapse"` requires explicit `protocol_params` (`n_frames` and `interval_s`) because unspecified work cannot be planned or reserved. |
-| `run_adaptive_zstack` | Z-stack with a hook strategy for adaptive behaviour |
-| `run_adaptive_timelapse` | Timelapse with a hook strategy for adaptive behaviour |
-| `read_hook_log` | Read hook output log after an acquisition |
-| `list_hooks` | List pre-coded and saved hook strategies |
-| `get_hook_documentation` | Return the pycro-manager hook API reference (called automatically before hook generation) |
-| `generate_and_save_hook` | Validate and save a hook script |
-| `read_hook_from_file` | Read and AST-scan a user-provided hook file |
-| `list_mm_plugins` | List installed MM plugins grouped by role (autofocus, processor, …) for use as hooks |
-| `get_smlm_documentation` | Return the SMLM protocol reference (dSTORM/PALM/PAINT parameters, acquisition protocol, drift correction, post-processing, pitfalls) |
-| `check_emu_installed` | Detect whether EMU and htSMLM are installed by scanning the Micro-Manager plugins directory for their JARs |
-| `get_htsmlm_documentation` | Return the htSMLM/EMU reference (UIProperty inventory, control workflow, panel descriptions) — only called if EMU/htSMLM is detected or user mentions it |
-| `get_emu_configuration` | Read the EMU config and return the structured map (lasers by slot, filter-wheel state table, focus lock) for the active htSMLM configuration — only called if EMU is detected or user mentions it |
-| `get_emu_laser_map` / `resolve_emu_device` | Slot→laser table (each slot's own enable/power/trigger lines); resolve a semantic name to a device-property |
-| `save_knowledge` | Save a non-standard fact about a sample, device, or strategy to the persistent knowledge base |
-| `get_knowledge` | Retrieve entries from the persistent knowledge base |
-| `delete_knowledge` | Remove a single entry from the persistent knowledge base |
