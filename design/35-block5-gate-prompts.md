@@ -12,13 +12,26 @@ demo run of this gate (2026-08-04) substituted `uv run microclaw` into fourteen
 commands correctly and typed `uv runmicroclaw` in the fifteenth, so that step
 recorded a `uv` usage error instead of the check it was meant to perform. That is
 the Block 4d placeholder lesson, which this runbook's own header states and then
-broke for the invocation itself. Run **one** of these lines in G0 before anything
-else, and use `mc` everywhere afterwards:
+broke for the invocation itself.
+
+**Set `$Run` once, at the top of G0, before anything else.** Everything below goes
+through `$Run`, `mc`, or `py`; no other line in this runbook names the interpreter.
 
 ```powershell
-function mc { uv run microclaw @args }   # uv-managed installs (the demo machine)
-function mc { microclaw @args }          # a direct install on PATH
+$Run = "uv run"     # uv-managed install (the demo machine)
+# $Run = ""         # microclaw and python already on PATH -- uncomment instead
+
+function mc { if ($Run) { uv run microclaw @args } else { microclaw @args } }
+function py { if ($Run) { uv run python @args }    else { python @args } }
 ```
+
+`py` exists because **the interpreter needs the same treatment as `microclaw`.**
+A uv-managed install runs pytest as `uv run python -m pytest`; a bare
+`python -m pytest` there tests whatever interpreter happens to be on PATH, which
+is not the environment under gate. The first correction of this runbook wrapped
+only `microclaw` and left `python` bare, and separately hardcoded `uv run` into
+the one command that could not call the function — both caught by the operator
+on 2026-08-04.
 
 `$LASTEXITCODE` still comes from the real executable inside the function, so every
 exit-code check below stays valid.
@@ -51,7 +64,7 @@ git merge-base --is-ancestor 6262acb HEAD > "$Evidence\implementation-ancestor.t
 echo $LASTEXITCODE > "$Evidence\implementation-ancestor-exit.txt"
 git merge-base --is-ancestor 577acc4 HEAD > "$Evidence\installer-fix-ancestor.txt" 2>&1
 echo $LASTEXITCODE > "$Evidence\installer-fix-ancestor-exit.txt"
-python -m pytest -q > "$Evidence\pytest.txt" 2>&1
+py -m pytest -q > "$Evidence\pytest.txt" 2>&1
 echo $LASTEXITCODE > "$Evidence\pytest-exit.txt"
 Copy-Item "design\35-block5-gate-prompts.md" "$Evidence\runbook.md"
 ```
@@ -134,7 +147,7 @@ immediately without reading the piped line or writing a config:
 
 ```powershell
 $NonInteractive = Join-Path $Evidence "noninteractive-must-not-exist.yaml"
-cmd /c "echo unused| uv run microclaw init --path `"$NonInteractive`" --no-edit > `"$Evidence\init-noninteractive.txt`" 2>&1"
+cmd /c "echo unused| $Run microclaw init --path `"$NonInteractive`" --no-edit > `"$Evidence\init-noninteractive.txt`" 2>&1"
 echo $LASTEXITCODE > "$Evidence\init-noninteractive-exit.txt"
 Test-Path $NonInteractive > "$Evidence\init-noninteractive-wrote.txt"
 ```
