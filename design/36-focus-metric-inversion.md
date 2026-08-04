@@ -5,6 +5,11 @@ evidence folder `m5-autofocus-fail`, with the `safety_config.yaml` in play).
 Second occurrence of the same defect; the first was design/28 F2 (Nestor,
 2026-07-17), which examined it and concluded it was not a metric-sign bug.
 
+This document is the mechanism and the fix. The session it came out of is
+recorded in [design/37](37-m5-autofocus-session-findings.md), whose Finding 1
+this is, and which also covers the hardware-motion plugin wall the same session
+hit and the one behavioural miss it exposed.
+
 **It was a metric-sign bug.** This document establishes the mechanism, records
 why the earlier analysis was wrong in a way that was hard to see, and fixes it.
 
