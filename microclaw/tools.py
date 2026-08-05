@@ -2708,6 +2708,7 @@ def run_multiposition_with_autofocus(
     ) if value is None]
     if missing:
         return {"error": f"Missing required arguments: {missing}."}
+    save_dir = guard.resolve_in_workspace(save_dir)  # before any forwarded move
     if autofocus_method != "coarse_then_fine":
         return {"error": "The deprecated wrapper only forwards coarse_then_fine autofocus."}
     if protocol == "snap":
@@ -2759,7 +2760,9 @@ def run_multiposition_with_autofocus(
         "deprecation": (
             "run_multiposition_with_autofocus is deprecated; use "
             "run_multiposition_acquisition(..., "
-            "hook_strategy='autofocus_per_position')."
+            "hook_strategy='autofocus_per_position'). This forwarding path writes "
+            "one dataset with a position axis; the former implementation wrote one "
+            "dataset per position."
         ),
     }
 
@@ -2901,6 +2904,11 @@ def _plan_with_hook_dose(plan: AcquisitionPlan, hook: Any) -> AcquisitionPlan:
     extra_per_event = getattr(
         hook, "planned_extra_exposures_per_event", lambda: 0
     )()
+    # Non-dose hooks leave the plan completely transparent. Besides avoiding
+    # needless reconstruction, this preserves capability-confirmation ordering
+    # without adding a new plan-inspection contract to that path.
+    if extra_per_event == 0:
+        return plan
     extra = plan.frames * extra_per_event
     return AcquisitionPlan(
         frames=plan.frames + extra,

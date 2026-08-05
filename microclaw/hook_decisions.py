@@ -354,7 +354,10 @@ class UntrustedHookAdapter:
             if ctx is None:
                 self._refuse(metadata, action, "no artifact budget was authorized for this run")
                 return None
-            if ctx["state"].get("frame_artifacts", 0) >= 1:
+            # Only a CompositeHook installs this per-frame counter. A standalone
+            # adapter already enforces HookResult's one-artifact rule per call.
+            if ("frame_artifacts" in ctx["state"] and
+                    ctx["state"]["frame_artifacts"] >= 1):
                 self._refuse(
                     metadata, action,
                     "another hook already emitted the run's one artifact for this frame",
@@ -366,9 +369,8 @@ class UntrustedHookAdapter:
             except (OSError, ValueError) as exc:
                 self._refuse(metadata, action, str(exc))
                 return None
-            ctx["state"]["frame_artifacts"] = (
-                ctx["state"].get("frame_artifacts", 0) + 1
-            )
+            if "frame_artifacts" in ctx["state"]:
+                ctx["state"]["frame_artifacts"] += 1
             self._accept(metadata, action, "parent wrote bounded artifact", **info)
             return info["sha256"]
         if isinstance(action, SetIlluminationPower):

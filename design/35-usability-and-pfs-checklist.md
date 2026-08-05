@@ -3960,7 +3960,10 @@ This is an inventory, not permission to close with unresolved blank work. Block
   launder controller, guard, queue, or path access. Reservations add the worst-
   case coarse and fine sweep planes using the exact plane-count helper called by
   `sweep_autofocus`; early termination closes under-spent. The legacy autofocus
-  tool remains as a deprecated forwarding name. `RequestAutofocus` remains
+  tool remains as a deprecated forwarding name. Forwarding deliberately changes
+  its disk layout from one dataset per position to one dataset with a `position`
+  axis; the result deprecation note and tool schema state that compatibility
+  consequence explicitly. Display-only `snap` is not forwarded. `RequestAutofocus` remains
   unhonored. For the rig gate, repeat G2's five-tile plus, autofocus parameters,
   live-view check, position-axis inspection, and per-field Z review, adding the
   saved mosaic stitcher and checking its artifact plus the reservation report.

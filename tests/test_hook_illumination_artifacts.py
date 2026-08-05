@@ -95,6 +95,44 @@ def test_hook_params_cannot_smuggle_capabilities(monkeypatch, smuggled):
     assert adapter.hook.kwargs == {}
 
 
+def test_composition_does_not_launder_ctrl_guard_queue_or_hash_check(monkeypatch):
+    received = {}
+
+    class SavedHook:
+        def __init__(self, **kwargs):
+            received.update(kwargs)
+
+        def analyze_frame(self, _image, _metadata):
+            return HookResult({})
+
+    monkeypatch.setattr("microclaw.hook_manager.list_saved_hooks", lambda: ["saved"])
+    monkeypatch.setattr(
+        "microclaw.hook_manager.load_hook_class", lambda name: SavedHook
+    )
+    ctrl, guard = object(), _guard()
+    composed = tools._resolve_hooks(
+        ctrl, guard,
+        ["snr_observer", "saved"],
+        [{}, {"ctrl": ctrl, "guard": guard, "event_queue": object()}],
+        None,
+    )
+
+    assert received == {}
+    assert isinstance(composed.named_hooks[1][1], UntrustedHookAdapter)
+    # load_hook_class is the manifest/hash-verifying loader. Composition must
+    # use it rather than importing or constructing saved source directly.
+    assert composed.named_hooks[1][0] == "saved"
+
+    def hash_refusal(_name):
+        raise ValueError("Saved hook hash does not match its manifest")
+
+    monkeypatch.setattr("microclaw.hook_manager.load_hook_class", hash_refusal)
+    with pytest.raises(ValueError, match="hash does not match"):
+        tools._resolve_hooks(
+            ctrl, guard, ["snr_observer", "saved"], [{}, {}], None
+        )
+
+
 @pytest.mark.parametrize("name,class_name", [
     ("filament_position_filter", "FilamentPositionFilter"),
     ("mosaic_cell_counter", "MosaicCellCounter"),

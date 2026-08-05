@@ -66,6 +66,32 @@ def test_composite_observers_share_original_pixels_discard_wins_and_log_is_attri
     assert "one artifact for this frame" in refused[0]["reason"]
 
 
+def test_single_hook_can_emit_one_artifact_on_each_of_five_frames(tmp_path):
+    class PerFrameEmitter:
+        def __init__(self):
+            self.frame = 0
+
+        def analyze_frame(self, _image, _metadata):
+            filename = f"frame-{self.frame}.bin"
+            self.frame += 1
+            return HookResult({}, (EmitArtifact(filename, b"x"),))
+
+    adapter = UntrustedHookAdapter(PerFrameEmitter())
+    artifact_dir = tmp_path / "artifacts"
+    adapter.configure_artifacts(
+        target_dir=artifact_dir, max_artifact_bytes=1,
+        max_count=5, max_total_bytes=5,
+    )
+    for frame in range(5):
+        assert adapter.image_process_fn(
+            np.zeros((1, 1), dtype=np.uint8), {"Axes": {"time": frame}}, object()
+        ) is not None
+
+    assert sorted(path.name for path in artifact_dir.iterdir()) == [
+        f"frame-{frame}.bin" for frame in range(5)
+    ]
+
+
 def test_composite_post_hardware_chains_and_rejects_none():
     class Add:
         def __init__(self, amount): self.amount = amount
