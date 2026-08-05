@@ -96,6 +96,19 @@ Currently wired by Microclaw's acquisition runner for reviewed built-ins:
   image_process_fn       callable(image, metadata, event_queue) -> tuple | None
   post_hardware_hook_fn  callable(event) -> dict   (ALWAYS return the event)
 
+``run_multiposition_acquisition`` accepts one hook name or an ordered list.
+Post-hardware callbacks run in declared order and each receives the event
+returned by its predecessor; returning ``None`` is a defect and aborts loudly.
+Image observers receive independent pixel copies of the same original frame,
+so mutations never flow between analyses, and a discard from any observer wins
+(for storage only, never dose). The one-artifact-per-frame rule applies across
+the composition: after the first accepted artifact, later proposals for that
+frame are refused and audited. Artifact limits and the hook log are per run,
+and composed log entries identify their ``hook_strategy``. Saved hooks are
+still resolved independently, hash-checked, stripped of forbidden parameters,
+and ``UntrustedHookAdapter``-wrapped; composition grants no controller, guard,
+path, or event-queue capability.
+
 Generated and user-saved hooks instead implement
 `analyze_frame(image, metadata) -> HookResult | None`. They never receive ctrl,
 guard, credentials, paths/directories, runner queues, or the pycro-manager event queue. Legacy saved
@@ -178,6 +191,10 @@ refused; the corresponding `hook_action` records are authoritative.
 DiscardFrame returns None from the parent image processor after recording the
 observation. The position is still moved to and still exposed: discard saves storage,
 not dose. It does not skip acquisition or reduce dose (design/27).
+
+``RequestAutofocus`` remains unhonored by every runner. Compose the reviewed
+``autofocus_per_position`` hook instead; the decision proposal is not a working
+autofocus mechanism.
 
 ### image_process_fn(image: np.ndarray, metadata: dict, event_queue) -> tuple | None
 

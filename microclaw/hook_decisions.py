@@ -354,12 +354,21 @@ class UntrustedHookAdapter:
             if ctx is None:
                 self._refuse(metadata, action, "no artifact budget was authorized for this run")
                 return None
+            if ctx["state"].get("frame_artifacts", 0) >= 1:
+                self._refuse(
+                    metadata, action,
+                    "another hook already emitted the run's one artifact for this frame",
+                )
+                return None
             try:
                 info = write_hook_artifact(**ctx, filename=action.filename,
                                            payload=action.payload)
             except (OSError, ValueError) as exc:
                 self._refuse(metadata, action, str(exc))
                 return None
+            ctx["state"]["frame_artifacts"] = (
+                ctx["state"].get("frame_artifacts", 0) + 1
+            )
             self._accept(metadata, action, "parent wrote bounded artifact", **info)
             return info["sha256"]
         if isinstance(action, SetIlluminationPower):
@@ -553,3 +562,95 @@ class UntrustedHookAdapter:
         except Exception as exc:
             self._record(metadata, event="hook_failure", reason=str(exc))
             raise
+
+
+class CompositeHook:
+    """Compose independently-resolved hooks without combining their authority.
+
+    Each image observer receives its own pixel copy of the original frame.  A
+    discard by any observer wins.  Child audit records are merged into one
+    run log and attributed by strategy name.
+    """
+
+    def __init__(self, named_hooks: list[tuple[str, Any]], log_path: str | None) -> None:
+        self.named_hooks = named_hooks
+        self.log_path = log_path
+        self._log: list[dict[str, Any]] = []
+        self._seen = [0] * len(named_hooks)
+        self._artifact_state: dict[str, int] | None = None
+
+    def _child_log(self, hook: Any) -> list[dict[str, Any]]:
+        if isinstance(hook, UntrustedHookAdapter):
+            return hook._log
+        if hasattr(hook, "get_summary"):
+            return hook.get_summary()
+        return []
+
+    def _sync(self, index: int) -> None:
+        name, hook = self.named_hooks[index]
+        records = self._child_log(hook)
+        for record in records[self._seen[index]:]:
+            self._log.append({"hook_strategy": name, **record})
+        self._seen[index] = len(records)
+        if self.log_path:
+            Path(self.log_path).write_text(
+                json.dumps(self._log, indent=2, allow_nan=False), encoding="utf-8"
+            )
+
+    def post_hardware_hook_fn(self, event: dict) -> dict:
+        current = event
+        for index, (_name, hook) in enumerate(self.named_hooks):
+            callback = getattr(hook, "post_hardware_hook_fn", None)
+            if callback is None:
+                continue
+            try:
+                current = callback(current)
+            finally:
+                self._sync(index)
+            if current is None:
+                raise RuntimeError(
+                    f"post_hardware_hook_fn for hook {_name!r} returned None; "
+                    "every post-hardware hook must return the event"
+                )
+        return current
+
+    def image_process_fn(self, image, metadata, event_queue):
+        if self._artifact_state is not None:
+            self._artifact_state["frame_artifacts"] = 0
+        discard = False
+        for index, (_name, hook) in enumerate(self.named_hooks):
+            callback = getattr(hook, "image_process_fn", None)
+            if callback is None:
+                continue
+            observer_image = np.array(image, copy=True)
+            try:
+                returned = callback(observer_image, dict(metadata), event_queue)
+            finally:
+                self._sync(index)
+            discard = discard or returned is None
+        return None if discard else (image, metadata)
+
+    def configure_artifacts(self, *, target_dir: str | Path, **limits: int) -> None:
+        adapters = [h for _n, h in self.named_hooks
+                    if isinstance(h, UntrustedHookAdapter)]
+        state = {"count": 0, "total_bytes": 0, "frame_artifacts": 0}
+        for hook in adapters:
+            hook.configure_artifacts(target_dir=target_dir, **limits)
+            hook._artifact_context["state"] = state
+        self._artifact_state = state
+
+    def bind_artifact_directory(self, target_dir: str | Path) -> None:
+        for _name, hook in self.named_hooks:
+            if hasattr(hook, "bind_artifact_directory"):
+                hook.bind_artifact_directory(target_dir)
+
+    def bind_reservation(self, reservation) -> None:
+        for _name, hook in self.named_hooks:
+            if hasattr(hook, "bind_reservation"):
+                hook.bind_reservation(reservation)
+
+    def planned_extra_exposures_per_event(self) -> int:
+        return sum(
+            getattr(hook, "planned_extra_exposures_per_event", lambda: 0)()
+            for _name, hook in self.named_hooks
+        )

@@ -46,6 +46,25 @@ class AutofocusResult:
 MIN_CONTRAST = 0.15
 
 
+def sweep_plane_count(z_start_um: float, z_end_um: float, z_step_um: float) -> int:
+    """Return the exact number of camera snaps made by ``sweep_autofocus``."""
+    return max(int(round(abs(z_end_um - z_start_um) / z_step_um)) + 1, 1)
+
+
+def coarse_then_fine_plane_count(
+    z_range_um: float, coarse_step_um: float, fine_step_um: float
+) -> int:
+    """Worst-case snaps for both autofocus passes.
+
+    The fine window is at most two coarse steps wide and is clamped to the
+    coarse window.  Planning the maximum is intentional: a flat coarse curve
+    may stop before the fine pass and close the reservation under-spent.
+    """
+    coarse = sweep_plane_count(-z_range_um / 2, z_range_um / 2, coarse_step_um)
+    fine_span = min(z_range_um, 2 * coarse_step_um)
+    return coarse + sweep_plane_count(0, fine_span, fine_step_um)
+
+
 def curve_contrast(metric_values) -> float:
     """Dynamic range of the metric curve relative to its typical level:
     (max - min) / median.
@@ -86,7 +105,7 @@ def sweep_autofocus(
     focus_device = ctrl.core.get_focus_device()
     # linspace, not arange: float arange accumulates error and can drop or
     # duplicate the endpoint.
-    n = max(int(round(abs(z_end_um - z_start_um) / z_step_um)) + 1, 1)
+    n = sweep_plane_count(z_start_um, z_end_um, z_step_um)
     z_positions = [float(z) for z in np.linspace(z_start_um, z_end_um, n)]
     metric_values = []
 

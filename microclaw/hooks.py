@@ -248,6 +248,18 @@ class AutofocusHook(HookBase):
         self.z_step_um = z_step_um
         self.settle_ms = settle_ms
         self._autofocus_fn = coarse_then_fine_autofocus
+        self._reservation = None
+
+    def bind_reservation(self, reservation) -> None:
+        self._reservation = reservation
+
+    def planned_extra_exposures_per_event(self) -> int:
+        """Worst-case autofocus snaps made before each planned camera frame."""
+        from microclaw.autofocus import coarse_then_fine_plane_count
+        coarse_step = max(self.z_step_um * 5, 1.0)
+        return coarse_then_fine_plane_count(
+            self.z_range_um, coarse_step, self.z_step_um
+        )
 
     def post_hardware_hook_fn(self, event: dict) -> dict:
         """Called after hardware moves to event position, before image capture."""
@@ -265,6 +277,12 @@ class AutofocusHook(HookBase):
         result = self._autofocus_fn(
             self.ctrl, self.z_range_um, coarse_step, self.z_step_um, self.settle_ms
         )
+        if self._reservation is not None:
+            actual_sweeps = len(result.coarse.z_positions)
+            if result.fine is not None:
+                actual_sweeps += len(result.fine.z_positions)
+            for _ in range(actual_sweeps):
+                self._reservation.commit_frame()
         self.log_event(
             event,
             best_z_um=round(result.final_z_um, 3),

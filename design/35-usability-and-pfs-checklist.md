@@ -3951,7 +3951,21 @@ schedule them or record a reason at block 12.
 This is an inventory, not permission to close with unresolved blank work. Block
 12 assigns every row one of the explicit dispositions above.
 
-- **Hooks cannot be composed: `hook_strategy` takes exactly one.** From design/38
+- **Resolved: hooks compose and autofocus sweep dose is reserved.** A hook name
+  or ordered list now runs in one acquisition. Post-hardware callbacks chain;
+  image observers see separate copies of the original frame; any discard wins.
+  The one-artifact-per-frame rule, `artifact_limits`, and audit log are per run,
+  with hook attribution on composed entries. Saved hooks still cross their own
+  hash check and `UntrustedHookAdapter` boundary, so trusted autofocus cannot
+  launder controller, guard, queue, or path access. Reservations add the worst-
+  case coarse and fine sweep planes using the exact plane-count helper called by
+  `sweep_autofocus`; early termination closes under-spent. The legacy autofocus
+  tool remains as a deprecated forwarding name. `RequestAutofocus` remains
+  unhonored. For the rig gate, repeat G2's five-tile plus, autofocus parameters,
+  live-view check, position-axis inspection, and per-field Z review, adding the
+  saved mosaic stitcher and checking its artifact plus the reservation report.
+
+  Historical finding: from design/38
   (merged `088a9ad`). `run_multiposition_acquisition(hook_strategy="autofocus_per_position")`
   autofocuses per field and writes one `position`-axis dataset — proven on M5 in
   G2 — but it cannot *also* stitch or observe, because `hook_strategy` is a
@@ -3961,14 +3975,16 @@ This is an inventory, not permission to close with unresolved blank work. Block
   hook we like"). A written block prompt exists; it also folds in the next two
   rows. **Prerequisite for deprecating `run_multiposition_with_autofocus`.**
 
-- **The autofocus sweep's dose is not reserved.** The sweep runs inside
+- **Resolved with the composition block: the autofocus sweep's dose is now reserved.**
+  The original finding was that the sweep runs inside
   `post_hardware_hook_fn`, outside the event plan, so `_authorize_acquisition`
   never sees it; `_plan_protocol_repetitions` (`tools.py:2217`) counts only
   `_build_acquisition_events` frames. `sweep_autofocus` (`autofocus.py:76`) snaps
   once per plane at `n = round(span/z_step)+1`, and `AutofocusHook` runs a coarse
   then a fine pass. At M5 G2's settings that is tens of exposures per position
-  against a reservation covering one. Live bug, not specific to the deprecated
-  tool.
+  against a reservation covering one. The shared plane-count helper and hook-
+  aware plan now reserve and account those exposures for every runner using the
+  reviewed autofocus hook, not only the deprecated tool.
 
 - **design/38 F12 — a property write can report failure after it has succeeded.**
   On M5 G7.a, `set_device_property` on `All: 3. TTL Enable` raised

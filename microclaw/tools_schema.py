@@ -935,10 +935,13 @@ TOOLS: list[dict[str, Any]] = [
                     "default": False,
                 },
                 "hook_strategy": {
-                    "type": "string",
+                    "oneOf": [
+                        {"type": "string"},
+                        {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                    ],
                     "description": (
-                        "Hook strategy name (from list_hooks). Runs ONE acquisition "
-                        "across all positions with a single hook instance. Cannot be "
+                        "One hook name or an ordered list (from list_hooks). Runs ONE "
+                        "acquisition across all positions. Cannot be "
                         "combined with protocol='snap'. BATCHED: every position's "
                         "event is submitted before the first frame arrives, so the "
                         "hook can measure and log but can never stop the scan early "
@@ -946,8 +949,12 @@ TOOLS: list[dict[str, Any]] = [
                     ),
                 },
                 "hook_params": {
-                    "type": "object",
-                    "description": "Parameters passed to the hook constructor.",
+                    "oneOf": [
+                        {"type": "object"},
+                        {"type": "array", "items": {"oneOf": [
+                            {"type": "object"}, {"type": "null"}]}},
+                    ],
+                    "description": "For a hook list, an aligned list of objects or nulls.",
                 },
                 "log_path": {
                     "type": "string",
@@ -1090,12 +1097,12 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "run_multiposition_with_autofocus",
         "description": (
-            "Visit each position, run software autofocus, then run a per-position "
-            "protocol (snap, zstack, or timelapse). Supply either stored position_names "
-            "or raw positions; raw coordinates do not require mark_position first. "
-            "zstack/timelapse writes one dataset per position, not one dataset with a "
-            "`position` axis, so its output CANNOT be passed to "
-            "build_stage_coordinate_mosaic."
+            "DEPRECATED forwarding name. Use run_multiposition_acquisition with "
+            "hook_strategy='autofocus_per_position' (or an ordered hook list). "
+            "The forwarded run writes one dataset with a `position` axis. The old "
+            "implementation wrote one dataset per position, whose output CANNOT be "
+            "used as one position-axis acquisition; that duplicated path is gone. "
+            "Display-only snap is not supported by this deprecated wrapper."
         ),
         "input_schema": {
             "type": "object",
