@@ -151,39 +151,30 @@ a cold session resumes from the remote alone.
   against a string only 3 call sites emit. **Every one was found by running the
   pattern over captured evidence, and none was visible by reading it.** See the
   standing rule proposed for the post-merge design gate below.
-- **`main` is at `e1ad3cb`, re-measured 1492 passed / 99 skipped / 3 expected
-  warnings on macOS (2026-08-05)** — unchanged from `bb57e3c`, which only
-  gained design/41's docs. The older wording follows.
-- **`main` was at `bb57e3c`, measured 1492 passed / 99 skipped / 3 expected
-  warnings on macOS (2026-08-05).** The collected total grew from 1492 to 1591
-  when design/39 landed; the earlier boundary recorded 1393/99 at `d7c1d13`, and
-  Windows measured 1377/115 there — the same collection, with sixteen
-  platform-conditional tests skipping instead of passing. Judge a suite by
-  failures and collected total, not the passed count. Re-measure anyway;
-  a wildly different *total* means something else changed.
-- **Nothing is assigned, and there are no open branches or worktrees.** Every
-  Track A block — 1, 2, 3, 4, 4b, 4c, 4d, 4e, 4f, 4g, 4h, 5, 5b — is merged,
-  gated, ledger-closed, design-reconciled, and written up in `design/prompts.md`.
-  Branches are deleted locally *and* on `origin`;
-  `git log --oneline origin/main..main` is empty. The only other branches on
-  `origin` are `port-to-jpype-acqj` and two `florian/*`, none of which belong to
-  this checklist.
-- **Track A has zero open checklist items.** Verified item by item at this
-  boundary, not assumed from the block headings — blocks 4 and 4b had merged and
-  gated but left their item boxes unticked, and those were reconciled here
-  against the ledger and the shipped code rather than blanket-ticked.
-- **The next block is 6a** (`design34/focus-system-authorization`), the first of
-  the rescoped Track B. Order from there is 6a, then 6 and 7a, then 7b and 8.
-  **Track D may run concurrently** in its own worktree. Track C last.
-- **Track D grew on 2026-08-05 and its order changed.** The M5 smiley run
-  (`design/41-smiley-session-findings.md`) added blocks 41a, 41b, 41c, and folded
-  two more findings into block 13. **Within Track D, assign 41a before block 13**:
-  41a is what keeps a long session alive, and block 13's own rig gate is run
-  inside such a session. Track D order is 41a, 13, 41b, 41c — 13 and 41b may run
-  concurrently in separate worktrees once 41a is merged, since 13 is `tools.py`
-  and 41b is the emitters plus `image_analysis.py`.
-- **Nothing from design/41 is assigned or started.** The design doc and these
-  checklist entries are the whole of it; no branch exists.
+- **`main` is at `c799063`, measured 1511 passed / 99 skipped / 3 expected
+  warnings on macOS (2026-08-05), 1610 collected.** The history of that number:
+  1591 collected when design/39 landed, 1393/99 at `d7c1d13`, and Windows
+  measured 1377/115 there — the same collection, with sixteen
+  platform-conditional tests skipping instead of passing. **Judge a suite by
+  failures and collected total, not the passed count**, and re-measure rather
+  than trusting this line; a wildly different *total* means something else
+  changed. When reviewing a branch, diff **collected test IDs** against its start
+  commit — on block 6a five tests silently dropped out of collection while the
+  totals cancelled exactly, so the totals rule alone did not catch it.
+- **Track A is fully closed** — blocks 1, 2, 3, 4, 4b, 4c, 4d, 4e, 4f, 4g, 4h,
+  5, 5b are all merged, gated, ledger-closed, design-reconciled, and written up
+  in `design/prompts.md`, with their branches deleted locally *and* on `origin`.
+  Track A has zero open checklist items, verified item by item.
+- **The one open branch is 6a's**, above. Everything else on `origin` —
+  `port-to-jpype-acqj` and two `florian/*` — belongs to no checklist here.
+  `git log --oneline origin/main..main` is empty.
+- **Track B order from here is 6 and 7a** (both depend on 6a merging), then 7b
+  and 8. Track C last.
+- **Track D order is 41a, 13, 41b, 41c**, from the M5 smiley run
+  (`design/41-smiley-session-findings.md`), which also folded two findings into
+  block 13. **41a is merged**, so 13 and 41b are both assignable now and may run
+  concurrently with each other and with 6a — 13 is `tools.py`, 41b is the
+  emitters plus `image_analysis.py`. 41c follows 41b.
 
 ### Rescoped 2026-08-05 — read this before touching Track B
 
@@ -236,6 +227,19 @@ in the code — six of them, all the same shape: *a criterion that could not fai
 process, match patterns that also matched the prompt or the intro text). One
 would have failed a passing run. **Run every match pattern over a real captured
 transcript before shipping a runbook**, and review the runbook like code.
+
+**The rule that follows, adopted after block 6a took three rounds to ship a
+runbook (2026-08-05):** a gate criterion must be demonstrated to **fail on
+known-bad evidence and pass on known-good evidence** before the runbook ships.
+Both directions, or it is not validated. Block 6a's four runbook defects were
+each caught by exactly this and by nothing else — a PFS-write check that passed
+on the pre-fix baseline session, OR'd `Select-String` patterns summed to 9 on the
+operator's own correct profile against an expected 2, a `position_um` argument
+that does not exist so the check read 0 on any run, and a threshold of 4 against
+a string only 3 call sites emit. None was visible by reading. The known-bad
+evidence already exists for most gates: the rig sessions that motivated the
+block. The known-good evidence is usually the operator's current working
+profile.
 
 ### Where the rig evidence lives
 
