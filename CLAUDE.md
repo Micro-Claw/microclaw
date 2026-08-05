@@ -1,5 +1,56 @@
 # Microclaw — Claude Instructions
 
+## What Microclaw is
+
+Microclaw helps a user build **smart acquisition workflows for their own system
+and their own samples**. It is an assistant to a microscopist's session, not a
+replacement for it.
+
+- **Never anchor on one microscope.** M5, M2, the Nikon, and the demo config are
+  examples, not the target. Anything in `microclaw/` must work for a generic
+  Micro-Manager installation, which may drive any hardware, any device labels,
+  any config groups. Rig-specific facts belong in gate docs, design notes, and
+  rig profiles.
+- **Microclaw is easy to use.** Prefer the smaller surface, the shorter path,
+  the fewer arguments. If a feature needs a paragraph of explanation before a
+  user can call it, that is a design problem.
+- **The user owns the session.** Microclaw must open mid-session, and more than
+  once, without assuming it set the machine up or that it is the only client.
+  It augments a workflow rather than determining one, and takes charge of the
+  machine only when the user asks it to. Do not add exclusive locks, ownership
+  claims, or "microclaw session" state that a second launch would trip over.
+- **Image analysis lives in hooks.** Analysis runs as an acquisition hook so it
+  travels with the acquisition. Do not write custom image-analysis code outside
+  a hook; if analysis is needed somewhere else, that is a signal the hook
+  contract needs extending, not a reason to fork the code path.
+- **Everything must compile to a standalone pycro-manager script.** Every tool
+  call and every hook has to work as a composite inside plain pycro-manager, so
+  a user can walk away with a script that runs without Microclaw. Reject designs
+  that depend on Microclaw-only runtime state to execute an acquisition.
+
+## Engineering principles
+
+- **Fold into what exists.** Before writing a new function, look for the one
+  that already does this or nearly does this, and extend it. Two functions that
+  do almost the same thing is a defect, not a convenience.
+- **Don't add layers.** No extra wrappers, validators, registries, or guard
+  passes unless the existing architecture genuinely cannot express the behavior.
+  Prefer using what is already there over introducing another indirection.
+- **No legacy anchoring.** This program is in active development and owes no
+  backward compatibility yet. Keep an old schema, hook shape, or call signature
+  working only when it is nearly free; never contort a design for it, and never
+  carry a compatibility shim that costs real code. Replacing the old thing
+  outright is usually the right call — say so and do it.
+
+## Design docs and agent prompts
+
+- Keep design documents **short and to the point**. State the problem, the
+  decision, and the evidence. Include code stubs where a stub says it faster
+  than prose. Long documents do not get read on the rig.
+- **Write agent runner prompts to a file** (`design/prompts.md` or a file the
+  prompt names) before spawning the agent, so the exact instructions a runner
+  received are recoverable from the repo alone.
+
 ## The block workflow — authoritative
 
 This is how every block of the active implementation checklist runs. The active
