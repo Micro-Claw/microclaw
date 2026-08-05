@@ -224,6 +224,16 @@ assistant's narration when judging whether a guard fired.
 | 10 | Features | 9; optional | `design26/few-shot-run-c` | | | required or marked skipped | | |
 | 11 | Features | accepted Run B fixtures | `design32/hook-worker-isolation` | | | regression required | | |
 | 12 | Closeout | prior applicable blocks | — | | | **required** | n/a | |
+| 39 | Out-of-band | — | `design-39-emu-names` | `0016c54` | `7450f5e` + `a7ac7d5` (coordinator review) + runbook `483c620` | **pushed 2026-08-05, awaiting M5 + demo** — `design/39-gate-prompts.md` G0–G5 | | pending — design/39 §"Planned edits" |
+
+**Out-of-band rows.** design/36, design/37, design/38 and the composition block
+all ran the full block workflow without a ledger row, because they grew out of
+rig sessions rather than this checklist — so while each was in flight there was
+nowhere a cold session could look to find its branch or its gate state. Row 39
+exists to close that gap. It is **not** a design/35 block and nothing here
+depends on it; the ledger is simply the one place a resumed session looks.
+Its two design commits (`9bf42a5`, `0016c54`) landed on `main` before the block
+branched, so the start commit is `main`'s tip, not a branch point.
 
 Baseline to re-measure before block 1: `main` was 1160 passed / 99 skipped / 3
 warnings at the previous closeout, before Block 14 Phases 2 (`47f6702`) and 4
