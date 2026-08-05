@@ -3951,6 +3951,30 @@ schedule them or record a reason at block 12.
 This is an inventory, not permission to close with unresolved blank work. Block
 12 assigns every row one of the explicit dispositions above.
 
+- **`filament_position_filter` scores bead fields as filamentous.** Found by the
+  operator during design/38's H6, 2026-08-05: two fields of beads scored
+  `would_keep: true` (`filament_score` 0.045 and 0.107 against a 0.02 threshold),
+  and the operator flagged it — "these are beads. Punctae, not filaments." The
+  Sato tubeness response with the hook's current scales and SNR gate does not
+  discriminate puncta from ridges at these settings, so the hook's central claim
+  does not hold on the one sample class it was easiest to test against. This is a
+  saved-hook quality problem, not a microclaw defect, but the hook is in the rig's
+  registry and its description promises filament discrimination. Either recalibrate
+  its scales against a known-filamentous and a known-punctate field, or narrow the
+  description to what it measures (ridge coverage above an SNR gate).
+
+- **Nine of M5's twelve saved hooks refuse to resolve, mostly for legacy reasons.**
+  Registry survey, design/38 H6, 2026-08-05. All nine are legacy-newline-pinned
+  with an on-disk hash that no longer matches the manifest — a pre-existing
+  condition, not caused by the composition block. Beyond that: three
+  (`mosaic_cell_counter`, `mosaic_stitcher`, `mosaic_stitcher_rot`) still use the
+  pre-Block-7 contract (subclass `HookBase`, take `log_path`) and need rewriting,
+  not just re-saving; two (`mosaic_stitcher_v2`, `mosaic_stitcher_rot_v2`) carry
+  the reversed-`EmitArtifact` defect and would have failed mid-acquisition. The
+  operator's working set is effectively three hooks. Migrating the rest is a
+  half-day of hook rewriting nobody has scheduled, and until it happens the rig's
+  registry mostly looks broken to its own agent.
+
 - **Resolved: hooks compose and autofocus sweep dose is reserved.** A hook name
   or ordered list now runs in one acquisition. Post-hardware callbacks chain;
   image observers see separate copies of the original frame; any discard wins.
