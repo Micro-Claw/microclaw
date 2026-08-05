@@ -1,5 +1,15 @@
 # Nikon PFS and TIZDrive findings
 
+> **Superseded in part by `design/40-pfs-five-sessions.md` (2026-08-05).** The
+> probe kit this note specifies was never run; five real microclaw sessions
+> supplied better evidence. Where the two disagree about the rig, design/40
+> wins. Specifically refuted here: the "configured approach position" of §139
+> and §180 (four locks in one day at 2912, 2498, 2532 and 2450 µm — there is no
+> single number), and the `move_named_stage` staleness table of §246–250 (that
+> signature did not reproduce; the live defect is a missed target reported as
+> success). Still open exactly as written: probe 0's question at §194 — no
+> session has moved Z with PFS armed. It now gates nothing.
+
 ## Scope
 
 This note records the findings from examining:
