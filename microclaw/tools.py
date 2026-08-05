@@ -706,7 +706,20 @@ def get_full_device_state(
 # --- System State ---
 
 _NO_LASER_MAP = (
-    "unknown — no EMU laser map on this rig, so microclaw cannot read laser state"
+    "unknown — this rig has no EMU laser map, which is the only per-SLOT laser "
+    "source microclaw has. This is not evidence that the rig has no lasers: a "
+    "non-EMU rig drives its lasers as ordinary device properties. Read "
+    "declared_illumination_properties and list_devices before saying anything "
+    "about what illumination exists here."
+)
+
+# Absence of an EMU config is a fact about microclaw's map, not about the
+# hardware. The demo rig ships Emu.jar with no config.uicfg, so "not an EMU
+# rig" was wrong there in both directions.
+_NO_EMU_CONFIG = (
+    "No EMU configuration file on this rig, so the EMU semantic map is "
+    "unavailable. That does not mean the rig has no lasers or filters — on a "
+    "non-EMU rig they are ordinary device properties."
 )
 
 
@@ -4545,7 +4558,7 @@ def get_emu_laser_map(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
 
     props, params = _cached_emu_properties(ctrl)
     if not props:
-        return {"error": "No EMU configuration found — this is not an EMU/htSMLM rig."}
+        return {"error": _NO_EMU_CONFIG}
     lasers = build_emu_map(props, params)["lasers"]
     return {
         "lasers": lasers,
@@ -4564,7 +4577,7 @@ def resolve_emu_device(
 
     props, params = _cached_emu_properties(ctrl)
     if not props:
-        return {"error": "No EMU configuration found — this is not an EMU/htSMLM rig."}
+        return {"error": _NO_EMU_CONFIG}
     try:
         return {
             "semantic_name": semantic_name,
@@ -4578,7 +4591,7 @@ def _emu_power_entry(ctrl: MicroscopeController, slot: int) -> dict:
     from microclaw.emu_manager import build_emu_map
     props, params = _cached_emu_properties(ctrl)
     if not props:
-        raise ValueError("No EMU configuration found — this is not an EMU/htSMLM rig.")
+        raise ValueError(_NO_EMU_CONFIG)
     entry = build_emu_map(props, params)["lasers"].get(int(slot), {}).get("power_pct")
     if not entry or "device" not in entry:
         raise ValueError(f"EMU laser slot {slot} has no allocated percentage property.")

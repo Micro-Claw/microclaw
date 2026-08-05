@@ -475,3 +475,18 @@ def test_name_lookup_refuses_when_the_device_split_failed(m5_props_no_devices):
         emu_manager.resolve_emu_device(props, "Two-state device 3", params)
     with pytest.raises(KeyError, match="could not be split"):
         emu_manager.resolve_emu_device(props, "BFP", params)
+
+
+def test_absent_emu_map_never_denies_the_rig_has_lasers():
+    """A missing EMU config is a fact about our map, not about the hardware.
+
+    The demo rig ships Emu.jar with no config.uicfg and drives illumination
+    through ordinary device properties. Wording that reads as "this is not a
+    laser rig" is the design/20 S4 false negative in a softer form.
+    """
+    from microclaw.tools import _NO_EMU_CONFIG, _NO_LASER_MAP
+
+    for message in (_NO_EMU_CONFIG, _NO_LASER_MAP):
+        assert "not an EMU/htSMLM rig" not in message
+        assert "does not mean" in message or "not evidence" in message
+    assert "declared_illumination_properties" in _NO_LASER_MAP
