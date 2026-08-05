@@ -1176,7 +1176,10 @@ def _stub_serve_runtime(monkeypatch):
     fake = types.SimpleNamespace(
         history=[], history_fn="unused.json", save=False,
         confirm=lambda *args: False,
-        guard=types.SimpleNamespace(shutter_all=lambda core: []),
+        guard=types.SimpleNamespace(
+            shutter_all=lambda core: [],
+            declared_illumination_state=lambda core: [],
+        ),
         ctrl=types.SimpleNamespace(core=object()),
     )
     monkeypatch.setattr(webserve, "Session", lambda args: fake)
@@ -1215,6 +1218,17 @@ def test_loopback_startup_still_auto_opens_its_http_url(monkeypatch):
     serve(_args(host="127.0.0.1", no_browser=False))
 
     assert opened == [("127.0.0.1", 8000, "http://127.0.0.1:8000")]
+
+
+def test_web_exit_reads_declared_illumination_without_shuttering(monkeypatch):
+    fake = _stub_serve_runtime(monkeypatch)
+    reads = []
+    writes = []
+    fake.guard.declared_illumination_state = lambda core: reads.append(core) or []
+    fake.guard.shutter_all = lambda core: writes.append(core)
+    serve(_args(host="127.0.0.1", no_browser=True))
+    assert reads == [fake.ctrl.core]
+    assert writes == []
 
 
 def test_remote_confirmation_audit_carries_identity(session, remote, fast_confirm_poll):

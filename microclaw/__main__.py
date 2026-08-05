@@ -251,15 +251,45 @@ def run_session(args):
     # (history[:] = ...) so the finally block always sees the latest turns.
     history = []
     store = ConversationStore(AuditLog(history_fn_name, enabled=args.save_history))
-    # AuditLog writes as messages are produced. The finally ensures EVERY exit
-    # path — 'exit', Ctrl-C, or a crash inside run_agent — shutters illumination
-    # (design/14 §3: a session once ended with a 638 nm laser left at 25%).
+    # AuditLog writes as messages are produced. Every exit path — 'exit',
+    # Ctrl-C, or a crash inside run_agent — reports declared illumination state
+    # without changing it (design/38 F9 reverses design/14 §3).
     try:
         _repl(args, ctrl, guard, history, store)
     finally:
-        shuttered = guard.shutter_all(ctrl.core)
-        if shuttered:
-            print(f"[microclaw] Illumination off: {', '.join(shuttered)}")
+        report_declared_illumination_on_exit(guard, ctrl.core)
+
+
+def report_declared_illumination_on_exit(guard, core, *, flush=False):
+    """Print conspicuous non-off or unreadable declared properties on exit.
+
+    Runs inside a `finally`, so it must never raise: an exception here would
+    replace whatever ended the session — including the traceback the operator
+    needs. Per-property read failures are already reported individually; this
+    guards the enumeration itself.
+    """
+    try:
+        readings = guard.declared_illumination_state(core)
+    except Exception as exc:                                    # noqa: BLE001
+        print(
+            "[microclaw] EXIT ILLUMINATION REPORT FAILED: "
+            f"{type(exc).__name__}: {exc}. Rig illumination state is unverified.",
+            flush=flush,
+        )
+        return
+    for item in readings:
+        name = f"{item['device']}.{item['property']}"
+        if "error" in item:
+            print(
+                f"[microclaw] EXIT ILLUMINATION READ FAILED: {name}: {item['error']}",
+                flush=flush,
+            )
+        elif item["value"] != item["off_value"]:
+            print(
+                f"[microclaw] EXIT ILLUMINATION NOT OFF: {name} = {item['value']!r} "
+                f"(off_value={item['off_value']!r})",
+                flush=flush,
+            )
 
 
 def _repl(args, ctrl, guard, history, store):

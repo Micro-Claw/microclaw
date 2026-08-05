@@ -260,16 +260,29 @@ def _parse_roi(raw: Any) -> list[int] | None:
 
 
 def parse_mm_pixel_size_affine(raw: Any, *, objective: str, binning: int) -> StageCameraAffine | None:
-    """Decode MMCore row-major m00,m01,m02,m10,m11,m12 or reject a sentinel."""
+    """Decode either MM affine representation, with one sentinel policy.
+
+    MMCore exposes six row-major values separated by semicolons; NDTiff summary
+    metadata stores the four linear terms separated by underscores.
+    """
     if raw is None or str(raw).strip().lower() == "undefined":
         return None
     try:
-        values = [float(value.strip()) for value in str(raw).split(";")]
+        text = str(raw)
+        delimiter = ";" if ";" in text else "_"
+        values = [float(value.strip()) for value in text.split(delimiter)]
     except (TypeError, ValueError):
         return None
-    if len(values) != 6 or not all(math.isfinite(value) for value in values):
+    if len(values) == 6:
+        m00, m01, _m02, m10, m11, _m12 = values
+    elif len(values) == 4:
+        # java.awt.geom.AffineTransform.getMatrix stores its flat array in
+        # column-major order: {m00, m10, m01, m11[, m02, m12]}.
+        m00, m10, m01, m11 = values
+    else:
         return None
-    m00, m01, _m02, m10, m11, _m12 = values
+    if not all(math.isfinite(value) for value in values):
+        return None
     linear = (m00, m01, m10, m11)
     if all(value == 0.0 for value in values):
         return None
@@ -325,13 +338,28 @@ def _acquisition_calibration(
 ) -> tuple[tuple[StageCameraAffine, dict] | None, str | None]:
     from microclaw.tools import _iter_present_coords
 
+    summary = getattr(dataset, "summary_metadata", {}) or {}
+    summary_affine = _metadata_value(summary, "AffineTransform")
+    frame_records = [
+        (coords, dataset.read_metadata(**coords))
+        for coords in _iter_present_coords(dataset, fixed_axes)
+    ]
+    per_frame_affines = [
+        _metadata_value(metadata, "PixelSizeAffine", "PixelSizeAffineString")
+        for _coords, metadata in frame_records
+    ]
+    # Summary metadata is a fallback for MM datasets that omit the affine from
+    # every frame. It must never mask a present or inconsistent per-frame value.
+    use_summary = summary_affine is not None and all(
+        raw is None for raw in per_frame_affines
+    )
     candidates = []
     frame_count = 0
     rois = []
-    for coords in _iter_present_coords(dataset, fixed_axes):
+    for (coords, metadata), per_frame_raw in zip(frame_records, per_frame_affines):
         frame_count += 1
-        metadata = dataset.read_metadata(**coords)
-        raw = _metadata_value(metadata, "PixelSizeAffine", "PixelSizeAffineString")
+        raw = summary_affine if use_summary else per_frame_raw
+        affine_source = "AffineTransform" if use_summary else "PixelSizeAffine"
         objective = _metadata_value(
             metadata, "Objective", "ObjectiveLabel", "PixelSizeConfig", "PixelSizeConfigName"
         )
@@ -340,6 +368,7 @@ def _acquisition_calibration(
         camera_model = _metadata_value(
             metadata, "CameraModel", "CameraDeviceName", "CameraAdapter",
             f"{camera_device}-Camera" if camera_device is not None else "",
+            f"{camera_device}-CameraName" if camera_device is not None else "",
         )
         roi = _parse_roi(_metadata_value(metadata, "ROI", "Roi", "CameraROI"))
         rois.append(None if roi is None else tuple(roi))
@@ -350,7 +379,8 @@ def _acquisition_calibration(
             )
         except (TypeError, ValueError):
             affine = None
-        candidates.append((affine, objective, camera_device, camera_model, roi, coords))
+        candidates.append((affine, objective, camera_device, camera_model, roi, coords,
+                           affine_source))
     known_rois = {roi for roi in rois if roi is not None}
     if len(known_rois) > 1 or (known_rois and any(roi is None for roi in rois)):
         raise CalibrationResolutionError(
@@ -373,19 +403,26 @@ def _acquisition_calibration(
         raise CalibrationResolutionError(
             "Dataset calibration identity changes between frames"
         )
-    affine, objective, camera_device, camera_model, roi, coords = first
+    affine, objective, camera_device, camera_model, roi, coords, _source = first
     missing = [name for name, value in (
-        ("objective", objective), ("binning", affine.binning),
+        ("binning", affine.binning),
         ("camera_device", camera_device), ("camera_model", camera_model), ("roi", roi),
     ) if value is None or value == ""]
     if missing:
         return None, "acquisition calibration identity is incomplete; missing " + ", ".join(missing)
-    affine.objective = str(objective)
-    return (affine, _identity_for_affine(
+    affine.objective = "" if objective is None else str(objective)
+    identity = _identity_for_affine(
         affine, source_kind="acquisition_recorded",
-        source_reference={"metadata_key": "PixelSizeAffine", "coordinates": coords},
+        source_reference={"metadata_key": first[6], "coordinates": coords},
         camera_device=camera_device, camera_model=camera_model, roi=roi,
-    )), None
+    )
+    if objective is None or objective == "":
+        identity["objective_unrecorded"] = True
+        identity["objective_unrecorded_reason"] = (
+            "The dataset records affine geometry and binning but no objective label; "
+            "verify the optical path before reusing this calibration outside this dataset."
+        )
+    return (affine, identity), None
 
 
 def _read_artifact(path: str, guard) -> dict:
@@ -475,8 +512,17 @@ def resolve_calibration(
             "supply an artifact, "
             "immutable version, or explicitly confirmed current calibration." + detail
         )
+    accepted = (
+        "{'kind':'artifact','path':'...'}, "
+        "{'kind':'knowledge_version','key':'...'}, "
+        "{'kind':'confirmed_current','objective':'...','binning':1}, or "
+        "{'kind':'legacy_derived','pixel_size_um':...,'objective':'...','binning':1}"
+    )
     if not isinstance(calibration_ref, dict) or "kind" not in calibration_ref:
-        raise CalibrationResolutionError("calibration_ref must be one tagged object")
+        raise CalibrationResolutionError(
+            "calibration_ref must contain a 'kind' discriminator. Accepted shapes: "
+            + accepted
+        )
     kind = calibration_ref["kind"]
 
     def with_fallthrough(identity: dict) -> dict:
@@ -548,4 +594,6 @@ def resolve_calibration(
             camera_device=calibration_ref.get("camera_device"),
             camera_model=calibration_ref.get("camera_model"), roi=calibration_ref.get("roi"),
         ))
-    raise CalibrationResolutionError(f"Unknown calibration_ref kind: {kind!r}")
+    raise CalibrationResolutionError(
+        f"Unknown calibration_ref kind: {kind!r}. Accepted shapes: {accepted}"
+    )

@@ -12,7 +12,7 @@ import threading
 import time
 import weakref
 from datetime import datetime, timezone
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 from pathlib import Path
 from typing import Any, Callable
 
@@ -82,6 +82,43 @@ def _acquisition_entry_point(fn):
     """Mark a public tool whose effects must pass the dose planner/ledger."""
     fn._microclaw_acquisition_entry_point = True
     return fn
+
+
+class _HookedAcquisitionFailure(RuntimeError):
+    """A hook failed after pycro-manager resolved the dataset directory."""
+
+    def __init__(self, error: Exception, dataset_path: str) -> None:
+        super().__init__(str(error))
+        self.dataset_path = dataset_path
+
+
+def _hooked_failure_result(exc: _HookedAcquisitionFailure, log_path: str | None) -> dict:
+    """Report a mid-acquisition hook failure without hiding what was written.
+
+    design/38 F7: session A lost a complete dataset because the failure result
+    named no path. The agent guessed `<save_dir>/<name>`, missed the collision
+    suffix pycro-manager had already applied (`plus_A` vs `plus_A_1`), and swept
+    a whole drive looking for it.
+
+    Returning a dict rather than raising means the tool wrapper's
+    `hint_for_error` never runs, so the "already exposed" warning it would have
+    added is carried here instead. Dropping it would trade one silent failure
+    for another.
+    """
+    result = {
+        "error": str(exc),
+        "dataset_path": exc.dataset_path,
+        "artifact": {"kind": "dataset", "path": exc.dataset_path},
+        "hint": (
+            "The hook raised mid-acquisition. The stage has already moved and "
+            "the frames acquired before the failure are saved at dataset_path — "
+            "read what is there before re-acquiring, and do not treat the run as "
+            "untouched."
+        ),
+    }
+    if log_path:
+        result["log_path"] = log_path
+    return result
 
 
 def _acquisition_ledger(ctrl) -> AcquisitionLedger:
@@ -184,17 +221,47 @@ def _pause_live(ctrl: MicroscopeController):
     core.snap_image() throws "sequence acquisition is running" if live mode is
     on, and studio.live().snap(True) is worse — it never returns and wedges the
     single-lock ZMQ bridge (design/14 V1). Every snap path must run inside
-    this. Yields whether live mode was on, so callers can report the bounce.
+    this. Yields a mutable observation record. Restore success is checked
+    against CMMCore's actual camera sequence, not MM Studio's live-mode flag.
     """
     live = ctrl.studio.live()
     was_on = bool(live.is_live_mode_on())
     if was_on:
         live.set_live_mode_on(False)
+    state: dict[str, Any] = {"was_on": was_on, "restore_observed": None}
     try:
-        yield was_on
+        yield state
     finally:
         if was_on:
             live.set_live_mode_on(True)
+            deadline = time.monotonic() + _LIVE_MODE_WAIT_S
+            while True:
+                try:
+                    running = bool(ctrl.core.is_sequence_running())
+                except Exception as exc:
+                    state["restore_error"] = f"Could not read camera sequence state: {exc}"
+                    break
+                if running:
+                    state["restore_observed"] = True
+                    break
+                if time.monotonic() >= deadline:
+                    state["restore_observed"] = False
+                    state["restore_error"] = (
+                        "Live-mode flag was restored but CMMCore did not report a "
+                        "running camera sequence."
+                    )
+                    break
+                time.sleep(_LIVE_MODE_POLL_S)
+
+
+def _live_restore_report(state: dict) -> dict | None:
+    if not state.get("was_on"):
+        return None
+    return {
+        "requested": True,
+        "sequence_running": state.get("restore_observed"),
+        **({"warning": state["restore_error"]} if state.get("restore_error") else {}),
+    }
 
 
 # MM 2.0.3 updates its nominal live flag synchronously, but a failed start is
@@ -727,6 +794,9 @@ def get_system_state(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     # enabled" has to be sourced from here or not made at all (design/20 F2).
     state["shutter"] = _shutter_state(ctrl)
     state["lasers"] = _laser_state(ctrl)
+    illumination = guard.declared_illumination_state(ctrl.core)
+    if illumination:
+        state["declared_illumination_properties"] = illumination
     try:
         label = str(ctrl.core.get_camera_device())
         state["camera"] = {
@@ -821,15 +891,30 @@ def _acquire_with_hooks(
 
         hook_fn_kwargs["image_saved_fn"] = account_saved_frame
 
+    dataset_path = None
     try:
         with Acquisition(directory=save_dir, name=name, show_display=True, **hook_fn_kwargs) as acq:
+            # Resolve collision suffixes before dispatching the first event: a
+            # first-frame hook failure must still report the data already owned
+            # by this acquisition. This is safe to read here because
+            # pycro-manager 1.0.2 sets `_dataset_disk_location` inside
+            # Acquisition.__init__ from the Java storage's real disk location
+            # (java_backend_acquisitions.py:301), before acquire() dispatches
+            # anything. If that moves, the fallback in _acq_dataset_path returns
+            # the UNSUFFIXED path — which is precisely the wrong guess design/38
+            # F7 is about, so re-verify this on any pycro-manager upgrade.
+            dataset_path = _acq_dataset_path(acq, save_dir, name)
             if hook is not None and hasattr(hook, "bind_artifact_directory"):
                 hook.bind_artifact_directory(
-                    Path(_acq_dataset_path(acq, save_dir, name)) / "artifacts"
+                    Path(dataset_path) / "artifacts"
                 )
             if callable(events):
                 events = events(acq)
             acq.acquire(events)
+    except Exception as exc:
+        if hook is not None and dataset_path is not None:
+            raise _HookedAcquisitionFailure(exc, dataset_path) from exc
+        raise
     finally:
         if reservation is not None and close_reservation:
             reservation.close()
@@ -890,19 +975,21 @@ def run_zstack(
     }
 
 
-def _assert_excitation_will_fire(ctrl: MicroscopeController, laser_slot: int) -> None:
-    """Refuse an acquisition whose excitation laser is gated off at the trigger.
+def _verify_trigger_line_armed(ctrl: MicroscopeController, laser_slot: int) -> dict:
+    """Verify only that an EMU slot's trigger line is armed.
 
-    In amr_test (design/14 §1) a 100-frame SMLM acquisition ran with the
-    excitation trigger line never verified — had trigger mode been '0 - Off',
-    the dataset would have been 100 blank frames and nothing would have said
-    so. One property read prevents that.
+    This checks trigger mode and trigger sequence when the map declares them.
+    It does not verify any other part of the emission path.
     """
     from microclaw.emu_manager import build_emu_map
 
     props = _cached_emu_properties(ctrl)
     if not props:
-        return  # non-EMU rig; nothing to assert
+        return {
+            "guarantee": "no trigger-line verification available",
+            "checked": [],
+            "not_verified": ["device-level enables", "illumination properties", "emission path"],
+        }
     lasers = build_emu_map(props)["lasers"]
     laser = lasers.get(laser_slot)
     if laser is None:
@@ -911,25 +998,47 @@ def _assert_excitation_will_fire(ctrl: MicroscopeController, laser_slot: int) ->
             f"{sorted(lasers)}. Call get_emu_laser_map() — never infer a slot "
             f"index from device naming order."
         )
+    checked = []
     trig = laser.get("trigger_mode")
     if trig and "device" in trig:
         mode = str(ctrl.core.get_property(trig["device"], trig["property"]))
+        checked.append({"kind": "trigger mode", "device": trig["device"],
+                        "property": trig["property"], "value": mode})
         if mode.strip().startswith("0"):
             raise SafetyViolation(
-                f"Laser slot {laser_slot} trigger mode is {mode!r}: it will NOT "
-                f"emit during the acquisition — every frame would be blank. Set "
-                f"{trig['device']}.{trig['property']} to a firing mode (e.g. "
+                f"Laser slot {laser_slot} trigger mode is {mode!r}: the trigger "
+                f"line is not armed. Set {trig['device']}.{trig['property']} to an armed mode (e.g. "
                 f"'4 - Follow') first."
             )
     seq = laser.get("trigger_sequence")
     if seq and "device" in seq:
         value = str(ctrl.core.get_property(seq["device"], seq["property"]))
+        checked.append({"kind": "trigger sequence", "device": seq["device"],
+                        "property": seq["property"], "value": value})
         if value.strip() == "0":
             raise SafetyViolation(
                 f"Laser slot {laser_slot} trigger sequence is 0: the laser is "
-                f"gated off for every frame. Set {seq['device']}."
+                f"not armed at the trigger for any frame. Set {seq['device']}."
                 f"{seq['property']} (65535 = always on) first."
             )
+    return {
+        "guarantee": "trigger line is armed",
+        "checked": checked,
+        "not_verified": ["device-level enables", "illumination properties", "emission path"],
+    }
+
+
+def shutter_declared_illumination(
+    ctrl: MicroscopeController, guard: SafetyGuard
+) -> dict:
+    """Explicitly drive all declared illumination properties to off_value."""
+    attempted = [
+        f"{item['device']}.{item['property']}"
+        for item in guard.declared_illumination_state(ctrl.core)
+    ]
+    shuttered = guard.shutter_all(ctrl.core)
+    return {"status": "Declared illumination shutter requested.",
+            "attempted": attempted, "shuttered": shuttered}
 
 
 @_acquisition_entry_point
@@ -946,8 +1055,9 @@ def run_timelapse(
     _reservation: Reservation | None = None,
 ) -> dict:
     save_dir = guard.resolve_in_workspace(save_dir)   # before any hardware moves
+    trigger_preflight = None
     if laser_slot is not None:
-        _assert_excitation_will_fire(ctrl, laser_slot)
+        trigger_preflight = _verify_trigger_line_armed(ctrl, laser_slot)
     if channel:
         guard.check_channel(channel)
     if exposure_ms is not None:
@@ -969,10 +1079,16 @@ def run_timelapse(
         guard, save_dir, name, events, reservation=reservation,
         close_reservation=_reservation is None,
     )
-    return {
+    result = {
         "status": "Timelapse complete.", "dataset_path": dataset_path,
         **_reservation_report(reservation),
     }
+    if trigger_preflight is not None:
+        result["trigger_preflight"] = trigger_preflight
+    illumination = guard.declared_illumination_state(ctrl.core)
+    if illumination:
+        result["declared_illumination_properties"] = illumination
+    return result
 
 
 def export_dataset_as_tiff(
@@ -1229,6 +1345,8 @@ def build_stage_coordinate_mosaic(
         "kind": "stage_coordinate_mosaic",
         "selection": {key: axis_selection[key] for key in sorted(axis_selection)},
         "calibration_identity": calibration_identity,
+        **({"calibration_warning": calibration_identity["objective_unrecorded_reason"]}
+           if calibration_identity.get("objective_unrecorded") else {}),
         # What the dataset says about itself, recorded alongside what the
         # calibration claims. camera_model_key names which vendor key answered,
         # because that differs per adapter and a future reader cannot infer it.
@@ -1403,7 +1521,7 @@ def snap_and_analyze(
     otherwise (design/14 §7). display=False keeps the snap headless.
     Live view is paused around the snap either way (V1: never probe by calling).
     """
-    with _pause_live(ctrl) as was_live:
+    with _pause_live(ctrl) as live_state:
         image = snap_to_numpy_displayed(ctrl) if display else snap_to_numpy(ctrl)
     min_snr, min_snr_source = _analysis_gate(guard)
     stats = compute_stats(image, min_snr=min_snr)
@@ -1421,8 +1539,14 @@ def snap_and_analyze(
         "max_intensity": round(stats.max_intensity, 1),
         "saturated_fraction": round(stats.saturated_fraction, 4),
     }
-    if was_live:
-        text_payload["live_view"] = "paused for the snap, then restored"
+    restore = _live_restore_report(live_state)
+    if restore:
+        text_payload["live_view"] = (
+            "paused for the snap; camera sequence restart verified"
+            if restore["sequence_running"] is True
+            else "paused for the snap; camera sequence restart not verified"
+        )
+        text_payload["live_view_restore"] = restore
     try:
         pixel_size = float(ctrl.core.get_pixel_size_um())
     except Exception:
@@ -1559,7 +1683,7 @@ def calibrate_stage_to_camera(
     F4). With no pixel size to scale against, step_um falls back to 20 µm.
     """
     from skimage.registration import phase_cross_correlation
-    from microclaw.calibration import save_affine, solve_affine
+    from microclaw.calibration import affine_version_key, save_affine, solve_affine
 
     px_hint = _calibration_pixel_size_hint(ctrl, pixel_size_hint_um)
     x0, y0 = ctrl.core.get_x_position(), ctrl.core.get_y_position()
@@ -1634,6 +1758,8 @@ def calibrate_stage_to_camera(
         "step_um": step_um,
         "frame_px": list(frame_hw),
         "knowledge_key": key,
+        "calibration_ref": {"kind": "knowledge_version",
+                            "key": affine_version_key(affine)},
         "status": (
             "Calibrated and cached. Image-pixel offsets can now be converted "
             "to stage µm (find_features reports offset_from_center_um)."
@@ -2393,17 +2519,18 @@ def run_multiposition_acquisition(
             for pos_label, x_um, y_um, z_um in resolved:
                 ctrl.add_position(pos_label, float(x_um), float(y_um),
                                   float(z_um) if z_um is not None else None)
-        hooked = _acquire_positions_with_hook(
-            ctrl, guard,
-            positions=[{"name": n, "x_um": x, "y_um": y, "z_um": z}
-                       for n, x, y, z in resolved],
-            save_dir=save_dir, name=name, hook_strategy=hook_strategy,
-            hook_params=hook_params, log_path=log_path,
-            channel=params.get("channel"), exposure_ms=params.get("exposure_ms"),
-            illumination_envelope=illumination_envelope,
-            artifact_limits=artifact_limits,
-            **shape,
-        )
+        with _pause_live(ctrl) as live_state:
+            hooked = _acquire_positions_with_hook(
+                ctrl, guard,
+                positions=[{"name": n, "x_um": x, "y_um": y, "z_um": z}
+                           for n, x, y, z in resolved],
+                save_dir=save_dir, name=name, hook_strategy=hook_strategy,
+                hook_params=hook_params, log_path=log_path,
+                channel=params.get("channel"), exposure_ms=params.get("exposure_ms"),
+                illumination_envelope=illumination_envelope,
+                artifact_limits=artifact_limits,
+                **shape,
+            )
         if "error" in hooked:
             return hooked
         # The coordinates are known exactly, right here — the hooked branch used
@@ -2411,11 +2538,12 @@ def run_multiposition_acquisition(
         # re-imaging the grid (design/23 Episode A). The non-hooked branch has
         # attached them since design/19 F3; this is the same fix on the path every
         # survey actually takes. read_hook_log joins to this on `position`.
+        restore = _live_restore_report(live_state)
         return {**hooked, "tiles": [
             {"position": n, "x_um": round(x, 3), "y_um": round(y, 3),
              **({"z_um": round(z, 3)} if z is not None else {})}
             for n, x, y, z in resolved
-        ]}
+        ], **({"live_view_restore": restore} if restore else {})}
 
     reservation = (
         _authorize_acquisition(
@@ -2423,27 +2551,28 @@ def run_multiposition_acquisition(
         )
         if protocol != "snap" else None
     )
-    try:
-        for pos_label, x_um, y_um, z_um in resolved:
-            pos_save_dir = str(Path(save_dir) / pos_label) if save_dir else None
-            # Coordinates on every row, including the error rows. The agent used to
-            # publish X/Y columns filled from its own call ordering rather than from
-            # anything a tool returned (design/19 F3, design/20 S1).
-            where = {"x_um": round(x_um, 3), "y_um": round(y_um, 3)}
-            if z_um is not None:
-                where["z_um"] = round(z_um, 3)
-            try:
-                result = _run_protocol_at(
-                    ctrl, guard, pos_label, x_um, y_um, z_um, protocol, pos_save_dir,
-                    params, mark_position_in_list=mark_positions,
-                    reservation=reservation,
-                )
-                results.append({**where, **result})
-            except Exception as e:
-                results.append({"position": pos_label, **where, "error": str(e)})
-    finally:
-        if reservation is not None:
-            reservation.close()
+    with _pause_live(ctrl) as live_state:
+        try:
+            for pos_label, x_um, y_um, z_um in resolved:
+                pos_save_dir = str(Path(save_dir) / pos_label) if save_dir else None
+                # Coordinates on every row, including the error rows. The agent used to
+                # publish X/Y columns filled from its own call ordering rather than from
+                # anything a tool returned (design/19 F3, design/20 S1).
+                where = {"x_um": round(x_um, 3), "y_um": round(y_um, 3)}
+                if z_um is not None:
+                    where["z_um"] = round(z_um, 3)
+                try:
+                    result = _run_protocol_at(
+                        ctrl, guard, pos_label, x_um, y_um, z_um, protocol, pos_save_dir,
+                        params, mark_position_in_list=mark_positions,
+                        reservation=reservation,
+                    )
+                    results.append({**where, **result})
+                except Exception as e:
+                    results.append({"position": pos_label, **where, "error": str(e)})
+        finally:
+            if reservation is not None:
+                reservation.close()
 
     total = len(position_names or positions)
     n_ok = sum(1 for r in results if "error" not in r)
@@ -2451,6 +2580,9 @@ def run_multiposition_acquisition(
         "status": f"{n_ok}/{total} positions completed.",
         "results": results,
     }
+    restore = _live_restore_report(live_state)
+    if restore:
+        payload["live_view_restore"] = restore
     if protocol == "snap" and n_ok:
         # One stamp for the whole grid: the per-tile focus_metric values are
         # comparable to each other under these settings and to nothing else.
@@ -2552,30 +2684,45 @@ def run_tile_acquisition(
 def run_multiposition_with_autofocus(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
-    position_names: list[str],
-    z_range_um: float,
-    z_step_um: float,
-    protocol: str,
-    save_dir: str,
+    position_names: list[str] | None = None,
+    z_range_um: float | None = None,
+    z_step_um: float | None = None,
+    protocol: str | None = None,
+    save_dir: str | None = None,
     name: str = "multipos_af",
     autofocus_method: str = "coarse_then_fine",
     settle_ms: int = 50,
     protocol_params: dict | None = None,
     preserve_unsupported: bool = False,
+    positions: list[dict] | None = None,
 ) -> dict:
     """Visit each position, autofocus, then run a per-position protocol.
 
     """
+    if position_names is not None and positions is not None:
+        return {"error": "Provide position_names or positions, not both."}
+    if position_names is None and positions is None:
+        return {"error": "Provide either position_names or positions."}
+    missing = [name for name, value in (
+        ("z_range_um", z_range_um), ("z_step_um", z_step_um),
+        ("protocol", protocol), ("save_dir", save_dir),
+    ) if value is None]
+    if missing:
+        return {"error": f"Missing required arguments: {missing}."}
     save_dir = guard.resolve_in_workspace(save_dir)   # before the stage moves
     params = protocol_params or {}
-    projection, conflict = _preflight_native_positions(
-        ctrl, guard, preserve_unsupported=preserve_unsupported
-    )
-    if conflict:
-        return conflict
-    all_positions = {p["name"]: p for p in projection.positions}
+    if position_names is not None:
+        projection, conflict = _preflight_native_positions(
+            ctrl, guard, preserve_unsupported=preserve_unsupported
+        )
+        if conflict:
+            return conflict
+        all_positions = {p["name"]: p for p in projection.positions}
+        requested = [(name, all_positions.get(name), True) for name in position_names]
+    else:
+        requested = [(str(p["name"]), p, False) for p in positions]
     results = []
-    valid_count = sum(1 for name in position_names if name in all_positions)
+    valid_count = sum(1 for _name, pos, _stored in requested if pos is not None)
     reservation = (
         _authorize_acquisition(
             ctrl, guard,
@@ -2584,16 +2731,14 @@ def run_multiposition_with_autofocus(
         if protocol != "snap" and valid_count else None
     )
 
-    live = ctrl.studio.live()
-    was_live = live.is_live_mode_on()
-    if was_live:
-        live.set_live_mode_on(False)
-    try:
-        for pos_name in position_names:
-            if pos_name not in all_positions:
+    with ExitStack() as cleanup:
+        live_state = cleanup.enter_context(_pause_live(ctrl))
+        if reservation is not None:
+            cleanup.callback(reservation.close)
+        for pos_name, pos, stored in requested:
+            if pos is None:
                 results.append({"position": pos_name, "error": "Not found in position list."})
                 continue
-            pos = all_positions[pos_name]
             try:
                 guard.check_xy(pos["x_um"], pos["y_um"])
                 if "z_um" in pos:
@@ -2603,7 +2748,12 @@ def run_multiposition_with_autofocus(
                     {"position": pos_name, "error": f"Stored position out of bounds: {e}"}
                 )
                 continue
-            ctrl.go_to_position(pos_name)
+            if stored:
+                ctrl.go_to_position(pos_name)
+            else:
+                ctrl.set_xy(float(pos["x_um"]), float(pos["y_um"]))
+                if "z_um" in pos:
+                    ctrl.set_z(float(pos["z_um"]))
 
             current_z = ctrl.core.get_position()
             try:
@@ -2659,16 +2809,12 @@ def run_multiposition_with_autofocus(
                 results.append(
                     {"position": pos_name, **af_info, "error": str(e)}
                 )
-    finally:
-        if reservation is not None:
-            reservation.close()
-        if was_live:
-            live.set_live_mode_on(True)
-
     n_ok = sum(1 for r in results if "error" not in r)
+    restore = _live_restore_report(live_state)
     return {
-        "status": f"{n_ok}/{len(position_names)} positions completed with autofocus.",
+        "status": f"{n_ok}/{len(requested)} positions completed with autofocus.",
         "results": results,
+        **({"live_view_restore": restore} if restore else {}),
     }
 
 
@@ -2896,9 +3042,12 @@ def run_adaptive_zstack(
     )
     started_at = datetime.now(timezone.utc)
     started = time.monotonic()
-    dataset_path = _acquire_with_hooks(
-        guard, save_dir, name, events, hook, reservation=reservation
-    )
+    try:
+        dataset_path = _acquire_with_hooks(
+            guard, save_dir, name, events, hook, reservation=reservation
+        )
+    except _HookedAcquisitionFailure as exc:
+        return _hooked_failure_result(exc, log_path)
     completed_at = datetime.now(timezone.utc)
     return _adaptive_result(
         dataset_path, log_path, frames_planned=len(events), frames_acquired=len(events),
@@ -3039,9 +3188,12 @@ def _acquire_positions_with_hook(
     )
     started_at = datetime.now(timezone.utc)
     started = time.monotonic()
-    dataset_path = _acquire_with_hooks(
-        guard, save_dir, name, events, hook, reservation=reservation
-    )
+    try:
+        dataset_path = _acquire_with_hooks(
+            guard, save_dir, name, events, hook, reservation=reservation
+        )
+    except _HookedAcquisitionFailure as exc:
+        return _hooked_failure_result(exc, log_path)
     completed_at = datetime.now(timezone.utc)
     # Say how many positions ran. "Adaptive acquisition complete." over a grid
     # left no way to confirm every tile fired without opening the log.
@@ -3653,26 +3805,111 @@ def inspect_artifacts(
     guard: SafetyGuard,
     paths: list[str],
     manifest_path: str | None = None,
+    max_files: int = 1000,
+    max_total_bytes: int = 1024 * 1024 * 1024,
+    max_depth: int = 16,
+    hash: bool = True,
 ) -> dict:
-    """List and SHA-256 local artifacts, recursively and deterministically."""
+    """Survey local artifacts deterministically, then optionally hash them."""
+    limits = (max_files, max_total_bytes, max_depth)
+    if any(isinstance(value, bool) or not isinstance(value, int) or value <= 0
+           for value in limits):
+        return {"error": "Artifact inspection limits must be positive integers."}
+    if not isinstance(hash, bool):
+        return {"error": "hash must be true or false."}
     files: set[Path] = set()
+    survey_by_path: dict[Path, dict] = {}
+
+    def survey() -> list[dict]:
+        return [survey_by_path[path] for path in sorted(survey_by_path, key=str)]
+
+    def refusal(message: str) -> dict:
+        return {
+            "error": message,
+            "survey": survey(),
+            "survey_totals": {
+                "file_count": len(files),
+                "total_bytes": sum(path.stat().st_size for path in files),
+            },
+        }
+
     for raw in paths:
         resolved = Path(guard.resolve_readable_path(raw))
         if not resolved.exists():
-            return {"error": f"Artifact path not found: {resolved}"}
+            return refusal(f"Artifact path not found: {resolved}")
         if resolved.is_dir():
-            files.update(p for p in resolved.rglob("*") if p.is_file())
+            pending = [(resolved, 0)]
+            while pending:
+                directory, depth = pending.pop()
+                direct_count = 0
+                direct_bytes = 0
+                try:
+                    entries = sorted(directory.iterdir(), key=lambda path: str(path))
+                except OSError as exc:
+                    return refusal(f"Cannot list artifact directory {directory}: {exc}")
+                children = []
+                for entry in entries:
+                    if entry.is_dir() and not entry.is_symlink():
+                        children.append(entry)
+                        continue
+                    if not entry.is_file():
+                        continue
+                    size = entry.stat().st_size
+                    direct_count += 1
+                    direct_bytes += size
+                    if entry not in files and len(files) >= max_files:
+                        survey_by_path[directory] = {
+                            "path": str(directory), "depth": depth,
+                            "direct_file_count": direct_count,
+                            "direct_bytes": direct_bytes,
+                        }
+                        return refusal(
+                            f"Artifact inspection reached max_files={max_files}; "
+                            "use the directory survey or narrow paths."
+                        )
+                    files.add(entry)
+                    if hash and sum(path.stat().st_size for path in files) > max_total_bytes:
+                        survey_by_path[directory] = {
+                            "path": str(directory), "depth": depth,
+                            "direct_file_count": direct_count,
+                            "direct_bytes": direct_bytes,
+                        }
+                        return refusal(
+                            f"Artifact inspection exceeded max_total_bytes={max_total_bytes}; "
+                            "use hash=false or narrow paths."
+                        )
+                survey_by_path[directory] = {
+                    "path": str(directory), "depth": depth,
+                    "direct_file_count": direct_count, "direct_bytes": direct_bytes,
+                }
+                if children and depth >= max_depth:
+                    return refusal(
+                        f"Artifact inspection reached max_depth={max_depth}; "
+                        "use the directory survey or narrow paths."
+                    )
+                pending.extend((child, depth + 1) for child in reversed(children))
         else:
+            if resolved not in files and len(files) >= max_files:
+                return refusal(f"Artifact inspection reached max_files={max_files}.")
             files.add(resolved)
+    total_bytes = sum(path.stat().st_size for path in files)
+    if hash and total_bytes > max_total_bytes:
+        return refusal(
+            f"Artifact inspection would hash {total_bytes} bytes, exceeding "
+            f"max_total_bytes={max_total_bytes}."
+        )
     artifacts = []
     for path in sorted(files, key=lambda p: str(p)):
-        digest = hashlib.sha256()
-        with path.open("rb") as stream:
-            for block in iter(lambda: stream.read(1024 * 1024), b""):
-                digest.update(block)
-        artifacts.append({"path": str(path), "size_bytes": path.stat().st_size,
-                          "sha256": digest.hexdigest()})
-    result = {"artifact_count": len(artifacts), "artifacts": artifacts}
+        artifact = {"path": str(path), "size_bytes": path.stat().st_size}
+        if hash:
+            digest = hashlib.sha256()
+            with path.open("rb") as stream:
+                for block in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(block)
+            artifact["sha256"] = digest.hexdigest()
+        artifacts.append(artifact)
+    result = {"artifact_count": len(artifacts), "total_bytes": total_bytes,
+              "hashes_computed": hash, "artifacts": artifacts, "survey": survey()}
     if manifest_path:
         manifest_path = guard.resolve_in_workspace(manifest_path)
         Path(manifest_path).parent.mkdir(parents=True, exist_ok=True)
@@ -4395,12 +4632,16 @@ def get_album_state(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
 
 def snap_to_album(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     guard.check_exposure(float(ctrl.core.get_exposure()))
-    with _pause_live(ctrl) as live_was_on:
+    with _pause_live(ctrl) as live_state:
         images = ctrl.studio.acquisitions().snap()
         created = bool(ctrl.studio.album().add_images(images))
     state = get_album_state(ctrl, guard)
     return {"status": "Snap added to the Micro-Manager Album.",
-            "created_new_album": created, "live_view_restarted": live_was_on, **state}
+            "created_new_album": created,
+            "live_view_restarted": live_state["was_on"],
+            **({"live_view_restore": _live_restore_report(live_state)}
+               if live_state["was_on"] else {}),
+            **state}
 
 
 _MDA_SCALARS = (
@@ -4593,6 +4834,7 @@ TOOL_REGISTRY = {
     "get_device_property_info": get_device_property_info,
     "get_full_device_state": get_full_device_state,
     "get_system_state": get_system_state,
+    "shutter_declared_illumination": shutter_declared_illumination,
     "calibrate_stage_to_camera": calibrate_stage_to_camera,
     "find_features": find_features,
     "center_feature": center_feature,

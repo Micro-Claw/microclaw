@@ -1123,7 +1123,7 @@ class SafetyGuard:
     def shutter_all(self, core) -> list[str]:
         """Best-effort: drive every known illumination shutter to its off value.
 
-        Called on session teardown so no exit path leaves a laser on. Must not
+        This is an explicit operator action, never session teardown. Must not
         raise — a failed shutter on one device should not stop the others."""
         done = []
         for s in self._c.illumination.shutters:
@@ -1133,6 +1133,22 @@ class SafetyGuard:
             except Exception:
                 pass
         return done
+
+    def declared_illumination_state(self, core) -> list[dict[str, str]]:
+        """Read every declared illumination property without judging its state."""
+        readings = []
+        for item in self._c.illumination.shutters:
+            reading = {
+                "device": item.device,
+                "property": item.property,
+                "off_value": item.off_value,
+            }
+            try:
+                reading["value"] = str(core.get_property(item.device, item.property))
+            except Exception as exc:
+                reading["error"] = f"{type(exc).__name__}: {exc}"
+            readings.append(reading)
+        return readings
 
     def check_named_stage(self, device: str, pos: float) -> None:
         """Guard a stage addressed by label against its per-device travel limits.

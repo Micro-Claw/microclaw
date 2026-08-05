@@ -119,11 +119,17 @@ only the methods actually implemented by the hook are passed to `Acquisition(...
 The saved-hook contract. `HookResult` contains JSON-safe measurements and a list
 or tuple of typed action proposals: MoveStage, AcquireAt, SetExposure, ContinueSurvey,
 StopSurvey, RequestAutofocus, SetIlluminationPower, EmitArtifact, or DiscardFrame.
-Under run_adaptive_survey the trusted parent
-supports ContinueSurvey, StopSurvey, and AcquireAt for a position in the planned
-grid. It guard-checks and reservation-checks every proposal and writes every
-accept/refuse decision to the log. The other three actions are parsed but refused
-as unsupported by this runner.
+Runner support for control-flow proposals is:
+
+  runner                              ContinueSurvey        StopSurvey / AcquireAt
+  run_adaptive_survey                 dispatch next tile    supported
+  fixed-plan hooked acquisitions      accepted noop         refused
+
+A fixed-plan runner already continues through every committed event, so
+ContinueSurvey changes nothing and is recorded as an accepted noop. Proposals
+that would change behaviour but are unavailable remain refused. The adaptive
+runner guard-checks and reservation-checks every proposal and writes every
+accept/refuse decision to the log.
 
 Optional analyzer, analyzer_version, parameters, and artifact_sha256 fields retain
 the `microclaw.analysis-observation/v1` envelope used by HookBase.log_analysis.
@@ -159,7 +165,9 @@ always permitted even after the increasing-write budget is exhausted, and does n
 consume that budget. An aborted or failed run may never reach the hook's intended
 final frame, so hardware can remain at whatever value the last accepted write set.
 
-EmitArtifact carries bytes or an ndarray and a bare filename, never a path. Trusted
+EmitArtifact is constructed as ``EmitArtifact(filename, payload)`` (prefer the
+unambiguous keyword form ``EmitArtifact(filename="result.tiff", payload=image)``).
+The filename is bare, never a path; payload is bytes or an ndarray. Trusted
 parent code confines and exclusively creates the file in the run artifact directory,
 enforces per-file and per-run limits, hashes it, and records the path and sha256.
 A HookResult may propose at most one artifact per frame; this keeps the observation's

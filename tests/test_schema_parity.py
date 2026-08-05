@@ -65,3 +65,14 @@ def test_run_autofocus_description_says_sweep_is_headless():
     assert "sweep is headless" in description
     assert "live view is paused for its duration and restored afterwards" in description
     assert "viewer does not show the sweep as it happens" in description
+
+
+def test_mosaic_and_multiposition_descriptions_agree_on_dataset_shape():
+    mosaic = _SCHEMA_BY_NAME["build_stage_coordinate_mosaic"]["description"]
+    multipos = _SCHEMA_BY_NAME["run_multiposition_acquisition"]["description"]
+    autofocus = _SCHEMA_BY_NAME["run_multiposition_with_autofocus"]["description"]
+
+    assert "ONE dataset" in mosaic and "hook_strategy" in mosaic
+    assert "single dataset with a `position` axis" in multipos
+    assert "Without hook_strategy" in multipos and "CANNOT" in multipos
+    assert "one dataset per position" in autofocus and "CANNOT" in autofocus

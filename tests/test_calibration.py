@@ -106,9 +106,10 @@ class TestPersistence:
 
 
 class FakeDataset:
-    def __init__(self, records):
+    def __init__(self, records, summary_metadata=None):
         self.records = records
         self.axes = {"position": [record[0] for record in records]}
+        self.summary_metadata = summary_metadata or {}
 
     def has_image(self, **coords):
         return coords["position"] in dict(self.records)
@@ -141,14 +142,87 @@ def _real_metadata(
 
 
 class TestCalibrationResolver:
+    def test_mm_summary_affine_transform_is_accepted_without_objective(self):
+        dataset = FakeDataset(
+            [("p", _real_metadata(None))],
+            summary_metadata={"AffineTransform": "0.01_-0.1_-0.1_-0.01"},
+        )
+        affine, identity = resolve_calibration(dataset, None)
+        assert (affine.a, affine.b, affine.c, affine.d) == (0.01, -0.1, -0.1, -0.01)
+        assert affine.objective == ""
+        assert identity["source_reference"]["metadata_key"] == "AffineTransform"
+        assert identity["objective_unrecorded"] is True
+        assert "verify the optical path" in identity["objective_unrecorded_reason"]
+
     def test_mm_row_major_and_sentinels(self):
         affine = parse_mm_pixel_size_affine(
             "1;2;3;4;5;6", objective="obj", binning=1
         )
         assert (affine.a, affine.b, affine.c, affine.d) == (1, 2, 4, 5)
-        for raw in ("Undefined", "0;0;0;0;0;0", "1;0;0;0;1;0",
-                    "nan;0;0;0;1;0", "1;2;0;2;4;0"):
-            assert parse_mm_pixel_size_affine(raw, objective="obj", binning=1) is None
+        sentinel_pairs = (
+            ("0;0;0;0;0;0", "0_0_0_0"),
+            ("1;0;0;0;1;0", "1_0_0_1"),
+            ("nan;0;0;0;1;0", "nan_0_0_1"),
+            ("1;2;0;2;4;0", "1_2_2_4"),
+        )
+        for six_value, four_value in sentinel_pairs:
+            assert parse_mm_pixel_size_affine(
+                six_value, objective="obj", binning=1
+            ) is None
+            assert parse_mm_pixel_size_affine(
+                four_value, objective="obj", binning=1
+            ) is None
+        assert parse_mm_pixel_size_affine(
+            "Undefined", objective="obj", binning=1
+        ) is None
+
+    def test_captured_mm_affine_forms_decode_to_identical_asymmetric_matrix(self):
+        # Copied verbatim from plus_mosaic_2. MMCore's six-value form is
+        # row-major; java.awt.geom.AffineTransform.getMatrix's four-value form
+        # is column-major. b != c makes a mistaken transpose observable.
+        per_frame = (
+            "0.004927971153294251;-0.10452770834076626;0.0;"
+            "-0.10638852331845677;-0.00512650316309355;0.0"
+        )
+        summary = (
+            "0.004927971153294251_-0.10638852331845677_"
+            "-0.10452770834076626_-0.00512650316309355"
+        )
+        parsed_per_frame = parse_mm_pixel_size_affine(
+            per_frame, objective="", binning=1
+        )
+        parsed_summary = parse_mm_pixel_size_affine(summary, objective="", binning=1)
+        expected = (
+            0.004927971153294251, -0.10452770834076626,
+            -0.10638852331845677, -0.00512650316309355,
+        )
+        assert (parsed_per_frame.a, parsed_per_frame.b,
+                parsed_per_frame.c, parsed_per_frame.d) == expected
+        assert (parsed_summary.a, parsed_summary.b,
+                parsed_summary.c, parsed_summary.d) == expected
+
+    def test_semicolon_delimiter_always_selects_six_value_mmcore_order(self):
+        affine = parse_mm_pixel_size_affine(
+            "2;3;99;5;7;101", objective="obj", binning=1
+        )
+        assert (affine.a, affine.b, affine.c, affine.d) == (2, 3, 5, 7)
+
+    def test_per_frame_affine_wins_over_stale_summary(self):
+        dataset = FakeDataset(
+            [("p", _real_metadata("0;-0.1056;0;-0.1056;0;0", objective="20x"))],
+            summary_metadata={"AffineTransform": "1_0_0_1"},
+        )
+        affine, identity = resolve_calibration(dataset, None)
+        assert affine.pixel_size_um == pytest.approx(0.1056)
+        assert identity["source_reference"]["metadata_key"] == "PixelSizeAffine"
+
+    def test_summary_cannot_mask_inconsistent_per_frame_affines(self):
+        dataset = FakeDataset([
+            ("p0", _real_metadata("0;-0.2;0;0.2;0;0", objective="20x")),
+            ("p1", _real_metadata("0;-0.3;0;0.3;0;0", objective="20x")),
+        ], summary_metadata={"AffineTransform": "0_-0.1_0.1_0"})
+        with pytest.raises(CalibrationResolutionError, match="changes between frames"):
+            resolve_calibration(dataset, None)
 
     def test_literal_run_a_metadata_reports_recorded_sentinel(self):
         dataset = FakeDataset([("run_a_r0_c0", _real_metadata())])
@@ -263,7 +337,7 @@ class TestCalibrationResolver:
         with pytest.raises(CalibrationResolutionError, match="does not record"):
             resolve_calibration(empty, None)
 
-    def test_missing_objective_falls_through_without_inventing_none(self, tmp_path):
+    def test_explicit_ref_overrides_recorded_affine_with_unrecorded_objective(self, tmp_path):
         dataset = FakeDataset([("p", _real_metadata("0;-0.2;0;0.2;0;0"))])
         affine = StageCameraAffine(0.2, 0, 0, 0.2, "known", 1, 0.2)
         identity = {
@@ -277,7 +351,9 @@ class TestCalibrationResolver:
             dataset, {"kind": "artifact", "path": str(artifact)}
         )
         assert resolved["source_kind"] == "artifact"
-        assert "missing objective" in resolved["acquisition_fallthrough_reason"]
+        assert resolved["acquisition_recorded_not_used_reason"] == (
+            "explicit calibration_ref supplied"
+        )
         assert resolved["payload"]["objective"] == "known"
         assert resolved["payload"]["objective"] != "None"
 

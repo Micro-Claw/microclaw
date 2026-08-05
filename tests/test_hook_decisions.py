@@ -72,6 +72,18 @@ def test_continue_dispatches_next_planned_tile(tmp_path):
     assert adapter._log[-1]["decision"] == "accepted"
 
 
+def test_continue_is_an_accepted_noop_under_a_fixed_plan(tmp_path):
+    class Hook:
+        def analyze_frame(self, image, metadata):
+            return HookResult({}, (ContinueSurvey(),))
+
+    adapter = UntrustedHookAdapter(Hook(), str(tmp_path / "hook.json"))
+    adapter.image_process_fn(np.zeros((2, 2)), {"PositionName": "p0"}, object())
+    record = adapter._log[-1]
+    assert record["decision"] == "accepted"
+    assert "noop" in record["reason"]
+
+
 def test_continue_walked_to_end_matches_planned_frame_count(tmp_path):
     adapter, candidates, progress = _adapter(ContinueSurvey(), tmp_path)
     image = np.zeros((2, 2))
@@ -119,12 +131,13 @@ def test_guard_violation_is_refused_and_logged(tmp_path):
     {"kind": "AcquireAt"},
     {"kind": "StopSurvey", "surprise": True},
 ])
-def test_unknown_or_malformed_action_fails_before_dispatch(action, tmp_path):
+def test_unknown_or_malformed_action_is_refused_before_dispatch(action, tmp_path):
     adapter, candidates, progress = _adapter(action, tmp_path)
-    with pytest.raises((TypeError, ValueError)):
-        adapter.image_process_fn(np.zeros((2, 2)), {}, object())
-    assert candidates.empty() and progress.n_done == 0
-    assert adapter._log[-1]["event"] == "hook_failure"
+    returned = adapter.image_process_fn(np.zeros((2, 2)), {}, object())
+    assert returned is not None
+    assert candidates.empty() and progress.n_done == 1
+    assert adapter._log[-1]["event"] == "hook_action"
+    assert adapter._log[-1]["decision"] == "refused"
 
 
 def test_non_json_measurements_fail_closed(tmp_path):
@@ -428,6 +441,20 @@ def test_action_list_is_normalized_but_other_iterables_are_rejected():
         HookResult({"score": 1}, "ContinueSurvey")
     with pytest.raises(TypeError, match="list or tuple"):
         HookResult({"score": 1}, (a for a in [ContinueSurvey()]))
+
+
+def test_malformed_emit_artifact_is_refused_without_aborting_frame(tmp_path):
+    class Hook:
+        def analyze_frame(self, image, metadata):
+            return HookResult({}, (EmitArtifact(b"payload", "result.bin"),))
+
+    adapter = UntrustedHookAdapter(Hook(), log_path=str(tmp_path / "hook.json"))
+    image = np.zeros((2, 2), dtype=np.uint16)
+    returned = adapter.image_process_fn(image, {"Axes": {"position": "p"}}, object())
+
+    assert returned[0] is image
+    assert adapter._log[-1]["decision"] == "refused"
+    assert "filename must be a string" in adapter._log[-1]["reason"]
 
 
 def test_parent_writes_design26_observation_envelope_and_coordinates(tmp_path):

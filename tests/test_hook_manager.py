@@ -1,5 +1,8 @@
 import hashlib
 import json
+import inspect
+from pathlib import Path
+
 import pytest
 from microclaw.hook_manager import (
     describe_saved_hook,
@@ -10,6 +13,7 @@ from microclaw.hook_manager import (
     read_hook_from_file,
     validate_hook_contract,
 )
+from microclaw.hook_decisions import EmitArtifact
 
 
 def test_clean_code_passes():
@@ -50,6 +54,58 @@ def test_static_contract_accepts_runner_callback_signature():
         "    def image_process_fn(self, image, metadata, event_queue): pass\n"
     )
     assert validate_hook_contract(code) == []
+
+
+def test_static_contract_rejects_reversed_emit_artifact_arguments():
+    code = (
+        "class Hook:\n"
+        " def analyze_frame(self, image, metadata):\n"
+        "  return HookResult({}, (EmitArtifact(image, self.filename),))\n"
+    )
+    assert "not provably a string" in validate_hook_contract(code)[0]
+
+
+def test_session_a_hook_source_is_rejected_verbatim():
+    source = (Path(__file__).parent / "fixtures" / "hooks" /
+              "session_a_plus_mosaic_stitcher.py").read_text(encoding="utf-8")
+    errors = validate_hook_contract(source)
+    assert any("not provably a string" in error for error in errors)
+
+
+def test_documented_emit_artifact_order_matches_runtime_signature():
+    assert list(inspect.signature(EmitArtifact).parameters)[:2] == ["filename", "payload"]
+    from microclaw.hook_docs import HOOK_REFERENCE
+    assert "EmitArtifact(filename, payload)" in HOOK_REFERENCE
+
+
+@pytest.mark.parametrize("filename_expr", ['"x.bin"', "f'{name}.bin'", "str(name)"])
+def test_provable_positional_filename_is_accepted(filename_expr):
+    code = (
+        "class Hook:\n"
+        " def analyze_frame(self, image, metadata):\n"
+        f"  return HookResult({{}}, (EmitArtifact({filename_expr}, image),))\n"
+    )
+    assert validate_hook_contract(code) == []
+
+
+def test_keyword_emit_artifact_is_never_subject_to_positional_type_guessing():
+    code = (
+        "class Hook:\n"
+        " def analyze_frame(self, image, metadata):\n"
+        "  return HookResult({}, (EmitArtifact(filename=self.out_name, payload=image),))\n"
+    )
+    assert validate_hook_contract(code) == []
+
+
+def test_other_typed_actions_are_checked_from_their_runtime_signatures():
+    code = (
+        "class Hook:\n"
+        " def analyze_frame(self, image, metadata):\n"
+        "  return HookResult({}, (AcquireAt(),))\n"
+    )
+    errors = validate_hook_contract(code)
+    assert any("AcquireAt is missing required arguments ['position']" in error
+               for error in errors)
 
 
 def test_subprocess_blocked():

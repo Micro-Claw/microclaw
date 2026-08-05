@@ -9,8 +9,8 @@ import pytest
 from microclaw import tools
 from microclaw.autofocus import AutofocusResult, SweepResult
 from microclaw.safety import (
-    AnalysisConstraints, SafetyConstraints, SafetyGuard, SafetyViolation,
-    StageConstraints,
+    AnalysisConstraints, IlluminationConstraints, IlluminationProperty,
+    SafetyConstraints, SafetyGuard, SafetyViolation, StageConstraints,
 )
 from microclaw.tools import (
     clear_position_list,
@@ -45,6 +45,7 @@ from microclaw.tools import (
     snap_and_analyze,
     start_live_view,
     stop_live_view,
+    shutter_declared_illumination,
 )
 
 
@@ -78,8 +79,8 @@ class TestLiveViewReadiness:
     a tool that returns "Live view started." without looking is lying by
     construction. The delay in the fake below stands in for any state that is
     not true immediately after the call — that failure path, or a bridge/MM
-    variant that does lag. See design/37 F4 for the restore fix, which is
-    separate and unwritten.
+        variant that does lag. The separate restore path is covered below by
+        checking CMMCore's sequence state, as design/37 F4 requires.
     """
 
     class DelayedStartLive:
@@ -333,6 +334,8 @@ class TestCalibrateStageToCamera:
         assert "error" not in result
         assert result["pixel_size_um"] == pytest.approx(px, rel=0.05)
         assert result["n_snaps"] == 4
+        assert result["calibration_ref"]["kind"] == "knowledge_version"
+        assert "_sha256_" in result["calibration_ref"]["key"]
         assert pos == {"x": 0.0, "y": 0.0}, "stage must return to its start"
 
     def test_featureless_field_returns_error_not_garbage(
@@ -583,6 +586,30 @@ class TestGetSystemState:
         assert "y_um" in result
         assert "z_um" in result
         assert "exposure_ms" in result
+        assert "declared_illumination_properties" not in result
+
+    def test_reports_declared_illumination_values_without_judging_them(self, mock_ctrl):
+        guard = SafetyGuard(SafetyConstraints(illumination=IlluminationConstraints(
+            shutters=[
+                IlluminationProperty("Aggregate", "Enable", off_value="0"),
+                IlluminationProperty("Aggregate", "Gate", off_value="0"),
+                IlluminationProperty("Source 2", "Enable", off_value="0"),
+                IlluminationProperty("Source 3", "Enable", off_value="0"),
+                IlluminationProperty("Source 4", "Enable", off_value="0"),
+            ]
+        )))
+        values = {
+            ("Aggregate", "Enable"): "0", ("Aggregate", "Gate"): "1",
+            ("Source 2", "Enable"): "0", ("Source 3", "Enable"): "0",
+            ("Source 4", "Enable"): "0",
+        }
+        mock_ctrl.core.get_property.side_effect = lambda d, p: values[(d, p)]
+        result = get_system_state(mock_ctrl, guard)
+        assert [item["value"] for item in result["declared_illumination_properties"]] == [
+            "0", "1", "0", "0", "0"
+        ]
+        assert "warning" not in result
+        assert "refusal" not in result
 
     def test_handles_unavailable_stage(self, mock_ctrl, unconstrained_guard):
         mock_ctrl.core.get_x_position.side_effect = Exception("Device not found")
@@ -749,6 +776,22 @@ class TestGetSystemState:
         assert result["lasers"] == {2: {"enabled": "unknown"}}
 
 
+def test_explicit_shutter_tool_drives_every_declaration_to_off_value(mock_ctrl):
+    guard = SafetyGuard(SafetyConstraints(illumination=IlluminationConstraints(
+        shutters=[
+            IlluminationProperty("Source", "Enable", off_value="0"),
+            IlluminationProperty("Aggregate", "Gate", off_value="closed"),
+        ]
+    )))
+    mock_ctrl.core.get_property.side_effect = ["1", "armed"]
+    result = shutter_declared_illumination(mock_ctrl, guard)
+    assert result["attempted"] == ["Source.Enable", "Aggregate.Gate"]
+    assert result["shuttered"] == ["Source.Enable", "Aggregate.Gate"]
+    assert mock_ctrl.core.set_property.call_args_list == [
+        call("Source", "Enable", "0"), call("Aggregate", "Gate", "closed")
+    ]
+
+
 class TestSnapAndAnalyze:
     @pytest.fixture(autouse=True)
     def _patch_snaps(self, monkeypatch):
@@ -810,7 +853,20 @@ class TestSnapAndAnalyze:
         calls = live.set_live_mode_on.call_args_list
         assert calls[0] == call(False), "live must be stopped before the snap"
         assert calls[-1] == call(True), "live must be restored after the snap"
-        assert "live_view" in result
+        assert result["live_view"] == "paused for the snap; camera sequence restart verified"
+        assert result["live_view_restore"]["sequence_running"] is True
+
+    def test_live_restore_does_not_claim_success_without_camera_sequence(
+            self, mock_ctrl, unconstrained_guard, monkeypatch):
+        mock_ctrl.studio.live().is_live_mode_on.return_value = True
+        mock_ctrl.core.is_sequence_running.return_value = False
+        monkeypatch.setattr(tools, "_LIVE_MODE_WAIT_S", 0)
+        result = snap_and_analyze(mock_ctrl, unconstrained_guard)
+        assert result["live_view"] == (
+            "paused for the snap; camera sequence restart not verified"
+        )
+        assert result["live_view_restore"]["sequence_running"] is False
+        assert "did not report" in result["live_view_restore"]["warning"]
 
     def test_live_untouched_when_off(self, mock_ctrl, unconstrained_guard):
         mock_ctrl.studio.live().is_live_mode_on.return_value = False
@@ -1094,6 +1150,21 @@ class TestRunMultipositionWithAutofocus:
         self._run(patched_ctrl, unconstrained_guard, tmp_path, monkeypatch)
 
         live.set_live_mode_on.assert_not_called()
+
+    def test_raw_positions_need_no_prior_mark(
+            self, patched_ctrl, unconstrained_guard, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "microclaw.tools.coarse_then_fine_autofocus", lambda *a, **k: _FAKE_AF_RESULT
+        )
+        result = run_multiposition_with_autofocus(
+            patched_ctrl, unconstrained_guard,
+            positions=[{"name": "raw", "x_um": 3.0, "y_um": 4.0, "z_um": 50.0}],
+            z_range_um=10.0, z_step_um=1.0, protocol="snap", save_dir=str(tmp_path),
+        )
+        assert result["status"].startswith("1/1")
+        patched_ctrl.set_xy.assert_called_once_with(3.0, 4.0)
+        patched_ctrl.set_z.assert_called_once_with(50.0)
+        patched_ctrl.go_to_position.assert_not_called()
 
     def test_live_restored_when_autofocus_raises(self, patched_ctrl, unconstrained_guard, tmp_path, monkeypatch):
         monkeypatch.setattr(
@@ -1526,6 +1597,54 @@ class TestHookedGridAcquisition:
         assert os.path.isdir(os.path.dirname(log_path))
         assert result["log_path"] == log_path
 
+    @pytest.mark.parametrize("fail_at", [1, 5])
+    def test_failure_returns_resolved_dataset_and_log_paths(
+        self, centered_ctrl, unconstrained_guard, monkeypatch, tmp_path, fail_at
+    ):
+        from microclaw import tools
+        from microclaw.hooks import PRECODED_HOOK_REGISTRY
+
+        monkeypatch.setitem(PRECODED_HOOK_REGISTRY, "recording", _RecordingHook)
+        resolved_dir = tmp_path / "grid_2"
+        resolved_dir.mkdir()
+        resolved_path = str(resolved_dir)
+
+        class FailingAcquisition:
+            def __init__(self, **kwargs):
+                self._dataset_disk_location = resolved_path
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def acquire(self, events):
+                for frame, _event in enumerate(events, start=1):
+                    if frame == fail_at:
+                        raise RuntimeError(f"forced failure at frame {frame}")
+
+        monkeypatch.setattr(tools, "Acquisition", FailingAcquisition)
+        log_path = str(tmp_path / "grid-hook.json")
+        positions = [
+            {"name": f"p{i}", "x_um": float(i), "y_um": 0.0}
+            for i in range(5)
+        ]
+        result = run_multiposition_acquisition(
+            centered_ctrl, unconstrained_guard, protocol="timelapse",
+            save_dir=str(tmp_path), name="grid", positions=positions,
+            protocol_params={"n_frames": 1, "interval_s": 0},
+            hook_strategy="recording", log_path=log_path,
+        )
+
+        assert result["error"] == f"forced failure at frame {fail_at}"
+        assert result["dataset_path"] == resolved_path
+        assert result["artifact"]["path"] == resolved_path
+        assert result["log_path"] == log_path
+        # Returning a dict bypasses the tool wrapper's hint_for_error, so the
+        # "already exposed" warning has to travel in the payload itself.
+        assert "stage has already moved" in result["hint"]
+
     def test_the_hook_log_keys_to_positions_across_the_grid(
         self, centered_ctrl, unconstrained_guard, captured
     ):
@@ -1909,7 +2028,7 @@ class TestTimelapseTriggerPreflight:
     def test_gated_off_trigger_refused(self, mock_ctrl, unconstrained_guard, monkeypatch):
         from microclaw.tools import run_timelapse
         self._setup(mock_ctrl, monkeypatch, mode="0 - Off")
-        with pytest.raises(SafetyViolation, match="NOT emit"):
+        with pytest.raises(SafetyViolation, match="trigger line is not armed"):
             run_timelapse(mock_ctrl, unconstrained_guard, n_frames=100, interval_s=0,
                           save_dir="/tmp", laser_slot=3)
 
@@ -1926,6 +2045,19 @@ class TestTimelapseTriggerPreflight:
         result = run_timelapse(mock_ctrl, unconstrained_guard, n_frames=100, interval_s=0,
                                save_dir="/tmp", laser_slot=3)
         assert result["status"] == "Timelapse complete."
+        assert result["trigger_preflight"] == {
+            "guarantee": "trigger line is armed",
+            "checked": [
+                {"kind": "trigger mode", "device": "Laser Trigger",
+                 "property": "Mode3", "value": "4 - Follow"},
+                {"kind": "trigger sequence", "device": "Laser Trigger",
+                 "property": "Sequence3", "value": "65535"},
+            ],
+            "not_verified": [
+                "device-level enables", "illumination properties", "emission path"
+            ],
+        }
+        assert "declared_illumination_properties" not in result
 
     def test_unknown_slot_refused(self, mock_ctrl, unconstrained_guard, monkeypatch):
         from microclaw.tools import run_timelapse
@@ -1941,6 +2073,9 @@ class TestTimelapseTriggerPreflight:
         result = tools.run_timelapse(mock_ctrl, unconstrained_guard, n_frames=1,
                                      interval_s=0, save_dir="/tmp", laser_slot=3)
         assert result["status"] == "Timelapse complete."
+        assert result["trigger_preflight"]["guarantee"] == (
+            "no trigger-line verification available"
+        )
 
     def test_no_laser_slot_means_no_preflight(self, mock_ctrl, unconstrained_guard, monkeypatch):
         monkeypatch.setattr("microclaw.tools._acquire_with_hooks", lambda *a, **k: "/tmp/ds")
@@ -2353,6 +2488,44 @@ class TestRunAOfflineTools:
         assert result["artifacts"][0]["sha256"] == (
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         )
+
+    def test_inspect_artifacts_refuses_before_hashing_over_file_limit(
+            self, mock_ctrl, unconstrained_guard, tmp_path):
+        (tmp_path / "a").write_bytes(b"a")
+        (tmp_path / "b").write_bytes(b"b")
+        result = tools.inspect_artifacts(
+            mock_ctrl, unconstrained_guard, [str(tmp_path)], max_files=1
+        )
+        assert "reached max_files=1" in result["error"]
+        assert result["survey_totals"] == {"file_count": 1, "total_bytes": 1}
+        assert result["survey"][0]["direct_file_count"] == 2
+
+    def test_inspect_artifacts_refuses_before_hashing_over_byte_limit(
+            self, mock_ctrl, unconstrained_guard, tmp_path):
+        (tmp_path / "a").write_bytes(b"abc")
+        result = tools.inspect_artifacts(
+            mock_ctrl, unconstrained_guard, [str(tmp_path)], max_total_bytes=2
+        )
+        assert "max_total_bytes=2" in result["error"]
+        assert result["survey"][0]["direct_bytes"] == 3
+
+    def test_inspect_artifacts_listing_only_skips_hash_and_byte_read_limit(
+            self, mock_ctrl, unconstrained_guard, tmp_path):
+        (tmp_path / "dataset").mkdir()
+        (tmp_path / "dataset" / "NDTiff.index").write_bytes(b"index")
+        result = tools.inspect_artifacts(
+            mock_ctrl, unconstrained_guard, [str(tmp_path)],
+            hash=False, max_total_bytes=1,
+        )
+        assert result["hashes_computed"] is False
+        assert "sha256" not in result["artifacts"][0]
+        dataset_row = next(
+            row for row in result["survey"] if row["path"] == str(tmp_path / "dataset")
+        )
+        assert dataset_row == {
+            "path": str(tmp_path / "dataset"), "depth": 1,
+            "direct_file_count": 1, "direct_bytes": 5,
+        }
 
     def test_compare_revisit_frames_recovers_translation(self, mock_ctrl,
                                                           unconstrained_guard,

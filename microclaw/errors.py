@@ -17,9 +17,10 @@ Error sources:
 _JAVA_HINTS = (
     (
         "sequence acquisition is running",
-        "Live view is running; a snap requires it stopped. microclaw pauses "
-        "live automatically in snap tools — retry the call, or call "
-        "stop_live_view first.",
+        "Micro-Manager reports a running sequence. Snap tools pause Live view "
+        "automatically, so one snap retry is reasonable. For a multiposition or "
+        "other acquisition, do not blindly retry: call stop_live_view, inspect "
+        "camera/sequence state, and acquire again only after it is idle.",
     ),
     (
         "Device not found",

@@ -34,6 +34,37 @@ _HOOK_ARTIFACT_LIMITS_SCHEMA = {
     "additionalProperties": False,
 }
 
+_CALIBRATION_REF_SCHEMA = {
+    "description": (
+        "Optional tagged calibration reference. Omit it to use calibration recorded "
+        "in the NDTiff dataset. Every explicit reference must include the shown "
+        "'kind' discriminator."
+    ),
+    "oneOf": [
+        {"type": "object", "properties": {
+            "kind": {"const": "artifact"}, "path": {"type": "string"}},
+         "required": ["kind", "path"], "additionalProperties": False},
+        {"type": "object", "properties": {
+            "kind": {"const": "knowledge_version"}, "key": {"type": "string"}},
+         "required": ["kind", "key"], "additionalProperties": False},
+        {"type": "object", "properties": {
+            "kind": {"const": "confirmed_current"},
+            "objective": {"type": "string"}, "binning": {"type": "integer"}},
+         "required": ["kind", "objective", "binning"], "additionalProperties": False},
+        {"type": "object", "properties": {
+            "kind": {"const": "legacy_derived"},
+            "pixel_size_um": {"type": "number", "exclusiveMinimum": 0},
+            "objective": {"type": "string"}, "binning": {"type": "integer"},
+            "rot90_k": {"type": "integer"}, "flip_x": {"type": "boolean"},
+            "flip_y": {"type": "boolean"}, "camera_device": {"type": "string"},
+            "camera_model": {"type": "string"},
+            "roi": {"type": "array", "items": {"type": "integer"},
+                    "minItems": 4, "maxItems": 4}},
+         "required": ["kind", "pixel_size_um", "objective", "binning"],
+         "additionalProperties": False},
+    ],
+}
+
 TOOLS: list[dict[str, Any]] = [
     {
         "name": "start_live_view",
@@ -322,10 +353,22 @@ TOOLS: list[dict[str, Any]] = [
             "Return a summary of the current microscope state: stage positions, "
             "active channel, exposure time, whether live view is running, and the "
             "shutter and per-slot laser state. "
+            "When illumination shutters are declared, also returns each declared "
+            "illumination property with its current and configured off values, "
+            "without judging which values are required. "
             "Call this first when you need context before executing a protocol. "
             "The shutter and lasers fields are always present, and read 'unknown' "
             "when this rig cannot report them — never tell the user illumination "
             "was off unless this tool said so."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "shutter_declared_illumination",
+        "description": (
+            "Explicitly drive every property declared under illumination.shutters "
+            "to its configured off_value. Use only when the operator asks to shutter "
+            "declared illumination; session exit never calls this action."
         ),
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
@@ -419,7 +462,13 @@ TOOLS: list[dict[str, Any]] = [
         "name": "build_stage_coordinate_mosaic",
         "description": (
             "Build a zero-exposure stage-coordinate mosaic from one explicitly "
-            "selected plane of a saved NDTiff dataset."
+            "selected plane of a saved NDTiff dataset. Requires ONE dataset "
+            "containing every tile on a `position` axis. Acquire it with "
+            "run_multiposition_acquisition(hook_strategy=...). A plain "
+            "run_multiposition_acquisition call or "
+            "run_multiposition_with_autofocus writes one dataset per position "
+            "and CANNOT be mosaicked; plan the acquisition accordingly before "
+            "exposing the sample."
         ),
         "input_schema": {
             "type": "object",
@@ -430,10 +479,7 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "object",
                     "description": "One real coordinate value for every non-position axis.",
                 },
-                "calibration_ref": {
-                    "type": "object",
-                    "description": "Tagged artifact, knowledge_version, confirmed_current, or legacy_derived reference.",
-                },
+                "calibration_ref": _CALIBRATION_REF_SCHEMA,
                 "output_pixel_size_um": {"type": "number", "exclusiveMinimum": 0},
             },
             "required": ["dataset_path", "output_path", "axis_selection"],
@@ -454,10 +500,7 @@ TOOLS: list[dict[str, Any]] = [
                 "input_kind": {"type": "string", "enum": ["frames", "stage_coordinate_mosaic"]},
                 "parameters": {"type": "object"},
                 "output_dir": {"type": "string"},
-                "calibration_ref": {
-                    "type": "object",
-                    "description": "Explicit artifact or immutable knowledge_version reference required for mosaics.",
-                },
+                "calibration_ref": _CALIBRATION_REF_SCHEMA,
                 "output_pixel_size_um": {"type": "number", "exclusiveMinimum": 0},
                 "model_project_config": {"type": "object"},
                 "artifact_limits": _HOOK_ARTIFACT_LIMITS_SCHEMA,
@@ -810,8 +853,13 @@ TOOLS: list[dict[str, Any]] = [
             "stage position list. "
             "Pass hook_strategy to run one hooked acquisition across every position: a "
             "single dataset with a `position` axis and one hook log covering every "
-            "point. Not compatible with protocol='snap' (display-only, no acquisition "
-            "images) — use protocol='timelapse' with n_frames=1 instead."
+            "point. Prefer this single-dataset option for a tiled acquisition; do not "
+            "also run the per-position form unless the user explicitly requests both, "
+            "because doing both repeats every exposure. Not compatible with "
+            "protocol='snap' (display-only, no acquisition "
+            "images) — use protocol='timelapse' with n_frames=1 instead. Without "
+            "hook_strategy, zstack/timelapse writes one dataset per position; those "
+            "separate datasets CANNOT be passed to build_stage_coordinate_mosaic."
         ),
         "input_schema": {
             "type": "object",
@@ -1042,9 +1090,12 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "run_multiposition_with_autofocus",
         "description": (
-            "Visit each named position, run software autofocus, then run a per-position "
-            "protocol (snap, zstack, or timelapse). Use this for automated surveys where "
-            "each stored image must be in focus."
+            "Visit each position, run software autofocus, then run a per-position "
+            "protocol (snap, zstack, or timelapse). Supply either stored position_names "
+            "or raw positions; raw coordinates do not require mark_position first. "
+            "zstack/timelapse writes one dataset per position, not one dataset with a "
+            "`position` axis, so its output CANNOT be passed to "
+            "build_stage_coordinate_mosaic."
         ),
         "input_schema": {
             "type": "object",
@@ -1052,7 +1103,15 @@ TOOLS: list[dict[str, Any]] = [
                 "position_names": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "List of position labels to visit.",
+                    "description": "Stored position labels. Use this OR positions.",
+                },
+                "positions": {
+                    "type": "array",
+                    "items": {"type": "object", "properties": {
+                        "name": {"type": "string"}, "x_um": {"type": "number"},
+                        "y_um": {"type": "number"}, "z_um": {"type": "number"}},
+                        "required": ["name", "x_um", "y_um"]},
+                    "description": "Raw XY(Z) coordinates. Use this OR position_names.",
                 },
                 "z_range_um": {
                     "type": "number",
@@ -1092,7 +1151,7 @@ TOOLS: list[dict[str, Any]] = [
                     "default": False,
                 },
             },
-            "required": ["position_names", "z_range_um", "z_step_um", "protocol", "save_dir"],
+            "required": ["z_range_um", "z_step_um", "protocol", "save_dir"],
         },
     },
     {
@@ -1379,13 +1438,21 @@ TOOLS: list[dict[str, Any]] = [
         "name": "inspect_artifacts",
         "description": (
             "Recursively enumerate files under workspace artifact paths and compute "
-            "their size and SHA-256. Optionally save a deterministic JSON manifest."
+            "their size and optional SHA-256 within deterministic file-count, byte, "
+            "and depth bounds. Refusals include a per-directory count/byte survey so "
+            "a caller can narrow the next request. Optionally save a JSON manifest."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "paths": {"type": "array", "items": {"type": "string"}},
                 "manifest_path": {"type": "string"},
+                "max_files": {"type": "integer", "minimum": 1, "default": 1000},
+                "max_total_bytes": {"type": "integer", "minimum": 1,
+                                    "default": 1073741824},
+                "max_depth": {"type": "integer", "minimum": 1, "default": 16},
+                "hash": {"type": "boolean", "default": True,
+                         "description": "False returns a bounded listing without reading file contents."},
             },
             "required": ["paths"],
         },
