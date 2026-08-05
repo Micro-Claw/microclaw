@@ -12,6 +12,12 @@ An AI agent for [Micro-Manager](https://micro-manager.org) microscopy control. D
 > [!CAUTION]
 > The hardware safety features are not comprehensive. Always be mindful of what your microscope is doing. Use at your own risk.
 
+> [!IMPORTANT]
+> **PREVIEW ONLY** This package is provided as a preview for feedback only. 
+> Specifications (e.g. safety_config.yaml) are unstable and the design is subject to change.
+>
+> Suitable for experiments, exploration and prototypes. It is NOT suitable for production use at this time.
+
 ## Architecture
 
 ```
