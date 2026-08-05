@@ -258,7 +258,101 @@ rig as you found it.
 
 ---
 
-## Return kit
+# Second gate round — the exit-behaviour fix (G7)
+
+**G0–G6 above are executed and settled; do not re-run them.** This section gates
+the change they produced: microclaw no longer writes illumination state on exit.
+
+Cost: about five minutes and **one frame**. Re-pin first — the code has moved:
+
+```
+git fetch origin
+git checkout fix/plus-acquisition-findings
+git pull
+git merge-base --is-ancestor 7d9960d HEAD
+echo %ERRORLEVEL%
+```
+
+Expected `0`. Then `pip install -e . > g7_install.txt 2>&1`.
+
+The offline tests for this change drive a fake core. They prove the code takes no
+write path; they cannot prove the real ZMQ bridge stays quiet. That is what G7 is
+for.
+
+## G7.a — arm the rig and record the baseline
+
+Start microclaw. Ask it:
+
+> Read and report `iChrome-MLE-TCP` — `All: 3. TTL Enable` and for N in 1,2,3,4
+> `Laser N: 4. Use TTL` and `Laser N: 1. Enable`. Do not change anything.
+
+If TTL is not already armed, arm it (`All: 3. TTL Enable = 1`; confirm when asked)
+and re-read. Record the table. **This is the state that must survive.**
+
+## G7.b — Ctrl+C (the exact case that started this)
+
+Press Ctrl+C.
+
+Expected: microclaw exits and prints one `[microclaw] EXIT ILLUMINATION NOT OFF:`
+line per declared property that is not at its off value, naming device, property,
+and value. Copy the exit output verbatim into `g7b_exit_output.txt`.
+
+Now read the same properties **from Micro-Manager's Device Property Browser**,
+not through microclaw:
+
+- **Expected: identical to G7.a.** `All: 3. TTL Enable = 1`, all four `Use TTL = 1`.
+- If anything changed, that is a failure — report it with both tables and stop.
+
+## G7.c — the same for a clean `exit`
+
+Restart microclaw, confirm the properties are still as in G7.a, then type `exit`.
+Read them again from the Property Browser. Expected: unchanged, and an exit report
+naming whatever is not off.
+
+## G7.d — the explicit shutter still works
+
+Restart microclaw. Ask it:
+
+> Shutter all declared illumination.
+
+Expected: it uses `shutter_declared_illumination` and reports what it attempted
+and what it shuttered. Verify in the Property Browser that the declared
+properties are now at their off values — this capability must still exist, just
+never automatically.
+
+Then re-arm `All: 3. TTL Enable = 1` and confirm all four `Use TTL = 1`.
+
+## G7.e — preflight no longer claims emission was verified
+
+One frame. With the rig armed and working, ask microclaw:
+
+> Acquire a single frame with the 640 nm laser, slot 3, and save it to
+> `D:\SSD\gate_g7`. Then tell me exactly what the trigger preflight verified and
+> what it did not.
+
+Expected: the result carries a `trigger_preflight` block naming what was checked
+(trigger mode, trigger sequence) and a `not_verified` list. The agent must **not**
+tell you emission was verified or that the laser "will fire". In G6.e it said
+"the trigger line was verified to fire" while the laser was gated off — that
+sentence, or anything like it, is a failure of this gate.
+
+Also confirm the result carries `declared_illumination_properties`.
+
+## G7.f — leave the rig as you found it
+
+`All: 3. TTL Enable = 1`, all four `Use TTL = 1`,
+`Laser 1: 6. Status = AVAILABLE ENABLED USETTL`.
+
+## G7 return kit
+
+- `g7_install.txt`, `g7b_exit_output.txt`
+- Property tables from G7.a, G7.b, G7.c, G7.d
+- Session histories for G7.a–G7.e
+- What the agent said in G7.e about what was and was not verified
+
+---
+
+## Return kit (first gate round — already returned)
 
 - `g0_install.txt`, `g0_tests.txt`
 - `g1_config.txt` (the `illumination:` block)
