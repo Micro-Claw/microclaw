@@ -3963,7 +3963,12 @@ This is an inventory, not permission to close with unresolved blank work. Block
   tool remains as a deprecated forwarding name. Forwarding deliberately changes
   its disk layout from one dataset per position to one dataset with a `position`
   axis; the result deprecation note and tool schema state that compatibility
-  consequence explicitly. Display-only `snap` is not forwarded. `RequestAutofocus` remains
+  consequence explicitly. This is the layout `build_stage_coordinate_mosaic`
+  can consume; retaining the old per-position layout would preserve the trap
+  that made both original sessions acquire the sample a second time. The tool's
+  callers are agent conversations rather than an external scripting contract,
+  and the agent sees the migration through the result and schema. Display-only
+  `snap` is not forwarded. `RequestAutofocus` remains
   unhonored. For the rig gate, repeat G2's five-tile plus, autofocus parameters,
   live-view check, position-axis inspection, and per-field Z review, adding the
   saved mosaic stitcher and checking its artifact plus the reservation report.

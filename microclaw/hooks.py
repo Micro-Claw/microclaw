@@ -253,10 +253,14 @@ class AutofocusHook(HookBase):
     def bind_reservation(self, reservation) -> None:
         self._reservation = reservation
 
+    def _coarse_step_um(self) -> float:
+        """The coarse step shared by sweep execution and dose planning."""
+        return max(self.z_step_um * 5, 1.0)
+
     def planned_extra_exposures_per_event(self) -> int:
         """Worst-case autofocus snaps made before each planned camera frame."""
         from microclaw.autofocus import coarse_then_fine_plane_count
-        coarse_step = max(self.z_step_um * 5, 1.0)
+        coarse_step = self._coarse_step_um()
         return coarse_then_fine_plane_count(
             self.z_range_um, coarse_step, self.z_step_um
         )
@@ -273,7 +277,7 @@ class AutofocusHook(HookBase):
             self.log_event(event, autofocus="skipped", reason=str(e))
             return event
 
-        coarse_step = max(self.z_step_um * 5, 1.0)
+        coarse_step = self._coarse_step_um()
         result = self._autofocus_fn(
             self.ctrl, self.z_range_um, coarse_step, self.z_step_um, self.settle_ms
         )
