@@ -203,6 +203,7 @@ def _with_cache_breakpoint(messages: list[dict]) -> list[dict]:
 
 
 _RETRY_DELAYS = (5, 15, 30)
+MAX_RETRY_AFTER_SECONDS = 60
 
 TRANSIENT_API_ERROR_MESSAGE = (
     "The Anthropic API is still unavailable after retrying. "
@@ -235,9 +236,10 @@ def _unwind_cancel(messages: list[dict], on_message=None, result=CANCEL_RESULT) 
     """Leave `messages` in a state the API will accept on the next turn.
 
     An assistant turn ending in tool_use blocks is only valid if the next user
-    message answers every one of them. On cancel we answer the unrun ones with an
-    error result rather than dropping them — otherwise the *next* prompt 400s,
-    from a history that looks perfectly fine in the viewer. See design/16 §5.
+    message answers every one of them. When a turn is interrupted, answer the
+    unrun ones with an error result rather than dropping them — otherwise the
+    *next* prompt 400s from a history that looks perfectly fine in the viewer.
+    See design/16 §5.
     """
     last = messages[-1] if messages else None
     if last and last["role"] == "assistant":
@@ -312,7 +314,7 @@ def _stream_one_round(messages, system_blocks, model, context_provider=None):
                 anthropic._exceptions.OverloadedError,
                 anthropic.APIConnectionError) as e:
             if attempt == len(_RETRY_DELAYS):
-                raise _TransientAPIError from e
+                raise _TransientAPIError(TRANSIENT_API_ERROR_MESSAGE) from e
             retry_after = 0.0
             response = getattr(e, "response", None)
             if response is not None:
@@ -320,6 +322,12 @@ def _stream_one_round(messages, system_blocks, model, context_provider=None):
                     retry_after = max(0.0, float(response.headers.get("retry-after", 0)))
                 except (TypeError, ValueError):
                     pass
+                if retry_after > MAX_RETRY_AFTER_SECONDS:
+                    raise _TransientAPIError(
+                        "The Anthropic API asked Microclaw to wait "
+                        f"{retry_after:g} seconds before retrying, which is too long "
+                        "to hold this turn open. Please try again later."
+                    ) from e
     raise RuntimeError("unexpected loop exit")  # pragma: no cover
 
 
@@ -385,7 +393,7 @@ def run_agent_iter(
             # there was no API response to continue from.
             del messages[start:]
             if isinstance(e, _TransientAPIError):
-                yield {"type": "error", "message": TRANSIENT_API_ERROR_MESSAGE}
+                yield {"type": "error", "message": str(e)}
                 return
             if isinstance(e, _BadModel):
                 yield {"type": "error",
@@ -410,6 +418,13 @@ def run_agent_iter(
             return
 
         if response.stop_reason != "tool_use":
+            _unwind_cancel(
+                messages,
+                on_message,
+                json.dumps({
+                    "error": f"The model stopped with reason: {response.stop_reason}."
+                }),
+            )
             yield {
                 "type": "error",
                 "message": f"[Unexpected stop reason: {response.stop_reason}]",

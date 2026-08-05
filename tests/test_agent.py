@@ -10,7 +10,13 @@ import anthropic
 import httpx
 import pytest
 from unittest.mock import MagicMock, patch
-from microclaw.agent import MAX_OUTPUT_TOKENS, SYSTEM_PROMPT, run_agent, run_agent_iter
+from microclaw.agent import (
+    MAX_OUTPUT_TOKENS,
+    MAX_RETRY_AFTER_SECONDS,
+    SYSTEM_PROMPT,
+    run_agent,
+    run_agent_iter,
+)
 from microclaw.safety import SafetyConstraints, SafetyGuard
 
 
@@ -544,6 +550,22 @@ class TestRunAgentIter:
         assert MAX_OUTPUT_TOKENS == 8192
         assert client.messages.stream.call_args.kwargs["max_tokens"] == 8192
 
+    def test_unexpected_stop_reason_is_an_error_event(self, mock_ctrl, guard):
+        response = tool_use_response("get_system_state", {}, call_id="refused-call")
+        response.stop_reason = "refusal"
+        messages = []
+
+        events = self._drain([response], messages, mock_ctrl, guard)
+
+        assert events[-1] == {
+            "type": "error",
+            "message": "[Unexpected stop reason: refusal]",
+        }
+        assert api_history_is_valid(messages)
+        assert json.loads(messages[-1]["content"][0]["content"]) == {
+            "error": "The model stopped with reason: refusal."
+        }
+
 
 class TestAPIFailureSurvival:
     @pytest.mark.parametrize(
@@ -592,6 +614,32 @@ class TestAPIFailureSurvival:
         retry = next(event for event in events if event["type"] == "retry")
         assert retry["delay"] == 17.0
         assert client.messages.stream.call_count == 2
+
+    def test_retry_after_past_cap_fails_without_sleeping(
+        self, mock_ctrl, guard, monkeypatch
+    ):
+        sleeps = []
+        monkeypatch.setattr("microclaw.agent.time.sleep", sleeps.append)
+        response = httpx.Response(
+            429,
+            headers={"retry-after": "3600"},
+            request=httpx.Request("POST", "https://api.anthropic.com/v1/messages"),
+        )
+        failure = anthropic.RateLimitError("slow down", response=response, body=None)
+        client = MagicMock()
+        client.messages.stream.side_effect = failure
+        messages = []
+
+        with patch("microclaw.agent._get_client", return_value=client):
+            events = list(run_agent_iter("go", mock_ctrl, guard, messages))
+
+        assert MAX_RETRY_AFTER_SECONDS == 60
+        assert sleeps == []
+        assert client.messages.stream.call_count == 1
+        assert events[-1]["type"] == "error"
+        assert "3600 seconds" in events[-1]["message"]
+        assert "too long" in events[-1]["message"]
+        assert api_history_is_valid(messages)
 
     @pytest.mark.parametrize(
         "failure",
