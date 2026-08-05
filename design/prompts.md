@@ -4631,3 +4631,73 @@ passed beautifully — the metric peaked 2 nm from the operator's manual focus �
 on **beads**, three runs running, when the inversion was observed on a diffuse
 field. Beads are the one field type where even the broken metric's argmax was
 right. A passing gate on the easy sample is worth recording as exactly that.
+
+---
+
+# design/38 — plus-acquisition session findings (merged `088a9ad`, 2026-08-05)
+
+Four implementation rounds, two rig-gate rounds on M5. What is worth carrying
+forward is mostly about how the prompts were wrong, not the code.
+
+**Two of my premises were wrong, in the same way, and the fix was the same.**
+F2 asserted microclaw "cannot read the affine Micro-Manager actually writes" —
+I had scanned raw TIFF bytes, seen `AffineTransform` in the summary blob, never
+reached the per-image metadata, and generalised from its absence. Every frame
+carried a standard `PixelSizeAffine` the existing parser handled. Later, prompt
+09 argued autofocus must not become a hook because the phase was unwired;
+`post_hardware_hook_fn` is wired, `AutofocusHook` already uses it, and the rig
+gate had just proved it works. **Both errors were reading a partial view and
+concluding absence.** Open the artifact with the real reader before asserting
+what is not in it.
+
+**A runner will implement the prompt's premise, not the truth.** The
+`AffineTransform` support was built exactly as specified on a false premise, and
+it was *fine code* — a parallel parser that skipped four sentinel checks and
+transposed the matrix, both of which I then had to catch in review. A wrong
+prompt does not produce a visibly wrong implementation.
+
+**The dataset carried both representations of the same measurement**, which made
+the transpose provable rather than arguable: decode both, require equality. When
+a rig writes the same fact twice, that redundancy is the strongest test
+available — and every existing sentinel fixture was a symmetric matrix, which
+cannot detect a transpose at all.
+
+**A gate that asks the agent to write bad code cannot pass.** G4 asked for a
+deliberately reversed `EmitArtifact`; the agent refused, quoting the corrected
+documentation back. The doc fix worked so well the static checker never ran. A
+well-behaved agent declining is the right outcome and an untestable one — gate
+the *rejection path* by other means.
+
+**The strongest gate evidence was behavioural, not tabular.** G7.e passed not
+because a field had the right shape but because the agent volunteered, unasked
+and before exposing, what the preflight does *not* verify — where in G6.e it had
+told the operator "the trigger line was verified to fire" while the laser was
+gated off. Prefer criteria that observe what the agent *says and does*.
+
+**`echo %ERRORLEVEL%` is cmd.exe syntax and the operator runs PowerShell.** It
+prints the literal string and fails silently, so both pin checks I wrote verified
+nothing across two gate rounds. Rig steps must print words, not codes to
+interpret. See the `PowerShell, not cmd` memory.
+
+**My time estimate was out by 2.5x** ("about five minutes" for a twelve-minute
+gate) because I costed steps rather than turns. Each gate step is a multi-turn
+conversation with an agent that asks good clarifying questions. Cost gates from
+transcript length.
+
+**Operator rulings that reversed prior design, both correct:**
+
+- *Session exit writes nothing.* This reverses design/14 §3 (`shutter_all` added
+  after a session left a 638 nm laser at 25%). The ruling: users move in and out
+  of a session repeatedly, and silent state mutation on exit broke that — Ctrl+C
+  shuttered a declared TTL gate and left a rig that reported success while
+  emitting nothing. Recorded as a trade, not a cleanup.
+- *Leave the `ttl.state0` hardcode alone.* I proposed removing it on principle;
+  the operator pointed out it is inert on rigs without that device, and removal
+  would have meant reconciling eight references across five documents and
+  re-gating a five-round first-launch path. **Check whether the code you object
+  to actually executes anywhere before costing a change.**
+
+**Withdrawing a prompt is cheaper than a runner discovering it is wrong.** The
+generic "arming chain" for F9 was designed before any evidence and withdrawn on
+the operator's push-back; the probe that replaced it settled the mechanism in one
+gate round and cost two property reads and a clean exit.
