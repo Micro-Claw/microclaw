@@ -117,3 +117,126 @@ microclaw writes nothing on exit and only tells you what is still on.
 - The H1 hook log and mosaic artifact
 - The reservation fields from H1 and your frame cap from H2
 - Anything that surprised you, in your own words
+
+---
+
+# Second gate round — H5–H7
+
+H1's composition and dose reservation **passed**; H3 passed. What failed was the
+mosaic getting written *by the acquisition*, twice, for two different reasons —
+both now fixed. This round proves the inline path and the two refusals.
+
+Re-pin:
+
+```
+git fetch origin
+git checkout codex/compose-hooks-autofocus-dose
+git pull
+git merge-base --is-ancestor 13f5bf3 HEAD
+if ($LASTEXITCODE -eq 0) { "PIN OK" } else { "PIN FAILED - STOP" }
+pip install -e . > h5_install.txt 2>&1
+python -m pytest -p no:cacheprovider -q > h5_tests.txt 2>&1
+```
+
+## Read this before you start: two of your saved hooks will now refuse
+
+Saved hooks are re-checked against the current contract when they load, not only
+when they are saved. Running that check over the copies of your M5 hooks in this
+repo's fixtures:
+
+| Hook | Verdict |
+|---|---|
+| `filament_position_filter` (legacy + migrated) | loads |
+| `mosaic_cell_counter` (legacy + migrated) | loads |
+| `uv_activation`, `uv_activation_wind_down` | loads |
+| `mosaic_stitcher` (legacy) | loads |
+| `mosaic_stitcher_rot` (legacy) | loads |
+| **`mosaic_stitcher` (migrated/v2)** | **REFUSES** — reversed `EmitArtifact` |
+| **`mosaic_stitcher_rot` (migrated/v2)** | **REFUSES** — reversed `EmitArtifact` |
+
+Those two carry the same defect session A's hook had: they would have run,
+exposed the sample, and failed on the final tile. Refusing them is the fix
+working. **They need re-saving with `EmitArtifact(filename=..., payload=...)`
+before they can be used again** — ask microclaw to do it, as it did for
+`plus_mosaic_stitcher` during the H1 round.
+
+If your rig's registry differs from these fixtures, the survey in H6 is the
+authoritative one.
+
+## H5 — the mosaic must be written BY the acquisition
+
+The one claim this block has not yet demonstrated on hardware. Same five-tile
+plus as H1, same autofocus, but the mosaic must come out of the run itself — no
+offline `build_stage_coordinate_mosaic` rescue.
+
+Arm the rig as usual, then ask microclaw:
+
+> Acquire a 5-tile plus centred on the current position with a half-FOV step,
+> using the 640 nm laser. Autofocus at each field with a 10 µm range and 1 µm
+> step, and stitch the tiles inline in the same acquisition so the mosaic is
+> written by the run itself. Save to `D:\SSD\gate_h5`.
+
+Expected:
+
+- One acquisition, one `position`-axis dataset, per-hook log attribution — as H1.
+- `reservation_frames_planned: 75`, `hook_extra_exposures_planned: 70`.
+- **A mosaic TIFF written by the run**, listed in the result's artifacts with a
+  sha256. If the agent falls back to building it offline, that is a failure of
+  this gate — tell it to do it inline and report what it says.
+- The agent should pass `artifact_limits` without being told. If it forgets, the
+  run must be **refused during planning** — see H7 — and then it should retry
+  with a budget. Either order is a pass; a silent no-mosaic is not.
+
+Open the mosaic. Beads in the half-FOV overlaps must superimpose, not reflect
+across the diagonal.
+
+Dose: 5 frames + 70 sweep exposures.
+
+## H6 — a broken saved hook is refused before anything moves (zero dose)
+
+Pick one of the two hooks in the table above that you have **not** re-saved. Ask:
+
+> Run a 2-position acquisition using the `<name>` hook, saving to `D:\SSD\gate_h6`.
+
+Expected: **refused, naming the contract violation and the reversed
+`EmitArtifact` arguments.** No stage movement, no exposure, no dataset directory.
+Confirm the stage did not move.
+
+Then ask:
+
+> Describe the `<name>` hook.
+
+Expected: `resolve_refusal.would_refuse: true` with the contract violation in
+`reasons` — where before this fix it said `false`.
+
+Also, for the record:
+
+> List my saved hooks and tell me which ones would refuse to run and why.
+
+Paste that output — it is the authoritative registry survey for your rig.
+
+## H7 — an emitting hook with no budget is refused during planning (zero dose)
+
+Ask microclaw to run the H5 acquisition again but **explicitly without**
+`artifact_limits`:
+
+> Run the same 5-tile plus with the stitcher composed, but do not pass
+> artifact_limits. Tell me exactly what happens and whether anything was exposed.
+
+Expected: refused during planning, naming the emitting hook and the missing
+`artifact_limits`. **Nothing exposed, no autofocus sweep, stage unmoved** — check
+the position before and after. This is the gate for "decided before the stage
+moves", which is the whole point of both fixes in this round.
+
+## H8 — leave the rig as you found it
+
+`All: 3. TTL Enable = 1`, all four `Use TTL = 1`,
+`Laser 1: 6. Status = AVAILABLE ENABLED USETTL`. Paste the exit report.
+
+## Return kit
+
+- `h5_install.txt`, `h5_tests.txt`
+- Session histories for H5–H7
+- The H5 hook log, mosaic TIFF, and the result's artifact list
+- The H6 registry survey output
+- Stage positions before/after H6 and H7
