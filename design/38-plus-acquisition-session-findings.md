@@ -124,27 +124,27 @@ limits for file count, total hashed bytes, and recursion depth, plus a `hash=fal
 listing-only mode. A refusal includes the partial per-directory survey with direct
 file counts and byte totals so the caller can locate and narrow to a dataset.
 
-## F9 — laser-off mutated M5's TTL prerequisites
+## F9 — the cause of M5's closed TTL prerequisite is unestablished
 
-On M5, turning a laser off left all `Laser N: 4. Use TTL` values false. A later
-enable did not restore them, and `_assert_excitation_will_fire` checks the EMU
-trigger mode and sequence but cannot see this independent iChrome prerequisite.
-This is an M5-specific interaction among EMU, MicroFPGA, and the Toptica iChrome;
-it must not be generalized into the demo-shaped `microclaw/` device model.
+Neither supplied session history contains the event that changed the TTL state,
+so the mechanism is not known. `SafetyGuard.shutter_all` (`safety.py:1123`) drives
+every declared illumination shutter to its `off_value`; its only callers are the
+two session-teardown paths (`webserve.py:890` and `__main__.py:260`). If
+`All: 3. TTL Enable` is declared in `illumination.shutters`, session exit is one
+candidate cause, and the contemporaneous act of turning a laser off may be
+incidental.
 
-**Deferred — mechanism unimplemented in this block.** The required product fix is
-a configured, general arming chain in `safety_config.yaml`: declared prerequisites,
-preflight verification, guarded record/restore with read-back, authorization-map
-coverage, and state reporting. None of those pieces is implemented here, so this
-block does not close F9 and laser acquisition can still pass the existing EMU-only
-preflight while an independent prerequisite is false.
+Enabling a declared shutter is confirm-gated by
+`illumination.require_confirm_on_enable`. Automatic re-arming is therefore a
+policy decision, not merely missing plumbing. The three live hypotheses — session
+teardown, a mid-session laser-off path, or an actor outside microclaw — imply three
+different fixes. The probe specified by the rewritten prompt 04 distinguishes
+them; this block does not implement a fix or author the coordinator-owned runbook.
 
-Offline conclusion and rig gate: after every supported laser-off path, record the
-iChrome TTL values; then enable each excitation slot through the normal workflow
-and verify that the same slot's TTL property is restored before a single low-dose
-test frame. Until that gate establishes a generic, configured semantic mapping,
-the implementation must refuse to invent a device/property rule. The coordinator
-will place the exact PowerShell-safe probe in the M5 gate runbook.
+One statement holds under every hypothesis: preflight cannot currently see this
+prerequisite, so an acquisition can pass `_assert_excitation_will_fire` and still
+produce blank frames. F9 remains probe-first and unimplemented until M5 returns
+that evidence.
 
 ## F10 — multiposition acquisition did not own live-view state
 

@@ -426,7 +426,13 @@ class UntrustedHookAdapter:
             return None
         ctx = self._context
         if ctx is None:
-            self._refuse(metadata, action, "unsupported-by-this-runner")
+            if isinstance(action, ContinueSurvey):
+                self._accept(
+                    metadata, action,
+                    "noop: this runner already continues through its fixed event plan",
+                )
+            else:
+                self._refuse(metadata, action, "unsupported-by-this-runner")
             return
         if isinstance(action, (MoveStage, SetExposure, RequestAutofocus)):
             self._refuse(metadata, action, "unsupported-by-run_adaptive_survey")

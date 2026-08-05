@@ -1556,6 +1556,54 @@ class TestHookedGridAcquisition:
         assert os.path.isdir(os.path.dirname(log_path))
         assert result["log_path"] == log_path
 
+    @pytest.mark.parametrize("fail_at", [1, 5])
+    def test_failure_returns_resolved_dataset_and_log_paths(
+        self, centered_ctrl, unconstrained_guard, monkeypatch, tmp_path, fail_at
+    ):
+        from microclaw import tools
+        from microclaw.hooks import PRECODED_HOOK_REGISTRY
+
+        monkeypatch.setitem(PRECODED_HOOK_REGISTRY, "recording", _RecordingHook)
+        resolved_dir = tmp_path / "grid_2"
+        resolved_dir.mkdir()
+        resolved_path = str(resolved_dir)
+
+        class FailingAcquisition:
+            def __init__(self, **kwargs):
+                self._dataset_disk_location = resolved_path
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def acquire(self, events):
+                for frame, _event in enumerate(events, start=1):
+                    if frame == fail_at:
+                        raise RuntimeError(f"forced failure at frame {frame}")
+
+        monkeypatch.setattr(tools, "Acquisition", FailingAcquisition)
+        log_path = str(tmp_path / "grid-hook.json")
+        positions = [
+            {"name": f"p{i}", "x_um": float(i), "y_um": 0.0}
+            for i in range(5)
+        ]
+        result = run_multiposition_acquisition(
+            centered_ctrl, unconstrained_guard, protocol="timelapse",
+            save_dir=str(tmp_path), name="grid", positions=positions,
+            protocol_params={"n_frames": 1, "interval_s": 0},
+            hook_strategy="recording", log_path=log_path,
+        )
+
+        assert result["error"] == f"forced failure at frame {fail_at}"
+        assert result["dataset_path"] == resolved_path
+        assert result["artifact"]["path"] == resolved_path
+        assert result["log_path"] == log_path
+        # Returning a dict bypasses the tool wrapper's hint_for_error, so the
+        # "already exposed" warning has to travel in the payload itself.
+        assert "stage has already moved" in result["hint"]
+
     def test_the_hook_log_keys_to_positions_across_the_grid(
         self, centered_ctrl, unconstrained_guard, captured
     ):

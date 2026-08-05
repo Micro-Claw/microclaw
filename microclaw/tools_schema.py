@@ -450,7 +450,13 @@ TOOLS: list[dict[str, Any]] = [
         "name": "build_stage_coordinate_mosaic",
         "description": (
             "Build a zero-exposure stage-coordinate mosaic from one explicitly "
-            "selected plane of a saved NDTiff dataset."
+            "selected plane of a saved NDTiff dataset. Requires ONE dataset "
+            "containing every tile on a `position` axis. Acquire it with "
+            "run_multiposition_acquisition(hook_strategy=...). A plain "
+            "run_multiposition_acquisition call or "
+            "run_multiposition_with_autofocus writes one dataset per position "
+            "and CANNOT be mosaicked; plan the acquisition accordingly before "
+            "exposing the sample."
         ),
         "input_schema": {
             "type": "object",
@@ -839,7 +845,9 @@ TOOLS: list[dict[str, Any]] = [
             "also run the per-position form unless the user explicitly requests both, "
             "because doing both repeats every exposure. Not compatible with "
             "protocol='snap' (display-only, no acquisition "
-            "images) — use protocol='timelapse' with n_frames=1 instead."
+            "images) — use protocol='timelapse' with n_frames=1 instead. Without "
+            "hook_strategy, zstack/timelapse writes one dataset per position; those "
+            "separate datasets CANNOT be passed to build_stage_coordinate_mosaic."
         ),
         "input_schema": {
             "type": "object",
@@ -1072,7 +1080,10 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Visit each position, run software autofocus, then run a per-position "
             "protocol (snap, zstack, or timelapse). Supply either stored position_names "
-            "or raw positions; raw coordinates do not require mark_position first."
+            "or raw positions; raw coordinates do not require mark_position first. "
+            "zstack/timelapse writes one dataset per position, not one dataset with a "
+            "`position` axis, so its output CANNOT be passed to "
+            "build_stage_coordinate_mosaic."
         ),
         "input_schema": {
             "type": "object",

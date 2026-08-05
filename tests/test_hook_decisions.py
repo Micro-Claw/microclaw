@@ -72,6 +72,18 @@ def test_continue_dispatches_next_planned_tile(tmp_path):
     assert adapter._log[-1]["decision"] == "accepted"
 
 
+def test_continue_is_an_accepted_noop_under_a_fixed_plan(tmp_path):
+    class Hook:
+        def analyze_frame(self, image, metadata):
+            return HookResult({}, (ContinueSurvey(),))
+
+    adapter = UntrustedHookAdapter(Hook(), str(tmp_path / "hook.json"))
+    adapter.image_process_fn(np.zeros((2, 2)), {"PositionName": "p0"}, object())
+    record = adapter._log[-1]
+    assert record["decision"] == "accepted"
+    assert "noop" in record["reason"]
+
+
 def test_continue_walked_to_end_matches_planned_frame_count(tmp_path):
     adapter, candidates, progress = _adapter(ContinueSurvey(), tmp_path)
     image = np.zeros((2, 2))

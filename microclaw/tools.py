@@ -84,6 +84,43 @@ def _acquisition_entry_point(fn):
     return fn
 
 
+class _HookedAcquisitionFailure(RuntimeError):
+    """A hook failed after pycro-manager resolved the dataset directory."""
+
+    def __init__(self, error: Exception, dataset_path: str) -> None:
+        super().__init__(str(error))
+        self.dataset_path = dataset_path
+
+
+def _hooked_failure_result(exc: _HookedAcquisitionFailure, log_path: str | None) -> dict:
+    """Report a mid-acquisition hook failure without hiding what was written.
+
+    design/38 F7: session A lost a complete dataset because the failure result
+    named no path. The agent guessed `<save_dir>/<name>`, missed the collision
+    suffix pycro-manager had already applied (`plus_A` vs `plus_A_1`), and swept
+    a whole drive looking for it.
+
+    Returning a dict rather than raising means the tool wrapper's
+    `hint_for_error` never runs, so the "already exposed" warning it would have
+    added is carried here instead. Dropping it would trade one silent failure
+    for another.
+    """
+    result = {
+        "error": str(exc),
+        "dataset_path": exc.dataset_path,
+        "artifact": {"kind": "dataset", "path": exc.dataset_path},
+        "hint": (
+            "The hook raised mid-acquisition. The stage has already moved and "
+            "the frames acquired before the failure are saved at dataset_path — "
+            "read what is there before re-acquiring, and do not treat the run as "
+            "untouched."
+        ),
+    }
+    if log_path:
+        result["log_path"] = log_path
+    return result
+
+
 def _acquisition_ledger(ctrl) -> AcquisitionLedger:
     try:
         ledger = _ACQUISITION_LEDGERS.get(ctrl)
@@ -851,15 +888,30 @@ def _acquire_with_hooks(
 
         hook_fn_kwargs["image_saved_fn"] = account_saved_frame
 
+    dataset_path = None
     try:
         with Acquisition(directory=save_dir, name=name, show_display=True, **hook_fn_kwargs) as acq:
+            # Resolve collision suffixes before dispatching the first event: a
+            # first-frame hook failure must still report the data already owned
+            # by this acquisition. This is safe to read here because
+            # pycro-manager 1.0.2 sets `_dataset_disk_location` inside
+            # Acquisition.__init__ from the Java storage's real disk location
+            # (java_backend_acquisitions.py:301), before acquire() dispatches
+            # anything. If that moves, the fallback in _acq_dataset_path returns
+            # the UNSUFFIXED path — which is precisely the wrong guess design/38
+            # F7 is about, so re-verify this on any pycro-manager upgrade.
+            dataset_path = _acq_dataset_path(acq, save_dir, name)
             if hook is not None and hasattr(hook, "bind_artifact_directory"):
                 hook.bind_artifact_directory(
-                    Path(_acq_dataset_path(acq, save_dir, name)) / "artifacts"
+                    Path(dataset_path) / "artifacts"
                 )
             if callable(events):
                 events = events(acq)
             acq.acquire(events)
+    except Exception as exc:
+        if hook is not None and dataset_path is not None:
+            raise _HookedAcquisitionFailure(exc, dataset_path) from exc
+        raise
     finally:
         if reservation is not None and close_reservation:
             reservation.close()
@@ -2956,9 +3008,12 @@ def run_adaptive_zstack(
     )
     started_at = datetime.now(timezone.utc)
     started = time.monotonic()
-    dataset_path = _acquire_with_hooks(
-        guard, save_dir, name, events, hook, reservation=reservation
-    )
+    try:
+        dataset_path = _acquire_with_hooks(
+            guard, save_dir, name, events, hook, reservation=reservation
+        )
+    except _HookedAcquisitionFailure as exc:
+        return _hooked_failure_result(exc, log_path)
     completed_at = datetime.now(timezone.utc)
     return _adaptive_result(
         dataset_path, log_path, frames_planned=len(events), frames_acquired=len(events),
@@ -3099,9 +3154,12 @@ def _acquire_positions_with_hook(
     )
     started_at = datetime.now(timezone.utc)
     started = time.monotonic()
-    dataset_path = _acquire_with_hooks(
-        guard, save_dir, name, events, hook, reservation=reservation
-    )
+    try:
+        dataset_path = _acquire_with_hooks(
+            guard, save_dir, name, events, hook, reservation=reservation
+        )
+    except _HookedAcquisitionFailure as exc:
+        return _hooked_failure_result(exc, log_path)
     completed_at = datetime.now(timezone.utc)
     # Say how many positions ran. "Adaptive acquisition complete." over a grid
     # left no way to confirm every tile fired without opening the log.
