@@ -794,6 +794,9 @@ def get_system_state(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     # enabled" has to be sourced from here or not made at all (design/20 F2).
     state["shutter"] = _shutter_state(ctrl)
     state["lasers"] = _laser_state(ctrl)
+    illumination = guard.declared_illumination_state(ctrl.core)
+    if illumination:
+        state["declared_illumination_properties"] = illumination
     try:
         label = str(ctrl.core.get_camera_device())
         state["camera"] = {
@@ -972,19 +975,21 @@ def run_zstack(
     }
 
 
-def _assert_excitation_will_fire(ctrl: MicroscopeController, laser_slot: int) -> None:
-    """Refuse an acquisition whose excitation laser is gated off at the trigger.
+def _assert_excitation_will_fire(ctrl: MicroscopeController, laser_slot: int) -> dict:
+    """Verify only that an EMU slot's trigger line is armed.
 
-    In amr_test (design/14 §1) a 100-frame SMLM acquisition ran with the
-    excitation trigger line never verified — had trigger mode been '0 - Off',
-    the dataset would have been 100 blank frames and nothing would have said
-    so. One property read prevents that.
+    This checks trigger mode and trigger sequence when the map declares them.
+    It does not verify any other part of the emission path.
     """
     from microclaw.emu_manager import build_emu_map
 
     props = _cached_emu_properties(ctrl)
     if not props:
-        return  # non-EMU rig; nothing to assert
+        return {
+            "guarantee": "no trigger-line verification available",
+            "checked": [],
+            "not_verified": ["device-level enables", "illumination properties", "emission path"],
+        }
     lasers = build_emu_map(props)["lasers"]
     laser = lasers.get(laser_slot)
     if laser is None:
@@ -993,25 +998,47 @@ def _assert_excitation_will_fire(ctrl: MicroscopeController, laser_slot: int) ->
             f"{sorted(lasers)}. Call get_emu_laser_map() — never infer a slot "
             f"index from device naming order."
         )
+    checked = []
     trig = laser.get("trigger_mode")
     if trig and "device" in trig:
         mode = str(ctrl.core.get_property(trig["device"], trig["property"]))
+        checked.append({"kind": "trigger mode", "device": trig["device"],
+                        "property": trig["property"], "value": mode})
         if mode.strip().startswith("0"):
             raise SafetyViolation(
-                f"Laser slot {laser_slot} trigger mode is {mode!r}: it will NOT "
-                f"emit during the acquisition — every frame would be blank. Set "
-                f"{trig['device']}.{trig['property']} to a firing mode (e.g. "
+                f"Laser slot {laser_slot} trigger mode is {mode!r}: the trigger "
+                f"line is not armed. Set {trig['device']}.{trig['property']} to an armed mode (e.g. "
                 f"'4 - Follow') first."
             )
     seq = laser.get("trigger_sequence")
     if seq and "device" in seq:
         value = str(ctrl.core.get_property(seq["device"], seq["property"]))
+        checked.append({"kind": "trigger sequence", "device": seq["device"],
+                        "property": seq["property"], "value": value})
         if value.strip() == "0":
             raise SafetyViolation(
                 f"Laser slot {laser_slot} trigger sequence is 0: the laser is "
-                f"gated off for every frame. Set {seq['device']}."
+                f"not armed at the trigger for any frame. Set {seq['device']}."
                 f"{seq['property']} (65535 = always on) first."
             )
+    return {
+        "guarantee": "trigger line is armed",
+        "checked": checked,
+        "not_verified": ["device-level enables", "illumination properties", "emission path"],
+    }
+
+
+def shutter_declared_illumination(
+    ctrl: MicroscopeController, guard: SafetyGuard
+) -> dict:
+    """Explicitly drive all declared illumination properties to off_value."""
+    attempted = [
+        f"{item['device']}.{item['property']}"
+        for item in guard.declared_illumination_state(ctrl.core)
+    ]
+    shuttered = guard.shutter_all(ctrl.core)
+    return {"status": "Declared illumination shutter requested.",
+            "attempted": attempted, "shuttered": shuttered}
 
 
 @_acquisition_entry_point
@@ -1028,8 +1055,9 @@ def run_timelapse(
     _reservation: Reservation | None = None,
 ) -> dict:
     save_dir = guard.resolve_in_workspace(save_dir)   # before any hardware moves
+    excitation_preflight = None
     if laser_slot is not None:
-        _assert_excitation_will_fire(ctrl, laser_slot)
+        excitation_preflight = _assert_excitation_will_fire(ctrl, laser_slot)
     if channel:
         guard.check_channel(channel)
     if exposure_ms is not None:
@@ -1051,10 +1079,16 @@ def run_timelapse(
         guard, save_dir, name, events, reservation=reservation,
         close_reservation=_reservation is None,
     )
-    return {
+    result = {
         "status": "Timelapse complete.", "dataset_path": dataset_path,
         **_reservation_report(reservation),
     }
+    if excitation_preflight is not None:
+        result["excitation_preflight"] = excitation_preflight
+    illumination = guard.declared_illumination_state(ctrl.core)
+    if illumination:
+        result["declared_illumination_properties"] = illumination
+    return result
 
 
 def export_dataset_as_tiff(
@@ -4800,6 +4834,7 @@ TOOL_REGISTRY = {
     "get_device_property_info": get_device_property_info,
     "get_full_device_state": get_full_device_state,
     "get_system_state": get_system_state,
+    "shutter_declared_illumination": shutter_declared_illumination,
     "calibrate_stage_to_camera": calibrate_stage_to_camera,
     "find_features": find_features,
     "center_feature": center_feature,

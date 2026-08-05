@@ -936,6 +936,25 @@ class TestIlluminationGate:
         core.set_property.side_effect = RuntimeError("device unplugged")
         assert guard.shutter_all(core) == []  # must not raise
 
+    def test_declared_illumination_state_reports_values_and_read_failures(self):
+        guard = SafetyGuard(SafetyConstraints(illumination=IlluminationConstraints(
+            shutters=[
+                IlluminationProperty("Source", "Enable", off_value="0"),
+                IlluminationProperty("Aggregate", "Gate", off_value="closed"),
+            ]
+        )))
+        core = _core()
+        def read(device, prop):
+            if device == "Aggregate":
+                raise RuntimeError("unavailable")
+            return "1"
+        core.get_property.side_effect = read
+        assert guard.declared_illumination_state(core) == [
+            {"device": "Source", "property": "Enable", "off_value": "0", "value": "1"},
+            {"device": "Aggregate", "property": "Gate", "off_value": "closed",
+             "error": "RuntimeError: unavailable"},
+        ]
+
     def test_from_yaml_loads_illumination(self, tmp_path):
         cfg = tmp_path / "safety.yaml"
         cfg.write_text(

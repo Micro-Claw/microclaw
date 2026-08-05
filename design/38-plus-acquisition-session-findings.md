@@ -124,27 +124,60 @@ limits for file count, total hashed bytes, and recursion depth, plus a `hash=fal
 listing-only mode. A refusal includes the partial per-directory survey with direct
 file counts and byte totals so the caller can locate and narrow to a dataset.
 
-## F9 — the cause of M5's closed TTL prerequisite is unestablished
+## F9 — session teardown closed M5's arming prerequisite
 
-Neither supplied session history contains the event that changed the TTL state,
-so the mechanism is not known. `SafetyGuard.shutter_all` (`safety.py:1123`) drives
-every declared illumination shutter to its `off_value`; its only callers are the
-two session-teardown paths (`webserve.py:890` and `__main__.py:260`). If
-`All: 3. TTL Enable` is declared in `illumination.shutters`, session exit is one
-candidate cause, and the contemporaneous act of turning a laser off may be
-incidental.
+The returned M5 gate established the mechanism. `g1_config.txt` shows
+`All: 3. TTL Enable` in `illumination.shutters` with `off_value: '0'`, alongside
+the other aggregate and per-source enables and `Core.AutoShutter`.
+`SafetyGuard.shutter_all` ran in `finally` on both session front ends, including
+the Ctrl+C route used between G1 and G2. G6.c confirmed the write-through effect,
+and G2's opening reads confirmed the next session inherited it: the aggregate
+property and all four per-source `Use TTL` properties read `0`, the first source
+enable read `0`, and its status had changed from `AVAILABLE ENABLED USETTL` to
+bare `AVAILABLE`. The operator changed nothing between sessions.
 
-Enabling a declared shutter is confirm-gated by
-`illumination.require_confirm_on_enable`. Automatic re-arming is therefore a
-policy decision, not merely missing plumbing. The three live hypotheses — session
-teardown, a mid-session laser-off path, or an actor outside microclaw — imply three
-different fixes. The probe specified by the rewritten prompt 04 distinguishes
-them; this block does not implement a fix or author the coordinator-owned runbook.
+This round reverses design/14 §3. That section added teardown `shutter_all` after
+a session ended with a 638 nm laser left at 25%. The operator has ruled that
+silent state mutation on exit is the larger hazard: it breaks the intended
+move-in/move-out workflow and, as G6.e demonstrated, can leave a rig that reports
+a successful acquisition while emitting nothing. Session exit now performs no
+illumination write. It instead names every declared illumination property whose
+current value differs from `off_value`, and names every failed read. The explicit
+`shutter_all` capability remains available only on operator request. The trade is
+real: illumination microclaw turned on can now outlive its session; the conspicuous
+per-property exit report, rather than silent mutation, covers that hazard.
 
-One statement holds under every hypothesis: preflight cannot currently see this
-prerequisite, so an acquisition can pass `_assert_excitation_will_fire` and still
-produce blank frames. F9 remains probe-first and unimplemented until M5 returns
-that evidence.
+G6.e also established the limit of the old preflight. With this prerequisite
+closed, `run_timelapse(laser_slot=3)` passed its trigger checks, while the captured
+frame matched background rather than the with-prerequisite control. The preflight
+now says only that the EMU trigger line is armed, records the trigger mode and
+sequence it checked, and explicitly says it did not verify device-level enables,
+declared illumination properties, or the emission path. System state and the
+acquisition result surface every declared illumination property as factual values
+without deciding which values are required.
+
+### F9 follow-up direction — operator-authored arming chains
+
+The missing fact is which declared illumination properties must be on for a
+given source to emit. It cannot be derived from the declaration: in working M5
+images `All: 1. Enable` and `All: 2. Emission` were `0`, `All: 3. TTL Enable` had
+to be `1`, and three of four per-source enables were correctly `0`. Only the
+operator can classify these roles.
+
+`first_launch.py` already asks the operator to classify each candidate property
+as emission/enable, power, ordinary, excluded, or unresolved, then authors
+`illumination.shutters`. The follow-up should add one question for properties
+classified emission/enable: is it a per-source enable, where off is normal when
+that source is unused, or an arming prerequisite, which must be on for a source
+on that device to emit?
+
+The requirement belongs in reviewed, versioned, fail-closed `safety_config.yaml`,
+not in the agent-writable knowledge base. Knowledge may retain observations and
+prompt the operator to declare them, but cannot authorize its own refusal. An
+absent arming-prerequisite declaration means no check, preserving current
+behaviour on rigs without one. M5's status string happens to expose whether its
+operator declaration is correct without an exposure; that is useful gate
+evidence, not a vendor-specific product contract.
 
 ## F10 — multiposition acquisition did not own live-view state
 
@@ -181,6 +214,15 @@ evidence to overwrite either calibration: the ~2.2% scale difference and affine
 orientation require a rig gate against a known displacement/landmark. Mosaic
 provenance must retain the four affine terms and their source, not silently
 substitute the configured scalar.
+
+## Smaller finding — first-launch recommendation remains label-based
+
+The known `first_launch.py` recommendation keys on a device label. An unrelated
+rig with a device labelled `TTL` exposing `State0` would therefore receive it
+spuriously. It fails closed and still requires human confirmation. Generalising
+the match to the underlying property shape is a candidate for whichever future
+block next opens `first_launch.py`; it is deliberately unchanged and unscheduled
+here.
 
 ## Exposure-planning correction
 

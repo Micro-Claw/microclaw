@@ -1,14 +1,14 @@
-# M5 rig gate — plus-acquisition fixes + TTL probe
+# M5 rig gate — plus-acquisition fixes + returned F9 evidence
 
 Branch: `fix/plus-acquisition-findings`.
 Sample: the bead slide from the 2026-08-04 sessions, or equivalent.
 Total added dose: **~15 frames** plus one autofocus sweep. Everything else is
 property reads and offline work.
 
-Run the gates **in order**. G1 and G6 are two halves of one investigation and
-must bracket the imaging gates: G1 establishes the healthy baseline and tests the
-mid-session hypothesis, G6 tests the teardown hypothesis and deliberately leaves
-the rig in a closed-TTL state, so nothing may follow it.
+This runbook has now been executed. G1 and G6 bracketed the imaging gates: G1
+established the healthy baseline, and G6 proved the teardown mechanism. The
+record below preserves the procedure and its settled result rather than leaving
+probe-first language in place.
 
 Record everything. Return the files listed at the end. **If a gate's actual result
 differs from its expected result in any way, stop and report — do not adapt the
@@ -218,7 +218,7 @@ original 10-minute-hang defect not fixed.
 
 ---
 
-## G6 — the teardown hypothesis (run LAST)
+## G6 — teardown mechanism (settled; run last in the gate)
 
 This deliberately leaves the rig with TTL possibly closed. Nothing may follow it.
 
@@ -231,7 +231,7 @@ restart it.**
 **G6.c.** In Micro-Manager's Device Property Browser (not through microclaw),
 read `iChrome-MLE-TCP` → `All: 3. TTL Enable` and all four `Laser N: 4. Use TTL`.
 
-This is the decisive measurement:
+This was the decisive measurement, and the returned result was the first case:
 
 - `1` before exit and `0` after → **session teardown closes the gate.**
   `shutter_all` drives every declared illumination shutter to `off_value` on exit,
@@ -248,10 +248,9 @@ Ask microclaw:
 > Acquire a single frame at the current position with the 640 nm laser, slot 3,
 > and save it to `D:\SSD\gate_g6`.
 
-Expected — and this is the one behaviour we predict fails: microclaw's preflight
-checks only trigger mode and sequence, so it will likely **accept** the run and
-produce a blank frame. Record which happened. One frame of dose, and it tells us
-whether preflight can be trusted when a prerequisite outside the EMU map is off.
+Returned result: microclaw accepted the run because preflight checked only trigger
+mode and sequence. The frame matched background; the with-TTL control contained
+signal. Preflight therefore did not verify end-to-end emission.
 
 **G6.f.** Re-arm: set `All: 3. TTL Enable` back to `1`, verify all four
 `Use TTL = 1` and `Laser 1: 6. Status = AVAILABLE ENABLED USETTL`, and leave the
@@ -272,7 +271,9 @@ rig as you found it.
 
 ## What this gate does not cover
 
-F9 has **no product fix in this block**. G1 and G6 are investigation: they tell us
-which of three mechanisms closed the TTL gate so the fix can be designed against
-evidence instead of speculation. Whatever G6.e shows, microclaw's preflight is
-unchanged in this branch and can still accept an acquisition that cannot emit.
+F9 is settled by this return: the declared property plus `shutter_all` in the
+session `finally` caused the state change on every exit route, including Ctrl+C;
+G6.c and G2's opening reads confirm it. The product follow-up removes teardown
+writes, reports declared illumination state on exit and in acquisition context,
+and narrows preflight's claim to the trigger checks it actually performed. The
+per-source arming-chain refusal remains a separate operator-authored follow-up.

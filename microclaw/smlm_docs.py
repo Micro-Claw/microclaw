@@ -176,7 +176,7 @@ checklist: in a past session the "focus lock engaged?" item was answered with
 | Check                  | Tool                                    | Pass condition                     |
 |------------------------|-----------------------------------------|------------------------------------|
 | Focus lock engaged     | get_focus_lock_state()                  | engaged == true                    |
-| Excitation will fire   | run_timelapse(laser_slot=N)             | pre-flight raises if gated off     |
+| Trigger line armed     | run_timelapse(laser_slot=N)             | trigger mode/sequence accepted     |
 | Blinking density       | find_features()                         | spot_density_per_um2 in [0.1, 1.0] |
 | No saturation          | snap_and_analyze()                      | saturated_fraction == 0            |
 | In focus               | run_autofocus() or snap_and_analyze()   | converged == true                  |

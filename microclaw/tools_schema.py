@@ -353,10 +353,22 @@ TOOLS: list[dict[str, Any]] = [
             "Return a summary of the current microscope state: stage positions, "
             "active channel, exposure time, whether live view is running, and the "
             "shutter and per-slot laser state. "
+            "When illumination shutters are declared, also returns each declared "
+            "illumination property with its current and configured off values, "
+            "without judging which values are required. "
             "Call this first when you need context before executing a protocol. "
             "The shutter and lasers fields are always present, and read 'unknown' "
             "when this rig cannot report them — never tell the user illumination "
             "was off unless this tool said so."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "shutter_declared_illumination",
+        "description": (
+            "Explicitly drive every property declared under illumination.shutters "
+            "to its configured off_value. Use only when the operator asks to shutter "
+            "declared illumination; session exit never calls this action."
         ),
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },

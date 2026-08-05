@@ -9,8 +9,8 @@ import pytest
 from microclaw import tools
 from microclaw.autofocus import AutofocusResult, SweepResult
 from microclaw.safety import (
-    AnalysisConstraints, SafetyConstraints, SafetyGuard, SafetyViolation,
-    StageConstraints,
+    AnalysisConstraints, IlluminationConstraints, IlluminationProperty,
+    SafetyConstraints, SafetyGuard, SafetyViolation, StageConstraints,
 )
 from microclaw.tools import (
     clear_position_list,
@@ -45,6 +45,7 @@ from microclaw.tools import (
     snap_and_analyze,
     start_live_view,
     stop_live_view,
+    shutter_declared_illumination,
 )
 
 
@@ -585,6 +586,30 @@ class TestGetSystemState:
         assert "y_um" in result
         assert "z_um" in result
         assert "exposure_ms" in result
+        assert "declared_illumination_properties" not in result
+
+    def test_reports_declared_illumination_values_without_judging_them(self, mock_ctrl):
+        guard = SafetyGuard(SafetyConstraints(illumination=IlluminationConstraints(
+            shutters=[
+                IlluminationProperty("Aggregate", "Enable", off_value="0"),
+                IlluminationProperty("Aggregate", "Gate", off_value="0"),
+                IlluminationProperty("Source 2", "Enable", off_value="0"),
+                IlluminationProperty("Source 3", "Enable", off_value="0"),
+                IlluminationProperty("Source 4", "Enable", off_value="0"),
+            ]
+        )))
+        values = {
+            ("Aggregate", "Enable"): "0", ("Aggregate", "Gate"): "1",
+            ("Source 2", "Enable"): "0", ("Source 3", "Enable"): "0",
+            ("Source 4", "Enable"): "0",
+        }
+        mock_ctrl.core.get_property.side_effect = lambda d, p: values[(d, p)]
+        result = get_system_state(mock_ctrl, guard)
+        assert [item["value"] for item in result["declared_illumination_properties"]] == [
+            "0", "1", "0", "0", "0"
+        ]
+        assert "warning" not in result
+        assert "refusal" not in result
 
     def test_handles_unavailable_stage(self, mock_ctrl, unconstrained_guard):
         mock_ctrl.core.get_x_position.side_effect = Exception("Device not found")
@@ -749,6 +774,22 @@ class TestGetSystemState:
         mock_ctrl.core.get_property.side_effect = Exception("bridge error")
         result = get_system_state(mock_ctrl, unconstrained_guard)
         assert result["lasers"] == {2: {"enabled": "unknown"}}
+
+
+def test_explicit_shutter_tool_drives_every_declaration_to_off_value(mock_ctrl):
+    guard = SafetyGuard(SafetyConstraints(illumination=IlluminationConstraints(
+        shutters=[
+            IlluminationProperty("Source", "Enable", off_value="0"),
+            IlluminationProperty("Aggregate", "Gate", off_value="closed"),
+        ]
+    )))
+    mock_ctrl.core.get_property.side_effect = ["1", "armed"]
+    result = shutter_declared_illumination(mock_ctrl, guard)
+    assert result["attempted"] == ["Source.Enable", "Aggregate.Gate"]
+    assert result["shuttered"] == ["Source.Enable", "Aggregate.Gate"]
+    assert mock_ctrl.core.set_property.call_args_list == [
+        call("Source", "Enable", "0"), call("Aggregate", "Gate", "closed")
+    ]
 
 
 class TestSnapAndAnalyze:
@@ -1987,7 +2028,7 @@ class TestTimelapseTriggerPreflight:
     def test_gated_off_trigger_refused(self, mock_ctrl, unconstrained_guard, monkeypatch):
         from microclaw.tools import run_timelapse
         self._setup(mock_ctrl, monkeypatch, mode="0 - Off")
-        with pytest.raises(SafetyViolation, match="NOT emit"):
+        with pytest.raises(SafetyViolation, match="trigger line is not armed"):
             run_timelapse(mock_ctrl, unconstrained_guard, n_frames=100, interval_s=0,
                           save_dir="/tmp", laser_slot=3)
 
@@ -2004,6 +2045,19 @@ class TestTimelapseTriggerPreflight:
         result = run_timelapse(mock_ctrl, unconstrained_guard, n_frames=100, interval_s=0,
                                save_dir="/tmp", laser_slot=3)
         assert result["status"] == "Timelapse complete."
+        assert result["excitation_preflight"] == {
+            "guarantee": "trigger line is armed",
+            "checked": [
+                {"kind": "trigger mode", "device": "Laser Trigger",
+                 "property": "Mode3", "value": "4 - Follow"},
+                {"kind": "trigger sequence", "device": "Laser Trigger",
+                 "property": "Sequence3", "value": "65535"},
+            ],
+            "not_verified": [
+                "device-level enables", "illumination properties", "emission path"
+            ],
+        }
+        assert "declared_illumination_properties" not in result
 
     def test_unknown_slot_refused(self, mock_ctrl, unconstrained_guard, monkeypatch):
         from microclaw.tools import run_timelapse
@@ -2019,6 +2073,9 @@ class TestTimelapseTriggerPreflight:
         result = tools.run_timelapse(mock_ctrl, unconstrained_guard, n_frames=1,
                                      interval_s=0, save_dir="/tmp", laser_slot=3)
         assert result["status"] == "Timelapse complete."
+        assert result["excitation_preflight"]["guarantee"] == (
+            "no trigger-line verification available"
+        )
 
     def test_no_laser_slot_means_no_preflight(self, mock_ctrl, unconstrained_guard, monkeypatch):
         monkeypatch.setattr("microclaw.tools._acquire_with_hooks", lambda *a, **k: "/tmp/ds")

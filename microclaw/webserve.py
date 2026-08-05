@@ -883,10 +883,11 @@ def serve(args):
         _open_when_ready(visit, args.web_port, f"http://{visit}:{args.web_port}")
 
     # Audit records are already flushed message-by-message. Every exit path
-    # still shutters known illumination (design/14 §3).
+    # reports declared illumination without changing rig state (design/38 F9).
     try:
         uvicorn.run(app, host=args.host, port=args.web_port, log_level="warning")
     finally:
-        shuttered = session.guard.shutter_all(session.ctrl.core)
-        if shuttered:
-            print(f"[microclaw] Illumination off: {', '.join(shuttered)}", flush=True)
+        from microclaw.__main__ import report_declared_illumination_on_exit
+        report_declared_illumination_on_exit(
+            session.guard, session.ctrl.core, flush=True
+        )

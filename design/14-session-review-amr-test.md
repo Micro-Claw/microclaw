@@ -1560,7 +1560,7 @@ self-attests to. In `smlm_docs.py`, name the tool for each item:
 | Check              | Tool                                    | Pass condition          |
 |--------------------|-----------------------------------------|-------------------------|
 | Focus lock engaged | get_focus_lock_state()                  | engaged == true         |
-| Excitation will fire | _assert_excitation_will_fire(slot)    | trigger mode != "0 - Off" |
+| Trigger line armed   | _assert_excitation_will_fire(slot)    | trigger mode != "0 - Off" |
 | Blinking density   | find_features()                         | spot_density_per_um2 in [0.1, 1.0] |
 | No saturation      | snap_and_analyze()                      | saturated_fraction == 0 |
 ```

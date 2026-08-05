@@ -969,6 +969,82 @@ def test_repl_resolves_api_key_through_shared_loader(monkeypatch, capsys, source
     assert f"Anthropic API key: {shown}" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("route", ["exit", "ctrl_c", "exception"])
+def test_every_repl_exit_route_preserves_declared_illumination(
+    monkeypatch, capsys, route
+):
+    from microclaw import __main__ as cli
+    from microclaw import credentials
+
+    class StatefulCore(Core):
+        def __init__(self):
+            super().__init__()
+            self.values = {("Source", "Enable"): "1", ("Aggregate", "Gate"): "armed"}
+            self.writes = []
+
+        def get_property(self, device, prop):
+            return self.values[(device, prop)]
+
+        def set_property(self, device, prop, value):
+            self.writes.append((device, prop, value))
+            self.values[(device, prop)] = value
+
+    core = StatefulCore()
+    illumination = IlluminationConstraints(shutters=[
+        IlluminationProperty("Source", "Enable", off_value="0"),
+        IlluminationProperty("Aggregate", "Gate", off_value="closed"),
+    ])
+    monkeypatch.setattr(cli, "load_safety_config_or_exit",
+                        lambda path: parsed(illumination=illumination))
+    monkeypatch.setattr(cli, "MicroscopeController", lambda port, guard: Controller(core))
+    monkeypatch.setattr(cli, "validate_live_rig", lambda *args, **kwargs: None)
+    monkeypatch.setattr(credentials, "load_api_key", lambda: ("key", "env"))
+    monkeypatch.setattr("microclaw.agent.set_api_key", lambda key: None)
+
+    if route == "exit":
+        monkeypatch.setattr("builtins.input", lambda prompt: "exit")
+        monkeypatch.setattr(cli, "run_agent", lambda *a, **k: pytest.fail("agent ran"))
+    elif route == "ctrl_c":
+        def interrupted(prompt):
+            raise KeyboardInterrupt
+        monkeypatch.setattr("builtins.input", interrupted)
+        monkeypatch.setattr(cli, "run_agent", lambda *a, **k: pytest.fail("agent ran"))
+    else:
+        monkeypatch.setattr("builtins.input", lambda prompt: "acquire")
+        def failed_agent(*args, **kwargs):
+            raise RuntimeError("agent failed")
+        monkeypatch.setattr(cli, "run_agent", failed_agent)
+    before = dict(core.values)
+    args = SimpleNamespace(
+        safety_config=None, port=1, save_history=False,
+        history_retention_days=None, profile=False, model=None,
+    )
+    if route == "exception":
+        with pytest.raises(RuntimeError, match="agent failed"):
+            cli.run_session(args)
+    else:
+        cli.run_session(args)
+
+    assert core.values == before
+    assert core.writes == []
+    output = capsys.readouterr().out
+    assert "Source.Enable = '1'" in output
+    assert "Aggregate.Gate = 'armed'" in output
+
+
+def test_exit_report_names_read_failure_and_makes_no_writes(capsys):
+    from microclaw import __main__ as cli
+
+    guard = SafetyGuard(SafetyConstraints(illumination=IlluminationConstraints(
+        shutters=[IlluminationProperty("Source", "Enable", off_value="0")]
+    )))
+    core = Core()
+    core.get_property = lambda *args: (_ for _ in ()).throw(RuntimeError("bridge down"))
+    core.set_property = lambda *args: pytest.fail("exit report wrote hardware")
+    cli.report_declared_illumination_on_exit(guard, core)
+    assert "EXIT ILLUMINATION READ FAILED: Source.Enable" in capsys.readouterr().out
+
+
 def test_repl_refuses_missing_api_key_before_repl(monkeypatch):
     from microclaw import __main__ as cli
     from microclaw import credentials
