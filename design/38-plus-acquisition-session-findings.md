@@ -242,3 +242,69 @@ That is Option A: five exposures, one dataset with a `position` axis, and one
 hook log. Option B is the legacy per-position dataset loop. The agent must not run
 both unless the operator explicitly asks for both; doing so is not a fallback but
 a second dose to the same sample.
+
+## G7 — the exit-behaviour fix, gated on M5 2026-08-05
+
+Evidence: `design38-g7-m5/`. **PASS on every step.**
+
+- **G7.b (Ctrl+C, web-GUI session) and G7.c (clean `exit`)** — both printed the
+  exit report and wrote nothing:
+
+  ```
+  [microclaw] EXIT ILLUMINATION NOT OFF: iChrome-MLE-TCP.All: 3. TTL Enable = '1' (off_value='0')
+  [microclaw] EXIT ILLUMINATION NOT OFF: iChrome-MLE-TCP.Laser 1: 1. Enable = '1' (off_value='0')
+  ```
+
+  The state survived: the session started immediately after the Ctrl+C snapped a
+  frame with `focus_metric_valid: true`, SNR 3.64, max 655 — i.e. the laser was
+  still emitting, where G6.e's gated-off frame peaked at 224. Note the direct
+  Property-Browser read after exit was not captured; the pass rests on that
+  functional evidence plus the exit report's own readings.
+
+- **G7.d** — `shutter_declared_illumination` drove all 21 declared properties off
+  on request. The capability survives; only its automatic invocation is gone.
+
+- **G7.e** — the corrected preflight returned exactly its scope:
+
+  ```json
+  {"guarantee": "trigger line is armed",
+   "checked": [{"kind": "trigger mode", "value": "4 - Follow"},
+               {"kind": "trigger sequence", "value": "65535"}],
+   "not_verified": ["device-level enables", "illumination properties", "emission path"]}
+  ```
+
+  More importantly it changed the agent's behaviour. **Before** exposing, unasked,
+  it said the preflight "does not verify the per-laser enable, the emission state,
+  laser power, the emission filter in the path, the shutter, or that photons
+  actually reach the camera." In G6.e the same agent had said "the trigger line
+  was verified to fire" while the laser was gated off. `get_system_state` and the
+  timelapse result both carried `declared_illumination_properties`.
+
+### F12 — a property write can report failure after it has succeeded
+
+Found incidentally in G7.a. `set_device_property` on `All: 3. TTL Enable`
+returned:
+
+```
+Exception: java.lang.Exception: Cannot set property "All: 3. TTL Enable" to "1"
+[ Error in device "iChrome-MLE-TCP": Serial timeout occurred. (17) ]
+```
+
+The agent read the property back and found it was `1`: **the write had landed and
+the error was the acknowledgement timing out.** The agent handled it correctly,
+but nothing in microclaw made it do so.
+
+This is the same shape as the failed-write-that-landed defect design/32 Block 7b's
+gate caught, so it recurs. It matters most for illumination: an operator told a
+laser-enable write failed may believe the laser is off when it is on, or retry and
+double-apply. Candidate fix: on a write exception, read the property back and
+report `write_reported_failure_but_value_changed` with both values, rather than
+surfacing the raw exception and leaving the caller to guess. Not scheduled.
+
+### F13 — the agent does not know it can now read illumination state
+
+On exit in G7.c the agent told the operator "I can't confirm the illumination
+state on my own." That is no longer true: `get_system_state` returns
+`declared_illumination_properties`. The round-4 prompt change teaches the agent to
+consult it after a blank or low-signal frame, but not at session end or handoff.
+One prompt line. Not scheduled.

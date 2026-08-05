@@ -23,11 +23,14 @@ git fetch origin
 git checkout fix/plus-acquisition-findings
 git pull
 git merge-base --is-ancestor ee5d330 HEAD
-echo %ERRORLEVEL%
+if ($LASTEXITCODE -eq 0) { "PIN OK" } else { "PIN FAILED - STOP" }
 ```
 
-Expected: `0`. Any other value means this runbook does not describe the code you
-have — stop.
+Expected: `PIN OK`. Anything else means this runbook does not describe the code
+you have — stop.
+
+(PowerShell. `echo %ERRORLEVEL%` is cmd.exe-only syntax and prints the literal
+string `%ERRORLEVEL%` in PowerShell — it does not report the exit code.)
 
 Then, because a stale editable install has repeatedly produced errors that look
 like something else:
@@ -270,10 +273,10 @@ git fetch origin
 git checkout fix/plus-acquisition-findings
 git pull
 git merge-base --is-ancestor 7d9960d HEAD
-echo %ERRORLEVEL%
+if ($LASTEXITCODE -eq 0) { "PIN OK" } else { "PIN FAILED - STOP" }
 ```
 
-Expected `0`. Then `pip install -e . > g7_install.txt 2>&1`.
+Expected `PIN OK`. Then `pip install -e . > g7_install.txt 2>&1`.
 
 The offline tests for this change drive a fake core. They prove the code takes no
 write path; they cannot prove the real ZMQ bridge stays quiet. That is what G7 is
