@@ -4701,3 +4701,71 @@ transcript length.
 generic "arming chain" for F9 was designed before any evidence and withdrawn on
 the operator's push-back; the probe that replaced it settled the mechanism in one
 gate round and cost two property reads and a clean exit.
+
+---
+
+# Composition block — hooks compose, sweep dose is reserved (merged `efa57fa`, 2026-08-05)
+
+Four implementation rounds, two rig-gate rounds on M5. Grew out of design/38's
+open register rather than the checklist.
+
+**I wrote the block prompt on a false premise, for the second time in one
+session.** The first draft argued autofocus must not become a hook because the
+pycro-manager phase was unwired. `post_hardware_hook_fn` *is* wired,
+`AutofocusHook` already used it, and the rig gate had just proved it worked —
+evidence that was in the transcript when I wrote the prompt. Same failure as
+design/38's F2: I read a partial view (the "not currently wired" list in
+`hook_docs.py`) and concluded absence without checking the neighbouring list.
+The operator caught it by asking a scheduling question, not a technical one.
+**Before writing a prompt that says a capability is missing, grep for it.**
+
+**The real gap was the one the operator named in their first sentence** —
+"and then run whatever additional hook we like." I spent a page arguing about
+phases and dose while `hook_strategy: str | None` sat there, singular. When a
+domain expert describes a limitation in plain language, the plain language is
+usually the specification.
+
+**A green suite the runner cannot run is not a green suite.** Round 1 came back
+with pytest segfaulting in the runner's environment; it said so instead of
+claiming otherwise, which was right. The suite ran fine here: 9 failures, four
+distinct defect classes, including a path-confinement guard. Had it guessed
+"probably fine", that merges.
+
+**Mutation-test the capability tests, and do it yourself.** The runner claimed it
+had mutation-verified the untrusted-composition test. I re-ran the mutation
+anyway — letting `ctrl` past `FORBIDDEN_SAVED_HOOK_PARAMS` — and it did fail, so
+the claim held. Cheap to check, and the one category where a test that has never
+been seen to fail is worth nothing.
+
+**Isolation is only as deep as its copy.** Composition deep-copied pixels and
+shallow-copied metadata. Since `metadata["Axes"]` is a dict, one observer could
+rewrite the next observer's position *and* the parent's, whose log attribution
+reads the same key. Found by writing the two-hook mutation by hand rather than
+reading the code. **When a boundary claims isolation, construct the attack.**
+
+**Fixture copies are not registry state.** I surveyed the rig's hooks using the
+repo's fixture files and told the operator "two of your hooks will now refuse."
+The real registry said nine of twelve refuse — all on a pre-existing legacy hash
+pin the fixtures do not carry. My change added a *reason* to two; it broke
+nothing. A survey run against files answers a different question from one run
+against the manifest.
+
+**The gate found two defects that were both knowable before exposure**, and each
+cost a full acquisition: a saved hook was only contract-checked at save time, so
+a stale one resolved and failed on the final tile; and a corrected hook still
+wrote nothing because emitting needs an `artifact_limits` budget nobody asked
+for. Both now refuse during planning. The shape to watch for: *anything the
+system could have decided before the stage moved and instead discovered after.*
+
+**Sparse beads defeat registration checks, again.** Asked whether the mosaic
+tiles superimpose, phase correlation returned `err=1.000` on all four pairs —
+no signal at all — and bead matching peaked at 2/5. The usable test was
+autocorrelating the emitted mosaic for duplicate content at the tile step, which
+rules out gross misregistration without claiming sub-pixel accuracy. design/28 F4
+already says what this needs: aperiodic structure and a step ≲ ¼ FOV. Say what a
+measurement cannot show.
+
+**Runner process, twice:** worked in the main checkout instead of its own
+worktree, and left the delivery uncommitted both rounds. The first left `main`'s
+working directory on a feature branch with unsaved work. Committing the delivery
+and re-homing the branch is coordinator cleanup, not a runner favour.
