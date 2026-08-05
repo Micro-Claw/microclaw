@@ -276,7 +276,9 @@ def parse_mm_pixel_size_affine(raw: Any, *, objective: str, binning: int) -> Sta
     if len(values) == 6:
         m00, m01, _m02, m10, m11, _m12 = values
     elif len(values) == 4:
-        m00, m01, m10, m11 = values
+        # java.awt.geom.AffineTransform.getMatrix stores its flat array in
+        # column-major order: {m00, m10, m01, m11[, m02, m12]}.
+        m00, m10, m01, m11 = values
     else:
         return None
     if not all(math.isfinite(value) for value in values):

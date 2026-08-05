@@ -176,6 +176,37 @@ class TestCalibrationResolver:
             "Undefined", objective="obj", binning=1
         ) is None
 
+    def test_captured_mm_affine_forms_decode_to_identical_asymmetric_matrix(self):
+        # Copied verbatim from plus_mosaic_2. MMCore's six-value form is
+        # row-major; java.awt.geom.AffineTransform.getMatrix's four-value form
+        # is column-major. b != c makes a mistaken transpose observable.
+        per_frame = (
+            "0.004927971153294251;-0.10452770834076626;0.0;"
+            "-0.10638852331845677;-0.00512650316309355;0.0"
+        )
+        summary = (
+            "0.004927971153294251_-0.10638852331845677_"
+            "-0.10452770834076626_-0.00512650316309355"
+        )
+        parsed_per_frame = parse_mm_pixel_size_affine(
+            per_frame, objective="", binning=1
+        )
+        parsed_summary = parse_mm_pixel_size_affine(summary, objective="", binning=1)
+        expected = (
+            0.004927971153294251, -0.10452770834076626,
+            -0.10638852331845677, -0.00512650316309355,
+        )
+        assert (parsed_per_frame.a, parsed_per_frame.b,
+                parsed_per_frame.c, parsed_per_frame.d) == expected
+        assert (parsed_summary.a, parsed_summary.b,
+                parsed_summary.c, parsed_summary.d) == expected
+
+    def test_semicolon_delimiter_always_selects_six_value_mmcore_order(self):
+        affine = parse_mm_pixel_size_affine(
+            "2;3;99;5;7;101", objective="obj", binning=1
+        )
+        assert (affine.a, affine.b, affine.c, affine.d) == (2, 3, 5, 7)
+
     def test_per_frame_affine_wins_over_stale_summary(self):
         dataset = FakeDataset(
             [("p", _real_metadata("0;-0.1056;0;-0.1056;0;0", objective="20x"))],

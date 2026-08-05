@@ -28,11 +28,26 @@ objects were rejected. The schema now publishes the exact tagged union:
 Omission is also documented: it asks the resolver to use calibration recorded in
 the dataset.
 
-## F2 — Micro-Manager's recorded affine used the other metadata representation
+## F2 — recorded geometry was usable; incomplete identity blocked it
 
-The resolver read per-frame `PixelSizeAffine`, a six-value semicolon-delimited
-Java affine, while current MM/NDTiff summary metadata records `AffineTransform`
-as four underscore-delimited linear terms. The real `plus_mosaic_2` summary has:
+The original diagnosis was wrong. It inferred from the summary blob that the
+real MM dataset lacked the affine representation microclaw understood. Opening
+`plus_mosaic_2` through NDTiff shows that all five frames carry the ordinary
+six-value, semicolon-delimited `PixelSizeAffine`, which the pre-existing parser
+already handled. What prevented `calibration_ref=None` from resolving was the
+identity-completeness gate: M5 recorded no objective label, and its camera model
+was under the previously unprobed `<camera>-CameraName` vendor key.
+
+The fixes that unblock the captured dataset are therefore:
+
+- recognize `<camera>-CameraName` when completing camera identity;
+- accept acquisition-recorded geometry with an unrecorded objective, while
+  setting `objective_unrecorded: true`, retaining a reason, and surfacing that
+  degradation as a mosaic warning.
+
+The four-value summary `AffineTransform` support remains useful as a secondary
+fallback for datasets where every selected frame omits `PixelSizeAffine`. The
+real `plus_mosaic_2` summary has:
 
 ```text
 AffineTransform =
@@ -40,19 +55,23 @@ AffineTransform =
 -0.10452770834076626_-0.00512650316309355
 ```
 
-The shared MM affine parser now recognizes that representation and applies the
-same all-zero, identity, non-finite, and singular-sentinel refusals as it does to
-the six-value form. Per-frame metadata remains authoritative; summary metadata
-is used only when every selected frame omits its affine. The resolver records
-which metadata key supplied the calibration. A summary
-affine is a historical acquisition record and can be used even when MM did not
-record an objective label. That degradation is explicit in the calibration
-identity and mosaic warning. This makes `calibration_ref=None` useful on the
-captured dataset rather than structurally impossible.
+The shared parser applies the same all-zero, identity, non-finite, and singular
+sentinel refusals to both forms. Per-frame metadata remains authoritative;
+summary metadata is used only when every selected frame omits its affine.
 
 `plus_mosaic_2` contains both forms. Under the precedence rule its per-frame
 `PixelSizeAffine` is used; the summary form remains the fallback for datasets
-whose selected frames omit that key.
+whose selected frames omit that key. They encode the same asymmetric matrix in
+different flat-array orders: MMCore's six-value vector is
+`m00,m01,m02,m10,m11,m12`, while Java `AffineTransform.getMatrix` writes
+`m00,m10,m01,m11[,m02,m12]`. Micro-Manager's own `AffineUtils.doubleToAffine`
+performs the corresponding reordering, and its `affineToMeasurements` comment
+records the Java order. See the
+[Micro-Manager AffineUtils source](https://github.com/micro-manager/micro-manager/blob/fe03637f48b69de4a72cab63681d031708657222/mmstudio/src/main/java/org/micromanager/internal/utils/AffineUtils.java)
+and [Oracle `AffineTransform.getMatrix` contract](https://docs.oracle.com/en/java/javase/21/docs/api/java.desktop/java/awt/geom/AffineTransform.html#getMatrix(double%5B%5D)).
+The captured asymmetric pair is a regression test: both representations must
+decode to identical `(a, b, c, d)` values, so swapping `b` and `c` cannot hide
+behind symmetric identity/sentinel fixtures.
 
 ## F3 — a newly measured calibration could not be referenced
 

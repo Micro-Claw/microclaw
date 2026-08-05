@@ -12,7 +12,7 @@ import threading
 import time
 import weakref
 from datetime import datetime, timezone
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 from pathlib import Path
 from typing import Any, Callable
 
@@ -2645,9 +2645,10 @@ def run_multiposition_with_autofocus(
         if protocol != "snap" and valid_count else None
     )
 
-    pause_live = _pause_live(ctrl)
-    live_state = pause_live.__enter__()
-    try:
+    with ExitStack() as cleanup:
+        live_state = cleanup.enter_context(_pause_live(ctrl))
+        if reservation is not None:
+            cleanup.callback(reservation.close)
         for pos_name, pos, stored in requested:
             if pos is None:
                 results.append({"position": pos_name, "error": "Not found in position list."})
@@ -2722,13 +2723,6 @@ def run_multiposition_with_autofocus(
                 results.append(
                     {"position": pos_name, **af_info, "error": str(e)}
                 )
-    finally:
-        try:
-            if reservation is not None:
-                reservation.close()
-        finally:
-            pause_live.__exit__(None, None, None)
-
     n_ok = sum(1 for r in results if "error" not in r)
     restore = _live_restore_report(live_state)
     return {
