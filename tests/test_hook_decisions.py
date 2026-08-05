@@ -706,3 +706,33 @@ def test_a_trusted_builtin_may_still_keep_its_own_log(tmp_path, monkeypatch):
                          str(tmp_path / "trusted.json"))
     assert hook.log_path == str(tmp_path / "trusted.json")
     assert not isinstance(hook, UntrustedHookAdapter)
+
+
+def test_composed_observers_cannot_reach_each_other_through_nested_metadata():
+    """Isolation covers metadata's nesting, not just the pixel buffer.
+
+    A shallow dict(metadata) left metadata["Axes"] shared, so one hook could
+    rewrite the next hook's position — and the parent's, since HookBase.where
+    reads the same key when it attributes the log record.
+    """
+    class Mutator:
+        def image_process_fn(self, image, metadata, _queue):
+            metadata["Axes"]["position"] = "HIJACKED"
+            image[0, 0] = 999
+            return image, metadata
+
+    class Victim:
+        def __init__(self):
+            self.seen = None
+
+        def image_process_fn(self, image, metadata, _queue):
+            self.seen = (metadata["Axes"]["position"], int(image[0, 0]))
+            return image, metadata
+
+    victim = Victim()
+    composite = CompositeHook([("mutator", Mutator()), ("victim", victim)], None)
+    metadata = {"Axes": {"position": "p0"}}
+    composite.image_process_fn(np.zeros((2, 2), dtype=int), metadata, object())
+
+    assert victim.seen == ("p0", 0), "an observer saw another observer's edits"
+    assert metadata == {"Axes": {"position": "p0"}}, "the parent's metadata was mutated"

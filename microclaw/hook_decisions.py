@@ -8,6 +8,7 @@ validates decisions in trusted parent code.
 
 from __future__ import annotations
 
+import copy
 from dataclasses import asdict, dataclass
 import hashlib
 import io
@@ -625,8 +626,16 @@ class CompositeHook:
             if callback is None:
                 continue
             observer_image = np.array(image, copy=True)
+            # deepcopy, not dict(): metadata is nested (metadata["Axes"] is a
+            # dict), so a shallow copy leaves the nesting shared. A hook writing
+            # metadata["Axes"]["position"] would then rewrite the next hook's
+            # view *and* the parent's, whose log attribution reads the same key
+            # through HookBase.where. Pixels were already isolated; this closes
+            # the other half.
             try:
-                returned = callback(observer_image, dict(metadata), event_queue)
+                returned = callback(
+                    observer_image, copy.deepcopy(metadata), event_queue
+                )
             finally:
                 self._sync(index)
             discard = discard or returned is None
