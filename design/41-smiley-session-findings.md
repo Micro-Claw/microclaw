@@ -91,6 +91,10 @@ this puts microclaw runtime state in the script — that is the point of it.
 
 ## F2 — `max_tokens=4096` truncated the script and ended the turn
 
+**FIXED — block 41a, merged 2026-08-05.** Cap raised to 8192; truncation is a
+named recoverable condition and unwinds any `tool_use` blocks it cut. See
+design/16 §5 "The invariant is not about Stop".
+
 `agent.py:291` caps every model reply at 4096 tokens. The script did not fit.
 Message `:47` ends mid-function, inside an unclosed ``` fence:
 
@@ -130,6 +134,10 @@ did not bite here only because the truncation happened to land in a text block.
 ---
 
 ## F3 — only 529 is retried; every other API failure kills the session
+
+**FIXED — block 41a, merged 2026-08-05.** 429/5xx/connection/timeout share the
+backoff, `retry-after` is honoured to a 60 s cap, and the rollback moved to the
+common failure boundary. See design/16 §5 "The invariant is not about Stop".
 
 This is the most likely mechanism behind "I ran out of turns", which the
 operator could not otherwise account for (they had credits, and the longest turn
@@ -263,6 +271,10 @@ readable way.
 ---
 
 ## F7 — entry state was not restored
+
+**FIXED — block 41a, merged 2026-08-05.** Prompt wording only: the laser bullet
+now names the entry state — what microclaw turned on it turns off, what it found
+on it leaves on.
 
 640 was enabled at 2.24% when the session opened (`:2`). It was left **off**
 (`:42`), and the assistant flagged this plainly rather than hiding it. The filter

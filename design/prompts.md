@@ -4856,3 +4856,38 @@ were ticked. Together they meant a session could drive a 60× oil objective 450
 never permitted. Nothing in the block workflow asks "what is refused, and what
 does the operator do then?" — design/40's block 6a exists because that question
 went unasked for four blocks.
+
+---
+
+## Block 41a — session survival, merged 2026-08-05
+
+Ran concurrently with block 6a's rig gate, in a separate worktree. Two review
+rounds. Nothing here needed a rig.
+
+**Both review rounds found the same shape: the fix was right and stopped one
+line short.** Round 1 fixed `max_tokens` truncation so it unwinds its orphaned
+`tool_use` blocks — and left the `stop_reason != "tool_use"` branch immediately
+below it returning without unwinding, which is the identical defect for
+`refusal` and `pause_turn`. Round 2 honoured `retry-after` — with no upper
+bound, so a server-sent `3600` would `time.sleep` for an hour, which is the same
+silent hang the block exists to remove. **When a fix restores an invariant, the
+review question is not "is this branch right" but "which other branches leave
+through the same door".**
+
+**The test bar did the work.** The block's acceptance said: assert the *history
+is API-valid* after every failure path, not that an error was emitted. The
+implementer wrote an `api_history_is_valid` helper and used it at four failure
+sites, which is what made the round-1 defect reviewable at all — the branch that
+was missing it stood out precisely because every other one had it. Worth
+copying: when a defect class is invisible in the product's own UI, make the
+invariant a function and call it everywhere, rather than asserting on messages.
+I drove that helper directly against a broken history before trusting it — a
+validator that cannot fail is worth nothing, and this session had already been
+burned three times by criteria that could not fail.
+
+**Cheap process note.** Diffing *collected test IDs* against the start commit,
+not just comparing totals, is now the thing that catches silent test loss. It
+caught a deliberate-but-uncovered deletion here (`test_unexpected_stop_reason_is
+_an_error_event`, retired because `max_tokens` was no longer "unexpected", while
+the branch it covered still existed). On block 6a the same diff caught five
+tests dropping out of collection where the totals had cancelled exactly.

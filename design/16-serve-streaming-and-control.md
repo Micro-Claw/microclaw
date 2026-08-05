@@ -580,6 +580,42 @@ entry per skipped block, and the loop exits after appending it.
 The model sees `is_error` results reading "Cancelled by the operator," which is
 exactly what we want it to know when the operator types "continue".
 
+### The invariant is not about Stop (block 41a, 2026-08-05)
+
+Written for cancel, the unwinding above is owed by **every** path that abandons a
+turn after the assistant message is appended. Two of them were missing it, and
+neither had a symptom in the viewer:
+
+- **`stop_reason == "max_tokens"`.** Truncation was reported as an "unexpected
+  stop reason" and the turn ended. When the cut lands inside a `tool_use` block
+  the next prompt 400s. It did not bite on the smiley run only because that
+  truncation happened to land in text.
+- **Any other `stop_reason`** — `refusal`, `pause_turn`, or whatever the API adds
+  next. This one was found in review *after* the `max_tokens` fix, one branch
+  below it.
+
+So `_unwind_cancel` takes the result string as an argument and all three callers
+pass their own cause. Truncation is a named, recoverable condition — say the
+reply was cut and invite a continue — not an error the operator has to decode.
+`max_tokens` is 8192; 4096 was too low for a model that must narrate and act.
+
+**Retry and rollback.** `_stream_one_round` retries 429, 5xx, connection errors
+and timeouts on one shared backoff — previously only 529, so every other
+transient failure ended the session through `webserve.py`'s blanket handler.
+That is the most likely mechanism behind the operator's "I ran out of turns".
+`retry-after` is honoured up to **60 s**; beyond that the turn is released with a
+message naming the requested delay, because an unbounded `time.sleep` is
+indistinguishable from the hang being fixed. The history rollback
+(`del messages[start:]`) now lives at the common failure boundary rather than on
+the 529 path alone, so no failure strands a partial turn — while the append-only
+audit still keeps the attempted prompt, which is the whole point of it being
+append-only.
+
+The test bar that makes this reviewable: assert **the history is API-valid after
+every failure path**, not that an error was emitted. The defect class here is
+invisible in the viewer, so a test that only checks the banner passes on the
+broken code.
+
 ### What Stop does *not* do
 
 A cancelled turn can leave a laser on and a stage mid-travel. Stop waits for the
