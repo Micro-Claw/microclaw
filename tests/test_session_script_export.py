@@ -1,10 +1,13 @@
 import inspect
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from microclaw import image_analysis, tools
+import numpy as np
+
+from microclaw import autofocus, image_analysis, tools
 from microclaw.tools_schema import TOOLS
 
 
@@ -22,6 +25,19 @@ def call(name, params):
     return {"role": "assistant", "content": [
         {"type": "tool_use", "id": name, "name": name, "input": params}
     ]}
+
+
+def completed_call(name, params, result):
+    tool_id = f"{name}-id"
+    return [
+        {"role": "assistant", "content": [
+            {"type": "tool_use", "id": tool_id, "name": name, "input": params}
+        ]},
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": tool_id,
+             "content": json.dumps(result)}
+        ]},
+    ]
 
 
 def export(tmp_path, records):
@@ -63,13 +79,16 @@ def test_real_smiley_session_fixture_shows_whole_routine_and_holes():
     ).read_text()
     assert source.count("# RECORDED TOOL:") == 39
     assert "# RECORDED TOOL: move_stage_xy" in source
-    assert "# NOT EMITTED: run_multiposition_acquisition" in source
+    assert "# RECORDED TOOL: run_multiposition_acquisition\nevents =" in source
     assert "# NOT EMITTED: build_stage_coordinate_mosaic" in source
     assert "# RECORDED TOOL: set_device_property" in source.split(
         "# NOT EMITTED: build_stage_coordinate_mosaic", 1
     )[1]
     assert "import microclaw" not in source
     assert "TOOL_REGISTRY" not in source
+    assert source.index("# NOT EMITTED:") == source.index(
+        "# NOT EMITTED: build_stage_coordinate_mosaic"
+    )
 
 
 @pytest.mark.parametrize("fn", [
@@ -77,17 +96,29 @@ def test_real_smiley_session_fixture_shows_whole_routine_and_holes():
     image_analysis.compute_stats,
 ])
 def test_inlined_analysis_function_is_byte_identical_to_source(tmp_path, fn):
-    _, _, source = export(tmp_path, [])
+    _, _, source = export(tmp_path, [call("snap_and_analyze", {})])
     assert inspect.getsource(fn) in source
 
 
 def test_inlined_analysis_constant_comes_from_module(tmp_path):
-    _, _, source = export(tmp_path, [])
+    _, _, source = export(tmp_path, [call("snap_and_analyze", {})])
     assignment = (
         "UNCALIBRATED_MIN_SNR_FALLBACK = "
         f"{image_analysis.UNCALIBRATED_MIN_SNR_FALLBACK!r}"
     )
     assert assignment in source
+
+
+@pytest.mark.parametrize("fn", [
+    autofocus.SweepResult, autofocus.AutofocusResult,
+    autofocus.sweep_autofocus, autofocus.coarse_then_fine_autofocus,
+    autofocus.single_sweep_autofocus,
+])
+def test_inlined_autofocus_is_byte_identical_to_source(tmp_path, fn):
+    _, _, source = export(tmp_path, [call(
+        "run_autofocus", {"z_range_um": 2, "z_step_um": 0.5}
+    )])
+    assert inspect.getsource(fn) in source
 
 
 def test_records_are_injected_and_absent_from_published_schema(tmp_path):
@@ -173,3 +204,96 @@ def test_set_channel_refuses_authorization_plan_instead_of_guessing(tmp_path):
     assert "# NOT EMITTED: set_channel" in source
     assert "authorization-map channel plan" in source
     assert "set_config('Channel'" not in source
+
+
+def test_go_to_position_emits_coordinates_from_recorded_result(tmp_path):
+    records = completed_call(
+        "go_to_position", {"name": "target"},
+        {"status": "Moved", "name": "target", "x_um": 1.5,
+         "y_um": 2.5, "z_um": 3.5},
+    )
+    _, _, source = export(tmp_path, records)
+    assert "core.set_xy_position(1.5, 2.5)" in source
+    assert "core.set_position(3.5)" in source
+
+
+def test_observation_only_hook_emits_hardware_but_decision_hook_refuses(tmp_path):
+    base = {
+        "protocol": "timelapse",
+        "positions": [{"name": "a", "x_um": 1, "y_um": 2, "z_um": 3}],
+        "protocol_params": {"n_frames": 1, "interval_s": 0},
+        "save_dir": "/data", "name": "run",
+    }
+    _, _, observed = export(tmp_path, [call(
+        "run_multiposition_acquisition", {**base, "hook_strategy": "snr_observer"}
+    )])
+    assert "# NOT EMITTED:" not in observed
+    assert "xyz_positions': [(1, 2, 3)]" in observed
+
+    _, _, deciding = export(tmp_path, [call(
+        "run_multiposition_acquisition", {**base, "hook_strategy": "position_filter"}
+    )])
+    assert "# NOT EMITTED: run_multiposition_acquisition — hooked acquisition" in deciding
+    assert "HookBase" in deciding
+
+
+def test_realistic_emitted_routine_runs_to_completion_against_fake_core(tmp_path):
+    """Move, snap/analyze, autofocus, and unhooked acquisition all execute."""
+    records = [call("start_live_view", {})]
+    records += completed_call("snap_and_analyze", {}, {"min_snr": 3.1})
+    records += completed_call(
+        "run_autofocus",
+        {"z_range_um": 2, "z_step_um": 0.5, "settle_ms": 0},
+        {"converged": False},
+    )
+    records += [call("run_multiposition_acquisition", {
+        "protocol": "timelapse",
+        "positions": [
+            {"name": "a", "x_um": 1, "y_um": 2, "z_um": 0},
+            {"name": "b", "x_um": 3, "y_um": 4, "z_um": 0},
+        ],
+        "protocol_params": {"n_frames": 1, "interval_s": 0},
+        "save_dir": "/data", "name": "run",
+    }), call("stop_live_view", {})]
+    _, _, source = export(tmp_path, records)
+    assert "# NOT EMITTED:" not in source
+
+    class Core:
+        def __init__(self):
+            self.z = 0.0
+            self.snaps = 0
+            self.moves = []
+
+        def get_focus_device(self): return "Z"
+        def get_position(self): return self.z
+        def set_position(self, z): self.z = float(z)
+        def set_xy_position(self, x, y): self.moves.append((x, y))
+        def wait_for_device(self, _device): pass
+        def snap_image(self): self.snaps += 1
+        def get_bytes_per_pixel(self): return 2
+        def get_number_of_components(self): return 1
+        def get_tagged_image(self):
+            image = np.array([[0, 10], [10, 0]], dtype=np.uint16)
+            return SimpleNamespace(pix=image, tags={"Width": 2, "Height": 2})
+
+    acquired = []
+
+    class Acquisition:
+        def __init__(self, **kwargs): self.kwargs = kwargs
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def acquire(self, events): acquired.append(events)
+
+    core = Core()
+    executable = source.replace(
+        "from pycromanager import Acquisition, Core, multi_d_acquisition_events",
+        "",
+    )
+    exec(compile(executable, "routine.py", "exec"), {
+        "Core": lambda: core,
+        "Acquisition": Acquisition,
+        "multi_d_acquisition_events": lambda **kwargs: kwargs,
+    })
+    assert core.snaps >= 3
+    assert core.moves == [(1, 2), (3, 4)]
+    assert len(acquired) == 2
