@@ -84,6 +84,16 @@ def _acquisition_entry_point(fn):
     return fn
 
 
+class _HookArtifactBudgetError(ValueError):
+    """A hook can emit artifacts but the run authorized no artifact budget.
+
+    Its own type so the acquisition entry points can convert *this* refusal to a
+    result dict without also swallowing the malformed-argument ValueErrors
+    _configure_hook_capabilities raises, which must keep propagating so the tool
+    wrapper can attach its "re-read the schema" hint.
+    """
+
+
 class _HookedAcquisitionFailure(RuntimeError):
     """A hook failed after pycro-manager resolved the dataset directory."""
 
@@ -2862,7 +2872,9 @@ def _resolve_hook(
     from microclaw.hook_manager import FORBIDDEN_SAVED_HOOK_PARAMS
     for forbidden in FORBIDDEN_SAVED_HOOK_PARAMS:
         params.pop(forbidden, None)
-    return UntrustedHookAdapter(hook_cls(**params), log_path=log_path)
+    adapter = UntrustedHookAdapter(hook_cls(**params), log_path=log_path)
+    adapter.strategy_name = hook_strategy
+    return adapter
 
 
 def _resolve_hooks(
@@ -2927,6 +2939,20 @@ def _configure_hook_capabilities(hook: Any, ctrl: MicroscopeController,
                                  artifact_limits: dict | None) -> None:
     """Validate and authorize independent parent-side hook capabilities."""
     from microclaw.hook_decisions import CompositeHook, UntrustedHookAdapter
+    if isinstance(hook, CompositeHook):
+        emitters = hook.artifact_emitting_hook_names
+    elif bool(getattr(hook, "can_emit_artifacts", False)):
+        emitters = [getattr(hook, "strategy_name", hook.__class__.__name__)]
+    else:
+        emitters = []
+    if emitters and artifact_limits is None:
+        raise _HookArtifactBudgetError(
+            "Hook(s) " + ", ".join(repr(name) for name in emitters) +
+            " can emit artifacts, but no artifact_limits budget was configured. "
+            "The acquisition was refused during planning before any exposure; "
+            "pass artifact_limits with max_artifact_bytes, max_count, and "
+            "max_total_bytes."
+        )
     if isinstance(hook, CompositeHook):
         untrusted = [child for _name, child in hook.named_hooks
                      if isinstance(child, UntrustedHookAdapter)]
@@ -3061,8 +3087,11 @@ def run_adaptive_zstack(
     events = _build_acquisition_events(
         channel=channel, z_start=z_start_um, z_end=z_end_um, z_step=z_step_um,
     )
-    _configure_hook_capabilities(hook, ctrl, guard, save_dir, name,
-                                 illumination_envelope, artifact_limits)
+    try:
+        _configure_hook_capabilities(hook, ctrl, guard, save_dir, name,
+                                     illumination_envelope, artifact_limits)
+    except _HookArtifactBudgetError as exc:
+        return {"error": str(exc)}
     reservation = _authorize_acquisition(
         ctrl, guard, _plan_with_hook_dose(plan_events(ctrl, events, None), hook)
     )
@@ -3209,8 +3238,11 @@ def _acquire_positions_with_hook(
         channel=channel, exposure_ms=exposure_ms,
         position_labels=[p["name"] for p in positions], **shape_kwargs,
     )
-    _configure_hook_capabilities(hook, ctrl, guard, save_dir, name,
-                                 illumination_envelope, artifact_limits)
+    try:
+        _configure_hook_capabilities(hook, ctrl, guard, save_dir, name,
+                                     illumination_envelope, artifact_limits)
+    except _HookArtifactBudgetError as exc:
+        return {"error": str(exc)}
     plan = _plan_with_hook_dose(plan_events(ctrl, events, exposure_ms), hook)
     reservation = _authorize_acquisition(ctrl, guard, plan)
     started_at = datetime.now(timezone.utc)

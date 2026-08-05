@@ -80,6 +80,10 @@ def _frame_index(metadata: dict):
 class HookBase:
     """All hooks write a summary log so Claude can read results afterward."""
 
+    # Shipped hooks declare artifact capability without being executed as a
+    # probe. Override with True on a reviewed built-in that may emit one.
+    can_emit_artifacts = False
+
     def __init__(self, log_path: str | None = None):
         self.log_path = log_path
         self._log: list[dict] = []

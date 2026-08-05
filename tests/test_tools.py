@@ -1778,6 +1778,41 @@ class TestHookedGridAcquisition:
         assert sum(entry.get("analyzer") == "microclaw.image_analysis.compute_stats"
                    for entry in log) == 2
 
+    def test_composed_emitter_without_budget_refuses_before_any_exposure(
+        self, centered_ctrl, unconstrained_guard, monkeypatch, tmp_path
+    ):
+        from microclaw import hook_manager, tools
+
+        monkeypatch.setattr(hook_manager, "HOOKS_DIR", tmp_path / "hooks")
+        monkeypatch.setattr(hook_manager, "MANIFEST", tmp_path / "manifest.json")
+        source = (
+            "from microclaw.hook_decisions import EmitArtifact, HookResult\n"
+            "class Stitcher:\n"
+            " def analyze_frame(self, image, metadata):\n"
+            "  return HookResult({}, (EmitArtifact(filename='mosaic.tif', payload=image),))\n"
+        )
+        hook_manager.save_hook(
+            "plus_mosaic_stitcher", source, "fixture", source="claude_generated"
+        )
+        acquire = MagicMock()
+        monkeypatch.setattr(tools, "_acquire_with_hooks", acquire)
+        centered_ctrl.core.snap_image.reset_mock()
+
+        result = run_multiposition_acquisition(
+            centered_ctrl, unconstrained_guard, protocol="timelapse",
+            save_dir=str(tmp_path), name="composed",
+            positions=[{"name": "p0", "x_um": 0.0, "y_um": 0.0}],
+            protocol_params={"n_frames": 1, "interval_s": 0},
+            hook_strategy=["autofocus_per_position", "plus_mosaic_stitcher"],
+            hook_params=[{"z_range_um": 10.0, "z_step_um": 1.0}, {}],
+        )
+
+        assert "no artifact_limits budget" in result["error"]
+        assert "before any exposure" in result["error"]
+        assert "plus_mosaic_stitcher" in result["error"]
+        acquire.assert_not_called()
+        centered_ctrl.core.snap_image.assert_not_called()
+
     def test_the_hook_log_keys_to_positions_across_the_grid(
         self, centered_ctrl, unconstrained_guard, captured
     ):

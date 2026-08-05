@@ -4010,6 +4010,15 @@ This is an inventory, not permission to close with unresolved blank work. Block
   round-4 prompt teaches it to consult that after a blank or low-signal frame,
   but not at session end or handoff. One prompt line.
 
+- **design/38 Round 4 H2 — acquisition frame-cap policy is not inspectable.**
+  The agent and operator can see a particular run's reservation, but no tool
+  reports the currently configured acquisition frame cap by name. A reservation
+  payload is not the policy value and cannot be used to determine whether a
+  larger plan should bind. The 40 µm / 0.5 µm five-position autofocus run was
+  accepted at 145 reserved frames, so H2's budget-refusal limb was not tested.
+  Add a read-only policy/introspection surface in the block that next opens
+  acquisition-budget usability; this composition block does not fix it.
+
 - **design/38 F9 follow-up — per-source illumination prerequisites.** Preflight
   still cannot refuse an acquisition that will not emit: M5 G6.e passed preflight
   with the TTL gate shut and produced a signal-free frame (max 224 vs 469 with the

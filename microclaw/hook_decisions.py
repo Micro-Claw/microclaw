@@ -252,6 +252,7 @@ class UntrustedHookAdapter:
 
     def __init__(self, hook: Any, log_path: str | None = None) -> None:
         self.hook = hook
+        self.can_emit_artifacts = bool(getattr(hook, "can_emit_artifacts", False))
         self.log_path = log_path
         self._log: list[dict[str, Any]] = []
         self._context: dict[str, Any] | None = None
@@ -665,3 +666,10 @@ class CompositeHook:
             getattr(hook, "planned_extra_exposures_per_event", lambda: 0)()
             for _name, hook in self.named_hooks
         )
+
+    @property
+    def artifact_emitting_hook_names(self) -> list[str]:
+        return [
+            name for name, hook in self.named_hooks
+            if bool(getattr(hook, "can_emit_artifacts", False))
+        ]
