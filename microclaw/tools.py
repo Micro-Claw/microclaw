@@ -975,7 +975,7 @@ def run_zstack(
     }
 
 
-def _assert_excitation_will_fire(ctrl: MicroscopeController, laser_slot: int) -> dict:
+def _verify_trigger_line_armed(ctrl: MicroscopeController, laser_slot: int) -> dict:
     """Verify only that an EMU slot's trigger line is armed.
 
     This checks trigger mode and trigger sequence when the map declares them.
@@ -1055,9 +1055,9 @@ def run_timelapse(
     _reservation: Reservation | None = None,
 ) -> dict:
     save_dir = guard.resolve_in_workspace(save_dir)   # before any hardware moves
-    excitation_preflight = None
+    trigger_preflight = None
     if laser_slot is not None:
-        excitation_preflight = _assert_excitation_will_fire(ctrl, laser_slot)
+        trigger_preflight = _verify_trigger_line_armed(ctrl, laser_slot)
     if channel:
         guard.check_channel(channel)
     if exposure_ms is not None:
@@ -1083,8 +1083,8 @@ def run_timelapse(
         "status": "Timelapse complete.", "dataset_path": dataset_path,
         **_reservation_report(reservation),
     }
-    if excitation_preflight is not None:
-        result["excitation_preflight"] = excitation_preflight
+    if trigger_preflight is not None:
+        result["trigger_preflight"] = trigger_preflight
     illumination = guard.declared_illumination_state(ctrl.core)
     if illumination:
         result["declared_illumination_properties"] = illumination

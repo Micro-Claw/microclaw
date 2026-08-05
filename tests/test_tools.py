@@ -2045,7 +2045,7 @@ class TestTimelapseTriggerPreflight:
         result = run_timelapse(mock_ctrl, unconstrained_guard, n_frames=100, interval_s=0,
                                save_dir="/tmp", laser_slot=3)
         assert result["status"] == "Timelapse complete."
-        assert result["excitation_preflight"] == {
+        assert result["trigger_preflight"] == {
             "guarantee": "trigger line is armed",
             "checked": [
                 {"kind": "trigger mode", "device": "Laser Trigger",
@@ -2073,7 +2073,7 @@ class TestTimelapseTriggerPreflight:
         result = tools.run_timelapse(mock_ctrl, unconstrained_guard, n_frames=1,
                                      interval_s=0, save_dir="/tmp", laser_slot=3)
         assert result["status"] == "Timelapse complete."
-        assert result["excitation_preflight"]["guarantee"] == (
+        assert result["trigger_preflight"]["guarantee"] == (
             "no trigger-line verification available"
         )
 

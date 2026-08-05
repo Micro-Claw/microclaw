@@ -261,8 +261,22 @@ def run_session(args):
 
 
 def report_declared_illumination_on_exit(guard, core, *, flush=False):
-    """Print conspicuous non-off or unreadable declared properties on exit."""
-    readings = guard.declared_illumination_state(core)
+    """Print conspicuous non-off or unreadable declared properties on exit.
+
+    Runs inside a `finally`, so it must never raise: an exception here would
+    replace whatever ended the session — including the traceback the operator
+    needs. Per-property read failures are already reported individually; this
+    guards the enumeration itself.
+    """
+    try:
+        readings = guard.declared_illumination_state(core)
+    except Exception as exc:                                    # noqa: BLE001
+        print(
+            "[microclaw] EXIT ILLUMINATION REPORT FAILED: "
+            f"{type(exc).__name__}: {exc}. Rig illumination state is unverified.",
+            flush=flush,
+        )
+        return
     for item in readings:
         name = f"{item['device']}.{item['property']}"
         if "error" in item:
