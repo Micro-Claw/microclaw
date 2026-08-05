@@ -244,6 +244,7 @@ class TestSNRObservationHook:
         assert entry["position"] == "tile_r0_c0"
         assert set(entry["result"]) == {
             "focus_metric", "focus_metric_valid", "background_level", "snr",
+            "snr_valid", "snr_invalid_reason",
             "mean_intensity", "max_intensity", "min_intensity",
             "saturated_fraction", "analysis_ms",
         }

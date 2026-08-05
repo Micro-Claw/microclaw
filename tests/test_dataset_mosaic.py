@@ -307,3 +307,14 @@ def test_tool_uses_shared_present_coordinate_traversal(monkeypatch, tmp_path):
     run_tool(monkeypatch, tmp_path, {"time": 0})
     # Once in the tool and once in resolve_calibration's acquisition audit.
     assert calls == [{"time": 0}, {"time": 0}]
+
+
+def test_singleton_non_position_axes_default_without_selection(monkeypatch, tmp_path):
+    FakeDataset.axes = {"position": ["p0"], "time": [0], "z": [0]}
+    FakeDataset.images = {("p0", 0): np.ones((3, 3), np.uint16)}
+    FakeDataset.metadata = {("p0", 0): metadata(0, 0)}
+    try:
+        result = run_tool(monkeypatch, tmp_path, {})
+        assert result["selection"] == {"time": 0, "z": 0}
+    finally:
+        FakeDataset.axes = {"position": ["p0", "p1"], "time": [0, 1]}

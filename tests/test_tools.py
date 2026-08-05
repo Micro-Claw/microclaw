@@ -3127,6 +3127,58 @@ class TestSaveKnowledgeConfirmation:
         assert "declined" in result["error"].lower()
         assert calls == []  # save_entry never reached
 
+
+    def test_rank_hook_log_skips_interleaved_runner_actions(
+        self, mock_ctrl, unconstrained_guard, tmp_path
+    ):
+        path = tmp_path / "hook.json"
+        path.write_text(json.dumps([
+            {"schema": "microclaw.hook-action/v1", "decision": "accepted"},
+            {"schema": "microclaw.analysis-observation/v1", "position": "p0",
+             "x_um": 1, "y_um": 2, "result": {"snr": 4}},
+        ]))
+        result = tools.rank_hook_log(mock_ctrl, unconstrained_guard, str(path))
+        assert result["entry_count"] == 1
+        assert result["ranking"][0]["position"] == "p0"
+
+    def test_position_preflight_names_conflicts_as_pre_existing(
+        self, mock_ctrl, unconstrained_guard
+    ):
+        from microclaw.controller import PositionProjection
+        mock_ctrl.inspect_current_position_list.return_value = PositionProjection(
+            [], [], [{"code": "duplicate_label", "index": 0, "label": "old"}]
+        )
+        _, conflict = tools._preflight_native_positions(mock_ctrl, unconstrained_guard)
+        detail = conflict["position_list_conflict"]
+        assert "pre-existing" in detail["source"]
+        assert "not evaluated or written" in detail["hint"]
+
+    def test_zero_calibration_shift_names_stationary_pattern_before_step_size(self):
+        reason = tools._diagnose_calibration_shift(
+            np.array([0.0, 0.0]), (512, 512), 20.0, None
+        )
+        assert "stationary feature" in reason
+        assert "before changing step_um" in reason
+
+    def test_failed_hooked_marking_rolls_back_only_this_calls_grid(
+        self, mock_ctrl, unconstrained_guard, monkeypatch, tmp_path
+    ):
+        monkeypatch.setattr(
+            tools, "_acquire_positions_with_hook", lambda *args, **kwargs: {"error": "camera"}
+        )
+        result = run_multiposition_acquisition(
+            mock_ctrl, unconstrained_guard, protocol="timelapse",
+            save_dir=str(tmp_path), positions=[
+                {"name": "new0", "x_um": 1, "y_um": 2},
+                {"name": "new1", "x_um": 3, "y_um": 4},
+            ], protocol_params={"n_frames": 1, "interval_s": 0},
+            mark_positions=True, hook_strategy="snr_observer",
+        )
+        assert [call.args[0] for call in mock_ctrl.remove_position.call_args_list] == [
+            "new1", "new0"
+        ]
+        assert result["position_list_rollback"]["complete"] is True
+
     def test_saves_after_confirmation(self, mock_ctrl, unconstrained_guard, monkeypatch):
         from microclaw import tools
         calls = []

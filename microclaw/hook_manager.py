@@ -204,9 +204,35 @@ def _hook_contract_analysis(code: str) -> tuple[list[str], bool]:
     return errors, can_emit_artifacts
 
 
-def validate_hook_contract(code: str) -> list[str]:
-    """Return static contract violations without importing saved source."""
-    return _hook_contract_analysis(code)[0]
+def validate_hook_contract(
+    candidate: str | object, required_callback: str | None = None
+) -> list[str]:
+    """Validate the callback contract used by both save preflight and runners."""
+    if isinstance(candidate, str):
+        errors = _hook_contract_analysis(candidate)[0]
+        if errors or required_callback is None:
+            return errors
+        tree = ast.parse(candidate)
+        classes = sorted(
+            (node for node in tree.body if isinstance(node, ast.ClassDef)),
+            key=lambda node: node.name,
+        )
+        selected = next(node for node in classes if any(
+            isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and item.name in {"analyze_frame", "image_process_fn"}
+            for item in node.body
+        ))
+        callbacks = {
+            item.name for item in selected.body
+            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        if required_callback not in callbacks:
+            return [f"This runner requires {required_callback}; the hook does not define it."]
+        return []
+    target = getattr(candidate, "hook", candidate)
+    if required_callback and not callable(getattr(target, required_callback, None)):
+        return [f"This runner requires {required_callback}; the hook does not define it."]
+    return []
 
 
 def hook_source_can_emit_artifacts(code: str) -> bool:

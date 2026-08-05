@@ -48,6 +48,21 @@ def test_static_contract_rejects_analyze_instead_of_image_process_fn():
     assert validate_hook_contract("class Hook:\n    def analyze(self, image): pass\n")
 
 
+def test_adaptive_preflight_and_runtime_use_the_same_contract_validator():
+    source_error = validate_hook_contract(
+        "class Hook:\n    def image_process_fn(self, image, metadata, queue): pass\n",
+        required_callback="analyze_frame",
+    )
+
+    class Hook:
+        def image_process_fn(self, image, metadata, queue):
+            pass
+
+    runtime_error = validate_hook_contract(Hook(), required_callback="analyze_frame")
+    assert source_error == runtime_error
+    assert "analyze_frame" in source_error[0]
+
+
 def test_static_contract_accepts_runner_callback_signature():
     code = (
         "class Hook:\n"

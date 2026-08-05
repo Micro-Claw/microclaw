@@ -12,7 +12,9 @@ class ImageStats(NamedTuple):
     focus_metric: float          # tenengrad — the number tools report
     focus_metric_valid: bool     # False when snr < min_snr: no signal to be sharp about
     background_level: float      # robust: median (the camera offset, Evolve512 ≈ 400)
-    snr: float                   # the shared snr() definition below
+    snr: float | None            # None when snr_valid is False
+    snr_valid: bool
+    snr_invalid_reason: str | None
     mean_intensity: float
     max_intensity: float
     min_intensity: float
@@ -27,6 +29,36 @@ class ImageStats(NamedTuple):
 #: by objective and by sample. If it needs per-rig values it belongs in
 #: safety_config.yaml alongside the other rig facts.
 UNCALIBRATED_MIN_SNR_FALLBACK = 3.1
+MAX_SATURATED_FRACTION_FOR_SNR = 0.0001
+
+
+def snr_validity(
+    saturated_fraction: float, signal_mode: str = "bright_on_dark"
+) -> tuple[bool, str | None]:
+    """State the single validity rule for the package's bright-signal SNR.
+
+    ``snr()`` measures a bright signal above a dark background. It is therefore
+    not an interpretable score for transmitted-light images, where background is
+    the illumination path, and it is invalid when clipping occupies more than
+    0.01% of pixels. Both cases are explicit refusals to score, never threshold
+    adjustments. Callers surface ``snr=None`` plus this reason.
+    """
+    if signal_mode not in {"bright_on_dark", "transmitted_light"}:
+        raise ValueError(
+            "signal_mode must be 'bright_on_dark' or 'transmitted_light'"
+        )
+    if signal_mode == "transmitted_light":
+        return False, (
+            "SNR is not scored for transmitted light: this metric assumes a "
+            "bright signal above a dark background, while transmitted-light "
+            "background is the illumination path."
+        )
+    if saturated_fraction > MAX_SATURATED_FRACTION_FOR_SNR:
+        return False, (
+            f"SNR is invalid because {saturated_fraction:.4%} of pixels are "
+            "saturated (limit 0.0100%); reduce exposure and re-check after focus moves."
+        )
+    return True, None
 
 
 def resolve_min_snr(
@@ -191,6 +223,7 @@ def tenengrad(image: np.ndarray) -> float:
 def compute_stats(
     image: np.ndarray,
     min_snr: float = UNCALIBRATED_MIN_SNR_FALLBACK,
+    signal_mode: str = "bright_on_dark",
 ) -> ImageStats:
     """Per-image statistics, including the focus metric and its validity gate.
 
@@ -214,16 +247,21 @@ def compute_stats(
     if img.ndim == 3:
         img = img.mean(axis=-1)
     bg = float(np.median(img))           # computed once, shared by snr and the metric
-    s = snr(image, background=bg)
+    raw_snr = snr(image, background=bg)
+    saturated_fraction = float(np.sum(image >= bit_max) / image.size)
+    snr_valid, snr_invalid_reason = snr_validity(saturated_fraction, signal_mode)
+    reported_snr = round(raw_snr, 2) if snr_valid else None
     return ImageStats(
         focus_metric=tenengrad(image),
-        focus_metric_valid=s >= min_snr,
+        focus_metric_valid=snr_valid and raw_snr >= min_snr,
         background_level=round(bg, 1),
-        snr=round(s, 2),
+        snr=reported_snr,
+        snr_valid=snr_valid,
+        snr_invalid_reason=snr_invalid_reason,
         mean_intensity=float(np.mean(image)),
         max_intensity=float(np.max(image)),
         min_intensity=float(np.min(image)),
-        saturated_fraction=float(np.sum(image >= bit_max) / image.size),
+        saturated_fraction=saturated_fraction,
     )
 
 

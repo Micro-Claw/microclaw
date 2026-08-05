@@ -477,12 +477,12 @@ TOOLS: list[dict[str, Any]] = [
                 "output_path": {"type": "string"},
                 "axis_selection": {
                     "type": "object",
-                    "description": "One real coordinate value for every non-position axis.",
+                    "description": "Coordinate values for ambiguous non-position axes; singleton axes default automatically.",
                 },
                 "calibration_ref": _CALIBRATION_REF_SCHEMA,
                 "output_pixel_size_um": {"type": "number", "exclusiveMinimum": 0},
             },
-            "required": ["dataset_path", "output_path", "axis_selection"],
+            "required": ["dataset_path", "output_path"],
         },
     },
     {
@@ -547,6 +547,12 @@ TOOLS: list[dict[str, Any]] = [
                         "Set false for a headless snap when display churn is unwanted."
                     ),
                     "default": True,
+                },
+                "signal_mode": {
+                    "type": "string",
+                    "enum": ["bright_on_dark", "transmitted_light"],
+                    "description": "Use transmitted_light to explicitly refuse the bright-on-dark SNR score.",
+                    "default": "bright_on_dark",
                 },
             },
             "required": [],
@@ -965,6 +971,11 @@ TOOLS: list[dict[str, Any]] = [
                 },
                 "illumination_envelope": _HOOK_ILLUMINATION_ENVELOPE_SCHEMA,
                 "artifact_limits": _HOOK_ARTIFACT_LIMITS_SCHEMA,
+                "signal_mode": {
+                    "type": "string",
+                    "enum": ["bright_on_dark", "transmitted_light"],
+                    "default": "bright_on_dark",
+                },
             },
             "required": ["protocol"],
         },
@@ -1089,6 +1100,11 @@ TOOLS: list[dict[str, Any]] = [
                         "Default true; set false to leave the stage on the last tile."
                     ),
                     "default": True,
+                },
+                "signal_mode": {
+                    "type": "string",
+                    "enum": ["bright_on_dark", "transmitted_light"],
+                    "default": "bright_on_dark",
                 },
             },
             "required": ["rows", "cols", "step_um", "protocol"],
@@ -1718,6 +1734,12 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "string",
                     "description": "'claude_generated' or 'user_provided'.",
                     "default": "claude_generated",
+                },
+                "runner_contract": {
+                    "type": "string",
+                    "enum": ["fixed", "adaptive"],
+                    "description": "Runner that will execute the hook; adaptive requires analyze_frame.",
+                    "default": "fixed",
                 },
             },
             "required": ["name", "code", "description"],

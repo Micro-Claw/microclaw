@@ -1253,7 +1253,7 @@ def build_stage_coordinate_mosaic(
     guard: SafetyGuard,
     dataset_path: str,
     output_path: str,
-    axis_selection: dict,
+    axis_selection: dict | None = None,
     calibration_ref: dict | None = None,
     output_pixel_size_um: float | None = None,
 ) -> dict:
@@ -1265,6 +1265,8 @@ def build_stage_coordinate_mosaic(
     timestamp, so identical inputs and selection produce identical pixels and
     hashed payloads.
     """
+    if axis_selection is None:
+        axis_selection = {}
     if not isinstance(axis_selection, dict):
         raise ValueError("axis_selection must be an object")
     dataset_path = guard.resolve_readable_path(dataset_path)
@@ -1276,8 +1278,17 @@ def build_stage_coordinate_mosaic(
     missing = non_position_axes - set(axis_selection)
     if unknown:
         raise ValueError(f"Unknown or position axis selections: {sorted(unknown)}")
+    for axis in sorted(missing):
+        values = list(dataset.axes[axis])
+        if len(values) == 1:
+            axis_selection[axis] = values[0]
+    missing = non_position_axes - set(axis_selection)
     if missing:
-        raise ValueError(f"axis_selection must fix every non-position axis: {sorted(missing)}")
+        available = {axis: list(dataset.axes[axis]) for axis in sorted(non_position_axes)}
+        raise ValueError(
+            "axis_selection must fix every ambiguous non-position axis; remaining "
+            f"{sorted(missing)}. Full non-position axis values: {available}"
+        )
     for axis, value in axis_selection.items():
         if value not in dataset.axes[axis]:
             raise ValueError(f"Dataset axis selection is not present: {axis}={value!r}")
@@ -1524,11 +1535,14 @@ def _focus_metric_payload(
         "focus_metric_valid": stats.focus_metric_valid,
         "background_level": stats.background_level,
         "snr": stats.snr,
+        "snr_valid": stats.snr_valid,
         "min_snr": min_snr,
         "min_snr_source": min_snr_source,
         **_metric_stamp(ctrl),
     }
-    if not stats.focus_metric_valid:
+    if not stats.snr_valid:
+        payload["warning"] = stats.snr_invalid_reason
+    elif not stats.focus_metric_valid:
         payload["warning"] = focus_invalid_warning(stats.snr, min_snr)
     return payload
 
@@ -1539,6 +1553,7 @@ def snap_and_analyze(
     return_thumbnail: bool = False,
     thumbnail_size: int = 512,
     display: bool = True,
+    signal_mode: str = "bright_on_dark",
 ) -> list | dict:
     """Snap an image, display it in the MM viewer, and return numerical stats.
 
@@ -1551,7 +1566,7 @@ def snap_and_analyze(
     with _pause_live(ctrl) as live_state:
         image = snap_to_numpy_displayed(ctrl) if display else snap_to_numpy(ctrl)
     min_snr, min_snr_source = _analysis_gate(guard)
-    stats = compute_stats(image, min_snr=min_snr)
+    stats = compute_stats(image, min_snr=min_snr, signal_mode=signal_mode)
     text_payload: dict[str, Any] = {
         "z_um": round(ctrl.core.get_position(), 3),
         # Observed, not assumed. This used to echo the `display` parameter, so
@@ -1678,6 +1693,14 @@ def _diagnose_calibration_shift(
             f"{detail}): the move left too little overlap to register. Reduce "
             f"step_um (≈¼ of the smaller FOV dimension) or clear the ROI to image "
             f"the full sensor."
+        )
+    if np.isfinite(mag) and mag < 0.5:
+        return (
+            f"the commanded move produced no image shift at all (|shift| {mag:.2f} px). "
+            "A merely small step produces a small shift, not none; this is the "
+            "signature of a stationary feature dominating correlation (for example "
+            "a vignette rim, sensor dirt, or fixed reflection). Crop to the illuminated "
+            "centre and retry before changing step_um."
         )
     if not np.isfinite(mag) or mag < 1.0:
         return (
@@ -2030,7 +2053,15 @@ def _preflight_native_positions(
             [i for i in projection.issues if i.get("code") != "unsupported_only"],
         )
     if projection.issues:
-        return None, _position_conflict(projection)
+        conflict = _position_conflict(projection)
+        conflict["position_list_conflict"].update({
+            "source": "pre-existing entries, not positions this call would add",
+            "hint": (
+                "Resolve or clear the listed pre-existing entries; proposed positions "
+                "from this call were not evaluated or written."
+            ),
+        })
+        return None, conflict
     ctrl.set_position_projection(projection)
     return projection, None
 
@@ -2362,6 +2393,7 @@ def _run_protocol_at(
     params: dict,
     mark_position_in_list: bool = False,
     reservation: Reservation | None = None,
+    signal_mode: str = "bright_on_dark",
 ) -> dict:
     guard.check_xy(x_um, y_um)
     ctrl.core.set_xy_position(x_um, y_um)
@@ -2389,7 +2421,7 @@ def _run_protocol_at(
         with _pause_live(ctrl):                     # snap(True) wedges under live (V1)
             image = snap_to_numpy_displayed(ctrl)
         min_snr, min_snr_source = _analysis_gate(guard)
-        stats = compute_stats(image, min_snr=min_snr)
+        stats = compute_stats(image, min_snr=min_snr, signal_mode=signal_mode)
         tile = {
             "position": pos_label,
             "status": "snapped",
@@ -2405,6 +2437,7 @@ def _run_protocol_at(
             # focus_metric_valid is False where there is no signal to be sharp about.
             "focus_metric_valid": stats.focus_metric_valid,
             "snr": stats.snr,
+            "snr_valid": stats.snr_valid,
             "min_snr": min_snr,
             "min_snr_source": min_snr_source,
             "background_level": stats.background_level,
@@ -2413,7 +2446,9 @@ def _run_protocol_at(
             "max_intensity": round(stats.max_intensity, 1),
             "saturated_fraction": round(stats.saturated_fraction, 4),
         }
-        if not stats.focus_metric_valid:
+        if not stats.snr_valid:
+            tile["warning"] = stats.snr_invalid_reason
+        elif not stats.focus_metric_valid:
             tile["warning"] = focus_invalid_warning(stats.snr, min_snr)
         return tile
     if pos_save_dir is None:
@@ -2456,6 +2491,7 @@ def run_multiposition_acquisition(
     preserve_unsupported: bool = False,
     illumination_envelope: dict | None = None,
     artifact_limits: dict | None = None,
+    signal_mode: str = "bright_on_dark",
 ) -> dict:
     """Visit each position and run a per-position protocol.
 
@@ -2546,19 +2582,38 @@ def run_multiposition_acquisition(
             for pos_label, x_um, y_um, z_um in resolved:
                 ctrl.add_position(pos_label, float(x_um), float(y_um),
                                   float(z_um) if z_um is not None else None)
+        added_labels = [item[0] for item in resolved] if mark_positions else []
         with _pause_live(ctrl) as live_state:
-            hooked = _acquire_positions_with_hook(
-                ctrl, guard,
-                positions=[{"name": n, "x_um": x, "y_um": y, "z_um": z}
-                           for n, x, y, z in resolved],
-                save_dir=save_dir, name=name, hook_strategy=hook_strategy,
-                hook_params=hook_params, log_path=log_path,
-                channel=params.get("channel"), exposure_ms=params.get("exposure_ms"),
-                illumination_envelope=illumination_envelope,
-                artifact_limits=artifact_limits,
-                **shape,
-            )
+            try:
+                hooked = _acquire_positions_with_hook(
+                    ctrl, guard,
+                    positions=[{"name": n, "x_um": x, "y_um": y, "z_um": z}
+                               for n, x, y, z in resolved],
+                    save_dir=save_dir, name=name, hook_strategy=hook_strategy,
+                    hook_params=hook_params, log_path=log_path,
+                    channel=params.get("channel"), exposure_ms=params.get("exposure_ms"),
+                    illumination_envelope=illumination_envelope,
+                    artifact_limits=artifact_limits,
+                    **shape,
+                )
+            except SafetyViolation:
+                raise
+            except Exception as exc:
+                hooked = {"error": str(exc)}
         if "error" in hooked:
+            # Transaction boundary: undo only entries written by this call.
+            # Pre-existing list entries are never part of this rollback.
+            rollback_errors = []
+            for label in reversed(added_labels):
+                try:
+                    ctrl.remove_position(label)
+                except Exception as exc:
+                    rollback_errors.append({"position": label, "error": str(exc)})
+            hooked["position_list_rollback"] = {
+                "attempted": added_labels,
+                "complete": not rollback_errors,
+                "errors": rollback_errors,
+            }
             return hooked
         # The coordinates are known exactly, right here — the hooked branch used
         # to drop them, so "where was tile r2_c1?" had no answer short of
@@ -2593,6 +2648,7 @@ def run_multiposition_acquisition(
                         ctrl, guard, pos_label, x_um, y_um, z_um, protocol, pos_save_dir,
                         params, mark_position_in_list=mark_positions,
                         reservation=reservation,
+                        signal_mode=signal_mode,
                     )
                     results.append({**where, **result})
                 except Exception as e:
@@ -2635,6 +2691,7 @@ def run_tile_acquisition(
     center_x_um: float | None = None,
     center_y_um: float | None = None,
     return_to_center: bool = True,
+    signal_mode: str = "bright_on_dark",
 ) -> dict:
     """Acquire a rows×cols tile grid centered on center_x_um/center_y_um.
 
@@ -2679,6 +2736,7 @@ def run_tile_acquisition(
         hook_strategy=hook_strategy,
         hook_params=hook_params,
         log_path=log_path,
+        signal_mode=signal_mode,
     )
     return_result = None
     if return_to_center:
@@ -3514,13 +3572,16 @@ def _acquire_survey_with_detector(
                 "Saved untrusted hooks are not supported by the non-adaptive "
                 "survey-with-detector runner; use run_adaptive_survey."
             )
-        if not hook.proposes_actions:
+        from microclaw.hook_manager import validate_hook_contract
+        contract_errors = validate_hook_contract(hook, required_callback="analyze_frame")
+        if contract_errors:
             # A legacy saved hook has no way to reach candidates/progress, so it
             # can never advance the survey past the seed tile. Left to run, the
             # generator would idle out max_idle_s and log "stalled" — a
             # structural impossibility reported as a hardware symptom. Refuse
             # before any position is exposed.
             raise ValueError(
+                f"Adaptive analyze_frame contract failed: {contract_errors[0]} "
                 "This saved hook defines only a legacy image_process_fn, so it "
                 "cannot propose ContinueSurvey or StopSurvey and can never "
                 "advance an adaptive survey past the seed tile. Give it an "
@@ -3755,6 +3816,8 @@ def rank_hook_log(
     seen: set[str] = set()
     rows = []
     for i, entry in enumerate(entries):
+        if entry.get("schema") not in (None, "microclaw.analysis-observation/v1"):
+            continue
         label = entry.get("position")
         result = entry.get("result") or {}
         missing = [k for k in ("position", "x_um", "y_um") if entry.get(k) is None]
@@ -4128,6 +4191,7 @@ def generate_and_save_hook(
     code: str,
     description: str,
     source: str = "claude_generated",
+    runner_contract: str = "fixed",
 ) -> dict:
     """Lint and save a hook script. Call ONLY after the user has confirmed the code.
 
@@ -4138,7 +4202,10 @@ def generate_and_save_hook(
     """
     from microclaw.hook_manager import lint_hook_code, save_hook, validate_hook_contract
     warnings = lint_hook_code(code)
-    contract_errors = validate_hook_contract(code)
+    if runner_contract not in {"fixed", "adaptive"}:
+        return {"error": "runner_contract must be 'fixed' or 'adaptive'."}
+    required_callback = "analyze_frame" if runner_contract == "adaptive" else None
+    contract_errors = validate_hook_contract(code, required_callback=required_callback)
     if contract_errors:
         return {
             "error": "Hook failed static preflight; it was not saved.",
@@ -4159,7 +4226,8 @@ def generate_and_save_hook(
         "source": source,
         "warnings": warnings,
         "preflight": (
-            "Static syntax and image_process_fn contract passed. Source was not "
+            f"Static syntax and {runner_contract} runner contract passed using "
+            f"{('analyze_frame' if required_callback else 'the saved-hook callback validator')}. Source was not "
             "imported or executed because no hook sandbox is configured."
         ),
     }
