@@ -111,10 +111,129 @@ def compute_stats(
 
 core = Core()
 
-# RECORDED TOOL: move_stage_xy
-core.set_xy_position(12.5, -4.0)
+# RECORDED TOOL: get_system_state
+# No hardware-routine effect.
 
-# RECORDED TOOL: run_timelapse
-events = multi_d_acquisition_events(**{'num_time_points': 2, 'time_interval_s': 0, 'channel_group': 'Channel', 'channels': ['DAPI'], 'channel_exposures_ms': [10]})
-with Acquisition(directory='session-data', name='cells') as acq:
-    acq.acquire(events)
+# RECORDED TOOL: check_emu_installed
+# No hardware-routine effect.
+
+# RECORDED TOOL: get_emu_configuration
+# No hardware-routine effect.
+
+# RECORDED TOOL: get_emu_laser_map
+# No hardware-routine effect.
+
+# RECORDED TOOL: get_available_channels
+# No hardware-routine effect.
+
+# RECORDED TOOL: get_device_property
+# No hardware-routine effect.
+
+# RECORDED TOOL: get_device_property
+# No hardware-routine effect.
+
+# RECORDED TOOL: get_roi
+# No hardware-routine effect.
+
+# RECORDED TOOL: get_pixel_size
+# No hardware-routine effect.
+
+# RECORDED TOOL: get_focus_lock_state
+# No hardware-routine effect.
+
+# RECORDED TOOL: get_xy_position
+# No hardware-routine effect.
+
+# RECORDED TOOL: set_device_property
+core.set_property('Thorlabs Filter Wheel', 'State', '3')
+
+# RECORDED TOOL: move_stage_xy
+core.set_xy_position(757.4, -7232.4)
+
+# RECORDED TOOL: get_device_property
+# No hardware-routine effect.
+
+# RECORDED TOOL: get_device_property
+# No hardware-routine effect.
+
+# RECORDED TOOL: start_live_view
+# NOT EMITTED: start_live_view
+raise RuntimeError('NOT EMITTED: start_live_view')
+
+# RECORDED TOOL: snap_and_analyze
+# NOT EMITTED: snap_and_analyze
+raise RuntimeError('NOT EMITTED: snap_and_analyze')
+
+# RECORDED TOOL: run_autofocus
+# NOT EMITTED: run_autofocus
+raise RuntimeError('NOT EMITTED: run_autofocus')
+
+# RECORDED TOOL: set_focus_lock
+# NOT EMITTED: set_focus_lock
+raise RuntimeError('NOT EMITTED: set_focus_lock')
+
+# RECORDED TOOL: list_hooks
+# No hardware-routine effect.
+
+# RECORDED TOOL: describe_hook
+# No hardware-routine effect.
+
+# RECORDED TOOL: describe_hook
+# No hardware-routine effect.
+
+# RECORDED TOOL: validate_positions
+# No hardware-routine effect.
+
+# RECORDED TOOL: run_multiposition_acquisition
+# NOT EMITTED: run_multiposition_acquisition
+raise RuntimeError('NOT EMITTED: run_multiposition_acquisition')
+
+# RECORDED TOOL: set_device_property
+core.set_property('Thorlabs Filter Wheel', 'State', '1')
+
+# RECORDED TOOL: set_device_property
+core.set_property('iChrome-MLE-TCP', 'Laser 2: 1. Enable', '1')
+
+# RECORDED TOOL: set_device_property
+core.set_property('iChrome-MLE-TCP', 'Laser 1: 1. Enable', '0')
+
+# RECORDED TOOL: get_device_property
+# No hardware-routine effect.
+
+# RECORDED TOOL: get_device_property
+# No hardware-routine effect.
+
+# RECORDED TOOL: run_multiposition_acquisition
+# NOT EMITTED: run_multiposition_acquisition
+raise RuntimeError('NOT EMITTED: run_multiposition_acquisition')
+
+# RECORDED TOOL: read_hook_log
+# No hardware-routine effect.
+
+# RECORDED TOOL: read_hook_log
+# No hardware-routine effect.
+
+# RECORDED TOOL: build_stage_coordinate_mosaic
+# NOT EMITTED: build_stage_coordinate_mosaic
+raise RuntimeError('NOT EMITTED: build_stage_coordinate_mosaic')
+
+# RECORDED TOOL: build_stage_coordinate_mosaic
+# NOT EMITTED: build_stage_coordinate_mosaic
+raise RuntimeError('NOT EMITTED: build_stage_coordinate_mosaic')
+
+# RECORDED TOOL: build_stage_coordinate_mosaic
+# NOT EMITTED: build_stage_coordinate_mosaic
+raise RuntimeError('NOT EMITTED: build_stage_coordinate_mosaic')
+
+# RECORDED TOOL: inspect_artifacts
+# No hardware-routine effect.
+
+# RECORDED TOOL: set_focus_lock
+# NOT EMITTED: set_focus_lock
+raise RuntimeError('NOT EMITTED: set_focus_lock')
+
+# RECORDED TOOL: set_device_property
+core.set_property('iChrome-MLE-TCP', 'Laser 2: 1. Enable', '0')
+
+# RECORDED TOOL: get_system_state
+# No hardware-routine effect.

@@ -454,7 +454,10 @@ def run_agent_iter(
                 confirmation_start = (
                     len(confirmation_records) if confirmation_records is not None else 0
                 )
-                result_json = execute_tool(block.name, block.input, ctrl, guard, cancel=cancel)
+                result_json = execute_tool(
+                    block.name, block.input, ctrl, guard,
+                    cancel=cancel, records=messages,
+                )
                 if confirmation_records is not None:
                     issued = confirmation_records[confirmation_start:]
                     if issued:

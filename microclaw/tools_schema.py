@@ -77,9 +77,8 @@ TOOLS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "output_path": {"type": "string"},
-                "records": {"type": "array", "items": {"type": "object"}},
             },
-            "required": ["output_path", "records"],
+            "required": ["output_path"],
         },
     },
     {

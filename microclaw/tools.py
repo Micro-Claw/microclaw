@@ -61,6 +61,16 @@ def emits(renderer: Callable[[dict[str, Any]], str]):
     return decorate
 
 
+def emits_nothing(fn):
+    """Mark a tool whose recorded call has no hardware-routine effect."""
+    fn._microclaw_emits_nothing = True
+    return fn
+
+
+class CannotEmit(RuntimeError):
+    """A tool knows that its recorded call has no standalone representation."""
+
+
 def _emit_acquisition(
     shape: dict[str, Any], params: dict[str, Any], default_name: str
 ) -> str:
@@ -69,7 +79,8 @@ def _emit_acquisition(
     channel = params.get("channel")
     exposure = params.get("exposure_ms")
     if channel:
-        event_args.update(channel_group="Channel", channels=[channel])
+        from microclaw.authorization import CHANNEL_CONFIG_GROUP
+        event_args.update(channel_group=CHANNEL_CONFIG_GROUP, channels=[channel])
         if exposure is not None:
             event_args["channel_exposures_ms"] = [exposure]
     prefix = ""
@@ -104,18 +115,16 @@ def _analysis_source() -> str:
     """Return exact source for the pure-numpy analysis used by exported routines."""
     from microclaw import image_analysis
     parts = [
-        "UNCALIBRATED_MIN_SNR_FALLBACK = 3.1\n",
-        "class ImageStats(NamedTuple):\n"
-        "    focus_metric: float\n    focus_metric_valid: bool\n"
-        "    background_level: float\n    snr: float\n    mean_intensity: float\n"
-        "    max_intensity: float\n    min_intensity: float\n"
-        "    saturated_fraction: float\n",
+        "UNCALIBRATED_MIN_SNR_FALLBACK = "
+        f"{image_analysis.UNCALIBRATED_MIN_SNR_FALLBACK!r}\n",
+        inspect.getsource(image_analysis.ImageStats),
     ]
     for fn in (image_analysis.snr, image_analysis.tenengrad, image_analysis.compute_stats):
         parts.append(inspect.getsource(fn))
     return "\n".join(parts)
 
 
+@emits_nothing
 def export_session_script(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -141,11 +150,22 @@ def export_session_script(
         renderer = getattr(fn, "_microclaw_emitter", None)
         lines.append("")
         lines.append(f"# RECORDED TOOL: {name}")
+        if fn is not None and getattr(fn, "_microclaw_emits_nothing", False):
+            lines.append("# No hardware-routine effect.")
+            continue
         if renderer is None:
             lines.append(f"# NOT EMITTED: {name}")
             lines.append(f"raise RuntimeError({('NOT EMITTED: ' + name)!r})")
-            break
-        lines.extend(renderer(params).splitlines())
+            continue
+        try:
+            rendered = renderer(params)
+        except CannotEmit as exc:
+            reason = str(exc)
+            lines.append(f"# NOT EMITTED: {name}")
+            lines.append(f"# {reason}")
+            lines.append(f"raise RuntimeError({('NOT EMITTED: ' + name + ' — ' + reason)!r})")
+            continue
+        lines.extend(rendered.splitlines())
         emitted += 1
     source = "\n".join(lines) + "\n"
     Path(path).write_text(source, encoding="utf-8")
@@ -415,11 +435,13 @@ def set_exposure(ctrl: MicroscopeController, guard: SafetyGuard, ms: float) -> d
     return {"status": f"Exposure set to {ms} ms."}
 
 
+@emits_nothing
 def get_exposure(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     ms = ctrl.core.get_exposure()
     return {"exposure_ms": ms}
 
 
+@emits_nothing
 def get_pixel_size(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     um = float(ctrl.core.get_pixel_size_um())
     result: dict = {"pixel_size_um": um}
@@ -443,6 +465,7 @@ def _bounce_live_if_on(ctrl: MicroscopeController) -> bool:
     return False
 
 
+@emits_nothing
 def get_roi(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     roi = ctrl.core.get_roi()
     return {
@@ -488,6 +511,7 @@ def clear_roi(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
 
 # --- XY Stage ---
 
+@emits_nothing
 def get_xy_position(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     x = ctrl.core.get_x_position()
     y = ctrl.core.get_y_position()
@@ -540,6 +564,7 @@ def move_stage_xy(
 
 # --- Z Stage ---
 
+@emits_nothing
 def get_z_position(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     z = ctrl.core.get_position()
     return {"z_um": round(z, 3)}
@@ -592,6 +617,7 @@ def _device_type_name(core, label: str) -> str:
     return device_type_name(core, label)
 
 
+@emits_nothing
 def list_stages(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     """Every stage device, and which ones the core's Z/XY tools actually drive.
 
@@ -621,6 +647,7 @@ def list_stages(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     }
 
 
+@emits_nothing
 def get_stage_position(
     ctrl: MicroscopeController, guard: SafetyGuard, device: str
 ) -> dict:
@@ -663,10 +690,9 @@ def _has_channel_authorization_map(ctrl: MicroscopeController) -> bool:
     """
     return getattr(ctrl, "authorization_map", None) is not None
 
-@emits(lambda p: (
-    f"core.set_config('Channel', {p['preset']!r})\n"
-    f"core.wait_for_config('Channel', {p['preset']!r})"
-))
+@emits(lambda p: (_ for _ in ()).throw(CannotEmit(
+    "set_channel may execute an authorization-map channel plan; block 41c must make that plan emittable"
+)))
 def set_channel(
     ctrl: MicroscopeController, guard: SafetyGuard, preset: str, *, cancel=None
 ) -> dict:
@@ -682,6 +708,7 @@ def set_channel(
     return {"status": f"Channel set to '{preset}'."}
 
 
+@emits_nothing
 def get_available_channels(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     from microclaw.authorization import CHANNEL_CONFIG_GROUP
     channels = _str_vector(ctrl.core.get_available_configs(CHANNEL_CONFIG_GROUP))
@@ -710,6 +737,7 @@ def set_device_property(
     return {"status": f"Set {device}.{property} = {value!r}."}
 
 
+@emits_nothing
 def get_device_property(
     ctrl: MicroscopeController, guard: SafetyGuard, device: str, property: str
 ) -> dict:
@@ -717,11 +745,13 @@ def get_device_property(
     return {"device": device, "property": property, "value": value}
 
 
+@emits_nothing
 def list_devices(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     devices = _str_vector(ctrl.core.get_loaded_devices())
     return {"devices": devices}
 
 
+@emits_nothing
 def list_device_properties(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -763,6 +793,7 @@ def _property_type_name(core, device: str, prop: str) -> str:
         return "Unknown"
 
 
+@emits_nothing
 def get_device_property_info(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -807,6 +838,7 @@ def get_device_property_info(
     return info
 
 
+@emits_nothing
 def get_full_device_state(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -915,6 +947,7 @@ def _laser_state(ctrl: MicroscopeController) -> Any:
     return out
 
 
+@emits_nothing
 def get_system_state(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     state: dict[str, Any] = {}
     try:
@@ -2209,6 +2242,7 @@ def mark_position(
     }
 
 
+@emits_nothing
 def get_position_list(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     """Return all positions from MM's native position list."""
     projection = _validate_position_projection(
@@ -3844,6 +3878,7 @@ def run_adaptive_survey(
     return result
 
 
+@emits_nothing
 def read_hook_log(ctrl: MicroscopeController, guard: SafetyGuard, log_path: str) -> dict:
     """Read a hook's output log file after an acquisition completes."""
     log_path = guard.resolve_readable_path(log_path)
@@ -3855,6 +3890,7 @@ def read_hook_log(ctrl: MicroscopeController, guard: SafetyGuard, log_path: str)
             "artifact": {"kind": "hook_log", "path": log_path}}
 
 
+@emits_nothing
 def rank_hook_log(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -3969,6 +4005,7 @@ def rank_hook_log(
     return result
 
 
+@emits_nothing
 def validate_positions(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -4003,6 +4040,7 @@ def validate_positions(
     return {"accepted": accepted, "rejected": rejected, "clipped": 0}
 
 
+@emits_nothing
 def inspect_artifacts(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -4123,6 +4161,7 @@ def inspect_artifacts(
     return result
 
 
+@emits_nothing
 def compare_revisit_frames(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -4290,6 +4329,7 @@ def generate_and_save_hook(
     }
 
 
+@emits_nothing
 def read_hook_from_file(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -4311,6 +4351,7 @@ def read_hook_from_file(
     return {"code": code, "warnings": warnings, "path": path}
 
 
+@emits_nothing
 def list_hooks(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     """List all available hook strategies (pre-coded and saved)."""
     from microclaw.hooks import PRECODED_HOOK_REGISTRY
@@ -4322,6 +4363,7 @@ def list_hooks(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     }
 
 
+@emits_nothing
 def describe_hook(
     ctrl: MicroscopeController, guard: SafetyGuard, name: str
 ) -> dict:
@@ -4381,6 +4423,7 @@ def describe_hook(
     }
 
 
+@emits_nothing
 def list_mm_plugins(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     """List installed MM plugins by role so a human can review/gate them."""
     try:
@@ -4401,16 +4444,19 @@ def list_mm_plugins(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     }
 
 
+@emits_nothing
 def get_hook_documentation(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     from microclaw.hook_docs import HOOK_REFERENCE
     return {"documentation": HOOK_REFERENCE}
 
 
+@emits_nothing
 def get_smlm_documentation(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     from microclaw.smlm_docs import SMLM_REFERENCE
     return {"documentation": SMLM_REFERENCE}
 
 
+@emits_nothing
 def check_emu_installed(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     from microclaw.emu_manager import (
         find_mm_app_dir, find_plugin_jars, read_emu_config, _emu_config_path,
@@ -4452,11 +4498,13 @@ def check_emu_installed(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     }
 
 
+@emits_nothing
 def get_htsmlm_documentation(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     from microclaw.htsmlm_docs import HTSMLM_REFERENCE
     return {"documentation": HTSMLM_REFERENCE}
 
 
+@emits_nothing
 def save_knowledge(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -4488,6 +4536,7 @@ def save_knowledge(
     return {"status": f"Saved '{key}' under '{category}'.", "category": category, "key": key, "value": value}
 
 
+@emits_nothing
 def get_knowledge(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -4501,6 +4550,7 @@ def get_knowledge(
     return {"knowledge": data}
 
 
+@emits_nothing
 def delete_knowledge(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -4562,6 +4612,7 @@ def _cached_emu_properties(
         return None, {}
 
 
+@emits_nothing
 def get_emu_configuration(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -4628,6 +4679,7 @@ def _read_qpd(ctrl: MicroscopeController, focus_lock: dict) -> dict | None:
     return out or None
 
 
+@emits_nothing
 def get_focus_lock_state(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     """Read the hardware focus lock via the EMU map ('Z stage focus locking').
 
@@ -4677,6 +4729,7 @@ def set_focus_lock(
     }
 
 
+@emits_nothing
 def get_emu_laser_map(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     """The slot → laser table (enable / power / trigger lines) from the EMU map."""
     from microclaw.emu_manager import build_emu_map
@@ -4694,6 +4747,7 @@ def get_emu_laser_map(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     }
 
 
+@emits_nothing
 def resolve_emu_device(
     ctrl: MicroscopeController, guard: SafetyGuard, semantic_name: str
 ) -> dict:
@@ -4765,6 +4819,7 @@ def verify_emu_laser_power_calibration(
             "formula": "raw = slope * percent + offset"}
 
 
+@emits_nothing
 def get_emu_laser_power_percentage(
     ctrl: MicroscopeController, guard: SafetyGuard, slot: int
 ) -> dict:
@@ -4853,6 +4908,7 @@ def _datastore_state(store: Any) -> dict | None:
     return out
 
 
+@emits_nothing
 def get_album_state(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     store = ctrl.studio.album().get_datastore()
     return {"album_exists": store is not None, "datastore": _datastore_state(store)}
@@ -4921,6 +4977,7 @@ def _read_mda_settings(settings: Any) -> dict:
     return out
 
 
+@emits_nothing
 def get_mda_settings(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     manager = ctrl.studio.acquisitions()
     settings = manager.get_acquisition_settings()
@@ -5126,6 +5183,7 @@ def execute_tool(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
     cancel=None,
+    records=None,
 ) -> str | list:
     """Execute a tool and return content for the tool_result block.
 
@@ -5142,7 +5200,9 @@ def execute_tool(
         ):
             from microclaw.authorization import authorize_path
             authorize_path(ctrl, f"acquisition-tool:{name}")
-        if name == "set_channel":
+        if name == "export_session_script":
+            result = fn(ctrl, guard, records=records, **tool_input)
+        elif name == "set_channel":
             result = fn(ctrl, guard, cancel=cancel, **tool_input)
         else:
             result = fn(ctrl, guard, **tool_input)

@@ -11,7 +11,7 @@ from microclaw.tools import TOOL_REGISTRY
 from microclaw.tools_schema import TOOLS
 
 _SCHEMA_BY_NAME = {t["name"]: t for t in TOOLS}
-_INJECTED = {"ctrl", "guard"}  # supplied by execute_tool, never in the schema
+_INJECTED = {"ctrl", "guard", "records"}  # supplied by execute_tool, never in schema
 
 
 def test_registry_and_schema_cover_the_same_tools():
