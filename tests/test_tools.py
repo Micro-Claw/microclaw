@@ -731,11 +731,12 @@ class TestGetSystemState:
 
     def test_laser_slots_are_read_through_the_emu_map(self, mock_ctrl,
                                                       unconstrained_guard, monkeypatch):
-        monkeypatch.setattr(tools, "_cached_emu_properties", lambda ctrl: {"stub": {}})
+        monkeypatch.setattr(tools, "_cached_emu_properties", lambda ctrl: ({"stub": {}}, {}))
         monkeypatch.setattr(
             "microclaw.emu_manager.build_emu_map",
-            lambda props: {"lasers": {
-                3: {"enable": {"device": "Laser3", "property": "On"},
+            lambda props, params: {"lasers": {
+                3: {"name": "640",
+                    "enable": {"device": "Laser3", "property": "On"},
                     "power_pct": {"device": "Laser3", "property": "Power"}},
                 1: {"enable": {"device": "Laser1", "property": "On"}},
             }},
@@ -747,7 +748,7 @@ class TestGetSystemState:
         # Keyed by slot index, never by device order (design/14 §1).
         assert result["lasers"] == {
             1: {"enabled": "0"},
-            3: {"enabled": "1", "power_pct": "40"},
+            3: {"name": "640", "enabled": "1", "power_pct": "40"},
         }
 
     def test_a_slot_with_no_enable_or_power_line_is_unknown_not_absent(
@@ -756,10 +757,10 @@ class TestGetSystemState:
         # Seen on the rig: build_emu_map yields a slot carrying only trigger
         # lines. There is nothing to read for it, and saying nothing about a
         # laser slot is the failure this fix exists to prevent.
-        monkeypatch.setattr(tools, "_cached_emu_properties", lambda ctrl: {"stub": {}})
+        monkeypatch.setattr(tools, "_cached_emu_properties", lambda ctrl: ({"stub": {}}, {}))
         monkeypatch.setattr(
             "microclaw.emu_manager.build_emu_map",
-            lambda props: {"lasers": {0: {"trigger_mode": {"device": "T", "property": "M"}}}},
+            lambda props, params: {"lasers": {0: {"trigger_mode": {"device": "T", "property": "M"}}}},
         )
         result = get_system_state(mock_ctrl, unconstrained_guard)
         assert result["lasers"] == {0: "unknown"}
@@ -767,10 +768,10 @@ class TestGetSystemState:
 
     def test_an_unreadable_laser_line_says_so(self, mock_ctrl, unconstrained_guard,
                                               monkeypatch):
-        monkeypatch.setattr(tools, "_cached_emu_properties", lambda ctrl: {"stub": {}})
+        monkeypatch.setattr(tools, "_cached_emu_properties", lambda ctrl: ({"stub": {}}, {}))
         monkeypatch.setattr(
             "microclaw.emu_manager.build_emu_map",
-            lambda props: {"lasers": {2: {"enable": {"device": "L2", "property": "On"}}}},
+            lambda props, params: {"lasers": {2: {"enable": {"device": "L2", "property": "On"}}}},
         )
         mock_ctrl.core.get_property.side_effect = Exception("bridge error")
         result = get_system_state(mock_ctrl, unconstrained_guard)
@@ -2104,7 +2105,7 @@ class TestFocusLock:
         from microclaw import tools
         monkeypatch.setattr(
             tools, "_cached_emu_properties",
-            lambda ctrl: self.PROPS if props is None else props,
+            lambda ctrl: (self.PROPS if props is None else props, {}),
         )
 
     def test_reports_engaged_with_qpd(self, mock_ctrl, unconstrained_guard, monkeypatch):
@@ -2187,7 +2188,7 @@ class TestTimelapseTriggerPreflight:
 
     def _setup(self, mock_ctrl, monkeypatch, mode="4 - Follow", sequence="65535"):
         from microclaw import tools
-        monkeypatch.setattr(tools, "_cached_emu_properties", lambda ctrl: self.PROPS)
+        monkeypatch.setattr(tools, "_cached_emu_properties", lambda ctrl: (self.PROPS, {}))
         monkeypatch.setattr("microclaw.tools._acquire_with_hooks", lambda *a, **k: "/tmp/ds")
         values = {("Laser Trigger", "Mode3"): mode,
                   ("Laser Trigger", "Sequence3"): sequence}
@@ -2236,7 +2237,7 @@ class TestTimelapseTriggerPreflight:
 
     def test_non_emu_rig_skips_preflight(self, mock_ctrl, unconstrained_guard, monkeypatch):
         from microclaw import tools
-        monkeypatch.setattr(tools, "_cached_emu_properties", lambda ctrl: None)
+        monkeypatch.setattr(tools, "_cached_emu_properties", lambda ctrl: (None, {}))
         monkeypatch.setattr("microclaw.tools._acquire_with_hooks", lambda *a, **k: "/tmp/ds")
         result = tools.run_timelapse(mock_ctrl, unconstrained_guard, n_frames=1,
                                      interval_s=0, save_dir="/tmp", laser_slot=3)
@@ -3398,7 +3399,7 @@ def _design30_emu_power(monkeypatch):
             "offset": "0.0",
         }
     }
-    monkeypatch.setattr(tools, "_cached_emu_properties", lambda ctrl: props)
+    monkeypatch.setattr(tools, "_cached_emu_properties", lambda ctrl: (props, {}))
 
 
 def test_emu_calibration_uses_slope_in_documented_direction(

@@ -30,19 +30,9 @@ def _candidate_mm_dirs() -> list[Path]:
     """Return platform-specific candidate µManager installation directories."""
     system = platform.system()
     if system == "Windows":
-        return [
-            Path("C:/Program Files/Micro-Manager-2.0"),
-            Path("C:/Program Files/Micro-Manager-2.0.1"),
-            Path("C:/Program Files/Micro-Manager-2.0.2"),
-            Path("C:/Program Files/Micro-Manager-2.0.3"),
-        ]
+        return sorted(Path("C:/Program Files").glob("Micro-Manager-2.0*"))
     if system == "Darwin":
-        return [
-            Path("/Applications/Micro-Manager-2.0"),
-            Path("/Applications/Micro-Manager-2.0.1"),
-            Path("/Applications/Micro-Manager-2.0.2"),
-            Path("/Applications/Micro-Manager-2.0.3"),
-        ]
+        return sorted(Path("/Applications").glob("Micro-Manager-2.0*"))
     # Linux
     return [
         Path("/opt/micro-manager"),
@@ -58,9 +48,13 @@ def _emu_config_path(mm_app_dir: Path) -> Path:
 def _find_jars(mm_app_dir: Path, prefix: str) -> list[str]:
     """Return basenames of JARs matching prefix in the MM plugins directories."""
     found = []
-    for subdir in ("mmplugins", "plugins"):
-        pattern = str(mm_app_dir / subdir / f"{prefix}*.jar")
-        found.extend(Path(p).name for p in glob.glob(pattern))
+    prefix = prefix.casefold()
+    for subdir in ("mmplugins", "plugins", "EMU"):
+        pattern = str(mm_app_dir / subdir / "*.jar")
+        found.extend(
+            Path(p).name for p in glob.glob(pattern)
+            if Path(p).name.casefold().startswith(prefix)
+        )
     return found
 
 
@@ -269,7 +263,9 @@ _LASER_ALT_RE = re.compile(
     r"^Laser\s?(?P<i>\d+) (?P<field>on/off|power)$", re.IGNORECASE
 )
 
-_FILTER_WHEEL_KEY = "Filter wheel position"
+_FILTER_WHEEL_RE = re.compile(
+    r"^Filter wheel(?: (?P<i>\d+))? position$", re.IGNORECASE
+)
 _FOCUS_LOCK_KEY = "Z stage focus locking"
 
 
@@ -280,7 +276,29 @@ def _slim(entry: dict) -> dict:
     return dict(entry)
 
 
-def build_emu_map(props: dict[str, dict]) -> dict:
+def _parse_parameters(raw: object) -> dict[str, dict[str, str]]:
+    """Group flat ``Panel - Parameter`` keys by their EMU panel label."""
+    if not isinstance(raw, dict):
+        return {}
+    result: dict[str, dict[str, str]] = {}
+    for key, value in raw.items():
+        if not isinstance(key, str) or " - " not in key:
+            continue
+        panel, name = key.split(" - ", 1)
+        result.setdefault(panel, {})[name] = value
+    return result
+
+
+def _normal_name(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value if value and value.casefold() != "none" else None
+
+
+def build_emu_map(
+    props: dict[str, dict], params: dict[str, dict[str, str]] | None = None
+) -> dict:
     """Semantic view over parsed EMU properties: slot → laser, filter wheel,
     focus lock — placeholder-free and shaped so a laser cannot be mismatched
     to another laser's trigger line.
@@ -291,6 +309,7 @@ def build_emu_map(props: dict[str, dict]) -> dict:
     638's (Mode3), then ran a 100-frame acquisition on the unverified line.
     Nothing may infer a slot index.
     """
+    params = params or {}
     allocated = {
         k: v
         for k, v in props.items()
@@ -314,9 +333,80 @@ def build_emu_map(props: dict[str, dict]) -> dict:
             continue
         used.add(name)
 
-    filter_wheel = allocated.get(_FILTER_WHEEL_KEY)
-    if filter_wheel is not None:
-        used.add(_FILTER_WHEEL_KEY)
+    # Rule A: a panel Name labels everything in that panel. Laser and trigger
+    # panels share a slot, so either parameter names the whole paired record.
+    property_names: dict[str, str] = {}
+    for panel, panel_params in params.items():
+        label = _normal_name(panel_params.get("Name"))
+        if label is None:
+            continue
+        for prop_name in allocated:
+            if not prop_name.casefold().startswith((panel + " ").casefold()):
+                continue
+            property_names[prop_name] = label
+            if m := (_LASER_RE.match(prop_name) or _TRIG_RE.match(prop_name)
+                     or _LASER_ALT_RE.match(prop_name)):
+                slot = int(m["i"])
+                existing = lasers.setdefault(slot, {}).get("name")
+                if existing is None or existing.casefold() == label.casefold():
+                    lasers[slot]["name"] = label
+
+    # Rule B: "X name" labels the exact UIProperty X.
+    for panel_params in params.values():
+        for param_name, value in panel_params.items():
+            if not param_name.casefold().endswith(" name"):
+                continue
+            target = param_name[:-5]
+            label = _normal_name(value)
+            if target in allocated and label is not None:
+                property_names[target] = label
+
+    filter_wheels: dict[int, dict] = {}
+    for prop_name, entry in allocated.items():
+        match = _FILTER_WHEEL_RE.match(prop_name)
+        if not match:
+            continue
+        ordinal = int(match["i"] or 1)
+        wheel = {"ui_property": prop_name, **_slim(entry)}
+        filter_wheels[ordinal] = wheel
+        used.add(prop_name)
+
+    # Rule C: slot lists are the one shape join. Refuse partial pairing.
+    for panel, panel_params in params.items():
+        for param_name, raw_names in panel_params.items():
+            match = re.fullmatch(r"Filter names(?: (?P<i>\d+))?", param_name,
+                                 re.IGNORECASE)
+            if not match or not isinstance(raw_names, str):
+                continue
+            ordinal = int(match["i"] or 1)
+            target = "Filter wheel position" if ordinal == 1 else (
+                f"Filter wheel {ordinal} position"
+            )
+            wheel = filter_wheels.get(ordinal)
+            names = [part.strip() for part in raw_names.split(",")]
+            states = props.get(target, {}).get("states")
+            state_count = len(states) if isinstance(states, dict) else None
+            contiguous = (
+                isinstance(states, dict)
+                and sorted(states) == list(range(len(names)))
+            )
+            if wheel is None or state_count != len(names) or not contiguous:
+                if wheel is None:
+                    wheel = {"ui_property": target}
+                    filter_wheels[ordinal] = wheel
+                wheel["name_mismatch"] = {
+                    "names": len(names),
+                    "states": state_count,
+                }
+                continue
+            slots = {}
+            for position in sorted(states):
+                label = _normal_name(names[position]) if position < len(names) else None
+                slot = {"name": label, "value": states[position]}
+                if label is None:
+                    slot["empty"] = True
+                slots[position] = slot
+            wheel["slots"] = slots
 
     focus_lock = allocated.get(_FOCUS_LOCK_KEY)
     if focus_lock is not None:
@@ -330,30 +420,97 @@ def build_emu_map(props: dict[str, dict]) -> dict:
         if qpd:
             focus_lock["qpd"] = qpd
 
+    other = {n: _slim(v) for n, v in allocated.items() if n not in used}
+    for prop_name, label in property_names.items():
+        target = other.get(prop_name)
+        if target is not None:
+            target["name"] = label
+        elif prop_name == _FOCUS_LOCK_KEY and focus_lock is not None:
+            focus_lock["name"] = label
+
+    # Rule D: retain role aliases only when their exact target is allocated.
+    aliases: dict[str, list[str]] = {}
+    for panel, panel_params in params.items():
+        for role, target in panel_params.items():
+            if isinstance(target, str) and target in allocated:
+                aliases.setdefault(target, []).extend((role, f"{panel} - {role}"))
+    for target, role_names in aliases.items():
+        if target in other:
+            other[target]["aliases"] = role_names
+        elif target == _FOCUS_LOCK_KEY and focus_lock is not None:
+            focus_lock["aliases"] = role_names
+        elif match := (_LASER_RE.match(target) or _TRIG_RE.match(target)
+                       or _LASER_ALT_RE.match(target)):
+            lasers[int(match["i"])].setdefault("aliases", []).extend(role_names)
+        elif match := _FILTER_WHEEL_RE.match(target):
+            ordinal = int(match["i"] or 1)
+            filter_wheels[ordinal].setdefault("aliases", []).extend(role_names)
+
     return {
         "lasers": lasers,
-        "filter_wheel": _slim(filter_wheel) if filter_wheel else None,
+        "filter_wheels": filter_wheels,
         "focus_lock": focus_lock,
-        "other": {n: _slim(v) for n, v in allocated.items() if n not in used},
+        "other": other,
         # Names only — the placeholder noise is what buried the useful 99
         # entries in ~9 kB of context.
         "unallocated": sorted(set(props) - set(allocated)),
     }
 
 
-def resolve_emu_device(props: dict[str, dict], semantic_name: str) -> dict:
-    """'Laser 3 enable' → {'device': 'Luxx638', 'property': 'Laser Operation Select'}."""
+def resolve_emu_device(
+    props: dict[str, dict], semantic_name: str,
+    params: dict[str, dict[str, str]] | None = None,
+) -> dict:
+    """Resolve an exact UIProperty key or a configured human-facing name."""
     entry = props.get(semantic_name)
-    if entry is None or "device" not in entry:
-        allocated = sorted(
-            k for k, v in props.items()
-            if v.get("mm_property_string") not in _PLACEHOLDER_VALUES and "device" in v
-        )
+    if entry is not None and "device" in entry and (
+        entry.get("mm_property_string") not in _PLACEHOLDER_VALUES
+    ):
+        return {"device": entry["device"], "property": entry["property"]}
+
+    wanted = semantic_name.strip().casefold()
+    emu_map = build_emu_map(props, params)
+    candidates: list[tuple[str, dict]] = []
+    for slot, laser in emu_map["lasers"].items():
+        names = [laser.get("name"), *laser.get("aliases", [])]
+        if any(str(name).strip().casefold() == wanted for name in names if name):
+            candidates.append((f"laser slot {slot}", laser))
+    for prop_name, other in emu_map["other"].items():
+        names = [other.get("name"), *other.get("aliases", [])]
+        if any(str(name).strip().casefold() == wanted for name in names if name):
+            candidates.append((prop_name, other))
+    for ordinal, wheel in emu_map["filter_wheels"].items():
+        if any(
+            str(name).strip().casefold() == wanted
+            for name in wheel.get("aliases", [])
+        ):
+            candidates.append((f"filter wheel {ordinal}", wheel))
+        for position, slot in wheel.get("slots", {}).items():
+            if str(slot.get("name", "")).strip().casefold() == wanted:
+                candidates.append((f"filter wheel {ordinal} slot {position}", {
+                    "device": wheel.get("device"), "property": wheel.get("property"),
+                    "value": slot["value"], "name": slot["name"],
+                }))
+    focus_lock = emu_map["focus_lock"]
+    if focus_lock is not None:
+        names = [focus_lock.get("name"), *focus_lock.get("aliases", [])]
+        if any(str(name).strip().casefold() == wanted for name in names if name):
+            candidates.append(("focus lock", focus_lock))
+    if len(candidates) == 1:
+        return candidates[0][1]
+    if len(candidates) > 1:
         raise KeyError(
-            f"'{semantic_name}' is not an allocated EMU property. "
-            f"Allocated names: {allocated}"
+            f"'{semantic_name}' is ambiguous; candidates: "
+            f"{[label for label, _ in candidates]}"
         )
-    return {"device": entry["device"], "property": entry["property"]}
+    allocated = sorted(
+        k for k, v in props.items()
+        if v.get("mm_property_string") not in _PLACEHOLDER_VALUES and "device" in v
+    )
+    raise KeyError(
+        f"'{semantic_name}' is not an allocated EMU property or configured name. "
+        f"Allocated names: {allocated}"
+    )
 
 
 def read_emu_config(
@@ -369,6 +526,7 @@ def read_emu_config(
       config_name   — name of the currently active configuration
       plugin_name   — plugin registered (should be "htSMLM")
       properties    — structured UIProperty → MM device/property mapping
+      parameters       — parsed panel → parameter → value map
       plugin_settings — raw plugin-level settings (tab visibility, etc.)
     """
     config_path = _emu_config_path(Path(mm_app_dir))
@@ -400,5 +558,6 @@ def read_emu_config(
         "config_name": active.get("configurationName", ""),
         "plugin_name": active.get("pluginName", ""),
         "properties": _parse_properties(properties, device_labels),
+        "parameters": _parse_parameters(active.get("parameters", {})),
         "plugin_settings": settings,
     }

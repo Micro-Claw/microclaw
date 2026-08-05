@@ -43,6 +43,11 @@ Workflow:
   3. Call set_device_property(device, property, value) with the device and
      property from step 2.
 
+Configured human-facing identities ride on the semantic map records as `name`.
+Call resolve_emu_device with either an exact UIProperty key or a configured
+name such as "640" or "BFP". A laser name returns the whole slot record so its
+enable, power, and trigger lines remain paired.
+
 Example — enable Laser 0:
   config = get_emu_configuration()
   entry  = config["properties"]["Laser 0 enable"]
@@ -67,12 +72,12 @@ the "properties" dict returned by get_emu_configuration().
   (same pattern for Laser 1, 2, 3)
 
 ### Filters  (panel label "Filters")
-  "Filters Filter wheel position"    MultiState — filter wheel slot (0-based index)
-  "Filters Filter wheel 2 position"  MultiState — second filter wheel (DualFW mode only)
+  "Filter wheel position"    MultiState — filter wheel slot (0-based index)
+  "Filter wheel 2 position"  MultiState — second filter wheel (DualFW mode only)
 
 ### Focus  (panel label "Focus")
-  "Focus Z stage position"       SingleState — numeric Z position in µm
-  "Focus Z stage focus locking"  TwoState    — engage/disengage hardware focus lock
+  "Z stage position"       SingleState — numeric Z position in µm
+  "Z stage focus locking"  TwoState    — engage/disengage hardware focus lock
 
 ### Additional two-state controls  (panel label "Controls")
   "Two-state device 1" through "Two-state device 6"
@@ -81,8 +86,7 @@ the "properties" dict returned by get_emu_configuration().
     - 3D astigmatic lens in/out
     - BFP (back focal plane / Bertrand lens) in/out
     - Focus lock laser on/off
-  Ask the user what each numbered device corresponds to on their system, or
-  inspect the UIParameter names in the config ("Two-state device N name").
+  Their configured names are returned in each record's `name` field.
 
 ### Laser triggers  (panel label "Laser trigger 0" through "Laser trigger 3")
   "Laser trigger 0 mode"           MultiState — Off | On | Rising | Falling | Camera
@@ -101,7 +105,7 @@ the "properties" dict returned by get_emu_configuration().
   "QPD X", "QPD Y", "QPD Z"  — read-only signal monitors; do not set these.
 
 ### Powermeter  (panel label "Powermeter")
-  "Powermeter Laser powermeter"  — read-only power readout; do not set this.
+  "Laser powermeter"  — read-only power readout; do not set this.
 
 ---
 
@@ -137,12 +141,9 @@ it programmatically. For all acquisitions use microclaw's native tools:
    (Needed to read the EMU config; try get_emu_configuration() first —
    it will prompt for the directory if auto-detection fails.)
 
-2. What does each "Two-state device N" button control?
-   (TIRF/HILO/epi, 3D, BFP, etc. — varies per setup.)
-
-3. Are the iBeamSmart panels enabled and what are their names?
+2. Are the iBeamSmart panels enabled and what are their names?
    (Determines the UIProperty name prefix for those lasers.)
 
-4. Is the Trigger tab (MicroFPGA) present?
+3. Is the Trigger tab (MicroFPGA) present?
    (Required to set laser trigger modes and pulse durations.)
 """

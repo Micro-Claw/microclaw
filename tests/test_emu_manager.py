@@ -231,7 +231,7 @@ class TestBuildEmuMap:
         )
 
     def test_filter_wheel_carries_the_state_table(self, emu_map):
-        fw = emu_map["filter_wheel"]
+        fw = emu_map["filter_wheels"][1]
         assert fw["device"] == "Servos"
         assert fw["property"] == "Position3"
         assert fw["states"] == {0: "5000", 3: "32000"}
@@ -309,3 +309,103 @@ def test_looks_like_mm_dir(tmp_path):
     empty = tmp_path / "c"
     empty.mkdir()
     assert not emu_manager._looks_like_mm_dir(empty)
+
+
+# ── parameters and human-facing names (design/39) ───────────────────────────
+
+M5_CONFIG = Path(__file__).parent / "fixtures" / "m5-config.uicfg"
+M5_DEVICES = [
+    "iChrome-MLE-TCP", "Laser Trigger", "Thorlabs Filter Wheel",
+    "Thorlabs Filter Wheel-1", "Thorlabs ELL6", "Thorlabs ELL20",
+    "Thorlabs ELL17/ELL20", "PIZStage", "Analog Input", "iBeamSmartCW",
+]
+
+
+@pytest.fixture
+def m5_config(tmp_path):
+    mm = tmp_path / "MM"
+    (mm / "EMU").mkdir(parents=True)
+    (mm / "EMU" / "config.uicfg").write_text(M5_CONFIG.read_text())
+    return emu_manager.read_emu_config(mm, M5_DEVICES)
+
+
+@pytest.fixture
+def m5_map(m5_config):
+    return emu_manager.build_emu_map(
+        m5_config["properties"], m5_config["parameters"]
+    )
+
+
+def test_real_m5_laser_names_come_from_parameters(m5_map):
+    assert m5_map["lasers"][3]["name"] == "640"
+    assert m5_map["lasers"][1]["name"] == "488"
+
+
+def test_two_state_names_ignore_none_placeholder(m5_map):
+    assert m5_map["other"]["Two-state device 3"]["name"] == "BFP"
+    assert "Two-state device 4" not in m5_map["other"]
+
+
+def test_filter_names_strip_whitespace_and_mark_empty_slots(m5_map):
+    slots = m5_map["filter_wheels"][1]["slots"]
+    assert slots[2]["name"] == "676/37"
+    assert slots[5] == {"name": None, "value": "5", "empty": True}
+
+
+def test_second_filter_wheel_has_its_own_names(m5_map):
+    assert m5_map["filter_wheels"][2]["slots"][0]["name"] == "525/50"
+
+
+def test_filter_name_count_mismatch_fails_loudly():
+    props = emu_manager._parse_properties({
+        "Filter wheel position": "Wheel-State",
+        "Filter wheel position state 0": "0",
+        "Filter wheel position state 1": "1",
+    }, ["Wheel"])
+    params = emu_manager._parse_parameters({"Filters - Filter names": "DAPI"})
+    wheel = emu_manager.build_emu_map(props, params)["filter_wheels"][1]
+    assert "slots" not in wheel
+    assert wheel["name_mismatch"] == {"names": 1, "states": 2}
+
+
+def test_resolve_configured_names_preserves_laser_slot_pairing(m5_config):
+    props, params = m5_config["properties"], m5_config["parameters"]
+    bfp = emu_manager.resolve_emu_device(props, " BfP ", params)
+    assert bfp["device"] == "Thorlabs ELL6"
+    assert bfp["property"] == "State"
+    laser = emu_manager.resolve_emu_device(props, "640", params)
+    assert laser["name"] == "640"
+    assert laser["trigger_mode"]["property"] == "Mode3"
+    focus = emu_manager.resolve_emu_device(props, "Focus stabilization", params)
+    assert focus["device"] == "PIZStage"
+
+
+def test_role_alias_does_not_allocate_its_target(m5_map):
+    assert "Two-state device 5" in m5_map["unallocated"]
+    assert "Two-state device 5" not in m5_map["other"]
+
+
+def test_config_without_parameters_has_no_invented_names(tmp_path):
+    mm = tmp_path / "MM"
+    (mm / "EMU").mkdir(parents=True)
+    (mm / "EMU" / "config.uicfg").write_text(json.dumps({
+        "defaultConfigurationName": "plain",
+        "pluginConfigurations": [{
+            "configurationName": "plain", "pluginName": "Simple UI",
+            "properties": {"Laser0 on/off": "Laser-OnOff"},
+            "settings": {},
+        }],
+    }))
+    config = emu_manager.read_emu_config(mm, ["Laser"])
+    emu_map = emu_manager.build_emu_map(
+        config["properties"], config["parameters"]
+    )
+    assert config["parameters"] == {}
+    assert all("name" not in laser for laser in emu_map["lasers"].values())
+
+
+def test_find_jars_searches_emu_case_insensitively(tmp_path):
+    emu = tmp_path / "EMU"
+    emu.mkdir()
+    (emu / "htsmlm-2.1.0.jar").write_text("")
+    assert emu_manager._find_jars(tmp_path, "htSMLM") == ["htsmlm-2.1.0.jar"]
