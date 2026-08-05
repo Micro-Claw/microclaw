@@ -4,11 +4,18 @@ from unittest.mock import MagicMock
 
 from microclaw.autofocus import (
     MIN_CONTRAST,
+    coarse_then_fine_plane_count,
     curve_contrast,
     coarse_then_fine_autofocus,
     single_sweep_autofocus,
     sweep_autofocus,
+    sweep_plane_count,
 )
+
+
+def test_planned_plane_count_uses_sweep_arithmetic_and_worst_case_fine_pass():
+    assert sweep_plane_count(40, 60, 2.5) == 9
+    assert coarse_then_fine_plane_count(20, 2.5, 0.5) == 20
 
 
 def make_ctrl_with_focus_at(best_z: float, width: int = 64, flat: bool = False):

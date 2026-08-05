@@ -308,3 +308,39 @@ state on my own." That is no longer true: `get_system_state` returns
 `declared_illumination_properties`. The round-4 prompt change teaches the agent to
 consult it after a blank or low-signal frame, but not at session end or handoff.
 One prompt line. Not scheduled.
+
+## Round 4 composition-gate findings (2026-08-05)
+
+Composition itself passed on M5: one acquisition produced one five-position
+dataset, 5/5 fields, and one 14-entry attributed log with both hooks interleaved
+per tile. Sweep dose reservations were exact: 75 planned / 70 hook-extra frames
+for 10 µm / 1 µm, and 145 / 140 for 40 µm / 0.5 µm.
+
+Two pre-exposure defects blocked the inline mosaic. Saved source was checked
+against the current hook contract only when saved, so the hash-pinned Session A
+stitcher with `EmitArtifact(mosaic, self.out_name)` loaded and failed on the last
+tile. Resolve now repeats the same non-executing AST contract validation;
+`describe_hook.resolve_refusal` is built from that same analysis. Correct older
+hooks remain loadable. The same AST analysis marks saved hooks that can emit.
+Reviewed pre-coded hooks declare `can_emit_artifacts` on their class.
+
+An emitting hook without `artifact_limits` is now refused during planning,
+before acquisition or autofocus exposure, with the emitting strategy name and
+the three required limit fields. This deliberately refuses instead of applying
+a default: artifact size, count, and total bytes are operator policy, and a
+silent default would invent new write authority. Composition checks every child.
+
+### Autofocus convergence observation (register; no fix in this block)
+
+The returned Round 4 tables were internally tight but differed between sweeps:
+
+| Run | Coarse/fine request | Five-field result | Reported state |
+|---|---|---|---|
+| H1 | 10 µm / 1 µm | approximately 42.97 µm at all five tiles; within-run spread only a few nm | all `converged: true` |
+| H2 | 40 µm / 0.5 µm | approximately 42.47 µm at all five tiles; within-run spread only a few nm | all `converged: true` |
+
+The approximately 0.5 µm disagreement is within one step of the coarser sweep,
+so sampling is plausible and this is not diagnosed as a defect. Retain both
+tables with the gate evidence and watch for recurrence: two tightly converged
+runs landing on opposite sides of that offset is the uncertainty design/28 F1
+was intended to keep visible.

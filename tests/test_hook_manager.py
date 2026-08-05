@@ -217,6 +217,28 @@ class TestHashPinnedLoad:
         cls = load_hook_class("analysis")
         assert hasattr(cls, "analyze_frame")
 
+    def test_stale_session_a_reversed_emit_is_refused_at_load(self):
+        source = (Path(__file__).parent / "fixtures" / "hooks" /
+                  "session_a_plus_mosaic_stitcher.py").read_text(encoding="utf-8")
+        # This represents a hook pinned before the newer contract check existed.
+        save_hook("plus_mosaic_stitcher", source, "stale rig hook",
+                  source="claude_generated")
+
+        with pytest.raises(ValueError, match="current hook contract.*not provably a string"):
+            load_hook_class("plus_mosaic_stitcher")
+
+    def test_correct_preexisting_artifact_hook_still_loads_and_is_declared(self):
+        code = (
+            "from microclaw.hook_decisions import EmitArtifact, HookResult\n"
+            "class H:\n"
+            " def analyze_frame(self, image, metadata):\n"
+            "  return HookResult({}, (EmitArtifact(filename='x.bin', payload=image),))\n"
+        )
+        save_hook("correct_old_hook", code, "correct", source="user_provided")
+
+        cls = load_hook_class("correct_old_hook")
+        assert cls.can_emit_artifacts is True
+
     def test_tampered_file_refused(self):
         save_hook("h", _CLEAN_HOOK, "clean", source="user_provided")
         # Edit the file on disk after save — TOCTOU.

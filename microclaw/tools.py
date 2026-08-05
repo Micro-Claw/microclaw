@@ -84,6 +84,16 @@ def _acquisition_entry_point(fn):
     return fn
 
 
+class _HookArtifactBudgetError(ValueError):
+    """A hook can emit artifacts but the run authorized no artifact budget.
+
+    Its own type so the acquisition entry points can convert *this* refusal to a
+    result dict without also swallowing the malformed-argument ValueErrors
+    _configure_hook_capabilities raises, which must keep propagating so the tool
+    wrapper can attach its "re-read the schema" hint.
+    """
+
+
 class _HookedAcquisitionFailure(RuntimeError):
     """A hook failed after pycro-manager resolved the dataset directory."""
 
@@ -872,6 +882,8 @@ def _acquire_with_hooks(
     save_dir = guard.resolve_in_workspace(save_dir)
     hook_fn_kwargs: dict[str, Any] = {}
     if hook is not None:
+        if reservation is not None and hasattr(hook, "bind_reservation"):
+            hook.bind_reservation(reservation)
         if hasattr(hook, "post_hardware_hook_fn"):
             hook_fn_kwargs["post_hardware_hook_fn"] = hook.post_hardware_hook_fn
         if hasattr(hook, "image_process_fn"):
@@ -2423,8 +2435,8 @@ def run_multiposition_acquisition(
     name: str = "multipos",
     protocol_params: dict | None = None,
     mark_positions: bool = False,
-    hook_strategy: str | None = None,
-    hook_params: dict | None = None,
+    hook_strategy: str | list[str] | None = None,
+    hook_params: dict | list[dict | None] | None = None,
     log_path: str | None = None,
     preserve_unsupported: bool = False,
     illumination_envelope: dict | None = None,
@@ -2696,125 +2708,72 @@ def run_multiposition_with_autofocus(
     preserve_unsupported: bool = False,
     positions: list[dict] | None = None,
 ) -> dict:
-    """Visit each position, autofocus, then run a per-position protocol.
-
-    """
-    if position_names is not None and positions is not None:
-        return {"error": "Provide position_names or positions, not both."}
-    if position_names is None and positions is None:
-        return {"error": "Provide either position_names or positions."}
+    """Deprecated forwarding wrapper for composed multiposition acquisition."""
+    # Planning and authorization are deliberately delegated: the forwarded
+    # path reaches _plan_protocol_repetitions/_authorize_acquisition for plain
+    # runs and hook-aware authorization for this autofocus run.
     missing = [name for name, value in (
         ("z_range_um", z_range_um), ("z_step_um", z_step_um),
         ("protocol", protocol), ("save_dir", save_dir),
     ) if value is None]
     if missing:
         return {"error": f"Missing required arguments: {missing}."}
-    save_dir = guard.resolve_in_workspace(save_dir)   # before the stage moves
-    params = protocol_params or {}
-    if position_names is not None:
-        projection, conflict = _preflight_native_positions(
-            ctrl, guard, preserve_unsupported=preserve_unsupported
-        )
-        if conflict:
-            return conflict
-        all_positions = {p["name"]: p for p in projection.positions}
-        requested = [(name, all_positions.get(name), True) for name in position_names]
-    else:
-        requested = [(str(p["name"]), p, False) for p in positions]
-    results = []
-    valid_count = sum(1 for _name, pos, _stored in requested if pos is not None)
-    reservation = (
-        _authorize_acquisition(
-            ctrl, guard,
-            _plan_protocol_repetitions(ctrl, protocol, params, valid_count),
-        )
-        if protocol != "snap" and valid_count else None
+    save_dir = guard.resolve_in_workspace(save_dir)  # before any forwarded move
+    if autofocus_method != "coarse_then_fine":
+        return {"error": "The deprecated wrapper only forwards coarse_then_fine autofocus."}
+    if protocol == "snap":
+        return {
+            "error": "The deprecated wrapper cannot compose autofocus with display-only "
+                     "snap. Use protocol='timelapse' with n_frames=1 and interval_s=0."
+        }
+    compatibility_log = str(Path(save_dir) / f"{name}_autofocus_log.json")
+    result = run_multiposition_acquisition(
+        ctrl, guard, protocol=protocol, save_dir=save_dir,
+        position_names=position_names, positions=positions, name=name,
+        protocol_params=protocol_params,
+        hook_strategy="autofocus_per_position",
+        hook_params={"z_range_um": z_range_um, "z_step_um": z_step_um,
+                     "settle_ms": settle_ms},
+        log_path=compatibility_log,
+        preserve_unsupported=preserve_unsupported,
     )
-
-    with ExitStack() as cleanup:
-        live_state = cleanup.enter_context(_pause_live(ctrl))
-        if reservation is not None:
-            cleanup.callback(reservation.close)
-        for pos_name, pos, stored in requested:
-            if pos is None:
-                results.append({"position": pos_name, "error": "Not found in position list."})
-                continue
-            try:
-                guard.check_xy(pos["x_um"], pos["y_um"])
-                if "z_um" in pos:
-                    guard.check_z(pos["z_um"])
-            except SafetyViolation as e:
-                results.append(
-                    {"position": pos_name, "error": f"Stored position out of bounds: {e}"}
-                )
-                continue
-            if stored:
-                ctrl.go_to_position(pos_name)
-            else:
-                ctrl.set_xy(float(pos["x_um"]), float(pos["y_um"]))
-                if "z_um" in pos:
-                    ctrl.set_z(float(pos["z_um"]))
-
-            current_z = ctrl.core.get_position()
-            try:
-                guard.check_z(current_z - z_range_um / 2)
-                guard.check_z(current_z + z_range_um / 2)
-            except Exception as e:
-                results.append(
-                    {"position": pos_name, "error": f"Autofocus range out of bounds: {e}"}
-                )
-                continue
-
-            af = _run_autofocus_passes(
-                ctrl, z_range_um, z_step_um, autofocus_method, settle_ms
-            )
-            # Non-convergence restores the entry Z; the protocol still runs
-            # there (same plane as no autofocus), but the result must say so —
-            # a silent {"status": "complete"} on an unfocused position is the
-            # design/14 §4 failure mode.
-            af_info: dict[str, Any] = {
-                "best_z_um": round(af.final_z_um, 3),
-                "autofocus_converged": af.converged,
-            }
-            if not af.converged:
-                af_info["autofocus_warning"] = af.reason
-
-            pos_save_dir = str(Path(save_dir) / pos_name)
-            Path(pos_save_dir).mkdir(parents=True, exist_ok=True)
-            try:
-                if protocol == "snap":
-                    ctrl.studio.live().snap(True)
-                    results.append({"position": pos_name, **af_info, "status": "snapped"})
-                elif protocol == "zstack":
-                    r = run_zstack(
-                        ctrl, guard, save_dir=pos_save_dir, name=pos_name,
-                        _reservation=reservation, **params
-                    )
-                    results.append({"position": pos_name, **af_info, **r})
-                elif protocol == "timelapse":
-                    r = run_timelapse(
-                        ctrl, guard, save_dir=pos_save_dir, name=pos_name,
-                        _reservation=reservation, **params
-                    )
-                    results.append({"position": pos_name, **af_info, **r})
-                else:
-                    results.append(
-                        {
-                            "position": pos_name,
-                            **af_info,
-                            "error": f"Unknown protocol '{protocol}'.",
-                        }
-                    )
-            except Exception as e:
-                results.append(
-                    {"position": pos_name, **af_info, "error": str(e)}
-                )
-    n_ok = sum(1 for r in results if "error" not in r)
-    restore = _live_restore_report(live_state)
+    if "error" not in result:
+        autofocus_by_position: dict[str, dict[str, Any]] = {}
+        try:
+            records = json.loads(Path(compatibility_log).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            records = []
+        for record in records:
+            position = record.get("position")
+            if position is not None and (
+                "best_z_um" in record or "autofocus" in record
+            ):
+                autofocus_by_position[str(position)] = {
+                    **({"best_z_um": record["best_z_um"]}
+                       if "best_z_um" in record else {}),
+                    "autofocus_converged": bool(record.get("converged", False)),
+                    **({"autofocus_warning": record["warning"]}
+                       if "warning" in record else {}),
+                }
+        compatibility_results = [
+            {**tile, **autofocus_by_position.get(str(tile["position"]), {}),
+             "status": "complete"}
+            for tile in result.get("tiles", [])
+        ]
+        result["results"] = compatibility_results
+        result["status"] = (
+            f"{len(compatibility_results)}/{len(compatibility_results)} positions "
+            "completed with autofocus."
+        )
     return {
-        "status": f"{n_ok}/{len(requested)} positions completed with autofocus.",
-        "results": results,
-        **({"live_view_restore": restore} if restore else {}),
+        **result,
+        "deprecation": (
+            "run_multiposition_with_autofocus is deprecated; use "
+            "run_multiposition_acquisition(..., "
+            "hook_strategy='autofocus_per_position'). This forwarding path writes "
+            "one dataset with a position axis; the former implementation wrote one "
+            "dataset per position."
+        ),
     }
 
 
@@ -2913,7 +2872,65 @@ def _resolve_hook(
     from microclaw.hook_manager import FORBIDDEN_SAVED_HOOK_PARAMS
     for forbidden in FORBIDDEN_SAVED_HOOK_PARAMS:
         params.pop(forbidden, None)
-    return UntrustedHookAdapter(hook_cls(**params), log_path=log_path)
+    adapter = UntrustedHookAdapter(hook_cls(**params), log_path=log_path)
+    adapter.strategy_name = hook_strategy
+    return adapter
+
+
+def _resolve_hooks(
+    ctrl: MicroscopeController,
+    guard: SafetyGuard,
+    hook_strategy: str | list[str],
+    hook_params: dict | list[dict | None] | None,
+    log_path: str | None,
+) -> Any:
+    """Resolve one hook unchanged, or independently resolve and compose many."""
+    if isinstance(hook_strategy, str):
+        if isinstance(hook_params, list):
+            raise ValueError("hook_params must be an object for one hook_strategy.")
+        return _resolve_hook(ctrl, guard, hook_strategy, hook_params, log_path)
+    if not isinstance(hook_strategy, list) or not hook_strategy or not all(
+        isinstance(name, str) and name for name in hook_strategy
+    ):
+        raise ValueError("hook_strategy must be a hook name or a non-empty list of names.")
+    if hook_params is None:
+        params = [None] * len(hook_strategy)
+    elif isinstance(hook_params, list) and len(hook_params) == len(hook_strategy):
+        params = hook_params
+    else:
+        raise ValueError(
+            "For composed hooks, hook_params must be a same-length list of objects or nulls."
+        )
+    from microclaw.hook_decisions import CompositeHook
+    # Child hooks receive no shared log or newly combined capabilities. Saved
+    # hooks are still hash-checked and adapter-wrapped by each _resolve_hook call.
+    hooks = [
+        (strategy, _resolve_hook(ctrl, guard, strategy, param, None))
+        for strategy, param in zip(hook_strategy, params)
+    ]
+    return CompositeHook(hooks, log_path)
+
+
+def _plan_with_hook_dose(plan: AcquisitionPlan, hook: Any) -> AcquisitionPlan:
+    """Add worst-case hook-fired exposures to an event-plan reservation."""
+    extra_per_event = getattr(
+        hook, "planned_extra_exposures_per_event", lambda: 0
+    )()
+    # Non-dose hooks leave the plan completely transparent. Besides avoiding
+    # needless reconstruction, this preserves capability-confirmation ordering
+    # without adding a new plan-inspection contract to that path.
+    if extra_per_event == 0:
+        return plan
+    extra = plan.frames * extra_per_event
+    return AcquisitionPlan(
+        frames=plan.frames + extra,
+        exposure_ms_per_frame=plan.exposure_ms_per_frame,
+        estimated_duration_s=(
+            plan.estimated_duration_s + extra * plan.exposure_ms_per_frame / 1000.0
+        ),
+        # Autofocus snaps are analyzed in memory and are not stored.
+        estimated_bytes=plan.estimated_bytes,
+    )
 
 
 def _configure_hook_capabilities(hook: Any, ctrl: MicroscopeController,
@@ -2921,7 +2938,42 @@ def _configure_hook_capabilities(hook: Any, ctrl: MicroscopeController,
                                  illumination_envelope: dict | None,
                                  artifact_limits: dict | None) -> None:
     """Validate and authorize independent parent-side hook capabilities."""
-    from microclaw.hook_decisions import UntrustedHookAdapter
+    from microclaw.hook_decisions import CompositeHook, UntrustedHookAdapter
+    if isinstance(hook, CompositeHook):
+        emitters = hook.artifact_emitting_hook_names
+    elif bool(getattr(hook, "can_emit_artifacts", False)):
+        emitters = [getattr(hook, "strategy_name", hook.__class__.__name__)]
+    else:
+        emitters = []
+    if emitters and artifact_limits is None:
+        raise _HookArtifactBudgetError(
+            "Hook(s) " + ", ".join(repr(name) for name in emitters) +
+            " can emit artifacts, but no artifact_limits budget was configured. "
+            "The acquisition was refused during planning before any exposure; "
+            "pass artifact_limits with max_artifact_bytes, max_count, and "
+            "max_total_bytes."
+        )
+    if isinstance(hook, CompositeHook):
+        untrusted = [child for _name, child in hook.named_hooks
+                     if isinstance(child, UntrustedHookAdapter)]
+        if illumination_envelope:
+            raise ValueError(
+                "illumination_envelope is not supported for composed hooks."
+            )
+        if artifact_limits is not None:
+            if not untrusted:
+                raise ValueError("Hook envelopes apply only to saved generated hooks.")
+            allowed = {"max_artifact_bytes", "max_count", "max_total_bytes"}
+            if set(artifact_limits) != allowed:
+                raise ValueError(f"artifact_limits must contain exactly {sorted(allowed)}.")
+            limits = {key: artifact_limits[key] for key in allowed}
+            if any(isinstance(v, bool) or not isinstance(v, int) or v <= 0
+                   for v in limits.values()):
+                raise ValueError("artifact limits must be positive integers.")
+            hook.configure_artifacts(
+                target_dir=Path(save_dir) / name / "artifacts", **limits
+            )
+        return
     if not isinstance(hook, UntrustedHookAdapter):
         if illumination_envelope or artifact_limits:
             raise ValueError("Hook envelopes apply only to saved generated hooks.")
@@ -3035,10 +3087,13 @@ def run_adaptive_zstack(
     events = _build_acquisition_events(
         channel=channel, z_start=z_start_um, z_end=z_end_um, z_step=z_step_um,
     )
-    _configure_hook_capabilities(hook, ctrl, guard, save_dir, name,
-                                 illumination_envelope, artifact_limits)
+    try:
+        _configure_hook_capabilities(hook, ctrl, guard, save_dir, name,
+                                     illumination_envelope, artifact_limits)
+    except _HookArtifactBudgetError as exc:
+        return {"error": str(exc)}
     reservation = _authorize_acquisition(
-        ctrl, guard, plan_events(ctrl, events, None)
+        ctrl, guard, _plan_with_hook_dose(plan_events(ctrl, events, None), hook)
     )
     started_at = datetime.now(timezone.utc)
     started = time.monotonic()
@@ -3092,7 +3147,9 @@ def run_adaptive_timelapse(
     )
     _configure_hook_capabilities(hook, ctrl, guard, save_dir, name,
                                  illumination_envelope, artifact_limits)
-    reservation = _authorize_acquisition(ctrl, guard, plan_events(ctrl, events, None))
+    reservation = _authorize_acquisition(
+        ctrl, guard, _plan_with_hook_dose(plan_events(ctrl, events, None), hook)
+    )
     started_at = datetime.now(timezone.utc)
     started = time.monotonic()
     dataset_path = _acquire_with_hooks(
@@ -3113,8 +3170,8 @@ def _acquire_positions_with_hook(
     positions: list[dict],
     save_dir: str,
     name: str,
-    hook_strategy: str,
-    hook_params: dict | None = None,
+    hook_strategy: str | list[str],
+    hook_params: dict | list[dict | None] | None = None,
     log_path: str | None = None,
     channel: str | None = None,
     exposure_ms: float | None = None,
@@ -3122,7 +3179,7 @@ def _acquire_positions_with_hook(
     artifact_limits: dict | None = None,
     **shape_kwargs: Any,
 ) -> dict:
-    """One Acquisition across every position, with a single hook instance.
+    """One Acquisition across every position, with one or composed hooks.
 
     positions are {name, x_um, y_um, z_um?} dicts; shape_kwargs carry the
     per-position event shape (z_start/z_end/z_step or num_time_points/
@@ -3162,7 +3219,7 @@ def _acquire_positions_with_hook(
             ctrl.core.set_exposure(exposure_ms)   # eventless exposure; see run_zstack
 
     try:
-        hook = _resolve_hook(ctrl, guard, hook_strategy, hook_params, log_path)
+        hook = _resolve_hooks(ctrl, guard, hook_strategy, hook_params, log_path)
     except ValueError as e:
         return {"error": str(e)}
 
@@ -3181,11 +3238,13 @@ def _acquire_positions_with_hook(
         channel=channel, exposure_ms=exposure_ms,
         position_labels=[p["name"] for p in positions], **shape_kwargs,
     )
-    _configure_hook_capabilities(hook, ctrl, guard, save_dir, name,
-                                 illumination_envelope, artifact_limits)
-    reservation = _authorize_acquisition(
-        ctrl, guard, plan_events(ctrl, events, exposure_ms)
-    )
+    try:
+        _configure_hook_capabilities(hook, ctrl, guard, save_dir, name,
+                                     illumination_envelope, artifact_limits)
+    except _HookArtifactBudgetError as exc:
+        return {"error": str(exc)}
+    plan = _plan_with_hook_dose(plan_events(ctrl, events, exposure_ms), hook)
+    reservation = _authorize_acquisition(ctrl, guard, plan)
     started_at = datetime.now(timezone.utc)
     started = time.monotonic()
     try:
@@ -3203,6 +3262,8 @@ def _acquire_positions_with_hook(
         positions=len(positions),
         positions_planned=len(positions), positions_completed=len(positions),
         frames_planned=len(events), frames_acquired=len(events),
+        reservation_frames_planned=plan.frames,
+        hook_extra_exposures_planned=plan.frames - len(events),
         started_at=started_at.isoformat(), completed_at=completed_at.isoformat(),
         duration_s=round(time.monotonic() - started, 6),
         **_reservation_report(reservation),
@@ -3501,7 +3562,9 @@ def _acquire_survey_with_detector(
                                   max_events=len(survey_events) if adaptive else None)
     reservation = (
         _authorize_acquisition(
-            ctrl, guard, plan_events(ctrl, survey_events, exposure_ms)
+            ctrl, guard, _plan_with_hook_dose(
+                plan_events(ctrl, survey_events, exposure_ms), hook
+            )
         )
         if adaptive else None
     )

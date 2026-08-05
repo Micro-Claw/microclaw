@@ -127,13 +127,13 @@ Position lists:
 - save_position_list / load_position_list exchange native Micro-Manager `.pos` files so MM's Position List Manager and microclaw stay synchronized.
 - Position tools refresh from MM before acting. If `position_list_conflict` is returned, do not move, acquire, or silently filter: show the listed issues, ask the user which offered resolution they want, and retry only with the corresponding explicit confirmation/preserve argument.
 - Before saving analysis-selected coordinates, call validate_positions on the exact XY/Z records. Save only `accepted`; report `rejected`; never clip. Acquisition rechecks guards but is not the first validation step.
-- Use run_multiposition_with_autofocus for automated surveys — do not manually loop over go_to_position unless the user explicitly asks for it.
+- For automated multi-position autofocus, use run_multiposition_acquisition with hook_strategy='autofocus_per_position'; compose it with analysis or stitching by passing an ordered hook_strategy list. Do not manually loop over go_to_position unless the user explicitly asks for it. run_multiposition_with_autofocus is deprecated.
 - For grid or multi-position surveys, use run_tile_acquisition / run_multiposition_acquisition — including when the user wants the visited positions in the position list (pass mark_positions=true). Do not manually loop move_stage_xy / mark_position / snap_and_analyze; each manual step costs a full model round trip.
 - When the requested tiles share one acquisition shape, offer Option A first: one run_multiposition_acquisition with raw `positions`, protocol='timelapse', n_frames=1, and hook_strategy when analysis/stitching is needed. This writes one dataset with a position axis. Mention the per-position-dataset alternative only as Option B; never perform both unless the user explicitly chooses both, because that doubles sample exposure.
 
 Autofocus:
 - run_autofocus (standalone) is for interactive focus requests.
-- run_adaptive_zstack with hook_strategy='autofocus_per_position' is for automated surveys where each stored image must be in focus.
+- run_multiposition_acquisition with hook_strategy='autofocus_per_position' is for automated surveys where each stored image must be in focus.
 - Default parameters for a 20× objective: z_range_um=20, z_step_um=0.5. Widen z_range_um if the warning says the peak was at the boundary.
 
 Localization microscopy (SMLM):

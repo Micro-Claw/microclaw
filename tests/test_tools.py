@@ -1,6 +1,7 @@
 import json
 import math
 import os
+from pathlib import Path
 from unittest.mock import MagicMock, call
 
 import numpy as np
@@ -1118,75 +1119,80 @@ class TestRunMultipositionWithAutofocus:
         mock_ctrl.core.get_position.return_value = 50.0
         return mock_ctrl
 
-    def _run(self, ctrl, guard, tmp_path, monkeypatch):
-        monkeypatch.setattr("microclaw.tools.coarse_then_fine_autofocus", lambda *a, **k: _FAKE_AF_RESULT)
-        monkeypatch.setattr("microclaw.tools.run_timelapse", lambda *a, **k: {"status": "ok"})
-        return run_multiposition_with_autofocus(
-            ctrl, guard,
-            position_names=["P1"],
-            z_range_um=10.0,
-            z_step_um=1.0,
-            protocol="timelapse",
-            save_dir=str(tmp_path),
-            protocol_params={"n_frames": 1, "interval_ms": 0},
-        )
-
-    def test_live_stopped_and_restored_when_on(self, patched_ctrl, unconstrained_guard, tmp_path, monkeypatch):
-        patched_ctrl.studio.live().is_live_mode_on.return_value = True
-        live = patched_ctrl.studio.live()
-        live.set_live_mode_on.reset_mock()
-
-        self._run(patched_ctrl, unconstrained_guard, tmp_path, monkeypatch)
-
-        calls = live.set_live_mode_on.call_args_list
-        assert calls[0] == call(False), "live mode must be stopped before loop"
-        assert calls[-1] == call(True), "live mode must be restored after loop"
-
-    def test_live_not_touched_when_off(self, patched_ctrl, unconstrained_guard, tmp_path, monkeypatch):
-        patched_ctrl.studio.live().is_live_mode_on.return_value = False
-        live = patched_ctrl.studio.live()
-        live.set_live_mode_on.reset_mock()
-
-        self._run(patched_ctrl, unconstrained_guard, tmp_path, monkeypatch)
-
-        live.set_live_mode_on.assert_not_called()
-
-    def test_raw_positions_need_no_prior_mark(
+    def test_raw_positions_forward_without_marking_and_return_deprecation(
             self, patched_ctrl, unconstrained_guard, tmp_path, monkeypatch):
+        forwarded = []
         monkeypatch.setattr(
-            "microclaw.tools.coarse_then_fine_autofocus", lambda *a, **k: _FAKE_AF_RESULT
+            "microclaw.tools.run_multiposition_acquisition",
+            lambda *args, **kwargs: (
+                forwarded.append(kwargs),
+                {"dataset_path": "/ws/one-dataset", "tiles": [
+                    {"position": "raw", "x_um": 3.0, "y_um": 4.0, "z_um": 50.0}
+                ]},
+            )[1],
         )
         result = run_multiposition_with_autofocus(
             patched_ctrl, unconstrained_guard,
             positions=[{"name": "raw", "x_um": 3.0, "y_um": 4.0, "z_um": 50.0}],
-            z_range_um=10.0, z_step_um=1.0, protocol="snap", save_dir=str(tmp_path),
+            z_range_um=10.0, z_step_um=1.0, protocol="timelapse",
+            save_dir=str(tmp_path), protocol_params={"n_frames": 1, "interval_s": 0},
         )
         assert result["status"].startswith("1/1")
-        patched_ctrl.set_xy.assert_called_once_with(3.0, 4.0)
-        patched_ctrl.set_z.assert_called_once_with(50.0)
+        assert "one dataset with a position axis" in result["deprecation"]
+        assert forwarded[0]["positions"][0]["name"] == "raw"
+        assert forwarded[0]["hook_strategy"] == "autofocus_per_position"
+        patched_ctrl.add_position.assert_not_called()
         patched_ctrl.go_to_position.assert_not_called()
 
-    def test_live_restored_when_autofocus_raises(self, patched_ctrl, unconstrained_guard, tmp_path, monkeypatch):
-        monkeypatch.setattr(
-            "microclaw.tools.coarse_then_fine_autofocus",
-            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("stage error")),
+    @pytest.mark.parametrize("omitted", ["z_range_um", "z_step_um", "protocol", "save_dir"])
+    def test_missing_required_argument_refuses_before_forward(
+        self, patched_ctrl, unconstrained_guard, tmp_path, monkeypatch, omitted
+    ):
+        forward = MagicMock()
+        monkeypatch.setattr("microclaw.tools.run_multiposition_acquisition", forward)
+        kwargs = dict(position_names=["P1"], z_range_um=10.0, z_step_um=1.0,
+                      protocol="timelapse", save_dir=str(tmp_path))
+        kwargs[omitted] = None
+        result = run_multiposition_with_autofocus(
+            patched_ctrl, unconstrained_guard, **kwargs
         )
-        patched_ctrl.studio.live().is_live_mode_on.return_value = True
-        live = patched_ctrl.studio.live()
-        live.set_live_mode_on.reset_mock()
+        assert omitted in result["error"]
+        forward.assert_not_called()
 
-        with pytest.raises(RuntimeError):
-            run_multiposition_with_autofocus(
-                patched_ctrl, unconstrained_guard,
-                position_names=["P1"],
-                z_range_um=10.0,
-                z_step_um=1.0,
-                protocol="timelapse",
-                save_dir=str(tmp_path),
-                protocol_params={"n_frames": 1, "interval_s": 0},
-            )
+    @pytest.mark.parametrize(
+        ("override", "message"),
+        [({"protocol": "snap"}, "display-only"),
+         ({"autofocus_method": "sweep"}, "coarse_then_fine")],
+    )
+    def test_unsupported_legacy_modes_refuse_before_forward(
+        self, patched_ctrl, unconstrained_guard, tmp_path, monkeypatch,
+        override, message,
+    ):
+        forward = MagicMock()
+        monkeypatch.setattr("microclaw.tools.run_multiposition_acquisition", forward)
+        kwargs = dict(position_names=["P1"], z_range_um=10.0, z_step_um=1.0,
+                      protocol="timelapse", save_dir=str(tmp_path))
+        kwargs.update(override)
+        result = run_multiposition_with_autofocus(
+            patched_ctrl, unconstrained_guard, **kwargs
+        )
+        assert message in result["error"]
+        forward.assert_not_called()
 
-        live.set_live_mode_on.assert_called_with(True)
+    def test_wrapper_resolves_save_dir_before_forward(
+        self, patched_ctrl, unconstrained_guard, tmp_path, monkeypatch
+    ):
+        resolved = str(tmp_path.resolve())
+        forward = MagicMock(return_value={"dataset_path": "/ws/ds", "tiles": []})
+        monkeypatch.setattr(
+            "microclaw.tools.run_multiposition_acquisition", forward
+        )
+        run_multiposition_with_autofocus(
+            patched_ctrl, unconstrained_guard, position_names=["P1"],
+            z_range_um=10.0, z_step_um=1.0, protocol="timelapse",
+            save_dir=str(tmp_path), protocol_params={"n_frames": 1, "interval_s": 0},
+        )
+        assert forward.call_args.kwargs["save_dir"] == resolved
 
     def test_stored_z_out_of_bounds_refused(self, mock_ctrl, default_guard, tmp_path, monkeypatch):
         from microclaw.controller import PositionProjection
@@ -1644,6 +1650,168 @@ class TestHookedGridAcquisition:
         # Returning a dict bypasses the tool wrapper's hint_for_error, so the
         # "already exposed" warning has to travel in the payload itself.
         assert "stage has already moved" in result["hint"]
+
+    @pytest.mark.parametrize("live_on", [True, False])
+    def test_composed_path_restores_live_normally_and_leaves_off_untouched(
+        self, centered_ctrl, unconstrained_guard, monkeypatch, tmp_path, live_on
+    ):
+        from microclaw import tools
+        from microclaw.hooks import PRECODED_HOOK_REGISTRY
+
+        monkeypatch.setitem(PRECODED_HOOK_REGISTRY, "recording", _RecordingHook)
+
+        class SuccessfulAcquisition:
+            def __init__(self, **_kwargs):
+                self._dataset_disk_location = str(tmp_path / "grid")
+
+            def __enter__(self): return self
+            def __exit__(self, *_exc): return False
+            def acquire(self, _events): return None
+
+        monkeypatch.setattr(tools, "Acquisition", SuccessfulAcquisition)
+        live = centered_ctrl.studio.live()
+        live.is_live_mode_on.return_value = live_on
+        live.set_live_mode_on.reset_mock()
+
+        result = run_multiposition_acquisition(
+            centered_ctrl, unconstrained_guard, protocol="timelapse",
+            save_dir=str(tmp_path), positions=[{"name": "p0", "x_um": 0, "y_um": 0}],
+            protocol_params={"n_frames": 1, "interval_s": 0},
+            hook_strategy="recording",
+        )
+
+        assert "error" not in result
+        if live_on:
+            assert live.set_live_mode_on.call_args_list[0] == call(False)
+            assert live.set_live_mode_on.call_args_list[-1] == call(True)
+        else:
+            live.set_live_mode_on.assert_not_called()
+
+    def test_composed_path_restores_live_when_acquisition_raises(
+        self, centered_ctrl, unconstrained_guard, monkeypatch, tmp_path
+    ):
+        from microclaw import tools
+        from microclaw.hooks import PRECODED_HOOK_REGISTRY
+
+        monkeypatch.setitem(PRECODED_HOOK_REGISTRY, "recording", _RecordingHook)
+
+        class FailingAcquisition:
+            def __init__(self, **_kwargs):
+                self._dataset_disk_location = str(tmp_path / "grid")
+
+            def __enter__(self): return self
+            def __exit__(self, *_exc): return False
+            def acquire(self, _events): raise RuntimeError("forced acquisition failure")
+
+        monkeypatch.setattr(tools, "Acquisition", FailingAcquisition)
+        live = centered_ctrl.studio.live()
+        live.is_live_mode_on.return_value = True
+        live.set_live_mode_on.reset_mock()
+
+        result = run_multiposition_acquisition(
+            centered_ctrl, unconstrained_guard, protocol="timelapse",
+            save_dir=str(tmp_path), positions=[{"name": "p0", "x_um": 0, "y_um": 0}],
+            protocol_params={"n_frames": 1, "interval_s": 0},
+            hook_strategy="recording",
+        )
+
+        assert result["error"] == "forced acquisition failure"
+        assert live.set_live_mode_on.call_args_list[0] == call(False)
+        assert live.set_live_mode_on.call_args_list[-1] == call(True)
+
+    def test_autofocus_and_observer_compose_end_to_end_in_one_acquisition(
+        self, centered_ctrl, unconstrained_guard, monkeypatch, tmp_path
+    ):
+        from microclaw import tools
+
+        monkeypatch.setattr(
+            "microclaw.autofocus.coarse_then_fine_autofocus",
+            lambda *_args, **_kwargs: _FAKE_AF_RESULT,
+        )
+        acquisitions = []
+
+        class DrivingAcquisition:
+            def __init__(self, **kwargs):
+                self.callbacks = kwargs
+                self._dataset_disk_location = str(tmp_path / "composed-dataset")
+                acquisitions.append(self)
+
+            def __enter__(self): return self
+            def __exit__(self, *_exc): return False
+
+            def acquire(self, events):
+                for event in events:
+                    event = self.callbacks["post_hardware_hook_fn"](event)
+                    metadata = {"Axes": event["axes"],
+                                "PositionName": event["axes"]["position"]}
+                    returned = self.callbacks["image_process_fn"](
+                        np.full((4, 4), 500, dtype=np.uint16), metadata, object()
+                    )
+                    if returned is not None:
+                        self.callbacks["image_saved_fn"](event["axes"], object())
+
+        monkeypatch.setattr(tools, "Acquisition", DrivingAcquisition)
+        log_path = str(tmp_path / "composed-log.json")
+        result = run_multiposition_acquisition(
+            centered_ctrl, unconstrained_guard, protocol="timelapse",
+            save_dir=str(tmp_path), name="composed",
+            positions=[
+                {"name": "p0", "x_um": 0.0, "y_um": 0.0},
+                {"name": "p1", "x_um": 1.0, "y_um": 0.0},
+            ],
+            protocol_params={"n_frames": 1, "interval_s": 0},
+            hook_strategy=["autofocus_per_position", "snr_observer"],
+            hook_params=[{"z_range_um": 10.0, "z_step_um": 1.0}, {}],
+            log_path=log_path,
+        )
+
+        assert len(acquisitions) == 1
+        assert result["dataset_path"] == str(tmp_path / "composed-dataset")
+        assert result["positions_completed"] == 2
+        # Per event: 1 stored frame + 3 coarse + 11 worst-case fine planes.
+        assert result["reservation_frames_planned"] == 30
+        assert result["hook_extra_exposures_planned"] == 28
+        log = json.loads(Path(log_path).read_text(encoding="utf-8"))
+        by_hook = {entry["hook_strategy"] for entry in log}
+        assert by_hook == {"autofocus_per_position", "snr_observer"}
+        assert sum("best_z_um" in entry for entry in log) == 2
+        assert sum(entry.get("analyzer") == "microclaw.image_analysis.compute_stats"
+                   for entry in log) == 2
+
+    def test_composed_emitter_without_budget_refuses_before_any_exposure(
+        self, centered_ctrl, unconstrained_guard, monkeypatch, tmp_path
+    ):
+        from microclaw import hook_manager, tools
+
+        monkeypatch.setattr(hook_manager, "HOOKS_DIR", tmp_path / "hooks")
+        monkeypatch.setattr(hook_manager, "MANIFEST", tmp_path / "manifest.json")
+        source = (
+            "from microclaw.hook_decisions import EmitArtifact, HookResult\n"
+            "class Stitcher:\n"
+            " def analyze_frame(self, image, metadata):\n"
+            "  return HookResult({}, (EmitArtifact(filename='mosaic.tif', payload=image),))\n"
+        )
+        hook_manager.save_hook(
+            "plus_mosaic_stitcher", source, "fixture", source="claude_generated"
+        )
+        acquire = MagicMock()
+        monkeypatch.setattr(tools, "_acquire_with_hooks", acquire)
+        centered_ctrl.core.snap_image.reset_mock()
+
+        result = run_multiposition_acquisition(
+            centered_ctrl, unconstrained_guard, protocol="timelapse",
+            save_dir=str(tmp_path), name="composed",
+            positions=[{"name": "p0", "x_um": 0.0, "y_um": 0.0}],
+            protocol_params={"n_frames": 1, "interval_s": 0},
+            hook_strategy=["autofocus_per_position", "plus_mosaic_stitcher"],
+            hook_params=[{"z_range_um": 10.0, "z_step_um": 1.0}, {}],
+        )
+
+        assert "no artifact_limits budget" in result["error"]
+        assert "before any exposure" in result["error"]
+        assert "plus_mosaic_stitcher" in result["error"]
+        acquire.assert_not_called()
+        centered_ctrl.core.snap_image.assert_not_called()
 
     def test_the_hook_log_keys_to_positions_across_the_grid(
         self, centered_ctrl, unconstrained_guard, captured

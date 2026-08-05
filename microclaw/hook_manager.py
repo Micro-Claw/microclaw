@@ -103,7 +103,7 @@ def lint_hook_code(code: str) -> list[str]:
     return warnings
 
 
-def validate_hook_contract(code: str) -> list[str]:
+def _hook_contract_analysis(code: str) -> tuple[list[str], bool]:
     """Statically reject hook source that cannot satisfy the runner contract.
 
     This deliberately does not import or execute the source: without an actual
@@ -112,7 +112,7 @@ def validate_hook_contract(code: str) -> list[str]:
     try:
         tree = ast.parse(code)
     except SyntaxError as e:
-        return [f"Syntax error: {e}"]
+        return [f"Syntax error: {e}"], False
     classes = [node for node in tree.body if isinstance(node, ast.ClassDef)]
     hooks = [
         node for node in classes
@@ -123,7 +123,7 @@ def validate_hook_contract(code: str) -> list[str]:
         return [
             "No top-level class defines analyze_frame(self, image, metadata) or "
             "image_process_fn(self, image, metadata, event_queue)."
-        ]
+        ], False
     errors: list[str] = []
     for cls in hooks:
         fn = next(item for item in cls.body if getattr(item, "name", None) in
@@ -150,8 +150,11 @@ def validate_hook_contract(code: str) -> list[str]:
                 and node.func.id == "str")
         )
 
+    can_emit_artifacts = False
     for call in (node for node in ast.walk(tree) if isinstance(node, ast.Call)):
         name = call.func.id if isinstance(call.func, ast.Name) else None
+        if name == "EmitArtifact":
+            can_emit_artifacts = True
         cls = action_types.get(name)
         if cls is None:
             continue
@@ -198,7 +201,17 @@ def validate_hook_contract(code: str) -> list[str]:
                 "Use EmitArtifact(filename=<bare filename>, payload=<bytes or ndarray>). "
                 f"Runtime signature: EmitArtifact{signature}."
             )
-    return errors
+    return errors, can_emit_artifacts
+
+
+def validate_hook_contract(code: str) -> list[str]:
+    """Return static contract violations without importing saved source."""
+    return _hook_contract_analysis(code)[0]
+
+
+def hook_source_can_emit_artifacts(code: str) -> bool:
+    """Whether saved source statically constructs an ``EmitArtifact`` action."""
+    return _hook_contract_analysis(code)[1]
 
 
 # Back-compat alias: the tool layer and older callers referenced this name. It
@@ -263,6 +276,12 @@ def load_hook_class(name: str):
     entry = manifest[name]
     source = verify_saved_hook_bytes(name, entry)
     code = source.decode("utf-8")
+    contract_errors, can_emit_artifacts = _hook_contract_analysis(code)
+    if contract_errors:
+        raise ValueError(
+            f"Saved hook '{name}' violates the current hook contract: "
+            f"{contract_errors}. Review and re-save corrected source before running it."
+        )
     new_warnings = set(lint_hook_code(code)) - set(entry.get("accepted_warnings", []))
     if new_warnings:
         raise RuntimeError(
@@ -274,6 +293,8 @@ def load_hook_class(name: str):
     spec.loader.exec_module(mod)
     cls = select_hook_class(mod, ("analyze_frame", "image_process_fn"))
     if cls is not None:
+        # Derived from source before import, never by probing untrusted behavior.
+        cls.can_emit_artifacts = can_emit_artifacts
         return cls
     raise AttributeError(
         f"No class with analyze_frame or image_process_fn found in hook '{name}'."
@@ -433,6 +454,10 @@ def describe_saved_hook(name: str) -> dict[str, Any]:
         refusal_reasons.append("saved hook subclasses HookBase")
     if "log_path" in parameter_names:
         refusal_reasons.append("saved hook constructor takes log_path")
+    contract_errors, can_emit_artifacts = _hook_contract_analysis(code)
+    refusal_reasons.extend(
+        f"current hook contract violation: {error}" for error in contract_errors
+    )
     stripped = [
         parameter for parameter in FORBIDDEN_SAVED_HOOK_PARAMS
         if parameter in parameter_names
@@ -444,6 +469,7 @@ def describe_saved_hook(name: str) -> dict[str, Any]:
         "class_docstring": ast.get_docstring(cls, clean=True),
         "constructor_parameters": parameters,
         "callback": callback,
+        "can_emit_artifacts": can_emit_artifacts,
         "resolve_refusal": {
             "would_refuse": bool(refusal_reasons),
             "reasons": refusal_reasons,

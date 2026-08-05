@@ -206,6 +206,21 @@ def test_malformed_source_returns_error_and_does_not_break_listing(
     assert "describe_hook" in listed["hint"]
 
 
+def test_describe_reports_the_same_contract_refusal_as_resolve(
+    tmp_path, monkeypatch, mock_ctrl, unconstrained_guard
+):
+    source = (Path(__file__).parent / "fixtures" / "hooks" /
+              "session_a_plus_mosaic_stitcher.py").read_text(encoding="utf-8")
+    _install_saved(tmp_path, monkeypatch, "plus_mosaic_stitcher", source)
+
+    described = describe_hook(mock_ctrl, unconstrained_guard, "plus_mosaic_stitcher")
+
+    assert described["resolve_refusal"]["would_refuse"] is True
+    assert any("not provably a string" in reason
+               for reason in described["resolve_refusal"]["reasons"])
+    assert described["can_emit_artifacts"] is True
+
+
 def test_describe_reports_exactly_what_resolve_hook_strips(monkeypatch, tmp_path):
     """The stripped list and the popping loop must stay one list.
 

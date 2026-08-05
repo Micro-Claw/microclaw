@@ -10,7 +10,7 @@ import pytest
 from microclaw.hook_decisions import (
     AcquireAt, ContinueSurvey, DiscardFrame, EmitArtifact, HookResult, MoveStage,
     RequestAutofocus, SetExposure, SetIlluminationPower, StopSurvey,
-    UntrustedHookAdapter,
+    CompositeHook, UntrustedHookAdapter,
 )
 from microclaw.hooks import HookBase
 from microclaw.safety import SafetyViolation
@@ -25,6 +25,88 @@ def _events(n=3):
         {"axes": {"position": f"p{i}"}, "x": float(i), "y": float(i + 1)}
         for i in range(n)
     ]
+
+
+def test_composite_observers_share_original_pixels_discard_wins_and_log_is_attributed(
+    tmp_path,
+):
+    class Observer:
+        def __init__(self, name, discard=False):
+            self.name, self.discard, self.seen = name, discard, []
+
+        def analyze_frame(self, image, _metadata):
+            self.seen.append(int(image[0, 0]))
+            image[0, 0] = 999
+            actions = [EmitArtifact(f"{self.name}.bin", b"x")]
+            if self.discard:
+                actions.append(DiscardFrame())
+            return HookResult({"name": self.name}, actions)
+
+    first, second = Observer("first"), Observer("second", discard=True)
+    composite = CompositeHook([
+        ("first_hook", UntrustedHookAdapter(first)),
+        ("second_hook", UntrustedHookAdapter(second)),
+    ], str(tmp_path / "hook.json"))
+    composite.configure_artifacts(
+        target_dir=tmp_path / "artifacts", max_artifact_bytes=2,
+        max_count=2, max_total_bytes=2,
+    )
+    returned = composite.image_process_fn(
+        np.array([[7]], dtype=np.uint16), {"Axes": {}}, object()
+    )
+
+    assert returned is None
+    assert first.seen == second.seen == [7]
+    assert [p.name for p in (tmp_path / "artifacts").iterdir()] == ["first.bin"]
+    records = json.loads((tmp_path / "hook.json").read_text())
+    assert {record["hook_strategy"] for record in records} == {
+        "first_hook", "second_hook"
+    }
+    refused = [r for r in records if r.get("decision") == "refused"]
+    assert "one artifact for this frame" in refused[0]["reason"]
+
+
+def test_single_hook_can_emit_one_artifact_on_each_of_five_frames(tmp_path):
+    class PerFrameEmitter:
+        def __init__(self):
+            self.frame = 0
+
+        def analyze_frame(self, _image, _metadata):
+            filename = f"frame-{self.frame}.bin"
+            self.frame += 1
+            return HookResult({}, (EmitArtifact(filename, b"x"),))
+
+    adapter = UntrustedHookAdapter(PerFrameEmitter())
+    artifact_dir = tmp_path / "artifacts"
+    adapter.configure_artifacts(
+        target_dir=artifact_dir, max_artifact_bytes=1,
+        max_count=5, max_total_bytes=5,
+    )
+    for frame in range(5):
+        assert adapter.image_process_fn(
+            np.zeros((1, 1), dtype=np.uint8), {"Axes": {"time": frame}}, object()
+        ) is not None
+
+    assert sorted(path.name for path in artifact_dir.iterdir()) == [
+        f"frame-{frame}.bin" for frame in range(5)
+    ]
+
+
+def test_composite_post_hardware_chains_and_rejects_none():
+    class Add:
+        def __init__(self, amount): self.amount = amount
+        def post_hardware_hook_fn(self, event):
+            return {**event, "value": event.get("value", 0) + self.amount}
+
+    assert CompositeHook([("a", Add(2)), ("b", Add(3))], None).post_hardware_hook_fn(
+        {"value": 1}
+    )["value"] == 6
+
+    class Broken:
+        def post_hardware_hook_fn(self, _event): return None
+
+    with pytest.raises(RuntimeError, match="must return the event"):
+        CompositeHook([("broken", Broken())], None).post_hardware_hook_fn({})
 
 
 class _Guard:
@@ -624,3 +706,33 @@ def test_a_trusted_builtin_may_still_keep_its_own_log(tmp_path, monkeypatch):
                          str(tmp_path / "trusted.json"))
     assert hook.log_path == str(tmp_path / "trusted.json")
     assert not isinstance(hook, UntrustedHookAdapter)
+
+
+def test_composed_observers_cannot_reach_each_other_through_nested_metadata():
+    """Isolation covers metadata's nesting, not just the pixel buffer.
+
+    A shallow dict(metadata) left metadata["Axes"] shared, so one hook could
+    rewrite the next hook's position — and the parent's, since HookBase.where
+    reads the same key when it attributes the log record.
+    """
+    class Mutator:
+        def image_process_fn(self, image, metadata, _queue):
+            metadata["Axes"]["position"] = "HIJACKED"
+            image[0, 0] = 999
+            return image, metadata
+
+    class Victim:
+        def __init__(self):
+            self.seen = None
+
+        def image_process_fn(self, image, metadata, _queue):
+            self.seen = (metadata["Axes"]["position"], int(image[0, 0]))
+            return image, metadata
+
+    victim = Victim()
+    composite = CompositeHook([("mutator", Mutator()), ("victim", victim)], None)
+    metadata = {"Axes": {"position": "p0"}}
+    composite.image_process_fn(np.zeros((2, 2), dtype=int), metadata, object())
+
+    assert victim.seen == ("p0", 0), "an observer saw another observer's edits"
+    assert metadata == {"Axes": {"position": "p0"}}, "the parent's metadata was mutated"
