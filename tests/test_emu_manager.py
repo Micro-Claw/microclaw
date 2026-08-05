@@ -336,6 +336,16 @@ def m5_map(m5_config):
     )
 
 
+@pytest.fixture
+def m5_props_no_devices(tmp_path):
+    """The real config parsed with no device list, as tools.py falls back to."""
+    mm = tmp_path / "MM"
+    (mm / "EMU").mkdir(parents=True)
+    (mm / "EMU" / "config.uicfg").write_text(M5_CONFIG.read_text())
+    config = emu_manager.read_emu_config(mm, [])
+    return config["properties"], config["parameters"]
+
+
 def test_real_m5_laser_names_come_from_parameters(m5_map):
     assert m5_map["lasers"][3]["name"] == "640"
     assert m5_map["lasers"][1]["name"] == "488"
@@ -409,3 +419,59 @@ def test_find_jars_searches_emu_case_insensitively(tmp_path):
     emu.mkdir()
     (emu / "htsmlm-2.1.0.jar").write_text("")
     assert emu_manager._find_jars(tmp_path, "htSMLM") == ["htsmlm-2.1.0.jar"]
+
+
+def _slot3_props():
+    return emu_manager._parse_properties({
+        "Laser 3 enable": "L-On", "Laser 3 power percentage": "L-Pct",
+        "Laser trigger 3 mode": "T-Mode3", "Laser trigger 3 sequence": "T-Seq3",
+    }, ["L", "T"])
+
+
+@pytest.mark.parametrize("first", ["Laser 3", "Laser trigger 3"])
+def test_conflicting_panel_names_leave_the_slot_unnamed(first):
+    """Two panels, two labels, one slot: the answer must not be key order.
+
+    Silently keeping whichever panel the JSON happened to list first is the
+    same class of defect as the incident this block fixes — an agent asking
+    for '640' routed to a slot by dict ordering.
+    """
+    labels = {"Laser 3": "640", "Laser trigger 3": "405"}
+    second = "Laser trigger 3" if first == "Laser 3" else "Laser 3"
+    params = {first: {"Name": labels[first]}, second: {"Name": labels[second]}}
+
+    slot = emu_manager.build_emu_map(_slot3_props(), params)["lasers"][3]
+
+    assert "name" not in slot
+    assert sorted(slot["name_conflict"]) == ["405", "640"]
+
+
+def test_a_third_agreeing_panel_does_not_resurrect_a_conflicted_name():
+    """Three panels on one slot: 640, 405, 640. It stays unnamed."""
+    props = emu_manager._parse_properties({
+        "Laser 3 enable": "L-On",
+        "Laser trigger 3 mode": "T-Mode3",
+        "Laser3 on/off": "A-OnOff",
+    }, ["L", "T", "A"])
+    params = {
+        "Laser 3": {"Name": "640"},
+        "Laser trigger 3": {"Name": "405"},
+        "Laser3": {"Name": "640"},
+    }
+    slot = emu_manager.build_emu_map(props, params)["lasers"][3]
+    assert "name" not in slot
+    assert sorted(slot["name_conflict"]) == ["405", "640"]
+
+
+def test_name_lookup_refuses_when_the_device_split_failed(m5_props_no_devices):
+    """The name path must refuse exactly where the exact-key path refuses.
+
+    tools.py falls back to an empty device list when get_loaded_devices()
+    fails, leaving mm_property_string unsplit. Returning a record with no
+    'device' would fail in the caller instead of here.
+    """
+    props, params = m5_props_no_devices
+    with pytest.raises(KeyError, match="not an allocated EMU property"):
+        emu_manager.resolve_emu_device(props, "Two-state device 3", params)
+    with pytest.raises(KeyError, match="could not be split"):
+        emu_manager.resolve_emu_device(props, "BFP", params)

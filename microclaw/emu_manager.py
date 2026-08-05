@@ -347,9 +347,23 @@ def build_emu_map(
             if m := (_LASER_RE.match(prop_name) or _TRIG_RE.match(prop_name)
                      or _LASER_ALT_RE.match(prop_name)):
                 slot = int(m["i"])
-                existing = lasers.setdefault(slot, {}).get("name")
-                if existing is None or existing.casefold() == label.casefold():
-                    lasers[slot]["name"] = label
+                record = lasers.setdefault(slot, {})
+                # Two panels binding different labels to one slot: keeping
+                # either makes the answer depend on JSON key order, which is
+                # how the wrong laser gets picked. Refuse to name it and say
+                # so, as rule C does for a slot-count mismatch. Once a slot is
+                # in conflict it stays unnamed — a third agreeing panel must
+                # not silently resurrect a name.
+                conflict = record.get("name_conflict")
+                existing = record.get("name")
+                if conflict is not None:
+                    if label not in conflict:
+                        conflict.append(label)
+                elif existing is None:
+                    record["name"] = label
+                elif existing.casefold() != label.casefold():
+                    del record["name"]
+                    record["name_conflict"] = [existing, label]
 
     # Rule B: "X name" labels the exact UIProperty X.
     for panel_params in params.values():
@@ -457,6 +471,19 @@ def build_emu_map(
     }
 
 
+def _resolvable(record: dict) -> bool:
+    """True when a resolved record carries a usable Micro-Manager target.
+
+    A plain record holds device/property directly; a laser slot record holds
+    them on its enable/power/trigger sub-records instead.
+    """
+    if record.get("device"):
+        return True
+    return any(
+        isinstance(line, dict) and line.get("device") for line in record.values()
+    )
+
+
 def resolve_emu_device(
     props: dict[str, dict], semantic_name: str,
     params: dict[str, dict[str, str]] | None = None,
@@ -497,7 +524,19 @@ def resolve_emu_device(
         if any(str(name).strip().casefold() == wanted for name in names if name):
             candidates.append(("focus lock", focus_lock))
     if len(candidates) == 1:
-        return candidates[0][1]
+        label, record = candidates[0]
+        # The exact-key path above refuses an entry whose device/property could
+        # not be split (no loaded-device list). The name path must refuse it
+        # too, or a caller reading record["device"] fails downstream instead of
+        # here. A laser slot carries its targets on its per-line sub-records.
+        if not _resolvable(record):
+            raise KeyError(
+                f"'{semantic_name}' names {label}, but its Micro-Manager "
+                f"device/property could not be resolved — the EMU config was "
+                f"parsed without the loaded-device list, so "
+                f"'DeviceLabel-PropertyLabel' could not be split."
+            )
+        return record
     if len(candidates) > 1:
         raise KeyError(
             f"'{semantic_name}' is ambiguous; candidates: "
