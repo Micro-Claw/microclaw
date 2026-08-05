@@ -250,7 +250,7 @@ with the new build, is cheap and is the remaining piece. G2 in
 
 ## F4 — `_pause_live` claims it restored live view without checking, and it did not
 
-**Severity: medium (visible, confusing, and it made the operator debug our tool for us). OPEN.**
+**Severity: medium (visible, confusing, and it made the operator debug our tool for us). FIXED on `fix/plus-acquisition-findings`, pending rig validation.**
 
 Twice, the agent issued `start_live_view` and `snap_and_analyze` in one batch.
 Both times the operator was told the stream was up and it was not. The operator
@@ -355,6 +355,11 @@ the flag: `_pause_live` should verify the restore against the camera, and say
 what it observed rather than asserting `"then restored"`. That also retires the
 open question in design/18's shape — this is the one case where MM does give us
 a way to check the thing itself instead of a proxy for it.
+
+Implemented in the plus-acquisition findings branch: `_pause_live` now reads
+`CMMCore.isSequenceRunning()` after requesting restoration and callers report
+whether a camera sequence was actually observed. Both multiposition paths use
+the shared helper. The corrected adjacent-call M5 gate remains the live proof.
 
 ## F5 — `run_autofocus` is headless, and the agent told the operator otherwise
 

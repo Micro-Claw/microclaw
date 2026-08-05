@@ -78,8 +78,8 @@ class TestLiveViewReadiness:
     a tool that returns "Live view started." without looking is lying by
     construction. The delay in the fake below stands in for any state that is
     not true immediately after the call — that failure path, or a bridge/MM
-    variant that does lag. See design/37 F4 for the restore fix, which is
-    separate and unwritten.
+        variant that does lag. The separate restore path is covered below by
+        checking CMMCore's sequence state, as design/37 F4 requires.
     """
 
     class DelayedStartLive:
@@ -812,7 +812,20 @@ class TestSnapAndAnalyze:
         calls = live.set_live_mode_on.call_args_list
         assert calls[0] == call(False), "live must be stopped before the snap"
         assert calls[-1] == call(True), "live must be restored after the snap"
-        assert "live_view" in result
+        assert result["live_view"] == "paused for the snap; camera sequence restart verified"
+        assert result["live_view_restore"]["sequence_running"] is True
+
+    def test_live_restore_does_not_claim_success_without_camera_sequence(
+            self, mock_ctrl, unconstrained_guard, monkeypatch):
+        mock_ctrl.studio.live().is_live_mode_on.return_value = True
+        mock_ctrl.core.is_sequence_running.return_value = False
+        monkeypatch.setattr(tools, "_LIVE_MODE_WAIT_S", 0)
+        result = snap_and_analyze(mock_ctrl, unconstrained_guard)
+        assert result["live_view"] == (
+            "paused for the snap; camera sequence restart not verified"
+        )
+        assert result["live_view_restore"]["sequence_running"] is False
+        assert "did not report" in result["live_view_restore"]["warning"]
 
     def test_live_untouched_when_off(self, mock_ctrl, unconstrained_guard):
         mock_ctrl.studio.live().is_live_mode_on.return_value = False
@@ -2378,7 +2391,9 @@ class TestRunAOfflineTools:
         result = tools.inspect_artifacts(
             mock_ctrl, unconstrained_guard, [str(tmp_path)], max_files=1
         )
-        assert result == {"error": "Artifact inspection exceeded max_files=1."}
+        assert "reached max_files=1" in result["error"]
+        assert result["survey_totals"] == {"file_count": 1, "total_bytes": 1}
+        assert result["survey"][0]["direct_file_count"] == 2
 
     def test_inspect_artifacts_refuses_before_hashing_over_byte_limit(
             self, mock_ctrl, unconstrained_guard, tmp_path):
@@ -2386,7 +2401,26 @@ class TestRunAOfflineTools:
         result = tools.inspect_artifacts(
             mock_ctrl, unconstrained_guard, [str(tmp_path)], max_total_bytes=2
         )
-        assert "would hash 3 bytes" in result["error"]
+        assert "max_total_bytes=2" in result["error"]
+        assert result["survey"][0]["direct_bytes"] == 3
+
+    def test_inspect_artifacts_listing_only_skips_hash_and_byte_read_limit(
+            self, mock_ctrl, unconstrained_guard, tmp_path):
+        (tmp_path / "dataset").mkdir()
+        (tmp_path / "dataset" / "NDTiff.index").write_bytes(b"index")
+        result = tools.inspect_artifacts(
+            mock_ctrl, unconstrained_guard, [str(tmp_path)],
+            hash=False, max_total_bytes=1,
+        )
+        assert result["hashes_computed"] is False
+        assert "sha256" not in result["artifacts"][0]
+        dataset_row = next(
+            row for row in result["survey"] if row["path"] == str(tmp_path / "dataset")
+        )
+        assert dataset_row == {
+            "path": str(tmp_path / "dataset"), "depth": 1,
+            "direct_file_count": 1, "direct_bytes": 5,
+        }
 
     def test_compare_revisit_frames_recovers_translation(self, mock_ctrl,
                                                           unconstrained_guard,

@@ -40,11 +40,19 @@ AffineTransform =
 -0.10452770834076626_-0.00512650316309355
 ```
 
-The resolver now recognizes that representation, validates finite non-degenerate
-geometry, and records which metadata key supplied the calibration. A summary
+The shared MM affine parser now recognizes that representation and applies the
+same all-zero, identity, non-finite, and singular-sentinel refusals as it does to
+the six-value form. Per-frame metadata remains authoritative; summary metadata
+is used only when every selected frame omits its affine. The resolver records
+which metadata key supplied the calibration. A summary
 affine is a historical acquisition record and can be used even when MM did not
-record an objective label. This makes `calibration_ref=None` useful on the
+record an objective label. That degradation is explicit in the calibration
+identity and mosaic warning. This makes `calibration_ref=None` useful on the
 captured dataset rather than structurally impossible.
+
+`plus_mosaic_2` contains both forms. Under the precedence rule its per-frame
+`PixelSizeAffine` is used; the summary form remains the fallback for datasets
+whose selected frames omit that key.
 
 ## F3 — a newly measured calibration could not be referenced
 
@@ -92,10 +100,10 @@ into an apparently missing dataset.
 ## F8 — artifact inspection had no work bound
 
 `inspect_artifacts` recursively enumerated a tree and SHA-256ed every byte. On the
-project root this ran for ten minutes. It now has default and caller-adjustable
-limits for file count, total bytes, recursion depth, and elapsed seconds. Count,
-depth, and byte refusals occur before content hashing; time is checked during
-enumeration and each hash stream.
+project root this ran for ten minutes. It now has deterministic, caller-adjustable
+limits for file count, total hashed bytes, and recursion depth, plus a `hash=false`
+listing-only mode. A refusal includes the partial per-directory survey with direct
+file counts and byte totals so the caller can locate and narrow to a dataset.
 
 ## F9 — laser-off mutated M5's TTL prerequisites
 
@@ -104,6 +112,13 @@ enable did not restore them, and `_assert_excitation_will_fire` checks the EMU
 trigger mode and sequence but cannot see this independent iChrome prerequisite.
 This is an M5-specific interaction among EMU, MicroFPGA, and the Toptica iChrome;
 it must not be generalized into the demo-shaped `microclaw/` device model.
+
+**Deferred — mechanism unimplemented in this block.** The required product fix is
+a configured, general arming chain in `safety_config.yaml`: declared prerequisites,
+preflight verification, guarded record/restore with read-back, authorization-map
+coverage, and state reporting. None of those pieces is implemented here, so this
+block does not close F9 and laser acquisition can still pass the existing EMU-only
+preflight while an independent prerequisite is false.
 
 Offline conclusion and rig gate: after every supported laser-off path, record the
 iChrome TTL values; then enable each excitation slot through the normal workflow
@@ -115,11 +130,11 @@ will place the exact PowerShell-safe probe in the M5 gate runbook.
 ## F10 — multiposition acquisition did not own live-view state
 
 `run_multiposition_with_autofocus` paused and restored live view, but
-`run_multiposition_acquisition` did not. Both its hooked single-dataset branch and
-its per-position branch now pause live view for their acquisition window and
-restore it in `finally`. The Java error hint no longer says to blindly retry a
-sequence conflict; it tells the operator to stop live view and inspect sequence
-state first.
+`run_multiposition_acquisition` did not. Both now use the shared pause helper for
+their acquisition window. The helper verifies a requested restart with
+`CMMCore.isSequenceRunning()` and results distinguish requested from observed
+restoration. The Java hint permits one retry for an auto-paused snap but warns
+against blindly repeating a multiposition acquisition.
 
 ## F11 — autofocus multiposition required prior marking
 

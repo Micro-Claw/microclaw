@@ -2,6 +2,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import importlib.util
+import inspect
 import json
 from pathlib import Path
 from typing import Any
@@ -135,28 +136,67 @@ def validate_hook_contract(code: str) -> list[str]:
                 ("self, image, and metadata." if fn.name == "analyze_frame" else
                  "self, image, metadata, and event_queue.")
             )
+    from microclaw import hook_decisions
+
+    action_types = {
+        cls.__name__: cls for cls in hook_decisions._ACTION_TYPES.values()
+    }
+
+    def provably_string(node: ast.expr) -> bool:
+        return (
+            isinstance(node, ast.Constant) and isinstance(node.value, str)
+            or isinstance(node, ast.JoinedStr)
+            or (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "str")
+        )
+
     for call in (node for node in ast.walk(tree) if isinstance(node, ast.Call)):
         name = call.func.id if isinstance(call.func, ast.Name) else None
-        if name != "EmitArtifact" or len(call.args) != 2:
+        cls = action_types.get(name)
+        if cls is None:
             continue
-        first, second = call.args
-        first_payload = (
-            isinstance(first, (ast.Bytes, ast.List, ast.Tuple))
-            or (isinstance(first, ast.Call) and isinstance(first.func, ast.Attribute)
-                and first.func.attr in {"array", "asarray", "zeros", "ones"})
-            or (isinstance(first, ast.Name) and any(token in first.id.lower()
-                for token in ("image", "canvas", "payload", "data")))
-        )
-        second_filename = (
-            isinstance(second, ast.Constant) and isinstance(second.value, str)
-            or isinstance(second, ast.Name) and any(token in second.id.lower()
-                for token in ("filename", "file_name"))
-            or isinstance(second, ast.Attribute) and "filename" in second.attr.lower()
-        )
-        if first_payload and second_filename:
+        signature = inspect.signature(cls)
+        parameters = list(signature.parameters.values())
+        positional = [p for p in parameters if p.kind in (
+            inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD
+        )]
+        parameter_names = set(signature.parameters)
+        keyword_names = [keyword.arg for keyword in call.keywords if keyword.arg is not None]
+        has_dynamic_keywords = any(keyword.arg is None for keyword in call.keywords)
+        if len(call.args) > len(positional):
             errors.append(
-                "EmitArtifact arguments are reversed: use "
-                "EmitArtifact(filename=<bare filename>, payload=<bytes or ndarray>)."
+                f"{name} accepts at most {len(positional)} positional arguments; "
+                f"signature is {name}{signature}."
+            )
+            continue
+        unknown = sorted(set(keyword_names) - parameter_names)
+        duplicates = sorted(set(keyword_names) & {p.name for p in positional[:len(call.args)]})
+        if unknown:
+            errors.append(f"{name} has unknown keyword arguments {unknown}; signature is {name}{signature}.")
+        if duplicates:
+            errors.append(f"{name} supplies {duplicates} both positionally and by keyword.")
+        if not has_dynamic_keywords:
+            supplied = {p.name for p in positional[:len(call.args)]} | set(keyword_names)
+            missing = [
+                p.name for p in parameters
+                if p.default is inspect.Parameter.empty
+                and p.kind not in (inspect.Parameter.VAR_POSITIONAL,
+                                   inspect.Parameter.VAR_KEYWORD)
+                and p.name not in supplied
+            ]
+            if missing:
+                errors.append(
+                    f"{name} is missing required arguments {missing}; "
+                    f"signature is {name}{signature}."
+                )
+        # EmitArtifact's two fields have deliberately easy-to-swap types. With
+        # two positional arguments, accept only a filename that is statically
+        # certain to be a string. Dynamic values use the documented keyword form.
+        if name == "EmitArtifact" and len(call.args) == 2 and not provably_string(call.args[0]):
+            errors.append(
+                "EmitArtifact's first positional argument is not provably a string. "
+                "Use EmitArtifact(filename=<bare filename>, payload=<bytes or ndarray>). "
+                f"Runtime signature: EmitArtifact{signature}."
             )
     return errors
 

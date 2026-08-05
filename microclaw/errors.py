@@ -17,9 +17,10 @@ Error sources:
 _JAVA_HINTS = (
     (
         "sequence acquisition is running",
-        "Micro-Manager still reports a running sequence even though acquisition "
-        "tools pause Live view. Do not blindly retry: call stop_live_view, inspect "
-        "camera/sequence state, and start another acquisition only after it is idle.",
+        "Micro-Manager reports a running sequence. Snap tools pause Live view "
+        "automatically, so one snap retry is reasonable. For a multiposition or "
+        "other acquisition, do not blindly retry: call stop_live_view, inspect "
+        "camera/sequence state, and acquire again only after it is idle.",
     ),
     (
         "Device not found",

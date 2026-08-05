@@ -184,17 +184,47 @@ def _pause_live(ctrl: MicroscopeController):
     core.snap_image() throws "sequence acquisition is running" if live mode is
     on, and studio.live().snap(True) is worse — it never returns and wedges the
     single-lock ZMQ bridge (design/14 V1). Every snap path must run inside
-    this. Yields whether live mode was on, so callers can report the bounce.
+    this. Yields a mutable observation record. Restore success is checked
+    against CMMCore's actual camera sequence, not MM Studio's live-mode flag.
     """
     live = ctrl.studio.live()
     was_on = bool(live.is_live_mode_on())
     if was_on:
         live.set_live_mode_on(False)
+    state: dict[str, Any] = {"was_on": was_on, "restore_observed": None}
     try:
-        yield was_on
+        yield state
     finally:
         if was_on:
             live.set_live_mode_on(True)
+            deadline = time.monotonic() + _LIVE_MODE_WAIT_S
+            while True:
+                try:
+                    running = bool(ctrl.core.is_sequence_running())
+                except Exception as exc:
+                    state["restore_error"] = f"Could not read camera sequence state: {exc}"
+                    break
+                if running:
+                    state["restore_observed"] = True
+                    break
+                if time.monotonic() >= deadline:
+                    state["restore_observed"] = False
+                    state["restore_error"] = (
+                        "Live-mode flag was restored but CMMCore did not report a "
+                        "running camera sequence."
+                    )
+                    break
+                time.sleep(_LIVE_MODE_POLL_S)
+
+
+def _live_restore_report(state: dict) -> dict | None:
+    if not state.get("was_on"):
+        return None
+    return {
+        "requested": True,
+        "sequence_running": state.get("restore_observed"),
+        **({"warning": state["restore_error"]} if state.get("restore_error") else {}),
+    }
 
 
 # MM 2.0.3 updates its nominal live flag synchronously, but a failed start is
@@ -1229,6 +1259,8 @@ def build_stage_coordinate_mosaic(
         "kind": "stage_coordinate_mosaic",
         "selection": {key: axis_selection[key] for key in sorted(axis_selection)},
         "calibration_identity": calibration_identity,
+        **({"calibration_warning": calibration_identity["objective_unrecorded_reason"]}
+           if calibration_identity.get("objective_unrecorded") else {}),
         # What the dataset says about itself, recorded alongside what the
         # calibration claims. camera_model_key names which vendor key answered,
         # because that differs per adapter and a future reader cannot infer it.
@@ -1403,7 +1435,7 @@ def snap_and_analyze(
     otherwise (design/14 §7). display=False keeps the snap headless.
     Live view is paused around the snap either way (V1: never probe by calling).
     """
-    with _pause_live(ctrl) as was_live:
+    with _pause_live(ctrl) as live_state:
         image = snap_to_numpy_displayed(ctrl) if display else snap_to_numpy(ctrl)
     min_snr, min_snr_source = _analysis_gate(guard)
     stats = compute_stats(image, min_snr=min_snr)
@@ -1421,8 +1453,14 @@ def snap_and_analyze(
         "max_intensity": round(stats.max_intensity, 1),
         "saturated_fraction": round(stats.saturated_fraction, 4),
     }
-    if was_live:
-        text_payload["live_view"] = "paused for the snap, then restored"
+    restore = _live_restore_report(live_state)
+    if restore:
+        text_payload["live_view"] = (
+            "paused for the snap; camera sequence restart verified"
+            if restore["sequence_running"] is True
+            else "paused for the snap; camera sequence restart not verified"
+        )
+        text_payload["live_view_restore"] = restore
     try:
         pixel_size = float(ctrl.core.get_pixel_size_um())
     except Exception:
@@ -2395,7 +2433,7 @@ def run_multiposition_acquisition(
             for pos_label, x_um, y_um, z_um in resolved:
                 ctrl.add_position(pos_label, float(x_um), float(y_um),
                                   float(z_um) if z_um is not None else None)
-        with _pause_live(ctrl):
+        with _pause_live(ctrl) as live_state:
             hooked = _acquire_positions_with_hook(
                 ctrl, guard,
                 positions=[{"name": n, "x_um": x, "y_um": y, "z_um": z}
@@ -2414,11 +2452,12 @@ def run_multiposition_acquisition(
         # re-imaging the grid (design/23 Episode A). The non-hooked branch has
         # attached them since design/19 F3; this is the same fix on the path every
         # survey actually takes. read_hook_log joins to this on `position`.
+        restore = _live_restore_report(live_state)
         return {**hooked, "tiles": [
             {"position": n, "x_um": round(x, 3), "y_um": round(y, 3),
              **({"z_um": round(z, 3)} if z is not None else {})}
             for n, x, y, z in resolved
-        ]}
+        ], **({"live_view_restore": restore} if restore else {})}
 
     reservation = (
         _authorize_acquisition(
@@ -2426,33 +2465,28 @@ def run_multiposition_acquisition(
         )
         if protocol != "snap" else None
     )
-    live = ctrl.studio.live()
-    was_live = bool(live.is_live_mode_on())
-    if was_live:
-        live.set_live_mode_on(False)
-    try:
-        for pos_label, x_um, y_um, z_um in resolved:
-            pos_save_dir = str(Path(save_dir) / pos_label) if save_dir else None
-            # Coordinates on every row, including the error rows. The agent used to
-            # publish X/Y columns filled from its own call ordering rather than from
-            # anything a tool returned (design/19 F3, design/20 S1).
-            where = {"x_um": round(x_um, 3), "y_um": round(y_um, 3)}
-            if z_um is not None:
-                where["z_um"] = round(z_um, 3)
-            try:
-                result = _run_protocol_at(
-                    ctrl, guard, pos_label, x_um, y_um, z_um, protocol, pos_save_dir,
-                    params, mark_position_in_list=mark_positions,
-                    reservation=reservation,
-                )
-                results.append({**where, **result})
-            except Exception as e:
-                results.append({"position": pos_label, **where, "error": str(e)})
-    finally:
-        if reservation is not None:
-            reservation.close()
-        if was_live:
-            live.set_live_mode_on(True)
+    with _pause_live(ctrl) as live_state:
+        try:
+            for pos_label, x_um, y_um, z_um in resolved:
+                pos_save_dir = str(Path(save_dir) / pos_label) if save_dir else None
+                # Coordinates on every row, including the error rows. The agent used to
+                # publish X/Y columns filled from its own call ordering rather than from
+                # anything a tool returned (design/19 F3, design/20 S1).
+                where = {"x_um": round(x_um, 3), "y_um": round(y_um, 3)}
+                if z_um is not None:
+                    where["z_um"] = round(z_um, 3)
+                try:
+                    result = _run_protocol_at(
+                        ctrl, guard, pos_label, x_um, y_um, z_um, protocol, pos_save_dir,
+                        params, mark_position_in_list=mark_positions,
+                        reservation=reservation,
+                    )
+                    results.append({**where, **result})
+                except Exception as e:
+                    results.append({"position": pos_label, **where, "error": str(e)})
+        finally:
+            if reservation is not None:
+                reservation.close()
 
     total = len(position_names or positions)
     n_ok = sum(1 for r in results if "error" not in r)
@@ -2460,6 +2494,9 @@ def run_multiposition_acquisition(
         "status": f"{n_ok}/{total} positions completed.",
         "results": results,
     }
+    restore = _live_restore_report(live_state)
+    if restore:
+        payload["live_view_restore"] = restore
     if protocol == "snap" and n_ok:
         # One stamp for the whole grid: the per-tile focus_metric values are
         # comparable to each other under these settings and to nothing else.
@@ -2561,18 +2598,17 @@ def run_tile_acquisition(
 def run_multiposition_with_autofocus(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
-    *,
     position_names: list[str] | None = None,
-    positions: list[dict] | None = None,
-    z_range_um: float,
-    z_step_um: float,
-    protocol: str,
-    save_dir: str,
+    z_range_um: float | None = None,
+    z_step_um: float | None = None,
+    protocol: str | None = None,
+    save_dir: str | None = None,
     name: str = "multipos_af",
     autofocus_method: str = "coarse_then_fine",
     settle_ms: int = 50,
     protocol_params: dict | None = None,
     preserve_unsupported: bool = False,
+    positions: list[dict] | None = None,
 ) -> dict:
     """Visit each position, autofocus, then run a per-position protocol.
 
@@ -2581,6 +2617,12 @@ def run_multiposition_with_autofocus(
         return {"error": "Provide position_names or positions, not both."}
     if position_names is None and positions is None:
         return {"error": "Provide either position_names or positions."}
+    missing = [name for name, value in (
+        ("z_range_um", z_range_um), ("z_step_um", z_step_um),
+        ("protocol", protocol), ("save_dir", save_dir),
+    ) if value is None]
+    if missing:
+        return {"error": f"Missing required arguments: {missing}."}
     save_dir = guard.resolve_in_workspace(save_dir)   # before the stage moves
     params = protocol_params or {}
     if position_names is not None:
@@ -2603,10 +2645,8 @@ def run_multiposition_with_autofocus(
         if protocol != "snap" and valid_count else None
     )
 
-    live = ctrl.studio.live()
-    was_live = live.is_live_mode_on()
-    if was_live:
-        live.set_live_mode_on(False)
+    pause_live = _pause_live(ctrl)
+    live_state = pause_live.__enter__()
     try:
         for pos_name, pos, stored in requested:
             if pos is None:
@@ -2683,15 +2723,18 @@ def run_multiposition_with_autofocus(
                     {"position": pos_name, **af_info, "error": str(e)}
                 )
     finally:
-        if reservation is not None:
-            reservation.close()
-        if was_live:
-            live.set_live_mode_on(True)
+        try:
+            if reservation is not None:
+                reservation.close()
+        finally:
+            pause_live.__exit__(None, None, None)
 
     n_ok = sum(1 for r in results if "error" not in r)
+    restore = _live_restore_report(live_state)
     return {
         "status": f"{n_ok}/{len(requested)} positions completed with autofocus.",
         "results": results,
+        **({"live_view_restore": restore} if restore else {}),
     }
 
 
@@ -3679,50 +3722,108 @@ def inspect_artifacts(
     max_files: int = 1000,
     max_total_bytes: int = 1024 * 1024 * 1024,
     max_depth: int = 16,
-    max_seconds: float = 30.0,
+    hash: bool = True,
 ) -> dict:
-    """List and SHA-256 local artifacts within explicit resource bounds."""
-    limits = (max_files, max_total_bytes, max_depth, max_seconds)
-    if any(isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0
+    """Survey local artifacts deterministically, then optionally hash them."""
+    limits = (max_files, max_total_bytes, max_depth)
+    if any(isinstance(value, bool) or not isinstance(value, int) or value <= 0
            for value in limits):
-        return {"error": "Artifact inspection limits must be positive numbers."}
-    started = time.monotonic()
+        return {"error": "Artifact inspection limits must be positive integers."}
+    if not isinstance(hash, bool):
+        return {"error": "hash must be true or false."}
     files: set[Path] = set()
+    survey_by_path: dict[Path, dict] = {}
+
+    def survey() -> list[dict]:
+        return [survey_by_path[path] for path in sorted(survey_by_path, key=str)]
+
+    def refusal(message: str) -> dict:
+        return {
+            "error": message,
+            "survey": survey(),
+            "survey_totals": {
+                "file_count": len(files),
+                "total_bytes": sum(path.stat().st_size for path in files),
+            },
+        }
+
     for raw in paths:
         resolved = Path(guard.resolve_readable_path(raw))
         if not resolved.exists():
-            return {"error": f"Artifact path not found: {resolved}"}
+            return refusal(f"Artifact path not found: {resolved}")
         if resolved.is_dir():
-            for p in resolved.rglob("*"):
-                if time.monotonic() - started > max_seconds:
-                    return {"error": f"Artifact inspection exceeded max_seconds={max_seconds}."}
-                if p.is_file():
-                    depth = len(p.relative_to(resolved).parts)
-                    if depth > max_depth:
-                        return {"error": f"Artifact inspection exceeded max_depth={max_depth}."}
-                    files.add(p)
-                    if len(files) > max_files:
-                        return {"error": f"Artifact inspection exceeded max_files={max_files}."}
+            pending = [(resolved, 0)]
+            while pending:
+                directory, depth = pending.pop()
+                direct_count = 0
+                direct_bytes = 0
+                try:
+                    entries = sorted(directory.iterdir(), key=lambda path: str(path))
+                except OSError as exc:
+                    return refusal(f"Cannot list artifact directory {directory}: {exc}")
+                children = []
+                for entry in entries:
+                    if entry.is_dir() and not entry.is_symlink():
+                        children.append(entry)
+                        continue
+                    if not entry.is_file():
+                        continue
+                    size = entry.stat().st_size
+                    direct_count += 1
+                    direct_bytes += size
+                    if entry not in files and len(files) >= max_files:
+                        survey_by_path[directory] = {
+                            "path": str(directory), "depth": depth,
+                            "direct_file_count": direct_count,
+                            "direct_bytes": direct_bytes,
+                        }
+                        return refusal(
+                            f"Artifact inspection reached max_files={max_files}; "
+                            "use the directory survey or narrow paths."
+                        )
+                    files.add(entry)
+                    if hash and sum(path.stat().st_size for path in files) > max_total_bytes:
+                        survey_by_path[directory] = {
+                            "path": str(directory), "depth": depth,
+                            "direct_file_count": direct_count,
+                            "direct_bytes": direct_bytes,
+                        }
+                        return refusal(
+                            f"Artifact inspection exceeded max_total_bytes={max_total_bytes}; "
+                            "use hash=false or narrow paths."
+                        )
+                survey_by_path[directory] = {
+                    "path": str(directory), "depth": depth,
+                    "direct_file_count": direct_count, "direct_bytes": direct_bytes,
+                }
+                if children and depth >= max_depth:
+                    return refusal(
+                        f"Artifact inspection reached max_depth={max_depth}; "
+                        "use the directory survey or narrow paths."
+                    )
+                pending.extend((child, depth + 1) for child in reversed(children))
         else:
+            if resolved not in files and len(files) >= max_files:
+                return refusal(f"Artifact inspection reached max_files={max_files}.")
             files.add(resolved)
     total_bytes = sum(path.stat().st_size for path in files)
-    if total_bytes > max_total_bytes:
-        return {"error": (
+    if hash and total_bytes > max_total_bytes:
+        return refusal(
             f"Artifact inspection would hash {total_bytes} bytes, exceeding "
             f"max_total_bytes={max_total_bytes}."
-        )}
+        )
     artifacts = []
     for path in sorted(files, key=lambda p: str(p)):
-        digest = hashlib.sha256()
-        with path.open("rb") as stream:
-            for block in iter(lambda: stream.read(1024 * 1024), b""):
-                if time.monotonic() - started > max_seconds:
-                    return {"error": f"Artifact inspection exceeded max_seconds={max_seconds}."}
-                digest.update(block)
-        artifacts.append({"path": str(path), "size_bytes": path.stat().st_size,
-                          "sha256": digest.hexdigest()})
+        artifact = {"path": str(path), "size_bytes": path.stat().st_size}
+        if hash:
+            digest = hashlib.sha256()
+            with path.open("rb") as stream:
+                for block in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(block)
+            artifact["sha256"] = digest.hexdigest()
+        artifacts.append(artifact)
     result = {"artifact_count": len(artifacts), "total_bytes": total_bytes,
-              "artifacts": artifacts}
+              "hashes_computed": hash, "artifacts": artifacts, "survey": survey()}
     if manifest_path:
         manifest_path = guard.resolve_in_workspace(manifest_path)
         Path(manifest_path).parent.mkdir(parents=True, exist_ok=True)
@@ -4445,12 +4546,16 @@ def get_album_state(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
 
 def snap_to_album(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     guard.check_exposure(float(ctrl.core.get_exposure()))
-    with _pause_live(ctrl) as live_was_on:
+    with _pause_live(ctrl) as live_state:
         images = ctrl.studio.acquisitions().snap()
         created = bool(ctrl.studio.album().add_images(images))
     state = get_album_state(ctrl, guard)
     return {"status": "Snap added to the Micro-Manager Album.",
-            "created_new_album": created, "live_view_restarted": live_was_on, **state}
+            "created_new_album": created,
+            "live_view_restarted": live_state["was_on"],
+            **({"live_view_restore": _live_restore_report(live_state)}
+               if live_state["was_on"] else {}),
+            **state}
 
 
 _MDA_SCALARS = (

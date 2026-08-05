@@ -260,16 +260,27 @@ def _parse_roi(raw: Any) -> list[int] | None:
 
 
 def parse_mm_pixel_size_affine(raw: Any, *, objective: str, binning: int) -> StageCameraAffine | None:
-    """Decode MMCore row-major m00,m01,m02,m10,m11,m12 or reject a sentinel."""
+    """Decode either MM affine representation, with one sentinel policy.
+
+    MMCore exposes six row-major values separated by semicolons; NDTiff summary
+    metadata stores the four linear terms separated by underscores.
+    """
     if raw is None or str(raw).strip().lower() == "undefined":
         return None
     try:
-        values = [float(value.strip()) for value in str(raw).split(";")]
+        text = str(raw)
+        delimiter = ";" if ";" in text else "_"
+        values = [float(value.strip()) for value in text.split(delimiter)]
     except (TypeError, ValueError):
         return None
-    if len(values) != 6 or not all(math.isfinite(value) for value in values):
+    if len(values) == 6:
+        m00, m01, _m02, m10, m11, _m12 = values
+    elif len(values) == 4:
+        m00, m01, m10, m11 = values
+    else:
         return None
-    m00, m01, _m02, m10, m11, _m12 = values
+    if not all(math.isfinite(value) for value in values):
+        return None
     linear = (m00, m01, m10, m11)
     if all(value == 0.0 for value in values):
         return None
@@ -327,17 +338,26 @@ def _acquisition_calibration(
 
     summary = getattr(dataset, "summary_metadata", {}) or {}
     summary_affine = _metadata_value(summary, "AffineTransform")
+    frame_records = [
+        (coords, dataset.read_metadata(**coords))
+        for coords in _iter_present_coords(dataset, fixed_axes)
+    ]
+    per_frame_affines = [
+        _metadata_value(metadata, "PixelSizeAffine", "PixelSizeAffineString")
+        for _coords, metadata in frame_records
+    ]
+    # Summary metadata is a fallback for MM datasets that omit the affine from
+    # every frame. It must never mask a present or inconsistent per-frame value.
+    use_summary = summary_affine is not None and all(
+        raw is None for raw in per_frame_affines
+    )
     candidates = []
     frame_count = 0
     rois = []
-    for coords in _iter_present_coords(dataset, fixed_axes):
+    for (coords, metadata), per_frame_raw in zip(frame_records, per_frame_affines):
         frame_count += 1
-        metadata = dataset.read_metadata(**coords)
-        raw = _metadata_value(metadata, "PixelSizeAffine", "PixelSizeAffineString")
-        affine_source = "PixelSizeAffine"
-        if summary_affine is not None:
-            raw = summary_affine
-            affine_source = "AffineTransform"
+        raw = summary_affine if use_summary else per_frame_raw
+        affine_source = "AffineTransform" if use_summary else "PixelSizeAffine"
         objective = _metadata_value(
             metadata, "Objective", "ObjectiveLabel", "PixelSizeConfig", "PixelSizeConfigName"
         )
@@ -351,23 +371,10 @@ def _acquisition_calibration(
         roi = _parse_roi(_metadata_value(metadata, "ROI", "Roi", "CameraROI"))
         rois.append(None if roi is None else tuple(roi))
         try:
-            if affine_source == "AffineTransform":
-                values = [float(value) for value in str(raw).split("_")]
-                if len(values) != 4:
-                    raise ValueError("AffineTransform must contain four values")
-                affine = StageCameraAffine(
-                    values[0], values[1], values[2], values[3],
-                    str(objective) if objective is not None else "",
-                    int(str(binning).split("x")[0]),
-                    float(np.sqrt(abs(np.linalg.det(np.asarray(values).reshape(2, 2))))),
-                )
-                if not all(math.isfinite(value) for value in values) or affine.pixel_size_um <= 0:
-                    affine = None
-            else:
-                affine = parse_mm_pixel_size_affine(
-                    raw, objective=str(objective) if objective is not None else "",
-                    binning=int(str(binning).split("x")[0]),
-                )
+            affine = parse_mm_pixel_size_affine(
+                raw, objective=str(objective) if objective is not None else "",
+                binning=int(str(binning).split("x")[0]),
+            )
         except (TypeError, ValueError):
             affine = None
         candidates.append((affine, objective, camera_device, camera_model, roi, coords,
@@ -399,16 +406,21 @@ def _acquisition_calibration(
         ("binning", affine.binning),
         ("camera_device", camera_device), ("camera_model", camera_model), ("roi", roi),
     ) if value is None or value == ""]
-    if first[6] != "AffineTransform" and (objective is None or objective == ""):
-        missing.insert(0, "objective")
     if missing:
         return None, "acquisition calibration identity is incomplete; missing " + ", ".join(missing)
     affine.objective = "" if objective is None else str(objective)
-    return (affine, _identity_for_affine(
+    identity = _identity_for_affine(
         affine, source_kind="acquisition_recorded",
         source_reference={"metadata_key": first[6], "coordinates": coords},
         camera_device=camera_device, camera_model=camera_model, roi=roi,
-    )), None
+    )
+    if objective is None or objective == "":
+        identity["objective_unrecorded"] = True
+        identity["objective_unrecorded_reason"] = (
+            "The dataset records affine geometry and binning but no objective label; "
+            "verify the optical path before reusing this calibration outside this dataset."
+        )
+    return (affine, identity), None
 
 
 def _read_artifact(path: str, guard) -> dict:

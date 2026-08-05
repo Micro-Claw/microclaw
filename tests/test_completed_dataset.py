@@ -288,12 +288,30 @@ class Cancel:
     assert result["status"] == "cancelled" and result["cancelled"]
 
 
-def test_mosaic_uses_dataset_recorded_calibration_when_reference_is_omitted(offline_home):
+def test_mosaic_uses_dataset_recorded_calibration_when_reference_is_omitted(
+        offline_home, monkeypatch):
+    import tifffile
+    from microclaw import tools
     save, dataset, guard, root = offline_home
-    save("x", "class X:\n def analyze_saved_frame(self, image, metadata, context): pass\n")
+    save("x", '''
+class X:
+ def analyze_saved_frame(self, image, metadata, context):
+  return {"shape": list(image.shape)}
+''')
+    def build(_ctrl, _guard, _dataset_path, output_path, _selection,
+              calibration_ref, _output_pixel_size_um):
+        assert calibration_ref is None
+        tifffile.imwrite(output_path, np.ones((3, 4), np.uint16))
+        manifest = output_path + ".json"
+        Path(manifest).write_text("{}")
+        return {"calibration_identity": {"source_kind": "acquisition_recorded"},
+                "shape": [3, 4], "manifest_path": manifest}
+    monkeypatch.setattr(tools, "build_stage_coordinate_mosaic", build)
     base = (guard, str(dataset), "x", {"time": 0}, "stage_coordinate_mosaic", {}, str(root / "m"))
     result = completed_dataset.run_analysis_on_saved_dataset(*base)
-    assert "explicit calibration_ref" not in str(result.get("failure", {}))
+    assert result["status"] == "completed"
+    assert result["observations"][0]["result"] == {"shape": [3, 4]}
+    assert result["calibration_identity"]["source_kind"] == "acquisition_recorded"
     with pytest.raises(ValueError, match="live microscope core"):
         completed_dataset.run_analysis_on_saved_dataset(
             *base[:-1], str(root / "m2"), calibration_ref={"kind": "confirmed_current"}

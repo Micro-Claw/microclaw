@@ -1415,8 +1415,9 @@ TOOLS: list[dict[str, Any]] = [
         "name": "inspect_artifacts",
         "description": (
             "Recursively enumerate files under workspace artifact paths and compute "
-            "their size and SHA-256 within explicit file-count, byte, depth, and time "
-            "bounds. Optionally save a deterministic JSON manifest."
+            "their size and optional SHA-256 within deterministic file-count, byte, "
+            "and depth bounds. Refusals include a per-directory count/byte survey so "
+            "a caller can narrow the next request. Optionally save a JSON manifest."
         ),
         "input_schema": {
             "type": "object",
@@ -1427,8 +1428,8 @@ TOOLS: list[dict[str, Any]] = [
                 "max_total_bytes": {"type": "integer", "minimum": 1,
                                     "default": 1073741824},
                 "max_depth": {"type": "integer", "minimum": 1, "default": 16},
-                "max_seconds": {"type": "number", "exclusiveMinimum": 0,
-                                "default": 30},
+                "hash": {"type": "boolean", "default": True,
+                         "description": "False returns a bounded listing without reading file contents."},
             },
             "required": ["paths"],
         },
