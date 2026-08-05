@@ -664,12 +664,12 @@ def test_clipping_invalidates_snr_instead_of_reporting_a_large_value():
     assert "saturated" in stats.snr_invalid_reason
 
 
-def test_transmitted_light_refuses_the_bright_on_dark_snr_metric():
-    stats = compute_stats(
-        np.arange(4096, dtype=np.uint16).reshape(64, 64),
-        signal_mode="transmitted_light",
-    )
+def test_negative_going_structure_refuses_snr_but_keeps_focus_valid():
+    rng = np.random.default_rng(9)
+    image = (4000 + rng.normal(0, 8, (128, 128))).astype(np.uint16)
+    image[40:88, 40:88] = 500
+    stats = compute_stats(image)
     assert stats.snr is None
     assert stats.snr_valid is False
-    assert stats.focus_metric_valid is False
-    assert "transmitted light" in stats.snr_invalid_reason
+    assert stats.focus_metric_valid is True
+    assert "negative-going" in stats.snr_invalid_reason

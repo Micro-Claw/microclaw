@@ -548,12 +548,6 @@ TOOLS: list[dict[str, Any]] = [
                     ),
                     "default": True,
                 },
-                "signal_mode": {
-                    "type": "string",
-                    "enum": ["bright_on_dark", "transmitted_light"],
-                    "description": "Use transmitted_light to explicitly refuse the bright-on-dark SNR score.",
-                    "default": "bright_on_dark",
-                },
             },
             "required": [],
         },
@@ -971,11 +965,6 @@ TOOLS: list[dict[str, Any]] = [
                 },
                 "illumination_envelope": _HOOK_ILLUMINATION_ENVELOPE_SCHEMA,
                 "artifact_limits": _HOOK_ARTIFACT_LIMITS_SCHEMA,
-                "signal_mode": {
-                    "type": "string",
-                    "enum": ["bright_on_dark", "transmitted_light"],
-                    "default": "bright_on_dark",
-                },
             },
             "required": ["protocol"],
         },
@@ -1100,11 +1089,6 @@ TOOLS: list[dict[str, Any]] = [
                         "Default true; set false to leave the stage on the last tile."
                     ),
                     "default": True,
-                },
-                "signal_mode": {
-                    "type": "string",
-                    "enum": ["bright_on_dark", "transmitted_light"],
-                    "default": "bright_on_dark",
                 },
             },
             "required": ["rows", "cols", "step_um", "protocol"],

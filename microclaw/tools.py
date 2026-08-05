@@ -1536,6 +1536,7 @@ def _focus_metric_payload(
         "background_level": stats.background_level,
         "snr": stats.snr,
         "snr_valid": stats.snr_valid,
+        "snr_invalid_reason": stats.snr_invalid_reason,
         "min_snr": min_snr,
         "min_snr_source": min_snr_source,
         **_metric_stamp(ctrl),
@@ -1553,7 +1554,6 @@ def snap_and_analyze(
     return_thumbnail: bool = False,
     thumbnail_size: int = 512,
     display: bool = True,
-    signal_mode: str = "bright_on_dark",
 ) -> list | dict:
     """Snap an image, display it in the MM viewer, and return numerical stats.
 
@@ -1566,7 +1566,7 @@ def snap_and_analyze(
     with _pause_live(ctrl) as live_state:
         image = snap_to_numpy_displayed(ctrl) if display else snap_to_numpy(ctrl)
     min_snr, min_snr_source = _analysis_gate(guard)
-    stats = compute_stats(image, min_snr=min_snr, signal_mode=signal_mode)
+    stats = compute_stats(image, min_snr=min_snr)
     text_payload: dict[str, Any] = {
         "z_um": round(ctrl.core.get_position(), 3),
         # Observed, not assumed. This used to echo the `display` parameter, so
@@ -2393,7 +2393,6 @@ def _run_protocol_at(
     params: dict,
     mark_position_in_list: bool = False,
     reservation: Reservation | None = None,
-    signal_mode: str = "bright_on_dark",
 ) -> dict:
     guard.check_xy(x_um, y_um)
     ctrl.core.set_xy_position(x_um, y_um)
@@ -2421,7 +2420,7 @@ def _run_protocol_at(
         with _pause_live(ctrl):                     # snap(True) wedges under live (V1)
             image = snap_to_numpy_displayed(ctrl)
         min_snr, min_snr_source = _analysis_gate(guard)
-        stats = compute_stats(image, min_snr=min_snr, signal_mode=signal_mode)
+        stats = compute_stats(image, min_snr=min_snr)
         tile = {
             "position": pos_label,
             "status": "snapped",
@@ -2438,6 +2437,7 @@ def _run_protocol_at(
             "focus_metric_valid": stats.focus_metric_valid,
             "snr": stats.snr,
             "snr_valid": stats.snr_valid,
+            "snr_invalid_reason": stats.snr_invalid_reason,
             "min_snr": min_snr,
             "min_snr_source": min_snr_source,
             "background_level": stats.background_level,
@@ -2491,7 +2491,6 @@ def run_multiposition_acquisition(
     preserve_unsupported: bool = False,
     illumination_envelope: dict | None = None,
     artifact_limits: dict | None = None,
-    signal_mode: str = "bright_on_dark",
 ) -> dict:
     """Visit each position and run a per-position protocol.
 
@@ -2577,6 +2576,16 @@ def run_multiposition_acquisition(
         except KeyError as e:
             return {"error": f"protocol_params for '{protocol}' is missing {e}."}
         if mark_positions:
+            # Match the non-hooked path: validate coordinates before publishing
+            # anything to the operator's native position list.
+            sweeps_z = "z_start" in shape
+            for _label, x_um, y_um, z_um in resolved:
+                guard.check_xy(x_um, y_um)
+                if not sweeps_z and z_um is not None:
+                    guard.check_z(z_um)
+            if sweeps_z:
+                guard.check_z(shape["z_start"])
+                guard.check_z(shape["z_end"])
             # The grid coordinates are known up front, so marking needs no stage
             # reads and no visit loop — mark before the Acquisition takes over.
             for pos_label, x_um, y_um, z_um in resolved:
@@ -2596,8 +2605,10 @@ def run_multiposition_acquisition(
                     artifact_limits=artifact_limits,
                     **shape,
                 )
-            except SafetyViolation:
-                raise
+            except SafetyViolation as exc:
+                if not added_labels:
+                    raise
+                hooked = {"error": str(exc)}
             except Exception as exc:
                 hooked = {"error": str(exc)}
         if "error" in hooked:
@@ -2648,7 +2659,6 @@ def run_multiposition_acquisition(
                         ctrl, guard, pos_label, x_um, y_um, z_um, protocol, pos_save_dir,
                         params, mark_position_in_list=mark_positions,
                         reservation=reservation,
-                        signal_mode=signal_mode,
                     )
                     results.append({**where, **result})
                 except Exception as e:
@@ -2691,7 +2701,6 @@ def run_tile_acquisition(
     center_x_um: float | None = None,
     center_y_um: float | None = None,
     return_to_center: bool = True,
-    signal_mode: str = "bright_on_dark",
 ) -> dict:
     """Acquire a rows×cols tile grid centered on center_x_um/center_y_um.
 
@@ -2736,7 +2745,6 @@ def run_tile_acquisition(
         hook_strategy=hook_strategy,
         hook_params=hook_params,
         log_path=log_path,
-        signal_mode=signal_mode,
     )
     return_result = None
     if return_to_center:
@@ -3815,8 +3823,9 @@ def rank_hook_log(
         return {"error": "Hook log must contain a JSON array."}
     seen: set[str] = set()
     rows = []
+    invalid_rows = []
     for i, entry in enumerate(entries):
-        if entry.get("schema") not in (None, "microclaw.analysis-observation/v1"):
+        if entry.get("schema") != "microclaw.analysis-observation/v1":
             continue
         label = entry.get("position")
         result = entry.get("result") or {}
@@ -3828,6 +3837,18 @@ def rank_hook_log(
         if label in seen:
             return {"error": f"Duplicate position in hook log: {label}"}
         seen.add(label)
+        valid_key = f"{metric}_valid"
+        if result.get(valid_key) is False:
+            invalid_rows.append({
+                "position": label, "x_um": entry["x_um"], "y_um": entry["y_um"],
+                **({"z_um": entry["z_um"]} if entry.get("z_um") is not None else {}),
+                metric: result[metric],
+                valid_key: False,
+                "invalid_reason": result.get(f"{metric}_invalid_reason"),
+                "focus_metric_valid": result.get("focus_metric_valid"),
+                "saturated_fraction": result.get("saturated_fraction"),
+            })
+            continue
         try:
             value = float(result[metric])
         except (TypeError, ValueError):
@@ -3838,6 +3859,7 @@ def rank_hook_log(
             "position": label, "x_um": entry["x_um"], "y_um": entry["y_um"],
             **({"z_um": entry["z_um"]} if entry.get("z_um") is not None else {}),
             metric: value,
+            valid_key: result.get(valid_key),
             "focus_metric_valid": result.get("focus_metric_valid"),
             "saturated_fraction": result.get("saturated_fraction"),
         })
@@ -3851,10 +3873,18 @@ def rank_hook_log(
         "log_path": log_path,
         "metric": metric,
         "ranking_key": f"descending result.{metric}, then ascending position label",
-        "entry_count": len(rows),
+        "entry_count": len(rows) + len(invalid_rows),
+        "ranked_entry_count": len(rows),
+        "invalid_entry_count": len(invalid_rows),
         "ranking": rows,
+        "invalid_rows": invalid_rows,
         "budget_views": {str(k): rows[:k] for k in requested},
     }
+    if invalid_rows:
+        result["warning"] = (
+            f"Ranking is incomplete: {len(invalid_rows)} observation(s) had invalid "
+            f"{metric} and are listed in invalid_rows rather than ranked."
+        )
     if position_list_path:
         position_list_path = guard.resolve_readable_path(position_list_path)
         try:
