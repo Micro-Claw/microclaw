@@ -4819,3 +4819,40 @@ formality; it is where absence-reasoning defects live.
 115 skipped against 1491 / 99 locally. The pass counts differ by 16 and look
 alarming; the totals are both 1590, so nothing was lost — 16 tests skip on
 Windows.
+
+---
+
+## Block 0c — the remote evidence kit, closed 2026-08-05 without ever being run
+
+No implementer and no runner prompt: 0c was coordination. It is recorded here
+because what it teaches cost three blocks of planning built on top of it.
+
+**The kit was authored, reviewed, gated, shipped — and the operator could not
+run it.** Not "chose not to": the scripts were too hard to run alone, which is
+the constraint this checklist states in its own preamble ("their operator is not
+an implementer", `design/35:47`) and which the plan then designed around rather
+than for. Both 0a and 0b were merged after a returned round each, so the failure
+was not sloppiness in the artefact. **The artefact was the wrong shape.**
+
+What arrived instead, unasked, was five ordinary microclaw sessions from the
+rig — and they answered more of design/34 than the probe kit was designed to,
+including two questions the kit could not have reached at all (that the
+authorization map made PFS unusable, and that the servo drives the offset by
+itself). Written up as design/40; Track B was rescoped against it.
+
+**The generalisable lesson: ask a remote operator for their normal work, not for
+a script.** A session history is evidence they produce by doing their job; a
+probe is a second job you have asked them to learn. When the operator is the
+long pole, instrument the thing they were going to do anyway. This now sits in
+design/40's per-block loop as a standing instruction for runbooks: prefer steps
+that are ordinary microclaw usage over steps that run a script.
+
+**Second lesson, cheaper to state than to have learned: a blanket exclusion is a
+decision to make the capability unusable, and it needs the same evidence bar as
+enabling it.** Block 4 excluded the continuous-focus enable and marked
+PFS-offset workflows unsupported. Both were defensible in isolation and both
+were ticked. Together they meant a session could drive a 60× oil objective 450
+µm past its recorded engage height and only then discover the last write was
+never permitted. Nothing in the block workflow asks "what is refused, and what
+does the operator do then?" — design/40's block 6a exists because that question
+went unasked for four blocks.
