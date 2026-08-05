@@ -3951,6 +3951,57 @@ schedule them or record a reason at block 12.
 This is an inventory, not permission to close with unresolved blank work. Block
 12 assigns every row one of the explicit dispositions above.
 
+- **Hooks cannot be composed: `hook_strategy` takes exactly one.** From design/38
+  (merged `088a9ad`). `run_multiposition_acquisition(hook_strategy="autofocus_per_position")`
+  autofocuses per field and writes one `position`-axis dataset — proven on M5 in
+  G2 — but it cannot *also* stitch or observe, because `hook_strategy` is a
+  single string (`tools.py:2300,2473`; `_resolve_hook` at `:2696`). That is why
+  G2 had to build its mosaic offline afterwards. The operator asked for
+  composition directly ("run autofocus as a hook and then run whatever additional
+  hook we like"). A written block prompt exists; it also folds in the next two
+  rows. **Prerequisite for deprecating `run_multiposition_with_autofocus`.**
+
+- **The autofocus sweep's dose is not reserved.** The sweep runs inside
+  `post_hardware_hook_fn`, outside the event plan, so `_authorize_acquisition`
+  never sees it; `_plan_protocol_repetitions` (`tools.py:2217`) counts only
+  `_build_acquisition_events` frames. `sweep_autofocus` (`autofocus.py:76`) snaps
+  once per plane at `n = round(span/z_step)+1`, and `AutofocusHook` runs a coarse
+  then a fine pass. At M5 G2's settings that is tens of exposures per position
+  against a reservation covering one. Live bug, not specific to the deprecated
+  tool.
+
+- **design/38 F12 — a property write can report failure after it has succeeded.**
+  On M5 G7.a, `set_device_property` on `All: 3. TTL Enable` raised
+  `Serial timeout occurred. (17)`; the read-back showed the value had landed. The
+  agent caught it, nothing in microclaw made it. Same shape as the
+  failed-write-that-landed defect Block 7b's gate caught, so it recurs. Worst for
+  illumination: an operator told a laser-enable failed may believe the laser is
+  off when it is on, or retry and double-apply. Candidate fix — read back on a
+  write exception and report `write_reported_failure_but_value_changed` with both
+  values, rather than surfacing the raw exception.
+
+- **design/38 F13 — the agent does not know it can read illumination state.** On
+  exit in G7.c it told the operator "I can't confirm the illumination state on my
+  own"; `get_system_state` now returns `declared_illumination_properties`. The
+  round-4 prompt teaches it to consult that after a blank or low-signal frame,
+  but not at session end or handoff. One prompt line.
+
+- **design/38 F9 follow-up — per-source illumination prerequisites.** Preflight
+  still cannot refuse an acquisition that will not emit: M5 G6.e passed preflight
+  with the TTL gate shut and produced a signal-free frame (max 224 vs 469 with the
+  gate open). Round 4 narrowed the *claim* — the preflight now reports what it
+  checked and what it did not — but nothing refuses. Which declared properties
+  must be **on** is not derivable: on M5, `All: 1. Enable` and `All: 2. Emission`
+  are `0` while imaging works, `All: 3. TTL Enable` must be `1`, and three of four
+  per-laser enables are correctly `0`. It needs operator declaration.
+  Constraints settled with the operator: the requirement belongs in
+  `safety_config.yaml`, **not** the knowledge base (knowledge is agent-writable,
+  and a refusal resting on it lets the agent write its own permission slip); an
+  absent declaration means **no check**, since most rigs have no such gate;
+  `first_launch.py` already classifies every candidate property and authors
+  `illumination.shutters` (`:841`, `:1165`), so this is one more question in an
+  existing interview, not a new subsystem.
+
 - **`tests/test_webserve.py::test_browser_opens_only_once_the_port_accepts` is
   race-prone and has now failed a rig gate.** Failed on M5 during Block 4d's G0,
   2026-08-03, on code that does not touch `webserve.py` and that passed the same
