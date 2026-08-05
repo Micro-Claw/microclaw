@@ -4769,3 +4769,53 @@ measurement cannot show.
 worktree, and left the delivery uncommitted both rounds. The first left `main`'s
 working directory on a feature branch with unsaved work. Committing the delivery
 and re-homing the branch is coordinator cleanup, not a runner favour.
+
+---
+
+# design/39 — EMU names (merged `c987f65`, 2026-08-05)
+
+One implementation round, one coordinator-review round, one rig-gate round.
+Grew out of a rig session, not the checklist.
+
+**I asserted a reader list instead of pasting the grep, and it was wrong.** The
+design doc said `htsmlm_docs.py` read the `filter_wheel` map key. It does not —
+it *documents filter UIProperty names*, which is a different defect in the same
+file, and the real reader was `tools_schema.py`. I had read that file for the
+UIProperty problem and generalised from it. The runner refused to start and said
+so, which is the third time in this project a prompt shipped a false premise
+(design/38 F2, the composition block, now this). The difference is that this one
+cost nothing, because the prompt told the runner that reporting a wrong premise
+is a successful outcome. **Put the command output in the design doc; do not
+summarise a grep you ran once for another reason.**
+
+**I dispatched before committing the spec.** Step 1 says the coordinator's edits
+are committed before the block is assigned. I wrote that the design doc was
+uncommitted, in the same message that handed over the prompt, and dispatched
+anyway. A worktree sees committed history; saying the rule aloud is not
+following it.
+
+**My own two fixes both had defects, and I found them by re-reading, not by
+running tests.** The conflict fix popped the name on disagreement, so a third
+agreeing panel re-set it — resurrecting a name from a slot already known to be
+contested. And the test I wrote for that used a panel label `"Laser 3 "` whose
+trailing space prefix-matched nothing, so it asserted on a slot no panel had
+touched: green, and testing nothing. **A coordinator's own patch gets the same
+adversarial read as a runner's, including its tests.**
+
+**The behavioural gate criterion earned its keep.** G1 was written to fail an
+agent that reaches slot 3 by reasoning about device ordering — right answer,
+wrong route, because that route produced the wrong answer last time. It passed
+properly: the agent volunteered the disavowal unprompted. Continues design/38's
+lesson that the strongest evidence is what the agent *says*, not what a field
+contains.
+
+**The cheap gate on the rig that lacks the feature found the defect the real rig
+could not.** G5 asked the demo — no EMU config — what lasers it has, and the
+agent concluded "this is not a laser rig" from the absence of our map. M5 is
+structurally incapable of surfacing that. A rig without the feature is not a
+formality; it is where absence-reasoning defects live.
+
+**Reconcile counts by total, not by pass count.** The rig reported 1475 passed /
+115 skipped against 1491 / 99 locally. The pass counts differ by 16 and look
+alarming; the totals are both 1590, so nothing was lost — 16 tests skip on
+Windows.

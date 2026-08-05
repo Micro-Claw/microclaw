@@ -261,3 +261,44 @@ no-`parameters` path. The gate that matters is the one this came from: ask for
 the 640 nm laser and confirm the agent reaches **slot 3** with no correction, and
 ask to change the **BFP** and confirm it reaches `Thorlabs ELL6-State` without
 asking the user which numbered device that is.
+
+---
+
+## What shipped, and what the gate measured
+
+Merged `c987f65`, 2026-08-05. Suite 1492 passed / 99 skipped on `main`.
+
+**Gate results.** M5 G1–G4 and demo G5 all **PASS** (evidence: `39-emu-m5`,
+`39-emu-demo`). G1 passed for the right reason, which was the criterion: the
+agent answered slot 3 unaided *and* volunteered that "the device's internal
+numbering 'Laser 1' differs from the EMU slot index" — explicitly disavowing the
+route that produced slot 1 last time. G3's ambiguity check held: asked to move to
+`676/37`, present in both wheels, it asked which wheel. Rig test counts were 1475
+passed / 115 skipped against 1491 / 99 locally — same 1590 total, 16 skipped on
+Windows.
+
+**Two defects found in coordinator review, not by the suite.** Both were
+silent-wrong-answer shaped and neither was in the plan above:
+
+- Rule A resolved a laser-slot name conflict by dict iteration order, so two
+  panels binding different labels to one slot gave whichever the JSON listed
+  first. The slot now stays unnamed and carries `name_conflict`. A later
+  agreeing panel must not resurrect the name — the first fix allowed exactly
+  that.
+- The name path returned records whose device/property could not be split
+  (`tools.py` passes an empty device list when `get_loaded_devices()` fails)
+  where the exact-key path raises. `_resolvable()` now guards both.
+
+**One defect the M5 gate could not have found.** G5 on the demo produced *"This
+is not a laser rig"* from the absence of an EMU config. Wrong in both
+directions: the demo ships `Emu.jar` with no `config.uicfg`, and a non-EMU rig
+drives lasers as ordinary device properties. This is design/20 S4's false
+negative — an omitted or hedged laser field letting the agent sign off "no lasers
+were involved" — reintroduced through wording rather than through a missing key.
+`_NO_LASER_MAP` now names what is unknown (per-*slot* state) and points at
+`declared_illumination_properties`; the three copies of the EMU-absent error are
+folded into `_NO_EMU_CONFIG`.
+
+**Carried forward:** the wording fix (`6adef62`) landed after the gate and is
+**ungated**. It changes only strings the agent reasons from, so confirming it
+costs one demo G5 re-run.

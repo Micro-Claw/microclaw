@@ -224,7 +224,7 @@ assistant's narration when judging whether a guard fired.
 | 10 | Features | 9; optional | `design26/few-shot-run-c` | | | required or marked skipped | | |
 | 11 | Features | accepted Run B fixtures | `design32/hook-worker-isolation` | | | regression required | | |
 | 12 | Closeout | prior applicable blocks | — | | | **required** | n/a | |
-| 39 | Out-of-band | — | `design-39-emu-names` | `0016c54` | `7450f5e` + `a7ac7d5` (coordinator review) + runbook `483c620` | **pushed 2026-08-05, awaiting M5 + demo** — `design/39-gate-prompts.md` G0–G5 | | pending — design/39 §"Planned edits" |
+| 39 | Out-of-band | — | `design-39-emu-names` (deleted) | `0016c54` | `7450f5e` + `a7ac7d5` (coordinator review) + runbook `483c620` + `6adef62` | M5 G1–G4 + demo G5 all **PASS** 2026-08-05 (`39-emu-m5`, `39-emu-demo`); **`6adef62` landed post-gate and is ungated** | `c987f65` | **done** — design/39 §"What shipped, and what the gate measured" |
 
 **Out-of-band rows.** design/36, design/37, design/38 and the composition block
 all ran the full block workflow without a ledger row, because they grew out of
