@@ -47,9 +47,18 @@ replacement for it.
 - Keep design documents **short and to the point**. State the problem, the
   decision, and the evidence. Include code stubs where a stub says it faster
   than prose. Long documents do not get read on the rig.
-- **Write agent runner prompts to a file** (`design/prompts.md` or a file the
-  prompt names) before spawning the agent, so the exact instructions a runner
-  received are recoverable from the repo alone.
+- **`design/` is for design, not for prompts.** A design doc states a problem
+  and a decision. The instructions handed to an agent are working material and
+  do not belong beside it.
+- **Write agent runner prompts to a file in the scratchpad** before spawning the
+  agent, so the exact instructions a runner received are recoverable while the
+  block is live. Do not commit them. What survives the block is the *outcome* —
+  the coordination notes in `design/prompts.md` (step 9), which are written after
+  the fact and say what was learned, not what was asked.
+- **Rig-gate runbooks are the exception and stay in `design/`, on the block's
+  branch.** They are not runner prompts: the user checks that branch out on the
+  rig and reads the runbook there, so step 4 of the block workflow requires them
+  committed. Scratch is unreachable from the rig.
 
 ## The block workflow — authoritative
 
