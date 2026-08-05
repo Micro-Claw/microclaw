@@ -3638,6 +3638,15 @@ Source: `design/40-pfs-five-sessions.md`, which supersedes
 rig. **Rescoped 2026-08-05.** Read design/40 before assigning anything here; the
 paragraphs below say what changed and why, and every block's item text was
 rewritten against measured session evidence rather than the probe kit's plan.
+design/40 also carries the **code stubs**, the **cross-rig regression bar**, and
+an **orchestration board** for running these blocks across sessions — that board
+tracks state, this file still owns scope and the ledger.
+
+**The binding constraint on every block below: Demo, M2 and M5 must be
+unchanged.** All of this was learned on one unusual rig, and CLAUDE.md's first
+rule is that `microclaw/` works for a generic Micro-Manager installation. A fix
+that makes the Nikon work by assuming a Nikon is a defect even if the Nikon gate
+passes. design/40 names, per rig, the regression each block must prove absent.
 
 ## What changed, and why the old plan is not the plan
 
@@ -3689,11 +3698,24 @@ everything except Phase 5 generation.
       `check_z` already owns. Replace the block-4 exclusion
       (this file `:706`, `:724`) with a declaration setup can offer.
 - [ ] **`first_launch` must offer `absolute-position` for stage-position
-      properties instead of excluding them** (`first_launch.py:367`). The kind
+      properties instead of excluding them** (`first_launch.py:367`) — **but
+      only for a stage that already has a reviewed travel entry.** The kind
       exists, `safety.py:961`–`973` routes it through `check_named_stage`, and
-      `authorization.py:743`–`766` already validates that its bounds may only
-      narrow the named-stage bounds. Setup emits that kind elsewhere
+      `authorization.py:743`–`766` validates that its bounds may only narrow the
+      named-stage bounds. Setup emits that kind elsewhere
       (`first_launch.py:989`) and simply never offers it here.
+- [ ] **Close the hole this would otherwise open.** `safety.py:961`–`973` routes
+      an `absolute-position` write through a bound *only* when the device is the
+      core focus device, the core XY device, or already in `named_stages`. On
+      any other stage it falls through every branch and is gated by nothing but
+      its own declared min/max — while `check_named_stage` (`safety.py:1165`)
+      refuses that device outright. **M2 is the shape that breaks**: its
+      `named_stages: []` is a deliberate refusal
+      (`design/29-block9-m2-safety-config.yaml:116`–`123`), and a typed entry
+      would quietly reinstate motion on a stage the operator declared
+      unreachable. The validator must reject an `absolute-position` declaration
+      that no travel bound governs. Net effect: stricter than today everywhere
+      except the Nikon offset, which it unblocks.
 - [ ] Reconcile the runtime refusal text (`authorization.py:1272`) with what
       setup writes. Today the refusal names `allowed_numeric` as a legal home
       for a pair whose generated config comment says it cannot go there. The
@@ -3709,12 +3731,21 @@ everything except Phase 5 generation.
 - [ ] **`get_focus_lock_state` must not be EMU-only** (`tools.py:4506`). On a
       rig with a working hardware focus lock it answers "No EMU configuration —
       cannot read a focus lock", and `agent.py:149` instructs the model to trust
-      that answer. Read the configured autofocus device first; fall back to the
-      EMU map, not the other way round. Do not build the typed capability here —
-      that is 7a — just stop returning a false negative.
+      that answer. **Additive only: the EMU branch stays first and unchanged, so
+      M5's payload — including its `qpd` block — is byte-identical.** The
+      `get_auto_focus_device()` path is a fallback reached only when the EMU map
+      carries no `focus_lock`, never a preferred source. Do not build the typed
+      capability here — that is 7a — just stop returning a false negative.
 - [ ] Off-rig tests: a config with no `Core.Focus` role; a stage-position
-      property offered as `absolute-position` and refused when its bounds widen
-      the named-stage entry; a focus-lock read on a rig with no EMU map.
+      property offered as `absolute-position`, refused when its bounds widen the
+      named-stage entry **and refused when no travel bound governs it at all**;
+      a focus-lock read on a rig with no EMU map; and an M5-fixture read proving
+      the EMU payload is unchanged.
+- [ ] **Cross-rig regression bar applies** — see design/40 §"Every fix here must
+      leave Demo, M2 and M5 exactly as they are". Replay the captured demo
+      inventory and the M5 `config.uicfg` fixture and diff the emitted profile
+      against today's; a synthetic fixture has manufactured a fake defect and
+      hidden a real one before.
 
 Rig gate:
 

@@ -211,19 +211,9 @@ and the post-lock 2490 → 2532 Z case.
 
 **D3 — 7a and 7c merge, and move above 7b.** The typed capability and the
 bounded engage search are one deliverable; the search is what makes the
-capability worth having, and today's data fully determines its shape:
-
-```python
-def engage_continuous_focus(ctrl, guard, *, z_start, z_ceiling, step_um,
-                            settle_s, timeout_s) -> dict:
-    """Off → step → On → poll Status → stop on lock. Generic: the device comes
-    from get_auto_focus_device(), the bounds from the caller and check_z.
-    Records the focus stage AND every offset stage at entry and at lock,
-    because the servo moves them."""
-```
-
-No Nikon-named recipe, no baked-in height, and it refuses rather than guessing
-when `z_ceiling` is absent.
+capability worth having, and today's data fully determines its shape. See
+§"Code stubs" below. No Nikon-named recipe, no baked-in height, and it refuses
+rather than guessing when `z_ceiling` is absent.
 
 **D4 — 7b shrinks to autofocus-under-lock.** `run_autofocus` must not sweep a
 focus device while continuous focus is armed. Probes 1–4 are deferred, not
@@ -238,6 +228,319 @@ a separate worktree; the file overlap with 6a is limited to `tools.py`.
 *concluded*. Recorded here as owed work rather than scheduled, because the
 right shape is not yet clear and inventing a schema for it now would be the
 extra layer CLAUDE.md warns against.
+
+## Every fix here must leave Demo, M2 and M5 exactly as they are
+
+**This is the binding constraint on all four blocks, not a closing caveat.**
+Everything in this note was learned on one unusual rig. CLAUDE.md's first rule is
+that `microclaw/` must work for a generic Micro-Manager installation; a fix that
+makes the Nikon work by assuming a Nikon is a defect even if the Nikon gate
+passes. Three of these rigs are reachable and one is not, so each block's gate
+names which of them it must be measured on.
+
+What each rig has that these changes could break:
+
+| Rig | Shape that matters here | The regression to prove absent |
+| --- | --- | --- |
+| **Demo** | `core_device_assignments`: focus `Z`, xy `XY`, **autofocus `Autofocus`** (`DAutoFocus`, DemoCamera). No `named_stages` beyond the defaults; camera returns one frame regardless of position. | 7a's capability must work here *as plumbing* — and must not be **believed** here. `DAutoFocus` is expected to report locked whenever enabled; confirm that, and if so the demo gates the call paths only, never lock semantics. A self-confirming probe is not evidence. |
+| **M2** | `named_stages: []` **on purpose** — SmarActZ and the TIRF stage are absent from the config and must not be movable by name at all (`design/29-block9-m2-safety-config.yaml:116`–`123`). No EMU. | 6a must not turn "setup offers `absolute-position`" into a way around an empty `named_stages`. See the hole below — this is the one place these changes can make a rig *less* safe. |
+| **M5** | EMU + MicroFPGA; focus lock read through the EMU map with a `qpd` block; no `Channel` group; no core shutter; hazardous actuators are `GenericDevice`. | `get_focus_lock_state` must return **byte-identical** output on M5. The new core-autofocus path is a fallback reached only when the EMU map has no `focus_lock`, never a preferred source. |
+| **Nikon Ti** | Three single-axis stages, `Core.Focus` sometimes unassigned, PFS as `AutoFocusDevice` + offset `StageDevice`. | The rig all of this is *for*. It is the only one that cannot be re-tested quickly — assume one round trip per block and ship complete. |
+
+### The hole 6a must close, not open
+
+`safety.py:961`–`973` routes an `absolute-position` write through `check_z`,
+`check_xy`, or `check_named_stage` **only if** the device is the core focus
+device, the core XY device, or already has a `named_stages` entry. A typed
+`absolute-position` declaration on any *other* stage falls through every branch
+and is gated by nothing but its own declared min/max — while `check_named_stage`
+(`safety.py:1165`) refuses that same device outright, because "a stage with no
+`named_stages` entry may not be moved at all."
+
+The Nikon config never exposed this: `TIPFSOffset` happens to be in
+`named_stages` too. **M2 is the shape that would break** — an empty
+`named_stages` is a deliberate refusal there, and an `absolute-position` entry
+would quietly reinstate motion on a stage the operator declared unreachable.
+
+So 6a's rule is not "offer the kind." It is: **offer `absolute-position` only
+for a stage that already has a reviewed travel entry, and make the validator
+reject one that does not.** That is strictly stricter than today on every rig
+except the one where it unblocks the offset.
+
+### Cross-rig regression bar, every block
+
+- [ ] Full non-hardware suite green on updated `main` before the branch is
+      reviewed, and re-run by the coordinator rather than trusted from a report.
+- [ ] Replay the **captured** demo inventory
+      (`tests/fixtures/block4_demo_inventory_20260801.json`) and the M5
+      `config.uicfg` fixture through any changed setup or authorization path,
+      and diff the emitted profile against what it emits today. A synthetic
+      fixture has manufactured a fake defect and hidden a real one before.
+- [ ] For a changed refusal or classification: show the *unchanged* verdict for
+      M2's empty `named_stages` and M5's EMU focus lock in the same test run.
+- [ ] Name in the block's report which rigs were measured and which were argued
+      from fixtures. Those are different claims.
+
+## Code stubs
+
+Shapes, not implementations — enough to fix the contract before a runner starts.
+
+### 6a — authorization, roles, and the lock read
+
+```python
+# first_launch.py — _metadata_default. Replaces the blanket "x" at :367.
+if _is_stage_position(item):
+    if _has_reviewed_travel(item, assignments, named_stages):
+        return ("p",                       # -> kind: absolute-position
+                "MM identifies a stage position property on a stage that already "
+                "has a reviewed travel entry; absolute-position narrows it",
+                technical_range)
+    return ("x",
+            "MM identifies a stage position property on a stage with no reviewed "
+            "travel entry. Declare named_stages for it first, or leave it "
+            "excluded — a typed bound alone would not fail closed.",
+            None)
+
+
+# authorization.py — inside the existing `if policy.kind == "absolute-position"`
+# branch (:743), after axis_policies is built. This is the M2 guard.
+if not axis_policies:
+    errors.append(
+        f"Typed absolute-position {identity.device}.{identity.property} names a "
+        "stage that is neither the core focus/XY device nor a declared named "
+        f"stage, so no travel bound governs it. Declare named_stages[{identity.device}] "
+        "first; a typed entry may narrow a travel bound, never create one."
+    )
+```
+
+```python
+# controller.py — one place that turns an unassigned role into a real answer.
+class CoreRoleUnassigned(RuntimeError):
+    """Micro-Manager has no device in this role. Not a hardware fault."""
+
+
+def require_focus_device(core) -> str:
+    label = core.get_focus_device()
+    if label:
+        return label
+    raise CoreRoleUnassigned(
+        "Micro-Manager has no Core-Focus device assigned, so there is no Z axis "
+        "to drive. Set it in Devices > Hardware Configuration Wizard, or in the "
+        "Device Property Browser under Core-Focus. microclaw cannot set it for "
+        "you: Core role properties are excluded because writing one re-aims "
+        "every reviewed stage bound at a different device. Single-axis stages "
+        f"loaded on this rig: {', '.join(single_axis_stages(core)) or 'none'}."
+    )
+```
+
+```python
+# tools.py — get_system_state (:806). Same for get_z_position, move_stage_z,
+# run_autofocus: name the cause once, in the message, not four times in the model.
+except Exception:
+    state["z_stage"] = (
+        "unavailable — no Core-Focus device is assigned (see get_z_position)"
+        if not ctrl.core.get_focus_device() else "unavailable"
+    )
+```
+
+```python
+# tools.py — get_focus_lock_state (:4506). ADDITIVE. The EMU branch is
+# unchanged and stays first, so M5's answer is byte-identical.
+def get_focus_lock_state(ctrl, guard) -> dict:
+    props, params = _cached_emu_properties(ctrl)
+    if props:
+        lock = build_emu_map(props, params)["focus_lock"]
+        if lock is not None and "device" in lock:
+            return {...}                      # exactly today's payload, incl. qpd
+    device = ctrl.core.get_auto_focus_device()
+    if not device:
+        return {"engaged": None,
+                "reason": "No EMU focus lock and no Core-AutoFocus device "
+                          "assigned — this rig reports no hardware focus lock."}
+    return {"engaged": bool(ctrl.core.is_continuous_focus_enabled()),
+            "locked": bool(ctrl.core.is_continuous_focus_locked()),
+            "device": device, "source": "core-autofocus"}
+```
+
+### 6 — the move failure contract
+
+```python
+@dataclass(frozen=True)
+class MoveOutcome:
+    requested_um: float
+    measured_um: float
+    tolerance_um: float
+    within_tolerance: bool
+    elapsed_s: float
+    device_status: str | None
+
+
+def settle_to_target(core, device, target, *, tolerance_um, timeout_s,
+                     poll_s, consecutive) -> MoveOutcome:
+    """Poll until |measured - target| <= tolerance for `consecutive` reads.
+
+    Tolerance-of-target is the gate, not stability: this adapter's Busy() can
+    clear before motion starts, so a stability-only check passes immediately at
+    the OLD position — the design/34 :236 failure exactly.
+    """
+
+
+# move_named_stage and move_stage_z share one return shape. A miss is a failure.
+outcome = settle_to_target(...)
+if not outcome.within_tolerance:
+    return {"error": f"{device} did not reach {target:g} µm.",
+            "kind": "move_not_achieved", **asdict(outcome)}
+return {"device": device, **asdict(outcome)}
+```
+
+Two fixtures, both from real sessions: a fake that stops at a hard floor
+(`requested 5 → measured 27.85`, must fail, not succeed with `error_um`), and a
+fake whose `Busy()` clears before motion starts (must fail the target check
+while passing a stability-only one).
+
+### 7a — capability and bounded search
+
+```python
+def engage_continuous_focus(ctrl, guard, *, z_start, z_ceiling, step_um,
+                            settle_s=0.5, timeout_s=60.0) -> dict:
+    """Off -> step -> On -> read status -> stop on lock, ceiling, or timeout.
+
+    Generic: the device is get_auto_focus_device(); the bounds are the caller's
+    and check_z's. z_ceiling has no default, so an unbounded climb toward a
+    coverslip cannot be requested by omission.
+
+    Lock is binary on the hardware measured in design/40 — there is no partial
+    signal to hill-climb, so this steps and asks, it does not optimise.
+    """
+    device = ctrl.core.get_auto_focus_device()      # raises if unassigned
+    entry = _read_focus_axes(ctrl)                  # focus stage AND every offset stage
+    tried: list[dict] = []
+    z = z_start
+    while z <= z_ceiling:
+        guard.check_z(z)
+        _set_continuous_focus(ctrl, False)
+        move_stage_z(ctrl, guard, z, absolute=True)  # block 6's measured move
+        _set_continuous_focus(ctrl, True)
+        status = _await_lock(ctrl, device, settle_s, timeout_s)
+        tried.append({"z_um": z, "status": status.raw})
+        if status.locked:
+            return {"locked": True, "device": device, "tried": tried,
+                    "entry_axes": entry, "lock_axes": _read_focus_axes(ctrl)}
+        z += step_um
+    return {"error": "Continuous focus did not lock below the ceiling.",
+            "kind": "engage_not_locked", "device": device, "tried": tried,
+            "z_ceiling": z_ceiling, "entry_axes": entry,
+            "final_axes": _read_focus_axes(ctrl)}
+```
+
+`_read_focus_axes` records the focus stage **and** every offset stage, because
+the servo moves them: a lock at 2500 pulled `TIPFSOffset` from 27.85 to 183.55
+by itself. A result that reports one axis describes half the machine.
+
+### 7b — autofocus must not fight an armed servo
+
+```python
+# autofocus.py — before the sweep.
+lock = get_focus_lock_state(ctrl, guard)
+if lock.get("engaged") is True:
+    return {"error": f"Continuous focus is engaged on {lock.get('device')}. A "
+                     "software sweep would fight the servo and duplicate what it "
+                     "already does. Disengage it, or use the lock you have.",
+            "kind": "continuous_focus_engaged", "focus_lock": lock}
+```
+
+**`engaged is True`, never truthiness.** `None` means "this rig reports no lock"
+— on Demo, M2 and any rig with no EMU map and no autofocus device — and must let
+autofocus run exactly as it does today. Getting this wrong disables autofocus on
+every rig that is not the Nikon, which is the whole failure mode this section
+exists to prevent.
+
+### 13 — the platform defects
+
+```python
+# tools.py :2506 — mark_positions preflight. Separate what this call would add
+# from what was already there, so a failed run cannot wedge every later one.
+existing, conflict = _preflight_native_positions(ctrl, guard, ...)
+if conflict:
+    conflict["position_list_conflict"]["source"] = "pre-existing entries, not this call"
+    conflict["position_list_conflict"]["hint"] = (
+        "clear_position_list() or resolve the listed indexes; the grid this call "
+        "would add was not evaluated."
+    )
+    return conflict
+
+# tools.py :3757 — rank_hook_log. The parent's own runner interleaves these.
+for i, entry in enumerate(entries):
+    if entry.get("schema") != "microclaw.analysis-observation/v1":
+        continue          # hook_action and other runner records are not rankings
+
+# tools.py :4162 — one contract, checked once. The runner and the preflight must
+# call the same validator; the message must name whichever it actually ran.
+"preflight": f"Static syntax and {contract_name} contract passed. ..."
+
+# tools.py :1684 — calibration. A zero shift is a fingerprint, not a small shift.
+if mag < 0.5:
+    return ("the commanded move produced no image shift at all (|shift| "
+            f"{mag:.2f} px). A step-size problem produces a small shift, not "
+            "none: this is the signature of a stationary feature dominating the "
+            "correlation — a vignette rim, sensor dirt, or a fixed reflection. "
+            "Crop the ROI to the illuminated centre and retry before changing "
+            "step_um.")
+```
+
+## Orchestration checklist
+
+**Scope lives in `design/35`; process lives in `CLAUDE.md` §"The block
+workflow"; this board tracks *state* only.** Where any two disagree, CLAUDE.md
+wins on process and design/35 wins on what a block contains — fix the other
+document and say so. Do not restate item text here; it will drift.
+
+An orchestrating session works one row at a time, top to bottom, except that
+block 13 may run in parallel in its own worktree.
+
+| # | Block | Branch | State | Next action |
+| --- | --- | --- | --- | --- |
+| 1 | **6a** authorize the focus system | `design34/focus-system-authorization` | not started | assign to an implementer in a worktree |
+| 2 | **13** platform defects (parallel) | `design40/platform-defects` | not started | assign once 6a has an implementer |
+| 3 | **6** measured read-back + failure contract | `design34/measured-position-readback` | blocked on 6a | — |
+| 4 | **7a** capability + bounded search | `design34/continuous-focus-capability` | blocked on 6a | — |
+| 5 | **7b** autofocus under lock | `design34/continuous-focus-policy` | blocked on 7a | — |
+| 6 | **8** Phase 5 addendum | `design33/phase5-continuous-focus` | blocked on 6, 7a, 7b | — |
+
+Update the **ledger in design/35**, not this table, when a block moves — the
+ledger carries commits, gate results and merges. This table exists so a cold
+session can see the order and the parallelism at a glance.
+
+### Per-block loop (the ten steps, specialised)
+
+Read CLAUDE.md's ten steps first; these are the additions specific to design/40.
+
+1. **Before assigning:** state which rigs the block's gate needs, from the table
+   in §"Every fix here must leave Demo, M2 and M5 exactly as they are". Only 6a
+   and 7a need the Nikon; 6 and 13 have Any-rig gates that Demo or M5 satisfy.
+2. **In the runner's prompt:** hand it the block's design/35 section, the stub
+   above, and the cross-rig regression bar. Write the prompt to the scratchpad,
+   not to `design/`.
+3. **On review:** re-run the suite yourself. Check the fixture replay actually
+   ran, and that the report distinguishes measured rigs from argued ones.
+4. **Runbook on the block's branch**, pinned with
+   `git merge-base --is-ancestor`. The Nikon operator reads it on the rig, and
+   they could not run the last thing we shipped — **prefer runbook steps that
+   are ordinary microclaw usage over steps that run a script.** That is the
+   whole lesson of Track 0.
+5. **After the gate:** if the Nikon result contradicts something in this
+   document, fix this document in the same merge. design/40 is evidence, and
+   evidence is revisable.
+
+### Session-boundary handoff
+
+When a session ends mid-block, the next one must be able to resume from the
+remote alone. Before stopping, ensure:
+
+- [ ] the ledger row carries the branch and the start commit;
+- [ ] the branch is **pushed**, not just committed;
+- [ ] this board's State column is current;
+- [ ] anything learned that is not in a commit is in `design/prompts.md`.
 
 ## Still owed
 
