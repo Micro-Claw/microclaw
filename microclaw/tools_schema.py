@@ -67,6 +67,22 @@ _CALIBRATION_REF_SCHEMA = {
 
 TOOLS: list[dict[str, Any]] = [
     {
+        "name": "export_session_script",
+        "description": (
+            "Compile the supplied append-only session record to a standalone "
+            "pycro-manager Python script. Unsupported calls make the script fail "
+            "loudly rather than being reconstructed."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "output_path": {"type": "string"},
+                "records": {"type": "array", "items": {"type": "object"}},
+            },
+            "required": ["output_path", "records"],
+        },
+    },
+    {
         "name": "start_live_view",
         "description": "Start the Micro-Manager camera live preview stream.",
         "input_schema": {"type": "object", "properties": {}, "required": []},

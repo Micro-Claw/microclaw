@@ -53,6 +53,110 @@ from microclaw.dataset_mosaic import MosaicFrameShape, MosaicGeometry, assemble_
 logger = logging.getLogger(__name__)
 
 
+def emits(renderer: Callable[[dict[str, Any]], str]):
+    """Attach a source renderer to the tool whose call it reproduces."""
+    def decorate(fn):
+        fn._microclaw_emitter = renderer
+        return fn
+    return decorate
+
+
+def _emit_acquisition(
+    shape: dict[str, Any], params: dict[str, Any], default_name: str
+) -> str:
+    """Render the pycro-manager primitive used by the adjacent acquisition tools."""
+    event_args = dict(shape)
+    channel = params.get("channel")
+    exposure = params.get("exposure_ms")
+    if channel:
+        event_args.update(channel_group="Channel", channels=[channel])
+        if exposure is not None:
+            event_args["channel_exposures_ms"] = [exposure]
+    prefix = ""
+    if not channel and exposure is not None:
+        prefix = f"core.set_exposure({exposure!r})\n"
+    return (
+        prefix
+        + f"events = multi_d_acquisition_events(**{event_args!r})\n"
+        + f"with Acquisition(directory={params['save_dir']!r}, name={params.get('name', default_name)!r}) as acq:\n"
+        + "    acq.acquire(events)"
+    )
+
+
+def _recorded_tool_calls(records: list[dict]) -> list[tuple[str, dict]]:
+    """Read tool calls from the append-only Anthropic conversation record."""
+    calls = []
+    for message in records:
+        if message.get("role") != "assistant":
+            continue
+        content = message.get("content", [])
+        for block in content if isinstance(content, list) else []:
+            kind = block.get("type") if isinstance(block, dict) else getattr(block, "type", None)
+            if kind != "tool_use":
+                continue
+            name = block.get("name") if isinstance(block, dict) else block.name
+            params = block.get("input", {}) if isinstance(block, dict) else block.input
+            calls.append((str(name), dict(params)))
+    return calls
+
+
+def _analysis_source() -> str:
+    """Return exact source for the pure-numpy analysis used by exported routines."""
+    from microclaw import image_analysis
+    parts = [
+        "UNCALIBRATED_MIN_SNR_FALLBACK = 3.1\n",
+        "class ImageStats(NamedTuple):\n"
+        "    focus_metric: float\n    focus_metric_valid: bool\n"
+        "    background_level: float\n    snr: float\n    mean_intensity: float\n"
+        "    max_intensity: float\n    min_intensity: float\n"
+        "    saturated_fraction: float\n",
+    ]
+    for fn in (image_analysis.snr, image_analysis.tenengrad, image_analysis.compute_stats):
+        parts.append(inspect.getsource(fn))
+    return "\n".join(parts)
+
+
+def export_session_script(
+    ctrl: MicroscopeController,
+    guard: SafetyGuard,
+    output_path: str,
+    records: list[dict],
+) -> dict:
+    """Compile recorded calls to a standalone pycro-manager script."""
+    path = guard.resolve_in_workspace(output_path)
+    lines = [
+        "from typing import NamedTuple",
+        "import numpy as np",
+        "from pycromanager import Acquisition, Core, multi_d_acquisition_events",
+        "",
+        _analysis_source().rstrip(),
+        "",
+        "core = Core()",
+    ]
+    emitted = 0
+    for name, params in _recorded_tool_calls(records):
+        if name == "export_session_script":
+            continue
+        fn = TOOL_REGISTRY.get(name)
+        renderer = getattr(fn, "_microclaw_emitter", None)
+        lines.append("")
+        lines.append(f"# RECORDED TOOL: {name}")
+        if renderer is None:
+            lines.append(f"# NOT EMITTED: {name}")
+            lines.append(f"raise RuntimeError({('NOT EMITTED: ' + name)!r})")
+            break
+        lines.extend(renderer(params).splitlines())
+        emitted += 1
+    source = "\n".join(lines) + "\n"
+    Path(path).write_text(source, encoding="utf-8")
+    return {
+        "status": "Session script exported.",
+        "output_path": str(path),
+        "emitted_calls": emitted,
+        "artifact": {"kind": "python", "path": str(path)},
+    }
+
+
 def _require_confirmation(summary: str, kind: str = "action") -> bool:
     """Blocking stdin confirmation for actions that persist model-writable content.
 
@@ -304,6 +408,7 @@ def stop_live_view(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     return {"status": "Live view stopped."}
 
 
+@emits(lambda p: f"core.set_exposure({p['ms']!r})")
 def set_exposure(ctrl: MicroscopeController, guard: SafetyGuard, ms: float) -> dict:
     guard.check_exposure(ms)
     ctrl.core.set_exposure(ms)
@@ -389,6 +494,11 @@ def get_xy_position(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     return {"x_um": round(x, 3), "y_um": round(y, 3)}
 
 
+@emits(lambda p: (
+    f"core.set_xy_position({p['x_um']!r}, {p['y_um']!r})"
+    if p.get("absolute", True) else
+    f"core.set_relative_xy_position({p['x_um']!r}, {p['y_um']!r})"
+))
 def move_stage_xy(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -435,6 +545,10 @@ def get_z_position(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     return {"z_um": round(z, 3)}
 
 
+@emits(lambda p: (
+    f"core.set_position({p['z_um']!r})" if p.get("absolute", True)
+    else f"core.set_relative_position({p['z_um']!r})"
+))
 def move_stage_z(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -549,6 +663,10 @@ def _has_channel_authorization_map(ctrl: MicroscopeController) -> bool:
     """
     return getattr(ctrl, "authorization_map", None) is not None
 
+@emits(lambda p: (
+    f"core.set_config('Channel', {p['preset']!r})\n"
+    f"core.wait_for_config('Channel', {p['preset']!r})"
+))
 def set_channel(
     ctrl: MicroscopeController, guard: SafetyGuard, preset: str, *, cancel=None
 ) -> dict:
@@ -572,6 +690,7 @@ def get_available_channels(ctrl: MicroscopeController, guard: SafetyGuard) -> di
 
 # --- Device Properties ---
 
+@emits(lambda p: f"core.set_property({p['device']!r}, {p['property']!r}, {p['value']!r})")
 def set_device_property(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -961,6 +1080,9 @@ def _acq_dataset_path(acq, save_dir: str, name: str) -> str:
 
 
 @_acquisition_entry_point
+@emits(lambda p: _emit_acquisition({
+    "z_start": p["z_start_um"], "z_end": p["z_end_um"], "z_step": p["z_step_um"]
+}, p, "zstack"))
 def run_zstack(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -1069,6 +1191,9 @@ def shutter_declared_illumination(
 
 
 @_acquisition_entry_point
+@emits(lambda p: _emit_acquisition({
+    "num_time_points": p["n_frames"], "time_interval_s": p["interval_s"]
+}, p, "timelapse"))
 def run_timelapse(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -4988,6 +5113,7 @@ TOOL_REGISTRY = {
     "snap_to_album": snap_to_album,
     "get_mda_settings": get_mda_settings,
     "run_mda": run_mda,
+    "export_session_script": export_session_script,
     "save_knowledge": save_knowledge,
     "get_knowledge": get_knowledge,
     "delete_knowledge": delete_knowledge,
