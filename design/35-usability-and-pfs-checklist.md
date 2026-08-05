@@ -138,7 +138,7 @@ a cold session resumes from the remote alone.
 - **Track D's next blocks are 13 and 41b**, which may now run concurrently with
   each other and with 6a, in separate worktrees (13 is `tools.py`, 41b is the
   emitters plus `image_analysis.py`). 41c follows 41b.
-  **Both were assigned 2026-08-05 from `2d66045`**, in worktrees
+  **Both were assigned 2026-08-05 from `03dcea0`**, in worktrees
   `../microclaw-13` and `../microclaw-41b`. Three branches are now in flight at
   once (6a, 13, 41b); 6a is the only one whose next step belongs to the rig.
 - **Baseline re-measured 2026-08-05 at `2d66045`** — the boundary-refresh merge —
@@ -294,9 +294,9 @@ assistant's narration when judging whether a guard fired.
 | 7b | Nikon | 7a | `design34/continuous-focus-policy` | | | **required** | | |
 | 7c | Nikon | — | — | — | — | — | **SKIPPED 2026-08-05** — merged into 7a | design/40 D3 |
 | 8 | Nikon | 6, 7a, 7b | `design33/phase5-continuous-focus` | | | required | | |
-| 13 | Platform | 41a merged; may run concurrently with Track B and 41b | `design40/platform-defects` | `2d66045` | | **required** | | |
+| 13 | Platform | 41a merged; may run concurrently with Track B and 41b | `design40/platform-defects` | `03dcea0` | | **required** | | |
 | 41a | Platform | none — **assign first in Track D** | `design41/session-survival` (deleted) | `b0ee300` | `501287f` + `bb58551` (round 1 returned) | n/a — no rig surface | `1fb284d` | **done** — design/16 §5 "The invariant is not about Stop"; design/41 F2/F3/F7 ticked |
-| 41b | Platform | 41a merged | `design41/script-export` | `2d66045` | | **required** | | |
+| 41b | Platform | 41a merged | `design41/script-export` | `03dcea0` | | **required** | | |
 | 41c | Platform | 41b merged | `design41/emu-channel-plan` | | | **required** — M5 + demo | | |
 | 9 | Features | operator intake | `design26/generated-adapter-run-b` | | | required | | |
 | 10 | Features | 9; optional | `design26/few-shot-run-c` | | | required or marked skipped | | |
