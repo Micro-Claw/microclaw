@@ -127,9 +127,23 @@ rescoped against the Nikon sessions** (design/40). Recorded because these facts
 otherwise exist only in a closed conversation, and step 9's whole point is that
 a cold session resumes from the remote alone.
 
-- **Block 6a was assigned 2026-08-05 from `e1ad3cb`** (branch
-  `design34/focus-system-authorization`), the first Track B block. Nothing else
-  is in flight; Track D's 41a remains available to a second worktree.
+- **Block 6a is pushed and awaiting its rig gate** (branch
+  `design34/focus-system-authorization` at `4994f3e`, assigned 2026-08-05 from
+  `f41c89a`). Two review rounds were returned before it was shippable. Nothing
+  else is in flight; Track D's 41a remains available to a second worktree.
+- **All three review rounds found the same shape of defect, and none of them
+  were in the product code after round 1.** Round 1: five existing tests were
+  silently uncollected because a test was defined at column 0 inside a class
+  body — and the added/dropped counts cancelled exactly, so the "judge by
+  collected total" rule did not catch it either. Rounds 1 and 2: four gate
+  criteria that could not fail or could not pass — a PFS-write check satisfied
+  by a *read* (it passed on the pre-fix baseline session), OR'd `Select-String`
+  patterns counted as a sum (read 9 on the operator's own correct profile
+  against an expected 2), a `position_um` argument that does not exist
+  (`move_named_stage` takes `um`, so it read 0 on any run), and a threshold of 4
+  against a string only 3 call sites emit. **Every one was found by running the
+  pattern over captured evidence, and none was visible by reading it.** See the
+  standing rule proposed for the post-merge design gate below.
 - **`main` is at `e1ad3cb`, re-measured 1492 passed / 99 skipped / 3 expected
   warnings on macOS (2026-08-05)** — unchanged from `bb57e3c`, which only
   gained design/41's docs. The older wording follows.
@@ -254,7 +268,7 @@ assistant's narration when judging whether a guard fired.
 | 4d | Usability | 4c merged | `design33/property-authorization-rename` (deleted) | `052179d` | `fd4c5b6` + `c063f16` + `029b5f4` | demo G0/G1/G2 + M5 G4 **PASS** 2026-08-03; G3 closed by offline replay | `5f56679` | **done** — design/33 §"Block 4d landed" |
 | 5 | Usability | 4b, 4e, 4f, 4h, 4c, 4d | `design33/deployed-config-hygiene` | `a27997f` | `6262acb` + `577acc4` + `c0344f2` + `8028145` + `c48edc1` (round 1 returned) | demo G0–G3 + M5 G0/G4 all **PASS** 2026-08-04 | `d14c147` | **done** — design/33 §"Block 5 landed", design/17 §"Block 5: the first-run path moved" |
 | 5b | Usability | 5 merged | `design17/guided-install` (deleted) | `3d63a6c` | `c2ee97c` + `11000bd` + `eb94b2e` + runbook `644e592`/`c1cdc62`/`d585549` (round 1 returned) | demo G0/G1/G3 + M5 G0/G2 **PASS** 2026-08-04; operator confirmed full `install.bat` on M5 | `ab5e97c` | **done** — design/17 §"Block 5b: the installer guides the whole first run" |
-| 6a | Nikon | — **assign first** | `design34/focus-system-authorization` | `f41c89a` | | **required** | | |
+| 6a | Nikon | — **assign first** | `design34/focus-system-authorization` | `f41c89a` | `eb93067` + `49b2487` + `2a5ca10`; runbook `21e708e`/`8db66cc`/`4994f3e` (rounds 1 and 2 returned) | **pushed 2026-08-05, awaiting the Nikon + any non-EMU rig** | | |
 | 6 | Nikon | 6a | `design34/measured-position-readback` | | | **required** — 11:40 session is the pre-fix baseline; probe S not owed | | |
 | 7a | Nikon | 6a | `design34/continuous-focus-capability` | | | **required** | | |
 | 7b | Nikon | 7a | `design34/continuous-focus-policy` | | | **required** | | |
