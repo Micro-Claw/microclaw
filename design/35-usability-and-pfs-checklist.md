@@ -254,7 +254,7 @@ assistant's narration when judging whether a guard fired.
 | 4d | Usability | 4c merged | `design33/property-authorization-rename` (deleted) | `052179d` | `fd4c5b6` + `c063f16` + `029b5f4` | demo G0/G1/G2 + M5 G4 **PASS** 2026-08-03; G3 closed by offline replay | `5f56679` | **done** — design/33 §"Block 4d landed" |
 | 5 | Usability | 4b, 4e, 4f, 4h, 4c, 4d | `design33/deployed-config-hygiene` | `a27997f` | `6262acb` + `577acc4` + `c0344f2` + `8028145` + `c48edc1` (round 1 returned) | demo G0–G3 + M5 G0/G4 all **PASS** 2026-08-04 | `d14c147` | **done** — design/33 §"Block 5 landed", design/17 §"Block 5: the first-run path moved" |
 | 5b | Usability | 5 merged | `design17/guided-install` (deleted) | `3d63a6c` | `c2ee97c` + `11000bd` + `eb94b2e` + runbook `644e592`/`c1cdc62`/`d585549` (round 1 returned) | demo G0/G1/G3 + M5 G0/G2 **PASS** 2026-08-04; operator confirmed full `install.bat` on M5 | `ab5e97c` | **done** — design/17 §"Block 5b: the installer guides the whole first run" |
-| 6a | Nikon | — **assign first** | `design34/focus-system-authorization` | `e1ad3cb` | | **required** | | |
+| 6a | Nikon | — **assign first** | `design34/focus-system-authorization` | `f41c89a` | | **required** | | |
 | 6 | Nikon | 6a | `design34/measured-position-readback` | | | **required** — 11:40 session is the pre-fix baseline; probe S not owed | | |
 | 7a | Nikon | 6a | `design34/continuous-focus-capability` | | | **required** | | |
 | 7b | Nikon | 7a | `design34/continuous-focus-policy` | | | **required** | | |
