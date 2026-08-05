@@ -79,9 +79,17 @@ because a block looks small.
    history, not an editor buffer).
 2. **Delegate the implementation.** Hand one block, its named design sections,
    and its acceptance evidence to an implementation agent in **its own git
-   worktree**. This is a standing instruction to use the Agent tool; it
-   overrides the usual "don't spawn agents unless asked." Do not code the block
-   inline. The implementer commits and reports; it never merges.
+   worktree**. Do not code the block inline. The implementer commits and
+   reports; it never merges.
+
+   **Write the runner prompt to the scratchpad, then stop and offer to start the
+   agent. Do not spawn it automatically.** The prompt is the deliverable of this
+   step; running it is a separate decision that is the user's, because the same
+   prompt is often handed to a different agent runner (codex, for example)
+   instead. Say the prompt is ready, say what it covers, and ask. This is the one
+   place the block workflow does *not* override "don't spawn agents unless
+   asked" — everything else about delegation still stands, including that the
+   work does not get done inline.
 3. **Review what comes back.** Read the diff, not the summary. Re-run the suite
    yourself rather than accepting the reported count. Return findings to the
    implementer and repeat 2–3 until the code is right. Rejecting an
