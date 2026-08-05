@@ -1582,7 +1582,8 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Detect whether EMU and/or htSMLM are installed by scanning the Micro-Manager "
             "plugins directory for their JAR files. "
-            "Returns emu_installed, htsmlm_installed, the MM app directory found, and the "
+            "Returns emu_installed, htsmlm_installed, htsmlm_configured, the MM app "
+            "directory found, and the "
             "names of any plugin JARs discovered. "
             "Call this to determine whether get_htsmlm_documentation and get_emu_configuration "
             "are relevant for the current setup. If neither plugin is detected AND the user has "
@@ -1608,8 +1609,9 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Read the EMU configuration and return the AUTHORITATIVE structured map "
             "from htSMLM semantic names to Micro-Manager devices/properties: 'lasers' "
-            "(slot index → its own enable, power and trigger lines), 'filter_wheel' "
-            "(with the state → value table), 'focus_lock', 'other', and 'unallocated' "
+            "(slot index → its name and own enable, power and trigger lines), "
+            "'filter_wheels' (ordinal → named slot/value table), 'focus_lock', "
+            "'other', and 'unallocated' "
             "(names only). On an EMU/htSMLM rig, call this BEFORE list_device_properties "
             "or any device probing — never infer a laser/filter/trigger index from "
             "device naming order. "
@@ -1651,7 +1653,9 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Resolve an EMU semantic UIProperty name (e.g. 'Laser 3 enable', "
             "'Filter wheel position') to its Micro-Manager {device, property} pair. "
-            "Use this instead of guessing which device backs an htSMLM control."
+            "Accepts exact UIProperty keys or configured names such as '640' and 'BFP'. "
+            "A laser name returns its whole paired slot record. Use this instead of "
+            "guessing which device backs an htSMLM control."
         ),
         "input_schema": {
             "type": "object",

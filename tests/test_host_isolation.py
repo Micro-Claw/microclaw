@@ -56,7 +56,7 @@ def test_emu_discovery_never_touches_the_host(monkeypatch):
         emu_manager, "find_mm_app_dir",
         lambda *a, **k: pytest.fail("a unit test reached for the host's MM install"),
     )
-    assert tools._cached_emu_properties(MagicMock()) is None
+    assert tools._cached_emu_properties(MagicMock()) == (None, {})
 
 
 def test_get_system_state_reports_no_laser_map_by_default(unconstrained_guard):
@@ -69,10 +69,10 @@ def test_get_system_state_reports_no_laser_map_by_default(unconstrained_guard):
 
 def test_a_test_can_still_opt_in_to_an_emu_rig(monkeypatch, unconstrained_guard):
     # The guard is a default, not a wall: patches in the test body win.
-    monkeypatch.setattr(tools, "_cached_emu_properties", lambda ctrl: {"stub": {}})
+    monkeypatch.setattr(tools, "_cached_emu_properties", lambda ctrl: ({"stub": {}}, {}))
     monkeypatch.setattr(
         "microclaw.emu_manager.build_emu_map",
-        lambda props: {"lasers": {1: {"enable": {"device": "L1", "property": "On"}}}},
+        lambda props, params: {"lasers": {1: {"enable": {"device": "L1", "property": "On"}}}},
     )
     ctrl = MagicMock()
     ctrl.core.get_property.return_value = "0"

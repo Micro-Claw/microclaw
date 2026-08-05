@@ -1551,7 +1551,7 @@ def test_center_feature_refuses_without_calibration(headless_mm, unconstrained_g
 def test_focus_lock_state_is_unknown_on_a_non_emu_rig(headless_mm, unconstrained_guard, monkeypatch):
     """§5: engaged=None means 'unknown' — never a false reassurance of False."""
     from microclaw import tools
-    monkeypatch.setattr(tools, "_cached_emu_properties", lambda ctrl: None)
+    monkeypatch.setattr(tools, "_cached_emu_properties", lambda ctrl: (None, {}))
     result = tools.get_focus_lock_state(headless_mm, unconstrained_guard)
     assert result["engaged"] is None
     assert "reason" in result

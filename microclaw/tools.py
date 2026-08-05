@@ -706,7 +706,20 @@ def get_full_device_state(
 # --- System State ---
 
 _NO_LASER_MAP = (
-    "unknown — no EMU laser map on this rig, so microclaw cannot read laser state"
+    "unknown — this rig has no EMU laser map, which is the only per-SLOT laser "
+    "source microclaw has. This is not evidence that the rig has no lasers: a "
+    "non-EMU rig drives its lasers as ordinary device properties. Read "
+    "declared_illumination_properties and list_devices before saying anything "
+    "about what illumination exists here."
+)
+
+# Absence of an EMU config is a fact about microclaw's map, not about the
+# hardware. The demo rig ships Emu.jar with no config.uicfg, so "not an EMU
+# rig" was wrong there in both directions.
+_NO_EMU_CONFIG = (
+    "No EMU configuration file on this rig, so the EMU semantic map is "
+    "unavailable. That does not mean the rig has no lasers or filters — on a "
+    "non-EMU rig they are ordinary device properties."
 )
 
 
@@ -754,11 +767,11 @@ def _laser_state(ctrl: MicroscopeController) -> Any:
     """
     from microclaw.emu_manager import build_emu_map
 
-    props = _cached_emu_properties(ctrl)
+    props, params = _cached_emu_properties(ctrl)
     if not props:
         return _NO_LASER_MAP
     try:
-        lasers = build_emu_map(props)["lasers"]
+        lasers = build_emu_map(props, params)["lasers"]
     except Exception:
         return "unknown"
     if not lasers:
@@ -767,6 +780,8 @@ def _laser_state(ctrl: MicroscopeController) -> Any:
     out: dict[int, Any] = {}
     for slot, laser in sorted(lasers.items()):
         readings: dict[str, Any] = {}
+        if "name" in laser:
+            readings["name"] = laser["name"]
         for key, field in (("enabled", "enable"), ("power_pct", "power_pct")):
             line = laser.get(field)
             if not line or "device" not in line:
@@ -995,14 +1010,14 @@ def _verify_trigger_line_armed(ctrl: MicroscopeController, laser_slot: int) -> d
     """
     from microclaw.emu_manager import build_emu_map
 
-    props = _cached_emu_properties(ctrl)
+    props, params = _cached_emu_properties(ctrl)
     if not props:
         return {
             "guarantee": "no trigger-line verification available",
             "checked": [],
             "not_verified": ["device-level enables", "illumination properties", "emission path"],
         }
-    lasers = build_emu_map(props)["lasers"]
+    lasers = build_emu_map(props, params)["lasers"]
     laser = lasers.get(laser_slot)
     if laser is None:
         raise SafetyViolation(
@@ -4272,13 +4287,16 @@ def get_smlm_documentation(ctrl: MicroscopeController, guard: SafetyGuard) -> di
 
 
 def check_emu_installed(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
-    from microclaw.emu_manager import find_mm_app_dir, find_plugin_jars, _emu_config_path
+    from microclaw.emu_manager import (
+        find_mm_app_dir, find_plugin_jars, read_emu_config, _emu_config_path,
+    )
 
     mm_dir = find_mm_app_dir(ctrl)
     if mm_dir is None:
         return {
             "emu_installed": False,
             "htsmlm_installed": False,
+            "htsmlm_configured": False,
             "mm_app_dir": None,
             "note": (
                 "Micro-Manager installation directory not found automatically. "
@@ -4289,9 +4307,19 @@ def check_emu_installed(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
 
     jars = find_plugin_jars(mm_dir)
     config_exists = _emu_config_path(mm_dir).exists()
+    plugin_name = ""
+    if config_exists:
+        try:
+            plugin_name = read_emu_config(mm_dir).get("plugin_name", "")
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
+    htsmlm_configured = "".join(
+        char for char in plugin_name.casefold() if char.isalnum()
+    ) == "htsmlm"
     return {
         "emu_installed": bool(jars["EMU"]) or config_exists,
         "htsmlm_installed": bool(jars["htSMLM"]),
+        "htsmlm_configured": htsmlm_configured,
         "mm_app_dir": str(mm_dir),
         "emu_jars": jars["EMU"],
         "htsmlm_jars": jars["htSMLM"],
@@ -4379,25 +4407,34 @@ def _read_emu_properties(ctrl: MicroscopeController, mm_app_dir: str) -> dict:
         device_labels = []
     config = read_emu_config(mm_app_dir, device_labels)
     _EMU_SESSION_CACHE["properties"] = config["properties"]
+    _EMU_SESSION_CACHE["parameters"] = config["parameters"]
     _EMU_SESSION_CACHE["plugin_name"] = config.get("plugin_name", "")
     return config
 
 
-def _cached_emu_properties(ctrl: MicroscopeController) -> dict | None:
-    """Parsed EMU properties, or None when this is not an EMU rig."""
+def _cached_emu_properties(
+    ctrl: MicroscopeController,
+) -> tuple[dict | None, dict]:
+    """Parsed EMU properties and parameters for this session."""
     if "properties" in _EMU_SESSION_CACHE:
-        return _EMU_SESSION_CACHE["properties"]
+        return (
+            _EMU_SESSION_CACHE["properties"],
+            _EMU_SESSION_CACHE.get("parameters", {}),
+        )
     from microclaw.emu_manager import find_mm_app_dir
 
     try:
         mm_dir = find_mm_app_dir(ctrl)
         if mm_dir is None:
             _EMU_SESSION_CACHE["properties"] = None
-            return None
-        return _read_emu_properties(ctrl, str(mm_dir))["properties"]
+            _EMU_SESSION_CACHE["parameters"] = {}
+            return None, {}
+        config = _read_emu_properties(ctrl, str(mm_dir))
+        return config["properties"], config["parameters"]
     except Exception:
         _EMU_SESSION_CACHE["properties"] = None
-        return None
+        _EMU_SESSION_CACHE["parameters"] = {}
+        return None, {}
 
 
 def get_emu_configuration(
@@ -4437,7 +4474,7 @@ def get_emu_configuration(
     # Structured, placeholder-free view (design/14 §2): same information as
     # the raw property dict at ~1/3 the tokens, shaped so a laser cannot be
     # mismatched to another slot's trigger line.
-    emu_map = build_emu_map(config["properties"])
+    emu_map = build_emu_map(config["properties"], config["parameters"])
     return {
         "config_name": config["config_name"],
         "plugin_name": config["plugin_name"],
@@ -4475,10 +4512,10 @@ def get_focus_lock_state(ctrl: MicroscopeController, guard: SafetyGuard) -> dict
     """
     from microclaw.emu_manager import build_emu_map
 
-    props = _cached_emu_properties(ctrl)
+    props, params = _cached_emu_properties(ctrl)
     if not props:
         return {"engaged": None, "reason": "No EMU configuration — cannot read a focus lock."}
-    lock = build_emu_map(props)["focus_lock"]
+    lock = build_emu_map(props, params)["focus_lock"]
     if lock is None or "device" not in lock:
         return {"engaged": None, "reason": "No focus-lock property in the EMU map."}
     value = str(ctrl.core.get_property(lock["device"], lock["property"]))
@@ -4497,10 +4534,10 @@ def set_focus_lock(
     """Engage or disengage the hardware focus lock via the EMU map."""
     from microclaw.emu_manager import build_emu_map
 
-    props = _cached_emu_properties(ctrl)
+    props, params = _cached_emu_properties(ctrl)
     if not props:
         return {"error": "No EMU configuration — cannot control a focus lock."}
-    lock = build_emu_map(props)["focus_lock"]
+    lock = build_emu_map(props, params)["focus_lock"]
     if lock is None or "device" not in lock:
         return {"error": "No focus-lock property in the EMU map."}
     target = str(lock.get("on", "1")) if enabled else str(lock.get("off", "0"))
@@ -4519,10 +4556,10 @@ def get_emu_laser_map(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     """The slot → laser table (enable / power / trigger lines) from the EMU map."""
     from microclaw.emu_manager import build_emu_map
 
-    props = _cached_emu_properties(ctrl)
+    props, params = _cached_emu_properties(ctrl)
     if not props:
-        return {"error": "No EMU configuration found — this is not an EMU/htSMLM rig."}
-    lasers = build_emu_map(props)["lasers"]
+        return {"error": _NO_EMU_CONFIG}
+    lasers = build_emu_map(props, params)["lasers"]
     return {
         "lasers": lasers,
         "note": (
@@ -4538,21 +4575,24 @@ def resolve_emu_device(
     """Resolve an EMU semantic name ('Laser 3 enable') to its MM device/property."""
     from microclaw.emu_manager import resolve_emu_device as _resolve
 
-    props = _cached_emu_properties(ctrl)
+    props, params = _cached_emu_properties(ctrl)
     if not props:
-        return {"error": "No EMU configuration found — this is not an EMU/htSMLM rig."}
+        return {"error": _NO_EMU_CONFIG}
     try:
-        return {"semantic_name": semantic_name, **_resolve(props, semantic_name)}
+        return {
+            "semantic_name": semantic_name,
+            **_resolve(props, semantic_name, params),
+        }
     except KeyError as e:
         return {"error": str(e).strip("'\"")}
 
 
 def _emu_power_entry(ctrl: MicroscopeController, slot: int) -> dict:
     from microclaw.emu_manager import build_emu_map
-    props = _cached_emu_properties(ctrl)
+    props, params = _cached_emu_properties(ctrl)
     if not props:
-        raise ValueError("No EMU configuration found — this is not an EMU/htSMLM rig.")
-    entry = build_emu_map(props)["lasers"].get(int(slot), {}).get("power_pct")
+        raise ValueError(_NO_EMU_CONFIG)
+    entry = build_emu_map(props, params)["lasers"].get(int(slot), {}).get("power_pct")
     if not entry or "device" not in entry:
         raise ValueError(f"EMU laser slot {slot} has no allocated percentage property.")
     try:
