@@ -52,6 +52,15 @@ def test_static_contract_accepts_runner_callback_signature():
     assert validate_hook_contract(code) == []
 
 
+def test_static_contract_rejects_reversed_emit_artifact_arguments():
+    code = (
+        "class Hook:\n"
+        " def analyze_frame(self, image, metadata):\n"
+        "  return HookResult({}, (EmitArtifact(image, self.filename),))\n"
+    )
+    assert "arguments are reversed" in validate_hook_contract(code)[0]
+
+
 def test_subprocess_blocked():
     code = "import subprocess\nsubprocess.run(['rm', '-rf', '/'])"
     warnings = lint_hook_code(code)

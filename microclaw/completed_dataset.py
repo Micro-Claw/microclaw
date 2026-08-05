@@ -256,9 +256,7 @@ def run_analysis_on_saved_dataset(
     output_dir = guard.resolve_in_workspace(output_dir)
     Path(output_dir).mkdir(parents=True, exist_ok=False)
     if input_kind == "stage_coordinate_mosaic":
-        if calibration_ref is None:
-            raise ValueError("stage_coordinate_mosaic requires an explicit calibration_ref")
-        if calibration_ref.get("kind") == "confirmed_current":
+        if calibration_ref is not None and calibration_ref.get("kind") == "confirmed_current":
             raise ValueError(
                 "confirmed_current calibration requires a live microscope core and is "
                 "not available to completed-dataset replay; use artifact or knowledge_version"

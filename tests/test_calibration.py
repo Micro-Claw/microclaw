@@ -106,9 +106,10 @@ class TestPersistence:
 
 
 class FakeDataset:
-    def __init__(self, records):
+    def __init__(self, records, summary_metadata=None):
         self.records = records
         self.axes = {"position": [record[0] for record in records]}
+        self.summary_metadata = summary_metadata or {}
 
     def has_image(self, **coords):
         return coords["position"] in dict(self.records)
@@ -141,6 +142,16 @@ def _real_metadata(
 
 
 class TestCalibrationResolver:
+    def test_mm_summary_affine_transform_is_accepted_without_objective(self):
+        dataset = FakeDataset(
+            [("p", _real_metadata(None))],
+            summary_metadata={"AffineTransform": "0.01_-0.1_-0.1_-0.01"},
+        )
+        affine, identity = resolve_calibration(dataset, None)
+        assert (affine.a, affine.b, affine.c, affine.d) == (0.01, -0.1, -0.1, -0.01)
+        assert affine.objective == ""
+        assert identity["source_reference"]["metadata_key"] == "AffineTransform"
+
     def test_mm_row_major_and_sentinels(self):
         affine = parse_mm_pixel_size_affine(
             "1;2;3;4;5;6", objective="obj", binning=1

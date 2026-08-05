@@ -135,6 +135,29 @@ def validate_hook_contract(code: str) -> list[str]:
                 ("self, image, and metadata." if fn.name == "analyze_frame" else
                  "self, image, metadata, and event_queue.")
             )
+    for call in (node for node in ast.walk(tree) if isinstance(node, ast.Call)):
+        name = call.func.id if isinstance(call.func, ast.Name) else None
+        if name != "EmitArtifact" or len(call.args) != 2:
+            continue
+        first, second = call.args
+        first_payload = (
+            isinstance(first, (ast.Bytes, ast.List, ast.Tuple))
+            or (isinstance(first, ast.Call) and isinstance(first.func, ast.Attribute)
+                and first.func.attr in {"array", "asarray", "zeros", "ones"})
+            or (isinstance(first, ast.Name) and any(token in first.id.lower()
+                for token in ("image", "canvas", "payload", "data")))
+        )
+        second_filename = (
+            isinstance(second, ast.Constant) and isinstance(second.value, str)
+            or isinstance(second, ast.Name) and any(token in second.id.lower()
+                for token in ("filename", "file_name"))
+            or isinstance(second, ast.Attribute) and "filename" in second.attr.lower()
+        )
+        if first_payload and second_filename:
+            errors.append(
+                "EmitArtifact arguments are reversed: use "
+                "EmitArtifact(filename=<bare filename>, payload=<bytes or ndarray>)."
+            )
     return errors
 
 

@@ -159,7 +159,9 @@ always permitted even after the increasing-write budget is exhausted, and does n
 consume that budget. An aborted or failed run may never reach the hook's intended
 final frame, so hardware can remain at whatever value the last accepted write set.
 
-EmitArtifact carries bytes or an ndarray and a bare filename, never a path. Trusted
+EmitArtifact is constructed as ``EmitArtifact(filename, payload)`` (prefer the
+unambiguous keyword form ``EmitArtifact(filename="result.tiff", payload=image)``).
+The filename is bare, never a path; payload is bytes or an ndarray. Trusted
 parent code confines and exclusively creates the file in the run artifact directory,
 enforces per-file and per-run limits, hashes it, and records the path and sha256.
 A HookResult may propose at most one artifact per frame; this keeps the observation's

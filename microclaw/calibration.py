@@ -325,6 +325,8 @@ def _acquisition_calibration(
 ) -> tuple[tuple[StageCameraAffine, dict] | None, str | None]:
     from microclaw.tools import _iter_present_coords
 
+    summary = getattr(dataset, "summary_metadata", {}) or {}
+    summary_affine = _metadata_value(summary, "AffineTransform")
     candidates = []
     frame_count = 0
     rois = []
@@ -332,6 +334,10 @@ def _acquisition_calibration(
         frame_count += 1
         metadata = dataset.read_metadata(**coords)
         raw = _metadata_value(metadata, "PixelSizeAffine", "PixelSizeAffineString")
+        affine_source = "PixelSizeAffine"
+        if summary_affine is not None:
+            raw = summary_affine
+            affine_source = "AffineTransform"
         objective = _metadata_value(
             metadata, "Objective", "ObjectiveLabel", "PixelSizeConfig", "PixelSizeConfigName"
         )
@@ -340,17 +346,32 @@ def _acquisition_calibration(
         camera_model = _metadata_value(
             metadata, "CameraModel", "CameraDeviceName", "CameraAdapter",
             f"{camera_device}-Camera" if camera_device is not None else "",
+            f"{camera_device}-CameraName" if camera_device is not None else "",
         )
         roi = _parse_roi(_metadata_value(metadata, "ROI", "Roi", "CameraROI"))
         rois.append(None if roi is None else tuple(roi))
         try:
-            affine = parse_mm_pixel_size_affine(
-                raw, objective=str(objective) if objective is not None else "",
-                binning=int(str(binning).split("x")[0]),
-            )
+            if affine_source == "AffineTransform":
+                values = [float(value) for value in str(raw).split("_")]
+                if len(values) != 4:
+                    raise ValueError("AffineTransform must contain four values")
+                affine = StageCameraAffine(
+                    values[0], values[1], values[2], values[3],
+                    str(objective) if objective is not None else "",
+                    int(str(binning).split("x")[0]),
+                    float(np.sqrt(abs(np.linalg.det(np.asarray(values).reshape(2, 2))))),
+                )
+                if not all(math.isfinite(value) for value in values) or affine.pixel_size_um <= 0:
+                    affine = None
+            else:
+                affine = parse_mm_pixel_size_affine(
+                    raw, objective=str(objective) if objective is not None else "",
+                    binning=int(str(binning).split("x")[0]),
+                )
         except (TypeError, ValueError):
             affine = None
-        candidates.append((affine, objective, camera_device, camera_model, roi, coords))
+        candidates.append((affine, objective, camera_device, camera_model, roi, coords,
+                           affine_source))
     known_rois = {roi for roi in rois if roi is not None}
     if len(known_rois) > 1 or (known_rois and any(roi is None for roi in rois)):
         raise CalibrationResolutionError(
@@ -373,17 +394,19 @@ def _acquisition_calibration(
         raise CalibrationResolutionError(
             "Dataset calibration identity changes between frames"
         )
-    affine, objective, camera_device, camera_model, roi, coords = first
+    affine, objective, camera_device, camera_model, roi, coords, _source = first
     missing = [name for name, value in (
-        ("objective", objective), ("binning", affine.binning),
+        ("binning", affine.binning),
         ("camera_device", camera_device), ("camera_model", camera_model), ("roi", roi),
     ) if value is None or value == ""]
+    if first[6] != "AffineTransform" and (objective is None or objective == ""):
+        missing.insert(0, "objective")
     if missing:
         return None, "acquisition calibration identity is incomplete; missing " + ", ".join(missing)
-    affine.objective = str(objective)
+    affine.objective = "" if objective is None else str(objective)
     return (affine, _identity_for_affine(
         affine, source_kind="acquisition_recorded",
-        source_reference={"metadata_key": "PixelSizeAffine", "coordinates": coords},
+        source_reference={"metadata_key": first[6], "coordinates": coords},
         camera_device=camera_device, camera_model=camera_model, roi=roi,
     )), None
 
@@ -475,8 +498,17 @@ def resolve_calibration(
             "supply an artifact, "
             "immutable version, or explicitly confirmed current calibration." + detail
         )
+    accepted = (
+        "{'kind':'artifact','path':'...'}, "
+        "{'kind':'knowledge_version','key':'...'}, "
+        "{'kind':'confirmed_current','objective':'...','binning':1}, or "
+        "{'kind':'legacy_derived','pixel_size_um':...,'objective':'...','binning':1}"
+    )
     if not isinstance(calibration_ref, dict) or "kind" not in calibration_ref:
-        raise CalibrationResolutionError("calibration_ref must be one tagged object")
+        raise CalibrationResolutionError(
+            "calibration_ref must contain a 'kind' discriminator. Accepted shapes: "
+            + accepted
+        )
     kind = calibration_ref["kind"]
 
     def with_fallthrough(identity: dict) -> dict:
@@ -548,4 +580,6 @@ def resolve_calibration(
             camera_device=calibration_ref.get("camera_device"),
             camera_model=calibration_ref.get("camera_model"), roi=calibration_ref.get("roi"),
         ))
-    raise CalibrationResolutionError(f"Unknown calibration_ref kind: {kind!r}")
+    raise CalibrationResolutionError(
+        f"Unknown calibration_ref kind: {kind!r}. Accepted shapes: {accepted}"
+    )

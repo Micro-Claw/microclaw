@@ -1559,7 +1559,7 @@ def calibrate_stage_to_camera(
     F4). With no pixel size to scale against, step_um falls back to 20 µm.
     """
     from skimage.registration import phase_cross_correlation
-    from microclaw.calibration import save_affine, solve_affine
+    from microclaw.calibration import affine_version_key, save_affine, solve_affine
 
     px_hint = _calibration_pixel_size_hint(ctrl, pixel_size_hint_um)
     x0, y0 = ctrl.core.get_x_position(), ctrl.core.get_y_position()
@@ -1634,6 +1634,8 @@ def calibrate_stage_to_camera(
         "step_um": step_um,
         "frame_px": list(frame_hw),
         "knowledge_key": key,
+        "calibration_ref": {"kind": "knowledge_version",
+                            "key": affine_version_key(affine)},
         "status": (
             "Calibrated and cached. Image-pixel offsets can now be converted "
             "to stage µm (find_features reports offset_from_center_um)."
@@ -2393,17 +2395,18 @@ def run_multiposition_acquisition(
             for pos_label, x_um, y_um, z_um in resolved:
                 ctrl.add_position(pos_label, float(x_um), float(y_um),
                                   float(z_um) if z_um is not None else None)
-        hooked = _acquire_positions_with_hook(
-            ctrl, guard,
-            positions=[{"name": n, "x_um": x, "y_um": y, "z_um": z}
-                       for n, x, y, z in resolved],
-            save_dir=save_dir, name=name, hook_strategy=hook_strategy,
-            hook_params=hook_params, log_path=log_path,
-            channel=params.get("channel"), exposure_ms=params.get("exposure_ms"),
-            illumination_envelope=illumination_envelope,
-            artifact_limits=artifact_limits,
-            **shape,
-        )
+        with _pause_live(ctrl):
+            hooked = _acquire_positions_with_hook(
+                ctrl, guard,
+                positions=[{"name": n, "x_um": x, "y_um": y, "z_um": z}
+                           for n, x, y, z in resolved],
+                save_dir=save_dir, name=name, hook_strategy=hook_strategy,
+                hook_params=hook_params, log_path=log_path,
+                channel=params.get("channel"), exposure_ms=params.get("exposure_ms"),
+                illumination_envelope=illumination_envelope,
+                artifact_limits=artifact_limits,
+                **shape,
+            )
         if "error" in hooked:
             return hooked
         # The coordinates are known exactly, right here — the hooked branch used
@@ -2423,6 +2426,10 @@ def run_multiposition_acquisition(
         )
         if protocol != "snap" else None
     )
+    live = ctrl.studio.live()
+    was_live = bool(live.is_live_mode_on())
+    if was_live:
+        live.set_live_mode_on(False)
     try:
         for pos_label, x_um, y_um, z_um in resolved:
             pos_save_dir = str(Path(save_dir) / pos_label) if save_dir else None
@@ -2444,6 +2451,8 @@ def run_multiposition_acquisition(
     finally:
         if reservation is not None:
             reservation.close()
+        if was_live:
+            live.set_live_mode_on(True)
 
     total = len(position_names or positions)
     n_ok = sum(1 for r in results if "error" not in r)
@@ -2552,7 +2561,9 @@ def run_tile_acquisition(
 def run_multiposition_with_autofocus(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
-    position_names: list[str],
+    *,
+    position_names: list[str] | None = None,
+    positions: list[dict] | None = None,
     z_range_um: float,
     z_step_um: float,
     protocol: str,
@@ -2566,16 +2577,24 @@ def run_multiposition_with_autofocus(
     """Visit each position, autofocus, then run a per-position protocol.
 
     """
+    if position_names is not None and positions is not None:
+        return {"error": "Provide position_names or positions, not both."}
+    if position_names is None and positions is None:
+        return {"error": "Provide either position_names or positions."}
     save_dir = guard.resolve_in_workspace(save_dir)   # before the stage moves
     params = protocol_params or {}
-    projection, conflict = _preflight_native_positions(
-        ctrl, guard, preserve_unsupported=preserve_unsupported
-    )
-    if conflict:
-        return conflict
-    all_positions = {p["name"]: p for p in projection.positions}
+    if position_names is not None:
+        projection, conflict = _preflight_native_positions(
+            ctrl, guard, preserve_unsupported=preserve_unsupported
+        )
+        if conflict:
+            return conflict
+        all_positions = {p["name"]: p for p in projection.positions}
+        requested = [(name, all_positions.get(name), True) for name in position_names]
+    else:
+        requested = [(str(p["name"]), p, False) for p in positions]
     results = []
-    valid_count = sum(1 for name in position_names if name in all_positions)
+    valid_count = sum(1 for _name, pos, _stored in requested if pos is not None)
     reservation = (
         _authorize_acquisition(
             ctrl, guard,
@@ -2589,11 +2608,10 @@ def run_multiposition_with_autofocus(
     if was_live:
         live.set_live_mode_on(False)
     try:
-        for pos_name in position_names:
-            if pos_name not in all_positions:
+        for pos_name, pos, stored in requested:
+            if pos is None:
                 results.append({"position": pos_name, "error": "Not found in position list."})
                 continue
-            pos = all_positions[pos_name]
             try:
                 guard.check_xy(pos["x_um"], pos["y_um"])
                 if "z_um" in pos:
@@ -2603,7 +2621,12 @@ def run_multiposition_with_autofocus(
                     {"position": pos_name, "error": f"Stored position out of bounds: {e}"}
                 )
                 continue
-            ctrl.go_to_position(pos_name)
+            if stored:
+                ctrl.go_to_position(pos_name)
+            else:
+                ctrl.set_xy(float(pos["x_um"]), float(pos["y_um"]))
+                if "z_um" in pos:
+                    ctrl.set_z(float(pos["z_um"]))
 
             current_z = ctrl.core.get_position()
             try:
@@ -2667,7 +2690,7 @@ def run_multiposition_with_autofocus(
 
     n_ok = sum(1 for r in results if "error" not in r)
     return {
-        "status": f"{n_ok}/{len(position_names)} positions completed with autofocus.",
+        "status": f"{n_ok}/{len(requested)} positions completed with autofocus.",
         "results": results,
     }
 
@@ -3653,26 +3676,53 @@ def inspect_artifacts(
     guard: SafetyGuard,
     paths: list[str],
     manifest_path: str | None = None,
+    max_files: int = 1000,
+    max_total_bytes: int = 1024 * 1024 * 1024,
+    max_depth: int = 16,
+    max_seconds: float = 30.0,
 ) -> dict:
-    """List and SHA-256 local artifacts, recursively and deterministically."""
+    """List and SHA-256 local artifacts within explicit resource bounds."""
+    limits = (max_files, max_total_bytes, max_depth, max_seconds)
+    if any(isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0
+           for value in limits):
+        return {"error": "Artifact inspection limits must be positive numbers."}
+    started = time.monotonic()
     files: set[Path] = set()
     for raw in paths:
         resolved = Path(guard.resolve_readable_path(raw))
         if not resolved.exists():
             return {"error": f"Artifact path not found: {resolved}"}
         if resolved.is_dir():
-            files.update(p for p in resolved.rglob("*") if p.is_file())
+            for p in resolved.rglob("*"):
+                if time.monotonic() - started > max_seconds:
+                    return {"error": f"Artifact inspection exceeded max_seconds={max_seconds}."}
+                if p.is_file():
+                    depth = len(p.relative_to(resolved).parts)
+                    if depth > max_depth:
+                        return {"error": f"Artifact inspection exceeded max_depth={max_depth}."}
+                    files.add(p)
+                    if len(files) > max_files:
+                        return {"error": f"Artifact inspection exceeded max_files={max_files}."}
         else:
             files.add(resolved)
+    total_bytes = sum(path.stat().st_size for path in files)
+    if total_bytes > max_total_bytes:
+        return {"error": (
+            f"Artifact inspection would hash {total_bytes} bytes, exceeding "
+            f"max_total_bytes={max_total_bytes}."
+        )}
     artifacts = []
     for path in sorted(files, key=lambda p: str(p)):
         digest = hashlib.sha256()
         with path.open("rb") as stream:
             for block in iter(lambda: stream.read(1024 * 1024), b""):
+                if time.monotonic() - started > max_seconds:
+                    return {"error": f"Artifact inspection exceeded max_seconds={max_seconds}."}
                 digest.update(block)
         artifacts.append({"path": str(path), "size_bytes": path.stat().st_size,
                           "sha256": digest.hexdigest()})
-    result = {"artifact_count": len(artifacts), "artifacts": artifacts}
+    result = {"artifact_count": len(artifacts), "total_bytes": total_bytes,
+              "artifacts": artifacts}
     if manifest_path:
         manifest_path = guard.resolve_in_workspace(manifest_path)
         Path(manifest_path).parent.mkdir(parents=True, exist_ok=True)

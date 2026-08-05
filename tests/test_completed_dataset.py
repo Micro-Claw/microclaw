@@ -288,12 +288,12 @@ class Cancel:
     assert result["status"] == "cancelled" and result["cancelled"]
 
 
-def test_mosaic_requires_explicit_reproducible_calibration(offline_home):
+def test_mosaic_uses_dataset_recorded_calibration_when_reference_is_omitted(offline_home):
     save, dataset, guard, root = offline_home
     save("x", "class X:\n def analyze_saved_frame(self, image, metadata, context): pass\n")
     base = (guard, str(dataset), "x", {"time": 0}, "stage_coordinate_mosaic", {}, str(root / "m"))
-    with pytest.raises(ValueError, match="explicit calibration_ref"):
-        completed_dataset.run_analysis_on_saved_dataset(*base)
+    result = completed_dataset.run_analysis_on_saved_dataset(*base)
+    assert "explicit calibration_ref" not in str(result.get("failure", {}))
     with pytest.raises(ValueError, match="live microscope core"):
         completed_dataset.run_analysis_on_saved_dataset(
             *base[:-1], str(root / "m2"), calibration_ref={"kind": "confirmed_current"}

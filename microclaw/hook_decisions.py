@@ -495,7 +495,17 @@ class UntrustedHookAdapter:
                 else:
                     raise TypeError("analyze_frame must return HookResult or None.")
                 # Parse the complete proposal before dispatching any part of it.
-                actions = tuple(parse_action(a) for a in result.actions)
+                try:
+                    actions = tuple(parse_action(a) for a in result.actions)
+                except (TypeError, ValueError) as exc:
+                    # The frame is already exposed and may already be on disk. A
+                    # malformed proposal must not turn an analysis defect into an
+                    # acquisition abort that hides the dataset from the caller.
+                    self._record(metadata, event="hook_action", decision="refused",
+                                 reason=str(exc))
+                    if self._context is not None:
+                        self._context["progress"].image_done()
+                    return image, metadata
                 if sum(isinstance(a, EmitArtifact) for a in actions) > 1:
                     raise ValueError(
                         "HookResult may propose at most one EmitArtifact per frame."

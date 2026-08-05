@@ -333,6 +333,8 @@ class TestCalibrateStageToCamera:
         assert "error" not in result
         assert result["pixel_size_um"] == pytest.approx(px, rel=0.05)
         assert result["n_snaps"] == 4
+        assert result["calibration_ref"]["kind"] == "knowledge_version"
+        assert "_sha256_" in result["calibration_ref"]["key"]
         assert pos == {"x": 0.0, "y": 0.0}, "stage must return to its start"
 
     def test_featureless_field_returns_error_not_garbage(
@@ -1094,6 +1096,21 @@ class TestRunMultipositionWithAutofocus:
         self._run(patched_ctrl, unconstrained_guard, tmp_path, monkeypatch)
 
         live.set_live_mode_on.assert_not_called()
+
+    def test_raw_positions_need_no_prior_mark(
+            self, patched_ctrl, unconstrained_guard, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "microclaw.tools.coarse_then_fine_autofocus", lambda *a, **k: _FAKE_AF_RESULT
+        )
+        result = run_multiposition_with_autofocus(
+            patched_ctrl, unconstrained_guard,
+            positions=[{"name": "raw", "x_um": 3.0, "y_um": 4.0, "z_um": 50.0}],
+            z_range_um=10.0, z_step_um=1.0, protocol="snap", save_dir=str(tmp_path),
+        )
+        assert result["status"].startswith("1/1")
+        patched_ctrl.set_xy.assert_called_once_with(3.0, 4.0)
+        patched_ctrl.set_z.assert_called_once_with(50.0)
+        patched_ctrl.go_to_position.assert_not_called()
 
     def test_live_restored_when_autofocus_raises(self, patched_ctrl, unconstrained_guard, tmp_path, monkeypatch):
         monkeypatch.setattr(
@@ -2353,6 +2370,23 @@ class TestRunAOfflineTools:
         assert result["artifacts"][0]["sha256"] == (
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         )
+
+    def test_inspect_artifacts_refuses_before_hashing_over_file_limit(
+            self, mock_ctrl, unconstrained_guard, tmp_path):
+        (tmp_path / "a").write_bytes(b"a")
+        (tmp_path / "b").write_bytes(b"b")
+        result = tools.inspect_artifacts(
+            mock_ctrl, unconstrained_guard, [str(tmp_path)], max_files=1
+        )
+        assert result == {"error": "Artifact inspection exceeded max_files=1."}
+
+    def test_inspect_artifacts_refuses_before_hashing_over_byte_limit(
+            self, mock_ctrl, unconstrained_guard, tmp_path):
+        (tmp_path / "a").write_bytes(b"abc")
+        result = tools.inspect_artifacts(
+            mock_ctrl, unconstrained_guard, [str(tmp_path)], max_total_bytes=2
+        )
+        assert "would hash 3 bytes" in result["error"]
 
     def test_compare_revisit_frames_recovers_translation(self, mock_ctrl,
                                                           unconstrained_guard,
