@@ -500,8 +500,8 @@ block 13 may run in parallel in its own worktree.
 
 | # | Block | Branch | State | Next action |
 | --- | --- | --- | --- | --- |
-| 1 | **6a** authorize the focus system | `design34/focus-system-authorization` | not started | assign to an implementer in a worktree |
-| 2 | **13** platform defects (parallel) | `design40/platform-defects` | not started | assign once 6a has an implementer |
+| 1 | **6a** authorize the focus system | `design34/focus-system-authorization` | **pushed at `4994f3e`, awaiting the rig gate** | the operator runs the Nikon gate; nothing here |
+| 2 | **13** platform defects (parallel) | `design40/platform-defects` | **assigned 2026-08-05 from `2d66045`** | implementer at work in `../microclaw-13` |
 | 3 | **6** measured read-back + failure contract | `design34/measured-position-readback` | blocked on 6a | — |
 | 4 | **7a** capability + bounded search | `design34/continuous-focus-capability` | blocked on 6a | — |
 | 5 | **7b** autofocus under lock | `design34/continuous-focus-policy` | blocked on 7a | — |
