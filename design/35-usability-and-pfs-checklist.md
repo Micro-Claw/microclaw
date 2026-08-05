@@ -35,6 +35,13 @@ Three things follow from that:
 3. **The Nikon PFS work (design/34) is a separate track** whose first step costs
    nothing and can start today. It is sequenced so that the one probe that could
    dissolve most of the design runs before any of it is built.
+   **That sequencing did not work** (2026-08-05): the probe was authored,
+   shipped, and never run, because a remote operator with less coding experience
+   could not run it — the constraint stated two sections below. Five ordinary
+   microclaw sessions supplied better evidence than the probe would have. The
+   lesson for any future remote-evidence plan is in
+   `design/40-pfs-five-sessions.md`: **ask for the rig's normal work, not for a
+   script.**
 
 Blocks 11 and 12 stay where they are in the order — after the usability and
 Nikon tracks — not because they matter less, but because they each need
@@ -135,27 +142,41 @@ that a cold session resumes from the remote alone.
   boundary, not assumed from the block headings — blocks 4 and 4b had merged and
   gated but left their item boxes unticked, and those were reconciled here
   against the ledger and the shipped code rather than blanket-ticked.
-- **The next block is 6** (`design34/measured-position-readback`), the first of
-  Track B. Order from there is 6, then 7a–7c and 8 as Track 0's evidence allows,
-  then Track C.
+- **The next block is 6a** (`design34/focus-system-authorization`), the first of
+  the rescoped Track B. Order from there is 6a, then 6 and 7a, then 7b and 8.
+  **Block 13 (Track D) may run concurrently** in its own worktree. Track C last.
 
-**Three things are outstanding, and none is a work item you can start.**
+### Rescoped 2026-08-05 — read this before touching Track B
 
-0. **0a and 0b's design-reconciliation cells say `pending`, and that is
-   deliberate.** Their gate is design/34, which currently states both PFS
-   hypotheses and commits to neither — and it cannot be reconciled until probe 0
-   answers. Those two cells close as part of 0c, not before. Do not read them as
-   forgotten bookkeeping, and do not close them by writing a conclusion the
-   evidence has not supplied.
-1. **Track 0's kit was shipped 2026-08-03 and nothing has come back.** Do not
-   re-prepare or re-ship it, and do not read 0a/0b's unticked boxes as
-   "unstarted" — both are merged (`ba695da`, `96a0a91`); the boxes are the
-   authoring spec, not a queue. Round-trip latency is days and it is the
-   longest-latency item on the board. When evidence arrives, 0c's items are the
-   triage procedure. **Block 6 does not wait on it** — 6's two defects are
-   independent of the PFS question, and probe S only supplies 6's *baseline*.
-2. **Block 6 owes a post-fix rig run**, which is why its ledger row says
-   "required" rather than pointing at probe S alone.
+**Track 0 is closed and its plan did not survive contact.** The probe kit was
+shipped 2026-08-03 and **never run** — the operator could not run the scripts
+alone, which this file warns about at `:47`. What came back instead is five real
+microclaw sessions from 2026-08-05, and they establish more than the kit was
+designed to. `design/40-pfs-five-sessions.md` is the write-up and is
+**authoritative over design/34 wherever the two disagree about the rig.**
+
+Three consequences a resumed session must not undo:
+
+1. **Do not re-ship or re-author the probe kit**, and do not re-open 0a/0b/0c.
+   Blocks 0a and 0b are merged and their reconciliation cells are now closed
+   against design/40, not against probe 0. Probe 0's question — does an
+   out-of-range PFS drop `State` on its own timeout? — is still unanswered and
+   is now a footnote, not a gate. Nothing in Track B waits on it.
+2. **Block 6a is new and lands first.** The blanket exclusions on
+   `TIPFSStatus.State` and `TIPFSOffset.Position` — ticked in block 4 at `:706`
+   and `:724` — are what made PFS unusable, and block 8 lifted them last. One
+   session was spent driving a 60× oil objective 450 µm past its recorded engage
+   height only to find the final write was never permitted. The remote operator
+   lifted both by hand, mid-session, twice.
+3. **Old 7c is merged into 7a and marked skipped; old 7b is scoped down.** The
+   evidence refutes the "configured approach position" the old 7c was built on
+   (four locks in one day at 2912, 2498, 2532, 2450 µm), and the per-path
+   movement policy in old 7b rested on a premise that is still untested. What
+   survives of 7b is `run_autofocus` under an armed servo, which is certain.
+
+**One thing that is outstanding and is not a work item you can start:** block 6
+owes a post-fix rig run. Its pre-fix baseline is the 11:40 session, not probe S,
+which was never run.
 
 **Two settled operator rulings that must not be re-litigated:**
 
@@ -197,9 +218,9 @@ assistant's narration when judging whether a guard fired.
 
 | Block | Track | Depends on | Branch | Start commit | Implementation commit | Rig evidence | Merge | Design reconciliation |
 |---|---|---|---|---|---|---|---|---|
-| 0a | Remote kit | — | `design34/nikon-probe-kit` | `b717594` | `42d8978` (`8696169` rejected) | **is the deliverable** | `ba695da` | pending |
-| 0b | Remote kit | — | `design34/nikon-stopgap-config` | `b717594` | `ead2fb9` (`6ac2ab2` rejected) | 0c ships it | `96a0a91` | pending |
-| 0c | Remote kit | 0a, 0b | — (ship + wait) | | | **SHIPPED 2026-08-03 — awaiting the remote operator** | n/a | |
+| 0a | Remote kit | — | `design34/nikon-probe-kit` | `b717594` | `42d8978` (`8696169` rejected) | **is the deliverable** | `ba695da` | **done 2026-08-05** — design/40 supersedes design/34; probe 0 unanswered and no longer blocking |
+| 0b | Remote kit | — | `design34/nikon-stopgap-config` | `b717594` | `ead2fb9` (`6ac2ab2` rejected) | 0c ships it | `96a0a91` | **done 2026-08-05** — design/40 supersedes design/34; probe 0 unanswered and no longer blocking |
+| 0c | Remote kit | 0a, 0b | — (ship + wait) | | | **CLOSED 2026-08-05 — the kit was never run; five real sessions answered more than it would have** | n/a | done — design/40 |
 | 1 | Usability | 0a and 0b assigned | `design33/phase5-doc-reconciliation` | `b717594` | `dd359a3` | n/a | `20b92e2` | done — block *is* the gate |
 | 2 | Usability | 1 | `design33/undeclared-light-source-gate` | `98842cf` | `ef72b15` + `e9817ad` | **PASS** — M5 refusal/declaration/confirm/cleanup + separate demo fail-closed run | `a1b7579` | done — design/33 landed semantics + residual boundary |
 | 3 | Usability | 2 | `design33/config-diagnostics` | `e8d6ee1` | `dce17a4` + `65bfd7c` | n/a — no rig surface | `0cb871f` | done — error taxonomy + offline-validation contract |
@@ -215,11 +236,13 @@ assistant's narration when judging whether a guard fired.
 | 4d | Usability | 4c merged | `design33/property-authorization-rename` (deleted) | `052179d` | `fd4c5b6` + `c063f16` + `029b5f4` | demo G0/G1/G2 + M5 G4 **PASS** 2026-08-03; G3 closed by offline replay | `5f56679` | **done** — design/33 §"Block 4d landed" |
 | 5 | Usability | 4b, 4e, 4f, 4h, 4c, 4d | `design33/deployed-config-hygiene` | `a27997f` | `6262acb` + `577acc4` + `c0344f2` + `8028145` + `c48edc1` (round 1 returned) | demo G0–G3 + M5 G0/G4 all **PASS** 2026-08-04 | `d14c147` | **done** — design/33 §"Block 5 landed", design/17 §"Block 5: the first-run path moved" |
 | 5b | Usability | 5 merged | `design17/guided-install` (deleted) | `3d63a6c` | `c2ee97c` + `11000bd` + `eb94b2e` + runbook `644e592`/`c1cdc62`/`d585549` (round 1 returned) | demo G0/G1/G3 + M5 G0/G2 **PASS** 2026-08-04; operator confirmed full `install.bat` on M5 | `ab5e97c` | **done** — design/17 §"Block 5b: the installer guides the whole first run" |
-| 6 | Nikon | probe S = pre-fix baseline; post-fix run owed | `design34/measured-position-readback` | | | required | | |
-| 7a | Nikon | scope: none; rig gate: probe 0 | `design34/continuous-focus-capability` | | | **required** | | |
+| 6a | Nikon | — **assign first** | `design34/focus-system-authorization` | | | **required** | | |
+| 6 | Nikon | 6a | `design34/measured-position-readback` | | | **required** — 11:40 session is the pre-fix baseline; probe S not owed | | |
+| 7a | Nikon | 6a | `design34/continuous-focus-capability` | | | **required** | | |
 | 7b | Nikon | 7a | `design34/continuous-focus-policy` | | | **required** | | |
-| 7c | Nikon | 7b; only if evidence requires search | `design34/continuous-focus-initialization` | | | **required** | | |
-| 8 | Nikon | 6, 7b, and 7c if applicable | `design33/phase5-continuous-focus` | | | required | | |
+| 7c | Nikon | — | — | — | — | — | **SKIPPED 2026-08-05** — merged into 7a | design/40 D3 |
+| 8 | Nikon | 6, 7a, 7b | `design33/phase5-continuous-focus` | | | required | | |
+| 13 | Platform | none — may run concurrently with Track B | `design40/platform-defects` | | | **required** | | |
 | 9 | Features | operator intake | `design26/generated-adapter-run-b` | | | required | | |
 | 10 | Features | 9; optional | `design26/few-shot-run-c` | | | required or marked skipped | | |
 | 11 | Features | accepted Run B fixtures | `design32/hook-worker-isolation` | | | regression required | | |
@@ -431,9 +454,31 @@ Precedent for the artifact: `design/29-block9-m2-safety-config.yaml`. It lives i
       refusal text back, unedited. Those refusals are also block 3's best
       real-world test data.
 
-## 0c. Ship, wait, and triage what comes back
+## 0c. [x] Ship, wait, and triage what comes back — **CLOSED 2026-08-05**
 
 No branch — this is coordination.
+
+**The kit was shipped 2026-08-03 and never run.** The operator could not run the
+scripts alone. Five real microclaw sessions came back instead, written up in
+`design/40-pfs-five-sessions.md`, and they answered more of design/34's
+questions than the kit was designed to. The triage items below are kept as the
+record of what was planned; they were not executed and are not owed. **Do not
+re-ship or re-author the kit.**
+
+What the sessions did *not* answer, and what happens to it:
+
+- **Probe 0's question is still open** — no session moved Z with PFS armed, so
+  nothing distinguishes an elapsed-time timeout from an effect of the move.
+  Recorded in design/40 §"Still owed". It gates nothing.
+- **Probes 1–4 are retired for now**, not because they were answered but because
+  the procedure that works does not need them. Do not ask a remote operator to
+  run motion near a coverslip to settle a question no block depends on.
+- **The design/34 `:223`–`:234` rig-value list is no longer collected up front.**
+  Capture range, safe step and timeouts are collected *by* block 7a's bounded
+  search as it runs; the engagement position it asked for turned out not to be a
+  stable number.
+
+The original items, unexecuted:
 
 - [ ] Ship 0a and 0b together as one package. One shipment, maximum information.
 - [ ] On return: verify the script hashes match what was shipped, confirm the
@@ -701,7 +746,15 @@ Human-decision requirements — each must fail closed, never infer:
 - [x] Render refusals in Phase 5's own wording. Do not reuse `execute_tool`'s —
       block 3 fixes that message, but the setup flow's audience is different.
 
-Continuous focus — hard exclusion until blocks 7a–7b land (and 7c if required):
+Continuous focus — hard exclusion until blocks 7a–7b land (and 7c if required).
+**Reversed 2026-08-05 by block 6a.** These items shipped as written and are
+correctly ticked, but the blanket exclusion they produced is what made PFS
+unusable on the Nikon: one session drove a 60× oil objective 450 µm past its
+recorded engage height only to find `TIPFSStatus.State` was never writable, and
+another ended with the offset refused while the lock held. Block 6a replaces the
+exclusion with a declaration setup can offer; block 4's ban on *inferring* a
+movement policy or copying an engagement position stands, and design/40
+strengthens it (four locks in one day spanned 2450–2912 µm):
 
 - [x] **Do not classify `TIPFSStatus.State` or any equivalent continuous-focus /
       autofocus enable as a categorical property.** Emit an exclusion or an
@@ -722,7 +775,11 @@ Continuous focus — hard exclusion until blocks 7a–7b land (and 7c if require
       requirement to omit the entry, which contradicted both the impact row it
       derives from and Block 0b's shipped Nikon worksheet.
 - [x] Mark PFS-offset workflows unsupported even when the offset has reviewed
-      bounds, until block 6's settling work lands.
+      bounds, until block 6's settling work lands. **Lifted by block 6a, ahead
+      of block 6** (2026-08-05): a lock the operator cannot offset is not a
+      degraded capability, it is a useless one, and the marker was reached in a
+      real session with PFS holding. The settling *fix* is still owed — block 6
+      — but withholding the capability until it lands was the wrong trade.
 
 Setup text must explain, not just gate:
 
@@ -3574,203 +3631,344 @@ Post-merge design gate:
 
 ---
 
-# Track B — Nikon PFS and position reporting (blocks 6–8)
+# Track B — Nikon PFS and position reporting (blocks 6a, 6, 7a, 7b, 8)
 
-Source: `design/34-nikon-pfs-tizdrive-findings.md`. **Evidence comes from Track
-0**, which is authored here and run by the remote operator. Blocks 7 and 8 are
-scoped from what comes back; block 6 is not.
+Source: `design/40-pfs-five-sessions.md`, which supersedes
+`design/34-nikon-pfs-tizdrive-findings.md` wherever the two disagree about the
+rig. **Rescoped 2026-08-05.** Read design/40 before assigning anything here; the
+paragraphs below say what changed and why, and every block's item text was
+rewritten against measured session evidence rather than the probe kit's plan.
 
-Values Track 0 must have returned before blocks 7a–7c can be scoped — this is the
-design/34 `:223`–`:234` list, and it is the acceptance test for whether round
-trip #1 was sufficient:
+## What changed, and why the old plan is not the plan
 
-- safe TIZDrive approach range and a hard ceiling **per objective and
-  sample-holder combination** — not one universal number;
-- direction convention; safe search step size; expected PFS capture range;
-- search and lock timeouts, and `FullFocusTimeoutMs` as configured;
-- NikonTI adapter, Micro-Manager, and microscope firmware versions;
-- repeatability and sample-dependence of the 2440–2450 µm engagement position;
-- safe and useful `TIPFSOffset` limits, plus the offset's measured latency and
-  useful settling tolerance.
+**The probe kit was never run.** The operator could not run the scripts alone —
+the constraint this file states at `:47`, which the kit was shipped anyway. What
+came back instead is five real microclaw sessions from 2026-08-05 (histories in
+`~/Documents/Documents - Beyonce/Projects/Micro-Claw/pfs_fix/`), and they answer
+more of design/34's questions than the kit was designed to. **Block 0c is closed
+against that evidence, not against probe output.**
 
-Anything still missing after round trip #1 goes into round trip #2's scope
-(block 0c), not into an assumption.
+Four things follow, all argued in design/40:
 
-## 6. Measured position read-back and named-stage settling
+1. **PFS engages under pure software control** — four locks, no GUI, no coarse
+   wheel, and one held across a 25-tile survey. The loop is
+   `PFS Off → step Z → PFS On → read Status → repeat`. The capability is not in
+   doubt; the missing thing is a primitive for it.
+2. **The blanket exclusions were the blocker, and they land last in the old
+   order.** One session was spent climbing a 60× oil objective 450 µm past the
+   recorded engage height only to discover `TIPFSStatus.State` was never
+   writable; another ended with the offset refused while PFS held a lock. Both
+   were safely liftable by declaration, and the remote operator lifted them by
+   hand mid-session. **Block 6a now lands first.**
+3. **Three design/34 premises are refuted** — there is no single approach
+   position, the named-stage staleness signature did not reproduce (the live
+   defect is a mismatch reported as success), and "`move_stage_z` disables PFS"
+   is still untested but no longer blocks anything.
+4. **Seven defects surfaced that are not Nikon work at all.** They are block 13
+   in the new Track D.
+
+**The design/34 `:223`–`:234` rig-value list is no longer a gate on scoping.**
+It asked for a per-objective approach range, an engagement position and its
+repeatability. Sessions show the engage height is not a stable number
+(2912, 2498, 2532, 2450 across four locks), so a bounded search replaces it.
+What is still genuinely wanted — capture range, safe step, timeouts, adapter and
+firmware versions — is now collected *by* block 7a's search as it runs, not
+before it is written.
+
+## 6a. Authorize the focus system, and say what is unassigned
+
+Branch: `design34/focus-system-authorization`
+
+**Assign this first.** It is the only block that changes whether the remote
+operator can work at all, and it replaces block 8's blanket-exclusion lift for
+everything except Phase 5 generation.
+
+- [ ] Stop excluding continuous-focus enable properties outright. A rig's
+      autofocus-device enable is a reviewable categorical declaration like any
+      other; the hazard on this hardware is the Z move that precedes it, which
+      `check_z` already owns. Replace the block-4 exclusion
+      (this file `:706`, `:724`) with a declaration setup can offer.
+- [ ] **`first_launch` must offer `absolute-position` for stage-position
+      properties instead of excluding them** (`first_launch.py:367`). The kind
+      exists, `safety.py:961`–`973` routes it through `check_named_stage`, and
+      `authorization.py:743`–`766` already validates that its bounds may only
+      narrow the named-stage bounds. Setup emits that kind elsewhere
+      (`first_launch.py:989`) and simply never offers it here.
+- [ ] Reconcile the runtime refusal text (`authorization.py:1272`) with what
+      setup writes. Today the refusal names `allowed_numeric` as a legal home
+      for a pair whose generated config comment says it cannot go there. The
+      refusal is right and setup is wrong; a remote operator should not be the
+      one to discover that.
+- [ ] **An unassigned `Core.Focus` must be diagnosed, not swallowed.**
+      `get_system_state` (`tools.py:806`–`809`) turns `No device with label ""`
+      into `z_stage: "unavailable"`, and `get_z_position`, `move_stage_z` and
+      autofocus all raise the raw Java exception. Two sessions were lost to it.
+      microclaw cannot fix the role itself — it is a device-assignment property
+      it correctly excludes — so it must name the cause and the remedy.
+      Generic: any MM config with several single-axis stages and no role line.
+- [ ] **`get_focus_lock_state` must not be EMU-only** (`tools.py:4506`). On a
+      rig with a working hardware focus lock it answers "No EMU configuration —
+      cannot read a focus lock", and `agent.py:149` instructs the model to trust
+      that answer. Read the configured autofocus device first; fall back to the
+      EMU map, not the other way round. Do not build the typed capability here —
+      that is 7a — just stop returning a false negative.
+- [ ] Off-rig tests: a config with no `Core.Focus` role; a stage-position
+      property offered as `absolute-position` and refused when its bounds widen
+      the named-stage entry; a focus-lock read on a rig with no EMU map.
+
+Rig gate:
+
+- [ ] Nikon rig: from a fresh start, engage and disengage PFS and move the
+      offset without hand-editing `safety_config.yml`. The operator's current
+      hand-declared file is the acceptance reference, not the target — setup
+      must be able to *produce* an equivalent one.
+- [ ] Nikon rig: with `Core.Focus` unassigned, every Z-facing tool reports the
+      unassigned role and the remedy. Then assign it and show them working.
+- [ ] Any rig: `get_focus_lock_state` on a rig with no EMU map reports the real
+      lock state or a reason that is true.
+
+Post-merge design gate:
+
+- [ ] Record in design/33 what setup now emits for a stage-position property and
+      for a continuous-focus enable, and strike the "PFS-offset workflows
+      unsupported" marker with the evidence that lifted it.
+
+## 6. Measured position read-back and the move failure contract
 
 Branch: `design34/measured-position-readback`
 
-Two real defects that are **independent of the PFS question** and of probe 0's
-outcome. They affect every rig, not just the Nikon. Small; can run in parallel
-with Track A if a second agent and worktree are available.
+Two real defects, independent of the PFS question, affecting every rig.
+**Rewritten 2026-08-05:** the offset half is not the defect design/34 recorded.
 
-- [ ] `move_stage_z` (`microclaw/tools.py:342`) returns the **requested target**
-      as `z_um` with `"status": "Moved."` and performs no read at all. The
-      session shows the consequence: it reported `{"z_um": 2440, "status":
-      "Moved."}` while a later read measured 2462.2 µm. Return **measured** Z.
-- [ ] A move that the servo modifies, clamps, or rejects must not be reported as
-      a clean success. Decide and document what the tool returns when measured
-      and requested disagree beyond tolerance — this is a contract change, so it
-      needs a stated rule, not a silent field swap.
+- [ ] `move_stage_z` (`microclaw/tools.py:438`) returns the **requested** target
+      as `z_um` with `"status": "Moved."` and performs no read at all. Sessions
+      show the consequence sharply: commanded 2490, the servo settled at 2532;
+      commanded 2900, settled at 2912. Return **measured** Z.
+- [ ] **A move whose measured position misses its target beyond tolerance is a
+      typed failure, not a success carrying an error field.** This is the
+      correction to design/34 `:236`–`:274`. `move_named_stage`
+      (`tools.py:519`–`539`) already reads back and reports `error_um`; the
+      staleness signature did *not* reproduce. What reproduced is worse — at
+      11:40 it returned `{"requested_um": 5, "achieved_um": 27.85,
+      "error_um": 22.85}` **as a success**, and the agent came within one tool
+      call of sweeping a focus curve against an axis that had not moved.
 - [ ] Freeze the result contract before coding: success reports at least
-      `requested_um`, `measured_um`, `tolerance_um`, and `within_tolerance: true`;
-      timeout or mismatch is a typed failure carrying the same measured fields,
-      elapsed time, and last device status. Define the tolerance source, timeout,
-      polling interval, required consecutive in-tolerance samples, and stability
-      window in the design reconciliation; none may be an unexplained magic
-      constant.
-- [ ] `move_named_stage` (`microclaw/tools.py:423`) performs one immediate read
-      after `wait_for_device` and returned the **exact previous target** on all
-      three offset moves in the session (130 → reported 149.475; 160 → reported
-      130.0; 149.5 → reported 160.0). Reporting the previous *target*, not an
-      intermediate value, means the stage had fully settled where it was and had
-      not begun moving: **the adapter's `Busy()` clears before motion starts.**
-      A longer wait does not fix this.
-- [ ] Poll until the measured position is within a configured tolerance **of the
-      target** and stable, or until a timeout. **The tolerance-of-target
-      condition must be the gate:** because motion has not started at the first
-      read, a stability check alone passes immediately at the old position, which
-      is precisely the observed failure.
-- [ ] Image acquisition and focus scoring must not begin until the settling check
-      succeeds.
+      `requested_um`, `measured_um`, `tolerance_um`, and `within_tolerance:
+      true`; mismatch or timeout is a typed failure carrying the same measured
+      fields, elapsed time, and last device status. Define the tolerance source,
+      timeout, polling interval, required consecutive in-tolerance samples, and
+      stability window in the design reconciliation; none may be an unexplained
+      magic constant.
+- [ ] Poll until the measured position is within tolerance **of the target** and
+      stable, or until timeout. The tolerance-of-target condition is the gate: a
+      stability check alone passes immediately at the old position.
+- [ ] Image acquisition and focus scoring must not begin until the settling
+      check succeeds.
 - [ ] Apply the same read-back rule to `MicroscopeController.set_z`
       (`microclaw/controller.py:552`).
-- [ ] Off-rig tests must include the observed failure shape specifically: a fake
-      whose `Busy()` clears before motion starts, proving the stability-only
-      check would pass and the target-tolerance check does not.
+- [ ] Off-rig tests must include both observed shapes specifically: a fake whose
+      `Busy()` clears before motion starts (proving the stability-only check
+      passes and the target-tolerance check does not), **and** a fake that stops
+      short of its target at a hard mechanical floor, proving that is reported
+      as a failure rather than a success with a large `error_um`.
 
 Rig gate:
 
 - [ ] Nikon rig: three consecutive `TIPFSOffset` moves reporting their own
-      achieved positions, with TIZDrive recorded alongside. **Probe S's returned
-      data is the pre-fix baseline for this** — it measures exactly this shape, so
-      do not commission a separate baseline run. What is still owed is the
-      post-fix comparison against it.
-- [ ] Any rig: a Z move whose measured result differs from the request is
-      reported as such, not as a clean success.
+      achieved positions, with the focus stage recorded alongside. **The 11:40
+      session is the pre-fix baseline** — probe S was never run and is not owed.
+- [ ] Nikon rig: a commanded Z followed by a PFS engage reports the settled
+      position, not the request (the 2490 → 2532 case).
+- [ ] Any rig: a move whose measured result differs from the request is reported
+      as a failure, not a clean success.
 
 Post-merge design gate:
 
-- [ ] Record the settling contract and the read-back rule in design/34 and
+- [ ] Record the settling contract and the read-back rule in design/40 and
       wherever the tool contracts are documented. State that reviewed bounds are
-      **not** proof that an asynchronous device achieved or settled at its target.
+      **not** proof that an asynchronous device achieved or settled at its
+      target, and correct design/34 `:246`–`:250`, whose table describes a
+      signature that did not reproduce.
 
-## 7. Typed continuous focus — split capability, enforcement, and initialization
+## 7a. Typed continuous focus and the bounded engage search
 
-Branches: `design34/continuous-focus-capability`,
-`design34/continuous-focus-policy`, and, only if needed,
-`design34/continuous-focus-initialization`.
+Branch: `design34/continuous-focus-capability`
 
-**Scope 7b and 7c only after Track 0 reports** — 7a's scope is independent and
-may start earlier. If probe 0 shows the timeout
-hypothesis, 7b may shrink to mandatory `require_off` enforcement and 7c may be
-skipped. Probe 0 does not eliminate 7b: a Z-writing path can still fight an
-already-locked PFS servo, especially during software autofocus.
-
-Continuous focus should be a typed microscope capability, not an arbitrary
-`set_device_property` write. Keep 7a, 7b, and 7c as separate branches and
-rollback boundaries; do not merge them merely because they touch the same
-paths. If Track 0 eliminates 7c, mark it skipped with the evidence and reason.
-Block 7b is not optional.
-
-### 7a. Capability and status operations
-
-**Scope does not depend on Track 0** — this sub-block survives either probe-0
-outcome, so it may be implemented before round trip #1 returns. Only its rig
-gate waits on the evidence.
+**Merged from the old 7a and 7c**, and moved above 7b. They were split when the
+search was hypothetical; the sessions performed it by hand more than thirty
+times, so its shape is determined and the capability is not worth having
+without it.
 
 - [ ] Add operations that discover the configured autofocus device via
       `get_auto_focus_device()`; enable and disable continuous focus through the
       CMMCore API; report enabled and locked state; and wait for a well-defined
       lock, failure, or timeout. `enableContinuousFocus`,
-      `isContinuousFocusEnabled`, and `isContinuousFocusLocked` are in the
+      `isContinuousFocusEnabled` and `isContinuousFocusLocked` are in the
       mmcorej 2.0.3 API (`tests/fixtures/mmcorej-cmmcore-2.0.3-methods.txt`) and
-      are currently unused by production code.
+      are unused by production code.
+- [ ] Add the bounded engage search. Shape, from design/40 D3:
+
+      ```python
+      def engage_continuous_focus(ctrl, guard, *, z_start, z_ceiling, step_um,
+                                  settle_s, timeout_s) -> dict:
+          """Off → step → On → poll status → stop on lock or ceiling."""
+      ```
+
+      Every Z step goes through `check_z`; the ceiling is a caller argument with
+      no default, so an unbounded search cannot be requested by omission.
+- [ ] **Record the focus stage and every offset stage at entry and at lock.**
+      The servo moves them: at 11:40 a lock at 2500 pulled `TIPFSOffset` from
+      27.85 to 183.55 by itself. A result that reports only the focus axis
+      describes half the machine.
+- [ ] **No configured approach position.** design/34 `:173` and the old 7c both
+      assumed one; four measured locks (2912, 2498, 2532, 2450) say there is
+      none. Search, do not aim.
+- [ ] **Keep it generic.** Driven by `get_auto_focus_device()` and caller bounds.
+      No Nikon-named recipe, no baked-in height. Ti-with-PFS is as unusual as M5
+      is; rig facts belong in design/40 and the rig profile, never in
+      `microclaw/`.
+- [ ] Lock is binary on this hardware — `Focus lock failed` at every wrong
+      height, `Locked in focus` at the right one. Do not build a hill-climb;
+      there is no gradient to follow.
+- [ ] Report an unreached lock as a typed failure carrying the heights tried,
+      the last status string, and both axes' positions — the information the
+      agent had to reconstruct by hand in every session.
 
 Rig gate (Nikon):
 
 - [ ] Show enable, disable, enabled-state, locked-state, and timeout/failure
-      reporting against the outcome observed by probe 0.
+      reporting.
+- [ ] Engage from below the capture range through the typed capability alone,
+      in one call, and reach `Locked in focus`. Compare the heights tried and
+      the achieved lock against the 13:18 session, which did it by hand.
+- [ ] Show the ceiling refusing: a search whose ceiling is below the lock height
+      stops at the ceiling and reports a typed failure, without a further step.
 
-### 7b. Per-path movement policy
+Post-merge design gate:
 
-- [ ] Give **every** Z-moving path an explicit continuous-focus policy, from
-      `require_off`, `move_then_rearm`, or `preserve`. Not just the two obvious
-      seams:
-      - `microclaw/tools.py:342` (`move_stage_z`)
-      - `microclaw/controller.py:552` (`set_z`)
-      - `microclaw/autofocus.py:94`, `:103`, `:115` — sweep, move-to-best,
-        `_restore`
-      - `microclaw/hooks.py:313` — the focus-recovery jog
-      - `microclaw/tools.py:2175` — per-position Z in the tile/grid path
-      The last four are the ones most likely to run unattended; a policy covering
-      only the first two misses the dangerous paths. All are already inside a
-      `check_z`-guarded range — the gap is continuous-focus awareness, not bounds.
-- [ ] **Autofocus is the sharpest case:** a software focus sweep while PFS holds
-      lock both fights the servo and duplicates what the servo already does.
-      State what `run_autofocus` does under an armed PFS.
-- [ ] **`preserve` must not be implemented by re-enabling PFS after the move.**
-      Re-arming after a move is observably different from keeping PFS searching
-      throughout it and must be reported as such. Do not offer `preserve` at all
-      unless Track 0 established a movement path that actually preserves search.
-- [ ] Reproduce the session's original failing sequence and show the enforced
-      policy reports its behaviour truthfully.
-- [ ] Show each implemented policy on at least one Z-moving path, including a
-      refusal under `require_off`.
+- [ ] Update design/40 with the measured enable, disable, enabled, locked,
+      failure and timeout semantics, plus capture range, useful step and any
+      timeouts the search observed — the parts of design/34 `:223`–`:234` this
+      block actually collects.
 
-### 7c. Optional bounded initialization/search operation
+## 7b. Autofocus must not fight an armed servo
 
-- [ ] Implement this sub-block only if Track 0 establishes a safe need and the
-      reviewed rig profile can express it. Prefer a dedicated bounded operation
-      over letting the
-      agent assemble arbitrary property writes and moves: confirm PFS off → move
-      to a **configured** approach position → enable PFS → if no lock, follow a
-      configured rig-validated search policy with a small step, a timeout, and a
-      hard Z ceiling → stop immediately on lock or unexpected status → permit
-      offset adjustment only after lock is confirmed.
-- [ ] **Keep it generic.** Drive it from `get_auto_focus_device()` and a rig
-      profile. No Nikon-named recipe, no 2440 µm baked in. Ti-with-PFS is as
-      unusual as M5 is; rig facts belong in design/34 and the rig profile, never
-      in `microclaw/`.
-- [ ] Extend the safety schema to express the capability. Context-dependent
-      approach ceilings may exceed the current flat stage-range model — if the
-      schema cannot express per-objective/per-holder bounds, say so and leave the
-      policy unresolved rather than collapsing it.
+Branch: `design34/continuous-focus-policy`
 
-Rig gate (Nikon, for 7c if applicable):
+**Scoped down 2026-08-05.** The old block asked for a policy on every Z-writing
+path, premised on the move disabling PFS. That premise is untested and no longer
+blocking. What is live is narrower and certain: a software sweep under an armed
+lock both fights the servo and duplicates what it already does.
 
-- [ ] Show the successful sequence (PFS off → move to approach → PFS on →
-      `Locked in focus`) works through the typed capability.
+- [ ] `run_autofocus` must not sweep the focus device while continuous focus is
+      enabled. Refuse with a typed error naming the lock and the remedy; do not
+      silently disable it.
+- [ ] Cover the unattended paths, which is where this actually bites:
+      `microclaw/autofocus.py:94`, `:103`, `:115` — sweep, move-to-best,
+      `_restore`; `microclaw/hooks.py:313` — the focus-recovery jog;
+      `microclaw/tools.py:2175` — per-position Z in the tile/grid path. All are
+      already inside a `check_z`-guarded range; the gap is lock awareness.
+- [ ] **Do not offer `preserve`.** Re-arming after a move is observably
+      different from keeping the servo searching throughout it, and no evidence
+      supports a movement path that preserves search. Offering it would be a
+      claim the rig has not made.
+- [ ] `move_stage_z` and `set_z` get an explicit, documented policy — but state
+      it as a policy, not as a finding about the hardware. Whether the move
+      itself disarms PFS is still unmeasured (design/40 §"Still owed").
 
-Post-merge design gates:
+Rig gate (Nikon):
 
-- [ ] **After 7a:** update design/34 with the measured enable, disable, enabled,
-      locked, failure, and timeout semantics, including which probe-0 hypothesis
-      the evidence supported.
-- [ ] **After 7b:** record the policy enforced for every Z-writing path and which
-      of `require_off`, `move_then_rearm`, and `preserve` are actually available
-      on this hardware. Do not claim `preserve` without direct evidence.
-- [ ] **After 7c, if implemented:** record the bounded initialization/search
-      behavior and update design/33 with the associated schema extension. If 7c
-      is skipped, record the evidence and reason instead.
+- [ ] `run_autofocus` under an armed lock refuses, and the lock survives the
+      refusal.
+- [ ] With the lock disengaged, the same call runs normally.
+
+Post-merge design gate:
+
+- [ ] Record which Z-writing paths are lock-aware and what each does. Do not
+      claim `preserve`. State plainly that probes 1–4 remain unrun.
 
 ## 8. Phase 5 continuous-focus addendum
 
 Branch: `design33/phase5-continuous-focus`
 
-- [ ] Now that a typed capability with rig-verified enable, lock, failure,
-      timeout, and Z-movement semantics exists, let Phase 5 declare it — replacing
-      block 4's blanket exclusion.
-- [ ] Require reviewed approach bounds for the objective and sample-holder
-      combination. Still never copy an observed engagement position.
-- [ ] Lift the "PFS-offset workflows unsupported" marker only if block 6's
-      settling work is merged and its rig gate passed.
+- [ ] Now that a typed capability with rig-verified enable, lock, failure and
+      timeout semantics exists, let Phase 5 declare it. **6a already lifted the
+      blanket exclusion**; what is left here is generation, not permission.
+- [ ] Require reviewed bounds for the search — a ceiling per objective and
+      sample-holder combination. Never copy an observed engagement position:
+      four locks in one day spanned 2450–2912 µm.
 - [ ] Regenerate a Nikon profile through setup and start a session under it.
+      Acceptance: it authorizes what the operator's hand-edited
+      `safety_config.yml` authorizes, without hand editing.
 
 Post-merge design gate:
 
 - [ ] Record in design/33 what Phase 5 now emits for a continuous-focus rig and
       what remains unresolved.
+
+---
+
+# Track D — platform defects from the 2026-08-05 sessions (block 13)
+
+These surfaced on the Nikon but none of them is Nikon work; three of them break
+hooked surveys on every rig. Split out so Track B stays about focus.
+**May run concurrently with Track B** in its own worktree — the overlap with 6a
+is limited to `tools.py`, so sequence the two branches rather than sharing a
+tree.
+
+## 13. Hooked-survey and diagnostic defects
+
+Branch: `design40/platform-defects`
+
+- [ ] **A failed marked run poisons the position list.** `mark_positions=True`
+      preflights the *entire* native list (`tools.py:2506`), so 25 entries left
+      by a failed grid refused the next run with a conflict quoting the **old**
+      grid's coordinates. The agent concluded `run_tile_acquisition` lays its
+      grid out asymmetrically — it does not (`tools.py:2660`) — and spent a
+      round trip on the wrong fix. Decide and state whether a partially-written
+      grid is rolled back, and make the conflict distinguish pre-existing
+      entries from the ones this call would add.
+- [ ] **`rank_hook_log` cannot read its own parent's log.** It requires
+      `result.<metric>` on every entry (`tools.py:3757`–`3764`); the runner
+      interleaves `hook_action` records, so ranking fails on entry 1 of every
+      hooked survey. Skip non-observation entries.
+- [ ] **Hook preflight validates a contract the runner rejects.**
+      `generate_and_save_hook` returns hard-coded "Static syntax and
+      `image_process_fn` contract passed" (`tools.py:4162`) while
+      `run_tile_acquisition` refuses that contract. Two review-and-save cycles
+      with the operator, on hardware. One contract, checked in one place.
+- [ ] `ContinueSurvey` logs `"decision": "refused",
+      "reason": "unsupported-by-this-runner"` on every tile of a batched run —
+      25 refusals in a run where the action is a documented no-op. Either accept
+      it as a no-op in that runner or stop the docs recommending it there.
+- [ ] **The SNR gate is a fluorescence assumption.** Brightfield fields with
+      cells the operator could see read SNR 2.53 / 2.74 / 1.41 and gate the
+      focus metric off; raising exposure made it *worse*, because in transmitted
+      light the background is the signal path. Decide what the gate means for
+      transmitted light — this may be a different metric, a different gate, or
+      an honest refusal to score; it must not be a threshold tuned until
+      brightfield passes.
+- [ ] **`calibrate_stage_to_camera` mis-diagnoses fixed-pattern lock.** An exact
+      `0.00 px` shift is the signature of a stationary vignette rim or sensor
+      dirt dominating the correlation, not of too small a step
+      (`tools.py:1684`). The advice sent the operator to a larger step, which
+      failed the opposite way. Detect the zero-shift case and name it; a real
+      80 µm move left the tracked centroid at (144.7, 558.5) unchanged to one
+      decimal while the whole field visibly moved.
+
+Rig gate:
+
+- [ ] Any rig: a hooked tile survey with `mark_positions=True` that fails
+      mid-run leaves a state the next identical call can run from.
+- [ ] Any rig: `rank_hook_log` ranks the log its own hooked survey just wrote.
+- [ ] Any rig with transmitted light: whatever the SNR decision is, a field the
+      operator calls usable is reported consistently with that decision.
+
+Post-merge design gate:
+
+- [ ] Record the hook-contract single-source decision in design/32 and the SNR
+      decision in design/25. Update design/40's defect list with what shipped
+      and what was deliberately left.
 
 ---
 
@@ -3889,6 +4087,10 @@ Post-merge design gate:
 
 ## 12. Closeout
 
+Closeout runs last regardless of block number: **block 13 (Track D) is in its
+scope**, and so is any Track B block still open. The file orders tracks by
+priority, not by number — see Track D's placement between B and C.
+
 - [ ] Re-run the full non-hardware suite and static checks on updated `main`.
       Discover the configured checks at closeout time. At creation of this file
       no linter was configured, so the known minimum is `compileall` plus the
@@ -3942,14 +4144,19 @@ schedule them or record a reason at block 12.
 | `TTL.State0` GenericDevice false positive | impact summary | **Block 4** (recommend exclusion, require confirmation) |
 | Channel preset colliding with a typed actuator, only tested off-rig | impact summary | **Block 4** surfaces collisions; rig coverage **(no block)** |
 | Phase 3's human confirmation gate was never validated | design/33 `:796` | **Block 4** rig gate requires an operator transcript |
-| Probe 0, the null control that decides whether the move was ever implicated | design/34 `:184`–`:200` | **Block 0a** (authored), **0c** (answered) |
-| Probes 1–4, the motion cases | design/34 `:201`–`:217` | **Block 0a** (shipped, held), **0c** (released or retired) |
-| Rig-profile values PFS needs (approach range, ceilings, timeouts, versions) | design/34 `:223`–`:234` | **Block 0a** probe E + Track B preamble |
-| Whether MM Studio / NikonTI exposes a PFS-preserving jog | design/34 `:219`–`:221` | **Block 0a** probe U |
-| Continuous-focus / PFS coordination not modelled | design/34 | **Blocks 7a–7c**, scoped from Track 0 |
+| Probe 0, the null control that decides whether the move was ever implicated | design/34 `:184`–`:200` | **Block 0a** (authored), never run — **unanswered, gates nothing**; design/40 §"Still owed" |
+| Probes 1–4, the motion cases | design/34 `:201`–`:217` | **Block 0a** (shipped, never run) — **retired 2026-08-05**, no block depends on them |
+| Rig-profile values PFS needs (capture range, safe step, timeouts, versions) | design/34 `:223`–`:234` | **Block 7a** collects them as the bounded search runs; the "approach position" it asked for is refuted (design/40) |
+| Whether MM Studio / NikonTI exposes a PFS-preserving jog | design/34 `:219`–`:221` | **Moot** — microclaw engaged PFS in software four times on 2026-08-05; the KB claim that only the GUI can was wrong |
+| Continuous-focus / PFS coordination not modelled | design/34, design/40 | **Blocks 6a, 7a, 7b** (7c merged into 7a) |
 | `move_stage_z` never measures the position it reports | design/34 `:110`–`:120` | **Block 6** |
-| `move_named_stage` asynchronous settling | design/34 `:236`–`:274` | **Block 6**; measured by **block 0a** probe S |
+| `move_named_stage` reports a missed target as success | design/40; design/34 `:236`–`:274` describes a signature that did **not** reproduce | **Block 6** |
 | Nikon operator's install may no longer start after the tightening blocks | this session | **Block 0b** |
+| Exclusions made PFS unusable; setup over-excludes stage-position properties | design/40 | **Block 6a** |
+| Unassigned `Core.Focus` surfaces as a raw Java exception | design/40 | **Block 6a** |
+| `get_focus_lock_state` is EMU-only | design/40 | **Block 6a** |
+| Hooked-survey defects: position-list poisoning, `rank_hook_log`, hook-contract preflight, SNR gate, calibration zero-shift | design/40 | **Block 13** |
+| Saved knowledge does not separate measurement from inference | design/40 D6 | **(no block)** — owed, shape not yet clear |
 | Block 11 Run B | old §11 | **Block 9** |
 | Block 12 Run C | old §12 | **Block 10** |
 | Block 13 worker isolation | old §13 | **Block 11** |
