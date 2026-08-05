@@ -147,7 +147,16 @@ a cold session resumes from the remote alone.
   against the ledger and the shipped code rather than blanket-ticked.
 - **The next block is 6a** (`design34/focus-system-authorization`), the first of
   the rescoped Track B. Order from there is 6a, then 6 and 7a, then 7b and 8.
-  **Block 13 (Track D) may run concurrently** in its own worktree. Track C last.
+  **Track D may run concurrently** in its own worktree. Track C last.
+- **Track D grew on 2026-08-05 and its order changed.** The M5 smiley run
+  (`design/41-smiley-session-findings.md`) added blocks 41a, 41b, 41c, and folded
+  two more findings into block 13. **Within Track D, assign 41a before block 13**:
+  41a is what keeps a long session alive, and block 13's own rig gate is run
+  inside such a session. Track D order is 41a, 13, 41b, 41c — 13 and 41b may run
+  concurrently in separate worktrees once 41a is merged, since 13 is `tools.py`
+  and 41b is the emitters plus `image_analysis.py`.
+- **Nothing from design/41 is assigned or started.** The design doc and these
+  checklist entries are the whole of it; no branch exists.
 
 ### Rescoped 2026-08-05 — read this before touching Track B
 
@@ -245,7 +254,10 @@ assistant's narration when judging whether a guard fired.
 | 7b | Nikon | 7a | `design34/continuous-focus-policy` | | | **required** | | |
 | 7c | Nikon | — | — | — | — | — | **SKIPPED 2026-08-05** — merged into 7a | design/40 D3 |
 | 8 | Nikon | 6, 7a, 7b | `design33/phase5-continuous-focus` | | | required | | |
-| 13 | Platform | none — may run concurrently with Track B | `design40/platform-defects` | | | **required** | | |
+| 13 | Platform | 41a merged; may run concurrently with Track B and 41b | `design40/platform-defects` | | | **required** | | |
+| 41a | Platform | none — **assign first in Track D** | `design41/session-survival` | | | n/a — no rig surface | | |
+| 41b | Platform | 41a merged | `design41/script-export` | | | **required** | | |
+| 41c | Platform | 41b merged | `design41/emu-channel-plan` | | | **required** — M5 + demo | | |
 | 9 | Features | operator intake | `design26/generated-adapter-run-b` | | | required | | |
 | 10 | Features | 9; optional | `design26/few-shot-run-c` | | | required or marked skipped | | |
 | 11 | Features | accepted Run B fixtures | `design32/hook-worker-isolation` | | | regression required | | |
@@ -3942,13 +3954,20 @@ Post-merge design gate:
 
 ---
 
-# Track D — platform defects from the 2026-08-05 sessions (block 13)
+# Track D — platform defects from the 2026-08-05 sessions (blocks 13, 41a–41c)
 
-These surfaced on the Nikon but none of them is Nikon work; three of them break
-hooked surveys on every rig. Split out so Track B stays about focus.
-**May run concurrently with Track B** in its own worktree — the overlap with 6a
-is limited to `tools.py`, so sequence the two branches rather than sharing a
-tree.
+These surfaced on the Nikon and on M5, but none of them is Nikon or M5 work;
+several break hooked surveys on every rig. Split out so Track B stays about
+focus. **May run concurrently with Track B** in its own worktree — the overlap
+with 6a is limited to `tools.py`, so sequence the two branches rather than
+sharing a tree.
+
+Blocks 41a–41c come from `design/41-smiley-session-findings.md`, the M5 smiley
+run of 2026-08-05. **Assign 41a before anything else in this track**, including
+block 13: it is what keeps a long session alive, and every other block's rig
+gate is run inside such a session. Design/41's remaining two findings are folded
+into block 13 rather than given blocks of their own, because they are the same
+decisions block 13 already owns.
 
 ## 13. Hooked-survey and diagnostic defects
 
@@ -3982,6 +4001,32 @@ Branch: `design40/platform-defects`
       transmitted light — this may be a different metric, a different gate, or
       an honest refusal to score; it must not be a threshold tuned until
       brightfield passes.
+- [ ] **Saturation does not invalidate SNR, so a clipped gate passes anything**
+      (design/41 F4). On the M5 smiley run every one of 18 frames had
+      `max_intensity` 65535 in both channels, and the operator's explicit
+      "keep the tile if SNR > 3" gate reported margins of 173–716 and 277–904.
+      `saturated_fraction` was computed, logged, and used by nobody. `snr()`
+      uses p99.5 rather than `max()` (`image_analysis.py:48`), so a clipped
+      frame degrades into a plausible large number instead of an obvious error.
+      Report SNR as **invalid above a saturation fraction**, the same way
+      `focus_metric_valid` already gates the focus metric below `min_snr` — one
+      existing pattern extended, not a new validator. **This bullet and the
+      brightfield bullet above are one decision about what SNR validity means;
+      settle them together and state the semantics once.**
+- [ ] **Exposure is approved once and never re-checked after a focus move**
+      (design/41 F4). The operator approved exposure against an out-of-focus
+      snap (`max_intensity` 6637, `saturated_fraction` 0.0); autofocus then
+      moved 2 µm and every subsequent frame clipped. Surface clipping in the
+      result the model reads from `snap_and_analyze` and the acquisition tools,
+      so "exposure is good" can be re-asked when focus changes.
+- [ ] **`axis_selection` makes the caller guess an answer the dataset holds**
+      (design/41 F5). `build_stage_coordinate_mosaic` took three calls to place
+      9 tiles: the error names only the axis *this* call omitted
+      (`tools.py:1279`), so fixing it reveals the next one. Both axes were
+      length 1 — a timelapse with `n_frames=1` — so both failures had exactly
+      one legal completion. Default singleton axes to their only value, and when
+      something genuinely ambiguous remains, state the full non-position axis set
+      with each axis's available values so one correction is always enough.
 - [ ] **`calibrate_stage_to_camera` mis-diagnoses fixed-pattern lock.** An exact
       `0.00 px` shift is the signature of a stationary vignette rim or sensor
       dirt dominating the correlation, not of too small a step
@@ -3997,12 +4042,166 @@ Rig gate:
 - [ ] Any rig: `rank_hook_log` ranks the log its own hooked survey just wrote.
 - [ ] Any rig with transmitted light: whatever the SNR decision is, a field the
       operator calls usable is reported consistently with that decision.
+- [ ] Any fluorescence rig: a deliberately over-exposed field is reported as a
+      saturated, invalid SNR rather than a large one. The M5 smiley conditions
+      reproduce this directly — beads at 100 ms after autofocus clipped every
+      frame — so this is a re-run of a known-clipping field, not a new setup.
+- [ ] Any rig: a `n_frames=1` multi-position dataset mosaics in **one** call to
+      `build_stage_coordinate_mosaic` with no `axis_selection` argument.
 
 Post-merge design gate:
 
 - [ ] Record the hook-contract single-source decision in design/32 and the SNR
       decision in design/25. Update design/40's defect list with what shipped
       and what was deliberately left.
+- [ ] State the SNR validity semantics **once** — saturation and transmitted
+      light resolved by the same rule — in design/25, and tick design/41 F4/F5.
+
+## 41a. A session must survive an API failure — **assign first in Track D**
+
+Branch: `design41/session-survival`
+
+Source: `design/41-smiley-session-findings.md` F2, F3, F7. No rig surface —
+this is `agent.py` and its tests. It is first because every other block's gate
+is run inside a session that currently ends on a transient HTTP error.
+
+- [ ] **Only 529 is retried.** `_stream_one_round` catches
+      `anthropic._exceptions.OverloadedError` and nothing else
+      (`agent.py:307`). A `RateLimitError` (429), `InternalServerError` (500),
+      `APIConnectionError`, or a read timeout escapes `run_agent_iter` into
+      `webserve.py:591`'s blanket `except Exception`, which ends the turn. This
+      is the most likely mechanism behind the operator's "I ran out of turns",
+      which they could not otherwise account for — they had credits, and their
+      longest turn used ~17 of the 50 allowed rounds. Retry 429 and 5xx on the
+      same backoff, honouring `retry-after` when the response carries it.
+- [ ] **The rollback is attached to one flavour of failure.**
+      `del messages[start:]` runs only on the `_Overloaded` path
+      (`agent.py:369`). Every other escape leaves the partial turn in
+      `messages`. Put the rollback with the failure, not with 529.
+- [ ] **`max_tokens` is reported as "unexpected" and ends the turn.**
+      `agent.py:388` treats any `stop_reason` that is not `end_turn` or
+      `tool_use` as an error. Truncation is an expected condition: name it, say
+      the reply was cut, and let the operator continue without guessing what
+      happened. Raise the 4096 cap (`agent.py:291`) — it is low for a model that
+      must both narrate and act.
+- [ ] **Truncation inside a `tool_use` block leaves an unanswered tool call.**
+      `_unwind_cancel` exists precisely to prevent that (`agent.py:229`,
+      design/16 §5) and the `max_tokens` path does not call it; the next prompt
+      400s from a history that looks fine in the viewer. It did not bite on the
+      smiley run only because the truncation landed in a text block.
+- [ ] **Entry state is not the assistant's to clean up** (design/41 F7). 640 was
+      enabled at 2.24% when the session opened and was left off. The prompt says
+      "leave operator-established lasers as found unless asked"
+      (`agent.py:103`) and the model read it as covering only lasers it enabled.
+      Name the entry state: what microclaw turned on, microclaw turns off; what
+      it found on, it leaves on. Prompt wording, not code.
+- [ ] Tests: each retried status actually retries and then succeeds; each
+      terminal failure leaves `messages` in a state the next prompt accepts.
+      Assert the history is API-valid after every failure path, not just that an
+      error was emitted — the defect this block fixes is invisible in the viewer.
+- [ ] Stop if retrying makes a genuine auth or bad-request failure look
+      transient. A 401 or 400 must still fail fast and say so.
+
+Post-merge design gate:
+
+- [ ] Record the retry and rollback contract in design/16 alongside §5's cancel
+      unwinding, and tick design/41 F2/F3/F7.
+
+## 41b. Compile a session to a standalone pycro-manager script
+
+Branch: `design41/script-export`
+
+Source: `design/41-smiley-session-findings.md` F1. Depends on 41a merged — this
+block's own deliverable is long model output, which is what 41a makes survivable.
+
+"Everything must compile to a standalone pycro-manager script" is a stated
+architectural principle in `CLAUDE.md` with no implementation. Asked for one on
+2026-08-05, the assistant correctly reported that **no tool can write a `.py` to
+a path it chooses**: `generate_and_save_hook` is hooks-dir-only, and the
+acquisition tools write datasets and TIFFs. So it wrote the script from memory
+into chat, and could not reproduce `compute_stats` or `run_autofocus` because it
+cannot see their source. The result was not merely inexact — its `build_mosaic`
+**re-imaged every kept tile**, where the session had built the mosaic offline
+from the saved NDTiff at zero dose. The script the operator was told to copy and
+run doubles the dose on a bleaching sample.
+
+- [ ] **Emit from the record; never reconstruct from memory.** Every tool call
+      is already recorded append-only. Give each hardware and acquisition tool
+      an emitter that renders *its own call* as pycro-manager source, next to
+      the tool it emits — not in a registry.
+- [ ] **Inline analysis functions from source**, via `inspect.getsource` of the
+      pure-numpy functions in `image_analysis.py`, so the emitted `snr()` *is*
+      the `snr()` that ran. Inlining rather than importing is what keeps the
+      script standalone; an import of `microclaw` fails the principle.
+- [ ] **A tool with no emitter emits a refusal, not a guess.** The script
+      carries a literal `# NOT EMITTED: <tool>` line and fails loudly at that
+      point. A plausible-looking fabrication of a step is the defect being
+      fixed, not an acceptable fallback.
+- [ ] **Write through `guard.resolve_in_workspace`** — the existing path gate the
+      mosaic already used, which makes "next to the file it made" legal without
+      a new permission surface.
+- [ ] Scope: the emitted script reproduces the **hardware routine**. Nothing
+      here puts microclaw runtime state into the script; that is the point of it.
+- [ ] Stop if the emitter needs a parallel description of what each tool does.
+      Two descriptions of one tool drift, and the drift is unfalsifiable from
+      inside microclaw. If a tool cannot emit itself, that is the finding.
+
+Rig gate:
+
+- [ ] Any rig: export a session that moved the stage and acquired, then run the
+      emitted script against a running MMStudio **with microclaw not running**.
+      It completes.
+- [ ] Same rig: the script's dataset and the session's dataset agree on frame
+      count and stage coordinates. Dose is compared explicitly — an export that
+      re-images what the session read from disk fails this gate.
+- [ ] Any rig: a session using a tool with no emitter produces a script that
+      stops at the `# NOT EMITTED` line rather than running past it.
+
+Post-merge design gate:
+
+- [ ] `CLAUDE.md`'s compile-to-script principle gains a pointer to the
+      implementation and to what is *not* emittable. Tick design/41 F1.
+
+## 41c. Channel plans on a rig with no `Channel` config group
+
+Branch: `design41/emu-channel-plan`
+
+Source: `design/41-smiley-session-findings.md` F6. Depends on 41b merged: raw
+`set_device_property` calls are not emittable in any readable way, so this block
+is also what makes channel switching exportable.
+
+M5 has no `Channel` config group — `get_available_channels` returns `[]` — so
+the channel-plan executor (design/33 Phase 4) had no presets to drive and the
+two-channel run was done by hand: three raw property writes per switch, against
+EMU's reversed slot order. The writes were correct; the assistant's narration of
+them in the same message was not, calling slot 3 "slot 1". A reversed index map
+being hand-applied to laser enables is one off-by-one from arming the wrong line.
+
+- [ ] **Build the channel plan from the EMU laser map when no `Channel` config
+      group exists.** Same executor, same typed plan, sourced from the map
+      instead of from presets. design/39 already reads EMU's `parameters` block,
+      so the slots carry their configured names ("640", "561") — this is the
+      missing *source* for a mechanism that exists, not a new layer.
+- [ ] Note for the implementer: the illumination confirmation fires on the
+      enable and not on the disable. Check that a plan-driven switch does not
+      lose a confirmation the hand-written sequence would have raised.
+- [ ] Stop if this becomes EMU-specific machinery in `microclaw/`. The plan
+      source is pluggable or this belongs in a rig profile — see the standing
+      constraint on rig facts.
+
+Rig gate:
+
+- [ ] M5: a two-channel multi-position run switches channels through the plan,
+      with no raw `set_device_property` call in the history. Filter, enable, and
+      trigger end in the same state the hand-written sequence produced.
+- [ ] Demo (has a real `Channel` group): non-regression — preset-sourced plans
+      behave exactly as before.
+- [ ] M5: 41a's entry-state rule observed in the same run — a laser found on at
+      session start is still on at the end, and one microclaw enabled is off.
+
+Post-merge design gate:
+
+- [ ] Record the plan-source decision in design/33 Phase 4 and tick design/41 F6.
 
 ---
 
