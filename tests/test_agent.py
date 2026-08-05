@@ -10,7 +10,7 @@ import anthropic
 import httpx
 import pytest
 from unittest.mock import MagicMock, patch
-from microclaw.agent import SYSTEM_PROMPT, run_agent, run_agent_iter
+from microclaw.agent import MAX_OUTPUT_TOKENS, SYSTEM_PROMPT, run_agent, run_agent_iter
 from microclaw.safety import SafetyConstraints, SafetyGuard
 
 
@@ -75,6 +75,50 @@ def text_response(text: str):
     response.stop_reason = "end_turn"
     response.content = [block]
     return response
+
+
+def api_history_is_valid(messages):
+    """The tool-use/result invariant enforced by the Messages API."""
+    for index, message in enumerate(messages):
+        if message["role"] != "assistant":
+            continue
+        tool_ids = {
+            getattr(block, "id", None) or block.get("id")
+            for block in message["content"]
+            if (getattr(block, "type", None)
+                or (isinstance(block, dict) and block.get("type"))) == "tool_use"
+        }
+        if not tool_ids:
+            continue
+        if index + 1 >= len(messages) or messages[index + 1]["role"] != "user":
+            return False
+        result_ids = {
+            block["tool_use_id"] for block in messages[index + 1]["content"]
+            if isinstance(block, dict) and block.get("type") == "tool_result"
+        }
+        if result_ids != tool_ids:
+            return False
+    return not messages or messages[-1]["role"] != "assistant" or not any(
+        (getattr(block, "type", None)
+         or (isinstance(block, dict) and block.get("type"))) == "tool_use"
+        for block in messages[-1]["content"]
+    )
+
+
+def status_error(error_type, status):
+    return error_type(
+        f"HTTP {status}",
+        response=httpx.Response(
+            status, request=httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+        ),
+        body=None,
+    )
+
+
+def connection_error(error_type=anthropic.APIConnectionError):
+    return error_type(
+        request=httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    )
 
 
 @pytest.fixture
@@ -143,6 +187,14 @@ class TestOperatorEstablishedStatePrompt:
         assert "Shutter the excitation before manual or physical interaction with the rig" in SYSTEM_PROMPT
         assert "take their word for it, do not wait to verify it" in SYSTEM_PROMPT
         assert "do not look for a particular phrase" in SYSTEM_PROMPT
+
+    def test_laser_entry_state_is_named_explicitly(self):
+        rule = next(
+            line for line in SYSTEM_PROMPT.splitlines()
+            if "At the end of a task involving lasers" in line
+        )
+        assert "what microclaw turned on, microclaw turns off" in rule
+        assert "what it found on, it leaves on" in rule
 
 
 class TestZStackThenExportPrompt:
@@ -426,8 +478,9 @@ class TestRunAgentIter:
         with patch("microclaw.agent._get_client", return_value=client):
             events = list(run_agent_iter("go", mock_ctrl, guard, messages))
         assert events[-1]["type"] == "error"
-        assert "overloaded" in events[-1]["message"].lower()
+        assert "retry" in events[-1]["message"].lower()
         assert messages == [{"role": "user", "content": "earlier"}]
+        assert api_history_is_valid(messages)
 
     def test_overload_rollback_keeps_attempted_prompt_in_append_only_audit(
         self, mock_ctrl, guard, monkeypatch
@@ -458,12 +511,141 @@ class TestRunAgentIter:
         assert "continue" in events[-1]["message"].lower()
         assert len(messages) == 1 + 2 * 2   # user + 2×(assistant, tool_result)
 
-    def test_unexpected_stop_reason_is_an_error_event(self, mock_ctrl, guard):
+    def test_max_tokens_is_a_named_recoverable_error(self, mock_ctrl, guard):
         response = MagicMock()
         response.stop_reason = "max_tokens"
         response.content = []
         events = self._drain([response], [], mock_ctrl, guard)
-        assert events[-1] == {"type": "error", "message": "[Unexpected stop reason: max_tokens]"}
+        assert events[-1]["type"] == "error"
+        assert "cut off" in events[-1]["message"]
+        assert "continue" in events[-1]["message"]
+
+    def test_max_tokens_inside_tool_use_is_unwound_for_the_next_prompt(
+        self, mock_ctrl, guard
+    ):
+        response = tool_use_response("get_system_state", {}, call_id="cut-off-call")
+        response.stop_reason = "max_tokens"
+        messages = []
+        events = self._drain([response], messages, mock_ctrl, guard)
+
+        assert events[-1]["type"] == "error"
+        assert api_history_is_valid(messages)
+        assert messages[-1]["content"] == [{
+            "type": "tool_result",
+            "tool_use_id": "cut-off-call",
+            "is_error": True,
+            "content": json.dumps({"error": "The model reply was cut off."}),
+        }]
+
+    def test_requests_allow_a_longer_model_reply(self, mock_ctrl, guard):
+        client = make_mock_client([text_response("hi")])
+        with patch("microclaw.agent._get_client", return_value=client):
+            list(run_agent_iter("go", mock_ctrl, guard, []))
+        assert MAX_OUTPUT_TOKENS == 8192
+        assert client.messages.stream.call_args.kwargs["max_tokens"] == 8192
+
+
+class TestAPIFailureSurvival:
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            pytest.param(lambda: status_error(anthropic.RateLimitError, 429), id="429"),
+            pytest.param(lambda: status_error(anthropic.InternalServerError, 500), id="500"),
+            pytest.param(connection_error, id="connection"),
+            pytest.param(lambda: connection_error(anthropic.APITimeoutError), id="timeout"),
+        ],
+    )
+    def test_retryable_failure_retries_then_succeeds(
+        self, failure, mock_ctrl, guard, monkeypatch
+    ):
+        monkeypatch.setattr("microclaw.agent._RETRY_DELAYS", (0.01,))
+        monkeypatch.setattr("microclaw.agent.time.sleep", lambda seconds: None)
+        client = MagicMock()
+        client.messages.stream.side_effect = [failure(), FakeStream(text_response("done"))]
+        messages = []
+
+        with patch("microclaw.agent._get_client", return_value=client):
+            events = list(run_agent_iter("go", mock_ctrl, guard, messages))
+
+        assert client.messages.stream.call_count == 2
+        assert [event["type"] for event in events].count("retry") == 1
+        assert events[-1] == {"type": "done", "reply": "done"}
+        assert api_history_is_valid(messages)
+
+    def test_retry_after_is_honoured(self, mock_ctrl, guard, monkeypatch):
+        monkeypatch.setattr("microclaw.agent._RETRY_DELAYS", (5,))
+        sleeps = []
+        monkeypatch.setattr("microclaw.agent.time.sleep", sleeps.append)
+        response = httpx.Response(
+            429,
+            headers={"retry-after": "17"},
+            request=httpx.Request("POST", "https://api.anthropic.com/v1/messages"),
+        )
+        failure = anthropic.RateLimitError("slow down", response=response, body=None)
+        client = MagicMock()
+        client.messages.stream.side_effect = [failure, FakeStream(text_response("done"))]
+
+        with patch("microclaw.agent._get_client", return_value=client):
+            events = list(run_agent_iter("go", mock_ctrl, guard, []))
+
+        assert sleeps == [17.0]
+        retry = next(event for event in events if event["type"] == "retry")
+        assert retry["delay"] == 17.0
+        assert client.messages.stream.call_count == 2
+
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            pytest.param(lambda: status_error(anthropic.RateLimitError, 429), id="429"),
+            pytest.param(lambda: status_error(anthropic.InternalServerError, 500), id="500"),
+            pytest.param(lambda: status_error(anthropic._exceptions.OverloadedError, 529), id="529"),
+            pytest.param(connection_error, id="connection"),
+            pytest.param(lambda: connection_error(anthropic.APITimeoutError), id="timeout"),
+            pytest.param(lambda: status_error(anthropic.AuthenticationError, 401), id="401"),
+            pytest.param(lambda: status_error(anthropic.BadRequestError, 400), id="400"),
+        ],
+    )
+    def test_every_terminal_api_failure_rolls_back_to_valid_history(
+        self, failure, mock_ctrl, guard, monkeypatch
+    ):
+        monkeypatch.setattr("microclaw.agent._RETRY_DELAYS", ())
+        client = MagicMock()
+        client.messages.stream.side_effect = failure()
+        messages = [{"role": "user", "content": "completed earlier turn"}]
+
+        with patch("microclaw.agent._get_client", return_value=client):
+            try:
+                events = list(run_agent_iter("attempted", mock_ctrl, guard, messages))
+            except (anthropic.AuthenticationError, anthropic.BadRequestError):
+                events = []
+
+        assert client.messages.stream.call_count == 1
+        assert messages == [{"role": "user", "content": "completed earlier turn"}]
+        assert api_history_is_valid(messages)
+        if events:
+            assert events[-1]["type"] == "error"
+
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            pytest.param(lambda: status_error(anthropic.AuthenticationError, 401), id="401"),
+            pytest.param(lambda: status_error(anthropic.BadRequestError, 400), id="400"),
+        ],
+    )
+    def test_auth_and_bad_request_fail_immediately_and_say_why(
+        self, failure, mock_ctrl, guard, monkeypatch
+    ):
+        monkeypatch.setattr("microclaw.agent._RETRY_DELAYS", (5, 15, 30))
+        client = MagicMock()
+        error = failure()
+        client.messages.stream.side_effect = error
+
+        with patch("microclaw.agent._get_client", return_value=client), pytest.raises(
+            type(error), match="HTTP"
+        ):
+            list(run_agent_iter("go", mock_ctrl, guard, []))
+
+        assert client.messages.stream.call_count == 1
 
 
 def multi_tool_response(names, call_ids):

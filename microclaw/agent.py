@@ -25,6 +25,8 @@ DEFAULT_MAX_ITERATIONS = 50
 _client: anthropic.Anthropic | None = None
 _known_models: list[str] | None = None
 
+MAX_OUTPUT_TOKENS = 8192
+
 
 def _get_client() -> anthropic.Anthropic:
     """Lazily construct the Anthropic client so importing this module has no
@@ -100,7 +102,7 @@ Illumination safety:
 - Re-imaging a coordinate is a hardware cost to be justified, not a free action: every exposure bleaches the sample irreversibly. Bookkeeping — marking positions, renaming them, getting them into the position list, re-measuring a value you could compute — must NEVER be a reason to re-expose a point you have already imaged. When you need a position in the list, mark_position(x_um=…, y_um=…) records a known coordinate with no move and no exposure; when you need a statistic a past image already contains, compute it rather than re-snapping.
 - Image multiple fluorescence channels from the LONGEST excitation wavelength to the shortest by default (e.g. 561 before 488; Cy5 before GFP before DAPI), and use the same order in any multi-channel hook you write. Shorter wavelengths bleach and cross-excite longer-wavelength fluorophores, but not the reverse, so longest-first minimises photodamage. Deviate only when the user explicitly asks for a different order. Channel presets and lasers often include wavelength values in them, but some channel presets may be opaque strings with no wavelength metadata. In this case, map them yourself — DAPI/Hoechst ≈ 405, GFP/FITC/488 ≈ 488, TRITC/Cy3/561 ≈ 561, mCherry/TxRed ≈ 594, Cy5/647 ≈ 647; a numeric preset name IS its wavelength. If a preset name is unmappable, ask the user for the order rather than guessing.
 - Do NOT ask permission for reversible bookkeeping that carries out what was asked (mark_position, get_*, set_roi). Beyond what was asked, the rig's state is the operator's — illumination, the viewer, anything they set up or can see: do not change it in either direction unasked, and never restore, tidy, or "make safe" on their behalf merely because the safety guard permits that direction. The guard's silence means "this will not hurt anything", not "this is yours to do". Ask, and wait. Also ask and wait before enabling illumination, raising power, moving Z on an unverified focus metric, or overwriting a dataset.
-- At the end of a task involving lasers, confirm every laser you enabled during the task is off; leave operator-established lasers as found unless asked, and do not just mention turning yours off.
+- At the end of a task involving lasers, confirm every laser you enabled during the task is off; what microclaw turned on, microclaw turns off, and what it found on, it leaves on unless asked — do not just mention turning yours off.
 
 Device property discovery:
 - When the user references a device whose properties you do not know, call list_device_properties(device) to enumerate them, then get_device_property_info(device, property) on the specific property to learn its type, allowed values, and numeric limits before calling set_device_property.
@@ -202,13 +204,14 @@ def _with_cache_breakpoint(messages: list[dict]) -> list[dict]:
 
 _RETRY_DELAYS = (5, 15, 30)
 
-OVERLOADED_MESSAGE = (
-    "The Anthropic API is currently overloaded (HTTP 529). "
+TRANSIENT_API_ERROR_MESSAGE = (
+    "The Anthropic API is still unavailable after retrying. "
     "Please try again in a few minutes."
 )
 
 
 CANCEL_RESULT = json.dumps({"error": "Cancelled by the operator."})
+TRUNCATED_RESULT = json.dumps({"error": "The model reply was cut off."})
 
 CANCEL_REASON = (
     "Stopped by the operator. The last step completed — check illumination and "
@@ -216,8 +219,8 @@ CANCEL_REASON = (
 )
 
 
-class _Overloaded(Exception):
-    """The 529 retries are spent. Internal to this module."""
+class _TransientAPIError(Exception):
+    """The retries for a transient API failure are spent. Internal only."""
 
 
 class _BadModel(Exception):
@@ -228,7 +231,7 @@ def _cancelled(cancel) -> bool:
     return cancel is not None and cancel.is_set()
 
 
-def _unwind_cancel(messages: list[dict], on_message=None):
+def _unwind_cancel(messages: list[dict], on_message=None, result=CANCEL_RESULT) -> None:
     """Leave `messages` in a state the API will accept on the next turn.
 
     An assistant turn ending in tool_use blocks is only valid if the next user
@@ -246,13 +249,12 @@ def _unwind_cancel(messages: list[dict], on_message=None):
             message = {"role": "user", "content": [
                 {"type": "tool_result",
                  "tool_use_id": b.id if hasattr(b, "id") else b["id"],
-                 "is_error": True, "content": CANCEL_RESULT}
+                 "is_error": True, "content": result}
                 for b in pending
             ]}
             messages.append(message)
             if on_message is not None:
                 on_message(message)
-    yield {"type": "cancelled", "reason": CANCEL_REASON}
 
 
 def _system_blocks() -> list[dict[str, Any]]:
@@ -276,9 +278,11 @@ def _stream_one_round(messages, system_blocks, model, context_provider=None):
 
     Yields `text_delta` events as the prose arrives; returns the final Message —
     the same object `messages.create()` used to return, blocks and all. Raises
-    `_Overloaded` once the 529 backoff is spent.
+    `_TransientAPIError` once the transient-failure backoff is spent.
     """
+    retry_after = 0.0
     for attempt, delay in enumerate([0, *_RETRY_DELAYS]):
+        delay = max(delay, retry_after)
         if delay:
             yield {"type": "retry", "delay": delay, "attempt": attempt}
             time.sleep(delay)
@@ -288,7 +292,7 @@ def _stream_one_round(messages, system_blocks, model, context_provider=None):
             )
             with _get_client().messages.stream(
                 model=model,
-                max_tokens=4096,
+                max_tokens=MAX_OUTPUT_TOKENS,
                 system=system_blocks,
                 tools=TOOLS_CACHED,
                 messages=_with_cache_breakpoint(model_messages),
@@ -304,9 +308,18 @@ def _stream_one_round(messages, system_blocks, model, context_provider=None):
             # A free-text model picker (v4c) can hold an id the API rejects.
             # Without this it escapes run_agent_iter as a 500 on the SSE stream.
             raise _BadModel(str(e)) from None
-        except anthropic._exceptions.OverloadedError:
+        except (anthropic.RateLimitError, anthropic.InternalServerError,
+                anthropic._exceptions.OverloadedError,
+                anthropic.APIConnectionError) as e:
             if attempt == len(_RETRY_DELAYS):
-                raise _Overloaded from None
+                raise _TransientAPIError from e
+            retry_after = 0.0
+            response = getattr(e, "response", None)
+            if response is not None:
+                try:
+                    retry_after = max(0.0, float(response.headers.get("retry-after", 0)))
+                except (TypeError, ValueError):
+                    pass
     raise RuntimeError("unexpected loop exit")  # pragma: no cover
 
 
@@ -356,7 +369,8 @@ def run_agent_iter(
 
     for iteration in range(max_iterations):
         if _cancelled(cancel):
-            yield from _unwind_cancel(messages, on_message)
+            _unwind_cancel(messages, on_message)
+            yield {"type": "cancelled", "reason": CANCEL_REASON}
             return
         yield {"type": "round_start", "iteration": iteration}
 
@@ -364,26 +378,35 @@ def run_agent_iter(
             response = yield from _stream_one_round(
                 messages, system_blocks, model, context_provider
             )
-        except _Overloaded:
-            # Remove the unsent/unanswered turn from the API-facing history.
-            # on_message may already have durably audited it; that append-only
-            # record truthfully shows the attempted prompt and is not rolled back.
+        except Exception as e:
+            # A failed API call must not strand its attempted prompt in the
+            # model-facing history. The append-only audit deliberately retains
+            # that prompt: it records what the operator attempted, even though
+            # there was no API response to continue from.
             del messages[start:]
-            yield {"type": "error", "message": OVERLOADED_MESSAGE}
-            return
-        except _BadModel as e:
-            # Keep API history valid, while retaining the attempted prompt in
-            # any append-only audit populated by on_message (see above).
-            del messages[start:]
-            yield {"type": "error",
-                   "message": f"The API rejected the model '{model}': {e}"}
-            return
+            if isinstance(e, _TransientAPIError):
+                yield {"type": "error", "message": TRANSIENT_API_ERROR_MESSAGE}
+                return
+            if isinstance(e, _BadModel):
+                yield {"type": "error",
+                       "message": f"The API rejected the model '{model}': {e}"}
+                return
+            raise
 
         append({"role": "assistant", "content": response.content})
 
         if response.stop_reason == "end_turn":
             text = next((b.text for b in response.content if hasattr(b, "text")), "")
             yield {"type": "done", "reply": text}
+            return
+
+        if response.stop_reason == "max_tokens":
+            _unwind_cancel(messages, on_message, TRUNCATED_RESULT)
+            yield {
+                "type": "error",
+                "message": "The model reply was cut off at the output-token limit. "
+                           "You can ask Microclaw to continue.",
+            }
             return
 
         if response.stop_reason != "tool_use":
