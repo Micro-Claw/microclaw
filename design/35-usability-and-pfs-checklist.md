@@ -120,16 +120,19 @@ What this file adds, specific to these blocks:
   recorded hash — is solved by pinning with `git merge-base --is-ancestor`
   (`cf13c1a`), not by branch placement. Coordinator bookkeeping stays on `main`.
 
-### State at the 2026-08-04 session boundary — read this before assigning anything
+### State at the 2026-08-05 session boundary — read this before assigning anything
 
-Refreshed after Block 5b merged and **Track A closed**. Recorded because these
-facts otherwise exist only in a closed conversation, and step 9's whole point is
-that a cold session resumes from the remote alone.
+Refreshed after Track A closed (block 5b), design/39 merged, and **Track B was
+rescoped against the Nikon sessions** (design/40). Recorded because these facts
+otherwise exist only in a closed conversation, and step 9's whole point is that
+a cold session resumes from the remote alone.
 
-- **`main` is at `d7c1d13`, measured 1393 passed / 99 skipped / 3 expected
-  warnings on macOS.** Windows measures 1377 / 115 — the same 1492 collected,
-  with sixteen platform-conditional tests skipping instead of passing. Judge a
-  suite by failures and collected total, not the passed count. Re-measure anyway;
+- **`main` is at `bb57e3c`, measured 1492 passed / 99 skipped / 3 expected
+  warnings on macOS (2026-08-05).** The collected total grew from 1492 to 1591
+  when design/39 landed; the earlier boundary recorded 1393/99 at `d7c1d13`, and
+  Windows measured 1377/115 there — the same collection, with sixteen
+  platform-conditional tests skipping instead of passing. Judge a suite by
+  failures and collected total, not the passed count. Re-measure anyway;
   a wildly different *total* means something else changed.
 - **Nothing is assigned, and there are no open branches or worktrees.** Every
   Track A block — 1, 2, 3, 4, 4b, 4c, 4d, 4e, 4f, 4g, 4h, 5, 5b — is merged,
