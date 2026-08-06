@@ -477,12 +477,12 @@ TOOLS: list[dict[str, Any]] = [
                 "output_path": {"type": "string"},
                 "axis_selection": {
                     "type": "object",
-                    "description": "One real coordinate value for every non-position axis.",
+                    "description": "Coordinate values for ambiguous non-position axes; singleton axes default automatically.",
                 },
                 "calibration_ref": _CALIBRATION_REF_SCHEMA,
                 "output_pixel_size_um": {"type": "number", "exclusiveMinimum": 0},
             },
-            "required": ["dataset_path", "output_path", "axis_selection"],
+            "required": ["dataset_path", "output_path"],
         },
     },
     {
@@ -1718,6 +1718,12 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "string",
                     "description": "'claude_generated' or 'user_provided'.",
                     "default": "claude_generated",
+                },
+                "runner_contract": {
+                    "type": "string",
+                    "enum": ["fixed", "adaptive"],
+                    "description": "Runner that will execute the hook; adaptive requires analyze_frame.",
+                    "default": "fixed",
                 },
             },
             "required": ["name", "code", "description"],
