@@ -894,6 +894,39 @@ class TestSnapAndAnalyze:
         assert result["focus_metric_valid"] is False
         assert "999" in result["warning"]
 
+    def test_saturated_snap_payload_exposes_snr_invalidity_reason(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        image = np.arange(10000, dtype=np.uint16).reshape(100, 100)
+        image.flat[:5] = np.iinfo(np.uint16).max
+        monkeypatch.setattr(tools, "snap_to_numpy_displayed", lambda ctrl: image)
+        result = snap_and_analyze(mock_ctrl, unconstrained_guard)
+        assert result["snr"] is None
+        assert result["snr_valid"] is False
+        assert "saturated" in result["snr_invalid_reason"]
+        assert result["warning"] == result["snr_invalid_reason"]
+
+    def test_sub_threshold_clipping_is_still_visible_in_the_report(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        # M5 rig gate, 2026-08-06: at 60 ms the frame clipped (max_intensity
+        # 65535) while saturated_fraction printed 0.0, because the payload
+        # rounded to 4 places and the validity gate fires at 1e-4. The display
+        # resolution equalled the decision threshold, so the operator could not
+        # see where they stood relative to it -- the exact confusion design/41 F4
+        # set out to remove. The gate itself is right: a handful of ceiling
+        # pixels must not invalidate a p99.5-based SNR.
+        image = np.full((200, 200), 300, dtype=np.uint16)   # 40000 px
+        image[0, 0] = np.iinfo(np.uint16).max               # 1 px -> 2.5e-5
+        monkeypatch.setattr(tools, "snap_to_numpy_displayed", lambda ctrl: image)
+        result = snap_and_analyze(mock_ctrl, unconstrained_guard)
+
+        assert result["max_intensity"] == 65535.0
+        assert result["snr_valid"] is True          # below the 1e-4 gate
+        # The number must not collapse to zero next to a clipped max_intensity.
+        assert result["saturated_fraction"] > 0
+        assert result["saturated_fraction"] == pytest.approx(2.5e-05)
+
     def test_zero_pixel_size_carries_warning(self, mock_ctrl, unconstrained_guard):
         # The model asked about pixel size once and had forgotten 20 messages
         # later — the warning must ride along on every snap (design/14 §8).
@@ -2513,9 +2546,66 @@ class TestArtifactDeclarations:
 
 class TestRunAOfflineTools:
     def _log(self, tmp_path, entries):
+        from microclaw.hooks import HookBase, analysis_observation_record
+        written = []
+        for entry in entries:
+            if entry.get("schema") == "microclaw.analysis-observation/v1":
+                written.append(entry)
+                continue
+            metadata = {
+                "PositionName": entry["position"],
+                "XPosition_um_Intended": entry["x_um"],
+                "YPosition_um_Intended": entry["y_um"],
+                **({"ZPosition_um_Intended": entry["z_um"]}
+                   if entry.get("z_um") is not None else {}),
+            }
+            written.append({
+                **HookBase.where(metadata),
+                **analysis_observation_record(
+                    analyzer="test", analyzer_version="1", result=entry["result"]
+                ),
+            })
         path = tmp_path / "hook.json"
-        path.write_text(json.dumps(entries), encoding="utf-8")
+        path.write_text(json.dumps(written), encoding="utf-8")
         return str(path)
+
+    def test_rank_hook_log_reports_all_invalid_rows_without_ranking_them(
+        self, mock_ctrl, unconstrained_guard, tmp_path
+    ):
+        records = [
+            {"position": "a", "x_um": 1, "y_um": 2, "result": {
+                "snr": None, "snr_valid": False,
+                "snr_invalid_reason": "saturated", "saturated_fraction": 0.001,
+            }},
+            {"position": "b", "x_um": 3, "y_um": 4, "result": {
+                "snr": None, "snr_valid": False,
+                "snr_invalid_reason": "saturated", "saturated_fraction": 0.002,
+            }},
+        ]
+        result = tools.rank_hook_log(
+            mock_ctrl, unconstrained_guard, self._log(tmp_path, records)
+        )
+        assert result["ranking"] == []
+        assert [row["position"] for row in result["invalid_rows"]] == ["a", "b"]
+        assert result["invalid_entry_count"] == 2
+        assert "incomplete" in result["warning"]
+
+    def test_rank_hook_log_ranks_valid_rows_and_lists_invalid_rows(
+        self, mock_ctrl, unconstrained_guard, tmp_path
+    ):
+        records = [
+            {"position": "valid", "x_um": 1, "y_um": 2,
+             "result": {"snr": 8, "snr_valid": True}},
+            {"position": "clipped", "x_um": 3, "y_um": 4, "result": {
+                "snr": None, "snr_valid": False,
+                "snr_invalid_reason": "saturated", "saturated_fraction": 0.001,
+            }},
+        ]
+        result = tools.rank_hook_log(
+            mock_ctrl, unconstrained_guard, self._log(tmp_path, records)
+        )
+        assert [row["position"] for row in result["ranking"]] == ["valid"]
+        assert [row["position"] for row in result["invalid_rows"]] == ["clipped"]
 
     def test_rank_hook_log_sorts_metric_then_label(self, mock_ctrl, unconstrained_guard,
                                                    tmp_path):
@@ -2749,9 +2839,9 @@ class TestRunAOfflineTools:
         assert tools.inspect_artifacts(mock_ctrl, guard, [str(artifact)])["artifact_count"] == 1
 
         hook_log = tmp_path / "outside-hook.json"
-        hook_log.write_text(json.dumps([{
+        hook_log.write_text(Path(self._log(tmp_path, [{
             "position": "p0", "x_um": 1, "y_um": 2, "result": {"snr": 9}
-        }]), encoding="utf-8")
+        }])).read_text(), encoding="utf-8")
         assert tools.rank_hook_log(mock_ctrl, guard, str(hook_log))["entry_count"] == 1
         position_list = tmp_path / "outside.pos"
         position_list.write_text("{}", encoding="utf-8")
@@ -3126,6 +3216,98 @@ class TestSaveKnowledgeConfirmation:
         )
         assert "declined" in result["error"].lower()
         assert calls == []  # save_entry never reached
+
+
+    def test_rank_hook_log_skips_interleaved_runner_actions(
+        self, mock_ctrl, unconstrained_guard, tmp_path
+    ):
+        from microclaw.hook_decisions import ContinueSurvey, UntrustedHookAdapter
+        from microclaw.hooks import HookBase, analysis_observation_record
+        metadata = {
+            "PositionName": "p0", "XPosition_um_Intended": 1,
+            "YPosition_um_Intended": 2,
+        }
+        adapter = UntrustedHookAdapter(object())
+        adapter._record(
+            metadata, event="hook_action", action={"kind": ContinueSurvey().kind},
+            decision="accepted",
+        )
+        observation = {
+            **HookBase.where(metadata),
+            **analysis_observation_record(
+                analyzer="test", analyzer_version="1", result={"snr": 4}
+            ),
+        }
+        path = tmp_path / "hook.json"
+        path.write_text(json.dumps([*adapter._log, observation]))
+        result = tools.rank_hook_log(mock_ctrl, unconstrained_guard, str(path))
+        assert result["entry_count"] == 1
+        assert result["ranking"][0]["position"] == "p0"
+
+    def test_position_preflight_names_conflicts_as_pre_existing(
+        self, mock_ctrl, unconstrained_guard
+    ):
+        from microclaw.controller import PositionProjection
+        mock_ctrl.inspect_current_position_list.return_value = PositionProjection(
+            [], [], [{"code": "duplicate_label", "index": 0, "label": "old"}]
+        )
+        _, conflict = tools._preflight_native_positions(mock_ctrl, unconstrained_guard)
+        detail = conflict["position_list_conflict"]
+        assert "pre-existing" in detail["source"]
+        assert "not evaluated or written" in detail["hint"]
+
+    def test_zero_calibration_shift_names_stationary_pattern_before_step_size(self):
+        reason = tools._diagnose_calibration_shift(
+            np.array([0.0, 0.0]), (512, 512), 20.0, None
+        )
+        assert "stationary feature" in reason
+        assert "before changing step_um" in reason
+
+    def test_failed_hooked_marking_rolls_back_only_this_calls_grid(
+        self, mock_ctrl, unconstrained_guard, monkeypatch, tmp_path
+    ):
+        monkeypatch.setattr(
+            tools, "_acquire_positions_with_hook", lambda *args, **kwargs: {"error": "camera"}
+        )
+        result = run_multiposition_acquisition(
+            mock_ctrl, unconstrained_guard, protocol="timelapse",
+            save_dir=str(tmp_path), positions=[
+                {"name": "new0", "x_um": 1, "y_um": 2},
+                {"name": "new1", "x_um": 3, "y_um": 4},
+            ], protocol_params={"n_frames": 1, "interval_s": 0},
+            mark_positions=True, hook_strategy="snr_observer",
+        )
+        assert [call.args[0] for call in mock_ctrl.remove_position.call_args_list] == [
+            "new1", "new0"
+        ]
+        assert result["position_list_rollback"]["complete"] is True
+
+    def test_unsafe_hooked_grid_is_checked_before_any_position_is_marked(
+        self, mock_ctrl, default_guard, tmp_path
+    ):
+        with pytest.raises(SafetyViolation):
+            run_multiposition_acquisition(
+                mock_ctrl, default_guard, protocol="timelapse", save_dir=str(tmp_path),
+                positions=[{"name": "unsafe", "x_um": 5000, "y_um": 0}],
+                protocol_params={"n_frames": 1, "interval_s": 0},
+                mark_positions=True, hook_strategy="snr_observer",
+            )
+        mock_ctrl.add_position.assert_not_called()
+
+    def test_post_mark_safety_refusal_still_rolls_back(
+        self, mock_ctrl, unconstrained_guard, monkeypatch, tmp_path
+    ):
+        def refuse(*args, **kwargs):
+            raise SafetyViolation("dose refused")
+        monkeypatch.setattr(tools, "_acquire_positions_with_hook", refuse)
+        result = run_multiposition_acquisition(
+            mock_ctrl, unconstrained_guard, protocol="timelapse", save_dir=str(tmp_path),
+            positions=[{"name": "new", "x_um": 1, "y_um": 2}],
+            protocol_params={"n_frames": 1, "interval_s": 0},
+            mark_positions=True, hook_strategy="snr_observer",
+        )
+        mock_ctrl.remove_position.assert_called_once_with("new")
+        assert result["position_list_rollback"]["complete"] is True
 
     def test_saves_after_confirmation(self, mock_ctrl, unconstrained_guard, monkeypatch):
         from microclaw import tools

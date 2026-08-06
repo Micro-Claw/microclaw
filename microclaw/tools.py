@@ -1774,7 +1774,7 @@ def build_stage_coordinate_mosaic(
     guard: SafetyGuard,
     dataset_path: str,
     output_path: str,
-    axis_selection: dict,
+    axis_selection: dict | None = None,
     calibration_ref: dict | None = None,
     output_pixel_size_um: float | None = None,
 ) -> dict:
@@ -1786,6 +1786,8 @@ def build_stage_coordinate_mosaic(
     timestamp, so identical inputs and selection produce identical pixels and
     hashed payloads.
     """
+    if axis_selection is None:
+        axis_selection = {}
     if not isinstance(axis_selection, dict):
         raise ValueError("axis_selection must be an object")
     dataset_path = guard.resolve_readable_path(dataset_path)
@@ -1797,8 +1799,17 @@ def build_stage_coordinate_mosaic(
     missing = non_position_axes - set(axis_selection)
     if unknown:
         raise ValueError(f"Unknown or position axis selections: {sorted(unknown)}")
+    for axis in sorted(missing):
+        values = list(dataset.axes[axis])
+        if len(values) == 1:
+            axis_selection[axis] = values[0]
+    missing = non_position_axes - set(axis_selection)
     if missing:
-        raise ValueError(f"axis_selection must fix every non-position axis: {sorted(missing)}")
+        available = {axis: list(dataset.axes[axis]) for axis in sorted(non_position_axes)}
+        raise ValueError(
+            "axis_selection must fix every ambiguous non-position axis; remaining "
+            f"{sorted(missing)}. Full non-position axis values: {available}"
+        )
     for axis, value in axis_selection.items():
         if value not in dataset.axes[axis]:
             raise ValueError(f"Dataset axis selection is not present: {axis}={value!r}")
@@ -2045,11 +2056,15 @@ def _focus_metric_payload(
         "focus_metric_valid": stats.focus_metric_valid,
         "background_level": stats.background_level,
         "snr": stats.snr,
+        "snr_valid": stats.snr_valid,
+        "snr_invalid_reason": stats.snr_invalid_reason,
         "min_snr": min_snr,
         "min_snr_source": min_snr_source,
         **_metric_stamp(ctrl),
     }
-    if not stats.focus_metric_valid:
+    if not stats.snr_valid:
+        payload["warning"] = stats.snr_invalid_reason
+    elif not stats.focus_metric_valid:
         payload["warning"] = focus_invalid_warning(stats.snr, min_snr)
     return payload
 
@@ -2086,7 +2101,7 @@ def snap_and_analyze(
         "mean_intensity": round(stats.mean_intensity, 1),
         "min_intensity": round(stats.min_intensity, 1),
         "max_intensity": round(stats.max_intensity, 1),
-        "saturated_fraction": round(stats.saturated_fraction, 4),
+        "saturated_fraction": round(stats.saturated_fraction, 6),
     }
     restore = _live_restore_report(live_state)
     if restore:
@@ -2200,6 +2215,14 @@ def _diagnose_calibration_shift(
             f"{detail}): the move left too little overlap to register. Reduce "
             f"step_um (≈¼ of the smaller FOV dimension) or clear the ROI to image "
             f"the full sensor."
+        )
+    if np.isfinite(mag) and mag < 0.5:
+        return (
+            f"the commanded move produced no image shift at all (|shift| {mag:.2f} px). "
+            "A merely small step produces a small shift, not none; this is the "
+            "signature of a stationary feature dominating correlation (for example "
+            "a vignette rim, sensor dirt, or fixed reflection). Crop to the illuminated "
+            "centre and retry before changing step_um."
         )
     if not np.isfinite(mag) or mag < 1.0:
         return (
@@ -2561,7 +2584,15 @@ def _preflight_native_positions(
             [i for i in projection.issues if i.get("code") != "unsupported_only"],
         )
     if projection.issues:
-        return None, _position_conflict(projection)
+        conflict = _position_conflict(projection)
+        conflict["position_list_conflict"].update({
+            "source": "pre-existing entries, not positions this call would add",
+            "hint": (
+                "Resolve or clear the listed pre-existing entries; proposed positions "
+                "from this call were not evaluated or written."
+            ),
+        })
+        return None, conflict
     ctrl.set_position_projection(projection)
     return projection, None
 
@@ -2944,15 +2975,19 @@ def _run_protocol_at(
             # focus_metric_valid is False where there is no signal to be sharp about.
             "focus_metric_valid": stats.focus_metric_valid,
             "snr": stats.snr,
+            "snr_valid": stats.snr_valid,
+            "snr_invalid_reason": stats.snr_invalid_reason,
             "min_snr": min_snr,
             "min_snr_source": min_snr_source,
             "background_level": stats.background_level,
             "mean_intensity": round(stats.mean_intensity, 1),
             "min_intensity": round(stats.min_intensity, 1),
             "max_intensity": round(stats.max_intensity, 1),
-            "saturated_fraction": round(stats.saturated_fraction, 4),
+            "saturated_fraction": round(stats.saturated_fraction, 6),
         }
-        if not stats.focus_metric_valid:
+        if not stats.snr_valid:
+            tile["warning"] = stats.snr_invalid_reason
+        elif not stats.focus_metric_valid:
             tile["warning"] = focus_invalid_warning(stats.snr, min_snr)
         return tile
     if pos_save_dir is None:
@@ -3081,24 +3116,55 @@ def run_multiposition_acquisition(
         except KeyError as e:
             return {"error": f"protocol_params for '{protocol}' is missing {e}."}
         if mark_positions:
+            # Match the non-hooked path: validate coordinates before publishing
+            # anything to the operator's native position list.
+            sweeps_z = "z_start" in shape
+            for _label, x_um, y_um, z_um in resolved:
+                guard.check_xy(x_um, y_um)
+                if not sweeps_z and z_um is not None:
+                    guard.check_z(z_um)
+            if sweeps_z:
+                guard.check_z(shape["z_start"])
+                guard.check_z(shape["z_end"])
             # The grid coordinates are known up front, so marking needs no stage
             # reads and no visit loop — mark before the Acquisition takes over.
             for pos_label, x_um, y_um, z_um in resolved:
                 ctrl.add_position(pos_label, float(x_um), float(y_um),
                                   float(z_um) if z_um is not None else None)
+        added_labels = [item[0] for item in resolved] if mark_positions else []
         with _pause_live(ctrl) as live_state:
-            hooked = _acquire_positions_with_hook(
-                ctrl, guard,
-                positions=[{"name": n, "x_um": x, "y_um": y, "z_um": z}
-                           for n, x, y, z in resolved],
-                save_dir=save_dir, name=name, hook_strategy=hook_strategy,
-                hook_params=hook_params, log_path=log_path,
-                channel=params.get("channel"), exposure_ms=params.get("exposure_ms"),
-                illumination_envelope=illumination_envelope,
-                artifact_limits=artifact_limits,
-                **shape,
-            )
+            try:
+                hooked = _acquire_positions_with_hook(
+                    ctrl, guard,
+                    positions=[{"name": n, "x_um": x, "y_um": y, "z_um": z}
+                               for n, x, y, z in resolved],
+                    save_dir=save_dir, name=name, hook_strategy=hook_strategy,
+                    hook_params=hook_params, log_path=log_path,
+                    channel=params.get("channel"), exposure_ms=params.get("exposure_ms"),
+                    illumination_envelope=illumination_envelope,
+                    artifact_limits=artifact_limits,
+                    **shape,
+                )
+            except SafetyViolation as exc:
+                if not added_labels:
+                    raise
+                hooked = {"error": str(exc)}
+            except Exception as exc:
+                hooked = {"error": str(exc)}
         if "error" in hooked:
+            # Transaction boundary: undo only entries written by this call.
+            # Pre-existing list entries are never part of this rollback.
+            rollback_errors = []
+            for label in reversed(added_labels):
+                try:
+                    ctrl.remove_position(label)
+                except Exception as exc:
+                    rollback_errors.append({"position": label, "error": str(exc)})
+            hooked["position_list_rollback"] = {
+                "attempted": added_labels,
+                "complete": not rollback_errors,
+                "errors": rollback_errors,
+            }
             return hooked
         # The coordinates are known exactly, right here — the hooked branch used
         # to drop them, so "where was tile r2_c1?" had no answer short of
@@ -4065,13 +4131,16 @@ def _acquire_survey_with_detector(
                 "Saved untrusted hooks are not supported by the non-adaptive "
                 "survey-with-detector runner; use run_adaptive_survey."
             )
-        if not hook.proposes_actions:
+        from microclaw.hook_manager import validate_hook_contract
+        contract_errors = validate_hook_contract(hook, required_callback="analyze_frame")
+        if contract_errors:
             # A legacy saved hook has no way to reach candidates/progress, so it
             # can never advance the survey past the seed tile. Left to run, the
             # generator would idle out max_idle_s and log "stalled" — a
             # structural impossibility reported as a hardware symptom. Refuse
             # before any position is exposed.
             raise ValueError(
+                f"Adaptive analyze_frame contract failed: {contract_errors[0]} "
                 "This saved hook defines only a legacy image_process_fn, so it "
                 "cannot propose ContinueSurvey or StopSurvey and can never "
                 "advance an adaptive survey past the seed tile. Give it an "
@@ -4312,7 +4381,10 @@ def rank_hook_log(
         return {"error": "Hook log must contain a JSON array."}
     seen: set[str] = set()
     rows = []
+    invalid_rows = []
     for i, entry in enumerate(entries):
+        if entry.get("schema") != "microclaw.analysis-observation/v1":
+            continue
         label = entry.get("position")
         result = entry.get("result") or {}
         missing = [k for k in ("position", "x_um", "y_um") if entry.get(k) is None]
@@ -4323,6 +4395,18 @@ def rank_hook_log(
         if label in seen:
             return {"error": f"Duplicate position in hook log: {label}"}
         seen.add(label)
+        valid_key = f"{metric}_valid"
+        if result.get(valid_key) is False:
+            invalid_rows.append({
+                "position": label, "x_um": entry["x_um"], "y_um": entry["y_um"],
+                **({"z_um": entry["z_um"]} if entry.get("z_um") is not None else {}),
+                metric: result[metric],
+                valid_key: False,
+                "invalid_reason": result.get(f"{metric}_invalid_reason"),
+                "focus_metric_valid": result.get("focus_metric_valid"),
+                "saturated_fraction": result.get("saturated_fraction"),
+            })
+            continue
         try:
             value = float(result[metric])
         except (TypeError, ValueError):
@@ -4333,6 +4417,7 @@ def rank_hook_log(
             "position": label, "x_um": entry["x_um"], "y_um": entry["y_um"],
             **({"z_um": entry["z_um"]} if entry.get("z_um") is not None else {}),
             metric: value,
+            valid_key: result.get(valid_key),
             "focus_metric_valid": result.get("focus_metric_valid"),
             "saturated_fraction": result.get("saturated_fraction"),
         })
@@ -4346,10 +4431,18 @@ def rank_hook_log(
         "log_path": log_path,
         "metric": metric,
         "ranking_key": f"descending result.{metric}, then ascending position label",
-        "entry_count": len(rows),
+        "entry_count": len(rows) + len(invalid_rows),
+        "ranked_entry_count": len(rows),
+        "invalid_entry_count": len(invalid_rows),
         "ranking": rows,
+        "invalid_rows": invalid_rows,
         "budget_views": {str(k): rows[:k] for k in requested},
     }
+    if invalid_rows:
+        result["warning"] = (
+            f"Ranking is incomplete: {len(invalid_rows)} observation(s) had invalid "
+            f"{metric} and are listed in invalid_rows rather than ranked."
+        )
     if position_list_path:
         position_list_path = guard.resolve_readable_path(position_list_path)
         try:
@@ -4689,6 +4782,7 @@ def generate_and_save_hook(
     code: str,
     description: str,
     source: str = "claude_generated",
+    runner_contract: str = "fixed",
 ) -> dict:
     """Lint and save a hook script. Call ONLY after the user has confirmed the code.
 
@@ -4699,7 +4793,10 @@ def generate_and_save_hook(
     """
     from microclaw.hook_manager import lint_hook_code, save_hook, validate_hook_contract
     warnings = lint_hook_code(code)
-    contract_errors = validate_hook_contract(code)
+    if runner_contract not in {"fixed", "adaptive"}:
+        return {"error": "runner_contract must be 'fixed' or 'adaptive'."}
+    required_callback = "analyze_frame" if runner_contract == "adaptive" else None
+    contract_errors = validate_hook_contract(code, required_callback=required_callback)
     if contract_errors:
         return {
             "error": "Hook failed static preflight; it was not saved.",
@@ -4720,7 +4817,8 @@ def generate_and_save_hook(
         "source": source,
         "warnings": warnings,
         "preflight": (
-            "Static syntax and image_process_fn contract passed. Source was not "
+            f"Static syntax and {runner_contract} runner contract passed using "
+            f"{('analyze_frame' if required_callback else 'the saved-hook callback validator')}. Source was not "
             "imported or executed because no hook sandbox is configured."
         ),
     }

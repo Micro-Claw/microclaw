@@ -138,9 +138,24 @@ a cold session resumes from the remote alone.
 - **Track D's next blocks are 13 and 41b**, which may now run concurrently with
   each other and with 6a, in separate worktrees (13 is `tools.py`, 41b is the
   emitters plus `image_analysis.py`). 41c follows 41b.
-  **Both were assigned 2026-08-05 from `2d66045`**, in worktrees
+  **Both were assigned 2026-08-05 from `03dcea0`**, in worktrees
   `../microclaw-13` and `../microclaw-41b`. Three branches are now in flight at
   once (6a, 13, 41b); 6a is the only one whose next step belongs to the rig.
+  **As of 2026-08-06: block 13 is pushed and awaiting its gate** (runbook
+  `design/40-block13-rig-gate.md`, on the branch); **41b is in review after two
+  rounds** and is not pushed. Both blocks were implemented by an operator-driven
+  codex runner rather than by an Agent-tool runner — see the note on step 2 in
+  `CLAUDE.md`, which now says the coordinator writes the prompt and *offers*.
+- **Two rounds of review on each of 13 and 41b found real defects behind a green
+  suite, both times.** The pattern is worth keeping: every reported suite count
+  and collected-ID diff was accurate, and the defects were invisible in them.
+  Block 13 round 1 shipped a `rank_hook_log` fix whose test invented a schema
+  (`microclaw.hook-action/v1`) that exists nowhere, so the fix admitted `None`
+  and the original defect survived untouched; it was caught only by rebuilding
+  the log with the real writers. **Judge a fix by driving the real producer, not
+  by reading its test.** The coordinator's own first repro of the same area was
+  wrong for the mirror-image reason — a hand-built record that omitted
+  `snr_valid` — so this cuts both ways.
 - **Baseline re-measured 2026-08-05 at `2d66045`** — the boundary-refresh merge —
   and it is unchanged from `c799063`: **1511 passed / 99 skipped / 3 expected
   warnings, 1610 collected.** The 3 warnings are one
@@ -179,11 +194,71 @@ a cold session resumes from the remote alone.
   `git log --oneline origin/main..main` is empty.
 - **Track B order from here is 6 and 7a** (both depend on 6a merging), then 7b
   and 8. Track C last.
-- **Track D order is 41a, 13, 41b, 41c**, from the M5 smiley run
+- **Track D order is 41a, 13, 41b, 41c**, plus **41d** (added 2026-08-06 from
+  41b's M5 gate; `safety.py`, disjoint from everything else in the track, may run
+  concurrently). From the M5 smiley run
   (`design/41-smiley-session-findings.md`), which also folded two findings into
   block 13. **41a is merged**, so 13 and 41b are both assignable now and may run
   concurrently with each other and with 6a — 13 is `tools.py`, 41b is the
   emitters plus `image_analysis.py`. 41c follows 41b.
+
+### State at the 2026-08-06 session boundary — read this before assigning anything
+
+Written because the session ended on credits, mid-block, and step 9's whole point
+is that a cold session resumes from the remote alone. `main` is `3d52b3d` plus
+this commit; `git log --oneline origin/main..main` is empty; no uncommitted files
+in any worktree.
+
+- **Block 13 is CLOSED.** Merged `d24e721`, gate `40-block13-m5`, design gate
+  `e5ad254`. Its G3 (transmitted light) was **not runnable on M5** and is in the
+  carried-forward register, as is its unexercised position-list rollback path and
+  the post-gate `f4e98c6`, which is ungated.
+- **Block 41b is pushed at `b6cc7a2` and NOT merged. One narrow thing is owed.**
+  Four review rounds and **four** rig rounds are done.
+  **G3 PASSED on M5, 2026-08-06** (`41-block4b-m5-run-round4`): the script was
+  executed with microclaw closed and stopped loudly at
+  `RuntimeError: NOT EMITTED: run_adaptive_survey`, which is exactly G3's
+  criterion — and a stronger test than planned, because it fired on a real
+  unemittable tool rather than the mosaic. **Round 4's by-name resolution is also
+  confirmed on the rig**: after `clear_position_list` + three `mark_position`
+  calls, the by-name survey emitted its true coordinates
+  `(339.7, 300.1, 42.987)` and siblings, anchored on `_HERE`.
+  **What is owed: one clean G1/G2 run on current code.** G1/G2 last passed in rig
+  round 2, on pre-`_HERE` code; round 4's script stopped at `run_adaptive_survey`
+  before reaching its acquisitions, so no script-written datasets exist to
+  compare. Run the runbook's one-session recipe **without any adaptive tool**
+  (`run_adaptive_survey`/`_zstack`/`_timelapse` all refuse by design), confirm the
+  script completes and the datasets match, then merge.
+  Deliberately left unmerged rather than carried forward, because unlike block
+  13's G3 this gate *is* runnable on any rig.
+- **Block 41d is new and unassigned** — `design41/path-expansion`. There is no
+  `expanduser` anywhere in `microclaw/`, so `~/x` is joined under the workspace
+  root as a literal directory named `~`. Found by 41b's M5 gate; the operator got
+  `C:\Users\ries\AppData\Local\microclaw\~\microclaw_data`. It predates
+  Track D (`ee7f098`, 2026-07-28) and affects **every** path-taking tool, so any
+  past session that used a `~` path has been writing into a stray `~` folder.
+  Touches only `safety.py`; may run concurrently with anything.
+- **Block 6a is still pushed and still awaiting the Nikon**, unchanged since
+  2026-08-05 at `4994f3e`. It must merge `main` before its own merge — `main` has
+  moved a long way since it branched.
+- **Track order from here:** 41b's gate → merge → 41c. 41d any time. Track B's 6
+  and 7a unblock when 6a merges.
+- **`main` measures 1525 passed / 99 skipped / 3 expected warnings, 1623
+  collected** (2026-08-06, macOS). Re-measure rather than trusting this. Judge a
+  suite by failures and collected total, and **diff collected test IDs** against
+  the branch's start commit — that check has now caught silent test loss twice.
+
+**The one process change made this session.** `CLAUDE.md` step 2 now says the
+coordinator writes the runner prompt to scratch and **offers** to start an agent,
+rather than spawning one. Blocks 13 and 41b were largely implemented by an
+operator-driven codex runner; round 4 of 41b ran in an Agent-tool runner when
+codex credits ran out. Both work; the prompt is the deliverable either way.
+
+**What actually caught defects this session**, all of it in `design/prompts.md`
+under "Blocks 13 and 41b": drive the real producer rather than reading the test,
+execute the artifact rather than compiling it, and read the session history
+rather than the artifact alone. Every single round came back green with accurate
+numbers and had a real defect in it.
 
 ### Rescoped 2026-08-05 — read this before touching Track B
 
@@ -294,10 +369,11 @@ assistant's narration when judging whether a guard fired.
 | 7b | Nikon | 7a | `design34/continuous-focus-policy` | | | **required** | | |
 | 7c | Nikon | — | — | — | — | — | **SKIPPED 2026-08-05** — merged into 7a | design/40 D3 |
 | 8 | Nikon | 6, 7a, 7b | `design33/phase5-continuous-focus` | | | required | | |
-| 13 | Platform | 41a merged; may run concurrently with Track B and 41b | `design40/platform-defects` | `2d66045` | | **required** | | |
+| 13 | Platform | 41a merged | `design40/platform-defects` (deleted) | `03dcea0` | `0c83268` + `c2fc7ab` (round 1 returned); runbook `9d2a934`; post-gate `f4e98c6` **ungated** | M5 2026-08-06 **G1/G2/G4/G5 PASS**; **G3 not runnable — no transmitted light on M5, carried forward** | `d24e721` | **done** — design/25 §"SNR validity, stated once", design/32 §"One hook contract", design/40 §"What block 13 shipped", design/41 F4/F5 |
 | 41a | Platform | none — **assign first in Track D** | `design41/session-survival` (deleted) | `b0ee300` | `501287f` + `bb58551` (round 1 returned) | n/a — no rig surface | `1fb284d` | **done** — design/16 §5 "The invariant is not about Stop"; design/41 F2/F3/F7 ticked |
-| 41b | Platform | 41a merged | `design41/script-export` | `2d66045` | | **required** | | |
+| 41b | Platform | 41a merged | `design41/script-export` | `03dcea0` | 4 review rounds through `5ead7cc`; README `4b08f30`; runbook `bc9aea1`; post-gate `b6cc7a2` **ungated** | M5 r1 **FAIL**; r2 **G1/G2 PASS** on pre-`_HERE` code; r3 exported, not executed; **r4 2026-08-06 G3 PASS** (executed, stopped loudly) + by-name resolution confirmed on the rig. **G1/G2 owed once on current code** | | |
 | 41c | Platform | 41b merged | `design41/emu-channel-plan` | | | **required** — M5 + demo | | |
+| 41d | Platform | none — may run concurrently (touches `safety.py`, disjoint from 41b) | `design41/path-expansion` | | | **required** | | |
 | 9 | Features | operator intake | `design26/generated-adapter-run-b` | | | required | | |
 | 10 | Features | 9; optional | `design26/few-shot-run-c` | | | required or marked skipped | | |
 | 11 | Features | accepted Run B fixtures | `design32/hook-worker-isolation` | | | regression required | | |
@@ -4009,11 +4085,11 @@ gate is run inside such a session. Design/41's remaining two findings are folded
 into block 13 rather than given blocks of their own, because they are the same
 decisions block 13 already owns.
 
-## 13. Hooked-survey and diagnostic defects
+## 13. [x] Hooked-survey and diagnostic defects — **MERGED 2026-08-06**
 
 Branch: `design40/platform-defects`
 
-- [ ] **A failed marked run poisons the position list.** `mark_positions=True`
+- [x] **A failed marked run poisons the position list.** `mark_positions=True`
       preflights the *entire* native list (`tools.py:2506`), so 25 entries left
       by a failed grid refused the next run with a conflict quoting the **old**
       grid's coordinates. The agent concluded `run_tile_acquisition` lays its
@@ -4021,27 +4097,27 @@ Branch: `design40/platform-defects`
       round trip on the wrong fix. Decide and state whether a partially-written
       grid is rolled back, and make the conflict distinguish pre-existing
       entries from the ones this call would add.
-- [ ] **`rank_hook_log` cannot read its own parent's log.** It requires
+- [x] **`rank_hook_log` cannot read its own parent's log.** It requires
       `result.<metric>` on every entry (`tools.py:3757`–`3764`); the runner
       interleaves `hook_action` records, so ranking fails on entry 1 of every
       hooked survey. Skip non-observation entries.
-- [ ] **Hook preflight validates a contract the runner rejects.**
+- [x] **Hook preflight validates a contract the runner rejects.**
       `generate_and_save_hook` returns hard-coded "Static syntax and
       `image_process_fn` contract passed" (`tools.py:4162`) while
       `run_tile_acquisition` refuses that contract. Two review-and-save cycles
       with the operator, on hardware. One contract, checked in one place.
-- [ ] `ContinueSurvey` logs `"decision": "refused",
+- [x] `ContinueSurvey` logs `"decision": "refused",
       "reason": "unsupported-by-this-runner"` on every tile of a batched run —
       25 refusals in a run where the action is a documented no-op. Either accept
       it as a no-op in that runner or stop the docs recommending it there.
-- [ ] **The SNR gate is a fluorescence assumption.** Brightfield fields with
+- [x] **The SNR gate is a fluorescence assumption.** Brightfield fields with
       cells the operator could see read SNR 2.53 / 2.74 / 1.41 and gate the
       focus metric off; raising exposure made it *worse*, because in transmitted
       light the background is the signal path. Decide what the gate means for
       transmitted light — this may be a different metric, a different gate, or
       an honest refusal to score; it must not be a threshold tuned until
       brightfield passes.
-- [ ] **Saturation does not invalidate SNR, so a clipped gate passes anything**
+- [x] **Saturation does not invalidate SNR, so a clipped gate passes anything**
       (design/41 F4). On the M5 smiley run every one of 18 frames had
       `max_intensity` 65535 in both channels, and the operator's explicit
       "keep the tile if SNR > 3" gate reported margins of 173–716 and 277–904.
@@ -4053,13 +4129,13 @@ Branch: `design40/platform-defects`
       existing pattern extended, not a new validator. **This bullet and the
       brightfield bullet above are one decision about what SNR validity means;
       settle them together and state the semantics once.**
-- [ ] **Exposure is approved once and never re-checked after a focus move**
+- [x] **Exposure is approved once and never re-checked after a focus move**
       (design/41 F4). The operator approved exposure against an out-of-focus
       snap (`max_intensity` 6637, `saturated_fraction` 0.0); autofocus then
       moved 2 µm and every subsequent frame clipped. Surface clipping in the
       result the model reads from `snap_and_analyze` and the acquisition tools,
       so "exposure is good" can be re-asked when focus changes.
-- [ ] **`axis_selection` makes the caller guess an answer the dataset holds**
+- [x] **`axis_selection` makes the caller guess an answer the dataset holds**
       (design/41 F5). `build_stage_coordinate_mosaic` took three calls to place
       9 tiles: the error names only the axis *this* call omitted
       (`tools.py:1279`), so fixing it reveals the next one. Both axes were
@@ -4067,7 +4143,7 @@ Branch: `design40/platform-defects`
       one legal completion. Default singleton axes to their only value, and when
       something genuinely ambiguous remains, state the full non-position axis set
       with each axis's available values so one correction is always enough.
-- [ ] **`calibrate_stage_to_camera` mis-diagnoses fixed-pattern lock.** An exact
+- [x] **`calibrate_stage_to_camera` mis-diagnoses fixed-pattern lock.** An exact
       `0.00 px` shift is the signature of a stationary vignette rim or sensor
       dirt dominating the correlation, not of too small a step
       (`tools.py:1684`). The advice sent the operator to a larger step, which
@@ -4077,25 +4153,58 @@ Branch: `design40/platform-defects`
 
 Rig gate:
 
-- [ ] Any rig: a hooked tile survey with `mark_positions=True` that fails
+- [x] Any rig: a hooked tile survey with `mark_positions=True` that fails
       mid-run leaves a state the next identical call can run from.
-- [ ] Any rig: `rank_hook_log` ranks the log its own hooked survey just wrote.
+- [x] Any rig: `rank_hook_log` ranks the log its own hooked survey just wrote.
 - [ ] Any rig with transmitted light: whatever the SNR decision is, a field the
       operator calls usable is reported consistently with that decision.
-- [ ] Any fluorescence rig: a deliberately over-exposed field is reported as a
+- [x] Any fluorescence rig: a deliberately over-exposed field is reported as a
       saturated, invalid SNR rather than a large one. The M5 smiley conditions
       reproduce this directly — beads at 100 ms after autofocus clipped every
       frame — so this is a re-run of a known-clipping field, not a new setup.
-- [ ] Any rig: a `n_frames=1` multi-position dataset mosaics in **one** call to
+- [x] Any rig: a `n_frames=1` multi-position dataset mosaics in **one** call to
       `build_stage_coordinate_mosaic` with no `axis_selection` argument.
 
 Post-merge design gate:
 
-- [ ] Record the hook-contract single-source decision in design/32 and the SNR
+- [x] Record the hook-contract single-source decision in design/32 and the SNR
       decision in design/25. Update design/40's defect list with what shipped
       and what was deliberately left.
-- [ ] State the SNR validity semantics **once** — saturation and transmitted
+- [x] State the SNR validity semantics **once** — saturation and transmitted
       light resolved by the same rule — in design/25, and tick design/41 F4/F5.
+
+### Rig gate — M5, 2026-08-06: **G1, G2, G4, G5 PASS; G3 not runnable here**
+
+Evidence: `40-block13-m5` (history `20260806_100503_655555`, plus `survey_a1`,
+`survey_a1_plus3`, `mosaic_poslist`). No written verdict was returned; the result
+was scored from the history.
+
+- **G1 PASS**, by a cleaner route than the runbook asked. `validate_positions`
+  accepted `survey_r0_c0` and **rejected** `survey_r1_c0` on the XY guard; the
+  list went 3 → 4 with only the accepted point written, the next
+  `validate_positions` returned `rejected: []`, and the 4-position run completed.
+  `position_list_rollback` appears **0 times** — correctly: check-before-mark
+  meant nothing unsafe was ever written, so no rollback was needed. The rollback
+  path itself is therefore still unexercised on a rig.
+- **G2 PASS.** `ranked_entry_count 4`, `invalid_entry_count 0`, ranking its own
+  hooked survey's log.
+- **G3 not runnable.** M5 has no transmitted-light path. Carried forward.
+- **G4 PASS, and it found a defect.** The exposure ramp 50→60→70→80 ms refused
+  correctly at 80 ms (0.0135% saturated → `snr: null`, focus metric refused with
+  it). But at 60 ms the frame clipped — `max_intensity 65535` — while
+  `saturated_fraction` printed **0.0**, because the payload rounded to 4 places
+  and the gate fires at 1e-4. On that 252×236 ROI the gate trips at 6 pixels out
+  of 59472, so 1–5 clipped pixels were indistinguishable from none. Fixed in
+  `f4e98c6` (6 places); the gate logic is unchanged and correct — the reported
+  SNRs across the ramp (103.81 → 103.16) were consistent, not inflated. **That
+  one commit landed after the gate and is itself ungated.**
+- **G5 PASS.** One `build_stage_coordinate_mosaic` call, no `axis_selection`,
+  result `selection: {"time": 0, "z": 0}`. design/41 F5's three calls became one.
+
+Process note: the runbook's G1 recipe (refuse a whole oversized grid) was not
+what the operator ran, and what they ran was better — a grid with one point
+outside travel exercises the same boundary while still producing a usable
+survey. Prefer that shape in future runbooks.
 
 ## 41a. A session must survive an API failure — **assign first in Track D**
 
@@ -4190,7 +4299,12 @@ Rig gate:
 
 - [ ] Any rig: export a session that moved the stage and acquired, then run the
       emitted script against a running MMStudio **with microclaw not running**.
-      It completes.
+      Its **hardware routine completes**, and the script stops only at a declared
+      refusal. *(Reworded 2026-08-06. "It completes" cannot be met by any session
+      containing an offline mosaic, because that refusal is architectural and
+      approved: `build_stage_coordinate_mosaic` depends transitively on the
+      package calibration module, so inlining it would not be standalone. Split
+      across G1 and G3 of `design/41-block41b-rig-gate.md`.)*
 - [ ] Same rig: the script's dataset and the session's dataset agree on frame
       count and stage coordinates. Dose is compared explicitly — an export that
       re-images what the session read from disk fails this gate.
@@ -4242,6 +4356,56 @@ Rig gate:
 Post-merge design gate:
 
 - [ ] Record the plan-source decision in design/33 Phase 4 and tick design/41 F6.
+
+## 41d. `~` is written as a directory instead of being expanded
+
+Branch: `design41/path-expansion`
+
+Source: **block 41b's M5 rig gate, 2026-08-06** — not design/41. The operator
+asked for `~/microclaw_data/multipos_3sites` and got
+`C:\Users\ries\AppData\Local\microclaw\~\microclaw_data\multipos_3sites`:
+a literal directory named `~` under the workspace root.
+
+There is **no `expanduser` anywhere in `microclaw/`**. `~/x` is not absolute, so
+`resolve_in_workspace` (`safety.py:1201`) joins it under the root as an ordinary
+path segment. This predates Track D entirely — the code dates to `ee7f098`,
+2026-07-28 — and it affects **every tool that takes a path**, not just the
+acquisition tools that surfaced it. It is filed separately from 41b because the
+fix is package-wide and belongs on its own branch with its own gate.
+
+- [ ] **Decide expand-or-refuse, and state it once.** The three options are
+      expand `~` to the real home, refuse it, or keep literalising it. The last
+      is what happens today and is the worst: it silently produces a directory
+      the operator did not ask for, in a place they will not look. Expansion
+      followed by the existing confinement check is the obvious answer — but
+      *say* which, in one place, and let both resolvers use it.
+- [ ] **Refuse clearly when the expansion escapes the workspace.** With
+      `workspace_dir` configured, expanding `~` will usually land outside it.
+      That must be a refusal naming the configured root, not a silent rewrite
+      and not a traceback.
+- [ ] **One place, not per tool.** Both `resolve_in_workspace` and
+      `resolve_readable_path` normalise; every path-taking tool inherits it. If
+      the fix needs touching individual tools, that is the wrong shape.
+- [ ] Tests both directions: `~/x` with no workspace root, `~/x` with a root it
+      escapes, `~/x` with a root that contains it, and a path *containing* a
+      literal `~` segment that is not a prefix (`a/~b/c` must not be mangled).
+- [ ] Stop if this turns into per-tool path handling, or if expansion has to
+      differ between the read and write resolvers for any reason other than
+      confinement.
+
+Rig gate:
+
+- [ ] Any rig: a tool given `~/...` either writes under the real home directory
+      or refuses naming the workspace root. **No directory named `~` is
+      created anywhere.**
+- [ ] Any rig: re-run the acquisition from block 41b's gate with a `~` path and
+      confirm the dataset lands where the operator expects.
+
+Post-merge design gate:
+
+- [ ] Record the path-normalisation contract in design/32 beside the
+      workspace-confinement section, and note that `resolve_readable_path` is
+      deliberately unconfined but still normalised.
 
 ---
 
@@ -4440,6 +4604,21 @@ schedule them or record a reason at block 12.
 
 This is an inventory, not permission to close with unresolved blank work. Block
 12 assigns every row one of the explicit dispositions above.
+
+- **Block 13's G3 — the transmitted-light SNR refusal is unmeasured on any rig.**
+  The rule is stated once in design/25 and covered by unit tests, and it was
+  verified off-rig on a synthetic dark-on-bright field (SNR refuses,
+  `focus_metric_valid` stays true, tenengrad 2.99e8). No reachable rig has a
+  transmitted-light path — **M5 does not**, which is why its 2026-08-06 gate
+  skipped it. Run it on the first rig that has brightfield or phase; the Nikon is
+  the likeliest. Merged 2026-08-06 with this explicitly owed rather than held.
+- **Block 13's position-list rollback path is unexercised on a rig.** The M5 gate
+  passed G1 without it, because check-before-mark meant nothing unsafe was
+  written and no rollback was needed. The rollback only runs when a refusal
+  lands *after* marking (a dose or budget refusal is the plausible one). Covered
+  by tests, not by hardware.
+- **`saturated_fraction` reporting precision landed after block 13's gate**
+  (`f4e98c6`) and is itself ungated. Reporting-only, two-directionally tested.
 
 - **`filament_position_filter` scores bead fields as filamentous.** Found by the
   operator during design/38's H6, 2026-08-05: two fields of beads scored

@@ -12,7 +12,9 @@ class ImageStats(NamedTuple):
     focus_metric: float          # tenengrad — the number tools report
     focus_metric_valid: bool     # False when snr < min_snr: no signal to be sharp about
     background_level: float      # robust: median (the camera offset, Evolve512 ≈ 400)
-    snr: float                   # the shared snr() definition below
+    snr: float | None            # None when snr_valid is False
+    snr_valid: bool
+    snr_invalid_reason: str | None
     mean_intensity: float
     max_intensity: float
     min_intensity: float
@@ -27,6 +29,46 @@ class ImageStats(NamedTuple):
 #: by objective and by sample. If it needs per-rig values it belongs in
 #: safety_config.yaml alongside the other rig facts.
 UNCALIBRATED_MIN_SNR_FALLBACK = 3.1
+# The least-clipped measured M5 smiley frame was 0.048% saturated; 0.01%
+# catches it with ~5x margin while tolerating a smaller isolated-pixel tail.
+MAX_SATURATED_FRACTION_FOR_SNR = 0.0001
+
+
+def snr_validity(
+    image: np.ndarray, background: float, saturated_fraction: float, min_snr: float,
+) -> tuple[bool, bool, str | None]:
+    """State the single validity rule for bright-signal SNR and focus.
+
+    Clipping above 0.01% invalidates both SNR and focus: plateau edges are not an
+    honest Tenengrad measurement. A statistically strong negative-going tail
+    (at least ``min_snr`` and 1.5x the positive tail) identifies dark structure
+    on a bright background without caller declarations; that invalidates only
+    the bright-on-dark SNR, because Tenengrad is polarity-insensitive. Otherwise
+    the existing positive-tail SNR gate decides whether focus has signal. The
+    magnitude clause keeps symmetric empty-field noise out of the polarity case.
+    """
+    if saturated_fraction > MAX_SATURATED_FRACTION_FOR_SNR:
+        return False, False, (
+            f"SNR and focus metric are invalid because {saturated_fraction:.4%} "
+            "of pixels are saturated (limit 0.0100%); reduce exposure and re-check "
+            "after focus moves."
+        )
+    img = image.astype(np.float64)
+    if img.ndim == 3:
+        img = img.mean(axis=-1)
+    mad = float(np.median(np.abs(img - np.median(img))))
+    noise = 1.4826 * mad
+    if noise <= 0:
+        return True, False, None
+    positive_snr = (float(np.percentile(img, 99.5)) - background) / noise
+    negative_snr = (background - float(np.percentile(img, 0.5))) / noise
+    if negative_snr >= min_snr and negative_snr > 1.5 * positive_snr:
+        return False, True, (
+            "SNR is not scored because this frame has strong negative-going "
+            "contrast (dark structure on a bright background); the reported SNR "
+            "metric assumes bright signal above a dark background. Focus remains valid."
+        )
+    return True, positive_snr >= min_snr, None
 
 
 def resolve_min_snr(
@@ -214,16 +256,23 @@ def compute_stats(
     if img.ndim == 3:
         img = img.mean(axis=-1)
     bg = float(np.median(img))           # computed once, shared by snr and the metric
-    s = snr(image, background=bg)
+    raw_snr = snr(image, background=bg)
+    saturated_fraction = float(np.sum(image >= bit_max) / image.size)
+    snr_valid, focus_metric_valid, snr_invalid_reason = snr_validity(
+        image, bg, saturated_fraction, min_snr
+    )
+    reported_snr = round(raw_snr, 2) if snr_valid else None
     return ImageStats(
         focus_metric=tenengrad(image),
-        focus_metric_valid=s >= min_snr,
+        focus_metric_valid=focus_metric_valid,
         background_level=round(bg, 1),
-        snr=round(s, 2),
+        snr=reported_snr,
+        snr_valid=snr_valid,
+        snr_invalid_reason=snr_invalid_reason,
         mean_intensity=float(np.mean(image)),
         max_intensity=float(np.max(image)),
         min_intensity=float(np.min(image)),
-        saturated_fraction=float(np.sum(image >= bit_max) / image.size),
+        saturated_fraction=saturated_fraction,
     )
 
 

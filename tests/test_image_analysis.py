@@ -651,3 +651,25 @@ def test_make_thumbnail_multichannel():
     pil = Image.open(io.BytesIO(base64.standard_b64decode(b64)))
     assert pil.mode == "L"
     assert max(pil.size) == 64
+
+
+def test_clipping_invalidates_snr_instead_of_reporting_a_large_value():
+    image = np.arange(10000, dtype=np.uint16).reshape(100, 100)
+    image.flat[:5] = np.iinfo(np.uint16).max
+    stats = compute_stats(image)
+    assert stats.saturated_fraction == pytest.approx(0.0005)
+    assert stats.snr is None
+    assert stats.snr_valid is False
+    assert stats.focus_metric_valid is False
+    assert "saturated" in stats.snr_invalid_reason
+
+
+def test_negative_going_structure_refuses_snr_but_keeps_focus_valid():
+    rng = np.random.default_rng(9)
+    image = (4000 + rng.normal(0, 8, (128, 128))).astype(np.uint16)
+    image[40:88, 40:88] = 500
+    stats = compute_stats(image)
+    assert stats.snr is None
+    assert stats.snr_valid is False
+    assert stats.focus_metric_valid is True
+    assert "negative-going" in stats.snr_invalid_reason

@@ -4891,3 +4891,84 @@ caught a deliberate-but-uncovered deletion here (`test_unexpected_stop_reason_is
 _an_error_event`, retired because `max_tokens` was no longer "unexpected", while
 the branch it covered still existed). On block 6a the same diff caught five
 tests dropping out of collection where the totals had cancelled exactly.
+
+
+## Blocks 13 and 41b — the review rounds, 2026-08-05/06
+
+Both blocks were implemented by an operator-driven **codex** runner rather than
+by an Agent-tool runner. `CLAUDE.md` step 2 was amended during the block: the
+coordinator writes the prompt to scratch and **offers** to start an agent, rather
+than spawning one, because the same prompt is often handed to a different runner.
+
+**Every round came back green, with accurate numbers, and had real defects.**
+Across five review rounds the reported suite counts and collected-ID diffs were
+correct every single time. The defects were never visible in them.
+
+What actually found things:
+
+- **Drive the real producer, not the test.** Block 13 round 1 shipped a
+  `rank_hook_log` fix whose test invented a schema (`microclaw.hook-action/v1`)
+  that exists nowhere. Real runner records are written by `hook_decisions._record`
+  and carry **no `schema` key at all**, so the fix's `None` allowance let them
+  straight through and the original defect survived untouched. Rebuilding the log
+  with `HookBase.where` + `analysis_observation_record` reproduced the failure
+  verbatim. The coordinator's own first repro of the same area was wrong for the
+  mirror-image reason — a hand-built record that omitted `snr_valid` made a
+  working fix look broken. **Both directions of this trap were hit in one block.**
+- **Execute the artifact.** Block 41b's exported script passed `compile()` and its
+  own test suite while containing `position['name']` against dicts keyed
+  `position` — a `KeyError` on the first loop iteration. Only exec'ing it against
+  a fake `Core` caught it. `compile()` does not resolve names.
+- **Read the history, not just the artifact.** The M5 41b run showed
+  `run_multiposition_acquisition` called with **no `positions` argument** — it read
+  the MM position list that `mark_position` had filled. That made "mark_position
+  emits nothing" safe only because the acquisition emitter refuses when the
+  recorded result carries no resolved coordinates. From the script alone that
+  coupling was invisible.
+- **One rig defect hid another.** 41b's first M5 run stopped at `mark_position`;
+  behind it sat the `KeyError` that would have failed the next line. Fixing only
+  the reported failure would have cost another round trip.
+
+**Runbook defects, still the most common kind.** Two were caught in the
+coordinator's own drafts before shipping: an arithmetic claim that 3 mosaic calls
+produce 6 log occurrences (it is 5 — two are prose mentions), and a criterion
+built on `saturated_fraction`, which counts **19** on the known-bad history
+because it was always computed and ignored. A third was caught after shipping:
+41b's runbook still pinned the pre-fix commit, so a re-run would have reproduced
+the same failures and looked like a regression. **Pins move with the fix.**
+
+**Rig evidence is not scratch.** The fix verification for 41b regenerated
+`session_script.py` in place inside the evidence folder, destroying the artifact
+that documented the FAIL. Only the error text and the history survived. Re-tests
+write to a new folder; the runbook now says so.
+
+
+### 41b's rig rounds — three stops, each hiding the next (2026-08-06)
+
+41b took three rig rounds, and **each one halted one step earlier than the defect
+behind it**, because an emitted script raises at its first refusal and hides
+everything after. Round 1 stopped at `mark_position`; behind it sat a `KeyError`
+that would have failed the next line. Round 2 got through and exposed an
+unexpanded `~`. Round 3 stopped at a named-position refusal before ever reaching
+the mosaic the round was *for*.
+
+The fix is a runbook shape, now in `design/41-block41b-rig-gate.md`: build **one**
+session that exercises every emitter path with the known refusal placed **last**,
+so a single export surfaces every remaining stop point. Serial discovery costs a
+rig round trip per defect, and rig round trips are the scarcest thing here.
+
+Two related habits that paid off in the same block:
+
+- **Re-export the operator's real history yourself.** The coordinator has the
+  evidence bundles; a runner usually does not. Twice a runner correctly declined
+  to claim a re-export it could not perform, and twice the coordinator settled the
+  question in one command against the actual record.
+- **Probe the refusals you did not ask to change.** Round 4 loosened a refusal by
+  design; the review checked the three neighbouring refusals (failed mark,
+  `clear_position_list`, unknown name) had *not* loosened with it. They hadn't —
+  but that is the check that would have caught it.
+
+A note on specs: round 4's runner overrode the spec twice, and was right both
+times — it deleted `conflicts` once nothing could populate it, and declined to
+add a new refusal the spec had suggested in passing. A runner that argues with a
+loose instruction is doing the job.
