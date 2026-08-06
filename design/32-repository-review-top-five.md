@@ -1291,3 +1291,23 @@ Divergences from the stub above, for the record:
   regression test now loads the packaged example through `importlib` so strict
   validation can never silently break startup again. If a future rig legitimately
   wants `camera:`/`channels:` present without their key, revisit these two.
+
+## One hook contract, checked in one place (block 13, merged 2026-08-06)
+
+`generate_and_save_hook` used to return a hard-coded *"Static syntax and
+`image_process_fn` contract passed"* while `run_tile_acquisition` refused the very
+file it had just blessed. Two review-and-save cycles were spent on hardware
+discovering that. There was also a third statement of the same rules in
+`hook_manager.describe_saved_hook`, re-deriving the refusal reasons for
+`resolve_refusal`.
+
+**Decision.** `validate_hook_contract(..., required_callback=...)` is the single
+validator. `generate_and_save_hook` takes `runner_contract` (`"fixed"` or
+`"adaptive"`), passes the matching required callback, and its `preflight` message
+**names the contract it actually checked** rather than asserting a fixed one. The
+adaptive survey runner calls the same validator at execution time, so the
+preflight and the runner cannot disagree.
+
+The rule that generalises: a preflight may only claim what it *ran*. A message
+naming a contract the checker did not evaluate is worse than no message, because
+it is believed.

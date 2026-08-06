@@ -550,3 +550,30 @@ remote alone. Before stopping, ensure:
   are confounded by a sample lift, so no ratio may be quoted.
 - Whether the operator's hand-declared 0–400 µm offset bound is the right one.
   It is theirs, it is reviewed, and it is narrower than the device's 0–1000.
+
+## What block 13 shipped, and what it left (merged 2026-08-06)
+
+All seven defects in §"Defects with no block" that belonged to block 13 shipped.
+M5 gate 2026-08-06: **G1, G2, G4, G5 PASS; G3 skipped** (M5 has no
+transmitted-light path).
+
+| defect | shipped as | measured |
+| --- | --- | --- |
+| 3 — failed marked run poisons the list | guard **before** marking; rollback of only this call's own labels if a later refusal lands | M5: a grid point rejected by the XY guard was never written; list 3 → 4, next run clean |
+| 4 — `rank_hook_log` cannot read its parent's log | skips schema-less runner records; invalid rows listed, valid rows still ranked | M5: `ranked_entry_count 4`, `invalid_entry_count 0`, from its own survey's log |
+| 5 — preflight validates a contract the runner rejects | one validator, message names the contract checked (design/32) | off-rig |
+| 6 — SNR gate is a fluorescence assumption | frame-intrinsic polarity refusal; semantics stated once in design/25 | **not measured — G3 owed** |
+| 7 — calibration mis-diagnoses fixed-pattern lock | exact-zero shift named as stationary-pattern correlation, ordered before the step-size branch | off-rig |
+| F4 saturation | invalidates SNR *and* focus | M5: 80 ms, 0.0135% → refused |
+| F5 `axis_selection` | singleton axes default | M5: three calls became one |
+
+**Deliberately left.** Saturation inside the autofocus *sweep* — the sweep's
+frames are not retained and the metric seam takes only pixels, so gating it needs
+either an extra exposure or a plumbing change. design/41 files it as a concern,
+not a defect. Still owed. `detect_features`' bare `snr` was also left alone: it
+is a puncta-centroid tool, not a gate.
+
+**Owed: G3.** The transmitted-light refusal is covered by unit tests and verified
+off-rig (a clean dark-on-bright field: SNR refuses, `focus_metric_valid` stays
+true, tenengrad 2.99e8). No reachable rig has a transmitted-light path — M5 does
+not. Carried forward against the next rig that does; the Nikon is the likeliest.
