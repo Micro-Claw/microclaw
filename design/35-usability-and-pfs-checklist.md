@@ -227,9 +227,10 @@ in any worktree.
 - **Block 6a is still pushed and still awaiting the Nikon**, unchanged since
   2026-08-05 at `4994f3e`. It must merge `main` before its own merge — `main` has
   moved a long way since it branched.
-- **Track order from here:** 41b's gate → merge → 41c. 41d any time. Track B's 6
-  and 7a unblock when 6a merges.
-- **`main` measures 1525 passed / 99 skipped / 3 expected warnings, 1623
+- **Track order from here: 41c is next** (needs M5 + demo; 41b unblocked it).
+  41d any time — it touches only `safety.py`. Track B's 6 and 7a unblock when 6a
+  merges.
+- **`main` measures 1571 passed / 99 skipped / 3 expected warnings, 1670
   collected** (2026-08-06, macOS). Re-measure rather than trusting this. Judge a
   suite by failures and collected total, and **diff collected test IDs** against
   the branch's start commit — that check has now caught silent test loss twice.
