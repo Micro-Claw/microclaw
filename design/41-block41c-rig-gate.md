@@ -149,7 +149,11 @@ start. This is G3's baseline and you cannot recover it later.
     ```powershell
     Select-String -Path $S2 -Pattern '# SKIPPED:' -SimpleMatch | Measure-Object | Select-Object -ExpandProperty Count
     ```
-    — **PASS is 2.**
+    — **PASS is 2 or more**: one per refused call in step 9, plus one for every
+    other call that failed during the session. The 2026-08-06 M5 run had **4**,
+    because two channel switches also hit serial timeouts. Do not read a higher
+    count as a failure; read the lines, and check each names a real failure from
+    the session.
 
     ```powershell
     Select-String -Path $S2 -Pattern 'raise RuntimeError' -SimpleMatch | Measure-Object | Select-Object -ExpandProperty Count
