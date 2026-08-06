@@ -213,24 +213,10 @@ in any worktree.
   `e5ad254`. Its G3 (transmitted light) was **not runnable on M5** and is in the
   carried-forward register, as is its unexercised position-list rollback path and
   the post-gate `f4e98c6`, which is ungated.
-- **Block 41b is pushed at `b6cc7a2` and NOT merged. One narrow thing is owed.**
-  Four review rounds and **four** rig rounds are done.
-  **G3 PASSED on M5, 2026-08-06** (`41-block4b-m5-run-round4`): the script was
-  executed with microclaw closed and stopped loudly at
-  `RuntimeError: NOT EMITTED: run_adaptive_survey`, which is exactly G3's
-  criterion — and a stronger test than planned, because it fired on a real
-  unemittable tool rather than the mosaic. **Round 4's by-name resolution is also
-  confirmed on the rig**: after `clear_position_list` + three `mark_position`
-  calls, the by-name survey emitted its true coordinates
-  `(339.7, 300.1, 42.987)` and siblings, anchored on `_HERE`.
-  **What is owed: one clean G1/G2 run on current code.** G1/G2 last passed in rig
-  round 2, on pre-`_HERE` code; round 4's script stopped at `run_adaptive_survey`
-  before reaching its acquisitions, so no script-written datasets exist to
-  compare. Run the runbook's one-session recipe **without any adaptive tool**
-  (`run_adaptive_survey`/`_zstack`/`_timelapse` all refuse by design), confirm the
-  script completes and the datasets match, then merge.
-  Deliberately left unmerged rather than carried forward, because unlike block
-  13's G3 this gate *is* runnable on any rig.
+- **Block 41b is CLOSED.** Merged `b1aa55e`, gate `41-block4b-m5-run-round4` +
+  `41-block41b-m5-round5`, design gate in `CLAUDE.md` and design/41 F1. Five rig
+  rounds. Two commits landed post-gate and are **ungated**: `b6cc7a2` and
+  `5af0fc6`. **41c is now unblocked.**
 - **Block 41d is new and unassigned** — `design41/path-expansion`. There is no
   `expanduser` anywhere in `microclaw/`, so `~/x` is joined under the workspace
   root as a literal directory named `~`. Found by 41b's M5 gate; the operator got
@@ -371,7 +357,7 @@ assistant's narration when judging whether a guard fired.
 | 8 | Nikon | 6, 7a, 7b | `design33/phase5-continuous-focus` | | | required | | |
 | 13 | Platform | 41a merged | `design40/platform-defects` (deleted) | `03dcea0` | `0c83268` + `c2fc7ab` (round 1 returned); runbook `9d2a934`; post-gate `f4e98c6` **ungated** | M5 2026-08-06 **G1/G2/G4/G5 PASS**; **G3 not runnable — no transmitted light on M5, carried forward** | `d24e721` | **done** — design/25 §"SNR validity, stated once", design/32 §"One hook contract", design/40 §"What block 13 shipped", design/41 F4/F5 |
 | 41a | Platform | none — **assign first in Track D** | `design41/session-survival` (deleted) | `b0ee300` | `501287f` + `bb58551` (round 1 returned) | n/a — no rig surface | `1fb284d` | **done** — design/16 §5 "The invariant is not about Stop"; design/41 F2/F3/F7 ticked |
-| 41b | Platform | 41a merged | `design41/script-export` | `03dcea0` | 4 review rounds through `5ead7cc`; README `4b08f30`; runbook `bc9aea1`; post-gate `b6cc7a2` **ungated** | M5 r1 **FAIL**; r2 **G1/G2 PASS** on pre-`_HERE` code; r3 exported, not executed; **r4 2026-08-06 G3 PASS** (executed, stopped loudly) + by-name resolution confirmed on the rig. **G1/G2 owed once on current code** | | |
+| 41b | Platform | 41a merged | `design41/script-export` (deleted) | `03dcea0` | 4 review rounds through `5ead7cc`; README `4b08f30`; runbook `bc9aea1`; post-gate `b6cc7a2` + `5af0fc6`, both **ungated** | M5 **G1/G2/G3 all PASS** rounds 4–5 2026-08-06 | `b1aa55e` | **done** — `CLAUDE.md` compile-to-script pointer, design/41 F1 |
 | 41c | Platform | 41b merged | `design41/emu-channel-plan` | | | **required** — M5 + demo | | |
 | 41d | Platform | none — may run concurrently (touches `safety.py`, disjoint from 41b) | `design41/path-expansion` | | | **required** | | |
 | 9 | Features | operator intake | `design26/generated-adapter-run-b` | | | required | | |
@@ -4256,7 +4242,7 @@ Post-merge design gate:
 - [ ] Record the retry and rollback contract in design/16 alongside §5's cancel
       unwinding, and tick design/41 F2/F3/F7.
 
-## 41b. Compile a session to a standalone pycro-manager script
+## 41b. [x] Compile a session to a standalone pycro-manager script — **MERGED 2026-08-06**
 
 Branch: `design41/script-export`
 
@@ -4274,30 +4260,30 @@ cannot see their source. The result was not merely inexact — its `build_mosaic
 from the saved NDTiff at zero dose. The script the operator was told to copy and
 run doubles the dose on a bleaching sample.
 
-- [ ] **Emit from the record; never reconstruct from memory.** Every tool call
+- [x] **Emit from the record; never reconstruct from memory.** Every tool call
       is already recorded append-only. Give each hardware and acquisition tool
       an emitter that renders *its own call* as pycro-manager source, next to
       the tool it emits — not in a registry.
-- [ ] **Inline analysis functions from source**, via `inspect.getsource` of the
+- [x] **Inline analysis functions from source**, via `inspect.getsource` of the
       pure-numpy functions in `image_analysis.py`, so the emitted `snr()` *is*
       the `snr()` that ran. Inlining rather than importing is what keeps the
       script standalone; an import of `microclaw` fails the principle.
-- [ ] **A tool with no emitter emits a refusal, not a guess.** The script
+- [x] **A tool with no emitter emits a refusal, not a guess.** The script
       carries a literal `# NOT EMITTED: <tool>` line and fails loudly at that
       point. A plausible-looking fabrication of a step is the defect being
       fixed, not an acceptable fallback.
-- [ ] **Write through `guard.resolve_in_workspace`** — the existing path gate the
+- [x] **Write through `guard.resolve_in_workspace`** — the existing path gate the
       mosaic already used, which makes "next to the file it made" legal without
       a new permission surface.
-- [ ] Scope: the emitted script reproduces the **hardware routine**. Nothing
+- [x] Scope: the emitted script reproduces the **hardware routine**. Nothing
       here puts microclaw runtime state into the script; that is the point of it.
-- [ ] Stop if the emitter needs a parallel description of what each tool does.
+- [x] Stop if the emitter needs a parallel description of what each tool does.
       Two descriptions of one tool drift, and the drift is unfalsifiable from
       inside microclaw. If a tool cannot emit itself, that is the finding.
 
 Rig gate:
 
-- [ ] Any rig: export a session that moved the stage and acquired, then run the
+- [x] Any rig: export a session that moved the stage and acquired, then run the
       emitted script against a running MMStudio **with microclaw not running**.
       Its **hardware routine completes**, and the script stops only at a declared
       refusal. *(Reworded 2026-08-06. "It completes" cannot be met by any session
@@ -4305,16 +4291,47 @@ Rig gate:
       approved: `build_stage_coordinate_mosaic` depends transitively on the
       package calibration module, so inlining it would not be standalone. Split
       across G1 and G3 of `design/41-block41b-rig-gate.md`.)*
-- [ ] Same rig: the script's dataset and the session's dataset agree on frame
+- [x] Same rig: the script's dataset and the session's dataset agree on frame
       count and stage coordinates. Dose is compared explicitly — an export that
       re-images what the session read from disk fails this gate.
-- [ ] Any rig: a session using a tool with no emitter produces a script that
+- [x] Any rig: a session using a tool with no emitter produces a script that
       stops at the `# NOT EMITTED` line rather than running past it.
 
 Post-merge design gate:
 
-- [ ] `CLAUDE.md`'s compile-to-script principle gains a pointer to the
+- [x] `CLAUDE.md`'s compile-to-script principle gains a pointer to the
       implementation and to what is *not* emittable. Tick design/41 F1.
+
+### Rig gate — M5, rounds 4 and 5, 2026-08-06: **G1, G2, G3 all PASS**
+
+Five rig rounds in all. Rounds 1–3 each halted one step earlier than the defect
+behind it, which is why the runbook now builds one session covering every
+emitter path with the known refusal last.
+
+- **G3 PASS** (`41-block4b-m5-run-round4`). Executed with microclaw closed; the
+  script stopped loudly at `RuntimeError: NOT EMITTED: run_adaptive_survey`.
+  Stronger than planned — it fired on a real unemittable tool rather than the
+  staged mosaic. The same run confirmed **by-name position resolution on the
+  rig**: after `clear_position_list` and three `mark_position` calls, the survey
+  emitted its true coordinates `(339.7, 300.1, 42.987)` and siblings.
+- **G1 + G2 PASS** (`41-block41b-m5-round5`). Fully emitted routine, no holes;
+  the script ran to completion with microclaw closed, and the datasets are
+  byte-identical to the session's at all three positions (149712 B each), one
+  acquisition per position. Dose exact.
+- Post-gate and therefore **ungated**: `b6cc7a2` (adaptive tools refuse with an
+  architectural reason instead of "not implemented") and `5af0fc6` (below).
+
+**The merge found a defect neither branch could see.** Block 13 added
+`snr_validity()` to `image_analysis` and `compute_stats` began calling it; 41b
+inlines a hand-listed set of helpers and did not know. Both branches were green
+alone; merged, every exported script that snaps and analyses raised
+`NameError: name 'snr_validity' is not defined` **at runtime, on the rig, with
+no microclaw around to explain it**. Caught by running the suite on the merge
+result before pushing. Fixed in `5af0fc6`, whose real content is
+`test_emitted_analysis_defines_every_name_it_uses`: a structural guard that
+every global the inlined analysis references is defined in the emitted source,
+so the next helper added to `image_analysis` fails a test here rather than a
+script on a microscope.
 
 ## 41c. Channel plans on a rig with no `Channel` config group
 
@@ -4604,6 +4621,12 @@ schedule them or record a reason at block 12.
 
 This is an inventory, not permission to close with unresolved blank work. Block
 12 assigns every row one of the explicit dispositions above.
+
+- **Two block-41b commits landed after its gate and are ungated**: `b6cc7a2`
+  (adaptive runs refuse with an architectural reason) and `5af0fc6` (inline
+  `snr_validity`, plus the structural guard). Both are two-directionally tested
+  off-rig; neither has been exercised by a rig run. The next session that
+  exports a script covers both incidentally.
 
 - **Block 13's G3 — the transmitted-light SNR refusal is unmeasured on any rig.**
   The rule is stated once in design/25 and covered by unit tests, and it was

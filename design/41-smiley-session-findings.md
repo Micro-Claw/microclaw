@@ -21,6 +21,13 @@ script into chat for the user to copy by hand.
 
 ## F1 — "compiles to a standalone script" is a principle with no implementation
 
+**FIXED — block 41b, merged 2026-08-06.** `export_session_script` emits from the
+record; analysis is inlined from source; unemittable tools refuse with a reason
+and a loud `RuntimeError`. M5 gate rounds 4–5: the script ran to completion with
+microclaw closed and its datasets are byte-identical to the session's, one
+acquisition per position — the reconstructed `build_mosaic` that re-imaged every
+kept tile is exactly what the offline-mosaic refusal now prevents.
+
 The user's ask (`:44`): *"Can you compile this whole routine to a pycro-manager
 script that can run outside of microclaw?"* Then (`:50`): *"Can you leave it
 as-is and save this script next to the file it made?"*
