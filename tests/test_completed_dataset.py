@@ -277,6 +277,55 @@ def test_dataset_and_content_hashes_are_distinct(offline_home):
     assert dataset_hash != content_hash
 
 
+def test_model_project_config_values_that_are_not_paths_stay_values(
+        offline_home, tmp_path, monkeypatch):
+    """A tilde in free text must not be mistaken for a path (block 41d).
+
+    `_optional_input_hashes` uses the read resolver as a *type probe*: "is this
+    string a file?". Once a leading `~` started being expanded, a value like
+    `"~500 cells"` — which expanduser leaves alone, so the resolver refuses it —
+    raised through the manifest assembly and failed the whole record. The
+    answer to "is this a file?" for an unresolvable string is no.
+    """
+    _, _, guard, root = offline_home
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "model.cfg").write_bytes(b"weights")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+
+    records = completed_dataset._optional_input_hashes(
+        {"approx_cells": "~500 cells", "note": "~", "config": "~/model.cfg",
+         "threshold": 0.5},
+        guard,
+    )
+    # Free text and a bare tilde are values, not references.
+    assert records["approx_cells"] == {
+        "value": "~500 cells",
+        "sha256": hashlib.sha256(b'"~500 cells"').hexdigest(),
+    }
+    assert "reference" not in records["note"] and records["note"]["value"] == "~"
+    assert records["threshold"]["value"] == 0.5
+    # A `~` path that really names a file is still expanded and hashed.
+    assert records["config"]["reference"] == "~/model.cfg"
+    assert records["config"]["sha256"] == hashlib.sha256(b"weights").hexdigest()
+
+
+def test_a_tilde_in_model_project_config_does_not_fail_the_record(offline_home):
+    """End to end: the manifest assembly is wrapped in `except Exception`, so
+    the regression showed up as a whole run marked failed, not as a traceback."""
+    save, *_ = offline_home
+    save("noop", '''
+class Noop:
+ def analyze_saved_frame(self, image, metadata, context): return {"n": 1}
+''')
+    result = run(offline_home, "noop",
+                 model_project_config={"approx_cells": "~500 cells"})
+    assert result["status"] == "completed", result.get("failure")
+    assert "manifest_assembly_failure" not in result
+    assert result["model_project_config"]["approx_cells"]["value"] == "~500 cells"
+
+
 def test_cancellation_before_adapter_invocation(offline_home):
     save, *_ = offline_home
     save("cancel", '''
