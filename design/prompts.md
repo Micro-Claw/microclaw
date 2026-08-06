@@ -4941,3 +4941,34 @@ the same failures and looked like a regression. **Pins move with the fix.**
 `session_script.py` in place inside the evidence folder, destroying the artifact
 that documented the FAIL. Only the error text and the history survived. Re-tests
 write to a new folder; the runbook now says so.
+
+
+### 41b's rig rounds — three stops, each hiding the next (2026-08-06)
+
+41b took three rig rounds, and **each one halted one step earlier than the defect
+behind it**, because an emitted script raises at its first refusal and hides
+everything after. Round 1 stopped at `mark_position`; behind it sat a `KeyError`
+that would have failed the next line. Round 2 got through and exposed an
+unexpanded `~`. Round 3 stopped at a named-position refusal before ever reaching
+the mosaic the round was *for*.
+
+The fix is a runbook shape, now in `design/41-block41b-rig-gate.md`: build **one**
+session that exercises every emitter path with the known refusal placed **last**,
+so a single export surfaces every remaining stop point. Serial discovery costs a
+rig round trip per defect, and rig round trips are the scarcest thing here.
+
+Two related habits that paid off in the same block:
+
+- **Re-export the operator's real history yourself.** The coordinator has the
+  evidence bundles; a runner usually does not. Twice a runner correctly declined
+  to claim a re-export it could not perform, and twice the coordinator settled the
+  question in one command against the actual record.
+- **Probe the refusals you did not ask to change.** Round 4 loosened a refusal by
+  design; the review checked the three neighbouring refusals (failed mark,
+  `clear_position_list`, unknown name) had *not* loosened with it. They hadn't —
+  but that is the check that would have caught it.
+
+A note on specs: round 4's runner overrode the spec twice, and was right both
+times — it deleted `conflicts` once nothing could populate it, and declined to
+add a new refusal the spec had suggested in passing. A runner that argues with a
+loose instruction is doing the job.
