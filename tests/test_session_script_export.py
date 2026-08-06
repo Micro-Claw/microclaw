@@ -217,10 +217,89 @@ def test_dose_detector_passes_known_good_recorded_offline_mosaic(tmp_path):
     assert "Acquisition(directory=str(_HERE)" in source  # later acquisition rendered
 
 
-def test_set_channel_refuses_authorization_plan_instead_of_guessing(tmp_path):
+M5_CHANNEL_RESULT = {
+    "status": "Channel set to '640'.",
+    "writes": 4,
+    # The reversed M5 slot order, exactly as execute_channel_plan recorded it.
+    "effects": [
+        ["iChrome-MLE-TCP", "Laser 4: 1. Enable", "0"],
+        ["iChrome-MLE-TCP", "Laser 3: 1. Enable", "0"],
+        ["iChrome-MLE-TCP", "Laser 2: 1. Enable", "0"],
+        ["iChrome-MLE-TCP", "Laser 1: 1. Enable", "1"],
+    ],
+    "channel_source": "emu-laser-map",
+}
+
+
+def test_set_channel_emits_the_recorded_writes_in_order(tmp_path):
+    """Both sources emit as writes; neither is rebuilt from a live rig.
+
+    A rig with no "Channel" config group is exactly the rig whose channels are
+    not presets, so `core.set_config('Channel', ...)` would fail there. Assert
+    against the recorded effect list, not against a plan re-derived here.
+    """
+    _, _, source = export(tmp_path, completed_call(
+        "set_channel", {"preset": "640"}, M5_CHANNEL_RESULT))
+
+    assert "# NOT EMITTED" not in source
+    assert "set_config('Channel'" not in source
+    written = [line for line in source.splitlines()
+               if line.startswith("core.set_property(")]
+    assert written == [
+        f"core.set_property('iChrome-MLE-TCP', 'Laser {i}: 1. Enable', {v!r})"
+        for i, v in ((4, "0"), (3, "0"), (2, "0"), (1, "1"))
+    ]
+
+
+def test_emitted_channel_switch_waits_and_verifies_like_the_executor(tmp_path):
+    """The emitted script runs against a fake core and refuses a bad read-back."""
+    _, _, source = export(tmp_path, completed_call(
+        "set_channel", {"preset": "640"}, M5_CHANNEL_RESULT))
+
+    class Core:
+        def __init__(self, liar=None):
+            self.values, self.calls, self.liar = {}, [], liar
+        def set_property(self, d, p, v):
+            self.calls.append(("set", d, p))
+            self.values[(d, p)] = str(v)
+        def wait_for_device(self, d):
+            self.calls.append(("wait", d))
+        def get_property(self, d, p):
+            if self.liar and (d, p) == self.liar[0]:
+                return self.liar[1]
+            return self.values[(d, p)]
+
+    def run(core):
+        executable = source.replace(
+            "from pycromanager import Acquisition, Core, multi_d_acquisition_events", ""
+        )
+        exec(compile(executable, "routine.py", "exec"), {
+            "__file__": str(tmp_path / "routine.py"), "Core": lambda: core,
+            "Acquisition": object, "multi_d_acquisition_events": dict,
+        })
+
+    good = Core()
+    run(good)
+    assert good.values[("iChrome-MLE-TCP", "Laser 1: 1. Enable")] == "1"
+    assert good.calls.count(("wait", "iChrome-MLE-TCP")) == 4
+
+    lying = Core(liar=(("iChrome-MLE-TCP", "Laser 1: 1. Enable"), "0"))
+    with pytest.raises(AssertionError, match="did not verify"):
+        run(lying)
+
+
+def test_map_less_channel_delegation_emits_the_set_config_that_ran(tmp_path):
+    _, _, source = export(tmp_path, completed_call(
+        "set_channel", {"preset": "DAPI"},
+        {"status": "Channel set to 'DAPI'.", "config_group": "Channel"}))
+    assert "core.set_config('Channel', 'DAPI')" in source
+    assert "core.wait_for_config('Channel', 'DAPI')" in source
+
+
+def test_set_channel_without_a_recorded_result_refuses_rather_than_guessing(tmp_path):
     _, _, source = export(tmp_path, [call("set_channel", {"preset": "DAPI"})])
     assert "# NOT EMITTED: set_channel" in source
-    assert "authorization-map channel plan" in source
+    assert "no executed channel effects" in source
     assert "set_config('Channel'" not in source
 
 

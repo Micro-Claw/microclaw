@@ -1057,9 +1057,72 @@ def _has_channel_authorization_map(ctrl: MicroscopeController) -> bool:
     """
     return getattr(ctrl, "authorization_map", None) is not None
 
-@emits(lambda p: (_ for _ in ()).throw(CannotEmit(
-    "set_channel may execute an authorization-map channel plan; block 41c must make that plan emittable"
-)))
+def _check_acquisition_channel(
+    ctrl: MicroscopeController, guard: SafetyGuard, channel: str
+) -> None:
+    """Gate a channel used as an acquisition *axis*, not as a one-off switch.
+
+    The acquisition tools hand `channel` straight to pycro-manager as
+    `channel_group="Channel"`, so Micro-Manager's group has to be the thing that
+    defines it. A rig whose channels come from anywhere else (design/41 F6)
+    cannot switch on that axis at all, and must not be allowed to run an
+    acquisition that silently images every plane on whichever line was last on.
+    """
+    from microclaw.authorization import CHANNEL_SOURCE_CONFIG_GROUP, _channel_source
+
+    guard.check_channel(channel)
+    source = _channel_source(ctrl, guard.is_illumination_enable)
+    if source.kind == CHANNEL_SOURCE_CONFIG_GROUP:
+        return
+    raise SafetyViolation(
+        f"This acquisition cannot drive a channel axis for {channel!r}: an "
+        "acquisition switches channels through Micro-Manager's \"Channel\" config "
+        f"group, and this rig has no preset there. {source.describe()} Call "
+        "set_channel first and run the acquisition without a channel argument — "
+        "once per channel if the run needs more than one."
+    )
+
+
+def _emit_set_channel(params: RecordedParams) -> str:
+    """Render the writes that actually ran, never a plan rebuilt from the rig.
+
+    A channel is not always a Micro-Manager preset (design/41 F6), so emitting
+    `core.set_config('Channel', ...)` would fail outright on the rig the plan
+    came from. The recorded effect list is the one thing true of both sources.
+    """
+    result = params.result
+    effects = result.get("effects")
+    if effects:
+        lines = [f"# channel {params.get('preset')!r} ({result.get('channel_source')})"]
+        for effect in effects:
+            try:
+                device, prop, value = (str(item) for item in effect)
+            except (TypeError, ValueError):
+                raise CannotEmit(
+                    f"the recorded channel effect {effect!r} is not a "
+                    "device/property/value triple"
+                ) from None
+            lines.append(f"core.set_property({device!r}, {prop!r}, {value!r})")
+            if device != "Core":     # MM's pseudo-device never becomes busy
+                lines.append(f"core.wait_for_device({device!r})")
+            lines.append(
+                f"assert str(core.get_property({device!r}, {prop!r})) == {value!r}, "
+                + repr(f"channel write did not verify: {device}.{prop}")
+            )
+        return "\n".join(lines)
+    group = result.get("config_group")
+    if group:
+        return (
+            f"core.set_config({group!r}, {params.get('preset')!r})\n"
+            f"core.wait_for_config({group!r}, {params.get('preset')!r})"
+        )
+    raise CannotEmit(
+        "the recorded result has no executed channel effects, so the writes that "
+        "ran cannot be reproduced"
+    )
+
+
+@emits(_emit_set_channel)
 def set_channel(
     ctrl: MicroscopeController, guard: SafetyGuard, preset: str, *, cancel=None
 ) -> dict:
@@ -1072,14 +1135,28 @@ def set_channel(
         )
     ctrl.core.set_config(CHANNEL_CONFIG_GROUP, preset)
     ctrl.core.wait_for_config(CHANNEL_CONFIG_GROUP, preset)
-    return {"status": f"Channel set to '{preset}'."}
+    return {
+        "status": f"Channel set to '{preset}'.",
+        "config_group": CHANNEL_CONFIG_GROUP,
+    }
 
 
 @emits_nothing
 def get_available_channels(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
-    from microclaw.authorization import CHANNEL_CONFIG_GROUP
-    channels = _str_vector(ctrl.core.get_available_configs(CHANNEL_CONFIG_GROUP))
-    return {"channels": channels}
+    from microclaw.authorization import _channel_source
+
+    source = _channel_source(ctrl, guard.is_illumination_enable)
+    result: dict[str, Any] = {
+        "channels": list(source.names), "source": source.describe(),
+    }
+    # Never let a refused slot look like "this rig simply has no channels".
+    if source.unavailable:
+        result["unavailable"] = {
+            label: list(reasons) for label, reasons in source.unavailable.items()
+        }
+    if source.problems:
+        result["problems"] = list(source.problems)
+    return result
 
 
 # --- Device Properties ---
@@ -1501,7 +1578,7 @@ def run_zstack(
     guard.check_z(z_start_um)
     guard.check_z(z_end_um)
     if channel:
-        guard.check_channel(channel)
+        _check_acquisition_channel(ctrl, guard, channel)
     if exposure_ms is not None:
         guard.check_exposure(exposure_ms)
     if not channel and exposure_ms is not None:
@@ -1611,7 +1688,7 @@ def run_timelapse(
     if laser_slot is not None:
         trigger_preflight = _verify_trigger_line_armed(ctrl, laser_slot)
     if channel:
-        guard.check_channel(channel)
+        _check_acquisition_channel(ctrl, guard, channel)
     if exposure_ms is not None:
         guard.check_exposure(exposure_ms)
     # Without a channel, the acquisition events carry no exposure, so set it on
@@ -3711,7 +3788,7 @@ def run_adaptive_zstack(
     guard.check_z(z_start_um)
     guard.check_z(z_end_um)
     if channel:
-        guard.check_channel(channel)
+        _check_acquisition_channel(ctrl, guard, channel)
 
     try:
         hook = _resolve_hook(ctrl, guard, hook_strategy, hook_params, log_path)
@@ -3774,7 +3851,7 @@ def run_adaptive_timelapse(
     save_dir = guard.resolve_in_workspace(save_dir)
     log_path = _prepare_log_path(guard, log_path)
     if channel:
-        guard.check_channel(channel)
+        _check_acquisition_channel(ctrl, guard, channel)
 
     try:
         hook = _resolve_hook(ctrl, guard, hook_strategy, hook_params, log_path)
@@ -3851,7 +3928,7 @@ def _acquire_positions_with_hook(
         guard.check_z(shape_kwargs["z_start"])     # the planes actually visited
         guard.check_z(shape_kwargs["z_end"])
     if channel:
-        guard.check_channel(channel)
+        _check_acquisition_channel(ctrl, guard, channel)
     if exposure_ms is not None:
         guard.check_exposure(exposure_ms)
         if not channel:
@@ -4166,7 +4243,7 @@ def _acquire_survey_with_detector(
         guard.check_z(shape_kwargs["z_start"])
         guard.check_z(shape_kwargs["z_end"])
     if channel:
-        guard.check_channel(channel)
+        _check_acquisition_channel(ctrl, guard, channel)
     if exposure_ms is not None:
         guard.check_exposure(exposure_ms)
         if not channel:
