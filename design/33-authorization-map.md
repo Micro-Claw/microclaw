@@ -1155,17 +1155,42 @@ Two defects came back, both in the export half:
 
   `_recorded_tool_calls` attaches a result to every recorded `tool_use` and never
   asks whether it succeeded; this is 41b code, invisible there only because those
-  gate sessions contained no failures. `_recorded_failure` now states the rule once, structurally: a
-  top-level `error` (how `execute_tool` reports both a refusal and a raised
-  exception), or per-item `error` entries inside a top-level list (how a
-  part-completed acquisition reports itself). The `status` prose — "0/3 positions
-  completed." — is a symptom and is deliberately not parsed, and only the exact
-  key `error` counts, because `error_um` is a measurement a *successful* move
-  reports. **Partial success refuses like total failure**: emitting the whole
-  loop re-images what did complete, emitting only what worked silently changes
-  what the routine does, and the record cannot say which the operator wanted.
-  Both are reconstructions, so it gets the refusal — the same rule 41b applied to
-  the offline mosaic and to adaptive runs, now applied to its own gap.
+  gate sessions contained no failures. `_recorded_outcome` now reads how much of
+  a call completed, structurally: a top-level `error` (how `execute_tool` reports
+  both a refusal and a raised exception), or per-item `error` entries inside a
+  top-level list (how a part-completed acquisition reports itself). The `status`
+  prose — "0/3 positions completed." — is a symptom and is deliberately not
+  parsed, and only the exact key `error` counts, because `error_um` is a
+  measurement a *successful* move reports.
+
+  **Three outcomes, three treatments** — the first attempt gave the first two the
+  same one and demo round 2 caught it:
+
+  | outcome | treatment |
+  | --- | --- |
+  | **cannot emit** — offline mosaic, adaptive run, no emitter | `# NOT EMITTED` + `raise` |
+  | **partial completion** — some items done, some not | `# NOT EMITTED` + `raise` |
+  | **nothing completed** — rejected call, or every item failed | `# SKIPPED` comment, script continues |
+
+  The split is between *did something happen* and *can it be reproduced*. A call
+  that completed nothing did nothing, so the script doing nothing is the **exact**
+  reproduction, not a reconstruction — and halting there strands every later step
+  that really ran. Round 2 measured that: the rejected call's `raise` sat at line
+  97 and the acquisition that had actually run, at lines 99–106, was unreachable;
+  the script contributed zero acquisitions. Failed calls are ordinary — the M5
+  gate session had three — so refusing on them makes the export useless on exactly
+  the sessions people have, a worse failure than the duplicate dose it replaced.
+  Partial completion keeps the refusal, because something *did* happen that cannot
+  be faithfully reproduced: replaying the whole step re-images what completed,
+  replaying only what worked silently changes the routine, and the record cannot
+  say which the operator wanted. A partial mid-session does still strand what
+  follows; that is the accepted cost of not reconstructing it.
+
+  **The guarantee is narrower than it looks.** "Nothing completed" is not a claim
+  that no hardware moved — a tool can fail after moving a stage. What is
+  guaranteed is that *nothing the session recorded as completed is skipped, and
+  nothing that failed is retried*, which is the safer of the two errors and the
+  one that matches what the operator actually got.
 - **The model was offered channels it could not use.** A session with
   `channels.allowed: []` was told the rig had four channels and then refused when
   it set one. The guard was right; the report was not. `get_available_channels`

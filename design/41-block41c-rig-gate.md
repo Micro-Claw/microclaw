@@ -295,11 +295,29 @@ script compares a Float numerically exactly as the rig session did. A
 requested '10', got '10.0000'` here is that defect returning — record it
 verbatim.
 
-> Run 2026-08-06: the script ran to completion against a live core with
+> Round 1, 2026-08-06: the script ran to completion against a live core with
 > microclaw closed, every channel write going through `_verify_property`, with
 > `_property_type_name` calling `get_property_type` over the pyjavaz bridge, and
 > `Core.Shutter` correctly getting no `wait_for_device`. The inlined check works
 > standalone on hardware. The Float branch of it remains untested — see step 2.
+>
+> **Round 2 is this step's known-bad, and it is why "runs to the end" is the
+> criterion.** The session's first multiposition call was rejected by the tool
+> layer (`TypeError: unexpected keyword argument 'channel'`) and did nothing.
+> The exporter refused it — `# NOT EMITTED` plus a `raise` at line 97 — which
+> put a hard stop *in front of* the acquisition that had actually run, at lines
+> 99–106. The script contributed **zero** acquisitions. A call that completed
+> nothing is now a `# SKIPPED` comment and the script carries on; only a genuine
+> cannot-emit step, or one that partly completed, still halts.
+
+**A session with a failed call in the middle is the normal case, not something
+to avoid by ordering.** Do not rearrange a session to put failures last. The
+41b-era advice about placing known refusals last still holds for *genuine*
+cannot-emit refusals — the offline mosaic, an adaptive run — because those halt
+by design and hide anything after them. It does **not** apply to a call the rig
+or the tool layer rejected: those are ordinary, they happen wherever they happen,
+and the export has to survive them in place. If a call fails mid-session, leave
+it there and export anyway — that is the evidence this step wants.
 
 Also count the acquisitions, as in G1:
 
@@ -308,14 +326,14 @@ Select-String -Path $S -Pattern 'acq.acquire(events)' -SimpleMatch -AllMatches |
   ForEach-Object { $_.Matches } | Measure-Object | Select-Object -ExpandProperty Count
 ```
 
-**PASS** when it equals the number of acquisitions that *completed*. On
-2026-08-06 this was 2 where 1 had run: the session's first multiposition call
-raised `TypeError: got an unexpected keyword argument 'channel'` and did
-nothing, and the exporter emitted it anyway — with **no channel at all**, since
-the rejected argument was never where the emitter reads one. It therefore
-acquired in whatever state was current, FITC, a channel the session never asked
-to image, leaving three datasets per position where the session made one. A call
-the tool layer rejected is now refused, so this count should match.
+**PASS** when it equals the number of acquisitions that *completed*. In round 1
+this was 2 where 1 had run: the rejected call was emitted anyway — with **no
+channel at all**, since the rejected argument was never where the emitter reads
+one — so it acquired in whatever state was current, FITC, a channel the session
+never asked to image, leaving three datasets per position where the session made
+one. Round 2 measured 1, correctly. Both halves must hold together: **the count
+matches *and* the script reaches the end.** Round 1 ran to the end with the wrong
+count; round 2 had the right count and did not run. Either alone is a FAIL.
 
 ---
 
