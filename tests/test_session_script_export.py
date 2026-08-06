@@ -250,6 +250,112 @@ def test_observation_only_hook_emits_hardware_but_decision_hook_refuses(tmp_path
     assert "HookBase" in deciding
 
 
+@pytest.mark.parametrize("name", [
+    "mark_position", "clear_position_list", "delete_position",
+    "save_position_list", "load_position_list", "import_mm_positions",
+])
+def test_position_list_session_state_emits_nothing(tmp_path, name):
+    _, result, source = export(tmp_path, [call(name, {})])
+    assert f"# RECORDED TOOL: {name}\n# No hardware-routine effect." in source
+    assert "# NOT EMITTED:" not in source
+    assert result["emitted_calls"] == 0
+
+
+def test_result_derived_multiposition_refuses_incomplete_coordinates(tmp_path):
+    records = completed_call(
+        "run_multiposition_acquisition",
+        {
+            "protocol": "timelapse",
+            "protocol_params": {"n_frames": 1, "interval_s": 0},
+            "save_dir": "/data", "name": "run",
+        },
+        {"results": [
+            {"position": "complete", "x_um": 1, "y_um": 2},
+            {"position": "missing-y", "x_um": 3},
+        ]},
+    )
+    _, _, source = export(tmp_path, records)
+    reason = "the record contains no resolved position coordinates"
+    assert f"# NOT EMITTED: run_multiposition_acquisition — {reason}" in source
+    assert "for position in" not in source
+    assert "Acquisition(directory=" not in source
+
+
+def _exec_acquisition_source(source):
+    class Core:
+        def __init__(self):
+            self.moves = []
+            self.z_moves = []
+
+        def set_xy_position(self, x, y): self.moves.append((x, y))
+        def set_position(self, z): self.z_moves.append(z)
+        def set_exposure(self, _exposure): pass
+
+    acquired = []
+
+    class Acquisition:
+        def __init__(self, **kwargs): self.kwargs = kwargs
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def acquire(self, events): acquired.append((self.kwargs, events))
+
+    core = Core()
+    executable = source.replace(
+        "from pycromanager import Acquisition, Core, multi_d_acquisition_events",
+        "",
+    )
+    exec(compile(executable, "routine.py", "exec"), {
+        "Core": lambda: core,
+        "Acquisition": Acquisition,
+        "multi_d_acquisition_events": lambda **kwargs: kwargs,
+    })
+    return core, acquired
+
+
+def test_result_derived_per_position_protocol_executes_without_runtime_state(tmp_path):
+    records = completed_call(
+        "run_multiposition_acquisition",
+        {
+            "protocol": "timelapse",
+            "protocol_params": {"n_frames": 2, "interval_s": 0},
+            "save_dir": "/data", "name": "run", "mark_positions": False,
+        },
+        {"results": [
+            {"position": "pos_1", "x_um": 50.0, "y_um": 0.2, "z_um": 6.318,
+             "status": "Timelapse complete.", "dataset_path": "/session/pos_1",
+             "declared_illumination_properties": [{"device": "Laser", "value": "On"}]},
+            {"position": "pos_2", "x_um": 150.0, "y_um": 0.2, "z_um": 6.4,
+             "status": "Timelapse complete.", "dataset_path": "/session/pos_2"},
+        ]},
+    )
+    _, _, source = export(tmp_path, records)
+    assert "'name': 'pos_1'" in source
+    assert "'position': 'pos_1'" not in source
+    assert "dataset_path" not in source
+    assert "declared_illumination_properties" not in source
+    assert "Timelapse complete" not in source
+
+    core, acquired = _exec_acquisition_source(source)
+    assert core.moves == [(50.0, 0.2), (150.0, 0.2)]
+    assert core.z_moves == [6.318, 6.4]
+    assert [entry[0]["name"] for entry in acquired] == ["pos_1", "pos_2"]
+
+
+def test_tile_per_position_protocol_executes_against_fake_core(tmp_path):
+    _, _, source = export(tmp_path, [call("run_tile_acquisition", {
+        "rows": 1, "cols": 2, "step_um": 10,
+        "center_x_um": 5, "center_y_um": 20,
+        "protocol": "timelapse",
+        "protocol_params": {"n_frames": 1, "interval_s": 0},
+        "save_dir": "/data", "name": "tile", "mark_positions": False,
+    })])
+    core, acquired = _exec_acquisition_source(source)
+    assert core.moves == [(0.0, 20.0), (10.0, 20.0)]
+    assert [entry[0]["name"] for entry in acquired] == [
+        "tile_r0_c0", "tile_r0_c1",
+    ]
+
+
 def test_realistic_emitted_routine_runs_to_completion_against_fake_core(tmp_path):
     """Move, snap/analyze, autofocus, and unhooked acquisition all execute."""
     records = [call("start_live_view", {})]

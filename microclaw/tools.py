@@ -154,10 +154,22 @@ def _emit_multiposition(params: RecordedParams) -> str:
             )
     positions = params.get("positions")
     if positions is None:
-        positions = [item for item in params.result.get("results", [])
-                     if "x_um" in item and "y_um" in item]
+        recorded_positions = params.result.get("results", [])
+        if not recorded_positions or any(
+            "x_um" not in item or "y_um" not in item
+            for item in recorded_positions
+        ):
+            raise CannotEmit("the record contains no resolved position coordinates")
+        positions = [{
+            "name": item.get("name", item.get("position")),
+            "x_um": item["x_um"],
+            "y_um": item["y_um"],
+            **({"z_um": item["z_um"]} if item.get("z_um") is not None else {}),
+        } for item in recorded_positions]
     if not positions:
         raise CannotEmit("the record contains no resolved position coordinates")
+    if any(position.get("name") is None for position in positions):
+        raise CannotEmit("the record contains a resolved position without a label")
     protocol = params["protocol"]
     protocol_params = dict(params.get("protocol_params") or {})
     if hook:
@@ -2425,6 +2437,13 @@ def run_autofocus(
 
 # --- Position management ---
 
+# Position-list operations emit nothing because the list is session state, not a
+# standalone hardware-routine action.  A later acquisition that consumes that
+# state must carry its own resolved coordinates in its recorded result;
+# _emit_multiposition refuses the export if it cannot recover the complete set.
+# Keep these classifications coupled to that fail-closed guard: weakening it
+# would silently turn a marked session into a positionless/partial script.
+
 def _preflight_native_positions(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -2446,6 +2465,7 @@ def _preflight_native_positions(
     ctrl.set_position_projection(projection)
     return projection, None
 
+@emits_nothing
 def mark_position(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -2534,6 +2554,7 @@ def go_to_position(
     return {"status": f"Moved to '{name}'.", **pos}
 
 
+@emits_nothing
 def delete_position(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -2567,6 +2588,7 @@ def delete_position(
     return {"status": f"Position '{name}' deleted from MM position list."}
 
 
+@emits_nothing
 def clear_position_list(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -2585,6 +2607,7 @@ def clear_position_list(
     return {"status": "Position list cleared."}
 
 
+@emits_nothing
 def save_position_list(ctrl: MicroscopeController, guard: SafetyGuard, path: str) -> dict:
     """Save MM's current native position list to a `.pos` file."""
     if not path.lower().endswith(".pos"):
@@ -2641,6 +2664,7 @@ def _position_conflict(
     }
 
 
+@emits_nothing
 def load_position_list(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -2699,6 +2723,7 @@ def load_position_list(
     }
 
 
+@emits_nothing
 def import_mm_positions(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
