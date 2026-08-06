@@ -337,7 +337,10 @@ TOOLS: list[dict[str, Any]] = [
             "List this rig's channel names and say where they come from: the "
             "Micro-Manager 'Channel' config group, or — on a rig without one — the "
             "named laser slots of the EMU configuration. Also reports any "
-            "channel-shaped thing the rig refused to name, with the reason."
+            "channel-shaped thing the rig refused to name, with the reason. "
+            "If an 'authorized' list is present, this session's safety config "
+            "permits only those; 'channels' still lists everything the rig has, "
+            "so set_channel on a name outside 'authorized' will be refused."
         ),
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },

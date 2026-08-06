@@ -505,6 +505,35 @@ class TestSetChannel:
         assert "DAPI" in result["channels"]
         assert "config group" in result["source"]
 
+    @pytest.mark.parametrize("allowed,expected", [
+        ([], []),                       # the exact M5 gate session
+        (["DAPI"], ["DAPI"]),
+    ])
+    def test_allowlist_restricted_channels_are_reported_as_such(
+        self, mock_ctrl, allowed, expected
+    ):
+        """M5 gate, 2026-08-06. A session ran with `channels.allowed: []`, was
+        told it had four channels, picked one, and was refused. The allowlist is
+        unchanged and still the only authority; the report simply stops offering
+        what this session cannot use, while `channels` still says what the rig
+        has so no rig reality is hidden.
+        """
+        from microclaw.safety import SafetyConstraints, SafetyGuard
+
+        guard = SafetyGuard(SafetyConstraints(allowed_channels=allowed))
+        result = get_available_channels(mock_ctrl, guard)
+        assert result["channels"] == ["DAPI", "FITC", "Cy5"]
+        assert result["authorized"] == expected
+        for refused in set(result["channels"]) - set(expected):
+            with pytest.raises(SafetyViolation, match="allowed list"):
+                set_channel(mock_ctrl, guard, preset=refused)
+
+    def test_unrestricted_session_reports_no_authorized_subset(
+        self, mock_ctrl, unconstrained_guard
+    ):
+        assert "authorized" not in get_available_channels(
+            mock_ctrl, unconstrained_guard)
+
     def test_channel_less_rig_says_so_instead_of_a_bare_empty_list(
         self, mock_ctrl, unconstrained_guard
     ):
