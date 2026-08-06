@@ -1073,22 +1073,53 @@ ChannelSource(kind, names, effects, unavailable, problems).expand(core, channel)
   and the channels it offers.
 - **Emittable, from the record.** `execute_channel_plan` returns the executed
   `effects`, and `set_channel`'s emitter renders exactly those as
-  set/wait/read-back. It never emits `core.set_config("Channel", …)` for a plan —
+  set/wait/verify. It never emits `core.set_config("Channel", …)` for a plan —
   a rig with no group is exactly the rig the plan came from. The map-less
   delegation path emits the `set_config` that genuinely ran, keyed on its own
   recorded result.
+- **The emitted read-back is `_verify_property` itself**, inlined with
+  `inspect.getsource` alongside `_property_type_name` and `ChannelPlanError`,
+  the way the analysis is inlined. The first version paraphrased it as
+  `assert str(core.get_property(...)) == value` and was wrong: `_verify_property`
+  compares a **Float** property numerically because Micro-Manager reformats one
+  (`"10"` reads back `"10.0000"`, measured above), so any `Channel` preset
+  carrying a camera exposure would have exported a script that died partway
+  through, standalone on the rig, on a write that had succeeded. Two things
+  follow from inlining rather than recording the type alongside each effect: the
+  emitted rule can never drift from the executor's — including that it
+  special-cases `Float` and **not** `Integer` — and the script establishes the
+  type the way the executor does, by asking the core, so `_property_type_name`'s
+  pyjavaz shape handling (`to_string` / `swig_value`) travels with it instead of
+  being re-guessed in the emitted source. Caught in coordinator review,
+  2026-08-06; every M5 enable fixture is categorical and none could have caught
+  it.
+
+  **The general rule, and this is its second instance:** what the exporter
+  inlines, it inlines *from source*. A paraphrase is a second implementation
+  that drifts, and both times it drifted the failure landed on a rig, in a
+  standalone script, with nothing around to explain it. Byte-identity does not
+  enforce it — that still passes when an inlined function starts calling a
+  helper which was never inlined. `test_emitted_inline_defines_every_name_it_uses`
+  is the guard, now parametrized over **every** record that triggers an inline
+  rather than the analysis alone; it was blind to this block's inline until it
+  was widened, which is exactly where blocks 13 and 41b each sat before merging.
+  Add a param there whenever the exporter learns to inline something new.
 
 **Boundary, deliberately not crossed.** The acquisition tools' `channel=`
 argument is handed to pycro-manager as `channel_group="Channel"`, so it stays
-config-group-only. A channel name can now exist without a preset, which makes
-that combination newly reachable and silently wrong, so it is **refused**,
-naming `set_channel` as the way through. Making the acquisition *axis* itself
+config-group-only. **41c introduced both the reachability and the refusal**: a
+channel name could not previously sit in `channels.allowed` without a preset
+behind it, so this block is what makes that combination reachable, and reachable
+and silently wrong — imaging every plane on whichever line was last on — is worse
+than the gap it closes. It is therefore **refused**, naming `set_channel` as the
+way through, rather than shipped and filed. Making the acquisition *axis* itself
 EMU-sourced would mean switching channels from inside an event hook, and is not
 part of this block.
 
-**Evidence.** Offline only, replayed against the captured M5 `config.uicfg` in
-`tests/fixtures/`. Nothing here is rig-verified;
-`design/41-block41c-rig-gate.md` is the gate.
+**Evidence.** Offline, replayed against the captured M5 `config.uicfg` in
+`tests/fixtures/`, plus the captured 2026-08-05 M5 session history against which
+the gate checker was validated (see the runbook). No *hardware* behaviour here is
+rig-verified; `design/41-block41c-rig-gate.md` is the gate.
 
 ## The illumination gate is inert on an undeclared light source (2026-07-29)
 

@@ -167,15 +167,22 @@ python check_41c.py C:\path\to\<session>_microclaw_history.jsonl
 Read the printed **G1 PASS** / **G1 FAIL** words, and paste the whole output —
 the `raw set_device_property` list is evidence either way.
 
-> **Validated both directions before this runbook shipped.** On the
-> reconstruction of the 2026-08-05 M5 writes (`Thorlabs Filter Wheel.State = 1`,
-> `Laser 2: 1. Enable = 1`, `Laser 1: 1. Enable = 0`, verbatim from design/41 F6)
-> it prints **G1 FAIL** and names both enable writes. On a session that switches
-> with `set_channel` and only moves the filter by hand it prints **G1 PASS**. The
-> reconstruction was built from the writes quoted in design/41 rather than from
-> the captured session file, which is not in this repository — **coordinator:
-> re-run the checker against the real 2026-08-05 history and confirm FAIL before
-> this gate is accepted.**
+> **Validated both directions, against the real captured evidence.** Run on
+> `smiley_run/20260805_151048_746130_microclaw_history.jsonl` — the M5 session
+> this block comes from — it prints **G1 FAIL**, exit 1, naming three raw enable
+> writes:
+>
+> ```
+> Laser 2: 1. Enable = 1
+> Laser 1: 1. Enable = 0
+> Laser 2: 1. Enable = 0
+> ```
+>
+> and correctly *not* counting the two `Thorlabs Filter Wheel.State` writes
+> beside them. That session has five raw writes where design/41 F6 quoted three,
+> so the checker handles more than the finding described. On a session that
+> switches with `set_channel` and only moves the filter by hand it prints
+> **G1 PASS**.
 
 Then confirm the hardware end state matches what the hand-written sequence
 produced. After step 6, `get_emu_laser_map` must show:
@@ -215,7 +222,12 @@ Short session on the **Demo** machine (it has a real `Channel` group).
    `source` line naming the Micro-Manager `'Channel'` config group. If it
    mentions EMU at all, that is a **FAIL**.
 2. `set_channel` to two different presets in turn. Each must apply and verify as
-   it did before this block.
+   it did before this block. **At least one of them must set a camera
+   exposure** — a Float property — and say in your result which presets you
+   used. Check the preset's contents in Micro-Manager first if you are not sure
+   it carries one. This is the only step in the whole gate that exercises the
+   emitted read-back tolerance against a real driver: M5's laser enables are
+   all categorical, so G1 cannot reach it.
 3. Run a small acquisition **passing `channel='DAPI'`** — on this rig that must
    still work, unchanged. (It is the path G1 step 9 refuses on M5.)
 4. Export the session and check that the channel switches emitted at all:
@@ -229,15 +241,32 @@ the capability G2 confirms did not arrive at the cost of the preset path.
 Then read the two `# RECORDED TOOL: set_channel` sections. **Either** shape is
 correct, and which one you get says which path ran:
 
-- `core.set_property(...)` / `wait_for_device` / `assert ... get_property(...)`
-  — an authorization-map session replayed the expanded preset, and the script
-  reproduces exactly those writes;
+- `core.set_property(...)` / `core.wait_for_device(...)` /
+  `_verify_property(core, ...)` — an authorization-map session replayed the
+  expanded preset, and the script reproduces exactly those writes;
 - `core.set_config('Channel', ...)` — a session with no `property_authorization`
   delegated to Micro-Manager, and the script reproduces that.
 
 **FAIL** if you see `set_config` from a session that *did* have an
 authorization map, or expanded writes from one that did not: the script would
 then not be what ran.
+
+5. **Run the exported script**, microclaw closed and MMStudio running:
+
+```powershell
+python C:\path\to\the\exported_script.py
+```
+
+**PASS** when it runs to the end. **This step is the point of G2, not step 4** —
+a grep proves the line was written, and this defect only exists when the line
+*runs*. The first version of this emitter hand-wrote the read-back as
+`assert str(core.get_property(...)) == '10'`, which fails on a write that
+succeeded, because Micro-Manager reformats a Float read-back (`"10"` comes back
+`"10.0000"`). It is now the executor's own `_verify_property`, inlined, so the
+script compares a Float numerically exactly as the rig session did. A
+`ChannelPlanError: Read-back verification failed for <camera>.Exposure:
+requested '10', got '10.0000'` here is that defect returning — record it
+verbatim.
 
 ---
 
@@ -272,7 +301,10 @@ For each of G1–G3 write **PASS**, **FAIL**, or **SKIPPED (reason)**, and paste
 - the full `check_41c.py` output;
 - both refusal messages from step 9, verbatim;
 - the `get_emu_laser_map` readings at start and end;
-- the exported scripts themselves.
+- **which Demo presets you used in G2, and whether one carried a camera
+  exposure** — a G2 run with no Float effect has not tested the read-back
+  tolerance, and should be recorded as SKIPPED for that part rather than PASS;
+- the exported scripts themselves, and the output of running each one.
 
 Say which rig each step ran on. A step you could not run is not a pass. If a step
 fails, **keep the artifacts exactly as they are** and re-test into a new folder
