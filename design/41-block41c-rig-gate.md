@@ -76,8 +76,14 @@ name the exact device/property to declare.
 ## Run G1 and G3 as ONE M5 session, in this order
 
 Block 41b cost five rig rounds because each run halted one step before the next
-defect. Build **one** session that exercises every path, with **both known
-refusals last**. Do not reorder.
+defect. Build **one** session that exercises every path, with the two deliberate
+**probe** refusals last. Do not reorder.
+
+"Refusals last" here means the two refusals you go looking for in step 9, so a
+`SafetyViolation` does not stop you discovering a later defect in the *session*.
+It is not advice about the exported script, and it is not a reason to avoid
+failures elsewhere — if something fails in the middle, leave it and carry on.
+Step 10 exists precisely to export a session that contains failures.
 
 **Record first, before anything else.** Ask microclaw for
 `get_emu_laser_map` and write down which slots read `enabled="1"` at session
@@ -107,6 +113,27 @@ start. This is G3's baseline and you cannot recover it later.
      and listing the four real names.
 
    A refusal here is a **PASS**. Paste both messages.
+10. **Export the session a second time**, to a different filename, now that it
+    contains two refused calls. Note that path too.
+
+    This is the one place the M5 gate exercises the skip-and-continue path on
+    hardware, and step 7's export cannot: it was taken before anything had
+    failed. The second script must contain a `# SKIPPED:` line for each refused
+    call and **no `raise RuntimeError`** from them, and it must still run to the
+    end and perform both channel switches and both acquisitions. Demo round 2
+    failed exactly here — a refused call's `raise` sat in front of the work that
+    had really happened, and the script did nothing.
+
+    ```powershell
+    Select-String -Path $S2 -Pattern '# SKIPPED:' -SimpleMatch | Measure-Object | Select-Object -ExpandProperty Count
+    ```
+    — **PASS is 2.**
+
+    ```powershell
+    Select-String -Path $S2 -Pattern 'raise RuntimeError' -SimpleMatch | Measure-Object | Select-Object -ExpandProperty Count
+    ```
+    — **PASS is 0**, unless you also built a mosaic or an adaptive run, which
+    refuse by design. If it is not 0, say which step produced it.
 
 ---
 
@@ -373,6 +400,9 @@ For each of G1–G3 write **PASS**, **FAIL**, or **SKIPPED (reason)**, and paste
   tolerance, and should be recorded as SKIPPED for that part rather than PASS;
 - **the acquisition count from the script beside the number of datasets on
   disk**, for the dose check in G1;
+- **both G1 exports** — step 7's and step 10's — and the result of running each.
+  The second is the only one that carries failed calls, and it is the one that
+  proves the script survives them;
 - the exported scripts themselves, and the output of running each one.
 
 If any tool call failed during the session — a refusal, a trigger that was not
