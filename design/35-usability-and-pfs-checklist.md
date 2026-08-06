@@ -217,7 +217,14 @@ in any worktree.
   `41-block41b-m5-round5`, design gate in `CLAUDE.md` and design/41 F1. Five rig
   rounds. Two commits landed post-gate and are **ungated**: `b6cc7a2` and
   `5af0fc6`. **41c is now unblocked.**
-- **Block 41d is new and unassigned** — `design41/path-expansion`. There is no
+- **Blocks 41c and 41d are ASSIGNED 2026-08-06**, concurrently, one worktree
+  each. They are disjoint: 41c is `authorization.py` + `tools.py`'s channel
+  surface, 41d is `safety.py`'s two path resolvers. Both gate on M5, and 41d's
+  gate is a re-run of 41b's acquisition with a `~` path, so one rig session can
+  cover both. **Merge them to `main` one at a time, running the suite on the
+  merge result before pushing** — that is the only step that caught the
+  13 × 41b `NameError`.
+- **Block 41d** — `design41/path-expansion`. There is no
   `expanduser` anywhere in `microclaw/`, so `~/x` is joined under the workspace
   root as a literal directory named `~`. Found by 41b's M5 gate; the operator got
   `C:\Users\ries\AppData\Local\microclaw\~\microclaw_data`. It predates
@@ -227,13 +234,15 @@ in any worktree.
 - **Block 6a is still pushed and still awaiting the Nikon**, unchanged since
   2026-08-05 at `4994f3e`. It must merge `main` before its own merge — `main` has
   moved a long way since it branched.
-- **Track order from here: 41c is next** (needs M5 + demo; 41b unblocked it).
-  41d any time — it touches only `safety.py`. Track B's 6 and 7a unblock when 6a
-  merges.
+- **Track order from here:** 41c and 41d are the live blocks. Nothing else in
+  Track D remains. Track B's 6 and 7a unblock when 6a merges; Track C (9–11) and
+  closeout 12 follow.
 - **`main` measures 1571 passed / 99 skipped / 3 expected warnings, 1670
-  collected** (2026-08-06, macOS). Re-measure rather than trusting this. Judge a
-  suite by failures and collected total, and **diff collected test IDs** against
-  the branch's start commit — that check has now caught silent test loss twice.
+  collected** (re-measured 2026-08-06 at `61d9c0d`, macOS, 16.6 s — unchanged
+  from the figure recorded at the boundary). Re-measure rather than trusting
+  this. Judge a suite by failures and collected total, and **diff collected test
+  IDs** against the branch's start commit — that check has now caught silent
+  test loss twice.
 
 **The one process change made this session.** `CLAUDE.md` step 2 now says the
 coordinator writes the runner prompt to scratch and **offers** to start an agent,
