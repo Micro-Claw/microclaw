@@ -575,3 +575,41 @@ def test_adaptive_runs_refuse_with_the_architectural_reason(tmp_path):
         assert f"# NOT EMITTED: {tool}" in source
         assert "chosen at runtime by its hook" in source
         assert "no standalone emitter has been implemented" not in source
+
+
+def test_emitted_analysis_defines_every_name_it_uses(tmp_path):
+    """Recurrence guard for the block-13/41b integration defect (2026-08-06).
+
+    `_analysis_source` inlines a hand-listed set of helpers. Block 13 added
+    `snr_validity()` to `image_analysis` and `compute_stats` began calling it;
+    both branches stayed green alone, and merged they emitted scripts that
+    raised `NameError: name 'snr_validity' is not defined` at runtime. Pin the
+    invariant structurally rather than by extending the list again: every global
+    the inlined analysis references must be defined in the emitted source.
+    """
+    import ast, builtins
+
+    _, _, source = export(tmp_path, [call("snap_and_analyze", {})])
+    tree = ast.parse(source)
+    defined = {n.name for n in ast.walk(tree)
+               if isinstance(n, (ast.FunctionDef, ast.ClassDef))}
+    defined |= {t.id for n in ast.walk(tree) if isinstance(n, ast.Assign)
+                for t in n.targets if isinstance(t, ast.Name)}
+    defined |= {a.asname or a.name.split(".")[0]
+                for n in ast.walk(tree)
+                if isinstance(n, (ast.Import, ast.ImportFrom)) for a in n.names}
+
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+            continue
+        # Every name bound anywhere in the body: assignment, tuple unpacking,
+        # for-targets, comprehensions, with-as. Store context covers them all.
+        local = {a.arg for f in ast.walk(node)
+                 if isinstance(f, ast.FunctionDef) for a in f.args.args}
+        local |= {n.id for n in ast.walk(node)
+                  if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)}
+        for name in (n.id for n in ast.walk(node)
+                     if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)):
+            assert (name in defined or name in local
+                    or hasattr(builtins, name)), (
+                f"emitted script references {name!r} but never defines it")

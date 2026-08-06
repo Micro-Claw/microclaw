@@ -435,11 +435,18 @@ def _analysis_source(*, include_autofocus: bool = False) -> str:
     parts = [
         "UNCALIBRATED_MIN_SNR_FALLBACK = "
         f"{image_analysis.UNCALIBRATED_MIN_SNR_FALLBACK!r}\n",
+        "MAX_SATURATED_FRACTION_FOR_SNR = "
+        f"{image_analysis.MAX_SATURATED_FRACTION_FOR_SNR!r}\n",
         inspect.getsource(image_analysis.ImageStats),
     ]
+    # Every helper compute_stats reaches, not a hand-picked list. Block 13 added
+    # snr_validity() and the emitted scripts kept passing their own tests while
+    # raising NameError on a rig: the two branches were green apart and broken
+    # together. test_emitted_analysis_defines_every_name_it_uses is the guard.
     for fn in (
         image_analysis._reshape_pixels, image_analysis.snap_to_numpy,
-        image_analysis.snr, image_analysis.tenengrad, image_analysis.compute_stats,
+        image_analysis.snr, image_analysis.tenengrad,
+        image_analysis.snr_validity, image_analysis.compute_stats,
     ):
         parts.append(inspect.getsource(fn))
     if include_autofocus:
