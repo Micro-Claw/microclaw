@@ -141,6 +141,21 @@ a cold session resumes from the remote alone.
   **Both were assigned 2026-08-05 from `03dcea0`**, in worktrees
   `../microclaw-13` and `../microclaw-41b`. Three branches are now in flight at
   once (6a, 13, 41b); 6a is the only one whose next step belongs to the rig.
+  **As of 2026-08-06: block 13 is pushed and awaiting its gate** (runbook
+  `design/40-block13-rig-gate.md`, on the branch); **41b is in review after two
+  rounds** and is not pushed. Both blocks were implemented by an operator-driven
+  codex runner rather than by an Agent-tool runner — see the note on step 2 in
+  `CLAUDE.md`, which now says the coordinator writes the prompt and *offers*.
+- **Two rounds of review on each of 13 and 41b found real defects behind a green
+  suite, both times.** The pattern is worth keeping: every reported suite count
+  and collected-ID diff was accurate, and the defects were invisible in them.
+  Block 13 round 1 shipped a `rank_hook_log` fix whose test invented a schema
+  (`microclaw.hook-action/v1`) that exists nowhere, so the fix admitted `None`
+  and the original defect survived untouched; it was caught only by rebuilding
+  the log with the real writers. **Judge a fix by driving the real producer, not
+  by reading its test.** The coordinator's own first repro of the same area was
+  wrong for the mirror-image reason — a hand-built record that omitted
+  `snr_valid` — so this cuts both ways.
 - **Baseline re-measured 2026-08-05 at `2d66045`** — the boundary-refresh merge —
   and it is unchanged from `c799063`: **1511 passed / 99 skipped / 3 expected
   warnings, 1610 collected.** The 3 warnings are one
@@ -294,9 +309,9 @@ assistant's narration when judging whether a guard fired.
 | 7b | Nikon | 7a | `design34/continuous-focus-policy` | | | **required** | | |
 | 7c | Nikon | — | — | — | — | — | **SKIPPED 2026-08-05** — merged into 7a | design/40 D3 |
 | 8 | Nikon | 6, 7a, 7b | `design33/phase5-continuous-focus` | | | required | | |
-| 13 | Platform | 41a merged; may run concurrently with Track B and 41b | `design40/platform-defects` | `03dcea0` | | **required** | | |
+| 13 | Platform | 41a merged; may run concurrently with Track B and 41b | `design40/platform-defects` | `03dcea0` | `0c83268` + `c2fc7ab` (round 1 returned); runbook `9d2a934` | **pushed 2026-08-06, awaiting any rig; G3 needs transmitted light, G4 fluorescence** | | |
 | 41a | Platform | none — **assign first in Track D** | `design41/session-survival` (deleted) | `b0ee300` | `501287f` + `bb58551` (round 1 returned) | n/a — no rig surface | `1fb284d` | **done** — design/16 §5 "The invariant is not about Stop"; design/41 F2/F3/F7 ticked |
-| 41b | Platform | 41a merged | `design41/script-export` | `03dcea0` | | **required** | | |
+| 41b | Platform | 41a merged | `design41/script-export` | `03dcea0` | `b6ca12d` + `54882df` (rounds 1 and 2 returned; in review, not pushed) | **required** | | |
 | 41c | Platform | 41b merged | `design41/emu-channel-plan` | | | **required** — M5 + demo | | |
 | 9 | Features | operator intake | `design26/generated-adapter-run-b` | | | required | | |
 | 10 | Features | 9; optional | `design26/few-shot-run-c` | | | required or marked skipped | | |
