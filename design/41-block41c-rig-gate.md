@@ -26,7 +26,7 @@ Three criteria. **G1 and G3 are one M5 session; G2 is a short Demo session.**
 
 ```powershell
 cd C:\path\to\microclaw
-git merge-base --is-ancestor abcaaeb HEAD
+git merge-base --is-ancestor 7c28fa2 HEAD
 if ($?) { "PIN OK - implementation is present" } else { "PIN FAIL - stop, wrong branch" }
 ```
 
