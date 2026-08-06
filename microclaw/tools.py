@@ -3607,6 +3607,11 @@ def _adaptive_result(
     return result
 
 
+@refuses(
+    "an adaptive run's events are chosen at runtime by its hook, so there is "
+    "no static event list to render; emitting the positions it happened to "
+    "visit would silently turn an adaptive run into a fixed one"
+)
 @_acquisition_entry_point
 def run_adaptive_zstack(
     ctrl: MicroscopeController,
@@ -3668,6 +3673,11 @@ def run_adaptive_zstack(
     )
 
 
+@refuses(
+    "an adaptive run's events are chosen at runtime by its hook, so there is "
+    "no static event list to render; emitting the positions it happened to "
+    "visit would silently turn an adaptive run into a fixed one"
+)
 @_acquisition_entry_point
 def run_adaptive_timelapse(
     ctrl: MicroscopeController,
@@ -4135,6 +4145,11 @@ def _acquire_survey_with_detector(
     )
 
 
+@refuses(
+    "an adaptive run's events are chosen at runtime by its hook, so there is "
+    "no static event list to render; emitting the positions it happened to "
+    "visit would silently turn an adaptive run into a fixed one"
+)
 @_acquisition_entry_point
 def run_adaptive_survey(
     ctrl: MicroscopeController,

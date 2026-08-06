@@ -555,3 +555,23 @@ def test_realistic_emitted_routine_runs_to_completion_against_fake_core(tmp_path
     assert core.snaps >= 3
     assert core.moves == [(1, 2), (3, 4)]
     assert len(acquired) == 2
+
+
+def test_adaptive_runs_refuse_with_the_architectural_reason(tmp_path):
+    """M5 rig gate round 4, 2026-08-06. The exported script stopped at
+
+        NOT EMITTED: run_adaptive_survey - no standalone emitter has been
+        implemented for this tool
+
+    which understates it. An adaptive run's events are chosen at runtime by its
+    hook, so it is not an unwritten emitter -- it is the same architectural
+    refusal as the offline mosaic. Emitting the positions it happened to visit
+    would silently convert an adaptive run into a fixed one, which is the
+    reconstruct-from-memory defect this block exists to remove.
+    """
+    for tool in ("run_adaptive_survey", "run_adaptive_zstack",
+                 "run_adaptive_timelapse"):
+        _, _, source = export(tmp_path, [call(tool, {})])
+        assert f"# NOT EMITTED: {tool}" in source
+        assert "chosen at runtime by its hook" in source
+        assert "no standalone emitter has been implemented" not in source
