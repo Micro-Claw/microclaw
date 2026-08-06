@@ -1116,21 +1116,46 @@ way through, rather than shipped and filed. Making the acquisition *axis* itself
 EMU-sourced would mean switching channels from inside an event hook, and is not
 part of this block.
 
-**Two findings from the M5 gate, 2026-08-06.** The channel work passed on
-hardware — four named channels where the rig used to report none, the reversed
+**What the 2026-08-06 gates established.** On **M5** the channel work passed on
+hardware: four named channels where the rig used to report none, the reversed
 slot order right, two switches through the plan with zero raw writes to a laser
-enable, and exactly one illumination confirmation per switch, on the enable. Two
-defects came back with it, both in the export half:
+enable, and exactly one illumination confirmation per switch, on the enable. On
+the **demo** rig, preset-sourced plans behaved as before (`channel_source:
+config-group`, no EMU mentioned, `expansion_drift: false`), and the emitted
+script **ran to completion against a live core with microclaw closed** — the
+first standalone hardware run of the inlined `_verify_property`, with
+`_property_type_name` reaching `get_property_type` over the pyjavaz bridge and
+`Core.Shutter` correctly getting no `wait_for_device`. Its **Float branch remains
+untested**: the stock demo `Channel` presets expand to `Dichroic.Label`,
+`Emission.Label`, `Excitation.Label` and `Core.Shutter`, all String, and M5's
+enables are categorical, so no rig in this gate reaches the numeric comparison
+without a preset edit. That half is SKIPPED, not passed.
+
+Two defects came back, both in the export half:
 
 - **A failed call was exported as a successful step.** The session made five
   `run_multiposition_acquisition` calls; two completed, two failed on trigger
   arming, one was refused by the channel-axis guard above. The export emitted all
   five, so the standalone script would have imaged each position **five times
   instead of twice** — 2.5× the session's dose on a bleaching sample — and then
-  driven a channel axis the rig cannot drive. `_recorded_tool_calls` attaches a
-  result to every recorded `tool_use` and never asks whether it succeeded; this
-  is 41b code, invisible there only because those gate sessions contained no
-  failures. `_recorded_failure` now states the rule once, structurally: a
+  driven a channel axis the rig cannot drive.
+
+  The **demo gate measured the same defect physically**, and it is worse than
+  duplicate dose. There, a multiposition call passed `channel` at the top level,
+  which the tool does not accept: it raised `TypeError` and did nothing. The
+  exporter emitted it anyway — and because the emitter reads the channel from
+  `protocol_params`, the rejected argument was invisible to it and the step
+  rendered with **no channel at all**, acquiring in whatever state was current
+  (FITC, from the preceding `set_channel`) — a channel the session never asked to
+  image. Three datasets per position where the session made one, and the file
+  sizes separate them exactly: the two real ones at 532654/532655 bytes, the
+  phantom alone at 532637. **Arguments the tool layer rejected never took effect,
+  so a step built from them is invention rather than reproduction** — design/41
+  F1's reconstruct-from-memory failure arriving through the exporter itself.
+
+  `_recorded_tool_calls` attaches a result to every recorded `tool_use` and never
+  asks whether it succeeded; this is 41b code, invisible there only because those
+  gate sessions contained no failures. `_recorded_failure` now states the rule once, structurally: a
   top-level `error` (how `execute_tool` reports both a refusal and a raised
   exception), or per-item `error` entries inside a top-level list (how a
   part-completed acquisition reports itself). The `status` prose — "0/3 positions

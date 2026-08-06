@@ -244,12 +244,17 @@ Short session on the **Demo** machine (it has a real `Channel` group).
    `source` line naming the Micro-Manager `'Channel'` config group. If it
    mentions EMU at all, that is a **FAIL**.
 2. `set_channel` to two different presets in turn. Each must apply and verify as
-   it did before this block. **At least one of them must set a camera
-   exposure** — a Float property — and say in your result which presets you
-   used. Check the preset's contents in Micro-Manager first if you are not sure
-   it carries one. This is the only step in the whole gate that exercises the
-   emitted read-back tolerance against a real driver: M5's laser enables are
-   all categorical, so G1 cannot reach it.
+   it did before this block. Say in your result which presets you used.
+
+   **The Float read-back needs a preset the stock demo config does not ship.**
+   Measured 2026-08-06: the stock `Channel` presets expand to `Dichroic.Label`,
+   `Emission.Label`, `Excitation.Label` and `Core.Shutter` — every one a String.
+   Nothing in them exercises the numeric comparison, and M5's laser enables are
+   categorical too, so **no rig in this gate reaches it by default**. To test it,
+   add a camera `Exposure` setting to one demo preset in the Micro-Manager
+   Group/Preset editor and use that preset here. If you do not, record that half
+   of G2 as **SKIPPED**, not PASS — a criterion that cannot fail is the defect
+   this checklist keeps re-learning, and a PASS here would be exactly that.
 3. Run a small acquisition **passing `channel='DAPI'`** — on this rig that must
    still work, unchanged. (It is the path G1 step 9 refuses on M5.)
 4. Export the session and check that the channel switches emitted at all:
@@ -289,6 +294,28 @@ script compares a Float numerically exactly as the rig session did. A
 `ChannelPlanError: Read-back verification failed for <camera>.Exposure:
 requested '10', got '10.0000'` here is that defect returning — record it
 verbatim.
+
+> Run 2026-08-06: the script ran to completion against a live core with
+> microclaw closed, every channel write going through `_verify_property`, with
+> `_property_type_name` calling `get_property_type` over the pyjavaz bridge, and
+> `Core.Shutter` correctly getting no `wait_for_device`. The inlined check works
+> standalone on hardware. The Float branch of it remains untested — see step 2.
+
+Also count the acquisitions, as in G1:
+
+```powershell
+Select-String -Path $S -Pattern 'acq.acquire(events)' -SimpleMatch -AllMatches |
+  ForEach-Object { $_.Matches } | Measure-Object | Select-Object -ExpandProperty Count
+```
+
+**PASS** when it equals the number of acquisitions that *completed*. On
+2026-08-06 this was 2 where 1 had run: the session's first multiposition call
+raised `TypeError: got an unexpected keyword argument 'channel'` and did
+nothing, and the exporter emitted it anyway — with **no channel at all**, since
+the rejected argument was never where the emitter reads one. It therefore
+acquired in whatever state was current, FITC, a channel the session never asked
+to image, leaving three datasets per position where the session made one. A call
+the tool layer rejected is now refused, so this count should match.
 
 ---
 

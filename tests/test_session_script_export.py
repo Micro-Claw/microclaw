@@ -297,6 +297,69 @@ def test_failed_and_partial_acquisitions_are_not_replayed_as_successes(tmp_path)
     assert len(acquisitions) == 3
 
 
+def test_malformed_call_the_tool_layer_rejected_is_not_emitted_as_well_formed(tmp_path):
+    """Demo rig gate, 2026-08-06, measured physically rather than by inspection.
+
+    The session made two multiposition calls. The first passed `channel` at the
+    top level, which the tool does not accept -- it raised `TypeError` and did
+    nothing. The second completed 3/3. The exporter emitted **both**, leaving
+    three datasets per position where the session made one.
+
+    The phantom is worse than duplicate dose. The emitter reads the channel from
+    `protocol_params`, so the rejected top-level `channel` was invisible to it
+    and the step rendered with **no channel at all** -- acquiring in whatever
+    state was current, which was FITC from the preceding `set_channel`, a
+    channel the session never asked to image. File sizes corroborated it: the
+    two real datasets matched at 532654/532655 bytes and the phantom stood alone
+    at 532637.
+
+    Arguments the tool layer rejected never took effect, so a step built from
+    them is invention, not reproduction -- design/41 F1's failure arriving
+    through the exporter itself.
+    """
+    positions = [{"name": "spot_1", "x_um": 1.0, "y_um": 2.0}]
+    records = completed_call("set_channel", {"preset": "FITC"}, {
+        "status": "Channel set to 'FITC'.", "writes": 1,
+        "effects": [["Emission", "Label", "Chroma-HQ535"]],
+        "channel_source": "config-group",
+    })
+    records += completed_call(
+        "run_multiposition_acquisition",
+        {"protocol": "timelapse", "positions": positions, "channel": "DAPI",
+         "save_dir": "/data", "name": "spot",
+         "protocol_params": {"n_frames": 1, "interval_s": 0}},
+        {"error": "TypeError: run_multiposition_acquisition() got an unexpected "
+                  "keyword argument 'channel'",
+         "hint": "This is an argument error, not a hardware fault."},
+    )
+    # The call that worked put its channel where the tool accepts it, so it
+    # renders *with* a channel group -- as the demo session's second call did.
+    records += completed_call(
+        "run_multiposition_acquisition",
+        {"protocol": "timelapse", "positions": positions, "save_dir": "/data",
+         "name": "spot",
+         "protocol_params": {"n_frames": 1, "interval_s": 0, "channel": "DAPI"}},
+        {"status": "1/1 positions completed.",
+         "results": [{"position": "spot_1", "x_um": 1.0, "y_um": 2.0,
+                      "dataset_path": "/data/spot_1"}]},
+    )
+
+    _, result, source = export(tmp_path, records)
+
+    # One acquisition ran; one is emitted.
+    assert source.count("acq.acquire(events)") == 1
+    # The rejected call refuses, and names why it was rejected.
+    assert source.count("# NOT EMITTED: run_multiposition_acquisition") == 1
+    assert "TypeError" in source
+    # The one acquisition emitted is the real one, with its channel.
+    assert "'channel_group': 'Channel', 'channels': ['DAPI']" in source
+    # And crucially: no channel-less acquisition. That is the phantom -- the one
+    # that imaged whatever channel happened to be current.
+    assert "multi_d_acquisition_events(**{'num_time_points': 1, 'time_interval_s': 0})" \
+        not in source
+    assert result["emitted_calls"] == 2      # the set_channel and the good run
+
+
 def test_successful_move_reporting_error_um_is_still_emitted(tmp_path):
     """`error_um` is a measurement a successful move reports, not a failure.
 
