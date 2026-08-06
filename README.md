@@ -4,13 +4,18 @@
      h1/h2 a full-width bottom border, and that rule would cut across the image. -->
 <img src="docs/microclaw-icon.png" alt="" width="120" align="left" hspace="16" vspace="4">
 
-An AI agent for [Micro-Manager](https://micro-manager.org) microscopy control. Describe your acquisition protocol in plain language; Microclaw translates it into Micro-Manager tool calls while the GUI responds in real time.
+An AI agent for [Micro-Manager](https://micro-manager.org) microscopy control. 
+Describe your acquisition protocol in plain language; Microclaw translates it 
+into [Pycro-Manager](https://github.com/micro-manager/pycro-manager) tool 
+calls while the GUI responds in real time. Acquisition routines can be compiled 
+to standalone Pycro-Manager scripts for re-use outside of the agent.
 
 <br clear="left">
 
 
 > [!CAUTION]
-> The hardware safety features are not comprehensive. Always be mindful of what your microscope is doing. Use at your own risk.
+> The hardware safety features are not comprehensive. Always be mindful of what 
+> your microscope is doing. Use at your own risk.
 
 > [!IMPORTANT]
 > **PREVIEW ONLY** This package is provided as a preview for feedback only. 
@@ -21,12 +26,12 @@ An AI agent for [Micro-Manager](https://micro-manager.org) microscopy control. D
 ## Architecture
 
 ```
-User (natural language) → AgentLoop (Anthropic API) → ToolRegistry → SafetyGuard → MicroscopeController → pycro-manager ZMQ → MM GUI
+User (natural language) → Agent → Tools → Safety Guard → Microscope Controller → PM ZMQ → MM GUI
 ```
 
 - **Agent**: `claude-opus-4-8` via Anthropic API with tool use and prompt caching.
 - **Safety**: User-defined `safety_config.yaml` enforced as a hard gate before every hardware call. The AI cannot override these limits.
-- **Backend**: pycro-manager (ZMQ on port 4827). Open Micro-Manager normally; Microclaw connects to the running instance.
+- **Backend**: Pycro-Manager (ZMQ on port 4827). Open Micro-Manager normally. Microclaw connects to the running instance.
 
 ## Install (Windows)
 
