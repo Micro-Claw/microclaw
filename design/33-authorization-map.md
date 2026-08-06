@@ -1016,6 +1016,80 @@ rollback-failure, and cancellation used deterministic fakes.
 - **Validated:** nothing scientific. Phase 4 claims no scientific result and does
   not validate a safe illumination state, exposure, dose, timing, or device policy.
 
+### The plan source, and why it is not always a preset (block 41c, 2026-08-06)
+
+**Problem.** Phase 4 executes presets, and M5 has no `Channel` group, so it had
+nothing to drive. The 2026-08-05 two-channel run was three raw
+`set_device_property` writes per switch against EMU's **reversed** slot order —
+slot 3 is `640` and its enable is `Laser 1: 1. Enable`. The writes were right;
+the narration of them in the same message was not. See design/41 F6.
+
+**Decision.** One source seam, `ChannelSource` in `authorization.py`. It answers
+*what channels exist* and *what does this one expand to*; the startup
+classification loop and `execute_channel_plan` both ask it, and the executor
+never learns which source it is replaying. There is no second executor, no
+second authorization path, and no `if emu:` in the replay loop.
+
+```python
+ChannelSource(kind, names, effects, unavailable, problems).expand(core, channel)
+```
+
+- **Selection is by preset, not by group.** A `Channel` group holding at least
+  one preset always wins, and the EMU config is not read at all. Only a rig with
+  nothing to drive looks further. Reading `Core.ChannelGroup` stays excluded for
+  the reason above; this changes the *source*, never the group name.
+- **An EMU-sourced channel is laser-only, and says so.** EMU names filter slots
+  (`Filters - Filter names`) and laser slots (`Laser 3 - Name`), but **nothing in
+  its configuration joins a laser to a filter** — checked against the captured
+  M5 `config.uicfg`, whose `Filters` panel carries names and colours only. That
+  join is not invented, and it is not added as a new declaration block either: a
+  rig that needs a channel to move more than its lasers already has a way to say
+  so — a Micro-Manager `Channel` preset, which this code then prefers. The scope
+  is stated in `get_available_channels`, in `set_channel`'s result, and in the
+  refusal text.
+- **Every other named slot goes to its declared `off_value` first, then the
+  target to its `on_value`.** Unconditional, like a preset: the same channel
+  always produces the same writes, so `channel_expansion_hashes` and
+  `expansion_drift` keep meaning. Off-before-on is the order that never has two
+  lines armed at once, and leaves less light on the sample if a write fails
+  mid-plan. The hand-written M5 sequence armed first; the end state is identical.
+- **EMU supplies identity, the safety config supplies values.** A slot whose
+  enable pair is not declared under `illumination.shutters` is not offered as a
+  channel. The executor's illumination routing is therefore reached exactly as
+  for a preset effect, and `check_illumination` fires **once per switch, on the
+  enable** — the off-writes equal the declared `off_value` and are silent,
+  precisely as the hand-written `set_device_property` writes were. Checked, and
+  unchanged.
+- **An unresolvable name is a refusal, never a fabrication.** No slot becomes
+  "Laser 3" or "slot 2". Unnamed, name-conflicted (design/39 rule A),
+  duplicate-named, undeclared and unreadable cases each carry their reason into
+  `excluded_presets` and `get_available_channels`, so a rig never merely looks
+  channel-less.
+- **`channels.allowed` and the map are unchanged.** An EMU-sourced channel passes
+  `guard.check_channel`, `authorize_channel` against `authorized_presets`, and
+  per-effect `_authorize_channel_effect`, identically. The startup diagnostic
+  that told an operator "This rig has no Micro-Manager Channel group; remove
+  these non-channel claims" was wrong on such a rig and now names the EMU source
+  and the channels it offers.
+- **Emittable, from the record.** `execute_channel_plan` returns the executed
+  `effects`, and `set_channel`'s emitter renders exactly those as
+  set/wait/read-back. It never emits `core.set_config("Channel", …)` for a plan —
+  a rig with no group is exactly the rig the plan came from. The map-less
+  delegation path emits the `set_config` that genuinely ran, keyed on its own
+  recorded result.
+
+**Boundary, deliberately not crossed.** The acquisition tools' `channel=`
+argument is handed to pycro-manager as `channel_group="Channel"`, so it stays
+config-group-only. A channel name can now exist without a preset, which makes
+that combination newly reachable and silently wrong, so it is **refused**,
+naming `set_channel` as the way through. Making the acquisition *axis* itself
+EMU-sourced would mean switching channels from inside an event hook, and is not
+part of this block.
+
+**Evidence.** Offline only, replayed against the captured M5 `config.uicfg` in
+`tests/fixtures/`. Nothing here is rig-verified;
+`design/41-block41c-rig-gate.md` is the gate.
+
 ## The illumination gate is inert on an undeclared light source (2026-07-29)
 
 Found during the design/32 Block 15 demo gate on the MM demo config. **Not a

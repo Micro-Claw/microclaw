@@ -262,6 +262,20 @@ correction is always enough.
 
 ## F6 — no Channel group, so channels were raw property writes
 
+**FIXED — block 41c, 2026-08-06.** `ChannelSource` (design/33 §"The plan source")
+is now the one seam both the startup classifier and `execute_channel_plan` ask
+for a channel's effects. A `Channel` preset still wins whenever one exists; a rig
+with none builds the plan from the **named** EMU laser slots, so `640` writes
+`Laser 1: 1. Enable` and no index is ever inferred. An unnamed, conflicted or
+undeclared slot refuses with its reason instead of becoming "Laser 3".
+`set_channel` emits the writes that ran, so a switch is exportable under F1.
+
+Two things this fix does **not** do, on purpose: an EMU-sourced channel is
+**laser-only** (EMU carries no laser-to-filter association, and none was
+invented — set the emission filter separately), and the acquisition tools'
+`channel=` axis stays config-group-only, now refusing rather than silently
+imaging on whichever line was last on.
+
 M5 has no `Channel` config group (`get_available_channels` → `{"channels": []}`,
 `:4`; see also the standing note that M5 has only a `System` group). The
 channel-plan executor (design/33 Phase 4) drives config-group presets, so it had
