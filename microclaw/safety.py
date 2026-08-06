@@ -22,6 +22,42 @@ def _finite_number(value, name: str, error_type=SafetyViolation) -> float:
     return float(value)
 
 
+def _expand_home(path: str) -> str:
+    """Expand a leading `~` / `~user`, before any other path resolution.
+
+    The one place microclaw decides what `~` means. Both path resolvers below
+    normalise through here, so every path-taking tool inherits it and none of
+    them handle `~` themselves.
+
+    The decision is **expand, then confine** — never literalise. A `~` carried
+    through literally is not absolute, so it is joined under the workspace root
+    as an ordinary segment and the operator gets a directory named `~` they did
+    not ask for, somewhere they will not look (block 41b's M5 gate, 2026-08-06:
+    `~/microclaw_data/x` became `...\\microclaw\\~\\microclaw_data\\x`).
+    Expansion happens *before* the caller's confinement check, never after it
+    and never as a way around it.
+
+    An expansion that cannot resolve is **refused**, not passed through.
+    `os.path.expanduser` returns its input unchanged when there is no home to
+    expand to — a missing USERPROFILE/HOMEPATH on Windows, an unknown `~user`
+    on POSIX — and that silent pass-through is the literalising defect wearing
+    a different hat.
+
+    Only a leading `~` is touched, matching `expanduser`: `a/~b/c` and
+    `/data/~tmp` are ordinary paths and come back unchanged.
+    """
+    if not path.startswith("~"):
+        return path
+    expanded = os.path.expanduser(path)
+    if expanded.startswith("~"):
+        raise SafetyViolation(
+            f"Path '{path}' starts with '~', but there is no home directory to "
+            f"expand it to (USERPROFILE or HOMEDRIVE+HOMEPATH on Windows; HOME "
+            f"or the user database on POSIX). Give an absolute path instead."
+        )
+    return expanded
+
+
 def _finite_number_text(value, name: str) -> float:
     """Parse a numeric device-property value, then apply the shared validator."""
     if isinstance(value, bool):
@@ -1183,11 +1219,13 @@ class SafetyGuard:
     def resolve_in_workspace(self, path: str) -> str:
         """Resolve a path microclaw will write or serve, confined to workspace_dir.
 
-        realpath-resolves (so `..` and symlinks can't escape) and raises
-        SafetyViolation if the result leaves the configured root. When
-        workspace_dir is None the path is absolutised — confinement is
-        unchanged unless a lab opts in by configuring a root.
+        Expands a leading `~` (see _expand_home), then realpath-resolves (so
+        `..` and symlinks can't escape) and raises SafetyViolation if the
+        result leaves the configured root. When workspace_dir is None the path
+        is absolutised — confinement is unchanged unless a lab opts in by
+        configuring a root.
         """
+        expanded = _expand_home(path)
         root = self._c.workspace_dir
         if root is None:
             # abspath, not normpath. normpath is lexical: it respells separators
@@ -1196,16 +1234,25 @@ class SafetyGuard:
             # pycro-manager's Java side already anchored ('C:\tmp\...', with
             # AcqEngJ's _1 rename); matching a filesystem-resolved string takes
             # filesystem resolution, not respelling (design/21 F6).
-            return os.path.abspath(path)
-        root = os.path.realpath(root)
-        target = path if os.path.isabs(path) else os.path.join(root, path)
+            return os.path.abspath(expanded)
+        # The configured root gets the same expansion: `workspace_dir: ~/data`
+        # would otherwise confine everything to a `~` directory under the cwd.
+        root = os.path.realpath(_expand_home(root))
+        target = expanded if os.path.isabs(expanded) else os.path.join(root, expanded)
         resolved = os.path.realpath(target)
         # rstrip: realpath of a drive or filesystem root ("D:\", "/") already
         # ends in a separator, so `root + os.sep` would be a doubled separator
         # that nothing starts with — and the sandbox would reject every path.
         if resolved != root and not resolved.startswith(root.rstrip(os.sep) + os.sep):
+            # Name the expansion when there was one: with a workspace configured
+            # a `~` path usually lands outside it, and "escapes" is baffling
+            # unless the operator is told what their `~` became.
+            shown = (
+                f"'{path}'" if expanded == path
+                else f"'{path}' (expanded to '{expanded}')"
+            )
             raise SafetyViolation(
-                f"Path '{path}' escapes the configured workspace directory ({root})."
+                f"Path {shown} escapes the configured workspace directory ({root})."
             )
         return resolved
 
@@ -1213,12 +1260,15 @@ class SafetyGuard:
         """Absolutise a path that microclaw will only read locally.
 
         NEVER use this for a path that will be written to or served to a client.
-        Local reads are deliberately not confined by workspace_dir.
+        Local reads are deliberately **not** confined by workspace_dir — but
+        they get exactly the same normalisation, so `~` means one thing across
+        the package. Expansion is normalisation, not confinement: a literal `~`
+        segment here would read the wrong file just as surely as it wrote one.
         """
         # abspath, not normpath. normpath is lexical: it respells separators
         # and leaves '/tmp/x' as the drive-relative '\tmp\x' on Windows. The
         # spelling that matches the OS's resolution is the OS's resolution.
-        return os.path.abspath(path)
+        return os.path.abspath(_expand_home(path))
 
     def check_plugin(self, classpath: str) -> None:
         """Gate a read-only analyzer plugin: allow by default, deny if blocklisted.

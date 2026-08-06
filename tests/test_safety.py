@@ -801,6 +801,151 @@ class TestWorkspaceSandbox:
         assert constraints.workspace_dir == str(tmp_path)
 
 
+def _components(resolved: str) -> tuple[str, ...]:
+    """Path components of a resolved path, both separators, either platform."""
+    return Path(resolved).parts
+
+
+class TestHomeExpansion:
+    """`~` is expanded, then confined — never carried through as a segment.
+
+    Block 41b's M5 gate asked for `~/microclaw_data/multipos_3sites` and got
+    `C:\\Users\\ries\\AppData\\Local\\microclaw\\~\\microclaw_data\\...`: a
+    literal directory named `~` under the workspace root, because nothing in
+    the package called expanduser and `~/x` is not absolute.
+
+    Every assertion here checks the *whole* resolved string and that no
+    component equals `~`. A prefix-only assertion would have passed on the
+    defect — the defective path started with the workspace root too.
+    """
+
+    @pytest.fixture
+    def home(self, tmp_path, monkeypatch):
+        """A fake home directory, so nothing here depends on the real one."""
+        home = tmp_path / "home" / "ries"
+        home.mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(home))          # POSIX
+        monkeypatch.setenv("USERPROFILE", str(home))   # Windows
+        return home
+
+    def test_tilde_expands_when_no_workspace_is_configured(self, home):
+        guard = SafetyGuard(SafetyConstraints())  # workspace_dir None
+        expected = os.path.abspath(home / "data" / "run.json")
+        for resolved in (
+            guard.resolve_in_workspace("~/data/run.json"),
+            guard.resolve_readable_path("~/data/run.json"),
+        ):
+            assert resolved == expected
+            assert "~" not in _components(resolved)
+
+    def test_the_operators_rig_path_lands_under_the_real_home(self, home):
+        """The literal 41b case: forward slashes, on a machine whose separator
+        may not be one. abspath respells; what must not survive is the `~`."""
+        guard = SafetyGuard(SafetyConstraints())
+        resolved = guard.resolve_in_workspace("~/microclaw_data/multipos_3sites")
+        assert resolved == os.path.abspath(
+            home / "microclaw_data" / "multipos_3sites"
+        )
+        assert "~" not in _components(resolved)
+        assert resolved.startswith(os.path.abspath(home))
+
+    def test_tilde_escaping_the_workspace_is_refused_naming_root_and_expansion(
+        self, tmp_path, home
+    ):
+        """The defect wrote silently into root/~/...; a refusal is the fix, and
+        it has to say what the `~` became or 'escapes' is unreadable."""
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        guard = SafetyGuard(SafetyConstraints(workspace_dir=str(workspace)))
+        with pytest.raises(SafetyViolation) as exc:
+            guard.resolve_in_workspace("~/microclaw_data/multipos_3sites")
+        message = str(exc.value)
+        assert "escapes the configured workspace directory" in message
+        assert os.path.realpath(workspace) in message
+        assert "expanded to" in message
+        assert str(home) in message
+
+    def test_tilde_inside_the_workspace_resolves(self, tmp_path, home):
+        guard = SafetyGuard(SafetyConstraints(workspace_dir=str(tmp_path)))
+        resolved = guard.resolve_in_workspace("~/microclaw_data/run")
+        assert resolved == os.path.realpath(home / "microclaw_data" / "run")
+        assert "~" not in _components(resolved)
+
+    def test_local_reads_expand_but_stay_unconfined(self, tmp_path, home):
+        """resolve_readable_path is deliberately unconfined and gets exactly the
+        same normalisation: expansion is normalisation, not confinement."""
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        guard = SafetyGuard(SafetyConstraints(workspace_dir=str(workspace)))
+        resolved = guard.resolve_readable_path("~/inputs/calibration.json")
+        assert resolved == os.path.abspath(home / "inputs" / "calibration.json")
+        assert "~" not in _components(resolved)
+
+    def test_a_bare_tilde_is_the_home_directory(self, home):
+        guard = SafetyGuard(SafetyConstraints())
+        for resolved in (
+            guard.resolve_in_workspace("~"),
+            guard.resolve_readable_path("~"),
+        ):
+            assert resolved == os.path.abspath(home)
+            assert "~" not in _components(resolved)
+
+    def test_a_tilde_that_is_not_a_prefix_is_not_mangled(self, home):
+        """Only a leading `~` means a home directory. `a/~b/c` is a path."""
+        guard = SafetyGuard(SafetyConstraints())
+        for raw in (
+            os.path.join("a", "~b", "c"),
+            os.path.join(os.sep, "data", "~tmp", "x.json"),
+            os.path.join("a", "~", "c"),
+        ):
+            for resolved in (
+                guard.resolve_in_workspace(raw),
+                guard.resolve_readable_path(raw),
+            ):
+                assert resolved == os.path.abspath(raw)
+                assert str(home) not in resolved
+
+    def test_a_non_prefix_tilde_survives_inside_a_workspace(self, tmp_path, home):
+        """A confined write to a directory the operator really did name `~b`."""
+        guard = SafetyGuard(SafetyConstraints(workspace_dir=str(tmp_path)))
+        resolved = guard.resolve_in_workspace(os.path.join("a", "~b", "c.json"))
+        assert resolved == os.path.realpath(tmp_path / "a" / "~b" / "c.json")
+        assert "~b" in _components(resolved)
+
+    def test_an_unexpandable_tilde_is_refused_not_passed_through(
+        self, tmp_path, monkeypatch
+    ):
+        """os.path.expanduser returns its input unchanged when it cannot resolve
+        — on Windows, no USERPROFILE and no HOMEDRIVE+HOMEPATH. Passing that
+        through is the original defect with a different cause, so refuse."""
+        monkeypatch.setattr(os.path, "expanduser", lambda p: p)
+        for guard in (
+            SafetyGuard(SafetyConstraints()),
+            SafetyGuard(SafetyConstraints(workspace_dir=str(tmp_path))),
+        ):
+            for resolve in (guard.resolve_in_workspace, guard.resolve_readable_path):
+                with pytest.raises(SafetyViolation, match="no home directory"):
+                    resolve("~/microclaw_data/run")
+
+    @pytest.mark.skipif(
+        os.name == "nt",
+        reason="ntpath fabricates ~user from USERPROFILE's parent rather than failing",
+    )
+    def test_an_unknown_tilde_user_is_refused(self, home):
+        guard = SafetyGuard(SafetyConstraints())
+        for resolve in (guard.resolve_in_workspace, guard.resolve_readable_path):
+            with pytest.raises(SafetyViolation, match="no home directory"):
+                resolve("~no_such_user_microclaw/data")
+
+    def test_a_workspace_root_written_with_a_tilde_is_expanded(self, home):
+        """A config saying `workspace_dir: ~/data` confined everything to a `~`
+        directory under the cwd — the same defect one level up."""
+        guard = SafetyGuard(SafetyConstraints(workspace_dir="~/data"))
+        resolved = guard.resolve_in_workspace("run/log.json")
+        assert resolved == os.path.realpath(home / "data" / "run" / "log.json")
+        assert "~" not in _components(resolved)
+
+
 def _laser_guard(**overrides) -> SafetyGuard:
     ill = IlluminationConstraints(
         shutters=[
