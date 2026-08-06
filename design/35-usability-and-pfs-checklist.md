@@ -311,7 +311,7 @@ assistant's narration when judging whether a guard fired.
 | 8 | Nikon | 6, 7a, 7b | `design33/phase5-continuous-focus` | | | required | | |
 | 13 | Platform | 41a merged; may run concurrently with Track B and 41b | `design40/platform-defects` | `03dcea0` | `0c83268` + `c2fc7ab` (round 1 returned); runbook `9d2a934` | **pushed 2026-08-06, awaiting any rig; G3 needs transmitted light, G4 fluorescence** | | |
 | 41a | Platform | none — **assign first in Track D** | `design41/session-survival` (deleted) | `b0ee300` | `501287f` + `bb58551` (round 1 returned) | n/a — no rig surface | `1fb284d` | **done** — design/16 §5 "The invariant is not about Stop"; design/41 F2/F3/F7 ticked |
-| 41b | Platform | 41a merged | `design41/script-export` | `03dcea0` | `b6ca12d` + `54882df` (rounds 1 and 2 returned; in review, not pushed) | **required** | | |
+| 41b | Platform | 41a merged | `design41/script-export` | `03dcea0` | `b6ca12d` + `54882df` + `79b8f1a` + `8bfdceb` (rounds 1, 2 and 3 returned); runbook `10394fd` | **pushed 2026-08-06, awaiting any rig** | | |
 | 41c | Platform | 41b merged | `design41/emu-channel-plan` | | | **required** — M5 + demo | | |
 | 9 | Features | operator intake | `design26/generated-adapter-run-b` | | | required | | |
 | 10 | Features | 9; optional | `design26/few-shot-run-c` | | | required or marked skipped | | |
@@ -4205,7 +4205,12 @@ Rig gate:
 
 - [ ] Any rig: export a session that moved the stage and acquired, then run the
       emitted script against a running MMStudio **with microclaw not running**.
-      It completes.
+      Its **hardware routine completes**, and the script stops only at a declared
+      refusal. *(Reworded 2026-08-06. "It completes" cannot be met by any session
+      containing an offline mosaic, because that refusal is architectural and
+      approved: `build_stage_coordinate_mosaic` depends transitively on the
+      package calibration module, so inlining it would not be standalone. Split
+      across G1 and G3 of `design/41-block41b-rig-gate.md`.)*
 - [ ] Same rig: the script's dataset and the session's dataset agree on frame
       count and stage coordinates. Dose is compared explicitly — an export that
       re-images what the session read from disk fails this gate.
