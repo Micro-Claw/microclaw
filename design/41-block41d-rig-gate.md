@@ -25,7 +25,7 @@ changes the rig's real `safety_config.yaml`.
 
 ```powershell
 cd C:\path\to\microclaw
-git merge-base --is-ancestor 63ddd2b HEAD
+git merge-base --is-ancestor 3412aea HEAD
 if ($?) { "PIN OK - implementation is present" } else { "PIN FAIL - stop, wrong branch" }
 ```
 
