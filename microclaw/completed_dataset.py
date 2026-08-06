@@ -31,6 +31,7 @@ from microclaw.hook_manager import (
     verify_saved_hook_bytes,
 )
 from microclaw.hooks import write_analysis_observation
+from microclaw.safety import SafetyViolation
 
 
 OFFLINE_VERBS = ("analyze_completed_dataset", "analyze_saved_frame")
@@ -207,9 +208,22 @@ def _optional_input_hashes(values: dict | None, guard) -> dict | None:
         raise ValueError("model_project_config must be an object or None")
     records = {}
     for name, value in sorted(values.items()):
-        if isinstance(value, str) and Path(guard.resolve_readable_path(value)).is_file():
-            resolved = guard.resolve_readable_path(value)
-            data = Path(resolved).read_bytes()
+        # A *type probe*, not path handling: these values are arbitrary operator
+        # data and the only question is "is this string a file?". A string the
+        # resolver refuses is not a path, so the answer is no. `~500 cells` is
+        # free text — expanduser leaves anything but a real `~user` alone, so
+        # the resolver rightly refuses it, and refusing the whole record over a
+        # tilde in a free-text value would be absurd (block 41d).
+        source = None
+        if isinstance(value, str):
+            try:
+                candidate = Path(guard.resolve_readable_path(value))
+            except SafetyViolation:
+                candidate = None
+            if candidate is not None and candidate.is_file():
+                source = candidate  # resolved once, then reused
+        if source is not None:
+            data = source.read_bytes()
             records[name] = {"reference": value, "sha256": _sha(data),
                              "size_bytes": len(data)}
         else:

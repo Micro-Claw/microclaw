@@ -157,11 +157,23 @@ does not confuse them.
 Open microclaw normally (the rig's own config, no flags) and ask it, in these
 words or close to them:
 
-> Save a single snap to `~/microclaw_data/gate41d_g1`.
+> Run a **1-frame timelapse** (`n_frames=1`, `interval_s=0`) and save it to
+> `~/microclaw_data/gate41d_g1`.
 
-Any tool that takes a path is fine — a timelapse of one frame, a log export, a
-TIFF export. The point is that the path came from you, through the model, into
-a real tool.
+**Ask for a timelapse, not a snap.** No snap tool takes a save path —
+`snap_and_analyze` and `snap_to_album` do not write to a directory — so "save a
+snap to \<path\>" forces the model to improvise, and what actually got exercised
+then depends on what it chose. `run_timelapse(n_frames=1, interval_s=0,
+save_dir=...)` is this codebase's way to save a single plane, and its `save_dir`
+goes through the resolver **before any hardware moves**. Another path-taking
+tool is an acceptable substitute (a TIFF export, a log export) — but ask for one
+by name.
+
+The data lands in a **subfolder** of the directory you named, called after the
+acquisition and carrying AcqEngJ's `_1` suffix:
+`...\gate41d_g1\timelapse_1`. Check the disk, not the artifact download —
+`run_timelapse` declares no artifact, so `/api/artifact` will not serve it. That
+is pre-existing and not this block's business.
 
 **PASS is one of these two, matching Step 0's prediction:**
 
@@ -171,8 +183,9 @@ a real tool.
    Test-Path "$env:USERPROFILE\microclaw_data\gate41d_g1"
    Get-ChildItem -Recurse "$env:USERPROFILE\microclaw_data\gate41d_g1" | Select-Object FullName, Length
    ```
-   `True` and a non-empty listing. `True` alone is not enough — an empty
-   directory means the path resolved and the write did not.
+   `True` and a non-empty listing that includes the `timelapse_1` subfolder.
+   `True` alone is not enough — an empty directory means the path resolved and
+   the write did not.
 
 2. **It refused**, and the refusal names **both** the configured workspace root
    **and** what the `~` expanded to. Paste the message verbatim. A refusal that
@@ -191,8 +204,9 @@ a real tool.
    microclaw --safety-config $dst2 serve
    ```
 
-   Ask for `~/microclaw_data/gate41d_g1b` and confirm it **writes** to
-   `C:\Users\<you>\microclaw_data\gate41d_g1b`. Then close that session.
+   Ask for the same 1-frame timelapse into `~/microclaw_data/gate41d_g1b` and
+   confirm it **writes** to `C:\Users\<you>\microclaw_data\gate41d_g1b`. Then
+   close that session.
 
 **Then re-run G0's finder**, save as `gate41d-tilde-after-g1.txt`, and diff:
 
@@ -243,15 +257,20 @@ microclaw --safety-config "$env:USERPROFILE\Desktop\safety_config_41d.yaml" serv
 (Session flags go **before** the subcommand; drop `serve` if you drive microclaw
 from the terminal instead of the browser.)
 
-Ask for **two** saves in that one session, in this order:
+Ask for **two** 1-frame timelapses in that one session, in this order — the same
+call as G1, only the `save_dir` differs:
 
-1. > Save a snap to `~/microclaw_data/gate41d_g2`.
-2. > Save a snap to `C:\microclaw_gate41d\gate41d_g2_inside`.
+1. > Run a 1-frame timelapse (`n_frames=1`, `interval_s=0`) saving to
+   > `~/microclaw_data/gate41d_g2`.
+2. > Run a 1-frame timelapse (`n_frames=1`, `interval_s=0`) saving to
+   > `C:\microclaw_gate41d\gate41d_g2_inside`.
 
 **PASS requires both directions:**
 
 - (1) is **refused**, and the message names `C:\microclaw_gate41d` *and* the
   expansion (`C:\Users\<you>\microclaw_data\gate41d_g2`). Paste it verbatim.
+  `run_timelapse` resolves `save_dir` before it touches hardware, so a refusal
+  here should cost **no exposure at all** — say so if you saw the camera fire.
 - (2) **succeeds** and the data is there:
   ```powershell
   Get-ChildItem -Recurse "C:\microclaw_gate41d\gate41d_g2_inside" | Select-Object FullName, Length
@@ -282,19 +301,28 @@ before. The rig's own `safety_config.yaml` was never touched.
 path and confirm the dataset lands where the operator expects.*
 
 Back on the rig's own config (no `--safety-config`). Run the same shape of
-session 41b's G1 used — move the stage, set an exposure, snap and analyze, mark
-two or three positions, then a small multi-position acquisition — but give the
-acquisition **`~/microclaw_data/gate41d_multipos`** as its save directory.
+session 41b's G1 used:
+
+1. move the stage; set an exposure; **snap and analyze** (that one takes no
+   path, and needs none — it is here because 41b's session had it);
+2. **mark two or three positions**;
+3. run a small **multi-position acquisition over those marked positions**,
+   giving it **`~/microclaw_data/gate41d_multipos`** as its `save_dir`.
+
+Step 3 is the one that matters: it is a path-taking acquisition tool, asked for
+by name, with a `~` path. Do not substitute a snap.
 
 **PASS when all four hold:**
 
-1. The acquisition runs and the dataset exists at
-   `C:\Users\<you>\microclaw_data\gate41d_multipos` (AcqEngJ's `_1` suffix is
-   normal), with one folder per what you asked for and non-zero file sizes:
+1. The acquisition runs and the dataset exists in a subfolder of
+   `C:\Users\<you>\microclaw_data\gate41d_multipos`, named after the
+   acquisition with AcqEngJ's `_1` suffix:
    ```powershell
    Get-ChildItem -Recurse "$env:USERPROFILE\microclaw_data\gate41d_multipos*" |
      Measure-Object -Property Length -Sum
    ```
+   **`Sum` must be non-zero.** A directory tree with no bytes in it means the
+   path resolved and the acquisition did not write.
 2. **Or** — if this rig configures a `workspace_dir` that excludes your home —
    it refuses before any hardware moves, naming the root and the expansion, and
    **no partial dataset** is left anywhere. Then re-run it with a path inside the

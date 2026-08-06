@@ -1357,6 +1357,18 @@ across the package. Expansion is normalisation, not confinement: a literal `~`
 segment on a read reads the wrong file just as surely as it writes one. The two
 resolvers may differ *only* in confinement.
 
+**One caller uses the resolver as a type probe, and must not inherit the
+refusal.** `completed_dataset._optional_input_hashes` asks "is this string a
+file?" of arbitrary operator `model_project_config` values. `expanduser` leaves
+free text alone, so `"~500 cells"` reached the new refusal and — inside the
+manifest's `except Exception` — failed the **entire** completed-dataset record
+over a tilde in a value. It now catches `SafetyViolation` and answers *no*,
+which is the honest answer to that question for a string that is not a path.
+That is the only such caller; every other one passes a genuine path, where
+raising is correct. The rule: a resolver refusal means "this is not a usable
+path", and a caller asking a yes/no question about a path may read it that way
+— but no caller may re-implement what `~` means.
+
 **Evidence.** `tests/test_safety.py::TestHomeExpansion` — 11 tests, both
 resolvers, asserting the whole resolved string and that no component equals
 `~`. A prefix-only assertion would have passed on the defect, because the
@@ -1364,7 +1376,10 @@ defective path started with the workspace root too. 9 of the 11 fail on the
 pre-fix code; the 2 that pass are the `a/~b/c` non-mangling cases, which must
 hold in both directions. Home is monkeypatched (`HOME` and `USERPROFILE`), and
 the unresolvable case is exercised by patching `expanduser` to the identity so
-the Windows pass-through is tested on any platform.
+the Windows pass-through is tested on any platform. The type-probe regression
+has two more in `tests/test_completed_dataset.py`, one direct and one through
+the runner, because the failure mode was a record silently marked `failed`
+rather than a traceback.
 
 The rule that generalises: a normalisation that silently returns its input on
 failure is not a normalisation. If `~` cannot be resolved, say so — do not
