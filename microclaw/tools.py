@@ -254,11 +254,9 @@ def _emit_multiposition(params: RecordedParams) -> str:
             event_args["channel_exposures_ms"] = [exposure]
     elif exposure is not None:
         lines.append(f"    core.set_exposure({exposure!r})")
-    save_dir = params.get("save_dir")
-    name = params.get("name", "multipos")
     lines.extend([
         f"    events = multi_d_acquisition_events(**{event_args!r})",
-        f"    with Acquisition(directory=str(Path({save_dir!r}) / position['name']), "
+        "    with Acquisition(directory=str(_HERE / position['name']), "
         "name=position['name']) as acq:",
         "        acq.acquire(events)",
     ])
@@ -395,6 +393,7 @@ def export_session_script(
         *(["", _analysis_source(include_autofocus=autofocus_used).rstrip()]
           if analysis_used else []),
         "",
+        "_HERE = Path(__file__).resolve().parent",
         "core = Core()",
         "mm = SimpleNamespace(core=core)",
     ]

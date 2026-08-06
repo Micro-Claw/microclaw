@@ -166,7 +166,7 @@ def test_unemittable_tool_refuses_and_script_cannot_run_past_it(tmp_path):
         "Core = object\nAcquisition = object\nmulti_d_acquisition_events = object",
     )
     with pytest.raises(RuntimeError, match="NOT EMITTED: build_stage_coordinate_mosaic"):
-        exec(compile(prefix, "routine.py", "exec"), {})
+        exec(compile(prefix, "routine.py", "exec"), {"__file__": "routine.py"})
 
 
 def _mosaic_dose_calls(source):
@@ -281,7 +281,7 @@ def test_result_derived_multiposition_refuses_incomplete_coordinates(tmp_path):
     assert "Acquisition(directory=" not in source
 
 
-def _exec_acquisition_source(source):
+def _exec_acquisition_source(source, script_path=None):
     class Core:
         def __init__(self):
             self.moves = []
@@ -305,6 +305,7 @@ def _exec_acquisition_source(source):
         "",
     )
     exec(compile(executable, "routine.py", "exec"), {
+        "__file__": str(script_path or Path("routine.py").resolve()),
         "Core": lambda: core,
         "Acquisition": Acquisition,
         "multi_d_acquisition_events": lambda **kwargs: kwargs,
@@ -312,13 +313,16 @@ def _exec_acquisition_source(source):
     return core, acquired
 
 
-def test_result_derived_per_position_protocol_executes_without_runtime_state(tmp_path):
+def test_result_derived_per_position_protocol_executes_without_runtime_state(
+    tmp_path, monkeypatch,
+):
     records = completed_call(
         "run_multiposition_acquisition",
         {
             "protocol": "timelapse",
             "protocol_params": {"n_frames": 2, "interval_s": 0},
-            "save_dir": "/data", "name": "run", "mark_positions": False,
+            "save_dir": "~/microclaw_data/multipos_3sites", "name": "run",
+            "mark_positions": False,
         },
         {"results": [
             {"position": "pos_1", "x_um": 50.0, "y_um": 0.2, "z_um": 6.318,
@@ -334,11 +338,20 @@ def test_result_derived_per_position_protocol_executes_without_runtime_state(tmp
     assert "dataset_path" not in source
     assert "declared_illumination_properties" not in source
     assert "Timelapse complete" not in source
+    assert "~" not in source
 
-    core, acquired = _exec_acquisition_source(source)
+    script_path = tmp_path / "export" / "session_script.py"
+    cwd = tmp_path / "unrelated-cwd"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    core, acquired = _exec_acquisition_source(source, script_path)
     assert core.moves == [(50.0, 0.2), (150.0, 0.2)]
     assert core.z_moves == [6.318, 6.4]
     assert [entry[0]["name"] for entry in acquired] == ["pos_1", "pos_2"]
+    assert [entry[0]["directory"] for entry in acquired] == [
+        str(script_path.parent / "pos_1"),
+        str(script_path.parent / "pos_2"),
+    ]
 
 
 def test_tile_per_position_protocol_executes_against_fake_core(tmp_path):
@@ -409,6 +422,7 @@ def test_realistic_emitted_routine_runs_to_completion_against_fake_core(tmp_path
         "",
     )
     exec(compile(executable, "routine.py", "exec"), {
+        "__file__": str(tmp_path / "routine.py"),
         "Core": lambda: core,
         "Acquisition": Acquisition,
         "multi_d_acquisition_events": lambda **kwargs: kwargs,
