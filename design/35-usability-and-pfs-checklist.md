@@ -194,7 +194,9 @@ a cold session resumes from the remote alone.
   `git log --oneline origin/main..main` is empty.
 - **Track B order from here is 6 and 7a** (both depend on 6a merging), then 7b
   and 8. Track C last.
-- **Track D order is 41a, 13, 41b, 41c**, from the M5 smiley run
+- **Track D order is 41a, 13, 41b, 41c**, plus **41d** (added 2026-08-06 from
+  41b's M5 gate; `safety.py`, disjoint from everything else in the track, may run
+  concurrently). From the M5 smiley run
   (`design/41-smiley-session-findings.md`), which also folded two findings into
   block 13. **41a is merged**, so 13 and 41b are both assignable now and may run
   concurrently with each other and with 6a — 13 is `tools.py`, 41b is the
@@ -311,8 +313,9 @@ assistant's narration when judging whether a guard fired.
 | 8 | Nikon | 6, 7a, 7b | `design33/phase5-continuous-focus` | | | required | | |
 | 13 | Platform | 41a merged | `design40/platform-defects` (deleted) | `03dcea0` | `0c83268` + `c2fc7ab` (round 1 returned); runbook `9d2a934`; post-gate `f4e98c6` **ungated** | M5 2026-08-06 **G1/G2/G4/G5 PASS**; **G3 not runnable — no transmitted light on M5, carried forward** | `d24e721` | **done** — design/25 §"SNR validity, stated once", design/32 §"One hook contract", design/40 §"What block 13 shipped", design/41 F4/F5 |
 | 41a | Platform | none — **assign first in Track D** | `design41/session-survival` (deleted) | `b0ee300` | `501287f` + `bb58551` (round 1 returned) | n/a — no rig surface | `1fb284d` | **done** — design/16 §5 "The invariant is not about Stop"; design/41 F2/F3/F7 ticked |
-| 41b | Platform | 41a merged | `design41/script-export` | `03dcea0` | `b6ca12d` + `54882df` + `79b8f1a` + `8bfdceb` (rounds 1, 2 and 3 returned); runbook `10394fd` | **pushed 2026-08-06, awaiting any rig** | | |
+| 41b | Platform | 41a merged | `design41/script-export` | `03dcea0` | `b6ca12d` + `54882df` + `79b8f1a` + `8bfdceb` + `a763098` (3 review rounds + rig round 1); runbook `10394fd`/`696874b`/`8e51676` | M5 rig r1 **FAIL** (`mark_position` refuse + `KeyError`); r2 2026-08-06 **G1/G2 PASS** (stacks byte-identical, 149712 B × 3), **G3 not exercised**, one finding: emitter uses the raw input path | | |
 | 41c | Platform | 41b merged | `design41/emu-channel-plan` | | | **required** — M5 + demo | | |
+| 41d | Platform | none — may run concurrently (touches `safety.py`, disjoint from 41b) | `design41/path-expansion` | | | **required** | | |
 | 9 | Features | operator intake | `design26/generated-adapter-run-b` | | | required | | |
 | 10 | Features | 9; optional | `design26/few-shot-run-c` | | | required or marked skipped | | |
 | 11 | Features | accepted Run B fixtures | `design32/hook-worker-isolation` | | | regression required | | |
@@ -4295,6 +4298,56 @@ Rig gate:
 Post-merge design gate:
 
 - [ ] Record the plan-source decision in design/33 Phase 4 and tick design/41 F6.
+
+## 41d. `~` is written as a directory instead of being expanded
+
+Branch: `design41/path-expansion`
+
+Source: **block 41b's M5 rig gate, 2026-08-06** — not design/41. The operator
+asked for `~/microclaw_data/multipos_3sites` and got
+`C:\Users\ries\AppData\Local\microclaw\~\microclaw_data\multipos_3sites`:
+a literal directory named `~` under the workspace root.
+
+There is **no `expanduser` anywhere in `microclaw/`**. `~/x` is not absolute, so
+`resolve_in_workspace` (`safety.py:1201`) joins it under the root as an ordinary
+path segment. This predates Track D entirely — the code dates to `ee7f098`,
+2026-07-28 — and it affects **every tool that takes a path**, not just the
+acquisition tools that surfaced it. It is filed separately from 41b because the
+fix is package-wide and belongs on its own branch with its own gate.
+
+- [ ] **Decide expand-or-refuse, and state it once.** The three options are
+      expand `~` to the real home, refuse it, or keep literalising it. The last
+      is what happens today and is the worst: it silently produces a directory
+      the operator did not ask for, in a place they will not look. Expansion
+      followed by the existing confinement check is the obvious answer — but
+      *say* which, in one place, and let both resolvers use it.
+- [ ] **Refuse clearly when the expansion escapes the workspace.** With
+      `workspace_dir` configured, expanding `~` will usually land outside it.
+      That must be a refusal naming the configured root, not a silent rewrite
+      and not a traceback.
+- [ ] **One place, not per tool.** Both `resolve_in_workspace` and
+      `resolve_readable_path` normalise; every path-taking tool inherits it. If
+      the fix needs touching individual tools, that is the wrong shape.
+- [ ] Tests both directions: `~/x` with no workspace root, `~/x` with a root it
+      escapes, `~/x` with a root that contains it, and a path *containing* a
+      literal `~` segment that is not a prefix (`a/~b/c` must not be mangled).
+- [ ] Stop if this turns into per-tool path handling, or if expansion has to
+      differ between the read and write resolvers for any reason other than
+      confinement.
+
+Rig gate:
+
+- [ ] Any rig: a tool given `~/...` either writes under the real home directory
+      or refuses naming the workspace root. **No directory named `~` is
+      created anywhere.**
+- [ ] Any rig: re-run the acquisition from block 41b's gate with a `~` path and
+      confirm the dataset lands where the operator expects.
+
+Post-merge design gate:
+
+- [ ] Record the path-normalisation contract in design/32 beside the
+      workspace-confinement section, and note that `resolve_readable_path` is
+      deliberately unconfined but still normalised.
 
 ---
 
