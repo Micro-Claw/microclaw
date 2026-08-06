@@ -467,6 +467,26 @@ def _analysis_source(*, include_autofocus: bool = False) -> str:
     return "\n".join(parts)
 
 
+def _channel_verification_source() -> str:
+    """Return exact source for the read-back check the channel executor ran.
+
+    Inlined for the same reason the analysis is: the emitted verification must
+    *be* the executor's, not a paraphrase of it. A paraphrase was written first
+    and was wrong -- a bare string compare fails a write that succeeded, because
+    `_verify_property` compares a Float property numerically and Micro-Manager
+    reformats one ("10" reads back "10.0000", measured; design/33 Phase 4). The
+    type is established the way the executor establishes it, by asking the core,
+    so `_property_type_name`'s bridge-shape handling travels with it.
+    """
+    from microclaw import authorization
+
+    return "\n".join(inspect.getsource(item) for item in (
+        authorization.ChannelPlanError,
+        authorization._property_type_name,
+        authorization._verify_property,
+    ))
+
+
 @emits_nothing
 def export_session_script(
     ctrl: MicroscopeController,
@@ -485,18 +505,26 @@ def export_session_script(
         for name, params in recorded
     )
     autofocus_used = any(name == "run_autofocus" for name, _params in recorded)
+    # Only a channel switch that actually replayed writes needs the read-back
+    # check; a map-less set_config delegation verifies nothing of its own.
+    channel_writes = any(
+        name == "set_channel" and params.result.get("effects")
+        for name, params in recorded
+    )
     lines = [
         "from __future__ import annotations",
+        "import math",
         "import time",
         "from dataclasses import dataclass",
         "from pathlib import Path",
         "from types import SimpleNamespace",
-        "from typing import Callable, NamedTuple, Optional",
+        "from typing import Any, Callable, NamedTuple, Optional",
         "import numpy as np",
         "from pycromanager import Acquisition, Core, multi_d_acquisition_events",
         "",
         *(["", _analysis_source(include_autofocus=autofocus_used).rstrip()]
           if analysis_used else []),
+        *(["", _channel_verification_source().rstrip()] if channel_writes else []),
         "",
         "core = Core()",
         "mm = SimpleNamespace(core=core)",
@@ -1105,10 +1133,9 @@ def _emit_set_channel(params: RecordedParams) -> str:
             lines.append(f"core.set_property({device!r}, {prop!r}, {value!r})")
             if device != "Core":     # MM's pseudo-device never becomes busy
                 lines.append(f"core.wait_for_device({device!r})")
-            lines.append(
-                f"assert str(core.get_property({device!r}, {prop!r})) == {value!r}, "
-                + repr(f"channel write did not verify: {device}.{prop}")
-            )
+            # The executor's own check, inlined by _channel_verification_source.
+            # Never hand-write the comparison here; see that function for why.
+            lines.append(f"_verify_property(core, {device!r}, {prop!r}, {value!r})")
         return "\n".join(lines)
     group = result.get("config_group")
     if group:

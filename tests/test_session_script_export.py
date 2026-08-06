@@ -251,41 +251,121 @@ def test_set_channel_emits_the_recorded_writes_in_order(tmp_path):
     ]
 
 
+FLOAT_CHANNEL_RESULT = {
+    "status": "Channel set to 'FITC'.",
+    "writes": 2,
+    "effects": [
+        ["Emission", "Label", "Chroma-HQ535"],
+        ["Camera", "Exposure", "10"],
+    ],
+    "channel_source": "config-group",
+}
+
+
+class FakeCore:
+    """Enough core to execute an emitted channel switch.
+
+    `reformat` reproduces the measured driver behaviour that broke the first
+    version of this emitter: a Float property requested as "10" reads back
+    "10.0000". `liar` returns a genuinely different value for one pair.
+    """
+
+    def __init__(self, types=None, reformat=(), liar=None):
+        self.values, self.calls = {}, []
+        self.types = dict(types or {})
+        self.reformat, self.liar = set(reformat), liar
+
+    def set_property(self, d, p, v):
+        self.calls.append(("set", d, p))
+        self.values[(d, p)] = f"{float(v):.4f}" if (d, p) in self.reformat else str(v)
+
+    def wait_for_device(self, d):
+        self.calls.append(("wait", d))
+
+    def get_property_type(self, d, p):
+        return self.types.get((d, p), "String")
+
+    def get_property(self, d, p):
+        if self.liar and (d, p) == self.liar[0]:
+            return self.liar[1]
+        return self.values[(d, p)]
+
+
+def run_emitted(source, core, tmp_path):
+    executable = source.replace(
+        "from pycromanager import Acquisition, Core, multi_d_acquisition_events", ""
+    )
+    exec(compile(executable, "routine.py", "exec"), {
+        "__file__": str(tmp_path / "routine.py"), "Core": lambda: core,
+        "Acquisition": object, "multi_d_acquisition_events": dict,
+    })
+
+
 def test_emitted_channel_switch_waits_and_verifies_like_the_executor(tmp_path):
     """The emitted script runs against a fake core and refuses a bad read-back."""
     _, _, source = export(tmp_path, completed_call(
         "set_channel", {"preset": "640"}, M5_CHANNEL_RESULT))
 
-    class Core:
-        def __init__(self, liar=None):
-            self.values, self.calls, self.liar = {}, [], liar
-        def set_property(self, d, p, v):
-            self.calls.append(("set", d, p))
-            self.values[(d, p)] = str(v)
-        def wait_for_device(self, d):
-            self.calls.append(("wait", d))
-        def get_property(self, d, p):
-            if self.liar and (d, p) == self.liar[0]:
-                return self.liar[1]
-            return self.values[(d, p)]
-
-    def run(core):
-        executable = source.replace(
-            "from pycromanager import Acquisition, Core, multi_d_acquisition_events", ""
-        )
-        exec(compile(executable, "routine.py", "exec"), {
-            "__file__": str(tmp_path / "routine.py"), "Core": lambda: core,
-            "Acquisition": object, "multi_d_acquisition_events": dict,
-        })
-
-    good = Core()
-    run(good)
+    good = FakeCore()
+    run_emitted(source, good, tmp_path)
     assert good.values[("iChrome-MLE-TCP", "Laser 1: 1. Enable")] == "1"
     assert good.calls.count(("wait", "iChrome-MLE-TCP")) == 4
 
-    lying = Core(liar=(("iChrome-MLE-TCP", "Laser 1: 1. Enable"), "0"))
-    with pytest.raises(AssertionError, match="did not verify"):
-        run(lying)
+    lying = FakeCore(liar=(("iChrome-MLE-TCP", "Laser 1: 1. Enable"), "0"))
+    with pytest.raises(Exception, match="Read-back verification failed"):
+        run_emitted(source, lying, tmp_path)
+
+
+def test_emitted_float_read_back_accepts_driver_reformatting(tmp_path):
+    """Coordinator review, 2026-08-06. The first emitter compared read-back as
+
+        assert str(core.get_property('Camera', 'Exposure')) == '10'
+
+    which is not what `_verify_property` does. A Float property is compared
+    numerically because Micro-Manager reformats it -- "10" reads back "10.0000",
+    measured on a rig (design/33 Phase 4). Any `Channel` preset carrying a
+    camera exposure would therefore have exported a script that died partway
+    through, on the rig, standalone, with nothing around to explain it. That is
+    block 41b's failure mode exactly, and none of the M5 enable fixtures could
+    catch it because they are all categorical.
+    """
+    _, _, source = export(tmp_path, completed_call(
+        "set_channel", {"preset": "FITC"}, FLOAT_CHANNEL_RESULT))
+
+    exposure = ("Camera", "Exposure")
+    reformatting = FakeCore(types={exposure: "Float"}, reformat=[exposure])
+    run_emitted(source, reformatting, tmp_path)                 # must not raise
+    assert reformatting.values[exposure] == "10.0000"
+
+    # A genuinely wrong value is still refused, so the tolerance is not a hole.
+    wrong = FakeCore(types={exposure: "Float"}, liar=(exposure, "11.0000"))
+    with pytest.raises(Exception, match="Read-back verification failed"):
+        run_emitted(source, wrong, tmp_path)
+
+    # And the same reformatting on a String property is still a mismatch --
+    # the emitted rule keys off the type, exactly as the executor's does.
+    stringy = FakeCore(types={exposure: "String"}, reformat=[exposure])
+    with pytest.raises(Exception, match="Read-back verification failed"):
+        run_emitted(source, stringy, tmp_path)
+
+
+@pytest.mark.parametrize("name", [
+    "ChannelPlanError", "_property_type_name", "_verify_property",
+])
+def test_inlined_channel_verification_is_byte_identical_to_source(tmp_path, name):
+    """The emitted check must *be* the executor's, not a paraphrase of it."""
+    from microclaw import authorization
+
+    _, _, source = export(tmp_path, completed_call(
+        "set_channel", {"preset": "640"}, M5_CHANNEL_RESULT))
+    assert inspect.getsource(getattr(authorization, name)) in source
+
+
+def test_channel_verification_is_absent_when_nothing_replayed_writes(tmp_path):
+    _, _, source = export(tmp_path, completed_call(
+        "set_channel", {"preset": "DAPI"},
+        {"status": "Channel set to 'DAPI'.", "config_group": "Channel"}))
+    assert "_verify_property" not in source
 
 
 def test_map_less_channel_delegation_emits_the_set_config_that_ran(tmp_path):
@@ -656,7 +736,17 @@ def test_adaptive_runs_refuse_with_the_architectural_reason(tmp_path):
         assert "no standalone emitter has been implemented" not in source
 
 
-def test_emitted_analysis_defines_every_name_it_uses(tmp_path):
+@pytest.mark.parametrize("records", [
+    pytest.param([call("snap_and_analyze", {})], id="analysis"),
+    pytest.param(
+        [call("run_autofocus", {"z_range_um": 2, "z_step_um": 0.5})], id="autofocus"
+    ),
+    pytest.param(
+        completed_call("set_channel", {"preset": "640"}, M5_CHANNEL_RESULT),
+        id="channel-verification",
+    ),
+])
+def test_emitted_inline_defines_every_name_it_uses(tmp_path, records):
     """Recurrence guard for the block-13/41b integration defect (2026-08-06).
 
     `_analysis_source` inlines a hand-listed set of helpers. Block 13 added
@@ -664,11 +754,19 @@ def test_emitted_analysis_defines_every_name_it_uses(tmp_path):
     both branches stayed green alone, and merged they emitted scripts that
     raised `NameError: name 'snr_validity' is not defined` at runtime. Pin the
     invariant structurally rather than by extending the list again: every global
-    the inlined analysis references must be defined in the emitted source.
+    an inlined block references must be defined in the emitted source.
+
+    **Parametrized over every record that triggers an inline**, not just the
+    analysis one. Block 41c added `_channel_verification_source` and this guard
+    could not see it, which is the position blocks 13 and 41b were both in
+    before they merged. A byte-identity test does not close that: it still
+    passes when the inlined function starts calling a helper that was never
+    inlined, and the script `NameError`s on the rig. Add a param here whenever
+    the exporter learns to inline something new.
     """
     import ast, builtins
 
-    _, _, source = export(tmp_path, [call("snap_and_analyze", {})])
+    _, _, source = export(tmp_path, records)
     tree = ast.parse(source)
     defined = {n.name for n in ast.walk(tree)
                if isinstance(n, (ast.FunctionDef, ast.ClassDef))}
@@ -677,6 +775,27 @@ def test_emitted_analysis_defines_every_name_it_uses(tmp_path):
     defined |= {a.asname or a.name.split(".")[0]
                 for n in ast.walk(tree)
                 if isinstance(n, (ast.Import, ast.ImportFrom)) for a in n.names}
+
+    # Annotations never evaluate. The emitted script opens with
+    # `from __future__ import annotations`, so `ctrl: MicroscopeController` is a
+    # string at runtime, not a load -- scanning it would fail a script that runs
+    # perfectly (it did, the moment this guard was widened past the analysis).
+    # The invariant is "would this NameError on the rig", so model that.
+    annotated: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            args = node.args
+            slots = [arg.annotation for arg in (
+                *args.posonlyargs, *args.args, *args.kwonlyargs,
+                *(a for a in (args.vararg, args.kwarg) if a is not None),
+            )] + [node.returns]
+        elif isinstance(node, ast.AnnAssign):
+            slots = [node.annotation]
+        else:
+            continue
+        for slot in slots:
+            if slot is not None:
+                annotated.update(id(item) for item in ast.walk(slot))
 
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.ClassDef)):
@@ -688,7 +807,8 @@ def test_emitted_analysis_defines_every_name_it_uses(tmp_path):
         local |= {n.id for n in ast.walk(node)
                   if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)}
         for name in (n.id for n in ast.walk(node)
-                     if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)):
+                     if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
+                     and id(n) not in annotated):
             assert (name in defined or name in local
                     or hasattr(builtins, name)), (
                 f"emitted script references {name!r} but never defines it")
