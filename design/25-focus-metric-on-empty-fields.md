@@ -493,3 +493,42 @@ comparison statistic used to rank fields in a survey**, which MM's autofocus doe
 not provide; and the plugin path runs arbitrary Java that bypasses the safety guard
 and needs `plugins.allow_hardware_motion`. Keep the MM plugin for autofocus, and
 fix microclaw's own metric. Different questions.
+
+## SNR validity, stated once (block 13, merged 2026-08-06)
+
+`snr()` is a **one-sided, bright-on-dark, unclipped** statistic. It is a
+measurement only while both of those hold, and `snr_validity()` in
+`image_analysis.py` is the single place that says so. Two causes of invalidity,
+deliberately *not* symmetric in what they invalidate:
+
+| cause | detected by | invalidates SNR | invalidates the focus metric |
+| --- | --- | --- | --- |
+| saturation | `saturated_fraction > 1e-4` | yes | **yes** |
+| wrong polarity | negative tail ≥ `min_snr` **and** ≥ 1.5× the positive tail | yes | **no** |
+
+The asymmetry is the whole decision. Tenengrad squares its gradients, so it is
+polarity-insensitive by construction and scores a dark-on-bright field perfectly
+well — a gate that cannot measure the field must not veto a metric that can. A
+*clipped* field is different: tenengrad on a saturated bead measures the edge of
+a plateau, so saturation takes both.
+
+Three things this deliberately is not:
+
+- **Not a caller-declared mode.** An earlier round added `signal_mode` to three
+  tool schemas. It was removed: the operator on the brightfield session never
+  declared anything — they just saw cells — so the default stood and returned the
+  old wrong answer. Detection is frame-intrinsic or it does not fire when it
+  matters.
+- **Not a lowered threshold.** Transmitted light is an explicit refusal to score,
+  never a number tuned until brightfield passes.
+- **Not blind to the empty field.** The `≥ min_snr` clause on the negative tail is
+  what stops a pure-noise frame — where both tails sit near 2.58 σ — being read as
+  transmitted light and re-opening this document's original failure. Verified:
+  a noise field reports `snr_valid: true, focus_metric_valid: false`.
+
+The 1e-4 saturation bound was chosen against the measured M5 fractions
+(0.00048–0.00636, all clipped), roughly 5× margin at the low end. **Report it to
+enough precision to see the threshold** — the M5 gate printed `max_intensity
+65535` beside `saturated_fraction 0.0` because the payload rounded to 4 places
+while the gate fires at 1e-4; on a 252×236 ROI the gate trips at 6 pixels out of
+59472.

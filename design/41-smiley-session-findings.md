@@ -168,6 +168,13 @@ Two things follow, and they are independent:
 
 ## F4 — every tile was saturated, so the SNR gate decided nothing
 
+**FIXED — block 13, merged 2026-08-06.** `snr_validity()` states the rule once:
+saturation above 0.01% invalidates SNR *and* the focus metric; `compute_stats`
+reports `snr: null` with `snr_invalid_reason`. Confirmed on M5 at 80 ms
+(0.0135% saturated → refused, focus metric refused with it). The gate also found
+that the payload rounded `saturated_fraction` to the same resolution as its own
+threshold, so a clipped frame could print `0.0`; now reported to 6 places.
+
 The user asked to keep a tile only if it had signal in **both** channels, SNR > 3
 (`:6`). All 9 tiles passed in both, and the reported margins were 173–716 (640)
 and 277–904 (561). Those numbers are not real SNRs. From the hook logs:
@@ -212,6 +219,11 @@ make it *mean* something, not to add a validator layer:
 ---
 
 ## F5 — `axis_selection` cost two rounds to a question the dataset answers
+
+**FIXED — block 13, merged 2026-08-06.** Singleton axes default to their only
+value; an ambiguous case names every non-position axis with its values. Confirmed
+on M5: one call, no `axis_selection`, result `selection: {"time": 0, "z": 0}` —
+the three calls of the smiley run became one.
 
 Three calls to `build_stage_coordinate_mosaic` to place 9 tiles (`:33`–`:37`):
 

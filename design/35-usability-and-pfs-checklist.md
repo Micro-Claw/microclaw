@@ -309,7 +309,7 @@ assistant's narration when judging whether a guard fired.
 | 7b | Nikon | 7a | `design34/continuous-focus-policy` | | | **required** | | |
 | 7c | Nikon | — | — | — | — | — | **SKIPPED 2026-08-05** — merged into 7a | design/40 D3 |
 | 8 | Nikon | 6, 7a, 7b | `design33/phase5-continuous-focus` | | | required | | |
-| 13 | Platform | 41a merged; may run concurrently with Track B and 41b | `design40/platform-defects` | `03dcea0` | `0c83268` + `c2fc7ab` (round 1 returned); runbook `9d2a934` | **pushed 2026-08-06, awaiting any rig; G3 needs transmitted light, G4 fluorescence** | | |
+| 13 | Platform | 41a merged | `design40/platform-defects` (deleted) | `03dcea0` | `0c83268` + `c2fc7ab` (round 1 returned); runbook `9d2a934`; post-gate `f4e98c6` **ungated** | M5 2026-08-06 **G1/G2/G4/G5 PASS**; **G3 not runnable — no transmitted light on M5, carried forward** | `d24e721` | **done** — design/25 §"SNR validity, stated once", design/32 §"One hook contract", design/40 §"What block 13 shipped", design/41 F4/F5 |
 | 41a | Platform | none — **assign first in Track D** | `design41/session-survival` (deleted) | `b0ee300` | `501287f` + `bb58551` (round 1 returned) | n/a — no rig surface | `1fb284d` | **done** — design/16 §5 "The invariant is not about Stop"; design/41 F2/F3/F7 ticked |
 | 41b | Platform | 41a merged | `design41/script-export` | `03dcea0` | `b6ca12d` + `54882df` + `79b8f1a` + `8bfdceb` (rounds 1, 2 and 3 returned); runbook `10394fd` | **pushed 2026-08-06, awaiting any rig** | | |
 | 41c | Platform | 41b merged | `design41/emu-channel-plan` | | | **required** — M5 + demo | | |
@@ -4024,11 +4024,11 @@ gate is run inside such a session. Design/41's remaining two findings are folded
 into block 13 rather than given blocks of their own, because they are the same
 decisions block 13 already owns.
 
-## 13. Hooked-survey and diagnostic defects
+## 13. [x] Hooked-survey and diagnostic defects — **MERGED 2026-08-06**
 
 Branch: `design40/platform-defects`
 
-- [ ] **A failed marked run poisons the position list.** `mark_positions=True`
+- [x] **A failed marked run poisons the position list.** `mark_positions=True`
       preflights the *entire* native list (`tools.py:2506`), so 25 entries left
       by a failed grid refused the next run with a conflict quoting the **old**
       grid's coordinates. The agent concluded `run_tile_acquisition` lays its
@@ -4036,27 +4036,27 @@ Branch: `design40/platform-defects`
       round trip on the wrong fix. Decide and state whether a partially-written
       grid is rolled back, and make the conflict distinguish pre-existing
       entries from the ones this call would add.
-- [ ] **`rank_hook_log` cannot read its own parent's log.** It requires
+- [x] **`rank_hook_log` cannot read its own parent's log.** It requires
       `result.<metric>` on every entry (`tools.py:3757`–`3764`); the runner
       interleaves `hook_action` records, so ranking fails on entry 1 of every
       hooked survey. Skip non-observation entries.
-- [ ] **Hook preflight validates a contract the runner rejects.**
+- [x] **Hook preflight validates a contract the runner rejects.**
       `generate_and_save_hook` returns hard-coded "Static syntax and
       `image_process_fn` contract passed" (`tools.py:4162`) while
       `run_tile_acquisition` refuses that contract. Two review-and-save cycles
       with the operator, on hardware. One contract, checked in one place.
-- [ ] `ContinueSurvey` logs `"decision": "refused",
+- [x] `ContinueSurvey` logs `"decision": "refused",
       "reason": "unsupported-by-this-runner"` on every tile of a batched run —
       25 refusals in a run where the action is a documented no-op. Either accept
       it as a no-op in that runner or stop the docs recommending it there.
-- [ ] **The SNR gate is a fluorescence assumption.** Brightfield fields with
+- [x] **The SNR gate is a fluorescence assumption.** Brightfield fields with
       cells the operator could see read SNR 2.53 / 2.74 / 1.41 and gate the
       focus metric off; raising exposure made it *worse*, because in transmitted
       light the background is the signal path. Decide what the gate means for
       transmitted light — this may be a different metric, a different gate, or
       an honest refusal to score; it must not be a threshold tuned until
       brightfield passes.
-- [ ] **Saturation does not invalidate SNR, so a clipped gate passes anything**
+- [x] **Saturation does not invalidate SNR, so a clipped gate passes anything**
       (design/41 F4). On the M5 smiley run every one of 18 frames had
       `max_intensity` 65535 in both channels, and the operator's explicit
       "keep the tile if SNR > 3" gate reported margins of 173–716 and 277–904.
@@ -4068,13 +4068,13 @@ Branch: `design40/platform-defects`
       existing pattern extended, not a new validator. **This bullet and the
       brightfield bullet above are one decision about what SNR validity means;
       settle them together and state the semantics once.**
-- [ ] **Exposure is approved once and never re-checked after a focus move**
+- [x] **Exposure is approved once and never re-checked after a focus move**
       (design/41 F4). The operator approved exposure against an out-of-focus
       snap (`max_intensity` 6637, `saturated_fraction` 0.0); autofocus then
       moved 2 µm and every subsequent frame clipped. Surface clipping in the
       result the model reads from `snap_and_analyze` and the acquisition tools,
       so "exposure is good" can be re-asked when focus changes.
-- [ ] **`axis_selection` makes the caller guess an answer the dataset holds**
+- [x] **`axis_selection` makes the caller guess an answer the dataset holds**
       (design/41 F5). `build_stage_coordinate_mosaic` took three calls to place
       9 tiles: the error names only the axis *this* call omitted
       (`tools.py:1279`), so fixing it reveals the next one. Both axes were
@@ -4082,7 +4082,7 @@ Branch: `design40/platform-defects`
       one legal completion. Default singleton axes to their only value, and when
       something genuinely ambiguous remains, state the full non-position axis set
       with each axis's available values so one correction is always enough.
-- [ ] **`calibrate_stage_to_camera` mis-diagnoses fixed-pattern lock.** An exact
+- [x] **`calibrate_stage_to_camera` mis-diagnoses fixed-pattern lock.** An exact
       `0.00 px` shift is the signature of a stationary vignette rim or sensor
       dirt dominating the correlation, not of too small a step
       (`tools.py:1684`). The advice sent the operator to a larger step, which
@@ -4092,25 +4092,58 @@ Branch: `design40/platform-defects`
 
 Rig gate:
 
-- [ ] Any rig: a hooked tile survey with `mark_positions=True` that fails
+- [x] Any rig: a hooked tile survey with `mark_positions=True` that fails
       mid-run leaves a state the next identical call can run from.
-- [ ] Any rig: `rank_hook_log` ranks the log its own hooked survey just wrote.
+- [x] Any rig: `rank_hook_log` ranks the log its own hooked survey just wrote.
 - [ ] Any rig with transmitted light: whatever the SNR decision is, a field the
       operator calls usable is reported consistently with that decision.
-- [ ] Any fluorescence rig: a deliberately over-exposed field is reported as a
+- [x] Any fluorescence rig: a deliberately over-exposed field is reported as a
       saturated, invalid SNR rather than a large one. The M5 smiley conditions
       reproduce this directly — beads at 100 ms after autofocus clipped every
       frame — so this is a re-run of a known-clipping field, not a new setup.
-- [ ] Any rig: a `n_frames=1` multi-position dataset mosaics in **one** call to
+- [x] Any rig: a `n_frames=1` multi-position dataset mosaics in **one** call to
       `build_stage_coordinate_mosaic` with no `axis_selection` argument.
 
 Post-merge design gate:
 
-- [ ] Record the hook-contract single-source decision in design/32 and the SNR
+- [x] Record the hook-contract single-source decision in design/32 and the SNR
       decision in design/25. Update design/40's defect list with what shipped
       and what was deliberately left.
-- [ ] State the SNR validity semantics **once** — saturation and transmitted
+- [x] State the SNR validity semantics **once** — saturation and transmitted
       light resolved by the same rule — in design/25, and tick design/41 F4/F5.
+
+### Rig gate — M5, 2026-08-06: **G1, G2, G4, G5 PASS; G3 not runnable here**
+
+Evidence: `40-block13-m5` (history `20260806_100503_655555`, plus `survey_a1`,
+`survey_a1_plus3`, `mosaic_poslist`). No written verdict was returned; the result
+was scored from the history.
+
+- **G1 PASS**, by a cleaner route than the runbook asked. `validate_positions`
+  accepted `survey_r0_c0` and **rejected** `survey_r1_c0` on the XY guard; the
+  list went 3 → 4 with only the accepted point written, the next
+  `validate_positions` returned `rejected: []`, and the 4-position run completed.
+  `position_list_rollback` appears **0 times** — correctly: check-before-mark
+  meant nothing unsafe was ever written, so no rollback was needed. The rollback
+  path itself is therefore still unexercised on a rig.
+- **G2 PASS.** `ranked_entry_count 4`, `invalid_entry_count 0`, ranking its own
+  hooked survey's log.
+- **G3 not runnable.** M5 has no transmitted-light path. Carried forward.
+- **G4 PASS, and it found a defect.** The exposure ramp 50→60→70→80 ms refused
+  correctly at 80 ms (0.0135% saturated → `snr: null`, focus metric refused with
+  it). But at 60 ms the frame clipped — `max_intensity 65535` — while
+  `saturated_fraction` printed **0.0**, because the payload rounded to 4 places
+  and the gate fires at 1e-4. On that 252×236 ROI the gate trips at 6 pixels out
+  of 59472, so 1–5 clipped pixels were indistinguishable from none. Fixed in
+  `f4e98c6` (6 places); the gate logic is unchanged and correct — the reported
+  SNRs across the ramp (103.81 → 103.16) were consistent, not inflated. **That
+  one commit landed after the gate and is itself ungated.**
+- **G5 PASS.** One `build_stage_coordinate_mosaic` call, no `axis_selection`,
+  result `selection: {"time": 0, "z": 0}`. design/41 F5's three calls became one.
+
+Process note: the runbook's G1 recipe (refuse a whole oversized grid) was not
+what the operator ran, and what they ran was better — a grid with one point
+outside travel exercises the same boundary while still producing a usable
+survey. Prefer that shape in future runbooks.
 
 ## 41a. A session must survive an API failure — **assign first in Track D**
 
@@ -4460,6 +4493,21 @@ schedule them or record a reason at block 12.
 
 This is an inventory, not permission to close with unresolved blank work. Block
 12 assigns every row one of the explicit dispositions above.
+
+- **Block 13's G3 — the transmitted-light SNR refusal is unmeasured on any rig.**
+  The rule is stated once in design/25 and covered by unit tests, and it was
+  verified off-rig on a synthetic dark-on-bright field (SNR refuses,
+  `focus_metric_valid` stays true, tenengrad 2.99e8). No reachable rig has a
+  transmitted-light path — **M5 does not**, which is why its 2026-08-06 gate
+  skipped it. Run it on the first rig that has brightfield or phase; the Nikon is
+  the likeliest. Merged 2026-08-06 with this explicitly owed rather than held.
+- **Block 13's position-list rollback path is unexercised on a rig.** The M5 gate
+  passed G1 without it, because check-before-mark meant nothing unsafe was
+  written and no rollback was needed. The rollback only runs when a refusal
+  lands *after* marking (a dose or budget refusal is the plausible one). Covered
+  by tests, not by hardware.
+- **`saturated_fraction` reporting precision landed after block 13's gate**
+  (`f4e98c6`) and is itself ungated. Reporting-only, two-directionally tested.
 
 - **`filament_position_filter` scores bead fields as filamentous.** Found by the
   operator during design/38's H6, 2026-08-05: two fields of beads scored
