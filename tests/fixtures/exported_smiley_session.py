@@ -1,3 +1,4 @@
+from __future__ import annotations
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -403,6 +404,19 @@ def single_sweep_autofocus(
         final_z_um=sweep.best_z_um, converged=True, moved=True, reason=None,
     )
 
+def _run_autofocus_passes(
+    ctrl: MicroscopeController,
+    z_range_um: float,
+    z_step_um: float,
+    method: str,
+    settle_ms: int,
+) -> AutofocusResult:
+    if method == "coarse_then_fine":
+        return coarse_then_fine_autofocus(
+            ctrl, z_range_um, max(z_step_um * 5, 1.0), z_step_um, settle_ms,
+        )
+    return single_sweep_autofocus(ctrl, z_range_um, z_step_um, settle_ms)
+
 core = Core()
 mm = SimpleNamespace(core=core)
 
@@ -459,9 +473,7 @@ image = snap_to_numpy(mm)
 stats = compute_stats(image, min_snr=3.1)
 
 # RECORDED TOOL: run_autofocus
-autofocus_result = coarse_then_fine_autofocus(
-    mm, 20, max(0.5 * 5, 1.0), 0.5, 50,
-)
+autofocus_result = _run_autofocus_passes(mm, 20, 0.5, 'coarse_then_fine', 50)
 
 # RECORDED TOOL: set_focus_lock
 core.set_property('PIZStage', 'External sensor', '1')

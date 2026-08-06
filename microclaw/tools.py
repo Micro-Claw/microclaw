@@ -123,22 +123,14 @@ def _emit_snap_and_analyze(params: RecordedParams) -> str:
 
 
 def _emit_autofocus(params: RecordedParams) -> str:
-    method = params.get("method", "coarse_then_fine")
-    settle = params.get("settle_ms", 50)
-    if method == "coarse_then_fine":
-        return (
-            "autofocus_result = coarse_then_fine_autofocus(\n"
-            f"    mm, {params['z_range_um']!r}, "
-            f"max({params['z_step_um']!r} * 5, 1.0), "
-            f"{params['z_step_um']!r}, {settle!r},\n)"
-        )
-    if method == "single_sweep":
-        return (
-            "autofocus_result = single_sweep_autofocus(\n"
-            f"    mm, {params['z_range_um']!r}, {params['z_step_um']!r}, "
-            f"{settle!r},\n)"
-        )
-    raise CannotEmit(f"unknown recorded autofocus method {method!r}")
+    signature = inspect.signature(run_autofocus)
+    method = params.get("method", signature.parameters["method"].default)
+    settle = params.get("settle_ms", signature.parameters["settle_ms"].default)
+    return (
+        "autofocus_result = _run_autofocus_passes("
+        f"mm, {params['z_range_um']!r}, {params['z_step_um']!r}, "
+        f"{method!r}, {settle!r})"
+    )
 
 
 def _emit_go_to_position(params: RecordedParams) -> str:
@@ -357,6 +349,7 @@ def _analysis_source(*, include_autofocus: bool = False) -> str:
             autofocus.single_sweep_autofocus,
         ):
             parts.append(inspect.getsource(fn))
+        parts.append(inspect.getsource(_run_autofocus_passes))
     return "\n".join(parts)
 
 
@@ -378,6 +371,7 @@ def export_session_script(
     )
     autofocus_used = any(name == "run_autofocus" for name, _params in recorded)
     lines = [
+        "from __future__ import annotations",
         "import time",
         "from dataclasses import dataclass",
         "from pathlib import Path",

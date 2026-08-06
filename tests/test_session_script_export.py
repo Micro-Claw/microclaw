@@ -100,6 +100,19 @@ def test_inlined_analysis_function_is_byte_identical_to_source(tmp_path, fn):
     assert inspect.getsource(fn) in source
 
 
+def test_autofocus_emitter_passes_recorded_inputs_without_rederiving(tmp_path):
+    _, _, source = export(tmp_path, [call(
+        "run_autofocus", {"z_range_um": 20, "z_step_um": 0.5}
+    )])
+    emitted_call = source.split("# RECORDED TOOL: run_autofocus", 1)[1]
+    assert (
+        "autofocus_result = _run_autofocus_passes("
+        "mm, 20, 0.5, 'coarse_then_fine', 50)"
+    ) in emitted_call
+    assert "max(" not in emitted_call
+    assert inspect.getsource(tools._run_autofocus_passes) in source
+
+
 def test_inlined_analysis_constant_comes_from_module(tmp_path):
     _, _, source = export(tmp_path, [call("snap_and_analyze", {})])
     assignment = (
