@@ -39,8 +39,14 @@ end for why the original "it completes" could not be met as written.*
 1. move the stage somewhere;
 2. set an exposure;
 3. snap and analyze;
-4. run a **small unhooked multi-position acquisition** (or a timelapse) over two
-   or three positions.
+4. **mark two or three positions**, then run a **small unhooked multi-position
+   acquisition** (or a timelapse) over them.
+
+Step 4 is deliberately the ordinary workflow — mark positions, then acquire from
+the list without passing coordinates. The first M5 run of this gate (2026-08-06)
+failed there twice: `mark_position` refused to emit, and behind it the
+per-position emitter could not run. Both are fixed; keep the step as written so
+the path stays covered.
 
 **Do not build a mosaic in this session** — the offline mosaic is a deliberate,
 approved refusal, and including it here would stop the script before the end. G3
@@ -145,6 +151,13 @@ the counts, any traceback, and **the exported scripts themselves** — those are
 the primary evidence, more than the numbers.
 
 Say which rig each step ran on. A step you could not run is not a pass.
+
+**If a step fails, keep the artifact exactly as it is.** The failing script *is*
+the evidence, and a re-test must write to a **new folder** rather than
+regenerating over it — on 2026-08-06 the first M5 failure's script was
+overwritten by the fix verification, and the artifact that documented the FAIL
+was lost. The error text and the session history survived, which is the only
+reason the finding held up. Name re-test folders with a round suffix.
 
 ## Note on the reworded G1
 
