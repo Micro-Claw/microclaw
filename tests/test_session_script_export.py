@@ -1,5 +1,6 @@
 import inspect
 import json
+from itertools import count
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -27,8 +28,12 @@ def call(name, params):
     ]}
 
 
+_call_ids = count()
+
+
 def completed_call(name, params, result):
-    tool_id = f"{name}-id"
+    # Unique per call: a repeated tool name in one record must keep its own result.
+    tool_id = f"{name}-id-{next(_call_ids)}"
     return [
         {"role": "assistant", "content": [
             {"type": "tool_use", "id": tool_id, "name": name, "input": params}
@@ -300,14 +305,57 @@ def test_named_multiposition_refuses_absent_name(tmp_path):
     assert "Acquisition(directory=" not in source
 
 
-def test_named_multiposition_refuses_conflicting_mark_after_snapshot(tmp_path):
+def _marked(name, x_um, y_um, z_um):
+    return completed_call(
+        "mark_position", {"name": name},
+        {"status": f"Position {name!r} marked.", "x_um": x_um, "y_um": y_um,
+         "z_um": z_um, "imaged": False, "stage_moved": True},
+    )
+
+
+def test_named_multiposition_takes_the_later_mark_over_the_snapshot(tmp_path):
     records = _position_snapshot_records([
         {"name": "pos_1", "x_um": 1, "y_um": 2, "z_um": 3},
     ])
+    records += _marked("pos_1", 9, 8, 7)
+    records += [_named_hooked_run(["pos_1"])]
+    _, _, source = export(tmp_path, records)
+    assert "# NOT EMITTED: run_multiposition_acquisition" not in source
+    assert "xyz_positions': [(9, 8, 7)]" in source
+
+
+def test_named_multiposition_resolves_marks_without_any_snapshot(tmp_path):
+    records = _marked("pos_1", 10.0, 20.0, 1.0) + _marked("pos_2", 30.0, 40.0, 2.0)
+    records += [_named_hooked_run(["pos_1", "pos_2"])]
+    _, _, source = export(tmp_path, records)
+    assert "# NOT EMITTED: run_multiposition_acquisition" not in source
+    assert "xyz_positions': [(10.0, 20.0, 1.0), (30.0, 40.0, 2.0)]" in source
+
+
+def test_named_multiposition_still_refuses_a_name_never_marked(tmp_path):
+    records = _marked("pos_1", 10.0, 20.0, 1.0) + [_named_hooked_run(["pos_2"])]
+    _, _, source = export(tmp_path, records)
+    assert "could not resolve named position 'pos_2' unambiguously" in source
+    assert "xyz_positions" not in source
+
+
+def test_named_multiposition_refuses_a_marked_then_deleted_position(tmp_path):
+    records = _marked("pos_1", 10.0, 20.0, 1.0)
     records += completed_call(
-        "mark_position", {"name": "pos_1"},
-        {"status": "Position 'pos_1' marked.", "x_um": 9, "y_um": 8,
-         "z_um": 7, "imaged": False, "stage_moved": True},
+        "delete_position", {"name": "pos_1"},
+        {"status": "Position 'pos_1' deleted.", "count": 0},
+    )
+    records += [_named_hooked_run(["pos_1"])]
+    _, _, source = export(tmp_path, records)
+    assert "could not resolve named position 'pos_1' unambiguously" in source
+    assert "xyz_positions" not in source
+
+
+def test_named_multiposition_refuses_after_a_failed_mark(tmp_path):
+    records = _marked("pos_1", 10.0, 20.0, 1.0)
+    records += completed_call(
+        "mark_position", {"name": "pos_2"},
+        {"status": "Cancelled by the user.", "x_um": 5, "y_um": 6, "z_um": 7},
     )
     records += [_named_hooked_run(["pos_1"])]
     _, _, source = export(tmp_path, records)

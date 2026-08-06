@@ -365,53 +365,52 @@ def _resolve_recorded_position_names(
     recorded: list[tuple[str, RecordedParams]],
 ) -> None:
     """Walk mutable position-list history and couple named runs to known state."""
+    # State is partial by design: it holds what the record determines, which may
+    # be less than MM's whole list. Resolution is per name, so an unknown name
+    # refuses while a known one emits.
     state: dict[str, dict] | None = None
-    conflicts: set[str] = set()
     for name, params in recorded:
         result = params.result
         if name == "get_position_list":
             state = _position_snapshot(result, "positions")
-            conflicts = set()
             if result.get("position_list_conflict"):
                 state = None
         elif name == "validate_positions":
-            if result.get("rejected") == []:
-                state = _position_snapshot(result, "accepted")
-                conflicts = set()
-            else:
-                state, conflicts = None, set()
+            state = (_position_snapshot(result, "accepted")
+                     if result.get("rejected") == [] else None)
         elif name == "mark_position":
             position_name = params.get("name")
             delta = (_position_from_result(position_name, result)
                      if isinstance(position_name, str) else None)
             if delta is None or "marked" not in str(result.get("status", "")).lower():
-                state, conflicts = None, set()
-            elif state is not None:
-                if position_name in state and state[position_name] != delta:
-                    conflicts.add(position_name)
+                state = None
+            else:
+                # add_position replaces by label, so a successful mark is
+                # authoritative for that name whatever came before it — it can
+                # seed state from nothing and can supersede a known value.
+                state = {} if state is None else state
                 state[position_name] = delta
         elif name == "delete_position":
             status = str(result.get("status", "")).lower()
             if "deleted" in status and isinstance(params.get("name"), str):
                 if state is not None:
                     state.pop(params["name"], None)
-                conflicts.discard(params["name"])
             elif "cancelled" not in status and result.get("position_list_conflict") is None:
-                state, conflicts = None, set()
+                state = None
         elif name == "clear_position_list":
             status = str(result.get("status", "")).lower()
             if "cleared" in status:
-                state, conflicts = {}, set()
+                state = {}
             elif "cancelled" not in status and result.get("position_list_conflict") is None:
-                state, conflicts = None, set()
+                state = None
         elif name in {"load_position_list", "import_mm_positions"}:
             status = str(result.get("status", "")).lower()
             if ("loaded" in status or "imported" in status
                     or ("cancelled" not in status
                         and result.get("position_list_conflict") is None)):
-                # Their results omit coordinates, so only a later snapshot can
-                # make subsequent named-position resolution trustworthy.
-                state, conflicts = None, set()
+                # Their results omit coordinates, so only a later snapshot or
+                # mark can make subsequent named-position resolution trustworthy.
+                state = None
 
         if name != "run_multiposition_acquisition" or params.get("positions") is not None:
             continue
@@ -419,7 +418,7 @@ def _resolve_recorded_position_names(
         if not isinstance(requested, list):
             continue
         failure = next((item for item in requested
-                        if not isinstance(item, str) or item in conflicts
+                        if not isinstance(item, str)
                         or state is None or item not in state), None)
         if failure is not None:
             params["_position_resolution_error"] = (
