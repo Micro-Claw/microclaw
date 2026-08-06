@@ -5000,3 +5000,52 @@ rule is restated in two places, encode the rule, not the restatement.
 A smaller note in the same vein: the guard's first draft failed on `w`, a tuple
 unpacking target its scope walk missed. The *test* was wrong, not the code.
 Collecting every `Store`-context name is the version that holds.
+
+
+### Block 41d (merged `f864a33`, 2026-08-06)
+
+Two review rounds, two rig rounds, one file of production code changed.
+
+**A fix can regress something the block never meant to touch.** 41d added one
+helper, `_expand_home`, called by both path resolvers. Review found that
+`completed_dataset._optional_input_hashes` uses `resolve_readable_path` as a
+*type probe* — "is this string a file?" — over arbitrary `model_project_config`
+values. `os.path.expanduser` leaves `'~500 cells'` unchanged, so the new refusal
+fired on free text, and because manifest assembly sits inside `except Exception`
+the result was not a traceback but `status: "failed"` with
+`manifest_assembly_failure`, silently dropping the artifacts and the scientific
+payload. The lesson is the call-site audit: when a function's contract narrows,
+enumerate its callers and ask what each one was really asking it. Nineteen call
+sites, eighteen genuinely passing paths, one asking a yes/no question — and the
+one is where the regression lived.
+
+The fix is worth stating because it looks like the thing the spec forbade
+("no per-tool `~` handling") and is not: catching `SafetyViolation` at a call
+site that asks "is this a path?" answers *that* question, and decides nothing
+about what `~` means.
+
+**A gate criterion that cannot fail is worth a round trip to fix.** G0 scans for
+directories named `~`; G1 and G3 pass when the scan is unchanged. Round one came
+back with an empty before-scan, because the operator had already deleted 41b's
+leftover `~` — so a broken finder and a clean rig were indistinguishable and both
+"no new `~`" results were vacuous. Round two ran the finder against a real `~`
+first. **The instrument is validated before the measurement, on evidence that
+already exists**, and here that cost thirty seconds and converted two vacuous
+passes into real ones. This generalises past this block: several gates on this
+checklist scan for the *absence* of something.
+
+**A runbook must ask for a call the rig can actually make.** Round one's G1 said
+"save a single snap to `~/...`". No snap tool takes a path — `snap_and_analyze`
+and `snap_to_album` write no directory — so the model would have had to
+improvise, and G1's own "an empty directory means the write did not happen"
+check would then have read FAIL on a run that never attempted one. Naming the
+call (`run_timelapse(n_frames=1, interval_s=0, save_dir=…)`) is the fix. Check
+every runbook instruction against the tool schema, not against what the tool
+sounds like it should do.
+
+**The pin is part of the fix.** The runbook pinned `63ddd2b`, which carries the
+expansion but not the type-probe fix; a rig checking out that tree would have
+passed the pin and failed every record with a tilde in its config. When a review
+round changes behaviour, the pin moves with it. 41c hit the identical thing one
+round later — its pin predated the emitter fix, so a checkout carrying the
+paraphrase would have passed. Twice in one day is a pattern, not a coincidence.

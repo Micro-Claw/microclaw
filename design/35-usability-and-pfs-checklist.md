@@ -217,32 +217,31 @@ in any worktree.
   `41-block41b-m5-round5`, design gate in `CLAUDE.md` and design/41 F1. Five rig
   rounds. Two commits landed post-gate and are **ungated**: `b6cc7a2` and
   `5af0fc6`. **41c is now unblocked.**
-- **Blocks 41c and 41d are ASSIGNED 2026-08-06**, concurrently, one worktree
-  each. They are disjoint: 41c is `authorization.py` + `tools.py`'s channel
-  surface, 41d is `safety.py`'s two path resolvers. Both gate on M5, and 41d's
-  gate is a re-run of 41b's acquisition with a `~` path, so one rig session can
-  cover both. **Merge them to `main` one at a time, running the suite on the
-  merge result before pushing** — that is the only step that caught the
-  13 × 41b `NameError`.
-- **Block 41d** — `design41/path-expansion`. There is no
-  `expanduser` anywhere in `microclaw/`, so `~/x` is joined under the workspace
-  root as a literal directory named `~`. Found by 41b's M5 gate; the operator got
-  `C:\Users\ries\AppData\Local\microclaw\~\microclaw_data`. It predates
-  Track D (`ee7f098`, 2026-07-28) and affects **every** path-taking tool, so any
-  past session that used a `~` path has been writing into a stray `~` folder.
-  Touches only `safety.py`; may run concurrently with anything.
+- **Block 41d is CLOSED.** Merged `f864a33`, gate `gate41d-m5`, design gate in
+  design/32. Two review rounds and two rig rounds. One cosmetic residual (the
+  refusal message shows the expansion with mixed separators) is carried forward,
+  not owed.
+- **Block 41c is pushed and awaiting its gate** on M5 (G1, G3) and the demo
+  (G2), at `d552988`. Three review rounds. Its G2 needs a demo `Channel` preset
+  carrying a **camera exposure**, and it **runs** the exported script rather than
+  grepping it — that is the step that catches the read-back defect returning, and
+  a compile is not an execution.
+  What 41d was: there was no `expanduser` anywhere in `microclaw/`, so `~/x` was
+  joined under the workspace root as a literal directory named `~`. It predated
+  Track D (`ee7f098`, 2026-07-28) and affected **every** path-taking tool, so any
+  past session that used a `~` path had been writing into a stray `~` folder.
 - **Block 6a is still pushed and still awaiting the Nikon**, unchanged since
   2026-08-05 at `4994f3e`. It must merge `main` before its own merge — `main` has
   moved a long way since it branched.
-- **Track order from here:** 41c and 41d are the live blocks. Nothing else in
-  Track D remains. Track B's 6 and 7a unblock when 6a merges; Track C (9–11) and
-  closeout 12 follow.
-- **`main` measures 1571 passed / 99 skipped / 3 expected warnings, 1670
-  collected** (re-measured 2026-08-06 at `61d9c0d`, macOS, 16.6 s — unchanged
-  from the figure recorded at the boundary). Re-measure rather than trusting
-  this. Judge a suite by failures and collected total, and **diff collected test
-  IDs** against the branch's start commit — that check has now caught silent
-  test loss twice.
+- **Track order from here:** 41c is the only live block, and it is pushed. When
+  it closes, Track D is done. Track B's 6 and 7a unblock when 6a merges; Track C
+  (9–11) and closeout 12 follow.
+- **`main` measures 1584 passed / 99 skipped / 3 expected warnings, 1683
+  collected** (measured 2026-08-06 on the 41d merge result at `f864a33`, macOS,
+  17.7 s). Re-measure rather than trusting this. Judge a suite by failures and
+  collected total, and **diff collected test IDs** against the branch's start
+  commit — that check has now caught silent test loss twice, and on 41c it
+  distinguished a *rename* into three parametrized IDs from a deletion.
 
 **The one process change made this session.** `CLAUDE.md` step 2 now says the
 coordinator writes the runner prompt to scratch and **offers** to start an agent,
@@ -369,7 +368,7 @@ assistant's narration when judging whether a guard fired.
 | 41a | Platform | none — **assign first in Track D** | `design41/session-survival` (deleted) | `b0ee300` | `501287f` + `bb58551` (round 1 returned) | n/a — no rig surface | `1fb284d` | **done** — design/16 §5 "The invariant is not about Stop"; design/41 F2/F3/F7 ticked |
 | 41b | Platform | 41a merged | `design41/script-export` (deleted) | `03dcea0` | 4 review rounds through `5ead7cc`; README `4b08f30`; runbook `bc9aea1`; post-gate `b6cc7a2` + `5af0fc6`, both **ungated** | M5 **G1/G2/G3 all PASS** rounds 4–5 2026-08-06 | `b1aa55e` | **done** — `CLAUDE.md` compile-to-script pointer, design/41 F1 |
 | 41c | Platform | 41b merged | `design41/emu-channel-plan` | `8a11e45` | | **required** — M5 + demo | | |
-| 41d | Platform | none — may run concurrently (touches `safety.py`, disjoint from 41b and 41c) | `design41/path-expansion` | `8a11e45` | | **required** | | |
+| 41d | Platform | none — ran concurrently with 41c | `design41/path-expansion` (deleted) | `8a11e45` | `63ddd2b` + `ff03913`; review round 2 `3412aea`; runbook pin `d6e2a79` | M5 2026-08-06 **Step 0 + G0 + G1 + G2 + G3 all PASS** (`gate41d-m5`, two rounds) | `f864a33` | **done** — design/32 §"The path-normalisation contract (block 41d)" |
 | 9 | Features | operator intake | `design26/generated-adapter-run-b` | | | required | | |
 | 10 | Features | 9; optional | `design26/few-shot-run-c` | | | required or marked skipped | | |
 | 11 | Features | accepted Run B fixtures | `design32/hook-worker-isolation` | | | regression required | | |
@@ -4384,7 +4383,7 @@ Post-merge design gate:
 
 - [ ] Record the plan-source decision in design/33 Phase 4 and tick design/41 F6.
 
-## 41d. `~` is written as a directory instead of being expanded
+## 41d. [x] `~` is written as a directory instead of being expanded — **MERGED 2026-08-06**
 
 Branch: `design41/path-expansion`
 
@@ -4400,39 +4399,88 @@ path segment. This predates Track D entirely — the code dates to `ee7f098`,
 acquisition tools that surfaced it. It is filed separately from 41b because the
 fix is package-wide and belongs on its own branch with its own gate.
 
-- [ ] **Decide expand-or-refuse, and state it once.** The three options are
+- [x] **Decide expand-or-refuse, and state it once.** The three options are
       expand `~` to the real home, refuse it, or keep literalising it. The last
       is what happens today and is the worst: it silently produces a directory
       the operator did not ask for, in a place they will not look. Expansion
       followed by the existing confinement check is the obvious answer — but
       *say* which, in one place, and let both resolvers use it.
-- [ ] **Refuse clearly when the expansion escapes the workspace.** With
+- [x] **Refuse clearly when the expansion escapes the workspace.** With
       `workspace_dir` configured, expanding `~` will usually land outside it.
       That must be a refusal naming the configured root, not a silent rewrite
       and not a traceback.
-- [ ] **One place, not per tool.** Both `resolve_in_workspace` and
+- [x] **One place, not per tool.** Both `resolve_in_workspace` and
       `resolve_readable_path` normalise; every path-taking tool inherits it. If
       the fix needs touching individual tools, that is the wrong shape.
-- [ ] Tests both directions: `~/x` with no workspace root, `~/x` with a root it
+- [x] Tests both directions: `~/x` with no workspace root, `~/x` with a root it
       escapes, `~/x` with a root that contains it, and a path *containing* a
       literal `~` segment that is not a prefix (`a/~b/c` must not be mangled).
-- [ ] Stop if this turns into per-tool path handling, or if expansion has to
+- [x] Stop if this turns into per-tool path handling, or if expansion has to
       differ between the read and write resolvers for any reason other than
       confinement.
 
 Rig gate:
 
-- [ ] Any rig: a tool given `~/...` either writes under the real home directory
+- [x] Any rig: a tool given `~/...` either writes under the real home directory
       or refuses naming the workspace root. **No directory named `~` is
       created anywhere.**
-- [ ] Any rig: re-run the acquisition from block 41b's gate with a `~` path and
+- [x] Any rig: re-run the acquisition from block 41b's gate with a `~` path and
       confirm the dataset lands where the operator expects.
 
 Post-merge design gate:
 
-- [ ] Record the path-normalisation contract in design/32 beside the
-      workspace-confinement section, and note that `resolve_readable_path` is
-      deliberately unconfined but still normalised.
+- [x] Record the path-normalisation contract in design/32 and note that
+      `resolve_readable_path` is deliberately unconfined but still normalised.
+      *(Corrected 2026-08-06: this line said "beside the workspace-confinement
+      section" and **design/32 has no such section**. Landed as a titled section,
+      "The path-normalisation contract (block 41d)", in the style of block 13's
+      "One hook contract, checked in one place".)*
+
+### Rig gate — M5, 2026-08-06: **Step 0, G0, G1, G2, G3 all PASS**
+
+Evidence: `gate41d-m5` (histories `20260806_131159_240275`, `20260806_131509_321433`,
+`20260806_134326_665800`, plus the tilde inventories and the returned datasets).
+Two rounds, because the first returned G1 and G2 only.
+
+- **Step 0 PASS.** `WORKSPACE_ROOT: None` — M5 confines nothing, so G1 was
+  predicted to write. `~/microclaw_data/gate41d` resolved to
+  `C:\Users\ries\microclaw_data\gate41d`, and `a/~b/c.json` came back with `~b`
+  intact.
+- **G0 PASS on the second round, and this is the step that mattered.** On round
+  one the operator had already deleted 41b's leftover `~`, so the before-scan
+  was empty and the "no new `~`" comparison could not have failed. Round two ran
+  the finder against a real `C:\Users\ries\AppData\Local\microclaw\~` and it
+  listed it, so the before/after comparison is an instrument that has been shown
+  to work rather than one that returns empty either way.
+- **G1 PASS.** `run_timelapse(n_frames=1, interval_s=0,
+  save_dir="~/microclaw_data/gate41d_g1")` → `C:\Users\ries\microclaw_data\
+  gate41d_g1\timelapse_1`, non-empty on disk. Microclaw reported the **expanded**
+  path back, not `~/...`.
+- **G2 PASS, both directions.** With a throwaway `workspace_dir:
+  C:\microclaw_gate41d`, the `~` path was refused with
+  `Path '~/microclaw_data/gate41d_g2' (expanded to 'C:\Users\ries/microclaw_data/
+  gate41d_g2') escapes the configured workspace directory (C:\microclaw_gate41d).`
+  — root *and* expansion — while the inside-the-root write succeeded. The refused
+  call carries no `trigger_preflight` where both successful calls do, which is
+  positive evidence that it stopped before any hardware: `save_dir` is resolved
+  on `run_timelapse`'s first line.
+- **G3 PASS.** `run_multiposition_acquisition` over three marked positions with
+  `save_dir="~/microclaw_data/gate41d_multipos"` → `3/3 positions completed`,
+  per-position subdirectories built from the *resolved* root
+  (`...\gate41d_multipos\gate41d_pos1\gate41d_pos1_1`), three stacks of 159412 B.
+  The after-scan is byte-identical to the before-scan: **no new `~` anywhere.**
+
+**One cosmetic residual, deliberately not fixed.** The refusal message shows the
+expansion with mixed separators — `C:\Users\ries/microclaw_data/gate41d_g2` —
+because `expanduser` replaces the `~` and leaves the rest of the operator's
+string alone. The *resolved* path is normalised correctly by `realpath`
+downstream, so this is display only. Showing the realpath'd target that was
+actually compared against the root would read better. Carried forward, not owed.
+
+**A residual of the gate itself:** the `~` directory used to validate G0 was
+still on M5 when the evidence was returned. Whether it holds 41b's data or is an
+empty validation stub is the operator's call, and the runbook deliberately
+proposes rather than deletes.
 
 ---
 
