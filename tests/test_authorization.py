@@ -362,8 +362,9 @@ def test_missing_allowed_presets_are_demoted_and_not_authorized(capsys):
 
 
 def test_missing_allowed_presets_on_rig_without_channel_group_get_honest_advice():
+    # The source is chosen by whether the group holds a preset, not by whether
+    # the group is listed: Core here has none, and no other channel source.
     core = Core()
-    core.get_available_config_groups = lambda: ["Auxiliary"]
     report = validate_live_rig(Controller(core), parsed(channels=["MissingPreset"]))
     message = report.diagnostics[0].message
     assert "has no Micro-Manager Channel group" in message

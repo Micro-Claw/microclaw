@@ -381,9 +381,8 @@ def _emu_channel_effects(
     declares for that exact shutter — EMU supplies the identity that was got
     wrong on M5, the declaration supplies what "on" and "off" mean.
     """
-    usable: dict[str, tuple[int, str, str, Any]] = {}
+    named: dict[str, list[tuple[int, str, str, Any]]] = {}
     unavailable: dict[str, list[str]] = {}
-    duplicated: set[str] = set()
 
     for slot, laser in sorted(lasers.items()):
         label = f"EMU laser slot {slot}"
@@ -420,17 +419,19 @@ def _emu_channel_effects(
                 "top-level `illumination.shutters`"
             ]
             continue
-        if name in usable or name in duplicated:
-            duplicated.add(name)
-            previous = usable.pop(name, None)
-            slots = sorted({slot, *( [previous[0]] if previous else [] )})
+        named.setdefault(name, []).append((slot, device, prop, shutter))
+
+    # A name shared by two slots names neither of them: which laser fires would
+    # depend on iteration order, which is how the wrong line gets armed.
+    usable = {name: slots[0] for name, slots in named.items() if len(slots) == 1}
+    for name, slots in named.items():
+        if len(slots) > 1:
             unavailable[name] = [
                 f"more than one EMU laser slot is named {name!r} (slots "
-                f"{', '.join(str(item) for item in slots)}), so the channel is "
-                "ambiguous; give each slot a distinct `Laser <n> - Name`"
+                + ", ".join(str(slot) for slot, *_rest in slots)
+                + "), so the channel is ambiguous; give each slot a distinct "
+                "`Laser <n> - Name`"
             ]
-            continue
-        usable[name] = (slot, device, prop, shutter)
 
     channels: dict[str, tuple[tuple[str, str, str], ...]] = {}
     for name, (_slot, device, prop, shutter) in usable.items():
