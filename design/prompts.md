@@ -5049,3 +5049,49 @@ passed the pin and failed every record with a tilde in its config. When a review
 round changes behaviour, the pin moves with it. 41c hit the identical thing one
 round later — its pin predated the emitter fix, so a checkout carrying the
 paraphrase would have passed. Twice in one day is a pattern, not a coincidence.
+
+
+### Block 41c mid-gate (2026-08-06) — what the rig rounds taught before the block closed
+
+41c is the first block on this checklist whose rig gates found **more defects in
+code the block did not write than in code it did**. All three were in 41b's
+exporter, reachable only from a session containing failures — and 41b's own gate
+sessions had none. Recorded now, mid-block, because the lesson is about gate
+design rather than about channels.
+
+**A gate session with no mistakes in it under-tests the exporter.** Every 41b and
+41d gate ran clean sessions, so `_recorded_tool_calls` emitting failed calls as
+successes survived five rig rounds and two merges. 41c's M5 session had three
+failures in it by accident, and the demo's had one; both exported scripts were
+wrong. The runbook now asks operators to **keep failed calls in the session**.
+Generalise it: a gate that only exercises the happy path tests less than it looks.
+
+**Two opposite runbook defects in one block.** The checklist's long-standing rule
+is "a criterion that cannot fail is not validated". 41c produced the mirror image
+as well — step 10 required a `# SKIPPED` count of exactly 2, and the honest rig
+session produced 4, so a *better* run would have been marked FAIL. Check both
+directions: can this criterion fail on known-bad, **and** can it falsely fail on
+known-good?
+
+**The refusal/skip distinction, which cost a rig round to find.** 41b's
+`# NOT EMITTED` + `raise` exists for a session that did something the script
+cannot reproduce. A call that *failed* is the opposite case: the session did
+nothing, so the faithful reproduction is to do nothing. Applying the loud refusal
+to it halted the script before the acquisition that had run. Split: nothing
+completed → skip and continue; partial completion or cannot-emit → refuse.
+The coordinator's instruction conflated the two, and the rig found it.
+
+**Twice in this block a runner overrode the coordinator and was right.** The
+rollback-class fix was specified against `applied`; the runner showed `applied`
+is empty when only *read-back* fails though the device accepted the write, and
+used accepted-writes instead — then noticed that the narrow fix would have made
+a first-write failure report a *less* severe class when rollback failed than when
+it succeeded. Both catches came from running the existing suite against the
+proposed rule rather than from reading it.
+
+**A block can make pre-existing code reachable, and then owns it.** M5 had no
+`Channel` group, so `execute_channel_plan` had never run there; design/33 Phase 4's
+rollback had never been exercised on that hardware. 41c made it reachable, the
+iChrome's serial link flaked on 2 of 4 switches, and a plan where nothing landed
+reported `SAFE STATE NOT VERIFIED`. "Pre-existing" is about authorship, not about
+who ships the consequence.
