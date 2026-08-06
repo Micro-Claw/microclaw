@@ -209,7 +209,7 @@ def test_dose_detector_passes_known_good_recorded_offline_mosaic(tmp_path):
 
     assert "# NOT EMITTED: build_stage_coordinate_mosaic" in source
     _assert_zero_mosaic_dose(source)
-    assert "Acquisition(directory='/data'" in source  # later recorded acquisition rendered
+    assert "Acquisition(directory=str(_HERE)" in source  # later acquisition rendered
 
 
 def test_set_channel_refuses_authorization_plan_instead_of_guessing(tmp_path):
@@ -259,6 +259,83 @@ def test_position_list_session_state_emits_nothing(tmp_path, name):
     assert f"# RECORDED TOOL: {name}\n# No hardware-routine effect." in source
     assert "# NOT EMITTED:" not in source
     assert result["emitted_calls"] == 0
+
+
+def _position_snapshot_records(positions):
+    return completed_call(
+        "get_position_list", {}, {"positions": positions, "count": len(positions)},
+    )
+
+
+def _named_hooked_run(names):
+    return call("run_multiposition_acquisition", {
+        "protocol": "timelapse", "position_names": names,
+        "protocol_params": {"n_frames": 1, "interval_s": 0},
+        "hook_strategy": "snr_observer", "save_dir": "/recorded/session",
+        "name": "mosaic_stack",
+    })
+
+
+def test_named_multiposition_resolves_snapshot_and_emits_session_coordinates(tmp_path):
+    positions = [
+        {"name": "pos_1", "x_um": 399.9, "y_um": 300.0, "z_um": 42.987},
+        {"name": "pos_2", "x_um": 369.9, "y_um": 330.0, "z_um": 42.987},
+        {"name": "pos_3", "x_um": 339.9, "y_um": 270.0, "z_um": 42.987},
+    ]
+    _, _, source = export(
+        tmp_path,
+        _position_snapshot_records(positions)
+        + [_named_hooked_run(["pos_1", "pos_2", "pos_3"])],
+    )
+    assert "# NOT EMITTED: run_multiposition_acquisition" not in source
+    assert "xyz_positions': [(399.9, 300.0, 42.987), (369.9, 330.0, 42.987), (339.9, 270.0, 42.987)]" in source
+
+
+def test_named_multiposition_refuses_absent_name(tmp_path):
+    records = _position_snapshot_records([
+        {"name": "pos_1", "x_um": 1, "y_um": 2, "z_um": 3},
+    ]) + [_named_hooked_run(["missing"])]
+    _, _, source = export(tmp_path, records)
+    assert "could not resolve named position 'missing' unambiguously" in source
+    assert "Acquisition(directory=" not in source
+
+
+def test_named_multiposition_refuses_conflicting_mark_after_snapshot(tmp_path):
+    records = _position_snapshot_records([
+        {"name": "pos_1", "x_um": 1, "y_um": 2, "z_um": 3},
+    ])
+    records += completed_call(
+        "mark_position", {"name": "pos_1"},
+        {"status": "Position 'pos_1' marked.", "x_um": 9, "y_um": 8,
+         "z_um": 7, "imaged": False, "stage_moved": True},
+    )
+    records += [_named_hooked_run(["pos_1"])]
+    _, _, source = export(tmp_path, records)
+    assert "could not resolve named position 'pos_1' unambiguously" in source
+    assert "xyz_positions" not in source
+
+
+@pytest.mark.parametrize("records", [
+    [call("run_timelapse", {"n_frames": 1, "interval_s": 0,
+                            "save_dir": "/recorded"})],
+    [call("run_zstack", {"z_start_um": 0, "z_end_um": 1, "z_step_um": 1,
+                         "save_dir": "/recorded"})],
+    [call("run_multiposition_acquisition", {
+        "protocol": "timelapse",
+        "positions": [{"name": "p", "x_um": 1, "y_um": 2, "z_um": 3}],
+        "protocol_params": {"n_frames": 1, "interval_s": 0},
+        "hook_strategy": "snr_observer", "save_dir": "/recorded",
+    })],
+])
+def test_every_acquisition_emitter_anchors_beside_script(tmp_path, records):
+    _, _, source = export(tmp_path, records)
+    assert "Acquisition(directory=str(_HERE)" in source
+    assert "directory='/recorded'" not in source
+
+
+def test_export_without_acquisition_does_not_define_unused_here(tmp_path):
+    _, _, source = export(tmp_path, [call("move_stage_xy", {"x_um": 1, "y_um": 2})])
+    assert "_HERE" not in source
 
 
 def test_result_derived_multiposition_refuses_incomplete_coordinates(tmp_path):

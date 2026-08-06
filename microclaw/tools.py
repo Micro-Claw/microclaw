@@ -105,7 +105,7 @@ def _emit_acquisition(
     return (
         prefix
         + f"events = multi_d_acquisition_events(**{event_args!r})\n"
-        + f"with Acquisition(directory={params['save_dir']!r}, name={params.get('name', default_name)!r}) as acq:\n"
+        + f"with Acquisition(directory=str(_HERE), name={params.get('name', default_name)!r}) as acq:\n"
         + "    acq.acquire(events)"
     )
 
@@ -154,6 +154,8 @@ def _emit_multiposition(params: RecordedParams) -> str:
             )
     positions = params.get("positions")
     if positions is None:
+        if params.get("_position_resolution_error"):
+            raise CannotEmit(params["_position_resolution_error"])
         recorded_positions = params.result.get("results", [])
         if not recorded_positions or any(
             "x_um" not in item or "y_um" not in item
@@ -212,7 +214,7 @@ def _emit_multiposition(params: RecordedParams) -> str:
         return (
             prefix
             + f"events = multi_d_acquisition_events(**{shape!r})\n"
-            + f"with Acquisition(directory={params.get('save_dir')!r}, "
+            + "with Acquisition(directory=str(_HERE), "
             f"name={params.get('name', 'multipos')!r}) as acq:\n"
             + "    acq.acquire(events)"
         )
@@ -332,6 +334,102 @@ def _recorded_tool_calls(records: list[dict]) -> list[tuple[str, RecordedParams]
     return calls
 
 
+def _position_from_result(name: str, result: dict) -> dict | None:
+    """Return a complete position delta, or None when the result is insufficient."""
+    if "x_um" not in result or "y_um" not in result:
+        return None
+    return {
+        "name": name, "x_um": result["x_um"], "y_um": result["y_um"],
+        **({"z_um": result["z_um"]} if result.get("z_um") is not None else {}),
+    }
+
+
+def _position_snapshot(result: dict, key: str) -> dict[str, dict] | None:
+    """Parse a complete, unambiguous position snapshot from a recorded result."""
+    positions = result.get(key)
+    if not isinstance(positions, list):
+        return None
+    snapshot: dict[str, dict] = {}
+    for item in positions:
+        if not isinstance(item, dict):
+            return None
+        name = item.get("name", item.get("position"))
+        position = _position_from_result(name, item) if isinstance(name, str) else None
+        if position is None or (name in snapshot and snapshot[name] != position):
+            return None
+        snapshot[name] = position
+    return snapshot
+
+
+def _resolve_recorded_position_names(
+    recorded: list[tuple[str, RecordedParams]],
+) -> None:
+    """Walk mutable position-list history and couple named runs to known state."""
+    state: dict[str, dict] | None = None
+    conflicts: set[str] = set()
+    for name, params in recorded:
+        result = params.result
+        if name == "get_position_list":
+            state = _position_snapshot(result, "positions")
+            conflicts = set()
+            if result.get("position_list_conflict"):
+                state = None
+        elif name == "validate_positions":
+            if result.get("rejected") == []:
+                state = _position_snapshot(result, "accepted")
+                conflicts = set()
+            else:
+                state, conflicts = None, set()
+        elif name == "mark_position":
+            position_name = params.get("name")
+            delta = (_position_from_result(position_name, result)
+                     if isinstance(position_name, str) else None)
+            if delta is None or "marked" not in str(result.get("status", "")).lower():
+                state, conflicts = None, set()
+            elif state is not None:
+                if position_name in state and state[position_name] != delta:
+                    conflicts.add(position_name)
+                state[position_name] = delta
+        elif name == "delete_position":
+            status = str(result.get("status", "")).lower()
+            if "deleted" in status and isinstance(params.get("name"), str):
+                if state is not None:
+                    state.pop(params["name"], None)
+                conflicts.discard(params["name"])
+            elif "cancelled" not in status and result.get("position_list_conflict") is None:
+                state, conflicts = None, set()
+        elif name == "clear_position_list":
+            status = str(result.get("status", "")).lower()
+            if "cleared" in status:
+                state, conflicts = {}, set()
+            elif "cancelled" not in status and result.get("position_list_conflict") is None:
+                state, conflicts = None, set()
+        elif name in {"load_position_list", "import_mm_positions"}:
+            status = str(result.get("status", "")).lower()
+            if ("loaded" in status or "imported" in status
+                    or ("cancelled" not in status
+                        and result.get("position_list_conflict") is None)):
+                # Their results omit coordinates, so only a later snapshot can
+                # make subsequent named-position resolution trustworthy.
+                state, conflicts = None, set()
+
+        if name != "run_multiposition_acquisition" or params.get("positions") is not None:
+            continue
+        requested = params.get("position_names")
+        if not isinstance(requested, list):
+            continue
+        failure = next((item for item in requested
+                        if not isinstance(item, str) or item in conflicts
+                        or state is None or item not in state), None)
+        if failure is not None:
+            params["_position_resolution_error"] = (
+                f"could not resolve named position {failure!r} unambiguously "
+                "from the recorded position-list state"
+            )
+        else:
+            params["positions"] = [dict(state[item]) for item in requested]
+
+
 def _analysis_source(*, include_autofocus: bool = False) -> str:
     """Return exact source for the pure-numpy analysis used by exported routines."""
     from microclaw import autofocus, image_analysis
@@ -373,6 +471,7 @@ def export_session_script(
     """Compile recorded calls to a standalone pycro-manager script."""
     path = guard.resolve_in_workspace(output_path)
     recorded = _recorded_tool_calls(records)
+    _resolve_recorded_position_names(recorded)
     analysis_used = any(
         name in {"snap_and_analyze", "run_autofocus"}
         or (name in {"run_multiposition_acquisition", "run_tile_acquisition"}
@@ -393,7 +492,6 @@ def export_session_script(
         *(["", _analysis_source(include_autofocus=autofocus_used).rstrip()]
           if analysis_used else []),
         "",
-        "_HERE = Path(__file__).resolve().parent",
         "core = Core()",
         "mm = SimpleNamespace(core=core)",
     ]
@@ -425,6 +523,9 @@ def export_session_script(
             continue
         lines.extend(rendered.splitlines())
         emitted += 1
+    if any("_HERE" in line for line in lines):
+        lines.insert(lines.index("core = Core()"),
+                     "_HERE = Path(__file__).resolve().parent")
     source = "\n".join(lines) + "\n"
     Path(path).write_text(source, encoding="utf-8")
     return {
@@ -2436,9 +2537,10 @@ def run_autofocus(
 
 # --- Position management ---
 
-# Position-list operations emit nothing because the list is session state, not a
-# standalone hardware-routine action.  A later acquisition that consumes that
-# state must carry its own resolved coordinates in its recorded result;
+# Position-list operations (including mark_position) emit nothing because the
+# list is session state, not a standalone hardware-routine action. They are also
+# inputs to named-position resolution: the exporter replays snapshots and deltas
+# so a later acquisition carries the coordinates current at that point.
 # _emit_multiposition refuses the export if it cannot recover the complete set.
 # Keep these classifications coupled to that fail-closed guard: weakening it
 # would silently turn a marked session into a positionless/partial script.
