@@ -213,11 +213,22 @@ in any worktree.
   `e5ad254`. Its G3 (transmitted light) was **not runnable on M5** and is in the
   carried-forward register, as is its unexercised position-list rollback path and
   the post-gate `f4e98c6`, which is ungated.
-- **Block 41b is pushed at `bc9aea1` and NOT merged. One thing is owed: run its
-  gate.** Four review rounds and three rig rounds are done; G1 and G2 passed on
-  M5, and the runbook (`design/41-block41b-rig-gate.md`, on the branch) now says
-  to run G1 and G3 as **one** session. **G3 has never been executed** — round 3
-  exported the script but never ran it. Do not merge until it has been run.
+- **Block 41b is pushed at `b6cc7a2` and NOT merged. One narrow thing is owed.**
+  Four review rounds and **four** rig rounds are done.
+  **G3 PASSED on M5, 2026-08-06** (`41-block4b-m5-run-round4`): the script was
+  executed with microclaw closed and stopped loudly at
+  `RuntimeError: NOT EMITTED: run_adaptive_survey`, which is exactly G3's
+  criterion — and a stronger test than planned, because it fired on a real
+  unemittable tool rather than the mosaic. **Round 4's by-name resolution is also
+  confirmed on the rig**: after `clear_position_list` + three `mark_position`
+  calls, the by-name survey emitted its true coordinates
+  `(339.7, 300.1, 42.987)` and siblings, anchored on `_HERE`.
+  **What is owed: one clean G1/G2 run on current code.** G1/G2 last passed in rig
+  round 2, on pre-`_HERE` code; round 4's script stopped at `run_adaptive_survey`
+  before reaching its acquisitions, so no script-written datasets exist to
+  compare. Run the runbook's one-session recipe **without any adaptive tool**
+  (`run_adaptive_survey`/`_zstack`/`_timelapse` all refuse by design), confirm the
+  script completes and the datasets match, then merge.
   Deliberately left unmerged rather than carried forward, because unlike block
   13's G3 this gate *is* runnable on any rig.
 - **Block 41d is new and unassigned** — `design41/path-expansion`. There is no
@@ -360,7 +371,7 @@ assistant's narration when judging whether a guard fired.
 | 8 | Nikon | 6, 7a, 7b | `design33/phase5-continuous-focus` | | | required | | |
 | 13 | Platform | 41a merged | `design40/platform-defects` (deleted) | `03dcea0` | `0c83268` + `c2fc7ab` (round 1 returned); runbook `9d2a934`; post-gate `f4e98c6` **ungated** | M5 2026-08-06 **G1/G2/G4/G5 PASS**; **G3 not runnable — no transmitted light on M5, carried forward** | `d24e721` | **done** — design/25 §"SNR validity, stated once", design/32 §"One hook contract", design/40 §"What block 13 shipped", design/41 F4/F5 |
 | 41a | Platform | none — **assign first in Track D** | `design41/session-survival` (deleted) | `b0ee300` | `501287f` + `bb58551` (round 1 returned) | n/a — no rig surface | `1fb284d` | **done** — design/16 §5 "The invariant is not about Stop"; design/41 F2/F3/F7 ticked |
-| 41b | Platform | 41a merged | `design41/script-export` | `03dcea0` | `b6ca12d` + `54882df` + `79b8f1a` + `8bfdceb` + `a763098` + `f88c728` + `5ead7cc` (4 review rounds); README `4b08f30`; runbook `10394fd`/`696874b`/`8e51676`/`bc9aea1` | M5 r1 **FAIL**; r2 **G1/G2 PASS** (stacks byte-identical, 149712 B × 3); r3 G3 exported but **never executed**. **G3 still owed — see the boundary note** | | |
+| 41b | Platform | 41a merged | `design41/script-export` | `03dcea0` | 4 review rounds through `5ead7cc`; README `4b08f30`; runbook `bc9aea1`; post-gate `b6cc7a2` **ungated** | M5 r1 **FAIL**; r2 **G1/G2 PASS** on pre-`_HERE` code; r3 exported, not executed; **r4 2026-08-06 G3 PASS** (executed, stopped loudly) + by-name resolution confirmed on the rig. **G1/G2 owed once on current code** | | |
 | 41c | Platform | 41b merged | `design41/emu-channel-plan` | | | **required** — M5 + demo | | |
 | 41d | Platform | none — may run concurrently (touches `safety.py`, disjoint from 41b) | `design41/path-expansion` | | | **required** | | |
 | 9 | Features | operator intake | `design26/generated-adapter-run-b` | | | required | | |
