@@ -202,6 +202,53 @@ a cold session resumes from the remote alone.
   concurrently with each other and with 6a — 13 is `tools.py`, 41b is the
   emitters plus `image_analysis.py`. 41c follows 41b.
 
+### State at the 2026-08-06 session boundary — read this before assigning anything
+
+Written because the session ended on credits, mid-block, and step 9's whole point
+is that a cold session resumes from the remote alone. `main` is `3d52b3d` plus
+this commit; `git log --oneline origin/main..main` is empty; no uncommitted files
+in any worktree.
+
+- **Block 13 is CLOSED.** Merged `d24e721`, gate `40-block13-m5`, design gate
+  `e5ad254`. Its G3 (transmitted light) was **not runnable on M5** and is in the
+  carried-forward register, as is its unexercised position-list rollback path and
+  the post-gate `f4e98c6`, which is ungated.
+- **Block 41b is pushed at `bc9aea1` and NOT merged. One thing is owed: run its
+  gate.** Four review rounds and three rig rounds are done; G1 and G2 passed on
+  M5, and the runbook (`design/41-block41b-rig-gate.md`, on the branch) now says
+  to run G1 and G3 as **one** session. **G3 has never been executed** — round 3
+  exported the script but never ran it. Do not merge until it has been run.
+  Deliberately left unmerged rather than carried forward, because unlike block
+  13's G3 this gate *is* runnable on any rig.
+- **Block 41d is new and unassigned** — `design41/path-expansion`. There is no
+  `expanduser` anywhere in `microclaw/`, so `~/x` is joined under the workspace
+  root as a literal directory named `~`. Found by 41b's M5 gate; the operator got
+  `C:\Users\ries\AppData\Local\microclaw\~\microclaw_data`. It predates
+  Track D (`ee7f098`, 2026-07-28) and affects **every** path-taking tool, so any
+  past session that used a `~` path has been writing into a stray `~` folder.
+  Touches only `safety.py`; may run concurrently with anything.
+- **Block 6a is still pushed and still awaiting the Nikon**, unchanged since
+  2026-08-05 at `4994f3e`. It must merge `main` before its own merge — `main` has
+  moved a long way since it branched.
+- **Track order from here:** 41b's gate → merge → 41c. 41d any time. Track B's 6
+  and 7a unblock when 6a merges.
+- **`main` measures 1525 passed / 99 skipped / 3 expected warnings, 1623
+  collected** (2026-08-06, macOS). Re-measure rather than trusting this. Judge a
+  suite by failures and collected total, and **diff collected test IDs** against
+  the branch's start commit — that check has now caught silent test loss twice.
+
+**The one process change made this session.** `CLAUDE.md` step 2 now says the
+coordinator writes the runner prompt to scratch and **offers** to start an agent,
+rather than spawning one. Blocks 13 and 41b were largely implemented by an
+operator-driven codex runner; round 4 of 41b ran in an Agent-tool runner when
+codex credits ran out. Both work; the prompt is the deliverable either way.
+
+**What actually caught defects this session**, all of it in `design/prompts.md`
+under "Blocks 13 and 41b": drive the real producer rather than reading the test,
+execute the artifact rather than compiling it, and read the session history
+rather than the artifact alone. Every single round came back green with accurate
+numbers and had a real defect in it.
+
 ### Rescoped 2026-08-05 — read this before touching Track B
 
 **Track 0 is closed and its plan did not survive contact.** The probe kit was
@@ -313,7 +360,7 @@ assistant's narration when judging whether a guard fired.
 | 8 | Nikon | 6, 7a, 7b | `design33/phase5-continuous-focus` | | | required | | |
 | 13 | Platform | 41a merged | `design40/platform-defects` (deleted) | `03dcea0` | `0c83268` + `c2fc7ab` (round 1 returned); runbook `9d2a934`; post-gate `f4e98c6` **ungated** | M5 2026-08-06 **G1/G2/G4/G5 PASS**; **G3 not runnable — no transmitted light on M5, carried forward** | `d24e721` | **done** — design/25 §"SNR validity, stated once", design/32 §"One hook contract", design/40 §"What block 13 shipped", design/41 F4/F5 |
 | 41a | Platform | none — **assign first in Track D** | `design41/session-survival` (deleted) | `b0ee300` | `501287f` + `bb58551` (round 1 returned) | n/a — no rig surface | `1fb284d` | **done** — design/16 §5 "The invariant is not about Stop"; design/41 F2/F3/F7 ticked |
-| 41b | Platform | 41a merged | `design41/script-export` | `03dcea0` | `b6ca12d` + `54882df` + `79b8f1a` + `8bfdceb` + `a763098` (3 review rounds + rig round 1); runbook `10394fd`/`696874b`/`8e51676` | M5 rig r1 **FAIL** (`mark_position` refuse + `KeyError`); r2 2026-08-06 **G1/G2 PASS** (stacks byte-identical, 149712 B × 3), **G3 not exercised**, one finding: emitter uses the raw input path | | |
+| 41b | Platform | 41a merged | `design41/script-export` | `03dcea0` | `b6ca12d` + `54882df` + `79b8f1a` + `8bfdceb` + `a763098` + `f88c728` + `5ead7cc` (4 review rounds); README `4b08f30`; runbook `10394fd`/`696874b`/`8e51676`/`bc9aea1` | M5 r1 **FAIL**; r2 **G1/G2 PASS** (stacks byte-identical, 149712 B × 3); r3 G3 exported but **never executed**. **G3 still owed — see the boundary note** | | |
 | 41c | Platform | 41b merged | `design41/emu-channel-plan` | | | **required** — M5 + demo | | |
 | 41d | Platform | none — may run concurrently (touches `safety.py`, disjoint from 41b) | `design41/path-expansion` | | | **required** | | |
 | 9 | Features | operator intake | `design26/generated-adapter-run-b` | | | required | | |
