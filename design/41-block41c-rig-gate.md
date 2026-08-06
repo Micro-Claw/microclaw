@@ -206,9 +206,31 @@ Select-String -Path $S -Pattern 'Laser 1: 1. Enable' -SimpleMatch | Measure-Obje
 — **PASS is 2 or more** (each channel writes it). The exported script must
 contain the *reversed* pair, because that is what actually ran.
 
-Run the exported script with microclaw closed and MMStudio running; it should
-perform the switches and acquisitions, and stop only where 41b's approved
-refusals stop it.
+**Dose.** Count the acquisitions the script would run, and compare it against the
+acquisitions that actually *completed* in the session — not the ones you asked
+for:
+
+```powershell
+Select-String -Path $S -Pattern 'acq.acquire(events)' -SimpleMatch -AllMatches |
+  ForEach-Object { $_.Matches } | Measure-Object | Select-Object -ExpandProperty Count
+```
+
+**PASS** when it equals the number of acquisitions that completed. Count the
+datasets on disk to get that number; do not count from memory.
+
+> This is the check the first M5 run of this gate failed. The session made five
+> `run_multiposition_acquisition` calls, of which **two** completed — two failed
+> on trigger arming and one was refused by the channel-axis guard — and the
+> export emitted **all five**. Run standalone it would have imaged every position
+> five times instead of twice, 2.5× the session's dose on a bleaching sample. A
+> call that did not succeed is now `# NOT EMITTED` with its reason, including a
+> partly-completed one, so this count should now match. If it does not, that is
+> the same defect and the script is the evidence — keep it.
+
+Then run the exported script with microclaw closed and MMStudio running; it
+should perform the switches and the acquisitions that completed, and stop loudly
+at the first step microclaw refused to emit. **Stopping there is a PASS** —
+running past it is not.
 
 ---
 
@@ -304,7 +326,15 @@ For each of G1–G3 write **PASS**, **FAIL**, or **SKIPPED (reason)**, and paste
 - **which Demo presets you used in G2, and whether one carried a camera
   exposure** — a G2 run with no Float effect has not tested the read-back
   tolerance, and should be recorded as SKIPPED for that part rather than PASS;
+- **the acquisition count from the script beside the number of datasets on
+  disk**, for the dose check in G1;
 - the exported scripts themselves, and the output of running each one.
+
+If any tool call failed during the session — a refusal, a trigger that was not
+armed, a position that did not complete — **say so and keep it in the run**. A
+session with failures in it is more valuable evidence than a clean one: the
+export defect above was invisible across every earlier gate precisely because
+those sessions had none.
 
 Say which rig each step ran on. A step you could not run is not a pass. If a step
 fails, **keep the artifacts exactly as they are** and re-test into a new folder

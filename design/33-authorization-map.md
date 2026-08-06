@@ -1116,10 +1116,46 @@ way through, rather than shipped and filed. Making the acquisition *axis* itself
 EMU-sourced would mean switching channels from inside an event hook, and is not
 part of this block.
 
+**Two findings from the M5 gate, 2026-08-06.** The channel work passed on
+hardware — four named channels where the rig used to report none, the reversed
+slot order right, two switches through the plan with zero raw writes to a laser
+enable, and exactly one illumination confirmation per switch, on the enable. Two
+defects came back with it, both in the export half:
+
+- **A failed call was exported as a successful step.** The session made five
+  `run_multiposition_acquisition` calls; two completed, two failed on trigger
+  arming, one was refused by the channel-axis guard above. The export emitted all
+  five, so the standalone script would have imaged each position **five times
+  instead of twice** — 2.5× the session's dose on a bleaching sample — and then
+  driven a channel axis the rig cannot drive. `_recorded_tool_calls` attaches a
+  result to every recorded `tool_use` and never asks whether it succeeded; this
+  is 41b code, invisible there only because those gate sessions contained no
+  failures. `_recorded_failure` now states the rule once, structurally: a
+  top-level `error` (how `execute_tool` reports both a refusal and a raised
+  exception), or per-item `error` entries inside a top-level list (how a
+  part-completed acquisition reports itself). The `status` prose — "0/3 positions
+  completed." — is a symptom and is deliberately not parsed, and only the exact
+  key `error` counts, because `error_um` is a measurement a *successful* move
+  reports. **Partial success refuses like total failure**: emitting the whole
+  loop re-images what did complete, emitting only what worked silently changes
+  what the routine does, and the record cannot say which the operator wanted.
+  Both are reconstructions, so it gets the refusal — the same rule 41b applied to
+  the offline mosaic and to adaptive runs, now applied to its own gap.
+- **The model was offered channels it could not use.** A session with
+  `channels.allowed: []` was told the rig had four channels and then refused when
+  it set one. The guard was right; the report was not. `get_available_channels`
+  now also returns `authorized` whenever the allowlist restricts the offered set.
+  The allowlist is untouched and remains the only authority — the report asks
+  `guard.check_channel` rather than re-reading config, so the two cannot
+  disagree — and `channels` still lists what the rig has, so no rig reality is
+  hidden. This is a reporting fix, not an allowlist redesign; the split between
+  "what exists" and "what is permitted" is pre-existing and 41c only made it
+  visible, because on M5 the list used to be empty anyway.
+
 **Evidence.** Offline, replayed against the captured M5 `config.uicfg` in
 `tests/fixtures/`, plus the captured 2026-08-05 M5 session history against which
-the gate checker was validated (see the runbook). No *hardware* behaviour here is
-rig-verified; `design/41-block41c-rig-gate.md` is the gate.
+the gate checker was validated (see the runbook), plus the 2026-08-06 M5 gate run
+recorded above. `design/41-block41c-rig-gate.md` is the gate.
 
 ## The illumination gate is inert on an undeclared light source (2026-07-29)
 
