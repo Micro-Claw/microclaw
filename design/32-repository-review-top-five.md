@@ -1311,3 +1311,61 @@ preflight and the runner cannot disagree.
 The rule that generalises: a preflight may only claim what it *ran*. A message
 naming a contract the checker did not evaluate is worse than no message, because
 it is believed.
+
+## The path-normalisation contract (block 41d)
+
+**Problem.** There was no `expanduser` anywhere in `microclaw/`. `~/x` is not
+absolute, so `resolve_in_workspace` joined it under the workspace root as an
+ordinary segment. Block 41b's M5 gate asked for
+`~/microclaw_data/multipos_3sites` and got
+`C:\Users\ries\AppData\Local\microclaw\~\microclaw_data\multipos_3sites` — a
+literal directory named `~`, in a place the operator would not look. This dates
+to `ee7f098` (2026-07-28) and affected **every** path-taking tool, so any past
+session that used a `~` path wrote into a stray `~` folder.
+
+**Decision — expand, then confine; refuse rather than pass through.**
+`_expand_home` (`safety.py`) is the one place microclaw decides what `~` means.
+
+- **Expand, not refuse and not literalise.** Literalising is what the defect
+  did and is the worst of the three: silent, and wrong somewhere invisible.
+  Refusing `~` outright would be safe but hostile — operators type it.
+- **Expansion happens before the confinement check, never after and never as a
+  way around it.** `resolve_in_workspace` still realpath-resolves and still
+  refuses anything outside the configured root.
+- **An expansion that escapes a configured workspace is a refusal that names
+  both the root and the expansion**: `Path '~/x' (expanded to '/home/u/x')
+  escapes the configured workspace directory (/data)`. With a root configured,
+  `~` usually *does* land outside it, and "escapes" is unreadable unless the
+  operator is told what their `~` became.
+- **An expansion that cannot resolve is refused, not passed through.**
+  `os.path.expanduser` returns its input **unchanged** when it has no home — a
+  missing `USERPROFILE`/`HOMEDRIVE`+`HOMEPATH` on Windows, an unknown `~user`
+  on POSIX. Returning that is the same defect with a different cause, so a
+  still-leading `~` after expansion raises `SafetyViolation`. This is the
+  Windows-specific hole, and the rig is Windows.
+- **Only a leading `~` is touched**, matching `expanduser`: `a/~b/c` and
+  `/data/~tmp` are ordinary paths and are returned unchanged. A directory
+  genuinely named `~b` still works.
+- **The configured root is expanded through the same helper**, so
+  `workspace_dir: ~/data` in `safety_config.yaml` is not the same defect one
+  level up.
+
+**`resolve_readable_path` is deliberately unconfined, and still normalised.**
+Local reads are not confined by `workspace_dir` — that is on purpose and
+unchanged. But they take the identical `_expand_home`, so `~` means one thing
+across the package. Expansion is normalisation, not confinement: a literal `~`
+segment on a read reads the wrong file just as surely as it writes one. The two
+resolvers may differ *only* in confinement.
+
+**Evidence.** `tests/test_safety.py::TestHomeExpansion` — 11 tests, both
+resolvers, asserting the whole resolved string and that no component equals
+`~`. A prefix-only assertion would have passed on the defect, because the
+defective path started with the workspace root too. 9 of the 11 fail on the
+pre-fix code; the 2 that pass are the `a/~b/c` non-mangling cases, which must
+hold in both directions. Home is monkeypatched (`HOME` and `USERPROFILE`), and
+the unresolvable case is exercised by patching `expanduser` to the identity so
+the Windows pass-through is tested on any platform.
+
+The rule that generalises: a normalisation that silently returns its input on
+failure is not a normalisation. If `~` cannot be resolved, say so — do not
+create the directory the operator did not ask for.
