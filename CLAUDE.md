@@ -28,6 +28,25 @@ replacement for it.
   a user can walk away with a script that runs without Microclaw. Reject designs
   that depend on Microclaw-only runtime state to execute an acquisition.
 
+  This is implemented: `export_session_script` (block 41b, merged 2026-08-06)
+  walks the session record and emits each call through an `@emits` renderer that
+  lives **next to the tool it emits, never in a registry**. Analysis is inlined
+  from source with `inspect.getsource`, so the emitted `snr()` *is* the one that
+  ran. Three things are **not** emittable, and refuse with a reason rather than
+  guessing: the offline mosaic (its dependencies reach the package calibration
+  module, so inlining would not be standalone), adaptive runs (their events are
+  chosen at runtime by a hook — emitting the positions one happened to visit
+  would silently turn an adaptive run into a fixed one), and `set_channel` under
+  an authorization map (block 41c owns making that emittable). A tool with no
+  emitter emits `# NOT EMITTED: <tool>` and a loud `RuntimeError`; a plausible
+  fabrication of a step is the defect being fixed, not a fallback.
+
+  **If you add a helper to `image_analysis`, the exporter must inline it.**
+  `test_emitted_analysis_defines_every_name_it_uses` enforces this. It exists
+  because block 13 added `snr_validity()` while 41b was in flight: both branches
+  were green alone and, merged, every exported script raised `NameError` at
+  runtime on the rig.
+
 ## Engineering principles
 
 - **Fold into what exists.** Before writing a new function, look for the one

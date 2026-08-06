@@ -4972,3 +4972,31 @@ A note on specs: round 4's runner overrode the spec twice, and was right both
 times — it deleted `conflicts` once nothing could populate it, and declined to
 add a new refusal the spec had suggested in passing. A runner that argues with a
 loose instruction is doing the job.
+
+
+### The merge is a test, and it found the defect five rig rounds did not
+
+Blocks 13 and 41b ran concurrently and were merged a day apart. Each was green on
+its own branch, gated on M5, and closed out. **Merged, they were broken.** Block
+13 added `snr_validity()` to `image_analysis`; `compute_stats` began calling it;
+41b inlines a hand-listed set of helpers into every exported script and did not
+know. The result was `NameError: name 'snr_validity' is not defined` — thrown not
+in CI but *on the microscope*, in a standalone script with no microclaw around to
+explain it.
+
+Nothing in either block's process could have caught it. Both suites passed, both
+collected-ID diffs were clean, both rig gates passed. It surfaced because the
+coordinator ran the suite **on the merge result before pushing** — which is worth
+making a habit rather than a coincidence: when two blocks touch the same module,
+merge locally, run the suite, and only then push.
+
+The fix that matters is not the added helper but
+`test_emitted_analysis_defines_every_name_it_uses`: a structural invariant —
+every global the inlined analysis references must be defined in the emitted
+source — rather than a longer hand-maintained list. The list was the defect. This
+is the same lesson as the hook-contract single validator in design/32: when a
+rule is restated in two places, encode the rule, not the restatement.
+
+A smaller note in the same vein: the guard's first draft failed on `w`, a tuple
+unpacking target its scope walk missed. The *test* was wrong, not the code.
+Collecting every `Store`-context name is the version that holds.
