@@ -6,9 +6,9 @@ from types import SimpleNamespace
 import pytest
 
 from microclaw.authorization import (
-    AuthorizationEntry, AuthorizationMap, ChannelPlanPartialApplicationError,
-    ChannelPlanSafeStateError, RigAuthorizationError, _expansion_hash,
-    execute_channel_plan,
+    AuthorizationEntry, AuthorizationMap, ChannelPlanError,
+    ChannelPlanPartialApplicationError, ChannelPlanSafeStateError,
+    RigAuthorizationError, _expansion_hash, execute_channel_plan,
 )
 from microclaw.tools import set_device_property
 from microclaw.safety import (
@@ -128,17 +128,88 @@ def test_float_reformat_is_equal_and_wrong_value_fails():
         execute_channel_plan(ctrl, make_guard(exposure=20), "P")
 
 
-@pytest.mark.parametrize("failure", [1, 2, 3])
-def test_failure_after_each_position_rolls_back_and_stops(failure):
+@pytest.mark.parametrize("failure,expected", [
+    # The first write raising means nothing reached the device, so this is the
+    # base class -- not a *partial* application of a plan that applied nothing.
+    (1, ChannelPlanError),
+    (2, ChannelPlanPartialApplicationError),
+    (3, ChannelPlanPartialApplicationError),
+])
+def test_failure_after_each_position_rolls_back_and_stops(failure, expected):
     effects = [(f"D{i}", "Label", f"new{i}") for i in range(3)]
     originals = {(d, p): f"old{i}" for i, (d, p, _) in enumerate(effects)}
     core, ctrl, guard = categorical_plan(effects, originals)
     core.fail_on = failure
-    with pytest.raises(ChannelPlanPartialApplicationError, match="rolled_back"):
+    with pytest.raises(expected, match="rolled_back") as caught:
         execute_channel_plan(ctrl, guard, "P")
+    # Assert the exact rung of the ladder: `expected` alone would pass on a
+    # subclass, which is the confusion this parametrisation exists to catch.
+    assert isinstance(caught.value, ChannelPlanPartialApplicationError) == (failure > 1)
     assert core.values == originals
     assert all(("set", f"D{i}", "Label", f"new{i}") not in core.calls
                for i in range(failure, 3))
+
+
+def test_first_write_rejected_twice_does_not_claim_an_unverified_safe_state():
+    """M5 gate round 2, 2026-08-06, hit twice in four channel switches.
+
+        ChannelPlanSafeStateError: Channel plan '640' stopped after 0/4 writes:
+        Cannot set property "Laser 4: 1. Enable" to "0" [ ... Serial timeout
+        occurred. (17) ]; applied=[]; attempted=['...Laser 4: 1. Enable'];
+        rolled_back=[]; SAFE STATE NOT VERIFIED; rollback_failures=[...]
+
+    The first write raised, so nothing reached the device. The rollback then
+    tried to re-write that same property -- the command that had just timed out
+    -- it timed out again, and the executor escalated to its loudest possible
+    error about a plan in which nothing had changed. The rollback iterated
+    `attempted`, which includes the write that raised.
+    """
+    effects = [(f"D{i}", "Label", "new") for i in range(4)]
+    core, ctrl, guard = categorical_plan(
+        effects, {(d, p): "old" for d, p, _ in effects})
+    # The device refuses this property in both directions, as a dead link does.
+    def refuse(d, p, v):
+        core.calls.append(("set", d, p, str(v)))
+        if d == "D0":
+            raise RuntimeError('Cannot set property "Label": Serial timeout occurred. (17)')
+        core.values[(d, p)] = str(v)
+    core.set_property = refuse
+
+    with pytest.raises(ChannelPlanError) as caught:
+        execute_channel_plan(ctrl, guard, "P")
+
+    message = str(caught.value)
+    assert "SAFE STATE NOT VERIFIED" not in message
+    assert not isinstance(caught.value, ChannelPlanPartialApplicationError)
+    assert "NO WRITE REACHED THE DEVICE" in message
+    assert "applied=[]" in message
+    # It still reports the failed restore, just not as a safe-state failure.
+    assert "could not be restored either" in message
+    assert "Serial timeout" in message
+    assert core.values == {(d, p): "old" for d, p, _ in effects}
+
+
+def test_rollback_failure_after_writes_landed_still_reports_unverified_safe_state():
+    """The other direction: two writes land, the third fails, rollback fails.
+
+    This is the case ChannelPlanSafeStateError exists for -- a verified change
+    is still on the rig and could not be undone -- and narrowing the class above
+    must not weaken it.
+    """
+    effects = [(f"D{i}", "Label", "new") for i in range(3)]
+    core, ctrl, guard = categorical_plan(
+        effects, {(d, p): "old" for d, p, _ in effects})
+    core.fail_on = 3                       # D0 and D1 land, D2 raises
+    core.fail_rollback = ("D0", "Label", "old")
+
+    with pytest.raises(ChannelPlanSafeStateError) as caught:
+        execute_channel_plan(ctrl, guard, "P")
+
+    message = str(caught.value)
+    assert "SAFE STATE NOT VERIFIED" in message
+    assert "stopped after 2/3 writes" in message
+    assert "rollback_failures=['D0.Label" in message
+    assert core.values[("D0", "Label")] == "new"   # the change that stayed
 
 
 def test_failing_rollback_reports_unverified_safe_state():

@@ -164,7 +164,12 @@ CHANNEL_CONFIG_GROUP = "Channel"
 
 
 class ChannelPlanError(RuntimeError):
-    """A captured channel plan could not be safely completed."""
+    """A captured channel plan could not be safely completed.
+
+    Raised on its own when **no** write was verified as applied, which is the
+    least severe outcome: the plan stopped without completing a channel change.
+    The two subclasses below are strictly worse, in that order.
+    """
 
 
 class ChannelPlanPartialApplicationError(ChannelPlanError):
@@ -172,7 +177,7 @@ class ChannelPlanPartialApplicationError(ChannelPlanError):
 
 
 class ChannelPlanSafeStateError(ChannelPlanPartialApplicationError):
-    """Rollback itself failed, so the executor cannot claim a clean state."""
+    """Rollback of a write that landed failed; no clean state can be claimed."""
 
 
 @dataclass(frozen=True)
@@ -1668,29 +1673,42 @@ def execute_channel_plan(
     originals = [str(ctrl.core.get_property(device, prop)) for device, prop, _ in effects]
     attempted: list[tuple[str, str, str]] = []
     applied: list[tuple[str, str, str]] = []
+    # How many writes the device accepted without raising. `applied` is the
+    # subset that also verified, so these differ by at most one: the write whose
+    # wait or read-back failed. A set that *raised* never reached the device; a
+    # set that returned did, whatever the read-back then said. Rollback
+    # bookkeeping needs that distinction, not just `applied`.
+    accepted = 0
     try:
         for device, prop, value in effects:
             if _cancelled(cancel):
                 raise ChannelPlanError("Channel plan cancelled between writes.")
             attempted.append((device, prop, value))
             ctrl.core.set_property(device, prop, value)
+            accepted += 1
             _wait_for_plan_device(ctrl.core, device)
             _verify_property(ctrl.core, device, prop, value)
             applied.append((device, prop, value))
     except Exception as exc:
         rolled_back: list[str] = []
         rollback_failures: list[str] = []
+        unrestored: list[str] = []
         for index in range(len(attempted) - 1, -1, -1):
             device, prop, _ = attempted[index]
+            # Did this write reach the device at all? A set that returned did,
+            # even if its read-back then failed. A set that raised did not, and
+            # restoring it is still worth attempting -- it may have taken effect
+            # in part -- but failing to restore it is NOT evidence that a change
+            # was left behind, and must not be reported as one.
+            landed = index < accepted
             try:
                 ctrl.core.set_property(device, prop, originals[index])
                 _wait_for_plan_device(ctrl.core, device)
                 _verify_property(ctrl.core, device, prop, originals[index])
                 rolled_back.append(f"{device}.{prop}")
             except Exception as rollback_exc:
-                rollback_failures.append(
-                    f"{device}.{prop}: {_clean_exception_message(rollback_exc)}"
-                )
+                detail = f"{device}.{prop}: {_clean_exception_message(rollback_exc)}"
+                (rollback_failures if landed else unrestored).append(detail)
         applied_names = [f"{d}.{p}" for d, p, _ in applied]
         attempted_names = [f"{d}.{p}" for d, p, _ in attempted]
         message = (
@@ -1698,9 +1716,28 @@ def execute_channel_plan(
             f"{_clean_exception_message(exc)}; applied={applied_names}; "
             f"attempted={attempted_names}; rolled_back={rolled_back}"
         )
+        if unrestored:
+            message += (
+                f"; the failing write could not be restored either ({unrestored}) "
+                "-- that restore only rewrites the value the property already held, "
+                "so if the write did not take effect nothing changed, and if it "
+                "partly did, that one property is the only one in doubt"
+            )
+        # A rollback failure on a write that *landed* is the case this class
+        # exists for: a verified change is still on the rig and could not be
+        # undone. Keep it exactly as loud as it was.
         if rollback_failures:
             raise ChannelPlanSafeStateError(
                 message + f"; SAFE STATE NOT VERIFIED; rollback_failures={rollback_failures}"
+            ) from exc
+        # No write reached the device, so this is neither a partial application
+        # nor an unverified safe state. M5 gate, 2026-08-06: the first write of a
+        # four-write plan hit a serial timeout, the rollback of that same
+        # never-accepted write timed out identically, and the operator was told
+        # "SAFE STATE NOT VERIFIED" about a plan that changed nothing.
+        if accepted == 0:
+            raise ChannelPlanError(
+                message + "; NO WRITE REACHED THE DEVICE, so no channel change was made"
             ) from exc
         raise ChannelPlanPartialApplicationError(message) from exc
 
