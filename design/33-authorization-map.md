@@ -1048,11 +1048,39 @@ ChannelSource(kind, names, effects, unavailable, problems).expand(core, channel)
   is stated in `get_available_channels`, in `set_channel`'s result, and in the
   refusal text.
 - **Every other named slot goes to its declared `off_value` first, then the
-  target to its `on_value`.** Unconditional, like a preset: the same channel
-  always produces the same writes, so `channel_expansion_hashes` and
-  `expansion_drift` keep meaning. Off-before-on is the order that never has two
-  lines armed at once, and leaves less light on the sample if a write fails
-  mid-plan. The hand-written M5 sequence armed first; the end state is identical.
+  target to its `on_value`.** Unconditional, like a preset. Off-before-on is the
+  order that never has two lines armed at once, and leaves less light on the
+  sample if a write fails mid-plan. The hand-written M5 sequence armed first; the
+  end state is identical.
+
+  **Why unconditional, re-examined after the M5 serial timeouts (2026-08-06).**
+  A four-laser rig does three redundant writes before the one that matters, and
+  on M5 the first of them — `Laser 4: 1. Enable` on a laser already off — is
+  where both timeouts landed. The trade is worth restating because the reason
+  first given here was wrong: it was *not* hash stability. `channel_expansion_hashes`
+  and `expansion_drift` are computed from the **plan**, before execution, so
+  skipping a write at apply time would not disturb them at all.
+
+  The load-bearing reason is **emittability**. `originals` is already read for
+  every effect, so skipping writes already at their target would save the
+  set/wait/verify round trips — three per redundant slot, nine per switch on M5,
+  on a link that demonstrably flakes. But the executed effect list is what the
+  script exporter emits. Skip conditionally and the emitted script becomes a
+  function of that day's starting state: a session that skipped "slot 0 off"
+  because it was already off exports a script that omits it, and run later with
+  slot 0 on, that script images with two lasers. That is a dose defect in the
+  standalone artifact — exactly what design/41 F1 and this block exist to remove.
+  Emitting the full plan while executing a subset is worse still: it emits writes
+  that did not run, which is the reconstruction the whole exporter forbids.
+
+  **So it stays unconditional**, and the redundant writes are the price of a
+  channel that is definitive from any starting state and of a script that
+  reproduces it. If the round trips ever have to come down, the honest levers are
+  (a) shrink the *plan* rather than the execution — which needs an operator
+  declaration of which slots form the channel set, rejected here for the same
+  reason the filter association was — or (b) retry with backoff at the device
+  layer, which addresses a flaky serial link directly instead of by writing to it
+  less. (b) is the better lever and belongs with the device layer, not here.
 - **EMU supplies identity, the safety config supplies values.** A slot whose
   enable pair is not declared under `illumination.shutters` is not offered as a
   channel. The executor's illumination routing is therefore reached exactly as
@@ -1202,10 +1230,59 @@ Two defects came back, both in the export half:
   "what exists" and "what is permitted" is pre-existing and 41c only made it
   visible, because on M5 the list used to be empty anyway.
 
+### The rollback reported an unverified safe state for a plan that changed nothing
+
+M5 gate round 2, 2026-08-06, hit in **2 of 4** channel switches. Phase 4 code,
+but unreachable on M5 before block 41c — no `Channel` group meant no plan ever
+executed there — so 41c is what ships it to a rig whose iChrome serial link
+flakes, and it is fixed here.
+
+```
+ChannelPlanSafeStateError: Channel plan '640' stopped after 0/4 writes:
+Cannot set property "Laser 4: 1. Enable" to "0" [ ... Serial timeout occurred. (17) ];
+applied=[]; attempted=['iChrome-MLE-TCP.Laser 4: 1. Enable']; rolled_back=[];
+SAFE STATE NOT VERIFIED; rollback_failures=[... Serial timeout occurred. (17)]
+```
+
+The first write raised, so nothing reached the device. The rollback loop iterated
+**`attempted`**, which includes the write that raised, and tried to re-write that
+property to its original — the same command that had just timed out. It timed out
+again, and any rollback failure escalated the result to the loudest error the
+executor has, about a plan in which nothing had changed. The evidence contradicting
+the headline was in the same string: `applied=[]`.
+
+**The fix is in the bookkeeping, not in the attempt.** A write that raised may
+still have partly taken effect, so trying to restore it stays. What changed is the
+conclusion drawn when that restore fails. The executor now counts writes the device
+**accepted** — `set_property` returned, whatever the read-back then said — and a
+rollback failure is a safe-state failure only for a write that reached the device.
+That gives a strict severity ladder:
+
+| condition | class |
+| --- | --- |
+| no `set_property` returned — nothing reached the device | `ChannelPlanError` (base), `NO WRITE REACHED THE DEVICE` |
+| writes reached the device, all rollbacks verified | `ChannelPlanPartialApplicationError` |
+| a write that reached the device could not be rolled back | `ChannelPlanSafeStateError`, `SAFE STATE NOT VERIFIED` |
+
+`accepted`, not `applied`, is the discriminator, and the distinction is real: a
+**read-back** failure means the device took the command and returned the wrong
+value, so that state *did* change and stays a partial application. Only a set that
+raised means nothing arrived. The unrestorable never-accepted write is still
+reported, with the reasoning stated inline — the restore would only have rewritten
+the value already held, so if the write did not take effect nothing changed, and if
+it partly did, that one property is the only one in doubt.
+
+This also removed an inversion: before, a first-write failure with a *clean*
+rollback raised `ChannelPlanPartialApplicationError` while the same failure with a
+failed rollback would now raise the base class — a less severe class for a worse
+situation. Class is now chosen by `accepted` alone, so the ladder is monotone.
+`hint_for_error` gains the matching operator hint, so the base class does not fall
+through to a generic one.
+
 **Evidence.** Offline, replayed against the captured M5 `config.uicfg` in
 `tests/fixtures/`, plus the captured 2026-08-05 M5 session history against which
-the gate checker was validated (see the runbook), plus the 2026-08-06 M5 gate run
-recorded above. `design/41-block41c-rig-gate.md` is the gate.
+the gate checker was validated (see the runbook), plus the 2026-08-06 M5 and demo
+gate runs recorded above. `design/41-block41c-rig-gate.md` is the gate.
 
 ## The illumination gate is inert on an undeclared light source (2026-07-29)
 

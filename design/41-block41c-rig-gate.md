@@ -109,10 +109,32 @@ start. This is G3's baseline and you cannot recover it later.
 9. **Refusals, last.** In this order:
    - ask for an acquisition **passing `channel='640'`** — it must **refuse**,
      saying this rig cannot drive a channel axis and to call `set_channel` first;
-   - ask for `set_channel('DAPI')` — it must **refuse**, naming the EMU laser map
-     and listing the four real names.
+   - ask for `set_channel('DAPI')` — it must **refuse** and name the four real
+     channels.
 
    A refusal here is a **PASS**. Paste both messages.
+
+   **A `set_channel` that fails on a serial timeout is also worth pasting.** On
+   2026-08-06 two of four switches raised `ChannelPlanSafeStateError ... SAFE
+   STATE NOT VERIFIED` for plans where `applied=[]` — nothing had been written.
+   That is fixed: a plan where no write reaches the device now reports
+   `NO WRITE REACHED THE DEVICE` and does **not** claim an unverified safe state.
+   If you see `SAFE STATE NOT VERIFIED` on this rig, check whether the same
+   message says `applied=[]`; if it does, that is the defect returning.
+
+   > **What the second refusal does and does not test.** With a non-null
+   > `channels.allowed`, it comes from `guard.check_channel` — *"Channel 'DAPI'
+   > is not in the allowed list: ['405','488','561','640']"* — which fires in
+   > `set_channel` **before** `execute_channel_plan` and therefore before
+   > `authorize_channel` ever runs. That is correct, and it does list the four
+   > real names, but the EMU-source explanation added to `authorize_channel` is
+   > **not** exercised by it, and on any rig with a non-null allowlist an unknown
+   > name can never reach it. Do not read this step as having covered that path.
+   >
+   > To reach it, either run once with `channels.allowed` **absent** and ask for
+   > a bogus channel, or leave in `channels.allowed` a name the EMU map does not
+   > offer (an unnamed slot's, say) and ask for that. Both make `check_channel`
+   > pass and `authorize_channel` refuse. Optional — say whether you did it.
 10. **Export the session a second time**, to a different filename, now that it
     contains two refused calls. Note that path too.
 
