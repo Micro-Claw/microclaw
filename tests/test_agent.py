@@ -449,6 +449,21 @@ class TestRunAgentIter:
         assert messages is original
         assert [m["role"] for m in messages] == ["user", "user", "assistant"]
 
+    def test_tool_dispatch_injects_the_live_append_only_record(self, mock_ctrl, guard):
+        messages = []
+        seen = {}
+
+        def execute(*args, records=None, **kwargs):
+            seen["records"] = records
+            return json.dumps({"status": "ok"})
+
+        scripted = [tool_use_response("get_xy_position", {}), text_response("done")]
+        with patch("microclaw.agent.execute_tool", side_effect=execute):
+            self._drain(scripted, messages, mock_ctrl, guard)
+
+        assert seen["records"] is messages
+        assert messages[1]["content"][0].name == "get_xy_position"
+
     def test_closing_the_generator_mid_round_orphans_a_tool_use(self, mock_ctrl, guard):
         """Why webserve runs the turn to completion on its own thread.
 

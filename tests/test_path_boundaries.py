@@ -77,6 +77,7 @@ def test_all_write_and_serve_owners_remain_on_the_confined_resolver():
             "_prepare_log_path", "run_adaptive_zstack", "run_adaptive_timelapse",
             "_acquire_positions_with_hook", "_acquire_survey_with_detector",
             "inspect_artifacts", "calibrate_snr_threshold", "run_mda",
+            "export_session_script",
         },
         "microclaw/hooks.py": set(),
         "microclaw/webserve.py": {"build_app"},

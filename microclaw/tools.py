@@ -53,6 +53,495 @@ from microclaw.dataset_mosaic import MosaicFrameShape, MosaicGeometry, assemble_
 logger = logging.getLogger(__name__)
 
 
+def emits(renderer: Callable[[dict[str, Any]], str]):
+    """Attach a source renderer to the tool whose call it reproduces."""
+    def decorate(fn):
+        fn._microclaw_emitter = renderer
+        return fn
+    return decorate
+
+
+def emits_nothing(fn):
+    """Mark a tool whose recorded call has no hardware-routine effect."""
+    fn._microclaw_emits_nothing = True
+    return fn
+
+
+def refuses(reason: str):
+    """Attach the architectural reason a tool cannot emit itself."""
+    def decorate(fn):
+        fn._microclaw_refusal_reason = reason
+        return fn
+    return decorate
+
+
+class CannotEmit(RuntimeError):
+    """A tool knows that its recorded call has no standalone representation."""
+
+
+class RecordedParams(dict):
+    """Recorded input with the matching append-only tool result attached."""
+
+    def __init__(self, params: dict, result: dict | None = None):
+        super().__init__(params)
+        self.result = result or {}
+
+
+def _emit_acquisition(
+    shape: dict[str, Any], params: dict[str, Any], default_name: str
+) -> str:
+    """Render the pycro-manager primitive used by the adjacent acquisition tools."""
+    event_args = dict(shape)
+    channel = params.get("channel")
+    exposure = params.get("exposure_ms")
+    if channel:
+        from microclaw.authorization import CHANNEL_CONFIG_GROUP
+        event_args.update(channel_group=CHANNEL_CONFIG_GROUP, channels=[channel])
+        if exposure is not None:
+            event_args["channel_exposures_ms"] = [exposure]
+    prefix = ""
+    if not channel and exposure is not None:
+        prefix = f"core.set_exposure({exposure!r})\n"
+    return (
+        prefix
+        + f"events = multi_d_acquisition_events(**{event_args!r})\n"
+        + f"with Acquisition(directory=str(_HERE), name={params.get('name', default_name)!r}) as acq:\n"
+        + "    acq.acquire(events)"
+    )
+
+
+def _emit_snap_and_analyze(params: RecordedParams) -> str:
+    min_snr = params.result.get(
+        "min_snr", __import__("microclaw.image_analysis", fromlist=[
+            "UNCALIBRATED_MIN_SNR_FALLBACK"
+        ]).UNCALIBRATED_MIN_SNR_FALLBACK,
+    )
+    return (
+        "image = snap_to_numpy(mm)\n"
+        f"stats = compute_stats(image, min_snr={min_snr!r})"
+    )
+
+
+def _emit_autofocus(params: RecordedParams) -> str:
+    signature = inspect.signature(run_autofocus)
+    method = params.get("method", signature.parameters["method"].default)
+    settle = params.get("settle_ms", signature.parameters["settle_ms"].default)
+    return (
+        "autofocus_result = _run_autofocus_passes("
+        f"mm, {params['z_range_um']!r}, {params['z_step_um']!r}, "
+        f"{method!r}, {settle!r})"
+    )
+
+
+def _emit_go_to_position(params: RecordedParams) -> str:
+    result = params.result
+    if "x_um" not in result or "y_um" not in result:
+        raise CannotEmit("the recorded result has no resolved XY coordinates")
+    lines = [f"core.set_xy_position({result['x_um']!r}, {result['y_um']!r})"]
+    if result.get("z_um") is not None:
+        lines.append(f"core.set_position({result['z_um']!r})")
+    return "\n".join(lines)
+
+
+def _emit_multiposition(params: RecordedParams) -> str:
+    hook = params.get("hook_strategy")
+    if hook:
+        from microclaw.hooks import PRECODED_HOOK_REGISTRY
+        hook_cls = PRECODED_HOOK_REGISTRY.get(hook) if isinstance(hook, str) else None
+        if not getattr(hook_cls, "_microclaw_observation_only", False):
+            raise CannotEmit(
+                f"hooked acquisition ({hook!r}): inlining HookBase would import microclaw safety and hook decisions"
+            )
+    positions = params.get("positions")
+    if positions is None:
+        if params.get("_position_resolution_error"):
+            raise CannotEmit(params["_position_resolution_error"])
+        recorded_positions = params.result.get("results", [])
+        if not recorded_positions or any(
+            "x_um" not in item or "y_um" not in item
+            for item in recorded_positions
+        ):
+            raise CannotEmit("the record contains no resolved position coordinates")
+        positions = [{
+            "name": item.get("name", item.get("position")),
+            "x_um": item["x_um"],
+            "y_um": item["y_um"],
+            **({"z_um": item["z_um"]} if item.get("z_um") is not None else {}),
+        } for item in recorded_positions]
+    if not positions:
+        raise CannotEmit("the record contains no resolved position coordinates")
+    if any(position.get("name") is None for position in positions):
+        raise CannotEmit("the record contains a resolved position without a label")
+    protocol = params["protocol"]
+    protocol_params = dict(params.get("protocol_params") or {})
+    if hook:
+        if any(position.get("z_um") is None for position in positions):
+            raise CannotEmit(
+                "observation-only hooked acquisition has positions without recorded Z"
+            )
+        if protocol == "timelapse":
+            shape = {
+                "num_time_points": protocol_params["n_frames"],
+                "time_interval_s": protocol_params.get("interval_s", 0),
+            }
+        elif protocol == "zstack":
+            shape = {
+                "z_start": protocol_params["z_start_um"],
+                "z_end": protocol_params["z_end_um"],
+                "z_step": protocol_params["z_step_um"],
+            }
+        else:
+            raise CannotEmit(f"unknown recorded hooked protocol {protocol!r}")
+        sweeps_z = protocol == "zstack"
+        if sweeps_z:
+            shape["xy_positions"] = [
+                (position["x_um"], position["y_um"]) for position in positions
+            ]
+        else:
+            shape["xyz_positions"] = [
+                (position["x_um"], position["y_um"], position["z_um"])
+                for position in positions
+            ]
+        shape["position_labels"] = [position["name"] for position in positions]
+        channel = protocol_params.get("channel")
+        exposure = protocol_params.get("exposure_ms")
+        if channel:
+            from microclaw.authorization import CHANNEL_CONFIG_GROUP
+            shape.update(channel_group=CHANNEL_CONFIG_GROUP, channels=[channel])
+            if exposure is not None:
+                shape["channel_exposures_ms"] = [exposure]
+        prefix = f"core.set_exposure({exposure!r})\n" if exposure is not None and not channel else ""
+        return (
+            prefix
+            + f"events = multi_d_acquisition_events(**{shape!r})\n"
+            + "with Acquisition(directory=str(_HERE), "
+            f"name={params.get('name', 'multipos')!r}) as acq:\n"
+            + "    acq.acquire(events)"
+        )
+    lines = [f"for position in {positions!r}:",
+             "    core.set_xy_position(position['x_um'], position['y_um'])",
+             "    if position.get('z_um') is not None:",
+             "        core.set_position(position['z_um'])"]
+    if protocol == "snap":
+        min_snr = params.result.get(
+            "min_snr", __import__("microclaw.image_analysis", fromlist=[
+                "UNCALIBRATED_MIN_SNR_FALLBACK"
+            ]).UNCALIBRATED_MIN_SNR_FALLBACK,
+        )
+        lines.extend([
+            "    image = snap_to_numpy(mm)",
+            f"    stats = compute_stats(image, min_snr={min_snr!r})",
+        ])
+        return "\n".join(lines)
+    if protocol == "timelapse":
+        shape = {
+            "num_time_points": protocol_params["n_frames"],
+            "time_interval_s": protocol_params["interval_s"],
+        }
+    elif protocol == "zstack":
+        shape = {
+            "z_start": protocol_params["z_start_um"],
+            "z_end": protocol_params["z_end_um"],
+            "z_step": protocol_params["z_step_um"],
+        }
+    else:
+        raise CannotEmit(f"unknown recorded multiposition protocol {protocol!r}")
+    event_args = dict(shape)
+    channel = protocol_params.get("channel")
+    exposure = protocol_params.get("exposure_ms")
+    if channel:
+        from microclaw.authorization import CHANNEL_CONFIG_GROUP
+        event_args.update(channel_group=CHANNEL_CONFIG_GROUP, channels=[channel])
+        if exposure is not None:
+            event_args["channel_exposures_ms"] = [exposure]
+    elif exposure is not None:
+        lines.append(f"    core.set_exposure({exposure!r})")
+    lines.extend([
+        f"    events = multi_d_acquisition_events(**{event_args!r})",
+        "    with Acquisition(directory=str(_HERE / position['name']), "
+        "name=position['name']) as acq:",
+        "        acq.acquire(events)",
+    ])
+    return "\n".join(lines)
+
+
+def _emit_tile(params: RecordedParams) -> str:
+    if params.get("hook_strategy"):
+        raise CannotEmit(
+            "hooked tile acquisition: inlining HookBase would import microclaw safety and hook decisions"
+        )
+    center_x = params.get("center_x_um", params.result.get("grid_center_x_um"))
+    center_y = params.get("center_y_um", params.result.get("grid_center_y_um"))
+    if center_x is None or center_y is None:
+        raise CannotEmit("the record contains no resolved tile-grid center")
+    positions = []
+    for row in range(params["rows"]):
+        for col in range(params["cols"]):
+            positions.append({
+                "name": f"{params.get('name', 'tile')}_r{row}_c{col}",
+                "x_um": center_x - (params["cols"] - 1) / 2 * params["step_um"]
+                + col * params["step_um"],
+                "y_um": center_y - (params["rows"] - 1) / 2 * params["step_um"]
+                + row * params["step_um"],
+            })
+    forwarded = RecordedParams({**params, "positions": positions}, params.result)
+    return _emit_multiposition(forwarded)
+
+
+def _emit_focus_lock(params: RecordedParams) -> str:
+    result = params.result
+    if "property" not in result or "value" not in result:
+        raise CannotEmit("the recorded result has no resolved focus-lock property/value")
+    device, separator, prop = result["property"].partition(".")
+    if not separator:
+        raise CannotEmit("the recorded focus-lock property has no device prefix")
+    return f"core.set_property({device!r}, {prop!r}, {result['value']!r})"
+
+
+def _recorded_tool_calls(records: list[dict]) -> list[tuple[str, RecordedParams]]:
+    """Read tool calls from the append-only Anthropic conversation record."""
+    results = {}
+    for message in records:
+        content = message.get("content", []) if isinstance(message, dict) else []
+        for block in content if isinstance(content, list) else []:
+            if not isinstance(block, dict) or block.get("type") != "tool_result":
+                continue
+            value = block.get("content")
+            if isinstance(value, list):
+                value = next((part.get("text") for part in value
+                              if isinstance(part, dict) and part.get("type") == "text"), None)
+            try:
+                parsed = json.loads(value) if isinstance(value, str) else None
+            except ValueError:
+                parsed = None
+            if isinstance(parsed, dict):
+                results[str(block.get("tool_use_id"))] = parsed
+    calls = []
+    for message in records:
+        if message.get("role") != "assistant":
+            continue
+        content = message.get("content", [])
+        for block in content if isinstance(content, list) else []:
+            kind = block.get("type") if isinstance(block, dict) else getattr(block, "type", None)
+            if kind != "tool_use":
+                continue
+            name = block.get("name") if isinstance(block, dict) else block.name
+            params = block.get("input", {}) if isinstance(block, dict) else block.input
+            block_id = block.get("id") if isinstance(block, dict) else block.id
+            calls.append((str(name), RecordedParams(
+                dict(params), results.get(str(block_id))
+            )))
+    return calls
+
+
+def _position_from_result(name: str, result: dict) -> dict | None:
+    """Return a complete position delta, or None when the result is insufficient."""
+    if "x_um" not in result or "y_um" not in result:
+        return None
+    return {
+        "name": name, "x_um": result["x_um"], "y_um": result["y_um"],
+        **({"z_um": result["z_um"]} if result.get("z_um") is not None else {}),
+    }
+
+
+def _position_snapshot(result: dict, key: str) -> dict[str, dict] | None:
+    """Parse a complete, unambiguous position snapshot from a recorded result."""
+    positions = result.get(key)
+    if not isinstance(positions, list):
+        return None
+    snapshot: dict[str, dict] = {}
+    for item in positions:
+        if not isinstance(item, dict):
+            return None
+        name = item.get("name", item.get("position"))
+        position = _position_from_result(name, item) if isinstance(name, str) else None
+        if position is None or (name in snapshot and snapshot[name] != position):
+            return None
+        snapshot[name] = position
+    return snapshot
+
+
+def _resolve_recorded_position_names(
+    recorded: list[tuple[str, RecordedParams]],
+) -> None:
+    """Walk mutable position-list history and couple named runs to known state."""
+    # State is partial by design: it holds what the record determines, which may
+    # be less than MM's whole list. Resolution is per name, so an unknown name
+    # refuses while a known one emits.
+    state: dict[str, dict] | None = None
+    for name, params in recorded:
+        result = params.result
+        if name == "get_position_list":
+            state = _position_snapshot(result, "positions")
+            if result.get("position_list_conflict"):
+                state = None
+        elif name == "validate_positions":
+            state = (_position_snapshot(result, "accepted")
+                     if result.get("rejected") == [] else None)
+        elif name == "mark_position":
+            position_name = params.get("name")
+            delta = (_position_from_result(position_name, result)
+                     if isinstance(position_name, str) else None)
+            if delta is None or "marked" not in str(result.get("status", "")).lower():
+                state = None
+            else:
+                # add_position replaces by label, so a successful mark is
+                # authoritative for that name whatever came before it — it can
+                # seed state from nothing and can supersede a known value.
+                state = {} if state is None else state
+                state[position_name] = delta
+        elif name == "delete_position":
+            status = str(result.get("status", "")).lower()
+            if "deleted" in status and isinstance(params.get("name"), str):
+                if state is not None:
+                    state.pop(params["name"], None)
+            elif "cancelled" not in status and result.get("position_list_conflict") is None:
+                state = None
+        elif name == "clear_position_list":
+            status = str(result.get("status", "")).lower()
+            if "cleared" in status:
+                state = {}
+            elif "cancelled" not in status and result.get("position_list_conflict") is None:
+                state = None
+        elif name in {"load_position_list", "import_mm_positions"}:
+            status = str(result.get("status", "")).lower()
+            if ("loaded" in status or "imported" in status
+                    or ("cancelled" not in status
+                        and result.get("position_list_conflict") is None)):
+                # Their results omit coordinates, so only a later snapshot or
+                # mark can make subsequent named-position resolution trustworthy.
+                state = None
+
+        if name != "run_multiposition_acquisition" or params.get("positions") is not None:
+            continue
+        requested = params.get("position_names")
+        if not isinstance(requested, list):
+            continue
+        failure = next((item for item in requested
+                        if not isinstance(item, str)
+                        or state is None or item not in state), None)
+        if failure is not None:
+            params["_position_resolution_error"] = (
+                f"could not resolve named position {failure!r} unambiguously "
+                "from the recorded position-list state"
+            )
+        else:
+            params["positions"] = [dict(state[item]) for item in requested]
+
+
+def _analysis_source(*, include_autofocus: bool = False) -> str:
+    """Return exact source for the pure-numpy analysis used by exported routines."""
+    from microclaw import autofocus, image_analysis
+    parts = [
+        "UNCALIBRATED_MIN_SNR_FALLBACK = "
+        f"{image_analysis.UNCALIBRATED_MIN_SNR_FALLBACK!r}\n",
+        "MAX_SATURATED_FRACTION_FOR_SNR = "
+        f"{image_analysis.MAX_SATURATED_FRACTION_FOR_SNR!r}\n",
+        inspect.getsource(image_analysis.ImageStats),
+    ]
+    # Every helper compute_stats reaches, not a hand-picked list. Block 13 added
+    # snr_validity() and the emitted scripts kept passing their own tests while
+    # raising NameError on a rig: the two branches were green apart and broken
+    # together. test_emitted_analysis_defines_every_name_it_uses is the guard.
+    for fn in (
+        image_analysis._reshape_pixels, image_analysis.snap_to_numpy,
+        image_analysis.snr, image_analysis.tenengrad,
+        image_analysis.snr_validity, image_analysis.compute_stats,
+    ):
+        parts.append(inspect.getsource(fn))
+    if include_autofocus:
+        parts.extend([
+            inspect.getsource(autofocus.SweepResult),
+            inspect.getsource(autofocus.AutofocusResult),
+            f"MIN_CONTRAST = {autofocus.MIN_CONTRAST!r}\n",
+        ])
+        for fn in (
+            autofocus.sweep_plane_count, autofocus.curve_contrast,
+            autofocus.sweep_autofocus, autofocus._restore,
+            autofocus._flat_reason, autofocus._edge_reason,
+            autofocus.coarse_then_fine_autofocus,
+            autofocus.single_sweep_autofocus,
+        ):
+            parts.append(inspect.getsource(fn))
+        parts.append(inspect.getsource(_run_autofocus_passes))
+    return "\n".join(parts)
+
+
+@emits_nothing
+def export_session_script(
+    ctrl: MicroscopeController,
+    guard: SafetyGuard,
+    output_path: str,
+    records: list[dict],
+) -> dict:
+    """Compile recorded calls to a standalone pycro-manager script."""
+    path = guard.resolve_in_workspace(output_path)
+    recorded = _recorded_tool_calls(records)
+    _resolve_recorded_position_names(recorded)
+    analysis_used = any(
+        name in {"snap_and_analyze", "run_autofocus"}
+        or (name in {"run_multiposition_acquisition", "run_tile_acquisition"}
+            and params.get("protocol") == "snap")
+        for name, params in recorded
+    )
+    autofocus_used = any(name == "run_autofocus" for name, _params in recorded)
+    lines = [
+        "from __future__ import annotations",
+        "import time",
+        "from dataclasses import dataclass",
+        "from pathlib import Path",
+        "from types import SimpleNamespace",
+        "from typing import Callable, NamedTuple, Optional",
+        "import numpy as np",
+        "from pycromanager import Acquisition, Core, multi_d_acquisition_events",
+        "",
+        *(["", _analysis_source(include_autofocus=autofocus_used).rstrip()]
+          if analysis_used else []),
+        "",
+        "core = Core()",
+        "mm = SimpleNamespace(core=core)",
+    ]
+    emitted = 0
+    for name, params in recorded:
+        if name == "export_session_script":
+            continue
+        fn = TOOL_REGISTRY.get(name)
+        renderer = getattr(fn, "_microclaw_emitter", None)
+        lines.append("")
+        lines.append(f"# RECORDED TOOL: {name}")
+        if fn is not None and getattr(fn, "_microclaw_emits_nothing", False):
+            lines.append("# No hardware-routine effect.")
+            continue
+        if renderer is None:
+            reason = getattr(
+                fn, "_microclaw_refusal_reason",
+                "no standalone emitter has been implemented for this tool",
+            )
+            lines.append(f"# NOT EMITTED: {name} — {reason}")
+            lines.append(f"raise RuntimeError({('NOT EMITTED: ' + name + ' — ' + reason)!r})")
+            continue
+        try:
+            rendered = renderer(params)
+        except CannotEmit as exc:
+            reason = str(exc)
+            lines.append(f"# NOT EMITTED: {name} — {reason}")
+            lines.append(f"raise RuntimeError({('NOT EMITTED: ' + name + ' — ' + reason)!r})")
+            continue
+        lines.extend(rendered.splitlines())
+        emitted += 1
+    if any("_HERE" in line for line in lines):
+        lines.insert(lines.index("core = Core()"),
+                     "_HERE = Path(__file__).resolve().parent")
+    source = "\n".join(lines) + "\n"
+    Path(path).write_text(source, encoding="utf-8")
+    return {
+        "status": "Session script exported.",
+        "output_path": str(path),
+        "emitted_calls": emitted,
+        "artifact": {"kind": "python", "path": str(path)},
+    }
+
+
 def _require_confirmation(summary: str, kind: str = "action") -> bool:
     """Blocking stdin confirmation for actions that persist model-writable content.
 
@@ -281,6 +770,7 @@ _LIVE_MODE_WAIT_S = 2.0
 _LIVE_MODE_POLL_S = 0.02
 
 
+@emits_nothing
 def start_live_view(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     live = ctrl.studio.live()
     live.set_live_mode_on(True)
@@ -299,22 +789,26 @@ def start_live_view(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     return {"status": "Live view started."}
 
 
+@emits_nothing
 def stop_live_view(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     ctrl.studio.live().set_live_mode_on(False)
     return {"status": "Live view stopped."}
 
 
+@emits(lambda p: f"core.set_exposure({p['ms']!r})")
 def set_exposure(ctrl: MicroscopeController, guard: SafetyGuard, ms: float) -> dict:
     guard.check_exposure(ms)
     ctrl.core.set_exposure(ms)
     return {"status": f"Exposure set to {ms} ms."}
 
 
+@emits_nothing
 def get_exposure(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     ms = ctrl.core.get_exposure()
     return {"exposure_ms": ms}
 
 
+@emits_nothing
 def get_pixel_size(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     um = float(ctrl.core.get_pixel_size_um())
     result: dict = {"pixel_size_um": um}
@@ -338,6 +832,7 @@ def _bounce_live_if_on(ctrl: MicroscopeController) -> bool:
     return False
 
 
+@emits_nothing
 def get_roi(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     roi = ctrl.core.get_roi()
     return {
@@ -383,12 +878,18 @@ def clear_roi(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
 
 # --- XY Stage ---
 
+@emits_nothing
 def get_xy_position(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     x = ctrl.core.get_x_position()
     y = ctrl.core.get_y_position()
     return {"x_um": round(x, 3), "y_um": round(y, 3)}
 
 
+@emits(lambda p: (
+    f"core.set_xy_position({p['x_um']!r}, {p['y_um']!r})"
+    if p.get("absolute", True) else
+    f"core.set_relative_xy_position({p['x_um']!r}, {p['y_um']!r})"
+))
 def move_stage_xy(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -430,11 +931,16 @@ def move_stage_xy(
 
 # --- Z Stage ---
 
+@emits_nothing
 def get_z_position(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     z = ctrl.core.get_position()
     return {"z_um": round(z, 3)}
 
 
+@emits(lambda p: (
+    f"core.set_position({p['z_um']!r})" if p.get("absolute", True)
+    else f"core.set_relative_position({p['z_um']!r})"
+))
 def move_stage_z(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -478,6 +984,7 @@ def _device_type_name(core, label: str) -> str:
     return device_type_name(core, label)
 
 
+@emits_nothing
 def list_stages(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     """Every stage device, and which ones the core's Z/XY tools actually drive.
 
@@ -507,6 +1014,7 @@ def list_stages(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     }
 
 
+@emits_nothing
 def get_stage_position(
     ctrl: MicroscopeController, guard: SafetyGuard, device: str
 ) -> dict:
@@ -549,6 +1057,9 @@ def _has_channel_authorization_map(ctrl: MicroscopeController) -> bool:
     """
     return getattr(ctrl, "authorization_map", None) is not None
 
+@emits(lambda p: (_ for _ in ()).throw(CannotEmit(
+    "set_channel may execute an authorization-map channel plan; block 41c must make that plan emittable"
+)))
 def set_channel(
     ctrl: MicroscopeController, guard: SafetyGuard, preset: str, *, cancel=None
 ) -> dict:
@@ -564,6 +1075,7 @@ def set_channel(
     return {"status": f"Channel set to '{preset}'."}
 
 
+@emits_nothing
 def get_available_channels(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     from microclaw.authorization import CHANNEL_CONFIG_GROUP
     channels = _str_vector(ctrl.core.get_available_configs(CHANNEL_CONFIG_GROUP))
@@ -572,6 +1084,7 @@ def get_available_channels(ctrl: MicroscopeController, guard: SafetyGuard) -> di
 
 # --- Device Properties ---
 
+@emits(lambda p: f"core.set_property({p['device']!r}, {p['property']!r}, {p['value']!r})")
 def set_device_property(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -591,6 +1104,7 @@ def set_device_property(
     return {"status": f"Set {device}.{property} = {value!r}."}
 
 
+@emits_nothing
 def get_device_property(
     ctrl: MicroscopeController, guard: SafetyGuard, device: str, property: str
 ) -> dict:
@@ -598,11 +1112,13 @@ def get_device_property(
     return {"device": device, "property": property, "value": value}
 
 
+@emits_nothing
 def list_devices(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     devices = _str_vector(ctrl.core.get_loaded_devices())
     return {"devices": devices}
 
 
+@emits_nothing
 def list_device_properties(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -644,6 +1160,7 @@ def _property_type_name(core, device: str, prop: str) -> str:
         return "Unknown"
 
 
+@emits_nothing
 def get_device_property_info(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -688,6 +1205,7 @@ def get_device_property_info(
     return info
 
 
+@emits_nothing
 def get_full_device_state(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -796,6 +1314,7 @@ def _laser_state(ctrl: MicroscopeController) -> Any:
     return out
 
 
+@emits_nothing
 def get_system_state(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     state: dict[str, Any] = {}
     try:
@@ -961,6 +1480,9 @@ def _acq_dataset_path(acq, save_dir: str, name: str) -> str:
 
 
 @_acquisition_entry_point
+@emits(lambda p: _emit_acquisition({
+    "z_start": p["z_start_um"], "z_end": p["z_end_um"], "z_step": p["z_step_um"]
+}, p, "zstack"))
 def run_zstack(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -1069,6 +1591,9 @@ def shutter_declared_illumination(
 
 
 @_acquisition_entry_point
+@emits(lambda p: _emit_acquisition({
+    "num_time_points": p["n_frames"], "time_interval_s": p["interval_s"]
+}, p, "timelapse"))
 def run_timelapse(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -1248,6 +1773,9 @@ def _mosaic_dataset_identity(metadata_items: list[tuple[dict, dict]]) -> dict:
             "camera_model_key": model_key, "roi": first[2], "binning": first[3]}
 
 
+@refuses(
+    "offline mosaic dependencies transitively require the package calibration module, so inlining would not be standalone"
+)
 def build_stage_coordinate_mosaic(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -1548,6 +2076,7 @@ def _focus_metric_payload(
     return payload
 
 
+@emits(_emit_snap_and_analyze)
 def snap_and_analyze(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -1945,6 +2474,7 @@ def _sweep_payload(sweep) -> dict | None:
     }
 
 
+@emits(_emit_autofocus)
 def run_autofocus(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -2036,6 +2566,14 @@ def run_autofocus(
 
 # --- Position management ---
 
+# Position-list operations (including mark_position) emit nothing because the
+# list is session state, not a standalone hardware-routine action. They are also
+# inputs to named-position resolution: the exporter replays snapshots and deltas
+# so a later acquisition carries the coordinates current at that point.
+# _emit_multiposition refuses the export if it cannot recover the complete set.
+# Keep these classifications coupled to that fail-closed guard: weakening it
+# would silently turn a marked session into a positionless/partial script.
+
 def _preflight_native_positions(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -2065,6 +2603,7 @@ def _preflight_native_positions(
     ctrl.set_position_projection(projection)
     return projection, None
 
+@emits_nothing
 def mark_position(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -2115,6 +2654,7 @@ def mark_position(
     }
 
 
+@emits_nothing
 def get_position_list(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     """Return all positions from MM's native position list."""
     projection = _validate_position_projection(
@@ -2128,6 +2668,7 @@ def get_position_list(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     return result
 
 
+@emits(_emit_go_to_position)
 def go_to_position(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -2151,6 +2692,7 @@ def go_to_position(
     return {"status": f"Moved to '{name}'.", **pos}
 
 
+@emits_nothing
 def delete_position(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -2184,6 +2726,7 @@ def delete_position(
     return {"status": f"Position '{name}' deleted from MM position list."}
 
 
+@emits_nothing
 def clear_position_list(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -2202,6 +2745,7 @@ def clear_position_list(
     return {"status": "Position list cleared."}
 
 
+@emits_nothing
 def save_position_list(ctrl: MicroscopeController, guard: SafetyGuard, path: str) -> dict:
     """Save MM's current native position list to a `.pos` file."""
     if not path.lower().endswith(".pos"):
@@ -2258,6 +2802,7 @@ def _position_conflict(
     }
 
 
+@emits_nothing
 def load_position_list(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -2316,6 +2861,7 @@ def load_position_list(
     }
 
 
+@emits_nothing
 def import_mm_positions(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -2475,6 +3021,7 @@ def _run_protocol_at(
 
 
 @_acquisition_entry_point
+@emits(_emit_multiposition)
 def run_multiposition_acquisition(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -2684,6 +3231,7 @@ def run_multiposition_acquisition(
 
 
 @_acquisition_entry_point
+@emits(_emit_tile)
 def run_tile_acquisition(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -3132,6 +3680,11 @@ def _adaptive_result(
     return result
 
 
+@refuses(
+    "an adaptive run's events are chosen at runtime by its hook, so there is "
+    "no static event list to render; emitting the positions it happened to "
+    "visit would silently turn an adaptive run into a fixed one"
+)
 @_acquisition_entry_point
 def run_adaptive_zstack(
     ctrl: MicroscopeController,
@@ -3193,6 +3746,11 @@ def run_adaptive_zstack(
     )
 
 
+@refuses(
+    "an adaptive run's events are chosen at runtime by its hook, so there is "
+    "no static event list to render; emitting the positions it happened to "
+    "visit would silently turn an adaptive run into a fixed one"
+)
 @_acquisition_entry_point
 def run_adaptive_timelapse(
     ctrl: MicroscopeController,
@@ -3663,6 +4221,11 @@ def _acquire_survey_with_detector(
     )
 
 
+@refuses(
+    "an adaptive run's events are chosen at runtime by its hook, so there is "
+    "no static event list to render; emitting the positions it happened to "
+    "visit would silently turn an adaptive run into a fixed one"
+)
 @_acquisition_entry_point
 def run_adaptive_survey(
     ctrl: MicroscopeController,
@@ -3788,6 +4351,7 @@ def run_adaptive_survey(
     return result
 
 
+@emits_nothing
 def read_hook_log(ctrl: MicroscopeController, guard: SafetyGuard, log_path: str) -> dict:
     """Read a hook's output log file after an acquisition completes."""
     log_path = guard.resolve_readable_path(log_path)
@@ -3799,6 +4363,7 @@ def read_hook_log(ctrl: MicroscopeController, guard: SafetyGuard, log_path: str)
             "artifact": {"kind": "hook_log", "path": log_path}}
 
 
+@emits_nothing
 def rank_hook_log(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -3937,6 +4502,7 @@ def rank_hook_log(
     return result
 
 
+@emits_nothing
 def validate_positions(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -3971,6 +4537,7 @@ def validate_positions(
     return {"accepted": accepted, "rejected": rejected, "clipped": 0}
 
 
+@emits_nothing
 def inspect_artifacts(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -4091,6 +4658,7 @@ def inspect_artifacts(
     return result
 
 
+@emits_nothing
 def compare_revisit_frames(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -4263,6 +4831,7 @@ def generate_and_save_hook(
     }
 
 
+@emits_nothing
 def read_hook_from_file(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -4284,6 +4853,7 @@ def read_hook_from_file(
     return {"code": code, "warnings": warnings, "path": path}
 
 
+@emits_nothing
 def list_hooks(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     """List all available hook strategies (pre-coded and saved)."""
     from microclaw.hooks import PRECODED_HOOK_REGISTRY
@@ -4295,6 +4865,7 @@ def list_hooks(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     }
 
 
+@emits_nothing
 def describe_hook(
     ctrl: MicroscopeController, guard: SafetyGuard, name: str
 ) -> dict:
@@ -4354,6 +4925,7 @@ def describe_hook(
     }
 
 
+@emits_nothing
 def list_mm_plugins(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     """List installed MM plugins by role so a human can review/gate them."""
     try:
@@ -4374,16 +4946,19 @@ def list_mm_plugins(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     }
 
 
+@emits_nothing
 def get_hook_documentation(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     from microclaw.hook_docs import HOOK_REFERENCE
     return {"documentation": HOOK_REFERENCE}
 
 
+@emits_nothing
 def get_smlm_documentation(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     from microclaw.smlm_docs import SMLM_REFERENCE
     return {"documentation": SMLM_REFERENCE}
 
 
+@emits_nothing
 def check_emu_installed(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     from microclaw.emu_manager import (
         find_mm_app_dir, find_plugin_jars, read_emu_config, _emu_config_path,
@@ -4425,11 +5000,13 @@ def check_emu_installed(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     }
 
 
+@emits_nothing
 def get_htsmlm_documentation(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     from microclaw.htsmlm_docs import HTSMLM_REFERENCE
     return {"documentation": HTSMLM_REFERENCE}
 
 
+@emits_nothing
 def save_knowledge(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -4461,6 +5038,7 @@ def save_knowledge(
     return {"status": f"Saved '{key}' under '{category}'.", "category": category, "key": key, "value": value}
 
 
+@emits_nothing
 def get_knowledge(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -4474,6 +5052,7 @@ def get_knowledge(
     return {"knowledge": data}
 
 
+@emits_nothing
 def delete_knowledge(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -4535,6 +5114,7 @@ def _cached_emu_properties(
         return None, {}
 
 
+@emits_nothing
 def get_emu_configuration(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -4601,6 +5181,7 @@ def _read_qpd(ctrl: MicroscopeController, focus_lock: dict) -> dict | None:
     return out or None
 
 
+@emits_nothing
 def get_focus_lock_state(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     """Read the hardware focus lock via the EMU map ('Z stage focus locking').
 
@@ -4626,6 +5207,7 @@ def get_focus_lock_state(ctrl: MicroscopeController, guard: SafetyGuard) -> dict
     }
 
 
+@emits(_emit_focus_lock)
 def set_focus_lock(
     ctrl: MicroscopeController, guard: SafetyGuard, enabled: bool
 ) -> dict:
@@ -4650,6 +5232,7 @@ def set_focus_lock(
     }
 
 
+@emits_nothing
 def get_emu_laser_map(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     """The slot → laser table (enable / power / trigger lines) from the EMU map."""
     from microclaw.emu_manager import build_emu_map
@@ -4667,6 +5250,7 @@ def get_emu_laser_map(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     }
 
 
+@emits_nothing
 def resolve_emu_device(
     ctrl: MicroscopeController, guard: SafetyGuard, semantic_name: str
 ) -> dict:
@@ -4738,6 +5322,7 @@ def verify_emu_laser_power_calibration(
             "formula": "raw = slope * percent + offset"}
 
 
+@emits_nothing
 def get_emu_laser_power_percentage(
     ctrl: MicroscopeController, guard: SafetyGuard, slot: int
 ) -> dict:
@@ -4826,6 +5411,7 @@ def _datastore_state(store: Any) -> dict | None:
     return out
 
 
+@emits_nothing
 def get_album_state(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     store = ctrl.studio.album().get_datastore()
     return {"album_exists": store is not None, "datastore": _datastore_state(store)}
@@ -4894,6 +5480,7 @@ def _read_mda_settings(settings: Any) -> dict:
     return out
 
 
+@emits_nothing
 def get_mda_settings(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     manager = ctrl.studio.acquisitions()
     settings = manager.get_acquisition_settings()
@@ -5086,6 +5673,7 @@ TOOL_REGISTRY = {
     "snap_to_album": snap_to_album,
     "get_mda_settings": get_mda_settings,
     "run_mda": run_mda,
+    "export_session_script": export_session_script,
     "save_knowledge": save_knowledge,
     "get_knowledge": get_knowledge,
     "delete_knowledge": delete_knowledge,
@@ -5098,6 +5686,7 @@ def execute_tool(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
     cancel=None,
+    records=None,
 ) -> str | list:
     """Execute a tool and return content for the tool_result block.
 
@@ -5114,7 +5703,9 @@ def execute_tool(
         ):
             from microclaw.authorization import authorize_path
             authorize_path(ctrl, f"acquisition-tool:{name}")
-        if name == "set_channel":
+        if name == "export_session_script":
+            result = fn(ctrl, guard, records=records, **tool_input)
+        elif name == "set_channel":
             result = fn(ctrl, guard, cancel=cancel, **tool_input)
         else:
             result = fn(ctrl, guard, **tool_input)
