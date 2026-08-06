@@ -906,6 +906,27 @@ class TestSnapAndAnalyze:
         assert "saturated" in result["snr_invalid_reason"]
         assert result["warning"] == result["snr_invalid_reason"]
 
+    def test_sub_threshold_clipping_is_still_visible_in_the_report(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        # M5 rig gate, 2026-08-06: at 60 ms the frame clipped (max_intensity
+        # 65535) while saturated_fraction printed 0.0, because the payload
+        # rounded to 4 places and the validity gate fires at 1e-4. The display
+        # resolution equalled the decision threshold, so the operator could not
+        # see where they stood relative to it -- the exact confusion design/41 F4
+        # set out to remove. The gate itself is right: a handful of ceiling
+        # pixels must not invalidate a p99.5-based SNR.
+        image = np.full((200, 200), 300, dtype=np.uint16)   # 40000 px
+        image[0, 0] = np.iinfo(np.uint16).max               # 1 px -> 2.5e-5
+        monkeypatch.setattr(tools, "snap_to_numpy_displayed", lambda ctrl: image)
+        result = snap_and_analyze(mock_ctrl, unconstrained_guard)
+
+        assert result["max_intensity"] == 65535.0
+        assert result["snr_valid"] is True          # below the 1e-4 gate
+        # The number must not collapse to zero next to a clipped max_intensity.
+        assert result["saturated_fraction"] > 0
+        assert result["saturated_fraction"] == pytest.approx(2.5e-05)
+
     def test_zero_pixel_size_carries_warning(self, mock_ctrl, unconstrained_guard):
         # The model asked about pixel size once and had forgotten 20 messages
         # later — the warning must ride along on every snap (design/14 §8).

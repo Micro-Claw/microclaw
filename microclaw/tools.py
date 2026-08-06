@@ -1579,7 +1579,7 @@ def snap_and_analyze(
         "mean_intensity": round(stats.mean_intensity, 1),
         "min_intensity": round(stats.min_intensity, 1),
         "max_intensity": round(stats.max_intensity, 1),
-        "saturated_fraction": round(stats.saturated_fraction, 4),
+        "saturated_fraction": round(stats.saturated_fraction, 6),
     }
     restore = _live_restore_report(live_state)
     if restore:
@@ -2444,7 +2444,7 @@ def _run_protocol_at(
             "mean_intensity": round(stats.mean_intensity, 1),
             "min_intensity": round(stats.min_intensity, 1),
             "max_intensity": round(stats.max_intensity, 1),
-            "saturated_fraction": round(stats.saturated_fraction, 4),
+            "saturated_fraction": round(stats.saturated_fraction, 6),
         }
         if not stats.snr_valid:
             tile["warning"] = stats.snr_invalid_reason
