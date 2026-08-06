@@ -334,8 +334,8 @@ def _recorded_tool_calls(records: list[dict]) -> list[tuple[str, RecordedParams]
     return calls
 
 
-def _recorded_failure(result: dict | None) -> str | None:
-    """Why a recorded call cannot be emitted as a completed step, or None.
+def _recorded_outcome(result: dict | None) -> tuple[str, str] | None:
+    """How much of a recorded call completed: ``("nothing"|"partial", reason)``.
 
     Read structurally, never from prose. Two signals, and they are the two the
     record actually carries:
@@ -348,40 +348,54 @@ def _recorded_failure(result: dict | None) -> str | None:
       symptom of that, not the source, and is deliberately not parsed.
 
     Only the exact key ``error`` counts. ``error_um`` is a *measurement* that a
-    successful move reports, and matching it would refuse working steps.
+    successful move reports, and matching it would flag working steps.
 
-    **Partial success refuses, like total failure.** M5 gate, 2026-08-06: a
-    session made five `run_multiposition_acquisition` calls of which two
-    completed, and the export replayed all five -- 2.5x the session's dose on a
-    bleaching sample, plus a channel axis the rig cannot drive. Emitting the
-    whole loop over-images the positions that failed; emitting only the ones
-    that worked silently changes what the routine does, and the record cannot
-    say whether the operator wanted that position retried or dropped. Both are
-    reconstructions. A step the exporter cannot faithfully reproduce gets the
-    refusal, which is the same rule 41b applied to the offline mosaic and to
-    adaptive runs.
+    **The two answers are not the same defect, and must not get the same
+    treatment** (demo gate rounds 1 and 2, 2026-08-06):
+
+    - ``"nothing"`` -- the session did nothing here, so the faithful thing for
+      the script to do is also nothing. The exporter emits a comment and
+      *continues*. That is not a reconstruction, it is exact. Refusing here was
+      round 2's defect: a rejected call sat mid-session and the raise made the
+      acquisition that *did* run unreachable, so the script contributed zero
+      acquisitions. Failed calls are ordinary -- the M5 gate session had three --
+      so refusing on them makes the export useless on real sessions.
+    - ``"partial"`` -- something happened that cannot be faithfully reproduced.
+      Replaying the whole step re-images what completed; replaying only what
+      worked silently changes the routine, and the record cannot say whether the
+      operator wanted the failed item retried or dropped. Both are
+      reconstructions, so this keeps the hard refusal, like the offline mosaic
+      and adaptive runs.
+
+    ``"nothing"`` is *not* a claim that no hardware moved -- a tool can fail
+    after moving a stage. The guarantee is narrower and is the safer of the two
+    errors: nothing the session recorded as completed is skipped, and nothing
+    that failed is retried.
     """
     if not isinstance(result, dict):
         return None
     if "error" in result:
-        return f"the recorded call did not succeed: {result['error']}"
+        return "nothing", f"the recorded call did not succeed: {result['error']}"
     for key, value in result.items():
         if not isinstance(value, list):
-            continue
-        failed = [item for item in value
-                  if isinstance(item, dict) and "error" in item]
-        if not failed:
             continue
         detail = [
             f"{item.get('position', f'{key}[{index}]')!r}: {item['error']}"
             for index, item in enumerate(value)
             if isinstance(item, dict) and "error" in item
         ]
+        if not detail:
+            continue
         named = "; ".join(detail[:3]) + (
             f"; and {len(detail) - 3} more" if len(detail) > 3 else ""
         )
-        return (
-            f"{len(failed)} of {len(value)} recorded {key} entries did not "
+        if len(detail) == len(value):
+            return "nothing", (
+                f"none of the {len(value)} recorded {key} entries completed "
+                f"({named})"
+            )
+        return "partial", (
+            f"{len(detail)} of {len(value)} recorded {key} entries did not "
             f"complete ({named}), so replaying this step would not reproduce the "
             "run -- it would re-image what did complete and attempt again what "
             "did not"
@@ -609,10 +623,20 @@ def export_session_script(
             continue
         # Checked after the tool-level refusals so those keep their own wording,
         # and before the renderer so a call that did not succeed can never be
-        # rendered as one that did.
-        failure = _recorded_failure(params.result)
-        if failure is not None:
-            refuse(name, failure)
+        # rendered as one that did. A call that completed *nothing* is skipped
+        # and the script carries on: doing nothing is the exact reproduction of
+        # a step that did nothing, and halting there would strand every later
+        # step that really ran.
+        outcome = _recorded_outcome(params.result)
+        if outcome is not None:
+            completed, reason = outcome
+            if completed == "partial":
+                refuse(name, reason)
+            else:
+                lines.append(f"# SKIPPED: {name} — {reason}")
+                lines.append(
+                    "# The session completed nothing here, so neither does this script."
+                )
             continue
         try:
             rendered = renderer(params)

@@ -254,23 +254,27 @@ def test_failed_and_partial_acquisitions_are_not_replayed_as_successes(tmp_path)
     # Two acquisitions ran; two are emitted. Not five.
     assert source.count("acq.acquire(events)") == 2
     assert result["emitted_calls"] == 2
-    assert source.count("# NOT EMITTED: run_multiposition_acquisition") == 3
 
     # The refused one never reaches the rig's absent channel group. It may name
-    # '640' in its refusal text -- what must not exist is an executable event.
+    # '640' in its skip text -- what must not exist is an executable event.
     assert "'channel_group': 'Channel'" not in source
     assert "channels': ['640']" not in source
 
-    refusals = [line for line in source.splitlines() if "# NOT EMITTED" in line]
-    assert len(refusals) == 3, refusals
-    # Total failure names the rig's reason.
-    assert any("trigger line is not armed" in line for line in refusals), refusals
-    # Partial success refuses too, and names the position that did not complete.
-    assert any("1 of 3 recorded results entries did not complete" in line
-               and "'pos3'" in line for line in refusals), refusals
+    # The two that completed *nothing* are skipped, and the script carries on.
+    skipped = [line for line in source.splitlines() if "# SKIPPED" in line]
+    assert len(skipped) == 2, skipped
+    assert any("trigger line is not armed" in line for line in skipped), skipped
+    assert any("cannot drive a channel axis" in line for line in skipped), skipped
 
-    # And the script stops at the first step it could not emit, having run the
-    # one that did succeed -- exercised, not merely compiled.
+    # Only the partial one refuses, and it names the position that did not
+    # complete. Something happened there that cannot be faithfully reproduced.
+    refusals = [line for line in source.splitlines() if "# NOT EMITTED" in line]
+    assert len(refusals) == 1, refusals
+    assert "1 of 3 recorded results entries did not complete" in refusals[0]
+    assert "'pos3'" in refusals[0]
+
+    # Exercised, not merely compiled: it runs the first acquisition, walks past
+    # both skips, and stops at the partial one.
     visited, acquisitions = [], []
 
     class StageCore:
@@ -291,31 +295,20 @@ def test_failed_and_partial_acquisitions_are_not_replayed_as_successes(tmp_path)
             "__file__": str(tmp_path / "routine.py"), "Core": StageCore,
             "Acquisition": FakeAcquisition, "multi_d_acquisition_events": dict,
         })
-    # It stopped at the second call, so only the first acquisition's three
-    # positions were imaged -- not the failed run's, and not the refused run's.
+    # The first acquisition's three positions were imaged; the failed run's and
+    # the refused run's were not, and the partial one stopped the script before
+    # the fifth call. A partial mid-session does still strand what follows --
+    # that is the accepted cost of not reconstructing it.
     assert visited == [(1.0, 2.0), (3.0, 4.0), (5.0, 6.0)]
     assert len(acquisitions) == 3
 
 
-def test_malformed_call_the_tool_layer_rejected_is_not_emitted_as_well_formed(tmp_path):
-    """Demo rig gate, 2026-08-06, measured physically rather than by inspection.
+def _rejected_then_successful_session():
+    """The demo gate session: a call the tool layer rejected, then one that ran.
 
-    The session made two multiposition calls. The first passed `channel` at the
-    top level, which the tool does not accept -- it raised `TypeError` and did
-    nothing. The second completed 3/3. The exporter emitted **both**, leaving
-    three datasets per position where the session made one.
-
-    The phantom is worse than duplicate dose. The emitter reads the channel from
-    `protocol_params`, so the rejected top-level `channel` was invisible to it
-    and the step rendered with **no channel at all** -- acquiring in whatever
-    state was current, which was FITC from the preceding `set_channel`, a
-    channel the session never asked to image. File sizes corroborated it: the
-    two real datasets matched at 532654/532655 bytes and the phantom stood alone
-    at 532637.
-
-    Arguments the tool layer rejected never took effect, so a step built from
-    them is invention, not reproduction -- design/41 F1's failure arriving
-    through the exporter itself.
+    The first multiposition call passed `channel` at the top level, which the
+    tool does not accept -- it raised `TypeError` and did nothing. The second
+    put the channel in `protocol_params`, where the tool takes it, and completed.
     """
     positions = [{"name": "spot_1", "x_um": 1.0, "y_um": 2.0}]
     records = completed_call("set_channel", {"preset": "FITC"}, {
@@ -332,8 +325,6 @@ def test_malformed_call_the_tool_layer_rejected_is_not_emitted_as_well_formed(tm
                   "keyword argument 'channel'",
          "hint": "This is an argument error, not a hardware fault."},
     )
-    # The call that worked put its channel where the tool accepts it, so it
-    # renders *with* a channel group -- as the demo session's second call did.
     records += completed_call(
         "run_multiposition_acquisition",
         {"protocol": "timelapse", "positions": positions, "save_dir": "/data",
@@ -343,13 +334,31 @@ def test_malformed_call_the_tool_layer_rejected_is_not_emitted_as_well_formed(tm
          "results": [{"position": "spot_1", "x_um": 1.0, "y_um": 2.0,
                       "dataset_path": "/data/spot_1"}]},
     )
+    return records
 
-    _, result, source = export(tmp_path, records)
+
+def test_malformed_call_the_tool_layer_rejected_is_not_emitted_as_well_formed(tmp_path):
+    """Demo gate round 1, 2026-08-06, measured physically rather than by eye.
+
+    The exporter emitted **both** calls, leaving three datasets per position
+    where the session made one. The phantom is worse than duplicate dose: the
+    emitter reads the channel from `protocol_params`, so the rejected top-level
+    `channel` was invisible to it and the step rendered with **no channel at
+    all** -- acquiring in whatever state was current, which was FITC from the
+    preceding `set_channel`, a channel the session never asked to image. File
+    sizes corroborated it: the two real datasets matched at 532654/532655 bytes
+    and the phantom stood alone at 532637.
+
+    Arguments the tool layer rejected never took effect, so a step built from
+    them is invention, not reproduction -- design/41 F1's failure arriving
+    through the exporter itself.
+    """
+    _, result, source = export(tmp_path, _rejected_then_successful_session())
 
     # One acquisition ran; one is emitted.
     assert source.count("acq.acquire(events)") == 1
-    # The rejected call refuses, and names why it was rejected.
-    assert source.count("# NOT EMITTED: run_multiposition_acquisition") == 1
+    # The rejected call is skipped, and says why.
+    assert source.count("# SKIPPED: run_multiposition_acquisition") == 1
     assert "TypeError" in source
     # The one acquisition emitted is the real one, with its channel.
     assert "'channel_group': 'Channel', 'channels': ['DAPI']" in source
@@ -358,6 +367,62 @@ def test_malformed_call_the_tool_layer_rejected_is_not_emitted_as_well_formed(tm
     assert "multi_d_acquisition_events(**{'num_time_points': 1, 'time_interval_s': 0})" \
         not in source
     assert result["emitted_calls"] == 2      # the set_channel and the good run
+
+
+def test_script_runs_past_a_call_that_did_nothing_to_the_one_that_ran(tmp_path):
+    """Demo gate round 2, 2026-08-06. Round 1's fix refused the rejected call,
+
+        RuntimeError: NOT EMITTED: run_multiposition_acquisition — the recorded
+        call did not succeed: TypeError: ... unexpected keyword argument 'channel'
+
+    at line 97, which made the acquisition that *did* run -- lines 99-106 --
+    unreachable. The script contributed zero acquisitions.
+
+    A call that completed nothing is not the same as a call that cannot be
+    emitted. The session did nothing there, so doing nothing is the *exact*
+    reproduction, not a reconstruction; only a step that really happened and
+    cannot be reproduced earns the halt. Failed calls are ordinary -- the M5
+    gate session had three -- so refusing on them makes the export useless on
+    precisely the sessions people have.
+
+    Executed rather than compiled: round 2 shipped because a grep saw the line
+    and nothing ran it.
+    """
+    _, _, source = export(tmp_path, _rejected_then_successful_session())
+
+    assert "raise RuntimeError" not in source
+    assert "# SKIPPED: run_multiposition_acquisition" in source
+
+    visited, acquisitions, writes = [], [], []
+
+    class DemoCore:
+        def set_xy_position(self, x, y): visited.append((x, y))
+        def set_position(self, z): pass
+        def wait_for_device(self, _device): pass
+        def set_property(self, d, p, v): writes.append((d, p, v))
+        def get_property_type(self, _d, _p): return "String"
+        def get_property(self, d, p):
+            return next(v for wd, wp, v in writes if (wd, wp) == (d, p))
+
+    class FakeAcquisition:
+        def __init__(self, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def acquire(self, events): acquisitions.append(events)
+
+    exec(compile(source.replace(
+        "from pycromanager import Acquisition, Core, multi_d_acquisition_events", ""
+    ), "routine.py", "exec"), {
+        "__file__": str(tmp_path / "routine.py"), "Core": DemoCore,
+        "Acquisition": FakeAcquisition, "multi_d_acquisition_events": dict,
+    })
+
+    # It ran to the end: the channel switch, then the acquisition that the
+    # session actually performed. Round 2 reached neither.
+    assert writes == [("Emission", "Label", "Chroma-HQ535")]
+    assert visited == [(1.0, 2.0)]
+    assert len(acquisitions) == 1
+    assert acquisitions[0]["channels"] == ["DAPI"]
 
 
 def test_successful_move_reporting_error_um_is_still_emitted(tmp_path):
