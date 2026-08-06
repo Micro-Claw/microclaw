@@ -14,7 +14,7 @@ second.**
 
 ```powershell
 cd C:\path\to\microclaw
-git merge-base --is-ancestor a763098 HEAD
+git merge-base --is-ancestor 5ead7cc HEAD
 if ($?) { "PIN OK - implementation is present" } else { "PIN FAIL - stop, wrong branch" }
 ```
 
@@ -101,6 +101,30 @@ did not, which is the defect this block exists to fix.
 > session ran, and **0** attributable to its three mosaic steps.
 
 ---
+
+## Run G1 and G3 as ONE session
+
+**Read this before starting.** Three rig rounds have each stopped one step
+further on than the last, because the emitted script halts at its first refusal
+and hides everything after it. Do not discover the stop points serially again.
+Build **one** session that exercises every emitter path, in this order, then
+export it once:
+
+1. move the stage; set an exposure; snap and analyze;
+2. **mark two or three positions, then run a hooked survey over them by name**
+   (`position_names`, `snr_observer`) — this is the path fixed in round 4 and
+   never yet run on a rig;
+3. a second acquisition passing **explicit `positions`** instead of names;
+4. a **timelapse** or z-stack;
+5. **last of all**, build a stage-coordinate mosaic of one of those datasets.
+
+Export once. Steps 1–4 must all emit; step 5 must refuse. Then run the script
+with microclaw closed: it performs the whole hardware routine and stops loudly
+at the mosaic. That single run settles G1 and G3 together, and any *new*
+unemittable tool shows up in the same export rather than a round trip later.
+
+If something in 1–4 refuses, **that is the finding** — record it and stop; do
+not work around it by dropping the step.
 
 ## G3 — a session with an unsupported step stops there, and does not re-image
 
