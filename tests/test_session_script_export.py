@@ -199,6 +199,118 @@ def test_dose_detector_fails_known_bad_mosaic_rendered_as_acquisition(tmp_path, 
         _assert_zero_mosaic_dose(source)
 
 
+def _multiposition_call(positions, results, status):
+    return completed_call(
+        "run_multiposition_acquisition",
+        {"protocol": "timelapse", "positions": positions, "save_dir": "/data",
+         "name": "run", "protocol_params": {"n_frames": 1, "interval_s": 0}},
+        {"status": status, "results": results},
+    )
+
+
+def test_failed_and_partial_acquisitions_are_not_replayed_as_successes(tmp_path):
+    """M5 rig gate, 2026-08-06. The session made five multiposition calls; two
+    completed, two failed on trigger arming, one was refused by the channel-axis
+    guard. The export emitted all five, so the standalone script imaged each
+    position five times instead of twice -- 2.5x the session's dose on a
+    bleaching sample -- and then drove a channel axis the rig cannot drive.
+
+    `_recorded_tool_calls` attached every result and never asked whether the
+    call succeeded. This is the shape of that session, in order.
+    """
+    positions = [{"name": "pos1", "x_um": 1.0, "y_um": 2.0},
+                 {"name": "pos2", "x_um": 3.0, "y_um": 4.0},
+                 {"name": "pos3", "x_um": 5.0, "y_um": 6.0}]
+    ok = [{"position": p["name"], "x_um": p["x_um"], "y_um": p["y_um"],
+           "dataset_path": f"/data/{p['name']}"} for p in positions]
+
+    records = []
+    records += _multiposition_call(positions, ok, "3/3 positions completed.")
+    # Trigger line not armed: every position failed.
+    records += _multiposition_call(
+        positions,
+        [{"position": p["name"], "error": "trigger line is not armed"}
+         for p in positions],
+        "0/3 positions completed.",
+    )
+    # Refused outright by the channel-axis guard: execute_tool reports `error`.
+    records += completed_call(
+        "run_multiposition_acquisition",
+        {"protocol": "timelapse", "positions": positions, "channel": "640",
+         "save_dir": "/data", "name": "run",
+         "protocol_params": {"n_frames": 1, "interval_s": 0}},
+        {"error": "Safety constraint prevented this action: This acquisition "
+                  "cannot drive a channel axis for '640'"},
+    )
+    # The hard case: two of three positions completed.
+    records += _multiposition_call(
+        positions, [*ok[:2], {"position": "pos3", "error": "trigger sequence is 0"}],
+        "2/3 positions completed.",
+    )
+    records += _multiposition_call(positions, ok, "3/3 positions completed.")
+
+    _, result, source = export(tmp_path, records)
+
+    # Two acquisitions ran; two are emitted. Not five.
+    assert source.count("acq.acquire(events)") == 2
+    assert result["emitted_calls"] == 2
+    assert source.count("# NOT EMITTED: run_multiposition_acquisition") == 3
+
+    # The refused one never reaches the rig's absent channel group. It may name
+    # '640' in its refusal text -- what must not exist is an executable event.
+    assert "'channel_group': 'Channel'" not in source
+    assert "channels': ['640']" not in source
+
+    refusals = [line for line in source.splitlines() if "# NOT EMITTED" in line]
+    assert len(refusals) == 3, refusals
+    # Total failure names the rig's reason.
+    assert any("trigger line is not armed" in line for line in refusals), refusals
+    # Partial success refuses too, and names the position that did not complete.
+    assert any("1 of 3 recorded results entries did not complete" in line
+               and "'pos3'" in line for line in refusals), refusals
+
+    # And the script stops at the first step it could not emit, having run the
+    # one that did succeed -- exercised, not merely compiled.
+    visited, acquisitions = [], []
+
+    class StageCore:
+        def set_xy_position(self, x, y): visited.append((x, y))
+        def set_position(self, z): pass
+        def wait_for_device(self, _device): pass
+
+    class FakeAcquisition:
+        def __init__(self, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def acquire(self, events): acquisitions.append(events)
+
+    executable = source.replace(
+        "from pycromanager import Acquisition, Core, multi_d_acquisition_events", "")
+    with pytest.raises(RuntimeError, match="NOT EMITTED: run_multiposition_acquisition"):
+        exec(compile(executable, "routine.py", "exec"), {
+            "__file__": str(tmp_path / "routine.py"), "Core": StageCore,
+            "Acquisition": FakeAcquisition, "multi_d_acquisition_events": dict,
+        })
+    # It stopped at the second call, so only the first acquisition's three
+    # positions were imaged -- not the failed run's, and not the refused run's.
+    assert visited == [(1.0, 2.0), (3.0, 4.0), (5.0, 6.0)]
+    assert len(acquisitions) == 3
+
+
+def test_successful_move_reporting_error_um_is_still_emitted(tmp_path):
+    """`error_um` is a measurement a successful move reports, not a failure.
+
+    Matching it would refuse working steps, so the rule keys off the exact
+    `error` key only.
+    """
+    _, _, source = export(tmp_path, completed_call(
+        "go_to_position", {"name": "target"},
+        {"status": "Moved to 'target'.", "name": "target", "x_um": 1.5,
+         "y_um": -2.5, "error_um": 0.02}))
+    assert "# NOT EMITTED" not in source
+    assert "core.set_xy_position(1.5, -2.5)" in source
+
+
 def test_dose_detector_passes_known_good_recorded_offline_mosaic(tmp_path):
     """Known-good direction: the saved-NDTiff read contributes zero exposures."""
     _, _, source = export(tmp_path, [

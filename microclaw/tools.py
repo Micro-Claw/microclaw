@@ -334,6 +334,61 @@ def _recorded_tool_calls(records: list[dict]) -> list[tuple[str, RecordedParams]
     return calls
 
 
+def _recorded_failure(result: dict | None) -> str | None:
+    """Why a recorded call cannot be emitted as a completed step, or None.
+
+    Read structurally, never from prose. Two signals, and they are the two the
+    record actually carries:
+
+    - a top-level ``error``, which is how `execute_tool` reports both a refusal
+      and a raised exception;
+    - per-item ``error`` entries inside a top-level list, which is how a
+      part-completed acquisition reports itself (`results`, one entry per
+      position). The ``status`` line -- "0/3 positions completed." -- is a
+      symptom of that, not the source, and is deliberately not parsed.
+
+    Only the exact key ``error`` counts. ``error_um`` is a *measurement* that a
+    successful move reports, and matching it would refuse working steps.
+
+    **Partial success refuses, like total failure.** M5 gate, 2026-08-06: a
+    session made five `run_multiposition_acquisition` calls of which two
+    completed, and the export replayed all five -- 2.5x the session's dose on a
+    bleaching sample, plus a channel axis the rig cannot drive. Emitting the
+    whole loop over-images the positions that failed; emitting only the ones
+    that worked silently changes what the routine does, and the record cannot
+    say whether the operator wanted that position retried or dropped. Both are
+    reconstructions. A step the exporter cannot faithfully reproduce gets the
+    refusal, which is the same rule 41b applied to the offline mosaic and to
+    adaptive runs.
+    """
+    if not isinstance(result, dict):
+        return None
+    if "error" in result:
+        return f"the recorded call did not succeed: {result['error']}"
+    for key, value in result.items():
+        if not isinstance(value, list):
+            continue
+        failed = [item for item in value
+                  if isinstance(item, dict) and "error" in item]
+        if not failed:
+            continue
+        detail = [
+            f"{item.get('position', f'{key}[{index}]')!r}: {item['error']}"
+            for index, item in enumerate(value)
+            if isinstance(item, dict) and "error" in item
+        ]
+        named = "; ".join(detail[:3]) + (
+            f"; and {len(detail) - 3} more" if len(detail) > 3 else ""
+        )
+        return (
+            f"{len(failed)} of {len(value)} recorded {key} entries did not "
+            f"complete ({named}), so replaying this step would not reproduce the "
+            "run -- it would re-image what did complete and attempt again what "
+            "did not"
+        )
+    return None
+
+
 def _position_from_result(name: str, result: dict) -> dict | None:
     """Return a complete position delta, or None when the result is insufficient."""
     if "x_um" not in result or "y_um" not in result:
@@ -530,6 +585,12 @@ def export_session_script(
         "mm = SimpleNamespace(core=core)",
     ]
     emitted = 0
+
+    def refuse(tool: str, reason: str) -> None:
+        """One shape for every refusal: a comment, then a step that cannot run."""
+        lines.append(f"# NOT EMITTED: {tool} — {reason}")
+        lines.append(f"raise RuntimeError({('NOT EMITTED: ' + tool + ' — ' + reason)!r})")
+
     for name, params in recorded:
         if name == "export_session_script":
             continue
@@ -541,19 +602,22 @@ def export_session_script(
             lines.append("# No hardware-routine effect.")
             continue
         if renderer is None:
-            reason = getattr(
+            refuse(name, getattr(
                 fn, "_microclaw_refusal_reason",
                 "no standalone emitter has been implemented for this tool",
-            )
-            lines.append(f"# NOT EMITTED: {name} — {reason}")
-            lines.append(f"raise RuntimeError({('NOT EMITTED: ' + name + ' — ' + reason)!r})")
+            ))
+            continue
+        # Checked after the tool-level refusals so those keep their own wording,
+        # and before the renderer so a call that did not succeed can never be
+        # rendered as one that did.
+        failure = _recorded_failure(params.result)
+        if failure is not None:
+            refuse(name, failure)
             continue
         try:
             rendered = renderer(params)
         except CannotEmit as exc:
-            reason = str(exc)
-            lines.append(f"# NOT EMITTED: {name} — {reason}")
-            lines.append(f"raise RuntimeError({('NOT EMITTED: ' + name + ' — ' + reason)!r})")
+            refuse(name, str(exc))
             continue
         lines.extend(rendered.splitlines())
         emitted += 1
@@ -1176,6 +1240,20 @@ def get_available_channels(ctrl: MicroscopeController, guard: SafetyGuard) -> di
     result: dict[str, Any] = {
         "channels": list(source.names), "source": source.describe(),
     }
+    # M5 gate, 2026-08-06: a session ran with `channels.allowed: []`, was told it
+    # had four channels, picked one, and was refused. The allowlist is still the
+    # only authority -- asking it here rather than re-reading the config keeps it
+    # that way -- and `channels` still reports what the rig has, so this hides no
+    # rig reality. It only stops the model being offered what it cannot use.
+    authorized = []
+    for name in source.names:
+        try:
+            guard.check_channel(name)
+        except SafetyViolation:
+            continue
+        authorized.append(name)
+    if authorized != list(source.names):
+        result["authorized"] = authorized
     # Never let a refused slot look like "this rig simply has no channels".
     if source.unavailable:
         result["unavailable"] = {
