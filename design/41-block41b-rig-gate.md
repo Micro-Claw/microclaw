@@ -14,7 +14,7 @@ second.**
 
 ```powershell
 cd C:\path\to\microclaw
-git merge-base --is-ancestor 8bfdceb HEAD
+git merge-base --is-ancestor a763098 HEAD
 if ($?) { "PIN OK - implementation is present" } else { "PIN FAIL - stop, wrong branch" }
 ```
 
