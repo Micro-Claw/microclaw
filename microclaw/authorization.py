@@ -51,12 +51,15 @@ class RigAuthorizationError(RuntimeError):
         self.diagnostics = tuple(diagnostics)
 
 
-def _live_emu_laser_enables(
+def _live_emu_lasers(
     ctrl: Any, loaded_devices: list[str]
-) -> tuple[list[tuple[int, str, str]], list[str]]:
-    """Read semantic EMU laser enables from the running MM installation.
+) -> tuple[dict[int, dict], list[str]]:
+    """Read the semantic EMU laser map from the running MM installation.
 
-    This is startup discovery only: asking ImageJ for its application directory
+    Returns slot -> laser record (with the configured design/39 names) plus any
+    problem strings.  An empty map with no problems is an ordinary non-EMU rig.
+
+    This is read-only discovery: asking ImageJ for its application directory
     and reading EMU's config file do not write hardware.  In particular, do not
     treat a per-user cached/guessed MM path as authoritative here; a stale path
     is not evidence about the live installation being authorized.
@@ -72,19 +75,19 @@ def _live_emu_laser_enables(
     if not callable(getattr(ctrl, "get_mm_app_dir", None)):
         # Read-only/offline controller implementations have no live JVM whose
         # installation can be authorized.
-        return [], []
+        return {}, []
     try:
         # Startup validation is read-only, including with respect to the
         # per-user locator cache. Normal tool callers retain write-through.
         resolution = resolve_mm_app_dir(ctrl, cache_live=False)
     except Exception as exc:
-        return [], [
+        return {}, [
             "Could not locate the live Micro-Manager installation for EMU semantic "
             f"laser-enable discovery: {_clean_exception_message(exc)}"
         ]
     mm_app_dir = resolution.path
     if mm_app_dir is None:
-        return [], [
+        return {}, [
             "Could not establish the live Micro-Manager installation for EMU "
             f"semantic laser-enable discovery (live probe: {resolution.live_probe}; "
             "no validated fallback). Verify the running ImageJ/Micro-Manager "
@@ -97,8 +100,8 @@ def _live_emu_laser_enables(
         # actual config says this rig uses EMU; a validated live path without
         # one is therefore an ordinary non-EMU rig.
         if resolution.source == "live" and not _has_emu_config(mm_app_dir):
-            return [], []
-        return [], [
+            return {}, []
+        return {}, [
             f"Could not establish EMU semantics for the live installation: "
             f"{mm_app_dir} was located via {resolution.source!r} "
             f"(live probe: {resolution.live_probe}) but has no readable "
@@ -116,14 +119,23 @@ def _live_emu_laser_enables(
         )
     try:
         config = read_emu_config(mm_app_dir, loaded_devices)
-        lasers = build_emu_map(config["properties"])["lasers"]
+        # The parameters block carries the configured slot names (design/39).
+        # Without it a slot has no name, and a name is what a channel is.
+        lasers = build_emu_map(config["properties"], config["parameters"])["lasers"]
     except Exception as exc:
-        return [], [
+        return {}, [
             f"Could not resolve EMU semantic laser enables from {config_path}: "
             f"{_clean_exception_message(exc)}"
         ]
+    return lasers, problems
 
+
+def _emu_enable_pairs(
+    lasers: dict[int, dict]
+) -> tuple[list[tuple[int, str, str]], list[str]]:
+    """Exact (slot, device, property) for every laser enable the map resolves."""
     enables: list[tuple[int, str, str]] = []
+    problems: list[str] = []
     for slot, laser in sorted(lasers.items()):
         enable = laser.get("enable")
         if enable is None:
@@ -190,6 +202,9 @@ class AuthorizationMap:
     authorized_presets: frozenset[str] = frozenset()
     channel_expansion_hashes: dict[str, str] = field(default_factory=dict)
     diagnostics: tuple[ConfigDiagnostic, ...] = ()
+    # Which source produced this session's channels. Only the runtime refusal
+    # messages read it; the executor re-derives the source fresh at apply time.
+    channel_source: str = "config-group"
 
     def to_dict(self) -> dict:
         out = asdict(self)
@@ -286,6 +301,195 @@ def _expand_preset(core: Any, preset: str) -> list[tuple[str, str, str | None]]:
 def _expansion_hash(effects: Iterable[tuple[str, str, str | None]]) -> str:
     encoded = json.dumps(list(effects), ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+CHANNEL_SOURCE_CONFIG_GROUP = "config-group"
+CHANNEL_SOURCE_EMU_LASER_MAP = "emu-laser-map"
+CHANNEL_SOURCE_NONE = "none"
+
+# An EMU-sourced channel is laser-only, deliberately (design/41 F6). EMU names
+# filter slots but nothing in its configuration joins a laser to a filter, and
+# an invented join is one wrong emission filter away from a ruined dataset. A
+# rig that needs a channel to move more than its lasers declares that where
+# Micro-Manager already expresses it: a `Channel` config group, which this
+# module then prefers.
+EMU_CHANNEL_SCOPE = (
+    "An EMU-sourced channel switches laser enables only. EMU's configuration "
+    "carries no laser-to-filter association, so nothing else is moved and "
+    "nothing is inferred; set the emission filter yourself, or define a "
+    "Micro-Manager \"Channel\" config group and Microclaw will use that instead."
+)
+
+
+@dataclass(frozen=True)
+class ChannelSource:
+    """Where this session's channels come from, and what each one writes.
+
+    One source, one executor: :meth:`expand` is the only place a channel name
+    becomes an ordered list of (device, property, value) effects, whichever
+    source produced it, and `execute_channel_plan` never learns which.
+    """
+
+    kind: str
+    names: tuple[str, ...] = ()
+    effects: dict[str, tuple[tuple[str, str, str], ...]] = field(default_factory=dict)
+    # Channel-shaped things this source found but refused to offer, keyed by the
+    # best name it has for them, with the reason. Never an empty list that reads
+    # as "this rig has no channels".
+    unavailable: dict[str, list[str]] = field(default_factory=dict)
+    problems: tuple[str, ...] = ()
+
+    def expand(self, core: Any, channel: str) -> list[tuple[str, str, str | None]]:
+        if self.kind != CHANNEL_SOURCE_EMU_LASER_MAP:
+            return _expand_preset(core, channel)
+        effects = self.effects.get(channel)
+        if effects is None:
+            raise RigAuthorizationError(
+                f"Channel {channel!r} was refused: "
+                + "; ".join(self.unavailable.get(channel, ["it is not offered by this "
+                                                           "rig's EMU laser map"]))
+                + f". Available: {list(self.names)}. {self.describe()}"
+            )
+        return [tuple(effect) for effect in effects]
+
+    def describe(self) -> str:
+        if self.kind == CHANNEL_SOURCE_CONFIG_GROUP:
+            return f"Channels come from Micro-Manager's {CHANNEL_CONFIG_GROUP!r} config group."
+        if self.kind == CHANNEL_SOURCE_NONE:
+            # Deliberately source-neutral: a rig that has no other channel
+            # source must not be handed advice about one it does not run.
+            return (
+                "This rig offers no channels at all: Micro-Manager's \"Channel\" config "
+                "group holds no preset, and no other channel source was readable."
+            )
+        return (
+            "This rig has no Micro-Manager \"Channel\" config group, so its channels "
+            "are the named laser slots in EMU's configuration: a channel's name is "
+            "that slot's configured `Laser <n> - Name`, and its enable device/property "
+            f"must be declared under top-level `illumination.shutters`. {EMU_CHANNEL_SCOPE}"
+        )
+
+
+def _emu_channel_effects(
+    lasers: dict[int, dict], shutter_for: Any
+) -> tuple[dict[str, tuple[tuple[str, str, str], ...]], dict[str, list[str]]]:
+    """Turn the EMU laser map into channel name -> ordered enable writes.
+
+    Nothing here infers a slot index or a name: an unnamed, conflicted, or
+    ambiguous slot is refused with its reason rather than being called
+    "Laser 3" or "slot 2".  The values written are the ones the safety config
+    declares for that exact shutter — EMU supplies the identity that was got
+    wrong on M5, the declaration supplies what "on" and "off" mean.
+    """
+    usable: dict[str, tuple[int, str, str, Any]] = {}
+    unavailable: dict[str, list[str]] = {}
+    duplicated: set[str] = set()
+
+    for slot, laser in sorted(lasers.items()):
+        label = f"EMU laser slot {slot}"
+        enable = laser.get("enable") or {}
+        device, prop = enable.get("device"), enable.get("property")
+        conflict = laser.get("name_conflict")
+        name = laser.get("name")
+        if conflict:
+            unavailable[label] = [
+                "two EMU panels bind different names to this slot "
+                f"({', '.join(repr(item) for item in conflict)}), so it cannot be named; "
+                "give the slot's panels one consistent `Name` parameter in EMU"
+            ]
+            continue
+        if not isinstance(name, str) or not name.strip():
+            unavailable[label] = [
+                "the slot has no configured name in EMU's `parameters` block "
+                f"(`Laser {slot} - Name`), and a channel name is never inferred from a "
+                "slot index or a device property string"
+            ]
+            continue
+        name = name.strip()
+        if not isinstance(device, str) or not device or not isinstance(prop, str) or not prop:
+            unavailable[name] = [
+                f"{label} has no resolvable Micro-Manager enable device/property, so "
+                "there is nothing safe to write for this channel"
+            ]
+            continue
+        shutter = shutter_for(device, prop)
+        if shutter is None:
+            unavailable[name] = [
+                f"its enable {device}.{prop} is not a declared illumination shutter; "
+                "add that exact device/property (with its on_value/off_value) under "
+                "top-level `illumination.shutters`"
+            ]
+            continue
+        if name in usable or name in duplicated:
+            duplicated.add(name)
+            previous = usable.pop(name, None)
+            slots = sorted({slot, *( [previous[0]] if previous else [] )})
+            unavailable[name] = [
+                f"more than one EMU laser slot is named {name!r} (slots "
+                f"{', '.join(str(item) for item in slots)}), so the channel is "
+                "ambiguous; give each slot a distinct `Laser <n> - Name`"
+            ]
+            continue
+        usable[name] = (slot, device, prop, shutter)
+
+    channels: dict[str, tuple[tuple[str, str, str], ...]] = {}
+    for name, (_slot, device, prop, shutter) in usable.items():
+        # Outgoing lasers go off before the incoming one comes on: it is the
+        # order that never has two lines armed at once, and a failure part-way
+        # through leaves less light on the sample, not more. The hand-written
+        # M5 sequence enabled first; the end state is identical.
+        effects = [
+            (other_device, other_prop, other_shutter.off_value)
+            for other, (_s, other_device, other_prop, other_shutter) in usable.items()
+            if other != name
+        ]
+        effects.append((device, prop, shutter.on_value))
+        channels[name] = tuple(effects)
+    return channels, unavailable
+
+
+def _channel_source(
+    ctrl: Any, shutter_for: Any, lasers: dict[int, dict] | None = None
+) -> ChannelSource:
+    """Pick this rig's one channel source.
+
+    The Micro-Manager config group wins whenever it offers a preset — a rig that
+    has channels there behaves exactly as it did before this function existed,
+    and the EMU config is not even read. Only a rig with nothing to drive looks
+    further. `lasers` lets a caller that has already read the map (the startup
+    validator) avoid reading it twice.
+    """
+    core = ctrl.core
+    try:
+        presets = _strings(core.get_available_configs(CHANNEL_CONFIG_GROUP))
+    except Exception as exc:
+        # Enumeration failed, so absence was never established. Claim nothing.
+        return ChannelSource(CHANNEL_SOURCE_CONFIG_GROUP, problems=(
+            "Could not enumerate presets in the \"Channel\" group: "
+            + _clean_exception_message(exc),
+        ))
+    if presets:
+        return ChannelSource(CHANNEL_SOURCE_CONFIG_GROUP, tuple(presets))
+
+    problems: list[str] = []
+    if lasers is None:
+        try:
+            loaded = _strings(core.get_loaded_devices())
+        except Exception:
+            loaded = []
+        lasers, problems = _live_emu_lasers(ctrl, loaded)
+    if not lasers:
+        # No config group and no EMU map: exactly the pre-block behaviour, with
+        # no EMU-flavoured advice invented for a rig that has no EMU.
+        return ChannelSource(CHANNEL_SOURCE_NONE, problems=tuple(problems))
+    channels, unavailable = _emu_channel_effects(lasers, shutter_for)
+    return ChannelSource(
+        CHANNEL_SOURCE_EMU_LASER_MAP,
+        tuple(sorted(channels)),
+        channels,
+        unavailable,
+        tuple(problems),
+    )
 
 
 def _clean_exception_message(exc: Exception) -> str:
@@ -689,10 +893,9 @@ def validate_live_rig(
         loaded_devices = []
         loaded_devices_error = f"Could not enumerate connected devices: {exc}"
 
-    emu_enables, emu_discovery_problems = _live_emu_laser_enables(
-        ctrl, loaded_devices
-    )
-    emu_warnings = list(emu_discovery_problems)
+    emu_lasers, emu_discovery_problems = _live_emu_lasers(ctrl, loaded_devices)
+    emu_enables, emu_resolution_problems = _emu_enable_pairs(emu_lasers)
+    emu_warnings = [*emu_discovery_problems, *emu_resolution_problems]
     for slot, device, prop in emu_enables:
         if (device, prop) in illumination_shutter_pairs:
             continue
@@ -961,30 +1164,42 @@ def validate_live_rig(
         ))
 
     allowed_channels = parsed_config.constraints.allowed_channels
-    try:
-        available_groups = _strings(core.get_available_config_groups())
-    except Exception:
-        available_groups = None
-    try:
-        available_presets = _strings(core.get_available_configs(CHANNEL_CONFIG_GROUP))
-    except Exception as exc:
-        available_presets = None
-        errors.append(
-            "Could not enumerate presets in the \"Channel\" group: "
-            + _clean_exception_message(exc)
-        )
+    declared_shutters = {
+        (item.device, item.property): item for item in illumination.shutters
+    }
+    source = _channel_source(
+        ctrl,
+        lambda device, prop: declared_shutters.get((device, prop)),
+        lasers=emu_lasers,
+    )
+    errors.extend(source.problems)
+    available_presets = list(source.names)
+    # An enumeration failure is not evidence that a preset is absent, so it
+    # drops every claim without also advising the operator to add presets.
+    unenumerable = source.kind == CHANNEL_SOURCE_CONFIG_GROUP and bool(source.problems)
+    missing: list[str] = []
     if allowed_channels is None:
-        presets = available_presets or []
-    elif available_presets is None:
+        presets = available_presets
+    elif unenumerable:
         presets = []
     else:
         available = set(available_presets)
         missing = [preset for preset in allowed_channels if preset not in available]
         if missing:
-            channel_group_exists = (
-                available_groups is None or CHANNEL_CONFIG_GROUP in available_groups
-            )
-            if channel_group_exists:
+            if source.kind == CHANNEL_SOURCE_EMU_LASER_MAP:
+                corrective_action = (
+                    "This rig's channels come from its EMU laser map, not a "
+                    f"Micro-Manager Channel group; the channels it offers are "
+                    f"{available_presets}. Use one of those exact configured names, or "
+                    "remove the claim from top-level `channels.allowed`. "
+                    + source.describe()
+                )
+                exclusion_reason = (
+                    "channel is not a named laser slot in this rig's EMU laser map "
+                    f"(offered: {available_presets}); use an exact configured name or "
+                    "remove it from top-level `channels.allowed`"
+                )
+            elif source.kind == CHANNEL_SOURCE_CONFIG_GROUP:
                 corrective_action = (
                     "Add each preset to Micro-Manager's Channel group, or remove its "
                     "exact name from top-level `channels.allowed`."
@@ -1014,14 +1229,17 @@ def validate_live_rig(
         presets = [preset for preset in allowed_channels if preset in available]
     authorized_presets: set[str] = set()
     excluded_presets: dict[str, list[str]] = {
-        preset: [exclusion_reason]
-        for preset in (missing if allowed_channels is not None and available_presets is not None else [])
+        preset: [exclusion_reason] for preset in missing
     }
+    # A channel-shaped thing the source refused stays visible with its reason,
+    # so an operator never sees a rig that merely looks channel-less.
+    for label, reasons in source.unavailable.items():
+        excluded_presets.setdefault(label, list(reasons))
     channel_expansion_hashes: dict[str, str] = {}
     for preset in presets:
         reasons = []
         try:
-            effects = _expand_preset(core, preset)
+            effects = source.expand(core, preset)
             channel_expansion_hashes[preset] = _expansion_hash(effects)
         except Exception as exc:
             effects = []
@@ -1239,6 +1457,7 @@ def validate_live_rig(
         authorized_presets=frozenset(authorized_presets),
         channel_expansion_hashes=channel_expansion_hashes,
         diagnostics=tuple(demotions),
+        channel_source=source.kind,
     )
     ctrl.authorization_map = report
     return report
@@ -1285,6 +1504,20 @@ def authorize_channel(ctrl: Any, preset: str) -> None:
     report = getattr(ctrl, "authorization_map", None)
     if report is not None and preset not in report.authorized_presets:
         reasons = report.excluded_presets.get(preset, ["preset was not authorized at startup"])
+        # On a rig whose channels are not Micro-Manager presets, the remedy is
+        # a different one and the operator must be told which rig they are on.
+        source_note = ""
+        if report.channel_source == CHANNEL_SOURCE_EMU_LASER_MAP:
+            refused = {
+                label: detail for label, detail in report.excluded_presets.items()
+                if label.startswith("EMU laser slot ")
+            }
+            source_note = (
+                " " + ChannelSource(CHANNEL_SOURCE_EMU_LASER_MAP).describe()
+                + (f" Slots this rig refused to name: {refused}." if refused else "")
+            )
+        elif report.channel_source == CHANNEL_SOURCE_NONE:
+            source_note = " " + ChannelSource(CHANNEL_SOURCE_NONE).describe()
         raise RigAuthorizationError(
             f"Channel preset {preset!r} was refused: {'; '.join(reasons)}. The preset "
             "itself must appear under top-level `channels.allowed`, and every expanded "
@@ -1293,6 +1526,7 @@ def authorize_channel(ctrl: Any, preset: str) -> None:
             "`illumination.shutters`, or `illumination.power_properties`. An explicitly "
             "excluded or unclassifiable effect has no legal declaration until that "
             "exclusion is removed or its hardware semantics are established."
+            + source_note
         )
 
 
@@ -1415,9 +1649,13 @@ def execute_channel_plan(
     across each round trip, so an in-flight set/wait/read cannot be interrupted.
     """
     authorize_channel(ctrl, preset)
+    # Re-derived live, exactly like the preset re-read it replaces: an EMU
+    # config file is as editable mid-session as a Micro-Manager preset, and the
+    # startup hash stays a drift diagnostic rather than an authorization token.
+    source = _channel_source(ctrl, guard.is_illumination_enable)
     effects = tuple(
         (device, prop, "" if value is None else str(value))
-        for device, prop, value in _expand_preset(ctrl.core, preset)
+        for device, prop, value in source.expand(ctrl.core, preset)
     )
     for effect in effects:
         _authorize_channel_effect(ctrl, guard, *effect, confirm_fn)
@@ -1465,13 +1703,21 @@ def execute_channel_plan(
             ) from exc
         raise ChannelPlanPartialApplicationError(message) from exc
 
-    return {
+    result = {
         "status": f"Channel set to '{preset}'.",
         "writes": len(effects),
+        # The exact writes that ran, in order. The script exporter renders these
+        # rather than reconstructing a plan, so an emitted script cannot differ
+        # from what the rig did (block 41b's discipline).
+        "effects": [list(effect) for effect in effects],
+        "channel_source": source.kind,
         "expansion_drift": drifted,
         "startup_expansion_sha256": startup_hash,
         "applied_expansion_sha256": fresh_hash,
     }
+    if source.kind == CHANNEL_SOURCE_EMU_LASER_MAP:
+        result["scope"] = EMU_CHANNEL_SCOPE
+    return result
 
 
 def authorize_path(ctrl: Any, path: str) -> None:
