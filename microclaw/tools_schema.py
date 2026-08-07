@@ -1410,6 +1410,46 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "open_artifact",
+        "description": (
+            "Open a file microclaw wrote — a mosaic or exported TIFF, or a saved "
+            "acquisition dataset directory — on the user's screen, and verify it "
+            "against the digests recorded when it was written. This is how you "
+            "show the user a file: an image file opens in the ImageJ window "
+            "Micro-Manager runs under, a dataset directory opens in "
+            "Micro-Manager's own dataset viewer, and the result reports which "
+            "windows appeared with their dimensions. Never tell the user to open "
+            "a file in FIJI or the MM GUI; call this instead. If no window "
+            "appeared the result says so — do not claim a file is on screen "
+            "unless opened is true. Zero exposure; touches no hardware."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string",
+                         "description": "The artifact path a tool returned."},
+                "analyze": {"type": "boolean", "description":
+                    "Also read the pixels into this conversation so you can "
+                    "measure or describe them. Default false. Set it ONLY when "
+                    "the user asked you to analyze, interpret, count, or check "
+                    "the contents of the image. If they just want to look at it "
+                    "— 'show me', 'open it' — leave it false: the file is "
+                    "already on their screen, and rendering it also costs "
+                    "context for every remaining turn of the session. Not "
+                    "available for a dataset directory; export or mosaic the "
+                    "frames you want first."},
+                "axis_selection": {"type": "object", "description":
+                    "With analyze, fixes the plane to render in a multi-plane "
+                    "TIFF, e.g. {\"z\": 3}. Keys are the file's own stack axis "
+                    "names; if you omit it for a stack, the refusal names the "
+                    "exact keys and lengths to pass."},
+                "max_size": {"type": "integer", "description":
+                    "With analyze, longest rendered edge in px. Default 512."},
+            },
+            "required": ["path"],
+        },
+    },
+    {
         "name": "read_hook_log",
         "description": (
             "Read a hook's output log file after an acquisition completes. "

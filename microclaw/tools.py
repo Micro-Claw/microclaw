@@ -4537,6 +4537,215 @@ def run_adaptive_survey(
     return result
 
 
+# --- The read side: open what we wrote (design/42) ---
+
+def _sidecar_manifest(resolved: Path) -> dict | None:
+    """The manifest microclaw wrote beside this artifact, if it wrote one.
+
+    build_stage_coordinate_mosaic writes `<artifact><suffix>.json` — the same
+    spelling reproduced here rather than guessed. Anything else living at that
+    name is not ours, and reading it as provenance would be worse than having
+    none, so the shape is checked before it counts.
+    """
+    sidecar = resolved.with_suffix(resolved.suffix + ".json")
+    if not sidecar.is_file():
+        return None
+    try:
+        manifest = json.loads(sidecar.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(manifest, dict) or "manifest_payload" not in manifest:
+        return None
+    return manifest
+
+
+def _verify_against_manifest(manifest: dict, resolved: Path) -> dict:
+    """Recompute both digests the writer recorded, and report match/mismatch.
+
+    A mismatch does NOT stop the file opening. The operator is entitled to look
+    at a file whose provenance failed — that is often exactly the file they need
+    to look at — so this reports and never refuses.
+    """
+    inner = manifest.get("manifest_payload")
+    if not isinstance(inner, dict):
+        return {"provenance": ("A manifest sits beside this file but has no "
+                               "manifest_payload; nothing could be verified.")}
+    payload_bytes = json.dumps(
+        inner, sort_keys=True, separators=(",", ":"), allow_nan=False
+    ).encode("utf-8")
+    verified = {
+        "kind": inner.get("kind"),
+        "manifest_path": str(resolved.with_suffix(resolved.suffix + ".json")),
+        "manifest_payload_sha256_matches":
+            hashlib.sha256(payload_bytes).hexdigest()
+            == manifest.get("manifest_payload_sha256"),
+    }
+    recorded_pixels = inner.get("pixel_sha256")
+    if recorded_pixels is not None:
+        try:
+            pixels = tifffile.imread(resolved)
+            digest = hashlib.sha256(
+                pixels.astype(np.uint16, copy=False).tobytes(order="C")
+            ).hexdigest()
+            verified["pixel_sha256_matches"] = digest == recorded_pixels
+        except Exception as exc:
+            verified["pixel_sha256_matches"] = None
+            verified["pixel_sha256_unverified"] = (
+                f"Could not re-read the pixels to check them: "
+                f"{type(exc).__name__}: {exc}"
+            )
+    # The numbers that make the picture readable, straight from the manifest.
+    verified |= {key: inner[key] for key in
+                 ("coverage_fraction", "origin_um", "extent_um",
+                  "output_basis_um", "overwrite_convention") if key in inner}
+    if "calibration_warning" in inner:
+        verified["calibration_warning"] = inner["calibration_warning"]
+    return verified
+
+
+def _measured_shape(resolved: Path) -> dict:
+    """What Python reads from the artifact, to check the window against.
+
+    A bridge call returning is not proof a window painted, and a title match
+    alone is nearly self-confirming — the dimensions are the load-bearing part
+    (design/42). Header reads only for a TIFF; for a dataset, the index plus one
+    plane. Zero exposure either way.
+    """
+    try:
+        if resolved.is_dir():
+            dataset = Dataset(str(resolved))
+            coordinates = dataset.get_image_coordinates_list()
+            if not coordinates:
+                return {"error": "The dataset index lists no images."}
+            plane = dataset.read_image(**coordinates[0])
+            return {"width": int(plane.shape[-1]), "height": int(plane.shape[-2]),
+                    "n_planes": len(coordinates)}
+        with tifffile.TiffFile(resolved) as handle:
+            series = handle.series[0]
+            shape = tuple(int(x) for x in series.shape)
+            return {"width": shape[-1], "height": shape[-2],
+                    "n_planes": int(np.prod(shape[:-2])) if len(shape) > 2 else 1}
+    except Exception as exc:
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+
+def _select_plane(resolved: Path, axis_selection: dict | None) -> tuple[np.ndarray, dict]:
+    """One 2-D plane to render, or a ValueError naming what is missing.
+
+    Refuses on an ambiguous stack rather than silently rendering plane 0 and
+    letting the model describe it as "the image". Axis names are the ones
+    tifffile reads out of the file, lowercased, so the refusal can name the
+    exact keys a retry needs.
+    """
+    with tifffile.TiffFile(resolved) as handle:
+        series = handle.series[0]
+        axes = str(series.axes)
+        array = series.asarray()
+    array = np.squeeze(array)
+    if array.ndim == 2:
+        return array, {}
+    stack_axes = [name.lower() for name, length in zip(axes, series.shape)
+                  if length > 1][:-2]
+    if not stack_axes or len(stack_axes) != array.ndim - 2:
+        # Axis labels and array rank disagree; index positionally rather than
+        # invent names for something we cannot describe.
+        stack_axes = [f"axis{i}" for i in range(array.ndim - 2)]
+    selection = axis_selection or {}
+    unknown = set(selection) - set(stack_axes)
+    if unknown:
+        raise ValueError(
+            f"axis_selection names axes this file does not have: {sorted(unknown)}. "
+            f"Its stack axes are {stack_axes} with lengths "
+            f"{list(array.shape[:-2])}."
+        )
+    missing = [name for name in stack_axes if name not in selection]
+    if missing:
+        raise ValueError(
+            f"This file is a {list(array.shape)} stack, so 'the image' is "
+            f"ambiguous. Pass axis_selection with an index for each of "
+            f"{missing} (lengths {list(array.shape[:-2])}) and call again."
+        )
+    index = []
+    for name, length in zip(stack_axes, array.shape[:-2]):
+        value = selection[name]
+        if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value < length:
+            raise ValueError(
+                f"axis_selection['{name}'] must be an integer in 0..{length - 1}; "
+                f"got {value!r}."
+            )
+        index.append(value)
+    return array[tuple(index)], {name: selection[name] for name in stack_axes}
+
+
+@emits_nothing
+def open_artifact(
+    ctrl: MicroscopeController,
+    guard: SafetyGuard,
+    path: str,
+    analyze: bool = False,
+    axis_selection: dict | None = None,
+    max_size: int = 512,
+) -> dict | list:
+    """Open a file microclaw wrote in Micro-Manager, and say what it is.
+
+    Zero exposure; moves nothing. Opens a NEW window and leaves it — microclaw
+    never closes or re-uses the user's windows — and never renders the pixels
+    into the conversation unless `analyze` asks it to.
+    """
+    resolved = Path(guard.resolve_readable_path(path))
+    if not resolved.exists():
+        return {"error": f"Artifact not found: {resolved}"}
+
+    payload: dict = {"path": str(resolved)}
+    opened = ctrl.open_in_imagej(str(resolved))
+    payload["opened"] = opened
+    measured = _measured_shape(resolved)
+    payload["measured"] = measured
+    windows = opened.get("windows") or []
+    if opened.get("opened") and "width" in measured:
+        payload["dimensions_match"] = any(
+            window.get("width") == measured["width"]
+            and window.get("height") == measured["height"]
+            for window in windows
+        )
+
+    manifest = _sidecar_manifest(resolved)
+    if manifest is not None:
+        payload |= _verify_against_manifest(manifest, resolved)
+    else:
+        payload["provenance"] = (
+            "No microclaw manifest beside this file; opened, but its origin is "
+            "unverified."
+        )
+
+    # The default path ends here: the file is on the user's screen and its
+    # provenance is stated. Reading the pixels in is a separate, costlier act —
+    # an image block stays in the conversation for every subsequent turn.
+    if not analyze or resolved.is_dir():
+        if analyze and resolved.is_dir():
+            payload["analysis_refused"] = (
+                "A dataset directory is open in Micro-Manager's viewer, but "
+                "reading its pixels here needs one plane named: export or "
+                "mosaic the frames you want, then analyze that file."
+            )
+        return payload
+
+    try:
+        plane, selection = _select_plane(resolved, axis_selection)
+    except Exception as exc:
+        payload["analysis_refused"] = str(exc)
+        return payload
+    payload["selection"] = selection
+    mask = plane != 0
+    zero_fraction = float(np.count_nonzero(~mask) / mask.size)
+    payload["thumbnail_stretch"] = (
+        f"2nd-99.8th percentile measured over nonzero pixels only; "
+        f"{zero_fraction:.0%} of this image is zero and was excluded from the "
+        "stretch, so uncovered area does not flatten the real signal."
+    )
+    return image_content(payload, plane, max_size=max_size, mask=mask)
+
+
 @emits_nothing
 def read_hook_log(ctrl: MicroscopeController, guard: SafetyGuard, log_path: str) -> dict:
     """Read a hook's output log file after an acquisition completes."""
@@ -5832,6 +6041,7 @@ TOOL_REGISTRY = {
     "run_adaptive_zstack": run_adaptive_zstack,
     "run_adaptive_timelapse": run_adaptive_timelapse,
     "run_adaptive_survey": run_adaptive_survey,
+    "open_artifact": open_artifact,
     "read_hook_log": read_hook_log,
     "rank_hook_log": rank_hook_log,
     "validate_positions": validate_positions,
