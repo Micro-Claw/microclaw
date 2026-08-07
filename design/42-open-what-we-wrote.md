@@ -85,10 +85,15 @@ off by default and the tool description says plainly when to turn it on.
 
 `IJ.open(path)` is the primary, not `IJ.runMacro('open("…")')`:
 
-- It is the same entry point drag-and-drop uses (`ij.plugin.DragAndDrop` and
+- ~~It is the same entry point drag-and-drop uses (`ij.plugin.DragAndDrop` and
   `IJ.open` both land in `ij.io.Opener.open`), so Bio-Formats delegation via
-  `HandleExtraFileTypes` comes along for free — confirm in the spike rather than
-  trusting this paragraph.
+  `HandleExtraFileTypes` comes along for free~~ — **disproved for directories,
+  2026-08-07; see §"What the spike measured" F1. The instruction to confirm
+  rather than trust this paragraph was the right one, and it was wrong.** For a
+  single TIFF `IJ.open` is correct and measured. For a *directory* it is a
+  silent no-op that holds the bridge for ~7 s, while dragging the same folder
+  onto the toolbar opens it — so the two are not one entry point, and
+  Bio-Formats delegation is separately unproven here.
 - No macro engine, no global `ResultsTable`, no EDT batch-mode juggling.
 - **No string escaping.** A Windows path (`D:\SSD\stitch_test\…`) goes through as
   an argument. Embedding it in macro source would require escaping backslashes
@@ -291,7 +296,7 @@ reaching for `analyze` out of helpfulness:
 > in FIJI. Only pass `analyze=true` when they asked you to interpret the image
 > rather than look at it, and never describe an image you have not opened.
 
-## Spike first
+## Spike first — **DONE 2026-08-07, results in §"What the spike measured"**
 
 Per repo convention, `design/42-ij-open-spike.py` committed, outputs not. Run on
 the rig with MM open. Checks, each isolated:
@@ -310,6 +315,64 @@ the rig with MM open. Checks, each isolated:
    serialise under one lock, so a modal Bio-Formats import dialog could stall
    every subsequent core call. **If it can hang, that is a blocker** and the tool
    needs a non-blocking path before it ships.
+
+## What the spike measured — M5, 2026-08-07 (block 42a)
+
+`design/42-ij-open-spike.py`, MMCore 12.5.0 / ImageJ 1.53c / Windows 11.
+Evidence `out42a.txt` under `Micro-Claw/` (UTF-16LE). **6 PASS / 3 INFO / 1 SKIP,
+no FAIL.** Neither stop condition fired, so the design below stands — with one
+mechanism replaced and one assumption withdrawn.
+
+**Confirmed.**
+
+- **The design/10 correction is now measured, not argued.** `ij.IJ` and
+  `ij.WindowManager` each wrapped cleanly through `_new_static_java_class` in
+  both orders behind a decoy, exposing their own 138 / 38 methods and none of the
+  other's. The **control** — the same wrap with the eviction bypassed —
+  reproduced design/12 exactly: `ij.WindowManager` came back carrying
+  `java.lang.System`'s 40 methods and missing `getIDList`/`getImageCount`/
+  `getImage`. design/10 §2 and Net conclusions #2 are amended accordingly.
+- **`IJ.open` on the mosaic works.** Window id `4294967292`, title
+  `stitch_test_mosaic.tiff`, **1004×1024 == tifffile's (1024, 1004)**. The
+  operator confirmed by eye that it painted. This is the last clause of the
+  failing session, executed.
+- **No stall, and no wait needed.** `open_s` 0.018 s, a trivial core call
+  straight after 0.000 s, and the window visible to `WindowManager` with **no
+  sleep at all**. So the structural check reads once; it does not poll.
+- **Re-wrapping statics per call is hygiene, not a rule.** A held `ij.IJ` shadow
+  answered identically after `ij.WindowManager` evicted the shared key, and the
+  mirror case held. §"Constraints this must respect" said this was a spike
+  question rather than something to design around; it is now answered, and the
+  advice stands for consistency rather than for correctness.
+
+**F1 — `IJ.open` is not drag-and-drop, for directories. This replaces a
+mechanism.** `IJ.open` on the NDTiff directory raised nothing, opened nothing,
+and **held the bridge 6.94 s** doing it. The operator then dragged the same
+folder onto the ImageJ toolbar and **it opened**. So `ij.plugin.DragAndDrop` and
+`IJ.open` do not both land in `ij.io.Opener.open` for a directory, and the
+paragraph above that claimed they did is struck.
+
+This matters more than a corner case: NDTiff datasets are the commonest thing
+microclaw writes, and design/43 F7 turns on *"NDTiff opens directly in Fiji —
+never export just to look"*. Block 42b must find the entry point the drag
+actually dispatches to, or refuse directories by name. **Calling `IJ.open` on a
+directory and reporting the result is the one thing it must not do** — a silent
+seven-second no-op on the commonest artifact is worse than an honest refusal.
+
+**F2 — Bio-Formats delegation is unproven, and the probe was inconclusive rather
+than negative.** `loci.formats.ImageReader` resolved; `loci.plugins.BF`,
+`loci.plugins.LociImporter` and `HandleExtraFileTypes` all returned "Class not
+found on any classloaders". That is weak evidence: `HandleExtraFileTypes` is in
+the default package and is loaded by IJ's own `PluginClassLoader`, which
+pyjavaz's `ZMQUtil.loadClass` may not search. Check 4 **SKIPped** — no non-native
+file was supplied — so nothing was opened and nothing is settled. Two
+consequences: 42b must not lean on delegation, and **check 6's "does not stall"
+is scoped to a file that opens natively.** The modal-importer case, which is the
+one that could hold the lock, was never exercised.
+
+**F3 — `IJ.redirectErrorMessages` is present** (as `redirect_error_messages`).
+That is the lever for turning an IJ1 open failure into a Log entry rather than a
+modal dialog, and given F2 it is worth using.
 
 ## Acceptance
 

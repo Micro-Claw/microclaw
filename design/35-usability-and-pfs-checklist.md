@@ -457,7 +457,7 @@ assistant's narration when judging whether a guard fired.
 | 41b | Platform | 41a merged | `design41/script-export` (deleted) | `03dcea0` | 4 review rounds through `5ead7cc`; README `4b08f30`; runbook `bc9aea1`; post-gate `b6cc7a2` + `5af0fc6`, both **ungated** | M5 **G1/G2/G3 all PASS** rounds 4–5 2026-08-06 | `b1aa55e` | **done** — `CLAUDE.md` compile-to-script pointer, design/41 F1 |
 | 41c | Platform | 41b merged | `design41/emu-channel-plan` (deleted) | `8a11e45` | 21 commits through `3bae4e2`, 6 review rounds; runbook pin `c5917cc` | M5 **G1+G3 PASS** round 3 2026-08-07; demo **G2 PASS** rounds 1–2 (`block41c-round3`, `41-block41c-m5`, `-m5-round2`, `41-block41c-demo`, `-demo-round2`); Float read-back **SKIPPED** | `d4eea5f` | **done** — design/33 Phase 4, design/41 F6 |
 | 41d | Platform | none — ran concurrently with 41c | `design41/path-expansion` (deleted) | `8a11e45` | `63ddd2b` + `ff03913`; review round 2 `3412aea`; runbook pin `d6e2a79` | M5 2026-08-06 **Step 0 + G0 + G1 + G2 + G3 all PASS** (`gate41d-m5`, two rounds) | `f864a33` | **done** — design/32 §"The path-normalisation contract (block 41d)" |
-| 42a | Read side | none — may run concurrently with Track B | `design42/ij-open-spike` | `ca0709d` | `0d97329` + runbook `4ab450b`; review round 1 `f95d5a9` (runbook pin `0d97329` re-verified after it) | **pushed 2026-08-07, awaiting M5** — is the deliverable, all six checks | | |
+| 42a | Read side | none — may run concurrently with Track B | `design42/ij-open-spike` (deleted) | `ca0709d` | `0d97329` + runbook `4ab450b`; review round 1 `f95d5a9` (runbook pin `0d97329` re-verified after it) | M5 2026-08-07 **PASS** — 6 PASS / 3 INFO / 1 SKIP, no FAIL; 1c reproduced the design/12 collision (`out42a.txt`) | `4bcaeee` | **done** — design/10 §2 + Net conclusions #2 amended, design/42 §"What the spike measured" |
 | 42b | Read side | 42a's answers | `design42/open-artifact` | | | **required** — M5, and a thumbnail in the transcript is a failure | | |
 | 9 | Features | operator intake | `design26/generated-adapter-run-b` | | | required | | |
 | 10 | Features | 9; optional | `design26/few-shot-run-c` | | | required or marked skipped | | |
@@ -4648,7 +4648,7 @@ Nikon and touches `safety_config`/authorization; 42b touches `controller.py`,
 `tools.py`, `image_analysis.py`, `tools_schema.py`, `agent.py`. Separate
 worktrees, and 42b merges `main` before its own merge if 6a lands first.
 
-## 42a. The ImageJ open spike — evidence before the code
+## 42a. [x] The ImageJ open spike — evidence before the code — **MERGED 2026-08-07**
 
 Branch: `design42/ij-open-spike`
 
@@ -4663,70 +4663,167 @@ limitation is about the Preview canvas rather than about opening a new ImageJ
 window. `_probe_imagej_dir` is a real existence proof for the first. Neither is
 proof that `IJ.open` paints a window on this build. That is what this block buys.
 
-- [ ] **`design/42-ij-open-spike.py`, committed; its outputs are not.** One
+- [x] **`design/42-ij-open-spike.py`, committed; its outputs are not.** One
       function per check, each independently runnable, each reporting
       PASS/FAIL/ERROR with the raw value it saw. A failing check must not stop
       the ones after it — the ordering questions in checks 1 and 2 are only
       answerable if every check runs.
-- [ ] **Import `_new_static_java_class` from `microclaw.controller`; do not copy
+- [x] **Import `_new_static_java_class` from `microclaw.controller`; do not copy
       it.** This is a deliberate departure from the design/29 probe convention
       (`pycromanager` + stdlib only), which exists for the Nikon operator who may
       have no working microclaw. This runs on M5. A copied helper would be a
       different code path that can pass while the shipped one fails, which is the
       one outcome this spike must not produce.
-- [ ] **Check 1** — `ij.IJ` and `ij.WindowManager` both resolve through the
+- [x] **Check 1** — `ij.IJ` and `ij.WindowManager` both resolve through the
       helper, **wrapped in both orders**. The design/12 collision must not
       resurface. Report the method surface each shadow actually exposes, not just
       that the wrap did not raise.
-- [ ] **Check 2** — does a shadow returned *before* another static wrap still
+- [x] **Check 2** — does a shadow returned *before* another static wrap still
       work *after* it? This decides whether "re-wrap per call" is a rule or
       hygiene, and design/42 explicitly defers it here rather than designing
       around it.
-- [ ] **Check 3** — `IJ.open()` on `stitch_test_mosaic.tiff`: does a window
+- [x] **Check 3** — `IJ.open()` on `stitch_test_mosaic.tiff`: does a window
       appear, and do `WindowManager` dimensions match what Python reads from the
       same file? Dimensions are the load-bearing part; a title match alone is
       near-self-confirming.
-- [ ] **Check 4** — `IJ.open()` on a format IJ1 does not read natively. Confirm
+- [x] **Check 4** — `IJ.open()` on a format IJ1 does not read natively. Confirm
       Bio-Formats delegation via `HandleExtraFileTypes` is real *on this
       install*, and record how it fails when it is absent.
-- [ ] **Check 5** — `IJ.open()` on the NDTiff **directory** `stitch_test_1`.
+- [x] **Check 5** — `IJ.open()` on the NDTiff **directory** `stitch_test_1`.
       Expected to fail; record *how*, so `open_artifact` can refuse with a reason
       instead of hanging. **This one has a consequence for 42b's schema**, which
       currently advertises NDTiff directories as openable while design/43 F7 says
       NDTiff opens in Fiji as-is. Whatever check 5 returns, 42b's tool
       description must match it.
-- [ ] **Check 6** — does the call block until the window paints, or return
+- [x] **Check 6** — does the call block until the window paints, or return
       early? pyjavaz serialises every bridge round trip under one lock, so a
       modal Bio-Formats import dialog stalls **every** subsequent core call, on a
       rig, with a sample under illumination. **If it can hang, that is a blocker**
       and 42b does not start in this shape.
-- [ ] **Stop** and return to the coordinator if check 1 fails (the design/10
+- [x] **Stop** and return to the coordinator if check 1 fails (the design/10
       correction is then wrong and design/42's premise goes with it), or if check
       6 shows the bridge can be stalled.
-- [ ] Rig-facing: PowerShell/cmd-safe invocation, `> out.txt 2>&1`, no Unix
+- [x] Rig-facing: PowerShell/cmd-safe invocation, `> out.txt 2>&1`, no Unix
       pipelines. Record the MM build and IJ version in the output header.
 
 Rig gate — **the evidence is the deliverable**, so this block's gate is its run:
 
-- [ ] M5, with MM open and `stitch_test_mosaic.tiff` present, all six checks,
+- [x] M5, with MM open and `stitch_test_mosaic.tiff` present, all six checks,
       output returned.
 
 Post-merge design gate:
 
-- [ ] **Amend design/10 §2 and "Net conclusions" #2** — *only if* check 1
+- [x] **Amend design/10 §2 and "Net conclusions" #2** — *only if* check 1
       confirms it. design/42 already states the amendment is owed; the spike is
       what licenses making it. If check 1 fails, amend design/42 instead.
-- [ ] Fold checks 2–6 into design/42: the re-wrap rule, Bio-Formats reality,
+- [x] Fold checks 2–6 into design/42: the re-wrap rule, Bio-Formats reality,
       how a directory refuses, and whether the call blocks. Where an answer
       contradicts the Decision section, **change the decision** — do not carry
       a stub the spike disproved.
+
+### Rig gate — M5, 2026-08-07: **PASS. 6 PASS / 3 INFO / 1 SKIP, no FAIL.**
+
+Evidence: `out42a.txt` under `Micro-Claw/` (UTF-16LE — PowerShell's `>` writes
+UTF-16; read it with `encoding='utf-16'`). MMCore 12.5.0, ImageJ **1.53c**,
+Python 3.12.13, Windows 11. Neither stop condition fired. Operator confirmed by
+eye that two windows appeared: `stitch_test_mosaic.tiff` and
+`stitch_test_mosaic-1.tiff`.
+
+**What was established.**
+
+- **Check 1 PASS in both orders, and 1c came back `COLLISION`.** This is the
+  result that matters most: the control, with the eviction helper bypassed,
+  reproduced design/12 exactly — `JavaClass("ij.WindowManager")` came back
+  carrying **java.lang.System's 40 methods** and *missing its own* `getIDList`,
+  `getImageCount`, `getImage`. So check 1 measured a real bug being suppressed,
+  not an absent one, and **design/10's "static IJ1 methods are not directly
+  callable over ZMQ" is now measurably wrong** rather than merely argued to be.
+  The design gate below is licensed by this line and by nothing else.
+- **Check 2 PASS.** A held `ij.IJ` shadow answered `getVersion` identically
+  after `ij.WindowManager` was wrapped (evicting the shared key), and the mirror
+  case held too. **"Re-wrap statics per call" is HYGIENE, not a correctness
+  rule.** 42b should still re-wrap — it is what every other callsite does — but
+  it is not obliged to.
+- **Check 3 PASS.** `IJ.open` on the mosaic produced window id `4294967292`,
+  title `stitch_test_mosaic.tiff`, **1004×1024 matching tifffile's page shape
+  (1024, 1004)** exactly. The load-bearing dimension check passed, and the
+  operator's eyes confirm the window painted.
+- **Check 6 no stall.** `open_s` 0.018 s, `core_s` after the open 0.000 s,
+  window visible to `WindowManager` with **no sleep at all**. The single pyjavaz
+  lock was free immediately, so 42b's structural check may read once rather than
+  poll. **The blocker condition did not fire.**
+
+**Three findings that change block 42b.**
+
+1. **`IJ.open` is NOT the same entry point as drag-and-drop, for directories.**
+   Check 5: `IJ.open` on the NDTiff directory is a **silent no-op** — no
+   exception, no window, and it **held the bridge for 6.94 s** doing nothing.
+   But the operator then dragged the same `stitch_test_1` folder onto the
+   ImageJ toolbar **and it opened**. design/42 §"The call" asserts that
+   `ij.plugin.DragAndDrop` and `IJ.open` "both land in `ij.io.Opener.open`", and
+   flagged it as a paragraph to confirm rather than trust. **The spike disproved
+   it for the directory case**, which is the case that matters most: NDTiff
+   datasets are the commonest thing microclaw writes, and design/43 F7 turns on
+   "NDTiff opens directly in Fiji — never export just to look". 42b must find
+   the directory-capable path (`DragAndDrop.openDirectory` / `FolderOpener` /
+   whatever the drag actually dispatches to) or refuse directories explicitly;
+   it must not call `IJ.open` on one and report the result.
+2. **Bio-Formats delegation is unproven, and the probe is inconclusive** —
+   not negative. `loci.formats.ImageReader` **resolved**; `loci.plugins.BF`,
+   `loci.plugins.LociImporter` and **`HandleExtraFileTypes`** all came back
+   "Class not found on any classloaders". That is weak evidence of absence:
+   `HandleExtraFileTypes` lives in the *default package* and is loaded by IJ's
+   own `PluginClassLoader`, which pyjavaz's `ZMQUtil.loadClass` may simply not
+   search. Check 4 **SKIPped** — no `--foreign` file was supplied — so nothing
+   was actually opened. **42b must not lean on Bio-Formats delegation**, and
+   check 6's "does not stall" is correspondingly scoped: it says nothing about a
+   format that raises a modal importer dialog, because none was tried.
+3. **`IJ.redirectErrorMessages` is present** (as `redirect_error_messages`).
+   That is 42b's lever for turning an IJ1 open failure into a Log entry instead
+   of a modal dialog — which is what would otherwise hold the lock.
+
+**Two cosmetic notes for the next rig run**, neither a defect: PowerShell's `>`
+writes **UTF-16LE**, which made the evidence awkward to read (`Out-File
+-Encoding utf8` avoids it); and `uv run` writes progress to stderr, which
+PowerShell surfaces as a red `NativeCommandError` before the script even starts.
+Both belong in the next runbook, not in the code.
 
 ## 42b. `open_artifact` — open what we wrote, and stop there
 
 Branch: `design42/open-artifact`
 
-Depends on 42a's answers. design/42 §"Decision" through §"Stubs" is the spec.
-The hard part of this block is not opening the file; it is **not** rendering it.
+Depends on 42a's answers, **which are now in** — see 42a's gate record above and
+design/42 §"What the spike measured". design/42 §"Decision" through §"Stubs" is
+the spec, as amended by that section. The hard part of this block is not opening
+the file; it is **not** rendering it.
+
+**Read the three 42a findings before starting.** Two of them change the spec:
+
+- [ ] **The directory path is an open mechanism question and this block owns
+      it.** `IJ.open` on an NDTiff directory is a silent no-op that holds the
+      bridge for ~7 s, but dragging the same folder onto the ImageJ toolbar
+      opens it. So design/42's "same entry point as drag-and-drop" is false for
+      directories. Find what the drag actually dispatches to and use it, or
+      refuse directories by name — **do not call `IJ.open` on a directory and
+      report what comes back.** A silent 7-second no-op on the commonest
+      artifact microclaw writes is the worst available outcome. This needs its
+      own small spike addendum before the tool is written; the operator has
+      already shown the drag works, so the question is only which Java entry
+      point reproduces it.
+- [ ] **Do not lean on Bio-Formats delegation.** `HandleExtraFileTypes` did not
+      resolve over the bridge, and nothing non-native was ever opened (check 4
+      SKIPped). Treat non-native formats as unproven: open, check structurally,
+      and report honestly if no window appeared.
+- [ ] **Use `IJ.redirectErrorMessages`** so an IJ1 open failure goes to the Log
+      window rather than a modal dialog. Check 6 found no stall on a TIFF, but
+      the modal case was never exercised, and a dialog is what would hold the
+      single pyjavaz lock.
+- [ ] **The structural check may read once.** The window was visible to
+      `WindowManager` with no sleep (check 6), so no polling loop is needed —
+      but keep the "no new window" branch, which is check 5's refusal signal.
+- [ ] Re-wrapping statics per call is **hygiene, not a rule** (check 2). Keep
+      doing it for consistency with every other callsite; do not build anything
+      that depends on it being required.
 
 - [ ] **`controller.open_in_imagej(path)`**, beside `_probe_imagej_dir`, which is
       the existence proof for the mechanism. Statics per 42a check 2's answer.
