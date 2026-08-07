@@ -111,6 +111,20 @@ def _drain_java_iterable(iterable) -> list[str]:
     return out
 
 
+def _java_list_size(java_list) -> int:
+    """Length of a Java List returned over the bridge, in one round trip.
+
+    Same fact as _drain_java_iterable: bridge collections are not Python
+    iterables and len() does not work on them. Draining one just to count it
+    would stringify every element over the wire.
+    """
+    if java_list is None:
+        return 0
+    if isinstance(java_list, (list, tuple, set)):
+        return len(java_list)
+    return int(java_list.size())
+
+
 def _java_map_keys(java_map) -> list[str]:
     """Return the string keys of a Java Map returned over the pycro-manager bridge."""
     if isinstance(java_map, dict):
@@ -269,6 +283,167 @@ class MicroscopeController:
             return None
         # ImageJ returns a trailing-slash path string; normalise for Path use.
         return str(Path(raw))
+
+    # --- Opening what we wrote, in the windows Micro-Manager already runs ---
+
+    def open_in_imagej(self, path: str) -> dict:
+        """Open a file or a saved dataset so the user can see it. Zero exposure.
+
+        Two entry points, chosen by what the path *is* — not by a table of file
+        types:
+
+        * A **file** goes to `ij.IJ.open`, which is what ImageJ's own
+          drag-and-drop does for a file (`DragAndDrop.openFile` -> `ij.io.Opener`).
+          Not `IJ.runMacro`: no macro engine, and no backslash-escaping a Windows
+          path into a Java string inside a macro inside JSON.
+        * A **directory** goes to Micro-Manager's own dataset reader —
+          `Studio.data().loadData(path, virtual=True)`, `displays().manage()`,
+          `displays().loadDisplays()` — which is exactly what MM's own drop
+          target does (`org.micromanager.internal.utils.DragDropUtil`, installed
+          on `MainFrame`). `IJ.open` is deliberately **not** called on a
+          directory: block 42a measured it as a silent no-op that held the bridge
+          for 6.94 s. Nor is IJ1's drag path, whose `DragAndDrop.openDirectory`
+          opens with a modal GenericDialog that would hold the single pyjavaz
+          lock until a human answered it. `loadData`'s own modal (the
+          "Insufficient Memory Warning") sits inside an `if (!isVirtual)` block,
+          which is why virtual=True is not an optimisation but the safe call.
+
+        The path resolves **Java-side**. Microclaw's bridge is localhost-only by
+        construction — `Core(port=…)` and `Studio(port=…)` take no host — so
+        there is no remote case to detect and the caller's Python-side existence
+        check is the whole check.
+
+        Opens a NEW window and leaves it: microclaw never closes or re-uses the
+        user's windows, and writes nothing to MM on any exit path. `IJ.open`
+        returns void and `loadDisplays` can return an empty list, so neither is
+        proof anything painted (design/18's lesson, even though its Preview
+        specifics do not apply) — both branches below check structurally and
+        report `opened: False` rather than claim a window the user cannot see.
+
+        Statics go through `_new_static_java_class` per call (design/12); 42a
+        check 2 measured that as hygiene rather than a correctness rule.
+
+        ONE result shape, whichever entry point ran, so no caller has to know
+        which one did:
+
+            {"opened": bool,
+             "via":    str,                  # which mechanism, for the record
+             "windows": [{"title", "width", "height", "n_planes"}],  # if opened
+             "reason": str}                  # if not
+
+        `n_planes` is what the window is showing: ImageJ's stack size, or the
+        dataset's image count. An ImageJ window carries its `id` as well, which
+        an MM display has no equivalent of; nothing reads it, and no caller
+        needs it to understand the answer.
+        """
+        if not self.is_connected():
+            return {"opened": False, "reason": "No Micro-Manager bridge connection."}
+        try:
+            if Path(path).is_dir():
+                return self._open_dataset_in_mm(path)
+            return self._open_file_in_imagej(path)
+        except Exception as exc:
+            return {"opened": False,
+                    "reason": f"{type(exc).__name__}: {exc}"}
+
+    def _imagej_window_ids(self) -> set[int]:
+        """The IDs of every open ImageJ image window, read once.
+
+        42a measured the window as visible to WindowManager with no sleep after
+        IJ.open returned, so this reads once; there is no polling loop.
+        """
+        wm = _new_static_java_class(self._port, "ij.WindowManager")
+        get_ids = getattr(wm, "get_id_list", None) or getattr(wm, "getIDList", None)
+        ids = get_ids() if get_ids is not None else None
+        return set() if ids is None else {int(i) for i in ids}
+
+    def _describe_imagej_windows(self, ids: set[int]) -> list[dict]:
+        wm = _new_static_java_class(self._port, "ij.WindowManager")
+        get_image = getattr(wm, "get_image", None) or getattr(wm, "getImage", None)
+        described = []
+        for window_id in sorted(ids):
+            image = get_image(window_id) if get_image is not None else None
+            if image is None:
+                described.append({"id": window_id,
+                                  "error": "WindowManager has no image for this id"})
+                continue
+            described.append({
+                "id": window_id,
+                "title": str(image.get_title()),
+                "width": int(image.get_width()),
+                "height": int(image.get_height()),
+                "n_planes": int(image.get_stack_size()),
+            })
+        return described
+
+    def _open_file_in_imagej(self, path: str) -> dict:
+        ij = _new_static_java_class(self._port, "ij.IJ")
+        # One-shot: IJ1's no-argument redirectErrorMessages() applies to the very
+        # next error only, so an IJ1 failure during THIS open lands in the Log
+        # window instead of a modal dialog holding the single pyjavaz lock —
+        # without leaving a global flag flipped in the user's session.
+        redirect = getattr(ij, "redirect_error_messages", None) or getattr(
+            ij, "redirectErrorMessages", None
+        )
+        if redirect is not None:
+            try:
+                redirect()
+            except Exception:
+                pass
+        before = self._imagej_window_ids()
+        _new_static_java_class(self._port, "ij.IJ").open(path)
+        new_ids = self._imagej_window_ids() - before
+        if not new_ids:
+            return {
+                "opened": False,
+                "via": "ij.IJ.open",
+                "reason": (
+                    "ImageJ accepted the path but no new image window appeared. "
+                    "Check ImageJ's Log window: a format ImageJ cannot read "
+                    "natively fails here without raising."
+                ),
+            }
+        return {"opened": True, "via": "ij.IJ.open",
+                "windows": self._describe_imagej_windows(new_ids)}
+
+    _MM_READER = "micro-manager dataset reader"
+
+    def _open_dataset_in_mm(self, path: str) -> dict:
+        """MM's own reader for MM's own formats, exactly as its drop target does.
+
+        loadData dispatches internally on NDTiffAdapter.isNDTiffDataSet /
+        MultipageTiffReader.isMMMultipageTiff — microclaw does not sniff the
+        directory itself, and there is no file-type table here to grow one.
+        """
+        displays = self._studio.displays()
+        windows_before = _java_list_size(displays.get_all_image_windows())
+        store = self._studio.data().load_data(path, True)
+        if store is None:
+            return {"opened": False, "via": self._MM_READER,
+                    "reason": f"Micro-Manager could not read {path} as a dataset."}
+        self._studio.displays().manage(store)
+        created = self._studio.displays().load_displays(store)
+        n_created = _java_list_size(created)
+        windows_after = _java_list_size(displays.get_all_image_windows())
+        if not n_created and windows_after <= windows_before:
+            return {"opened": False, "via": self._MM_READER,
+                    "reason": ("Micro-Manager read the dataset but opened no "
+                               "display window for it.")}
+        # One entry per display actually created, so `windows` means the same
+        # thing here as it does for ImageJ. Dimensions come from the datastore:
+        # every display of one dataset shows the same frame size.
+        shared = {"n_planes": int(store.get_num_images())}
+        image = store.get_any_image()
+        if image is not None:
+            shared["width"] = int(image.get_width())
+            shared["height"] = int(image.get_height())
+        save_path = str(store.get_save_path())
+        windows = []
+        for index in range(n_created):
+            display = created.get(index)
+            windows.append({"title": str(display.get_name()) or save_path, **shared})
+        return {"opened": True, "via": self._MM_READER,
+                "windows": windows or [{"title": save_path, **shared}]}
 
     def _probe_imagej_dir(self) -> str | None:
         """ij.IJ.getDirectory("imagej") — MM's ImageJ install root."""

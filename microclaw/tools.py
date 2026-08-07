@@ -38,7 +38,7 @@ from microclaw.image_analysis import (
     compute_stats,
     detect_features,
     focus_invalid_warning,
-    make_thumbnail,
+    image_content,
     snap_to_numpy,
     preview_window_open,
     resolve_min_snr,
@@ -2341,17 +2341,7 @@ def snap_and_analyze(
         text_payload["warning"] = f"{existing} {pixel_warning}" if existing else pixel_warning
     if not return_thumbnail:
         return text_payload
-    return [
-        {"type": "text", "text": json.dumps(text_payload)},
-        {
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": "image/png",
-                "data": make_thumbnail(image, max_size=thumbnail_size),
-            },
-        },
-    ]
+    return image_content(text_payload, image, max_size=thumbnail_size)
 
 
 # --- Stage↔camera calibration (design/14 §8) ---
@@ -2757,17 +2747,7 @@ def run_autofocus(
     with _pause_live(ctrl):
         image = snap_to_numpy(ctrl)
     payload["focus_metric_at_final"] = _round_sig(tenengrad(image))
-    return [
-        {"type": "text", "text": json.dumps(payload)},
-        {
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": "image/png",
-                "data": make_thumbnail(image),
-            },
-        },
-    ]
+    return image_content(payload, image)
 
 
 # --- Position management ---

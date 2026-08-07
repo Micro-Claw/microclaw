@@ -1,6 +1,7 @@
 from __future__ import annotations
 import base64
 import io
+import json
 import time
 from typing import NamedTuple
 
@@ -276,22 +277,60 @@ def compute_stats(
     )
 
 
+def image_content(
+    payload: dict,
+    image: np.ndarray,
+    *,
+    max_size: int = 512,
+    mask: np.ndarray | None = None,
+) -> list[dict]:
+    """The text+image content block a tool returns when it renders pixels.
+
+    One definition, so that "what a rendered result looks like" is decided in a
+    single place. snap_and_analyze, run_autofocus and open_artifact are its
+    callers; a fourth hand-built copy of this pair is a defect, not a
+    convenience.
+    """
+    return [
+        {"type": "text", "text": json.dumps(payload)},
+        {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": make_thumbnail(image, max_size=max_size, mask=mask),
+            },
+        },
+    ]
+
+
 def make_thumbnail(
     image: np.ndarray,
     max_size: int = 512,
     percentile_low: float = 2.0,
     percentile_high: float = 99.8,
+    mask: np.ndarray | None = None,
 ) -> str:
     """Percentile-normalised, resized PNG thumbnail, returned as base64.
 
     A multichannel (H, W, C) image is reduced to luminance (channel mean) so the
     grayscale thumbnail path works regardless of camera type; the numerical
     metrics still see the full-resolution colour array upstream.
+
+    `mask` restricts which pixels the percentile stretch is measured over, and
+    must match the 2-D image the stretch sees. A stage-coordinate mosaic is
+    mostly uncovered zeros — the one measured here was 65% — and stretching over
+    all pixels puts the real signal in the bottom ~1% of the ramp, so what comes
+    back is a black rectangle. The rendered image is still the whole array; only
+    the black point and white point are measured from the masked pixels.
     """
     img = image.astype(np.float32)
     if img.ndim == 3:
         img = img.mean(axis=-1)
-    p_lo, p_hi = np.percentile(img, percentile_low), np.percentile(img, percentile_high)
+    values = img if mask is None else img[mask]
+    if values.size == 0:
+        values = img          # an all-masked-out image: stretch over everything
+    p_lo, p_hi = np.percentile(values, percentile_low), np.percentile(values, percentile_high)
     if p_hi > p_lo:
         img = (img - p_lo) / (p_hi - p_lo)
     img_8bit = (np.clip(img, 0, 1) * 255).astype(np.uint8)
