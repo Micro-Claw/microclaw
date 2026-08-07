@@ -5095,3 +5095,40 @@ rollback had never been exercised on that hardware. 41c made it reachable, the
 iChrome's serial link flaked on 2 of 4 switches, and a plan where nothing landed
 reported `SAFE STATE NOT VERIFIED`. "Pre-existing" is about authorship, not about
 who ships the consequence.
+
+
+### Block 41c closed (merged `d4eea5f`, 2026-08-07) — what the fourth round added
+
+The mid-gate note above stands; this is what closing it taught.
+
+**The round that passed was the round that ran the whole runbook in order.** Three
+M5 sessions stopped early — no second acquisition, no step-8 restore, no
+standalone script run — and each time the missing steps were the same ones, so G3
+went undemonstrated three rounds running. Nothing was wrong with those sessions
+except that they ended. When a runbook's later steps are the ones that keep
+getting skipped, that is worth naming to the operator as the *point* of the run
+rather than treating each omission as a fresh accident.
+
+**Dose was checked by counting folders, and that is the check to keep.** Round 3's
+six datasets per position decompose exactly: two from the session, two from the
+first exported script, two from the second. Each script emitted precisely the
+acquisitions that had completed. No assertion about the exporter's internals
+would have been as convincing, and the two earlier defects — replaying failed
+calls, then halting at them — were both found the same way, by comparing what is
+on disk against what the session did.
+
+**A fix confirmed against a genuine recurrence beats a fix confirmed by
+simulation.** The rollback-class fix was verified in review against a fake core
+reproducing M5's shape. Round 3 then hit the same iChrome serial timeout for
+real, and reported `ChannelPlanError` with `applied=[]` and no "SAFE STATE NOT
+VERIFIED" where round 2 had escalated. Wait for the real recurrence when the rig
+is going to produce one anyway; it costs nothing extra and it is the only
+evidence that the fake was faithful.
+
+**Merging two concurrent blocks is still a test, and it still has to be run.**
+41c branched from `8a11e45`, before 41d landed; both touch the path that exported
+scripts write through. The suite on the merge result was 1623/1722 — exactly
+1610 + 13 and 1709 + 13 — and a real captured history replayed through the merged
+exporter reproduced the rig's own v2 export byte-for-byte in shape (2 acquire, 5
+skipped, 0 raise). That is the check that caught the 13 × 41b `NameError`; it
+found nothing here, which is the result you want and not a reason to stop doing it.
