@@ -4691,18 +4691,25 @@ def open_artifact(
     Zero exposure; moves nothing. Opens a NEW window and leaves it — microclaw
     never closes or re-uses the user's windows — and never renders the pixels
     into the conversation unless `analyze` asks it to.
+
+    `opened` is a **boolean at the top level** of the payload, beside `via` and
+    `windows`, exactly as open_in_imagej reports them. Reading it must not
+    require reaching through a container, because the one thing a caller has to
+    get right here is not claiming a window that did not appear.
     """
     resolved = Path(guard.resolve_readable_path(path))
     if not resolved.exists():
         return {"error": f"Artifact not found: {resolved}"}
 
-    payload: dict = {"path": str(resolved)}
-    opened = ctrl.open_in_imagej(str(resolved))
-    payload["opened"] = opened
+    # open_in_imagej's keys are lifted, not nested. Nesting them under a key of
+    # their own gave the payload a top-level `opened` that was a *dict* — truthy
+    # even when the open failed — and "do not claim a window unless opened is
+    # true" is the one instruction in this tool that must not be able to mislead.
+    payload: dict = {"path": str(resolved), **ctrl.open_in_imagej(str(resolved))}
     measured = _measured_shape(resolved)
     payload["measured"] = measured
-    windows = opened.get("windows") or []
-    if opened.get("opened") and "width" in measured:
+    windows = payload.get("windows") or []
+    if payload.get("opened") and "width" in measured:
         payload["dimensions_match"] = any(
             window.get("width") == measured["width"]
             and window.get("height") == measured["height"]

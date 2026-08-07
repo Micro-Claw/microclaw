@@ -1419,9 +1419,10 @@ TOOLS: list[dict[str, Any]] = [
             "Micro-Manager runs under, a dataset directory opens in "
             "Micro-Manager's own dataset viewer, and the result reports which "
             "windows appeared with their dimensions. Never tell the user to open "
-            "a file in FIJI or the MM GUI; call this instead. If no window "
-            "appeared the result says so — do not claim a file is on screen "
-            "unless opened is true. Zero exposure; touches no hardware."
+            "a file in FIJI or the MM GUI; call this instead. The result's "
+            "top-level `opened` is true only when a window really appeared; if "
+            "it is false, `reason` says why and there is nothing on the user's "
+            "screen to describe. Zero exposure; touches no hardware."
         ),
         "input_schema": {
             "type": "object",

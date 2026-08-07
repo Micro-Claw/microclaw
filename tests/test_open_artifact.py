@@ -53,8 +53,26 @@ def test_default_call_returns_a_dict_and_never_renders(
         "the default call must return a payload, not a content list — an image "
         "block stays in the conversation for every subsequent turn"
     )
-    assert result["opened"]["opened"] is True
+    assert result["opened"] is True
     assert result["dimensions_match"] is True
+
+
+def test_opened_is_a_top_level_boolean(default_guard, no_thumbnails):
+    """Nesting this made the top-level `opened` a dict — truthy on failure.
+
+    Both the schema and the agent prompt tell the model not to claim a window
+    unless `opened` is true. A container at that key makes that instruction
+    false exactly when it matters, which is the failure this whole tool exists
+    to prevent.
+    """
+    ctrl = MagicMock(spec=MicroscopeController)
+    ctrl.open_in_imagej.return_value = {
+        "opened": False, "via": "ij.IJ.open", "reason": "nothing appeared."
+    }
+    result = open_artifact(ctrl, default_guard, str(FIXTURES / "mosaic.tiff"))
+    assert result["opened"] is False
+    assert not result["opened"], "a failed open must be falsy at the top level"
+    assert result["reason"] == "nothing appeared."
 
 
 def test_analyze_is_off_by_default_in_the_signature():
@@ -93,7 +111,7 @@ def test_tampered_tiff_reports_mismatch_and_still_opens(opening_ctrl, default_gu
     assert result["pixel_sha256_matches"] is False
     # The manifest itself is intact; only the pixels moved.
     assert result["manifest_payload_sha256_matches"] is True
-    assert result["opened"]["opened"] is True, (
+    assert result["opened"] is True, (
         "a failed provenance check must not stop the operator looking at the "
         "file — that is often exactly the file they need to see"
     )
@@ -104,7 +122,7 @@ def test_missing_sidecar_opens_with_provenance_unverified(opening_ctrl, default_
     result = open_artifact(
         opening_ctrl, default_guard, str(FIXTURES / "no_sidecar.tiff")
     )
-    assert result["opened"]["opened"] is True
+    assert result["opened"] is True
     assert "unverified" in result["provenance"]
     assert "pixel_sha256_matches" not in result
 
@@ -134,7 +152,7 @@ def test_a_failed_open_is_reported_as_such(default_guard, no_thumbnails):
         "opened": False, "via": "ij.IJ.open", "reason": "no new image window appeared."
     }
     result = open_artifact(ctrl, default_guard, str(FIXTURES / "mosaic.tiff"))
-    assert result["opened"]["opened"] is False
+    assert result["opened"] is False
     assert "dimensions_match" not in result
     # Provenance is still reported: the file is real even if nothing painted.
     assert result["pixel_sha256_matches"] is True
@@ -166,7 +184,7 @@ def test_ambiguous_stack_refuses_and_names_the_axes(
     assert isinstance(result, dict)
     assert "ambiguous" in result["analysis_refused"]
     assert "'z'" in result["analysis_refused"] or "z" in result["analysis_refused"]
-    assert result["opened"]["opened"] is True, "the refusal is about analysis, not opening"
+    assert result["opened"] is True, "the refusal is about analysis, not opening"
 
 
 def test_stack_with_a_selection_renders_that_plane(opening_ctrl, default_guard):
@@ -199,7 +217,7 @@ def test_directory_goes_to_the_micro_manager_reader_not_ij_open(
         "windows": [{"title": "acq_1", "width": 512, "height": 512, "n_planes": 6}],
     }
     result = open_artifact(ctrl, default_guard, str(dataset))
-    assert result["opened"]["via"] == "micro-manager dataset reader"
+    assert result["via"] == "micro-manager dataset reader"
 
 
 def test_analyze_on_a_directory_refuses_rather_than_rendering(
@@ -240,42 +258,99 @@ def test_open_in_imagej_reports_a_java_failure_rather_than_raising(monkeypatch):
     assert "Class not found" in result["reason"]
 
 
-def test_open_in_imagej_never_claims_a_window_that_did_not_appear(monkeypatch):
-    """IJ.open returns void; a returning bridge call is not a painted window."""
+_UNSET = object()
+
+
+def _bare_controller():
+    """A controller with a live bridge and nothing else — no MagicMock spec.
+
+    open_in_imagej is called unbound so the real method runs against exactly the
+    two attributes it uses.
+    """
     ctrl = MicroscopeController.__new__(MicroscopeController)
     ctrl.is_connected = lambda: True
     ctrl._port = 4827
-
-    shadow = MagicMock()
-    shadow.get_id_list.return_value = None      # no windows, before and after
-    monkeypatch.setattr(
-        "microclaw.controller._new_static_java_class", lambda port, cp: shadow
-    )
-    result = MicroscopeController.open_in_imagej(ctrl, str(FIXTURES / "mosaic.tiff"))
-    assert result["opened"] is False
-    assert "no new image window appeared" in result["reason"]
-    shadow.open.assert_called_once_with(str(FIXTURES / "mosaic.tiff"))
+    return ctrl
 
 
-def test_open_in_imagej_reports_the_new_window_only(monkeypatch):
-    ctrl = MicroscopeController.__new__(MicroscopeController)
-    ctrl.is_connected = lambda: True
-    ctrl._port = 4827
+def _java_list(items):
+    """A Java List over the bridge: size()/get(i), and NOT Python-iterable."""
+    java = MagicMock()
+    java.size.return_value = len(items)
+    java.get.side_effect = lambda index: items[index]
+    return java
 
+
+def _open_file(monkeypatch, path, *, window_ids=([-7], [-7, -8])):
+    """Run the real file branch. Returns (result, the ij static shadow)."""
     image = MagicMock()
-    image.get_title.return_value = "mosaic.tiff"
+    image.get_title.return_value = Path(path).name
     image.get_width.return_value = 16
     image.get_height.return_value = 12
     image.get_stack_size.return_value = 1
 
     shadow = MagicMock()
-    # A window the user already had, then that one plus ours.
-    shadow.get_id_list.side_effect = [[-7], [-7, -8]]
+    shadow.get_id_list.side_effect = list(window_ids)
     shadow.get_image.return_value = image
     monkeypatch.setattr(
         "microclaw.controller._new_static_java_class", lambda port, cp: shadow
     )
-    result = MicroscopeController.open_in_imagej(ctrl, str(FIXTURES / "mosaic.tiff"))
+    return MicroscopeController.open_in_imagej(_bare_controller(), str(path)), shadow
+
+
+def _dataset_store(save_path, *, n_images=6, width=512, height=512):
+    image = MagicMock()
+    image.get_width.return_value = width
+    image.get_height.return_value = height
+    store = MagicMock()
+    store.get_num_images.return_value = n_images
+    store.get_save_path.return_value = str(save_path)
+    store.get_any_image.return_value = image
+    return store
+
+
+def _open_dataset(monkeypatch, path, *, store=_UNSET, created=_UNSET):
+    """Run the real directory branch.
+
+    Returns (result, studio, displays, static_wraps). static_wraps records every
+    ImageJ static this path wrapped — it must stay empty.
+    """
+    static_wraps = []
+    monkeypatch.setattr(
+        "microclaw.controller._new_static_java_class",
+        lambda port, cp: static_wraps.append(cp),
+    )
+    if store is _UNSET:
+        store = _dataset_store(path)
+    if created is _UNSET:
+        display = MagicMock()
+        display.get_name.return_value = Path(path).name
+        created = _java_list([display])
+
+    displays = MagicMock()
+    displays.get_all_image_windows.return_value = _java_list([])
+    displays.load_displays.return_value = created
+    studio = MagicMock()
+    studio.displays.return_value = displays
+    studio.data.return_value.load_data.return_value = store
+
+    ctrl = _bare_controller()
+    ctrl._studio = studio
+    result = MicroscopeController.open_in_imagej(ctrl, str(path))
+    return result, studio, displays, static_wraps
+
+
+def test_open_in_imagej_never_claims_a_window_that_did_not_appear(monkeypatch):
+    """IJ.open returns void; a returning bridge call is not a painted window."""
+    path = FIXTURES / "mosaic.tiff"
+    result, shadow = _open_file(monkeypatch, path, window_ids=(None, None))
+    assert result["opened"] is False
+    assert "no new image window appeared" in result["reason"]
+    shadow.open.assert_called_once_with(str(path))
+
+
+def test_open_in_imagej_reports_the_new_window_only(monkeypatch):
+    result, shadow = _open_file(monkeypatch, FIXTURES / "mosaic.tiff")
     assert result["opened"] is True
     assert [w["id"] for w in result["windows"]] == [-8], (
         "only the window this call created may be reported; the user's existing "
@@ -289,15 +364,8 @@ def test_open_in_imagej_reports_the_new_window_only(monkeypatch):
 
 def test_open_in_imagej_arms_redirect_error_messages(monkeypatch):
     """A modal IJ1 error dialog would hold the single pyjavaz lock."""
-    ctrl = MicroscopeController.__new__(MicroscopeController)
-    ctrl.is_connected = lambda: True
-    ctrl._port = 4827
-    shadow = MagicMock()
-    shadow.get_id_list.return_value = None
-    monkeypatch.setattr(
-        "microclaw.controller._new_static_java_class", lambda port, cp: shadow
-    )
-    MicroscopeController.open_in_imagej(ctrl, str(FIXTURES / "mosaic.tiff"))
+    _, shadow = _open_file(monkeypatch, FIXTURES / "mosaic.tiff",
+                           window_ids=(None, None))
     shadow.redirect_error_messages.assert_called_once_with()
 
 
@@ -305,47 +373,12 @@ def test_directory_uses_the_mm_reader_and_never_ij_open(monkeypatch, tmp_path):
     """The one thing 42b must not do is call IJ.open on a directory."""
     dataset = tmp_path / "acq_1"
     dataset.mkdir()
-
-    ctrl = MicroscopeController.__new__(MicroscopeController)
-    ctrl.is_connected = lambda: True
-    ctrl._port = 4827
-
-    static_wraps = []
-    monkeypatch.setattr(
-        "microclaw.controller._new_static_java_class",
-        lambda port, cp: static_wraps.append(cp),
-    )
-
-    empty = MagicMock()
-    empty.size.return_value = 0
-    display = MagicMock()
-    display.get_name.return_value = "acq_1"
-    created = MagicMock()
-    created.size.return_value = 1
-    created.get.return_value = display
-
-    image = MagicMock()
-    image.get_width.return_value = 512
-    image.get_height.return_value = 512
-    store = MagicMock()
-    store.get_num_images.return_value = 6
-    store.get_save_path.return_value = str(dataset)
-    store.get_any_image.return_value = image
-
-    displays = MagicMock()
-    displays.get_all_image_windows.return_value = empty
-    displays.load_displays.return_value = created
-    studio = MagicMock()
-    studio.displays.return_value = displays
-    studio.data.return_value.load_data.return_value = store
-    ctrl._studio = studio
-
-    result = MicroscopeController.open_in_imagej(ctrl, str(dataset))
+    result, studio, _, static_wraps = _open_dataset(monkeypatch, dataset)
 
     assert result["opened"] is True
     assert result["via"] == "micro-manager dataset reader"
     assert result["windows"] == [
-        {"title": "acq_1", "n_planes": 6, "width": 512, "height": 512}
+        {"n_planes": 6, "title": "acq_1", "width": 512, "height": 512}
     ]
     assert static_wraps == [], "no ImageJ static was wrapped for a directory"
     # virtual=True: loadData's only modal sits inside `if (!isVirtual)`, and a
@@ -353,34 +386,21 @@ def test_directory_uses_the_mm_reader_and_never_ij_open(monkeypatch, tmp_path):
     studio.data.return_value.load_data.assert_called_once_with(str(dataset), True)
 
 
-def test_a_display_that_cannot_be_described_is_still_reported_as_open(tmp_path):
+def test_a_display_that_cannot_be_described_is_still_reported_as_open(
+    monkeypatch, tmp_path
+):
     """Failing to describe a window must not invert into 'nothing opened'."""
     dataset = tmp_path / "acq_1"
     dataset.mkdir()
-    ctrl = MicroscopeController.__new__(MicroscopeController)
-    ctrl.is_connected = lambda: True
-    ctrl._port = 4827
-
-    empty = MagicMock()
-    empty.size.return_value = 0
-    created = MagicMock()
-    created.size.return_value = 1
-    created.get.side_effect = AttributeError("no get on this shadow")
-
     store = MagicMock()
     store.get_num_images.side_effect = AttributeError("no getNumImages")
     store.get_save_path.side_effect = AttributeError("no getSavePath")
     store.get_any_image.side_effect = AttributeError("no getAnyImage")
+    created = MagicMock()
+    created.size.return_value = 1
+    created.get.side_effect = AttributeError("no get on this shadow")
 
-    displays = MagicMock()
-    displays.get_all_image_windows.return_value = empty
-    displays.load_displays.return_value = created
-    studio = MagicMock()
-    studio.displays.return_value = displays
-    studio.data.return_value.load_data.return_value = store
-    ctrl._studio = studio
-
-    result = MicroscopeController.open_in_imagej(ctrl, str(dataset))
+    result, _, _, _ = _open_dataset(monkeypatch, dataset, store=store, created=created)
     assert result["opened"] is True, (
         "a display was created; failing to read its name does not un-create it"
     )
@@ -392,21 +412,7 @@ def test_a_display_that_cannot_be_described_is_still_reported_as_open(tmp_path):
 def test_directory_with_no_display_created_reports_failure(monkeypatch, tmp_path):
     dataset = tmp_path / "acq_1"
     dataset.mkdir()
-    ctrl = MicroscopeController.__new__(MicroscopeController)
-    ctrl.is_connected = lambda: True
-    ctrl._port = 4827
-
-    empty = MagicMock()
-    empty.size.return_value = 0
-    displays = MagicMock()
-    displays.get_all_image_windows.return_value = empty
-    displays.load_displays.return_value = empty
-    studio = MagicMock()
-    studio.displays.return_value = displays
-    studio.data.return_value.load_data.return_value = MagicMock()
-    ctrl._studio = studio
-
-    result = MicroscopeController.open_in_imagej(ctrl, str(dataset))
+    result, _, _, _ = _open_dataset(monkeypatch, dataset, created=_java_list([]))
     assert result["opened"] is False
     assert "opened no display window" in result["reason"]
 
@@ -414,37 +420,51 @@ def test_directory_with_no_display_created_reports_failure(monkeypatch, tmp_path
 def test_directory_that_mm_cannot_read_refuses(monkeypatch, tmp_path):
     dataset = tmp_path / "not_a_dataset"
     dataset.mkdir()
-    ctrl = MicroscopeController.__new__(MicroscopeController)
-    ctrl.is_connected = lambda: True
-    ctrl._port = 4827
-    empty = MagicMock()
-    empty.size.return_value = 0
-    displays = MagicMock()
-    displays.get_all_image_windows.return_value = empty
-    studio = MagicMock()
-    studio.displays.return_value = displays
-    studio.data.return_value.load_data.return_value = None
-    ctrl._studio = studio
-
-    result = MicroscopeController.open_in_imagej(ctrl, str(dataset))
+    result, _, displays, _ = _open_dataset(monkeypatch, dataset, store=None)
     assert result["opened"] is False
     assert "could not read" in result["reason"]
     displays.load_displays.assert_not_called()
 
 
 def test_both_branches_answer_with_one_shape(monkeypatch, tmp_path):
-    """A caller must not have to branch on `via` to understand the answer."""
-    file_result = {"opened": True, "via": "ij.IJ.open",
-                   "windows": [{"id": -8, "title": "m.tiff", "width": 16,
-                                "height": 12, "n_planes": 1}]}
-    dir_result = {"opened": True, "via": "micro-manager dataset reader",
-                  "windows": [{"title": "acq_1", "n_planes": 6,
-                               "width": 512, "height": 512}]}
-    common = {"title", "width", "height", "n_planes"}
+    """A caller must not have to branch on `via` to understand the answer.
+
+    Both results are produced by the real open_in_imagej, so this fails if the
+    two branches ever drift apart. Comparing hand-written literals here would
+    have asserted nothing about the code.
+    """
+    dataset = tmp_path / "acq_1"
+    dataset.mkdir()
+    file_result, _ = _open_file(monkeypatch, FIXTURES / "mosaic.tiff")
+    dir_result, _, _, _ = _open_dataset(monkeypatch, dataset)
+
+    assert file_result["via"] != dir_result["via"], "two branches really ran"
     for result in (file_result, dir_result):
+        assert result["opened"] is True
         assert {"opened", "via", "windows"} <= set(result)
         for window in result["windows"]:
-            assert common <= set(window)
+            assert {"title", "width", "height", "n_planes"} <= set(window), (
+                f"{result['via']} reports a window as {sorted(window)}, which "
+                "does not carry the shared contract"
+            )
+    # The only permitted difference is the ImageJ window id, which an MM display
+    # has no equivalent of and which nothing reads.
+    file_keys = set(file_result["windows"][0])
+    dir_keys = set(dir_result["windows"][0])
+    assert file_keys - dir_keys == {"id"}
+    assert dir_keys - file_keys == set()
+
+
+def test_both_branches_refuse_with_one_shape(monkeypatch, tmp_path):
+    """And a refusal is one shape too: opened false, via, reason, no windows."""
+    dataset = tmp_path / "acq_1"
+    dataset.mkdir()
+    file_result, _ = _open_file(monkeypatch, FIXTURES / "mosaic.tiff",
+                                window_ids=(None, None))
+    dir_result, _, _, _ = _open_dataset(monkeypatch, dataset, store=None)
+    for result in (file_result, dir_result):
+        assert result["opened"] is False
+        assert set(result) == {"opened", "via", "reason"}
 
 
 # --- One place builds a text+image block ------------------------------------ #
