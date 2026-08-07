@@ -221,8 +221,9 @@ in any worktree.
   design/32. Two review rounds and two rig rounds. One cosmetic residual (the
   refusal message shows the expansion with mixed separators) is carried forward,
   not owed.
-- **Block 41c is pushed at `3bae4e2` and mid-gate.** See the dedicated section
-  below — it is the only live block and its state does not fit one bullet.
+- **Block 41c is CLOSED.** Merged `d4eea5f`, gates in §"41c" below, design gate
+  in design/33 Phase 4 and design/41 F6. Six review rounds, four rig rounds.
+  **Track D is complete.**
   What 41d was: there was no `expanduser` anywhere in `microclaw/`, so `~/x` was
   joined under the workspace root as a literal directory named `~`. It predated
   Track D (`ee7f098`, 2026-07-28) and affected **every** path-taking tool, so any
@@ -230,23 +231,22 @@ in any worktree.
 - **Block 6a is still pushed and still awaiting the Nikon**, unchanged since
   2026-08-05 at `4994f3e`. It must merge `main` before its own merge — `main` has
   moved a long way since it branched.
-- **Track order from here:** 41c is the only live block, and it is pushed. When
-  it closes, Track D is done. Track B's 6 and 7a unblock when 6a merges; Track C
-  (9–11) and closeout 12 follow.
-- **`main` measures 1584 passed / 99 skipped / 3 expected warnings, 1683
-  collected** (measured 2026-08-06 on the 41d merge result at `f864a33`, macOS,
-  17.7 s). Re-measure rather than trusting this. Judge a suite by failures and
+- **Track order from here: Track D is complete** (41a, 13, 41b, 41c, 41d all
+  merged). The next live work is **Track B**: 6a is pushed and awaiting the
+  Nikon, and 6 and 7a unblock when it merges. Then Track C (9–11) and closeout 12.
+- **`main` measures 1623 passed / 99 skipped / 3 expected warnings, 1722
+  collected** (measured 2026-08-07 on the 41c merge result at `d4eea5f`, macOS,
+  20.3 s — 41c and 41d merged cleanly, 1610 + 13 and 1709 + 13 exactly). Re-measure rather than trusting this. Judge a suite by failures and
   collected total, and **diff collected test IDs** against the branch's start
   commit — that check has now caught silent test loss twice, and on 41c it
   distinguished a *rename* into three parametrized IDs from a deletion.
 
-### Block 41c mid-gate — state at the 2026-08-06 evening boundary
+### Block 41c mid-gate — superseded 2026-08-07, kept for the round history
 
-Written because M5 became unavailable mid-gate. Branch `design41/emu-channel-plan`
-is pushed at **`3bae4e2`**, 21 commits from `8a11e45`, six coordinator review
-rounds and four rig rounds. Nothing is uncommitted; the local worktree at
-`../microclaw-41c` holds no state the remote lacks. **Suite on the branch: 1610
-passed / 99 skipped / 3 warnings, 1709 collected.**
+Written when M5 became unavailable mid-gate. **The block has since closed** —
+round 3 on 2026-08-07 completed every owed step and the gate record is under
+§"41c". This section is kept only for what the four rig rounds found and fixed,
+which is the part worth reading again.
 
 **What is already established, and must not be re-run to "confirm" it:**
 
@@ -444,7 +444,7 @@ assistant's narration when judging whether a guard fired.
 | 13 | Platform | 41a merged | `design40/platform-defects` (deleted) | `03dcea0` | `0c83268` + `c2fc7ab` (round 1 returned); runbook `9d2a934`; post-gate `f4e98c6` **ungated** | M5 2026-08-06 **G1/G2/G4/G5 PASS**; **G3 not runnable — no transmitted light on M5, carried forward** | `d24e721` | **done** — design/25 §"SNR validity, stated once", design/32 §"One hook contract", design/40 §"What block 13 shipped", design/41 F4/F5 |
 | 41a | Platform | none — **assign first in Track D** | `design41/session-survival` (deleted) | `b0ee300` | `501287f` + `bb58551` (round 1 returned) | n/a — no rig surface | `1fb284d` | **done** — design/16 §5 "The invariant is not about Stop"; design/41 F2/F3/F7 ticked |
 | 41b | Platform | 41a merged | `design41/script-export` (deleted) | `03dcea0` | 4 review rounds through `5ead7cc`; README `4b08f30`; runbook `bc9aea1`; post-gate `b6cc7a2` + `5af0fc6`, both **ungated** | M5 **G1/G2/G3 all PASS** rounds 4–5 2026-08-06 | `b1aa55e` | **done** — `CLAUDE.md` compile-to-script pointer, design/41 F1 |
-| 41c | Platform | 41b merged | `design41/emu-channel-plan` | `8a11e45` | 21 commits through `3bae4e2`, 6 review rounds; runbook pin `c5917cc` | **MID-GATE 2026-08-06** — M5 G1 **PASS** (r1, r2), demo G2 channel half **PASS** (r1, r2); export defects found and fixed r1–r2 both rigs; **G3 never demonstrated, M5 script never run standalone, Float read-back SKIPPED**. Evidence `41-block41c-m5`, `-m5-round2`, `41-block41c-demo`, `-demo-round2`. See §"Block 41c mid-gate" | | |
+| 41c | Platform | 41b merged | `design41/emu-channel-plan` (deleted) | `8a11e45` | 21 commits through `3bae4e2`, 6 review rounds; runbook pin `c5917cc` | M5 **G1+G3 PASS** round 3 2026-08-07; demo **G2 PASS** rounds 1–2 (`block41c-round3`, `41-block41c-m5`, `-m5-round2`, `41-block41c-demo`, `-demo-round2`); Float read-back **SKIPPED** | `d4eea5f` | **done** — design/33 Phase 4, design/41 F6 |
 | 41d | Platform | none — ran concurrently with 41c | `design41/path-expansion` (deleted) | `8a11e45` | `63ddd2b` + `ff03913`; review round 2 `3412aea`; runbook pin `d6e2a79` | M5 2026-08-06 **Step 0 + G0 + G1 + G2 + G3 all PASS** (`gate41d-m5`, two rounds) | `f864a33` | **done** — design/32 §"The path-normalisation contract (block 41d)" |
 | 9 | Features | operator intake | `design26/generated-adapter-run-b` | | | required | | |
 | 10 | Features | 9; optional | `design26/few-shot-run-c` | | | required or marked skipped | | |
@@ -4419,7 +4419,7 @@ every global the inlined analysis references is defined in the emitted source,
 so the next helper added to `image_analysis` fails a test here rather than a
 script on a microscope.
 
-## 41c. Channel plans on a rig with no `Channel` config group
+## 41c. [x] Channel plans on a rig with no `Channel` config group — **MERGED 2026-08-07**
 
 Branch: `design41/emu-channel-plan`
 
@@ -4434,31 +4434,87 @@ EMU's reversed slot order. The writes were correct; the assistant's narration of
 them in the same message was not, calling slot 3 "slot 1". A reversed index map
 being hand-applied to laser enables is one off-by-one from arming the wrong line.
 
-- [ ] **Build the channel plan from the EMU laser map when no `Channel` config
+- [x] **Build the channel plan from the EMU laser map when no `Channel` config
       group exists.** Same executor, same typed plan, sourced from the map
       instead of from presets. design/39 already reads EMU's `parameters` block,
       so the slots carry their configured names ("640", "561") — this is the
       missing *source* for a mechanism that exists, not a new layer.
-- [ ] Note for the implementer: the illumination confirmation fires on the
+- [x] Note for the implementer: the illumination confirmation fires on the
       enable and not on the disable. Check that a plan-driven switch does not
       lose a confirmation the hand-written sequence would have raised.
-- [ ] Stop if this becomes EMU-specific machinery in `microclaw/`. The plan
+- [x] Stop if this becomes EMU-specific machinery in `microclaw/`. The plan
       source is pluggable or this belongs in a rig profile — see the standing
       constraint on rig facts.
 
 Rig gate:
 
-- [ ] M5: a two-channel multi-position run switches channels through the plan,
-      with no raw `set_device_property` call in the history. Filter, enable, and
-      trigger end in the same state the hand-written sequence produced.
-- [ ] Demo (has a real `Channel` group): non-regression — preset-sourced plans
+- [x] M5: a two-channel multi-position run switches channels through the plan,
+      with no raw `set_device_property` **write to a laser enable** in the
+      history. Filter, enable, and trigger end in the same state the
+      hand-written sequence produced. *(Reworded 2026-08-06 and the rewording is
+      accepted. "No raw `set_device_property` call" cannot be met alongside a
+      laser-only channel: EMU's configuration carries no laser-to-filter
+      association, so the emission filter is still moved by hand, and inventing
+      that association is exactly what this block forbids. The narrowed criterion
+      is the off-by-one the block exists to prevent.)*
+- [x] Demo (has a real `Channel` group): non-regression — preset-sourced plans
       behave exactly as before.
-- [ ] M5: 41a's entry-state rule observed in the same run — a laser found on at
+- [x] M5: 41a's entry-state rule observed in the same run — a laser found on at
       session start is still on at the end, and one microclaw enabled is off.
 
 Post-merge design gate:
 
-- [ ] Record the plan-source decision in design/33 Phase 4 and tick design/41 F6.
+- [x] Record the plan-source decision in design/33 Phase 4 and tick design/41 F6.
+
+### Rig gate — M5 round 3 (2026-08-07) + demo rounds 1–2: **G1, G2, G3 PASS**
+
+Four rig rounds in all, across two rigs. Evidence: `block41c-round3` (M5),
+`41-block41c-m5`, `41-block41c-m5-round2`, `41-block41c-demo`,
+`41-block41c-demo-round2`.
+
+- **G1 PASS** (`block41c-round3`). `set_channel` calls
+  `['640','640','561','640','DAPI']`; raw writes are **three filter-wheel State
+  moves and nothing else** — zero raw writes to a laser enable. The checker was
+  run by the coordinator, not the operator, and exits 0. Reversed slot order
+  right: 640 writes `Laser 1`. Four illumination confirmations, all enables,
+  none on the disables.
+- **G3 PASS — first time in four sessions.** Entry state had slot 3 (`640`)
+  enabled with the others off; step 8 restored `640` after the second
+  acquisition; the session ends with `640` on and the `561` microclaw enabled
+  off. Earlier sessions never reached step 8, which is why this was outstanding
+  three rounds running.
+- **G2 PASS** (`41-block41c-demo`, `-demo-round2`). Source names the `Channel`
+  config group with no EMU mention, `channel_source: config-group`, both presets
+  apply, and a channel-axis acquisition still runs where M5 refuses it. **The
+  Float read-back half is SKIPPED, not passed** — see the carried-forward note.
+- **Dose is exact, and this is the criterion the round exists for.** Six datasets
+  per position = 2 from the session + 2 from the v1 script + 2 from the v2
+  script, each script emitting exactly the acquisitions that completed. Both
+  scripts ran standalone on M5 with microclaw closed and **neither raised**,
+  despite carrying 1 and 5 `# SKIPPED` lines respectively.
+- **The round-2 rollback fix is confirmed against a genuine recurrence.** The
+  same iChrome serial timeout hit the plan's first write; the result was
+  `ChannelPlanError` with `applied=[]` and **no "SAFE STATE NOT VERIFIED"**,
+  where round 2 had escalated to `ChannelPlanSafeStateError` on a plan in which
+  nothing landed.
+
+**Carried forward, not owed by this block:**
+
+- **The Float read-back is untested on hardware.** Neither rig reaches it by
+  default: demo `Channel` presets expand to `Label` writes plus `Core.Shutter`,
+  M5's enables are categorical. Adding a camera `Exposure` to one demo preset
+  closes it.
+- `_emit_multiposition` reads the channel from `protocol_params` only, so a
+  top-level `channel` renders channel-less. Unreachable now that malformed calls
+  are skipped; still latent; 41b's emitter, not 41c's.
+- 41c's EMU-source refusal note in `authorize_channel` is **rig-unexercised**:
+  `guard.check_channel` refuses an unknown name first on any rig with a non-null
+  `channels.allowed`.
+- Plans write every other named slot off **unconditionally** — three redundant
+  writes per switch on M5, where both serial timeouts landed. Deliberate: a
+  conditional skip would make the emitted script a function of that day's
+  starting state. The better lever for a flaky link is retry-with-backoff at the
+  device layer. See design/33 Phase 4.
 
 ## 41d. [x] `~` is written as a directory instead of being expanded — **MERGED 2026-08-06**
 
