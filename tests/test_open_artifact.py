@@ -353,6 +353,42 @@ def test_directory_uses_the_mm_reader_and_never_ij_open(monkeypatch, tmp_path):
     studio.data.return_value.load_data.assert_called_once_with(str(dataset), True)
 
 
+def test_a_display_that_cannot_be_described_is_still_reported_as_open(tmp_path):
+    """Failing to describe a window must not invert into 'nothing opened'."""
+    dataset = tmp_path / "acq_1"
+    dataset.mkdir()
+    ctrl = MicroscopeController.__new__(MicroscopeController)
+    ctrl.is_connected = lambda: True
+    ctrl._port = 4827
+
+    empty = MagicMock()
+    empty.size.return_value = 0
+    created = MagicMock()
+    created.size.return_value = 1
+    created.get.side_effect = AttributeError("no get on this shadow")
+
+    store = MagicMock()
+    store.get_num_images.side_effect = AttributeError("no getNumImages")
+    store.get_save_path.side_effect = AttributeError("no getSavePath")
+    store.get_any_image.side_effect = AttributeError("no getAnyImage")
+
+    displays = MagicMock()
+    displays.get_all_image_windows.return_value = empty
+    displays.load_displays.return_value = created
+    studio = MagicMock()
+    studio.displays.return_value = displays
+    studio.data.return_value.load_data.return_value = store
+    ctrl._studio = studio
+
+    result = MicroscopeController.open_in_imagej(ctrl, str(dataset))
+    assert result["opened"] is True, (
+        "a display was created; failing to read its name does not un-create it"
+    )
+    assert len(result["windows"][0]["unread"]) == 3, (
+        "and what could not be read must be said, not silently dropped"
+    )
+
+
 def test_directory_with_no_display_created_reports_failure(monkeypatch, tmp_path):
     dataset = tmp_path / "acq_1"
     dataset.mkdir()

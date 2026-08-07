@@ -429,21 +429,45 @@ class MicroscopeController:
             return {"opened": False, "via": self._MM_READER,
                     "reason": ("Micro-Manager read the dataset but opened no "
                                "display window for it.")}
+        # A display exists from here on. Describing it must not be able to
+        # UNDO that: these accessors are the least-proven calls in this path,
+        # and a naming difference turning a window that opened into "nothing
+        # opened" would be the same lie as claiming one that did not, pointed
+        # the other way. Report the window, and report what could not be read.
+        return {"opened": True, "via": self._MM_READER,
+                "windows": self._describe_mm_displays(store, created, n_created, path)}
+
+    def _describe_mm_displays(self, store, created, n_created: int,
+                              path: str) -> list[dict]:
+        described: dict = {}
+        for key, read in (("n_planes", lambda: int(store.get_num_images())),
+                          ("title", lambda: str(store.get_save_path()) or path)):
+            try:
+                described[key] = read()
+            except Exception as exc:
+                described[key] = None
+                described.setdefault("unread", []).append(
+                    f"{key}: {type(exc).__name__}: {exc}")
+        try:
+            image = store.get_any_image()
+            if image is not None:
+                described["width"] = int(image.get_width())
+                described["height"] = int(image.get_height())
+        except Exception as exc:
+            described.setdefault("unread", []).append(
+                f"dimensions: {type(exc).__name__}: {exc}")
         # One entry per display actually created, so `windows` means the same
         # thing here as it does for ImageJ. Dimensions come from the datastore:
         # every display of one dataset shows the same frame size.
-        shared = {"n_planes": int(store.get_num_images())}
-        image = store.get_any_image()
-        if image is not None:
-            shared["width"] = int(image.get_width())
-            shared["height"] = int(image.get_height())
-        save_path = str(store.get_save_path())
         windows = []
         for index in range(n_created):
-            display = created.get(index)
-            windows.append({"title": str(display.get_name()) or save_path, **shared})
-        return {"opened": True, "via": self._MM_READER,
-                "windows": windows or [{"title": save_path, **shared}]}
+            window = dict(described)
+            try:
+                window["title"] = str(created.get(index).get_name()) or window["title"]
+            except Exception:
+                pass          # the datastore's save path already answered this
+            windows.append(window)
+        return windows or [described]
 
     def _probe_imagej_dir(self) -> str | None:
         """ij.IJ.getDirectory("imagej") — MM's ImageJ install root."""
