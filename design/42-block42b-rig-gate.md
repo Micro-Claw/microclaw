@@ -11,7 +11,7 @@ before you start so you know what you are watching for.
 ## Pin the implementation
 
 ```
-git merge-base --is-ancestor ed9c78a HEAD
+git merge-base --is-ancestor 867f3af HEAD
 ```
 
 Exit code 0 means the code this runbook describes is in what you checked out.
@@ -19,7 +19,7 @@ Print it in words — `echo %ERRORLEVEL%` prints the literal string in PowerShel
 and verifies nothing:
 
 ```powershell
-git merge-base --is-ancestor ed9c78a HEAD
+git merge-base --is-ancestor 867f3af HEAD
 if ($LASTEXITCODE -eq 0) { "PINNED OK" } else { "WRONG TREE - stop" }
 ```
 
