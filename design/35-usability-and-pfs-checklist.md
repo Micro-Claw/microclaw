@@ -237,6 +237,14 @@ two `florian/*`, and `port-to-jpype-acqj`.
 - **Track order from here: Track D is complete** (41a, 13, 41b, 41c, 41d all
   merged). The next live work is **Track B**: 6a is pushed and awaiting the
   Nikon, and 6 and 7a unblock when it merges. Then Track C (9–11) and closeout 12.
+- **Track E is new, added 2026-08-07 from `design/42-open-what-we-wrote.md`**:
+  blocks 42a (the ImageJ open spike) and 42b (`open_artifact`). It is scheduled
+  now rather than after Track C because 6a is blocked on a remote operator and
+  Track E is not, and because design/43 F7 already points at `open_artifact` as
+  the fix for a defect being hit every session. **42a first — design/42 rests on
+  two corrections that are argued from the record and not yet measured**, and its
+  check 6 (can `IJ.open` stall the single pyjavaz lock?) can stop 42b in this
+  shape. Design/43 itself is *not* scheduled; F7 is named only as a dependent.
 - **`main` measures 1623 passed / 99 skipped / 3 expected warnings, 1722
   collected** (measured 2026-08-07 on the 41c merge result at `d4eea5f`, macOS,
   20.3 s — 41c and 41d merged cleanly, 1610 + 13 and 1709 + 13 exactly). Re-measure rather than trusting this. Judge a suite by failures and
@@ -449,6 +457,8 @@ assistant's narration when judging whether a guard fired.
 | 41b | Platform | 41a merged | `design41/script-export` (deleted) | `03dcea0` | 4 review rounds through `5ead7cc`; README `4b08f30`; runbook `bc9aea1`; post-gate `b6cc7a2` + `5af0fc6`, both **ungated** | M5 **G1/G2/G3 all PASS** rounds 4–5 2026-08-06 | `b1aa55e` | **done** — `CLAUDE.md` compile-to-script pointer, design/41 F1 |
 | 41c | Platform | 41b merged | `design41/emu-channel-plan` (deleted) | `8a11e45` | 21 commits through `3bae4e2`, 6 review rounds; runbook pin `c5917cc` | M5 **G1+G3 PASS** round 3 2026-08-07; demo **G2 PASS** rounds 1–2 (`block41c-round3`, `41-block41c-m5`, `-m5-round2`, `41-block41c-demo`, `-demo-round2`); Float read-back **SKIPPED** | `d4eea5f` | **done** — design/33 Phase 4, design/41 F6 |
 | 41d | Platform | none — ran concurrently with 41c | `design41/path-expansion` (deleted) | `8a11e45` | `63ddd2b` + `ff03913`; review round 2 `3412aea`; runbook pin `d6e2a79` | M5 2026-08-06 **Step 0 + G0 + G1 + G2 + G3 all PASS** (`gate41d-m5`, two rounds) | `f864a33` | **done** — design/32 §"The path-normalisation contract (block 41d)" |
+| 42a | Read side | none — may run concurrently with Track B | `design42/ij-open-spike` | `8b902d3` | | **is the deliverable** — M5, MM open, all six checks | | |
+| 42b | Read side | 42a's answers | `design42/open-artifact` | | | **required** — M5, and a thumbnail in the transcript is a failure | | |
 | 9 | Features | operator intake | `design26/generated-adapter-run-b` | | | required | | |
 | 10 | Features | 9; optional | `design26/few-shot-run-c` | | | required or marked skipped | | |
 | 11 | Features | accepted Run B fixtures | `design32/hook-worker-isolation` | | | regression required | | |
@@ -4617,6 +4627,187 @@ actually compared against the root would read better. Carried forward, not owed.
 still on M5 when the evidence was returned. Whether it holds 41b's data or is an
 empty validation stub is the operator's call, and the runbook deliberately
 proposes rather than deletes.
+
+---
+
+# Track E — the read side (block 42)
+
+`design/42-open-what-we-wrote.md`. Microclaw writes a file, hashes it, describes
+it, and then tells the operator to go open it in FIJI. There is no read side, and
+the last clause of *"put them in a stitched mosaic, then open the mosaic and show
+it to me"* has never been executable.
+
+Not a Track D block and nothing here depends on it, but two other documents now
+point at it: **design/43 F7** (six offers of `export_dataset_as_tiff` in one
+session, all with the wrong reason — the fix names `open_artifact` as the thing
+the model should reach for instead) and **F12**. Design/43 is not otherwise
+scheduled; do not start it from these rows.
+
+**Track E may run concurrently with Track B.** 6a is at step 5 awaiting the
+Nikon and touches `safety_config`/authorization; 42b touches `controller.py`,
+`tools.py`, `image_analysis.py`, `tools_schema.py`, `agent.py`. Separate
+worktrees, and 42b merges `main` before its own merge if 6a lands first.
+
+## 42a. The ImageJ open spike — evidence before the code
+
+Branch: `design42/ij-open-spike`
+
+Source: design/42 §"Spike first". The deliverable **is** the answers; the script
+is how they are obtained. Six questions, three of which can change the design and
+one of which (check 6) can stop it shipping in this shape at all.
+
+design/42 rests on two corrections that are argued from the record, not measured:
+that design/10's "static IJ1 methods are not directly callable over ZMQ" was the
+design/12 cache collision misattributed, and that the design/18 / jPypeMM repaint
+limitation is about the Preview canvas rather than about opening a new ImageJ
+window. `_probe_imagej_dir` is a real existence proof for the first. Neither is
+proof that `IJ.open` paints a window on this build. That is what this block buys.
+
+- [ ] **`design/42-ij-open-spike.py`, committed; its outputs are not.** One
+      function per check, each independently runnable, each reporting
+      PASS/FAIL/ERROR with the raw value it saw. A failing check must not stop
+      the ones after it — the ordering questions in checks 1 and 2 are only
+      answerable if every check runs.
+- [ ] **Import `_new_static_java_class` from `microclaw.controller`; do not copy
+      it.** This is a deliberate departure from the design/29 probe convention
+      (`pycromanager` + stdlib only), which exists for the Nikon operator who may
+      have no working microclaw. This runs on M5. A copied helper would be a
+      different code path that can pass while the shipped one fails, which is the
+      one outcome this spike must not produce.
+- [ ] **Check 1** — `ij.IJ` and `ij.WindowManager` both resolve through the
+      helper, **wrapped in both orders**. The design/12 collision must not
+      resurface. Report the method surface each shadow actually exposes, not just
+      that the wrap did not raise.
+- [ ] **Check 2** — does a shadow returned *before* another static wrap still
+      work *after* it? This decides whether "re-wrap per call" is a rule or
+      hygiene, and design/42 explicitly defers it here rather than designing
+      around it.
+- [ ] **Check 3** — `IJ.open()` on `stitch_test_mosaic.tiff`: does a window
+      appear, and do `WindowManager` dimensions match what Python reads from the
+      same file? Dimensions are the load-bearing part; a title match alone is
+      near-self-confirming.
+- [ ] **Check 4** — `IJ.open()` on a format IJ1 does not read natively. Confirm
+      Bio-Formats delegation via `HandleExtraFileTypes` is real *on this
+      install*, and record how it fails when it is absent.
+- [ ] **Check 5** — `IJ.open()` on the NDTiff **directory** `stitch_test_1`.
+      Expected to fail; record *how*, so `open_artifact` can refuse with a reason
+      instead of hanging. **This one has a consequence for 42b's schema**, which
+      currently advertises NDTiff directories as openable while design/43 F7 says
+      NDTiff opens in Fiji as-is. Whatever check 5 returns, 42b's tool
+      description must match it.
+- [ ] **Check 6** — does the call block until the window paints, or return
+      early? pyjavaz serialises every bridge round trip under one lock, so a
+      modal Bio-Formats import dialog stalls **every** subsequent core call, on a
+      rig, with a sample under illumination. **If it can hang, that is a blocker**
+      and 42b does not start in this shape.
+- [ ] **Stop** and return to the coordinator if check 1 fails (the design/10
+      correction is then wrong and design/42's premise goes with it), or if check
+      6 shows the bridge can be stalled.
+- [ ] Rig-facing: PowerShell/cmd-safe invocation, `> out.txt 2>&1`, no Unix
+      pipelines. Record the MM build and IJ version in the output header.
+
+Rig gate — **the evidence is the deliverable**, so this block's gate is its run:
+
+- [ ] M5, with MM open and `stitch_test_mosaic.tiff` present, all six checks,
+      output returned.
+
+Post-merge design gate:
+
+- [ ] **Amend design/10 §2 and "Net conclusions" #2** — *only if* check 1
+      confirms it. design/42 already states the amendment is owed; the spike is
+      what licenses making it. If check 1 fails, amend design/42 instead.
+- [ ] Fold checks 2–6 into design/42: the re-wrap rule, Bio-Formats reality,
+      how a directory refuses, and whether the call blocks. Where an answer
+      contradicts the Decision section, **change the decision** — do not carry
+      a stub the spike disproved.
+
+## 42b. `open_artifact` — open what we wrote, and stop there
+
+Branch: `design42/open-artifact`
+
+Depends on 42a's answers. design/42 §"Decision" through §"Stubs" is the spec.
+The hard part of this block is not opening the file; it is **not** rendering it.
+
+- [ ] **`controller.open_in_imagej(path)`**, beside `_probe_imagej_dir`, which is
+      the existence proof for the mechanism. Statics per 42a check 2's answer.
+- [ ] **Structural proof the window exists**: window-ID set difference across the
+      call, plus dimensions matched against what Python reads. `IJ.open` returns
+      void; a bridge call returning is not proof a window painted (design/18's
+      lesson survives even though its Preview specifics do not). No new window →
+      report the failure. **Never report a window the user cannot see.**
+- [ ] **`IJ.open(path)` as the primary, not `IJ.runMacro`.** Same entry point as
+      drag-and-drop, no macro engine, and — the reason that matters on this rig —
+      **no string escaping**: a Windows path goes through as an argument instead
+      of through backslash-escaping into a Java string inside a macro inside JSON.
+- [ ] **The user owns the session.** New window, left open. Never reuse, never
+      close, never `WindowManager.setTempCurrentImage`, nothing on any exit path.
+- [ ] **Do not build a bridge-locality detector.** design/42 asks for a refusal
+      when the bridge is not local, because `IJ.open` resolves the path Java-side.
+      Microclaw's bridge is localhost-only by construction — `Core(port=…)` and
+      `Studio(port=…)` take no host (`controller.py:214`) — so there is nothing to
+      detect and a detector would be a layer over a fact. State the fact in the
+      docstring and keep the Python-side existence check. If a check is wanted
+      anyway, the zero-new-code one is that `_probe_imagej_dir()`'s Java-side path
+      exists Python-side; decide and say which, do not add both.
+- [ ] **`analyze` is off by default, and the schema description is what holds
+      it.** The 512 px thumbnail for this mosaic is 32,496 base64 characters
+      measured on the real file, and an image block stays in the conversation for
+      every subsequent turn. "Show me" and "tell me what's in it" are different
+      requests.
+- [ ] **`_verify_against_manifest`** recomputes both digests the writer recorded
+      (`tools.py:2114`, `:2139`) and reports match/mismatch. A mismatch **still
+      opens** — the operator is entitled to look at a file whose provenance
+      failed. No sidecar → open, and say provenance is unverified.
+- [ ] **Fold the duplicated text+image block into `image_content`.**
+      `snap_and_analyze` (`tools.py:2344`) and `run_autofocus` (`tools.py:2761`)
+      hand-build the same pair; `open_artifact` would be the third. One
+      definition, three callers — not a fourth copy.
+- [ ] **`make_thumbnail` gains `mask`**, one line: percentiles read
+      `img if mask is None else img[mask]`. The mosaic is 65% uncovered zeros and
+      the 2/99.8 stretch over all pixels puts the real signal in the bottom ~1% of
+      the ramp, so the analyze path would otherwise be interpreting a black
+      rectangle. Say in the payload that the stretch was masked.
+- [ ] **`@emits_nothing`**, as with `read_hook_log`: a display step has no place
+      in a re-run script.
+- [ ] **`agent.py`**: call it and stop; do not tell the operator to open it in
+      FIJI; `analyze=true` only when asked to interpret; never describe an image
+      not opened.
+- [ ] Stop if this grows a registry of file types, a viewer abstraction, or a
+      second path into the MM Preview canvas — the last is what design/18 and
+      jPypeMM actually rule out and is out of scope by name.
+
+Suite, on committed fixtures:
+
+- [ ] The default call returns a dict, never a content list, and reaches no
+      thumbnail code — assert with a patched `make_thumbnail` that fails if
+      called.
+- [ ] A tampered TIFF reports `pixel_sha256_matches: false` **and still opens**.
+- [ ] A file with no sidecar opens with provenance stated as unverified.
+- [ ] `open_in_imagej` with no bridge returns `opened: false` rather than raising.
+- [ ] `image_content` is the only place the text+image pair is built.
+- [ ] Diff collected test IDs against the branch start commit.
+
+Rig gate — M5, and it is a behaviour gate as much as a mechanism gate:
+
+- [ ] Re-run the failing session verbatim: acquire the six positions, build the
+      mosaic, *"open the mosaic and show it to me."* Success is a **new ImageJ
+      window the operator can see**, reported with matching dimensions and both
+      digests confirmed, and no instruction to open anything in FIJI.
+- [ ] **The transcript contains no thumbnail.** That phrasing is a show-me, not
+      an analyze-me. A rendered image there is a **failed gate even though the
+      window opened**.
+- [ ] Then *"how many cells are in it?"* — `analyze=true` appears only on that
+      second call.
+- [ ] Close the window by hand: microclaw neither reopens it nor complains.
+- [ ] Run a second acquisition afterwards to confirm the bridge still works with
+      an ImageJ window open. (42a check 6 is the design-time version of this
+      question; this is the one that counts.)
+
+Post-merge design gate:
+
+- [ ] Record in design/42 what the gate measured, and tick design/43 F7's
+      dependency — F7's prompt fix names `open_artifact`, so it becomes
+      assignable here. Do not implement F7 in this block.
 
 ---
 
