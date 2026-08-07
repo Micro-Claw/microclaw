@@ -202,12 +202,12 @@ a cold session resumes from the remote alone.
   concurrently with each other and with 6a — 13 is `tools.py`, 41b is the
   emitters plus `image_analysis.py`. 41c follows 41b.
 
-### State at the 2026-08-06 session boundary — read this before assigning anything
+### State at the 2026-08-07 session boundary — read this before assigning anything
 
-Written because the session ended on credits, mid-block, and step 9's whole point
-is that a cold session resumes from the remote alone. `main` is `3d52b3d` plus
-this commit; `git log --oneline origin/main..main` is empty; no uncommitted files
-in any worktree.
+Step 9's whole point is that a cold session resumes from the remote alone. `main`
+is `ef91216`; `git log --oneline origin/main..main` is empty; no uncommitted
+files in either worktree; the only branches on `origin` besides `main` are `6a`,
+two `florian/*`, and `port-to-jpype-acqj`.
 
 - **Block 13 is CLOSED.** Merged `d24e721`, gate `40-block13-m5`, design gate
   `e5ad254`. Its G3 (transmitted light) was **not runnable on M5** and is in the
@@ -221,16 +221,19 @@ in any worktree.
   design/32. Two review rounds and two rig rounds. One cosmetic residual (the
   refusal message shows the expansion with mixed separators) is carried forward,
   not owed.
-- **Block 41c is CLOSED.** Merged `d4eea5f`, gates in §"41c" below, design gate
-  in design/33 Phase 4 and design/41 F6. Six review rounds, four rig rounds.
-  **Track D is complete.**
   What 41d was: there was no `expanduser` anywhere in `microclaw/`, so `~/x` was
   joined under the workspace root as a literal directory named `~`. It predated
   Track D (`ee7f098`, 2026-07-28) and affected **every** path-taking tool, so any
   past session that used a `~` path had been writing into a stray `~` folder.
-- **Block 6a is still pushed and still awaiting the Nikon**, unchanged since
-  2026-08-05 at `4994f3e`. It must merge `main` before its own merge — `main` has
-  moved a long way since it branched.
+- **Block 41c is CLOSED.** Merged `d4eea5f`, gates in §"41c" below, design gate
+  in design/33 Phase 4 and design/41 F6. Six review rounds, four rig rounds.
+  **Track D is complete.**
+- **Block 6a is the next work, and it is already pushed** — `design34/focus-system-authorization`
+  at `4994f3e`, unchanged since 2026-08-05, awaiting the Nikon **and any non-EMU
+  rig**. It is at step 5 of the block workflow: the code and runbook are on the
+  branch, the gates have not been run. It must merge `main` before its own merge
+  — `main` has moved a long way since it branched, and 6 and 7a unblock only once
+  it lands.
 - **Track order from here: Track D is complete** (41a, 13, 41b, 41c, 41d all
   merged). The next live work is **Track B**: 6a is pushed and awaiting the
   Nikon, and 6 and 7a unblock when it merges. Then Track C (9–11) and closeout 12.
