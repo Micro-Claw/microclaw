@@ -381,7 +381,7 @@ def run_wrap_order(port: int, order: str) -> int:
 
 def check1(port: int, timeout: float) -> None:
     """Parent side of check 1: run each order in a clean process."""
-    control_verdict = []
+    control_word = "DID-NOT-RUN"
     for order, label in (("ij", "1a. wrap order ij.IJ then ij.WindowManager"),
                          ("wm", "1b. wrap order ij.WindowManager then ij.IJ"),
                          ("control", "1c. CONTROL: same wrap with the eviction "
@@ -394,36 +394,55 @@ def check1(port: int, timeout: float) -> None:
             proc = subprocess.run(cmd, capture_output=True, text=True,
                                   timeout=max(timeout, 60.0))
         except subprocess.TimeoutExpired:
-            record("ERROR", label,
-                   "the subprocess never returned; it was killed. A static wrap "
-                   "should never block — treat this as a bridge problem, not an "
-                   "answer to check 1.")
-            continue
+            word, detail = "ERROR", (
+                "the subprocess never returned; it was killed. A static wrap "
+                "should never block — treat this as a bridge problem, not an "
+                "answer to check 1.")
         except Exception as exc:
-            record("ERROR", label, f"could not start subprocess: {exc!r}")
-            continue
-        out = (proc.stdout or "") + (proc.stderr or "")
-        print(textwrap.indent(out.rstrip(), "  | "), flush=True)
-        verdict = next((ln for ln in reversed(out.splitlines())
-                        if ln.startswith("CHILD-RESULT:")), "")
-        body = verdict.split(":", 1)[1].strip() if verdict else ""
-        word = body.split(" ", 1)[0] if body else ""
-        detail = body[len(word):].strip()
+            word, detail = "ERROR", f"could not start subprocess: {exc!r}"
+        else:
+            out = (proc.stdout or "") + (proc.stderr or "")
+            print(textwrap.indent(out.rstrip(), "  | "), flush=True)
+            verdict = next((ln for ln in reversed(out.splitlines())
+                            if ln.startswith("CHILD-RESULT:")), "")
+            body = verdict.split(":", 1)[1].strip() if verdict else ""
+            word = body.split(" ", 1)[0] if body else ""
+            detail = body[len(word):].strip()
+            if not word:
+                word, detail = "ERROR", (f"no CHILD-RESULT line; exit code "
+                                         f"{proc.returncode}")
         if order == "control":
-            control_verdict.append(word)
-            record("INFO", label, f"{word}: {detail}" if word else
-                   f"no CHILD-RESULT line; exit code {proc.returncode}")
+            control_word = word
+            # A control that errored is NOT an informational aside: it means the
+            # control did not run, and the summary block must not read as though
+            # it did.
+            record("INFO" if word in ("COLLISION", "NOCOLLISION") else "ERROR",
+                   label, f"{word}: {detail}")
         elif word in ("PASS", "FAIL", "ERROR"):
             record(word, label, detail)
         else:
-            record("ERROR", label,
-                   f"no CHILD-RESULT line; exit code {proc.returncode}")
-    if control_verdict == ["NOCOLLISION"]:
+            record("ERROR", label, f"unrecognised child verdict {word!r}: {detail}")
+
+    # The control licenses 1a/1b. Anything other than COLLISION withdraws that
+    # licence, and "the bug did not reproduce" and "the control did not run"
+    # withdraw it for different reasons, so say which.
+    if control_word != "COLLISION":
+        if control_word == "NOCOLLISION":
+            why = ("The control RAN and the collision did NOT reproduce without "
+                   "the helper on this install. So the wrap comes back clean "
+                   "either way here, and 1a/1b cannot distinguish a working "
+                   "helper from an absent bug.")
+        else:
+            why = (f"The control DID NOT RUN to a verdict ({control_word}). "
+                   "Nothing was measured about what happens without the helper, "
+                   "so 1a/1b are unlicensed for exactly the same reason as a "
+                   "NOCOLLISION control — not for a weaker one. Re-run 1c if "
+                   "you can; if it cannot run, say so in the report.")
         record("INFO", "1c. what the control means",
-               "The collision did not reproduce without the helper on this "
-               "install, so 1a/1b passing does not prove the helper is what "
-               "keeps the classes apart. Report this: it changes how much "
-               "design/42's correction of design/10 rests on check 1.")
+               why + " 1a/1b passing therefore does not show that "
+               "_new_static_java_class is what keeps the classes apart. Report "
+               "this: it is what someone will cite when amending design/10, and "
+               "it changes how much design/42's premise rests on check 1.")
 
 
 # --------------------------------------------------------------------------- #
@@ -700,14 +719,17 @@ def run_checks(want, port, core, args, timeout, baseline) -> None:
     if 2 in want:
         @check("2. a shadow held across another static wrap still works")
         def _c2():
+            # getVersion, not getDirectory: getDirectory can legitimately return
+            # empty/None on some builds (_probe_imagej_dir already treats it as
+            # falsy), and a falsy probe value must not be read as a dead shadow.
             ij1 = _new_static_java_class(port, "ij.IJ")
-            v1 = bridge_call("IJ.getDirectory (before)",
-                             lambda: jmethod(ij1, "getDirectory")("imagej"), timeout)
+            v1 = bridge_call("IJ.getVersion (before)",
+                             jmethod(ij1, "getVersion"), timeout)
             wm1 = _new_static_java_class(port, "ij.WindowManager")  # evicts
             v2_err = None
             try:
-                v2 = bridge_call("IJ.getDirectory (stale shadow, after eviction)",
-                                 lambda: jmethod(ij1, "getDirectory")("imagej"), timeout)
+                v2 = bridge_call("IJ.getVersion (stale shadow, after eviction)",
+                                 jmethod(ij1, "getVersion"), timeout)
             except BridgeStalled:
                 raise
             except Exception as exc:
@@ -726,8 +748,8 @@ def run_checks(want, port, core, args, timeout, baseline) -> None:
             detail = (
                 f"held ij.IJ shadow, then wrapped ij.WindowManager (evicts the "
                 f"shared cache key), then called the HELD shadow:\n"
-                f"  IJ.getDirectory before = {v1!r}\n"
-                f"  IJ.getDirectory after  = {v2!r}  {('ERR: ' + v2_err) if v2_err else ''}\n"
+                f"  IJ.getVersion before   = {v1!r}\n"
+                f"  IJ.getVersion after    = {v2!r}  {('ERR: ' + v2_err) if v2_err else ''}\n"
                 f"held ij.WindowManager shadow, then wrapped ij.IJ, then called it:\n"
                 f"  getImageCount before   = {c1!r}\n"
                 f"  getImageCount after    = {c2!r}  {('ERR: ' + c2_err) if c2_err else ''}\n"
@@ -737,15 +759,38 @@ def run_checks(want, port, core, args, timeout, baseline) -> None:
                 f"(getImageCount can legitimately differ if a window opened or "
                 f"closed between the two reads — check the numbers, not just the "
                 f"verdict.)")
-            ok = (v2_err is None and v2 == v1 and v1
-                  and c2_err is None and c2 is not None)
-            if ok:
-                return ("PASS", detail + "\nA held shadow survived a later static "
-                        "wrap: design/42's 're-wrap statics per call' is HYGIENE, "
-                        "not a correctness rule.")
-            return ("FAIL", detail + "\nA held shadow did NOT survive a later "
-                    "static wrap: 're-wrap statics per call' is a RULE, and 42b "
-                    "must get each static immediately before it uses it.")
+            # Three cases, not two. A verdict about shadow lifetime is only
+            # allowed when the BEFORE values could carry one and both probes
+            # agree; otherwise the observation is fine and the conclusion would
+            # be invented.
+            unusable = []
+            if not v1:
+                unusable.append(f"IJ.getVersion returned {v1!r} before the wrap")
+            if c1 is None:
+                unusable.append("WindowManager.getImageCount returned None "
+                                "before the wrap")
+            if unusable:
+                return ("INFO", detail + "\nCHECK 2 DID NOT MEASURE: "
+                        + "; ".join(unusable) + ". The probe, not the shadow, is "
+                        "what failed — nothing is claimed here about whether a "
+                        "held shadow survives a later static wrap, and 42b must "
+                        "not be told a rule this run did not establish.")
+            ij_ok = v2_err is None and v2 == v1
+            wm_ok = c2_err is None and c2 is not None
+            if ij_ok and wm_ok:
+                return ("PASS", detail + "\nBoth held shadows answered correctly "
+                        "after a later static wrap: design/42's 're-wrap statics "
+                        "per call' is HYGIENE, not a correctness rule.")
+            if not ij_ok and not wm_ok:
+                return ("FAIL", detail + "\nNeither held shadow survived a later "
+                        "static wrap: 're-wrap statics per call' is a RULE, and "
+                        "42b must get each static immediately before it uses it.")
+            return ("INFO", detail + "\nTHE TWO PROBES DISAGREE (ij.IJ "
+                    f"{'survived' if ij_ok else 'did not'}, ij.WindowManager "
+                    f"{'survived' if wm_ok else 'did not'}). One direction is "
+                    "not a general answer about shadow lifetime; report the raw "
+                    "values above and let 42b re-wrap per call until this is "
+                    "settled.")
     else:
         record("SKIP", "2. held shadow across a wrap", "not selected by --only")
 
