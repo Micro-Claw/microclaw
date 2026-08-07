@@ -28,13 +28,47 @@ frames it, and the mechanics differ from MM plugins in three load-bearing ways:
    - **ImageJ1 (IJ1)** — the classic ImageJ that MMStudio embeds. The class `ij.IJ`
      *resolves* over the bridge on any build (spike check 3), and IJ1 plugin
      resolution happens Java-side through ImageJ's own PluginClassLoader, so — unlike
-     MM plugins — it does **not** depend on #2401. ⚠️ **But** *the spike disproved the
+     MM plugins — it does **not** depend on #2401. ~~⚠️ **But** *the spike disproved the
      obvious call path:* `JavaClass("ij.IJ").run_macro(...)` /
      `JavaClass("ij.measure.ResultsTable").get_results_table()` fail — pyjavaz hands
      back a bare `java.lang.Class`, so **static IJ1 methods are not directly callable
-     over ZMQ**. The viable IJ1 path is *instance-based*: use the converter to get an
-     `ImageProcessor` and call its instance methods (`get_statistics()`), or
-     construct an instantiable `PlugInFilter` object. See Spike results.
+     over ZMQ**.~~ **RETRACTED 2026-08-07 — see the amendment note below.** The
+     instance-based path (converter → `ImageProcessor` → `get_statistics()`, or an
+     instantiated `PlugInFilter`) is still fine and still recommended for
+     measurement; it is simply no longer the *only* path.
+
+     > **Amendment, 2026-08-07 (design/42 block 42a).** The struck sentence is
+     > wrong, and the check-4 failure it rests on was misattributed. The error —
+     > `AttributeError: 'java_lang_Class' object has no attribute
+     > 'get_results_table'` — is the pyjavaz **static-class cache collision** that
+     > design/12 diagnosed ten days after this spike ran: every static `JavaClass`
+     > shadow is cached under the single key `"java.lang.Class"`, so the first
+     > classpath wrapped in a process wins and every later one silently inherits
+     > its surface. Check 4 wrapped `ij.IJ` (check 3) *before*
+     > `ij.measure.ResultsTable`, so `ResultsTable` came back carrying `ij.IJ`'s
+     > methods. This spike diagnosed a dead end that was really a cache bug.
+     >
+     > `controller._new_static_java_class(port, classpath)` evicts the colliding
+     > key first, and **static IJ1 dispatch works through it.** Measured on M5,
+     > 2026-08-07, MMCore 12.5.0 / ImageJ 1.53c (`design/42-ij-open-spike.py`,
+     > evidence `out42a.txt`): `ij.IJ` and `ij.WindowManager` were each wrapped in
+     > both orders behind a decoy static wrap, and each exposed its own 138 / 38
+     > methods with none of the other's. `IJ.open()` then opened a real window
+     > whose dimensions matched the file read Python-side.
+     >
+     > The **control** is why this is a measurement and not an assumption: the
+     > same wrap with the eviction bypassed reproduced the collision exactly —
+     > `ij.WindowManager` came back with `java.lang.System`'s 40 methods and none
+     > of its own. The bug is real, still present in this pyjavaz, and suppressed
+     > by the helper.
+     >
+     > What has **not** changed: the macro engine is still unnecessary and still
+     > not recommended (point 3's global-state argument stands on its own), and
+     > `net.imagej` (Approach B) is still not bundled. What changes is only that
+     > "static IJ1 is unreachable" may no longer be cited as a reason for
+     > anything. `_probe_imagej_dir` had in fact been calling `ij.IJ.getDirectory`
+     > in production on every rig for months while this document said it could
+     > not work.
    - **ImageJ2 / SciJava (IJ2)** — `net.imagej.ImageJ` gateway + `CommandService`.
      ⚠️ *Spike:* the SciJava framework classes (`org.scijava.Context`,
      `CommandService`, `ModuleService`) **do** resolve, but the `net.imagej.ImageJ`
@@ -80,11 +114,17 @@ an MM build containing #2401. Summary (`PASS=6 FAIL=2 SKIP=1`):
 
 1. **Premise confirmed.** `data().ij()` is `DefaultImageJConverter` — a converter,
    not a plugin runner — and it round-trips MM `Image` → `ImageProcessor` cleanly.
-2. **Static IJ1 dispatch over pyjavaz doesn't work.** Any path built on
-   `JavaClass("ij.IJ").run_macro(...)` or the `ResultsTable` static getter is dead as
-   written. IJ1 usage must go through **instances** (an `ImageProcessor` from the
-   converter, or an instantiated `PlugInFilter`). Whether *any* static/macro entry
-   point is reachable another way is an open follow-up spike (see Caveats).
+2. ~~**Static IJ1 dispatch over pyjavaz doesn't work.**~~ **RETRACTED 2026-08-07
+   (design/42 block 42a) — static IJ1 dispatch works, through
+   `controller._new_static_java_class`.** What this spike measured was the
+   pyjavaz static-class cache collision of design/12, not a property of IJ1 or of
+   ZMQ; check 4 wrapped `ij.IJ` before `ij.measure.ResultsTable` and got `ij.IJ`'s
+   surface back. Measured on M5 2026-08-07 in both wrap orders, with a control
+   that reproduced the collision when the eviction was bypassed. The follow-up
+   spike this conclusion called for **has now been run and is that spike.** Full
+   note in §2 above. Instance-based use (`ImageProcessor` from the converter, an
+   instantiated `PlugInFilter`) remains the recommendation for *measurement* — on
+   its merits, not because statics are unreachable.
 3. **The converter is the load-bearing, proven asset.** It, plus `ImageProcessor`
    instance methods, is enough for real analysis without the macro engine.
 4. **Approach B is genuinely blocked here**, and now precisely: SciJava is present

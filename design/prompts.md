@@ -5132,3 +5132,50 @@ scripts write through. The suite on the merge result was 1623/1722 — exactly
 exporter reproduced the rig's own v2 export byte-for-byte in shape (2 acquire, 5
 skipped, 0 raise). That is the check that caught the 13 × 41b `NameError`; it
 found nothing here, which is the result you want and not a reason to stop doing it.
+
+## Block 42a — the ImageJ open spike (design/42)
+
+**A spike that can only confirm is not a measurement. Give it a control.** Check
+1 asked whether `ij.IJ` and `ij.WindowManager` both survive
+`_new_static_java_class`. Wrapped naively that check cannot fail: with nothing
+wrapped first, the shared `"java.lang.Class"` cache key is empty and the
+design/12 collision is impossible by construction, so a green result would have
+proved only that the test was toothless. The implementer added a **decoy wrap**
+before the targets and a **control run with the eviction bypassed**. On M5 the
+control came back `COLLISION` — `ij.WindowManager` carrying `java.lang.System`'s
+40 methods and none of its own — which is what turned check 1 from a green tick
+into evidence strong enough to retract a conclusion design/10 had held since
+2026-07-02. Without the control the same PASS would have been worthless and
+would have looked identical.
+
+**The two review findings were both the same defect: a verdict outrunning what
+was measured.** 1c recorded a bland `INFO` when the control had *errored*, so a
+control that never ran read exactly like one that ran clean. And check 2's PASS
+condition required its probe value to be truthy, so an empty `getDirectory` would
+have printed "a held shadow did NOT survive" — a wrong conclusion from a correct
+observation, which is how design/28's "REFLECTED" mis-diagnosis happened. Both
+fixes were the same shape: add the third case, *"this check did not measure"*,
+and refuse to state a verdict from it. A spike's failure modes deserve the same
+scrutiny as its success path, because the failure text is what gets pasted into a
+design doc.
+
+**The paragraph flagged as "confirm rather than trust" was the one that was
+wrong.** design/42 asserted `IJ.open` and drag-and-drop both land in
+`ij.io.Opener.open`, and explicitly told the spike to check rather than believe
+it. For a directory they do not: `IJ.open` was a silent no-op that held the
+bridge seven seconds, while the operator dragging the same folder onto the
+toolbar opened it fine. **The operator's aside was worth more than the check.**
+Check 5 established only that `IJ.open` does nothing; it took a human trying the
+gesture the design was modelled on to show the gesture *works* and the model of
+it was wrong. Ask for the manual comparison explicitly next time — "does the
+thing you do by hand still work, and does it look the same?" — rather than hoping
+it arrives as a remark.
+
+**"Class not found on any classloaders" is not proof of absence.**
+`HandleExtraFileTypes` did not resolve over the bridge, which reads as
+"Bio-Formats delegation is missing" and is not: the class is in the default
+package and loads through IJ's own `PluginClassLoader`, which pyjavaz's
+`ZMQUtil.loadClass` need not search. Recorded as **inconclusive** rather than
+negative, and check 4 stayed **SKIP** because nobody supplied a non-native file.
+A SKIP that says why is a result; a probe result read past its own reach is how
+design/21's sourced-and-still-wrong tables happened.
