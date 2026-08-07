@@ -1053,7 +1053,11 @@ def _patch_autofocus(monkeypatch):
     monkeypatch.setattr("microclaw.tools.coarse_then_fine_autofocus", lambda *a, **k: _FAKE_AF_RESULT)
     monkeypatch.setattr("microclaw.tools.single_sweep_autofocus", lambda *a, **k: _FAKE_AF_RESULT)
     monkeypatch.setattr("microclaw.tools.snap_to_numpy", lambda ctrl: np.zeros((64, 64), dtype=np.uint16))
-    monkeypatch.setattr("microclaw.tools.make_thumbnail", lambda img: "")
+    # image_content is where the rendering happens now, and it calls
+    # make_thumbnail in its own module — patch it there.
+    monkeypatch.setattr(
+        "microclaw.image_analysis.make_thumbnail", lambda img, **kwargs: ""
+    )
 
 
 class TestRunAutofocus:
@@ -1149,7 +1153,9 @@ class TestRunAutofocus:
             "microclaw.tools.snap_to_numpy",
             lambda ctrl: np.zeros((64, 64), dtype=np.uint16),
         )
-        monkeypatch.setattr("microclaw.tools.make_thumbnail", lambda img: "")
+        monkeypatch.setattr(
+            "microclaw.image_analysis.make_thumbnail", lambda img, **kwargs: ""
+        )
 
         run_autofocus(mock_ctrl, unconstrained_guard, z_range_um=10.0, z_step_um=1.0)
 
