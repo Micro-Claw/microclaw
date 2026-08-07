@@ -79,6 +79,12 @@ def hint_for_error(exc: Exception) -> str:
             "applied, attempted, and rolled-back pair lists to determine the "
             "resulting state; do not blindly retry the plan."
         )
+    if error_type == "ChannelPlanError":
+        return (
+            "No write reached the device, so no channel change was made and the "
+            "rig's state is not in question. This is a device or link failure — "
+            "diagnose the device named in the message before retrying the plan."
+        )
     if error_type == "RigAuthorizationError":
         return (
             "This is an authorization decision, not a hardware fault. The write "

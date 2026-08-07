@@ -334,6 +334,75 @@ def _recorded_tool_calls(records: list[dict]) -> list[tuple[str, RecordedParams]
     return calls
 
 
+def _recorded_outcome(result: dict | None) -> tuple[str, str] | None:
+    """How much of a recorded call completed: ``("nothing"|"partial", reason)``.
+
+    Read structurally, never from prose. Two signals, and they are the two the
+    record actually carries:
+
+    - a top-level ``error``, which is how `execute_tool` reports both a refusal
+      and a raised exception;
+    - per-item ``error`` entries inside a top-level list, which is how a
+      part-completed acquisition reports itself (`results`, one entry per
+      position). The ``status`` line -- "0/3 positions completed." -- is a
+      symptom of that, not the source, and is deliberately not parsed.
+
+    Only the exact key ``error`` counts. ``error_um`` is a *measurement* that a
+    successful move reports, and matching it would flag working steps.
+
+    **The two answers are not the same defect, and must not get the same
+    treatment** (demo gate rounds 1 and 2, 2026-08-06):
+
+    - ``"nothing"`` -- the session did nothing here, so the faithful thing for
+      the script to do is also nothing. The exporter emits a comment and
+      *continues*. That is not a reconstruction, it is exact. Refusing here was
+      round 2's defect: a rejected call sat mid-session and the raise made the
+      acquisition that *did* run unreachable, so the script contributed zero
+      acquisitions. Failed calls are ordinary -- the M5 gate session had three --
+      so refusing on them makes the export useless on real sessions.
+    - ``"partial"`` -- something happened that cannot be faithfully reproduced.
+      Replaying the whole step re-images what completed; replaying only what
+      worked silently changes the routine, and the record cannot say whether the
+      operator wanted the failed item retried or dropped. Both are
+      reconstructions, so this keeps the hard refusal, like the offline mosaic
+      and adaptive runs.
+
+    ``"nothing"`` is *not* a claim that no hardware moved -- a tool can fail
+    after moving a stage. The guarantee is narrower and is the safer of the two
+    errors: nothing the session recorded as completed is skipped, and nothing
+    that failed is retried.
+    """
+    if not isinstance(result, dict):
+        return None
+    if "error" in result:
+        return "nothing", f"the recorded call did not succeed: {result['error']}"
+    for key, value in result.items():
+        if not isinstance(value, list):
+            continue
+        detail = [
+            f"{item.get('position', f'{key}[{index}]')!r}: {item['error']}"
+            for index, item in enumerate(value)
+            if isinstance(item, dict) and "error" in item
+        ]
+        if not detail:
+            continue
+        named = "; ".join(detail[:3]) + (
+            f"; and {len(detail) - 3} more" if len(detail) > 3 else ""
+        )
+        if len(detail) == len(value):
+            return "nothing", (
+                f"none of the {len(value)} recorded {key} entries completed "
+                f"({named})"
+            )
+        return "partial", (
+            f"{len(detail)} of {len(value)} recorded {key} entries did not "
+            f"complete ({named}), so replaying this step would not reproduce the "
+            "run -- it would re-image what did complete and attempt again what "
+            "did not"
+        )
+    return None
+
+
 def _position_from_result(name: str, result: dict) -> dict | None:
     """Return a complete position delta, or None when the result is insufficient."""
     if "x_um" not in result or "y_um" not in result:
@@ -467,6 +536,26 @@ def _analysis_source(*, include_autofocus: bool = False) -> str:
     return "\n".join(parts)
 
 
+def _channel_verification_source() -> str:
+    """Return exact source for the read-back check the channel executor ran.
+
+    Inlined for the same reason the analysis is: the emitted verification must
+    *be* the executor's, not a paraphrase of it. A paraphrase was written first
+    and was wrong -- a bare string compare fails a write that succeeded, because
+    `_verify_property` compares a Float property numerically and Micro-Manager
+    reformats one ("10" reads back "10.0000", measured; design/33 Phase 4). The
+    type is established the way the executor establishes it, by asking the core,
+    so `_property_type_name`'s bridge-shape handling travels with it.
+    """
+    from microclaw import authorization
+
+    return "\n".join(inspect.getsource(item) for item in (
+        authorization.ChannelPlanError,
+        authorization._property_type_name,
+        authorization._verify_property,
+    ))
+
+
 @emits_nothing
 def export_session_script(
     ctrl: MicroscopeController,
@@ -485,23 +574,37 @@ def export_session_script(
         for name, params in recorded
     )
     autofocus_used = any(name == "run_autofocus" for name, _params in recorded)
+    # Only a channel switch that actually replayed writes needs the read-back
+    # check; a map-less set_config delegation verifies nothing of its own.
+    channel_writes = any(
+        name == "set_channel" and params.result.get("effects")
+        for name, params in recorded
+    )
     lines = [
         "from __future__ import annotations",
+        "import math",
         "import time",
         "from dataclasses import dataclass",
         "from pathlib import Path",
         "from types import SimpleNamespace",
-        "from typing import Callable, NamedTuple, Optional",
+        "from typing import Any, Callable, NamedTuple, Optional",
         "import numpy as np",
         "from pycromanager import Acquisition, Core, multi_d_acquisition_events",
         "",
         *(["", _analysis_source(include_autofocus=autofocus_used).rstrip()]
           if analysis_used else []),
+        *(["", _channel_verification_source().rstrip()] if channel_writes else []),
         "",
         "core = Core()",
         "mm = SimpleNamespace(core=core)",
     ]
     emitted = 0
+
+    def refuse(tool: str, reason: str) -> None:
+        """One shape for every refusal: a comment, then a step that cannot run."""
+        lines.append(f"# NOT EMITTED: {tool} — {reason}")
+        lines.append(f"raise RuntimeError({('NOT EMITTED: ' + tool + ' — ' + reason)!r})")
+
     for name, params in recorded:
         if name == "export_session_script":
             continue
@@ -513,19 +616,32 @@ def export_session_script(
             lines.append("# No hardware-routine effect.")
             continue
         if renderer is None:
-            reason = getattr(
+            refuse(name, getattr(
                 fn, "_microclaw_refusal_reason",
                 "no standalone emitter has been implemented for this tool",
-            )
-            lines.append(f"# NOT EMITTED: {name} — {reason}")
-            lines.append(f"raise RuntimeError({('NOT EMITTED: ' + name + ' — ' + reason)!r})")
+            ))
+            continue
+        # Checked after the tool-level refusals so those keep their own wording,
+        # and before the renderer so a call that did not succeed can never be
+        # rendered as one that did. A call that completed *nothing* is skipped
+        # and the script carries on: doing nothing is the exact reproduction of
+        # a step that did nothing, and halting there would strand every later
+        # step that really ran.
+        outcome = _recorded_outcome(params.result)
+        if outcome is not None:
+            completed, reason = outcome
+            if completed == "partial":
+                refuse(name, reason)
+            else:
+                lines.append(f"# SKIPPED: {name} — {reason}")
+                lines.append(
+                    "# The session completed nothing here, so neither does this script."
+                )
             continue
         try:
             rendered = renderer(params)
         except CannotEmit as exc:
-            reason = str(exc)
-            lines.append(f"# NOT EMITTED: {name} — {reason}")
-            lines.append(f"raise RuntimeError({('NOT EMITTED: ' + name + ' — ' + reason)!r})")
+            refuse(name, str(exc))
             continue
         lines.extend(rendered.splitlines())
         emitted += 1
@@ -1057,9 +1173,71 @@ def _has_channel_authorization_map(ctrl: MicroscopeController) -> bool:
     """
     return getattr(ctrl, "authorization_map", None) is not None
 
-@emits(lambda p: (_ for _ in ()).throw(CannotEmit(
-    "set_channel may execute an authorization-map channel plan; block 41c must make that plan emittable"
-)))
+def _check_acquisition_channel(
+    ctrl: MicroscopeController, guard: SafetyGuard, channel: str
+) -> None:
+    """Gate a channel used as an acquisition *axis*, not as a one-off switch.
+
+    The acquisition tools hand `channel` straight to pycro-manager as
+    `channel_group="Channel"`, so Micro-Manager's group has to be the thing that
+    defines it. A rig whose channels come from anywhere else (design/41 F6)
+    cannot switch on that axis at all, and must not be allowed to run an
+    acquisition that silently images every plane on whichever line was last on.
+    """
+    from microclaw.authorization import CHANNEL_SOURCE_CONFIG_GROUP, _channel_source
+
+    guard.check_channel(channel)
+    source = _channel_source(ctrl, guard.is_illumination_enable)
+    if source.kind == CHANNEL_SOURCE_CONFIG_GROUP:
+        return
+    raise SafetyViolation(
+        f"This acquisition cannot drive a channel axis for {channel!r}: an "
+        "acquisition switches channels through Micro-Manager's \"Channel\" config "
+        f"group, and this rig has no preset there. {source.describe()} Call "
+        "set_channel first and run the acquisition without a channel argument — "
+        "once per channel if the run needs more than one."
+    )
+
+
+def _emit_set_channel(params: RecordedParams) -> str:
+    """Render the writes that actually ran, never a plan rebuilt from the rig.
+
+    A channel is not always a Micro-Manager preset (design/41 F6), so emitting
+    `core.set_config('Channel', ...)` would fail outright on the rig the plan
+    came from. The recorded effect list is the one thing true of both sources.
+    """
+    result = params.result
+    effects = result.get("effects")
+    if effects:
+        lines = [f"# channel {params.get('preset')!r} ({result.get('channel_source')})"]
+        for effect in effects:
+            try:
+                device, prop, value = (str(item) for item in effect)
+            except (TypeError, ValueError):
+                raise CannotEmit(
+                    f"the recorded channel effect {effect!r} is not a "
+                    "device/property/value triple"
+                ) from None
+            lines.append(f"core.set_property({device!r}, {prop!r}, {value!r})")
+            if device != "Core":     # MM's pseudo-device never becomes busy
+                lines.append(f"core.wait_for_device({device!r})")
+            # The executor's own check, inlined by _channel_verification_source.
+            # Never hand-write the comparison here; see that function for why.
+            lines.append(f"_verify_property(core, {device!r}, {prop!r}, {value!r})")
+        return "\n".join(lines)
+    group = result.get("config_group")
+    if group:
+        return (
+            f"core.set_config({group!r}, {params.get('preset')!r})\n"
+            f"core.wait_for_config({group!r}, {params.get('preset')!r})"
+        )
+    raise CannotEmit(
+        "the recorded result has no executed channel effects, so the writes that "
+        "ran cannot be reproduced"
+    )
+
+
+@emits(_emit_set_channel)
 def set_channel(
     ctrl: MicroscopeController, guard: SafetyGuard, preset: str, *, cancel=None
 ) -> dict:
@@ -1072,14 +1250,42 @@ def set_channel(
         )
     ctrl.core.set_config(CHANNEL_CONFIG_GROUP, preset)
     ctrl.core.wait_for_config(CHANNEL_CONFIG_GROUP, preset)
-    return {"status": f"Channel set to '{preset}'."}
+    return {
+        "status": f"Channel set to '{preset}'.",
+        "config_group": CHANNEL_CONFIG_GROUP,
+    }
 
 
 @emits_nothing
 def get_available_channels(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
-    from microclaw.authorization import CHANNEL_CONFIG_GROUP
-    channels = _str_vector(ctrl.core.get_available_configs(CHANNEL_CONFIG_GROUP))
-    return {"channels": channels}
+    from microclaw.authorization import _channel_source
+
+    source = _channel_source(ctrl, guard.is_illumination_enable)
+    result: dict[str, Any] = {
+        "channels": list(source.names), "source": source.describe(),
+    }
+    # M5 gate, 2026-08-06: a session ran with `channels.allowed: []`, was told it
+    # had four channels, picked one, and was refused. The allowlist is still the
+    # only authority -- asking it here rather than re-reading the config keeps it
+    # that way -- and `channels` still reports what the rig has, so this hides no
+    # rig reality. It only stops the model being offered what it cannot use.
+    authorized = []
+    for name in source.names:
+        try:
+            guard.check_channel(name)
+        except SafetyViolation:
+            continue
+        authorized.append(name)
+    if authorized != list(source.names):
+        result["authorized"] = authorized
+    # Never let a refused slot look like "this rig simply has no channels".
+    if source.unavailable:
+        result["unavailable"] = {
+            label: list(reasons) for label, reasons in source.unavailable.items()
+        }
+    if source.problems:
+        result["problems"] = list(source.problems)
+    return result
 
 
 # --- Device Properties ---
@@ -1501,7 +1707,7 @@ def run_zstack(
     guard.check_z(z_start_um)
     guard.check_z(z_end_um)
     if channel:
-        guard.check_channel(channel)
+        _check_acquisition_channel(ctrl, guard, channel)
     if exposure_ms is not None:
         guard.check_exposure(exposure_ms)
     if not channel and exposure_ms is not None:
@@ -1611,7 +1817,7 @@ def run_timelapse(
     if laser_slot is not None:
         trigger_preflight = _verify_trigger_line_armed(ctrl, laser_slot)
     if channel:
-        guard.check_channel(channel)
+        _check_acquisition_channel(ctrl, guard, channel)
     if exposure_ms is not None:
         guard.check_exposure(exposure_ms)
     # Without a channel, the acquisition events carry no exposure, so set it on
@@ -3711,7 +3917,7 @@ def run_adaptive_zstack(
     guard.check_z(z_start_um)
     guard.check_z(z_end_um)
     if channel:
-        guard.check_channel(channel)
+        _check_acquisition_channel(ctrl, guard, channel)
 
     try:
         hook = _resolve_hook(ctrl, guard, hook_strategy, hook_params, log_path)
@@ -3774,7 +3980,7 @@ def run_adaptive_timelapse(
     save_dir = guard.resolve_in_workspace(save_dir)
     log_path = _prepare_log_path(guard, log_path)
     if channel:
-        guard.check_channel(channel)
+        _check_acquisition_channel(ctrl, guard, channel)
 
     try:
         hook = _resolve_hook(ctrl, guard, hook_strategy, hook_params, log_path)
@@ -3851,7 +4057,7 @@ def _acquire_positions_with_hook(
         guard.check_z(shape_kwargs["z_start"])     # the planes actually visited
         guard.check_z(shape_kwargs["z_end"])
     if channel:
-        guard.check_channel(channel)
+        _check_acquisition_channel(ctrl, guard, channel)
     if exposure_ms is not None:
         guard.check_exposure(exposure_ms)
         if not channel:
@@ -4166,7 +4372,7 @@ def _acquire_survey_with_detector(
         guard.check_z(shape_kwargs["z_start"])
         guard.check_z(shape_kwargs["z_end"])
     if channel:
-        guard.check_channel(channel)
+        _check_acquisition_channel(ctrl, guard, channel)
     if exposure_ms is not None:
         guard.check_exposure(exposure_ms)
         if not channel:

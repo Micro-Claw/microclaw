@@ -199,6 +199,246 @@ def test_dose_detector_fails_known_bad_mosaic_rendered_as_acquisition(tmp_path, 
         _assert_zero_mosaic_dose(source)
 
 
+def _multiposition_call(positions, results, status):
+    return completed_call(
+        "run_multiposition_acquisition",
+        {"protocol": "timelapse", "positions": positions, "save_dir": "/data",
+         "name": "run", "protocol_params": {"n_frames": 1, "interval_s": 0}},
+        {"status": status, "results": results},
+    )
+
+
+def test_failed_and_partial_acquisitions_are_not_replayed_as_successes(tmp_path):
+    """M5 rig gate, 2026-08-06. The session made five multiposition calls; two
+    completed, two failed on trigger arming, one was refused by the channel-axis
+    guard. The export emitted all five, so the standalone script imaged each
+    position five times instead of twice -- 2.5x the session's dose on a
+    bleaching sample -- and then drove a channel axis the rig cannot drive.
+
+    `_recorded_tool_calls` attached every result and never asked whether the
+    call succeeded. This is the shape of that session, in order.
+    """
+    positions = [{"name": "pos1", "x_um": 1.0, "y_um": 2.0},
+                 {"name": "pos2", "x_um": 3.0, "y_um": 4.0},
+                 {"name": "pos3", "x_um": 5.0, "y_um": 6.0}]
+    ok = [{"position": p["name"], "x_um": p["x_um"], "y_um": p["y_um"],
+           "dataset_path": f"/data/{p['name']}"} for p in positions]
+
+    records = []
+    records += _multiposition_call(positions, ok, "3/3 positions completed.")
+    # Trigger line not armed: every position failed.
+    records += _multiposition_call(
+        positions,
+        [{"position": p["name"], "error": "trigger line is not armed"}
+         for p in positions],
+        "0/3 positions completed.",
+    )
+    # Refused outright by the channel-axis guard: execute_tool reports `error`.
+    records += completed_call(
+        "run_multiposition_acquisition",
+        {"protocol": "timelapse", "positions": positions, "channel": "640",
+         "save_dir": "/data", "name": "run",
+         "protocol_params": {"n_frames": 1, "interval_s": 0}},
+        {"error": "Safety constraint prevented this action: This acquisition "
+                  "cannot drive a channel axis for '640'"},
+    )
+    # The hard case: two of three positions completed.
+    records += _multiposition_call(
+        positions, [*ok[:2], {"position": "pos3", "error": "trigger sequence is 0"}],
+        "2/3 positions completed.",
+    )
+    records += _multiposition_call(positions, ok, "3/3 positions completed.")
+
+    _, result, source = export(tmp_path, records)
+
+    # Two acquisitions ran; two are emitted. Not five.
+    assert source.count("acq.acquire(events)") == 2
+    assert result["emitted_calls"] == 2
+
+    # The refused one never reaches the rig's absent channel group. It may name
+    # '640' in its skip text -- what must not exist is an executable event.
+    assert "'channel_group': 'Channel'" not in source
+    assert "channels': ['640']" not in source
+
+    # The two that completed *nothing* are skipped, and the script carries on.
+    skipped = [line for line in source.splitlines() if "# SKIPPED" in line]
+    assert len(skipped) == 2, skipped
+    assert any("trigger line is not armed" in line for line in skipped), skipped
+    assert any("cannot drive a channel axis" in line for line in skipped), skipped
+
+    # Only the partial one refuses, and it names the position that did not
+    # complete. Something happened there that cannot be faithfully reproduced.
+    refusals = [line for line in source.splitlines() if "# NOT EMITTED" in line]
+    assert len(refusals) == 1, refusals
+    assert "1 of 3 recorded results entries did not complete" in refusals[0]
+    assert "'pos3'" in refusals[0]
+
+    # Exercised, not merely compiled: it runs the first acquisition, walks past
+    # both skips, and stops at the partial one.
+    visited, acquisitions = [], []
+
+    class StageCore:
+        def set_xy_position(self, x, y): visited.append((x, y))
+        def set_position(self, z): pass
+        def wait_for_device(self, _device): pass
+
+    class FakeAcquisition:
+        def __init__(self, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def acquire(self, events): acquisitions.append(events)
+
+    executable = source.replace(
+        "from pycromanager import Acquisition, Core, multi_d_acquisition_events", "")
+    with pytest.raises(RuntimeError, match="NOT EMITTED: run_multiposition_acquisition"):
+        exec(compile(executable, "routine.py", "exec"), {
+            "__file__": str(tmp_path / "routine.py"), "Core": StageCore,
+            "Acquisition": FakeAcquisition, "multi_d_acquisition_events": dict,
+        })
+    # The first acquisition's three positions were imaged; the failed run's and
+    # the refused run's were not, and the partial one stopped the script before
+    # the fifth call. A partial mid-session does still strand what follows --
+    # that is the accepted cost of not reconstructing it.
+    assert visited == [(1.0, 2.0), (3.0, 4.0), (5.0, 6.0)]
+    assert len(acquisitions) == 3
+
+
+def _rejected_then_successful_session():
+    """The demo gate session: a call the tool layer rejected, then one that ran.
+
+    The first multiposition call passed `channel` at the top level, which the
+    tool does not accept -- it raised `TypeError` and did nothing. The second
+    put the channel in `protocol_params`, where the tool takes it, and completed.
+    """
+    positions = [{"name": "spot_1", "x_um": 1.0, "y_um": 2.0}]
+    records = completed_call("set_channel", {"preset": "FITC"}, {
+        "status": "Channel set to 'FITC'.", "writes": 1,
+        "effects": [["Emission", "Label", "Chroma-HQ535"]],
+        "channel_source": "config-group",
+    })
+    records += completed_call(
+        "run_multiposition_acquisition",
+        {"protocol": "timelapse", "positions": positions, "channel": "DAPI",
+         "save_dir": "/data", "name": "spot",
+         "protocol_params": {"n_frames": 1, "interval_s": 0}},
+        {"error": "TypeError: run_multiposition_acquisition() got an unexpected "
+                  "keyword argument 'channel'",
+         "hint": "This is an argument error, not a hardware fault."},
+    )
+    records += completed_call(
+        "run_multiposition_acquisition",
+        {"protocol": "timelapse", "positions": positions, "save_dir": "/data",
+         "name": "spot",
+         "protocol_params": {"n_frames": 1, "interval_s": 0, "channel": "DAPI"}},
+        {"status": "1/1 positions completed.",
+         "results": [{"position": "spot_1", "x_um": 1.0, "y_um": 2.0,
+                      "dataset_path": "/data/spot_1"}]},
+    )
+    return records
+
+
+def test_malformed_call_the_tool_layer_rejected_is_not_emitted_as_well_formed(tmp_path):
+    """Demo gate round 1, 2026-08-06, measured physically rather than by eye.
+
+    The exporter emitted **both** calls, leaving three datasets per position
+    where the session made one. The phantom is worse than duplicate dose: the
+    emitter reads the channel from `protocol_params`, so the rejected top-level
+    `channel` was invisible to it and the step rendered with **no channel at
+    all** -- acquiring in whatever state was current, which was FITC from the
+    preceding `set_channel`, a channel the session never asked to image. File
+    sizes corroborated it: the two real datasets matched at 532654/532655 bytes
+    and the phantom stood alone at 532637.
+
+    Arguments the tool layer rejected never took effect, so a step built from
+    them is invention, not reproduction -- design/41 F1's failure arriving
+    through the exporter itself.
+    """
+    _, result, source = export(tmp_path, _rejected_then_successful_session())
+
+    # One acquisition ran; one is emitted.
+    assert source.count("acq.acquire(events)") == 1
+    # The rejected call is skipped, and says why.
+    assert source.count("# SKIPPED: run_multiposition_acquisition") == 1
+    assert "TypeError" in source
+    # The one acquisition emitted is the real one, with its channel.
+    assert "'channel_group': 'Channel', 'channels': ['DAPI']" in source
+    # And crucially: no channel-less acquisition. That is the phantom -- the one
+    # that imaged whatever channel happened to be current.
+    assert "multi_d_acquisition_events(**{'num_time_points': 1, 'time_interval_s': 0})" \
+        not in source
+    assert result["emitted_calls"] == 2      # the set_channel and the good run
+
+
+def test_script_runs_past_a_call_that_did_nothing_to_the_one_that_ran(tmp_path):
+    """Demo gate round 2, 2026-08-06. Round 1's fix refused the rejected call,
+
+        RuntimeError: NOT EMITTED: run_multiposition_acquisition — the recorded
+        call did not succeed: TypeError: ... unexpected keyword argument 'channel'
+
+    at line 97, which made the acquisition that *did* run -- lines 99-106 --
+    unreachable. The script contributed zero acquisitions.
+
+    A call that completed nothing is not the same as a call that cannot be
+    emitted. The session did nothing there, so doing nothing is the *exact*
+    reproduction, not a reconstruction; only a step that really happened and
+    cannot be reproduced earns the halt. Failed calls are ordinary -- the M5
+    gate session had three -- so refusing on them makes the export useless on
+    precisely the sessions people have.
+
+    Executed rather than compiled: round 2 shipped because a grep saw the line
+    and nothing ran it.
+    """
+    _, _, source = export(tmp_path, _rejected_then_successful_session())
+
+    assert "raise RuntimeError" not in source
+    assert "# SKIPPED: run_multiposition_acquisition" in source
+
+    visited, acquisitions, writes = [], [], []
+
+    class DemoCore:
+        def set_xy_position(self, x, y): visited.append((x, y))
+        def set_position(self, z): pass
+        def wait_for_device(self, _device): pass
+        def set_property(self, d, p, v): writes.append((d, p, v))
+        def get_property_type(self, _d, _p): return "String"
+        def get_property(self, d, p):
+            return next(v for wd, wp, v in writes if (wd, wp) == (d, p))
+
+    class FakeAcquisition:
+        def __init__(self, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def acquire(self, events): acquisitions.append(events)
+
+    exec(compile(source.replace(
+        "from pycromanager import Acquisition, Core, multi_d_acquisition_events", ""
+    ), "routine.py", "exec"), {
+        "__file__": str(tmp_path / "routine.py"), "Core": DemoCore,
+        "Acquisition": FakeAcquisition, "multi_d_acquisition_events": dict,
+    })
+
+    # It ran to the end: the channel switch, then the acquisition that the
+    # session actually performed. Round 2 reached neither.
+    assert writes == [("Emission", "Label", "Chroma-HQ535")]
+    assert visited == [(1.0, 2.0)]
+    assert len(acquisitions) == 1
+    assert acquisitions[0]["channels"] == ["DAPI"]
+
+
+def test_successful_move_reporting_error_um_is_still_emitted(tmp_path):
+    """`error_um` is a measurement a successful move reports, not a failure.
+
+    Matching it would refuse working steps, so the rule keys off the exact
+    `error` key only.
+    """
+    _, _, source = export(tmp_path, completed_call(
+        "go_to_position", {"name": "target"},
+        {"status": "Moved to 'target'.", "name": "target", "x_um": 1.5,
+         "y_um": -2.5, "error_um": 0.02}))
+    assert "# NOT EMITTED" not in source
+    assert "core.set_xy_position(1.5, -2.5)" in source
+
+
 def test_dose_detector_passes_known_good_recorded_offline_mosaic(tmp_path):
     """Known-good direction: the saved-NDTiff read contributes zero exposures."""
     _, _, source = export(tmp_path, [
@@ -217,10 +457,169 @@ def test_dose_detector_passes_known_good_recorded_offline_mosaic(tmp_path):
     assert "Acquisition(directory=str(_HERE)" in source  # later acquisition rendered
 
 
-def test_set_channel_refuses_authorization_plan_instead_of_guessing(tmp_path):
+M5_CHANNEL_RESULT = {
+    "status": "Channel set to '640'.",
+    "writes": 4,
+    # The reversed M5 slot order, exactly as execute_channel_plan recorded it.
+    "effects": [
+        ["iChrome-MLE-TCP", "Laser 4: 1. Enable", "0"],
+        ["iChrome-MLE-TCP", "Laser 3: 1. Enable", "0"],
+        ["iChrome-MLE-TCP", "Laser 2: 1. Enable", "0"],
+        ["iChrome-MLE-TCP", "Laser 1: 1. Enable", "1"],
+    ],
+    "channel_source": "emu-laser-map",
+}
+
+
+def test_set_channel_emits_the_recorded_writes_in_order(tmp_path):
+    """Both sources emit as writes; neither is rebuilt from a live rig.
+
+    A rig with no "Channel" config group is exactly the rig whose channels are
+    not presets, so `core.set_config('Channel', ...)` would fail there. Assert
+    against the recorded effect list, not against a plan re-derived here.
+    """
+    _, _, source = export(tmp_path, completed_call(
+        "set_channel", {"preset": "640"}, M5_CHANNEL_RESULT))
+
+    assert "# NOT EMITTED" not in source
+    assert "set_config('Channel'" not in source
+    written = [line for line in source.splitlines()
+               if line.startswith("core.set_property(")]
+    assert written == [
+        f"core.set_property('iChrome-MLE-TCP', 'Laser {i}: 1. Enable', {v!r})"
+        for i, v in ((4, "0"), (3, "0"), (2, "0"), (1, "1"))
+    ]
+
+
+FLOAT_CHANNEL_RESULT = {
+    "status": "Channel set to 'FITC'.",
+    "writes": 2,
+    "effects": [
+        ["Emission", "Label", "Chroma-HQ535"],
+        ["Camera", "Exposure", "10"],
+    ],
+    "channel_source": "config-group",
+}
+
+
+class FakeCore:
+    """Enough core to execute an emitted channel switch.
+
+    `reformat` reproduces the measured driver behaviour that broke the first
+    version of this emitter: a Float property requested as "10" reads back
+    "10.0000". `liar` returns a genuinely different value for one pair.
+    """
+
+    def __init__(self, types=None, reformat=(), liar=None):
+        self.values, self.calls = {}, []
+        self.types = dict(types or {})
+        self.reformat, self.liar = set(reformat), liar
+
+    def set_property(self, d, p, v):
+        self.calls.append(("set", d, p))
+        self.values[(d, p)] = f"{float(v):.4f}" if (d, p) in self.reformat else str(v)
+
+    def wait_for_device(self, d):
+        self.calls.append(("wait", d))
+
+    def get_property_type(self, d, p):
+        return self.types.get((d, p), "String")
+
+    def get_property(self, d, p):
+        if self.liar and (d, p) == self.liar[0]:
+            return self.liar[1]
+        return self.values[(d, p)]
+
+
+def run_emitted(source, core, tmp_path):
+    executable = source.replace(
+        "from pycromanager import Acquisition, Core, multi_d_acquisition_events", ""
+    )
+    exec(compile(executable, "routine.py", "exec"), {
+        "__file__": str(tmp_path / "routine.py"), "Core": lambda: core,
+        "Acquisition": object, "multi_d_acquisition_events": dict,
+    })
+
+
+def test_emitted_channel_switch_waits_and_verifies_like_the_executor(tmp_path):
+    """The emitted script runs against a fake core and refuses a bad read-back."""
+    _, _, source = export(tmp_path, completed_call(
+        "set_channel", {"preset": "640"}, M5_CHANNEL_RESULT))
+
+    good = FakeCore()
+    run_emitted(source, good, tmp_path)
+    assert good.values[("iChrome-MLE-TCP", "Laser 1: 1. Enable")] == "1"
+    assert good.calls.count(("wait", "iChrome-MLE-TCP")) == 4
+
+    lying = FakeCore(liar=(("iChrome-MLE-TCP", "Laser 1: 1. Enable"), "0"))
+    with pytest.raises(Exception, match="Read-back verification failed"):
+        run_emitted(source, lying, tmp_path)
+
+
+def test_emitted_float_read_back_accepts_driver_reformatting(tmp_path):
+    """Coordinator review, 2026-08-06. The first emitter compared read-back as
+
+        assert str(core.get_property('Camera', 'Exposure')) == '10'
+
+    which is not what `_verify_property` does. A Float property is compared
+    numerically because Micro-Manager reformats it -- "10" reads back "10.0000",
+    measured on a rig (design/33 Phase 4). Any `Channel` preset carrying a
+    camera exposure would therefore have exported a script that died partway
+    through, on the rig, standalone, with nothing around to explain it. That is
+    block 41b's failure mode exactly, and none of the M5 enable fixtures could
+    catch it because they are all categorical.
+    """
+    _, _, source = export(tmp_path, completed_call(
+        "set_channel", {"preset": "FITC"}, FLOAT_CHANNEL_RESULT))
+
+    exposure = ("Camera", "Exposure")
+    reformatting = FakeCore(types={exposure: "Float"}, reformat=[exposure])
+    run_emitted(source, reformatting, tmp_path)                 # must not raise
+    assert reformatting.values[exposure] == "10.0000"
+
+    # A genuinely wrong value is still refused, so the tolerance is not a hole.
+    wrong = FakeCore(types={exposure: "Float"}, liar=(exposure, "11.0000"))
+    with pytest.raises(Exception, match="Read-back verification failed"):
+        run_emitted(source, wrong, tmp_path)
+
+    # And the same reformatting on a String property is still a mismatch --
+    # the emitted rule keys off the type, exactly as the executor's does.
+    stringy = FakeCore(types={exposure: "String"}, reformat=[exposure])
+    with pytest.raises(Exception, match="Read-back verification failed"):
+        run_emitted(source, stringy, tmp_path)
+
+
+@pytest.mark.parametrize("name", [
+    "ChannelPlanError", "_property_type_name", "_verify_property",
+])
+def test_inlined_channel_verification_is_byte_identical_to_source(tmp_path, name):
+    """The emitted check must *be* the executor's, not a paraphrase of it."""
+    from microclaw import authorization
+
+    _, _, source = export(tmp_path, completed_call(
+        "set_channel", {"preset": "640"}, M5_CHANNEL_RESULT))
+    assert inspect.getsource(getattr(authorization, name)) in source
+
+
+def test_channel_verification_is_absent_when_nothing_replayed_writes(tmp_path):
+    _, _, source = export(tmp_path, completed_call(
+        "set_channel", {"preset": "DAPI"},
+        {"status": "Channel set to 'DAPI'.", "config_group": "Channel"}))
+    assert "_verify_property" not in source
+
+
+def test_map_less_channel_delegation_emits_the_set_config_that_ran(tmp_path):
+    _, _, source = export(tmp_path, completed_call(
+        "set_channel", {"preset": "DAPI"},
+        {"status": "Channel set to 'DAPI'.", "config_group": "Channel"}))
+    assert "core.set_config('Channel', 'DAPI')" in source
+    assert "core.wait_for_config('Channel', 'DAPI')" in source
+
+
+def test_set_channel_without_a_recorded_result_refuses_rather_than_guessing(tmp_path):
     _, _, source = export(tmp_path, [call("set_channel", {"preset": "DAPI"})])
     assert "# NOT EMITTED: set_channel" in source
-    assert "authorization-map channel plan" in source
+    assert "no executed channel effects" in source
     assert "set_config('Channel'" not in source
 
 
@@ -577,7 +976,17 @@ def test_adaptive_runs_refuse_with_the_architectural_reason(tmp_path):
         assert "no standalone emitter has been implemented" not in source
 
 
-def test_emitted_analysis_defines_every_name_it_uses(tmp_path):
+@pytest.mark.parametrize("records", [
+    pytest.param([call("snap_and_analyze", {})], id="analysis"),
+    pytest.param(
+        [call("run_autofocus", {"z_range_um": 2, "z_step_um": 0.5})], id="autofocus"
+    ),
+    pytest.param(
+        completed_call("set_channel", {"preset": "640"}, M5_CHANNEL_RESULT),
+        id="channel-verification",
+    ),
+])
+def test_emitted_inline_defines_every_name_it_uses(tmp_path, records):
     """Recurrence guard for the block-13/41b integration defect (2026-08-06).
 
     `_analysis_source` inlines a hand-listed set of helpers. Block 13 added
@@ -585,11 +994,19 @@ def test_emitted_analysis_defines_every_name_it_uses(tmp_path):
     both branches stayed green alone, and merged they emitted scripts that
     raised `NameError: name 'snr_validity' is not defined` at runtime. Pin the
     invariant structurally rather than by extending the list again: every global
-    the inlined analysis references must be defined in the emitted source.
+    an inlined block references must be defined in the emitted source.
+
+    **Parametrized over every record that triggers an inline**, not just the
+    analysis one. Block 41c added `_channel_verification_source` and this guard
+    could not see it, which is the position blocks 13 and 41b were both in
+    before they merged. A byte-identity test does not close that: it still
+    passes when the inlined function starts calling a helper that was never
+    inlined, and the script `NameError`s on the rig. Add a param here whenever
+    the exporter learns to inline something new.
     """
     import ast, builtins
 
-    _, _, source = export(tmp_path, [call("snap_and_analyze", {})])
+    _, _, source = export(tmp_path, records)
     tree = ast.parse(source)
     defined = {n.name for n in ast.walk(tree)
                if isinstance(n, (ast.FunctionDef, ast.ClassDef))}
@@ -598,6 +1015,27 @@ def test_emitted_analysis_defines_every_name_it_uses(tmp_path):
     defined |= {a.asname or a.name.split(".")[0]
                 for n in ast.walk(tree)
                 if isinstance(n, (ast.Import, ast.ImportFrom)) for a in n.names}
+
+    # Annotations never evaluate. The emitted script opens with
+    # `from __future__ import annotations`, so `ctrl: MicroscopeController` is a
+    # string at runtime, not a load -- scanning it would fail a script that runs
+    # perfectly (it did, the moment this guard was widened past the analysis).
+    # The invariant is "would this NameError on the rig", so model that.
+    annotated: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            args = node.args
+            slots = [arg.annotation for arg in (
+                *args.posonlyargs, *args.args, *args.kwonlyargs,
+                *(a for a in (args.vararg, args.kwarg) if a is not None),
+            )] + [node.returns]
+        elif isinstance(node, ast.AnnAssign):
+            slots = [node.annotation]
+        else:
+            continue
+        for slot in slots:
+            if slot is not None:
+                annotated.update(id(item) for item in ast.walk(slot))
 
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.ClassDef)):
@@ -609,7 +1047,8 @@ def test_emitted_analysis_defines_every_name_it_uses(tmp_path):
         local |= {n.id for n in ast.walk(node)
                   if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)}
         for name in (n.id for n in ast.walk(node)
-                     if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)):
+                     if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
+                     and id(n) not in annotated):
             assert (name in defined or name in local
                     or hasattr(builtins, name)), (
                 f"emitted script references {name!r} but never defines it")

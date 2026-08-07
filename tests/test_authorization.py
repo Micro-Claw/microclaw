@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -361,8 +362,9 @@ def test_missing_allowed_presets_are_demoted_and_not_authorized(capsys):
 
 
 def test_missing_allowed_presets_on_rig_without_channel_group_get_honest_advice():
+    # The source is chosen by whether the group holds a preset, not by whether
+    # the group is listed: Core here has none, and no other channel source.
     core = Core()
-    core.get_available_config_groups = lambda: ["Auxiliary"]
     report = validate_live_rig(Controller(core), parsed(channels=["MissingPreset"]))
     message = report.diagnostics[0].message
     assert "has no Micro-Manager Channel group" in message
@@ -1423,3 +1425,106 @@ def test_preset_may_retarget_core_shutter_to_a_declared_shutter_device():
             Controller(core),
             parsed(channels=["Bad"], illumination=illumination),
         )
+
+
+# ── channels from the EMU laser map, on a rig with no Channel group (41c) ────
+
+M5_CONFIG = Path(__file__).parent / "fixtures" / "m5-config.uicfg"
+M5_LASER_DEVICES = ["iChrome-MLE-TCP", "Laser Trigger", "Thorlabs Filter Wheel",
+                    "Thorlabs ELL6", "PIZStage"]
+# EMU slot -> the iChrome's own channel number, which runs the OTHER WAY.
+M5_ENABLE = {slot: f"Laser {4 - slot}: 1. Enable" for slot in range(4)}
+
+
+def m5_emu_controller(tmp_path, parameters=None):
+    """The captured M5 configuration on a rig whose Channel group is empty."""
+    mm_dir = tmp_path / "Micro-Manager-2.0"
+    (mm_dir / "EMU").mkdir(parents=True)
+    (mm_dir / "plugins").mkdir()
+    raw = json.loads(M5_CONFIG.read_text())
+    if parameters is not None:
+        raw["pluginConfigurations"][0]["parameters"] = parameters
+    (mm_dir / "EMU" / "config.uicfg").write_text(json.dumps(raw), encoding="utf-8")
+    ctrl = Controller(Core())
+    ctrl.core.loaded_extra = list(M5_LASER_DEVICES)
+    ctrl.get_mm_app_dir = lambda: str(mm_dir)
+    return ctrl
+
+
+def m5_illumination(slots=range(4)):
+    return IlluminationConstraints(shutters=[
+        IlluminationProperty("iChrome-MLE-TCP", M5_ENABLE[slot], "1", "0")
+        for slot in slots
+    ])
+
+
+def test_emu_named_slots_are_authorized_channels_with_the_right_enable(tmp_path):
+    ctrl = m5_emu_controller(tmp_path)
+    report = validate_live_rig(
+        ctrl, parsed(channels=["640", "561"], illumination=m5_illumination())
+    )
+    assert report.channel_source == "emu-laser-map"
+    assert report.authorized_presets == {"640", "561"}
+    authorize_channel(ctrl, "640")
+    # Exactly one entry per channel turns a line ON, and it is the reversed
+    # pair -- slot 3 is "640" and its enable is `Laser 1`, not `Laser 3`.
+    armed = {
+        preset: [(e.device, e.property) for e in report.entries
+                 if e.path == f"channel-preset:{preset}" and e.detail == "value='1'"]
+        for preset in ("640", "561")
+    }
+    assert armed == {
+        "640": [("iChrome-MLE-TCP", M5_ENABLE[3])],
+        "561": [("iChrome-MLE-TCP", M5_ENABLE[2])],
+    }
+
+
+def test_emu_channel_effect_that_is_not_declared_illumination_is_refused(tmp_path):
+    """Same gate, same message shape as a preset-sourced effect."""
+    ctrl = m5_emu_controller(tmp_path)
+    with pytest.raises(RigAuthorizationError) as caught:
+        validate_live_rig(
+            ctrl, parsed(channels=["640"], illumination=m5_illumination([3]))
+        )
+    message = str(caught.value)
+    assert "constraints.illumination.shutters" in message
+    assert M5_ENABLE[0] in message
+
+
+def test_channels_allowed_advice_on_an_emu_rig_names_the_real_remedy(tmp_path):
+    """The pre-41c diagnostic told an EMU operator to delete a real channel.
+
+    "This rig has no Micro-Manager Channel group; remove these non-channel
+    claims" is wrong once the rig's channels come from its EMU laser map.
+    """
+    ctrl = m5_emu_controller(tmp_path)
+    report = validate_live_rig(
+        ctrl, parsed(channels=["640", "Cy5"], illumination=m5_illumination())
+    )
+    message = report.diagnostics[0].message
+    assert "has no Micro-Manager Channel group" not in message
+    assert "EMU laser map" in message and "'640'" in message
+    assert report.authorized_presets == {"640"}
+    assert "EMU laser map" in report.excluded_presets["Cy5"][0]
+    with pytest.raises(RigAuthorizationError, match="EMU laser map"):
+        authorize_channel(ctrl, "Cy5")
+
+
+def test_slot_the_rig_refused_to_name_stays_visible_with_its_reason(tmp_path):
+    ctrl = m5_emu_controller(tmp_path, parameters={
+        "Laser 0 - Name": "405", "Laser 1 - Name": "488", "Laser 2 - Name": "561",
+    })
+    report = validate_live_rig(
+        ctrl, parsed(channels=["561"], illumination=m5_illumination())
+    )
+    assert report.authorized_presets == {"561"}
+    reason = report.excluded_presets["EMU laser slot 3"][0]
+    assert "no configured name" in reason and "Laser 3 - Name" in reason
+    assert not any(name.startswith("Laser ") for name in report.authorized_presets)
+
+
+def test_unreadable_emu_config_refuses_the_session_rather_than_offering_none(tmp_path):
+    ctrl = m5_emu_controller(tmp_path)
+    (tmp_path / "Micro-Manager-2.0" / "EMU" / "config.uicfg").write_text("not json")
+    with pytest.raises(RigAuthorizationError, match="Could not resolve EMU semantic"):
+        validate_live_rig(ctrl, parsed(channels=["640"], illumination=m5_illumination()))

@@ -308,16 +308,24 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "set_channel",
         "description": (
-            "Set the imaging channel by applying a Micro-Manager hardware preset "
-            "from the 'Channel' config group. Use get_available_channels to list "
-            "valid preset names."
+            "Set the imaging channel by applying its authorized hardware writes in "
+            "order, with read-back verification and rollback on failure. On a rig "
+            "with a Micro-Manager 'Channel' config group a channel is a preset "
+            "there; on a rig without one the channels are the named laser slots of "
+            "the EMU configuration, and a switch moves laser enables only. Always "
+            "call get_available_channels first: it gives this rig's exact channel "
+            "names, which source they come from, and what a switch moves."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "preset": {
                     "type": "string",
-                    "description": "Name of the channel preset (e.g. 'DAPI', 'FITC').",
+                    "description": (
+                        "Exact channel name from get_available_channels (e.g. 'DAPI', "
+                        "'FITC', or a configured laser name like '640'). Never infer "
+                        "it from a device property string or a slot index."
+                    ),
                 }
             },
             "required": ["preset"],
@@ -325,7 +333,15 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "get_available_channels",
-        "description": "List the available channel preset names in the 'Channel' config group.",
+        "description": (
+            "List this rig's channel names and say where they come from: the "
+            "Micro-Manager 'Channel' config group, or — on a rig without one — the "
+            "named laser slots of the EMU configuration. Also reports any "
+            "channel-shaped thing the rig refused to name, with the reason. "
+            "If an 'authorized' list is present, this session's safety config "
+            "permits only those; 'channels' still lists everything the rig has, "
+            "so set_channel on a name outside 'authorized' will be refused."
+        ),
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
     {

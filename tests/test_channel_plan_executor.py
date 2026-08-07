@@ -1,12 +1,14 @@
+import json
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from microclaw.authorization import (
-    AuthorizationEntry, AuthorizationMap, ChannelPlanPartialApplicationError,
-    ChannelPlanSafeStateError, RigAuthorizationError, _expansion_hash,
-    execute_channel_plan,
+    AuthorizationEntry, AuthorizationMap, ChannelPlanError,
+    ChannelPlanPartialApplicationError, ChannelPlanSafeStateError,
+    RigAuthorizationError, _expansion_hash, execute_channel_plan,
 )
 from microclaw.tools import set_device_property
 from microclaw.safety import (
@@ -41,6 +43,10 @@ class Core:
         self.fail_on = self.fail_rollback = None
         self.write_count = 0
 
+    def get_available_configs(self, group):
+        assert group == "Channel"
+        return ["P"]
+    def get_loaded_devices(self): return sorted({d for d, _, _ in self.effects})
     def get_config_data(self, group, preset):
         assert group == "Channel"
         return [{"device": d, "property": p, "value": v} for d, p, v in self.effects]
@@ -122,17 +128,88 @@ def test_float_reformat_is_equal_and_wrong_value_fails():
         execute_channel_plan(ctrl, make_guard(exposure=20), "P")
 
 
-@pytest.mark.parametrize("failure", [1, 2, 3])
-def test_failure_after_each_position_rolls_back_and_stops(failure):
+@pytest.mark.parametrize("failure,expected", [
+    # The first write raising means nothing reached the device, so this is the
+    # base class -- not a *partial* application of a plan that applied nothing.
+    (1, ChannelPlanError),
+    (2, ChannelPlanPartialApplicationError),
+    (3, ChannelPlanPartialApplicationError),
+])
+def test_failure_after_each_position_rolls_back_and_stops(failure, expected):
     effects = [(f"D{i}", "Label", f"new{i}") for i in range(3)]
     originals = {(d, p): f"old{i}" for i, (d, p, _) in enumerate(effects)}
     core, ctrl, guard = categorical_plan(effects, originals)
     core.fail_on = failure
-    with pytest.raises(ChannelPlanPartialApplicationError, match="rolled_back"):
+    with pytest.raises(expected, match="rolled_back") as caught:
         execute_channel_plan(ctrl, guard, "P")
+    # Assert the exact rung of the ladder: `expected` alone would pass on a
+    # subclass, which is the confusion this parametrisation exists to catch.
+    assert isinstance(caught.value, ChannelPlanPartialApplicationError) == (failure > 1)
     assert core.values == originals
     assert all(("set", f"D{i}", "Label", f"new{i}") not in core.calls
                for i in range(failure, 3))
+
+
+def test_first_write_rejected_twice_does_not_claim_an_unverified_safe_state():
+    """M5 gate round 2, 2026-08-06, hit twice in four channel switches.
+
+        ChannelPlanSafeStateError: Channel plan '640' stopped after 0/4 writes:
+        Cannot set property "Laser 4: 1. Enable" to "0" [ ... Serial timeout
+        occurred. (17) ]; applied=[]; attempted=['...Laser 4: 1. Enable'];
+        rolled_back=[]; SAFE STATE NOT VERIFIED; rollback_failures=[...]
+
+    The first write raised, so nothing reached the device. The rollback then
+    tried to re-write that same property -- the command that had just timed out
+    -- it timed out again, and the executor escalated to its loudest possible
+    error about a plan in which nothing had changed. The rollback iterated
+    `attempted`, which includes the write that raised.
+    """
+    effects = [(f"D{i}", "Label", "new") for i in range(4)]
+    core, ctrl, guard = categorical_plan(
+        effects, {(d, p): "old" for d, p, _ in effects})
+    # The device refuses this property in both directions, as a dead link does.
+    def refuse(d, p, v):
+        core.calls.append(("set", d, p, str(v)))
+        if d == "D0":
+            raise RuntimeError('Cannot set property "Label": Serial timeout occurred. (17)')
+        core.values[(d, p)] = str(v)
+    core.set_property = refuse
+
+    with pytest.raises(ChannelPlanError) as caught:
+        execute_channel_plan(ctrl, guard, "P")
+
+    message = str(caught.value)
+    assert "SAFE STATE NOT VERIFIED" not in message
+    assert not isinstance(caught.value, ChannelPlanPartialApplicationError)
+    assert "NO WRITE REACHED THE DEVICE" in message
+    assert "applied=[]" in message
+    # It still reports the failed restore, just not as a safe-state failure.
+    assert "could not be restored either" in message
+    assert "Serial timeout" in message
+    assert core.values == {(d, p): "old" for d, p, _ in effects}
+
+
+def test_rollback_failure_after_writes_landed_still_reports_unverified_safe_state():
+    """The other direction: two writes land, the third fails, rollback fails.
+
+    This is the case ChannelPlanSafeStateError exists for -- a verified change
+    is still on the rig and could not be undone -- and narrowing the class above
+    must not weaken it.
+    """
+    effects = [(f"D{i}", "Label", "new") for i in range(3)]
+    core, ctrl, guard = categorical_plan(
+        effects, {(d, p): "old" for d, p, _ in effects})
+    core.fail_on = 3                       # D0 and D1 land, D2 raises
+    core.fail_rollback = ("D0", "Label", "old")
+
+    with pytest.raises(ChannelPlanSafeStateError) as caught:
+        execute_channel_plan(ctrl, guard, "P")
+
+    message = str(caught.value)
+    assert "SAFE STATE NOT VERIFIED" in message
+    assert "stopped after 2/3 writes" in message
+    assert "rollback_failures=['D0.Label" in message
+    assert core.values[("D0", "Label")] == "new"   # the change that stayed
 
 
 def test_failing_rollback_reports_unverified_safe_state():
@@ -236,3 +313,241 @@ def test_other_core_properties_are_excluded():
     ctrl = controller(core, {("Core", "Camera"): "built_in_typed_capability"})
     with pytest.raises(RigAuthorizationError, match="Core.Camera"):
         execute_channel_plan(ctrl, make_guard(), "P")
+
+
+# ── EMU-sourced channels: a rig with no "Channel" config group (design/41 F6) ──
+#
+# The evidence replayed here is the captured M5 EMU configuration, not an
+# invented fixture: an invented one has previously manufactured a fake defect
+# and hidden the real one. Its laser slots run OPPOSITE to the iChrome's own
+# channel numbering -- slot 3 is named "640" and its enable is
+# `Laser 1: 1. Enable` -- which is the off-by-one this block exists to prevent.
+
+M5_CONFIG = Path(__file__).parent / "fixtures" / "m5-config.uicfg"
+M5_DEVICES = ["iChrome-MLE-TCP", "Laser Trigger", "Thorlabs Filter Wheel",
+              "Thorlabs ELL6", "PIZStage"]
+M5_ENABLE = {slot: f"Laser {4 - slot}: 1. Enable" for slot in range(4)}
+M5_NAME = {0: "405", 1: "488", 2: "561", 3: "640"}
+
+
+@pytest.fixture(autouse=True)
+def _isolate_emu_locator(tmp_path, monkeypatch):
+    """No test may reach the host's Micro-Manager install or ~/.microclaw."""
+    from microclaw import emu_manager
+
+    monkeypatch.setattr(emu_manager, "_MICROCLAW_DIR", tmp_path / ".microclaw")
+    monkeypatch.setattr(emu_manager, "_EMU_CACHE", tmp_path / ".microclaw" / "emu.json")
+    monkeypatch.setattr(emu_manager, "_candidate_mm_dirs", lambda: [])
+
+
+class EmuCore(Core):
+    """A rig with no Channel preset to drive, and M5's device inventory."""
+
+    def get_available_configs(self, group):
+        assert group == "Channel"
+        return []
+
+    def get_loaded_devices(self):
+        return list(M5_DEVICES)
+
+
+def emu_rig(tmp_path, *, config_text=None, values=None):
+    mm = tmp_path / "Micro-Manager-2.0"
+    (mm / "EMU").mkdir(parents=True)
+    (mm / "mmplugins").mkdir()
+    (mm / "EMU" / "config.uicfg").write_text(
+        M5_CONFIG.read_text() if config_text is None else config_text
+    )
+    core = EmuCore([], values or {
+        ("iChrome-MLE-TCP", prop): "0" for prop in M5_ENABLE.values()
+    })
+    ctrl = SimpleNamespace(core=core, authorization_map=None)
+    ctrl.get_mm_app_dir = lambda: str(mm)
+    return core, ctrl, mm
+
+
+def emu_guard(*, slots=range(4), on="1", off="0"):
+    return make_guard(shutters=[
+        ("iChrome-MLE-TCP", M5_ENABLE[slot], on, off) for slot in slots
+    ])
+
+
+def emu_controller(ctrl, channels, guard):
+    """Attach the map validate_live_rig would have produced for these channels."""
+    from microclaw.authorization import CHANNEL_SOURCE_EMU_LASER_MAP, _channel_source
+
+    source = _channel_source(ctrl, guard.is_illumination_enable)
+    ctrl.authorization_map = AuthorizationMap(
+        "guaranteed", "complete", True,
+        entries=[AuthorizationEntry("channel-preset:x", "built_in_typed_capability",
+                                    "iChrome-MLE-TCP", prop)
+                 for prop in M5_ENABLE.values()],
+        authorized_presets=frozenset(channels),
+        channel_expansion_hashes={
+            name: _expansion_hash(source.effects[name]) for name in channels
+        },
+        channel_source=CHANNEL_SOURCE_EMU_LASER_MAP,
+    )
+    return ctrl
+
+
+def test_emu_source_names_channels_and_targets_the_reversed_slot(tmp_path):
+    """Slot 3 is "640" and its enable is `Laser 1: 1. Enable`, not `Laser 3`.
+
+    Asserted as an exact device/property pair, not a write count: a count would
+    pass with every laser in the rack armed in the wrong order.
+    """
+    from microclaw.authorization import CHANNEL_SOURCE_EMU_LASER_MAP, _channel_source
+
+    _core, ctrl, _mm = emu_rig(tmp_path)
+    source = _channel_source(ctrl, emu_guard().is_illumination_enable)
+
+    assert source.kind == CHANNEL_SOURCE_EMU_LASER_MAP
+    assert source.names == ("405", "488", "561", "640")
+    for slot, name in M5_NAME.items():
+        assert source.effects[name][-1] == (
+            "iChrome-MLE-TCP", M5_ENABLE[slot], "1"
+        ), f"channel {name} armed the wrong line"
+    # And nothing else: the emission filter is deliberately untouched.
+    assert {device for effects in source.effects.values()
+            for device, _p, _v in effects} == {"iChrome-MLE-TCP"}
+
+
+def test_emu_plan_turns_every_other_named_laser_off_before_arming_one(tmp_path):
+    core, ctrl, _mm = emu_rig(tmp_path)
+    guard = emu_guard()
+    ctrl = emu_controller(ctrl, {"640"}, guard)
+    core.values[("iChrome-MLE-TCP", M5_ENABLE[2])] = "1"   # 561 currently on
+
+    out = execute_channel_plan(ctrl, guard, "640", confirm_fn=lambda text, kind: True)
+
+    writes = [(call[2], call[3]) for call in core.calls if call[0] == "set"]
+    assert writes[-1] == (M5_ENABLE[3], "1")
+    assert all(value == "0" for _p, value in writes[:-1])
+    assert out["channel_source"] == "emu-laser-map"
+    assert core.values[("iChrome-MLE-TCP", M5_ENABLE[2])] == "0"
+
+
+def test_emu_switch_confirms_the_enable_and_not_the_disables(tmp_path):
+    """The hand-written sequence raised exactly one illumination confirmation.
+
+    check_illumination gates any value that is not the declared off_value, so
+    the plan's off-writes are silent and its single on-write is not. A
+    plan-driven switch must not lose a confirmation the hand sequence raised,
+    and must not add one it did not.
+    """
+    core, ctrl, _mm = emu_rig(tmp_path)
+    guard = emu_guard()
+    ctrl = emu_controller(ctrl, {"561"}, guard)
+    confirmations = []
+
+    execute_channel_plan(ctrl, guard, "561", confirm_fn=lambda text, kind:
+                         confirmations.append((text, kind)) or True)
+
+    assert len(confirmations) == 1
+    text, kind = confirmations[0]
+    assert kind == "illumination"
+    assert M5_ENABLE[2] in text and "'1'" in text
+    assert core.values[("iChrome-MLE-TCP", M5_ENABLE[2])] == "1"
+
+
+def test_declined_confirmation_leaves_no_laser_armed(tmp_path):
+    core, ctrl, _mm = emu_rig(tmp_path)
+    guard = emu_guard()
+    ctrl = emu_controller(ctrl, {"640"}, guard)
+    with pytest.raises(SafetyViolation, match="declined"):
+        execute_channel_plan(ctrl, guard, "640", confirm_fn=lambda text, kind: False)
+    assert core.calls == []
+
+
+def test_emu_plan_rolls_back_through_the_same_executor(tmp_path):
+    core, ctrl, _mm = emu_rig(tmp_path)
+    guard = emu_guard()
+    ctrl = emu_controller(ctrl, {"640"}, guard)
+    core.values[("iChrome-MLE-TCP", M5_ENABLE[0])] = "1"
+    core.fail_on = 2
+
+    with pytest.raises(ChannelPlanPartialApplicationError) as caught:
+        execute_channel_plan(ctrl, guard, "640", confirm_fn=lambda text, kind: True)
+
+    assert "rolled_back" in str(caught.value)
+    # The one write that landed was undone; the target line never came on.
+    assert core.values[("iChrome-MLE-TCP", M5_ENABLE[0])] == "1"
+    assert core.values[("iChrome-MLE-TCP", M5_ENABLE[3])] == "0"
+
+
+def test_undeclared_emu_enable_is_not_offered_as_a_channel(tmp_path):
+    _core, ctrl, _mm = emu_rig(tmp_path)
+    from microclaw.authorization import _channel_source
+
+    source = _channel_source(
+        ctrl, emu_guard(slots=[2, 3]).is_illumination_enable
+    )
+    assert source.names == ("561", "640")
+    assert "405" in source.unavailable and "488" in source.unavailable
+    assert "illumination.shutters" in source.unavailable["405"][0]
+    # The two it does offer never write the two it refused.
+    assert all(prop in (M5_ENABLE[2], M5_ENABLE[3])
+               for effects in source.effects.values() for _d, prop, _v in effects)
+
+
+def _m5_config_with(params):
+    raw = json.loads(M5_CONFIG.read_text())
+    raw["pluginConfigurations"][0]["parameters"] = params
+    return json.dumps(raw)
+
+
+@pytest.mark.parametrize("params,label,fragment", [
+    ({}, "EMU laser slot 3", "no configured name"),
+    ({"Laser 3 - Name": "640", "Laser trigger 3 - Name": "405"},
+     "EMU laser slot 3", "cannot be named"),
+    ({"Laser 2 - Name": "640", "Laser 3 - Name": "640"}, "640", "ambiguous"),
+])
+def test_unnameable_slots_refuse_with_a_reason(tmp_path, params, label, fragment):
+    """Never "Laser 3", never "slot 2" -- an unresolvable name is a refusal."""
+    from microclaw.authorization import _channel_source
+
+    _core, ctrl, _mm = emu_rig(tmp_path, config_text=_m5_config_with(params))
+    source = _channel_source(ctrl, emu_guard().is_illumination_enable)
+    assert label not in source.names
+    assert fragment in " ".join(source.unavailable[label])
+
+
+def test_unreadable_emu_config_reports_instead_of_looking_channel_less(tmp_path):
+    from microclaw.authorization import CHANNEL_SOURCE_NONE, _channel_source
+
+    _core, ctrl, mm = emu_rig(tmp_path)
+    (mm / "EMU" / "config.uicfg").write_text("not json")
+    source = _channel_source(ctrl, emu_guard().is_illumination_enable)
+    assert source.kind == CHANNEL_SOURCE_NONE and source.names == ()
+    assert any("Could not resolve EMU" in problem for problem in source.problems)
+
+
+def test_rig_with_no_group_and_no_emu_map_behaves_as_before(tmp_path):
+    """The standing constraint: a non-EMU rig must not gain EMU-flavoured advice."""
+    from microclaw.authorization import CHANNEL_SOURCE_NONE, _channel_source
+
+    core = EmuCore([], {})
+    source = _channel_source(SimpleNamespace(core=core), emu_guard().is_illumination_enable)
+    assert source.kind == CHANNEL_SOURCE_NONE
+    assert source.names == () and source.unavailable == {} and source.problems == ()
+    assert "EMU" not in source.describe()
+
+
+def test_config_group_rig_never_reads_the_emu_configuration(tmp_path):
+    """The demo-rig non-regression gate, encoded: presets win and EMU is not read."""
+    from microclaw import emu_manager
+    from microclaw.authorization import CHANNEL_SOURCE_CONFIG_GROUP, _channel_source
+
+    core, ctrl, _mm = emu_rig(tmp_path)
+    core.get_available_configs = lambda group: ["DAPI", "FITC"]
+    reads = []
+    original = emu_manager.read_emu_config
+    emu_manager.read_emu_config = lambda *a, **k: reads.append(a) or original(*a, **k)
+    try:
+        source = _channel_source(ctrl, emu_guard().is_illumination_enable)
+    finally:
+        emu_manager.read_emu_config = original
+    assert source.kind == CHANNEL_SOURCE_CONFIG_GROUP
+    assert source.names == ("DAPI", "FITC")
+    assert reads == []

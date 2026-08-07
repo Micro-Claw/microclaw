@@ -503,6 +503,74 @@ class TestSetChannel:
     def test_get_available_channels(self, mock_ctrl, unconstrained_guard):
         result = get_available_channels(mock_ctrl, unconstrained_guard)
         assert "DAPI" in result["channels"]
+        assert "config group" in result["source"]
+
+    @pytest.mark.parametrize("allowed,expected", [
+        ([], []),                       # the exact M5 gate session
+        (["DAPI"], ["DAPI"]),
+    ])
+    def test_allowlist_restricted_channels_are_reported_as_such(
+        self, mock_ctrl, allowed, expected
+    ):
+        """M5 gate, 2026-08-06. A session ran with `channels.allowed: []`, was
+        told it had four channels, picked one, and was refused. The allowlist is
+        unchanged and still the only authority; the report simply stops offering
+        what this session cannot use, while `channels` still says what the rig
+        has so no rig reality is hidden.
+        """
+        from microclaw.safety import SafetyConstraints, SafetyGuard
+
+        guard = SafetyGuard(SafetyConstraints(allowed_channels=allowed))
+        result = get_available_channels(mock_ctrl, guard)
+        assert result["channels"] == ["DAPI", "FITC", "Cy5"]
+        assert result["authorized"] == expected
+        for refused in set(result["channels"]) - set(expected):
+            with pytest.raises(SafetyViolation, match="allowed list"):
+                set_channel(mock_ctrl, guard, preset=refused)
+
+    def test_unrestricted_session_reports_no_authorized_subset(
+        self, mock_ctrl, unconstrained_guard
+    ):
+        assert "authorized" not in get_available_channels(
+            mock_ctrl, unconstrained_guard)
+
+    def test_channel_less_rig_says_so_instead_of_a_bare_empty_list(
+        self, mock_ctrl, unconstrained_guard
+    ):
+        """An empty list on its own reads as "no channels"; it must say why."""
+        mock_ctrl.core.get_available_configs.return_value = []
+        result = get_available_channels(mock_ctrl, unconstrained_guard)
+        assert result["channels"] == []
+        assert "offers no channels" in result["source"]
+
+    def test_acquisition_channel_axis_is_refused_when_presets_cannot_drive_it(
+        self, mock_ctrl, unconstrained_guard
+    ):
+        """design/41 F6: `channel=` becomes channel_group="Channel" events.
+
+        On a rig with no preset there, that would image every plane on
+        whichever line happened to be on. Refuse, and name the way through.
+        """
+        from microclaw.tools import run_zstack
+
+        mock_ctrl.core.get_available_configs.return_value = []
+        with pytest.raises(SafetyViolation, match="cannot drive a channel axis") as caught:
+            run_zstack(mock_ctrl, unconstrained_guard, z_start_um=0, z_end_um=1,
+                       z_step_um=1, save_dir="d", channel="640")
+        assert "set_channel first" in str(caught.value)
+
+    def test_acquisition_channel_axis_still_runs_on_a_preset_rig(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        from microclaw import tools
+
+        monkeypatch.setattr(tools, "_build_acquisition_events", lambda **k: ["event"])
+        monkeypatch.setattr(tools, "_authorize_acquisition", lambda *a, **k: None)
+        monkeypatch.setattr(tools, "_acquire_with_hooks", lambda *a, **k: "/data/x")
+        monkeypatch.setattr(tools, "_reservation_report", lambda r: {})
+        out = tools.run_zstack(mock_ctrl, unconstrained_guard, z_start_um=0,
+                               z_end_um=1, z_step_um=1, save_dir="d", channel="DAPI")
+        assert out["dataset_path"] == "/data/x"
 
 
 class TestSetDeviceProperty:

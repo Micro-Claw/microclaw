@@ -1016,6 +1016,274 @@ rollback-failure, and cancellation used deterministic fakes.
 - **Validated:** nothing scientific. Phase 4 claims no scientific result and does
   not validate a safe illumination state, exposure, dose, timing, or device policy.
 
+### The plan source, and why it is not always a preset (block 41c, 2026-08-06)
+
+**Problem.** Phase 4 executes presets, and M5 has no `Channel` group, so it had
+nothing to drive. The 2026-08-05 two-channel run was three raw
+`set_device_property` writes per switch against EMU's **reversed** slot order —
+slot 3 is `640` and its enable is `Laser 1: 1. Enable`. The writes were right;
+the narration of them in the same message was not. See design/41 F6.
+
+**Decision.** One source seam, `ChannelSource` in `authorization.py`. It answers
+*what channels exist* and *what does this one expand to*; the startup
+classification loop and `execute_channel_plan` both ask it, and the executor
+never learns which source it is replaying. There is no second executor, no
+second authorization path, and no `if emu:` in the replay loop.
+
+```python
+ChannelSource(kind, names, effects, unavailable, problems).expand(core, channel)
+```
+
+- **Selection is by preset, not by group.** A `Channel` group holding at least
+  one preset always wins, and the EMU config is not read at all. Only a rig with
+  nothing to drive looks further. Reading `Core.ChannelGroup` stays excluded for
+  the reason above; this changes the *source*, never the group name.
+- **An EMU-sourced channel is laser-only, and says so.** EMU names filter slots
+  (`Filters - Filter names`) and laser slots (`Laser 3 - Name`), but **nothing in
+  its configuration joins a laser to a filter** — checked against the captured
+  M5 `config.uicfg`, whose `Filters` panel carries names and colours only. That
+  join is not invented, and it is not added as a new declaration block either: a
+  rig that needs a channel to move more than its lasers already has a way to say
+  so — a Micro-Manager `Channel` preset, which this code then prefers. The scope
+  is stated in `get_available_channels`, in `set_channel`'s result, and in the
+  refusal text.
+- **Every other named slot goes to its declared `off_value` first, then the
+  target to its `on_value`.** Unconditional, like a preset. Off-before-on is the
+  order that never has two lines armed at once, and leaves less light on the
+  sample if a write fails mid-plan. The hand-written M5 sequence armed first; the
+  end state is identical.
+
+  **Why unconditional, re-examined after the M5 serial timeouts (2026-08-06).**
+  A four-laser rig does three redundant writes before the one that matters, and
+  on M5 the first of them — `Laser 4: 1. Enable` on a laser already off — is
+  where both timeouts landed. The trade is worth restating because the reason
+  first given here was wrong: it was *not* hash stability. `channel_expansion_hashes`
+  and `expansion_drift` are computed from the **plan**, before execution, so
+  skipping a write at apply time would not disturb them at all.
+
+  The load-bearing reason is **emittability**. `originals` is already read for
+  every effect, so skipping writes already at their target would save the
+  set/wait/verify round trips — three per redundant slot, nine per switch on M5,
+  on a link that demonstrably flakes. But the executed effect list is what the
+  script exporter emits. Skip conditionally and the emitted script becomes a
+  function of that day's starting state: a session that skipped "slot 0 off"
+  because it was already off exports a script that omits it, and run later with
+  slot 0 on, that script images with two lasers. That is a dose defect in the
+  standalone artifact — exactly what design/41 F1 and this block exist to remove.
+  Emitting the full plan while executing a subset is worse still: it emits writes
+  that did not run, which is the reconstruction the whole exporter forbids.
+
+  **So it stays unconditional**, and the redundant writes are the price of a
+  channel that is definitive from any starting state and of a script that
+  reproduces it. If the round trips ever have to come down, the honest levers are
+  (a) shrink the *plan* rather than the execution — which needs an operator
+  declaration of which slots form the channel set, rejected here for the same
+  reason the filter association was — or (b) retry with backoff at the device
+  layer, which addresses a flaky serial link directly instead of by writing to it
+  less. (b) is the better lever and belongs with the device layer, not here.
+- **EMU supplies identity, the safety config supplies values.** A slot whose
+  enable pair is not declared under `illumination.shutters` is not offered as a
+  channel. The executor's illumination routing is therefore reached exactly as
+  for a preset effect, and `check_illumination` fires **once per switch, on the
+  enable** — the off-writes equal the declared `off_value` and are silent,
+  precisely as the hand-written `set_device_property` writes were. Checked, and
+  unchanged.
+- **An unresolvable name is a refusal, never a fabrication.** No slot becomes
+  "Laser 3" or "slot 2". Unnamed, name-conflicted (design/39 rule A),
+  duplicate-named, undeclared and unreadable cases each carry their reason into
+  `excluded_presets` and `get_available_channels`, so a rig never merely looks
+  channel-less.
+- **`channels.allowed` and the map are unchanged.** An EMU-sourced channel passes
+  `guard.check_channel`, `authorize_channel` against `authorized_presets`, and
+  per-effect `_authorize_channel_effect`, identically. The startup diagnostic
+  that told an operator "This rig has no Micro-Manager Channel group; remove
+  these non-channel claims" was wrong on such a rig and now names the EMU source
+  and the channels it offers.
+- **Emittable, from the record.** `execute_channel_plan` returns the executed
+  `effects`, and `set_channel`'s emitter renders exactly those as
+  set/wait/verify. It never emits `core.set_config("Channel", …)` for a plan —
+  a rig with no group is exactly the rig the plan came from. The map-less
+  delegation path emits the `set_config` that genuinely ran, keyed on its own
+  recorded result.
+- **The emitted read-back is `_verify_property` itself**, inlined with
+  `inspect.getsource` alongside `_property_type_name` and `ChannelPlanError`,
+  the way the analysis is inlined. The first version paraphrased it as
+  `assert str(core.get_property(...)) == value` and was wrong: `_verify_property`
+  compares a **Float** property numerically because Micro-Manager reformats one
+  (`"10"` reads back `"10.0000"`, measured above), so any `Channel` preset
+  carrying a camera exposure would have exported a script that died partway
+  through, standalone on the rig, on a write that had succeeded. Two things
+  follow from inlining rather than recording the type alongside each effect: the
+  emitted rule can never drift from the executor's — including that it
+  special-cases `Float` and **not** `Integer` — and the script establishes the
+  type the way the executor does, by asking the core, so `_property_type_name`'s
+  pyjavaz shape handling (`to_string` / `swig_value`) travels with it instead of
+  being re-guessed in the emitted source. Caught in coordinator review,
+  2026-08-06; every M5 enable fixture is categorical and none could have caught
+  it.
+
+  **The general rule, and this is its second instance:** what the exporter
+  inlines, it inlines *from source*. A paraphrase is a second implementation
+  that drifts, and both times it drifted the failure landed on a rig, in a
+  standalone script, with nothing around to explain it. Byte-identity does not
+  enforce it — that still passes when an inlined function starts calling a
+  helper which was never inlined. `test_emitted_inline_defines_every_name_it_uses`
+  is the guard, now parametrized over **every** record that triggers an inline
+  rather than the analysis alone; it was blind to this block's inline until it
+  was widened, which is exactly where blocks 13 and 41b each sat before merging.
+  Add a param there whenever the exporter learns to inline something new.
+
+**Boundary, deliberately not crossed.** The acquisition tools' `channel=`
+argument is handed to pycro-manager as `channel_group="Channel"`, so it stays
+config-group-only. **41c introduced both the reachability and the refusal**: a
+channel name could not previously sit in `channels.allowed` without a preset
+behind it, so this block is what makes that combination reachable, and reachable
+and silently wrong — imaging every plane on whichever line was last on — is worse
+than the gap it closes. It is therefore **refused**, naming `set_channel` as the
+way through, rather than shipped and filed. Making the acquisition *axis* itself
+EMU-sourced would mean switching channels from inside an event hook, and is not
+part of this block.
+
+**What the 2026-08-06 gates established.** On **M5** the channel work passed on
+hardware: four named channels where the rig used to report none, the reversed
+slot order right, two switches through the plan with zero raw writes to a laser
+enable, and exactly one illumination confirmation per switch, on the enable. On
+the **demo** rig, preset-sourced plans behaved as before (`channel_source:
+config-group`, no EMU mentioned, `expansion_drift: false`), and the emitted
+script **ran to completion against a live core with microclaw closed** — the
+first standalone hardware run of the inlined `_verify_property`, with
+`_property_type_name` reaching `get_property_type` over the pyjavaz bridge and
+`Core.Shutter` correctly getting no `wait_for_device`. Its **Float branch remains
+untested**: the stock demo `Channel` presets expand to `Dichroic.Label`,
+`Emission.Label`, `Excitation.Label` and `Core.Shutter`, all String, and M5's
+enables are categorical, so no rig in this gate reaches the numeric comparison
+without a preset edit. That half is SKIPPED, not passed.
+
+Two defects came back, both in the export half:
+
+- **A failed call was exported as a successful step.** The session made five
+  `run_multiposition_acquisition` calls; two completed, two failed on trigger
+  arming, one was refused by the channel-axis guard above. The export emitted all
+  five, so the standalone script would have imaged each position **five times
+  instead of twice** — 2.5× the session's dose on a bleaching sample — and then
+  driven a channel axis the rig cannot drive.
+
+  The **demo gate measured the same defect physically**, and it is worse than
+  duplicate dose. There, a multiposition call passed `channel` at the top level,
+  which the tool does not accept: it raised `TypeError` and did nothing. The
+  exporter emitted it anyway — and because the emitter reads the channel from
+  `protocol_params`, the rejected argument was invisible to it and the step
+  rendered with **no channel at all**, acquiring in whatever state was current
+  (FITC, from the preceding `set_channel`) — a channel the session never asked to
+  image. Three datasets per position where the session made one, and the file
+  sizes separate them exactly: the two real ones at 532654/532655 bytes, the
+  phantom alone at 532637. **Arguments the tool layer rejected never took effect,
+  so a step built from them is invention rather than reproduction** — design/41
+  F1's reconstruct-from-memory failure arriving through the exporter itself.
+
+  `_recorded_tool_calls` attaches a result to every recorded `tool_use` and never
+  asks whether it succeeded; this is 41b code, invisible there only because those
+  gate sessions contained no failures. `_recorded_outcome` now reads how much of
+  a call completed, structurally: a top-level `error` (how `execute_tool` reports
+  both a refusal and a raised exception), or per-item `error` entries inside a
+  top-level list (how a part-completed acquisition reports itself). The `status`
+  prose — "0/3 positions completed." — is a symptom and is deliberately not
+  parsed, and only the exact key `error` counts, because `error_um` is a
+  measurement a *successful* move reports.
+
+  **Three outcomes, three treatments** — the first attempt gave the first two the
+  same one and demo round 2 caught it:
+
+  | outcome | treatment |
+  | --- | --- |
+  | **cannot emit** — offline mosaic, adaptive run, no emitter | `# NOT EMITTED` + `raise` |
+  | **partial completion** — some items done, some not | `# NOT EMITTED` + `raise` |
+  | **nothing completed** — rejected call, or every item failed | `# SKIPPED` comment, script continues |
+
+  The split is between *did something happen* and *can it be reproduced*. A call
+  that completed nothing did nothing, so the script doing nothing is the **exact**
+  reproduction, not a reconstruction — and halting there strands every later step
+  that really ran. Round 2 measured that: the rejected call's `raise` sat at line
+  97 and the acquisition that had actually run, at lines 99–106, was unreachable;
+  the script contributed zero acquisitions. Failed calls are ordinary — the M5
+  gate session had three — so refusing on them makes the export useless on exactly
+  the sessions people have, a worse failure than the duplicate dose it replaced.
+  Partial completion keeps the refusal, because something *did* happen that cannot
+  be faithfully reproduced: replaying the whole step re-images what completed,
+  replaying only what worked silently changes the routine, and the record cannot
+  say which the operator wanted. A partial mid-session does still strand what
+  follows; that is the accepted cost of not reconstructing it.
+
+  **The guarantee is narrower than it looks.** "Nothing completed" is not a claim
+  that no hardware moved — a tool can fail after moving a stage. What is
+  guaranteed is that *nothing the session recorded as completed is skipped, and
+  nothing that failed is retried*, which is the safer of the two errors and the
+  one that matches what the operator actually got.
+- **The model was offered channels it could not use.** A session with
+  `channels.allowed: []` was told the rig had four channels and then refused when
+  it set one. The guard was right; the report was not. `get_available_channels`
+  now also returns `authorized` whenever the allowlist restricts the offered set.
+  The allowlist is untouched and remains the only authority — the report asks
+  `guard.check_channel` rather than re-reading config, so the two cannot
+  disagree — and `channels` still lists what the rig has, so no rig reality is
+  hidden. This is a reporting fix, not an allowlist redesign; the split between
+  "what exists" and "what is permitted" is pre-existing and 41c only made it
+  visible, because on M5 the list used to be empty anyway.
+
+### The rollback reported an unverified safe state for a plan that changed nothing
+
+M5 gate round 2, 2026-08-06, hit in **2 of 4** channel switches. Phase 4 code,
+but unreachable on M5 before block 41c — no `Channel` group meant no plan ever
+executed there — so 41c is what ships it to a rig whose iChrome serial link
+flakes, and it is fixed here.
+
+```
+ChannelPlanSafeStateError: Channel plan '640' stopped after 0/4 writes:
+Cannot set property "Laser 4: 1. Enable" to "0" [ ... Serial timeout occurred. (17) ];
+applied=[]; attempted=['iChrome-MLE-TCP.Laser 4: 1. Enable']; rolled_back=[];
+SAFE STATE NOT VERIFIED; rollback_failures=[... Serial timeout occurred. (17)]
+```
+
+The first write raised, so nothing reached the device. The rollback loop iterated
+**`attempted`**, which includes the write that raised, and tried to re-write that
+property to its original — the same command that had just timed out. It timed out
+again, and any rollback failure escalated the result to the loudest error the
+executor has, about a plan in which nothing had changed. The evidence contradicting
+the headline was in the same string: `applied=[]`.
+
+**The fix is in the bookkeeping, not in the attempt.** A write that raised may
+still have partly taken effect, so trying to restore it stays. What changed is the
+conclusion drawn when that restore fails. The executor now counts writes the device
+**accepted** — `set_property` returned, whatever the read-back then said — and a
+rollback failure is a safe-state failure only for a write that reached the device.
+That gives a strict severity ladder:
+
+| condition | class |
+| --- | --- |
+| no `set_property` returned — nothing reached the device | `ChannelPlanError` (base), `NO WRITE REACHED THE DEVICE` |
+| writes reached the device, all rollbacks verified | `ChannelPlanPartialApplicationError` |
+| a write that reached the device could not be rolled back | `ChannelPlanSafeStateError`, `SAFE STATE NOT VERIFIED` |
+
+`accepted`, not `applied`, is the discriminator, and the distinction is real: a
+**read-back** failure means the device took the command and returned the wrong
+value, so that state *did* change and stays a partial application. Only a set that
+raised means nothing arrived. The unrestorable never-accepted write is still
+reported, with the reasoning stated inline — the restore would only have rewritten
+the value already held, so if the write did not take effect nothing changed, and if
+it partly did, that one property is the only one in doubt.
+
+This also removed an inversion: before, a first-write failure with a *clean*
+rollback raised `ChannelPlanPartialApplicationError` while the same failure with a
+failed rollback would now raise the base class — a less severe class for a worse
+situation. Class is now chosen by `accepted` alone, so the ladder is monotone.
+`hint_for_error` gains the matching operator hint, so the base class does not fall
+through to a generic one.
+
+**Evidence.** Offline, replayed against the captured M5 `config.uicfg` in
+`tests/fixtures/`, plus the captured 2026-08-05 M5 session history against which
+the gate checker was validated (see the runbook), plus the 2026-08-06 M5 and demo
+gate runs recorded above. `design/41-block41c-rig-gate.md` is the gate.
+
 ## The illumination gate is inert on an undeclared light source (2026-07-29)
 
 Found during the design/32 Block 15 demo gate on the MM demo config. **Not a
