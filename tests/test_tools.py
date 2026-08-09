@@ -297,6 +297,9 @@ class TestCalibrateStageToCamera:
         )
         mock_ctrl.core.get_camera_device.return_value = "Cam"
         mock_ctrl.core.get_device_name.side_effect = RuntimeError("adapter unavailable")
+        live = mock_ctrl.studio.live()
+        live.is_live_mode_on.return_value = True
+        live.set_live_mode_on.reset_mock()
 
         result = calibrate_stage_to_camera(
             mock_ctrl, unconstrained_guard, step_um=20.0
@@ -305,6 +308,9 @@ class TestCalibrateStageToCamera:
         assert "measured but not saved" in result["error"]
         assert "adapter unavailable" in result["error"]
         assert not knowledge_manager.KNOWLEDGE_PATH.exists()
+        assert live.set_live_mode_on.call_args_list == [call(False)]
+        assert result["live_view_restore"]["left_off"] is True
+        assert "start_live_view" in result["live_view_restore"]["reason"]
 
     def test_recovers_pixel_size_and_restores_stage(
         self, mock_ctrl, unconstrained_guard, monkeypatch, tmp_path
@@ -331,6 +337,9 @@ class TestCalibrateStageToCamera:
                 axis=(0, 1),
             ),
         )
+        live = mock_ctrl.studio.live()
+        live.is_live_mode_on.return_value = True
+        live.set_live_mode_on.reset_mock()
         result = calibrate_stage_to_camera(mock_ctrl, unconstrained_guard, step_um=20.0)
         assert "error" not in result
         assert result["pixel_size_um"] == pytest.approx(px, rel=0.05)
@@ -338,6 +347,9 @@ class TestCalibrateStageToCamera:
         assert result["calibration_ref"]["kind"] == "knowledge_version"
         assert "_sha256_" in result["calibration_ref"]["key"]
         assert pos == {"x": 0.0, "y": 0.0}, "stage must return to its start"
+        assert live.set_live_mode_on.call_args_list == [call(False)]
+        assert result["live_view_restore"]["requested"] is False
+        assert result["live_view_restore"]["left_off"] is True
 
     def test_featureless_field_returns_error_not_garbage(
         self, mock_ctrl, unconstrained_guard, monkeypatch, tmp_path
@@ -925,6 +937,7 @@ class TestSnapAndAnalyze:
         assert calls[-1] == call(True), "live must be restored after the snap"
         assert result["live_view"] == "paused for the snap; camera sequence restart verified"
         assert result["live_view_restore"]["sequence_running"] is True
+        mock_ctrl.core.is_sequence_running.assert_called()
 
     def test_live_restore_does_not_claim_success_without_camera_sequence(
             self, mock_ctrl, unconstrained_guard, monkeypatch):
@@ -1073,7 +1086,7 @@ class TestRunAutofocus:
         with pytest.raises(SafetyViolation):
             run_autofocus(mock_ctrl, default_guard, z_range_um=20.0, z_step_um=1.0)
 
-    def test_live_stopped_and_restored_when_on(self, mock_ctrl, unconstrained_guard, monkeypatch):
+    def test_live_stopped_and_left_off_when_on(self, mock_ctrl, unconstrained_guard, monkeypatch):
         _patch_autofocus(monkeypatch)
         mock_ctrl.studio.live().is_live_mode_on.return_value = True
         live = mock_ctrl.studio.live()
@@ -1083,7 +1096,7 @@ class TestRunAutofocus:
 
         calls = live.set_live_mode_on.call_args_list
         assert calls[0] == call(False), "live mode must be stopped before sweep"
-        assert calls[1] == call(True), "live mode must be restored after sweep"
+        assert call(True) not in calls, "an autofocus run must not restart live"
 
     def test_live_not_touched_when_off(self, mock_ctrl, unconstrained_guard, monkeypatch):
         _patch_autofocus(monkeypatch)
@@ -1128,12 +1141,12 @@ class TestRunAutofocus:
         assert result["coarse"]["metric_curve"] == [0.1, 0.9, 0.1]
         assert result["fine"]["peak_interior"] is True
 
-    def test_live_paused_and_restored_across_the_sweep(
+    def test_live_paused_across_the_sweep_and_left_off(
         self, mock_ctrl, unconstrained_guard, monkeypatch
     ):
         # design/37 F5 asserted in behaviour, not only in the description. The
-        # schema now promises the operator that live view is paused for the
-        # sweep and restored afterwards; a promise in prose that no test pins to
+        # schema promises the operator that live view is paused for the sweep;
+        # a promise in prose that no test pins to
         # the code is how F5 happened in the first place.
         # Observed from INSIDE the sweep. Asserting on the call list afterwards
         # looks equivalent and is not: run_autofocus bounces live a second time
@@ -1162,8 +1175,8 @@ class TestRunAutofocus:
         assert during, "the sweep never ran"
         assert during[0] and during[0][-1] == call(False), \
             "live must already be stopped when the sweep runs"
-        assert live.set_live_mode_on.call_args_list[-1] == call(True), \
-            "live must be restored after the sweep"
+        assert call(True) not in live.set_live_mode_on.call_args_list, \
+            "an autofocus run must leave live off after the sweep"
 
     def test_the_sweep_never_touches_the_viewer(
         self, mock_ctrl, unconstrained_guard, monkeypatch
@@ -1197,7 +1210,7 @@ class TestRunAutofocus:
         assert "flat" in result["reason"]
         assert result["fine"] is None
 
-    def test_live_restored_on_sweep_exception(self, mock_ctrl, unconstrained_guard, monkeypatch):
+    def test_live_left_off_on_sweep_exception(self, mock_ctrl, unconstrained_guard, monkeypatch):
         monkeypatch.setattr(
             "microclaw.tools.coarse_then_fine_autofocus",
             lambda *a, **k: (_ for _ in ()).throw(RuntimeError("hardware fault")),
@@ -1209,7 +1222,7 @@ class TestRunAutofocus:
         with pytest.raises(RuntimeError):
             run_autofocus(mock_ctrl, unconstrained_guard, z_range_um=10.0, z_step_um=1.0)
 
-        live.set_live_mode_on.assert_called_with(True)
+        assert live.set_live_mode_on.call_args_list == [call(False)]
 
 
 class TestRunMultipositionWithAutofocus:
@@ -1760,7 +1773,7 @@ class TestHookedGridAcquisition:
         assert "stage has already moved" in result["hint"]
 
     @pytest.mark.parametrize("live_on", [True, False])
-    def test_composed_path_restores_live_normally_and_leaves_off_untouched(
+    def test_composed_acquisition_leaves_live_off_and_reports_how_to_restart(
         self, centered_ctrl, unconstrained_guard, monkeypatch, tmp_path, live_on
     ):
         from microclaw import tools
@@ -1790,12 +1803,15 @@ class TestHookedGridAcquisition:
 
         assert "error" not in result
         if live_on:
-            assert live.set_live_mode_on.call_args_list[0] == call(False)
-            assert live.set_live_mode_on.call_args_list[-1] == call(True)
+            assert live.set_live_mode_on.call_args_list == [call(False)]
+            assert result["live_view_restore"]["requested"] is False
+            assert result["live_view_restore"]["left_off"] is True
+            assert "start_live_view" in result["live_view_restore"]["reason"]
         else:
             live.set_live_mode_on.assert_not_called()
+            assert "live_view_restore" not in result
 
-    def test_composed_path_restores_live_when_acquisition_raises(
+    def test_composed_path_leaves_live_off_when_acquisition_raises(
         self, centered_ctrl, unconstrained_guard, monkeypatch, tmp_path
     ):
         from microclaw import tools
@@ -1824,8 +1840,8 @@ class TestHookedGridAcquisition:
         )
 
         assert result["error"] == "forced acquisition failure"
-        assert live.set_live_mode_on.call_args_list[0] == call(False)
-        assert live.set_live_mode_on.call_args_list[-1] == call(True)
+        assert live.set_live_mode_on.call_args_list == [call(False)]
+        assert result["live_view_restore"]["left_off"] is True
 
     def test_autofocus_and_observer_compose_end_to_end_in_one_acquisition(
         self, centered_ctrl, unconstrained_guard, monkeypatch, tmp_path
@@ -2118,6 +2134,24 @@ def _puncta_image(spot_yx=(80, 30), shape=(128, 128)):
 
 
 class TestFindFeatures:
+    def test_operator_started_live_is_restored_and_sequence_verified(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        from microclaw.tools import find_features
+        monkeypatch.setattr("microclaw.tools.snap_to_numpy", lambda ctrl: _puncta_image())
+        monkeypatch.setattr("microclaw.tools._load_current_affine", lambda ctrl: None)
+        live = mock_ctrl.studio.live()
+        live.is_live_mode_on.return_value = True
+        live.set_live_mode_on.reset_mock()
+        mock_ctrl.core.is_sequence_running.return_value = True
+
+        result = find_features(mock_ctrl, unconstrained_guard)
+
+        assert live.set_live_mode_on.call_args_list == [call(False), call(True)]
+        assert result["live_view_restore"]["requested"] is True
+        assert result["live_view_restore"]["sequence_running"] is True
+        mock_ctrl.core.is_sequence_running.assert_called()
+
     def test_reports_um_offsets_when_calibrated(self, mock_ctrl, unconstrained_guard, monkeypatch):
         from microclaw.calibration import StageCameraAffine
         from microclaw.tools import find_features
@@ -2176,9 +2210,16 @@ class TestCenterFeature:
             "microclaw.tools._load_current_affine",
             lambda ctrl: StageCameraAffine(-px, 0.0, 0.0, -px, "obj", 1, px),
         )
+        live = mock_ctrl.studio.live()
+        live.is_live_mode_on.return_value = True
+        live.set_live_mode_on.reset_mock()
+        mock_ctrl.core.is_sequence_running.return_value = True
         result = center_feature(mock_ctrl, unconstrained_guard, max_iter=3, tol_px=5.0)
         assert result["centered"] is True
         assert math.hypot(*result["residual_px"]) <= 5.0
+        assert live.set_live_mode_on.call_args_list[-1] == call(True)
+        assert call(False) in live.set_live_mode_on.call_args_list
+        mock_ctrl.core.is_sequence_running.assert_called()
 
     def test_empty_field_errors(self, mock_ctrl, unconstrained_guard, monkeypatch):
         from microclaw.calibration import StageCameraAffine
