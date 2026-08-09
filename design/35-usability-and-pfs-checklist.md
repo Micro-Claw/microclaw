@@ -397,6 +397,14 @@ branch is open.** One worktree besides this one: `../microclaw-6a`, idle at
   `ENABLE ILLUMINATION` prompt, because that is what the tool was doing. Under a
   session-wide grant that exposure is silent. See 43c's entry; the block must
   answer it rather than discover it.
+- **43e is pushed and awaiting a rig** — branch
+  `design43/builtin-offline-adapters`, pinned at `3d30c1f`, runbook on the
+  branch. One review round. **Its gate emits no light and moves nothing**, so
+  unlike every other remaining Track F block it does not compete for rig time and
+  can ride along with any session. 43c is still in review.
+- **Both blocks were implemented by operator-driven codex runners**, not by
+  Agent-tool runners — the coordinator wrote the prompts and the user handed them
+  over, which is what step 2 of the block workflow describes.
 - **43c and 43e were both assigned 2026-08-09 from `eb577d8`**, concurrently, in
   worktrees `../microclaw-43c` and `../microclaw-43e`. Three block branches are
   in flight (6a, 43c, 43e) and 6a is the only one whose next step belongs to a
@@ -685,7 +693,7 @@ assistant's narration when judging whether a guard fired.
 | 43b | Nestor | none | `design43/refresh-gui` (deleted) | `04c0654` | `8162b04` + `74dc87f` (review round 1 returned); runbook `ef6a658` pinned `74dc87f` | **M5 2026-08-09 — G1, G2, G3 both limbs all PASS; G4 NOT EXERCISED by design** (`43b-m5`). Suite 1656 passed / 116 skipped / 0 failed / 1772 collected. G1 settled the pyjavaz shadow `javap` could not reach; EMU's plugin panel repainted too, which the gate did not ask for | `b220e33` | **done** `8ec9da6` — design/43 F4's write-path table annotated as one row short (`set_channel` has two routes); its "verify before implementing" caveat answered in both halves, `javap` for the Java method and M5 for the pyjavaz shadow; suggested-order item 2 struck through, three callsites estimated and five shipped |
 | 43c | Nestor | none | `design43/session-grants` | `eb577d8` | | **required** — the audit log must still record every event | | |
 | 43d | Nestor | none | `design43/report-shapes` (deleted) | `04c0654` | `8635d7c` + `9b98b0b` (two review rounds returned) + `a7a415d` (coordinator fixes) + `010701a` (runbook total corrected); runbook pin `a7a415d` | **M5 2026-08-09 — G1, G2, G3 all PASS; all three known-bad patterns read 0** (`43d-m5`). Suite 1657 passed / 116 skipped / 0 failed / 1773 collected, skips equal to 43b's M5 run. Gate folded into a real 640-trigger session rather than run as a script | `53395d2` | **done** `53e3f12` — design/43 F8's stub corrected (`hook_actions` is omitted, not zeroed, when no typed action was observed) with the surviving two-kind projection recorded as still owed; F11's two-value list corrected to three (`partially_explicit`); suggested-order item 4 struck through |
-| 43e | Nestor | none | `design43/builtin-offline-adapters` | `eb577d8` | | required | | |
+| 43e | Nestor | none | `design43/builtin-offline-adapters` | `eb577d8` | `452dbc5` + `3d30c1f` (review round 1 returned); runbook `43-block43e-rig-gate.md` pinned `3d30c1f` | **pushed 2026-08-09, awaiting a rig — zero-exposure gate, folds into any session** | | |
 | 43f | Nestor | 43a merged (its prompt names the key this creates) | `design43/rig-profile` | | | required | | |
 | 43g | Nestor | none | `design43/coverage-statistics` | | | **required — beads + a diffuse field**; nothing ranks on it until calibrated | | |
 | 43h | Nestor | none | `design43/emit-adaptive-runs` | | | **required** — run the emitted script with microclaw closed | | |
@@ -5637,9 +5645,38 @@ hook dispatching only `DiscardFrame` still reads as two zeros. That last one is
 a narrower version of the same defect and was left rather than widened
 mid-block.
 
-## 43e. Offline analysis ships with no analyses in it
+## 43e. Offline analysis ships with no analyses in it — **PUSHED, awaiting a rig**
 
-Branch: `design43/builtin-offline-adapters`
+Branch: `design43/builtin-offline-adapters`, runbook
+`design/43-block43e-rig-gate.md` on the branch, pinned at `3d30c1f`. Off-rig
+**1685 passed / 99 skipped / 3 expected warnings, 1784 collected** on macOS,
+re-measured by the coordinator; +5 IDs from `eb577d8`, none removed.
+
+**The gate emits no light and moves nothing**, so it does not compete for rig
+time the way the rest of Track F does — it can ride along with any session.
+
+**What review round 1 returned, and what the answers were.** Five findings; the
+three required ones were all provenance or reachability, not arithmetic:
+
+- The built-ins defaulted `min_snr` to `UNCALIBRATED_MIN_SNR_FALLBACK` and
+  recorded only the number, so a manifest could not distinguish an operator's
+  deliberate 3.1 from the package guessing — and ignored `guard.analysis_min_snr`
+  entirely. `resolve_min_snr` exists for exactly this and names offline analysis
+  in its docstring. Now resolved at the trusted runner boundary (explicit → rig
+  config → labelled fallback) with `min_snr_source` recorded beside the value.
+  **This is 43d's defect class again: a value without provenance is a claim.**
+- `emit`'s refusal text still said "must be 'unverified' or 'provisional'" after
+  the allowed set was widened for built-ins. Derived from the set now.
+- `connected_components` had been added to `_analysis_source`, so every exported
+  script carried code no emitted call can reach — the offline mosaic path is
+  non-emittable. **The coordinator's runner prompt caused this** by overstating
+  CLAUDE.md's rule, which is closure over what is *emitted*. Removed.
+- Kept, with the reason now written down: the masked MAD derivation is local
+  because `snr()` and `snr_validity()` deliberately measure the full frame,
+  while mosaic canvas zeros are not observations.
+- `find_features` is **not** unified with the offline twin: blob detection
+  measures puncta, connected components measures contiguous thresholded signal.
+  Carried to the design gate as F15's closing question, answered.
 
 Source: design/43 F15. The mosaic path is plumbed to the analysis boundary
 (`completed_dataset.py:337–352`) and the last step is missing. Retires F10's
