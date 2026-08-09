@@ -132,7 +132,12 @@ def coverage_stats(
 
     ``signal_concentration`` is the share of positive, above-background signal
     held by the brightest 1% of pixels. A value near one identifies the bright
-    corner that can dominate SNR without filling the field.
+    corner that can dominate SNR without filling the field. Its 1% window is
+    matched to the 0.5% tail ``snr`` takes p99.5 over, which is the band where
+    snr can be fooled at all -- so a bright region much larger than 1% of the
+    frame reads progressively lower (measured: a corner at 0.9% of the frame
+    reads 0.98, at 1.6% reads 0.63, at 3.5% reads 0.29). Read a low value as
+    "not a small bright patch", never as "spread evenly".
 
     Shot noise makes the noise floor signal-dependent. The frame-wide MAD
     estimates noise at background; when sample fills much of the field, signal

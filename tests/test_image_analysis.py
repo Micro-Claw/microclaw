@@ -653,14 +653,28 @@ class TestCoverageStats:
         assert empty_stats.structure_coverage < 0.005
 
     def test_bright_corner_is_concentrated_but_spread_signal_is_not(self):
-        """F6's failure: equal signal in one corner must read near one."""
+        """F6's failure: the corner must WIN on snr, and extent must catch it.
+
+        The corner is 24x24 = 0.88% of the frame, deliberately wider than the
+        0.5% tail p99.5 is taken over. Narrower than that the corner does not
+        define p99.5, snr prefers the spread field unaided, and this test passes
+        without reproducing the failure it exists for: measured on this fixture,
+        a 16x16 corner reads snr 4.05 against the spread field's 239.0, and
+        20x20 reads 3411. That is F6's "1% of the frame is enough to define
+        p99.5" from the other side.
+        """
+        total_photons = 10000 * 16 * 16
         corner_photons = np.zeros((256, 256))
-        corner_photons[8:24, 8:24] = 10000
+        corner_photons[8:32, 8:32] = total_photons / (24 * 24)
         spread_photons = np.zeros((256, 256))
-        spread_photons[::4, ::4] = 625  # 16x as many pixels, same total photons
+        spread_photons[::4, ::4] = total_photons / (64 * 64)  # same total photons
 
         corner_stats = compute_stats(simulated_scmos_frame(corner_photons, seed=4))
         spread_stats = compute_stats(simulated_scmos_frame(spread_photons, seed=4))
+        # F6: snr ranks one bright corner above a field that is full of sample.
+        assert corner_stats.snr > spread_stats.snr
+        assert corner_stats.signal_coverage < spread_stats.signal_coverage
+        # ...and concentration is what says the corner is not a full field.
         assert corner_stats.signal_concentration == pytest.approx(1.0, abs=0.05)
         assert spread_stats.signal_concentration < 0.2
 
