@@ -1267,6 +1267,7 @@ def set_channel(
         )
     ctrl.core.set_config(CHANNEL_CONFIG_GROUP, preset)
     ctrl.core.wait_for_config(CHANNEL_CONFIG_GROUP, preset)
+    ctrl.refresh_gui()
     return {
         "status": f"Channel set to '{preset}'.",
         "config_group": CHANNEL_CONFIG_GROUP,

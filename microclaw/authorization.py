@@ -1725,8 +1725,8 @@ def execute_channel_plan(
             )
         # Refresh once after every rollback, before selecting which exception
         # describes the outcome. Production controllers never raise here, but
-        # preserving the write exception even for a broken test double keeps
-        # this recovery path fail-safe.
+        # even a broken test double's repaint error must never replace the
+        # exception that describes the state of the rig.
         try:
             ctrl.refresh_gui()
         except Exception:

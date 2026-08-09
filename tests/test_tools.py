@@ -504,6 +504,7 @@ class TestSetChannel:
         set_channel(mock_ctrl, default_guard, preset="DAPI")
         mock_ctrl.core.set_config.assert_called_once_with("Channel", "DAPI")
         mock_ctrl.core.wait_for_config.assert_called_once_with("Channel", "DAPI")
+        mock_ctrl.refresh_gui.assert_called_once_with()
 
     def test_forbidden_channel(self, mock_ctrl, default_guard):
         with pytest.raises(SafetyViolation, match="allowed list"):

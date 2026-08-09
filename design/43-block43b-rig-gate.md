@@ -73,7 +73,22 @@ the four property names, the four displayed values, and the four read-back
 values. Do not repeatedly switch channels merely to test repainting; each
 switch is a real illumination-state operation.
 
-## G3 — rollback repaint (best-effort on M5)
+## G3 — zero-dose focus-lock and raw-property checks
+
+Keep the Property Browser open on the PIZStage focus-lock property. Call
+`set_focus_lock` once to toggle it, without clicking Refresh in Micro-Manager,
+and compare the displayed value with `get_focus_lock_state`. Restore the
+original lock state when finished. PASS requires every toggle to repaint the
+Property Browser and agree with the read-back; this zero-dose check may be
+repeated if the first observation is unclear.
+
+As a one-line non-regression check, use `set_device_property` to write that same
+non-illumination focus-lock property to the value it already holds; without a
+manual refresh, record that the Property Browser still agrees with
+`get_device_property`. This callsite refreshed before the migration and must
+continue to do so.
+
+## G4 — rollback repaint (best-effort on M5)
 
 A rollback needs a channel plan to fail after at least one write succeeds. M5
 has no safe, deterministic control for that condition: unplugging the iChrome,
@@ -105,6 +120,8 @@ not replace them.
 | Step 0 passes/skips; previous M5 skips | | |
 | G1 bridge shadow + exit code | | |
 | G2 channel/property-browser/read-back values | | |
-| G3 rollback repaint | | |
+| G3 focus-lock toggle/read-back | | |
+| G3 `set_device_property` non-regression | | |
+| G4 rollback repaint | | |
 
 Send back this completed table, `suite-43b.txt`, and `collect-43b.txt`.
