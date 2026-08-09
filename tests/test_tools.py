@@ -297,6 +297,9 @@ class TestCalibrateStageToCamera:
         )
         mock_ctrl.core.get_camera_device.return_value = "Cam"
         mock_ctrl.core.get_device_name.side_effect = RuntimeError("adapter unavailable")
+        live = mock_ctrl.studio.live()
+        live.is_live_mode_on.return_value = True
+        live.set_live_mode_on.reset_mock()
 
         result = calibrate_stage_to_camera(
             mock_ctrl, unconstrained_guard, step_um=20.0
@@ -305,6 +308,9 @@ class TestCalibrateStageToCamera:
         assert "measured but not saved" in result["error"]
         assert "adapter unavailable" in result["error"]
         assert not knowledge_manager.KNOWLEDGE_PATH.exists()
+        assert live.set_live_mode_on.call_args_list == [call(False)]
+        assert result["live_view_restore"]["left_off"] is True
+        assert "start_live_view" in result["live_view_restore"]["reason"]
 
     def test_recovers_pixel_size_and_restores_stage(
         self, mock_ctrl, unconstrained_guard, monkeypatch, tmp_path
@@ -331,6 +337,9 @@ class TestCalibrateStageToCamera:
                 axis=(0, 1),
             ),
         )
+        live = mock_ctrl.studio.live()
+        live.is_live_mode_on.return_value = True
+        live.set_live_mode_on.reset_mock()
         result = calibrate_stage_to_camera(mock_ctrl, unconstrained_guard, step_um=20.0)
         assert "error" not in result
         assert result["pixel_size_um"] == pytest.approx(px, rel=0.05)
@@ -338,6 +347,9 @@ class TestCalibrateStageToCamera:
         assert result["calibration_ref"]["kind"] == "knowledge_version"
         assert "_sha256_" in result["calibration_ref"]["key"]
         assert pos == {"x": 0.0, "y": 0.0}, "stage must return to its start"
+        assert live.set_live_mode_on.call_args_list == [call(False)]
+        assert result["live_view_restore"]["requested"] is False
+        assert result["live_view_restore"]["left_off"] is True
 
     def test_featureless_field_returns_error_not_garbage(
         self, mock_ctrl, unconstrained_guard, monkeypatch, tmp_path
@@ -2122,6 +2134,24 @@ def _puncta_image(spot_yx=(80, 30), shape=(128, 128)):
 
 
 class TestFindFeatures:
+    def test_operator_started_live_is_restored_and_sequence_verified(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        from microclaw.tools import find_features
+        monkeypatch.setattr("microclaw.tools.snap_to_numpy", lambda ctrl: _puncta_image())
+        monkeypatch.setattr("microclaw.tools._load_current_affine", lambda ctrl: None)
+        live = mock_ctrl.studio.live()
+        live.is_live_mode_on.return_value = True
+        live.set_live_mode_on.reset_mock()
+        mock_ctrl.core.is_sequence_running.return_value = True
+
+        result = find_features(mock_ctrl, unconstrained_guard)
+
+        assert live.set_live_mode_on.call_args_list == [call(False), call(True)]
+        assert result["live_view_restore"]["requested"] is True
+        assert result["live_view_restore"]["sequence_running"] is True
+        mock_ctrl.core.is_sequence_running.assert_called()
+
     def test_reports_um_offsets_when_calibrated(self, mock_ctrl, unconstrained_guard, monkeypatch):
         from microclaw.calibration import StageCameraAffine
         from microclaw.tools import find_features
@@ -2180,9 +2210,16 @@ class TestCenterFeature:
             "microclaw.tools._load_current_affine",
             lambda ctrl: StageCameraAffine(-px, 0.0, 0.0, -px, "obj", 1, px),
         )
+        live = mock_ctrl.studio.live()
+        live.is_live_mode_on.return_value = True
+        live.set_live_mode_on.reset_mock()
+        mock_ctrl.core.is_sequence_running.return_value = True
         result = center_feature(mock_ctrl, unconstrained_guard, max_iter=3, tol_px=5.0)
         assert result["centered"] is True
         assert math.hypot(*result["residual_px"]) <= 5.0
+        assert live.set_live_mode_on.call_args_list[-1] == call(True)
+        assert call(False) in live.set_live_mode_on.call_args_list
+        mock_ctrl.core.is_sequence_running.assert_called()
 
     def test_empty_field_errors(self, mock_ctrl, unconstrained_guard, monkeypatch):
         from microclaw.calibration import StageCameraAffine

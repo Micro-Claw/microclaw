@@ -207,6 +207,8 @@ class TestLiveDoseAndTiffPrompt:
     def test_live_view_is_not_started_just_for_agent_visibility(self):
         assert "so the user can see what you are doing" not in SYSTEM_PROMPT
         assert "Live view is for the operator's eyes, not yours" in SYSTEM_PROMPT
+        assert "(a focus sweep, a navigation)" not in SYSTEM_PROMPT
+        assert "worth watching (a navigation)" in SYSTEM_PROMPT
         assert "camera_triggers_lasers: true" in SYSTEM_PROMPT
         assert "never leave it running after an acquisition finishes" in SYSTEM_PROMPT
 

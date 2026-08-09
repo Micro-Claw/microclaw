@@ -2575,7 +2575,7 @@ def find_features(
 ) -> dict:
     """Snap and return spot count, intensity-weighted centroid, and its offset
     from the field centre — in pixels always, in µm when calibrated."""
-    with _pause_live(ctrl, restore=False) as live_state:
+    with _pause_live(ctrl) as live_state:
         image = snap_to_numpy(ctrl)
     out = detect_features(image, min_sigma, max_sigma, threshold_rel)
     live_report = _live_restore_report(live_state)
