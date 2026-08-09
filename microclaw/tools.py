@@ -674,6 +674,8 @@ class SessionGrants:
     approve that write; the distinguishable audit row is the only backstop.
     Grants therefore remove repeated decisions, not any SafetyGuard check or
     refusal, and are deliberately process memory rather than persisted state.
+    The terminal's ``grants`` command can revoke only between turns; browser
+    operators can revoke while a turn is running.
     """
 
     GRANTABLE = frozenset({"illumination", "acquisition"})

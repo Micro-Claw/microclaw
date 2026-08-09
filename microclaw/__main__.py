@@ -321,7 +321,7 @@ def _repl(args, ctrl, guard, history, store):
             if not grants:
                 print("No active session grants.")
                 continue
-            print("Active session grants:")
+            print("Active session grants (terminal revocation is between turns):")
             for index, grant in enumerate(grants, 1):
                 print(
                     f"  {index}. {grant['kind']}/{grant['subject']} "

@@ -381,8 +381,8 @@ class Session:
             decision: str, decided_by: str = identity, grant_id: str | None = None,
             grant_identity: str | None = None,
         ) -> bool:
-            return Session._audit_confirmation(
-                self, summary=summary, kind=kind, subject=subject,
+            return self._audit_confirmation(
+                summary=summary, kind=kind, subject=subject,
                 decision=decision, confirmation_id=confirmation_id,
                 identity=decided_by, grant_id=grant_id,
                 grant_identity=grant_identity,
@@ -716,8 +716,7 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
             revoked = tools.SESSION_GRANTS.revoke(c.id)
             if revoked is None:
                 raise HTTPException(409, "No session grant with this id is active.")
-            Session._audit_confirmation(
-                session,
+            session._audit_confirmation(
                 summary=(
                     f"SESSION GRANT REVOKED: "
                     f"{revoked['kind']}/{revoked['subject']}"
@@ -743,6 +742,26 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
                 p.kind, p.subject, p.summary, identity=request.state.identity
             )
             p.grant_id = grant["id"]
+            # Grant lifecycle is committed here, beside creation and
+            # revocation. The turn thread separately audits whether this
+            # particular action completed as an approved session decision.
+            # Roll back if the durable row cannot be written: prompts must not
+            # turn off under a grant whose origin is absent from the log.
+            try:
+                session._audit_confirmation(
+                    summary=(
+                        f"SESSION GRANT CREATED: "
+                        f"{grant['kind']}/{grant['subject']}"
+                    ),
+                    kind=grant["kind"], subject=grant["subject"],
+                    decision=f"granted:{grant['id']}",
+                    confirmation_id=p.id, identity=request.state.identity,
+                    grant_id=grant["id"], grant_identity=grant["identity"],
+                )
+            except Exception:
+                tools.SESSION_GRANTS.revoke(grant["id"])
+                p.grant_id = None
+                raise
         p.reply.put((c.approve, request.state.identity))
         return JSONResponse({"resolved": True, "grants": tools.SESSION_GRANTS.active()})
 

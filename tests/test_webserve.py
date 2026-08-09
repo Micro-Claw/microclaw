@@ -81,8 +81,9 @@ def session():
         audit_records=[],
         current_identity="loopback",
     )
-    # Session.confirm only reads _emit/pending/cancel, so binding the real
-    # method makes the fake route confirmations exactly as the real one does.
+    # Bind the real confirmation and audit methods so the fake routes exercise
+    # exactly the same decision-to-row path as a live Session.
+    s._audit_confirmation = webserve.Session._audit_confirmation.__get__(s)
     s.confirm = webserve.Session.confirm.__get__(s)
     yield s
     tools.SESSION_GRANTS.clear()
@@ -518,6 +519,9 @@ def test_browser_session_grant_auto_audits_and_revoke_restores_prompting(
     thread.join(timeout=5)
     assert box["answer"] is True
     grant = tools.SESSION_GRANTS.active()[0]
+    lifecycle = load_history(path).messages[:2]
+    assert lifecycle[0]["decision"] == f"granted:{grant['id']}"
+    assert lifecycle[1]["decision"] == f"approved:session:{grant['id']}"
 
     assert session.confirm("enable 561", "illumination", "enable") is True
     auto = session.audit_records[-1]
@@ -540,6 +544,30 @@ def test_browser_session_grant_auto_audits_and_revoke_restores_prompting(
     client.post("/api/confirm", json={"id": session.pending.id, "approve": False})
     thread.join(timeout=5)
     assert box["answer"] is False
+
+
+def test_session_grant_creation_is_audited_even_if_the_turn_is_stopped(
+    session, client, tmp_path
+):
+    path = tmp_path / "confirmations.jsonl"
+    session.confirmation_audit = AuditLog(path)
+    session.cancel.set()
+    # Model the endpoint-visible window after a confirmation became pending.
+    # No turn-thread decision is needed to prove the lifecycle row is owned by
+    # the POST that creates the standing grant.
+    session.pending = webserve._Pending(
+        "pending-id", "enable 488", "illumination", "enable"
+    )
+
+    response = client.post(
+        "/api/confirm", json={"id": "pending-id", "approve": "session"}
+    )
+
+    assert response.status_code == 200
+    grant = tools.SESSION_GRANTS.active()[0]
+    records = load_history(path).messages
+    assert [record["decision"] for record in records] == [f"granted:{grant['id']}"]
+    assert records[0]["grant_id"] == grant["id"]
 
 
 def test_browser_page_exposes_session_approval_and_persistent_revoke_controls(client):
