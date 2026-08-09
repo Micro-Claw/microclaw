@@ -1,0 +1,192 @@
+# Block 43e rig gate — offline analysis that ships with analyses in it
+
+This gate exercises design/43 **F15**, and retires F10's error text and half of
+F12. It asks whether a standard measurement over an already-saved dataset now
+happens *without a hook-writing project*.
+
+**This gate emits no light and moves nothing.** Every step reads saved pixels;
+`run_analysis_on_saved_dataset` never touches the controller. It can therefore be
+folded into any session, with or without a sample on the stage, and it does not
+need the rig to be idle. Fold it into real work rather than running it as a
+script — a scripted gate tests the keys, a session tests the sentences.
+
+**Any rig with (a) a saved multi-position NDTiff dataset and (b) a stage-camera
+calibration artifact can run this.** M5 has both — the `43d-data/` 25-tile grid
+and the design/29 affine — and it is also the rig whose operator hit F15, so its
+saved hooks are the ones that failed their integrity check. A rig without a
+calibration artifact can still run G3 and G4.
+
+Everything below is PowerShell. Use `$LASTEXITCODE` and printed words, never
+`%ERRORLEVEL%`. Where a step says "record", paste the value into the results
+table.
+
+## Step 0 — pin the implementation and run the full suite
+
+`3d30c1f` is the gated implementation, pinned by the coordinator at push time.
+The check accepts descendant commits, so a later runbook amendment cannot
+invalidate the pin it contains.
+
+Off-rig at `3d30c1f` on macOS, re-measured by the coordinator rather than taken
+from the runner's report: **1685 passed, 99 skipped, 3 expected warnings, 1784
+collected, 0 failures.** The branch started from `eb577d8` at 1680 / 99 / 1779,
+so the five added IDs are this block's own tests and nothing was lost.
+
+On a Windows rig expect the same **1784 collected** with the long-standing
+platform-conditional set skipping: M5 measured 116 skips at both the 43b and 43d
+gates, which would be **1668 passed + 116 skipped = 1784**. Derive the total from
+passed + skipped on the machine in front of you; do not compare against a
+transcribed figure.
+
+Both commands go through the same launcher, so neither can silently pick a
+different Python.
+
+```powershell
+cd C:\Users\ries\microclaw
+git fetch origin
+git checkout design43/builtin-offline-adapters
+git pull
+git merge-base --is-ancestor 3d30c1f HEAD
+if ($LASTEXITCODE -eq 0) { "PIN OK - the gated implementation is present" }
+else { "PIN FAILED - stop, this checkout does not contain the implementation" }
+
+pip install -e . > install-43e.txt 2>&1
+python -m pytest -q > suite-43e.txt 2>&1
+python -m pytest --collect-only -q > collected-43e.txt 2>&1
+Get-Content suite-43e.txt -Tail 8
+Get-Content collected-43e.txt -Tail 3
+```
+
+Record failures, collected total, passed and skipped. Compare skips with the
+**previous full-suite run on this same rig** (116 at 43b and 43d on M5); an
+increased skip count is a failure until every new skip is explained. Any test
+failure: stop and send `suite-43e.txt`.
+
+## G1 — a standard measurement no longer requires writing a hook
+
+**This is the headline criterion.** In session, point microclaw at a saved
+multi-tile dataset and ask, in your own words, the question F15 came from — for
+example:
+
+> can you tell me whether the positive positions in that scan belong to the same
+> cell or not
+
+Do **not** name the adapter, the tool, or the words "connected components" in the
+request. The point is whether microclaw reaches the measurement it now has.
+
+Record the tool call, the result, and microclaw's prose.
+
+- [ ] Microclaw calls `run_analysis_on_saved_dataset` with adapter
+      `connected_components` and `input_kind="stage_coordinate_mosaic"`.
+- [ ] It does **not** offer to write, generate or save an adapter or hook for
+      this question.
+- [ ] The result reports per-object `area_um2`, `centroid_stage_um` and a
+      bounding box, and microclaw answers the same-cell question from the
+      labels rather than from prose.
+- [ ] No confirmation prompt appears for the analysis itself: a built-in has no
+      manifest, no hash pin, no lint and no review gate.
+
+If microclaw cannot find the dataset or the calibration and asks for them, that
+is not a failure — supply them and continue. If it flounders on the *call shape*,
+record that and fall back to naming the tool explicitly; a gate that only proves
+the plumbing still tells us the plumbing works, and the difference between the
+two outcomes is exactly what we want to know.
+
+Centroids are in **stage** coordinates. Sanity-check one against where you know
+that object sits; the off-rig test pins the convention against the real
+rasteriser, and this is the cheap confirmation that the same convention survives
+a real dataset's origin.
+
+## G2 — the record says where the threshold came from
+
+Open the analysis manifest written by G1:
+
+```powershell
+$m = "<output_dir>\analysis-manifest.json"
+(Get-Content $m -Raw | ConvertFrom-Json).parameters
+(Get-Content $m -Raw | ConvertFrom-Json).analyzer
+```
+
+- [ ] `parameters.min_snr_source` is present and is one of `explicit`,
+      `rig_config`, `package_default_uncalibrated`.
+- [ ] It **matches this rig's configuration**: if `analysis.min_snr` is set in
+      `safety_config.yaml`, the source must read `rig_config` and the value must
+      equal it; if it is unset, the source must read
+      `package_default_uncalibrated`. Check the config rather than assuming.
+- [ ] `analyzer.source` is `builtin`, `analyzer.source_sha256` is 64 hex
+      characters, and `analyzer.version` is the installed microclaw version.
+
+The second bullet is the one that discriminates. A build that ignored rig
+configuration would still print a plausible number here; only the comparison
+against `safety_config.yaml` catches it.
+
+## G3 — "did anything happen in that timelapse", answered without re-imaging
+
+Point microclaw at a saved timelapse — one of the nine 488 acquisitions from the
+Nestor session is the literal case, but any saved dataset works — and ask whether
+anything is visibly present in it.
+
+- [ ] Microclaw scores the saved frames (adapter `frame_statistics`,
+      `input_kind="frames"`) instead of saying it cannot tell from the result.
+- [ ] **No exposure occurs**: no acquisition is started, no live view begins, and
+      the lasers stay as they were. Confirm at the rig, not from the payload.
+- [ ] Microclaw reports per-frame statistics and says what they do and do not
+      establish.
+
+## G4 — the untrusted path is exactly as gated as it was
+
+The built-ins must not have loosened anything for saved adapters. This rig has
+the two hooks that failed their integrity check in the Nestor session
+(`mosaic_cell_counter`, `mosaic_cell_counter_v2`, legacy newline hash). Ask
+microclaw to run one of them.
+
+- [ ] It still refuses, naming the manifest/hash integrity problem — not a
+      built-in, not a hardware hint.
+- [ ] Then ask for a name that exists nowhere. The refusal lists **built-in
+      adapters first, then saved adapters**, and both lists are real.
+
+If those two hooks have since been re-saved and now resolve, say so and
+substitute any saved adapter plus a deliberately corrupted manifest entry, or
+record G4 as not runnable here.
+
+## Step 1 — sentence check over the captured session
+
+Close the session and set `$h` to its history JSONL:
+
+```powershell
+$h = "<path to this session's *_microclaw_history.jsonl>"
+"F15 offers to write code for a standard measurement: " + (Select-String -Path $h -Pattern '(write|generate|create).{0,40}(adapter|hook)').Count
+```
+
+Expected on the gate session: **0**. A non-zero count is only acceptable if you
+deliberately asked for a genuinely custom biological analysis in the same
+session — read the turn before scoring it, because that request *should* still
+route to the reviewed, hash-pinned path.
+
+### Pattern validation before this runbook shipped
+
+The pattern was run over the F15 session itself,
+`20260806_152935_790472_microclaw_history.jsonl` (**262 history messages**):
+
+| criterion | count on the known-bad Nestor session | what it matched |
+|---|---:|---|
+| `(write\|generate\|create).{0,40}(adapter\|hook)` | **2** | *"I write a small offline connectivity adapter"* and *"write a small analysis hook"* — both offers to author code for a standard measurement |
+
+The pattern can therefore fail. The positive criteria in G1–G4 carry the rest:
+zero counts alone do not prove microclaw did the right thing.
+
+## Results
+
+| gate | result | evidence |
+|---|---|---|
+| Step 0 pin | | |
+| Full suite: failures / collected | | |
+| Full suite: skips vs previous same-rig run | | |
+| G1 measurement without writing a hook | | |
+| G1 stage-coordinate sanity check | | |
+| G2 threshold provenance vs `safety_config.yaml` | | |
+| G3 saved-frame scoring, zero exposure | | |
+| G4 saved-adapter gates unchanged | | |
+| Step 1 write-a-hook sentence count | | |
+
+Send back this table, `suite-43e.txt`, `collected-43e.txt`, the captured history
+JSONL, and the `analysis-manifest.json` from G1.
