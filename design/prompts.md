@@ -5378,3 +5378,64 @@ the tool was doing — it was the *request* that meant the opposite. Under block
 all, so the case is now a required item in 43c's entry. **Run the gate as a
 session, not as a script**: this came out of an operator asking for something
 ordinary in the middle of the checks.
+
+## Block 43d — report shapes and hints that sent the reader wrong (design/43 F8, F10, F11)
+
+Merged `53395d2`, 2026-08-09. Payload text only, no behaviour change, three
+findings grouped because each produced a wrong sentence in one session. Two
+review rounds returned plus a coordinator fix.
+
+**A field added to retire a wrong inference can carry the same inference.** F8's
+defect was `stopped_early: false` read as "nothing was found". The fix adds
+`hook_actions` counts — and round 1 emitted them as `{"ContinueSurvey": 0,
+"StopSurvey": 0}` whenever the counts did not exist, which is every precoded
+hook. A reader seeing zero Continue decisions on a survey that continued at
+every tile concludes the hook never ran. Round 2 omitted them for precoded
+hooks; the coordinator then found the same hole one level down, because
+`HookResult.actions` defaults to `()`, so a *saved* hook that only records
+measurements also has an empty count dict. **An empty observation is not a
+measurement of zero**, and the distinction has to survive into the payload.
+
+**Zeros are a fabrication, and a disclosed fabrication is still one.** The
+runner's round-1 report did note that built-ins dispatch no typed actions — and
+shipped the zeros anyway. The instruction had been the opposite: if the counts
+cannot be observed, that is a finding to report rather than a value to invent.
+Disclosure in a report is not a substitute for correctness in a payload, because
+the payload is what the next session reads.
+
+**A "distinguishes" in a test name is a claim to check.** Round 1 shipped
+`test_grid_center_source_distinguishes_default_explicit_and_partial` whose
+partial assertion was `== "current_stage_position"` — the code collapsed the
+half-explicit case, and the name asserted otherwise. F11 named two values
+because it never considered one coordinate supplied and one defaulted; that case
+is neither, and reporting it as either is a false provenance claim. Three values
+shipped.
+
+**Validate a gate pattern by making it fire on the known-bad session, and say
+the count.** Every criterion in this runbook was run over
+`20260806_152935_790472` before shipping and each read 1 there, then 0 on the
+gate session. This is the practice that has repeatedly caught criteria which
+could not fail — and F7's own history is the warning, where the obvious pattern
+`export_dataset_as_tiff` read 1 on a session with seven offers because six were
+prose.
+
+**Fold the gate into a real session.** The M5 run was an operator debugging a
+640 laser that would not trigger in live mode, with the three limbs raised
+naturally inside it. G2 therefore landed on a genuine "can you run
+connected_components on that dataset" rather than a manufactured lookup, and G3
+on a real "scan a larger area around the previous scan". Both are what the
+findings were about. A scripted gate would have tested the keys; this tested the
+sentences.
+
+**Check that a criterion could have failed, after the fact as well as before.**
+G3 only discriminates if the stage moved between the two requests. Nobody moved
+it deliberately — but the survey's own traversal left it 40 µm from the earlier
+centre, more than one full FOV, so a defaulted grid would have been visibly
+wrong. Worth confirming from the evidence rather than assuming, and worth
+recording as what actually happened rather than what the runbook asked for.
+
+**Coordinator arithmetic is evidence too.** The runbook's expected total said
+1772 collected while its own `1674 + 99` said 1773 — block 43b's number carried
+across. The rig matched the true value so nothing was harmed, but an operator
+comparing strictly against the stated figure would have been right to stop the
+gate. State totals you derived, not totals you transcribed.
