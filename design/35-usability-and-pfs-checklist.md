@@ -297,6 +297,43 @@ is idle at `4994f3e` awaiting the Nikon.
   and collected total; diff collected test IDs against the branch's start
   commit.
 
+### State at the 2026-08-09 close of the Track F opening session — read this before assigning anything
+
+Supersedes the note above, which was written at the *start* of that session and
+described Track F as unstarted. `main` is `4be6ba4`; `git log --oneline
+origin/main..main` is empty; the working tree is clean; the only branches on
+`origin` besides `main` are `design34/focus-system-authorization` (6a) and the
+three that belong to no checklist here. One worktree, `../microclaw-6a`, idle.
+
+- **Track F blocks 43a and 43m are both MERGED and closed** — ledger rows closed,
+  design gates done, branches deleted locally and on `origin`, coordination notes
+  in `design/prompts.md`. Nine blocks remain: 43b–43k.
+- **The next work is 43b or 43d, and neither needs the rig before it starts.**
+  They are disjoint and may run concurrently in separate worktrees: 43b is
+  `controller.py` + `authorization.py`, 43d is payload text in `tools.py` and
+  `errors.py`. 43b's only pre-implementation check — does
+  `Application.refreshGUIFromCache()` exist — **is already answered off-rig**;
+  see its checklist entry. Do not re-run `javap` for it.
+- **Order for the rest**, from design/43's own suggested order: 43b, 43d, 43e,
+  43f, 43g, 43h, then 43i (needs 43g and 43h), 43j (needs 43e), and 43k is design
+  work only, after 43h and 43i have run on a rig.
+- **Both gates this session ran on M2, not M5, deliberately.** M2's lasers follow
+  the camera trigger the same way M5's do, so it is a full gate rig for
+  illumination-dose work rather than a substitute. Keeping the work off one
+  machine is what found block 43m at all.
+- **Two process rules were added this session and both are load-bearing.** A
+  block gated by a rig session runs the full suite there too (see "Standing
+  constraints"); and when judging that suite, compare the skip count to the
+  previous run on the same host, because a suite can go green by having its
+  subject tests start skipping.
+- **Suite baseline: 1667 passed / 99 skipped / 3 expected warnings, 1766
+  collected** on macOS at `4be6ba4`; the same commit measures 1650 / 116 / 1766
+  on M2. The 17-test difference is the platform-conditional set, not loss.
+- **What design/43 still owes that is not a block:** F7's offer count was
+  corrected from six to seven during 43a's gate, and F3's untested
+  frozen-Preview question is answered. Both are already written into
+  design/43 — no action, recorded so nobody re-derives them.
+
 ### Block 41c mid-gate — superseded 2026-08-07, kept for the round history
 
 Written when M5 became unavailable mid-gate. **The block has since closed** —
