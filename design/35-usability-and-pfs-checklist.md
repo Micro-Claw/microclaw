@@ -400,6 +400,26 @@ branch is open.** One worktree besides this one: `../microclaw-6a`, idle at
   directory with `XDG_*` proves nothing on a rig.* Both came from Step-0 or G1
   failures that a differently-worded criterion would have passed.
 
+> **Re-verified 2026-08-09 at assignment of 43g**, on `main` at `e9178ad`. Every
+> claim in this note held: `origin/main..main` empty, clean tree, remote branches
+> exactly `design34/focus-system-authorization`, `florian/setup-claude-workflow`
+> and `port-to-jpype-acqj` with no Track F branch open, one idle worktree at
+> `../microclaw-6a` (`4994f3e`), and the suite baseline re-measured **1701 passed
+> / 99 skipped / 3 expected warnings, 1800 collected** on macOS — the note's own
+> number, unchanged. **43g is assigned first, acting on this note's one
+> sequencing decision**; 43f, which design/43 puts ahead of it, follows.
+>
+> Four facts the 43g entry did not carry, found by reading the code rather than
+> design/43 — all now in that entry: `ImageStats` is a `NamedTuple` and not F6's
+> `@dataclass`; `_analysis_source`'s inline list is hand-maintained, so a new
+> `image_analysis` helper is the block-13/41b failure class exactly; ranking on a
+> coverage statistic meets `rank_hook_log`'s `f"{metric}_valid"` convention and
+> its hard error on a missing key; and `find_features` already uses the `note`
+> key this finding would write to. The fifth is the largest and is stated in the
+> entry as its own item: **the threshold this block must calibrate is `min_snr`
+> itself**, which is the placeholder 43e's gate caught changing a biological
+> answer.
+
 ### State at the 2026-08-09 close of the second Track F session — SUPERSEDED, kept for the round history
 
 > **Retired. Do not act on this note** — it describes 43c and 43e as the next
@@ -6021,13 +6041,61 @@ defined, so every observation record and `rank_hook_log` gets it for free.
 
 - [ ] `signal_coverage`, `structure_coverage`, `signal_concentration` on
       `ImageStats`. `snr` is a tail statistic and stays what it is.
+- [ ] **`ImageStats` is a `NamedTuple`, not F6's `@dataclass`**
+      (`image_analysis.py:12`). Verified at assignment: fields are positional, so
+      **append, never insert**; the one construction site
+      (`compute_stats`, `:266`) is all-keyword and safe. F6's "every observation
+      record gets it for free" **holds, and is now checked rather than assumed** —
+      `snr_observer` (`hooks.py:514`) and 43e's `frame_statistics`
+      (`completed_dataset.py:82`) both serialise the whole tuple with `_asdict()`,
+      so the three numbers reach the hook log and the offline adapter with no
+      further change. That also means this block silently changes 43e's shipped
+      output; say so in its result rather than letting a rig find it.
+- [ ] **The exporter must inline the new helper, and it will not do so by
+      itself.** `_analysis_source` (`tools.py:503–522`) inlines a **hand-written
+      list** of functions, and its own comment at `:513` says why: block 13 added
+      `snr_validity` while 41b was in flight, both branches were green alone, and
+      every exported script raised `NameError` on the rig. A new helper that
+      `compute_stats` reaches is that case exactly. Add it to the list and confirm
+      `test_emitted_inline_defines_every_name_it_uses` fails without it — a guard
+      that passes either way is not guarding this.
 - [ ] Survey ranking prefers coverage; state it in the `rank_hook_log` schema
-      rather than leaving the model to invent a composite in prose.
+      rather than leaving the model to invent a composite in prose. **Two
+      mechanical facts about that tool decide what "prefers" can mean:** it reads
+      `f"{metric}_valid"` and routes a `False` to an invalid-rows list
+      (`tools.py:5041–5052`), and there is no `signal_coverage_valid` — `.get`
+      returns `None`, so every row is kept. Decide whether coverage has a validity
+      flag or deliberately has none, and state which. And it **errors** when
+      `metric` is absent from any entry (`:5034–5037`), so ranking a log recorded
+      before this block returns `missing required field(s): ['result.signal_
+      coverage']`. That is the right behaviour — an old log must not rank wrong
+      silently — but the message should read as *this log predates the statistic*.
 - [ ] `find_features` names its own scope in its payload: a puncta detector scores
       an extended or filamentous field low, which is what happened at `[205]`.
+      **Not under the `note` key** — `tools.py:2716` already writes the
+      missing-calibration message there, and whichever assignment runs second
+      wins. A scope statement that disappears exactly when the rig is
+      uncalibrated is worse than none.
 - [ ] **Needs rig calibration before anything ranks on it** — beads, the diffuse
       field design/36 still owes, and this session's saved 561 tiles, which are a
       free labelled set with `ridge_coverage`/`snr` already logged.
+- [ ] **The threshold being calibrated is `min_snr`, not only the three new
+      numbers, and it is already the known-wrong one.** F6's `coverage_stats`
+      thresholds at `background + min_snr · noise`; `min_snr` resolves through
+      `resolve_min_snr` (`image_analysis.py:75–88`) to
+      `UNCALIBRATED_MIN_SNR_FALLBACK = 3.1`, labelled
+      `package_default_uncalibrated` — **the exact value that split one cell into
+      49 objects and changed the biological answer on 43e's M5 round 2**, and a
+      placeholder `image_analysis.py:28–31` has openly owed since design/23 F7.
+      The calibrated value has somewhere to go already: `analysis_min_snr` in
+      `safety_config.yaml` (`safety.py:832`) is the `rig_config` branch of that
+      same precedence. A gate that measures three new statistics against an
+      uncalibrated gate has measured nothing.
+- [ ] **Gate the reach, not the plumbing** (standing constraint, from 43e). At
+      least one criterion asks in the operator's words — *which of these tiles has
+      cells in it* — with no statistic named, and passes only if the ranking used
+      coverage and said so. F6's own evidence is a ranking that was mechanically
+      correct and picked a bright corner.
 
 ## 43h. Adaptive runs must be emittable
 
