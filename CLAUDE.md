@@ -42,7 +42,8 @@ replacement for it.
   fabrication of a step is the defect being fixed, not a fallback.
 
   **If you add a helper to `image_analysis`, the exporter must inline it.**
-  `test_emitted_analysis_defines_every_name_it_uses` enforces this. It exists
+  `test_emitted_inline_defines_every_name_it_uses`
+  (`tests/test_session_script_export.py`) enforces this. It exists
   because block 13 added `snr_validity()` while 41b was in flight: both branches
   were green alone and, merged, every exported script raised `NameError` at
   runtime on the rig.
