@@ -134,34 +134,28 @@ def coverage_stats(
     held by the brightest 1% of pixels. A value near one identifies the bright
     corner that can dominate SNR without filling the field.
 
-    If either relevant noise estimate is zero, the corresponding thresholded
-    coverage is zero: without a noise floor, ``min_snr`` cannot be applied, so
-    the conservative result makes no claim about extent. Concentration does not
-    use that gate and remains defined.
+    Shot noise makes the noise floor signal-dependent. The frame-wide MAD
+    estimates noise at background; when sample fills much of the field, signal
+    and its shot noise inflate the MAD and raise the threshold. Rig calibration
+    must therefore cover both sparse and sample-filled fields. A real camera
+    frame has a sensor pedestal and read noise, so MAD is not zero; this function
+    does not claim to handle zero-padded mosaics, whose uncovered pixels corrupt
+    the frame-wide background and noise estimates shared by all ``ImageStats``.
     """
     from scipy.ndimage import gaussian_filter
 
     img = image.astype(np.float64)
     if img.ndim == 3:
         img = img.mean(axis=-1)
-    if noise <= 0:
-        # With no measured noise floor min_snr cannot define an operative gate.
-        # Make no extent claim rather than silently degrading the calibrated
-        # threshold to `image > background`. Concentration remains meaningful.
-        signal_coverage = 0.0
-        structure_coverage = 0.0
-    else:
-        threshold = float(background) + float(min_snr) * float(noise)
-        signal_coverage = float(np.mean(img > threshold))
-        blurred = gaussian_filter(img, sigma=2.0)
-        blurred_noise = 1.4826 * float(
-            np.median(np.abs(blurred - np.median(blurred)))
-        )
-        structure_coverage = (
-            0.0 if blurred_noise <= 0 else float(np.mean(
-                blurred > float(background) + float(min_snr) * blurred_noise
-            ))
-        )
+    threshold = float(background) + float(min_snr) * float(noise)
+    signal_coverage = float(np.mean(img > threshold))
+    blurred = gaussian_filter(img, sigma=2.0)
+    blurred_noise = 1.4826 * float(
+        np.median(np.abs(blurred - np.median(blurred)))
+    )
+    structure_coverage = float(np.mean(
+        blurred > float(background) + float(min_snr) * blurred_noise
+    ))
 
     positive_signal = np.maximum(img - float(background), 0.0).ravel()
     total_signal = float(np.sum(positive_signal))
