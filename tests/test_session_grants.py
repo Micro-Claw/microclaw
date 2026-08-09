@@ -75,16 +75,35 @@ def test_terminal_operator_lists_and_revokes_a_grant_through_repl(
     assert not tools._require_confirmation("enable 488", "illumination", "enable")
 
 
-def test_grant_is_only_process_memory_and_writes_no_user_state(monkeypatch, tmp_path):
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
-    config_dir = paths.user_config_dir()
-    data_dir = paths.user_data_dir()
+def test_grant_is_only_process_memory_and_writes_no_user_state():
+    """Nothing under microclaw's real user directories may change.
+
+    Do not try to relocate those directories with XDG_* and assert they stay
+    absent: `paths.user_config_dir` reads APPDATA on Windows and LOCALAPPDATA
+    for data, so the env vars move nothing there and the real, already-existing
+    directory fails an `exists()` assertion. That is how this test failed on
+    M5 at block 43c's gate while passing on macOS -- a platform-conditional
+    test defect, with the product code correct.
+
+    Comparing a recursive snapshot instead is platform-independent and can
+    still fail for the reason the test exists: a grant persisted anywhere under
+    either directory shows up as a new path.
+    """
+    def snapshot():
+        listing = set()
+        for directory in (paths.user_config_dir(), paths.user_data_dir()):
+            if directory.exists():
+                listing |= {
+                    (path, path.stat().st_mtime_ns if path.is_file() else None)
+                    for path in directory.rglob("*")
+                }
+        return listing
+
+    before = snapshot()
     tools.SESSION_GRANTS.grant(
         "illumination", "enable", "enable 488", identity="stdin"
     )
-    assert not config_dir.exists()
-    assert not data_dir.exists()
+    assert snapshot() == before
     # A new process would construct the same fresh registry at import time.
     assert tools.SessionGrants().active() == []
 
