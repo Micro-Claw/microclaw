@@ -2759,7 +2759,7 @@ class TestRunAOfflineTools:
              "result": {"snr": 2}},
         ]
         positions = tmp_path / "positions.pos"
-        positions.write_text("native fixture placeholder")
+        positions.write_text("native fixture placeholder", encoding="utf-8")
         native = [{"name": "top", "x_um": 99, "y_um": 2}]
         mock_ctrl.project_position_list_file.return_value = PositionProjection(
             [], native, []
@@ -2782,7 +2782,7 @@ class TestRunAOfflineTools:
             "result": {"snr": 9},
         }]
         positions = tmp_path / "positions.pos"
-        positions.write_text("native fixture placeholder")
+        positions.write_text("native fixture placeholder", encoding="utf-8")
         native = [{"name": "top", "x_um": 1.23449, "y_um": 2.34551}]
         mock_ctrl.project_position_list_file.return_value = PositionProjection(
             [], native, []
@@ -2821,7 +2821,7 @@ class TestRunAOfflineTools:
             "result": {"snr": 9},
         }]
         positions = tmp_path / "positions.pos"
-        positions.write_text("native fixture placeholder")
+        positions.write_text("native fixture placeholder", encoding="utf-8")
         mock_ctrl.project_position_list_file.return_value = PositionProjection(
             [], [{"name": "top", "x_um": 1.0, "y_um": 2.0}], []
         )
@@ -2929,7 +2929,7 @@ class TestRunAOfflineTools:
     ):
         def log(name, values):
             path = tmp_path / name
-            path.write_text(json.dumps([{"result": {"snr": v}} for v in values]))
+            path.write_text(json.dumps([{"result": {"snr": v}} for v in values]), encoding="utf-8")
             return str(path)
         dark = [log("d1.json", [3.0]), log("d2.json", [3.1])]
         lit = [log("l1.json", [20.0]), log("l2.json", [25.0])]
@@ -2956,7 +2956,7 @@ class TestRunAOfflineTools:
         hook_log = tmp_path / "outside-hook.json"
         hook_log.write_text(Path(self._log(tmp_path, [{
             "position": "p0", "x_um": 1, "y_um": 2, "result": {"snr": 9}
-        }])).read_text(), encoding="utf-8")
+        }])).read_text(encoding="utf-8"), encoding="utf-8")
         assert tools.rank_hook_log(mock_ctrl, guard, str(hook_log))["entry_count"] == 1
         position_list = tmp_path / "outside.pos"
         position_list.write_text("{}", encoding="utf-8")
@@ -3295,7 +3295,7 @@ class TestReadHookFromFile:
     def test_reads_valid_file(self, mock_ctrl, unconstrained_guard, tmp_path):
         hook_file = tmp_path / "good.py"
         code = "class H:\n    def image_process_fn(self, img, meta, q): return img, meta\n"
-        hook_file.write_text(code)
+        hook_file.write_text(code, encoding="utf-8")
         result = read_hook_from_file(mock_ctrl, unconstrained_guard, path=str(hook_file))
         assert result["code"] == code
         assert result["warnings"] == []
@@ -3310,7 +3310,7 @@ class TestReadHookFromFile:
         hook_file = tmp_path / "outside.py"
         hook_file.write_text(
             "class H:\n    def image_process_fn(self, img, meta, q): return img, meta\n"
-        )
+        , encoding="utf-8")
         guard = SafetyGuard(SafetyConstraints(workspace_dir=str(workspace)))
         assert read_hook_from_file(mock_ctrl, guard, str(hook_file))["path"] == str(hook_file)
 
@@ -3354,7 +3354,7 @@ class TestSaveKnowledgeConfirmation:
             ),
         }
         path = tmp_path / "hook.json"
-        path.write_text(json.dumps([*adapter._log, observation]))
+        path.write_text(json.dumps([*adapter._log, observation]), encoding="utf-8")
         result = tools.rank_hook_log(mock_ctrl, unconstrained_guard, str(path))
         assert result["entry_count"] == 1
         assert result["ranking"][0]["position"] == "p0"

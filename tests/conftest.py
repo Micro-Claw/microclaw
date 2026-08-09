@@ -34,6 +34,9 @@ def mock_ctrl(mock_core, mock_studio):
     ctrl = MagicMock(spec=MicroscopeController)
     ctrl.core = mock_core
     ctrl.studio = mock_studio
+    # A unit-test controller has no live JVM. MagicMock would otherwise
+    # auto-create this method and let host discovery inspect a real MM install.
+    ctrl.get_mm_app_dir = None
     ctrl.inspect_current_position_list.return_value = PositionProjection([], [], [])
     return ctrl
 

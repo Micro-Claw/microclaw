@@ -51,9 +51,9 @@ def offline_home(tmp_path, monkeypatch):
         entry = {"path": str(path), "source": "user_provided",
                  "sha256": hashlib.sha256(source_bytes).hexdigest(),
                  "accepted_warnings": completed_dataset.lint_hook_code(code), **extra}
-        data = json.loads(manifest.read_text()) if manifest.exists() else {}
+        data = json.loads(manifest.read_text(encoding="utf-8")) if manifest.exists() else {}
         data[name] = entry
-        manifest.write_text(json.dumps(data))
+        manifest.write_text(json.dumps(data), encoding="utf-8")
 
     return save, dataset, guard, tmp_path
 
@@ -352,7 +352,7 @@ class X:
         assert calibration_ref is None
         tifffile.imwrite(output_path, np.ones((3, 4), np.uint16))
         manifest = output_path + ".json"
-        Path(manifest).write_text("{}")
+        Path(manifest).write_text("{}", encoding="utf-8")
         return {"calibration_identity": {"source_kind": "acquisition_recorded"},
                 "shape": [3, 4], "manifest_path": manifest}
     monkeypatch.setattr(tools, "build_stage_coordinate_mosaic", build)
@@ -383,7 +383,7 @@ class Mosaic:
         calls.append((ctrl, passed_guard, calibration_ref))
         tifffile.imwrite(output_path, np.ones((3, 4), np.uint16))
         manifest = output_path + ".json"
-        Path(manifest).write_text("{}")
+        Path(manifest).write_text("{}", encoding="utf-8")
         return {"calibration_identity": {"source_kind": "artifact", "payload_sha256": "a" * 64},
                 "manifest_path": manifest, "artifact": {"kind": "tiff", "path": output_path}}
     monkeypatch.setattr(tools, "build_stage_coordinate_mosaic", build)
@@ -401,13 +401,13 @@ def test_provisional_counting_fixture_runs_over_saved_mosaic(offline_home, monke
     import tifffile
     from microclaw import tools
     save, dataset, guard, root = offline_home
-    source = (Path(__file__).parent / "fixtures/hooks/m5_migrated/mosaic_cell_counter.py").read_text()
+    source = (Path(__file__).parent / "fixtures/hooks/m5_migrated/mosaic_cell_counter.py").read_text(encoding="utf-8")
     save("counter", source, version="m5-migrated-fixture")
     def build(ctrl, passed_guard, dataset_path, output_path, selection,
               calibration_ref, output_pixel_size_um):
         tifffile.imwrite(output_path, np.zeros((8, 8), np.uint16))
         manifest = output_path + ".json"
-        Path(manifest).write_text("{}")
+        Path(manifest).write_text("{}", encoding="utf-8")
         return {"calibration_identity": {"source_kind": "artifact", "payload_sha256": "a" * 64},
                 "manifest_path": manifest, "artifact": {"kind": "tiff", "path": output_path}}
     monkeypatch.setattr(tools, "build_stage_coordinate_mosaic", build)

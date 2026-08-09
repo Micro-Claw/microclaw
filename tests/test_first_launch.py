@@ -1352,7 +1352,7 @@ def test_generated_profile_uses_shared_validator(monkeypatch, tmp_path):
     result = write_profile({"reviewed": True}, [], target)
     assert len(seen) == 1 and seen[0] != target and seen[0].parent == target.parent
     assert result.path == target
-    assert yaml.safe_load(target.read_text())["reviewed"] is False
+    assert yaml.safe_load(target.read_text(encoding="utf-8"))["reviewed"] is False
 
 
 def test_rejected_temporary_profile_leaves_no_target_or_temporary(monkeypatch, tmp_path):

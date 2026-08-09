@@ -86,7 +86,7 @@ class TestNativePositionListPrepareCommit:
     def test_prepare_loads_temporary_native_list(self, tmp_path, monkeypatch):
         ctrl = make_controller()
         f = tmp_path / "positions.pos"
-        f.write_text("native")
+        f.write_text("native", encoding="utf-8")
         candidate = MagicMock()
         monkeypatch.setattr("pycromanager.JavaObject", lambda *a, **k: candidate)
         projection = PositionProjection(
@@ -104,9 +104,9 @@ class TestNativePositionListPrepareCommit:
     def test_file_change_during_java_load_is_rejected(self, tmp_path, monkeypatch):
         ctrl = make_controller()
         f = tmp_path / "positions.pos"
-        f.write_text("before")
+        f.write_text("before", encoding="utf-8")
         candidate = MagicMock()
-        candidate.load.side_effect = lambda path: f.write_text("after")
+        candidate.load.side_effect = lambda path: f.write_text("after", encoding="utf-8")
         monkeypatch.setattr("pycromanager.JavaObject", lambda *a, **k: candidate)
 
         with pytest.raises(PositionListConflict) as exc:

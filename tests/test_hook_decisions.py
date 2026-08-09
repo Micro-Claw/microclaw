@@ -58,7 +58,7 @@ def test_composite_observers_share_original_pixels_discard_wins_and_log_is_attri
     assert returned is None
     assert first.seen == second.seen == [7]
     assert [p.name for p in (tmp_path / "artifacts").iterdir()] == ["first.bin"]
-    records = json.loads((tmp_path / "hook.json").read_text())
+    records = json.loads((tmp_path / "hook.json").read_text(encoding="utf-8"))
     assert {record["hook_strategy"] for record in records} == {
         "first_hook", "second_hook"
     }
@@ -555,7 +555,7 @@ def test_parent_writes_design26_observation_envelope_and_coordinates(tmp_path):
         "YPosition_um_Intended": -3.25, "ZPosition_um_Intended": 7.0,
     }
     adapter.image_process_fn(np.ones((2, 2)), metadata, object())
-    record = json.loads(path.read_text())[-1]
+    record = json.loads(path.read_text(encoding="utf-8"))[-1]
     assert {k: record[k] for k in ("position", "x_um", "y_um", "z_um")} == {
         "position": "tile_0", "x_um": 12.5, "y_um": -3.25, "z_um": 7.0,
     }
@@ -588,7 +588,7 @@ def test_legacy_event_queue_access_raises_and_parent_logs(tmp_path):
     adapter = UntrustedHookAdapter(Legacy(), str(path))
     with pytest.raises(RuntimeError, match="cannot access"):
         adapter.image_process_fn(np.zeros((2, 2)), {}, object())
-    assert json.loads(path.read_text())[-1]["event"] == "hook_failure"
+    assert json.loads(path.read_text(encoding="utf-8"))[-1]["event"] == "hook_failure"
 
 
 def test_legacy_image_metadata_return_is_preserved(tmp_path):
@@ -619,7 +619,7 @@ def test_legacy_parent_writes_one_frame_record_with_coordinates(
         "YPosition_um_Intended": -3.25,
     }
     assert adapter.image_process_fn(np.ones((4, 4)), metadata, object()) == returned
-    assert json.loads(path.read_text()) == [{
+    assert json.loads(path.read_text(encoding="utf-8")) == [{
         "position": "tile_0", "x_um": 12.5, "y_um": -3.25,
         "event": "legacy_hook_frame", "outcome": outcome,
     }]

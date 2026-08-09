@@ -181,7 +181,7 @@ def test_only_a_real_yaml_true_passes(tmp_path, truthy):
     pass — it is the same YAML boolean — which is fine.
     """
     p = _write(tmp_path, REAL.replace("reviewed: true", f"reviewed: {truthy}"))
-    parsed = yaml.safe_load(p.read_text())["reviewed"]
+    parsed = yaml.safe_load(p.read_text(encoding="utf-8"))["reviewed"]
     if parsed is True:
         load_safety_config(p)          # `yes` and `True` are YAML true
     else:

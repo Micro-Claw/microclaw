@@ -121,7 +121,7 @@ def test_remove_is_idempotent(local_dirs):
 def test_remove_deletes_what_install_wrote(local_dirs, monkeypatch):
     monkeypatch.setattr(shortcut, "_powershell", lambda *a, **k: None)
     p = shortcut.install()
-    p["lnk"].write_text("stub")             # PowerShell was stubbed out
+    p["lnk"].write_text("stub", encoding="utf-8")             # PowerShell was stubbed out
     gone = shortcut.remove()
     assert set(gone) == {p["lnk"], p["cmd"], p["icon"]}
     assert not p["icon"].exists()

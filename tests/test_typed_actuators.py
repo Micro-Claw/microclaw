@@ -24,7 +24,7 @@ def _yaml(tmp_path, body):
         "  max_illuminated_ms: 1\n  max_session_illuminated_ms: 1\n"
         "  confirm_above_frames: 1\n  confirm_above_duration_s: 1\n"
         "  confirm_above_bytes: 1\n  confirm_above_illuminated_ms: 1\n"
-    )
+    , encoding="utf-8")
     return ParsedSafetyConfig.from_yaml(str(path))
 
 
@@ -88,7 +88,7 @@ def test_bounded_numeric_illumination_alias_is_offline_parse_refusal(tmp_path, s
         "  allowed_numeric:\n    - {device: Camera, property: Gain, kind: bounded-numeric, units: dB, minimum: 0, maximum: 10}\n"
         "illumination:\n" + section +
         "acquisition: {max_frames: 1, max_duration_s: 1, max_bytes: 1, max_illuminated_ms: 1, confirm_above_frames: 1, confirm_above_duration_s: 1, confirm_above_illuminated_ms: 1}\n"
-    )
+    , encoding="utf-8")
     with pytest.raises(SafetyConfigError, match="aliases a declared illumination capability"):
         ParsedSafetyConfig.from_yaml(str(path))
 

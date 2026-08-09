@@ -356,8 +356,8 @@ def emu_rig(tmp_path, *, config_text=None, values=None):
     (mm / "EMU").mkdir(parents=True)
     (mm / "mmplugins").mkdir()
     (mm / "EMU" / "config.uicfg").write_text(
-        M5_CONFIG.read_text() if config_text is None else config_text
-    )
+        M5_CONFIG.read_text(encoding="utf-8") if config_text is None else config_text
+    , encoding="utf-8")
     core = EmuCore([], values or {
         ("iChrome-MLE-TCP", prop): "0" for prop in M5_ENABLE.values()
     })
@@ -492,7 +492,7 @@ def test_undeclared_emu_enable_is_not_offered_as_a_channel(tmp_path):
 
 
 def _m5_config_with(params):
-    raw = json.loads(M5_CONFIG.read_text())
+    raw = json.loads(M5_CONFIG.read_text(encoding="utf-8"))
     raw["pluginConfigurations"][0]["parameters"] = params
     return json.dumps(raw)
 
@@ -517,7 +517,7 @@ def test_unreadable_emu_config_reports_instead_of_looking_channel_less(tmp_path)
     from microclaw.authorization import CHANNEL_SOURCE_NONE, _channel_source
 
     _core, ctrl, mm = emu_rig(tmp_path)
-    (mm / "EMU" / "config.uicfg").write_text("not json")
+    (mm / "EMU" / "config.uicfg").write_text("not json", encoding="utf-8")
     source = _channel_source(ctrl, emu_guard().is_illumination_enable)
     assert source.kind == CHANNEL_SOURCE_NONE and source.names == ()
     assert any("Could not resolve EMU" in problem for problem in source.problems)
