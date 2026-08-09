@@ -395,6 +395,15 @@ Missing it today:
 | `execute_channel_plan` (`set_channel`) | `authorization.py:1409–1474` | **no** |
 | `set_focus_lock` | `tools.py:5227` | **no** |
 
+> **This table is one row short, found while implementing (block 43b).**
+> `set_channel` has **two** routes, not one: `execute_channel_plan` when the
+> session has an authorization map, and `core.set_config` + `wait_for_config`
+> when it does not. Only the first is listed above, and it is the route M5
+> happens to take — so a block implementing this table exactly would have fixed
+> the EMU path and shipped the plain Micro-Manager path still going stale. Five
+> callsites shipped. The subject of this finding is the *tool*; the mechanism
+> named in a row is how one rig reaches it.
+
 The channel plan is the one that hurts: it is the single most frequent hardware
 write in this workflow (17 switches), it changes four properties at once, and it
 also runs a rollback path whose whole purpose is restoring state the GUI is
@@ -439,12 +448,28 @@ on the deployed MM build and shadows as `refresh_gui_from_cache` over the bridge
 `refreshGUI()` is available, use it and drop the cache rationale; the fix stands
 either way.
 
-> **Half-answered 2026-08-09, off-rig.** `javap` on the local MM 2.0.3-20260625
-> `MMJ_.jar` reports both `refreshGUI()` and `refreshGUIFromCache()` on
-> `org.micromanager.Application`, so the from-cache rationale stands and the
-> fallback is not needed. Still unverified: the *deployed Windows* build, and
-> the bridge shadow — though `refresh_gui()` already works on the same interface
-> at `tools.py:1103`. See the checklist's block 43b entry.
+> **Answered in full. Off-rig 2026-08-09:** `javap` on the local MM
+> 2.0.3-20260625 `MMJ_.jar` reports both `refreshGUI()` and
+> `refreshGUIFromCache()` on `org.micromanager.Application`, so the from-cache
+> rationale stands and the fallback is not needed. **On M5, 2026-08-09:**
+> `callable(getattr(c.studio.app(), 'refresh_gui_from_cache', None))` returned
+> `True` on the deployed Windows build, which is the bridge half `javap` could
+> not reach. Note the split — `javap` proves a Java method exists; only a live
+> call proves pyjavaz shadows it. **Measured beyond the question asked:** EMU's
+> own plugin panel repainted alongside the Property Browser, so
+> `refreshGUIFromCache` reaches plugin windows and not just the browser.
+
+**Shipped and gated in block 43b (merged 2026-08-09).** M5 observed the Property
+Browser repainting after a channel switch, a focus-lock toggle and a direct
+property write, with no manual Refresh. The rollback limb is **not** rig-gated:
+provoking a plan that fails *after* a write lands would mean manufacturing an
+uncontrolled hardware fault, so it is covered by three unit tests over the three
+rollback exception exits plus a repaint failure that must not replace them.
+
+One implementation note worth keeping. The rollback refresh is wrapped in its
+own `try/except` even though `refresh_gui` never raises, and the success-path
+call is not. That asymmetry is deliberate: a repaint error must never replace
+the exception that describes the state of the rig.
 
 ---
 
@@ -1120,8 +1145,10 @@ this session had a field where the two would have disagreed (F6).
 1. ~~**F3** (live mode) and **F7** (TIFF prose)~~ — **DONE, block 43a, merged
    2026-08-09, M2 gate PASS.** Prompt and payload text plus one keyword argument
    on `_pause_live`; both stopped active harm.
-2. **F4** (refresh_gui) — a helper and three callsites; verify the MM method name
-   on the rig first.
+2. ~~**F4** (refresh_gui)~~ — **DONE, block 43b, merged 2026-08-09, M5 gate
+   PASS.** A helper and **five** callsites, not the three estimated here: F4's
+   table missed `set_channel`'s second route. The MM method name was settled
+   off-rig by `javap`; only the pyjavaz shadow needed the rig.
 3. **F2** (session grant) — small, self-contained, needs a UI change and a rig
    gate that the audit log still records every event.
 4. **F8 / F10 / F11** (report shapes and hints) — text in payloads, no behaviour
