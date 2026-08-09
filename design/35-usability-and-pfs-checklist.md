@@ -353,8 +353,14 @@ and the only branches on `origin` besides `main` are
 
 ### State at the 2026-08-09 close of the second Track F session — read this before assigning anything
 
-Supersedes every note above. Written at `53e3f12`; verify rather than compare,
-because a coordinator commit after it is expected. What should hold:
+**This is the live note — it supersedes every other State-at note in this
+section, including the one directly below it**, which was written earlier the
+same day and is kept only for the round history. Position is not recency here:
+this one was inserted above the note it replaced.
+
+Written at `53e3f12`; verify rather than compare, because coordinator commits
+after it are expected — `1cb4b3a` is the last one this session, and it moved six
+durable rules into §"Standing constraints that outlive any block". What should hold:
 `git log --oneline origin/main..main` empty, working tree clean, and the only
 branches on `origin` besides `main` are `design34/focus-system-authorization`
 (6a), `florian/setup-claude-workflow` and `port-to-jpype-acqj` — **no Track F
