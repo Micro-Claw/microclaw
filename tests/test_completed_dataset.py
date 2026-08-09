@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from microclaw import completed_dataset
-from microclaw.safety import SafetyConstraints, SafetyGuard
+from microclaw.safety import AnalysisConstraints, SafetyConstraints, SafetyGuard
 
 
 class FakeDataset:
@@ -131,9 +131,9 @@ def test_unknown_adapter_names_the_refusal_and_lists_saved_choices(offline_home)
     save("zebra", "class Zebra:\n def analyze_saved_frame(self, image, metadata, context): pass\n")
     save("alpha", "class Alpha:\n def analyze_saved_frame(self, image, metadata, context): pass\n")
     with pytest.raises(KeyError) as caught:
-        completed_dataset._load_saved_adapter("connected_components")
+        completed_dataset._load_saved_adapter("not_an_adapter")
     message = str(caught.value)
-    assert "No adapter named 'connected_components'" in message
+    assert "No adapter named 'not_an_adapter'" in message
     assert message.index("Available built-in adapters") < message.index("Available saved adapters")
     assert "['connected_components', 'frame_statistics']" in message
     assert "Available saved adapters: ['alpha', 'zebra']" in message
@@ -150,9 +150,52 @@ class Shadow:
     assert result["status"] == "completed"
     assert {item["status"] for item in result["observations"]} == {"observed"}
     assert result["analyzer"]["source"] == "builtin"
+    assert result["parameters"] == {
+        "min_snr": completed_dataset.resolve_min_snr()[0],
+        "min_snr_source": "package_default_uncalibrated",
+    }
+    assert result["observations"][0]["parameters"] == result["parameters"]
     assert len(result["analyzer"]["source_sha256"]) == 64
     int(result["analyzer"]["source_sha256"], 16)
     json.dumps(result, allow_nan=False)
+
+
+def test_builtin_threshold_prefers_explicit_then_records_rig_configuration(offline_home):
+    _, dataset, _, root = offline_home
+    configured_guard = SafetyGuard(SafetyConstraints(
+        workspace_dir=str(root), analysis=AnalysisConstraints(min_snr=7.5),
+    ))
+    configured = completed_dataset.run_analysis_on_saved_dataset(
+        configured_guard, str(dataset), "frame_statistics", {"time": 0}, "frames", {},
+        str(root / "configured-threshold"),
+    )
+    assert configured["parameters"] == {
+        "min_snr": 7.5, "min_snr_source": "rig_config",
+    }
+    explicit = completed_dataset.run_analysis_on_saved_dataset(
+        configured_guard, str(dataset), "frame_statistics", {"time": 0}, "frames",
+        {"min_snr": 4.25}, str(root / "explicit-threshold"),
+    )
+    assert explicit["parameters"] == {
+        "min_snr": 4.25, "min_snr_source": "explicit",
+    }
+
+
+def test_builtin_status_refusal_names_its_actual_allowed_statuses(offline_home, monkeypatch):
+    class BadStatus:
+        def __init__(self, min_snr, min_snr_source):
+            pass
+
+        def analyze_saved_frame(self, image, metadata, context):
+            return {"result": {}, "status": "typo"}
+
+    monkeypatch.setitem(completed_dataset.BUILTIN_ADAPTERS, "bad_status", BadStatus)
+    result = run(offline_home, "bad_status")
+    assert result["status"] == "failed"
+    assert result["failure"]["message"] == (
+        "Offline analysis status must be one of "
+        "['observed', 'provisional', 'unverified']; 'typo' is not allowed for this adapter."
+    )
 
 
 def test_saved_resolution_still_requires_manifest_hash_lint_and_capabilities(offline_home):
@@ -540,6 +583,7 @@ def test_builtin_connected_components_runs_real_mosaic_path_in_stage_coordinates
         "x_min": 5.0, "y_min": 15.0, "x_max": 7.0, "y_max": 17.0,
     }
     assert result["observations"][0]["status"] == "observed"
+    assert result["parameters"]["min_snr_source"] == "package_default_uncalibrated"
     assert len(result["analyzer"]["source_sha256"]) == 64
     json.dumps(result, allow_nan=False)
 

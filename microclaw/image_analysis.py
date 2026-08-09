@@ -315,6 +315,9 @@ def connected_components(
     if values.size == 0:
         return {"threshold": 0.0, "n_components": 0, "objects": []}
     background = float(np.median(values))
+    # This cannot reuse snr()/snr_validity(): they intentionally measure the
+    # full frame, while mosaic canvas zeros are not observations and must be
+    # excluded from this adapter's background/noise population.
     noise = 1.4826 * float(np.median(np.abs(values - background)))
     threshold = background + float(min_snr) * noise
     labels, _ = ndimage.label(covered & (img > threshold))

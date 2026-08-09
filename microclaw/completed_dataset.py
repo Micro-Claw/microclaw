@@ -33,7 +33,7 @@ from microclaw.hook_manager import (
 )
 from microclaw.hooks import write_analysis_observation
 from microclaw.image_analysis import (
-    UNCALIBRATED_MIN_SNR_FALLBACK, compute_stats, connected_components,
+    compute_stats, connected_components, resolve_min_snr,
 )
 from microclaw.safety import SafetyViolation
 
@@ -48,11 +48,11 @@ _ALLOWED_CAPABILITIES = frozenset(
 class ConnectedComponents:
     """Built-in geometric measurement over a stage-coordinate mosaic."""
 
-    def __init__(self, min_area_um2: float = 0.0, max_area_um2: float | None = None,
-                 min_snr: float = UNCALIBRATED_MIN_SNR_FALLBACK):
+    def __init__(self, min_snr: float, min_snr_source: str,
+                 min_area_um2: float = 0.0, max_area_um2: float | None = None):
         self.parameters = {
             "min_area_um2": min_area_um2, "max_area_um2": max_area_um2,
-            "min_snr": min_snr,
+            "min_snr": min_snr, "min_snr_source": min_snr_source,
         }
 
     def analyze_saved_frame(self, image, metadata, context):
@@ -64,20 +64,25 @@ class ConnectedComponents:
             raise ValueError("connected_components requires a square axis-aligned mosaic basis")
         return {"result": connected_components(
             image, pixel_size_um=float(basis[0][0]), origin_um=mosaic["origin_um"],
-            **self.parameters,
+            min_area_um2=self.parameters["min_area_um2"],
+            max_area_um2=self.parameters["max_area_um2"],
+            min_snr=self.parameters["min_snr"],
         ), "status": "observed", "parameters": self.parameters}
 
 
 class FrameStatistics:
     """Built-in package statistics over each selected saved frame."""
 
-    def __init__(self, min_snr: float = UNCALIBRATED_MIN_SNR_FALLBACK):
+    def __init__(self, min_snr: float, min_snr_source: str):
         self.min_snr = min_snr
+        self.min_snr_source = min_snr_source
 
     def analyze_saved_frame(self, image, metadata, context):
         return {
             "result": dict(compute_stats(image, min_snr=self.min_snr)._asdict()),
-            "status": "observed", "parameters": {"min_snr": self.min_snr},
+            "status": "observed", "parameters": {
+                "min_snr": self.min_snr, "min_snr_source": self.min_snr_source,
+            },
         }
 
 
@@ -334,6 +339,15 @@ def run_analysis_on_saved_dataset(
         entry = {"source": "builtin", "version": __version__}
     else:
         cls, verb, entry, source = _load_saved_adapter(adapter)
+    if builtin is not None:
+        # Resolve optional rig state at the trusted runner boundary; adapters
+        # remain plain measurement classes with no guard or configuration access.
+        min_snr, min_snr_source = resolve_min_snr(
+            explicit=parameters.get("min_snr"), configured=guard.analysis_min_snr,
+        )
+        parameters = {
+            **parameters, "min_snr": min_snr, "min_snr_source": min_snr_source,
+        }
     forbidden = set(parameters) & set(FORBIDDEN_SAVED_HOOK_PARAMS)
     if forbidden:
         raise ValueError(f"Offline adapter parameters request forbidden capabilities: {sorted(forbidden)}")
@@ -375,9 +389,11 @@ def run_analysis_on_saved_dataset(
         allowed_statuses = ({"unverified", "provisional", "observed"}
                             if builtin is not None else {"unverified", "provisional"})
         if status not in allowed_statuses:
+            reason = (" and is not self-assertable"
+                      if builtin is None else "")
             raise ValueError(
-                "Untrusted offline analysis status must be 'unverified' or 'provisional'; "
-                f"{status!r} is not self-assertable."
+                f"Offline analysis status must be one of {sorted(allowed_statuses)}; "
+                f"{status!r} is not allowed for this adapter{reason}."
             )
         return write_analysis_observation(
             observations, analyzer=analyzer or adapter,
