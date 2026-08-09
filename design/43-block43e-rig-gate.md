@@ -72,7 +72,7 @@ cd C:\Users\ries\microclaw
 git fetch origin
 git checkout design43/builtin-offline-adapters
 git pull
-git merge-base --is-ancestor 3d30c1f HEAD
+git merge-base --is-ancestor 9bae1ba HEAD
 if ($LASTEXITCODE -eq 0) { "PIN OK - the gated implementation is present" }
 else { "PIN FAILED - stop, this checkout does not contain the implementation" }
 
@@ -219,9 +219,9 @@ zero counts alone do not prove microclaw did the right thing.
 
 | gate | round 1 (M5, 2026-08-09) | round 2 | evidence |
 |---|---|---|---|
-| Step 0 pin | not returned | | |
-| Full suite: failures / collected | not returned | | |
-| Full suite: skips vs previous same-rig run | not returned | | |
+| Step 0 pin | PASS | | `install-43e.txt` |
+| Full suite: failures / collected | **PASS — 0 failed, 1668 passed, 116 skipped, 1784 collected** at `3d30c1f` | | `suite-43e.txt`, `collected-43e.txt` |
+| Full suite: skips vs previous same-rig run | **PASS — 116, equal to 43b's and 43d's M5 runs** | | |
 | G1 measurement without writing a hook | **FAIL** — never called `connected_components` in three attempts | | `43e-history.jsonl` turns 0–29 |
 | G1 stage-coordinate sanity check | not exercised | | |
 | G2 threshold provenance vs `safety_config.yaml` | not exercised — no manifest was written | | |
