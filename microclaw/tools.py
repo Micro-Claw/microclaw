@@ -831,24 +831,30 @@ def _wait(ctrl: MicroscopeController, device: str | None = None) -> None:
 # --- Camera ---
 
 @contextmanager
-def _pause_live(ctrl: MicroscopeController):
-    """Stop live mode for the duration of a camera op, then restore it.
+def _pause_live(ctrl: MicroscopeController, *, restore: bool = True):
+    """Stop live mode for a camera op; restore it only if this was a borrow.
 
     core.snap_image() throws "sequence acquisition is running" if live mode is
     on, and studio.live().snap(True) is worse — it never returns and wedges the
     single-lock ZMQ bridge (design/14 V1). Every snap path must run inside
-    this. Yields a mutable observation record. Restore success is checked
+    this. Use restore=False for frame-producing runs: on a rig where the camera
+    trigger fires the lasers, restoring live after a run keeps exposing the
+    sample. Yields a mutable observation record. Restore success is checked
     against CMMCore's actual camera sequence, not MM Studio's live-mode flag.
     """
     live = ctrl.studio.live()
     was_on = bool(live.is_live_mode_on())
     if was_on:
         live.set_live_mode_on(False)
-    state: dict[str, Any] = {"was_on": was_on, "restore_observed": None}
+    state: dict[str, Any] = {
+        "was_on": was_on,
+        "restored": restore and was_on,
+        "restore_observed": None,
+    }
     try:
         yield state
     finally:
-        if was_on:
+        if was_on and restore:
             live.set_live_mode_on(True)
             deadline = time.monotonic() + _LIVE_MODE_WAIT_S
             while True:
@@ -873,6 +879,16 @@ def _pause_live(ctrl: MicroscopeController):
 def _live_restore_report(state: dict) -> dict | None:
     if not state.get("was_on"):
         return None
+    if not state.get("restored"):
+        return {
+            "requested": False,
+            "left_off": True,
+            "reason": (
+                "Live view was running when this acquisition started and was "
+                "left off, so the camera is not exposing the sample after the "
+                "run. Restart it with start_live_view if you want it back."
+            ),
+        }
     return {
         "requested": True,
         "sequence_running": state.get("restore_observed"),
@@ -2464,7 +2480,7 @@ def calibrate_stage_to_camera(
     px_hint = _calibration_pixel_size_hint(ctrl, pixel_size_hint_um)
     x0, y0 = ctrl.core.get_x_position(), ctrl.core.get_y_position()
 
-    with _pause_live(ctrl):
+    with _pause_live(ctrl, restore=False) as live_state:
         # Snap the reference first so the step can be scaled to the ACTUAL frame
         # (ROI-cropped or full sensor); no stage move has happened yet.
         ref = snap_to_numpy(ctrl)
@@ -2484,6 +2500,9 @@ def calibrate_stage_to_camera(
         img_y = snap_to_numpy(ctrl)
         move_stage_xy(ctrl, guard, 0, -step_um, absolute=False)
 
+    live_report = _live_restore_report(live_state)
+    live_payload = {"live_view_restore": live_report} if live_report else {}
+
     # phase_cross_correlation returns (row, col) = (dy_px, dx_px).
     shift_x, _, _ = phase_cross_correlation(ref, img_x, upsample_factor=10)
     shift_y, _, _ = phase_cross_correlation(ref, img_y, upsample_factor=10)
@@ -2492,7 +2511,7 @@ def calibrate_stage_to_camera(
         why = _diagnose_calibration_shift(shift, frame_hw, step_um, px_hint)
         if why is not None:
             return {"error": f"Calibration failed on the {axis} move: {why}",
-                    "step_um": step_um, "frame_px": list(frame_hw)}
+                    "step_um": step_um, "frame_px": list(frame_hw), **live_payload}
 
     try:
         affine = solve_affine(
@@ -2503,7 +2522,7 @@ def calibrate_stage_to_camera(
             binning=_current_binning(ctrl),
         )
     except ValueError as e:
-        return {"error": f"Calibration failed: {e}"}
+        return {"error": f"Calibration failed: {e}", **live_payload}
 
     try:
         camera_device = str(ctrl.core.get_camera_device())
@@ -2522,7 +2541,8 @@ def calibrate_stage_to_camera(
             "error": (
                 "Calibration measured but not saved: complete camera device, "
                 f"model, and ROI identity could not be read ({error})."
-            )
+            ),
+            **live_payload,
         }
     key = save_affine(
         affine, camera_device=camera_device, camera_model=camera_model, roi=roi,
@@ -2540,6 +2560,7 @@ def calibrate_stage_to_camera(
             "Calibrated and cached. Image-pixel offsets can now be converted "
             "to stage µm (find_features reports offset_from_center_um)."
         ),
+        **live_payload,
     }
 
 
@@ -2554,9 +2575,12 @@ def find_features(
 ) -> dict:
     """Snap and return spot count, intensity-weighted centroid, and its offset
     from the field centre — in pixels always, in µm when calibrated."""
-    with _pause_live(ctrl):
+    with _pause_live(ctrl, restore=False) as live_state:
         image = snap_to_numpy(ctrl)
     out = detect_features(image, min_sigma, max_sigma, threshold_rel)
+    live_report = _live_restore_report(live_state)
+    if live_report:
+        out["live_view_restore"] = live_report
 
     if out["offset_from_center_px"] is not None:
         affine = _load_current_affine(ctrl)
@@ -2694,7 +2718,7 @@ def run_autofocus(
     variance that was MINIMISED at focus on real fields, which is what made two
     live sessions chase the sweep boundary away from the operator's own focus.
 
-    The sweep is headless: live view is paused for its duration and restored
+    The sweep is headless: live view is paused for its duration and left off
     afterwards, and the viewer does not show the sweep as it happens.
     """
     entry_z = ctrl.core.get_position()
@@ -2715,7 +2739,7 @@ def run_autofocus(
             "focus_lock": lock,
         }
 
-    with _pause_live(ctrl):
+    with _pause_live(ctrl, restore=False) as live_state:
         result = _run_autofocus_passes(ctrl, z_range_um, z_step_um, method, settle_ms)
 
     payload: dict[str, Any] = {
@@ -2734,6 +2758,9 @@ def run_autofocus(
             else None
         ),
     }
+    live_report = _live_restore_report(live_state)
+    if live_report:
+        payload["live_view_restore"] = live_report
 
     # Invariant that would have surfaced the amr_test bug immediately: the
     # first pass must span the requested window around the entry Z.
@@ -2745,7 +2772,7 @@ def run_autofocus(
     if not return_thumbnail:
         return payload
 
-    with _pause_live(ctrl):
+    with _pause_live(ctrl, restore=False):
         image = snap_to_numpy(ctrl)
     payload["focus_metric_at_final"] = _round_sig(tenengrad(image))
     return image_content(payload, image)
@@ -3150,7 +3177,7 @@ def _run_protocol_at(
         # branch used to drop them, so "scan a grid and tell me the max and min
         # at each point" had no tool that answered it and the agent hand-rolled
         # an 18-call move+snap loop instead (design/20 F1). Costs no exposure.
-        with _pause_live(ctrl):                     # snap(True) wedges under live (V1)
+        with _pause_live(ctrl, restore=False):      # snap(True) wedges under live (V1)
             image = snap_to_numpy_displayed(ctrl)
         min_snr, min_snr_source = _analysis_gate(guard)
         stats = compute_stats(image, min_snr=min_snr)
@@ -3326,7 +3353,7 @@ def run_multiposition_acquisition(
                 ctrl.add_position(pos_label, float(x_um), float(y_um),
                                   float(z_um) if z_um is not None else None)
         added_labels = [item[0] for item in resolved] if mark_positions else []
-        with _pause_live(ctrl) as live_state:
+        with _pause_live(ctrl, restore=False) as live_state:
             try:
                 hooked = _acquire_positions_with_hook(
                     ctrl, guard,
@@ -3345,6 +3372,7 @@ def run_multiposition_acquisition(
                 hooked = {"error": str(exc)}
             except Exception as exc:
                 hooked = {"error": str(exc)}
+        restore = _live_restore_report(live_state)
         if "error" in hooked:
             # Transaction boundary: undo only entries written by this call.
             # Pre-existing list entries are never part of this rollback.
@@ -3359,13 +3387,14 @@ def run_multiposition_acquisition(
                 "complete": not rollback_errors,
                 "errors": rollback_errors,
             }
+            if restore:
+                hooked["live_view_restore"] = restore
             return hooked
         # The coordinates are known exactly, right here — the hooked branch used
         # to drop them, so "where was tile r2_c1?" had no answer short of
         # re-imaging the grid (design/23 Episode A). The non-hooked branch has
         # attached them since design/19 F3; this is the same fix on the path every
         # survey actually takes. read_hook_log joins to this on `position`.
-        restore = _live_restore_report(live_state)
         return {**hooked, "tiles": [
             {"position": n, "x_um": round(x, 3), "y_um": round(y, 3),
              **({"z_um": round(z, 3)} if z is not None else {})}
@@ -3378,7 +3407,7 @@ def run_multiposition_acquisition(
         )
         if protocol != "snap" else None
     )
-    with _pause_live(ctrl) as live_state:
+    with _pause_live(ctrl, restore=False) as live_state:
         try:
             for pos_label, x_um, y_um, z_um in resolved:
                 pos_save_dir = str(Path(save_dir) / pos_label) if save_dir else None

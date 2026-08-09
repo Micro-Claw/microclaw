@@ -203,6 +203,20 @@ class TestOperatorEstablishedStatePrompt:
         assert "what it found on, it leaves on" in rule
 
 
+class TestLiveDoseAndTiffPrompt:
+    def test_live_view_is_not_started_just_for_agent_visibility(self):
+        assert "so the user can see what you are doing" not in SYSTEM_PROMPT
+        assert "Live view is for the operator's eyes, not yours" in SYSTEM_PROMPT
+        assert "camera_triggers_lasers: true" in SYSTEM_PROMPT
+        assert "never leave it running after an acquisition finishes" in SYSTEM_PROMPT
+
+    def test_export_rule_names_when_not_to_convert(self):
+        assert '"so you can open it in Fiji" is never a reason to export' in SYSTEM_PROMPT
+        assert "once, and not again for the same dataset" in SYSTEM_PROMPT
+        assert "requires a single-file TIFF" in SYSTEM_PROMPT
+        assert "channels as planes rather than reconstructing named channel axes" in SYSTEM_PROMPT
+
+
 class TestZStackThenExportPrompt:
     """
     'Run a 5-slice z-stack from 40 to 60 µm, then export to /tmp/out.tiff'
