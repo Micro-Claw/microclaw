@@ -3,8 +3,10 @@ from dataclasses import dataclass
 import hashlib
 import math
 from pathlib import Path
+import threading
 from typing import TYPE_CHECKING
 
+from ndstorage import Dataset
 from pycromanager import Core, Studio
 
 if TYPE_CHECKING:
@@ -123,6 +125,42 @@ def _java_list_size(java_list) -> int:
     if isinstance(java_list, (list, tuple, set)):
         return len(java_list)
     return int(java_list.size())
+
+
+_DIRECTORY_BRIDGE_TIMEOUT_S = 30.0
+
+
+class _BridgeCallStalled(RuntimeError):
+    """A directory-reader bridge interaction exceeded its watchdog."""
+
+
+def _bridge_call(label: str, fn, timeout: float | None = None):
+    """Run one bridge interaction on a daemon thread with a labelled timeout.
+
+    This makes an otherwise invisible bridge wedge reportable. It cannot cancel
+    the Java call: if Java remains stuck, pyjavaz's single lock remains held.
+    The pre-flight checks in `_open_dataset_in_mm` are what avoid known wedges.
+    """
+    if timeout is None:
+        timeout = _DIRECTORY_BRIDGE_TIMEOUT_S
+    result: dict = {}
+
+    def run() -> None:
+        try:
+            result["value"] = fn()
+        except BaseException as exc:  # noqa: BLE001 - re-raised on the caller
+            result["error"] = exc
+
+    worker = threading.Thread(target=run, name=f"bridge:{label}", daemon=True)
+    worker.start()
+    worker.join(timeout)
+    if worker.is_alive():
+        raise _BridgeCallStalled(
+            f"{label} stalled after the {timeout:g} s watchdog limit."
+        )
+    if "error" in result:
+        raise result["error"]
+    return result.get("value")
 
 
 def _java_map_keys(java_map) -> list[str]:
@@ -336,11 +374,11 @@ class MicroscopeController:
         an MM display has no equivalent of; nothing reads it, and no caller
         needs it to understand the answer.
         """
-        if not self.is_connected():
-            return {"opened": False, "reason": "No Micro-Manager bridge connection."}
         try:
             if Path(path).is_dir():
                 return self._open_dataset_in_mm(path)
+            if not self.is_connected():
+                return {"opened": False, "reason": "No Micro-Manager bridge connection."}
             return self._open_file_in_imagej(path)
         except Exception as exc:
             return {"opened": False,
@@ -414,18 +452,69 @@ class MicroscopeController:
         loadData dispatches internally on NDTiffAdapter.isNDTiffDataSet /
         MultipageTiffReader.isMMMultipageTiff — microclaw does not sniff the
         directory itself, and there is no file-type table here to grow one.
+
+        Every bridge interaction is watchdogged. A timeout reports which call
+        stalled, but cannot interrupt Java or release pyjavaz's lock; rejecting
+        incompatible axes and already-open stores before loadData is the fix.
         """
-        displays = self._studio.displays()
-        windows_before = _java_list_size(displays.get_all_image_windows())
-        store = self._studio.data().load_data(path, True)
+        axes = Dataset(path).axes
+        for axis, values in axes.items():
+            for value in values:
+                if type(value) is not int:
+                    return {
+                        "opened": False,
+                        "via": self._MM_READER,
+                        "reason": (
+                            "Micro-Manager's NDTiff reader accepts integer axis "
+                            f"values only; axis `{axis}` has value {value!r}. "
+                            "Export or mosaic the frames you want instead."
+                        ),
+                    }
+
+        if not _bridge_call("connection check", self.is_connected):
+            return {"opened": False, "via": self._MM_READER,
+                    "reason": "No Micro-Manager bridge connection."}
+        displays = _bridge_call("studio.displays", self._studio.displays)
+        if self._mm_dataset_is_open(displays, path):
+            return {
+                "opened": False,
+                "already_open": True,
+                "via": self._MM_READER,
+                "reason": (
+                    "This dataset is already open in Micro-Manager; it is on "
+                    "your screen now."
+                ),
+            }
+
+        def image_window_count() -> int | None:
+            try:
+                windows = _bridge_call(
+                    "displays.getAllImageWindows", displays.get_all_image_windows
+                )
+                return _bridge_call(
+                    "displays.getAllImageWindows.size",
+                    lambda: _java_list_size(windows),
+                )
+            except _BridgeCallStalled:
+                raise
+            except Exception:
+                return None
+
+        windows_before = image_window_count()
+        data = _bridge_call("studio.data", self._studio.data)
+        store = _bridge_call("loadData", lambda: data.load_data(path, True))
         if store is None:
             return {"opened": False, "via": self._MM_READER,
                     "reason": f"Micro-Manager could not read {path} as a dataset."}
-        self._studio.displays().manage(store)
-        created = self._studio.displays().load_displays(store)
-        n_created = _java_list_size(created)
-        windows_after = _java_list_size(displays.get_all_image_windows())
-        if not n_created and windows_after <= windows_before:
+        _bridge_call("manage", lambda: displays.manage(store))
+        created = _bridge_call("loadDisplays", lambda: displays.load_displays(store))
+        n_created = _bridge_call("loadDisplays result.size",
+                                 lambda: _java_list_size(created))
+        windows_after = image_window_count()
+        if not n_created and (
+            windows_before is None or windows_after is None
+            or windows_after <= windows_before
+        ):
             return {"opened": False, "via": self._MM_READER,
                     "reason": ("Micro-Manager read the dataset but opened no "
                                "display window for it.")}
@@ -437,22 +526,77 @@ class MicroscopeController:
         return {"opened": True, "via": self._MM_READER,
                 "windows": self._describe_mm_displays(store, created, n_created, path)}
 
+    def _mm_dataset_is_open(self, displays, path: str) -> bool:
+        """Best-effort save-path check across both MM display collections."""
+        wanted = Path(path).resolve()
+        for collection_name, getter_names in (
+            ("getAllImageWindows", ("get_all_image_windows", "getAllImageWindows")),
+            ("getAllDataViewers", ("get_all_data_viewers", "getAllDataViewers")),
+        ):
+            try:
+                getter = next(getattr(displays, name) for name in getter_names
+                              if callable(getattr(displays, name, None)))
+                items = _bridge_call(f"displays.{collection_name}", getter)
+                count = _bridge_call(f"displays.{collection_name}.size",
+                                     lambda items=items: _java_list_size(items))
+                for index in range(count):
+                    viewer = _bridge_call(
+                        f"displays.{collection_name}.get", lambda i=index: items.get(i)
+                    )
+                    provider = viewer
+                    for name in ("get_data_provider", "getDataProvider"):
+                        method = getattr(viewer, name, None)
+                        if callable(method):
+                            provider = _bridge_call(
+                                f"displays.{collection_name}.{name}", method
+                            )
+                            break
+                    for name in ("get_save_path", "getSavePath"):
+                        method = getattr(provider, name, None)
+                        if callable(method):
+                            saved = _bridge_call(
+                                f"displays.{collection_name}.{name}", method
+                            )
+                            if saved and Path(str(saved)).resolve() == wanted:
+                                return True
+                            break
+            except _BridgeCallStalled:
+                raise
+            except Exception:
+                # Builds differ in which collection and accessors are exposed.
+                continue
+        return False
+
     def _describe_mm_displays(self, store, created, n_created: int,
                               path: str) -> list[dict]:
         described: dict = {}
-        for key, read in (("n_planes", lambda: int(store.get_num_images())),
-                          ("title", lambda: str(store.get_save_path()) or path)):
+        for key, label, read in (
+            ("n_planes", "store.getNumImages", lambda: int(store.get_num_images())),
+            ("title", "store.getSavePath", lambda: str(store.get_save_path()) or path),
+        ):
             try:
-                described[key] = read()
+                described[key] = _bridge_call(
+                    f"_describe_mm_displays {label}", read
+                )
+            except _BridgeCallStalled:
+                raise
             except Exception as exc:
                 described[key] = None
                 described.setdefault("unread", []).append(
                     f"{key}: {type(exc).__name__}: {exc}")
         try:
-            image = store.get_any_image()
+            image = _bridge_call(
+                "_describe_mm_displays store.getAnyImage", store.get_any_image
+            )
             if image is not None:
-                described["width"] = int(image.get_width())
-                described["height"] = int(image.get_height())
+                described["width"] = int(_bridge_call(
+                    "_describe_mm_displays image.getWidth", image.get_width
+                ))
+                described["height"] = int(_bridge_call(
+                    "_describe_mm_displays image.getHeight", image.get_height
+                ))
+        except _BridgeCallStalled:
+            raise
         except Exception as exc:
             described.setdefault("unread", []).append(
                 f"dimensions: {type(exc).__name__}: {exc}")
@@ -463,7 +607,14 @@ class MicroscopeController:
         for index in range(n_created):
             window = dict(described)
             try:
-                window["title"] = str(created.get(index).get_name()) or window["title"]
+                display = _bridge_call(
+                    "_describe_mm_displays created.get", lambda: created.get(index)
+                )
+                window["title"] = str(_bridge_call(
+                    "_describe_mm_displays display.getName", display.get_name
+                )) or window["title"]
+            except _BridgeCallStalled:
+                raise
             except Exception:
                 pass          # the datastore's save path already answered this
             windows.append(window)

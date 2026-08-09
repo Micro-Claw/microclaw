@@ -7,6 +7,7 @@ content block.
 """
 import json
 from pathlib import Path
+import threading
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -309,13 +310,17 @@ def _dataset_store(save_path, *, n_images=6, width=512, height=512):
     return store
 
 
-def _open_dataset(monkeypatch, path, *, store=_UNSET, created=_UNSET):
+def _open_dataset(monkeypatch, path, *, store=_UNSET, created=_UNSET,
+                  open_windows=(), open_viewers=()):
     """Run the real directory branch.
 
     Returns (result, studio, displays, static_wraps). static_wraps records every
     ImageJ static this path wrapped — it must stay empty.
     """
     static_wraps = []
+    dataset = MagicMock()
+    dataset.axes = {"time": [0]}
+    monkeypatch.setattr("microclaw.controller.Dataset", lambda unused: dataset)
     monkeypatch.setattr(
         "microclaw.controller._new_static_java_class",
         lambda port, cp: static_wraps.append(cp),
@@ -328,7 +333,8 @@ def _open_dataset(monkeypatch, path, *, store=_UNSET, created=_UNSET):
         created = _java_list([display])
 
     displays = MagicMock()
-    displays.get_all_image_windows.return_value = _java_list([])
+    displays.get_all_image_windows.return_value = _java_list(list(open_windows))
+    displays.get_all_data_viewers.return_value = _java_list(list(open_viewers))
     displays.load_displays.return_value = created
     studio = MagicMock()
     studio.displays.return_value = displays
@@ -338,6 +344,77 @@ def _open_dataset(monkeypatch, path, *, store=_UNSET, created=_UNSET):
     ctrl._studio = studio
     result = MicroscopeController.open_in_imagej(ctrl, str(path))
     return result, studio, displays, static_wraps
+
+
+def test_non_integer_dataset_axis_refuses_without_touching_bridge(
+    monkeypatch, tmp_path
+):
+    dataset_path = tmp_path / "acq_1"
+    dataset_path.mkdir()
+    dataset = MagicMock()
+    dataset.axes = {"time": [0], "channel": ["640"]}
+    monkeypatch.setattr("microclaw.controller.Dataset", lambda unused: dataset)
+    ctrl = _bare_controller()
+    ctrl.is_connected = MagicMock(side_effect=AssertionError("bridge was touched"))
+    ctrl._studio = MagicMock()
+
+    result = MicroscopeController.open_in_imagej(ctrl, str(dataset_path))
+
+    assert result["opened"] is False
+    assert "axis `channel` has value '640'" in result["reason"]
+    ctrl.is_connected.assert_not_called()
+    ctrl._studio.displays.assert_not_called()
+
+
+@pytest.mark.parametrize("collection", ["open_windows", "open_viewers"])
+def test_already_open_dataset_reports_it_without_load_data(
+    monkeypatch, tmp_path, collection
+):
+    dataset_path = tmp_path / "acq_1"
+    dataset_path.mkdir()
+    provider = MagicMock()
+    provider.get_save_path.return_value = str(dataset_path.resolve())
+    viewer = MagicMock()
+    viewer.get_data_provider.return_value = provider
+
+    result, studio, _, _ = _open_dataset(
+        monkeypatch, dataset_path, **{collection: (viewer,)}
+    )
+
+    assert result == {
+        "opened": False,
+        "already_open": True,
+        "via": "micro-manager dataset reader",
+        "reason": (
+            "This dataset is already open in Micro-Manager; it is on your "
+            "screen now."
+        ),
+    }
+    studio.data.return_value.load_data.assert_not_called()
+
+
+def test_stalling_load_data_returns_a_labelled_failure(monkeypatch, tmp_path):
+    dataset_path = tmp_path / "acq_1"
+    dataset_path.mkdir()
+    monkeypatch.setattr("microclaw.controller._DIRECTORY_BRIDGE_TIMEOUT_S", 0.01)
+    blocker = threading.Event()
+
+    dataset = MagicMock()
+    dataset.axes = {"time": [0]}
+    monkeypatch.setattr("microclaw.controller.Dataset", lambda unused: dataset)
+    displays = MagicMock()
+    displays.get_all_image_windows.return_value = _java_list([])
+    displays.get_all_data_viewers.return_value = _java_list([])
+    studio = MagicMock()
+    studio.displays.return_value = displays
+    studio.data.return_value.load_data.side_effect = lambda *unused: blocker.wait()
+    ctrl = _bare_controller()
+    ctrl._studio = studio
+
+    result = MicroscopeController.open_in_imagej(ctrl, str(dataset_path))
+
+    assert result["opened"] is False
+    assert "loadData stalled" in result["reason"]
 
 
 def test_open_in_imagej_never_claims_a_window_that_did_not_appear(monkeypatch):
