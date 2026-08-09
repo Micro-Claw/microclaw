@@ -37,7 +37,7 @@ settled on M5 already: the artifact's digests still recompute exactly.
 ## Pin the implementation
 
 ```powershell
-git merge-base --is-ancestor 867f3af HEAD
+git merge-base --is-ancestor 229423d HEAD
 if ($LASTEXITCODE -eq 0) { "PINNED OK" } else { "WRONG TREE - stop" }
 ```
 
@@ -203,6 +203,32 @@ also proves the path is not sensitive to which machine wrote the data.
 window and no error. That is `IJ.open` on a directory, and nothing in this branch
 should be able to reach it. If you see it, say so immediately — it means the
 directory branch was not taken.
+
+### G4a is a diagnostic this round — read this before you run it
+
+The 2026-08-09 demo run wedged here for five minutes. That is now bounded: every
+directory-branch bridge call carries a 30 s labelled watchdog, so instead of
+hanging you will get a refusal naming the call that stalled.
+
+**A stall is an expected outcome this round, not a surprise.** The already-open
+guard added this round cannot see the viewer a pycro-manager acquisition opens
+(`NDViewer` implements neither `DisplayWindow` nor `DataViewer`), so if the wedge
+really is a second reader colliding with the acquisition's own viewer, G4a will
+still stall — and will now say which call did it.
+
+- [ ] **Copy the whole `reason` string verbatim.** The call label in it
+      (`loadData` / `manage` / `loadDisplays` / a `_describe_mm_displays`
+      accessor) is the entire point of this run and settles F2.
+- [ ] After any stall, **restart microclaw before continuing.** The reason says
+      this too. pyjavaz's lock is still held by the wedged call, so every later
+      bridge call will burn its own 30 s and fail; anything you test after that
+      point measures nothing.
+- [ ] Then run **G4b** (`stitch_test_1`) in the fresh session. It should refuse
+      *immediately* and name a non-integer axis — no 30 s wait, no bridge call at
+      all. A 30 s stall there instead means the axis pre-flight did not run.
+
+If G4a opens a window cleanly, say so plainly — it means the wedge was
+environmental and F2's leading hypothesis is wrong, which is worth knowing.
 
 ---
 

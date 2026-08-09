@@ -140,6 +140,12 @@ def _bridge_call(label: str, fn, timeout: float | None = None):
     This makes an otherwise invisible bridge wedge reportable. It cannot cancel
     the Java call: if Java remains stuck, pyjavaz's single lock remains held.
     The pre-flight checks in `_open_dataset_in_mm` are what avoid known wedges.
+
+    So a stall is terminal for the session, not a retryable error, and the
+    message says so. Once the lock is held every later bridge call — including
+    a core call — waits out its own watchdog and fails, which looks like
+    microclaw answering while the microscope is unreachable. The operator needs
+    to know to restart rather than keep asking.
     """
     if timeout is None:
         timeout = _DIRECTORY_BRIDGE_TIMEOUT_S
@@ -156,7 +162,11 @@ def _bridge_call(label: str, fn, timeout: float | None = None):
     worker.join(timeout)
     if worker.is_alive():
         raise _BridgeCallStalled(
-            f"{label} stalled after the {timeout:g} s watchdog limit."
+            f"{label} stalled after the {timeout:g} s watchdog limit. "
+            "Micro-Manager is still inside that call and pyjavaz holds one lock "
+            "across every round trip, so the bridge is now unusable for this "
+            "session: restart microclaw. Nothing was written to Micro-Manager "
+            "and no window was closed."
         )
     if "error" in result:
         raise result["error"]
@@ -527,7 +537,18 @@ class MicroscopeController:
                 "windows": self._describe_mm_displays(store, created, n_created, path)}
 
     def _mm_dataset_is_open(self, displays, path: str) -> bool:
-        """Best-effort save-path check across both MM display collections."""
+        """Best-effort save-path check across both MM display collections.
+
+        Covers windows Micro-Manager itself owns — anything opened through its
+        File menu or its drop target. It does **not** cover the viewer a
+        pycro-manager acquisition opens with `show_display=True`:
+        `org.micromanager.ndviewer.main.NDViewer` implements only
+        `NDViewerAPI`, not `DisplayWindow` and not `DataViewer`, so it appears
+        in neither `getAllImageWindows()` nor `getAllDataViewers()` (read from
+        NDViewer-0.10.2.jar with javap). A dataset microclaw's own acquisition
+        is still showing therefore reads as not-open here, and the watchdog,
+        not this check, is what keeps that case reportable.
+        """
         wanted = Path(path).resolve()
         for collection_name, getter_names in (
             ("getAllImageWindows", ("get_all_image_windows", "getAllImageWindows")),

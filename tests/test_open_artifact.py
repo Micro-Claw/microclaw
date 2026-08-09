@@ -394,6 +394,13 @@ def test_already_open_dataset_reports_it_without_load_data(
 
 
 def test_stalling_load_data_returns_a_labelled_failure(monkeypatch, tmp_path):
+    """A wedged bridge call is reported, and the reason names the call.
+
+    The test bounds its own wait. Asserting only on the returned payload makes
+    the watchdog itself untestable: with the watchdog removed this call blocks
+    forever, so the test would hang the suite rather than fail it, and a check
+    that can only hang cannot report a verdict.
+    """
     dataset_path = tmp_path / "acq_1"
     dataset_path.mkdir()
     monkeypatch.setattr("microclaw.controller._DIRECTORY_BRIDGE_TIMEOUT_S", 0.01)
@@ -411,10 +418,30 @@ def test_stalling_load_data_returns_a_labelled_failure(monkeypatch, tmp_path):
     ctrl = _bare_controller()
     ctrl._studio = studio
 
-    result = MicroscopeController.open_in_imagej(ctrl, str(dataset_path))
+    returned: dict = {}
 
+    def call() -> None:
+        returned["value"] = MicroscopeController.open_in_imagej(
+            ctrl, str(dataset_path)
+        )
+
+    try:
+        caller = threading.Thread(target=call, daemon=True)
+        caller.start()
+        caller.join(30)
+        assert not caller.is_alive(), (
+            "open_in_imagej never returned: the directory branch blocked on a "
+            "stalled bridge call instead of watchdogging it."
+        )
+    finally:
+        # Release the stubbed call so its thread exits with the test rather than
+        # living until the interpreter does.
+        blocker.set()
+
+    result = returned["value"]
     assert result["opened"] is False
     assert "loadData stalled" in result["reason"]
+    assert "restart" in result["reason"].lower()
 
 
 def test_open_in_imagej_never_claims_a_window_that_did_not_appear(monkeypatch):
