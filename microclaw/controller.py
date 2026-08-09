@@ -6,7 +6,6 @@ from pathlib import Path
 import threading
 from typing import TYPE_CHECKING
 
-from ndstorage import Dataset
 from pycromanager import Core, Studio
 
 if TYPE_CHECKING:
@@ -113,25 +112,11 @@ def _drain_java_iterable(iterable) -> list[str]:
     return out
 
 
-def _java_list_size(java_list) -> int:
-    """Length of a Java List returned over the bridge, in one round trip.
-
-    Same fact as _drain_java_iterable: bridge collections are not Python
-    iterables and len() does not work on them. Draining one just to count it
-    would stringify every element over the wire.
-    """
-    if java_list is None:
-        return 0
-    if isinstance(java_list, (list, tuple, set)):
-        return len(java_list)
-    return int(java_list.size())
-
-
-_DIRECTORY_BRIDGE_TIMEOUT_S = 30.0
+_OPEN_BRIDGE_TIMEOUT_S = 30.0
 
 
 class _BridgeCallStalled(RuntimeError):
-    """A directory-reader bridge interaction exceeded its watchdog."""
+    """An open-path bridge interaction exceeded its watchdog."""
 
 
 def _bridge_call(label: str, fn, timeout: float | None = None):
@@ -139,16 +124,21 @@ def _bridge_call(label: str, fn, timeout: float | None = None):
 
     This makes an otherwise invisible bridge wedge reportable. It cannot cancel
     the Java call: if Java remains stuck, pyjavaz's single lock remains held.
-    The pre-flight checks in `_open_dataset_in_mm` are what avoid known wedges.
 
     So a stall is terminal for the session, not a retryable error, and the
     message says so. Once the lock is held every later bridge call — including
     a core call — waits out its own watchdog and fails, which looks like
     microclaw answering while the microscope is unreachable. The operator needs
     to know to restart rather than keep asking.
+
+    Kept even though the Micro-Manager dataset reader that first wedged the
+    bridge is gone, because 42a finding 2 scoped its "IJ.open does not stall"
+    measurement to the formats it actually tried: a format whose importer raises
+    a modal dialog would still hold the lock, and `redirectErrorMessages` only
+    covers IJ1's own error path. This is what turns that into a report.
     """
     if timeout is None:
-        timeout = _DIRECTORY_BRIDGE_TIMEOUT_S
+        timeout = _OPEN_BRIDGE_TIMEOUT_S
     result: dict = {}
 
     def run() -> None:
@@ -337,24 +327,44 @@ class MicroscopeController:
     def open_in_imagej(self, path: str) -> dict:
         """Open a file or a saved dataset so the user can see it. Zero exposure.
 
-        Two entry points, chosen by what the path *is* — not by a table of file
-        types:
+        **One entry point: `ij.IJ.open` on a file.** A directory is resolved to
+        the TIFF files inside it and each is opened the same way, because an
+        NDTiff dataset *is* ordinary TIFF stack files plus an `NDTiff.index`
+        sidecar. ImageJ reads TIFF natively — no Bio-Formats, and nothing that
+        has to understand the dataset format.
 
-        * A **file** goes to `ij.IJ.open`, which is what ImageJ's own
-          drag-and-drop does for a file (`DragAndDrop.openFile` -> `ij.io.Opener`).
-          Not `IJ.runMacro`: no macro engine, and no backslash-escaping a Windows
-          path into a Java string inside a macro inside JSON.
-        * A **directory** goes to Micro-Manager's own dataset reader —
-          `Studio.data().loadData(path, virtual=True)`, `displays().manage()`,
-          `displays().loadDisplays()` — which is exactly what MM's own drop
-          target does (`org.micromanager.internal.utils.DragDropUtil`, installed
-          on `MainFrame`). `IJ.open` is deliberately **not** called on a
-          directory: block 42a measured it as a silent no-op that held the bridge
-          for 6.94 s. Nor is IJ1's drag path, whose `DragAndDrop.openDirectory`
-          opens with a modal GenericDialog that would hold the single pyjavaz
-          lock until a human answered it. `loadData`'s own modal (the
-          "Insufficient Memory Warning") sits inside an `if (!isVirtual)` block,
-          which is why virtual=True is not an optimisation but the safe call.
+        `IJ.open` is deliberately not called on the directory itself: 42a
+        measured that as a silent no-op that held the bridge for 6.94 s. IJ1's
+        own drag path is not called either — `DragAndDrop.openDirectory` opens a
+        modal GenericDialog that would hold the single pyjavaz lock until a human
+        answered it, and `FolderOpener.open` stalled the bridge for 120 s on two
+        separate gate runs.
+
+        Micro-Manager's dataset reader was the previous directory branch and is
+        **removed**, not merely unused. It cannot open what microclaw writes, for
+        two independent reasons measured on the rig (see
+        design/42-block42b-gate-findings.md):
+
+        * `NDTiffAdapter.hashMapToCoords` casts every axis value to `Integer`, so
+          a string-valued axis throws `ClassCastException` during `loadData`;
+        * `NDTiffAdapter` indexes coordinates with the **channel** axis stripped
+          (`"channel"` is the only string constant in the class), so a dataset
+          with no channel axis makes `getImagesIgnoringAxes` return an empty list
+          and `.get(0)` throw `IndexOutOfBoundsException` inside
+          `DisplayController.create`, under `loadDisplays`.
+
+        The second one hits every single-channel dataset microclaw writes, and
+        the crash landed part-way through display construction on the EDT, which
+        wedged the bridge for the rest of the session. Reading the TIFFs avoids
+        both because it never asks Micro-Manager to interpret the dataset.
+
+        **Known limitation, deliberately accepted:** a dataset whose planes span
+        several `*_NDTiffStack*.tif` files opens as several ImageJ windows, and
+        the axis structure (channel/z/time names) is not reconstructed — ImageJ
+        sees each file's planes as a plain stack. For the single-channel data
+        this is used on that is indistinguishable from the ideal. See
+        design/42-open-what-we-wrote.md §"Multi-channel datasets" for what a
+        proper multi-channel answer would take.
 
         The path resolves **Java-side**. Microclaw's bridge is localhost-only by
         construction — `Core(port=…)` and `Studio(port=…)` take no host — so
@@ -363,36 +373,66 @@ class MicroscopeController:
 
         Opens a NEW window and leaves it: microclaw never closes or re-uses the
         user's windows, and writes nothing to MM on any exit path. `IJ.open`
-        returns void and `loadDisplays` can return an empty list, so neither is
-        proof anything painted (design/18's lesson, even though its Preview
-        specifics do not apply) — both branches below check structurally and
-        report `opened: False` rather than claim a window the user cannot see.
+        returns void, so it is not proof anything painted (design/18's lesson,
+        even though its Preview specifics do not apply) — the window is confirmed
+        structurally against `WindowManager` and reports `opened: False` rather
+        than claim a window the user cannot see.
 
         Statics go through `_new_static_java_class` per call (design/12); 42a
         check 2 measured that as hygiene rather than a correctness rule.
 
-        ONE result shape, whichever entry point ran, so no caller has to know
-        which one did:
+        ONE result shape:
 
             {"opened": bool,
              "via":    str,                  # which mechanism, for the record
              "windows": [{"title", "width", "height", "n_planes"}],  # if opened
              "reason": str}                  # if not
 
-        `n_planes` is what the window is showing: ImageJ's stack size, or the
-        dataset's image count. An ImageJ window carries its `id` as well, which
-        an MM display has no equivalent of; nothing reads it, and no caller
-        needs it to understand the answer.
+        `n_planes` is ImageJ's stack size for the window.
         """
         try:
-            if Path(path).is_dir():
-                return self._open_dataset_in_mm(path)
             if not self.is_connected():
                 return {"opened": False, "reason": "No Micro-Manager bridge connection."}
+            if Path(path).is_dir():
+                return self._open_dataset_files_in_imagej(path)
             return self._open_file_in_imagej(path)
         except Exception as exc:
             return {"opened": False,
                     "reason": f"{type(exc).__name__}: {exc}"}
+
+    _DATASET_READER = "ij.IJ.open (dataset stack files)"
+
+    def _open_dataset_files_in_imagej(self, path: str) -> dict:
+        """Open the TIFFs inside a saved dataset directory, newest layout first.
+
+        Sorted so a split dataset opens in its own plane order rather than
+        whatever order the filesystem happens to return.
+        """
+        stacks = sorted(p for p in Path(path).iterdir()
+                        if p.is_file() and p.suffix.lower() in (".tif", ".tiff"))
+        if not stacks:
+            return {"opened": False, "via": self._DATASET_READER,
+                    "reason": (f"No TIFF files in {path}. If this is a folder of "
+                               "datasets rather than a dataset, open one of the "
+                               "datasets inside it.")}
+        windows: list[dict] = []
+        failures: list[str] = []
+        for stack in stacks:
+            result = self._open_file_in_imagej(str(stack))
+            if result.get("opened"):
+                windows.extend(result.get("windows") or [])
+            else:
+                failures.append(f"{stack.name}: {result.get('reason', 'unknown')}")
+        if not windows:
+            return {"opened": False, "via": self._DATASET_READER,
+                    "reason": "; ".join(failures) or "No window appeared."}
+        # Partial success is still success for the windows that appeared, and the
+        # ones that did not are named rather than dropped.
+        payload = {"opened": True, "via": self._DATASET_READER,
+                   "windows": windows, "n_stack_files": len(stacks)}
+        if failures:
+            payload["unopened"] = failures
+        return payload
 
     def _imagej_window_ids(self) -> set[int]:
         """The IDs of every open ImageJ image window, read once.
@@ -439,7 +479,10 @@ class MicroscopeController:
             except Exception:
                 pass
         before = self._imagej_window_ids()
-        _new_static_java_class(self._port, "ij.IJ").open(path)
+        _bridge_call(
+            f"IJ.open({Path(path).name})",
+            lambda: _new_static_java_class(self._port, "ij.IJ").open(path),
+        )
         new_ids = self._imagej_window_ids() - before
         if not new_ids:
             return {
@@ -453,193 +496,6 @@ class MicroscopeController:
             }
         return {"opened": True, "via": "ij.IJ.open",
                 "windows": self._describe_imagej_windows(new_ids)}
-
-    _MM_READER = "micro-manager dataset reader"
-
-    def _open_dataset_in_mm(self, path: str) -> dict:
-        """MM's own reader for MM's own formats, exactly as its drop target does.
-
-        loadData dispatches internally on NDTiffAdapter.isNDTiffDataSet /
-        MultipageTiffReader.isMMMultipageTiff — microclaw does not sniff the
-        directory itself, and there is no file-type table here to grow one.
-
-        Every bridge interaction is watchdogged. A timeout reports which call
-        stalled, but cannot interrupt Java or release pyjavaz's lock; rejecting
-        incompatible axes and already-open stores before loadData is the fix.
-        """
-        axes = Dataset(path).axes
-        for axis, values in axes.items():
-            for value in values:
-                if type(value) is not int:
-                    return {
-                        "opened": False,
-                        "via": self._MM_READER,
-                        "reason": (
-                            "Micro-Manager's NDTiff reader accepts integer axis "
-                            f"values only; axis `{axis}` has value {value!r}. "
-                            "Export or mosaic the frames you want instead."
-                        ),
-                    }
-
-        if not _bridge_call("connection check", self.is_connected):
-            return {"opened": False, "via": self._MM_READER,
-                    "reason": "No Micro-Manager bridge connection."}
-        displays = _bridge_call("studio.displays", self._studio.displays)
-        if self._mm_dataset_is_open(displays, path):
-            return {
-                "opened": False,
-                "already_open": True,
-                "via": self._MM_READER,
-                "reason": (
-                    "This dataset is already open in Micro-Manager; it is on "
-                    "your screen now."
-                ),
-            }
-
-        def image_window_count() -> int | None:
-            try:
-                windows = _bridge_call(
-                    "displays.getAllImageWindows", displays.get_all_image_windows
-                )
-                return _bridge_call(
-                    "displays.getAllImageWindows.size",
-                    lambda: _java_list_size(windows),
-                )
-            except _BridgeCallStalled:
-                raise
-            except Exception:
-                return None
-
-        windows_before = image_window_count()
-        data = _bridge_call("studio.data", self._studio.data)
-        store = _bridge_call("loadData", lambda: data.load_data(path, True))
-        if store is None:
-            return {"opened": False, "via": self._MM_READER,
-                    "reason": f"Micro-Manager could not read {path} as a dataset."}
-        _bridge_call("manage", lambda: displays.manage(store))
-        created = _bridge_call("loadDisplays", lambda: displays.load_displays(store))
-        n_created = _bridge_call("loadDisplays result.size",
-                                 lambda: _java_list_size(created))
-        windows_after = image_window_count()
-        if not n_created and (
-            windows_before is None or windows_after is None
-            or windows_after <= windows_before
-        ):
-            return {"opened": False, "via": self._MM_READER,
-                    "reason": ("Micro-Manager read the dataset but opened no "
-                               "display window for it.")}
-        # A display exists from here on. Describing it must not be able to
-        # UNDO that: these accessors are the least-proven calls in this path,
-        # and a naming difference turning a window that opened into "nothing
-        # opened" would be the same lie as claiming one that did not, pointed
-        # the other way. Report the window, and report what could not be read.
-        return {"opened": True, "via": self._MM_READER,
-                "windows": self._describe_mm_displays(store, created, n_created, path)}
-
-    def _mm_dataset_is_open(self, displays, path: str) -> bool:
-        """Best-effort save-path check across both MM display collections.
-
-        Covers windows Micro-Manager itself owns — anything opened through its
-        File menu or its drop target. It does **not** cover the viewer a
-        pycro-manager acquisition opens with `show_display=True`:
-        `org.micromanager.ndviewer.main.NDViewer` implements only
-        `NDViewerAPI`, not `DisplayWindow` and not `DataViewer`, so it appears
-        in neither `getAllImageWindows()` nor `getAllDataViewers()` (read from
-        NDViewer-0.10.2.jar with javap). A dataset microclaw's own acquisition
-        is still showing therefore reads as not-open here, and the watchdog,
-        not this check, is what keeps that case reportable.
-        """
-        wanted = Path(path).resolve()
-        for collection_name, getter_names in (
-            ("getAllImageWindows", ("get_all_image_windows", "getAllImageWindows")),
-            ("getAllDataViewers", ("get_all_data_viewers", "getAllDataViewers")),
-        ):
-            try:
-                getter = next(getattr(displays, name) for name in getter_names
-                              if callable(getattr(displays, name, None)))
-                items = _bridge_call(f"displays.{collection_name}", getter)
-                count = _bridge_call(f"displays.{collection_name}.size",
-                                     lambda items=items: _java_list_size(items))
-                for index in range(count):
-                    viewer = _bridge_call(
-                        f"displays.{collection_name}.get", lambda i=index: items.get(i)
-                    )
-                    provider = viewer
-                    for name in ("get_data_provider", "getDataProvider"):
-                        method = getattr(viewer, name, None)
-                        if callable(method):
-                            provider = _bridge_call(
-                                f"displays.{collection_name}.{name}", method
-                            )
-                            break
-                    for name in ("get_save_path", "getSavePath"):
-                        method = getattr(provider, name, None)
-                        if callable(method):
-                            saved = _bridge_call(
-                                f"displays.{collection_name}.{name}", method
-                            )
-                            if saved and Path(str(saved)).resolve() == wanted:
-                                return True
-                            break
-            except _BridgeCallStalled:
-                raise
-            except Exception:
-                # Builds differ in which collection and accessors are exposed.
-                continue
-        return False
-
-    def _describe_mm_displays(self, store, created, n_created: int,
-                              path: str) -> list[dict]:
-        described: dict = {}
-        for key, label, read in (
-            ("n_planes", "store.getNumImages", lambda: int(store.get_num_images())),
-            ("title", "store.getSavePath", lambda: str(store.get_save_path()) or path),
-        ):
-            try:
-                described[key] = _bridge_call(
-                    f"_describe_mm_displays {label}", read
-                )
-            except _BridgeCallStalled:
-                raise
-            except Exception as exc:
-                described[key] = None
-                described.setdefault("unread", []).append(
-                    f"{key}: {type(exc).__name__}: {exc}")
-        try:
-            image = _bridge_call(
-                "_describe_mm_displays store.getAnyImage", store.get_any_image
-            )
-            if image is not None:
-                described["width"] = int(_bridge_call(
-                    "_describe_mm_displays image.getWidth", image.get_width
-                ))
-                described["height"] = int(_bridge_call(
-                    "_describe_mm_displays image.getHeight", image.get_height
-                ))
-        except _BridgeCallStalled:
-            raise
-        except Exception as exc:
-            described.setdefault("unread", []).append(
-                f"dimensions: {type(exc).__name__}: {exc}")
-        # One entry per display actually created, so `windows` means the same
-        # thing here as it does for ImageJ. Dimensions come from the datastore:
-        # every display of one dataset shows the same frame size.
-        windows = []
-        for index in range(n_created):
-            window = dict(described)
-            try:
-                display = _bridge_call(
-                    "_describe_mm_displays created.get", lambda: created.get(index)
-                )
-                window["title"] = str(_bridge_call(
-                    "_describe_mm_displays display.getName", display.get_name
-                )) or window["title"]
-            except _BridgeCallStalled:
-                raise
-            except Exception:
-                pass          # the datastore's save path already answered this
-            windows.append(window)
-        return windows or [described]
 
     def _probe_imagej_dir(self) -> str | None:
         """ij.IJ.getDirectory("imagej") — MM's ImageJ install root."""

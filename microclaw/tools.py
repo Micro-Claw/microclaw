@@ -4731,7 +4731,7 @@ def open_artifact(
     if not analyze or resolved.is_dir():
         if analyze and resolved.is_dir():
             payload["analysis_refused"] = (
-                "A dataset directory is open in Micro-Manager's viewer, but "
+                "The dataset's stack files are open in ImageJ, but "
                 "reading its pixels here needs one plane named: export or "
                 "mosaic the frames you want, then analyze that file."
             )

@@ -394,6 +394,68 @@ opens; a file with no sidecar opens with provenance stated as unverified;
 `open_in_imagej` with no bridge returns `opened: false` rather than raising; and
 `image_content` is the only place the text+image pair is built.
 
+## The directory case: open the TIFFs, not the dataset
+
+**Decision, after two rig rounds:** a directory is resolved to the TIFF stack
+files inside it, and each goes to the same `IJ.open` a file does. Micro-Manager's
+dataset reader is not used.
+
+An NDTiff dataset is ordinary TIFF stack files plus an `NDTiff.index` sidecar, so
+ImageJ reads them natively — `tifffile` confirms a `pos_*_NDTiffStack.tif` off the
+demo rig is a plain 512x512 uint16 TIFF. This is also what the operator already
+does by hand, which is the strongest argument for it.
+
+The route tried first — `loadData` + `manage` + `loadDisplays`, imitating
+`DragDropUtil` — is a dead end for **our own data**, for two independent reasons
+measured on the rig and recorded in `42-block42b-gate-findings.md`:
+
+- **F1**, at load: `NDTiffAdapter.hashMapToCoords` casts every axis value to
+  `Integer`, so a string-valued axis throws `ClassCastException`.
+- **F4**, at display: `NDTiffAdapter` indexes coordinates with the **channel**
+  axis stripped, so a dataset with no channel axis makes `getImagesIgnoringAxes`
+  return an empty list and `.get(0)` throw inside `DisplayController.create`.
+  Every single-channel dataset microclaw writes hits this, and the crash wedged
+  the bridge for the rest of the session.
+
+Reading the TIFFs avoids both, because it never asks Micro-Manager to interpret
+the dataset.
+
+### Multi-channel datasets — known limitation, deliberately tabled
+
+Opening the stack files gives ImageJ windows of planes. It does **not**
+reconstruct the axis structure: channel/z/time names, per-channel LUTs and
+contrast, and the composite view all come from the dataset index, which ImageJ
+never reads. Concretely:
+
+- a dataset split across several `*_NDTiffStack*.tif` files opens as **several
+  windows** rather than one;
+- a multi-channel dataset's channels are **planes in a stack**, not named
+  channels, so they are not separable by name or shown as a composite.
+
+For single-channel data — what this is used on — the result is indistinguishable
+from the ideal, so **this is good enough and is not being solved**. Revisit only
+if a user explicitly asks for multi-channel display.
+
+**If it is ever picked up**, the routes worth costing, best first:
+
+1. **Build the hyperstack Python-side.** `ndstorage` already reads the index and
+   every plane correctly (it is what `_measured_shape` uses), so the axis map is
+   in hand without Micro-Manager. Write one properly-dimensioned OME-TIFF beside
+   the dataset with `tifffile.imwrite(..., metadata={"axes": ...})` and open that
+   through the existing file path. Costs a derived file; needs no new bridge
+   surface and no Java.
+2. **`NDViewer`.** It already displays exactly these datasets during acquisition
+   (`show_display=True`), so it demonstrably handles the format MM's own viewer
+   cannot. It needs an `NDViewerDataSource` built over the bridge, and
+   `org.micromanager.ndviewer.main.NDViewer` implements only `NDViewerAPI` — not
+   `DisplayWindow`, not `DataViewer` — so nothing in MM's display manager can be
+   reused to construct or find one.
+3. **Fix `NDTiffAdapter` upstream.** The channel assumption is a real MM bug and
+   worth reporting regardless. Not a path microclaw can depend on.
+
+Do **not** revisit "make acquisitions always write a channel axis": that contorts
+how data is written to suit a viewer, and would need its own acquisition re-gate.
+
 ## Out of scope
 
 Registration or stitching (still absent, still refused by name). Pushing pixels

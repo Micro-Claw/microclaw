@@ -37,7 +37,7 @@ settled on M5 already: the artifact's digests still recompute exactly.
 ## Pin the implementation
 
 ```powershell
-git merge-base --is-ancestor 229423d HEAD
+git merge-base --is-ancestor PLACEHOLDER HEAD
 if ($LASTEXITCODE -eq 0) { "PINNED OK" } else { "WRONG TREE - stop" }
 ```
 
@@ -80,67 +80,20 @@ shows the check is file arithmetic and carries nothing machine-specific.
 
 ---
 
-## G0 — the directory mechanism
+## G0 — RETIRED, do not run
 
-**Run this first — and only once. Do not re-run it after a code change.**
+G0 measured entry points microclaw no longer uses. Its two answers stand and are
+the reason the design changed:
 
-G0 is the spike, not microclaw. `42-ij-dir-spike.py` imports exactly two things
-from the package (`microclaw` for the path banner, `_new_static_java_class` for
-static-class hygiene) and never calls `open_in_imagej` or `_open_dataset_in_mm`.
-It calls MM's reader and IJ1's `FolderOpener` **raw**, on purpose, to measure what
-they do. **No change to microclaw can move its output**, and the 2026-08-09
-re-run confirmed that: it was byte-identical to the first, modulo a BOM and
-sub-second timings.
-
-Its answers are already in, and they are inputs to the design rather than a
-verdict on the code:
-
-- **D2 ERROR** — MM's `NDTiffAdapter` casts every axis value to `Integer`, so a
-  dataset with a string-valued axis cannot be read by MM at all. Per this
-  document's own legend, `D2 FAIL -> 42b must refuse directories by name`. That
-  refusal is implemented; verify it with the standalone check below, not by
-  re-running G0.
+- **D2 ERROR** — MM's `NDTiffAdapter` cannot read a dataset with a string-valued
+  axis (`ClassCastException`).
 - **D3 FAIL** — `FolderOpener.open` on a directory stalled the bridge for 120 s,
-  twice, no dialog reported. Microclaw does not call it. This is why.
+  on two separate runs, with no dialog on screen.
 
-**The check that does exercise the refusal** needs no Micro-Manager and no gate
-session — the axis pre-flight is pure Python and runs before any bridge call:
-
-```powershell
-uv run python -c "from microclaw.controller import MicroscopeController as C; from ndstorage import Dataset; p=r'D:\stitch_test\stitch_test_1'; print('AXES:', Dataset(p).axes); print('RESULT:', C._open_dataset_in_mm(C.__new__(C), p))"
-```
-
-Expect `AXES` to show which axis holds strings, and `RESULT` to be a refusal
-naming that axis and value. If `RESULT` instead says *No Micro-Manager bridge
-connection*, the axes were all integers and F1 is not what blocks this dataset —
-report that, because it would mean the D2 ClassCastException has another cause.
-
-The original framing follows, for the record: the directory branch was designed
-from a jar disassembly, which proves those methods exist and proves nothing about
-whether pyjavaz can reach them or whether a window paints.
-
-```powershell
-python design\42-ij-dir-spike.py --dir "C:\path\to\stitch_test_1" 2>&1 | Out-File -Encoding utf8 out42b-G0.txt
-Get-Content out42b-G0.txt
-```
-
-- **D2 PASS is the gate.** It means MM's own reader opened MM's own format,
-  virtual, with dimensions agreeing with what `ndstorage` reads Python-side, and
-  the bridge free straight after.
-- **D2 FAIL, or `load_data` raising or returning null**, is a real outcome and
-  not a disaster: `open_artifact` then reports `opened: false` with the reason
-  and does not claim a window. Send the output; the directory branch becomes a
-  named refusal instead.
-- **D4 is skipped unless you pass `--try-drag`.** Doing it once is worth it and
-  is the only way to reproduce what you saw when you dragged the folder by hand:
-  it will put up ImageJ's "Open all N images … as a stack?" dialog and hold the
-  bridge until you answer. Say which button you pressed.
-
-**Say what you see on screen**, not only what the file says. `WindowManager`
-agreeing is a structural check; your eyes are the only check on whether anything
-painted. Close the windows it leaves open by hand.
-
----
+Micro-Manager's dataset reader and IJ1's directory path are both **gone** from
+`open_in_imagej`. A directory is now resolved to the TIFF stack files inside it
+and each is opened with `IJ.open`, which is the path G1/G2 already passed. There
+is nothing left in G0 that scores the shipped code.
 
 ## G1 — open the mosaic and show it to me
 
@@ -210,60 +163,51 @@ must be reported rather than waved through.
 
 ## G4 — open a dataset directory
 
-Only meaningful if G0's D2 passed. Two cases, and the first is the better one.
+A directory is resolved to the TIFF stack files inside it, each opened with
+`IJ.open` — the same path G1 just proved. There is no Micro-Manager dataset
+reader involved, so an **ImageJ** window is the correct outcome here, not an MM
+display window.
 
-**G4a — the dataset microclaw just wrote here.** This is the real loop the block
-exists for: microclaw wrote it, now open it, on this machine, with no copying
-involved.
+**G4a — the dataset microclaw just wrote in G3.** This is the real loop the block
+exists for: microclaw wrote it, now open it, on this machine, no copying.
 
 > Open the dataset from that run.
 
-- [ ] Microclaw calls `open_artifact` on the **NDTiff directory**.
-- [ ] A **Micro-Manager display window** appears with the dataset in it — not an
-      ImageJ image-sequence window, and not nothing.
-- [ ] The result's `via` reads `micro-manager dataset reader`.
+- [ ] Microclaw calls `open_artifact` on the **dataset directory**.
+- [ ] One **ImageJ window per stack file** appears, showing the frames.
+- [ ] The result's `via` reads `ij.IJ.open (dataset stack files)`, and
+      `n_stack_files` matches the number of `*_NDTiffStack*.tif` files in the
+      directory.
 - [ ] It reports `provenance … unverified` (an NDTiff dataset has no microclaw
       manifest beside it) and opens anyway.
 - [ ] Ask it to analyze the dataset. It **refuses and says why**, pointing at
       export or mosaic — it does not render a plane it picked itself.
 
-**G4b — the copied M5 dataset.** Same request against `stitch_test_1`. This one
-also proves the path is not sensitive to which machine wrote the data.
+**G4b — the copied M5 dataset.** Same request against `stitch_test_1`. This is
+the one that used to be impossible: MM's reader threw `ClassCastException` on its
+string-valued axis and could never open it. Reading its TIFFs does not care.
 
-- [ ] Same five outcomes as G4a.
+- [ ] Same outcomes as G4a. A window appears.
 
-**The thing that must not happen anywhere in G4:** a seven-second pause with no
-window and no error. That is `IJ.open` on a directory, and nothing in this branch
-should be able to reach it. If you see it, say so immediately — it means the
-directory branch was not taken.
+**G4c — a directory that is not a dataset.** Point it at any folder with no
+TIFFs in it.
 
-### G4a is a diagnostic this round — read this before you run it
+- [ ] Refuses with `No TIFF files in …`, immediately, and opens nothing.
 
-The 2026-08-09 demo run wedged here for five minutes. That is now bounded: every
-directory-branch bridge call carries a 30 s labelled watchdog, so instead of
-hanging you will get a refusal naming the call that stalled.
+**What must not happen anywhere in G4:**
 
-**A stall is an expected outcome this round, not a surprise.** The already-open
-guard added this round cannot see the viewer a pycro-manager acquisition opens
-(`NDViewer` implements neither `DisplayWindow` nor `DataViewer`), so if the wedge
-really is a second reader colliding with the acquisition's own viewer, G4a will
-still stall — and will now say which call did it.
+- A stall. Every bridge call carries a 30 s labelled watchdog; if one fires, copy
+  the whole `reason` verbatim — it names the call — and **restart microclaw
+  before continuing**, because pyjavaz's lock is still held and anything tested
+  after that point measures nothing.
+- `IJ.open` being handed the **directory itself**. 42a measured that as a silent
+  no-op holding the bridge for 6.94 s. If a directory open produces no window and
+  a ~7 s pause, say so.
 
-- [ ] **Copy the whole `reason` string verbatim.** The call label in it
-      (`loadData` / `manage` / `loadDisplays` / a `_describe_mm_displays`
-      accessor) is the entire point of this run and settles F2.
-- [ ] After any stall, **restart microclaw before continuing.** The reason says
-      this too. pyjavaz's lock is still held by the wedged call, so every later
-      bridge call will burn its own 30 s and fail; anything you test after that
-      point measures nothing.
-- [ ] Then run **G4b** (`stitch_test_1`) in the fresh session. It should refuse
-      *immediately* and name a non-integer axis — no 30 s wait, no bridge call at
-      all. A 30 s stall there instead means the axis pre-flight did not run.
-
-If G4a opens a window cleanly, say so plainly — it means the wedge was
-environmental and F2's leading hypothesis is wrong, which is worth knowing.
-
----
+**Expected and fine, not a defect:** a dataset split across several stack files
+opens as several windows, and channels appear as planes rather than named
+channels. That limitation is recorded in design/42 §"Multi-channel datasets" and
+is deliberately not being solved.
 
 ## What to send back
 

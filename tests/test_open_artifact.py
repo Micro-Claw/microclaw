@@ -207,18 +207,18 @@ def test_out_of_range_selection_refuses(opening_ctrl, default_guard, no_thumbnai
 
 # --- Directories ------------------------------------------------------------ #
 
-def test_directory_goes_to_the_micro_manager_reader_not_ij_open(
+def test_directory_via_reaches_the_tool_payload(
     default_guard, tmp_path, no_thumbnails
 ):
     dataset = tmp_path / "acq_1"
     dataset.mkdir()
     ctrl = MagicMock(spec=MicroscopeController)
     ctrl.open_in_imagej.return_value = {
-        "opened": True, "via": "micro-manager dataset reader",
+        "opened": True, "via": "ij.IJ.open (dataset stack files)",
         "windows": [{"title": "acq_1", "width": 512, "height": 512, "n_planes": 6}],
     }
     result = open_artifact(ctrl, default_guard, str(dataset))
-    assert result["via"] == "micro-manager dataset reader"
+    assert result["via"] == "ij.IJ.open (dataset stack files)"
 
 
 def test_analyze_on_a_directory_refuses_rather_than_rendering(
@@ -228,7 +228,7 @@ def test_analyze_on_a_directory_refuses_rather_than_rendering(
     dataset.mkdir()
     ctrl = MagicMock(spec=MicroscopeController)
     ctrl.open_in_imagej.return_value = {
-        "opened": True, "via": "micro-manager dataset reader",
+        "opened": True, "via": "ij.IJ.open (dataset stack files)",
         "windows": [{"title": "acq_1", "width": 512, "height": 512, "n_planes": 6}],
     }
     result = open_artifact(ctrl, default_guard, str(dataset), analyze=True)
@@ -274,14 +274,6 @@ def _bare_controller():
     return ctrl
 
 
-def _java_list(items):
-    """A Java List over the bridge: size()/get(i), and NOT Python-iterable."""
-    java = MagicMock()
-    java.size.return_value = len(items)
-    java.get.side_effect = lambda index: items[index]
-    return java
-
-
 def _open_file(monkeypatch, path, *, window_ids=([-7], [-7, -8])):
     """Run the real file branch. Returns (result, the ij static shadow)."""
     image = MagicMock()
@@ -299,149 +291,48 @@ def _open_file(monkeypatch, path, *, window_ids=([-7], [-7, -8])):
     return MicroscopeController.open_in_imagej(_bare_controller(), str(path)), shadow
 
 
-def _dataset_store(save_path, *, n_images=6, width=512, height=512):
+def _open_dataset_dir(monkeypatch, directory, *, window_ids=None, n_files=1):
+    """Run the real directory branch against a directory of TIFF stack files.
+
+    An NDTiff dataset is ordinary TIFF files plus an NDTiff.index sidecar, so the
+    directory branch resolves those files and hands each to the same IJ.open the
+    file branch uses. Returns (result, the ij static shadow).
+    """
+    if window_ids is None:
+        # One extra window id per file, so each open looks like it produced one.
+        window_ids = []
+        for i in range(n_files):
+            window_ids.append(list(range(-7, -7 - i, -1)) or [])
+            window_ids.append(list(range(-7, -7 - i - 1, -1)))
+
     image = MagicMock()
-    image.get_width.return_value = width
-    image.get_height.return_value = height
-    store = MagicMock()
-    store.get_num_images.return_value = n_images
-    store.get_save_path.return_value = str(save_path)
-    store.get_any_image.return_value = image
-    return store
+    image.get_title.return_value = "stack.tif"
+    image.get_width.return_value = 16
+    image.get_height.return_value = 12
+    image.get_stack_size.return_value = 1
 
-
-def _open_dataset(monkeypatch, path, *, store=_UNSET, created=_UNSET,
-                  open_windows=(), open_viewers=()):
-    """Run the real directory branch.
-
-    Returns (result, studio, displays, static_wraps). static_wraps records every
-    ImageJ static this path wrapped — it must stay empty.
-    """
-    static_wraps = []
-    dataset = MagicMock()
-    dataset.axes = {"time": [0]}
-    monkeypatch.setattr("microclaw.controller.Dataset", lambda unused: dataset)
+    shadow = MagicMock()
+    shadow.get_id_list.side_effect = list(window_ids)
+    shadow.get_image.return_value = image
     monkeypatch.setattr(
-        "microclaw.controller._new_static_java_class",
-        lambda port, cp: static_wraps.append(cp),
+        "microclaw.controller._new_static_java_class", lambda port, cp: shadow
     )
-    if store is _UNSET:
-        store = _dataset_store(path)
-    if created is _UNSET:
-        display = MagicMock()
-        display.get_name.return_value = Path(path).name
-        created = _java_list([display])
-
-    displays = MagicMock()
-    displays.get_all_image_windows.return_value = _java_list(list(open_windows))
-    displays.get_all_data_viewers.return_value = _java_list(list(open_viewers))
-    displays.load_displays.return_value = created
-    studio = MagicMock()
-    studio.displays.return_value = displays
-    studio.data.return_value.load_data.return_value = store
-
-    ctrl = _bare_controller()
-    ctrl._studio = studio
-    result = MicroscopeController.open_in_imagej(ctrl, str(path))
-    return result, studio, displays, static_wraps
-
-
-def test_non_integer_dataset_axis_refuses_without_touching_bridge(
-    monkeypatch, tmp_path
-):
-    dataset_path = tmp_path / "acq_1"
-    dataset_path.mkdir()
-    dataset = MagicMock()
-    dataset.axes = {"time": [0], "channel": ["640"]}
-    monkeypatch.setattr("microclaw.controller.Dataset", lambda unused: dataset)
-    ctrl = _bare_controller()
-    ctrl.is_connected = MagicMock(side_effect=AssertionError("bridge was touched"))
-    ctrl._studio = MagicMock()
-
-    result = MicroscopeController.open_in_imagej(ctrl, str(dataset_path))
-
-    assert result["opened"] is False
-    assert "axis `channel` has value '640'" in result["reason"]
-    ctrl.is_connected.assert_not_called()
-    ctrl._studio.displays.assert_not_called()
-
-
-@pytest.mark.parametrize("collection", ["open_windows", "open_viewers"])
-def test_already_open_dataset_reports_it_without_load_data(
-    monkeypatch, tmp_path, collection
-):
-    dataset_path = tmp_path / "acq_1"
-    dataset_path.mkdir()
-    provider = MagicMock()
-    provider.get_save_path.return_value = str(dataset_path.resolve())
-    viewer = MagicMock()
-    viewer.get_data_provider.return_value = provider
-
-    result, studio, _, _ = _open_dataset(
-        monkeypatch, dataset_path, **{collection: (viewer,)}
+    result = MicroscopeController.open_in_imagej(
+        _bare_controller(), str(directory)
     )
-
-    assert result == {
-        "opened": False,
-        "already_open": True,
-        "via": "micro-manager dataset reader",
-        "reason": (
-            "This dataset is already open in Micro-Manager; it is on your "
-            "screen now."
-        ),
-    }
-    studio.data.return_value.load_data.assert_not_called()
+    return result, shadow
 
 
-def test_stalling_load_data_returns_a_labelled_failure(monkeypatch, tmp_path):
-    """A wedged bridge call is reported, and the reason names the call.
-
-    The test bounds its own wait. Asserting only on the returned payload makes
-    the watchdog itself untestable: with the watchdog removed this call blocks
-    forever, so the test would hang the suite rather than fail it, and a check
-    that can only hang cannot report a verdict.
-    """
-    dataset_path = tmp_path / "acq_1"
-    dataset_path.mkdir()
-    monkeypatch.setattr("microclaw.controller._DIRECTORY_BRIDGE_TIMEOUT_S", 0.01)
-    blocker = threading.Event()
-
-    dataset = MagicMock()
-    dataset.axes = {"time": [0]}
-    monkeypatch.setattr("microclaw.controller.Dataset", lambda unused: dataset)
-    displays = MagicMock()
-    displays.get_all_image_windows.return_value = _java_list([])
-    displays.get_all_data_viewers.return_value = _java_list([])
-    studio = MagicMock()
-    studio.displays.return_value = displays
-    studio.data.return_value.load_data.side_effect = lambda *unused: blocker.wait()
-    ctrl = _bare_controller()
-    ctrl._studio = studio
-
-    returned: dict = {}
-
-    def call() -> None:
-        returned["value"] = MicroscopeController.open_in_imagej(
-            ctrl, str(dataset_path)
-        )
-
-    try:
-        caller = threading.Thread(target=call, daemon=True)
-        caller.start()
-        caller.join(30)
-        assert not caller.is_alive(), (
-            "open_in_imagej never returned: the directory branch blocked on a "
-            "stalled bridge call instead of watchdogging it."
-        )
-    finally:
-        # Release the stubbed call so its thread exits with the test rather than
-        # living until the interpreter does.
-        blocker.set()
-
-    result = returned["value"]
-    assert result["opened"] is False
-    assert "loadData stalled" in result["reason"]
-    assert "restart" in result["reason"].lower()
+def _dataset_dir(tmp_path, name="acq_1", *, n_files=1, extras=("NDTiff.index",)):
+    """A directory shaped like a saved NDTiff dataset."""
+    directory = tmp_path / name
+    directory.mkdir()
+    for i in range(n_files):
+        suffix = "" if i == 0 else f"_{i}"
+        (directory / f"{name}_NDTiffStack{suffix}.tif").write_bytes(b"II*\x00")
+    for extra in extras:
+        (directory / extra).write_bytes(b"x")
+    return directory
 
 
 def test_open_in_imagej_never_claims_a_window_that_did_not_appear(monkeypatch):
@@ -473,99 +364,132 @@ def test_open_in_imagej_arms_redirect_error_messages(monkeypatch):
     shadow.redirect_error_messages.assert_called_once_with()
 
 
-def test_directory_uses_the_mm_reader_and_never_ij_open(monkeypatch, tmp_path):
-    """The one thing 42b must not do is call IJ.open on a directory."""
-    dataset = tmp_path / "acq_1"
-    dataset.mkdir()
-    result, studio, _, static_wraps = _open_dataset(monkeypatch, dataset)
+def test_directory_opens_the_tiffs_inside_it(monkeypatch, tmp_path):
+    """An NDTiff dataset is TIFF files; ImageJ reads TIFF natively.
+
+    Micro-Manager's dataset reader is not used and is not present: it cannot
+    open what microclaw writes (design/42-block42b-gate-findings.md F1 and F4).
+    """
+    directory = _dataset_dir(tmp_path)
+    result, shadow = _open_dataset_dir(monkeypatch, directory)
 
     assert result["opened"] is True
-    assert result["via"] == "micro-manager dataset reader"
-    assert result["windows"] == [
-        {"n_planes": 6, "title": "acq_1", "width": 512, "height": 512}
-    ]
-    assert static_wraps == [], "no ImageJ static was wrapped for a directory"
-    # virtual=True: loadData's only modal sits inside `if (!isVirtual)`, and a
-    # modal here holds the single pyjavaz lock until a human answers it.
-    studio.data.return_value.load_data.assert_called_once_with(str(dataset), True)
+    assert result["via"] == "ij.IJ.open (dataset stack files)"
+    assert result["n_stack_files"] == 1
+    assert len(result["windows"]) == 1
+    opened = [c.args[0] for c in shadow.open.call_args_list]
+    assert opened == [str(directory / "acq_1_NDTiffStack.tif")], (
+        "the directory itself must never be handed to IJ.open: 42a measured "
+        "that as a silent no-op that held the bridge for 6.94 s"
+    )
 
 
-def test_a_display_that_cannot_be_described_is_still_reported_as_open(
+def test_split_dataset_opens_every_stack_file(monkeypatch, tmp_path):
+    """A dataset split across files opens as several windows, by design."""
+    directory = _dataset_dir(tmp_path, n_files=3)
+    result, shadow = _open_dataset_dir(monkeypatch, directory, n_files=3)
+
+    assert result["opened"] is True
+    assert result["n_stack_files"] == 3
+    opened = [Path(c.args[0]).name for c in shadow.open.call_args_list]
+    assert opened == sorted(opened), "stack files open in their own plane order"
+    assert len(opened) == 3
+
+
+def test_directory_with_no_tiffs_refuses_and_says_so(monkeypatch, tmp_path):
+    directory = _dataset_dir(tmp_path, n_files=0)
+    result, shadow = _open_dataset_dir(monkeypatch, directory)
+
+    assert result["opened"] is False
+    assert "No TIFF files" in result["reason"]
+    shadow.open.assert_not_called()
+
+
+def test_a_stack_file_that_fails_does_not_hide_the_ones_that_opened(
     monkeypatch, tmp_path
 ):
-    """Failing to describe a window must not invert into 'nothing opened'."""
-    dataset = tmp_path / "acq_1"
-    dataset.mkdir()
-    store = MagicMock()
-    store.get_num_images.side_effect = AttributeError("no getNumImages")
-    store.get_save_path.side_effect = AttributeError("no getSavePath")
-    store.get_any_image.side_effect = AttributeError("no getAnyImage")
-    created = MagicMock()
-    created.size.return_value = 1
-    created.get.side_effect = AttributeError("no get on this shadow")
-
-    result, _, _, _ = _open_dataset(monkeypatch, dataset, store=store, created=created)
-    assert result["opened"] is True, (
-        "a display was created; failing to read its name does not un-create it"
-    )
-    assert len(result["windows"][0]["unread"]) == 3, (
-        "and what could not be read must be said, not silently dropped"
+    """Partial success is success for the windows that appeared, and names the rest."""
+    directory = _dataset_dir(tmp_path, n_files=2)
+    # First open produces a window, second produces none.
+    result, _ = _open_dataset_dir(
+        monkeypatch, directory, window_ids=([-7], [-7, -8], [-7, -8], [-7, -8])
     )
 
+    assert result["opened"] is True
+    assert len(result["windows"]) == 1
+    assert len(result["unopened"]) == 1
+    assert "NDTiffStack_1.tif" in result["unopened"][0]
 
-def test_directory_with_no_display_created_reports_failure(monkeypatch, tmp_path):
-    dataset = tmp_path / "acq_1"
-    dataset.mkdir()
-    result, _, _, _ = _open_dataset(monkeypatch, dataset, created=_java_list([]))
+
+def test_stalling_ij_open_returns_a_labelled_failure(monkeypatch, tmp_path):
+    """A wedged bridge call is reported, and the reason names the call.
+
+    The test bounds its own wait. Asserting only on the returned payload makes
+    the watchdog itself untestable: with the watchdog removed this call blocks
+    forever, so the test would hang the suite rather than fail it, and a check
+    that can only hang cannot report a verdict.
+    """
+    monkeypatch.setattr("microclaw.controller._OPEN_BRIDGE_TIMEOUT_S", 0.01)
+    blocker = threading.Event()
+
+    shadow = MagicMock()
+    shadow.get_id_list.return_value = [-7]
+    shadow.open.side_effect = lambda *unused: blocker.wait()
+    monkeypatch.setattr(
+        "microclaw.controller._new_static_java_class", lambda port, cp: shadow
+    )
+    ctrl = _bare_controller()
+    returned: dict = {}
+
+    def call() -> None:
+        returned["value"] = MicroscopeController.open_in_imagej(
+            ctrl, str(FIXTURES / "mosaic.tiff")
+        )
+
+    try:
+        caller = threading.Thread(target=call, daemon=True)
+        caller.start()
+        caller.join(30)
+        assert not caller.is_alive(), (
+            "open_in_imagej never returned: it blocked on a stalled bridge call "
+            "instead of watchdogging it."
+        )
+    finally:
+        blocker.set()
+
+    result = returned["value"]
     assert result["opened"] is False
-    assert "opened no display window" in result["reason"]
+    assert "IJ.open(mosaic.tiff) stalled" in result["reason"]
+    assert "restart" in result["reason"].lower()
 
 
-def test_directory_that_mm_cannot_read_refuses(monkeypatch, tmp_path):
-    dataset = tmp_path / "not_a_dataset"
-    dataset.mkdir()
-    result, _, displays, _ = _open_dataset(monkeypatch, dataset, store=None)
-    assert result["opened"] is False
-    assert "could not read" in result["reason"]
-    displays.load_displays.assert_not_called()
-
-
-def test_both_branches_answer_with_one_shape(monkeypatch, tmp_path):
+def test_both_paths_answer_with_one_shape(monkeypatch, tmp_path):
     """A caller must not have to branch on `via` to understand the answer.
 
-    Both results are produced by the real open_in_imagej, so this fails if the
-    two branches ever drift apart. Comparing hand-written literals here would
-    have asserted nothing about the code.
+    Both results come from the real open_in_imagej, so this fails if the file
+    path and the directory path ever drift apart.
     """
-    dataset = tmp_path / "acq_1"
-    dataset.mkdir()
+    directory = _dataset_dir(tmp_path)
     file_result, _ = _open_file(monkeypatch, FIXTURES / "mosaic.tiff")
-    dir_result, _, _, _ = _open_dataset(monkeypatch, dataset)
+    dir_result, _ = _open_dataset_dir(monkeypatch, directory)
 
-    assert file_result["via"] != dir_result["via"], "two branches really ran"
+    assert file_result["via"] != dir_result["via"], "two paths really ran"
     for result in (file_result, dir_result):
         assert result["opened"] is True
         assert {"opened", "via", "windows"} <= set(result)
         for window in result["windows"]:
-            assert {"title", "width", "height", "n_planes"} <= set(window), (
+            assert {"id", "title", "width", "height", "n_planes"} <= set(window), (
                 f"{result['via']} reports a window as {sorted(window)}, which "
                 "does not carry the shared contract"
             )
-    # The only permitted difference is the ImageJ window id, which an MM display
-    # has no equivalent of and which nothing reads.
-    file_keys = set(file_result["windows"][0])
-    dir_keys = set(dir_result["windows"][0])
-    assert file_keys - dir_keys == {"id"}
-    assert dir_keys - file_keys == set()
 
 
-def test_both_branches_refuse_with_one_shape(monkeypatch, tmp_path):
+def test_both_paths_refuse_with_one_shape(monkeypatch, tmp_path):
     """And a refusal is one shape too: opened false, via, reason, no windows."""
-    dataset = tmp_path / "acq_1"
-    dataset.mkdir()
+    directory = _dataset_dir(tmp_path, n_files=0)
     file_result, _ = _open_file(monkeypatch, FIXTURES / "mosaic.tiff",
                                 window_ids=(None, None))
-    dir_result, _, _, _ = _open_dataset(monkeypatch, dataset, store=None)
+    dir_result, _ = _open_dataset_dir(monkeypatch, directory)
     for result in (file_result, dir_result):
         assert result["opened"] is False
         assert set(result) == {"opened", "via", "reason"}
