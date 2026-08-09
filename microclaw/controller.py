@@ -1,12 +1,16 @@
 from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
+import logging
 import math
 from pathlib import Path
 import threading
 from typing import TYPE_CHECKING
 
 from pycromanager import Core, Studio
+
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from microclaw.safety import SafetyGuard
@@ -313,6 +317,24 @@ class MicroscopeController:
             return True
         except Exception:
             return False
+
+    def refresh_gui(self) -> None:
+        """Repaint Micro-Manager's GUI from its current property cache.
+
+        MMCore's cache is already current after a write through the core, while
+        a full hardware refresh adds reads that can time out on a flaky serial
+        link. Repainting is best-effort and never raises: a GUI failure must not
+        turn a successful hardware write into a failed tool call. The failure is
+        logged rather than silently discarded so operators and tests can see it;
+        logging is itself guarded to keep the no-raise contract unconditional.
+        """
+        try:
+            self.studio.app().refresh_gui_from_cache()
+        except Exception:
+            try:
+                logger.warning("Micro-Manager GUI refresh from cache failed", exc_info=True)
+            except Exception:
+                pass
 
     def get_mm_app_dir(self) -> str | None:
         """Return MM's install root by asking the running ImageJ JVM, or None.

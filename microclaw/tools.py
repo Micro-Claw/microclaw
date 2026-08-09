@@ -1323,7 +1323,7 @@ def set_device_property(
     # power writes are capped and ratcheted. In code, not just the prompt.
     guard.check_illumination(ctrl.core, device, property, value, confirm_fn=CONFIRM_FN)
     ctrl.core.set_property(device, property, value)
-    ctrl.studio.app().refresh_gui()
+    ctrl.refresh_gui()
     return {"status": f"Set {device}.{property} = {value!r}."}
 
 
@@ -5704,6 +5704,7 @@ def set_focus_lock(
     authorize_property_write(ctrl, lock["device"], lock["property"])
     guard.check_device_property(ctrl.core, lock["device"], lock["property"], target)
     ctrl.core.set_property(lock["device"], lock["property"], target)
+    ctrl.refresh_gui()
     return {
         "engaged": enabled,
         "property": f"{lock['device']}.{lock['property']}",
@@ -5859,7 +5860,7 @@ def set_emu_laser_power_percentage(
     ctrl.core.set_property(entry["device"], entry["property"], raw_value)
     written = str(ctrl.core.get_property(entry["device"], entry["property"]))
     written_effective = (float(written) - entry["offset"]) / entry["slope"]
-    ctrl.studio.app().refresh_gui()
+    ctrl.refresh_gui()
     return {
         "requested_percent": requested,
         "raw_value_written": written,
