@@ -3482,11 +3482,12 @@ def run_tile_acquisition(
     """
     center_x = ctrl.core.get_x_position() if center_x_um is None else center_x_um
     center_y = ctrl.core.get_y_position() if center_y_um is None else center_y_um
-    center_source = (
-        "explicit"
-        if center_x_um is not None and center_y_um is not None
-        else "current_stage_position"
-    )
+    if center_x_um is not None and center_y_um is not None:
+        center_source = "explicit"
+    elif center_x_um is None and center_y_um is None:
+        center_source = "current_stage_position"
+    else:
+        center_source = "partially_explicit"
     if center_x_um is not None or center_y_um is not None:
         # A supplied center is unvalidated caller input, and an even-sided grid
         # puts it between tiles — so the per-tile bounds check never covers it.
@@ -4565,16 +4566,25 @@ def run_adaptive_survey(
     )
     result["frames_acquired"] = progress.n_done
     result["stopped_early"] = stopped
-    result["hint"] = (
-        "stopped_early describes the hook's control decisions, not what was found. "
-        "Per-tile measurements are in log_path; call read_hook_log before saying "
-        "anything about content."
-    )
-    action_counts = getattr(hook, "action_counts", {})
-    result["hook_actions"] = {
-        "ContinueSurvey": action_counts.get("ContinueSurvey", 0),
-        "StopSurvey": action_counts.get("StopSurvey", 0),
-    }
+    if log_path:
+        # Deliberately replace _adaptive_result's generic read-back hint with the
+        # survey-specific warning: control state is not a content measurement.
+        result["hint"] = (
+            "stopped_early describes the hook's control decisions, not what was found. "
+            "Per-tile measurements are in log_path; call read_hook_log before saying "
+            "anything about content."
+        )
+    else:
+        result["hint"] = (
+            "stopped_early describes the hook's control decisions, not what was found. "
+            "No per-tile log was written for this run, so there is nothing to read back."
+        )
+    action_counts = getattr(hook, "action_counts", None)
+    if action_counts is not None:
+        result["hook_actions"] = {
+            "ContinueSurvey": action_counts.get("ContinueSurvey", 0),
+            "StopSurvey": action_counts.get("StopSurvey", 0),
+        }
     result["budget_exhausted"] = progress.exhausted_budget
     result["tiles_planned"] = [
         {"position": p["name"], "x_um": round(p["x_um"], 3),

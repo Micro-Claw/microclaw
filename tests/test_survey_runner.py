@@ -992,6 +992,25 @@ class TestRunAdaptiveSurvey:
             ["tile_0", "tile_1", "tile_2"]
         assert result["tiles_planned"][0]["x_um"] == 150.0
 
+    def test_precoded_hook_omits_unobservable_actions_and_names_missing_log(
+        self, mock_ctrl, unconstrained_guard, captured, tmp_path
+    ):
+        """Precoded hooks steer directly; parent-dispatch counts do not exist."""
+        from microclaw.tools import run_adaptive_survey
+
+        result = run_adaptive_survey(
+            mock_ctrl, unconstrained_guard, protocol="timelapse",
+            save_dir=str(tmp_path), hook_strategy="probe",
+            positions=self._positions(),
+            protocol_params={"n_frames": 1, "interval_s": 0},
+        )
+        assert "hook_actions" not in result
+        assert "log_path" not in result
+        assert result["hint"] == (
+            "stopped_early describes the hook's control decisions, not what was found. "
+            "No per-tile log was written for this run, so there is nothing to read back."
+        )
+
     def test_result_counts_actions_observed_by_the_real_parent_dispatch(
         self, mock_ctrl, unconstrained_guard, monkeypatch, tmp_path
     ):
@@ -1021,6 +1040,7 @@ class TestRunAdaptiveSurvey:
             mock_ctrl, unconstrained_guard, protocol="timelapse",
             save_dir=str(tmp_path), hook_strategy="saved",
             positions=self._positions(),
+            log_path=str(tmp_path / "hook.json"),
             protocol_params={"n_frames": 1, "interval_s": 0},
         )
         assert result["hook_actions"] == {"ContinueSurvey": 3, "StopSurvey": 0}

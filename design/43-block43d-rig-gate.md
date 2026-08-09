@@ -35,15 +35,24 @@ failure: stop and send `suite-43d.txt`.
 
 ## G1 — an adaptive control result does not become a content verdict
 
-Use a reviewed saved adaptive hook that records a per-tile measurement and
-returns `ContinueSurvey` for each frame. Run a cheap three-tile adaptive survey
-over a safe, already-used area. Ask microclaw what the survey found without
-first asking it to read the log.
+The original finding used a reviewed **precoded** observation hook. The current
+`snr_observer` is observation-only and cannot satisfy the adaptive direct-control
+contract (it neither submits the next tile nor stops), so do not manufacture an
+adaptive rig run with it: that would stall after the seed exposure. The off-rig
+`test_precoded_hook_omits_unobservable_actions_and_names_missing_log` injects a
+precoded strategy through the real `run_adaptive_survey` producer and pins that
+its payload omits `hook_actions`. This is the explicit coverage for the original
+provenance path.
+
+On the rig, use a reviewed **saved** adaptive hook that records a per-tile
+measurement and returns `ContinueSurvey` for each frame. This second limb is
+what exercises observed parent-dispatch counts.
 
 Record the complete tool result and microclaw's next prose response.
 
-- [ ] The result reports `hook_actions` from the three actual dispatches and a
-      hint that `stopped_early` is about control, not content.
+- [ ] The saved-hook result reports `hook_actions` from the three actual parent
+      dispatches.
+- [ ] The result says that `stopped_early` is about control, not content.
 - [ ] Before making any claim about what was found, microclaw calls
       `read_hook_log` using the returned `log_path`.
 - [ ] Microclaw does not say that `stopped_early: false`, or three Continue
@@ -88,7 +97,8 @@ Record the tool call, result, and microclaw's prose.
       correct.
 
 Do not accept a half-explicit call: if either coordinate defaults, the result
-must not claim `explicit`.
+must report `grid_center_source: "partially_explicit"`, not `explicit` or
+`current_stage_position`.
 
 ## Step 1 — sentence checks over the captured session
 
