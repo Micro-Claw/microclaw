@@ -386,12 +386,17 @@ branch is open.** One worktree besides this one: `../microclaw-6a`, idle at
   total; **derive the total from passed + skipped rather than transcribing it**
   (a coordinator slip put 1772 in front of a rig operator when the real number
   was 1773); diff collected test IDs against the branch's start commit.
-- **Two runbook rules earned this session.** Drive the suite and the collect-only
-  step through the **same launcher** — 43b's runbook used `uv` for one and bare
-  `python` for the other, and M5's bare `python` is a miniconda without pytest,
-  so no collected-ID list came back. And **fold the gate into a real session**
-  rather than running it as a script: 43d's M5 gate rode along with an operator
-  debugging a 640 trigger, which is why its criteria landed on genuine requests.
+- **All eight remaining Track F blocks are rig-gated**, so right now the pace of
+  this track is set by rig availability, not by how many branches are open.
+  Two at a time was right this session; a third would have queued behind 43d
+  without relieving anything. 43k is design-only *and* blocked on 43h/43i having
+  run on a rig, so there is no rig-free block to slot in.
+- **Six rules earned this session went into §"Standing constraints that outlive
+  any block"** rather than staying here, because this note gets superseded and
+  they should not go with it: counting gates rather than branches, one launcher
+  per runbook, deriving suite totals, folding a gate into a real session,
+  reviewing hard through a green suite, and treating a ledger row as open until
+  its design-reconciliation cell is filled.
 
 ### State at the 2026-08-09 close of the 43b/43d session — superseded, kept for the round history
 
@@ -6208,6 +6213,43 @@ This is an inventory, not permission to close with unresolved blank work. Block
   Corollary, from the same block: judge that run by **failures and collected
   total, and compare the skip count to the previous run on the same machine**. A
   suite can go green because its subject tests started skipping.
+- **Concurrency helps only while the rigs are free. When every remaining block
+  in a track needs a gate, the constraint is rig sessions and not implementer
+  throughput** — assigning a third branch then deepens the queue behind the
+  first two rather than relieving anything, and every branch in the queue is
+  another one that must merge `main` before it lands. Added 2026-08-09, from
+  Track F: 43b and 43d ran concurrently to good effect because both were
+  cold-startable while the rigs were idle, and the same move would have been
+  wrong one step later. Count the *gates* owed, not the branches available.
+- **Drive every command in a runbook through one launcher.** Block 43b's Step 0
+  ran the suite under `uv` and the collect-only line under bare `python`; on M5
+  bare `python` is a miniconda without pytest, so the suite passed and no
+  collected-ID list came back at all. A runbook that mixes launchers silently
+  loses whichever step guessed wrong.
+- **State suite totals you derived, not totals you transcribed.** Derive the
+  collected total from `passed + skipped` on the machine in question. Block
+  43d's runbook told an operator to expect 1772 when its own arithmetic said
+  1773, because the previous block's number was carried across — the rig matched
+  the true value, but an operator comparing strictly would have been right to
+  stop the gate.
+- **Fold a rig gate into a real session rather than running it as a script.**
+  Block 43d's M5 gate rode along with an operator debugging a 640 trigger, so
+  its criteria landed on a genuine "run connected_components on that" and a
+  genuine "scan a larger area around the previous scan" — the situations the
+  findings came from. Block 43b's gate found an unrelated dose defect the same
+  way, because the operator asked for something ordinary mid-run. A scripted
+  gate tests the keys; a session tests the sentences.
+- **A green suite and an accurate self-report say nothing about whether the code
+  is right.** Every implementation block in Track F so far has been returned at
+  least once with a correct test count, a correct collected-ID diff, and a real
+  defect behind them — including one where the runner disclosed the limitation
+  in its report and shipped the wrong payload anyway. **Treat a first-round
+  accept as the case to look at harder**, and judge a fix by driving the real
+  producer rather than by reading its test.
+- **A ledger row is closed only when its design-reconciliation cell is filled.**
+  Both 43b and 43d ran and merged their design gates while leaving that cell
+  empty, which reads exactly like step 10 never happening. Audit the row, not
+  the session's memory of having closed it.
 - No design may claim **process containment** until block 11 lands.
 - Rig facts belong in gate documents, design notes, and rig profiles — **never in
   `microclaw/`**. M5 (EMU + MicroFPGA) and Ti-with-PFS are both unusual; most
