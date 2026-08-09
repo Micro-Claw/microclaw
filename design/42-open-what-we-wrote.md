@@ -456,6 +456,44 @@ if a user explicitly asks for multi-channel display.
 Do **not** revisit "make acquisitions always write a channel axis": that contorts
 how data is written to suit a viewer, and would need its own acquisition re-gate.
 
+## What the gate measured — demo machine, 2026-08-09 (block 42b)
+
+Three rounds. Evidence in `Micro-Claw/42b-open-artifact-demo`,
+`out42b-G0-demo-round2.txt`, `42b-G4a-round2-history.jsonl` and
+`41b-open-artifact-demo-round3`. Findings in
+`42-block42b-gate-findings.md`.
+
+**Round 3 passed every gate**, at `a97620b`:
+
+| gate | result |
+|---|---|
+| G1 mosaic | ImageJ window, 1004x1024 `dimensions_match`, both digests true, no "open it in FIJI" |
+| G2 no thumbnail | **one** image block in the whole session, on the `analyze=true` turn only |
+| G3 user owns session | acquisition ran with ImageJ windows open; windows closed by hand were neither reopened nor complained about |
+| G4a our own dataset | three datasets, `n_stack_files: 1`, `dimensions_match` true, provenance unverified |
+| G4b `stitch_test_1` | opened, 252x236, **6 planes** |
+| G4c no TIFFs | refused, opened nothing |
+
+No stall anywhere; the watchdog never fired. Two `open_artifact` calls issued in
+one turn — the shape that wedged round 1 — both returned clean.
+
+**What the three rounds actually established**, beyond the checkboxes:
+
+1. **The design's directory mechanism was wrong**, and two independent MM defects
+   proved it (F1, F4 above). The shipped answer opens the dataset's TIFFs.
+2. **`IJ.open` on a file is sound**, unchanged across all three rounds.
+3. **The thumbnail discipline holds under a real session** — the model opened
+   without rendering, and reached for `analyze=true` only when asked to
+   interpret. It also declined to give a cell count off a thumbnail, which is
+   the behaviour G2 exists to protect.
+4. **A round-3 payload defect**, fixed in `5d09b7b`: a directory that is not a
+   dataset was measured as one, so `open_artifact` could report `opened: true`
+   with no `dimensions_match` at all. `dataset_stack_files` is now the single
+   definition of which files get opened, and the measurement uses it.
+
+**Still owed on M5:** nothing this block gates. 42b is read-side and was demo-
+gated by design; the two M5-specific items named in the runbook are unchanged.
+
 ## Out of scope
 
 Registration or stitching (still absent, still refused by name). Pushing pixels
