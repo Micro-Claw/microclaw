@@ -35,18 +35,26 @@ failure: stop and send `suite-43d.txt`.
 
 ## G1 — an adaptive control result does not become a content verdict
 
-The original finding used a reviewed **precoded** observation hook. The current
-`snr_observer` is observation-only and cannot satisfy the adaptive direct-control
-contract (it neither submits the next tile nor stops), so do not manufacture an
-adaptive rig run with it: that would stall after the seed exposure. The off-rig
-`test_precoded_hook_omits_unobservable_actions_and_names_missing_log` injects a
-precoded strategy through the real `run_adaptive_survey` producer and pins that
-its payload omits `hook_actions`. This is the explicit coverage for the original
-provenance path.
+**What the original finding actually ran**, read back from the session history
+rather than remembered: all seven `run_adaptive_survey` calls used
+`filament_position_filter` — a **saved** hook, not a precoded one — and every one
+of them passed `log_path`. So F8's own scenario is the saved-hook path with a log,
+and that is the limb this gate exercises on the rig. (An earlier draft of this
+runbook said the finding used a precoded hook. It did not; the error was the
+coordinator's and is corrected here.)
 
-On the rig, use a reviewed **saved** adaptive hook that records a per-tile
-measurement and returns `ContinueSurvey` for each frame. This second limb is
-what exercises observed parent-dispatch counts.
+Use a reviewed **saved** adaptive hook that records a per-tile measurement and
+returns `ContinueSurvey` for each frame. Run a cheap three-tile adaptive survey
+over a safe, already-used area, and ask microclaw what the survey found without
+first asking it to read the log.
+
+The **precoded** path is covered off-rig, deliberately, and must not be
+manufactured here: no precoded hook can drive an adaptive run — `snr_observer` is
+observation-only and neither submits the next tile nor stops, so an adaptive run
+with it would stall after the seed exposure. `test_precoded_hook_omits_
+unobservable_actions_and_names_missing_log` drives the real `run_adaptive_survey`
+producer with a precoded strategy and pins that the payload omits `hook_actions`
+rather than reporting zeros.
 
 Record the complete tool result and microclaw's next prose response.
 

@@ -4579,8 +4579,15 @@ def run_adaptive_survey(
             "stopped_early describes the hook's control decisions, not what was found. "
             "No per-tile log was written for this run, so there is nothing to read back."
         )
+    # Only when typed actions were actually observed at the parent dispatch. An
+    # empty dict is not "zero decisions" — it is a hook that never routed one
+    # through the parent, which is the normal shape for a precoded control hook
+    # AND for a saved hook that only records measurements (HookResult.actions
+    # defaults to ()). Emitting {"ContinueSurvey": 0} there says, in the one
+    # content-shaped field this result has, that the hook decided nothing on a
+    # run where it continued at every tile. That is F8's defect in a new key.
     action_counts = getattr(hook, "action_counts", None)
-    if action_counts is not None:
+    if action_counts:
         result["hook_actions"] = {
             "ContinueSurvey": action_counts.get("ContinueSurvey", 0),
             "StopSurvey": action_counts.get("StopSurvey", 0),
