@@ -397,17 +397,20 @@ branch is open.** One worktree besides this one: `../microclaw-6a`, idle at
   `ENABLE ILLUMINATION` prompt, because that is what the tool was doing. Under a
   session-wide grant that exposure is silent. See 43c's entry; the block must
   answer it rather than discover it.
-- **43c is pushed and awaiting M5 or M2** — branch `design43/session-grants`,
-  pinned at `2bf0e32`, runbook on the branch. Two review rounds. It must gate on
-  a rig whose camera trigger fires the lasers, and **with history saving on**:
-  with it off the grant still works and writes no audit rows at all, so the
-  headline criterion would be unobservable rather than failing.
-- **43e round 2 PASSED its headline criteria on M5; only G3 is owed.** G1 and G2
-  both passed at `9bae1ba`, and a second coordinator fix (`256cc18`) followed:
-  two zero-hardware refusals were still carrying the hardware hint, which is F10's
-  defect in the tool 43d fixed. Round 3 is G3 alone, zero exposure. **Its
-  strongest output is evidence for 43g** — the uncalibrated default threshold
-  split a cell and changed the biological answer on first real use.
+- **43c round 1 passed G1, G2 and G5 on M5; G3, G4 and G6 are owed.** Round 2 is
+  pushed at `a8a217d`. Step 0 failed on one Windows-conditional test — a defect
+  introduced by the coordinator's own round-1 review finding, and the second time
+  in this track that a *test* rather than product code was the thing wrong on
+  Windows. **A test that relocates a directory with `XDG_*` tests nothing on a
+  rig**; every rig here is Windows.
+- **43e is CLOSED** — merged `0d1a501`, design gate `44a0591`, branch deleted
+  locally and on `origin`, ledger row closed. Track F merged: 43a, 43m, 43b, 43d,
+  43e. **Seven remain: 43c (gating), 43f, 43g, 43h, 43i, 43j, 43k.**
+- **43e's strongest output was evidence for 43g, not a defect** — the
+  uncalibrated default threshold split a cell and changed the biological answer
+  on its first real use, and the operator's eye caught it. **43g should move up
+  the order accordingly**; design/43's suggested order puts it seventh, and two
+  blocks now point at it.
 - **Round 1 for the record: 43e ran on M5 and G1 FAILED at `3d30c1f`.** The built-ins
   shipped correct and unreachable: microclaw never called `connected_components`
   in three attempts, because the tool description and the system prompt named
@@ -709,7 +712,7 @@ assistant's narration when judging whether a guard fired.
 | 43a | Nestor | none — may run concurrently with Track B | `design43/live-dose-and-tiff-prose` (deleted) | `3d6146b` | `cf1f272` + `af7e015` (review round 1 returned); runbook `92520b7` pinned `af7e015` | **M2 2026-08-09 — G1, G2, G4 both limbs, G5 all PASS; G3 answered, no fix owed** (`43a-m2`). Gated on M2, not M5: same camera-triggered illumination, and deliberately off the outlier rig. Suite red with 9 pre-existing Windows failures, none in touched code → block 43m | `5ec57cb` | **done** `18f84f1` — design/43 F3's "Untested" paragraph replaced by what M2 measured, plus the two implementation corrections (headless focus sweep, `find_features` is a borrow); F7's offer count corrected six → seven; suggested-order item 1 struck through |
 | 43m | Nestor (fallout) | none — **gated every later Track F rig gate** | `design43/windows-suite-integrity` (deleted) | `18f84f1` | `f49deb5` (accepted round 1, no rework); runbook `f0f3d3f` pinned `f49deb5` | **M2 2026-08-09 PASS — 0 failed, 1650 passed, 116 skipped, 1766 collected** (`43m-m2`). Skip count unchanged from 43a's run, so the subject tests ran rather than being skipped | `75fea30` | done — block *is* the gate; standing constraint added below |
 | 43b | Nestor | none | `design43/refresh-gui` (deleted) | `04c0654` | `8162b04` + `74dc87f` (review round 1 returned); runbook `ef6a658` pinned `74dc87f` | **M5 2026-08-09 — G1, G2, G3 both limbs all PASS; G4 NOT EXERCISED by design** (`43b-m5`). Suite 1656 passed / 116 skipped / 0 failed / 1772 collected. G1 settled the pyjavaz shadow `javap` could not reach; EMU's plugin panel repainted too, which the gate did not ask for | `b220e33` | **done** `8ec9da6` — design/43 F4's write-path table annotated as one row short (`set_channel` has two routes); its "verify before implementing" caveat answered in both halves, `javap` for the Java method and M5 for the pyjavaz shadow; suggested-order item 2 struck through, three callsites estimated and five shipped |
-| 43c | Nestor | none | `design43/session-grants` | `eb577d8` | `e68fba6` + `4a3aed1` + `2bf0e32` (two review rounds returned); runbook `43-block43c-rig-gate.md` pinned `2bf0e32` | **pushed 2026-08-09, awaiting M5 or M2** — the audit log must still record every event; **history saving must be ON or the criterion is unobservable** | | |
+| 43c | Nestor | none | `design43/session-grants` | `eb577d8` | `e68fba6` + `4a3aed1` + `2bf0e32` (two review rounds returned) + `a8a217d` (coordinator fix after the rig round); runbook pinned `a8a217d` | **M5 round 1 2026-08-09 (`43c-m5`): G1, G2, G5 PASS on a real two-channel session — 9 enables, 3 prompts, 12 audit rows. Step 0 FAIL on one Windows-conditional test, fixed. G3, G4, G6 not exercised; round 2 pushed** | | |
 | 43d | Nestor | none | `design43/report-shapes` (deleted) | `04c0654` | `8635d7c` + `9b98b0b` (two review rounds returned) + `a7a415d` (coordinator fixes) + `010701a` (runbook total corrected); runbook pin `a7a415d` | **M5 2026-08-09 — G1, G2, G3 all PASS; all three known-bad patterns read 0** (`43d-m5`). Suite 1657 passed / 116 skipped / 0 failed / 1773 collected, skips equal to 43b's M5 run. Gate folded into a real 640-trigger session rather than run as a script | `53395d2` | **done** `53e3f12` — design/43 F8's stub corrected (`hook_actions` is omitted, not zeroed, when no typed action was observed) with the surviving two-kind projection recorded as still owed; F11's two-value list corrected to three (`partially_explicit`); suggested-order item 4 struck through |
 | 43e | Nestor | none | `design43/builtin-offline-adapters` (deleted) | `eb577d8` | `452dbc5` + `3d30c1f` (review round 1 returned) + `9bae1ba` + `256cc18` (two coordinator fixes, each after a rig round); runbook pinned `256cc18` | **M5, three rounds, 2026-08-09 (`43e-m5`, `43e-m5-round2`). Round 1: G1 FAIL — the adapters were correct and unreachable. Round 2: Step 0 (1671 + 116 = 1787), G1, G2 (both precedence branches), G4, Step 1 all PASS. Round 3: G3 PASS, no hardware tool called in the session.** `256cc18`'s two corrected hints are **ungated** — round 3 had no failing call | `0d1a501` | **done** — design/43 F15 annotated with the four things its stub did not say plus the two successors owed; F10 extended to the OSError siblings; F12's retired half named; suggested-order item 5 struck through |
 | 43f | Nestor | 43a merged (its prompt names the key this creates) | `design43/rig-profile` | | | required | | |
@@ -5499,7 +5502,46 @@ fake-controller question was settled by updating the fakes rather than adding a
 suite resolves only because the real method exists. Renaming it fails the suite
 loudly, which a `getattr` guard would have hidden.
 
-## 43c. One illumination approval per session, not one per switch — **PUSHED, awaiting M5 or M2**
+## 43c. One illumination approval per session, not one per switch — **M5 ROUND 1: G1/G2/G5 PASS, three criteria owed**
+
+### Rig gate round 1 — M5, 2026-08-09: **G1, G2, G5 PASS; Step 0 FAIL (test-only); G3, G4, G6 owed**
+
+Evidence: `43c-m5/`. Folded into a real two-channel 9-position acquisition —
+the shape F2 came from.
+
+- **G1 PASS.** Nine illumination enables produced **three prompts**: the first
+  session approval, one ordinary approval after a revoke, and a second session
+  approval. The F2 baseline is 17 enables → 17 prompts.
+- **G2 PASS, the headline.** Twelve audit rows = nine enable decisions plus three
+  lifecycle rows (`granted:` ×2, `revoked:` ×1), each carrying the summary that
+  names the exact device, property and value. Every suppressed exposure is
+  reconstructable, which is the whole argument for shipping this.
+- **G5 PASS, proved inside the same log** — a plain `approved` row sits between
+  the revoke and the re-grant, so prompting demonstrably came back.
+- **Step 0 FAIL: one Windows-only test defect, product code uninvolved.**
+  `test_grant_is_only_process_memory_and_writes_no_user_state` monkeypatched
+  `XDG_CONFIG_HOME` and asserted the config dir does not exist;
+  `paths.user_config_dir` reads `APPDATA` on Windows, so the patch moved nothing
+  and the assertion ran against the real, existing directory. **This came from
+  round 1 of review — the coordinator's own finding asked the runner to point
+  the test at "the directory a persisted grant would actually use", and `XDG_*`
+  is not that directory on the platform every rig runs.** Fixed in `a8a217d` by
+  comparing a recursive snapshot of both real directories across the grant.
+- **G3, G4, G6 not exercised.** Round 2 owes them; only G6 costs any exposure.
+
+**Unasked-for evidence worth keeping.** With a grant active, asked to *"turn on
+640 again"* while 488 was on, microclaw did **not** call `set_channel`. It
+stopped and asked whether the operator wanted both on or only 640, because a
+channel switch would turn 488 off. That is the **converse** of 43b's
+off-means-on hazard, caught by the agent unprompted, in the exact condition —
+under a grant — where no confirmation would have surfaced it. It is not G6, but
+it is evidence about the same ambiguity, and it suggests the agent's own
+clarification may be a better backstop than the prompt was.
+
+### Round 2
+
+Pushed at `a8a217d`. Off-rig **1690 / 99 / 1789**; expect **1673 + 116 = 1789**
+on M5.
 
 Branch: `design43/session-grants`, runbook `design/43-block43c-rig-gate.md` on
 the branch, pinned at `2bf0e32`. Off-rig **1690 passed / 99 skipped / 3 expected
@@ -6533,6 +6575,15 @@ This is an inventory, not permission to close with unresolved blank work. Block
   in its report and shipped the wrong payload anyway. **Treat a first-round
   accept as the case to look at harder**, and judge a fix by driving the real
   producer rather than by reading its test.
+- **A test that relocates a directory with `XDG_*` proves nothing on a rig.**
+  Every rig in this project is Windows, where `paths.user_config_dir` reads
+  `APPDATA` and `user_data_dir` reads `LOCALAPPDATA`. Block 43c's non-persistence
+  test patched the XDG variables, moved nothing, and asserted the real
+  already-existing directory was absent — a Step 0 failure on M5 with the product
+  code correct. Added 2026-08-09. Compare a snapshot of the real directories
+  instead. More generally: **a test asserting where something is *not* written
+  must name the platform's actual location**, and the suite is only trustworthy
+  on the platform it will be judged on.
 - **Gate the reach, not the plumbing.** A criterion that names the tool and
   checks its output tests whether the code works; it cannot test whether anything
   finds the code. Block 43e shipped two built-in adapters that were correct,
