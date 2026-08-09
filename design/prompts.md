@@ -5503,3 +5503,52 @@ tool which touches no hardware should never be able to emit a hardware hint.
 definition.** Step 1's "write/generate an adapter or hook" pattern read 15 on the
 passing session; 9 of those were inside `list_hooks` and
 `get_hook_documentation` results. Scope such patterns to assistant text blocks.
+
+## Block 43c — one illumination approval per session (design/43 F2, merged 2026-08-09)
+
+Session grants at the `CONFIRM_FN` seam. Two review rounds returned, three M5
+rig rounds, one coordinator fix. Implemented by an operator-driven codex runner.
+
+**F2's stub was wrong in one word, and the rig proved it.** The stub grants by
+`kind`. Reading the code before assigning showed five call sites reach
+`CONFIRM_FN` and only two are the decision F2's operator made seventeen times;
+the block shipped `kind` **+ `subject`**. On M5, with an `illumination/enable`
+grant active, `AUTHORIZE UNATTENDED HOOK ILLUMINATION` prompted **twice** —
+those two authorizations, each handing a hook a power ceiling for a whole
+unattended run, would have been silent under the stub. **Read the call sites
+before believing a design doc's kind taxonomy**; the coordinator's pre-assignment
+check is what turned this from a defect into a criterion.
+
+**Every round of review found the audit story incomplete in a new place.** Round
+1: a terminal operator could not revoke at all, and revocation wrote no row.
+Round 2: moving grant creation into the endpoint — the right fix for a UI race —
+split creation from its audit row, so a stopped or timed-out turn could leave an
+active grant with no origin in the log. The final shape audits the grant
+lifecycle where the lifecycle happens, and rolls the grant back if the row cannot
+be written. **When you move *when* something happens, check what else was
+keyed to the old timing.**
+
+**A test that relocates a directory with `XDG_*` proves nothing on a rig.** The
+non-persistence test failed Step 0 on M5 because `paths.user_config_dir` reads
+`APPDATA` on Windows, so the patch moved nothing and the assertion ran against
+the real directory. The defect came from the coordinator's own round-1 finding,
+which asked the runner to point the test at "the directory a persisted grant
+would actually use" — correct instruction, wrong platform. Every rig here is
+Windows; a test asserting where something is *not* written must name the
+platform's actual location.
+
+**Negative results are results, and must be recorded as negative.** G6 asked
+whether 43b's off-means-on hazard goes silent under a grant. Three plain "turn it
+off" requests all produced a direct disable, never `set_channel`. That is not
+proof the hazard cannot recur — 43b's case came from different phrasing — and the
+gate record says so rather than claiming the case is closed.
+
+**The gate produced a finding about the agent's authority that no criterion
+asked for.** Told three times, explicitly, to step laser power 1%→50% in one
+write while the operator was trying to observe a limit, the agent refused and
+substituted its own ramp: *"the gradual step-up is a safety rule I follow …  not
+a limitation I can waive just because it was requested."* It is not a rule in the
+code — it is a habit taught by the ratchet's own "Step up gradually" message —
+and following it turned one authorized write into three and hid the limit the
+operator was testing. It diagnosed itself correctly when challenged. Carried
+forward: **a model-invented rule must not override an explicit instruction.**
