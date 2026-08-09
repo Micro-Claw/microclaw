@@ -351,12 +351,61 @@ and the only branches on `origin` besides `main` are
   second merges `main` first**. Eight blocks remain after them: 43c, 43e, 43f,
   43g, 43h, 43i, 43j, 43k.
 
-### State at the 2026-08-09 close of the second Track F session — read this before assigning anything
+### State at the 2026-08-09 close of the third Track F session — read this before assigning anything
 
-**This is the live note — it supersedes every other State-at note in this
-section, including the one directly below it**, which was written earlier the
-same day and is kept only for the round history. Position is not recency here:
-this one was inserted above the note it replaced.
+**This is the live note. It supersedes every other State-at note in this
+section**, all of which are kept only for their round history. Position is not
+recency here — read the heading, not the order.
+
+Written at `a004fb0`, with coordinator commits after it expected, so **verify
+against the repository rather than against that hash.** What should hold:
+`git log --oneline origin/main..main` empty, working tree clean, and the only
+branches on `origin` besides `main` are `design34/focus-system-authorization`
+(6a), `florian/setup-claude-workflow` and `port-to-jpype-acqj` — **no Track F
+branch is open.** One worktree besides this one: `../microclaw-6a`, idle at
+`4994f3e`.
+
+- **43e and 43c are both MERGED and fully closed** (`0d1a501`, `98b7269`) — M5
+  gates passed, ledger rows closed with their design-reconciliation cells filled,
+  coordination notes in `design/prompts.md`, design gates merged (`44a0591`,
+  `a004fb0`), branches and worktrees deleted. **Track F merged: 43a, 43m, 43b,
+  43d, 43e, 43c. Six remain, none started: 43f, 43g, 43h, 43i, 43j, 43k.**
+- **43g should move up the order, and this is the one sequencing decision this
+  session leaves behind.** design/43 puts it seventh; two blocks now point at it.
+  43e's M5 gate had the uncalibrated default threshold **split a cell and change
+  the biological answer** on the built-in's first real use — the operator's eye
+  caught it — and F6 argues the same thing from the other direction. Nothing
+  ranks or thresholds honestly until it is calibrated.
+- **Order otherwise**, from design/43's own suggested order: 43f, 43g, 43h, then
+  43i (needs 43g and 43h), 43j (needs 43e, now merged), and 43k is design-only
+  after 43h and 43i have run on a rig.
+- **Both blocks were implemented by operator-driven codex runners**, with the
+  coordinator writing the prompts, reviewing every diff, re-running every suite
+  and fixing what the rig found. Each was returned at least once with an accurate
+  self-report and a real defect behind it; that is now six for six in Track F.
+- **Suite baseline: 1701 passed / 99 skipped / 3 expected warnings, 1800
+  collected** on macOS at `a004fb0`. M5 measured 1673 / 116 / 1789 at 43c's final
+  round, before 43e's and 43c's merges settled. Re-measure; judge by failures and
+  collected total; derive the total from passed + skipped; diff collected test
+  IDs against the branch's start commit.
+- **Three findings were carried forward rather than folded into a gated block**,
+  all in §"Still open, not yet scheduled": a measurement you cannot see
+  (`connected_components` writes no visual artifact), no offline blob detector
+  (`detect_features` is live-only), and a model-invented rule overriding an
+  explicit operator instruction. The first two are the same asymmetry F15 named,
+  seen from new angles, and both would sit naturally beside 43g.
+- **Two standing constraints were earned this session and are in
+  §"Standing constraints"** rather than here, because this note will be
+  superseded: *gate the reach, not the plumbing*, and *a test that relocates a
+  directory with `XDG_*` proves nothing on a rig.* Both came from Step-0 or G1
+  failures that a differently-worded criterion would have passed.
+
+### State at the 2026-08-09 close of the second Track F session — SUPERSEDED, kept for the round history
+
+> **Retired. Do not act on this note** — it describes 43c and 43e as the next
+> two blocks to assign. Both have since been implemented, gated on M5 and
+> merged. The live note is the one above it, at the close of the third Track F
+> session.
 
 Written at `53e3f12`, with further coordinator commits after it expected and
 made — so **verify against the repository, never against a hash quoted here.**
