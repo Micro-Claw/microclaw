@@ -265,19 +265,18 @@ is the only backstop. Test that the backstop is real:
 moved off the illuminated field: the honest outcome of this limb may be one
 unwanted enable, and that is the finding, not an accident.
 
-## Round 3 — one command, no microscope
+## Round 3 — M5, 2026-08-09: **Step 0 PASS. The gate is complete.**
 
-Every behavioural criterion has passed. What is owed is a clean full suite on a
-rig at `a8a217d`, because round 1's is the only rig suite this block has and it
-failed. Run Step 0 below and send `suite-43c.txt` and `collected-43c.txt`.
-Expect **1673 + 116 = 1789**, zero failures.
+**0 failed, 1673 passed, 116 skipped, 1789 collected**, equal to the collect-only
+line and to the off-rig prediction, with the skip count unchanged across five M5
+runs. The Windows-conditional test fixed in `a8a217d` no longer appears.
 
 ## Results
 
 | gate | round 1 (M5, 2026-08-09) | round 2 (M5, 2026-08-09) | evidence |
 |---|---|---|---|
 | Step 0 pin | PASS | — | `install-43c.txt` |
-| Full suite: failures / collected | **FAIL — 1 failed** (Windows-only test defect, fixed in `a8a217d`); 1672 + 116 = 1788 | **not re-run — the one thing owed** | `suite-43c.txt` |
+| Full suite: failures / collected | **FAIL — 1 failed** (Windows-only test defect, fixed in `a8a217d`); 1672 + 116 = 1788 | **PASS — 0 failed, 1673 + 116 = 1789** at `a8a217d`, equal to the collect-only line (round 3) | `43c-m5-round2/suite-43c.txt` |
 | Full suite: skips vs previous same-rig run | **PASS — 116, unchanged across four M5 runs** | — | |
 | G1 enables after the grant / prompts / rows | **PASS — 9 enables, 3 prompts** (vs 17/17 in the F2 session) | PASS again — 5 enables, 1 prompt | both confirmations JSONLs |
 | G2 granted / auto-approved / revoked row counts | **PASS — 12 rows = 9 decisions + 3 lifecycle**, every row carrying its summary | PASS — 11 rows incl. two declines and two subject-less approvals | both confirmations JSONLs |
