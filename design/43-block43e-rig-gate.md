@@ -47,20 +47,73 @@ the entire session, inside the error message. Both texts now name them and say
 what each answers, and say to retry a refused name rather than to give up on the
 measurement.
 
+## Round 2 — M5, 2026-08-09: **Step 0, G1, G2, G4, Step 1 all PASS. G3 still owed.**
+
+**G1 PASS on its headline.** Asked the same question with the tool unnamed,
+microclaw's first analysis action after reading the hook log was
+`run_analysis_on_saved_dataset` with `connected_components` and
+`input_kind="stage_coordinate_mosaic"` — then it answered the same-cell question
+*from the labels*, checking each positive tile's XY against object 1's bounding
+box. That is the behaviour round 1 could not produce.
+
+**G2 PASS, both precedence branches measured on the rig.** The default run
+recorded `min_snr_source: "package_default_uncalibrated"`, the operator-specified
+run recorded `"explicit"`, and both carried
+`analyzer.source: "builtin"` with a 64-hex `source_sha256` and the package
+version. The agent surfaced the uncalibrated caveat in its own prose *before*
+the operator questioned the answer. The `rig_config` branch was not exercised
+here — M5 has no `analysis.min_snr` — and stays covered off-rig.
+
+**The uncalibrated default changed the biological answer, which is the finding
+worth carrying.** At `min_snr` 3.1 the measurement split the cell: 49 objects,
+the bottom row of tiles outside object 1, answer *"not all the same cell"*. The
+operator looked at the mosaic and said *"This looks like only one cell to me"*.
+Re-run at `min_snr` 2.0 / `min_area_um2` 1.0 it returned 4 objects with object 1
+at **700.8 µm²** spanning the field, and a Fiji overlay confirmed it bounded the
+cell. **Nothing here is a code defect** — it is exactly what
+`package_default_uncalibrated` exists to warn about, and it is direct evidence
+for block 43g.
+
+**G4 PASS on both limbs, across the two rounds.** Round 1: an unknown adapter
+name listed built-ins first and hinted lookup, not hardware. Round 2: both
+integrity-failed saved hooks refused with their manifest/hash reasons, and when
+the operator said *"try it anyway"* the agent declined to route around the gate
+and offered the read-back-and-re-save path instead.
+
+**Step 1 PASS on substance.** The pattern read **15**, of which **9 are inside
+tool_result text** (`list_hooks` and `get_hook_documentation` both contain the
+words) and **6 are assistant text, all about an overlay** — raised only after the
+measurement had already answered the question, and only after the agent called
+`list_hooks` to check nothing existed. **Scope this pattern to assistant text
+blocks in the next runbook that uses it**; counted over the whole file it cannot
+separate microclaw's offers from a tool's documentation.
+
+**Two defects, both fixed in `256cc18`.** The first two calls of the session
+failed and both were told to look at the stage: `NotADirectoryError` (the mosaic
+`.tif` passed where a dataset directory was wanted) and `FileExistsError` (the
+`output_dir` already existed). Both are `OSError` siblings rather than
+`FileNotFoundError` subclasses, so they fell past the path branch into the
+hardware hint — design/43 F10's defect, in the tool block 43d fixed, on the two
+errors 43d did not map. The agent recovered from both unaided; the hints cost it
+two turns.
+
+**Still owed: G3.** `frame_statistics` over saved frames has not run on a rig.
+
 ## Step 0 — pin the implementation and run the full suite
 
-`9bae1ba` is the gated implementation, pinned by the coordinator at push time.
+`256cc18` is the gated implementation, pinned by the coordinator at push time.
 The check accepts descendant commits, so a later runbook amendment cannot
 invalidate the pin it contains.
 
-Off-rig at `9bae1ba` on macOS, re-measured by the coordinator rather than taken
-from the runner's report: **1688 passed, 99 skipped, 3 expected warnings, 1787
+Off-rig at `256cc18` on macOS, re-measured by the coordinator rather than taken
+from the runner's report: **1691 passed, 99 skipped, 3 expected warnings, 1790
 collected, 0 failures.** The branch started from `eb577d8` at 1680 / 99 / 1779:
-five IDs from the implementation and three from the round-1 fix, none lost.
+five IDs from the implementation, three from the round-1 fix, three from the
+round-2 fix, none lost.
 
-On a Windows rig expect the same **1787 collected** with the long-standing
-platform-conditional set skipping: M5 measured 116 skips at both the 43b and 43d
-gates, which would be **1671 passed + 116 skipped = 1787**. Derive the total from
+On a Windows rig expect the same **1790 collected** with the long-standing
+platform-conditional set skipping: M5 measured 116 skips at the 43b, 43d and
+43e round-2 runs, which would be **1674 passed + 116 skipped = 1790**. Derive the total from
 passed + skipped on the machine in front of you; do not compare against a
 transcribed figure.
 
@@ -72,7 +125,7 @@ cd C:\Users\ries\microclaw
 git fetch origin
 git checkout design43/builtin-offline-adapters
 git pull
-git merge-base --is-ancestor 9bae1ba HEAD
+git merge-base --is-ancestor 256cc18 HEAD
 if ($LASTEXITCODE -eq 0) { "PIN OK - the gated implementation is present" }
 else { "PIN FAILED - stop, this checkout does not contain the implementation" }
 
@@ -215,19 +268,33 @@ The pattern was run over the F15 session itself,
 The pattern can therefore fail. The positive criteria in G1–G4 carry the rest:
 zero counts alone do not prove microclaw did the right thing.
 
+## Round 3 — the only thing still owed
+
+Everything except **G3** has passed. Round 3 is therefore small, zero-exposure,
+and needs no sample:
+
+1. Step 0 at the new pin `256cc18` (expect **1674 + 116 = 1790** on M5).
+2. **G3** — point microclaw at a saved timelapse or any saved dataset and ask
+   whether anything is visibly in it. It must score the frames with
+   `frame_statistics` rather than say it cannot tell, and nothing may expose.
+3. A cheap re-check of the two hints fixed in `256cc18`, if it costs you nothing:
+   pass a `.tif` as `dataset_path`, and re-use an existing `output_dir`. Neither
+   refusal may mention hardware, devices or connections.
+
 ## Results
 
-| gate | round 1 (M5, 2026-08-09) | round 2 | evidence |
+| gate | round 1 (M5, 2026-08-09) | round 2 (M5, 2026-08-09) | evidence |
 |---|---|---|---|
-| Step 0 pin | PASS | | `install-43e.txt` |
-| Full suite: failures / collected | **PASS — 0 failed, 1668 passed, 116 skipped, 1784 collected** at `3d30c1f` | | `suite-43e.txt`, `collected-43e.txt` |
-| Full suite: skips vs previous same-rig run | **PASS — 116, equal to 43b's and 43d's M5 runs** | | |
-| G1 measurement without writing a hook | **FAIL** — never called `connected_components` in three attempts | | `43e-history.jsonl` turns 0–29 |
-| G1 stage-coordinate sanity check | not exercised | | |
-| G2 threshold provenance vs `safety_config.yaml` | not exercised — no manifest was written | | |
-| G3 saved-frame scoring, zero exposure | not exercised | | |
-| G4 saved-adapter gates unchanged | **half PASS** — unknown-name refusal lists built-ins first, twelve saved, lookup hint not hardware | | turn 8 |
-| Step 1 write-a-hook sentence count | **0 — PASS** | | |
+| Step 0 pin | PASS | PASS | `install-43e.txt` |
+| Full suite: failures / collected | **PASS — 0 failed, 1668 + 116 = 1784** at `3d30c1f` | **PASS — 0 failed, 1671 + 116 = 1787** at `9bae1ba`, equal to the collect-only line | `suite-43e.txt`, `collected-43e.txt` |
+| Full suite: skips vs previous same-rig run | **PASS — 116, equal to 43b's and 43d's M5 runs** | **PASS — 116, unchanged** | |
+| G1 measurement without writing a hook | **FAIL** — never called `connected_components` in three attempts | **PASS** — first analysis action, tool unnamed in the request; answered from the labels | `g1-history.jsonl` turns 5–11 |
+| G1 stage-coordinate sanity check | not exercised | **PASS** — object 1's box checked against each positive tile's XY; Fiji overlay bounded the cell | `overlay_cc_boxes.ijm` |
+| G2 threshold provenance vs `safety_config.yaml` | not exercised — no manifest was written | **PASS** — `package_default_uncalibrated` and `explicit` both measured; `analyzer.source: builtin`, 64-hex sha. `rig_config` not exercisable on M5 | turns 10, 20 |
+| G3 saved-frame scoring, zero exposure | not exercised | **not exercised — still owed** | |
+| G4 saved-adapter gates unchanged | **half PASS** — unknown-name refusal lists built-ins first, twelve saved, lookup hint not hardware | **PASS** — both integrity-failed hooks refused; agent declined to route around the gate on "try it anyway" | turn 8 (r1); `g4-history.jsonl` (r2) |
+| Step 1 write-a-hook sentence count | **0 — PASS** | **PASS on substance** — 15 raw, 9 in tool documentation, 6 assistant-text and all about the missing overlay | |
+| Refusal hints on a zero-hardware tool | not exercised | **FAIL, fixed in `256cc18`** — `NotADirectoryError` and `FileExistsError` both carried the hardware hint | `g1-history.jsonl` turns 6, 8 |
 
-Send back this table, `suite-43e.txt`, `collected-43e.txt`, the captured history
-JSONL, and the `analysis-manifest.json` from G1.
+Send back this table, `suite-43e.txt`, `collected-43e.txt` and the captured
+history JSONL.
