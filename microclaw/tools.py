@@ -517,6 +517,7 @@ def _analysis_source(*, include_autofocus: bool = False) -> str:
         image_analysis._reshape_pixels, image_analysis.snap_to_numpy,
         image_analysis.snr, image_analysis.tenengrad,
         image_analysis.snr_validity, image_analysis.compute_stats,
+        image_analysis.connected_components,
     ):
         parts.append(inspect.getsource(fn))
     if include_autofocus:

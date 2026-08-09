@@ -134,7 +134,52 @@ def test_unknown_adapter_names_the_refusal_and_lists_saved_choices(offline_home)
         completed_dataset._load_saved_adapter("connected_components")
     message = str(caught.value)
     assert "No adapter named 'connected_components'" in message
+    assert message.index("Available built-in adapters") < message.index("Available saved adapters")
+    assert "['connected_components', 'frame_statistics']" in message
     assert "Available saved adapters: ['alpha', 'zebra']" in message
+
+
+def test_builtins_need_no_manifest_and_saved_hooks_cannot_shadow_them(offline_home):
+    save, _, _, _ = offline_home
+    save("frame_statistics", '''
+class Shadow:
+ def analyze_saved_frame(self, image, metadata, context): raise AssertionError("shadow ran")
+''')
+    completed_dataset.MANIFEST.unlink()
+    result = run(offline_home, "frame_statistics")
+    assert result["status"] == "completed"
+    assert {item["status"] for item in result["observations"]} == {"observed"}
+    assert result["analyzer"]["source"] == "builtin"
+    assert len(result["analyzer"]["source_sha256"]) == 64
+    int(result["analyzer"]["source_sha256"], 16)
+    json.dumps(result, allow_nan=False)
+
+
+def test_saved_resolution_still_requires_manifest_hash_lint_and_capabilities(offline_home):
+    save, _, _, _ = offline_home
+    code = "class Saved:\n def analyze_saved_frame(self, image, metadata, context): return {}\n"
+    save("saved", code)
+    manifest = json.loads(completed_dataset.MANIFEST.read_text(encoding="utf-8"))
+
+    manifest["saved"]["sha256"] = "0" * 64
+    completed_dataset.MANIFEST.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="changed on disk"):
+        completed_dataset._load_saved_adapter("saved")
+
+    path = Path(manifest["saved"]["path"])
+    warned = "import os\n" + code
+    path.write_bytes(warned.encode("utf-8"))
+    manifest["saved"]["sha256"] = hashlib.sha256(warned.encode("utf-8")).hexdigest()
+    manifest["saved"]["accepted_warnings"] = []
+    completed_dataset.MANIFEST.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="lint warnings"):
+        completed_dataset._load_saved_adapter("saved")
+
+    manifest["saved"]["accepted_warnings"] = completed_dataset.lint_hook_code(warned)
+    manifest["saved"]["offline_capabilities"] = ["ctrl"]
+    completed_dataset.MANIFEST.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ValueError, match="forbidden capabilities"):
+        completed_dataset._load_saved_adapter("saved")
 
 
 def test_per_frame_selection_read_only_and_normalized_replay(offline_home):
@@ -429,6 +474,74 @@ def test_provisional_counting_fixture_runs_over_saved_mosaic(offline_home, monke
     assert result["status"] == "completed"
     assert [item["status"] for item in result["observations"]] == ["provisional"]
     assert result["observations"][0]["result"]["running_cell_count"] == 0
+
+
+def test_builtin_connected_components_runs_real_mosaic_path_in_stage_coordinates(
+        tmp_path, monkeypatch):
+    from microclaw import tools
+    from microclaw.calibration import (
+        StageCameraAffine, affine_payload_hash, canonical_affine_payload,
+    )
+
+    image = np.fromfunction(lambda row, col: 10 + ((row + col) % 2), (12, 12)).astype(np.uint16)
+    image[1:3, 1:3] = 100
+    image[7:9, 8:11] = 120
+
+    class MosaicDataset:
+        axes = {"position": ["p0"], "time": [0]}
+
+        def __init__(self, path):
+            pass
+
+        def has_image(self, **coords):
+            return coords == {"time": 0, "position": "p0"}
+
+        def read_image(self, **coords):
+            return image
+
+        def read_metadata(self, **coords):
+            return {
+                "Axes": coords, "XPosition_um_Intended": 10.0,
+                "YPosition_um_Intended": 20.0, "Core-Camera": "Camera",
+                "Camera-Camera": "model", "ROI": "0-0-12-12", "Binning": "1x1",
+                "Height": 12, "Width": 12, "PixelType": "GRAY16",
+            }
+
+    monkeypatch.setattr(completed_dataset, "Dataset", MosaicDataset)
+    monkeypatch.setattr(tools, "Dataset", MosaicDataset)
+    monkeypatch.setattr(completed_dataset, "MANIFEST", tmp_path / "absent-manifest.json")
+    dataset_path = tmp_path / "dataset"
+    dataset_path.mkdir()
+    (dataset_path / "NDTiff.index").write_bytes(b"real mosaic path fixture")
+    transform = StageCameraAffine(1, 0, 0, 1, "obj", 1, 1)
+    calibration_path = tmp_path / "calibration.json"
+    calibration_path.write_text(json.dumps({
+        "payload": canonical_affine_payload(transform),
+        "payload_sha256": affine_payload_hash(transform),
+        "camera_device": "Camera", "camera_model": "model", "roi": [0, 0, 12, 12],
+    }), encoding="utf-8")
+    guard = SafetyGuard(SafetyConstraints(workspace_dir=str(tmp_path)))
+    result = completed_dataset.run_analysis_on_saved_dataset(
+        guard, str(dataset_path), "connected_components", {"time": 0},
+        "stage_coordinate_mosaic", {"min_area_um2": 3, "max_area_um2": 10},
+        str(tmp_path / "analysis"),
+        calibration_ref={"kind": "artifact", "path": str(calibration_path)},
+    )
+
+    assert result["status"] == "completed", result.get("failure")
+    measured = result["observations"][0]["result"]
+    assert measured["n_components"] == 2
+    np.testing.assert_allclose([item["area_um2"] for item in measured["objects"]], [4, 6])
+    np.testing.assert_allclose(
+        [item["centroid_stage_um"] for item in measured["objects"]],
+        [[6.0, 16.0], [13.5, 22.0]],
+    )
+    assert measured["objects"][0]["bounding_box_stage_um"] == {
+        "x_min": 5.0, "y_min": 15.0, "x_max": 7.0, "y_max": 17.0,
+    }
+    assert result["observations"][0]["status"] == "observed"
+    assert len(result["analyzer"]["source_sha256"]) == 64
+    json.dumps(result, allow_nan=False)
 
 
 def test_public_wrapper_never_accesses_controller(monkeypatch):
