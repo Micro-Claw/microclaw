@@ -970,6 +970,9 @@ class TestSnapAndAnalyze:
         # "_gated": focus_metric now travels with focus_metric_valid + snr (design/25).
         assert result["focus_metric_kind"] == "tenengrad_gated"
         assert set(result["metric_valid_for"]) == {"roi", "exposure_ms", "binning"}
+        for metric in ("signal_coverage", "structure_coverage",
+                       "signal_concentration"):
+            assert result[metric] == round(result[metric], 6)
 
     def test_metric_gate_comes_from_rig_config(self, mock_ctrl):
         guard = SafetyGuard(SafetyConstraints(

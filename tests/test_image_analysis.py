@@ -612,25 +612,20 @@ class TestFocusMetricGate:
 
 class TestCoverageStats:
     def test_blur_changes_pixel_coverage_but_preserves_structure_extent(self):
-        """F5: the same structured field stays detectable after defocus."""
-        from scipy.ndimage import gaussian_filter
-
-        rng = np.random.default_rng(2)
+        """F5: diffuse material below the pixel gate separates from glass."""
+        rng = np.random.default_rng(12)
         noise = rng.normal(0, 10, (256, 256))
-        impulses = np.zeros((256, 256))
-        for y in range(64, 193, 32):
-            for x in range(64, 193, 32):
-                impulses[y, x] = 5000
-        focused_signal = gaussian_filter(impulses, 1)
-        focused = 400 + noise + focused_signal
-        blurred = 400 + noise + gaussian_filter(focused_signal, 3)
+        diffuse = np.zeros((256, 256))
+        diffuse[64:192, 88:168] = 15
+        out_of_focus = (400 + noise + diffuse).astype(np.uint16)
+        empty = (400 + noise).astype(np.uint16)
 
-        focused_stats = compute_stats(focused)
-        blurred_stats = compute_stats(blurred)
-        assert blurred_stats.signal_coverage > 2 * focused_stats.signal_coverage
-        assert blurred_stats.structure_coverage == pytest.approx(
-            focused_stats.structure_coverage, rel=0.1
-        )
+        field_stats = compute_stats(out_of_focus)
+        empty_stats = compute_stats(empty)
+        assert field_stats.snr < UNCALIBRATED_MIN_SNR_FALLBACK
+        assert field_stats.signal_coverage < 0.005
+        assert field_stats.structure_coverage > 0.1
+        assert empty_stats.structure_coverage < 0.005
 
     def test_bright_corner_is_concentrated_but_spread_signal_is_not(self):
         """F6's failure: equal signal in one corner must read near one."""
@@ -651,6 +646,15 @@ class TestCoverageStats:
         assert stats.signal_coverage == 0
         assert stats.structure_coverage == 0
         assert stats.signal_concentration == 0
+
+    def test_zero_noise_makes_no_thresholded_extent_claim(self):
+        image = np.full((32, 32), 400, dtype=np.uint16)
+        image[0:4, 0:4] = 800
+        low_gate = compute_stats(image, min_snr=1)
+        high_gate = compute_stats(image, min_snr=20)
+        assert low_gate.signal_coverage == high_gate.signal_coverage == 0
+        assert low_gate.structure_coverage == high_gate.structure_coverage == 0
+        assert low_gate.signal_concentration > 0
 
 
 def test_make_thumbnail_returns_valid_png():

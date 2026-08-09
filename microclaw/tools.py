@@ -2457,9 +2457,9 @@ def snap_and_analyze(
         "min_intensity": round(stats.min_intensity, 1),
         "max_intensity": round(stats.max_intensity, 1),
         "saturated_fraction": round(stats.saturated_fraction, 6),
-        "signal_coverage": stats.signal_coverage,
-        "structure_coverage": stats.structure_coverage,
-        "signal_concentration": stats.signal_concentration,
+        "signal_coverage": round(stats.signal_coverage, 6),
+        "structure_coverage": round(stats.structure_coverage, 6),
+        "signal_concentration": round(stats.signal_concentration, 6),
     }
     restore = _live_restore_report(live_state)
     if restore:
@@ -5007,6 +5007,11 @@ def read_hook_log(ctrl: MicroscopeController, guard: SafetyGuard, log_path: str)
             "artifact": {"kind": "hook_log", "path": log_path}}
 
 
+_COVERAGE_METRICS = frozenset({
+    "signal_coverage", "structure_coverage", "signal_concentration",
+})
+
+
 @emits_nothing
 def rank_hook_log(
     ctrl: MicroscopeController,
@@ -5040,8 +5045,7 @@ def rank_hook_log(
         result = entry.get("result") or {}
         missing = [k for k in ("position", "x_um", "y_um") if entry.get(k) is None]
         if metric not in result:
-            if metric in {"signal_coverage", "structure_coverage",
-                          "signal_concentration"}:
+            if metric in _COVERAGE_METRICS:
                 return {"error": (
                     f"Entry {i} predates the {metric} statistic; this hook log "
                     "must be reacquired before it can be ranked by coverage."
@@ -5094,8 +5098,7 @@ def rank_hook_log(
             "Coverage statistics deliberately have no validity flag; they are "
             "defined for every finite image. Their min_snr threshold and source "
             "travel with each ranked row."
-            if metric in {"signal_coverage", "structure_coverage",
-                          "signal_concentration"}
+            if metric in _COVERAGE_METRICS
             else f"Rows with result.{metric}_valid false are not ranked."
         ),
         "entry_count": len(rows) + len(invalid_rows),
