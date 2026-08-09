@@ -37,7 +37,7 @@ settled on M5 already: the artifact's digests still recompute exactly.
 ## Pin the implementation
 
 ```powershell
-git merge-base --is-ancestor PLACEHOLDER HEAD
+git merge-base --is-ancestor a97620b HEAD
 if ($LASTEXITCODE -eq 0) { "PINNED OK" } else { "WRONG TREE - stop" }
 ```
 
