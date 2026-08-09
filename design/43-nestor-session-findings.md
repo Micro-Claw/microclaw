@@ -439,6 +439,13 @@ on the deployed MM build and shadows as `refresh_gui_from_cache` over the bridge
 `refreshGUI()` is available, use it and drop the cache rationale; the fix stands
 either way.
 
+> **Half-answered 2026-08-09, off-rig.** `javap` on the local MM 2.0.3-20260625
+> `MMJ_.jar` reports both `refreshGUI()` and `refreshGUIFromCache()` on
+> `org.micromanager.Application`, so the from-cache rationale stands and the
+> fallback is not needed. Still unverified: the *deployed Windows* build, and
+> the bridge shadow — though `refresh_gui()` already works on the same interface
+> at `tools.py:1103`. See the checklist's block 43b entry.
+
 ---
 
 ## F5 — "when you see a tile with higher signal, use it to focus" is not expressible
