@@ -93,6 +93,65 @@ This is a hypothesis, not a measurement. What *is* measured is the structural
 defect above, which is real either way and is why a five-minute wedge was
 possible at all.
 
+## F4 — MM's dataset viewer cannot display a dataset with no channel axis
+
+**This is the answer, and it retires F2's leading hypothesis.** The round-2 G4a
+run (`42b-G4a-round2-history.jsonl`) opened the three `pos_*` datasets from disk
+in a session that had **not** acquired them, so nothing held them open. The first
+one did not stall. It returned a Java stack trace:
+
+```
+java.lang.IndexOutOfBoundsException: Index: 0, Size: 0
+  at java.util.LinkedList.get
+  at NDTiffAdapter.lambda$getImagesIgnoringAxes$2(NDTiffAdapter.java:278)
+  at NDTiffAdapter.getImagesIgnoringAxes(NDTiffAdapter.java:276)
+  at DefaultDatastore.getImagesIgnoringAxes(DefaultDatastore.java:210)
+  at DisplayController.handleDisplayPosition(DisplayController.java:612)
+  at AbstractDataViewer.setDisplayPosition(AbstractDataViewer.java:230)
+  at DisplayController.create(DisplayController.java:256)
+  at DisplayController$Builder.build(DisplayController.java:226)
+  at DefaultDisplayManager.loadDisplays(DefaultDisplayManager.java:398)
+```
+
+So `loadData` **succeeded** — MM read the dataset. It is `loadDisplays`, building
+the display, that fails.
+
+Why: `NDTiffAdapter` keeps `coordsIndexedMissingC_`, an index of coordinates with
+the **channel** axis stripped, and `"channel"` is the *only* string constant in
+the entire class (`javap` on `MMJ_.jar`). `getImagesIgnoringAxes` looks up that
+channel-stripped index and calls `.get(0)` on the result. Our datasets have axes
+`{'time': 0}` and no channel axis at all, so the lookup returns an empty list and
+`.get(0)` throws.
+
+**Every single-channel dataset microclaw writes hits this.** It is an MM defect,
+in display rather than in reading, and we cannot fix it.
+
+The wedge follows from the crash rather than causing it: the exception is thrown
+part-way through `DisplayController.create` on the EDT, and every later bridge
+call then stalls — `pos_2` on `studio.displays`, `pos_3` on the `connection
+check`, both watchdogged at 30 s and both correctly telling the operator to
+restart. A subsequent `open_artifact` on the mosaic TIFF — a path that is
+otherwise proven — also failed, exactly as the message predicted.
+
+**F2's threading finding stands** (microclaw is still the only caller that holds
+the bridge lock across MM display construction, and MM still backgrounds it at
+all four of its own call sites). **F2's file-lock hypothesis is withdrawn** — it
+was never needed. The round-2 run had no acquisition viewer open and failed
+anyway.
+
+### What this means for the block
+
+`Studio.data().loadData` + `loadDisplays` is **not a viable entry point for the
+datasets microclaw writes**. Block 42 exists to open what we wrote, and MM's
+viewer specifically cannot open what we write. Two independent MM defects now
+block it — F1 at load for string axes, F4 at display for missing channel — and
+neither is ours to repair.
+
+What still works, and is gate-proven: the **file** branch. `IJ.open` on a TIFF
+opened the mosaic and verified its digests (G1/G2 PASS). `ndstorage` also reads
+these datasets perfectly — `_measured_shape` returned 512×512×1 for the two that
+stalled, from the same call that failed to display them.
+
 ## F3 — a blocked tool call takes down `microclaw serve` (deferred, low priority)
 
 Recorded at the user's request; **not being fixed now.**
