@@ -276,6 +276,18 @@ class TestHintForError:
         from microclaw.errors import hint_for_error
         assert "port 4827" in hint_for_error(ConnectionError("connection refused"))
 
+    def test_a_missing_lookup_name_is_not_called_hardware(self):
+        from microclaw.errors import hint_for_error
+        hint = hint_for_error(KeyError("No adapter named 'missing'"))
+        assert "lookup error" in hint
+        assert "not a hardware fault" in hint
+
+    def test_path_message_wins_over_keyerror_type(self):
+        from microclaw.errors import hint_for_error
+        hint = hint_for_error(KeyError("No such file or directory: adapter.json"))
+        assert "path does not exist" in hint
+        assert "lookup error" not in hint
+
     def test_rig_authorization_refusal_is_not_called_hardware(self):
         from microclaw.authorization import RigAuthorizationError
         from microclaw.errors import _HARDWARE_HINT, hint_for_error

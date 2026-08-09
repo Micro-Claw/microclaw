@@ -992,6 +992,103 @@ class TestRunAdaptiveSurvey:
             ["tile_0", "tile_1", "tile_2"]
         assert result["tiles_planned"][0]["x_um"] == 150.0
 
+    def test_precoded_hook_omits_unobservable_actions_and_names_missing_log(
+        self, mock_ctrl, unconstrained_guard, captured, tmp_path
+    ):
+        """Precoded hooks steer directly; parent-dispatch counts do not exist."""
+        from microclaw.tools import run_adaptive_survey
+
+        result = run_adaptive_survey(
+            mock_ctrl, unconstrained_guard, protocol="timelapse",
+            save_dir=str(tmp_path), hook_strategy="probe",
+            positions=self._positions(),
+            protocol_params={"n_frames": 1, "interval_s": 0},
+        )
+        assert "hook_actions" not in result
+        assert "log_path" not in result
+        assert result["hint"] == (
+            "stopped_early describes the hook's control decisions, not what was found. "
+            "No per-tile log was written for this run, so there is nothing to read back."
+        )
+
+    def test_result_counts_actions_observed_by_the_real_parent_dispatch(
+        self, mock_ctrl, unconstrained_guard, monkeypatch, tmp_path
+    ):
+        import numpy as np
+        from microclaw import tools
+        from microclaw.hook_decisions import (
+            ContinueSurvey, HookResult, UntrustedHookAdapter,
+        )
+
+        class ContinueHook:
+            def analyze_frame(self, image, metadata):
+                return HookResult({"would_keep": True}, (ContinueSurvey(),))
+
+        adapter = UntrustedHookAdapter(ContinueHook(), str(tmp_path / "hook.json"))
+        monkeypatch.setattr(tools, "_resolve_hook", lambda *_args, **_kwargs: adapter)
+
+        def acquire(_guard, _save_dir, _name, _events, hook=None, **_kwargs):
+            for position in range(3):
+                hook.image_process_fn(
+                    np.zeros((2, 2), dtype=np.uint16),
+                    {"Axes": {"position": position}}, object(),
+                )
+            return "/ws/ds"
+
+        monkeypatch.setattr(tools, "_acquire_with_hooks", acquire)
+        result = tools.run_adaptive_survey(
+            mock_ctrl, unconstrained_guard, protocol="timelapse",
+            save_dir=str(tmp_path), hook_strategy="saved",
+            positions=self._positions(),
+            log_path=str(tmp_path / "hook.json"),
+            protocol_params={"n_frames": 1, "interval_s": 0},
+        )
+        assert result["hook_actions"] == {"ContinueSurvey": 3, "StopSurvey": 0}
+        assert result["frames_acquired"] == 3
+        assert "control decisions, not what was found" in result["hint"]
+        assert "read_hook_log" in result["hint"]
+
+    def test_a_saved_hook_that_dispatches_nothing_omits_the_counts(
+        self, mock_ctrl, unconstrained_guard, monkeypatch, tmp_path
+    ):
+        """An observation-only saved hook has no decisions, not zero decisions.
+
+        HookResult.actions defaults to (), so a saved hook may legitimately
+        record measurements and propose nothing. Its adapter then holds an empty
+        count dict — which is not the same fact as "the hook chose Continue zero
+        times", and reporting it as {"ContinueSurvey": 0} would recreate F8 in
+        the very field added to retire it.
+        """
+        import numpy as np
+        from microclaw import tools
+        from microclaw.hook_decisions import HookResult, UntrustedHookAdapter
+
+        class MeasureOnlyHook:
+            def analyze_frame(self, image, metadata):
+                return HookResult({"snr": 12.0})
+
+        adapter = UntrustedHookAdapter(MeasureOnlyHook(), str(tmp_path / "hook.json"))
+        monkeypatch.setattr(tools, "_resolve_hook", lambda *_args, **_kwargs: adapter)
+
+        def acquire(_guard, _save_dir, _name, _events, hook=None, **_kwargs):
+            for position in range(3):
+                hook.image_process_fn(
+                    np.zeros((2, 2), dtype=np.uint16),
+                    {"Axes": {"position": position}}, object(),
+                )
+            return "/ws/ds"
+
+        monkeypatch.setattr(tools, "_acquire_with_hooks", acquire)
+        result = tools.run_adaptive_survey(
+            mock_ctrl, unconstrained_guard, protocol="timelapse",
+            save_dir=str(tmp_path), hook_strategy="saved",
+            positions=self._positions(),
+            log_path=str(tmp_path / "hook.json"),
+            protocol_params={"n_frames": 1, "interval_s": 0},
+        )
+        assert "hook_actions" not in result
+        assert result["frames_acquired"] == 3
+
     def test_position_names_resolve_from_the_mm_list(
         self, mock_ctrl, unconstrained_guard, captured, tmp_path
     ):

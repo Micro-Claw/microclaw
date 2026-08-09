@@ -1424,6 +1424,27 @@ class TestTileGridCenter:
         assert self._tiles(result)[0] == (400.0, 500.0)
         tracking_ctrl.set_xy.assert_called_once_with(500.0, 600.0)
 
+    def test_grid_center_source_reports_default_explicit_and_partial_truthfully(
+        self, tracking_ctrl, unconstrained_guard
+    ):
+        default = run_tile_acquisition(
+            tracking_ctrl, unconstrained_guard,
+            rows=1, cols=1, step_um=100.0, protocol="snap",
+        )
+        explicit = run_tile_acquisition(
+            tracking_ctrl, unconstrained_guard,
+            rows=1, cols=1, step_um=100.0, protocol="snap",
+            center_x_um=500.0, center_y_um=600.0,
+        )
+        partial = run_tile_acquisition(
+            tracking_ctrl, unconstrained_guard,
+            rows=1, cols=1, step_um=100.0, protocol="snap",
+            center_x_um=700.0,
+        )
+        assert default["grid_center_source"] == "current_stage_position"
+        assert explicit["grid_center_source"] == "explicit"
+        assert partial["grid_center_source"] == "partially_explicit"
+
     def test_an_out_of_bounds_supplied_center_is_refused_before_any_motion(
         self, tracking_ctrl, default_guard
     ):

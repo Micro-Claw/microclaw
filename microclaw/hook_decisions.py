@@ -258,6 +258,12 @@ class UntrustedHookAdapter:
         self._context: dict[str, Any] | None = None
         self._illumination_context: dict[str, Any] | None = None
         self._artifact_context: dict[str, Any] | None = None
+        self._action_counts: dict[str, int] = {}
+
+    @property
+    def action_counts(self) -> dict[str, int]:
+        """Typed actions observed at the trusted parent dispatch boundary."""
+        return dict(self._action_counts)
 
     @property
     def proposes_actions(self) -> bool:
@@ -348,6 +354,7 @@ class UntrustedHookAdapter:
                      decision="accepted", reason=reason, **fields)
 
     def _dispatch(self, action: HookAction, metadata: dict) -> str | None:
+        self._action_counts[action.kind] = self._action_counts.get(action.kind, 0) + 1
         if isinstance(action, DiscardFrame):
             self._accept(metadata, action, "frame pixels discarded after exposure")
             return None
