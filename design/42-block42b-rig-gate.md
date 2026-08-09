@@ -82,9 +82,42 @@ shows the check is file arithmetic and carries nothing machine-specific.
 
 ## G0 — the directory mechanism
 
-**Run this first.** The tool's directory branch was designed from a jar
-disassembly, which proves those methods exist and proves nothing about whether
-pyjavaz can reach them or whether a window paints. G0 is what settles that.
+**Run this first — and only once. Do not re-run it after a code change.**
+
+G0 is the spike, not microclaw. `42-ij-dir-spike.py` imports exactly two things
+from the package (`microclaw` for the path banner, `_new_static_java_class` for
+static-class hygiene) and never calls `open_in_imagej` or `_open_dataset_in_mm`.
+It calls MM's reader and IJ1's `FolderOpener` **raw**, on purpose, to measure what
+they do. **No change to microclaw can move its output**, and the 2026-08-09
+re-run confirmed that: it was byte-identical to the first, modulo a BOM and
+sub-second timings.
+
+Its answers are already in, and they are inputs to the design rather than a
+verdict on the code:
+
+- **D2 ERROR** — MM's `NDTiffAdapter` casts every axis value to `Integer`, so a
+  dataset with a string-valued axis cannot be read by MM at all. Per this
+  document's own legend, `D2 FAIL -> 42b must refuse directories by name`. That
+  refusal is implemented; verify it with the standalone check below, not by
+  re-running G0.
+- **D3 FAIL** — `FolderOpener.open` on a directory stalled the bridge for 120 s,
+  twice, no dialog reported. Microclaw does not call it. This is why.
+
+**The check that does exercise the refusal** needs no Micro-Manager and no gate
+session — the axis pre-flight is pure Python and runs before any bridge call:
+
+```powershell
+uv run python -c "from microclaw.controller import MicroscopeController as C; from ndstorage import Dataset; p=r'D:\stitch_test\stitch_test_1'; print('AXES:', Dataset(p).axes); print('RESULT:', C._open_dataset_in_mm(C.__new__(C), p))"
+```
+
+Expect `AXES` to show which axis holds strings, and `RESULT` to be a refusal
+naming that axis and value. If `RESULT` instead says *No Micro-Manager bridge
+connection*, the axes were all integers and F1 is not what blocks this dataset —
+report that, because it would mean the D2 ClassCastException has another cause.
+
+The original framing follows, for the record: the directory branch was designed
+from a jar disassembly, which proves those methods exist and proves nothing about
+whether pyjavaz can reach them or whether a window paints.
 
 ```powershell
 python design\42-ij-dir-spike.py --dir "C:\path\to\stitch_test_1" 2>&1 | Out-File -Encoding utf8 out42b-G0.txt
