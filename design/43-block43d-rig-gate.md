@@ -10,15 +10,21 @@ the results table. Use `$LASTEXITCODE` and printed words, never
 
 ## Step 0 — pin the implementation and run the full suite
 
-The coordinator replaces `<BLOCK43D_COMMIT>` with the implementation commit.
-The gate deliberately accepts descendant commits.
+`a7a415d` is the gated implementation, pinned by the coordinator at push time.
+The gate deliberately accepts descendant commits, so a later runbook amendment
+cannot invalidate the pin it contains.
+
+Off-rig at `a7a415d` on macOS, re-measured by the coordinator rather than taken
+from the runner's report: **1674 passed, 99 skipped, 3 expected warnings, 1772
+collected, 0 failures.** The branch started from `04c0654` at 1667 / 99 / 1766,
+so the seven added IDs are this block's own tests and nothing was lost.
 
 ```powershell
 cd C:\Users\ries\microclaw
 git fetch origin
 git checkout design43/report-shapes
 git pull
-git merge-base --is-ancestor <BLOCK43D_COMMIT> HEAD
+git merge-base --is-ancestor a7a415d HEAD
 if ($LASTEXITCODE -eq 0) { "PIN OK - the gated implementation is present" }
 else { "PIN FAILED - stop, this checkout does not contain the implementation" }
 
