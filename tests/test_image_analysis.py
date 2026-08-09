@@ -282,6 +282,35 @@ class TestHintForError:
         assert "lookup error" in hint
         assert "not a hardware fault" in hint
 
+    def test_a_dataset_path_that_is_a_file_says_so(self):
+        """Block 43e's M5 gate, first call of the session: the agent passed the
+        mosaic .tif as dataset_path and got the hardware hint on a tool that
+        touches no hardware. NotADirectoryError is an OSError sibling, not a
+        FileNotFoundError subclass, so it fell past the path branch."""
+        from microclaw.errors import _HARDWARE_HINT, hint_for_error
+        hint = hint_for_error(NotADirectoryError(20, "The directory name is invalid"))
+        assert hint != _HARDWARE_HINT
+        assert "hardware" not in hint
+        assert "NDTiff dataset IS a directory" in hint
+
+    def test_a_windows_directory_name_message_is_recognised_without_the_type(self):
+        # WinError 267 reaches us through pycro-manager as a bare Exception on
+        # some paths, exactly as the FileNotFoundError case above does.
+        from microclaw.errors import _HARDWARE_HINT, hint_for_error
+        hint = hint_for_error(Exception("[WinError 267] The directory name is invalid: 'x.tif'"))
+        assert hint != _HARDWARE_HINT
+        assert "directory" in hint
+
+    def test_an_existing_output_directory_is_not_called_hardware(self):
+        """Same gate, second call: offline analysis refuses to reuse an
+        output_dir so a previous analysis is never overwritten. That is a
+        deliberate refusal and must read as one."""
+        from microclaw.errors import _HARDWARE_HINT, hint_for_error
+        hint = hint_for_error(FileExistsError(17, "Cannot create a file when that file already exists"))
+        assert hint != _HARDWARE_HINT
+        assert "hardware" not in hint
+        assert "output_dir" in hint
+
     def test_path_message_wins_over_keyerror_type(self):
         from microclaw.errors import hint_for_error
         hint = hint_for_error(KeyError("No such file or directory: adapter.json"))
