@@ -562,7 +562,7 @@ assistant's narration when judging whether a guard fired.
 | 43m | Nestor (fallout) | none — **gated every later Track F rig gate** | `design43/windows-suite-integrity` (deleted) | `18f84f1` | `f49deb5` (accepted round 1, no rework); runbook `f0f3d3f` pinned `f49deb5` | **M2 2026-08-09 PASS — 0 failed, 1650 passed, 116 skipped, 1766 collected** (`43m-m2`). Skip count unchanged from 43a's run, so the subject tests ran rather than being skipped | `75fea30` | done — block *is* the gate; standing constraint added below |
 | 43b | Nestor | none | `design43/refresh-gui` | `04c0654` assigned 2026-08-09, worktree `../microclaw-43b` | `8162b04` + `74dc87f` (review round 1 returned); runbook `ef6a658` pinned `74dc87f` | **pushed 2026-08-09, awaiting M5.** Runbook `design/43-block43b-rig-gate.md` on the branch. Owed: G1 the pyjavaz shadow of `refresh_gui_from_cache` (the one thing `javap` could not answer — **do not re-run `javap`**), G2 channel switch, G3 zero-dose focus-lock + `set_device_property` non-regression, G4 rollback **best-effort**, and a full suite per the standing constraint | | |
 | 43c | Nestor | none | `design43/session-grants` | | | **required** — the audit log must still record every event | | |
-| 43d | Nestor | none | `design43/report-shapes` | `04c0654` **assigned 2026-08-09**, worktree `../microclaw-43d` | | required — payload text, validate criteria against the Nestor history | | |
+| 43d | Nestor | none | `design43/report-shapes` | `04c0654` assigned 2026-08-09, worktree `../microclaw-43d` | `8635d7c` + `9b98b0b` (two review rounds returned) + `a7a415d` (coordinator fixes); runbook pin `a7a415d` | **pushed 2026-08-09, awaiting a rig.** Runbook `design/43-block43d-rig-gate.md` on the branch. G1 saved-hook survey, G2 unknown adapter, G3 previous-area centre, plus a full suite per the standing constraint. Gate patterns were validated against the Nestor session before shipping and each reads **1** on it | | |
 | 43e | Nestor | none | `design43/builtin-offline-adapters` | | | required | | |
 | 43f | Nestor | 43a merged (its prompt names the key this creates) | `design43/rig-profile` | | | required | | |
 | 43g | Nestor | none | `design43/coverage-statistics` | | | **required — beads + a diffuse field**; nothing ranks on it until calibrated | | |
@@ -5355,6 +5355,40 @@ no behaviour change, and each one produced a wrong statement in the session.
       scan's area must pass that scan's centre, because the default centre is
       wherever the stage happens to be.
 - [ ] No new arguments in any of the three.
+
+**Implemented and pushed 2026-08-09, awaiting a rig.** Two review rounds plus a
+coordinator fix. Three things it learned that design/43 F8 and F11 do not say:
+
+- **`hook_actions` is emitted only when typed actions were actually observed at
+  the parent dispatch, and omitted otherwise.** `_resolve_hook` wraps only
+  *saved* hooks in `UntrustedHookAdapter`; a precoded hook is returned bare and
+  has no counts, and a saved hook may legitimately dispatch nothing because
+  `HookResult.actions` defaults to `()`. In both cases an emitted
+  `{"ContinueSurvey": 0, "StopSurvey": 0}` would state, in the one
+  content-shaped field the result has, that the hook decided nothing on a run
+  where it continued at every tile — F8's own defect in the key added to retire
+  it. F8's stub shows the counts unconditionally; it is silent on this.
+- **A correction to the record, made by reading the session rather than
+  remembering it.** Review round 1 asserted F8's survey ran a *precoded* hook.
+  It did not: all seven `run_adaptive_survey` calls in
+  `20260806_152935_790472` used `filament_position_filter`, which is not in
+  `PRECODED_HOOK_REGISTRY`, and every one passed `log_path`. The error was the
+  coordinator's, reached the branch through a review prompt, and is corrected in
+  the runbook. The defect it prompted was real and the fix stands — but the
+  precoded path is covered off-rig, because **no precoded hook can drive an
+  adaptive run at all**, so a rig limb for it would stall after the seed
+  exposure.
+- **`grid_center_source` has three values, not two.** F11 names
+  `current_stage_position | explicit`; the half-explicit call — one coordinate
+  supplied, one defaulted — is neither, and reporting it as either is a false
+  provenance claim. It reports `partially_explicit`.
+
+Carried to the post-merge design gate: design/43 F8's stub and F11's two-value
+list both need reconciling to the above, and `hook_actions` currently projects
+only `ContinueSurvey`/`StopSurvey` from a dict that observes every kind, so a
+hook dispatching only `DiscardFrame` still reads as two zeros. That last one is
+a narrower version of the same defect and was left rather than widened
+mid-block.
 
 ## 43e. Offline analysis ships with no analyses in it
 
