@@ -351,7 +351,49 @@ and the only branches on `origin` besides `main` are
   second merges `main` first**. Eight blocks remain after them: 43c, 43e, 43f,
   43g, 43h, 43i, 43j, 43k.
 
-### State at the 2026-08-09 close of the 43b/43d session — read this before assigning anything
+### State at the 2026-08-09 close of the second Track F session — read this before assigning anything
+
+Supersedes every note above. Written at `53e3f12`; verify rather than compare,
+because a coordinator commit after it is expected. What should hold:
+`git log --oneline origin/main..main` empty, working tree clean, and the only
+branches on `origin` besides `main` are `design34/focus-system-authorization`
+(6a), `florian/setup-claude-workflow` and `port-to-jpype-acqj` — **no Track F
+branch is open.** One worktree besides this one: `../microclaw-6a`, idle at
+`4994f3e`.
+
+- **43b and 43d are both MERGED and fully closed** (`b220e33`, `53395d2`) — M5
+  gates PASS, ledger rows closed, coordination notes in `design/prompts.md`,
+  design gates merged (`8ec9da6`, `53e3f12`), branches and worktrees deleted.
+  **Track F merged: 43a, 43m, 43b, 43d. Eight remain: 43c, 43e, 43f, 43g, 43h,
+  43i, 43j, 43k.**
+- **43c and 43e are the next two, and they may run concurrently.** 43e was
+  blocked on 43d and is now unblocked: it extends `_load_saved_adapter`'s refusal
+  message, which 43d rewrote, so build on that wording rather than replacing it
+  (`No adapter named X. Available saved adapters: [...]` → built-ins listed
+  first). 43c is `tools.py`'s `CONFIRM_FN` seam plus `webserve.py`; 43e is
+  `completed_dataset.py` plus `image_analysis`. Disjoint.
+- **43c gained a required design item from 43b's M5 gate.** A `set_channel` call
+  that meant "turn the laser off" enabled it instead — approved at an
+  `ENABLE ILLUMINATION` prompt, because that is what the tool was doing. Under a
+  session-wide grant that exposure is silent. See 43c's entry; the block must
+  answer it rather than discover it.
+- **Order for the rest**, from design/43's own suggested order: 43c, 43e, 43f,
+  43g, 43h, then 43i (needs 43g and 43h), 43j (needs 43e), and 43k is design work
+  only, after 43h and 43i have run on a rig.
+- **Suite baseline: 1680 passed / 99 skipped / 3 expected warnings, 1779
+  collected** on macOS at `53e3f12`. M5 measured 1657 / 116 / 1773 at 43d's gate,
+  before 43b's six tests merged in. Re-measure; judge by failures and collected
+  total; **derive the total from passed + skipped rather than transcribing it**
+  (a coordinator slip put 1772 in front of a rig operator when the real number
+  was 1773); diff collected test IDs against the branch's start commit.
+- **Two runbook rules earned this session.** Drive the suite and the collect-only
+  step through the **same launcher** — 43b's runbook used `uv` for one and bare
+  `python` for the other, and M5's bare `python` is a miniconda without pytest,
+  so no collected-ID list came back. And **fold the gate into a real session**
+  rather than running it as a script: 43d's M5 gate rode along with an operator
+  debugging a 640 trigger, which is why its criteria landed on genuine requests.
+
+### State at the 2026-08-09 close of the 43b/43d session — superseded, kept for the round history
 
 Supersedes both notes above. Written at `8ec9da6`; verify rather than compare
 against that hash, because a coordinator commit after it is expected. What should
