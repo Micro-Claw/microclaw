@@ -5286,3 +5286,43 @@ reachable on macOS, and **no full suite had run on any Windows rig since 41b and
 "run on more rigs": a block whose gate is a rig session should run the suite
 there too, because the suite is the only part of the gate that exercises code the
 block did not touch.
+
+## Block 43m — the suite is red on Windows and nothing noticed
+
+Not a design/43 finding. Found by 43a's gate, as a side effect of Step 0 running
+the suite on the rig, and merged the same day it was found.
+
+**Two merges of latent, platform-only defects, invisible to everyone who could
+have looked.** Blocks 41b and 41c each shipped a test that fails only on a
+Windows host — eight reading the emitted script with an encoding-naive
+`read_text` under a code page, and one consulting the host's real Micro-Manager
+installation. Neither is reachable on macOS. No full suite had run on any
+Windows rig since they landed, so both sat green on every machine anybody
+checked. The durable fix is now a standing constraint in the checklist: **a
+block gated by a rig session runs the suite there too.** The suite is the only
+part of a rig gate that exercises code the block did not touch.
+
+**`MagicMock` invents capabilities, and capability checks are how this package
+degrades gracefully.** The EMU defect was `getattr(ctrl, "get_mm_app_dir", None)`
+passing on a mock that auto-created the method, so a unit test walked out to the
+real MM install. Any `getattr`/`hasattr` capability check has this hazard the
+moment a bare mock reaches it. The fix was one line in the shared fixture; the
+audit that came with it — which checks are reachable and which are not — was
+worth more than the fix.
+
+**The runner was right to decline the bigger version.** Asked to close the class,
+it fixed the one reachable case, audited the rest, and said replacing every bare
+`MagicMock` was unjustified scope. That is the correct answer to "make the class
+impossible" when the class is mostly theoretical, and it beats a sweeping change
+nobody can review.
+
+**Mutation-check a test whose subject is an absence.** The new AST guard asserts
+that no test does text I/O without naming an encoding. Reintroducing one
+violation made it fail and name the file and line. A guard like that is worth
+exactly as much as its demonstrated ability to go red.
+
+**A green suite can be a lie, and the skip count is how you tell.** 43m's gate
+criterion was "0 failed", which a run that *skipped* the eight subject tests
+would also satisfy. What made the result trustworthy was arithmetic against the
+previous run on the same machine: `1639 + 9 + 2 = 1650` passed with skips
+unchanged at 116. Compare skip counts across runs on one host, not just totals.
