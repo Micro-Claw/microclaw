@@ -356,10 +356,25 @@ def _live_restore_report(state: dict) -> dict | None:
 > continuous exposure: say so before you start one, and account for it the way
 > you account for any other dose.
 
-**Untested:** whether stopping live mode inside `_pause_live` and never
-restoring it leaves MM's Preview window in a state the operator finds
-disagreeable (an open-but-frozen canvas). Check on the rig; if it is ugly, the
-answer is still "off", just reported more loudly.
+**Measured 2026-08-09 on M2 (block 43a's gate).** The Preview window stays
+open displaying the last frame acquired before live stopped, and does not read
+as live. That is the good outcome and the report does not need to be louder, so
+this paragraph's contingency never had to be exercised.
+
+**One correction to the decision above, found while implementing it.** The
+replacement prompt text named *a focus sweep* as something the operator is about
+to watch. `run_autofocus`'s sweep is headless in this codebase — live is paused
+for its whole duration and `test_the_sweep_never_touches_the_viewer` pins that —
+so the example told the model to start a continuous exposure for an event that
+shows nothing. The shipped text keeps only the navigation example.
+
+**Also settled by the implementation:** `find_features` is a borrow, not a run.
+It is one on-demand snap, the same shape as `snap_and_analyze`, and
+`center_feature` loops over it — so leaving live off there both took over the
+operator's session for a single frame and swallowed the explanation, because
+`center_feature` returns its own payload. Decision 3's "interactive snaps keep
+restoring" covers it. `calibrate_stage_to_camera` and `run_autofocus` do not:
+four exposures with stage moves, and 20–60 exposures, are runs.
 
 ---
 
@@ -597,8 +612,11 @@ saved 561 tiles, which are a free labelled set: six known-positive fields with
 
 ## F7 — stop offering the TIFF export, and stop giving the wrong reason
 
-**What happened.** Offered six times (`[121] [123] [127] [145] [221] [261]`),
-always with the same rationale:
+**What happened.** Offered **seven** times — `[121] [123] [127] [145] [221]
+[223] [261]`. This document originally said six and listed six; `[223]`, *"(If
+you'd rather I also export each to a plain .tiff, say so.)"*, was missed by the
+hand-read and found in block 43a's gate when the match pattern was validated
+against this session. Most of them carried the same rationale:
 
 > **Export to TIFF** (`export_dataset_as_tiff`) so you can scrub it in FIJI and
 > look for moving spots
@@ -636,6 +654,19 @@ design/42's `open_artifact`.
 and in the SMLM section, keep the export line but attach the reason ("external
 localization software requires a single-file TIFF"), so the rule generalises
 instead of reading as a habit.
+
+**Shipped and gated in block 43a (merged 2026-08-09).** M2 measured both
+directions in one session: *"let me look at what you just acquired"* produced
+four `open_artifact` calls and no export offer, and *"I want to run this through
+ThunderSTORM"* produced the export with its single-file reason. The second is
+the limb that matters as much as the first — a fix that had made microclaw
+reluctant to export would have traded one wrong default for another.
+
+**A note for anyone writing a gate criterion against this finding.** The obvious
+pattern, `export_dataset_as_tiff`, reads **1** on this session: six of the seven
+offers were prose and never named the tool. Use `export.{0,40}tiff`,
+case-insensitive, which reads 7 and does not match the mosaic filenames at
+`[43]`/`[45]`.
 
 This raises the priority of design/42: F7 and F12 both end at "the operator wants
 to look at what we just wrote", and `open_artifact` is the answer to both.
@@ -1079,8 +1110,9 @@ this session had a field where the two would have disagreed (F6).
 
 ## Suggested order
 
-1. **F3** (live mode) and **F7** (TIFF prose) — prompt and payload text, no new
-   mechanism, both stop active harm.
+1. ~~**F3** (live mode) and **F7** (TIFF prose)~~ — **DONE, block 43a, merged
+   2026-08-09, M2 gate PASS.** Prompt and payload text plus one keyword argument
+   on `_pause_live`; both stopped active harm.
 2. **F4** (refresh_gui) — a helper and three callsites; verify the MM method name
    on the rig first.
 3. **F2** (session grant) — small, self-contained, needs a UI change and a rig

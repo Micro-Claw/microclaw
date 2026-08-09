@@ -501,7 +501,8 @@ assistant's narration when judging whether a guard fired.
 | 41d | Platform | none — ran concurrently with 41c | `design41/path-expansion` (deleted) | `8a11e45` | `63ddd2b` + `ff03913`; review round 2 `3412aea`; runbook pin `d6e2a79` | M5 2026-08-06 **Step 0 + G0 + G1 + G2 + G3 all PASS** (`gate41d-m5`, two rounds) | `f864a33` | **done** — design/32 §"The path-normalisation contract (block 41d)" |
 | 42a | Read side | none — may run concurrently with Track B | `design42/ij-open-spike` (deleted) | `ca0709d` | `0d97329` + runbook `4ab450b`; review round 1 `f95d5a9` (runbook pin `0d97329` re-verified after it) | M5 2026-08-07 **PASS** — 6 PASS / 3 INFO / 1 SKIP, no FAIL; 1c reproduced the design/12 collision (`out42a.txt`) | `4bcaeee` | **done** — design/10 §2 + Net conclusions #2 amended, design/42 §"What the spike measured" |
 | 42b | Read side | 42a's answers | `design42/open-artifact` (deleted) | `4d6a426` | `0dd3629` (dir spike) + `410846e` + `e02955f` + `ebebe45` + `ed9c78a`; review round 1 `867f3af`; runbook `a038c95`/`838f00d`/`b06fbac` pinned `867f3af`; findings `c60d33f`; fix round `229423d` (runner) + review round 2 `f574643`; **redesign `a97620b`** (open the dataset's TIFFs, MM reader deleted); runbook re-pinned `a97620b`; round-3 fix `5d09b7b` | **demo machine, three rounds, PASS at `a97620b`.** Round 1 (`bc93f76`): file branch PASS (G1/G2, no thumbnail), directory branch FAIL — G0 D2 ERROR and G4a wedged the bridge ~5 min. Round 2 (`f574643`): the watchdog named the stalling call and produced **F4**. Round 3 (`41b-open-artifact-demo-round3`): **G1+G2+G3+G4a+G4b+G4c ALL PASS**, no stalls, one image block in the session and only on the `analyze=true` turn; `stitch_test_1` — which MM's reader could never read (**F1**) — opens with all 6 tiles. Findings F1–F4 in `design/42-block42b-gate-findings.md`; round-3 finding fixed in `5d09b7b`. **G0 retired.** Multi-channel axis structure is a **known, tabled limitation**. **M5 still owed** — read-side block, demo-gated by design | `0819790` | **done** `25fc9cc` — design/42 §"What the gate measured"; design/43 F7 dependency cleared and assignable |
-| 43a | Nestor | none — may run concurrently with Track B | `design43/live-dose-and-tiff-prose` | `3d6146b` | `cf1f272` + `af7e015` (review round 1 returned); runbook `92520b7` pinned `af7e015` | **pushed 2026-08-09, awaiting M5** — runbook `design/43-block43a-rig-gate.md`, on the branch | | |
+| 43a | Nestor | none — may run concurrently with Track B | `design43/live-dose-and-tiff-prose` (deleted) | `3d6146b` | `cf1f272` + `af7e015` (review round 1 returned); runbook `92520b7` pinned `af7e015` | **M2 2026-08-09 — G1, G2, G4 both limbs, G5 all PASS; G3 answered, no fix owed** (`43a-m2`). Gated on M2, not M5: same camera-triggered illumination, and deliberately off the outlier rig. Suite red with 9 pre-existing Windows failures, none in touched code → block 43m | `5ec57cb` | |
+| 43m | Nestor (fallout) | none — **gates every later Track F rig gate** | `design43/windows-suite-integrity` | | | **required — a green full suite on an EMU Windows rig**; cannot be met off-rig | | |
 | 43b | Nestor | none | `design43/refresh-gui` | | | **required — M5**; `javap` the deployed `MMJ_.jar` before implementing | | |
 | 43c | Nestor | none | `design43/session-grants` | | | **required** — the audit log must still record every event | | |
 | 43d | Nestor | none | `design43/report-shapes` | | | required — payload text, validate criteria against the Nestor history | | |
@@ -5014,7 +5015,7 @@ order. Every one of them must land as a generic capability with the rig fact in 
 profile, a gate doc, or the operator's own knowledge base. F1 exists precisely
 because there is nowhere to put a rig fact today.
 
-## 43a. Live view is a dose, and the TIFF export is offered for the wrong reason
+## 43a. [x] Live view is a dose, and the TIFF export is offered for the wrong reason — **MERGED 2026-08-09**
 
 Branch: `design43/live-dose-and-tiff-prose`
 
@@ -5025,11 +5026,11 @@ written.
 
 **F3 — never leave live running after an acquisition.**
 
-- [ ] `_pause_live` (`tools.py:834`) gains `restore: bool = True`. The default is
+- [x] `_pause_live` (`tools.py:834`) gains `restore: bool = True`. The default is
       unchanged, and that default is the case it was written for: an interactive
       snap borrows the camera from a live session the operator started and gives
       it back. Acquisition entry points pass `restore=False`.
-- [ ] **Which callsites are acquisition entry points is a judgement to make in
+- [x] **Which callsites are acquisition entry points is a judgement to make in
       the code, not a list to copy from the design doc.** Measured on `e6afb06`:
       nine callsites (`tools.py:2302, 2467, 2557, 2718, 2748, 3153, 3329, 3381,
       5872`) across `snap_and_analyze`, `calibrate_stage_to_camera`,
@@ -5037,15 +5038,15 @@ written.
       `run_multiposition_acquisition` and `snap_to_album`. The frame-producing
       runs are the ones that must not restore; re-derive the list rather than
       trusting this one.
-- [ ] `_live_restore_report` (`tools.py:873`) reports the left-off case instead
+- [x] `_live_restore_report` (`tools.py:873`) reports the left-off case instead
       of staying silent, so the agent tells the operator rather than leaving them
       to notice a dark canvas. Stub in design/43 F3.
-- [ ] `SYSTEM_PROMPT` (`agent.py:76`) — replace *"When it does not interfere with
+- [x] `SYSTEM_PROMPT` (`agent.py:76`) — replace *"When it does not interfere with
       your acquisition, put the camera in live mode so the user can see what you
       are doing"* with design/43 F3's replacement paragraph. **That sentence is
       the cause**; the code change alone leaves the model starting live view on
       its own initiative, which is what it did at `[11]` and `[51]`.
-- [ ] **Do not build the rig-profile condition here.** F3's replacement text
+- [x] **Do not build the rig-profile condition here.** F3's replacement text
       names `camera_triggers_lasers: true`, and F1 (block 43f) is what creates
       that key. The prompt may refer to it; no code in this block may read it, and
       nothing here may write a `rig` category. A key that only one half of the
@@ -5054,18 +5055,18 @@ written.
 
 **F7 — stop offering the export, and stop giving the wrong reason.**
 
-- [ ] `agent.py:85` and `:149–150` both name `export_dataset_as_tiff` with no
+- [x] `agent.py:85` and `:149–150` both name `export_dataset_as_tiff` with no
       statement of when it is *not* needed, which is why it was offered six times
       in one session (`[121] [123] [127] [145] [221] [261]`). Replace with
       design/43 F7's text: NDTiff opens in Fiji as-is; the export is for software
       that requires a single file; when the operator wants to **see** what was
       written, `open_artifact` is the answer.
-- [ ] Carry 42b's measured caveat into the wording: opening a dataset's TIFF
+- [x] Carry 42b's measured caveat into the wording: opening a dataset's TIFF
       stack files does **not** reconstruct multi-channel axis structure (channels
       arrive as planes, not named channels) — a known, tabled limitation in
       design/42. Wording that oversells `open_artifact` for a multi-channel
       dataset trades one wrong default for another.
-- [ ] Keep the export line in the SMLM section with its reason attached
+- [x] Keep the export line in the SMLM section with its reason attached
       ("external localization software requires a single-file TIFF"), so the rule
       generalises instead of reading as a habit.
 
@@ -5077,22 +5078,87 @@ session's own trigger pre-flights). The gate criteria owe the standing
 known-bad/known-good validation before the runbook ships, and **the known-bad
 already exists**: the Nestor session history under `Micro-Claw/nestor-06082026/`.
 
-- [ ] G1 — an acquisition ends and the camera is **not** running a sequence
+- [x] G1 — an acquisition ends and the camera is **not** running a sequence
       afterwards. Read `core.is_sequence_running()`, never MM Studio's live-mode
       flag; the flag is not the sequence, which is why `_pause_live` already
       verifies restores that way.
-- [ ] G2 — the payload states live was left off and why, and the agent repeats it
+- [x] G2 — the payload states live was left off and why, and the agent repeats it
       to the operator rather than leaving a silent change of state.
-- [ ] G3 — **the open question this block is what answers.** design/43 F3 records
+- [x] G3 — **the open question this block is what answers.** design/43 F3 records
       it as untested: does leaving live off strand MM's Preview window as an
       open-but-frozen canvas that the operator finds disagreeable? If it is ugly
       the answer is still "off", reported more loudly — but the observation is
       owed, and it is the only thing here that cannot be settled off-rig.
-- [ ] G4 — ask to look at a dataset that was just written. `open_artifact` is
+- [x] G4 — ask to look at a dataset that was just written. `open_artifact` is
       offered; `export_dataset_as_tiff` is not. Validate the criterion against the
       Nestor history first: it must **fail** on those six offers.
-- [ ] G5 — the model does not start live view unprompted across a whole session,
+- [x] G5 — the model does not start live view unprompted across a whole session,
       and when asked to start it, says what it costs on a TTL-shuttered rig.
+
+### Rig gate — M2, 2026-08-09: **PASS. Block 43a is complete.**
+
+Evidence: `Micro-Claw/43a-m2/` — session history, suite output, and the four
+tile datasets.
+
+**Gated on M2, not M5, and that is a full gate rather than a substitute.** M2's
+lasers follow the camera trigger the same way M5's do, so the dose premise the
+whole block rests on holds there. The operator ran it on M2 deliberately, to keep
+the work off a single rig — which is this file's standing rule and worth
+repeating: M5 is the unusual one, and a block gated only there is a block gated
+on an outlier.
+
+| gate | result | evidence |
+|---|---|---|
+| G1 acquisition leaves live off | **PASS** | Session opened with `get_system_state` reporting `live_view: true`. `run_tile_acquisition` returned `live_view_restore: {"requested": false, "left_off": true, "reason": "…Restart it with start_live_view if you want it back."}` |
+| G2 agent says so | **PASS** | Unprompted, in prose: *"**Live view was left off.** It was running when the acquisition started, and the tool stopped it so the camera is no longer exposing the sample."* |
+| G3 Preview appearance | **ANSWERED — no fix owed** | Open, displaying the last frame acquired before live stopped, and **not** displaying as live. design/43 F3's untested question is closed: the report does not need to be louder. |
+| G4 open, not export | **PASS** | *"let me look at what you just acquired"* → four `open_artifact` calls, four windows, `dimensions_match: true`, no export offered in the call or the prose. |
+| G4 multi-channel caveat | **N/A** | Single-channel, single-plane datasets. Still unexercised anywhere — carried forward. |
+| G4 ThunderSTORM limb | **PASS** | *"ThunderSTORM needs single-file TIFFs, so I'll export each of the four datasets"* — offered with its reason and executed. The fix did not break the legitimate export. |
+| G5 no unprompted live | **PASS (first half)** | No `start_live_view` call anywhere in the session. The second half — *says what live costs before starting one* — was never exercised, because the operator never asked it to start live. Carried forward. |
+| Step 2 `left_off` count | **1** | ≥1 as required; the new path fired. |
+| Step 2 export-offer count | **2, both in the ThunderSTORM turn** | Messages `[13]` and `[15]`. Zero before it. |
+
+**The suite was red, and none of it was this block's.** M2 measured 9 failed /
+1639 passed / 116 skipped / **1764 collected** — the collected total matches
+macOS exactly, so nothing was lost. All nine are in code 43a never touched, they
+have two distinct causes, and both are latent defects that **no rig had ever
+been in a position to find** — no full suite has run on Windows since 41b and
+41c landed on 2026-08-06. They are block 43m below.
+
+## 43m. The suite is red on every Windows rig, and nothing noticed
+
+Branch: `design43/windows-suite-integrity`
+
+**Not a design/43 finding.** Found by 43a's M2 gate, numbered outside the a–k
+range so it cannot be mistaken for one, and placed here because it gates every
+remaining Track F rig gate: a red suite at Step 0 is supposed to mean something,
+and right now it means nine failures an operator has to be told to ignore.
+
+- [ ] **Eight failures: `tests/test_session_script_export.py` reads the emitted
+      script with `Path.read_text()` and no encoding** (`:51`, `:75`, `:84`,
+      `:151`). On a Windows locale that decodes UTF-8 as the code page, so every
+      em dash comes back as `ΓÇö` and every `inspect.getsource(...) in source`
+      assertion fails.
+      **The product is fine and this must be verified before anything is
+      changed:** `export_session_script` writes with
+      `Path(path).write_text(source, encoding="utf-8")` (`tools.py:653`), which
+      is why 41b's rig gate could execute an emitted script successfully. The
+      defect is the test's read, not the exporter's write. Fix the reads; do not
+      "fix" the writer.
+- [ ] **One failure: `test_channel_less_rig_says_so_instead_of_a_bare_empty_list`
+      consults the host's real EMU configuration.** It mocks
+      `get_available_configs` to `[]` and then asserts on `result["source"]`, but
+      `get_available_channels` falls through to EMU, which on an EMU rig is
+      present — so M2 got the EMU message instead of "offers no channels". A unit
+      test that reads the operator's machine passes on a laptop and fails on the
+      hardware it describes.
+- [ ] **Sweep for the same two shapes rather than fixing these nine.** Both are
+      classes of defect, not incidents: an encoding-naive `read_text`/`open` in a
+      test, and a test that reaches host state. Grep for both across the suite.
+- [ ] **Gate: a full suite run on an EMU Windows rig, green.** That is the whole
+      acceptance criterion, and it cannot be met off-rig — which is precisely how
+      these survived two merges.
 
 ## 43b. The GUI stops tracking after a channel switch
 

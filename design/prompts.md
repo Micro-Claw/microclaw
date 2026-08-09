@@ -5237,3 +5237,52 @@ whose subject is a timeout, a stall, or an absence.
 `test_emitted_inline_defines_every_name_it_uses`. The runner was literal and
 stopped; the guard was there. Fixed in `CLAUDE.md`. A wrong name in the
 instructions costs more than no name.
+
+## Block 43a — live view is a dose, and the TIFF export's wrong reason
+
+The first block of Track F, and the first of design/43. Two implementation
+commits, one review round, one rig gate, no rework after it.
+
+**A green suite with an accurate ID diff still had a real defect in it — the
+fourth time on this checklist.** Round 1 left `find_features` not restoring the
+operator's live view, alongside `snap_and_analyze` which does. The two are the
+same shape: one on-demand snap that answers a question about the field in front
+of you. What made it a defect rather than a debatable line was one level up —
+`center_feature` loops over `find_features` and returns its own payload, so the
+left-off report was swallowed entirely. An operator asking microclaw to centre a
+cell would have watched live die with no explanation, which is precisely the
+"leaving them to notice" failure F3 exists to remove. **Look at the callers of a
+function whose contract you just changed**, not only at the function.
+
+**Validating the gate patterns against the known-bad rewrote the finding.** The
+rule says run every match pattern over captured evidence before shipping a
+runbook. Doing it here killed the obvious pattern — `export_dataset_as_tiff`
+reads **1** on the Nestor session, because six of the offers were prose that
+never named the tool, so a runbook built on it would have scored the very
+session that motivated the block as almost clean. The replacement,
+`export.{0,40}tiff` case-insensitive, reads 7 — and the seventh is an offer
+design/43 F7's hand-read list had missed. The pattern validation did not just
+protect the gate; it corrected the finding.
+
+**Both limbs, or the criterion is half a criterion.** G4 checked that the export
+is *not* offered for "let me look at this" and that it *is* offered for
+ThunderSTORM. Only the first is the finding; without the second, a microclaw
+that had become reluctant to export would have passed.
+
+**The design doc's own prompt text was wrong and the implementation found it.**
+design/43 F3 supplied a replacement paragraph naming a focus sweep as something
+the operator watches. Our sweep is headless — live is paused for its duration and
+a test pins that — so the sentence told the model to start a continuous exposure,
+on a rig where live is dose, for an event that shows nothing. Verbatim text from
+a design doc still gets read against the code it will run beside.
+
+**Gating on the second rig found what the first never would have.** The operator
+ran this on M2 rather than M5, to keep the work off one machine. M2's suite came
+back with 9 failures in code the block never touched: eight from tests reading
+the emitted script with an encoding-naive `read_text` on a Windows code page, one
+from a unit test that consults the host's real EMU configuration. Neither is
+reachable on macOS, and **no full suite had run on any Windows rig since 41b and
+41c landed** — two merges. That is now block 43m, and the lesson is narrower than
+"run on more rigs": a block whose gate is a rig session should run the suite
+there too, because the suite is the only part of the gate that exercises code the
+block did not touch.
