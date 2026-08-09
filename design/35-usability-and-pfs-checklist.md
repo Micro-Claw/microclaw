@@ -605,7 +605,7 @@ assistant's narration when judging whether a guard fired.
 | 43m | Nestor (fallout) | none — **gated every later Track F rig gate** | `design43/windows-suite-integrity` (deleted) | `18f84f1` | `f49deb5` (accepted round 1, no rework); runbook `f0f3d3f` pinned `f49deb5` | **M2 2026-08-09 PASS — 0 failed, 1650 passed, 116 skipped, 1766 collected** (`43m-m2`). Skip count unchanged from 43a's run, so the subject tests ran rather than being skipped | `75fea30` | done — block *is* the gate; standing constraint added below |
 | 43b | Nestor | none | `design43/refresh-gui` (deleted) | `04c0654` | `8162b04` + `74dc87f` (review round 1 returned); runbook `ef6a658` pinned `74dc87f` | **M5 2026-08-09 — G1, G2, G3 both limbs all PASS; G4 NOT EXERCISED by design** (`43b-m5`). Suite 1656 passed / 116 skipped / 0 failed / 1772 collected. G1 settled the pyjavaz shadow `javap` could not reach; EMU's plugin panel repainted too, which the gate did not ask for | `b220e33` | |
 | 43c | Nestor | none | `design43/session-grants` | | | **required** — the audit log must still record every event | | |
-| 43d | Nestor | none | `design43/report-shapes` | `04c0654` assigned 2026-08-09, worktree `../microclaw-43d` | `8635d7c` + `9b98b0b` (two review rounds returned) + `a7a415d` (coordinator fixes); runbook pin `a7a415d` | **pushed 2026-08-09, awaiting a rig.** Runbook `design/43-block43d-rig-gate.md` on the branch. G1 saved-hook survey, G2 unknown adapter, G3 previous-area centre, plus a full suite per the standing constraint. Gate patterns were validated against the Nestor session before shipping and each reads **1** on it | | |
+| 43d | Nestor | none | `design43/report-shapes` (deleted) | `04c0654` | `8635d7c` + `9b98b0b` (two review rounds returned) + `a7a415d` (coordinator fixes) + `010701a` (runbook total corrected); runbook pin `a7a415d` | **M5 2026-08-09 — G1, G2, G3 all PASS; all three known-bad patterns read 0** (`43d-m5`). Suite 1657 passed / 116 skipped / 0 failed / 1773 collected, skips equal to 43b's M5 run. Gate folded into a real 640-trigger session rather than run as a script | `53395d2` | |
 | 43e | Nestor | none | `design43/builtin-offline-adapters` | | | required | | |
 | 43f | Nestor | 43a merged (its prompt names the key this creates) | `design43/rig-profile` | | | required | | |
 | 43g | Nestor | none | `design43/coverage-statistics` | | | **required — beads + a diffuse field**; nothing ranks on it until calibrated | | |
@@ -5438,30 +5438,70 @@ same two properties.
 
       Evidence: `43b-m5`, history turns 44–53 and the fourth confirmations row.
 
-## 43d. Report shapes and hints that sent the reader to the wrong place
+## 43d. [x] Report shapes and hints that sent the reader to the wrong place — **MERGED 2026-08-09**
 
 Branch: `design43/report-shapes`
 
 Source: design/43 F8, F10, F11. Grouped because all three are payload text with
 no behaviour change, and each one produced a wrong statement in the session.
 
-- [ ] F8 — `stopped_early` describes the hook's control decisions, not what was
+- [x] F8 — `stopped_early` describes the hook's control decisions, not what was
       found, and it was read as "nothing was found" over a tile that scored
       `would_keep: true`. Add the hint, and add `hook_actions` counts, which the
       parent already has.
-- [ ] F10 — a missing adapter name was reported as a possible hardware fault.
+- [x] F10 — a missing adapter name was reported as a possible hardware fault.
       `run_analysis_on_saved_dataset` refuses by name and lists what exists;
       `hint_for_error` maps `KeyError` to a lookup hint, not `_HARDWARE_HINT`.
       `errors.py:53` already says a hint that names the wrong subsystem is worse
       than none.
-- [ ] F11 — report `grid_center_source: current_stage_position | explicit`, and
+- [x] F11 — report `grid_center_source: current_stage_position | explicit`, and
       add the position-list prompt rule: a request that refers to a previous
       scan's area must pass that scan's centre, because the default centre is
       wherever the stage happens to be.
-- [ ] No new arguments in any of the three.
+- [x] No new arguments in any of the three.
 
-**Implemented and pushed 2026-08-09, awaiting a rig.** Two review rounds plus a
-coordinator fix. Three things it learned that design/43 F8 and F11 do not say:
+### Rig gate — M5, 2026-08-09: **PASS on all three limbs** (`43d-m5`)
+
+Merged `53395d2`. Evidence: history JSONL, `suite-43d.txt`, `install-43d.txt`,
+and the acquired `43d-data/` (a 3-tile survey, a 25-tile grid, two hook logs, and
+an empty `cc_analysis/` from the refused adapter).
+
+- **G1 PASS, and on its headline criterion.** `hook_actions: {"ContinueSurvey":
+  3, "StopSurvey": 0}` — real counts from the parent dispatch of a saved hook,
+  exactly design/43 F8's stub value. The agent then said *"Let me read the hook
+  log for the per-position measurements before reporting anything about
+  content"* and called `read_hook_log` **before** any content claim, which is the
+  behaviour F8 exists to produce.
+- **G2 PASS.** The refusal named the adapter and listed all twelve saved ones;
+  the hint said lookup, not hardware. The agent diagnosed a name problem and
+  pointed at the nearest available adapter. No hardware, device or connection
+  language anywhere in the turn.
+- **G3 PASS.** `grid_center_source: "explicit"` with centre `(1657.4, 539.3)`,
+  and the agent said so unprompted: *"pinned to that center rather than to
+  wherever the stage sits now"*. **The criterion discriminated:** the survey had
+  ended at `pos_3` (1657.4, **579.3**), so a defaulted centre would have sat
+  40 µm away — more than one full 32 µm FOV. Recorded honestly: that offset came
+  from the survey's own traversal, not from the deliberate stage move the runbook
+  asked for.
+- **All three known-bad sentence patterns read 0** on the gate session.
+- **Suite on M5: 1657 passed, 116 skipped, 0 failed**, 1773 collected. The skip
+  count matches 43b's M5 run exactly, so this block finally has the same-machine
+  comparison the standing constraint wants.
+
+**The gate was folded into a real session** — an operator debugging a 640 laser
+that would not trigger in live mode — rather than run as a script. That is the
+shape 43b's notes recommended, and it is why G2 landed on a genuine "can you run
+connected_components on that" rather than a manufactured lookup.
+
+**One coordinator error, corrected on the branch before merge.** The runbook's
+expected total said 1772 collected while its own `1674 + 99` says 1773; block
+43b's number was carried across. M5 measured 1657 + 116 = 1773, matching the true
+value, so nothing was affected — but an operator comparing strictly against the
+stated figure would have been right to stop. **Derive the total from
+passed + skipped rather than trusting a transcribed figure.**
+
+**Implemented over two review rounds plus a coordinator fix.** Three things it
+learned that design/43 F8 and F11 do not say:
 
 - **`hook_actions` is emitted only when typed actions were actually observed at
   the parent dispatch, and omitted otherwise.** `_resolve_hook` wraps only
