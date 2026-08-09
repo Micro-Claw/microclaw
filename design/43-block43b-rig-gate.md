@@ -12,15 +12,21 @@ cd C:\Users\ries\microclaw
 git fetch origin
 git checkout design43/refresh-gui
 git pull
-git merge-base --is-ancestor IMPLEMENTATION_COMMIT HEAD
+git merge-base --is-ancestor 74dc87f HEAD
 if ($LASTEXITCODE -eq 0) { "PIN OK - the gated implementation is in this checkout" }
 else { "PIN FAILED - stop, you are not testing the right code" }
 ```
 
-The coordinator replaces `IMPLEMENTATION_COMMIT` at push time. The ancestor
-check is intentional: an amended runbook or later review commit must not
-invalidate the pin. `$LASTEXITCODE`, not `%ERRORLEVEL%`, verifies the command in
-PowerShell; `%ERRORLEVEL%` only prints its own name there.
+`74dc87f` is the gated implementation, pinned by the coordinator at push time.
+The ancestor check is intentional: an amended runbook or later review commit
+must not invalidate the pin. `$LASTEXITCODE`, not `%ERRORLEVEL%`, verifies the
+command in PowerShell; `%ERRORLEVEL%` only prints its own name there.
+
+Off-rig at `74dc87f` on macOS, re-measured by the coordinator: **1673 passed,
+99 skipped, 3 expected warnings, 1772 collected, 0 failures.** The baseline this
+branch started from (`04c0654`) was 1667 / 99 / 1766, so the six added IDs are
+this block's own tests and nothing was lost. Compare against these numbers
+below, remembering that Windows legitimately skips more for the same collection.
 
 Reinstall this checkout, then run the entire suite:
 
