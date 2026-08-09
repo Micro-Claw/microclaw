@@ -342,6 +342,14 @@ and the only branches on `origin` besides `main` are
   corrected from six to seven during 43a's gate, and F3's untested
   frozen-Preview question is answered. Both are already written into
   design/43 — no action, recorded so nobody re-derives them.
+- **43b and 43d were both assigned 2026-08-09 from `04c0654`**, concurrently, in
+  worktrees `../microclaw-43b` and `../microclaw-43d`. Three block branches are
+  now in flight (6a, 43b, 43d) and 6a is the only one whose next step belongs to
+  a rig. They are disjoint by design — 43b is `controller.py` +
+  `authorization.py` + two `tools.py` callsites, 43d is payload text in
+  `tools.py` and `errors.py` — but both touch `tools.py`, so **whichever merges
+  second merges `main` first**. Eight blocks remain after them: 43c, 43e, 43f,
+  43g, 43h, 43i, 43j, 43k.
 
 ### Block 41c mid-gate — superseded 2026-08-07, kept for the round history
 
@@ -552,9 +560,9 @@ assistant's narration when judging whether a guard fired.
 | 42b | Read side | 42a's answers | `design42/open-artifact` (deleted) | `4d6a426` | `0dd3629` (dir spike) + `410846e` + `e02955f` + `ebebe45` + `ed9c78a`; review round 1 `867f3af`; runbook `a038c95`/`838f00d`/`b06fbac` pinned `867f3af`; findings `c60d33f`; fix round `229423d` (runner) + review round 2 `f574643`; **redesign `a97620b`** (open the dataset's TIFFs, MM reader deleted); runbook re-pinned `a97620b`; round-3 fix `5d09b7b` | **demo machine, three rounds, PASS at `a97620b`.** Round 1 (`bc93f76`): file branch PASS (G1/G2, no thumbnail), directory branch FAIL — G0 D2 ERROR and G4a wedged the bridge ~5 min. Round 2 (`f574643`): the watchdog named the stalling call and produced **F4**. Round 3 (`41b-open-artifact-demo-round3`): **G1+G2+G3+G4a+G4b+G4c ALL PASS**, no stalls, one image block in the session and only on the `analyze=true` turn; `stitch_test_1` — which MM's reader could never read (**F1**) — opens with all 6 tiles. Findings F1–F4 in `design/42-block42b-gate-findings.md`; round-3 finding fixed in `5d09b7b`. **G0 retired.** Multi-channel axis structure is a **known, tabled limitation**. **M5 still owed** — read-side block, demo-gated by design | `0819790` | **done** `25fc9cc` — design/42 §"What the gate measured"; design/43 F7 dependency cleared and assignable |
 | 43a | Nestor | none — may run concurrently with Track B | `design43/live-dose-and-tiff-prose` (deleted) | `3d6146b` | `cf1f272` + `af7e015` (review round 1 returned); runbook `92520b7` pinned `af7e015` | **M2 2026-08-09 — G1, G2, G4 both limbs, G5 all PASS; G3 answered, no fix owed** (`43a-m2`). Gated on M2, not M5: same camera-triggered illumination, and deliberately off the outlier rig. Suite red with 9 pre-existing Windows failures, none in touched code → block 43m | `5ec57cb` | **done** `18f84f1` — design/43 F3's "Untested" paragraph replaced by what M2 measured, plus the two implementation corrections (headless focus sweep, `find_features` is a borrow); F7's offer count corrected six → seven; suggested-order item 1 struck through |
 | 43m | Nestor (fallout) | none — **gated every later Track F rig gate** | `design43/windows-suite-integrity` (deleted) | `18f84f1` | `f49deb5` (accepted round 1, no rework); runbook `f0f3d3f` pinned `f49deb5` | **M2 2026-08-09 PASS — 0 failed, 1650 passed, 116 skipped, 1766 collected** (`43m-m2`). Skip count unchanged from 43a's run, so the subject tests ran rather than being skipped | `75fea30` | done — block *is* the gate; standing constraint added below |
-| 43b | Nestor | none | `design43/refresh-gui` | | | **required — M5**; `javap` the deployed `MMJ_.jar` before implementing | | |
+| 43b | Nestor | none | `design43/refresh-gui` | `04c0654` **assigned 2026-08-09**, worktree `../microclaw-43b` | | **required — M5**; the `javap` pre-check is **already answered off-rig** (see 43b's entry) — do not re-run it. What the rig owes is the bridge shadow plus the Property Browser observation, and a full suite per the standing constraint | | |
 | 43c | Nestor | none | `design43/session-grants` | | | **required** — the audit log must still record every event | | |
-| 43d | Nestor | none | `design43/report-shapes` | | | required — payload text, validate criteria against the Nestor history | | |
+| 43d | Nestor | none | `design43/report-shapes` | `04c0654` **assigned 2026-08-09**, worktree `../microclaw-43d` | | required — payload text, validate criteria against the Nestor history | | |
 | 43e | Nestor | none | `design43/builtin-offline-adapters` | | | required | | |
 | 43f | Nestor | 43a merged (its prompt names the key this creates) | `design43/rig-profile` | | | required | | |
 | 43g | Nestor | none | `design43/coverage-statistics` | | | **required — beads + a diffuse field**; nothing ranks on it until calibrated | | |
