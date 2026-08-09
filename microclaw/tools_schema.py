@@ -1315,8 +1315,10 @@ TOOLS: list[dict[str, Any]] = [
             "scan (each tile waits on the previous frame's scoring), so for a "
             "fixed survey that only reports per-tile numbers use "
             "run_tile_acquisition or run_multiposition_acquisition instead. "
-            "The result reports frames_acquired and stopped_early; read the "
-            "hook's own numbers back with read_hook_log(log_path)."
+            "The result reports frames_acquired, stopped_early, and dispatched "
+            "hook_actions. stopped_early describes control decisions, not what "
+            "was found; call read_hook_log(log_path) before making any claim "
+            "about the per-tile measurements."
         ),
         "input_schema": {
             "type": "object",

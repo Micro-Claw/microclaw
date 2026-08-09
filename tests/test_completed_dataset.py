@@ -126,6 +126,17 @@ def test_fixture_pins_the_bytes_it_writes_under_windows_translation(
     assert completed_dataset._load_saved_adapter("fixture_bytes")[0].__name__ == "FixtureBytes"
 
 
+def test_unknown_adapter_names_the_refusal_and_lists_saved_choices(offline_home):
+    save, *_ = offline_home
+    save("zebra", "class Zebra:\n def analyze_saved_frame(self, image, metadata, context): pass\n")
+    save("alpha", "class Alpha:\n def analyze_saved_frame(self, image, metadata, context): pass\n")
+    with pytest.raises(KeyError) as caught:
+        completed_dataset._load_saved_adapter("connected_components")
+    message = str(caught.value)
+    assert "No adapter named 'connected_components'" in message
+    assert "Available saved adapters: ['alpha', 'zebra']" in message
+
+
 def test_per_frame_selection_read_only_and_normalized_replay(offline_home):
     save, *_ = offline_home
     save("frame", '''

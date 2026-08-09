@@ -67,7 +67,9 @@ def _load_saved_adapter(name: str):
     """Load one reviewed/hash-pinned adapter and resolve its offline verb."""
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8")) if MANIFEST.exists() else {}
     if name not in manifest:
-        raise KeyError(f"No saved hook named {name!r}.")
+        raise KeyError(
+            f"No adapter named {name!r}. Available saved adapters: {sorted(manifest)}."
+        )
     entry = manifest[name]
     source = verify_saved_hook_bytes(name, entry)
     new = set(lint_hook_code(source.decode("utf-8"))) - set(entry.get("accepted_warnings", []))

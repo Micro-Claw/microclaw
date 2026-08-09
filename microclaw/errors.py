@@ -121,6 +121,11 @@ def hint_for_error(exc: Exception) -> str:
             "that Tools → Options → 'Run pycro-manager server on port 4827' is "
             "ticked."
         )
+    if isinstance(exc, KeyError):
+        return (
+            "This is a lookup error, not a hardware fault. Check the requested "
+            "name against the available names in the tool result."
+        )
     if in_hook:
         return "The hook raised during acquisition." + where
     return _HARDWARE_HINT
