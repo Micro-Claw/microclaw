@@ -155,6 +155,9 @@ class Shadow:
         "min_snr_source": "package_default_uncalibrated",
     }
     assert result["observations"][0]["parameters"] == result["parameters"]
+    assert {"signal_coverage", "structure_coverage", "signal_concentration"} <= set(
+        result["observations"][0]["result"]
+    )
     assert len(result["analyzer"]["source_sha256"]) == 64
     int(result["analyzer"]["source_sha256"], 16)
     json.dumps(result, allow_nan=False)

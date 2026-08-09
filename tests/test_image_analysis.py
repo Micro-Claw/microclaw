@@ -610,6 +610,49 @@ class TestFocusMetricGate:
         assert "2.4" in msg and "noise floor" in msg
 
 
+class TestCoverageStats:
+    def test_blur_changes_pixel_coverage_but_preserves_structure_extent(self):
+        """F5: the same structured field stays detectable after defocus."""
+        from scipy.ndimage import gaussian_filter
+
+        rng = np.random.default_rng(2)
+        noise = rng.normal(0, 10, (256, 256))
+        impulses = np.zeros((256, 256))
+        for y in range(64, 193, 32):
+            for x in range(64, 193, 32):
+                impulses[y, x] = 5000
+        focused_signal = gaussian_filter(impulses, 1)
+        focused = 400 + noise + focused_signal
+        blurred = 400 + noise + gaussian_filter(focused_signal, 3)
+
+        focused_stats = compute_stats(focused)
+        blurred_stats = compute_stats(blurred)
+        assert blurred_stats.signal_coverage > 2 * focused_stats.signal_coverage
+        assert blurred_stats.structure_coverage == pytest.approx(
+            focused_stats.structure_coverage, rel=0.1
+        )
+
+    def test_bright_corner_is_concentrated_but_spread_signal_is_not(self):
+        """F6's failure: equal signal in one corner must read near one."""
+        rng = np.random.default_rng(4)
+        background = 400 + rng.normal(0, 10, (256, 256))
+        corner = background.copy()
+        corner[8:24, 8:24] += 20000
+        spread = background.copy()
+        spread[::4, ::4] += 1250  # 16x as many pixels, same added total
+
+        corner_stats = compute_stats(corner)
+        spread_stats = compute_stats(spread)
+        assert corner_stats.signal_concentration == pytest.approx(1.0, abs=0.05)
+        assert spread_stats.signal_concentration < 0.2
+
+    def test_flat_field_has_zero_coverage_and_concentration(self):
+        stats = compute_stats(np.full((32, 32), 400, dtype=np.uint16))
+        assert stats.signal_coverage == 0
+        assert stats.structure_coverage == 0
+        assert stats.signal_concentration == 0
+
+
 def test_make_thumbnail_returns_valid_png():
     img = np.random.randint(0, 65535, (512, 512), dtype=np.uint16)
     b64 = make_thumbnail(img, max_size=128)

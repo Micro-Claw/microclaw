@@ -517,7 +517,8 @@ def _analysis_source(*, include_autofocus: bool = False) -> str:
     for fn in (
         image_analysis._reshape_pixels, image_analysis.snap_to_numpy,
         image_analysis.snr, image_analysis.tenengrad,
-        image_analysis.snr_validity, image_analysis.compute_stats,
+        image_analysis.snr_validity, image_analysis.coverage_stats,
+        image_analysis.compute_stats,
     ):
         parts.append(inspect.getsource(fn))
     if include_autofocus:
@@ -2456,6 +2457,9 @@ def snap_and_analyze(
         "min_intensity": round(stats.min_intensity, 1),
         "max_intensity": round(stats.max_intensity, 1),
         "saturated_fraction": round(stats.saturated_fraction, 6),
+        "signal_coverage": stats.signal_coverage,
+        "structure_coverage": stats.structure_coverage,
+        "signal_concentration": stats.signal_concentration,
     }
     restore = _live_restore_report(live_state)
     if restore:
@@ -2702,6 +2706,10 @@ def find_features(
     with _pause_live(ctrl) as live_state:
         image = snap_to_numpy(ctrl)
     out = detect_features(image, min_sigma, max_sigma, threshold_rel)
+    out["detector_scope"] = (
+        "Puncta detector: an extended or filamentous field can contain strong "
+        "signal and still score low here."
+    )
     live_report = _live_restore_report(live_state)
     if live_report:
         out["live_view_restore"] = live_report
@@ -5032,6 +5040,12 @@ def rank_hook_log(
         result = entry.get("result") or {}
         missing = [k for k in ("position", "x_um", "y_um") if entry.get(k) is None]
         if metric not in result:
+            if metric in {"signal_coverage", "structure_coverage",
+                          "signal_concentration"}:
+                return {"error": (
+                    f"Entry {i} predates the {metric} statistic; this hook log "
+                    "must be reacquired before it can be ranked by coverage."
+                )}
             missing.append(f"result.{metric}")
         if missing:
             return {"error": f"Entry {i} is missing required field(s): {missing}"}
@@ -5063,6 +5077,8 @@ def rank_hook_log(
             valid_key: result.get(valid_key),
             "focus_metric_valid": result.get("focus_metric_valid"),
             "saturated_fraction": result.get("saturated_fraction"),
+            "min_snr": entry.get("parameters", {}).get("min_snr"),
+            "min_snr_source": entry.get("parameters", {}).get("min_snr_source"),
         })
     rows.sort(key=lambda row: (-row[metric], row["position"]))
     for rank, row in enumerate(rows, 1):
@@ -5074,6 +5090,14 @@ def rank_hook_log(
         "log_path": log_path,
         "metric": metric,
         "ranking_key": f"descending result.{metric}, then ascending position label",
+        "metric_validity": (
+            "Coverage statistics deliberately have no validity flag; they are "
+            "defined for every finite image. Their min_snr threshold and source "
+            "travel with each ranked row."
+            if metric in {"signal_coverage", "structure_coverage",
+                          "signal_concentration"}
+            else f"Rows with result.{metric}_valid false are not ranked."
+        ),
         "entry_count": len(rows) + len(invalid_rows),
         "ranked_entry_count": len(rows),
         "invalid_entry_count": len(invalid_rows),

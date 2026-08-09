@@ -2204,6 +2204,8 @@ class TestFindFeatures:
         result = find_features(mock_ctrl, unconstrained_guard)
         assert "offset_from_center_um" not in result
         assert "calibrate_stage_to_camera" in result["note"]
+        assert "Puncta detector" in result["detector_scope"]
+        assert "filamentous" in result["detector_scope"]
 
 
 class TestCenterFeature:
@@ -2768,6 +2770,36 @@ class TestRunAOfflineTools:
                                      self._log(tmp_path, records), budgets=[1, 3])
         assert [r["position"] for r in result["ranking"]] == ["c", "a", "b"]
         assert [r["rank"] for r in result["budget_views"]["3"]] == [1, 2, 3]
+
+    def test_rank_hook_log_prefers_coverage_with_threshold_provenance(
+        self, mock_ctrl, unconstrained_guard, tmp_path
+    ):
+        records = [{
+            "schema": "microclaw.analysis-observation/v1", "position": "field",
+            "x_um": 1, "y_um": 2,
+            "parameters": {"min_snr": 3.1,
+                           "min_snr_source": "package_default_uncalibrated"},
+            "result": {"signal_coverage": 0.25},
+        }]
+        result = tools.rank_hook_log(
+            mock_ctrl, unconstrained_guard, self._log(tmp_path, records),
+            metric="signal_coverage",
+        )
+        assert result["ranking"][0]["min_snr"] == 3.1
+        assert result["ranking"][0]["min_snr_source"] == "package_default_uncalibrated"
+        assert result["ranking"][0]["signal_coverage_valid"] is None
+        assert "deliberately have no validity flag" in result["metric_validity"]
+
+    def test_rank_hook_log_explains_that_old_log_predates_coverage(
+        self, mock_ctrl, unconstrained_guard, tmp_path
+    ):
+        records = [{"position": "old", "x_um": 1, "y_um": 2,
+                    "result": {"snr": 5}}]
+        result = tools.rank_hook_log(
+            mock_ctrl, unconstrained_guard, self._log(tmp_path, records),
+            metric="signal_coverage",
+        )
+        assert "predates the signal_coverage statistic" in result["error"]
 
     def test_rank_hook_log_rejects_duplicates(self, mock_ctrl, unconstrained_guard,
                                                tmp_path):

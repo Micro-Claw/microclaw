@@ -246,7 +246,8 @@ class TestSNRObservationHook:
             "focus_metric", "focus_metric_valid", "background_level", "snr",
             "snr_valid", "snr_invalid_reason",
             "mean_intensity", "max_intensity", "min_intensity",
-            "saturated_fraction", "analysis_ms",
+            "saturated_fraction", "signal_coverage", "structure_coverage",
+            "signal_concentration", "analysis_ms",
         }
 
     def test_flat_field_is_logged_without_filtering(self):

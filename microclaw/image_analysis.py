@@ -20,6 +20,9 @@ class ImageStats(NamedTuple):
     max_intensity: float
     min_intensity: float
     saturated_fraction: float
+    signal_coverage: float       # pixels above background + min_snr * noise
+    structure_coverage: float    # same threshold after a sigma=2 px blur
+    signal_concentration: float  # brightest 1% share of above-background signal
 
 
 #: Below this SNR, "how sharp is this field?" has no answer, because there is
@@ -108,6 +111,44 @@ def snr(image: np.ndarray, background: float | None = None) -> float:
     if noise <= 0:                  # flat frame (all-zero, or saturated everywhere)
         return 0.0
     return float((np.percentile(img, 99.5) - bg) / noise)
+
+
+def coverage_stats(
+    image: np.ndarray, background: float, noise: float, min_snr: float,
+) -> tuple[float, float, float]:
+    """How much of the field has signal, and how evenly it is spread.
+
+    ``snr`` answers "is the brightest thing here well above noise?" -- a tail
+    statistic that one bright corner satisfies (design/43 F6). These answer
+    "how much of this field is sample?", which is the question a survey asks.
+    ``structure_coverage`` is deliberately blur-then-threshold: an out-of-focus
+    cell is spread and dim, so it can fail a per-pixel test while still being
+    obviously present (design/43 F5).
+
+    ``signal_concentration`` is the share of positive, above-background signal
+    held by the brightest 1% of pixels. A value near one identifies the bright
+    corner that can dominate SNR without filling the field.
+    """
+    from scipy.ndimage import gaussian_filter
+
+    img = image.astype(np.float64)
+    if img.ndim == 3:
+        img = img.mean(axis=-1)
+    threshold = float(background) + float(min_snr) * float(noise)
+    signal_coverage = float(np.mean(img > threshold))
+    structure_coverage = float(np.mean(gaussian_filter(img, sigma=2.0) > threshold))
+
+    positive_signal = np.maximum(img - float(background), 0.0).ravel()
+    total_signal = float(np.sum(positive_signal))
+    if total_signal <= 0:
+        concentration = 0.0
+    else:
+        brightest_count = max(1, int(np.ceil(positive_signal.size * 0.01)))
+        concentration = float(
+            np.sum(np.partition(positive_signal, -brightest_count)[-brightest_count:])
+            / total_signal
+        )
+    return signal_coverage, structure_coverage, concentration
 
 
 def focus_invalid_warning(
@@ -257,12 +298,16 @@ def compute_stats(
     if img.ndim == 3:
         img = img.mean(axis=-1)
     bg = float(np.median(img))           # computed once, shared by snr and the metric
+    noise = 1.4826 * float(np.median(np.abs(img - bg)))
     raw_snr = snr(image, background=bg)
     saturated_fraction = float(np.sum(image >= bit_max) / image.size)
     snr_valid, focus_metric_valid, snr_invalid_reason = snr_validity(
         image, bg, saturated_fraction, min_snr
     )
     reported_snr = round(raw_snr, 2) if snr_valid else None
+    signal_coverage, structure_coverage, signal_concentration = coverage_stats(
+        image, bg, noise, min_snr
+    )
     return ImageStats(
         focus_metric=tenengrad(image),
         focus_metric_valid=focus_metric_valid,
@@ -274,6 +319,9 @@ def compute_stats(
         max_intensity=float(np.max(image)),
         min_intensity=float(np.min(image)),
         saturated_fraction=saturated_fraction,
+        signal_coverage=signal_coverage,
+        structure_coverage=structure_coverage,
+        signal_concentration=signal_concentration,
     )
 
 
