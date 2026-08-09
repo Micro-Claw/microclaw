@@ -368,6 +368,19 @@ branches on `origin` besides `main` are `design34/focus-system-authorization`
 branch is open.** One worktree besides this one: `../microclaw-6a`, idle at
 `4994f3e`.
 
+> **Re-verified 2026-08-09 at assignment of 43c/43e**, on `main` at `a583055`.
+> Every claim in this note held: remote branches, clean tree, empty
+> `origin/main..main`, one idle worktree, and the suite baseline re-measured
+> **1680 passed / 99 skipped / 3 warnings, 1779 collected** on macOS. Two facts
+> the note does not carry, found while checking the two blocks' entries: the
+> `illumination` and `acquisition` confirmation *kinds* are each reached by more
+> than one call site, and the sites are not all the repetition F2 is about
+> (43c's entry now names them); and a built-in offline adapter has no manifest
+> entry, which four lines of `run_analysis_on_saved_dataset` currently require
+> (43e's entry now names them). `uv` is not installed on this macOS coordinator
+> box — local suite runs here use `python -m pytest`; the rig launcher rule is
+> unaffected.
+
 - **43b and 43d are both MERGED and fully closed** (`b220e33`, `53395d2`) — M5
   gates PASS, ledger rows closed, coordination notes in `design/prompts.md`,
   design gates merged (`8ec9da6`, `53e3f12`), branches and worktrees deleted.
@@ -5459,11 +5472,36 @@ Branch: `design43/session-grants`
 Source: design/43 F2. 17 confirmations in 50 minutes, all approved, all for the
 same two properties.
 
-- [ ] The grant lives at the `CONFIRM_FN` seam (`tools.py:545–564`), which both
-      frontends already share. Process memory only, never persisted, revocable.
+- [ ] The grant lives at the `CONFIRM_FN` seam, which both frontends already
+      share. Process memory only, never persisted, revocable. **Name it by
+      function, not by line:** `_require_confirmation` is `tools.py:662` and
+      `CONFIRM_FN = _require_confirmation` is `:681`; design/43 F2's `:545–564`
+      has drifted. `webserve.Session.confirm` is still at `webserve.py:332`, and
+      its `decided()` closure at `:347` is the one place a browser decision
+      becomes an audit row.
 - [ ] `GRANTABLE` is `illumination` and `acquisition` only. `knowledge` and `hook`
       confirmations are **not** grantable — they gate self-modification, not
       workflow friction.
+- [ ] **Neither grantable kind is one question, and the block must say what a
+      grant covers.** Verified on `main` at `a583055`; five call sites reach
+      `CONFIRM_FN`, and F2's stub grants by `kind` alone:
+
+      | kind | site | what it asks |
+      |---|---|---|
+      | `illumination` | `safety.py:1113` (`check_illumination`) | enable this shutter/laser — **this is F2's 17 repetitions** |
+      | `illumination` | `authorization.py:1594` | retarget `Core.Shutter` — which declared source AutoShutter fires next |
+      | `illumination` | `tools.py:3878` | authorize generated hook code to drive power **unattended for the whole run** |
+      | `acquisition` | `tools.py:768` | this plan exceeds a configured frames/duration/illuminated-ms threshold |
+      | `acquisition` | `tools.py:6087` | run MMStudio's current MDA — whatever the operator's window happens to hold |
+
+      A grant keyed on `kind` alone auto-approves rows 2, 3 and 5, none of which
+      is a decision the operator already made 17 times. Row 3 in particular
+      hands a hook a power ceiling for a whole unattended run, which is closer to
+      the `hook` kind this block refuses to make grantable. Decide and state it:
+      either narrow what a grant matches (the `identity` field in F2's own record
+      is the approver, not the subject — a grant may need a subject too), or keep
+      `kind` and remove the sites that do not belong under it. **Do not ship a
+      grant whose blast radius is discovered on a rig.**
 - [ ] Limits and refusals are untouched: `max_power_percent`,
       `max_power_step_factor`, the authorization map, XY/Z bounds, exposure caps
       and the acquisition ledger all still apply. A grant answers the question the
@@ -5601,6 +5639,29 @@ error text and half of F12.
 
 - [ ] Built-ins resolve **before** the saved manifest, implemented over
       `image_analysis` so there is one definition of every measurement.
+- [ ] **A built-in has no manifest entry, and four lines require one.** Verified
+      on `main` at `a583055`: `_load_saved_adapter` (`completed_dataset.py:66`)
+      returns `(cls, verb, entry, source)`, and the runner then reads
+      `entry.get("version")` in `emit` (`:326`), and `entry.get("source")` plus
+      `_sha(source)` in `manifest_base["analyzer"]` (`:389–390`). F15's stub
+      returns `{"source": "precoded"}, None` — `_sha(None)` raises, and the
+      reproducibility record would lose the provenance it exists to carry.
+      Decide what a built-in's `analyzer` block says. The obvious answer is the
+      one the exporter already uses for `snr`: hash `inspect.getsource` of the
+      built-in class, so the record pins the exact code that ran.
+- [ ] **Say what status a built-in emits.** `emit` (`:319`) refuses anything but
+      `unverified`/`provisional` because saved adapters are untrusted;
+      `write_analysis_observation` also allows `observed`. A built-in is trusted
+      package code with the same standing `image_analysis` has on the live path.
+      Pick one and write the reason next to it — do not loosen the check for
+      saved adapters on the way past.
+- [ ] **If anything lands in `image_analysis`, the exporter must inline it.**
+      `CLAUDE.md` and `test_emitted_inline_defines_every_name_it_uses`
+      (`tests/test_session_script_export.py`) enforce this; a helper added here
+      and not inlined makes every exported script raise `NameError` on a rig.
+      `scipy` is already a dependency (`pyproject.toml:12`) and `skimage` is
+      already imported by `image_analysis.detect_features`, so
+      `connected_components` needs no new one.
 - [ ] `connected_components` and `frame_statistics` to start — the two this
       session asked for and could not get.
 - [ ] Nothing about design/26's untrusted-adapter contract changes: saved
