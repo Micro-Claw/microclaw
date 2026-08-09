@@ -739,6 +739,30 @@ fact plainly rather than leaving it to be inferred:
 result["hook_actions"] = {"ContinueSurvey": 3, "StopSurvey": 0}
 ```
 
+> **Shipped and gated in block 43d (merged 2026-08-09), with one correction the
+> stub above needs.** `hook_actions` is emitted **only when typed actions were
+> actually observed at the parent dispatch, and omitted otherwise** — the stub
+> shows it unconditionally, and that is wrong twice over. `_resolve_hook` wraps
+> only *saved* hooks in `UntrustedHookAdapter`, so a precoded hook has no counts
+> at all; and `HookResult.actions` defaults to `()`, so a saved hook that only
+> records measurements has an empty count dict. In both cases an emitted
+> `{"ContinueSurvey": 0, "StopSurvey": 0}` states, in the one content-shaped
+> field this result has, that the hook decided nothing on a run where it
+> continued at every tile. **An empty observation is not a measurement of zero**,
+> and emitting it as one recreates this very finding in the field added to retire
+> it. Both halves were caught in review; the second only after the first was
+> fixed.
+>
+> M5 measured the working case: a saved hook over three tiles returned
+> `{"ContinueSurvey": 3, "StopSurvey": 0}`, and the agent called `read_hook_log`
+> before saying anything about content — which is the behaviour this finding
+> exists to produce.
+>
+> **Still owed, and deliberately not widened mid-block:** the payload projects
+> only `ContinueSurvey` and `StopSurvey` out of a dict that observes every kind,
+> so a hook dispatching only `DiscardFrame` still reads as two zeros. That is a
+> narrower instance of the same defect.
+
 ## F9 — two hooks were unusable for the whole session, with no remedy offered
 
 `mosaic_cell_counter` and `mosaic_cell_counter_v2` both failed their integrity
@@ -809,6 +833,20 @@ stage between requests, and "scan a larger area" meant the earlier area.
    scan's area ("the same area", "a larger area around that"), pass `center_x_um`
    / `center_y_um` from the earlier result. The default center is wherever the
    stage happens to be, which is not the same thing and may have moved.*
+
+> **Shipped and gated in block 43d (merged 2026-08-09). `grid_center_source` has
+> three values, not the two above.** One coordinate can be supplied while the
+> other defaults — `run_tile_acquisition` already branches on exactly that case
+> for its bounds check — and such a grid is neither `explicit` nor
+> `current_stage_position`. Calling it either is a false provenance claim, which
+> is the class of defect this finding is about. It reports `partially_explicit`.
+>
+> M5 measured the intended case: asked to scan a larger area around the previous
+> scan, the agent passed the earlier centre and said so — *"pinned to that center
+> rather than to wherever the stage sits now"* — and the result read
+> `grid_center_source: "explicit"`. The criterion discriminated by 40 µm, more
+> than one full FOV, because the preceding survey had left the stage on a
+> different tile.
 
 ## F12 — nine timelapses, and no way to say whether anything was in them
 
@@ -1151,8 +1189,12 @@ this session had a field where the two would have disagreed (F6).
    off-rig by `javap`; only the pyjavaz shadow needed the rig.
 3. **F2** (session grant) — small, self-contained, needs a UI change and a rig
    gate that the audit log still records every event.
-4. **F8 / F10 / F11** (report shapes and hints) — text in payloads, no behaviour
-   change, cheap to land together.
+4. ~~**F8 / F10 / F11** (report shapes and hints)~~ — **DONE, block 43d, merged
+   2026-08-09, M5 gate PASS.** "Text in payloads, cheap to land together" was
+   half right: no behaviour changed, and it still took two review rounds plus a
+   coordinator fix, because a field that reports a *measurement* has to
+   distinguish an absent one from a zero. F10's refusal message is the base
+   block 43e extends.
 5. **F15** (built-in offline adapters) — the mosaic path is already plumbed to
    the analysis boundary; this is the missing last step, and it retires F10's
    error and half of F12.
