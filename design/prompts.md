@@ -5326,3 +5326,55 @@ criterion was "0 failed", which a run that *skipped* the eight subject tests
 would also satisfy. What made the result trustworthy was arithmetic against the
 previous run on the same machine: `1639 + 9 + 2 = 1650` passed with skips
 unchanged at 116. Compare skip counts across runs on one host, not just totals.
+
+## Block 43b — the GUI stops tracking after a channel switch (design/43 F4)
+
+Merged `b220e33`, 2026-08-09. One helper on the controller and its callsites,
+gated on M5. Two review rounds; the second was a runbook and comment round.
+
+**A finding's table can be narrower than the finding.** design/43 F4 lists four
+write paths, one of which is `execute_channel_plan (set_channel)`. The
+implementer fixed exactly those four. But `set_channel` has *two* routes — the
+plan when an authorization map exists, and `core.set_config` +
+`wait_for_config` when it does not — so the block as specified fixed the path
+M5 takes and would have shipped the plain Micro-Manager path still going stale.
+Five callsites landed, not four. The subject of a finding is the tool; the
+mechanism named in its table is how one rig happens to reach it. **Read the
+tool, not the row.**
+
+**`javap` answers half a bridge question, and the half it cannot answer is the
+one worth gating.** The pre-implementation check established that
+`refreshGUIFromCache()` exists on `org.micromanager.Application`. Whether
+pyjavaz *shadows* it as `refresh_gui_from_cache` on the deployed Windows build
+is a different claim, and no amount of off-rig inspection reaches it. Folding
+that one-liner into the block's own gate — rather than owing a rig round trip
+before implementation could start — cost nothing and unblocked the block by a
+day. G1 then returned `True`, and EMU's plugin panel repainted alongside the
+Property Browser, which nobody had asked for.
+
+**A read-back is not evidence for a repaint finding.** The gate's session
+history showed every `set_channel` and `set_focus_lock` write agreeing with its
+`get_device_property` read-back — and that is exactly what the *pre-fix* code
+did too. F4 is a finding about the GUI diverging from correct hardware, so the
+tool log can never settle it; only a human looking at the Property Browser can.
+The coordinator scored Step 0 and G1 from the bundle and asked the operator for
+the other three rather than inferring them. **When a finding is about what a
+human sees, the machine-readable evidence is a distractor.**
+
+**Where a gate refuses to manufacture its own condition.** G4 needed a channel
+plan that fails after at least one write lands. The implementer wrote the limb
+as best-effort and said why: unplugging the iChrome or racing a serial
+disconnect creates an uncontrolled fault and might fail on the *first* write,
+which is not a partial application at all. It recorded NOT EXERCISED and named
+the three unit tests that cover the rollback exits instead. That is the right
+shape — an honest gap beats a manufactured pass.
+
+**The gate found a dose defect that was not its subject.** Asked to turn the
+488 laser off, the agent called `set_channel('488')`, which enables that slot:
+four writes and a real exposure, self-caught one turn later. The confirmation
+prompt fired and was approved, because "ENABLE ILLUMINATION" is exactly what
+the tool was doing — it was the *request* that meant the opposite. Under block
+43c's proposed session-wide illumination grant this happens with no prompt at
+all, so the case is now a required item in 43c's entry. **Run the gate as a
+session, not as a script**: this came out of an operator asking for something
+ordinary in the middle of the checks.

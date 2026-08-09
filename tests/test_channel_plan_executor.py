@@ -88,7 +88,13 @@ def controller(core, classes, startup=None):
         authorized_presets=frozenset({"P"}),
         channel_expansion_hashes={"P": startup or _expansion_hash(effects)},
     )
-    return SimpleNamespace(core=core, authorization_map=report)
+    refreshes = []
+    return SimpleNamespace(
+        core=core,
+        authorization_map=report,
+        refresh_gui=lambda: refreshes.append("refresh"),
+        refreshes=refreshes,
+    )
 
 
 def categorical_plan(effects, values=None):
@@ -104,6 +110,14 @@ def test_categorical_order_wait_and_exact_verification():
     assert out["writes"] == 2 and not out["expansion_drift"]
     assert core.calls == [("set", "Wheel", "Label", "DAPI"), ("wait", "Wheel"),
                           ("set", "Path", "State", "1"), ("wait", "Path")]
+    assert ctrl.refreshes == ["refresh"]
+
+
+def test_four_write_plan_refreshes_once():
+    effects = [(f"D{i}", "Label", f"new{i}") for i in range(4)]
+    core, ctrl, guard = categorical_plan(effects)
+    execute_channel_plan(ctrl, guard, "P")
+    assert ctrl.refreshes == ["refresh"]
 
 
 def test_auto_state_device_categorical_route():
@@ -219,6 +233,36 @@ def test_failing_rollback_reports_unverified_safe_state():
     core.fail_on, core.fail_rollback = 2, ("A", "Label", "old")
     with pytest.raises(ChannelPlanSafeStateError, match="SAFE STATE NOT VERIFIED"):
         execute_channel_plan(ctrl, guard, "P")
+
+
+@pytest.mark.parametrize(
+    "failure,rollback_failure,expected",
+    [
+        (1, None, ChannelPlanError),
+        (2, None, ChannelPlanPartialApplicationError),
+        (2, ("A", "Label", "old"), ChannelPlanSafeStateError),
+    ],
+)
+def test_rollback_refreshes_once_without_changing_exception(
+    failure, rollback_failure, expected
+):
+    effects = [("A", "Label", "new"), ("B", "Label", "new")]
+    core, ctrl, guard = categorical_plan(
+        effects, {("A", "Label"): "old", ("B", "Label"): "old"}
+    )
+    core.fail_on = failure
+    core.fail_rollback = rollback_failure
+    refreshes = []
+
+    def failing_refresh():
+        refreshes.append("refresh")
+        raise RuntimeError("paint failed")
+
+    ctrl.refresh_gui = failing_refresh
+    with pytest.raises(expected) as caught:
+        execute_channel_plan(ctrl, guard, "P")
+    assert type(caught.value) is expected
+    assert refreshes == ["refresh"]
 
 
 def test_cancellation_between_writes_rolls_back():
@@ -361,7 +405,13 @@ def emu_rig(tmp_path, *, config_text=None, values=None):
     core = EmuCore([], values or {
         ("iChrome-MLE-TCP", prop): "0" for prop in M5_ENABLE.values()
     })
-    ctrl = SimpleNamespace(core=core, authorization_map=None)
+    refreshes = []
+    ctrl = SimpleNamespace(
+        core=core,
+        authorization_map=None,
+        refresh_gui=lambda: refreshes.append("refresh"),
+        refreshes=refreshes,
+    )
     ctrl.get_mm_app_dir = lambda: str(mm)
     return core, ctrl, mm
 

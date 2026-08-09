@@ -1723,6 +1723,14 @@ def execute_channel_plan(
                 "so if the write did not take effect nothing changed, and if it "
                 "partly did, that one property is the only one in doubt"
             )
+        # Refresh once after every rollback, before selecting which exception
+        # describes the outcome. Production controllers never raise here, but
+        # even a broken test double's repaint error must never replace the
+        # exception that describes the state of the rig.
+        try:
+            ctrl.refresh_gui()
+        except Exception:
+            pass
         # A rollback failure on a write that *landed* is the case this class
         # exists for: a verified change is still on the rig and could not be
         # undone. Keep it exactly as loud as it was.
@@ -1741,6 +1749,7 @@ def execute_channel_plan(
             ) from exc
         raise ChannelPlanPartialApplicationError(message) from exc
 
+    ctrl.refresh_gui()
     result = {
         "status": f"Channel set to '{preset}'.",
         "writes": len(effects),

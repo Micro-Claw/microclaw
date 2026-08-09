@@ -342,6 +342,57 @@ and the only branches on `origin` besides `main` are
   corrected from six to seven during 43a's gate, and F3's untested
   frozen-Preview question is answered. Both are already written into
   design/43 — no action, recorded so nobody re-derives them.
+- **43b and 43d were both assigned 2026-08-09 from `04c0654`**, concurrently, in
+  worktrees `../microclaw-43b` and `../microclaw-43d`. Three block branches are
+  now in flight (6a, 43b, 43d) and 6a is the only one whose next step belongs to
+  a rig. They are disjoint by design — 43b is `controller.py` +
+  `authorization.py` + two `tools.py` callsites, 43d is payload text in
+  `tools.py` and `errors.py` — but both touch `tools.py`, so **whichever merges
+  second merges `main` first**. Eight blocks remain after them: 43c, 43e, 43f,
+  43g, 43h, 43i, 43j, 43k.
+
+### State at the 2026-08-09 close of the 43b/43d session — read this before assigning anything
+
+Supersedes both notes above. Written at `8ec9da6`; verify rather than compare
+against that hash, because a coordinator commit after it is expected. What should
+hold: `git log --oneline origin/main..main` empty, working tree clean, and the
+branches on `origin` besides `main` are `design34/focus-system-authorization`
+(6a), **`design43/report-shapes` (43d, awaiting a rig)**,
+`florian/setup-claude-workflow` and `port-to-jpype-acqj`. Two worktrees:
+`../microclaw-43d` and `../microclaw-6a` (idle at `4994f3e`).
+
+- **43b is MERGED and fully closed** (`b220e33`) — M5 gate PASS, ledger row
+  closed, coordination notes in `design/prompts.md`, design gate merged
+  (`8ec9da6`), branch and worktree deleted. **Track F blocks merged: 43a, 43m,
+  43b.**
+- **43d is pushed and awaiting a rig** — branch `design43/report-shapes`, pinned
+  at `a7a415d`, runbook `design/43-block43d-rig-gate.md` on the branch. Two
+  review rounds plus a coordinator fix. **It must merge `main` first**: `main`
+  has moved four times since it branched from `04c0654`, and 43b touched
+  `tools.py` too.
+- **Nothing else was started, deliberately.** Every remaining Track F block is
+  rig-gated (43c, 43e, 43f, 43g, 43h, 43i, 43j all "required"; 43k is design-only
+  *and* blocked on 43h/43i having run on a rig). **The constraint on this track
+  is rig sessions, not implementer throughput**, so starting a third branch would
+  only deepen the queue behind 43d rather than relieve it. 43b and 43d ran
+  concurrently because both were cold-startable while the rigs were free; that
+  condition no longer holds.
+- **43e must not start before 43d merges.** They edit the same lines: 43d
+  rewrote `_load_saved_adapter`'s refusal message, and 43e's job is to extend
+  that message to list built-in adapters first. 43d's version is the base 43e
+  builds on.
+- **Assign 43c and 43e together once 43d merges.** 43c gained a required design
+  item from 43b's M5 gate (a `set_channel` call that meant "off" and enabled a
+  laser, auto-approvable under a session grant) — see its entry.
+- **Suite baseline: 1673 passed / 99 skipped / 3 expected warnings, 1772
+  collected** on macOS at `8ec9da6`. M5 measured **1656 / 116 / 1772** at 43b's
+  gate — the same collection with the 17-test platform-conditional set skipping.
+  Re-measure; judge by failures and collected total; diff collected test IDs
+  against the branch's start commit.
+- **A runbook defect to fix in the next one written.** 43b's Step 0 ran the suite
+  under `uv` but the collect-only line with bare `python`, which on M5 is
+  miniconda without pytest — so no collected-ID list came back. Drive both
+  commands through one launcher.
 
 ### Block 41c mid-gate — superseded 2026-08-07, kept for the round history
 
@@ -552,9 +603,9 @@ assistant's narration when judging whether a guard fired.
 | 42b | Read side | 42a's answers | `design42/open-artifact` (deleted) | `4d6a426` | `0dd3629` (dir spike) + `410846e` + `e02955f` + `ebebe45` + `ed9c78a`; review round 1 `867f3af`; runbook `a038c95`/`838f00d`/`b06fbac` pinned `867f3af`; findings `c60d33f`; fix round `229423d` (runner) + review round 2 `f574643`; **redesign `a97620b`** (open the dataset's TIFFs, MM reader deleted); runbook re-pinned `a97620b`; round-3 fix `5d09b7b` | **demo machine, three rounds, PASS at `a97620b`.** Round 1 (`bc93f76`): file branch PASS (G1/G2, no thumbnail), directory branch FAIL — G0 D2 ERROR and G4a wedged the bridge ~5 min. Round 2 (`f574643`): the watchdog named the stalling call and produced **F4**. Round 3 (`41b-open-artifact-demo-round3`): **G1+G2+G3+G4a+G4b+G4c ALL PASS**, no stalls, one image block in the session and only on the `analyze=true` turn; `stitch_test_1` — which MM's reader could never read (**F1**) — opens with all 6 tiles. Findings F1–F4 in `design/42-block42b-gate-findings.md`; round-3 finding fixed in `5d09b7b`. **G0 retired.** Multi-channel axis structure is a **known, tabled limitation**. **M5 still owed** — read-side block, demo-gated by design | `0819790` | **done** `25fc9cc` — design/42 §"What the gate measured"; design/43 F7 dependency cleared and assignable |
 | 43a | Nestor | none — may run concurrently with Track B | `design43/live-dose-and-tiff-prose` (deleted) | `3d6146b` | `cf1f272` + `af7e015` (review round 1 returned); runbook `92520b7` pinned `af7e015` | **M2 2026-08-09 — G1, G2, G4 both limbs, G5 all PASS; G3 answered, no fix owed** (`43a-m2`). Gated on M2, not M5: same camera-triggered illumination, and deliberately off the outlier rig. Suite red with 9 pre-existing Windows failures, none in touched code → block 43m | `5ec57cb` | **done** `18f84f1` — design/43 F3's "Untested" paragraph replaced by what M2 measured, plus the two implementation corrections (headless focus sweep, `find_features` is a borrow); F7's offer count corrected six → seven; suggested-order item 1 struck through |
 | 43m | Nestor (fallout) | none — **gated every later Track F rig gate** | `design43/windows-suite-integrity` (deleted) | `18f84f1` | `f49deb5` (accepted round 1, no rework); runbook `f0f3d3f` pinned `f49deb5` | **M2 2026-08-09 PASS — 0 failed, 1650 passed, 116 skipped, 1766 collected** (`43m-m2`). Skip count unchanged from 43a's run, so the subject tests ran rather than being skipped | `75fea30` | done — block *is* the gate; standing constraint added below |
-| 43b | Nestor | none | `design43/refresh-gui` | | | **required — M5**; `javap` the deployed `MMJ_.jar` before implementing | | |
+| 43b | Nestor | none | `design43/refresh-gui` (deleted) | `04c0654` | `8162b04` + `74dc87f` (review round 1 returned); runbook `ef6a658` pinned `74dc87f` | **M5 2026-08-09 — G1, G2, G3 both limbs all PASS; G4 NOT EXERCISED by design** (`43b-m5`). Suite 1656 passed / 116 skipped / 0 failed / 1772 collected. G1 settled the pyjavaz shadow `javap` could not reach; EMU's plugin panel repainted too, which the gate did not ask for | `b220e33` | |
 | 43c | Nestor | none | `design43/session-grants` | | | **required** — the audit log must still record every event | | |
-| 43d | Nestor | none | `design43/report-shapes` | | | required — payload text, validate criteria against the Nestor history | | |
+| 43d | Nestor | none | `design43/report-shapes` | `04c0654` assigned 2026-08-09, worktree `../microclaw-43d` | `8635d7c` + `9b98b0b` (two review rounds returned) + `a7a415d` (coordinator fixes); runbook pin `a7a415d` | **pushed 2026-08-09, awaiting a rig.** Runbook `design/43-block43d-rig-gate.md` on the branch. G1 saved-hook survey, G2 unknown adapter, G3 previous-area centre, plus a full suite per the standing constraint. Gate patterns were validated against the Nestor session before shipping and each reads **1** on it | | |
 | 43e | Nestor | none | `design43/builtin-offline-adapters` | | | required | | |
 | 43f | Nestor | 43a merged (its prompt names the key this creates) | `design43/rig-profile` | | | required | | |
 | 43g | Nestor | none | `design43/coverage-statistics` | | | **required — beads + a diffuse field**; nothing ranks on it until calibrated | | |
@@ -5236,7 +5287,7 @@ long-standing platform-conditional set (the file has said "sixteen" since
 **This is the first green full suite ever measured on a Windows rig since 41b
 and 41c landed on 2026-08-06.**
 
-## 43b. The GUI stops tracking after a channel switch
+## 43b. [x] The GUI stops tracking after a channel switch — **MERGED 2026-08-09**
 
 Branch: `design43/refresh-gui`
 
@@ -5264,7 +5315,7 @@ finding.
       `set_device_property`, which is the same interface shadowing the same way
       — so what is left is one live one-liner, folded into this block's own gate
       rather than owed before it.
-- [ ] `controller.refresh_gui()`, never raising. Migrate the two existing
+- [x] `controller.refresh_gui()`, never raising. Migrate the two existing
       `ctrl.studio.app().refresh_gui()` callsites so there is one definition,
       and add it to `execute_channel_plan` (`authorization.py`) **including the
       rollback path** and to `set_focus_lock`.
@@ -5277,8 +5328,72 @@ finding.
       are `execute_channel_plan` (`authorization.py:1649`) and `set_focus_lock`
       (`tools.py:5690`). Every claim in F4's table holds in substance — only the
       numbers moved.
-- [ ] Rig gate on M5: a channel switch and a rollback both leave the Property
+- [x] Rig gate on M5: a channel switch and a rollback both leave the Property
       Browser showing what the hardware actually holds.
+
+### Rig gate — M5, 2026-08-09: **PASS** (`43b-m5`)
+
+Merged `b220e33`. Evidence bundle `43b-m5`: history + confirmations JSONL,
+`g1-43b.txt`, `suite-43b.txt`, `install-43b.txt`, `collect-43b.txt`.
+
+- **G1 PASS — the only fact this block owed a rig.** `refresh_gui_from_cache
+  callable: True`, exit 0. The deployed Windows build shadows
+  `refreshGUIFromCache` over pyjavaz. `javap` had established the Java method
+  exists on the local macOS 2.0.3 build; this is the bridge half it could not
+  reach.
+- **G2 PASS, operator-observed.** Three `set_channel` calls (488 → 640 → 488),
+  four writes each. The Property Browser repainted every time with no manual
+  Refresh — **and so did EMU's own plugin panel**, which the gate did not ask
+  for. `refreshGUIFromCache` reaches plugin windows, not just the browser.
+- **G3 PASS, operator-observed**, both limbs: `set_focus_lock` on and off
+  (`PIZStage.External sensor`), and the `set_device_property` non-regression
+  write.
+- **G4 NOT EXERCISED.** No partial channel-plan failure occurred, and the
+  runbook forbids manufacturing one — unplugging the iChrome or racing a serial
+  disconnect would be an uncontrolled fault and might fail on the first write,
+  which is not a partial application. Three unit tests cover all three rollback
+  exception exits plus a repaint failure that must not replace them.
+- **Suite on M5: 1656 passed, 116 skipped, 0 failed**, 3 expected warnings.
+  1656 + 116 = **1772 collected**, exactly the off-rig total, so nothing started
+  skipping. One gap in the evidence chain, recorded rather than glossed: the
+  standing constraint wants the skip count compared to the previous run *on the
+  same machine*, and no prior full-suite M5 number exists to compare against.
+  116 is the Windows platform-conditional set measured on M2 at 43a and 43m.
+
+**Runbook defect for future blocks.** Step 0's
+`python -m pytest -q --collect-only` failed on M5: bare `python` there is
+miniconda without pytest, while the suite itself ran under `uv`. So no
+collected-ID list was captured. No harm — the total is derivable from
+passed + skipped — but a runbook must drive both commands through the same
+launcher.
+
+**Not this block's finding, but it happened here.** Asked to turn the 488 laser
+off, the agent called `set_channel('488')`, which *re-enabled* it: four writes
+and a real exposure. It caught itself immediately and fixed it with a direct
+property write. The confirmations log shows the mistaken call produced a fourth
+`ENABLE ILLUMINATION` prompt, which was approved — so **the gate is the only
+thing that stood between a tool-choice error and a silent dose.** That is a
+direct input to block 43c and is written into its entry.
+
+**Implemented and pushed 2026-08-09, awaiting M5.** One correction to this
+entry's own scope, found in review round 1 and worth recording because the
+checklist and design/43 F4 both had it wrong: **`set_channel` has two routes,
+not one.** With an authorization map it runs `execute_channel_plan`; without one
+it delegates to `core.set_config` + `wait_for_config` (`tools.py:1264`, and
+`_has_channel_authorization_map`'s docstring at `:1185`). F4's table lists only
+the first, so the block as written would have fixed the path M5 takes and left
+the plain Micro-Manager one still not repainting — the "never anchor on one
+microscope" failure in its usual costume. **Five callsites shipped, not four.**
+
+Two smaller notes from the same round. The rollback refresh is wrapped in its
+own `try/except` even though the helper never raises: that is deliberate, so a
+repaint error can never replace a `ChannelPlanSafeStateError`, and the asymmetry
+with the bare success-path call is the point rather than an oversight. And the
+fake-controller question was settled by updating the fakes rather than adding a
+`getattr` guard — `tests/conftest.py`'s `mock_ctrl` is
+`MagicMock(spec=MicroscopeController)`, so every `refresh_gui` assertion in the
+suite resolves only because the real method exists. Renaming it fails the suite
+loudly, which a `getattr` guard would have hidden.
 
 ## 43c. One illumination approval per session, not one per switch
 
@@ -5305,6 +5420,23 @@ same two properties.
 - [ ] The operator asked for a blanket "deactivate session safety guards" button.
       This is deliberately narrower and must stay so. If the grantable set is too
       small, widen the set — never widen what a grant means.
+- [ ] **Answer the case 43b's M5 gate produced before designing the grant.**
+      Asked to turn the 488 laser *off*, the agent called `set_channel('488')` —
+      which enables that slot's laser. Four writes, a real exposure, and the
+      operator saw an `ENABLE ILLUMINATION` prompt for a request that meant the
+      opposite. They approved it; the agent then caught its own error and
+      disabled the property directly. Under a session-wide illumination grant
+      that exposure happens **with no prompt at all.**
+
+      This is not an argument against the grant — design/43 F2's 17-approvals
+      case is real and unchanged. It is a constraint on it: the friction the
+      grant removes is *repetition of a decision already made*, and this was a
+      different decision wearing the same prompt. Say in the design how a grant
+      behaves when the enable it is auto-approving contradicts what the operator
+      just asked for, or state plainly that it cannot tell and that the audit
+      row is the only backstop. Do not leave it unaddressed.
+
+      Evidence: `43b-m5`, history turns 44–53 and the fourth confirmations row.
 
 ## 43d. Report shapes and hints that sent the reader to the wrong place
 
@@ -5327,6 +5459,40 @@ no behaviour change, and each one produced a wrong statement in the session.
       scan's area must pass that scan's centre, because the default centre is
       wherever the stage happens to be.
 - [ ] No new arguments in any of the three.
+
+**Implemented and pushed 2026-08-09, awaiting a rig.** Two review rounds plus a
+coordinator fix. Three things it learned that design/43 F8 and F11 do not say:
+
+- **`hook_actions` is emitted only when typed actions were actually observed at
+  the parent dispatch, and omitted otherwise.** `_resolve_hook` wraps only
+  *saved* hooks in `UntrustedHookAdapter`; a precoded hook is returned bare and
+  has no counts, and a saved hook may legitimately dispatch nothing because
+  `HookResult.actions` defaults to `()`. In both cases an emitted
+  `{"ContinueSurvey": 0, "StopSurvey": 0}` would state, in the one
+  content-shaped field the result has, that the hook decided nothing on a run
+  where it continued at every tile — F8's own defect in the key added to retire
+  it. F8's stub shows the counts unconditionally; it is silent on this.
+- **A correction to the record, made by reading the session rather than
+  remembering it.** Review round 1 asserted F8's survey ran a *precoded* hook.
+  It did not: all seven `run_adaptive_survey` calls in
+  `20260806_152935_790472` used `filament_position_filter`, which is not in
+  `PRECODED_HOOK_REGISTRY`, and every one passed `log_path`. The error was the
+  coordinator's, reached the branch through a review prompt, and is corrected in
+  the runbook. The defect it prompted was real and the fix stands — but the
+  precoded path is covered off-rig, because **no precoded hook can drive an
+  adaptive run at all**, so a rig limb for it would stall after the seed
+  exposure.
+- **`grid_center_source` has three values, not two.** F11 names
+  `current_stage_position | explicit`; the half-explicit call — one coordinate
+  supplied, one defaulted — is neither, and reporting it as either is a false
+  provenance claim. It reports `partially_explicit`.
+
+Carried to the post-merge design gate: design/43 F8's stub and F11's two-value
+list both need reconciling to the above, and `hook_actions` currently projects
+only `ContinueSurvey`/`StopSurvey` from a dict that observes every kind, so a
+hook dispatching only `DiscardFrame` still reads as two zeros. That last one is
+a narrower version of the same defect and was left rather than widened
+mid-block.
 
 ## 43e. Offline analysis ships with no analyses in it
 

@@ -66,6 +66,19 @@ class TestGuardedSeam:
         ctrl._core.set_position.assert_called_once_with(999.0)
 
 
+class TestGuiRefresh:
+    def test_refreshes_from_cache(self):
+        ctrl = make_controller()
+        ctrl.refresh_gui()
+        ctrl._studio.app().refresh_gui_from_cache.assert_called_once_with()
+
+    def test_failure_is_logged_and_never_raised(self, caplog):
+        ctrl = make_controller()
+        ctrl._studio.app().refresh_gui_from_cache.side_effect = RuntimeError("paint failed")
+        ctrl.refresh_gui()
+        assert "GUI refresh from cache failed" in caplog.text
+
+
 class TestGoToPositionZOnly:
     def test_z_only_skips_xy(self):
         ctrl = make_controller()
