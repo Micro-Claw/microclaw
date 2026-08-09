@@ -1,6 +1,9 @@
+from types import SimpleNamespace
+
 import pytest
 
-from microclaw import tools
+from microclaw import paths, tools
+from microclaw import __main__ as cli
 from microclaw.conversation import AuditLog, load_history
 from microclaw.safety import (
     ForbiddenProperty,
@@ -26,10 +29,10 @@ def test_non_grantable_self_modification_kinds_raise():
             tools.SESSION_GRANTS.grant(kind, None, "summary", "stdin")
 
 
-def test_stdin_grant_auto_approves_with_a_distinct_audit_row_and_revokes(
+def test_stdin_grant_auto_approves_with_a_distinct_audit_row(
     monkeypatch, tmp_path,
 ):
-    answers = iter(["session", "n"])
+    answers = iter(["session"])
     monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
     path = tmp_path / "confirmations.jsonl"
     monkeypatch.setattr(tools, "CONFIRM_AUDIT_FN", AuditLog(path).append)
@@ -41,16 +44,47 @@ def test_stdin_grant_auto_approves_with_a_distinct_audit_row_and_revokes(
     assert record["decision"] == f"auto-approved:{grant['id']}"
     assert record["grant_id"] == grant["id"]
 
-    assert tools.SESSION_GRANTS.revoke(grant["id"])
+
+
+def test_terminal_operator_lists_and_revokes_a_grant_through_repl(
+    monkeypatch, tmp_path, capsys,
+):
+    grant = tools.SESSION_GRANTS.grant(
+        "illumination", "enable", "enable 488", identity="stdin"
+    )
+    path = tmp_path / "confirmations.jsonl"
+    monkeypatch.setattr(tools, "CONFIRM_AUDIT_FN", AuditLog(path).append)
+    monkeypatch.setattr(cli, "run_agent", lambda *a, **k: pytest.fail("agent ran"))
+    answers = iter(["grants", "1", "exit"])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
+
+    cli._repl(
+        SimpleNamespace(profile=False, model=None), object(), object(), [],
+        SimpleNamespace(model_messages=lambda: [], append=lambda message: None),
+    )
+
+    assert tools.SESSION_GRANTS.active() == []
+    output = capsys.readouterr().out
+    assert "illumination/enable" in output
+    assert "Revoked illumination/enable" in output
+    record = load_history(path).messages[-1]
+    assert record["decision"] == f"revoked:{grant['id']}"
+    assert record["grant_id"] == grant["id"]
+
+    monkeypatch.setattr("builtins.input", lambda prompt: "n")
     assert not tools._require_confirmation("enable 488", "illumination", "enable")
 
 
-def test_grant_is_only_process_memory_and_has_no_serializable_state_file(tmp_path):
-    before = set(tmp_path.iterdir())
+def test_grant_is_only_process_memory_and_writes_no_user_state(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    config_dir = paths.user_config_dir()
+    data_dir = paths.user_data_dir()
     tools.SESSION_GRANTS.grant(
         "illumination", "enable", "enable 488", identity="stdin"
     )
-    assert set(tmp_path.iterdir()) == before
+    assert not config_dir.exists()
+    assert not data_dir.exists()
     # A new process would construct the same fresh registry at import time.
     assert tools.SessionGrants().active() == []
 

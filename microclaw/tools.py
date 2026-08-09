@@ -690,6 +690,11 @@ class SessionGrants:
             return None
         return self._granted.get((kind, subject))
 
+    @classmethod
+    def is_grantable(cls, kind: str, subject: str | None) -> bool:
+        """Whether this exact confirmation question may receive a grant."""
+        return subject in cls._SUBJECTS.get(kind, ())
+
     def grant(
         self, kind: str, subject: str | None, summary: str, identity: str
     ) -> dict[str, str]:
@@ -698,7 +703,7 @@ class SessionGrants:
                 f"{kind!r} confirmations cannot be granted for a session; "
                 "they gate self-modification, not workflow."
             )
-        if subject not in self._SUBJECTS[kind]:
+        if not self.is_grantable(kind, subject):
             raise ValueError(
                 f"{kind!r} confirmation subject {subject!r} is not session-grantable."
             )
@@ -713,12 +718,12 @@ class SessionGrants:
         self._granted[(kind, subject)] = record
         return record
 
-    def revoke(self, grant_id: str) -> bool:
+    def revoke(self, grant_id: str) -> dict[str, str] | None:
         for key, record in tuple(self._granted.items()):
             if record["id"] == grant_id:
                 del self._granted[key]
-                return True
-        return False
+                return record
+        return None
 
     def active(self) -> list[dict[str, str]]:
         return list(self._granted.values())
@@ -771,7 +776,7 @@ def _require_confirmation(
         )
         return True
     print(f"\n[microclaw] Confirmation required:\n{summary}")
-    grantable = subject in SessionGrants._SUBJECTS.get(kind, ())
+    grantable = SessionGrants.is_grantable(kind, subject)
     prompt = "Proceed? [y/N, or s for this session] " if grantable else "Proceed? [y/N] "
     answer = input(prompt).strip().lower()
     if answer in {"s", "session"} and grantable:

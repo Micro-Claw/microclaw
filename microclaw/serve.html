@@ -481,15 +481,8 @@
     });
     // A 409 is a stale banner — the server already resolved it. Hide either way.
     if (!res.ok && res.status !== 409) { toast(await detail(res)); return; }
+    if (res.ok) showGrants((await res.json()).grants);
     hideConfirm(confirmId);
-    if (approve === "session") {
-      // The turn thread creates the grant after consuming this reply. Fetch on
-      // its next tick so the persistent chip carries the server-issued id.
-      setTimeout(async () => {
-        const state = await (await apiFetch("/api/confirm")).json();
-        showGrants(state.grants);
-      }, 100);
-    }
   }
 
   $("confirm-approve").addEventListener("click", () => answerConfirm(true));

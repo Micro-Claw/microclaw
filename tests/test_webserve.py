@@ -508,9 +508,13 @@ def test_browser_session_grant_auto_audits_and_revoke_restores_prompting(
         session, "enable 488", kind="illumination", subject="enable"
     )
     pid = session.pending.id
-    assert client.post(
+    approval = client.post(
         "/api/confirm", json={"id": pid, "approve": "session"}
-    ).status_code == 200
+    )
+    assert approval.status_code == 200
+    # The POST that disables future prompts returns the chip state itself; the
+    # UI does not race a later poll against the turn thread.
+    assert len(approval.json()["grants"]) == 1
     thread.join(timeout=5)
     assert box["answer"] is True
     grant = tools.SESSION_GRANTS.active()[0]
@@ -526,6 +530,9 @@ def test_browser_session_grant_auto_audits_and_revoke_restores_prompting(
     )
     assert response.status_code == 200
     assert response.json()["grants"] == []
+    revoke = load_history(path).messages[-1]
+    assert revoke["decision"] == f"revoked:{grant['id']}"
+    assert revoke["grant_id"] == grant["id"]
     thread, _, box = _start_confirm(
         session, "enable 488", kind="illumination", subject="enable"
     )
@@ -540,6 +547,20 @@ def test_browser_page_exposes_session_approval_and_persistent_revoke_controls(cl
     assert 'id="confirm-session"' in page
     assert 'id="grant-chips"' in page
     assert 'approve: "revoke"' in page
+
+
+def test_auto_approval_audits_acting_operator_and_grant_author_separately(session):
+    grant = tools.SESSION_GRANTS.grant(
+        "illumination", "enable", "enable 488", identity="grant-author"
+    )
+    session.current_identity = "acting-operator"
+
+    assert session.confirm("enable 561", "illumination", "enable") is True
+
+    record = session.audit_records[-1]
+    assert record["identity"] == "acting-operator"
+    assert record["grant_identity"] == "grant-author"
+    assert record["grant_id"] == grant["id"]
 
 
 def test_a_stale_confirm_id_is_a_409(session, client, fast_confirm_poll):
