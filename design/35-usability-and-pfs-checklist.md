@@ -397,6 +397,11 @@ branch is open.** One worktree besides this one: `../microclaw-6a`, idle at
   `ENABLE ILLUMINATION` prompt, because that is what the tool was doing. Under a
   session-wide grant that exposure is silent. See 43c's entry; the block must
   answer it rather than discover it.
+- **43c is pushed and awaiting M5 or M2** — branch `design43/session-grants`,
+  pinned at `2bf0e32`, runbook on the branch. Two review rounds. It must gate on
+  a rig whose camera trigger fires the lasers, and **with history saving on**:
+  with it off the grant still works and writes no audit rows at all, so the
+  headline criterion would be unobservable rather than failing.
 - **43e ran on M5 and G1 FAILED — round 2 is pushed at `9bae1ba`.** The built-ins
   shipped correct and unreachable: microclaw never called `connected_components`
   in three attempts, because the tool description and the system prompt named
@@ -698,7 +703,7 @@ assistant's narration when judging whether a guard fired.
 | 43a | Nestor | none — may run concurrently with Track B | `design43/live-dose-and-tiff-prose` (deleted) | `3d6146b` | `cf1f272` + `af7e015` (review round 1 returned); runbook `92520b7` pinned `af7e015` | **M2 2026-08-09 — G1, G2, G4 both limbs, G5 all PASS; G3 answered, no fix owed** (`43a-m2`). Gated on M2, not M5: same camera-triggered illumination, and deliberately off the outlier rig. Suite red with 9 pre-existing Windows failures, none in touched code → block 43m | `5ec57cb` | **done** `18f84f1` — design/43 F3's "Untested" paragraph replaced by what M2 measured, plus the two implementation corrections (headless focus sweep, `find_features` is a borrow); F7's offer count corrected six → seven; suggested-order item 1 struck through |
 | 43m | Nestor (fallout) | none — **gated every later Track F rig gate** | `design43/windows-suite-integrity` (deleted) | `18f84f1` | `f49deb5` (accepted round 1, no rework); runbook `f0f3d3f` pinned `f49deb5` | **M2 2026-08-09 PASS — 0 failed, 1650 passed, 116 skipped, 1766 collected** (`43m-m2`). Skip count unchanged from 43a's run, so the subject tests ran rather than being skipped | `75fea30` | done — block *is* the gate; standing constraint added below |
 | 43b | Nestor | none | `design43/refresh-gui` (deleted) | `04c0654` | `8162b04` + `74dc87f` (review round 1 returned); runbook `ef6a658` pinned `74dc87f` | **M5 2026-08-09 — G1, G2, G3 both limbs all PASS; G4 NOT EXERCISED by design** (`43b-m5`). Suite 1656 passed / 116 skipped / 0 failed / 1772 collected. G1 settled the pyjavaz shadow `javap` could not reach; EMU's plugin panel repainted too, which the gate did not ask for | `b220e33` | **done** `8ec9da6` — design/43 F4's write-path table annotated as one row short (`set_channel` has two routes); its "verify before implementing" caveat answered in both halves, `javap` for the Java method and M5 for the pyjavaz shadow; suggested-order item 2 struck through, three callsites estimated and five shipped |
-| 43c | Nestor | none | `design43/session-grants` | `eb577d8` | | **required** — the audit log must still record every event | | |
+| 43c | Nestor | none | `design43/session-grants` | `eb577d8` | `e68fba6` + `4a3aed1` + `2bf0e32` (two review rounds returned); runbook `43-block43c-rig-gate.md` pinned `2bf0e32` | **pushed 2026-08-09, awaiting M5 or M2** — the audit log must still record every event; **history saving must be ON or the criterion is unobservable** | | |
 | 43d | Nestor | none | `design43/report-shapes` (deleted) | `04c0654` | `8635d7c` + `9b98b0b` (two review rounds returned) + `a7a415d` (coordinator fixes) + `010701a` (runbook total corrected); runbook pin `a7a415d` | **M5 2026-08-09 — G1, G2, G3 all PASS; all three known-bad patterns read 0** (`43d-m5`). Suite 1657 passed / 116 skipped / 0 failed / 1773 collected, skips equal to 43b's M5 run. Gate folded into a real 640-trigger session rather than run as a script | `53395d2` | **done** `53e3f12` — design/43 F8's stub corrected (`hook_actions` is omitted, not zeroed, when no typed action was observed) with the surviving two-kind projection recorded as still owed; F11's two-value list corrected to three (`partially_explicit`); suggested-order item 4 struck through |
 | 43e | Nestor | none | `design43/builtin-offline-adapters` | `eb577d8` | `452dbc5` + `3d30c1f` (review round 1 returned) + `9bae1ba` (coordinator fix after the rig round); runbook pinned `9bae1ba` | **M5 round 1 2026-08-09 (`43e-m5`): Step 0 PASS (0 failed, 1668 + 116 = 1784, skips equal to 43b/43d), G4 second limb PASS, Step 1 PASS; G1 FAIL, G2/G3 not exercised. Round 2 pushed, awaiting the rig** | | |
 | 43f | Nestor | 43a merged (its prompt names the key this creates) | `design43/rig-profile` | | | required | | |
@@ -5488,9 +5493,42 @@ fake-controller question was settled by updating the fakes rather than adding a
 suite resolves only because the real method exists. Renaming it fails the suite
 loudly, which a `getattr` guard would have hidden.
 
-## 43c. One illumination approval per session, not one per switch
+## 43c. One illumination approval per session, not one per switch — **PUSHED, awaiting M5 or M2**
 
-Branch: `design43/session-grants`
+Branch: `design43/session-grants`, runbook `design/43-block43c-rig-gate.md` on
+the branch, pinned at `2bf0e32`. Off-rig **1690 passed / 99 skipped / 3 expected
+warnings, 1789 collected** on macOS, re-measured by the coordinator; +10 IDs from
+`eb577d8`, none removed.
+
+**What the block decided, and what two review rounds found.**
+
+- **A grant matches kind + subject, not kind.** `illumination/enable` and
+  `acquisition/threshold` are grantable; the `Core.Shutter` retarget, the
+  unattended hook illumination envelope and MMStudio's current MDA stay
+  subject-less and therefore one-shot. That answers the blast-radius question
+  the coordinator raised at assignment: three of the five `CONFIRM_FN` call
+  sites are not the decision F2's operator made seventeen times.
+- **Round 1: a terminal operator could not revoke at all** — `revoke` was
+  reachable only from the browser endpoint, and the test that looked like it
+  covered this called the registry method directly. Now a `grants` REPL command,
+  tested through `_repl`. **Revocation is between turns in the terminal and
+  mid-turn in the browser**; that asymmetry is documented rather than left to be
+  found on a rig.
+- **Round 1: revoking wrote no audit row**, so the log could not bound the
+  window in which prompts were off.
+- **Round 1: the grant chip could silently fail to appear** — the browser fetched
+  the grant list on a 100 ms timer, racing the turn thread. Grant creation moved
+  into `POST /api/confirm`, which returns the authoritative list.
+- **Round 2: that move split grant creation from its audit row.** The turn thread
+  was still the only writer of the creation row, and it never runs it if the
+  turn already timed out or was stopped — leaving an active grant, visible in the
+  UI, suppressing prompts, with no origin in the log. Creation is now audited
+  where it happens, **and the grant is rolled back if that row cannot be
+  written**, which is more than was asked for and is right.
+- **A grant cannot infer intent.** Asked to turn a laser off, microclaw may call
+  `set_channel`, which enables it (43b's M5 gate). Under a grant that enable is
+  silent. Stated beside `SessionGrants` and gated at G6 rather than left
+  implicit.
 
 Source: design/43 F2. 17 confirmations in 50 minutes, all approved, all for the
 same two properties.
