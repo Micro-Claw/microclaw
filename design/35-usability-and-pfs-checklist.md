@@ -304,9 +304,14 @@ described Track F as unstarted. Written at `a34581b`, with coordinator commits
 after it expected — so verify rather than compare against that hash. What should
 hold: `git log --oneline origin/main..main` is empty, the working tree is clean,
 and the only branches on `origin` besides `main` are
-`design34/focus-system-authorization` (6a), two `florian/*` and
+`design34/focus-system-authorization` (6a), `florian/setup-claude-workflow` and
 `port-to-jpype-acqj`, none of which belong to this checklist. One worktree,
 `../microclaw-6a`, idle at `4994f3e`.
+
+> **Corrected 2026-08-09 at assignment of 43b/43d.** This note and the one above
+> it both said *two* `florian/*` branches; `git ls-remote` shows one. Recorded so
+> the next session verifying against this note does not chase a phantom branch.
+> Everything else in the note verified exactly, including the suite baseline.
 
 - **Track F blocks 43a and 43m are both MERGED and closed** — ledger rows closed,
   design gates done, branches deleted locally and on `origin`, coordination notes
@@ -5255,15 +5260,23 @@ finding.
       2.0.3** build rather than the deployed Windows one, and `javap` proves the
       Java method exists, not that pyjavaz shadows it as
       `refresh_gui_from_cache`. Both are near-certain — `Application` is public
-      MM API, and `ctrl.studio.app().refresh_gui()` already works today at
-      `tools.py:1103` and `:5383`, which is the same interface shadowing the
-      same way — so what is left is one live one-liner, folded into this block's
-      own gate rather than owed before it.
+      MM API, and `ctrl.studio.app().refresh_gui()` already works today inside
+      `set_device_property`, which is the same interface shadowing the same way
+      — so what is left is one live one-liner, folded into this block's own gate
+      rather than owed before it.
 - [ ] `controller.refresh_gui()`, never raising. Migrate the two existing
-      `ctrl.studio.app().refresh_gui()` callsites (`tools.py:1103`, `:5383`) so
-      there is one definition, and add it to `execute_channel_plan`
-      (`authorization.py`) **including the rollback path** and to
-      `set_focus_lock`.
+      `ctrl.studio.app().refresh_gui()` callsites so there is one definition,
+      and add it to `execute_channel_plan` (`authorization.py`) **including the
+      rollback path** and to `set_focus_lock`.
+
+      **All four sites re-verified on `main` at `d481a04` (2026-08-09).** Name
+      them by function, not by line: design/43 F4's table cites `tools.py:1103`
+      and `:5383`, which have drifted. The two that refresh are
+      `set_device_property` (`tools.py:1326`) and
+      `set_emu_laser_power_percentage` (`tools.py:5862`); the two that do not
+      are `execute_channel_plan` (`authorization.py:1649`) and `set_focus_lock`
+      (`tools.py:5690`). Every claim in F4's table holds in substance — only the
+      numbers moved.
 - [ ] Rig gate on M5: a channel switch and a rollback both leave the Property
       Browser showing what the hardware actually holds.
 
