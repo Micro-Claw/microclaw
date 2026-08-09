@@ -4901,9 +4901,11 @@ Rig gate — M5, and it is a behaviour gate as much as a mechanism gate:
 
 Post-merge design gate:
 
-- [ ] Record in design/42 what the gate measured, and tick design/43 F7's
+- [x] Record in design/42 what the gate measured, and tick design/43 F7's
       dependency — F7's prompt fix names `open_artifact`, so it becomes
-      assignable here. Do not implement F7 in this block.
+      assignable here. Do not implement F7 in this block. **Done 2026-08-09:**
+      design/42 §"What the gate measured"; design/43 F7 carries a
+      "dependency cleared" note and is assignable. F7 not implemented here.
 
 ---
 

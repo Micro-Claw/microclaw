@@ -610,7 +610,17 @@ answer to "let me look at this".
 **Cause.** `SYSTEM_PROMPT:85` and `:149–150` both name the export with no
 statement of when it is *not* needed, so the model reaches for it whenever
 looking-at-data comes up. And the thing it should reach for instead is
-design/42's `open_artifact` — still a stub.
+design/42's `open_artifact`.
+
+> **Dependency cleared 2026-08-09.** `open_artifact` shipped with block 42b and
+> is demo-gated: a file opens in the running ImageJ, and a dataset directory
+> opens the TIFF stack files inside it — including `stitch_test_1`, which
+> Micro-Manager's own dataset reader could never read. **F7 is assignable.**
+> The claim it rests on is now measured rather than assumed: NDTiff opens in
+> ImageJ as-is, because an NDTiff dataset *is* TIFF stack files plus an index
+> sidecar. One caveat to carry into F7's wording — opening the stack files does
+> not reconstruct multi-channel axis structure (channels are planes, not named
+> channels), a known limitation tabled in design/42.
 
 **Decision.** Correct the fact and name the alternative.
 
