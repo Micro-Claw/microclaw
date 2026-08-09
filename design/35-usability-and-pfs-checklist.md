@@ -397,6 +397,14 @@ branch is open.** One worktree besides this one: `../microclaw-6a`, idle at
   `ENABLE ILLUMINATION` prompt, because that is what the tool was doing. Under a
   session-wide grant that exposure is silent. See 43c's entry; the block must
   answer it rather than discover it.
+- **43c and 43e were both assigned 2026-08-09 from `eb577d8`**, concurrently, in
+  worktrees `../microclaw-43c` and `../microclaw-43e`. Three block branches are
+  in flight (6a, 43c, 43e) and 6a is the only one whose next step belongs to a
+  rig. They are disjoint — 43c is the `CONFIRM_FN` seam in `tools.py` plus
+  `webserve.py` and `serve.html`, 43e is `completed_dataset.py` plus
+  `image_analysis` — but both may touch `tools.py`, so **whichever merges second
+  merges `main` first.** Six blocks remain after them: 43f, 43g, 43h, 43i, 43j,
+  43k.
 - **Order for the rest**, from design/43's own suggested order: 43c, 43e, 43f,
   43g, 43h, then 43i (needs 43g and 43h), 43j (needs 43e), and 43k is design work
   only, after 43h and 43i have run on a rig.
@@ -675,9 +683,9 @@ assistant's narration when judging whether a guard fired.
 | 43a | Nestor | none — may run concurrently with Track B | `design43/live-dose-and-tiff-prose` (deleted) | `3d6146b` | `cf1f272` + `af7e015` (review round 1 returned); runbook `92520b7` pinned `af7e015` | **M2 2026-08-09 — G1, G2, G4 both limbs, G5 all PASS; G3 answered, no fix owed** (`43a-m2`). Gated on M2, not M5: same camera-triggered illumination, and deliberately off the outlier rig. Suite red with 9 pre-existing Windows failures, none in touched code → block 43m | `5ec57cb` | **done** `18f84f1` — design/43 F3's "Untested" paragraph replaced by what M2 measured, plus the two implementation corrections (headless focus sweep, `find_features` is a borrow); F7's offer count corrected six → seven; suggested-order item 1 struck through |
 | 43m | Nestor (fallout) | none — **gated every later Track F rig gate** | `design43/windows-suite-integrity` (deleted) | `18f84f1` | `f49deb5` (accepted round 1, no rework); runbook `f0f3d3f` pinned `f49deb5` | **M2 2026-08-09 PASS — 0 failed, 1650 passed, 116 skipped, 1766 collected** (`43m-m2`). Skip count unchanged from 43a's run, so the subject tests ran rather than being skipped | `75fea30` | done — block *is* the gate; standing constraint added below |
 | 43b | Nestor | none | `design43/refresh-gui` (deleted) | `04c0654` | `8162b04` + `74dc87f` (review round 1 returned); runbook `ef6a658` pinned `74dc87f` | **M5 2026-08-09 — G1, G2, G3 both limbs all PASS; G4 NOT EXERCISED by design** (`43b-m5`). Suite 1656 passed / 116 skipped / 0 failed / 1772 collected. G1 settled the pyjavaz shadow `javap` could not reach; EMU's plugin panel repainted too, which the gate did not ask for | `b220e33` | **done** `8ec9da6` — design/43 F4's write-path table annotated as one row short (`set_channel` has two routes); its "verify before implementing" caveat answered in both halves, `javap` for the Java method and M5 for the pyjavaz shadow; suggested-order item 2 struck through, three callsites estimated and five shipped |
-| 43c | Nestor | none | `design43/session-grants` | | | **required** — the audit log must still record every event | | |
+| 43c | Nestor | none | `design43/session-grants` | `eb577d8` | | **required** — the audit log must still record every event | | |
 | 43d | Nestor | none | `design43/report-shapes` (deleted) | `04c0654` | `8635d7c` + `9b98b0b` (two review rounds returned) + `a7a415d` (coordinator fixes) + `010701a` (runbook total corrected); runbook pin `a7a415d` | **M5 2026-08-09 — G1, G2, G3 all PASS; all three known-bad patterns read 0** (`43d-m5`). Suite 1657 passed / 116 skipped / 0 failed / 1773 collected, skips equal to 43b's M5 run. Gate folded into a real 640-trigger session rather than run as a script | `53395d2` | **done** `53e3f12` — design/43 F8's stub corrected (`hook_actions` is omitted, not zeroed, when no typed action was observed) with the surviving two-kind projection recorded as still owed; F11's two-value list corrected to three (`partially_explicit`); suggested-order item 4 struck through |
-| 43e | Nestor | none | `design43/builtin-offline-adapters` | | | required | | |
+| 43e | Nestor | none | `design43/builtin-offline-adapters` | `eb577d8` | | required | | |
 | 43f | Nestor | 43a merged (its prompt names the key this creates) | `design43/rig-profile` | | | required | | |
 | 43g | Nestor | none | `design43/coverage-statistics` | | | **required — beads + a diffuse field**; nothing ranks on it until calibrated | | |
 | 43h | Nestor | none | `design43/emit-adaptive-runs` | | | **required** — run the emitted script with microclaw closed | | |
