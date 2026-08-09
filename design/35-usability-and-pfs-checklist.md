@@ -5168,9 +5168,26 @@ Source: design/43 F4. One helper on the controller and its callsites; a debounce
 timer is explicitly refused, and the pyjavaz single-lock reason is in the
 finding.
 
-- [ ] **Verify the method name before writing the helper.** `javap` on the
-      deployed `MMJ_.jar` for `Application.refreshGUIFromCache()`. If only
-      `refreshGUI()` exists, use it and drop the from-cache rationale.
+- [x] **Verify the method name before writing the helper. ANSWERED off-rig,
+      2026-08-09 — this block no longer owes a rig round trip before it can
+      start.** `javap -classpath MMJ_.jar org.micromanager.Application` on the
+      local Micro-Manager 2.0.3-20260625 install reports **both**:
+
+      ```
+      public abstract void refreshGUI();
+      public abstract void refreshGUIFromCache();
+      ```
+
+      So design/43 F4's `refreshGUIFromCache()` exists and its from-cache
+      rationale stands; the "if only `refreshGUI()` is available" fallback is
+      not needed. Two honest limits on that evidence: it is the **local macOS
+      2.0.3** build rather than the deployed Windows one, and `javap` proves the
+      Java method exists, not that pyjavaz shadows it as
+      `refresh_gui_from_cache`. Both are near-certain — `Application` is public
+      MM API, and `ctrl.studio.app().refresh_gui()` already works today at
+      `tools.py:1103` and `:5383`, which is the same interface shadowing the
+      same way — so what is left is one live one-liner, folded into this block's
+      own gate rather than owed before it.
 - [ ] `controller.refresh_gui()`, never raising. Migrate the two existing
       `ctrl.studio.app().refresh_gui()` callsites (`tools.py:1103`, `:5383`) so
       there is one definition, and add it to `execute_channel_plan`
