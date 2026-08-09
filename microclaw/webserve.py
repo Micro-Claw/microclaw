@@ -46,7 +46,7 @@ from fastapi.responses import (
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
-from microclaw import credentials
+from microclaw import credentials, tools
 from microclaw.authorization import RigAuthorizationError, validate_live_rig
 from microclaw.conversation import AuditLog, ConversationStore, prune_transcripts
 from microclaw.agent import (
@@ -172,10 +172,11 @@ class RemoteAuth:
 class _Pending:
     """One confirmation waiting on the operator, readable by /api/confirm."""
 
-    def __init__(self, id: str, summary: str, kind: str):
+    def __init__(self, id: str, summary: str, kind: str, subject: str | None):
         self.id = id
         self.summary = summary
         self.kind = kind
+        self.subject = subject
         # threading queue, not asyncio: confirm() blocks on the turn thread
         # while /api/confirm answers from the event loop.
         self.reply: queue.Queue = queue.Queue(maxsize=1)
@@ -187,7 +188,7 @@ class Prompt(BaseModel):
 
 class Confirm(BaseModel):
     id: str
-    approve: bool
+    approve: bool | str
 
 
 class Key(BaseModel):
@@ -329,7 +330,9 @@ class Session:
         else:
             print("No Anthropic API key found — set one from the browser.")
 
-    def confirm(self, summary: str, kind: str = "action") -> bool:
+    def confirm(
+        self, summary: str, kind: str = "action", subject: str | None = None
+    ) -> bool:
         """Route a confirmation to the browser. Runs on the turn thread.
 
         Installed as tools.CONFIRM_FN by serve(), because the operator of a
@@ -344,7 +347,9 @@ class Session:
         confirmation_id = uuid.uuid4().hex
         identity = self.current_identity
 
-        def decided(decision: str, decided_by: str = identity) -> bool:
+        def decided(
+            decision: str, decided_by: str = identity, grant_id: str | None = None
+        ) -> bool:
             record = {
                 "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 "identity": decided_by,
@@ -356,6 +361,10 @@ class Session:
                 # redaction before this reaches the confirmations JSONL.
                 "summary": summary,
             }
+            if subject is not None:
+                record["subject"] = subject
+            if grant_id is not None:
+                record["grant_id"] = grant_id
             # Redact once, then use that one copy everywhere. AuditLog.append
             # returns a redacted *copy* and leaves its argument untouched, so
             # appending the raw record here would put an unredacted summary in
@@ -368,15 +377,22 @@ class Session:
                 record = confirmation_audit.append(record)
             self.audit_records.append(record)
             print("[microclaw] Confirmation audit: " + json.dumps(record, sort_keys=True))
-            return decision == "approved"
+            return decision.startswith("approved") or decision.startswith("auto-approved")
+
+        grant = tools.SESSION_GRANTS.granted(kind, subject)
+        if grant is not None:
+            return decided(
+                f"auto-approved:{grant['id']}", grant["identity"], grant["id"]
+            )
 
         if emit is None:
             return decided("declined:no-stream")           # no stream: deny
-        p = _Pending(confirmation_id, summary, kind)
+        p = _Pending(confirmation_id, summary, kind, subject)
         self.pending = p
         print(f"\n[microclaw] Confirmation required ({kind}):\n{summary}")
         emit({"type": "confirm_request", "id": p.id,
-              "summary": summary, "kind": kind})
+              "summary": summary, "kind": kind, "subject": subject,
+              "grantable": subject in tools.SessionGrants._SUBJECTS.get(kind, ())})
         try:
             deadline = _monotonic() + CONFIRM_TIMEOUT_S
             while _monotonic() < deadline:
@@ -387,9 +403,18 @@ class Session:
                     answer, responder = p.reply.get(timeout=CONFIRM_POLL_S)
                 except queue.Empty:
                     continue
-                print(f"[microclaw] {'Approved' if answer else 'Declined'}"
+                if answer == "session":
+                    grant = tools.SESSION_GRANTS.grant(
+                        kind, subject, summary, identity=responder
+                    )
+                    print("[microclaw] Approved for this session from browser.")
+                    return decided(
+                        f"approved:session:{grant['id']}", responder, grant["id"]
+                    )
+                approved = answer is True
+                print(f"[microclaw] {'Approved' if approved else 'Declined'}"
                       f" from browser.")
-                return decided("approved" if answer else "declined", responder)
+                return decided("approved" if approved else "declined", responder)
             print("[microclaw] Confirmation timed out; declined.")
             return decided("declined:timeout")             # deadline: deny
         finally:
@@ -651,9 +676,13 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
         strands the turn until the deadline. serve.html fetches it on load.
         """
         p = session.pending
+        grants = tools.SESSION_GRANTS.active()
         if p is None:
-            return JSONResponse({})
-        return JSONResponse({"id": p.id, "summary": p.summary, "kind": p.kind})
+            return JSONResponse({"grants": grants})
+        return JSONResponse({"id": p.id, "summary": p.summary, "kind": p.kind,
+                             "subject": p.subject,
+                             "grantable": p.subject in tools.SessionGrants._SUBJECTS.get(p.kind, ()),
+                             "grants": grants})
 
     @app.post("/api/confirm")
     async def post_confirm(c: Confirm, request: Request):
@@ -663,9 +692,19 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
         is waiting on it. Matches on id: a stale banner from a previous confirm
         must not answer the current one.
         """
+        if c.approve == "revoke":
+            if not tools.SESSION_GRANTS.revoke(c.id):
+                raise HTTPException(409, "No session grant with this id is active.")
+            return JSONResponse({"resolved": True, "grants": tools.SESSION_GRANTS.active()})
+        if c.approve not in (True, False, "session"):
+            raise HTTPException(422, "approve must be true, false, 'session', or 'revoke'.")
         p = session.pending
         if p is None or p.id != c.id:
             raise HTTPException(409, "No confirmation with this id is pending.")
+        if c.approve == "session" and not (
+            p.subject in tools.SessionGrants._SUBJECTS.get(p.kind, ())
+        ):
+            raise HTTPException(422, "This confirmation cannot be granted for the session.")
         p.reply.put((c.approve, request.state.identity))
         return JSONResponse({"resolved": True})
 

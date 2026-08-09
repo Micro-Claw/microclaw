@@ -1114,6 +1114,7 @@ class SafetyGuard:
                 f"ENABLE ILLUMINATION: {device}.{prop} = {value!r}\n"
                 f"This will emit light at the sample.",
                 kind="illumination",
+                subject="enable",
             ):
                 raise SafetyViolation(
                     f"User declined to enable illumination {device}.{prop}."

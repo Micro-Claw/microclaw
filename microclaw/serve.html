@@ -89,6 +89,11 @@
   :root[data-theme="dark"] #confirm-banner.illumination h2 { color: #ff8a80; }
   #confirm-approve { background: var(--accent); color: #04191b; border-color: var(--accent); }
   #confirm-banner.illumination #confirm-approve { background: #c0392b; color: #fff; border-color: #c0392b; }
+  #confirm-session { border-color: var(--accent); color: var(--accent); }
+  #grant-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .grant-chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 7px;
+    border: 1px solid var(--accent); border-radius: 999px; font-size: 11px; color: var(--ink); }
+  .grant-chip button { border: 0; padding: 0; color: #c0392b; font-size: 11px; }
 
   #toast {
     position: fixed; left: 50%; transform: translateX(-50%); bottom: 108px; z-index: 30;
@@ -109,6 +114,7 @@
     <div class="stat"><b id="s-tools">0</b><span>tool calls</span></div>
   </div>
   <div class="controls">
+    <div id="grant-chips"></div>
     <button id="model-btn" class="hidden"></button>
     <button id="key-btn" class="hidden"></button>
     <button id="expand" class="hidden">Expand all</button>
@@ -174,6 +180,7 @@
     <pre id="confirm-summary"></pre>
     <div class="row">
       <button id="confirm-approve">Approve</button>
+      <button id="confirm-session" class="hidden">Approve for this session</button>
       <button id="confirm-decline">Decline</button>
     </div>
   </div>
@@ -409,6 +416,31 @@
   // the server's deadline. A page reload re-surfaces it via GET /api/confirm.
   let confirmId = null;
 
+  function showGrants(grants) {
+    const box = $("grant-chips");
+    box.replaceChildren();
+    for (const grant of grants || []) {
+      const chip = document.createElement("span");
+      chip.className = "grant-chip";
+      chip.append(document.createTextNode(grant.kind + ": " + grant.subject + " approved "));
+      const revoke = document.createElement("button");
+      revoke.type = "button";
+      revoke.textContent = "Revoke";
+      revoke.addEventListener("click", () => revokeGrant(grant.id));
+      chip.append(revoke);
+      box.append(chip);
+    }
+  }
+
+  async function revokeGrant(id) {
+    const res = await apiFetch("/api/confirm", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, approve: "revoke" }),
+    });
+    if (!res.ok) { toast(await detail(res)); return; }
+    showGrants((await res.json()).grants);
+  }
+
   function showConfirm(p) {
     confirmId = p.id;
     const ill = p.kind === "illumination";
@@ -420,6 +452,10 @@
       : "Microclaw wants to persist model-written content. Read it before approving; declining is safe.";
     $("confirm-summary").textContent = p.summary;
     $("confirm-approve").textContent = ill ? "Enable illumination" : "Approve";
+    $("confirm-session").classList.toggle("hidden", !p.grantable);
+    $("confirm-session").textContent = ill
+      ? "Enable illumination for this session" : "Approve for this session";
+    showGrants(p.grants);
     $("confirm-banner").classList.remove("hidden");
     // The turn is waiting on the operator, and the spinner must not claim
     // otherwise — "working…" is how a pending confirm reads as a hang.
@@ -446,9 +482,18 @@
     // A 409 is a stale banner — the server already resolved it. Hide either way.
     if (!res.ok && res.status !== 409) { toast(await detail(res)); return; }
     hideConfirm(confirmId);
+    if (approve === "session") {
+      // The turn thread creates the grant after consuming this reply. Fetch on
+      // its next tick so the persistent chip carries the server-issued id.
+      setTimeout(async () => {
+        const state = await (await apiFetch("/api/confirm")).json();
+        showGrants(state.grants);
+      }, 100);
+    }
   }
 
   $("confirm-approve").addEventListener("click", () => answerConfirm(true));
+  $("confirm-session").addEventListener("click", () => answerConfirm("session"));
   $("confirm-decline").addEventListener("click", () => answerConfirm(false));
 
   async function runTurn(text) {
@@ -623,6 +668,7 @@
       // A reload mid-turn destroyed the stream that carried confirm_request;
       // without this fetch the turn would sit stranded until the deadline.
       const pending = await (await apiFetch("/api/confirm")).json();
+      showGrants(pending.grants);
       if (pending.id) showConfirm(pending);
     } catch (err) { toast("Could not reach the Microclaw server: " + err.message); }
     msg.focus();

@@ -869,7 +869,9 @@ def test_bounded_shutter_and_power_writes_pass_map_and_typed_guard():
     guard.check_device_property(ctrl.core, "Laser", "Enable", "On")
     guard.check_illumination(
         ctrl.core, "Laser", "Enable", "On",
-        confirm_fn=lambda summary, kind="action": kind == "illumination",
+            confirm_fn=lambda summary, kind="action", subject=None: (
+                kind == "illumination" and subject == "enable"
+            ),
     )
     authorize_property_write(ctrl, "Laser", "Power")
     guard.check_device_property(ctrl.core, "Laser", "Power", "10")

@@ -251,12 +251,17 @@ def run_session(args):
     # (history[:] = ...) so the finally block always sees the latest turns.
     history = []
     store = ConversationStore(AuditLog(history_fn_name, enabled=args.save_history))
+    confirmation_fn_name = history_fn_name.replace("_history.jsonl", "_confirmations.jsonl")
+    confirmation_audit = AuditLog(confirmation_fn_name, enabled=args.save_history)
+    from microclaw import tools
+    tools.CONFIRM_AUDIT_FN = confirmation_audit.append
     # AuditLog writes as messages are produced. Every exit path — 'exit',
     # Ctrl-C, or a crash inside run_agent — reports declared illumination state
     # without changing it (design/38 F9 reverses design/14 §3).
     try:
         _repl(args, ctrl, guard, history, store)
     finally:
+        tools.CONFIRM_AUDIT_FN = None
         report_declared_illumination_on_exit(guard, ctrl.core)
 
 

@@ -84,13 +84,16 @@ def test_each_confirmation_threshold_fires_above_and_not_below(
     calls = []
     monkeypatch.setattr(
         tools, "CONFIRM_FN",
-        lambda summary, kind="action": calls.append((summary, kind)) or True,
+        lambda summary, kind="action", subject=None: calls.append(
+            (summary, kind, subject)
+        ) or True,
     )
     ctrl = MagicMock()
     monkeypatch.setattr(tools, "_ACQUISITION_LEDGERS", __import__("weakref").WeakKeyDictionary())
     tools._authorize_acquisition(ctrl, _guard(**{field: 1}), plan).close()
     assert len(calls) == 1
     assert calls[0][1] == "acquisition"
+    assert calls[0][2] == "threshold"
 
     calls.clear()
     at_threshold = AcquisitionPlan(1, 1, 1, 1)
