@@ -397,6 +397,29 @@ branch is open.** One worktree besides this one: `../microclaw-6a`, idle at
   `ENABLE ILLUMINATION` prompt, because that is what the tool was doing. Under a
   session-wide grant that exposure is silent. See 43c's entry; the block must
   answer it rather than discover it.
+- **43e ran on M5 and G1 FAILED — round 2 is pushed at `9bae1ba`.** The built-ins
+  shipped correct and unreachable: microclaw never called `connected_components`
+  in three attempts, because the tool description and the system prompt named
+  only the *saved* adapter path. Fixed by the coordinator on the branch; see
+  43e's entry. **Its gate emits no light and moves nothing**, so unlike every
+  other remaining Track F block it does not compete for rig time and can ride
+  along with any session. 43c is still in review.
+- **The lesson is a gate-writing one and belongs to the next block too.** G1
+  asked whether microclaw *reaches* a capability and forbade naming the tool. A
+  criterion phrased as "call X and check the output" would have passed by
+  construction and shipped a feature nothing could find. **Gate the reach, not
+  the plumbing** — added to §"Standing constraints".
+- **Both blocks were implemented by operator-driven codex runners**, not by
+  Agent-tool runners — the coordinator wrote the prompts and the user handed them
+  over, which is what step 2 of the block workflow describes.
+- **43c and 43e were both assigned 2026-08-09 from `eb577d8`**, concurrently, in
+  worktrees `../microclaw-43c` and `../microclaw-43e`. Three block branches are
+  in flight (6a, 43c, 43e) and 6a is the only one whose next step belongs to a
+  rig. They are disjoint — 43c is the `CONFIRM_FN` seam in `tools.py` plus
+  `webserve.py` and `serve.html`, 43e is `completed_dataset.py` plus
+  `image_analysis` — but both may touch `tools.py`, so **whichever merges second
+  merges `main` first.** Six blocks remain after them: 43f, 43g, 43h, 43i, 43j,
+  43k.
 - **Order for the rest**, from design/43's own suggested order: 43c, 43e, 43f,
   43g, 43h, then 43i (needs 43g and 43h), 43j (needs 43e), and 43k is design work
   only, after 43h and 43i have run on a rig.
@@ -675,9 +698,9 @@ assistant's narration when judging whether a guard fired.
 | 43a | Nestor | none — may run concurrently with Track B | `design43/live-dose-and-tiff-prose` (deleted) | `3d6146b` | `cf1f272` + `af7e015` (review round 1 returned); runbook `92520b7` pinned `af7e015` | **M2 2026-08-09 — G1, G2, G4 both limbs, G5 all PASS; G3 answered, no fix owed** (`43a-m2`). Gated on M2, not M5: same camera-triggered illumination, and deliberately off the outlier rig. Suite red with 9 pre-existing Windows failures, none in touched code → block 43m | `5ec57cb` | **done** `18f84f1` — design/43 F3's "Untested" paragraph replaced by what M2 measured, plus the two implementation corrections (headless focus sweep, `find_features` is a borrow); F7's offer count corrected six → seven; suggested-order item 1 struck through |
 | 43m | Nestor (fallout) | none — **gated every later Track F rig gate** | `design43/windows-suite-integrity` (deleted) | `18f84f1` | `f49deb5` (accepted round 1, no rework); runbook `f0f3d3f` pinned `f49deb5` | **M2 2026-08-09 PASS — 0 failed, 1650 passed, 116 skipped, 1766 collected** (`43m-m2`). Skip count unchanged from 43a's run, so the subject tests ran rather than being skipped | `75fea30` | done — block *is* the gate; standing constraint added below |
 | 43b | Nestor | none | `design43/refresh-gui` (deleted) | `04c0654` | `8162b04` + `74dc87f` (review round 1 returned); runbook `ef6a658` pinned `74dc87f` | **M5 2026-08-09 — G1, G2, G3 both limbs all PASS; G4 NOT EXERCISED by design** (`43b-m5`). Suite 1656 passed / 116 skipped / 0 failed / 1772 collected. G1 settled the pyjavaz shadow `javap` could not reach; EMU's plugin panel repainted too, which the gate did not ask for | `b220e33` | **done** `8ec9da6` — design/43 F4's write-path table annotated as one row short (`set_channel` has two routes); its "verify before implementing" caveat answered in both halves, `javap` for the Java method and M5 for the pyjavaz shadow; suggested-order item 2 struck through, three callsites estimated and five shipped |
-| 43c | Nestor | none | `design43/session-grants` | | | **required** — the audit log must still record every event | | |
+| 43c | Nestor | none | `design43/session-grants` | `eb577d8` | | **required** — the audit log must still record every event | | |
 | 43d | Nestor | none | `design43/report-shapes` (deleted) | `04c0654` | `8635d7c` + `9b98b0b` (two review rounds returned) + `a7a415d` (coordinator fixes) + `010701a` (runbook total corrected); runbook pin `a7a415d` | **M5 2026-08-09 — G1, G2, G3 all PASS; all three known-bad patterns read 0** (`43d-m5`). Suite 1657 passed / 116 skipped / 0 failed / 1773 collected, skips equal to 43b's M5 run. Gate folded into a real 640-trigger session rather than run as a script | `53395d2` | **done** `53e3f12` — design/43 F8's stub corrected (`hook_actions` is omitted, not zeroed, when no typed action was observed) with the surviving two-kind projection recorded as still owed; F11's two-value list corrected to three (`partially_explicit`); suggested-order item 4 struck through |
-| 43e | Nestor | none | `design43/builtin-offline-adapters` | | | required | | |
+| 43e | Nestor | none | `design43/builtin-offline-adapters` | `eb577d8` | `452dbc5` + `3d30c1f` (review round 1 returned) + `9bae1ba` (coordinator fix after the rig round); runbook pinned `9bae1ba` | **M5 round 1 2026-08-09 (`43e-m5`): Step 0 PASS (0 failed, 1668 + 116 = 1784, skips equal to 43b/43d), G4 second limb PASS, Step 1 PASS; G1 FAIL, G2/G3 not exercised. Round 2 pushed, awaiting the rig** | | |
 | 43f | Nestor | 43a merged (its prompt names the key this creates) | `design43/rig-profile` | | | required | | |
 | 43g | Nestor | none | `design43/coverage-statistics` | | | **required — beads + a diffuse field**; nothing ranks on it until calibrated | | |
 | 43h | Nestor | none | `design43/emit-adaptive-runs` | | | **required** — run the emitted script with microclaw closed | | |
@@ -5629,9 +5652,91 @@ hook dispatching only `DiscardFrame` still reads as two zeros. That last one is
 a narrower version of the same defect and was left rather than widened
 mid-block.
 
-## 43e. Offline analysis ships with no analyses in it
+## 43e. Offline analysis ships with no analyses in it — **M5 ROUND 1: G1 FAIL, fixed, round 2 pushed**
 
-Branch: `design43/builtin-offline-adapters`
+### Rig gate round 1 — M5, 2026-08-09: **G1 FAIL; G4 second limb PASS; Step 1 PASS**
+
+Evidence: `43e-history.jsonl` (32 messages) over the Nestor datasets. The gate
+was folded into a real session, which is why it found this.
+
+**Asked three times, in the operator's own words, whether positive positions
+belonged to the same cell, microclaw never called `connected_components`.** It
+guessed the adapter name `frame_stats`, read the refusal, and then abandoned
+offline analysis for `build_stage_coordinate_mosaic` + `open_artifact` and read
+the picture by eye. The answer was right and the operator confirmed it at the
+scope — so the session succeeded and the block's feature was never used. **A
+capability that ships and is not reachable has not shipped.**
+
+The cause was in the two texts the model reads *before* it errors: the tool
+description said *"Run one reviewed, hash-pinned offline adapter"*, which is true
+of the saved path and false of the built-ins, and `SYSTEM_PROMPT` had a whole
+branch for *writing* an adapter and no line saying the standard measurements
+already exist. `connected_components` and `frame_statistics` appeared exactly
+once in the whole session — inside the error message. Fixed in `9bae1ba` by the
+coordinator (step 7, sized to the finding): both texts name the built-ins and
+what each answers, and say to retry a refused name rather than give up on the
+measurement. Three tests derive the expectation from `BUILTIN_ADAPTERS`, so a
+third built-in fails until it is announced.
+
+**What did pass, on a genuine mistake rather than a manufactured one:** the
+refusal named the missing adapter, listed built-ins first and all twelve saved
+adapters, and hinted *"This is a lookup error, not a hardware fault"* — F10
+retired on real evidence. The Step 1 write-a-hook pattern read **0**: microclaw
+never offered to author anything, which is the half of F15 that was already
+working.
+
+**A note for the next gate criterion.** G1 asked whether microclaw *reaches* the
+measurement, and deliberately forbade naming the tool. That is what caught this;
+a criterion phrased as "run connected_components and check the output" would have
+passed round 1 by construction and shipped an unreachable feature.
+
+G2 and G3 were not exercised — no analysis manifest was written, because the one
+offline call refused on the name.
+
+**Step 0 PASSED, and its arithmetic reconciled.** M5 at `3d30c1f`: **0 failed,
+1668 passed, 116 skipped**, and the collect-only line read **1784**, equal to
+`1668 + 116` — the derived total and the reported total agree, which is the check
+block 43d's runbook slip earned. Skips are **116, identical to 43b's and 43d's M5
+runs**, so the subject tests ran rather than starting to skip. Same collection as
+macOS (1685 / 99 / 1784) with the 17-test platform-conditional set skipping. One
+launcher throughout; the collected-ID file came back, so 43b's mixed-launcher
+defect did not recur.
+
+### Round 2
+
+Pushed at `9bae1ba`, runbook re-pinned, round-1 result recorded in it. Off-rig
+**1688 passed / 99 skipped / 3 expected warnings, 1787 collected** on macOS.
+
+Branch: `design43/builtin-offline-adapters`, runbook
+`design/43-block43e-rig-gate.md` on the branch, pinned at `3d30c1f`. Off-rig
+**1685 passed / 99 skipped / 3 expected warnings, 1784 collected** on macOS,
+re-measured by the coordinator; +5 IDs from `eb577d8`, none removed.
+
+**The gate emits no light and moves nothing**, so it does not compete for rig
+time the way the rest of Track F does — it can ride along with any session.
+
+**What review round 1 returned, and what the answers were.** Five findings; the
+three required ones were all provenance or reachability, not arithmetic:
+
+- The built-ins defaulted `min_snr` to `UNCALIBRATED_MIN_SNR_FALLBACK` and
+  recorded only the number, so a manifest could not distinguish an operator's
+  deliberate 3.1 from the package guessing — and ignored `guard.analysis_min_snr`
+  entirely. `resolve_min_snr` exists for exactly this and names offline analysis
+  in its docstring. Now resolved at the trusted runner boundary (explicit → rig
+  config → labelled fallback) with `min_snr_source` recorded beside the value.
+  **This is 43d's defect class again: a value without provenance is a claim.**
+- `emit`'s refusal text still said "must be 'unverified' or 'provisional'" after
+  the allowed set was widened for built-ins. Derived from the set now.
+- `connected_components` had been added to `_analysis_source`, so every exported
+  script carried code no emitted call can reach — the offline mosaic path is
+  non-emittable. **The coordinator's runner prompt caused this** by overstating
+  CLAUDE.md's rule, which is closure over what is *emitted*. Removed.
+- Kept, with the reason now written down: the masked MAD derivation is local
+  because `snr()` and `snr_validity()` deliberately measure the full frame,
+  while mosaic canvas zeros are not observations.
+- `find_features` is **not** unified with the offline twin: blob detection
+  measures puncta, connected components measures contiguous thresholded signal.
+  Carried to the design gate as F15's closing question, answered.
 
 Source: design/43 F15. The mosaic path is plumbed to the analysis boundary
 (`completed_dataset.py:337–352`) and the last step is missing. Retires F10's
@@ -6317,6 +6422,14 @@ This is an inventory, not permission to close with unresolved blank work. Block
   in its report and shipped the wrong payload anyway. **Treat a first-round
   accept as the case to look at harder**, and judge a fix by driving the real
   producer rather than by reading its test.
+- **Gate the reach, not the plumbing.** A criterion that names the tool and
+  checks its output tests whether the code works; it cannot test whether anything
+  finds the code. Block 43e shipped two built-in adapters that were correct,
+  tested, and never called — the agent guessed a wrong adapter name, read a
+  refusal listing both right ones, and abandoned the measurement. G1 caught it
+  only because it forbade naming the tool in the request. Added 2026-08-09. When
+  a block adds a capability an agent is supposed to *choose*, at least one
+  criterion must be phrased in the operator's words with the tool unnamed.
 - **A ledger row is closed only when its design-reconciliation cell is filled.**
   Both 43b and 43d ran and merged their design gates while leaving that cell
   empty, which reads exactly like step 10 never happening. Audit the row, not
