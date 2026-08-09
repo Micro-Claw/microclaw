@@ -504,6 +504,7 @@ class TestSetChannel:
         set_channel(mock_ctrl, default_guard, preset="DAPI")
         mock_ctrl.core.set_config.assert_called_once_with("Channel", "DAPI")
         mock_ctrl.core.wait_for_config.assert_called_once_with("Channel", "DAPI")
+        mock_ctrl.refresh_gui.assert_called_once_with()
 
     def test_forbidden_channel(self, mock_ctrl, default_guard):
         with pytest.raises(SafetyViolation, match="allowed list"):
@@ -599,6 +600,7 @@ class TestSetDeviceProperty:
         set_device_property(mock_ctrl, unconstrained_guard,
                             device="DCam", property="Gain", value="0")
         mock_ctrl.core.set_property.assert_called_once_with("DCam", "Gain", "0")
+        mock_ctrl.refresh_gui.assert_called_once_with()
 
     def test_get_device_property(self, mock_ctrl, unconstrained_guard):
         mock_ctrl.core.get_property.return_value = "42"
@@ -2285,6 +2287,7 @@ class TestFocusLock:
         result = set_focus_lock(mock_ctrl, unconstrained_guard, enabled=True)
         mock_ctrl.core.set_property.assert_called_once_with(
             "PIZStage", "External sensor", "1")
+        mock_ctrl.refresh_gui.assert_called_once_with()
         assert result["engaged"] is True
 
     def test_set_focus_lock_writes_off_value(self, mock_ctrl, unconstrained_guard, monkeypatch):
@@ -2293,6 +2296,7 @@ class TestFocusLock:
         set_focus_lock(mock_ctrl, unconstrained_guard, enabled=False)
         mock_ctrl.core.set_property.assert_called_once_with(
             "PIZStage", "External sensor", "0")
+        mock_ctrl.refresh_gui.assert_called_once_with()
 
     def test_autofocus_refuses_while_lock_engaged(self, mock_ctrl, unconstrained_guard, monkeypatch):
         # The sweep would be actively opposed by the piezo servo loop.
@@ -3724,6 +3728,7 @@ def test_emu_write_reports_unrepresentable_one_percent(
     mock_ctrl.core.get_property.return_value = "0"
     result = tools.set_emu_laser_power_percentage(mock_ctrl, unconstrained_guard, 2, 1)
     mock_ctrl.core.set_property.assert_called_once_with("PWM", "Position0", "0")
+    mock_ctrl.refresh_gui.assert_called_once_with()
     assert result["effective_percent"] == 0
     assert result["representable"] is False
     assert result["min_nonzero_percent"] == pytest.approx(10 / 3)
