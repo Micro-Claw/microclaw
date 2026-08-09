@@ -20,20 +20,47 @@ Everything below is PowerShell. Use `$LASTEXITCODE` and printed words, never
 `%ERRORLEVEL%`. Where a step says "record", paste the value into the results
 table.
 
+## Round 1 — M5, 2026-08-09: **G1 FAIL, G4 half PASS. Fixed; re-gate at `9bae1ba`.**
+
+Recorded here because the finding is worth reading before running round 2.
+
+Asked three times, in the operator's own words, whether positive positions
+belonged to the same cell, **microclaw never called `connected_components`.** It
+guessed the adapter name `frame_stats`, got the refusal, and then abandoned
+offline analysis altogether in favour of `build_stage_coordinate_mosaic` +
+`open_artifact` and reading the picture by eye. The answer it gave was correct
+and the operator confirmed it at the microscope — but the measurement this block
+exists to ship was never used, and the session is a success story for block 42b
+rather than for this one.
+
+What the refusal did prove, on a genuine mistake rather than a manufactured one:
+it named the missing adapter, listed **built-ins first and all twelve saved
+adapters**, and its hint said *"This is a lookup error, not a hardware fault"*.
+That is F10 retired on real evidence — **G4's second limb PASS.**
+
+The cause was in the two places the model reads *before* it errors. The tool
+description said *"Run one reviewed, hash-pinned offline adapter"* — true of the
+saved path, false of the built-ins — and `SYSTEM_PROMPT` had a whole branch for
+writing an adapter and no line saying the standard measurements already exist.
+The names `connected_components` and `frame_statistics` appeared exactly once in
+the entire session, inside the error message. Both texts now name them and say
+what each answers, and say to retry a refused name rather than to give up on the
+measurement.
+
 ## Step 0 — pin the implementation and run the full suite
 
-`3d30c1f` is the gated implementation, pinned by the coordinator at push time.
+`9bae1ba` is the gated implementation, pinned by the coordinator at push time.
 The check accepts descendant commits, so a later runbook amendment cannot
 invalidate the pin it contains.
 
-Off-rig at `3d30c1f` on macOS, re-measured by the coordinator rather than taken
-from the runner's report: **1685 passed, 99 skipped, 3 expected warnings, 1784
-collected, 0 failures.** The branch started from `eb577d8` at 1680 / 99 / 1779,
-so the five added IDs are this block's own tests and nothing was lost.
+Off-rig at `9bae1ba` on macOS, re-measured by the coordinator rather than taken
+from the runner's report: **1688 passed, 99 skipped, 3 expected warnings, 1787
+collected, 0 failures.** The branch started from `eb577d8` at 1680 / 99 / 1779:
+five IDs from the implementation and three from the round-1 fix, none lost.
 
-On a Windows rig expect the same **1784 collected** with the long-standing
+On a Windows rig expect the same **1787 collected** with the long-standing
 platform-conditional set skipping: M5 measured 116 skips at both the 43b and 43d
-gates, which would be **1668 passed + 116 skipped = 1784**. Derive the total from
+gates, which would be **1671 passed + 116 skipped = 1787**. Derive the total from
 passed + skipped on the machine in front of you; do not compare against a
 transcribed figure.
 
@@ -84,12 +111,26 @@ Record the tool call, the result, and microclaw's prose.
       labels rather than from prose.
 - [ ] No confirmation prompt appears for the analysis itself: a built-in has no
       manifest, no hash pin, no lint and no review gate.
+- [ ] **If it mistypes an adapter name, it reads the refusal and retries with a
+      real one.** Round 1 failed here: it guessed `frame_stats`, was handed both
+      correct names, and abandoned the measurement instead of retrying. Do not
+      manufacture this — just record it if it happens.
+- [ ] **Opening a mosaic is not a substitute.** If microclaw answers only from
+      `open_artifact` and the picture, that is a **FAIL** even when the answer is
+      right, which is exactly how round 1 went. Showing the operator the mosaic
+      *as well* is good and expected.
 
 If microclaw cannot find the dataset or the calibration and asks for them, that
 is not a failure — supply them and continue. If it flounders on the *call shape*,
 record that and fall back to naming the tool explicitly; a gate that only proves
 the plumbing still tells us the plumbing works, and the difference between the
-two outcomes is exactly what we want to know.
+two outcomes is exactly what we want to know — round 1 is what "the plumbing
+works and nothing reaches it" looks like.
+
+**Use a dataset that mosaics.** Round 1 showed the practical constraint: the
+question needs one dataset with a `position` axis, not a folder of one-line
+stacks. `mt_scan_50um` worked (9 tiles, 97% coverage, real overlap);
+`mt_search_561` is seven separate scans and cost several turns to sort out.
 
 Centroids are in **stage** coordinates. Sanity-check one against where you know
 that object sits; the off-rig test pins the convention against the real
@@ -176,17 +217,17 @@ zero counts alone do not prove microclaw did the right thing.
 
 ## Results
 
-| gate | result | evidence |
-|---|---|---|
-| Step 0 pin | | |
-| Full suite: failures / collected | | |
-| Full suite: skips vs previous same-rig run | | |
-| G1 measurement without writing a hook | | |
-| G1 stage-coordinate sanity check | | |
-| G2 threshold provenance vs `safety_config.yaml` | | |
-| G3 saved-frame scoring, zero exposure | | |
-| G4 saved-adapter gates unchanged | | |
-| Step 1 write-a-hook sentence count | | |
+| gate | round 1 (M5, 2026-08-09) | round 2 | evidence |
+|---|---|---|---|
+| Step 0 pin | not returned | | |
+| Full suite: failures / collected | not returned | | |
+| Full suite: skips vs previous same-rig run | not returned | | |
+| G1 measurement without writing a hook | **FAIL** — never called `connected_components` in three attempts | | `43e-history.jsonl` turns 0–29 |
+| G1 stage-coordinate sanity check | not exercised | | |
+| G2 threshold provenance vs `safety_config.yaml` | not exercised — no manifest was written | | |
+| G3 saved-frame scoring, zero exposure | not exercised | | |
+| G4 saved-adapter gates unchanged | **half PASS** — unknown-name refusal lists built-ins first, twelve saved, lookup hint not hardware | | turn 8 |
+| Step 1 write-a-hook sentence count | **0 — PASS** | | |
 
 Send back this table, `suite-43e.txt`, `collected-43e.txt`, the captured history
 JSONL, and the `analysis-manifest.json` from G1.
