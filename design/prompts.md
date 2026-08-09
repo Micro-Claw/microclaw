@@ -5439,3 +5439,67 @@ recording as what actually happened rather than what the runbook asked for.
 across. The rig matched the true value so nothing was harmed, but an operator
 comparing strictly against the stated figure would have been right to stop the
 gate. State totals you derived, not totals you transcribed.
+
+## Block 43e — offline analysis ships with analyses in it (design/43 F15, merged 2026-08-09)
+
+Two built-in offline adapters, `connected_components` and `frame_statistics`,
+resolving before the saved manifest and implemented over `image_analysis`. One
+implementation round returned, three M5 rig rounds, two coordinator fixes. The
+implementer was an operator-driven codex runner, as 43c's was.
+
+**A capability that ships and cannot be found has not shipped.** Round 1 is the
+whole lesson. The adapters were correct, tested, and exercised by the suite —
+and asked three times, in the operator's own words, whether positions belonged
+to the same cell, microclaw never called `connected_components` once. It guessed
+`frame_stats`, read a refusal that named both real built-ins, and abandoned
+offline analysis for a mosaic it interpreted by eye. The cause was in the two
+texts a model reads *before* it errors: the tool description said "one reviewed,
+hash-pinned offline adapter", true of the saved path and false of these, and
+`SYSTEM_PROMPT` had a branch for *writing* an adapter and no line saying the
+standard measurements already exist. The names appeared exactly once in the
+session — inside the error message.
+
+**Gate the reach, not the plumbing.** G1 caught it only because it asked the
+question in the operator's words and forbade naming the tool. "Call
+connected_components and check the output" would have passed on round 1 and
+shipped a feature nothing could find. This is now a standing constraint, and it
+generalises to every block that adds something an agent is supposed to *choose*.
+
+**Review found three provenance defects behind a green suite, again.** The
+built-ins defaulted `min_snr` to `UNCALIBRATED_MIN_SNR_FALLBACK` and recorded
+only the number, so a manifest could not distinguish a deliberate 3.1 from the
+package guessing — and ignored `guard.analysis_min_snr` although the guard was
+in scope. `emit`'s refusal text still named the saved-adapter rule after the
+allowed set was widened. And `connected_components` had been added to
+`_analysis_source`, putting unreachable code in every exported script — caused by
+the coordinator's own runner prompt, which overstated CLAUDE.md's export rule as
+"anything in image_analysis must be inlined" when the real rule is closure over
+what is emitted.
+
+**The rig's most valuable output was not a defect.** At the uncalibrated default
+the measurement split a cell — 49 objects, answer "not all the same cell" — and
+the operator said "this looks like only one cell to me". At `min_snr` 2.0 it
+returned one 700.8 µm² object and a Fiji overlay bounded the cell. The
+provenance label worked exactly as intended; the placeholder threshold still
+changed a biological conclusion on first real use. That is evidence for 43g, and
+it is why a labelled default is worth more than a plausible one.
+
+**Two findings were carried forward rather than folded in**, both instances of
+the same asymmetry F15 named: `connected_components` writes no visual artifact,
+so its result cannot be seen without a hand-written Fiji macro; and there is no
+offline blob detector, so "are there localized features" still requires writing
+an adapter. Widening a block that has already been gated three times is how a
+gate stops meaning anything.
+
+**A refusal-hint defect outlived the block that fixed the class.** The gate
+session's first two calls both failed and both were told to look at the stage:
+`NotADirectoryError` and `FileExistsError` are `OSError` siblings, not
+`FileNotFoundError` subclasses, so they fell past 43d's path branch into
+`_HARDWARE_HINT` — on a tool documented as zero-hardware-action. Fixing a hint
+taxonomy by exception type leaves siblings behind; the general rule is that a
+tool which touches no hardware should never be able to emit a hardware hint.
+
+**A gate pattern counted over a whole JSONL cannot tell an offer from a
+definition.** Step 1's "write/generate an adapter or hook" pattern read 15 on the
+passing session; 9 of those were inside `list_hooks` and
+`get_hook_documentation` results. Scope such patterns to assistant text blocks.

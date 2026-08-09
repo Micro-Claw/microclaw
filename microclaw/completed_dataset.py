@@ -8,6 +8,7 @@ Source review and hash pinning are the gate until process isolation exists.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import platform
 import sys
@@ -31,6 +32,9 @@ from microclaw.hook_manager import (
     verify_saved_hook_bytes,
 )
 from microclaw.hooks import write_analysis_observation
+from microclaw.image_analysis import (
+    compute_stats, connected_components, resolve_min_snr,
+)
 from microclaw.safety import SafetyViolation
 
 
@@ -39,6 +43,53 @@ _ALLOWED_CAPABILITIES = frozenset(
     {"coordinates", "read_image", "read_metadata", "as_array", "artifacts",
      "observations", "cancellation"}
 )
+
+
+class ConnectedComponents:
+    """Built-in geometric measurement over a stage-coordinate mosaic."""
+
+    def __init__(self, min_snr: float, min_snr_source: str,
+                 min_area_um2: float = 0.0, max_area_um2: float | None = None):
+        self.parameters = {
+            "min_area_um2": min_area_um2, "max_area_um2": max_area_um2,
+            "min_snr": min_snr, "min_snr_source": min_snr_source,
+        }
+
+    def analyze_saved_frame(self, image, metadata, context):
+        if metadata.get("input_kind") != "stage_coordinate_mosaic":
+            raise ValueError("connected_components requires input_kind='stage_coordinate_mosaic'")
+        mosaic = metadata["mosaic_manifest"]
+        basis = mosaic["output_basis_um"]
+        if basis[0][1] != 0 or basis[1][0] != 0 or basis[0][0] != basis[1][1]:
+            raise ValueError("connected_components requires a square axis-aligned mosaic basis")
+        return {"result": connected_components(
+            image, pixel_size_um=float(basis[0][0]), origin_um=mosaic["origin_um"],
+            min_area_um2=self.parameters["min_area_um2"],
+            max_area_um2=self.parameters["max_area_um2"],
+            min_snr=self.parameters["min_snr"],
+        ), "status": "observed", "parameters": self.parameters}
+
+
+class FrameStatistics:
+    """Built-in package statistics over each selected saved frame."""
+
+    def __init__(self, min_snr: float, min_snr_source: str):
+        self.min_snr = min_snr
+        self.min_snr_source = min_snr_source
+
+    def analyze_saved_frame(self, image, metadata, context):
+        return {
+            "result": dict(compute_stats(image, min_snr=self.min_snr)._asdict()),
+            "status": "observed", "parameters": {
+                "min_snr": self.min_snr, "min_snr_source": self.min_snr_source,
+            },
+        }
+
+
+BUILTIN_ADAPTERS = {
+    "connected_components": ConnectedComponents,
+    "frame_statistics": FrameStatistics,
+}
 
 
 def _canonical_bytes(value: Any) -> bytes:
@@ -68,7 +119,8 @@ def _load_saved_adapter(name: str):
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8")) if MANIFEST.exists() else {}
     if name not in manifest:
         raise KeyError(
-            f"No adapter named {name!r}. Available saved adapters: {sorted(manifest)}."
+            f"No adapter named {name!r}. Available built-in adapters: "
+            f"{sorted(BUILTIN_ADAPTERS)}. Available saved adapters: {sorted(manifest)}."
         )
     entry = manifest[name]
     source = verify_saved_hook_bytes(name, entry)
@@ -278,7 +330,24 @@ def run_analysis_on_saved_dataset(
                 "not available to completed-dataset replay; use artifact or knowledge_version"
             )
 
-    cls, verb, entry, source = _load_saved_adapter(adapter)
+    builtin = BUILTIN_ADAPTERS.get(adapter)
+    if builtin is not None:
+        # Package code has the same trusted standing as live image_analysis.
+        # Its exact class source is pinned in the reproducibility manifest.
+        cls, verb = builtin, "analyze_saved_frame"
+        source = inspect.getsource(builtin).encode("utf-8")
+        entry = {"source": "builtin", "version": __version__}
+    else:
+        cls, verb, entry, source = _load_saved_adapter(adapter)
+    if builtin is not None:
+        # Resolve optional rig state at the trusted runner boundary; adapters
+        # remain plain measurement classes with no guard or configuration access.
+        min_snr, min_snr_source = resolve_min_snr(
+            explicit=parameters.get("min_snr"), configured=guard.analysis_min_snr,
+        )
+        parameters = {
+            **parameters, "min_snr": min_snr, "min_snr_source": min_snr_source,
+        }
     forbidden = set(parameters) & set(FORBIDDEN_SAVED_HOOK_PARAMS)
     if forbidden:
         raise ValueError(f"Offline adapter parameters request forbidden capabilities: {sorted(forbidden)}")
@@ -315,11 +384,16 @@ def run_analysis_on_saved_dataset(
 
     def emit(result, *, status, analyzer=None, analyzer_version=None, parameters=None,
              artifact_sha256=None):
-        # Saved adapters are untrusted, exactly like saved live hooks.
-        if status not in {"unverified", "provisional"}:
+        # Built-ins are reviewed package measurements and may assert `observed`;
+        # saved adapters remain untrusted, exactly like saved live hooks.
+        allowed_statuses = ({"unverified", "provisional", "observed"}
+                            if builtin is not None else {"unverified", "provisional"})
+        if status not in allowed_statuses:
+            reason = (" and is not self-assertable"
+                      if builtin is None else "")
             raise ValueError(
-                "Untrusted offline analysis status must be 'unverified' or 'provisional'; "
-                f"{status!r} is not self-assertable."
+                f"Offline analysis status must be one of {sorted(allowed_statuses)}; "
+                f"{status!r} is not allowed for this adapter{reason}."
             )
         return write_analysis_observation(
             observations, analyzer=analyzer or adapter,

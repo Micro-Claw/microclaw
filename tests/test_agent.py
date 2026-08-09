@@ -895,3 +895,40 @@ class TestLazyClient:
             importlib.reload(agent)  # reload must not build a client
         # sanity: module-global stays None until _get_client is called
         assert agent._client is None
+
+
+class TestBuiltInOfflineAdaptersAreDiscoverable:
+    """The M5 gate for block 43e found the built-ins shipped but unreachable.
+
+    Asked three times whether positions belonged to the same cell, the agent
+    guessed the adapter name 'frame_stats', read a refusal that named both real
+    built-ins, and then abandoned offline analysis for a mosaic it looked at by
+    eye. It never called connected_components. The names existed only inside an
+    error message, and the tool description said "reviewed, hash-pinned", which
+    describes the saved path alone.
+
+    So both texts must name every built-in. Deriving the expectation from
+    BUILTIN_ADAPTERS rather than listing it here means a third built-in fails
+    this test until it is announced somewhere the model reads before erroring.
+    """
+
+    def _schema(self):
+        from microclaw.tools_schema import TOOLS
+        return next(t for t in TOOLS if t["name"] == "run_analysis_on_saved_dataset")
+
+    def test_every_builtin_is_named_in_the_tool_description(self):
+        from microclaw.completed_dataset import BUILTIN_ADAPTERS
+        description = self._schema()["description"]
+        for name in BUILTIN_ADAPTERS:
+            assert name in description, f"{name} is invisible until the model errors"
+
+    def test_every_builtin_is_named_in_the_system_prompt(self):
+        from microclaw.completed_dataset import BUILTIN_ADAPTERS
+        for name in BUILTIN_ADAPTERS:
+            assert name in SYSTEM_PROMPT
+
+    def test_the_description_does_not_gate_builtins_behind_review(self):
+        # The old text was "Run one reviewed, hash-pinned offline adapter",
+        # which is true of saved adapters and false of these two.
+        description = self._schema()["description"]
+        assert "no review" in description or "need no review" in description

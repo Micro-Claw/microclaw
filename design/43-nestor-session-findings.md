@@ -811,6 +811,17 @@ a hardware one.
 
 The absence behind the error is F15, and it is the larger half.
 
+> **Extended after block 43e's M5 gate (2026-08-09).** 43d mapped `KeyError` to a
+> lookup hint, and the first two calls of 43e's gate session still collected
+> `_HARDWARE_HINT`: `NotADirectoryError` (a `.tif` passed where a dataset
+> directory belongs) and `FileExistsError` (the output directory already
+> existed). Both are `OSError` *siblings*, not `FileNotFoundError` subclasses, so
+> they fell past the path branch — on a tool documented as zero-hardware-action.
+> Each now says the useful thing instead. **Fixing a hint taxonomy by exception
+> type leaves the siblings behind**; the general rule this suggests, and which is
+> not yet implemented, is that a tool which touches no hardware should not be
+> able to emit a hardware hint at all.
+
 ## F11 — a 25-tile grid was exposed at the wrong place because the center defaulted
 
 `[33]`, caught after the fact:
@@ -869,6 +880,15 @@ extra exposure. If that is more than it should carry, the alternative is a
 documented pointer to `run_analysis_on_saved_dataset` in the result's `hint` —
 but the trio is the smaller surface, because it is the shape callers already
 know.
+
+> **Half retired by block 43e (merged 2026-08-09), after the fact rather than
+> during the run.** `frame_statistics` scores a completed dataset's frames
+> offline, and M5's gate answered exactly this question over two of the nine
+> kinesin timelapses at zero exposure — *"no reliable evidence of anything
+> visibly present"*, with the reasoning and the caveats. **What remains owed is
+> the during-the-run half**: the operator still learns nothing until the
+> acquisition is over and someone thinks to ask. The trio above is still the
+> right fix for that half.
 
 ## F13 — the workflow the operator wanted was nine hand-driven sequences
 
@@ -1176,6 +1196,67 @@ from `find_features`' offline twin at all, or whether the honest fix is that
 The live/offline split currently duplicates the *question* and not the code, and
 this session had a field where the two would have disagreed (F6).
 
+> **Shipped and gated in block 43e (merged 2026-08-09), over three M5 rounds.**
+> `connected_components` and `frame_statistics` resolve before the saved
+> manifest, with no manifest, hash pin, lint or confirmation; every design/26
+> gate on saved adapters is intact and now regression-pinned. Four corrections
+> and two carried-forward findings this section does not say:
+>
+> **1. Shipping the adapters did not make them reachable, and that was the whole
+> of round 1.** Asked three times, in the operator's own words, whether positions
+> belonged to the same cell, microclaw never called `connected_components`. It
+> guessed `frame_stats`, read a refusal naming both real built-ins, and answered
+> from a mosaic it opened and interpreted by eye. The tool description said *"one
+> reviewed, hash-pinned offline adapter"* — true of the saved path, false of
+> these — and `SYSTEM_PROMPT` had a branch for *writing* an adapter and none for
+> using the ones that ship. **A built-in library is a prompt-and-schema change as
+> much as a code change**; F15's stub is silent on this and it is the single
+> most important thing the block learned.
+>
+> **2. The threshold's provenance is part of the measurement.** F15's stub takes
+> `min_snr` as a plain parameter. It is resolved at the runner boundary through
+> `resolve_min_snr` (explicit → `guard.analysis_min_snr` → labelled fallback) and
+> recorded as `min_snr_source` beside the value, because a manifest reading
+> `min_snr: 3.1` cannot otherwise distinguish an operator's choice from the
+> package guessing. Both branches were measured on M5.
+>
+> **3. A built-in has no manifest entry, and the runner needs one.** `entry` and
+> `source` are read in four places, one of which (`_sha(source)`) raises on the
+> stub's `None`. A built-in's `analyzer` block records `source: "builtin"`, the
+> package version, and the sha256 of `inspect.getsource` of the class — the same
+> discipline the exporter uses for `snr`, and it makes the record pin the exact
+> code that ran.
+>
+> **4. Built-ins emit `observed`**; saved adapters stay restricted to
+> `unverified`/`provisional`. The status is about scientific verification, and
+> package code has the same standing here that `image_analysis` has live.
+>
+> **The measurement is right and its default threshold is not calibrated, which
+> changed the answer.** At `min_snr` 3.1 it returned 49 objects and split one
+> cell across the tile grid — *"not all the same cell"*. The operator looked at
+> the mosaic and said one cell; at `min_snr` 2.0 it returned a single 700.8 µm²
+> object and a Fiji overlay bounded it. Nothing failed: the `package_default_
+> uncalibrated` label did exactly its job. **But the first real use of a built-in
+> measurement produced a wrong biological conclusion from an uncalibrated
+> placeholder**, which is F6's argument arriving from a second direction and
+> raises the priority of the coverage-statistics work.
+>
+> **Two things F15 asked for that this block did not ship**, both the same
+> asymmetry seen from a new angle, both deliberately left rather than folded into
+> a gated block:
+>
+> - **The result cannot be seen.** `connected_components` returns areas,
+>   centroids and boxes as numbers and writes only the plain mosaic. The operator
+>   said *"I don't see any segmentation draw on the image"* and the session ended
+>   with a hand-written Fiji macro. The runner already hands every adapter an
+>   artifact directory; a label map or outline TIFF belongs there.
+> - **There is no offline blob detector.** Asked whether *localized* features are
+>   present, microclaw correctly said it would have to write an adapter:
+>   `detect_features` is live-only. So F15's closing question answers itself in a
+>   way this section did not anticipate — the live/offline split does not need
+>   `find_features` unified with connected components (they measure different
+>   things), it needs `detect_features` to have an offline caller.
+
 ---
 
 ## Suggested order
@@ -1195,9 +1276,13 @@ this session had a field where the two would have disagreed (F6).
    coordinator fix, because a field that reports a *measurement* has to
    distinguish an absent one from a zero. F10's refusal message is the base
    block 43e extends.
-5. **F15** (built-in offline adapters) — the mosaic path is already plumbed to
-   the analysis boundary; this is the missing last step, and it retires F10's
-   error and half of F12.
+5. ~~**F15** (built-in offline adapters)~~ — **DONE, block 43e, merged
+   2026-08-09, M5 gate PASS over three rounds.** "The missing last step" was
+   accurate about the code and wrong about the work: the adapters were correct
+   and unreachable until the tool description and system prompt named them.
+   F10's error text is extended and half of F12 is retired offline. Two
+   successors are owed — a visual artifact for the measurement, and an offline
+   caller for `detect_features`.
 6. **F1** (rig profile + interview) — one knowledge category and one prompt
    block; ships the fact F3's rule wants to condition on.
 7. **F6** (coverage statistics) — one place, but it needs rig calibration before

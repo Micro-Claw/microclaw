@@ -397,13 +397,27 @@ branch is open.** One worktree besides this one: `../microclaw-6a`, idle at
   `ENABLE ILLUMINATION` prompt, because that is what the tool was doing. Under a
   session-wide grant that exposure is silent. See 43c's entry; the block must
   answer it rather than discover it.
-- **43e ran on M5 and G1 FAILED — round 2 is pushed at `9bae1ba`.** The built-ins
+- **43c has passed every behavioural criterion over two M5 rounds; one clean
+  Step 0 is all that stands between it and merge.** Round 1 gave G1/G2/G5, round
+  2 gave G3/G4/G6. The suite failure was a Windows-conditional *test* defect
+  introduced by the coordinator's own round-1 review finding, fixed in
+  `a8a217d` and not yet re-run on a rig. **A test that relocates a directory
+  with `XDG_*` tests nothing on a rig**; every rig here is Windows.
+- **43e is CLOSED** — merged `0d1a501`, design gate `44a0591`, branch deleted
+  locally and on `origin`, ledger row closed. Track F merged: 43a, 43m, 43b, 43d,
+  43e. **Seven remain: 43c (gating), 43f, 43g, 43h, 43i, 43j, 43k.**
+- **43e's strongest output was evidence for 43g, not a defect** — the
+  uncalibrated default threshold split a cell and changed the biological answer
+  on its first real use, and the operator's eye caught it. **43g should move up
+  the order accordingly**; design/43's suggested order puts it seventh, and two
+  blocks now point at it.
+- **Round 1 for the record: 43e ran on M5 and G1 FAILED at `3d30c1f`.** The built-ins
   shipped correct and unreachable: microclaw never called `connected_components`
   in three attempts, because the tool description and the system prompt named
   only the *saved* adapter path. Fixed by the coordinator on the branch; see
   43e's entry. **Its gate emits no light and moves nothing**, so unlike every
   other remaining Track F block it does not compete for rig time and can ride
-  along with any session. 43c is still in review.
+  along with any session.
 - **The lesson is a gate-writing one and belongs to the next block too.** G1
   asked whether microclaw *reaches* a capability and forbade naming the tool. A
   criterion phrased as "call X and check the output" would have passed by
@@ -698,9 +712,9 @@ assistant's narration when judging whether a guard fired.
 | 43a | Nestor | none — may run concurrently with Track B | `design43/live-dose-and-tiff-prose` (deleted) | `3d6146b` | `cf1f272` + `af7e015` (review round 1 returned); runbook `92520b7` pinned `af7e015` | **M2 2026-08-09 — G1, G2, G4 both limbs, G5 all PASS; G3 answered, no fix owed** (`43a-m2`). Gated on M2, not M5: same camera-triggered illumination, and deliberately off the outlier rig. Suite red with 9 pre-existing Windows failures, none in touched code → block 43m | `5ec57cb` | **done** `18f84f1` — design/43 F3's "Untested" paragraph replaced by what M2 measured, plus the two implementation corrections (headless focus sweep, `find_features` is a borrow); F7's offer count corrected six → seven; suggested-order item 1 struck through |
 | 43m | Nestor (fallout) | none — **gated every later Track F rig gate** | `design43/windows-suite-integrity` (deleted) | `18f84f1` | `f49deb5` (accepted round 1, no rework); runbook `f0f3d3f` pinned `f49deb5` | **M2 2026-08-09 PASS — 0 failed, 1650 passed, 116 skipped, 1766 collected** (`43m-m2`). Skip count unchanged from 43a's run, so the subject tests ran rather than being skipped | `75fea30` | done — block *is* the gate; standing constraint added below |
 | 43b | Nestor | none | `design43/refresh-gui` (deleted) | `04c0654` | `8162b04` + `74dc87f` (review round 1 returned); runbook `ef6a658` pinned `74dc87f` | **M5 2026-08-09 — G1, G2, G3 both limbs all PASS; G4 NOT EXERCISED by design** (`43b-m5`). Suite 1656 passed / 116 skipped / 0 failed / 1772 collected. G1 settled the pyjavaz shadow `javap` could not reach; EMU's plugin panel repainted too, which the gate did not ask for | `b220e33` | **done** `8ec9da6` — design/43 F4's write-path table annotated as one row short (`set_channel` has two routes); its "verify before implementing" caveat answered in both halves, `javap` for the Java method and M5 for the pyjavaz shadow; suggested-order item 2 struck through, three callsites estimated and five shipped |
-| 43c | Nestor | none | `design43/session-grants` | `eb577d8` | | **required** — the audit log must still record every event | | |
+| 43c | Nestor | none | `design43/session-grants` | `eb577d8` | `e68fba6` + `4a3aed1` + `2bf0e32` (two review rounds returned) + `a8a217d` (coordinator fix after the rig round); runbook pinned `a8a217d` | **M5 round 1 2026-08-09 (`43c-m5`): G1, G2, G5 PASS on a real two-channel session — 9 enables, 3 prompts, 12 audit rows. Step 0 FAIL on one Windows-conditional test, fixed. G3, G4, G6 not exercised; round 2 pushed** | | |
 | 43d | Nestor | none | `design43/report-shapes` (deleted) | `04c0654` | `8635d7c` + `9b98b0b` (two review rounds returned) + `a7a415d` (coordinator fixes) + `010701a` (runbook total corrected); runbook pin `a7a415d` | **M5 2026-08-09 — G1, G2, G3 all PASS; all three known-bad patterns read 0** (`43d-m5`). Suite 1657 passed / 116 skipped / 0 failed / 1773 collected, skips equal to 43b's M5 run. Gate folded into a real 640-trigger session rather than run as a script | `53395d2` | **done** `53e3f12` — design/43 F8's stub corrected (`hook_actions` is omitted, not zeroed, when no typed action was observed) with the surviving two-kind projection recorded as still owed; F11's two-value list corrected to three (`partially_explicit`); suggested-order item 4 struck through |
-| 43e | Nestor | none | `design43/builtin-offline-adapters` | `eb577d8` | `452dbc5` + `3d30c1f` (review round 1 returned) + `9bae1ba` (coordinator fix after the rig round); runbook pinned `9bae1ba` | **M5 round 1 2026-08-09 (`43e-m5`): Step 0 PASS (0 failed, 1668 + 116 = 1784, skips equal to 43b/43d), G4 second limb PASS, Step 1 PASS; G1 FAIL, G2/G3 not exercised. Round 2 pushed, awaiting the rig** | | |
+| 43e | Nestor | none | `design43/builtin-offline-adapters` (deleted) | `eb577d8` | `452dbc5` + `3d30c1f` (review round 1 returned) + `9bae1ba` + `256cc18` (two coordinator fixes, each after a rig round); runbook pinned `256cc18` | **M5, three rounds, 2026-08-09 (`43e-m5`, `43e-m5-round2`). Round 1: G1 FAIL — the adapters were correct and unreachable. Round 2: Step 0 (1671 + 116 = 1787), G1, G2 (both precedence branches), G4, Step 1 all PASS. Round 3: G3 PASS, no hardware tool called in the session.** `256cc18`'s two corrected hints are **ungated** — round 3 had no failing call | `0d1a501` | **done** — design/43 F15 annotated with the four things its stub did not say plus the two successors owed; F10 extended to the OSError siblings; F12's retired half named; suggested-order item 5 struck through |
 | 43f | Nestor | 43a merged (its prompt names the key this creates) | `design43/rig-profile` | | | required | | |
 | 43g | Nestor | none | `design43/coverage-statistics` | | | **required — beads + a diffuse field**; nothing ranks on it until calibrated | | |
 | 43h | Nestor | none | `design43/emit-adaptive-runs` | | | **required** — run the emitted script with microclaw closed | | |
@@ -5488,9 +5502,111 @@ fake-controller question was settled by updating the fakes rather than adding a
 suite resolves only because the real method exists. Renaming it fails the suite
 loudly, which a `getattr` guard would have hidden.
 
-## 43c. One illumination approval per session, not one per switch
+## 43c. One illumination approval per session, not one per switch — **M5 ROUND 1: G1/G2/G5 PASS, three criteria owed**
 
-Branch: `design43/session-grants`
+### Rig gate round 1 — M5, 2026-08-09: **G1, G2, G5 PASS; Step 0 FAIL (test-only); G3, G4, G6 owed**
+
+Evidence: `43c-m5/`. Folded into a real two-channel 9-position acquisition —
+the shape F2 came from.
+
+- **G1 PASS.** Nine illumination enables produced **three prompts**: the first
+  session approval, one ordinary approval after a revoke, and a second session
+  approval. The F2 baseline is 17 enables → 17 prompts.
+- **G2 PASS, the headline.** Twelve audit rows = nine enable decisions plus three
+  lifecycle rows (`granted:` ×2, `revoked:` ×1), each carrying the summary that
+  names the exact device, property and value. Every suppressed exposure is
+  reconstructable, which is the whole argument for shipping this.
+- **G5 PASS, proved inside the same log** — a plain `approved` row sits between
+  the revoke and the re-grant, so prompting demonstrably came back.
+- **Step 0 FAIL: one Windows-only test defect, product code uninvolved.**
+  `test_grant_is_only_process_memory_and_writes_no_user_state` monkeypatched
+  `XDG_CONFIG_HOME` and asserted the config dir does not exist;
+  `paths.user_config_dir` reads `APPDATA` on Windows, so the patch moved nothing
+  and the assertion ran against the real, existing directory. **This came from
+  round 1 of review — the coordinator's own finding asked the runner to point
+  the test at "the directory a persisted grant would actually use", and `XDG_*`
+  is not that directory on the platform every rig runs.** Fixed in `a8a217d` by
+  comparing a recursive snapshot of both real directories across the grant.
+- **G3, G4, G6 not exercised.** Round 2 owes them; only G6 costs any exposure.
+
+**Unasked-for evidence worth keeping.** With a grant active, asked to *"turn on
+640 again"* while 488 was on, microclaw did **not** call `set_channel`. It
+stopped and asked whether the operator wanted both on or only 640, because a
+channel switch would turn 488 off. That is the **converse** of 43b's
+off-means-on hazard, caught by the agent unprompted, in the exact condition —
+under a grant — where no confirmation would have surfaced it. It is not G6, but
+it is evidence about the same ambiguity, and it suggests the agent's own
+clarification may be a better backstop than the prompt was.
+
+### Rig gate round 2 — M5, 2026-08-09: **G3, G4, G6 all answered; only a clean Step 0 owed**
+
+Evidence: session `20260809_211925_062824`.
+
+- **G3 PASS on all three limbs — the block's most important result.** With an
+  `illumination/enable` grant active, a `knowledge` save prompted (and was
+  declined), a 5000-frame `acquisition/threshold` plan prompted (and was
+  declined), and **`AUTHORIZE UNATTENDED HOOK ILLUMINATION` prompted twice**.
+  That third one is the blast-radius question from assignment answered on
+  hardware: the envelope's subject is `None`, so an `illumination/enable` grant
+  does not reach it. **Had the block shipped F2's stub — a grant keyed on kind
+  alone — those two envelope authorizations would have been silent.**
+- **G4 PASS both limbs with the grant active**: 110% refused against
+  `max_power_percent`, and 1%→50% refused by the 10× ratchet. A grant answers
+  the question the guard asks a human; it does not remove a guard.
+- **G6 exercised; the hazard did not reproduce.** Three plain "turn it off"
+  requests all went to a direct write of the enable property to `0` — never
+  `set_channel`, so no enable and no exposure. Recorded as a **negative result**:
+  43b's case came from different phrasing, and nothing here shows it cannot
+  recur.
+- **Owed: a clean Step 0.** Round 1's rig suite is the only one this block has
+  and it failed on the test defect since fixed. No microscope needed.
+
+**A finding this gate produced that is not 43c's to fix.** Asked to step laser
+power from 1% to 50% in one write, the agent refused three times and silently
+substituted its own ramp — *"the gradual step-up is a safety rule I follow
+specifically to avoid that, not a limitation I can waive just because it was
+requested."* It is not a safety rule; it is a habit learned from the ratchet's
+own "Step up gradually" wording, and following it converted one authorized write
+into three unauthorized ones while blocking the operator from testing a limit
+they were explicitly trying to test. The agent later diagnosed it correctly
+itself — *"that guard lives in my behaviour, not in a hard tool-side limit."*
+**The rig's state is the operator's, and a model-invented rule must not override
+an explicit instruction.** See the carried-forward register.
+
+Branch: `design43/session-grants`, runbook `design/43-block43c-rig-gate.md` on
+the branch, pinned at `2bf0e32`. Off-rig **1690 passed / 99 skipped / 3 expected
+warnings, 1789 collected** on macOS, re-measured by the coordinator; +10 IDs from
+`eb577d8`, none removed.
+
+**What the block decided, and what two review rounds found.**
+
+- **A grant matches kind + subject, not kind.** `illumination/enable` and
+  `acquisition/threshold` are grantable; the `Core.Shutter` retarget, the
+  unattended hook illumination envelope and MMStudio's current MDA stay
+  subject-less and therefore one-shot. That answers the blast-radius question
+  the coordinator raised at assignment: three of the five `CONFIRM_FN` call
+  sites are not the decision F2's operator made seventeen times.
+- **Round 1: a terminal operator could not revoke at all** — `revoke` was
+  reachable only from the browser endpoint, and the test that looked like it
+  covered this called the registry method directly. Now a `grants` REPL command,
+  tested through `_repl`. **Revocation is between turns in the terminal and
+  mid-turn in the browser**; that asymmetry is documented rather than left to be
+  found on a rig.
+- **Round 1: revoking wrote no audit row**, so the log could not bound the
+  window in which prompts were off.
+- **Round 1: the grant chip could silently fail to appear** — the browser fetched
+  the grant list on a 100 ms timer, racing the turn thread. Grant creation moved
+  into `POST /api/confirm`, which returns the authoritative list.
+- **Round 2: that move split grant creation from its audit row.** The turn thread
+  was still the only writer of the creation row, and it never runs it if the
+  turn already timed out or was stopped — leaving an active grant, visible in the
+  UI, suppressing prompts, with no origin in the log. Creation is now audited
+  where it happens, **and the grant is rolled back if that row cannot be
+  written**, which is more than was asked for and is right.
+- **A grant cannot infer intent.** Asked to turn a laser off, microclaw may call
+  `set_channel`, which enables it (43b's M5 gate). Under a grant that enable is
+  silent. Stated beside `SessionGrants` and gated at G6 rather than left
+  implicit.
 
 Source: design/43 F2. 17 confirmations in 50 minutes, all approved, all for the
 same two properties.
@@ -5702,10 +5818,64 @@ macOS (1685 / 99 / 1784) with the 17-test platform-conditional set skipping. One
 launcher throughout; the collected-ID file came back, so 43b's mixed-launcher
 defect did not recur.
 
-### Round 2
+### Rig gate round 2 — M5, 2026-08-09: **Step 0, G1, G2, G4, Step 1 all PASS; G3 owed**
 
-Pushed at `9bae1ba`, runbook re-pinned, round-1 result recorded in it. Off-rig
-**1688 passed / 99 skipped / 3 expected warnings, 1787 collected** on macOS.
+Evidence: `43e-m5-round2/` — `g1-history.jsonl`, `g4-history.jsonl`,
+`suite-43e.txt`, `collected-43e.txt`, `overlay_cc_boxes.ijm`.
+
+- **G1 PASS.** With the tool unnamed in the request, microclaw's first analysis
+  action after reading the hook log was `connected_components` over a
+  stage-coordinate mosaic, and it answered the same-cell question **from the
+  labels** — checking each positive tile's XY against object 1's bounding box.
+  The prompt fix worked.
+- **G2 PASS, both precedence branches on the rig.** `package_default_uncalibrated`
+  on the default run, `explicit` on the operator-specified one, with
+  `analyzer.source: "builtin"` and a 64-hex `source_sha256`. The agent raised the
+  uncalibrated caveat *before* the operator questioned the answer.
+- **G4 PASS.** Both integrity-failed saved hooks refused by name, and when the
+  operator said *"try it anyway"* microclaw declined to route around the gate and
+  offered read-back-and-re-save instead — F9's remedy, arrived at unaided.
+- **Step 0 PASS:** 1671 + 116 = **1787**, equal to the collect-only line, skips
+  unchanged from the three previous M5 runs.
+- **Two defects, fixed on the branch in `256cc18`.** The session's first two
+  calls both failed and both were told to look at the stage: `NotADirectoryError`
+  (a `.tif` passed where a dataset directory belongs) and `FileExistsError` (the
+  `output_dir` already existed). Both are `OSError` siblings, not
+  `FileNotFoundError` subclasses, so they fell past the path branch into
+  `_HARDWARE_HINT` — **design/43 F10's defect, in the tool block 43d fixed, on
+  the two errors 43d did not map.**
+
+**The finding that is not a defect, and matters most.** At the uncalibrated
+default (`min_snr` 3.1) the measurement **split the cell**: 49 objects, the
+bottom tile row outside object 1, answer *"not all the same cell"*. The operator
+looked and said *"This looks like only one cell to me"*; re-run at `min_snr` 2.0 /
+`min_area_um2` 1.0 it returned object 1 at **700.8 µm²** spanning the field, and
+a Fiji overlay confirmed it bounded the cell. The threshold's provenance label
+did its job — but **an uncalibrated default changed a biological conclusion on
+the first real use.** That is direct evidence for **43g**, which should be
+sequenced accordingly.
+
+**A new finding, not fixed here, deliberately.** `connected_components` reports
+numbers and writes only the plain mosaic, so the operator said *"I don't see any
+segmentation draw on the image"* and the answer was a hand-written Fiji macro.
+Microclaw diagnosed it exactly right (*"it does not produce a label map or an
+outline overlay"*) and checked `list_hooks` before proposing to build one. **A
+measurement you cannot see is half a measurement**, and the runner already has an
+artifact directory to write into. Carried forward as a candidate block rather
+than widened into this one.
+
+**A gate-writing lesson.** Step 1's pattern read 15, but **9 matches were inside
+`list_hooks` and `get_hook_documentation` results** — a tool's own documentation
+about writing hooks, not microclaw offering to write one. Scope such patterns to
+assistant text blocks; counted over the whole JSONL they cannot tell an offer
+from a definition.
+
+### Round 3 — G3 only
+
+Pushed at `256cc18`. Off-rig **1691 passed / 99 skipped / 3 expected warnings,
+1790 collected** on macOS. The only outstanding criterion is G3
+(`frame_statistics` over saved frames), plus a free re-check of the two fixed
+hints. Zero exposure, no sample needed.
 
 Branch: `design43/builtin-offline-adapters`, runbook
 `design/43-block43e-rig-gate.md` on the branch, pinned at `3d30c1f`. Off-rig
@@ -6087,6 +6257,31 @@ schedule them or record a reason at block 12.
 This is an inventory, not permission to close with unresolved blank work. Block
 12 assigns every row one of the explicit dispositions above.
 
+- **A model-invented rule must not override an explicit operator instruction.**
+  From 43c's M5 round 2, 2026-08-09. Asked to step laser power from 1% to 50% in
+  a single write — explicitly, three times, while saying they were testing a
+  tool limit — the agent refused and silently substituted its own ramp
+  (1→5→20→50, then 1→10→25→50), calling the gradual step-up *"a safety rule I
+  follow … not a limitation I can waive just because it was requested."* It is
+  not a rule in the code; it is a habit the ratchet's own *"Step up gradually"*
+  message teaches. Two costs: one authorized write became three unauthorized
+  ones, and the operator could not reach the limit they were trying to observe.
+  The agent diagnosed it correctly once challenged. Fix is prompt-shaped —
+  distinguish a guard that exists from a habit, and say so when declining — and
+  it belongs with F2's authority questions rather than inside a gated block.
+- **A measurement you cannot see is half a measurement** (design/43 F15's
+  follow-on, from 43e's M5 round 2, 2026-08-09). `connected_components` reports
+  areas, stage centroids and bounding boxes as numbers and writes only the plain
+  mosaic, so the operator said *"I don't see any segmentation draw on the
+  image"*. Microclaw diagnosed it correctly — *"it does not produce a label map
+  or an outline overlay"* — checked `list_hooks` before proposing to build
+  anything, and the session ended with a hand-written Fiji macro that the
+  operator ran and confirmed (*"it bounded the cell"*). The runner already hands
+  every adapter an artifact directory, so the natural shape is that the built-in
+  writes a label map or outline TIFF next to the mosaic and `open_artifact`
+  opens it. **Deliberately not folded into 43e**, which was already gated. Size
+  it as a block alongside 43g, whose calibration work it would make visible.
+
 - **Two block-41b commits landed after its gate and are ungated**: `b6cc7a2`
   (adaptive runs refuse with an architectural reason) and `5af0fc6` (inline
   `snr_validity`, plus the structural guard). Both are two-directionally tested
@@ -6422,6 +6617,15 @@ This is an inventory, not permission to close with unresolved blank work. Block
   in its report and shipped the wrong payload anyway. **Treat a first-round
   accept as the case to look at harder**, and judge a fix by driving the real
   producer rather than by reading its test.
+- **A test that relocates a directory with `XDG_*` proves nothing on a rig.**
+  Every rig in this project is Windows, where `paths.user_config_dir` reads
+  `APPDATA` and `user_data_dir` reads `LOCALAPPDATA`. Block 43c's non-persistence
+  test patched the XDG variables, moved nothing, and asserted the real
+  already-existing directory was absent — a Step 0 failure on M5 with the product
+  code correct. Added 2026-08-09. Compare a snapshot of the real directories
+  instead. More generally: **a test asserting where something is *not* written
+  must name the platform's actual location**, and the suite is only trustworthy
+  on the platform it will be judged on.
 - **Gate the reach, not the plumbing.** A criterion that names the tool and
   checks its output tests whether the code works; it cannot test whether anything
   finds the code. Block 43e shipped two built-in adapters that were correct,
