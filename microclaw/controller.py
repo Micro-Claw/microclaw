@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import hashlib
 import math
 from pathlib import Path
+import threading
 from typing import TYPE_CHECKING
 
 from pycromanager import Core, Studio
@@ -109,6 +110,73 @@ def _drain_java_iterable(iterable) -> list[str]:
     while has_next():
         out.append(str(iterator.next()))
     return out
+
+
+def dataset_stack_files(directory) -> list[Path]:
+    """The TIFF files a dataset directory would open, in plane order.
+
+    One definition, because the measurement has to describe the files that were
+    actually opened. When these two disagreed, `open_artifact` claimed
+    `opened: true` for a window whose dimensions it had never checked: the
+    directory was measured as an NDTiff dataset while a stray TIFF beside it was
+    what got opened (round-3 gate, `D:\\stitch_test`).
+
+    Sorted so a split dataset opens in its own plane order rather than whatever
+    order the filesystem happens to return.
+    """
+    return sorted(p for p in Path(directory).iterdir()
+                  if p.is_file() and p.suffix.lower() in (".tif", ".tiff"))
+
+
+_OPEN_BRIDGE_TIMEOUT_S = 30.0
+
+
+class _BridgeCallStalled(RuntimeError):
+    """An open-path bridge interaction exceeded its watchdog."""
+
+
+def _bridge_call(label: str, fn, timeout: float | None = None):
+    """Run one bridge interaction on a daemon thread with a labelled timeout.
+
+    This makes an otherwise invisible bridge wedge reportable. It cannot cancel
+    the Java call: if Java remains stuck, pyjavaz's single lock remains held.
+
+    So a stall is terminal for the session, not a retryable error, and the
+    message says so. Once the lock is held every later bridge call — including
+    a core call — waits out its own watchdog and fails, which looks like
+    microclaw answering while the microscope is unreachable. The operator needs
+    to know to restart rather than keep asking.
+
+    Kept even though the Micro-Manager dataset reader that first wedged the
+    bridge is gone, because 42a finding 2 scoped its "IJ.open does not stall"
+    measurement to the formats it actually tried: a format whose importer raises
+    a modal dialog would still hold the lock, and `redirectErrorMessages` only
+    covers IJ1's own error path. This is what turns that into a report.
+    """
+    if timeout is None:
+        timeout = _OPEN_BRIDGE_TIMEOUT_S
+    result: dict = {}
+
+    def run() -> None:
+        try:
+            result["value"] = fn()
+        except BaseException as exc:  # noqa: BLE001 - re-raised on the caller
+            result["error"] = exc
+
+    worker = threading.Thread(target=run, name=f"bridge:{label}", daemon=True)
+    worker.start()
+    worker.join(timeout)
+    if worker.is_alive():
+        raise _BridgeCallStalled(
+            f"{label} stalled after the {timeout:g} s watchdog limit. "
+            "Micro-Manager is still inside that call and pyjavaz holds one lock "
+            "across every round trip, so the bridge is now unusable for this "
+            "session: restart microclaw. Nothing was written to Micro-Manager "
+            "and no window was closed."
+        )
+    if "error" in result:
+        raise result["error"]
+    return result.get("value")
 
 
 def _java_map_keys(java_map) -> list[str]:
@@ -269,6 +337,176 @@ class MicroscopeController:
             return None
         # ImageJ returns a trailing-slash path string; normalise for Path use.
         return str(Path(raw))
+
+    # --- Opening what we wrote, in the windows Micro-Manager already runs ---
+
+    def open_in_imagej(self, path: str) -> dict:
+        """Open a file or a saved dataset so the user can see it. Zero exposure.
+
+        **One entry point: `ij.IJ.open` on a file.** A directory is resolved to
+        the TIFF files inside it and each is opened the same way, because an
+        NDTiff dataset *is* ordinary TIFF stack files plus an `NDTiff.index`
+        sidecar. ImageJ reads TIFF natively — no Bio-Formats, and nothing that
+        has to understand the dataset format.
+
+        `IJ.open` is deliberately not called on the directory itself: 42a
+        measured that as a silent no-op that held the bridge for 6.94 s. IJ1's
+        own drag path is not called either — `DragAndDrop.openDirectory` opens a
+        modal GenericDialog that would hold the single pyjavaz lock until a human
+        answered it, and `FolderOpener.open` stalled the bridge for 120 s on two
+        separate gate runs.
+
+        Micro-Manager's dataset reader was the previous directory branch and is
+        **removed**, not merely unused. It cannot open what microclaw writes, for
+        two independent reasons measured on the rig (see
+        design/42-block42b-gate-findings.md):
+
+        * `NDTiffAdapter.hashMapToCoords` casts every axis value to `Integer`, so
+          a string-valued axis throws `ClassCastException` during `loadData`;
+        * `NDTiffAdapter` indexes coordinates with the **channel** axis stripped
+          (`"channel"` is the only string constant in the class), so a dataset
+          with no channel axis makes `getImagesIgnoringAxes` return an empty list
+          and `.get(0)` throw `IndexOutOfBoundsException` inside
+          `DisplayController.create`, under `loadDisplays`.
+
+        The second one hits every single-channel dataset microclaw writes, and
+        the crash landed part-way through display construction on the EDT, which
+        wedged the bridge for the rest of the session. Reading the TIFFs avoids
+        both because it never asks Micro-Manager to interpret the dataset.
+
+        **Known limitation, deliberately accepted:** a dataset whose planes span
+        several `*_NDTiffStack*.tif` files opens as several ImageJ windows, and
+        the axis structure (channel/z/time names) is not reconstructed — ImageJ
+        sees each file's planes as a plain stack. For the single-channel data
+        this is used on that is indistinguishable from the ideal. See
+        design/42-open-what-we-wrote.md §"Multi-channel datasets" for what a
+        proper multi-channel answer would take.
+
+        The path resolves **Java-side**. Microclaw's bridge is localhost-only by
+        construction — `Core(port=…)` and `Studio(port=…)` take no host — so
+        there is no remote case to detect and the caller's Python-side existence
+        check is the whole check.
+
+        Opens a NEW window and leaves it: microclaw never closes or re-uses the
+        user's windows, and writes nothing to MM on any exit path. `IJ.open`
+        returns void, so it is not proof anything painted (design/18's lesson,
+        even though its Preview specifics do not apply) — the window is confirmed
+        structurally against `WindowManager` and reports `opened: False` rather
+        than claim a window the user cannot see.
+
+        Statics go through `_new_static_java_class` per call (design/12); 42a
+        check 2 measured that as hygiene rather than a correctness rule.
+
+        ONE result shape:
+
+            {"opened": bool,
+             "via":    str,                  # which mechanism, for the record
+             "windows": [{"title", "width", "height", "n_planes"}],  # if opened
+             "reason": str}                  # if not
+
+        `n_planes` is ImageJ's stack size for the window.
+        """
+        try:
+            if not self.is_connected():
+                return {"opened": False, "reason": "No Micro-Manager bridge connection."}
+            if Path(path).is_dir():
+                return self._open_dataset_files_in_imagej(path)
+            return self._open_file_in_imagej(path)
+        except Exception as exc:
+            return {"opened": False,
+                    "reason": f"{type(exc).__name__}: {exc}"}
+
+    _DATASET_READER = "ij.IJ.open (dataset stack files)"
+
+    def _open_dataset_files_in_imagej(self, path: str) -> dict:
+        """Open the TIFFs inside a saved dataset directory."""
+        stacks = dataset_stack_files(path)
+        if not stacks:
+            return {"opened": False, "via": self._DATASET_READER,
+                    "reason": (f"No TIFF files in {path}. If this is a folder of "
+                               "datasets rather than a dataset, open one of the "
+                               "datasets inside it.")}
+        windows: list[dict] = []
+        failures: list[str] = []
+        for stack in stacks:
+            result = self._open_file_in_imagej(str(stack))
+            if result.get("opened"):
+                windows.extend(result.get("windows") or [])
+            else:
+                failures.append(f"{stack.name}: {result.get('reason', 'unknown')}")
+        if not windows:
+            return {"opened": False, "via": self._DATASET_READER,
+                    "reason": "; ".join(failures) or "No window appeared."}
+        # Partial success is still success for the windows that appeared, and the
+        # ones that did not are named rather than dropped.
+        payload = {"opened": True, "via": self._DATASET_READER,
+                   "windows": windows, "n_stack_files": len(stacks)}
+        if failures:
+            payload["unopened"] = failures
+        return payload
+
+    def _imagej_window_ids(self) -> set[int]:
+        """The IDs of every open ImageJ image window, read once.
+
+        42a measured the window as visible to WindowManager with no sleep after
+        IJ.open returned, so this reads once; there is no polling loop.
+        """
+        wm = _new_static_java_class(self._port, "ij.WindowManager")
+        get_ids = getattr(wm, "get_id_list", None) or getattr(wm, "getIDList", None)
+        ids = get_ids() if get_ids is not None else None
+        return set() if ids is None else {int(i) for i in ids}
+
+    def _describe_imagej_windows(self, ids: set[int]) -> list[dict]:
+        wm = _new_static_java_class(self._port, "ij.WindowManager")
+        get_image = getattr(wm, "get_image", None) or getattr(wm, "getImage", None)
+        described = []
+        for window_id in sorted(ids):
+            image = get_image(window_id) if get_image is not None else None
+            if image is None:
+                described.append({"id": window_id,
+                                  "error": "WindowManager has no image for this id"})
+                continue
+            described.append({
+                "id": window_id,
+                "title": str(image.get_title()),
+                "width": int(image.get_width()),
+                "height": int(image.get_height()),
+                "n_planes": int(image.get_stack_size()),
+            })
+        return described
+
+    def _open_file_in_imagej(self, path: str) -> dict:
+        ij = _new_static_java_class(self._port, "ij.IJ")
+        # One-shot: IJ1's no-argument redirectErrorMessages() applies to the very
+        # next error only, so an IJ1 failure during THIS open lands in the Log
+        # window instead of a modal dialog holding the single pyjavaz lock —
+        # without leaving a global flag flipped in the user's session.
+        redirect = getattr(ij, "redirect_error_messages", None) or getattr(
+            ij, "redirectErrorMessages", None
+        )
+        if redirect is not None:
+            try:
+                redirect()
+            except Exception:
+                pass
+        before = self._imagej_window_ids()
+        _bridge_call(
+            f"IJ.open({Path(path).name})",
+            lambda: _new_static_java_class(self._port, "ij.IJ").open(path),
+        )
+        new_ids = self._imagej_window_ids() - before
+        if not new_ids:
+            return {
+                "opened": False,
+                "via": "ij.IJ.open",
+                "reason": (
+                    "ImageJ accepted the path but no new image window appeared. "
+                    "Check ImageJ's Log window: a format ImageJ cannot read "
+                    "natively fails here without raising."
+                ),
+            }
+        return {"opened": True, "via": "ij.IJ.open",
+                "windows": self._describe_imagej_windows(new_ids)}
 
     def _probe_imagej_dir(self) -> str | None:
         """ij.IJ.getDirectory("imagej") — MM's ImageJ install root."""

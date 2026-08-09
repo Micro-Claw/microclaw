@@ -43,6 +43,10 @@ def test_only_deliberately_reviewed_functions_may_use_permissive_read_resolution
             "load_position_list", "read_hook_log",
             "rank_hook_log", "inspect_artifacts", "compare_revisit_frames",
             "calibrate_snr_threshold", "read_hook_from_file",
+            # open_artifact reads a local artifact the user names and hands the
+            # same path to the JVM on the same machine. It never writes, and
+            # never serves the bytes to a client (design/42, block 42b).
+            "open_artifact",
         },
         "microclaw/hooks.py": {"SNRObservationHook.__init__"},
         "microclaw/webserve.py": set(),
