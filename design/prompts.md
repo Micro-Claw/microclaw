@@ -5179,3 +5179,61 @@ package and loads through IJ's own `PluginClassLoader`, which pyjavaz's
 negative, and check 4 stayed **SKIP** because nobody supplied a non-native file.
 A SKIP that says why is a result; a probe result read past its own reach is how
 design/21's sourced-and-still-wrong tables happened.
+
+---
+
+## Block 42b — `open_artifact` (design/42, merged 2026-08-09)
+
+**The user's own workflow was the answer, and three rounds went past it.** The
+block's premise was "imitate what MM does when you drop a folder on it", so the
+directory branch went to `Studio.data().loadData` + `loadDisplays`. Two rig
+rounds and two MM defects later, the operator said: *I can already open the
+NDTiffs in ImageJ.* An NDTiff dataset is ordinary TIFF stack files plus an
+`NDTiff.index` sidecar — the thing to open was sitting inside the directory the
+whole time. The redesign **deleted 187 lines** and made a dataset MM could never
+read open fine. Nobody had written down the third option because 42a's finding
+framed it as a binary: "find the directory-capable path **or** refuse
+directories". Both branches of that treat the directory as the unit to open.
+When a design doc enumerates options, check whether the enumeration is the trap.
+
+**Two rig defects, and the hypothesis in between was wrong.** F1
+(`ClassCastException`, string axis) and F4 (`IndexOutOfBoundsException`, no
+channel axis) are both in MM's `NDTiffAdapter` and neither is ours. Between them
+sat a confident, coherent, wrong hypothesis: that round 1's five-minute hang was
+a Windows file-lock collision with the acquisition's own `show_display=True`
+viewer. It fit every observation available at the time. It was retired by a
+round-2 run whose session had never acquired the data. **What killed it was
+instrumentation, not more thinking** — the labelled watchdog turned a silent
+hang into a stack trace naming `getImagesIgnoringAxes`.
+
+**Ship the diagnostic before shipping the fix.** Round 2 deliberately contained
+almost no fix: a watchdog that names the stalling call, and a message telling the
+operator the bridge is dead and to restart. The user chose that over building on
+the hypothesis, and it was right — the very next run produced F4. When the
+mechanism is not yet known, the highest-value change is the one that makes the
+next failure legible.
+
+**`javap` on the local jar beat every guess.** The channel assumption
+(`"channel"` is the only string constant in `NDTiffAdapter`), the four MM call
+sites that all wrap this sequence in `new Thread(...)`, and `NDViewer`
+implementing only `NDViewerAPI` — all read out of `MMJ_.jar` and
+`NDViewer-0.10.2.jar` on a laptop, with no rig time. The repo already said to do
+this; it is worth saying again because it repeatedly answered questions that
+looked like they needed the microscope.
+
+**A gate that cannot move is not a gate.** G0 was re-run after a code change and
+came back byte-identical, because the spike imports two symbols from the package
+and calls MM raw — no change to microclaw could affect it. That cost a round
+trip. The runbook now says so at the top of the section, and G0 is retired.
+
+**Two rounds of review caught the same defect shape twice**: a test that could
+not fail. Round 1's stall test hung the suite instead of going red when the
+watchdog was removed; round 2's fix bounded its own wait. Both were found by
+deleting the guard and re-running, not by reading. Mutation-check every new test
+whose subject is a timeout, a stall, or an absence.
+
+**A runner reported a guard test as missing** because `CLAUDE.md` named it
+`test_emitted_analysis_defines_every_name_it_uses` and it is actually
+`test_emitted_inline_defines_every_name_it_uses`. The runner was literal and
+stopped; the guard was there. Fixed in `CLAUDE.md`. A wrong name in the
+instructions costs more than no name.
