@@ -251,12 +251,17 @@ def run_session(args):
     # (history[:] = ...) so the finally block always sees the latest turns.
     history = []
     store = ConversationStore(AuditLog(history_fn_name, enabled=args.save_history))
+    confirmation_fn_name = history_fn_name.replace("_history.jsonl", "_confirmations.jsonl")
+    confirmation_audit = AuditLog(confirmation_fn_name, enabled=args.save_history)
+    from microclaw import tools
+    tools.CONFIRM_AUDIT_FN = confirmation_audit.append
     # AuditLog writes as messages are produced. Every exit path — 'exit',
     # Ctrl-C, or a crash inside run_agent — reports declared illumination state
     # without changing it (design/38 F9 reverses design/14 §3).
     try:
         _repl(args, ctrl, guard, history, store)
     finally:
+        tools.CONFIRM_AUDIT_FN = None
         report_declared_illumination_on_exit(guard, ctrl.core)
 
 
@@ -310,6 +315,35 @@ def _repl(args, ctrl, guard, history, store):
         if user_input.lower() in {"exit", "quit"}:
             print("Exiting.")
             break
+        if user_input.lower() == "grants":
+            from microclaw import tools
+            grants = tools.SESSION_GRANTS.active()
+            if not grants:
+                print("No active session grants.")
+                continue
+            print("Active session grants (terminal revocation is between turns):")
+            for index, grant in enumerate(grants, 1):
+                print(
+                    f"  {index}. {grant['kind']}/{grant['subject']} "
+                    f"(id {grant['id']})"
+                )
+            choice = input("Revoke which grant? [number/id, Enter to keep] ").strip()
+            if not choice:
+                continue
+            grant_id = choice
+            if choice.isdigit() and 1 <= int(choice) <= len(grants):
+                grant_id = grants[int(choice) - 1]["id"]
+            revoked = tools.SESSION_GRANTS.revoke(grant_id)
+            if revoked is None:
+                print("No active grant matched that number or id.")
+                continue
+            tools._stdin_decision_record(
+                f"SESSION GRANT REVOKED: {revoked['kind']}/{revoked['subject']}",
+                revoked["kind"], revoked["subject"],
+                f"revoked:{revoked['id']}", grant_id=revoked["id"],
+            )
+            print(f"Revoked {revoked['kind']}/{revoked['subject']} session grant.")
+            continue
 
         if args.profile:
             # enable profiling

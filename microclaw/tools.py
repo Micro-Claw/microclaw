@@ -11,6 +11,7 @@ import tempfile
 import threading
 import time
 import weakref
+import uuid
 from datetime import datetime, timezone
 from contextlib import contextmanager, ExitStack
 from pathlib import Path
@@ -659,16 +660,137 @@ def export_session_script(
     }
 
 
-def _require_confirmation(summary: str, kind: str = "action") -> bool:
+class SessionGrants:
+    """Narrow confirmation subjects approved for this process lifetime only.
+
+    A kind is not itself a question.  In particular, an illumination-enable
+    grant must not also authorize Core.Shutter retargeting or an unattended
+    hook power envelope, and an acquisition-threshold grant must not authorize
+    MMStudio's opaque current MDA.  Keep those call sites subject-less so they
+    remain one-shot confirmations.
+
+    The enable subject cannot infer the operator's natural-language intent. If
+    an agent enables a source while trying to turn it off, a matching grant will
+    approve that write; the distinguishable audit row is the only backstop.
+    Grants therefore remove repeated decisions, not any SafetyGuard check or
+    refusal, and are deliberately process memory rather than persisted state.
+    The terminal's ``grants`` command can revoke only between turns; browser
+    operators can revoke while a turn is running.
+    """
+
+    GRANTABLE = frozenset({"illumination", "acquisition"})
+    _SUBJECTS = {
+        "illumination": frozenset({"enable"}),
+        "acquisition": frozenset({"threshold"}),
+    }
+
+    def __init__(self) -> None:
+        self._granted: dict[tuple[str, str], dict[str, str]] = {}
+
+    def granted(self, kind: str, subject: str | None) -> dict[str, str] | None:
+        if subject is None:
+            return None
+        return self._granted.get((kind, subject))
+
+    @classmethod
+    def is_grantable(cls, kind: str, subject: str | None) -> bool:
+        """Whether this exact confirmation question may receive a grant."""
+        return subject in cls._SUBJECTS.get(kind, ())
+
+    def grant(
+        self, kind: str, subject: str | None, summary: str, identity: str
+    ) -> dict[str, str]:
+        if kind not in self.GRANTABLE:
+            raise ValueError(
+                f"{kind!r} confirmations cannot be granted for a session; "
+                "they gate self-modification, not workflow."
+            )
+        if not self.is_grantable(kind, subject):
+            raise ValueError(
+                f"{kind!r} confirmation subject {subject!r} is not session-grantable."
+            )
+        record = {
+            "id": uuid.uuid4().hex,
+            "kind": kind,
+            "subject": subject,
+            "identity": identity,
+            "granted_at": datetime.now(timezone.utc).isoformat(),
+            "granted_on": summary,
+        }
+        self._granted[(kind, subject)] = record
+        return record
+
+    def revoke(self, grant_id: str) -> dict[str, str] | None:
+        for key, record in tuple(self._granted.items()):
+            if record["id"] == grant_id:
+                del self._granted[key]
+                return record
+        return None
+
+    def active(self) -> list[dict[str, str]]:
+        return list(self._granted.values())
+
+    def clear(self) -> None:
+        self._granted.clear()
+
+
+SESSION_GRANTS = SessionGrants()
+# The CLI installs its confirmations JSONL append method here.  The browser has
+# an identity-aware audit path in Session.confirm, so it leaves this unset.
+CONFIRM_AUDIT_FN: Callable[[dict[str, str]], Any] | None = None
+
+
+def _stdin_decision_record(
+    summary: str, kind: str, subject: str | None, decision: str,
+    *, grant_id: str | None = None,
+) -> None:
+    if CONFIRM_AUDIT_FN is None:
+        return
+    record = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "identity": "stdin",
+        "confirmation_id": uuid.uuid4().hex,
+        "kind": kind,
+        "decision": decision,
+        "summary": summary,
+    }
+    if subject is not None:
+        record["subject"] = subject
+    if grant_id is not None:
+        record["grant_id"] = grant_id
+    CONFIRM_AUDIT_FN(record)
+
+
+def _require_confirmation(
+    summary: str, kind: str = "action", subject: str | None = None
+) -> bool:
     """Blocking stdin confirmation for actions that persist model-writable content.
 
-    Prints the exact thing about to be persisted and requires an explicit yes.
-    `kind` ("knowledge", "hook", "illumination") is for frontends that render
-    kinds differently; a terminal already reads the summary, so it is unused
-    here.
+    Prints the exact action and requires an explicit yes, unless the exact
+    ``kind``/``subject`` pair has a session grant.
     """
+    grant = SESSION_GRANTS.granted(kind, subject)
+    if grant is not None:
+        print(f"\n[microclaw] Auto-approved under session grant {grant['id']}:\n{summary}")
+        _stdin_decision_record(
+            summary, kind, subject, f"auto-approved:{grant['id']}",
+            grant_id=grant["id"],
+        )
+        return True
     print(f"\n[microclaw] Confirmation required:\n{summary}")
-    return input("Proceed? [y/N] ").strip().lower() in {"y", "yes"}
+    grantable = SessionGrants.is_grantable(kind, subject)
+    prompt = "Proceed? [y/N, or s for this session] " if grantable else "Proceed? [y/N] "
+    answer = input(prompt).strip().lower()
+    if answer in {"s", "session"} and grantable:
+        grant = SESSION_GRANTS.grant(kind, subject, summary, identity="stdin")
+        _stdin_decision_record(
+            summary, kind, subject, f"approved:session:{grant['id']}",
+            grant_id=grant["id"],
+        )
+        return True
+    approved = answer in {"y", "yes"}
+    _stdin_decision_record(summary, kind, subject, "approved" if approved else "declined")
+    return approved
 
 
 # The confirmation gate lives in code (not just the system prompt) so a
@@ -772,6 +894,7 @@ def _authorize_acquisition(
         f"illuminated_ms={plan.illuminated_ms:g}\n"
         f"Confirmation thresholds exceeded: {', '.join(exceeded)}.",
         kind="acquisition",
+        subject="threshold",
     ):
         reservation.close()
         # Name that this was a human confirmation decline, not a limit refusal.

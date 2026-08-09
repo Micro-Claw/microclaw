@@ -979,14 +979,14 @@ class TestIlluminationGate:
         with pytest.raises(SafetyViolation, match="declined"):
             guard.check_illumination(
                 _core(), "Luxx638", "Laser Operation Select", "On",
-                confirm_fn=lambda s, kind="action": False,
+                confirm_fn=lambda s, kind="action", subject=None: False,
             )
 
     def test_enable_confirmed_passes(self):
         guard = _laser_guard()
         guard.check_illumination(
             _core(), "Luxx638", "Laser Operation Select", "On",
-            confirm_fn=lambda s, kind="action": True,
+            confirm_fn=lambda s, kind="action", subject=None: True,
         )
 
     def test_confirm_receives_the_illumination_kind(self):
@@ -997,9 +997,12 @@ class TestIlluminationGate:
         seen = {}
         guard.check_illumination(
             _core(), "Luxx638", "Laser Operation Select", "On",
-            confirm_fn=lambda s, kind="action": seen.update(kind=kind) or True,
+            confirm_fn=lambda s, kind="action", subject=None: seen.update(
+                kind=kind, subject=subject
+            ) or True,
         )
         assert seen["kind"] == "illumination"
+        assert seen["subject"] == "enable"
 
     def test_disable_never_needs_confirmation(self):
         guard = _laser_guard()
@@ -1018,7 +1021,7 @@ class TestIlluminationGate:
         guard = _laser_guard()
         guard.check_illumination(
             _core(), "Luxx638", "Laser Operation Select", "Auto",
-            confirm_fn=lambda s, kind="action": True,
+            confirm_fn=lambda s, kind="action", subject=None: True,
         )
 
     def test_confirm_not_required_when_flag_off(self):

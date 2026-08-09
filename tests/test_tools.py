@@ -635,7 +635,9 @@ class TestSetDeviceProperty:
 
     def test_illumination_enable_blocked_when_declined(self, mock_ctrl, monkeypatch):
         # The gate must run through tools.CONFIRM_FN — in code, not the prompt.
-        monkeypatch.setattr("microclaw.tools.CONFIRM_FN", lambda s, kind="action": False)
+        monkeypatch.setattr(
+            "microclaw.tools.CONFIRM_FN", lambda s, kind="action", subject=None: False
+        )
         with pytest.raises(SafetyViolation, match="declined"):
             set_device_property(mock_ctrl, self._laser_guard(),
                                 device="Luxx638", property="Laser Operation Select",
@@ -643,7 +645,9 @@ class TestSetDeviceProperty:
         mock_ctrl.core.set_property.assert_not_called()
 
     def test_illumination_enable_passes_when_confirmed(self, mock_ctrl, monkeypatch):
-        monkeypatch.setattr("microclaw.tools.CONFIRM_FN", lambda s, kind="action": True)
+        monkeypatch.setattr(
+            "microclaw.tools.CONFIRM_FN", lambda s, kind="action", subject=None: True
+        )
         set_device_property(mock_ctrl, self._laser_guard(),
                             device="Luxx638", property="Laser Operation Select",
                             value="On")

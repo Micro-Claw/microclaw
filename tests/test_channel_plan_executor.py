@@ -307,7 +307,7 @@ def test_illumination_and_shutter_retarget_each_confirm():
                                  ("LED", "Enable", "1", "0")])
     confirmations = []
     execute_channel_plan(ctrl, guard, "P",
-                         confirm_fn=lambda text, kind: confirmations.append((text, kind)) or True)
+                         confirm_fn=lambda text, kind, **kw: confirmations.append((text, kind)) or True)
     assert len(confirmations) == 2 and {kind for _, kind in confirmations} == {"illumination"}
 
 
@@ -469,7 +469,7 @@ def test_emu_plan_turns_every_other_named_laser_off_before_arming_one(tmp_path):
     ctrl = emu_controller(ctrl, {"640"}, guard)
     core.values[("iChrome-MLE-TCP", M5_ENABLE[2])] = "1"   # 561 currently on
 
-    out = execute_channel_plan(ctrl, guard, "640", confirm_fn=lambda text, kind: True)
+    out = execute_channel_plan(ctrl, guard, "640", confirm_fn=lambda text, kind, **kw: True)
 
     writes = [(call[2], call[3]) for call in core.calls if call[0] == "set"]
     assert writes[-1] == (M5_ENABLE[3], "1")
@@ -491,7 +491,7 @@ def test_emu_switch_confirms_the_enable_and_not_the_disables(tmp_path):
     ctrl = emu_controller(ctrl, {"561"}, guard)
     confirmations = []
 
-    execute_channel_plan(ctrl, guard, "561", confirm_fn=lambda text, kind:
+    execute_channel_plan(ctrl, guard, "561", confirm_fn=lambda text, kind, **kw:
                          confirmations.append((text, kind)) or True)
 
     assert len(confirmations) == 1
@@ -506,7 +506,7 @@ def test_declined_confirmation_leaves_no_laser_armed(tmp_path):
     guard = emu_guard()
     ctrl = emu_controller(ctrl, {"640"}, guard)
     with pytest.raises(SafetyViolation, match="declined"):
-        execute_channel_plan(ctrl, guard, "640", confirm_fn=lambda text, kind: False)
+        execute_channel_plan(ctrl, guard, "640", confirm_fn=lambda text, kind, **kw: False)
     assert core.calls == []
 
 
@@ -518,7 +518,7 @@ def test_emu_plan_rolls_back_through_the_same_executor(tmp_path):
     core.fail_on = 2
 
     with pytest.raises(ChannelPlanPartialApplicationError) as caught:
-        execute_channel_plan(ctrl, guard, "640", confirm_fn=lambda text, kind: True)
+        execute_channel_plan(ctrl, guard, "640", confirm_fn=lambda text, kind, **kw: True)
 
     assert "rolled_back" in str(caught.value)
     # The one write that landed was undone; the target line never came on.

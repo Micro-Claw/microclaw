@@ -16,7 +16,7 @@ import pytest
 
 from fastapi.testclient import TestClient
 
-from microclaw import config, credentials, webserve
+from microclaw import config, credentials, tools, webserve
 from microclaw.conversation import AuditLog, ConversationStore, load_history
 from microclaw.webserve import build_app, serve
 
@@ -65,6 +65,7 @@ def _history_declaring(*paths, kind="tiff"):
 
 @pytest.fixture
 def session():
+    tools.SESSION_GRANTS.clear()
     s = types.SimpleNamespace(
         ctrl=object(),
         guard=_guard(),
@@ -80,10 +81,12 @@ def session():
         audit_records=[],
         current_identity="loopback",
     )
-    # Session.confirm only reads _emit/pending/cancel, so binding the real
-    # method makes the fake route confirmations exactly as the real one does.
+    # Bind the real confirmation and audit methods so the fake routes exercise
+    # exactly the same decision-to-row path as a live Session.
+    s._audit_confirmation = webserve.Session._audit_confirmation.__get__(s)
     s.confirm = webserve.Session.confirm.__get__(s)
-    return s
+    yield s
+    tools.SESSION_GRANTS.clear()
 
 
 @pytest.fixture
@@ -411,7 +414,7 @@ def test_stop_is_not_a_tool_the_agent_can_call():
 # ---- confirmations (design/21 F1) ----
 
 def _start_confirm(session, summary="Save knowledge devices/X:\nX: {a: 1}",
-                   kind="knowledge"):
+                   kind="knowledge", subject=None):
     """Run session.confirm on a thread, as a tool on the turn thread would.
 
     Returns once the confirm is pending (or the thread already returned), with
@@ -421,7 +424,7 @@ def _start_confirm(session, summary="Save knowledge devices/X:\nX: {a: 1}",
     session._emit = events.append
     box = {}
     thread = threading.Thread(
-        target=lambda: box.update(answer=session.confirm(summary, kind))
+        target=lambda: box.update(answer=session.confirm(summary, kind, subject))
     )
     thread.start()
     # Wait for the confirm_request *event*, not for session.pending: confirm()
@@ -479,7 +482,8 @@ def test_the_browser_can_approve_a_pending_confirm(session, client, fast_confirm
     pid = session.pending.id
     assert events[0] == {"type": "confirm_request", "id": pid,
                          "summary": "Save knowledge devices/X:\nX: {a: 1}",
-                         "kind": "knowledge"}
+                         "kind": "knowledge", "subject": None,
+                         "grantable": False}
 
     assert client.post("/api/confirm",
                        json={"id": pid, "approve": True}).status_code == 200
@@ -494,6 +498,97 @@ def test_the_browser_can_decline_a_pending_confirm(session, client, fast_confirm
     client.post("/api/confirm", json={"id": session.pending.id, "approve": False})
     thread.join(timeout=5)
     assert box["answer"] is False
+
+
+def test_browser_session_grant_auto_audits_and_revoke_restores_prompting(
+    session, client, fast_confirm_poll, tmp_path
+):
+    path = tmp_path / "confirmations.jsonl"
+    session.confirmation_audit = AuditLog(path)
+    thread, _, box = _start_confirm(
+        session, "enable 488", kind="illumination", subject="enable"
+    )
+    pid = session.pending.id
+    approval = client.post(
+        "/api/confirm", json={"id": pid, "approve": "session"}
+    )
+    assert approval.status_code == 200
+    # The POST that disables future prompts returns the chip state itself; the
+    # UI does not race a later poll against the turn thread.
+    assert len(approval.json()["grants"]) == 1
+    thread.join(timeout=5)
+    assert box["answer"] is True
+    grant = tools.SESSION_GRANTS.active()[0]
+    lifecycle = load_history(path).messages[:2]
+    assert lifecycle[0]["decision"] == f"granted:{grant['id']}"
+    assert lifecycle[1]["decision"] == f"approved:session:{grant['id']}"
+
+    assert session.confirm("enable 561", "illumination", "enable") is True
+    auto = session.audit_records[-1]
+    assert auto["decision"] == f"auto-approved:{grant['id']}"
+    assert auto["grant_id"] == grant["id"]
+    assert load_history(path).messages[-1] == auto
+
+    response = client.post(
+        "/api/confirm", json={"id": grant["id"], "approve": "revoke"}
+    )
+    assert response.status_code == 200
+    assert response.json()["grants"] == []
+    revoke = load_history(path).messages[-1]
+    assert revoke["decision"] == f"revoked:{grant['id']}"
+    assert revoke["grant_id"] == grant["id"]
+    thread, _, box = _start_confirm(
+        session, "enable 488", kind="illumination", subject="enable"
+    )
+    assert session.pending is not None
+    client.post("/api/confirm", json={"id": session.pending.id, "approve": False})
+    thread.join(timeout=5)
+    assert box["answer"] is False
+
+
+def test_session_grant_creation_is_audited_even_if_the_turn_is_stopped(
+    session, client, tmp_path
+):
+    path = tmp_path / "confirmations.jsonl"
+    session.confirmation_audit = AuditLog(path)
+    session.cancel.set()
+    # Model the endpoint-visible window after a confirmation became pending.
+    # No turn-thread decision is needed to prove the lifecycle row is owned by
+    # the POST that creates the standing grant.
+    session.pending = webserve._Pending(
+        "pending-id", "enable 488", "illumination", "enable"
+    )
+
+    response = client.post(
+        "/api/confirm", json={"id": "pending-id", "approve": "session"}
+    )
+
+    assert response.status_code == 200
+    grant = tools.SESSION_GRANTS.active()[0]
+    records = load_history(path).messages
+    assert [record["decision"] for record in records] == [f"granted:{grant['id']}"]
+    assert records[0]["grant_id"] == grant["id"]
+
+
+def test_browser_page_exposes_session_approval_and_persistent_revoke_controls(client):
+    page = client.get("/").text
+    assert 'id="confirm-session"' in page
+    assert 'id="grant-chips"' in page
+    assert 'approve: "revoke"' in page
+
+
+def test_auto_approval_audits_acting_operator_and_grant_author_separately(session):
+    grant = tools.SESSION_GRANTS.grant(
+        "illumination", "enable", "enable 488", identity="grant-author"
+    )
+    session.current_identity = "acting-operator"
+
+    assert session.confirm("enable 561", "illumination", "enable") is True
+
+    record = session.audit_records[-1]
+    assert record["identity"] == "acting-operator"
+    assert record["grant_identity"] == "grant-author"
+    assert record["grant_id"] == grant["id"]
 
 
 def test_a_stale_confirm_id_is_a_409(session, client, fast_confirm_poll):
@@ -523,12 +618,13 @@ def test_get_confirm_resurfaces_a_pending_banner(session, client, fast_confirm_p
 
     body = client.get("/api/confirm").json()
     assert body == {"id": pid, "summary": "Save knowledge devices/X:\nX: {a: 1}",
-                    "kind": "illumination"}
+                    "kind": "illumination", "subject": None,
+                    "grantable": False, "grants": []}
 
     client.post("/api/confirm", json={"id": pid, "approve": False})
     thread.join(timeout=5)
     assert box["answer"] is False
-    assert client.get("/api/confirm").json() == {}
+    assert client.get("/api/confirm").json() == {"grants": []}
 
 
 def test_stop_during_a_pending_confirm_denies(session, client, fast_confirm_poll):
