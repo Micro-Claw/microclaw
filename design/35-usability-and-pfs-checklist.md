@@ -351,6 +351,49 @@ and the only branches on `origin` besides `main` are
   second merges `main` first**. Eight blocks remain after them: 43c, 43e, 43f,
   43g, 43h, 43i, 43j, 43k.
 
+### State at the 2026-08-09 close of the 43b/43d session — read this before assigning anything
+
+Supersedes both notes above. Written at `8ec9da6`; verify rather than compare
+against that hash, because a coordinator commit after it is expected. What should
+hold: `git log --oneline origin/main..main` empty, working tree clean, and the
+branches on `origin` besides `main` are `design34/focus-system-authorization`
+(6a), **`design43/report-shapes` (43d, awaiting a rig)**,
+`florian/setup-claude-workflow` and `port-to-jpype-acqj`. Two worktrees:
+`../microclaw-43d` and `../microclaw-6a` (idle at `4994f3e`).
+
+- **43b is MERGED and fully closed** (`b220e33`) — M5 gate PASS, ledger row
+  closed, coordination notes in `design/prompts.md`, design gate merged
+  (`8ec9da6`), branch and worktree deleted. **Track F blocks merged: 43a, 43m,
+  43b.**
+- **43d is pushed and awaiting a rig** — branch `design43/report-shapes`, pinned
+  at `a7a415d`, runbook `design/43-block43d-rig-gate.md` on the branch. Two
+  review rounds plus a coordinator fix. **It must merge `main` first**: `main`
+  has moved four times since it branched from `04c0654`, and 43b touched
+  `tools.py` too.
+- **Nothing else was started, deliberately.** Every remaining Track F block is
+  rig-gated (43c, 43e, 43f, 43g, 43h, 43i, 43j all "required"; 43k is design-only
+  *and* blocked on 43h/43i having run on a rig). **The constraint on this track
+  is rig sessions, not implementer throughput**, so starting a third branch would
+  only deepen the queue behind 43d rather than relieve it. 43b and 43d ran
+  concurrently because both were cold-startable while the rigs were free; that
+  condition no longer holds.
+- **43e must not start before 43d merges.** They edit the same lines: 43d
+  rewrote `_load_saved_adapter`'s refusal message, and 43e's job is to extend
+  that message to list built-in adapters first. 43d's version is the base 43e
+  builds on.
+- **Assign 43c and 43e together once 43d merges.** 43c gained a required design
+  item from 43b's M5 gate (a `set_channel` call that meant "off" and enabled a
+  laser, auto-approvable under a session grant) — see its entry.
+- **Suite baseline: 1673 passed / 99 skipped / 3 expected warnings, 1772
+  collected** on macOS at `8ec9da6`. M5 measured **1656 / 116 / 1772** at 43b's
+  gate — the same collection with the 17-test platform-conditional set skipping.
+  Re-measure; judge by failures and collected total; diff collected test IDs
+  against the branch's start commit.
+- **A runbook defect to fix in the next one written.** 43b's Step 0 ran the suite
+  under `uv` but the collect-only line with bare `python`, which on M5 is
+  miniconda without pytest — so no collected-ID list came back. Drive both
+  commands through one launcher.
+
 ### Block 41c mid-gate — superseded 2026-08-07, kept for the round history
 
 Written when M5 became unavailable mid-gate. **The block has since closed** —
