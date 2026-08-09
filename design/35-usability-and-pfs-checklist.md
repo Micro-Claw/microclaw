@@ -560,7 +560,7 @@ assistant's narration when judging whether a guard fired.
 | 42b | Read side | 42a's answers | `design42/open-artifact` (deleted) | `4d6a426` | `0dd3629` (dir spike) + `410846e` + `e02955f` + `ebebe45` + `ed9c78a`; review round 1 `867f3af`; runbook `a038c95`/`838f00d`/`b06fbac` pinned `867f3af`; findings `c60d33f`; fix round `229423d` (runner) + review round 2 `f574643`; **redesign `a97620b`** (open the dataset's TIFFs, MM reader deleted); runbook re-pinned `a97620b`; round-3 fix `5d09b7b` | **demo machine, three rounds, PASS at `a97620b`.** Round 1 (`bc93f76`): file branch PASS (G1/G2, no thumbnail), directory branch FAIL — G0 D2 ERROR and G4a wedged the bridge ~5 min. Round 2 (`f574643`): the watchdog named the stalling call and produced **F4**. Round 3 (`41b-open-artifact-demo-round3`): **G1+G2+G3+G4a+G4b+G4c ALL PASS**, no stalls, one image block in the session and only on the `analyze=true` turn; `stitch_test_1` — which MM's reader could never read (**F1**) — opens with all 6 tiles. Findings F1–F4 in `design/42-block42b-gate-findings.md`; round-3 finding fixed in `5d09b7b`. **G0 retired.** Multi-channel axis structure is a **known, tabled limitation**. **M5 still owed** — read-side block, demo-gated by design | `0819790` | **done** `25fc9cc` — design/42 §"What the gate measured"; design/43 F7 dependency cleared and assignable |
 | 43a | Nestor | none — may run concurrently with Track B | `design43/live-dose-and-tiff-prose` (deleted) | `3d6146b` | `cf1f272` + `af7e015` (review round 1 returned); runbook `92520b7` pinned `af7e015` | **M2 2026-08-09 — G1, G2, G4 both limbs, G5 all PASS; G3 answered, no fix owed** (`43a-m2`). Gated on M2, not M5: same camera-triggered illumination, and deliberately off the outlier rig. Suite red with 9 pre-existing Windows failures, none in touched code → block 43m | `5ec57cb` | **done** `18f84f1` — design/43 F3's "Untested" paragraph replaced by what M2 measured, plus the two implementation corrections (headless focus sweep, `find_features` is a borrow); F7's offer count corrected six → seven; suggested-order item 1 struck through |
 | 43m | Nestor (fallout) | none — **gated every later Track F rig gate** | `design43/windows-suite-integrity` (deleted) | `18f84f1` | `f49deb5` (accepted round 1, no rework); runbook `f0f3d3f` pinned `f49deb5` | **M2 2026-08-09 PASS — 0 failed, 1650 passed, 116 skipped, 1766 collected** (`43m-m2`). Skip count unchanged from 43a's run, so the subject tests ran rather than being skipped | `75fea30` | done — block *is* the gate; standing constraint added below |
-| 43b | Nestor | none | `design43/refresh-gui` | `04c0654` assigned 2026-08-09, worktree `../microclaw-43b` | `8162b04` + `74dc87f` (review round 1 returned); runbook `ef6a658` pinned `74dc87f` | **pushed 2026-08-09, awaiting M5.** Runbook `design/43-block43b-rig-gate.md` on the branch. Owed: G1 the pyjavaz shadow of `refresh_gui_from_cache` (the one thing `javap` could not answer — **do not re-run `javap`**), G2 channel switch, G3 zero-dose focus-lock + `set_device_property` non-regression, G4 rollback **best-effort**, and a full suite per the standing constraint | | |
+| 43b | Nestor | none | `design43/refresh-gui` (deleted) | `04c0654` | `8162b04` + `74dc87f` (review round 1 returned); runbook `ef6a658` pinned `74dc87f` | **M5 2026-08-09 — G1, G2, G3 both limbs all PASS; G4 NOT EXERCISED by design** (`43b-m5`). Suite 1656 passed / 116 skipped / 0 failed / 1772 collected. G1 settled the pyjavaz shadow `javap` could not reach; EMU's plugin panel repainted too, which the gate did not ask for | `b220e33` | |
 | 43c | Nestor | none | `design43/session-grants` | | | **required** — the audit log must still record every event | | |
 | 43d | Nestor | none | `design43/report-shapes` | `04c0654` assigned 2026-08-09, worktree `../microclaw-43d` | `8635d7c` + `9b98b0b` (two review rounds returned) + `a7a415d` (coordinator fixes); runbook pin `a7a415d` | **pushed 2026-08-09, awaiting a rig.** Runbook `design/43-block43d-rig-gate.md` on the branch. G1 saved-hook survey, G2 unknown adapter, G3 previous-area centre, plus a full suite per the standing constraint. Gate patterns were validated against the Nestor session before shipping and each reads **1** on it | | |
 | 43e | Nestor | none | `design43/builtin-offline-adapters` | | | required | | |
@@ -5244,7 +5244,7 @@ long-standing platform-conditional set (the file has said "sixteen" since
 **This is the first green full suite ever measured on a Windows rig since 41b
 and 41c landed on 2026-08-06.**
 
-## 43b. The GUI stops tracking after a channel switch
+## 43b. [x] The GUI stops tracking after a channel switch — **MERGED 2026-08-09**
 
 Branch: `design43/refresh-gui`
 
@@ -5272,7 +5272,7 @@ finding.
       `set_device_property`, which is the same interface shadowing the same way
       — so what is left is one live one-liner, folded into this block's own gate
       rather than owed before it.
-- [ ] `controller.refresh_gui()`, never raising. Migrate the two existing
+- [x] `controller.refresh_gui()`, never raising. Migrate the two existing
       `ctrl.studio.app().refresh_gui()` callsites so there is one definition,
       and add it to `execute_channel_plan` (`authorization.py`) **including the
       rollback path** and to `set_focus_lock`.
@@ -5285,8 +5285,52 @@ finding.
       are `execute_channel_plan` (`authorization.py:1649`) and `set_focus_lock`
       (`tools.py:5690`). Every claim in F4's table holds in substance — only the
       numbers moved.
-- [ ] Rig gate on M5: a channel switch and a rollback both leave the Property
+- [x] Rig gate on M5: a channel switch and a rollback both leave the Property
       Browser showing what the hardware actually holds.
+
+### Rig gate — M5, 2026-08-09: **PASS** (`43b-m5`)
+
+Merged `b220e33`. Evidence bundle `43b-m5`: history + confirmations JSONL,
+`g1-43b.txt`, `suite-43b.txt`, `install-43b.txt`, `collect-43b.txt`.
+
+- **G1 PASS — the only fact this block owed a rig.** `refresh_gui_from_cache
+  callable: True`, exit 0. The deployed Windows build shadows
+  `refreshGUIFromCache` over pyjavaz. `javap` had established the Java method
+  exists on the local macOS 2.0.3 build; this is the bridge half it could not
+  reach.
+- **G2 PASS, operator-observed.** Three `set_channel` calls (488 → 640 → 488),
+  four writes each. The Property Browser repainted every time with no manual
+  Refresh — **and so did EMU's own plugin panel**, which the gate did not ask
+  for. `refreshGUIFromCache` reaches plugin windows, not just the browser.
+- **G3 PASS, operator-observed**, both limbs: `set_focus_lock` on and off
+  (`PIZStage.External sensor`), and the `set_device_property` non-regression
+  write.
+- **G4 NOT EXERCISED.** No partial channel-plan failure occurred, and the
+  runbook forbids manufacturing one — unplugging the iChrome or racing a serial
+  disconnect would be an uncontrolled fault and might fail on the first write,
+  which is not a partial application. Three unit tests cover all three rollback
+  exception exits plus a repaint failure that must not replace them.
+- **Suite on M5: 1656 passed, 116 skipped, 0 failed**, 3 expected warnings.
+  1656 + 116 = **1772 collected**, exactly the off-rig total, so nothing started
+  skipping. One gap in the evidence chain, recorded rather than glossed: the
+  standing constraint wants the skip count compared to the previous run *on the
+  same machine*, and no prior full-suite M5 number exists to compare against.
+  116 is the Windows platform-conditional set measured on M2 at 43a and 43m.
+
+**Runbook defect for future blocks.** Step 0's
+`python -m pytest -q --collect-only` failed on M5: bare `python` there is
+miniconda without pytest, while the suite itself ran under `uv`. So no
+collected-ID list was captured. No harm — the total is derivable from
+passed + skipped — but a runbook must drive both commands through the same
+launcher.
+
+**Not this block's finding, but it happened here.** Asked to turn the 488 laser
+off, the agent called `set_channel('488')`, which *re-enabled* it: four writes
+and a real exposure. It caught itself immediately and fixed it with a direct
+property write. The confirmations log shows the mistaken call produced a fourth
+`ENABLE ILLUMINATION` prompt, which was approved — so **the gate is the only
+thing that stood between a tool-choice error and a silent dose.** That is a
+direct input to block 43c and is written into its entry.
 
 **Implemented and pushed 2026-08-09, awaiting M5.** One correction to this
 entry's own scope, found in review round 1 and worth recording because the
@@ -5333,6 +5377,23 @@ same two properties.
 - [ ] The operator asked for a blanket "deactivate session safety guards" button.
       This is deliberately narrower and must stay so. If the grantable set is too
       small, widen the set — never widen what a grant means.
+- [ ] **Answer the case 43b's M5 gate produced before designing the grant.**
+      Asked to turn the 488 laser *off*, the agent called `set_channel('488')` —
+      which enables that slot's laser. Four writes, a real exposure, and the
+      operator saw an `ENABLE ILLUMINATION` prompt for a request that meant the
+      opposite. They approved it; the agent then caught its own error and
+      disabled the property directly. Under a session-wide illumination grant
+      that exposure happens **with no prompt at all.**
+
+      This is not an argument against the grant — design/43 F2's 17-approvals
+      case is real and unchanged. It is a constraint on it: the friction the
+      grant removes is *repetition of a decision already made*, and this was a
+      different decision wearing the same prompt. Say in the design how a grant
+      behaves when the enable it is auto-approving contradicts what the operator
+      just asked for, or state plainly that it cannot tell and that the audit
+      row is the only backstop. Do not leave it unaddressed.
+
+      Evidence: `43b-m5`, history turns 44–53 and the fourth confirmations row.
 
 ## 43d. Report shapes and hints that sent the reader to the wrong place
 
