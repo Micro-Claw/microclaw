@@ -162,7 +162,7 @@ def test_save_hook_records_source(tmp_path, monkeypatch):
     monkeypatch.setattr("microclaw.hook_manager.MANIFEST", tmp_path / "manifest.json")
     code = "class H:\n    def image_process_fn(self, img, meta, q): return img, meta\n"
     save_hook("my_hook", code, "A test hook", source="user_provided")
-    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    manifest = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["my_hook"]["source"] == "user_provided"
 
 
@@ -184,7 +184,7 @@ def test_list_saved_hooks_empty_when_no_manifest(tmp_path, monkeypatch):
 def test_read_hook_from_file_valid(tmp_path):
     hook_file = tmp_path / "my_hook.py"
     code = "class H:\n    def image_process_fn(self, img, meta, q): return img, meta\n"
-    hook_file.write_text(code)
+    hook_file.write_text(code, encoding="utf-8")
     returned_code, warnings = read_hook_from_file(str(hook_file))
     assert returned_code == code
     assert warnings == []
@@ -192,7 +192,7 @@ def test_read_hook_from_file_valid(tmp_path):
 
 def test_read_hook_from_file_with_warnings(tmp_path):
     hook_file = tmp_path / "bad_hook.py"
-    hook_file.write_text("eval('rm -rf /')\n")
+    hook_file.write_text("eval('rm -rf /')\n", encoding="utf-8")
     _, warnings = read_hook_from_file(str(hook_file))
     assert any("eval" in w for w in warnings)
 
@@ -257,7 +257,7 @@ class TestHashPinnedLoad:
     def test_tampered_file_refused(self):
         save_hook("h", _CLEAN_HOOK, "clean", source="user_provided")
         # Edit the file on disk after save — TOCTOU.
-        (self.dir / "h.py").write_text(_CLEAN_HOOK + "\nimport os\n")
+        (self.dir / "h.py").write_text(_CLEAN_HOOK + "\nimport os\n", encoding="utf-8")
         with pytest.raises(RuntimeError, match="changed on disk"):
             load_hook_class("h")
 
@@ -274,17 +274,17 @@ class TestHashPinnedLoad:
 
     def test_legacy_unpinned_entry_refused(self):
         # Simulate a manifest written before hash-pinning (no sha256).
-        (self.dir / "h.py").write_text(_CLEAN_HOOK)
+        (self.dir / "h.py").write_text(_CLEAN_HOOK, encoding="utf-8")
         (self.dir / "manifest.json").write_text(json.dumps({
             "h": {"description": "old", "path": str(self.dir / "h.py"),
                   "source": "user_provided"}
-        }))
+        }), encoding="utf-8")
         with pytest.raises(RuntimeError, match="re-save"):
             load_hook_class("h")
 
     def test_save_records_hash_and_accepted_warnings(self):
         save_hook("h", _CLEAN_HOOK, "clean", source="user_provided")
-        entry = json.loads((self.dir / "manifest.json").read_text())["h"]
+        entry = json.loads((self.dir / "manifest.json").read_text(encoding="utf-8"))["h"]
         assert "sha256" in entry
         assert entry["accepted_warnings"] == []
 
@@ -302,7 +302,7 @@ class TestHashPinnedLoad:
                 "sha256": hashlib.sha256(_CLEAN_HOOK.encode()).hexdigest(),
                 "accepted_warnings": [],
             }
-        }))
+        }), encoding="utf-8")
 
         with pytest.raises(RuntimeError, match="legacy newline-normalized.*re-save"):
             load_hook_class("h")

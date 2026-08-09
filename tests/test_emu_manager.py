@@ -45,7 +45,7 @@ def test_live_answer_preferred_and_cached(tmp_cache, tmp_path):
     result = emu_manager.find_mm_app_dir(ctrl)
 
     assert result == mm
-    cached = json.loads(emu_manager._EMU_CACHE.read_text())
+    cached = json.loads(emu_manager._EMU_CACHE.read_text(encoding="utf-8"))
     assert cached["mm_app_dir"] == str(mm)
 
 
@@ -73,7 +73,7 @@ def test_disconnected_ctrl_falls_through_to_cache(tmp_cache, tmp_path):
 def test_falls_through_to_path_guessing(tmp_cache, tmp_path, monkeypatch):
     """With no live answer and no cache, path guessing (with EMU) wins."""
     mm = _make_mm_dir(tmp_path)
-    (mm / "plugins" / "EMU_1.0.jar").write_text("")  # make _has_emu() pass
+    (mm / "plugins" / "EMU_1.0.jar").write_text("", encoding="utf-8")  # make _has_emu() pass
     monkeypatch.setattr(emu_manager, "_candidate_mm_dirs", lambda: [mm])
 
     result = emu_manager.find_mm_app_dir(None)
@@ -95,7 +95,7 @@ def test_bogus_live_answer_rejected(tmp_cache, tmp_path):
 
     assert result == good
     # The bogus answer must not have overwritten the cache.
-    cached = json.loads(emu_manager._EMU_CACHE.read_text())
+    cached = json.loads(emu_manager._EMU_CACHE.read_text(encoding="utf-8"))
     assert cached["mm_app_dir"] == str(good)
 
 
@@ -109,7 +109,7 @@ def test_live_answer_wins_over_stale_cache(tmp_cache, tmp_path):
     result = emu_manager.find_mm_app_dir(ctrl)
 
     assert result == current
-    cached = json.loads(emu_manager._EMU_CACHE.read_text())
+    cached = json.loads(emu_manager._EMU_CACHE.read_text(encoding="utf-8"))
     assert cached["mm_app_dir"] == str(current)
 
 
@@ -289,7 +289,7 @@ def test_read_emu_config_passes_device_labels(tmp_path):
             },
             "settings": {},
         }],
-    }))
+    }), encoding="utf-8")
     cfg = emu_manager.read_emu_config(mm, ["Luxx638"])
     entry = cfg["properties"]["Laser 3 enable"]
     assert entry["device"] == "Luxx638"
@@ -325,7 +325,7 @@ M5_DEVICES = [
 def m5_config(tmp_path):
     mm = tmp_path / "MM"
     (mm / "EMU").mkdir(parents=True)
-    (mm / "EMU" / "config.uicfg").write_text(M5_CONFIG.read_text())
+    (mm / "EMU" / "config.uicfg").write_text(M5_CONFIG.read_text(encoding="utf-8"), encoding="utf-8")
     return emu_manager.read_emu_config(mm, M5_DEVICES)
 
 
@@ -341,7 +341,7 @@ def m5_props_no_devices(tmp_path):
     """The real config parsed with no device list, as tools.py falls back to."""
     mm = tmp_path / "MM"
     (mm / "EMU").mkdir(parents=True)
-    (mm / "EMU" / "config.uicfg").write_text(M5_CONFIG.read_text())
+    (mm / "EMU" / "config.uicfg").write_text(M5_CONFIG.read_text(encoding="utf-8"), encoding="utf-8")
     config = emu_manager.read_emu_config(mm, [])
     return config["properties"], config["parameters"]
 
@@ -405,7 +405,7 @@ def test_config_without_parameters_has_no_invented_names(tmp_path):
             "properties": {"Laser0 on/off": "Laser-OnOff"},
             "settings": {},
         }],
-    }))
+    }), encoding="utf-8")
     config = emu_manager.read_emu_config(mm, ["Laser"])
     emu_map = emu_manager.build_emu_map(
         config["properties"], config["parameters"]
@@ -417,7 +417,7 @@ def test_config_without_parameters_has_no_invented_names(tmp_path):
 def test_find_jars_searches_emu_case_insensitively(tmp_path):
     emu = tmp_path / "EMU"
     emu.mkdir()
-    (emu / "htsmlm-2.1.0.jar").write_text("")
+    (emu / "htsmlm-2.1.0.jar").write_text("", encoding="utf-8")
     assert emu_manager._find_jars(tmp_path, "htSMLM") == ["htsmlm-2.1.0.jar"]
 
 

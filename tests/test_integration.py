@@ -817,7 +817,7 @@ def test_autofocus_hook(headless_mm, unconstrained_guard, tmp_path):
         log_path=log_path,
     )
     assert "complete" in result["status"]
-    log = json.loads(Path(log_path).read_text())
+    log = json.loads(Path(log_path).read_text(encoding="utf-8"))
     assert len(log) > 0
     # Each log entry should have best_z_um
     for entry in log:
@@ -840,7 +840,7 @@ def test_focus_feedback_hook(headless_mm, unconstrained_guard, tmp_path):
     assert "complete" in result["status"]
     # Log file is written only if focus correction triggered; absence is also valid
     if Path(log_path).exists():
-        log = json.loads(Path(log_path).read_text())
+        log = json.loads(Path(log_path).read_text(encoding="utf-8"))
         for entry in log:
             assert "focus_correction" in entry
 
@@ -861,7 +861,7 @@ def test_focus_feedback_hook_on_timelapse(headless_mm, unconstrained_guard, tmp_
     assert "complete" in result["status"]
     # Log file is written only if focus correction triggered; absence is also valid
     if Path(log_path).exists():
-        log = json.loads(Path(log_path).read_text())
+        log = json.loads(Path(log_path).read_text(encoding="utf-8"))
         for entry in log:
             assert "focus_correction" in entry
 
@@ -909,7 +909,7 @@ def test_position_filter_hook_passes_nonzero_images(headless_mm, unconstrained_g
     assert "complete" in result["status"]
     # With threshold=0, no positions should be rejected; log should be empty or absent
     if Path(log_path).exists():
-        log = json.loads(Path(log_path).read_text())
+        log = json.loads(Path(log_path).read_text(encoding="utf-8"))
         assert len(log) == 0  # no rejections
 
 
@@ -927,7 +927,7 @@ def test_position_filter_hook_rejects_bright_threshold(headless_mm, unconstraine
         log_path=log_path,
     )
     assert "complete" in result["status"]
-    log = json.loads(Path(log_path).read_text())
+    log = json.loads(Path(log_path).read_text(encoding="utf-8"))
     assert len(log) > 0
     assert all(entry["action"] == "rejected" for entry in log)
 
@@ -993,7 +993,7 @@ def test_hooked_grid_log_carries_real_stamped_xy(headless_mm, unconstrained_guar
     assert all(t["x_um"] is not None for t in result["tiles"])
 
     # F2: the hook log, stamped from REAL metadata, carries position + stage XY.
-    log = json.loads(Path(log_path).read_text())
+    log = json.loads(Path(log_path).read_text(encoding="utf-8"))
     assert len(log) == 2, f"expected one entry per tile, got: {log}"
     labels = {e["position"] for e in log}
     assert labels == {"xygrid_r0_c0", "xygrid_r0_c1"}, f"positions not stamped: {log}"
@@ -1118,7 +1118,7 @@ def test_a_saved_hook_that_keeps_no_log_of_its_own_still_runs(
         hook_strategy="quiet_legacy", hook_params={}, log_path=log_path,
     )
     assert "complete" in result["status"]
-    log = json.loads(Path(log_path).read_text())
+    log = json.loads(Path(log_path).read_text(encoding="utf-8"))
     assert log and all(e["event"] == "legacy_hook_frame" for e in log)
     assert all(e["outcome"] == "retained" for e in log)
 
@@ -1220,7 +1220,7 @@ def test_autofocus_mm_plugin_hook(headless_mm, tmp_path):
             log_path=log_path,
         )
         assert "complete" in result["status"]
-        log = json.loads(Path(log_path).read_text())
+        log = json.loads(Path(log_path).read_text(encoding="utf-8"))
         assert len(log) > 0
         # Each entry is either a successful focus (best_z_um) or a logged
         # skip/abort (autofocus key) — the plugin may decline to focus on demo.
@@ -1373,7 +1373,7 @@ def test_find_mm_app_dir_prefers_live_answer_over_cache(headless_mm, tmp_path, m
     assert result is not None
     assert emu_manager._looks_like_mm_dir(result)
     # Live answer written through to the cache.
-    cached = json.loads(emu_manager._EMU_CACHE.read_text())
+    cached = json.loads(emu_manager._EMU_CACHE.read_text(encoding="utf-8"))
     assert cached["mm_app_dir"] == str(result)
 
 

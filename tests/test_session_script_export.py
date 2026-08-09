@@ -48,7 +48,17 @@ def completed_call(name, params, result):
 def export(tmp_path, records):
     guard = Guard(tmp_path)
     result = tools.export_session_script(None, guard, "routine.py", records)
-    return guard, result, (tmp_path / "routine.py").read_text()
+    return guard, result, (tmp_path / "routine.py").read_text(encoding="utf-8")
+
+
+def test_exported_non_ascii_source_requires_utf8_when_read_back(tmp_path):
+    _, _, source = export(tmp_path, [call("snap_and_analyze", {})])
+    expected = inspect.getsource(image_analysis.tenengrad)
+    wrong = (tmp_path / "routine.py").read_text(encoding="cp1252")
+
+    assert "—" in expected
+    assert expected not in wrong
+    assert expected in source
 
 
 def test_recorded_stage_and_acquisition_emit_standalone_script(tmp_path):
@@ -72,7 +82,7 @@ def test_recorded_stage_and_acquisition_emit_standalone_script(tmp_path):
 
 def test_committed_example_is_an_actual_export():
     fixture = Path(__file__).parent / "fixtures" / "exported_stage_acquisition.py"
-    source = fixture.read_text()
+    source = fixture.read_text(encoding="utf-8")
     assert "core.set_xy_position(12.5, -4.0)" in source
     assert "acq.acquire(events)" in source
     assert "import microclaw" not in source
@@ -81,7 +91,7 @@ def test_committed_example_is_an_actual_export():
 def test_real_smiley_session_fixture_shows_whole_routine_and_holes():
     source = (
         Path(__file__).parent / "fixtures" / "exported_smiley_session.py"
-    ).read_text()
+    ).read_text(encoding="utf-8")
     assert source.count("# RECORDED TOOL:") == 39
     assert "# RECORDED TOOL: move_stage_xy" in source
     assert "# RECORDED TOOL: run_multiposition_acquisition\nevents =" in source
@@ -148,7 +158,7 @@ def test_records_are_injected_and_absent_from_published_schema(tmp_path):
         Guard(tmp_path), records=records,
     ))
     assert result["emitted_calls"] == 1
-    assert "core.set_xy_position(3, 4)" in (tmp_path / "injected.py").read_text()
+    assert "core.set_xy_position(3, 4)" in (tmp_path / "injected.py").read_text(encoding="utf-8")
 
 
 def test_unemittable_tool_refuses_and_script_cannot_run_past_it(tmp_path):

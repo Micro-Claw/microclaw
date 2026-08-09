@@ -39,7 +39,7 @@ def _core(x=0.0, y=0.0):
 def _parse(path):
     """Give pre-schema parser tests the now-mandatory reviewed metadata."""
     path = Path(path)
-    document = yaml.safe_load(path.read_text())
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
     if document is None:
         document = {}
     if isinstance(document, dict):
@@ -86,7 +86,7 @@ def _parse(path):
                 item["max_um"] = {"unbounded": True, "reason": "legacy test fixture"}
             elif "max_um" in item and "min_um" not in item:
                 item["min_um"] = {"unbounded": True, "reason": "legacy test fixture"}
-        path.write_text(yaml.safe_dump(document))
+        path.write_text(yaml.safe_dump(document), encoding="utf-8")
     return ParsedSafetyConfig.from_yaml(str(path)).constraints
 
 
@@ -159,10 +159,10 @@ class TestFromYaml:
 
     def test_schema_version_is_mandatory_and_old_versions_are_clear(self, tmp_path):
         cfg = tmp_path / "safety.yaml"
-        cfg.write_text("reviewed: true\n")
+        cfg.write_text("reviewed: true\n", encoding="utf-8")
         with pytest.raises(SafetyConfigError, match="add `schema_version: 2`"):
             ParsedSafetyConfig.from_yaml(str(cfg))
-        cfg.write_text("schema_version: 1\nreviewed: true\n")
+        cfg.write_text("schema_version: 1\nreviewed: true\n", encoding="utf-8")
         with pytest.raises(SafetyConfigError, match="schema 1 configs must add property_authorization"):
             ParsedSafetyConfig.from_yaml(str(cfg))
 
@@ -177,7 +177,7 @@ class TestFromYaml:
             "    - {device: Camera, property: Gain, kind: bounded-numeric, units: dB, minimum: 0, maximum: 10}\n"
             "  denied: []\n"
             + self._ACQUISITION
-        )
+        , encoding="utf-8")
         parsed = ParsedSafetyConfig.from_yaml(str(cfg))
         assert parsed.property_authorization.mode == "guaranteed"
         assert parsed.property_authorization.allowed_numeric[
@@ -188,7 +188,7 @@ class TestFromYaml:
             "schema_version: 2\nreviewed: true\n"
             "property_authorization: {mode: guaranteed, denied: []}\n"
             + self._ACQUISITION
-        )
+        , encoding="utf-8")
         with pytest.raises(SafetyConfigError, match="property_authorization.allowed_categorical"):
             ParsedSafetyConfig.from_yaml(str(cfg))
 
@@ -218,7 +218,7 @@ class TestFromYaml:
 
     def test_analysis_section_without_min_snr_is_accepted(self, tmp_path):
         cfg = tmp_path / "safety.yaml"
-        cfg.write_text("schema_version: 2\nreviewed: true\n" + self._PROFILE + "analysis:\n")
+        cfg.write_text("schema_version: 2\nreviewed: true\n" + self._PROFILE + "analysis:\n", encoding="utf-8")
         parsed = ParsedSafetyConfig.from_yaml(str(cfg))
         assert parsed.constraints.analysis.min_snr is None
 
@@ -232,7 +232,7 @@ class TestFromYaml:
             "  denied: []\n"
             "stage: {x_min: -10, x_max: 10, z_min: 0, z_max: 200}\n"
             + self._ACQUISITION
-        )
+        , encoding="utf-8")
         parsed = ParsedSafetyConfig.from_yaml(str(cfg))
         x = parsed.ranges[ActuatorId("core_xy", None, "stage-position", "x")]
         z = parsed.ranges[ActuatorId("core_focus", None, "stage-position", "z")]
@@ -263,7 +263,7 @@ class TestFromYaml:
             "    min_um: {unbounded: true, reason: controller enforces lower edge}\n"
             "    max_um: {unbounded: true, reason: controller enforces upper edge}\n"
             + self._ACQUISITION
-        )
+        , encoding="utf-8")
         parsed = ParsedSafetyConfig.from_yaml(str(cfg))
         assert {edge.unbounded_reason for policy in parsed.ranges.values()
                 for edge in (policy.minimum, policy.maximum) if edge.bound is None} == {
@@ -280,7 +280,7 @@ class TestFromYaml:
             "schema_version: 2\nreviewed: true\n"
             "forbidden_properties: [{device: Core, property: Initialize}]\n"
             "property_authorization: {mode: guaranteed, denied: []}\n"
-        )
+        , encoding="utf-8")
         with pytest.raises(SafetyConfigError, match="denylist-only configs must migrate"):
             ParsedSafetyConfig.from_yaml(str(cfg))
 
@@ -294,7 +294,7 @@ class TestFromYaml:
             "  denied:\n"
             "    - {device: Core, property: Initialize}\n"
             + self._ACQUISITION
-        )
+        , encoding="utf-8")
         parsed = ParsedSafetyConfig.from_yaml(str(cfg))
         assert parsed.property_authorization.mode == "degraded_trusted_plugins"
         assert parsed.constraints.allowed_properties is None
@@ -305,13 +305,13 @@ class TestFromYaml:
             "schema_version: 2\nreviewed: true\n"
             "property_authorization: {allowed_categorical: [], denied: []}\n"
             + self._ACQUISITION
-        )
+        , encoding="utf-8")
         assert ParsedSafetyConfig.from_yaml(str(cfg)).property_authorization.mode == "guaranteed"
         cfg.write_text(
             "schema_version: 2\nreviewed: true\n"
             "property_authorization: {mode: trusted, allowed_categorical: [], denied: []}\n"
             + self._ACQUISITION
-        )
+        , encoding="utf-8")
         with pytest.raises(SafetyConfigError, match="degraded_trusted_plugins"):
             ParsedSafetyConfig.from_yaml(str(cfg))
 
@@ -325,7 +325,7 @@ class TestFromYaml:
             "    - {device: DCam, property: Binning}\n"
             "    - {device: DCam, property: Binning}\n"
             "  denied: [{device: DCam, property: Binning}]\n"
-        )
+        , encoding="utf-8")
         with pytest.raises(SafetyConfigError) as exc:
             ParsedSafetyConfig.from_yaml(str(cfg))
         message = str(exc.value)
@@ -338,7 +338,7 @@ class TestFromYaml:
             "schema_version: 2\nreviewed: true\n"
             "stage: {x_min: 0, typo: 2}\n"
             "camera: {max_exposure_ms: -1}\n"
-        )
+        , encoding="utf-8")
         with pytest.raises(SafetyConfigError) as exc:
             ParsedSafetyConfig.from_yaml(str(cfg))
         message = str(exc.value)
@@ -354,7 +354,7 @@ class TestFromYaml:
             "forbidden_properties:\n"
             "  - {device: Core, property: Initialize}\n"
             "  - {device: Core, property: Initialize}\n"
-        )
+        , encoding="utf-8")
         with pytest.raises(SafetyConfigError, match="duplicate device/property"):
             ParsedSafetyConfig.from_yaml(str(cfg))
 
@@ -372,7 +372,7 @@ class TestFromYaml:
         cfg.write_text(
             "schema_version: 2\nreviewed: true\n"
             f"stage:\n  x_min: 0\n  x_max: {edge}\n"
-        )
+        , encoding="utf-8")
         with pytest.raises(SafetyConfigError):
             ParsedSafetyConfig.from_yaml(str(cfg))
 
@@ -381,7 +381,7 @@ class TestFromYaml:
         cfg.write_text(
             "stage:\n  z_min: 5.0\n  z_max: 100.0\n"
             "camera:\n  max_exposure_ms: 500\n"
-        )
+        , encoding="utf-8")
         constraints = _parse(str(cfg))
         guard = SafetyGuard(constraints)
         with pytest.raises(SafetyViolation):
@@ -391,7 +391,7 @@ class TestFromYaml:
 
     def test_empty_yaml_gives_no_constraints(self, tmp_path):
         cfg = tmp_path / "empty.yaml"
-        cfg.write_text("")
+        cfg.write_text("", encoding="utf-8")
         constraints = _parse(str(cfg))
         guard = SafetyGuard(constraints)
         guard.check_z(999999.0)  # no exception
@@ -402,7 +402,7 @@ class TestFromYaml:
             "forbidden_properties:\n"
             "  - device: Core\n"
             "    property: Initialize\n"
-        )
+        , encoding="utf-8")
         constraints = _parse(str(cfg))
         guard = SafetyGuard(constraints)
         with pytest.raises(SafetyViolation, match="forbidden"):
@@ -410,7 +410,7 @@ class TestFromYaml:
 
     def test_channels_loaded(self, tmp_path):
         cfg = tmp_path / "safety.yaml"
-        cfg.write_text("channels:\n  allowed: [DAPI, FITC]\n")
+        cfg.write_text("channels:\n  allowed: [DAPI, FITC]\n", encoding="utf-8")
         constraints = _parse(str(cfg))
         guard = SafetyGuard(constraints)
         guard.check_channel("DAPI")  # no exception
@@ -424,14 +424,14 @@ class TestFromYaml:
             "  blocked:\n"
             "    - org.example.KnownBadPlugin\n"
             "  allow_hardware_motion: true\n"
-        )
+        , encoding="utf-8")
         constraints = _parse(str(cfg))
         assert constraints.plugins.blocked == ["org.example.KnownBadPlugin"]
         assert constraints.plugins.allow_hardware_motion is True
 
     def test_plugins_default_when_absent(self, tmp_path):
         cfg = tmp_path / "safety.yaml"
-        cfg.write_text("stage:\n  z_min: 0.0\n")
+        cfg.write_text("stage:\n  z_min: 0.0\n", encoding="utf-8")
         constraints = _parse(str(cfg))
         assert constraints.plugins.blocked == []
         assert constraints.plugins.allow_hardware_motion is False
@@ -439,7 +439,7 @@ class TestFromYaml:
     @pytest.mark.parametrize("document", ["[]\n", "a scalar\n"])
     def test_rejects_non_mapping_root_with_filename(self, tmp_path, document):
         cfg = tmp_path / "safety.yaml"
-        cfg.write_text(document)
+        cfg.write_text(document, encoding="utf-8")
         with pytest.raises(SafetyConfigError) as exc:
             _parse(str(cfg))
         assert str(cfg) in str(exc.value)
@@ -447,7 +447,7 @@ class TestFromYaml:
 
     def test_unknown_keys_are_file_anchored_and_aggregated(self, tmp_path):
         cfg = tmp_path / "safety.yaml"
-        cfg.write_text("stagee: {}\nstage: {x_mim: 0}\ncamera: {exposure: 5}\n")
+        cfg.write_text("stagee: {}\nstage: {x_mim: 0}\ncamera: {exposure: 5}\n", encoding="utf-8")
         with pytest.raises(SafetyConfigError) as exc:
             _parse(str(cfg))
         message = str(exc.value)
@@ -486,7 +486,7 @@ class TestFromYaml:
             section, key = field.split(".")
             document[section][key] = value
         cfg = tmp_path / "safety.yaml"
-        cfg.write_text(yaml.safe_dump(document))
+        cfg.write_text(yaml.safe_dump(document), encoding="utf-8")
         with pytest.raises(SafetyConfigError, match="finite number") as exc:
             _parse(str(cfg))
         assert field in str(exc.value)
@@ -502,14 +502,14 @@ class TestFromYaml:
     )
     def test_rejects_unordered_bounds(self, tmp_path, document):
         cfg = tmp_path / "safety.yaml"
-        cfg.write_text(yaml.safe_dump(document))
+        cfg.write_text(yaml.safe_dump(document), encoding="utf-8")
         with pytest.raises(SafetyConfigError, match="minimum must be less"):
             _parse(str(cfg))
 
     @pytest.mark.parametrize("value", [0, -0.1])
     def test_rejects_non_positive_max_exposure(self, tmp_path, value):
         cfg = tmp_path / "safety.yaml"
-        cfg.write_text(yaml.safe_dump({"camera": {"max_exposure_ms": value}}))
+        cfg.write_text(yaml.safe_dump({"camera": {"max_exposure_ms": value}}), encoding="utf-8")
         with pytest.raises(SafetyConfigError, match="greater than zero"):
             _parse(str(cfg))
 
@@ -680,7 +680,7 @@ class TestAllowlistMode:
             "  allowed_categorical:\n"
             "    - {device: DCam, property: Binning}\n"
             "  denied: []\n"
-        )
+        , encoding="utf-8")
         constraints = _parse(str(cfg))
         assert constraints.allowed_properties == [ForbiddenProperty("DCam", "Binning")]
         parsed = ParsedSafetyConfig.from_yaml(str(cfg))
@@ -796,7 +796,7 @@ class TestWorkspaceSandbox:
 
     def test_from_yaml_loads_workspace_dir(self, tmp_path):
         cfg = tmp_path / "safety.yaml"
-        cfg.write_text(f"workspace_dir: {tmp_path}\n")
+        cfg.write_text(f"workspace_dir: {tmp_path}\n", encoding="utf-8")
         constraints = _parse(str(cfg))
         assert constraints.workspace_dir == str(tmp_path)
 
@@ -1111,7 +1111,7 @@ class TestIlluminationGate:
             "    - {device: Luxx638, property: Laser Operation Select}\n"
             "  power_properties:\n"
             "    - {device: Luxx638, property: 'Laser Power Set-point Select [%]'}\n"
-        )
+        , encoding="utf-8")
         c = _parse(str(cfg))
         assert c.illumination.max_power_percent == 30.0
         assert c.illumination.shutters[0].device == "Luxx638"
@@ -1122,7 +1122,7 @@ class TestIlluminationGate:
 
     def test_defaults_when_absent(self, tmp_path):
         cfg = tmp_path / "safety.yaml"
-        cfg.write_text("stage:\n  z_min: 0.0\n")
+        cfg.write_text("stage:\n  z_min: 0.0\n", encoding="utf-8")
         c = _parse(str(cfg))
         assert c.illumination.shutters == []
         assert c.illumination.require_confirm_on_enable is True
@@ -1159,7 +1159,7 @@ class TestNamedStageLimits:
         cfg.write_text(
             "named_stages:\n"
             "  - {device: PIZStage, min_um: 0.0, max_um: 200.0}\n"
-        )
+        , encoding="utf-8")
         c = _parse(str(cfg))
         assert c.named_stages == [NamedStageLimits("PIZStage", 0.0, 200.0)]
 

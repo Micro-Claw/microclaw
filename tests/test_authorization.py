@@ -1441,7 +1441,7 @@ def m5_emu_controller(tmp_path, parameters=None):
     mm_dir = tmp_path / "Micro-Manager-2.0"
     (mm_dir / "EMU").mkdir(parents=True)
     (mm_dir / "plugins").mkdir()
-    raw = json.loads(M5_CONFIG.read_text())
+    raw = json.loads(M5_CONFIG.read_text(encoding="utf-8"))
     if parameters is not None:
         raw["pluginConfigurations"][0]["parameters"] = parameters
     (mm_dir / "EMU" / "config.uicfg").write_text(json.dumps(raw), encoding="utf-8")
@@ -1525,6 +1525,6 @@ def test_slot_the_rig_refused_to_name_stays_visible_with_its_reason(tmp_path):
 
 def test_unreadable_emu_config_refuses_the_session_rather_than_offering_none(tmp_path):
     ctrl = m5_emu_controller(tmp_path)
-    (tmp_path / "Micro-Manager-2.0" / "EMU" / "config.uicfg").write_text("not json")
+    (tmp_path / "Micro-Manager-2.0" / "EMU" / "config.uicfg").write_text("not json", encoding="utf-8")
     with pytest.raises(RigAuthorizationError, match="Could not resolve EMU semantic"):
         validate_live_rig(ctrl, parsed(channels=["640"], illumination=m5_illumination()))

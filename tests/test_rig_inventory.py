@@ -560,7 +560,7 @@ def test_inventory_core_calls_are_pinned_to_javap_cmmcore_fixture():
         for item in pair.elts[1:]
         if isinstance(item, ast.Constant) and isinstance(item.value, str) and item.value.startswith("get_")
     }
-    java_methods = set(Path("tests/fixtures/mmcorej-cmmcore-2.0.3-methods.txt").read_text().splitlines())
+    java_methods = set(Path("tests/fixtures/mmcorej-cmmcore-2.0.3-methods.txt").read_text(encoding="utf-8").splitlines())
     normalize = lambda name: name.replace("_", "").lower()
     missing = {name for name in calls if normalize(name) not in {normalize(java) for java in java_methods}}
     assert not missing

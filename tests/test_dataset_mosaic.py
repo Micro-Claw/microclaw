@@ -178,7 +178,7 @@ def test_plane_isolation_manifest_and_deterministic_replay(monkeypatch, tmp_path
     ref = artifact(tmp_path / "cal.json")
     first = run_tool(monkeypatch, tmp_path, {"time": 0}, ref)
     assert 999 not in __import__("tifffile").imread(tmp_path / "out.tif")
-    manifest_document = json.loads(Path(first["manifest_path"]).read_text())
+    manifest_document = json.loads(Path(first["manifest_path"]).read_text(encoding="utf-8"))
     manifest = manifest_document["manifest_payload"]
     canonical_payload = json.dumps(
         manifest, sort_keys=True, separators=(",", ":"), allow_nan=False,
@@ -232,7 +232,7 @@ def test_roi_difference_is_recorded_not_refused(monkeypatch, tmp_path):
     assert cropped["calibration_roi_difference"]["dataset"] == [36, 50, 453, 227]
     assert cropped["calibration_roi_difference"]["calibration"] == [0, 0, 512, 512]
     assert (tmp_path / "out.tif").exists()
-    manifest = json.loads(Path(cropped["manifest_path"]).read_text())["manifest_payload"]
+    manifest = json.loads(Path(cropped["manifest_path"]).read_text(encoding="utf-8"))["manifest_payload"]
     assert manifest["calibration_roi_difference"]["calibration"] == [0, 0, 512, 512]
 
     # A matching ROI records nothing, so the field cannot be read as a warning
