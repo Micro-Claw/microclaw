@@ -15,9 +15,16 @@ The gate deliberately accepts descendant commits, so a later runbook amendment
 cannot invalidate the pin it contains.
 
 Off-rig at `a7a415d` on macOS, re-measured by the coordinator rather than taken
-from the runner's report: **1674 passed, 99 skipped, 3 expected warnings, 1772
+from the runner's report: **1674 passed, 99 skipped, 3 expected warnings, 1773
 collected, 0 failures.** The branch started from `04c0654` at 1667 / 99 / 1766,
 so the seven added IDs are this block's own tests and nothing was lost.
+
+> **Corrected after the gate ran.** This line first said **1772** collected,
+> which contradicted its own `1674 + 99`; the coordinator carried block 43b's
+> total across when writing it. M5 measured 1657 + 116 = **1773**, which matches
+> the true number, so the gate was unaffected — but an operator comparing
+> strictly against the stated expectation would have been right to stop. Derive
+> the total from passed + skipped rather than trusting a transcribed figure.
 
 ```powershell
 cd C:\Users\ries\microclaw
