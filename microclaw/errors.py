@@ -109,6 +109,22 @@ def hint_for_error(exc: Exception) -> str:
         )
     if isinstance(exc, PermissionError) or "Permission denied" in text:
         return "A path is not writable by this user." + where
+    # Both are OSError siblings rather than FileNotFoundError subclasses, so
+    # they fell past the path branch above and collected the hardware hint on a
+    # tool that touches no hardware (block 43e's M5 gate, both on the first two
+    # calls of the session).
+    if isinstance(exc, NotADirectoryError) or "directory name is invalid" in text.lower():
+        return (
+            "A path that must be a directory is a file. An NDTiff dataset IS a "
+            "directory — pass the dataset directory, not a .tif or .tiff inside "
+            "or beside it." + where
+        )
+    if isinstance(exc, FileExistsError):
+        return (
+            "An output directory already exists. Offline analysis refuses to "
+            "write into one, so a previous analysis is never silently "
+            "overwritten or mixed with a new one. Choose a new output_dir." + where
+        )
     if isinstance(exc, (TypeError, ValueError)):
         return (
             "This is an argument error, not a hardware fault: a tool was called "
