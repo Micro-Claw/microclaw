@@ -358,9 +358,10 @@ section, including the one directly below it**, which was written earlier the
 same day and is kept only for the round history. Position is not recency here:
 this one was inserted above the note it replaced.
 
-Written at `53e3f12`; verify rather than compare, because coordinator commits
-after it are expected — `1cb4b3a` is the last one this session, and it moved six
-durable rules into §"Standing constraints that outlive any block". What should hold:
+Written at `53e3f12`, with further coordinator commits after it expected and
+made — so **verify against the repository, never against a hash quoted here.**
+(An earlier draft of this paragraph named "the last commit this session" and was
+false within the hour.) What should hold:
 `git log --oneline origin/main..main` empty, working tree clean, and the only
 branches on `origin` besides `main` are `design34/focus-system-authorization`
 (6a), `florian/setup-claude-workflow` and `port-to-jpype-acqj` — **no Track F
@@ -404,9 +405,13 @@ branch is open.** One worktree besides this one: `../microclaw-6a`, idle at
   reviewing hard through a green suite, and treating a ledger row as open until
   its design-reconciliation cell is filled.
 
-### State at the 2026-08-09 close of the 43b/43d session — superseded, kept for the round history
+### State at the 2026-08-09 close of the 43b/43d session — SUPERSEDED, kept for the round history
 
-Supersedes both notes above. Written at `8ec9da6`; verify rather than compare
+> **Retired. Do not act on this note** — it was written mid-session, before 43d
+> was gated and merged, and it describes 43d as an open branch awaiting a rig.
+> The live note is the one above it.
+
+Superseded both notes above it when written. Written at `8ec9da6`; verify rather than compare
 against that hash, because a coordinator commit after it is expected. What should
 hold: `git log --oneline origin/main..main` empty, working tree clean, and the
 branches on `origin` besides `main` are `design34/focus-system-authorization`
@@ -5428,9 +5433,8 @@ property write. The confirmations log shows the mistaken call produced a fourth
 thing that stood between a tool-choice error and a silent dose.** That is a
 direct input to block 43c and is written into its entry.
 
-**Implemented and pushed 2026-08-09, awaiting M5.** One correction to this
-entry's own scope, found in review round 1 and worth recording because the
-checklist and design/43 F4 both had it wrong: **`set_channel` has two routes,
+**One correction to this entry's own scope**, found in review round 1 and worth
+recording because the checklist and design/43 F4 both had it wrong: **`set_channel` has two routes,
 not one.** With an authorization map it runs `execute_channel_plan`; without one
 it delegates to `core.set_config` + `wait_for_config` (`tools.py:1264`, and
 `_has_channel_authorization_map`'s docstring at `:1185`). F4's table lists only
