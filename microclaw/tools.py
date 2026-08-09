@@ -31,6 +31,7 @@ from microclaw.controller import (
     MicroscopeController,
     PositionListConflict,
     PositionProjection,
+    dataset_stack_files,
 )
 from microclaw.errors import hint_for_error, humanize_java_error
 from microclaw.image_analysis import (
@@ -4610,23 +4611,66 @@ def _measured_shape(resolved: Path) -> dict:
     alone is nearly self-confirming — the dimensions are the load-bearing part
     (design/42). Header reads only for a TIFF; for a dataset, the index plus one
     plane. Zero exposure either way.
+
+    A directory is read as an NDTiff dataset first, which is the case that
+    carries plane counts across split stack files. When it is not one, this falls
+    back to the TIFFs that `open_in_imagej` would actually open — otherwise a
+    directory holding a stray TIFF beside its datasets reports an error here
+    while a window is on screen, and `dimensions_match` disappears from a payload
+    that still says `opened: true` (round-3 gate, `D:\\stitch_test`).
     """
     try:
         if resolved.is_dir():
-            dataset = Dataset(str(resolved))
-            coordinates = dataset.get_image_coordinates_list()
-            if not coordinates:
-                return {"error": "The dataset index lists no images."}
-            plane = dataset.read_image(**coordinates[0])
-            return {"width": int(plane.shape[-1]), "height": int(plane.shape[-2]),
-                    "n_planes": len(coordinates)}
-        with tifffile.TiffFile(resolved) as handle:
-            series = handle.series[0]
-            shape = tuple(int(x) for x in series.shape)
-            return {"width": shape[-1], "height": shape[-2],
-                    "n_planes": int(np.prod(shape[:-2])) if len(shape) > 2 else 1}
+            try:
+                dataset = Dataset(str(resolved))
+                coordinates = dataset.get_image_coordinates_list()
+                if not coordinates:
+                    return {"error": "The dataset index lists no images."}
+                plane = dataset.read_image(**coordinates[0])
+                return {"width": int(plane.shape[-1]),
+                        "height": int(plane.shape[-2]),
+                        "n_planes": len(coordinates)}
+            except Exception as dataset_exc:
+                return _measured_stack_files(resolved, dataset_exc)
+        return _measured_tiff(resolved)
     except Exception as exc:
         return {"error": f"{type(exc).__name__}: {exc}"}
+
+
+def _measured_tiff(path: Path) -> dict:
+    with tifffile.TiffFile(path) as handle:
+        series = handle.series[0]
+        shape = tuple(int(x) for x in series.shape)
+        return {"width": shape[-1], "height": shape[-2],
+                "n_planes": int(np.prod(shape[:-2])) if len(shape) > 2 else 1}
+
+
+def _measured_stack_files(directory: Path, dataset_exc: Exception) -> dict:
+    """Measure the TIFFs a non-dataset directory would open, one entry each.
+
+    `files` is what makes this checkable when a directory holds more than one:
+    a single width/height could only be compared against one window, and the
+    others would ride along unchecked.
+    """
+    measured = []
+    for stack in dataset_stack_files(directory):
+        try:
+            measured.append({"file": stack.name, **_measured_tiff(stack)})
+        except Exception as exc:
+            measured.append({"file": stack.name,
+                             "error": f"{type(exc).__name__}: {exc}"})
+    if not measured:
+        return {"error": f"{type(dataset_exc).__name__}: {dataset_exc}"}
+    readable = [m for m in measured if "width" in m]
+    if not readable:
+        return {"not_a_dataset": str(dataset_exc), "files": measured}
+    return {
+        "width": readable[0]["width"],
+        "height": readable[0]["height"],
+        "n_planes": sum(m["n_planes"] for m in readable),
+        "not_a_dataset": str(dataset_exc),
+        "files": measured,
+    }
 
 
 def _select_plane(resolved: Path, axis_selection: dict | None) -> tuple[np.ndarray, dict]:
@@ -4710,9 +4754,13 @@ def open_artifact(
     payload["measured"] = measured
     windows = payload.get("windows") or []
     if payload.get("opened") and "width" in measured:
-        payload["dimensions_match"] = any(
-            window.get("width") == measured["width"]
-            and window.get("height") == measured["height"]
+        # With per-file measurements every window is checked against some file
+        # that was read; without them there is one shape to compare against.
+        # `any` over windows would let extra windows ride along unchecked.
+        shapes = [(m["width"], m["height"]) for m in measured.get("files", ())
+                  if "width" in m] or [(measured["width"], measured["height"])]
+        payload["dimensions_match"] = bool(windows) and all(
+            (window.get("width"), window.get("height")) in shapes
             for window in windows
         )
 

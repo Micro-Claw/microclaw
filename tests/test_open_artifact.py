@@ -207,6 +207,65 @@ def test_out_of_range_selection_refuses(opening_ctrl, default_guard, no_thumbnai
 
 # --- Directories ------------------------------------------------------------ #
 
+def test_a_directory_that_is_not_a_dataset_still_measures_what_it_opened(
+    default_guard, tmp_path, no_thumbnails
+):
+    """The round-3 gate case: `D:\\stitch_test`, a TIFF beside its datasets.
+
+    Measuring the directory as an NDTiff dataset fails there, and the payload
+    used to claim `opened: true` with no `dimensions_match` at all — a window
+    reported without the structural check that is the load-bearing part of it.
+    """
+    folder = tmp_path / "stitch_test"
+    (folder / "dataset_1").mkdir(parents=True)
+    tifffile.imwrite(folder / "mosaic.tiff",
+                     np.zeros((12, 16), dtype=np.uint16))
+
+    ctrl = MagicMock(spec=MicroscopeController)
+    ctrl.open_in_imagej.return_value = {
+        "opened": True, "via": "ij.IJ.open (dataset stack files)",
+        "windows": [{"id": 1, "title": "mosaic.tiff",
+                     "width": 16, "height": 12, "n_planes": 1}],
+        "n_stack_files": 1,
+    }
+    result = open_artifact(ctrl, default_guard, str(folder))
+
+    assert result["opened"] is True
+    assert result["dimensions_match"] is True, (
+        "a window was claimed, so it must have been checked against the file "
+        "that produced it"
+    )
+    assert result["measured"]["files"] == [
+        {"file": "mosaic.tiff", "width": 16, "height": 12, "n_planes": 1}
+    ]
+    assert "not_a_dataset" in result["measured"], (
+        "and the payload must still say this was not read as a dataset"
+    )
+
+
+def test_an_unchecked_extra_window_is_not_reported_as_matching(
+    default_guard, tmp_path, no_thumbnails
+):
+    """`any` would pass here: one window matches and the other is never checked."""
+    folder = tmp_path / "two"
+    folder.mkdir()
+    tifffile.imwrite(folder / "a.tif", np.zeros((12, 16), dtype=np.uint16))
+    tifffile.imwrite(folder / "b.tif", np.zeros((12, 16), dtype=np.uint16))
+
+    ctrl = MagicMock(spec=MicroscopeController)
+    ctrl.open_in_imagej.return_value = {
+        "opened": True, "via": "ij.IJ.open (dataset stack files)",
+        "windows": [{"id": 1, "title": "a.tif", "width": 16, "height": 12,
+                     "n_planes": 1},
+                    {"id": 2, "title": "b.tif", "width": 999, "height": 999,
+                     "n_planes": 1}],
+        "n_stack_files": 2,
+    }
+    result = open_artifact(ctrl, default_guard, str(folder))
+    assert result["dimensions_match"] is False
+
+
+
 def test_directory_via_reaches_the_tool_payload(
     default_guard, tmp_path, no_thumbnails
 ):

@@ -112,6 +112,22 @@ def _drain_java_iterable(iterable) -> list[str]:
     return out
 
 
+def dataset_stack_files(directory) -> list[Path]:
+    """The TIFF files a dataset directory would open, in plane order.
+
+    One definition, because the measurement has to describe the files that were
+    actually opened. When these two disagreed, `open_artifact` claimed
+    `opened: true` for a window whose dimensions it had never checked: the
+    directory was measured as an NDTiff dataset while a stray TIFF beside it was
+    what got opened (round-3 gate, `D:\\stitch_test`).
+
+    Sorted so a split dataset opens in its own plane order rather than whatever
+    order the filesystem happens to return.
+    """
+    return sorted(p for p in Path(directory).iterdir()
+                  if p.is_file() and p.suffix.lower() in (".tif", ".tiff"))
+
+
 _OPEN_BRIDGE_TIMEOUT_S = 30.0
 
 
@@ -403,13 +419,8 @@ class MicroscopeController:
     _DATASET_READER = "ij.IJ.open (dataset stack files)"
 
     def _open_dataset_files_in_imagej(self, path: str) -> dict:
-        """Open the TIFFs inside a saved dataset directory, newest layout first.
-
-        Sorted so a split dataset opens in its own plane order rather than
-        whatever order the filesystem happens to return.
-        """
-        stacks = sorted(p for p in Path(path).iterdir()
-                        if p.is_file() and p.suffix.lower() in (".tif", ".tiff"))
+        """Open the TIFFs inside a saved dataset directory."""
+        stacks = dataset_stack_files(path)
         if not stacks:
             return {"opened": False, "via": self._DATASET_READER,
                     "reason": (f"No TIFF files in {path}. If this is a folder of "
