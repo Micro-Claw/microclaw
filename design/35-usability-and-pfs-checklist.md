@@ -700,7 +700,7 @@ assistant's narration when judging whether a guard fired.
 | 43b | Nestor | none | `design43/refresh-gui` (deleted) | `04c0654` | `8162b04` + `74dc87f` (review round 1 returned); runbook `ef6a658` pinned `74dc87f` | **M5 2026-08-09 — G1, G2, G3 both limbs all PASS; G4 NOT EXERCISED by design** (`43b-m5`). Suite 1656 passed / 116 skipped / 0 failed / 1772 collected. G1 settled the pyjavaz shadow `javap` could not reach; EMU's plugin panel repainted too, which the gate did not ask for | `b220e33` | **done** `8ec9da6` — design/43 F4's write-path table annotated as one row short (`set_channel` has two routes); its "verify before implementing" caveat answered in both halves, `javap` for the Java method and M5 for the pyjavaz shadow; suggested-order item 2 struck through, three callsites estimated and five shipped |
 | 43c | Nestor | none | `design43/session-grants` | `eb577d8` | | **required** — the audit log must still record every event | | |
 | 43d | Nestor | none | `design43/report-shapes` (deleted) | `04c0654` | `8635d7c` + `9b98b0b` (two review rounds returned) + `a7a415d` (coordinator fixes) + `010701a` (runbook total corrected); runbook pin `a7a415d` | **M5 2026-08-09 — G1, G2, G3 all PASS; all three known-bad patterns read 0** (`43d-m5`). Suite 1657 passed / 116 skipped / 0 failed / 1773 collected, skips equal to 43b's M5 run. Gate folded into a real 640-trigger session rather than run as a script | `53395d2` | **done** `53e3f12` — design/43 F8's stub corrected (`hook_actions` is omitted, not zeroed, when no typed action was observed) with the surviving two-kind projection recorded as still owed; F11's two-value list corrected to three (`partially_explicit`); suggested-order item 4 struck through |
-| 43e | Nestor | none | `design43/builtin-offline-adapters` | `eb577d8` | `452dbc5` + `3d30c1f` (review round 1 returned) + `9bae1ba` (coordinator fix after the rig round); runbook pinned `9bae1ba` | **M5 round 1 2026-08-09: G1 FAIL, G4 second limb PASS, Step 1 PASS; round 2 pushed and awaiting the rig** | | |
+| 43e | Nestor | none | `design43/builtin-offline-adapters` | `eb577d8` | `452dbc5` + `3d30c1f` (review round 1 returned) + `9bae1ba` (coordinator fix after the rig round); runbook pinned `9bae1ba` | **M5 round 1 2026-08-09 (`43e-m5`): Step 0 PASS (0 failed, 1668 + 116 = 1784, skips equal to 43b/43d), G4 second limb PASS, Step 1 PASS; G1 FAIL, G2/G3 not exercised. Round 2 pushed, awaiting the rig** | | |
 | 43f | Nestor | 43a merged (its prompt names the key this creates) | `design43/rig-profile` | | | required | | |
 | 43g | Nestor | none | `design43/coverage-statistics` | | | **required — beads + a diffuse field**; nothing ranks on it until calibrated | | |
 | 43h | Nestor | none | `design43/emit-adaptive-runs` | | | **required** — run the emitted script with microclaw closed | | |
@@ -5692,6 +5692,15 @@ passed round 1 by construction and shipped an unreachable feature.
 
 G2 and G3 were not exercised — no analysis manifest was written, because the one
 offline call refused on the name.
+
+**Step 0 PASSED, and its arithmetic reconciled.** M5 at `3d30c1f`: **0 failed,
+1668 passed, 116 skipped**, and the collect-only line read **1784**, equal to
+`1668 + 116` — the derived total and the reported total agree, which is the check
+block 43d's runbook slip earned. Skips are **116, identical to 43b's and 43d's M5
+runs**, so the subject tests ran rather than starting to skip. Same collection as
+macOS (1685 / 99 / 1784) with the 17-test platform-conditional set skipping. One
+launcher throughout; the collected-ID file came back, so 43b's mixed-launcher
+defect did not recur.
 
 ### Round 2
 
