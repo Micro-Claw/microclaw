@@ -4788,7 +4788,7 @@ writes **UTF-16LE**, which made the evidence awkward to read (`Out-File
 PowerShell surfaces as a red `NativeCommandError` before the script even starts.
 Both belong in the next runbook, not in the code.
 
-## 42b. `open_artifact` — open what we wrote, and stop there
+## 42b. [x] `open_artifact` — open what we wrote, and stop there — **MERGED 2026-08-09**
 
 Branch: `design42/open-artifact`
 
@@ -4799,7 +4799,7 @@ the file; it is **not** rendering it.
 
 **Read the three 42a findings before starting.** Two of them change the spec:
 
-- [ ] **The directory path is an open mechanism question and this block owns
+- [x] **The directory path is an open mechanism question and this block owns
       it.** `IJ.open` on an NDTiff directory is a silent no-op that holds the
       bridge for ~7 s, but dragging the same folder onto the ImageJ toolbar
       opens it. So design/42's "same entry point as drag-and-drop" is false for
@@ -4810,35 +4810,42 @@ the file; it is **not** rendering it.
       own small spike addendum before the tool is written; the operator has
       already shown the drag works, so the question is only which Java entry
       point reproduces it.
-- [ ] **Do not lean on Bio-Formats delegation.** `HandleExtraFileTypes` did not
+      **Resolved by a third option this item did not contemplate (2026-08-09):**
+      neither the drag's entry point nor a refusal. A dataset directory is
+      resolved to the TIFF stack files inside it, each opened with `IJ.open` —
+      an NDTiff dataset *is* TIFF files plus an index sidecar. `IJ.open` is
+      never called on a directory, which is what this item actually forbids.
+      The spike addendum ran (`0dd3629`) and its answer was that MM's dataset
+      reader cannot open what microclaw writes (F1, F4).
+- [x] **Do not lean on Bio-Formats delegation.** `HandleExtraFileTypes` did not
       resolve over the bridge, and nothing non-native was ever opened (check 4
       SKIPped). Treat non-native formats as unproven: open, check structurally,
       and report honestly if no window appeared.
-- [ ] **Use `IJ.redirectErrorMessages`** so an IJ1 open failure goes to the Log
+- [x] **Use `IJ.redirectErrorMessages`** so an IJ1 open failure goes to the Log
       window rather than a modal dialog. Check 6 found no stall on a TIFF, but
       the modal case was never exercised, and a dialog is what would hold the
       single pyjavaz lock.
-- [ ] **The structural check may read once.** The window was visible to
+- [x] **The structural check may read once.** The window was visible to
       `WindowManager` with no sleep (check 6), so no polling loop is needed —
       but keep the "no new window" branch, which is check 5's refusal signal.
-- [ ] Re-wrapping statics per call is **hygiene, not a rule** (check 2). Keep
+- [x] Re-wrapping statics per call is **hygiene, not a rule** (check 2). Keep
       doing it for consistency with every other callsite; do not build anything
       that depends on it being required.
 
-- [ ] **`controller.open_in_imagej(path)`**, beside `_probe_imagej_dir`, which is
+- [x] **`controller.open_in_imagej(path)`**, beside `_probe_imagej_dir`, which is
       the existence proof for the mechanism. Statics per 42a check 2's answer.
-- [ ] **Structural proof the window exists**: window-ID set difference across the
+- [x] **Structural proof the window exists**: window-ID set difference across the
       call, plus dimensions matched against what Python reads. `IJ.open` returns
       void; a bridge call returning is not proof a window painted (design/18's
       lesson survives even though its Preview specifics do not). No new window →
       report the failure. **Never report a window the user cannot see.**
-- [ ] **`IJ.open(path)` as the primary, not `IJ.runMacro`.** Same entry point as
+- [x] **`IJ.open(path)` as the primary, not `IJ.runMacro`.** Same entry point as
       drag-and-drop, no macro engine, and — the reason that matters on this rig —
       **no string escaping**: a Windows path goes through as an argument instead
       of through backslash-escaping into a Java string inside a macro inside JSON.
-- [ ] **The user owns the session.** New window, left open. Never reuse, never
+- [x] **The user owns the session.** New window, left open. Never reuse, never
       close, never `WindowManager.setTempCurrentImage`, nothing on any exit path.
-- [ ] **Do not build a bridge-locality detector.** design/42 asks for a refusal
+- [x] **Do not build a bridge-locality detector.** design/42 asks for a refusal
       when the bridge is not local, because `IJ.open` resolves the path Java-side.
       Microclaw's bridge is localhost-only by construction — `Core(port=…)` and
       `Studio(port=…)` take no host (`controller.py:214`) — so there is nothing to
@@ -4846,57 +4853,65 @@ the file; it is **not** rendering it.
       docstring and keep the Python-side existence check. If a check is wanted
       anyway, the zero-new-code one is that `_probe_imagej_dir()`'s Java-side path
       exists Python-side; decide and say which, do not add both.
-- [ ] **`analyze` is off by default, and the schema description is what holds
+- [x] **`analyze` is off by default, and the schema description is what holds
       it.** The 512 px thumbnail for this mosaic is 32,496 base64 characters
       measured on the real file, and an image block stays in the conversation for
       every subsequent turn. "Show me" and "tell me what's in it" are different
       requests.
-- [ ] **`_verify_against_manifest`** recomputes both digests the writer recorded
+- [x] **`_verify_against_manifest`** recomputes both digests the writer recorded
       (`tools.py:2114`, `:2139`) and reports match/mismatch. A mismatch **still
       opens** — the operator is entitled to look at a file whose provenance
       failed. No sidecar → open, and say provenance is unverified.
-- [ ] **Fold the duplicated text+image block into `image_content`.**
+- [x] **Fold the duplicated text+image block into `image_content`.**
       `snap_and_analyze` (`tools.py:2344`) and `run_autofocus` (`tools.py:2761`)
       hand-build the same pair; `open_artifact` would be the third. One
       definition, three callers — not a fourth copy.
-- [ ] **`make_thumbnail` gains `mask`**, one line: percentiles read
+- [x] **`make_thumbnail` gains `mask`**, one line: percentiles read
       `img if mask is None else img[mask]`. The mosaic is 65% uncovered zeros and
       the 2/99.8 stretch over all pixels puts the real signal in the bottom ~1% of
       the ramp, so the analyze path would otherwise be interpreting a black
       rectangle. Say in the payload that the stretch was masked.
-- [ ] **`@emits_nothing`**, as with `read_hook_log`: a display step has no place
+- [x] **`@emits_nothing`**, as with `read_hook_log`: a display step has no place
       in a re-run script.
-- [ ] **`agent.py`**: call it and stop; do not tell the operator to open it in
+- [x] **`agent.py`**: call it and stop; do not tell the operator to open it in
       FIJI; `analyze=true` only when asked to interpret; never describe an image
       not opened.
-- [ ] Stop if this grows a registry of file types, a viewer abstraction, or a
+- [x] Stop if this grows a registry of file types, a viewer abstraction, or a
       second path into the MM Preview canvas — the last is what design/18 and
       jPypeMM actually rule out and is out of scope by name.
 
 Suite, on committed fixtures:
 
-- [ ] The default call returns a dict, never a content list, and reaches no
+- [x] The default call returns a dict, never a content list, and reaches no
       thumbnail code — assert with a patched `make_thumbnail` that fails if
       called.
-- [ ] A tampered TIFF reports `pixel_sha256_matches: false` **and still opens**.
-- [ ] A file with no sidecar opens with provenance stated as unverified.
-- [ ] `open_in_imagej` with no bridge returns `opened: false` rather than raising.
-- [ ] `image_content` is the only place the text+image pair is built.
-- [ ] Diff collected test IDs against the branch start commit.
+- [x] A tampered TIFF reports `pixel_sha256_matches: false` **and still opens**.
+- [x] A file with no sidecar opens with provenance stated as unverified.
+- [x] `open_in_imagej` with no bridge returns `opened: false` rather than raising.
+- [x] `image_content` is the only place the text+image pair is built.
+- [x] Diff collected test IDs against the branch start commit.
 
-Rig gate — M5, and it is a behaviour gate as much as a mechanism gate:
+Rig gate — **run on the demo machine, 2026-08-09** (read-side block; see the
+runbook for why, and the ledger for what M5 is still owed). A behaviour gate as
+much as a mechanism gate:
 
-- [ ] Re-run the failing session verbatim: acquire the six positions, build the
+- [x] Re-run the failing session verbatim: acquire the six positions, build the
       mosaic, *"open the mosaic and show it to me."* Success is a **new ImageJ
       window the operator can see**, reported with matching dimensions and both
       digests confirmed, and no instruction to open anything in FIJI.
-- [ ] **The transcript contains no thumbnail.** That phrasing is a show-me, not
+      **Deliberately not re-run verbatim.** The demo machine's three pixel-size
+      configs all carry the same identity affine (design/29), so a mosaic built
+      there is misleading evidence, not weaker evidence. G1 opened the **real M5
+      mosaic** instead and the success criteria above were met in full —
+      1004x1024 dimensions matched, both digests confirmed, no FIJI instruction.
+      See the runbook's §"Why this does not acquire and build a mosaic here".
+- [x] **The transcript contains no thumbnail.** That phrasing is a show-me, not
       an analyze-me. A rendered image there is a **failed gate even though the
       window opened**.
-- [ ] Then *"how many cells are in it?"* — `analyze=true` appears only on that
+- [x] Then *"how many cells are in it?"* — `analyze=true` appears only on that
       second call.
-- [ ] Close the window by hand: microclaw neither reopens it nor complains.
-- [ ] Run a second acquisition afterwards to confirm the bridge still works with
+- [x] Close the window by hand: microclaw neither reopens it nor complains.
+- [x] Run a second acquisition afterwards to confirm the bridge still works with
       an ImageJ window open. (42a check 6 is the design-time version of this
       question; this is the one that counts.)
 
