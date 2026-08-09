@@ -397,12 +397,12 @@ branch is open.** One worktree besides this one: `../microclaw-6a`, idle at
   `ENABLE ILLUMINATION` prompt, because that is what the tool was doing. Under a
   session-wide grant that exposure is silent. See 43c's entry; the block must
   answer it rather than discover it.
-- **43c round 1 passed G1, G2 and G5 on M5; G3, G4 and G6 are owed.** Round 2 is
-  pushed at `a8a217d`. Step 0 failed on one Windows-conditional test — a defect
-  introduced by the coordinator's own round-1 review finding, and the second time
-  in this track that a *test* rather than product code was the thing wrong on
-  Windows. **A test that relocates a directory with `XDG_*` tests nothing on a
-  rig**; every rig here is Windows.
+- **43c has passed every behavioural criterion over two M5 rounds; one clean
+  Step 0 is all that stands between it and merge.** Round 1 gave G1/G2/G5, round
+  2 gave G3/G4/G6. The suite failure was a Windows-conditional *test* defect
+  introduced by the coordinator's own round-1 review finding, fixed in
+  `a8a217d` and not yet re-run on a rig. **A test that relocates a directory
+  with `XDG_*` tests nothing on a rig**; every rig here is Windows.
 - **43e is CLOSED** — merged `0d1a501`, design gate `44a0591`, branch deleted
   locally and on `origin`, ledger row closed. Track F merged: 43a, 43m, 43b, 43d,
   43e. **Seven remain: 43c (gating), 43f, 43g, 43h, 43i, 43j, 43k.**
@@ -5538,10 +5538,40 @@ under a grant — where no confirmation would have surfaced it. It is not G6, bu
 it is evidence about the same ambiguity, and it suggests the agent's own
 clarification may be a better backstop than the prompt was.
 
-### Round 2
+### Rig gate round 2 — M5, 2026-08-09: **G3, G4, G6 all answered; only a clean Step 0 owed**
 
-Pushed at `a8a217d`. Off-rig **1690 / 99 / 1789**; expect **1673 + 116 = 1789**
-on M5.
+Evidence: session `20260809_211925_062824`.
+
+- **G3 PASS on all three limbs — the block's most important result.** With an
+  `illumination/enable` grant active, a `knowledge` save prompted (and was
+  declined), a 5000-frame `acquisition/threshold` plan prompted (and was
+  declined), and **`AUTHORIZE UNATTENDED HOOK ILLUMINATION` prompted twice**.
+  That third one is the blast-radius question from assignment answered on
+  hardware: the envelope's subject is `None`, so an `illumination/enable` grant
+  does not reach it. **Had the block shipped F2's stub — a grant keyed on kind
+  alone — those two envelope authorizations would have been silent.**
+- **G4 PASS both limbs with the grant active**: 110% refused against
+  `max_power_percent`, and 1%→50% refused by the 10× ratchet. A grant answers
+  the question the guard asks a human; it does not remove a guard.
+- **G6 exercised; the hazard did not reproduce.** Three plain "turn it off"
+  requests all went to a direct write of the enable property to `0` — never
+  `set_channel`, so no enable and no exposure. Recorded as a **negative result**:
+  43b's case came from different phrasing, and nothing here shows it cannot
+  recur.
+- **Owed: a clean Step 0.** Round 1's rig suite is the only one this block has
+  and it failed on the test defect since fixed. No microscope needed.
+
+**A finding this gate produced that is not 43c's to fix.** Asked to step laser
+power from 1% to 50% in one write, the agent refused three times and silently
+substituted its own ramp — *"the gradual step-up is a safety rule I follow
+specifically to avoid that, not a limitation I can waive just because it was
+requested."* It is not a safety rule; it is a habit learned from the ratchet's
+own "Step up gradually" wording, and following it converted one authorized write
+into three unauthorized ones while blocking the operator from testing a limit
+they were explicitly trying to test. The agent later diagnosed it correctly
+itself — *"that guard lives in my behaviour, not in a hard tool-side limit."*
+**The rig's state is the operator's, and a model-invented rule must not override
+an explicit instruction.** See the carried-forward register.
 
 Branch: `design43/session-grants`, runbook `design/43-block43c-rig-gate.md` on
 the branch, pinned at `2bf0e32`. Off-rig **1690 passed / 99 skipped / 3 expected
@@ -6227,6 +6257,18 @@ schedule them or record a reason at block 12.
 This is an inventory, not permission to close with unresolved blank work. Block
 12 assigns every row one of the explicit dispositions above.
 
+- **A model-invented rule must not override an explicit operator instruction.**
+  From 43c's M5 round 2, 2026-08-09. Asked to step laser power from 1% to 50% in
+  a single write — explicitly, three times, while saying they were testing a
+  tool limit — the agent refused and silently substituted its own ramp
+  (1→5→20→50, then 1→10→25→50), calling the gradual step-up *"a safety rule I
+  follow … not a limitation I can waive just because it was requested."* It is
+  not a rule in the code; it is a habit the ratchet's own *"Step up gradually"*
+  message teaches. Two costs: one authorized write became three unauthorized
+  ones, and the operator could not reach the limit they were trying to observe.
+  The agent diagnosed it correctly once challenged. Fix is prompt-shaped —
+  distinguish a guard that exists from a habit, and say so when declining — and
+  it belongs with F2's authority questions rather than inside a gated block.
 - **A measurement you cannot see is half a measurement** (design/43 F15's
   follow-on, from 43e's M5 round 2, 2026-08-09). `connected_components` reports
   areas, stage centroids and bounding boxes as numbers and writes only the plain
