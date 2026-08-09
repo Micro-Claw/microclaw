@@ -300,14 +300,18 @@ is idle at `4994f3e` awaiting the Nikon.
 ### State at the 2026-08-09 close of the Track F opening session — read this before assigning anything
 
 Supersedes the note above, which was written at the *start* of that session and
-described Track F as unstarted. `main` is `4be6ba4`; `git log --oneline
-origin/main..main` is empty; the working tree is clean; the only branches on
-`origin` besides `main` are `design34/focus-system-authorization` (6a) and the
-three that belong to no checklist here. One worktree, `../microclaw-6a`, idle.
+described Track F as unstarted. Written at `a34581b`, with coordinator commits
+after it expected — so verify rather than compare against that hash. What should
+hold: `git log --oneline origin/main..main` is empty, the working tree is clean,
+and the only branches on `origin` besides `main` are
+`design34/focus-system-authorization` (6a), two `florian/*` and
+`port-to-jpype-acqj`, none of which belong to this checklist. One worktree,
+`../microclaw-6a`, idle at `4994f3e`.
 
 - **Track F blocks 43a and 43m are both MERGED and closed** — ledger rows closed,
   design gates done, branches deleted locally and on `origin`, coordination notes
-  in `design/prompts.md`. Nine blocks remain: 43b–43k.
+  in `design/prompts.md`. **Ten blocks remain: 43b, 43c, 43d, 43e, 43f, 43g,
+  43h, 43i, 43j, 43k.**
 - **The next work is 43b or 43d, and neither needs the rig before it starts.**
   They are disjoint and may run concurrently in separate worktrees: 43b is
   `controller.py` + `authorization.py`, 43d is payload text in `tools.py` and
