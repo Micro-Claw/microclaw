@@ -264,6 +264,59 @@ is the whole problem, and it never touches a limit. If it turns out
 `acquisition` and `illumination` do not cover the friction, widen the grantable
 set — do not widen what a grant means.
 
+> **Shipped and gated in block 43c (merged 2026-08-09), over three M5 rounds.
+> The stub above is wrong in one word: a grant is keyed on `kind` AND
+> `subject`, not `kind`.** Five call sites reach `CONFIRM_FN`, and only two are
+> the decision this finding's operator made seventeen times. Grantable:
+> `illumination/enable` and `acquisition/threshold`. Subject-less and therefore
+> permanently one-shot: the `Core.Shutter` retarget, the unattended hook
+> illumination envelope, and MMStudio's current MDA.
+>
+> **M5 proved why.** With an `illumination/enable` grant active,
+> `AUTHORIZE UNATTENDED HOOK ILLUMINATION` prompted **twice** — each one handing
+> generated hook code a power ceiling for a whole unattended run. Under the stub
+> as written, both would have been silent. In the same session a `knowledge`
+> save and a 5000-frame `acquisition/threshold` plan also prompted, and both were
+> declined; 110% and a 1%→50% step were both **refused** by the guard with the
+> grant active, because a grant answers the question the guard asks a human and
+> removes no limit.
+>
+> **The audit log came out richer than this section describes.** It is not one
+> row per auto-approval: the grant *lifecycle* is recorded too, at the point it
+> happens — `granted:<id>` at creation, `revoked:<id>` at revocation — and the
+> grant is rolled back if its creation row cannot be written, so prompts can
+> never be off under a grant whose origin is absent from the log. M5's first
+> session reads: `granted` → `approved:session` → 5 × `auto-approved` →
+> `revoked` → a plain `approved` → `granted` → `approved:session` →
+> `auto-approved`. Nine enables, three prompts, twelve rows, every row carrying
+> the summary that names the device, property and value.
+>
+> **Revocation is asymmetric between frontends** and that is documented rather
+> than hidden: the browser can revoke mid-turn, the terminal's `grants` command
+> only between turns, because the REPL is blocked inside the turn where
+> auto-approvals happen.
+>
+> **On the intent case (43b's gate).** The block's position is that a grant
+> cannot infer intent and the audit row is the only backstop. G6 tested it and
+> **the hazard did not reproduce**: three plain "turn it off" requests all
+> produced a direct write of the enable property to `0`, never `set_channel`.
+> That is a negative result, not a proof — 43b's case came from different
+> phrasing. Separately, and unprompted, the agent *did* stop to ask when a
+> request was ambiguous in the other direction ("turn on 640" while 488 was on,
+> which `set_channel` would have silently turned off), which suggests the
+> agent's own clarification may be a better backstop than a prompt was.
+>
+> **One finding this gate produced that belongs with F2's authority questions
+> rather than inside it.** Told three times to step power 1%→50% in a single
+> write, while the operator was explicitly trying to observe a tool limit, the
+> agent refused and substituted its own ramp — *"the gradual step-up is a safety
+> rule I follow … not a limitation I can waive just because it was requested."*
+> It is not a rule in the code; it is a habit taught by the ratchet's own "Step
+> up gradually" message. One authorized write became three, and the limit stayed
+> hidden until the operator insisted a fourth time. **A model-invented rule must
+> not override an explicit instruction**, and a decline should say which of the
+> two it is.
+
 ---
 
 ## F3 — live view is a dose, and it is being switched on around the actions
@@ -1268,8 +1321,13 @@ this session had a field where the two would have disagreed (F6).
    PASS.** A helper and **five** callsites, not the three estimated here: F4's
    table missed `set_channel`'s second route. The MM method name was settled
    off-rig by `javap`; only the pyjavaz shadow needed the rig.
-3. **F2** (session grant) — small, self-contained, needs a UI change and a rig
-   gate that the audit log still records every event.
+3. ~~**F2** (session grant)~~ — **DONE, block 43c, merged 2026-08-09, M5 gate
+   PASS over three rounds.** "Small and self-contained" was right about the code
+   and wrong about the questions: the grant key needed a subject, the audit log
+   needed the grant's *lifecycle* and not just its uses, and revocation had to
+   reach the terminal. The rig gate did record every event — and showed why the
+   subject matters, by prompting twice for an unattended hook envelope that the
+   stub's kind-only grant would have approved silently.
 4. ~~**F8 / F10 / F11** (report shapes and hints)~~ — **DONE, block 43d, merged
    2026-08-09, M5 gate PASS.** "Text in payloads, cheap to land together" was
    half right: no behaviour changed, and it still took two review rounds plus a
