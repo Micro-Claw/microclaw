@@ -289,10 +289,13 @@ is idle at `4994f3e` awaiting the Nikon.
   `restore_observed` plus a warning when the flag went back on and the sequence
   did not. Design/37 F4 is closed in the code; any memory or note saying
   otherwise is stale. 43a builds on that verification rather than adding one.
-- **Suite baseline is `main`'s 1662 passed / 99 skipped / 3 expected warnings,
-  1761 collected**, measured 2026-08-09 on a fresh clone at `206ffa3`.
-  Re-measure; judge by failures and collected total; diff collected test IDs
-  against the branch's start commit.
+- **Suite baseline is `main`'s 1667 passed / 99 skipped / 3 expected warnings,
+  1766 collected** on macOS (2026-08-09, after 43a and 43m). The same commit
+  measures **1650 passed / 116 skipped / 1766 collected on M2** — Windows skips
+  17 more for the same collection, which is the long-standing
+  platform-conditional set and not a regression. Re-measure; judge by failures
+  and collected total; diff collected test IDs against the branch's start
+  commit.
 
 ### Block 41c mid-gate — superseded 2026-08-07, kept for the round history
 
@@ -502,7 +505,7 @@ assistant's narration when judging whether a guard fired.
 | 42a | Read side | none — may run concurrently with Track B | `design42/ij-open-spike` (deleted) | `ca0709d` | `0d97329` + runbook `4ab450b`; review round 1 `f95d5a9` (runbook pin `0d97329` re-verified after it) | M5 2026-08-07 **PASS** — 6 PASS / 3 INFO / 1 SKIP, no FAIL; 1c reproduced the design/12 collision (`out42a.txt`) | `4bcaeee` | **done** — design/10 §2 + Net conclusions #2 amended, design/42 §"What the spike measured" |
 | 42b | Read side | 42a's answers | `design42/open-artifact` (deleted) | `4d6a426` | `0dd3629` (dir spike) + `410846e` + `e02955f` + `ebebe45` + `ed9c78a`; review round 1 `867f3af`; runbook `a038c95`/`838f00d`/`b06fbac` pinned `867f3af`; findings `c60d33f`; fix round `229423d` (runner) + review round 2 `f574643`; **redesign `a97620b`** (open the dataset's TIFFs, MM reader deleted); runbook re-pinned `a97620b`; round-3 fix `5d09b7b` | **demo machine, three rounds, PASS at `a97620b`.** Round 1 (`bc93f76`): file branch PASS (G1/G2, no thumbnail), directory branch FAIL — G0 D2 ERROR and G4a wedged the bridge ~5 min. Round 2 (`f574643`): the watchdog named the stalling call and produced **F4**. Round 3 (`41b-open-artifact-demo-round3`): **G1+G2+G3+G4a+G4b+G4c ALL PASS**, no stalls, one image block in the session and only on the `analyze=true` turn; `stitch_test_1` — which MM's reader could never read (**F1**) — opens with all 6 tiles. Findings F1–F4 in `design/42-block42b-gate-findings.md`; round-3 finding fixed in `5d09b7b`. **G0 retired.** Multi-channel axis structure is a **known, tabled limitation**. **M5 still owed** — read-side block, demo-gated by design | `0819790` | **done** `25fc9cc` — design/42 §"What the gate measured"; design/43 F7 dependency cleared and assignable |
 | 43a | Nestor | none — may run concurrently with Track B | `design43/live-dose-and-tiff-prose` (deleted) | `3d6146b` | `cf1f272` + `af7e015` (review round 1 returned); runbook `92520b7` pinned `af7e015` | **M2 2026-08-09 — G1, G2, G4 both limbs, G5 all PASS; G3 answered, no fix owed** (`43a-m2`). Gated on M2, not M5: same camera-triggered illumination, and deliberately off the outlier rig. Suite red with 9 pre-existing Windows failures, none in touched code → block 43m | `5ec57cb` | |
-| 43m | Nestor (fallout) | none — **gates every later Track F rig gate** | `design43/windows-suite-integrity` | `18f84f1` | `f49deb5`; runbook `f0f3d3f` pinned `f49deb5` | **pushed 2026-08-09, awaiting M2 or M5** — runbook `design/43-block43m-rig-gate.md`, on the branch. The gate *is* the suite: 0 failed, 1766 collected | | |
+| 43m | Nestor (fallout) | none — **gated every later Track F rig gate** | `design43/windows-suite-integrity` (deleted) | `18f84f1` | `f49deb5` (accepted round 1, no rework); runbook `f0f3d3f` pinned `f49deb5` | **M2 2026-08-09 PASS — 0 failed, 1650 passed, 116 skipped, 1766 collected** (`43m-m2`). Skip count unchanged from 43a's run, so the subject tests ran rather than being skipped | `75fea30` | done — block *is* the gate; standing constraint added below |
 | 43b | Nestor | none | `design43/refresh-gui` | | | **required — M5**; `javap` the deployed `MMJ_.jar` before implementing | | |
 | 43c | Nestor | none | `design43/session-grants` | | | **required** — the audit log must still record every event | | |
 | 43d | Nestor | none | `design43/report-shapes` | | | required — payload text, validate criteria against the Nestor history | | |
@@ -5126,7 +5129,7 @@ have two distinct causes, and both are latent defects that **no rig had ever
 been in a position to find** — no full suite has run on Windows since 41b and
 41c landed on 2026-08-06. They are block 43m below.
 
-## 43m. The suite is red on every Windows rig, and nothing noticed
+## 43m. [x] The suite is red on every Windows rig, and nothing noticed — **MERGED 2026-08-09**
 
 Branch: `design43/windows-suite-integrity`
 
@@ -5135,7 +5138,7 @@ range so it cannot be mistaken for one, and placed here because it gates every
 remaining Track F rig gate: a red suite at Step 0 is supposed to mean something,
 and right now it means nine failures an operator has to be told to ignore.
 
-- [ ] **Eight failures: `tests/test_session_script_export.py` reads the emitted
+- [x] **Eight failures: `tests/test_session_script_export.py` reads the emitted
       script with `Path.read_text()` and no encoding** (`:51`, `:75`, `:84`,
       `:151`). On a Windows locale that decodes UTF-8 as the code page, so every
       em dash comes back as `ΓÇö` and every `inspect.getsource(...) in source`
@@ -5146,19 +5149,41 @@ and right now it means nine failures an operator has to be told to ignore.
       is why 41b's rig gate could execute an emitted script successfully. The
       defect is the test's read, not the exporter's write. Fix the reads; do not
       "fix" the writer.
-- [ ] **One failure: `test_channel_less_rig_says_so_instead_of_a_bare_empty_list`
+- [x] **One failure: `test_channel_less_rig_says_so_instead_of_a_bare_empty_list`
       consults the host's real EMU configuration.** It mocks
       `get_available_configs` to `[]` and then asserts on `result["source"]`, but
       `get_available_channels` falls through to EMU, which on an EMU rig is
       present — so M2 got the EMU message instead of "offers no channels". A unit
       test that reads the operator's machine passes on a laptop and fails on the
       hardware it describes.
-- [ ] **Sweep for the same two shapes rather than fixing these nine.** Both are
+- [x] **Sweep for the same two shapes rather than fixing these nine.** Both are
       classes of defect, not incidents: an encoding-naive `read_text`/`open` in a
       test, and a test that reaches host state. Grep for both across the suite.
-- [ ] **Gate: a full suite run on an EMU Windows rig, green.** That is the whole
+- [x] **Gate: a full suite run on an EMU Windows rig, green.** That is the whole
       acceptance criterion, and it cannot be met off-rig — which is precisely how
       these survived two merges.
+
+
+### Rig gate — M2, 2026-08-09: **PASS. Block 43m is complete.**
+
+Evidence: `Micro-Claw/43m-m2/` — `suite-43m.txt` and the install log.
+
+**0 failed, 1650 passed, 116 skipped, 1766 collected.**
+
+The accounting closes with no residue, which is what makes "0 failed" mean
+something here. The same machine measured 9 failed / 1639 passed / **116**
+skipped / 1764 collected at 43a's gate; this run is `1639 + 9 + 2 = 1650` passed
+with the skip count **unchanged at 116**. So all nine previously-failing tests
+now pass, both new tests pass, and nothing was newly skipped — the subject tests
+were not quietly hidden behind a platform skip, which is the one way this gate
+could have passed while proving nothing.
+
+Windows skips 17 more than macOS for the same 1766 collection. That is the
+long-standing platform-conditional set (the file has said "sixteen" since
+`d7c1d13`), not a regression.
+
+**This is the first green full suite ever measured on a Windows rig since 41b
+and 41c landed on 2026-08-06.**
 
 ## 43b. The GUI stops tracking after a channel switch
 
@@ -5852,6 +5877,16 @@ This is an inventory, not permission to close with unresolved blank work. Block
 
 ## Standing constraints that outlive any block
 
+- **A block whose gate is a rig session runs the full suite there too, and the
+  gate records the result.** Added 2026-08-09 after block 43m. The suite is the
+  only part of a rig gate that exercises code the block did *not* touch, and it
+  is the only place a platform-conditional defect can surface at all. Blocks 41b
+  and 41c each merged with a Windows-only defect in them, and both survived two
+  merges undetected because no full suite had run on a Windows rig since they
+  landed — 43a's gate found them by accident, as a side effect of Step 0.
+  Corollary, from the same block: judge that run by **failures and collected
+  total, and compare the skip count to the previous run on the same machine**. A
+  suite can go green because its subject tests started skipping.
 - No design may claim **process containment** until block 11 lands.
 - Rig facts belong in gate documents, design notes, and rig profiles — **never in
   `microclaw/`**. M5 (EMU + MicroFPGA) and Ti-with-PFS are both unusual; most
