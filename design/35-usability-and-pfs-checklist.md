@@ -257,6 +257,43 @@ two `florian/*`, and `port-to-jpype-acqj`.
   commit — that check has now caught silent test loss twice, and on 41c it
   distinguished a *rename* into three parametrized IDs from a deletion.
 
+### State at the 2026-08-09 session boundary — read this before assigning anything
+
+`main` is `e6afb06`; `git log --oneline origin/main..main` is empty; the working
+tree is clean; the only branches on `origin` besides `main` are
+`design34/focus-system-authorization` (6a), two `florian/*`, and
+`port-to-jpype-acqj`. Two worktrees exist: this one and `../microclaw-6a`, which
+is idle at `4994f3e` awaiting the Nikon.
+
+- **Track F is new and is the live work.** Added 2026-08-09 from
+  `design/43-nestor-session-findings.md`, which the 2026-08-07 note above
+  described as "not scheduled" — that line is now historical, and this note
+  supersedes it. Eleven blocks, 43a–43k, one per numbered item of design/43's own
+  suggested order. **43a is assigned first**: F3 (live view is a dose) + F7 (the
+  TIFF export offered for the wrong reason), whose 42b dependency cleared.
+- **Nothing else is startable.** Track B's 6a has been pushed and unchanged since
+  2026-08-05, awaiting a remote operator; 6, 7a, 7b and 8 all unblock only when
+  it merges. Track C's block 9 forbids creating its branch until an operator
+  supplies a real workflow. Tracks A, D and E are complete.
+- **Design/43's findings were checked against the tree at `e6afb06` before the
+  blocks were written**, and every file:line claim in the document holds:
+  `_pause_live` at `tools.py:834` with nine callsites, the live-mode sentence at
+  `agent.py:76`, the two export mentions at `:85` and `:149`,
+  `CATEGORIES = ("samples", "devices", "strategies")`, `_load_saved_adapter`'s
+  manifest-only lookup, the `unsupported-by-run_adaptive_survey` refusal at
+  `hook_decisions.py:451`, and `run_timelapse` taking no `hook_strategy`. The
+  document is safe to implement from directly.
+- **One correction to a recalled fact**, made while checking: `_pause_live` no
+  longer claims a restore it did not verify. It polls
+  `core.is_sequence_running()` against a 2 s deadline and reports
+  `restore_observed` plus a warning when the flag went back on and the sequence
+  did not. Design/37 F4 is closed in the code; any memory or note saying
+  otherwise is stale. 43a builds on that verification rather than adding one.
+- **Suite baseline is `main`'s 1662 passed / 99 skipped / 3 expected warnings,
+  1761 collected**, measured 2026-08-09 on a fresh clone at `206ffa3`.
+  Re-measure; judge by failures and collected total; diff collected test IDs
+  against the branch's start commit.
+
 ### Block 41c mid-gate — superseded 2026-08-07, kept for the round history
 
 Written when M5 became unavailable mid-gate. **The block has since closed** —
@@ -464,6 +501,17 @@ assistant's narration when judging whether a guard fired.
 | 41d | Platform | none — ran concurrently with 41c | `design41/path-expansion` (deleted) | `8a11e45` | `63ddd2b` + `ff03913`; review round 2 `3412aea`; runbook pin `d6e2a79` | M5 2026-08-06 **Step 0 + G0 + G1 + G2 + G3 all PASS** (`gate41d-m5`, two rounds) | `f864a33` | **done** — design/32 §"The path-normalisation contract (block 41d)" |
 | 42a | Read side | none — may run concurrently with Track B | `design42/ij-open-spike` (deleted) | `ca0709d` | `0d97329` + runbook `4ab450b`; review round 1 `f95d5a9` (runbook pin `0d97329` re-verified after it) | M5 2026-08-07 **PASS** — 6 PASS / 3 INFO / 1 SKIP, no FAIL; 1c reproduced the design/12 collision (`out42a.txt`) | `4bcaeee` | **done** — design/10 §2 + Net conclusions #2 amended, design/42 §"What the spike measured" |
 | 42b | Read side | 42a's answers | `design42/open-artifact` (deleted) | `4d6a426` | `0dd3629` (dir spike) + `410846e` + `e02955f` + `ebebe45` + `ed9c78a`; review round 1 `867f3af`; runbook `a038c95`/`838f00d`/`b06fbac` pinned `867f3af`; findings `c60d33f`; fix round `229423d` (runner) + review round 2 `f574643`; **redesign `a97620b`** (open the dataset's TIFFs, MM reader deleted); runbook re-pinned `a97620b`; round-3 fix `5d09b7b` | **demo machine, three rounds, PASS at `a97620b`.** Round 1 (`bc93f76`): file branch PASS (G1/G2, no thumbnail), directory branch FAIL — G0 D2 ERROR and G4a wedged the bridge ~5 min. Round 2 (`f574643`): the watchdog named the stalling call and produced **F4**. Round 3 (`41b-open-artifact-demo-round3`): **G1+G2+G3+G4a+G4b+G4c ALL PASS**, no stalls, one image block in the session and only on the `analyze=true` turn; `stitch_test_1` — which MM's reader could never read (**F1**) — opens with all 6 tiles. Findings F1–F4 in `design/42-block42b-gate-findings.md`; round-3 finding fixed in `5d09b7b`. **G0 retired.** Multi-channel axis structure is a **known, tabled limitation**. **M5 still owed** — read-side block, demo-gated by design | `0819790` | **done** `25fc9cc` — design/42 §"What the gate measured"; design/43 F7 dependency cleared and assignable |
+| 43a | Nestor | none — may run concurrently with Track B | `design43/live-dose-and-tiff-prose` | | | **required — M5** (camera trigger fires the lasers) | | |
+| 43b | Nestor | none | `design43/refresh-gui` | | | **required — M5**; `javap` the deployed `MMJ_.jar` before implementing | | |
+| 43c | Nestor | none | `design43/session-grants` | | | **required** — the audit log must still record every event | | |
+| 43d | Nestor | none | `design43/report-shapes` | | | required — payload text, validate criteria against the Nestor history | | |
+| 43e | Nestor | none | `design43/builtin-offline-adapters` | | | required | | |
+| 43f | Nestor | 43a merged (its prompt names the key this creates) | `design43/rig-profile` | | | required | | |
+| 43g | Nestor | none | `design43/coverage-statistics` | | | **required — beads + a diffuse field**; nothing ranks on it until calibrated | | |
+| 43h | Nestor | none | `design43/emit-adaptive-runs` | | | **required** — run the emitted script with microclaw closed | | |
+| 43i | Nestor | 43g, 43h | `design43/survey-refocus` | | | required | | |
+| 43j | Nestor | 43e (retires half of F12) | `design43/hooks-and-timelapse-observation` | | | required | | |
+| 43k | Nestor | 43h, 43i **run on a rig** | — design first | | | n/a — design block | | |
 | 9 | Features | operator intake | `design26/generated-adapter-run-b` | | | required | | |
 | 10 | Features | 9; optional | `design26/few-shot-run-c` | | | required or marked skipped | | |
 | 11 | Features | accepted Run B fixtures | `design32/hook-worker-isolation` | | | regression required | | |
@@ -4645,8 +4693,9 @@ it to me"* has never been executable.
 Not a Track D block and nothing here depends on it, but two other documents now
 point at it: **design/43 F7** (six offers of `export_dataset_as_tiff` in one
 session, all with the wrong reason — the fix names `open_artifact` as the thing
-the model should reach for instead) and **F12**. Design/43 is not otherwise
-scheduled; do not start it from these rows.
+the model should reach for instead) and **F12**. Both are now scheduled as
+**Track F** below; F7 is block 43a's second half. Do not start them from these
+rows.
 
 **Track E may run concurrently with Track B.** 6a is at step 5 awaiting the
 Nikon and touches `safety_config`/authorization; 42b touches `controller.py`,
@@ -4927,6 +4976,322 @@ Post-merge design gate:
       assignable here. Do not implement F7 in this block. **Done 2026-08-09:**
       design/42 §"What the gate measured"; design/43 F7 carries a
       "dependency cleared" note and is assignable. F7 not implemented here.
+
+---
+
+# Track F — the Nestor session (design/43)
+
+`design/43-nestor-session-findings.md`. Fifteen findings from one 50-minute M5
+session on 2026-08-06 that **worked** — nine 488 timelapses at nine verified
+tiles, nothing faked, the one wrong turn recovered as soon as the operator said
+so. Every finding is a place the session was harder than the science, and the
+evidence for all fifteen is one history JSONL plus one confirmations JSONL.
+
+Scheduled 2026-08-09. It goes ahead of Track C because block 9 cannot start
+without operator intake, and it runs alongside Track B because 6a is blocked on a
+remote operator.
+
+**Block order is design/43 §"Suggested order", one block per numbered item.**
+Three items pair two findings, and they are kept paired because one gate session
+observes both — not because they touch the same files. Where a later block
+depends on an earlier one, design/43 says so and the ledger's "Depends on" cell
+repeats it.
+
+Two of the fifteen change what Microclaw *is* rather than how well it behaves:
+**F14** (adaptive runs must be emittable) and **F15** (offline analysis ships
+with no analyses in it). Everything before them is friction removal. The order is
+deliberate on one point in particular — **F14 lands before F5**, so that
+refocus-and-re-judge is built inside a runner that already exports rather than
+widening a non-emittable surface.
+
+**Track F may run concurrently with Track B.** 6a is at step 5 awaiting the
+Nikon and touches `safety_config`/authorization; 43a touches `agent.py` and
+`tools.py`. Separate worktrees, and whichever lands second merges `main` first.
+
+**Do not tailor any of this to M5.** The session was on M5 and the findings are
+stated in its terms — a cropped ROI, TTL-shuttered lasers, a reversed EMU slot
+order. Every one of them must land as a generic capability with the rig fact in a
+profile, a gate doc, or the operator's own knowledge base. F1 exists precisely
+because there is nowhere to put a rig fact today.
+
+## 43a. Live view is a dose, and the TIFF export is offered for the wrong reason
+
+Branch: `design43/live-dose-and-tiff-prose`
+
+Source: design/43 F3 and F7. Paired because both are prompt-and-payload text that
+stops active harm, and because one rig session observes both: run an acquisition
+and watch what the camera does when it ends, then ask to look at what was
+written.
+
+**F3 — never leave live running after an acquisition.**
+
+- [ ] `_pause_live` (`tools.py:834`) gains `restore: bool = True`. The default is
+      unchanged, and that default is the case it was written for: an interactive
+      snap borrows the camera from a live session the operator started and gives
+      it back. Acquisition entry points pass `restore=False`.
+- [ ] **Which callsites are acquisition entry points is a judgement to make in
+      the code, not a list to copy from the design doc.** Measured on `e6afb06`:
+      nine callsites (`tools.py:2302, 2467, 2557, 2718, 2748, 3153, 3329, 3381,
+      5872`) across `snap_and_analyze`, `calibrate_stage_to_camera`,
+      `find_features`, `run_autofocus`, `_run_protocol_at`,
+      `run_multiposition_acquisition` and `snap_to_album`. The frame-producing
+      runs are the ones that must not restore; re-derive the list rather than
+      trusting this one.
+- [ ] `_live_restore_report` (`tools.py:873`) reports the left-off case instead
+      of staying silent, so the agent tells the operator rather than leaving them
+      to notice a dark canvas. Stub in design/43 F3.
+- [ ] `SYSTEM_PROMPT` (`agent.py:76`) — replace *"When it does not interfere with
+      your acquisition, put the camera in live mode so the user can see what you
+      are doing"* with design/43 F3's replacement paragraph. **That sentence is
+      the cause**; the code change alone leaves the model starting live view on
+      its own initiative, which is what it did at `[11]` and `[51]`.
+- [ ] **Do not build the rig-profile condition here.** F3's replacement text
+      names `camera_triggers_lasers: true`, and F1 (block 43f) is what creates
+      that key. The prompt may refer to it; no code in this block may read it, and
+      nothing here may write a `rig` category. A key that only one half of the
+      system knows about is worse than a sentence the model reads and finds
+      unanswered.
+
+**F7 — stop offering the export, and stop giving the wrong reason.**
+
+- [ ] `agent.py:85` and `:149–150` both name `export_dataset_as_tiff` with no
+      statement of when it is *not* needed, which is why it was offered six times
+      in one session (`[121] [123] [127] [145] [221] [261]`). Replace with
+      design/43 F7's text: NDTiff opens in Fiji as-is; the export is for software
+      that requires a single file; when the operator wants to **see** what was
+      written, `open_artifact` is the answer.
+- [ ] Carry 42b's measured caveat into the wording: opening a dataset's TIFF
+      stack files does **not** reconstruct multi-channel axis structure (channels
+      arrive as planes, not named channels) — a known, tabled limitation in
+      design/42. Wording that oversells `open_artifact` for a multi-channel
+      dataset trades one wrong default for another.
+- [ ] Keep the export line in the SMLM section with its reason attached
+      ("external localization software requires a single-file TIFF"), so the rule
+      generalises instead of reading as a habit.
+
+### Rig gate — M5
+
+The runbook lives on the branch. Both halves want a rig where the camera trigger
+fires the lasers, which is M5 (`Mode1 = "4 - Follow"`, established in this
+session's own trigger pre-flights). The gate criteria owe the standing
+known-bad/known-good validation before the runbook ships, and **the known-bad
+already exists**: the Nestor session history under `Micro-Claw/nestor-06082026/`.
+
+- [ ] G1 — an acquisition ends and the camera is **not** running a sequence
+      afterwards. Read `core.is_sequence_running()`, never MM Studio's live-mode
+      flag; the flag is not the sequence, which is why `_pause_live` already
+      verifies restores that way.
+- [ ] G2 — the payload states live was left off and why, and the agent repeats it
+      to the operator rather than leaving a silent change of state.
+- [ ] G3 — **the open question this block is what answers.** design/43 F3 records
+      it as untested: does leaving live off strand MM's Preview window as an
+      open-but-frozen canvas that the operator finds disagreeable? If it is ugly
+      the answer is still "off", reported more loudly — but the observation is
+      owed, and it is the only thing here that cannot be settled off-rig.
+- [ ] G4 — ask to look at a dataset that was just written. `open_artifact` is
+      offered; `export_dataset_as_tiff` is not. Validate the criterion against the
+      Nestor history first: it must **fail** on those six offers.
+- [ ] G5 — the model does not start live view unprompted across a whole session,
+      and when asked to start it, says what it costs on a TTL-shuttered rig.
+
+## 43b. The GUI stops tracking after a channel switch
+
+Branch: `design43/refresh-gui`
+
+Source: design/43 F4. One helper on the controller and its callsites; a debounce
+timer is explicitly refused, and the pyjavaz single-lock reason is in the
+finding.
+
+- [ ] **Verify the method name before writing the helper.** `javap` on the
+      deployed `MMJ_.jar` for `Application.refreshGUIFromCache()`. If only
+      `refreshGUI()` exists, use it and drop the from-cache rationale.
+- [ ] `controller.refresh_gui()`, never raising. Migrate the two existing
+      `ctrl.studio.app().refresh_gui()` callsites (`tools.py:1103`, `:5383`) so
+      there is one definition, and add it to `execute_channel_plan`
+      (`authorization.py`) **including the rollback path** and to
+      `set_focus_lock`.
+- [ ] Rig gate on M5: a channel switch and a rollback both leave the Property
+      Browser showing what the hardware actually holds.
+
+## 43c. One illumination approval per session, not one per switch
+
+Branch: `design43/session-grants`
+
+Source: design/43 F2. 17 confirmations in 50 minutes, all approved, all for the
+same two properties.
+
+- [ ] The grant lives at the `CONFIRM_FN` seam (`tools.py:545–564`), which both
+      frontends already share. Process memory only, never persisted, revocable.
+- [ ] `GRANTABLE` is `illumination` and `acquisition` only. `knowledge` and `hook`
+      confirmations are **not** grantable — they gate self-modification, not
+      workflow friction.
+- [ ] Limits and refusals are untouched: `max_power_percent`,
+      `max_power_step_factor`, the authorization map, XY/Z bounds, exposure caps
+      and the acquisition ledger all still apply. A grant answers the question the
+      guard asks a human; it does not remove a guard.
+- [ ] Every auto-approval still writes its own row to the confirmations JSONL,
+      marked as granted. **A silent audit log is a worse bug than the nagging**,
+      and this is the gate's headline criterion.
+- [ ] Browser UI: a third button on the banner, and an active grant shown as a
+      persistent chip with a Revoke control. Visible-and-revocable is what makes
+      this shippable; a hidden grant is not.
+- [ ] The operator asked for a blanket "deactivate session safety guards" button.
+      This is deliberately narrower and must stay so. If the grantable set is too
+      small, widen the set — never widen what a grant means.
+
+## 43d. Report shapes and hints that sent the reader to the wrong place
+
+Branch: `design43/report-shapes`
+
+Source: design/43 F8, F10, F11. Grouped because all three are payload text with
+no behaviour change, and each one produced a wrong statement in the session.
+
+- [ ] F8 — `stopped_early` describes the hook's control decisions, not what was
+      found, and it was read as "nothing was found" over a tile that scored
+      `would_keep: true`. Add the hint, and add `hook_actions` counts, which the
+      parent already has.
+- [ ] F10 — a missing adapter name was reported as a possible hardware fault.
+      `run_analysis_on_saved_dataset` refuses by name and lists what exists;
+      `hint_for_error` maps `KeyError` to a lookup hint, not `_HARDWARE_HINT`.
+      `errors.py:53` already says a hint that names the wrong subsystem is worse
+      than none.
+- [ ] F11 — report `grid_center_source: current_stage_position | explicit`, and
+      add the position-list prompt rule: a request that refers to a previous
+      scan's area must pass that scan's centre, because the default centre is
+      wherever the stage happens to be.
+- [ ] No new arguments in any of the three.
+
+## 43e. Offline analysis ships with no analyses in it
+
+Branch: `design43/builtin-offline-adapters`
+
+Source: design/43 F15. The mosaic path is plumbed to the analysis boundary
+(`completed_dataset.py:337–352`) and the last step is missing. Retires F10's
+error text and half of F12.
+
+- [ ] Built-ins resolve **before** the saved manifest, implemented over
+      `image_analysis` so there is one definition of every measurement.
+- [ ] `connected_components` and `frame_statistics` to start — the two this
+      session asked for and could not get.
+- [ ] Nothing about design/26's untrusted-adapter contract changes: saved
+      adapters keep the manifest, the hash pin, the lint and the confirmation.
+- [ ] **Where the line goes:** a built-in is a *measurement*, never a biological
+      judgement. The moment an adapter needs a concept from the user's biology it
+      belongs in the reviewed, hash-pinned path.
+- [ ] Answer the question design/43 F15 closes on: whether `find_features` and its
+      offline twin should be the same function with two callers. The live/offline
+      split currently duplicates the question and not the code.
+
+## 43f. A cropped ROI is a rig fact, and Microclaw has nowhere to keep it
+
+Branch: `design43/rig-profile`
+
+Source: design/43 F1. One knowledge category, one conditional prompt block, and
+the fact reaching its point of use. Ships the key 43a's prompt text refers to.
+
+- [ ] `CATEGORIES` gains `rig`, rendered first. Detection is the absence of the
+      profile, not a flag file.
+- [ ] The interview is a conversation, not a wizard: read the rig first, bring a
+      filled-in draft, ask only about the gaps, never block a task on it, never
+      re-ask a stored topic.
+- [ ] The stored fact must reach the point of use (`get_roi` returning
+      `illuminated_field`), not only the preamble.
+- [ ] This is the block that makes 43a's `camera_triggers_lasers` sentence live.
+
+## 43g. One bright corner beat the whole field
+
+Branch: `design43/coverage-statistics`
+
+Source: design/43 F6. Extent alongside intensity, in the one place statistics are
+defined, so every observation record and `rank_hook_log` gets it for free.
+
+- [ ] `signal_coverage`, `structure_coverage`, `signal_concentration` on
+      `ImageStats`. `snr` is a tail statistic and stays what it is.
+- [ ] Survey ranking prefers coverage; state it in the `rank_hook_log` schema
+      rather than leaving the model to invent a composite in prose.
+- [ ] `find_features` names its own scope in its payload: a puncta detector scores
+      an extended or filamentous field low, which is what happened at `[205]`.
+- [ ] **Needs rig calibration before anything ranks on it** — beads, the diffuse
+      field design/36 still owes, and this session's saved 561 tiles, which are a
+      free labelled set with `ridge_coverage`/`snr` already logged.
+
+## 43h. Adaptive runs must be emittable
+
+Branch: `design43/emit-adaptive-runs`
+
+Source: design/43 F14. The largest item here and the highest-value one: it is
+what turns a session into something the operator keeps. Independent of F5.
+
+- [ ] Emit the **program** — seed plan, hook source, decision loop — never the
+      trace. The refusal correctly rejects the trace and then generalises it into
+      a rule about all of them; the operator who wants the trace already has
+      `validate_positions` + `run_multiposition_acquisition`.
+- [ ] `_runner_source()` follows `_analysis_source()`: `inspect.getsource` over
+      the real loop, **never a re-write in the emitter**. `_survey_event_stream`
+      has design/24 and design/27 written into it and a hand-copied copy that
+      drifts reintroduces ghost exposures silently.
+- [ ] **Extend the free-name test to the adaptive path before writing the
+      emitter, not after.** `test_emitted_inline_defines_every_name_it_uses`
+      exists because two green branches broke together on a rig; the adaptive
+      emitter has strictly more surface for the same failure.
+- [ ] The guard's bounds emit as literals with the check kept. This does not
+      widen the exporter's existing accepted position — an exported script is the
+      operator's own, run under their supervision — and the header says so.
+- [ ] The refusal gets **narrower, not deleted**: `CannotEmit` stays for an
+      unrecoverable hook source, an unresolvable named position, and a capability
+      the script has no equivalent for.
+- [ ] **Post-merge design gate: `CLAUDE.md`'s export paragraph must be amended**
+      when this lands — its list of three non-emittable things becomes two. Do not
+      edit it before the code changes; today the paragraph is accurate.
+
+## 43i. "When you see a tile with higher signal, use it to focus"
+
+Branch: `design43/survey-refocus`
+
+Source: design/43 F5. Depends on 43g for the measurement that makes the request
+answerable, and lands after 43h so it is built inside a runner that exports.
+
+- [ ] `RequestAutofocus` becomes supported in `run_adaptive_survey` under an
+      authorized budget — a third capability of the same kind as
+      `illumination_envelope` and `artifact_limits`, not a new mechanism.
+- [ ] Absent budget → refused exactly as today. One refocus per tile.
+- [ ] The refocused tile is re-queued and the hook judges it again with
+      `microclaw_refocused` in its metadata.
+- [ ] A non-converging sweep is recorded and carried past; Z is not widened and
+      retried.
+
+## 43j. Hook usability and timelapse observation
+
+Branch: `design43/hooks-and-timelapse-observation`
+
+Source: design/43 F9 and F12. Paired as design/43 pairs them — "whenever their
+files are next open".
+
+- [ ] F9 — `list_hooks` marks unusable saved hooks inline, and `resolve_refusal`
+      carries the remedy as a call rather than as prose. Two hooks were dead for
+      the whole session and the offer made was to write a third.
+- [ ] F12 — `run_timelapse` gains the `hook_strategy` / `hook_params` /
+      `log_path` trio the other acquisition entry points already have. It is the
+      shape callers already know, and `snr_observer` over 150 frames is the "did
+      anything happen" answer at zero extra exposure.
+- [ ] Check what 43e already retired before starting: `frame_statistics` over a
+      saved dataset answers half of F12.
+
+## 43k. Search in one channel, acquire in another
+
+Branch: — **design first, no branch yet**
+
+Source: design/43 F13. Explicitly *not a fix yet*. The composite the session
+asked for in one sentence at `[90]`, which cost nine hand-driven sequences of
+twelve calls each.
+
+- [ ] **Do not fold this into 43i.** F5 supplies one half; the other half is a
+      second acquisition in a different channel at tiles the hook selected, and
+      that is a genuine new capability.
+- [ ] Design it after 43i and 43h have run on a rig, on the evidence of how they
+      behave. What makes it worth building at all is that 43h makes it portable:
+      the same composite that saves this operator nine sequences once is, as a
+      script, what they run on every coverslip for a year.
 
 ---
 
