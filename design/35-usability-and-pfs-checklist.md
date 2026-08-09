@@ -234,20 +234,25 @@ two `florian/*`, and `port-to-jpype-acqj`.
   branch, the gates have not been run. It must merge `main` before its own merge
   — `main` has moved a long way since it branched, and 6 and 7a unblock only once
   it lands.
-- **Track order from here: Track D is complete** (41a, 13, 41b, 41c, 41d all
-  merged). The next live work is **Track B**: 6a is pushed and awaiting the
-  Nikon, and 6 and 7a unblock when it merges. Then Track C (9–11) and closeout 12.
-- **Track E is new, added 2026-08-07 from `design/42-open-what-we-wrote.md`**:
-  blocks 42a (the ImageJ open spike) and 42b (`open_artifact`). It is scheduled
-  now rather than after Track C because 6a is blocked on a remote operator and
-  Track E is not, and because design/43 F7 already points at `open_artifact` as
-  the fix for a defect being hit every session. **42a first — design/42 rests on
-  two corrections that are argued from the record and not yet measured**, and its
-  check 6 (can `IJ.open` stall the single pyjavaz lock?) can stop 42b in this
-  shape. Design/43 itself is *not* scheduled; F7 is named only as a dependent.
-- **`main` measures 1623 passed / 99 skipped / 3 expected warnings, 1722
-  collected** (measured 2026-08-07 on the 41c merge result at `d4eea5f`, macOS,
-  20.3 s — 41c and 41d merged cleanly, 1610 + 13 and 1709 + 13 exactly). Re-measure rather than trusting this. Judge a suite by failures and
+- **Track order from here: Tracks D and E are complete** (41a, 13, 41b, 41c, 41d;
+  42a, 42b all merged). The next live work is **Track B**: 6a is pushed and
+  awaiting the Nikon, and 6 and 7a unblock when it merges. Then Track C (9–11)
+  and closeout 12. **Note block 9 cannot start without operator intake** — its
+  first item forbids creating the branch until a real workflow is supplied — so
+  the readiest unblocked work is **design/43 F7**, whose dependency 42b cleared.
+- **Track E — COMPLETE.** 42a merged 2026-08-07, 42b merged 2026-08-09. Added
+  2026-08-07 from `design/42-open-what-we-wrote.md` and scheduled ahead of Track
+  C because 6a was blocked on a remote operator and because design/43 F7 pointed
+  at `open_artifact`. **Outcome:** 42a's spike disproved design/42's claim that
+  `IJ.open` and drag-and-drop share an entry point for directories, and 42b's
+  gate then disproved the replacement — Micro-Manager's dataset reader cannot
+  open what microclaw writes. The shipped answer opens the TIFF stack files
+  inside a dataset directory. **design/43 F7 is now assignable**; design/43 as a
+  whole is still not scheduled.
+- **`main` measures 1662 passed / 99 skipped / 3 expected warnings, 1761
+  collected** (measured 2026-08-09 on a fresh clone of `origin/main` at
+  `206ffa3`, macOS, 18.7 s — the 42b close-out. Previously 1623 / 99 / 1722 at
+  `d4eea5f` on 2026-08-07; 42b added 39 tests and removed none). Re-measure rather than trusting this. Judge a suite by failures and
   collected total, and **diff collected test IDs** against the branch's start
   commit — that check has now caught silent test loss twice, and on 41c it
   distinguished a *rename* into three parametrized IDs from a deletion.
@@ -458,7 +463,7 @@ assistant's narration when judging whether a guard fired.
 | 41c | Platform | 41b merged | `design41/emu-channel-plan` (deleted) | `8a11e45` | 21 commits through `3bae4e2`, 6 review rounds; runbook pin `c5917cc` | M5 **G1+G3 PASS** round 3 2026-08-07; demo **G2 PASS** rounds 1–2 (`block41c-round3`, `41-block41c-m5`, `-m5-round2`, `41-block41c-demo`, `-demo-round2`); Float read-back **SKIPPED** | `d4eea5f` | **done** — design/33 Phase 4, design/41 F6 |
 | 41d | Platform | none — ran concurrently with 41c | `design41/path-expansion` (deleted) | `8a11e45` | `63ddd2b` + `ff03913`; review round 2 `3412aea`; runbook pin `d6e2a79` | M5 2026-08-06 **Step 0 + G0 + G1 + G2 + G3 all PASS** (`gate41d-m5`, two rounds) | `f864a33` | **done** — design/32 §"The path-normalisation contract (block 41d)" |
 | 42a | Read side | none — may run concurrently with Track B | `design42/ij-open-spike` (deleted) | `ca0709d` | `0d97329` + runbook `4ab450b`; review round 1 `f95d5a9` (runbook pin `0d97329` re-verified after it) | M5 2026-08-07 **PASS** — 6 PASS / 3 INFO / 1 SKIP, no FAIL; 1c reproduced the design/12 collision (`out42a.txt`) | `4bcaeee` | **done** — design/10 §2 + Net conclusions #2 amended, design/42 §"What the spike measured" |
-| 42b | Read side | 42a's answers | `design42/open-artifact` | `4d6a426` | `0dd3629` (dir spike) + `410846e` + `e02955f` + `ebebe45` + `ed9c78a`; review round 1 `867f3af`; runbook `a038c95`/`838f00d`/`b06fbac` pinned `867f3af`; findings `c60d33f`; fix round `229423d` (runner) + review round 2 `f574643`; **redesign `a97620b`** (open the dataset's TIFFs, MM reader deleted); runbook re-pinned `a97620b`; round-3 fix `5d09b7b` | **demo machine, three rounds, PASS at `a97620b`.** Round 1 (`bc93f76`): file branch PASS (G1/G2, no thumbnail), directory branch FAIL — G0 D2 ERROR and G4a wedged the bridge ~5 min. Round 2 (`f574643`): the watchdog named the stalling call and produced **F4**. Round 3 (`41b-open-artifact-demo-round3`): **G1+G2+G3+G4a+G4b+G4c ALL PASS**, no stalls, one image block in the session and only on the `analyze=true` turn; `stitch_test_1` — which MM's reader could never read (**F1**) — opens with all 6 tiles. Findings F1–F4 in `design/42-block42b-gate-findings.md`; round-3 finding fixed in `5d09b7b`. **G0 retired.** Multi-channel axis structure is a **known, tabled limitation**. **M5 still owed** — read-side block, demo-gated by design | `0819790` | **done** `25fc9cc` — design/42 §"What the gate measured"; design/43 F7 dependency cleared and assignable |
+| 42b | Read side | 42a's answers | `design42/open-artifact` (deleted) | `4d6a426` | `0dd3629` (dir spike) + `410846e` + `e02955f` + `ebebe45` + `ed9c78a`; review round 1 `867f3af`; runbook `a038c95`/`838f00d`/`b06fbac` pinned `867f3af`; findings `c60d33f`; fix round `229423d` (runner) + review round 2 `f574643`; **redesign `a97620b`** (open the dataset's TIFFs, MM reader deleted); runbook re-pinned `a97620b`; round-3 fix `5d09b7b` | **demo machine, three rounds, PASS at `a97620b`.** Round 1 (`bc93f76`): file branch PASS (G1/G2, no thumbnail), directory branch FAIL — G0 D2 ERROR and G4a wedged the bridge ~5 min. Round 2 (`f574643`): the watchdog named the stalling call and produced **F4**. Round 3 (`41b-open-artifact-demo-round3`): **G1+G2+G3+G4a+G4b+G4c ALL PASS**, no stalls, one image block in the session and only on the `analyze=true` turn; `stitch_test_1` — which MM's reader could never read (**F1**) — opens with all 6 tiles. Findings F1–F4 in `design/42-block42b-gate-findings.md`; round-3 finding fixed in `5d09b7b`. **G0 retired.** Multi-channel axis structure is a **known, tabled limitation**. **M5 still owed** — read-side block, demo-gated by design | `0819790` | **done** `25fc9cc` — design/42 §"What the gate measured"; design/43 F7 dependency cleared and assignable |
 | 9 | Features | operator intake | `design26/generated-adapter-run-b` | | | required | | |
 | 10 | Features | 9; optional | `design26/few-shot-run-c` | | | required or marked skipped | | |
 | 11 | Features | accepted Run B fixtures | `design32/hook-worker-isolation` | | | regression required | | |
