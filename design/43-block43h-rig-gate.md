@@ -1,6 +1,6 @@
 # Block 43h rig gate — emitted adaptive programs
 
-Implementation ancestor: d9f8169
+Implementation ancestor: 040a113
 
 Use PowerShell from the checked-out repository. uv is the single launcher for
 every Python/project command below; do not substitute bare Python for one line.
@@ -8,7 +8,7 @@ Git commands only establish the checkout.
 
 ## Step 0 — pin and run the full Windows suite
 
-    git merge-base --is-ancestor d9f8169 HEAD
+    git merge-base --is-ancestor 040a113 HEAD
     if ($LASTEXITCODE -ne 0) { throw "Block 43h implementation is not in this checkout" }
 
     uv run python -m pytest -q > suite-43h.txt 2>&1
@@ -18,10 +18,10 @@ Git commands only establish the checkout.
     uv run python -m pytest --collect-only -q > collected-43h.txt 2>&1
     if ($LASTEXITCODE -ne 0) { Get-Content collected-43h.txt; throw "Collection failed" }
 
-Expected on the Windows rig for this branch: **1706 passed + 116 skipped = 1822
+Expected on the Windows rig for this branch: **1711 passed + 116 skipped = 1827
 collected**, with 3 expected warnings. The total is derived on this branch, not
 copied from an earlier block. Compare 116 skips with the previous run on this
-same host; stop if tests failed, collection is not 1822, or the skip count rose.
+same host; stop if tests failed, collection is not 1827, or the skip count rose.
 
 ## Step 1 — offline export checks
 
@@ -31,15 +31,9 @@ These checks do not book microscope time.
     if ($LASTEXITCODE -ne 0) { Get-Content export-tests-43h.txt; throw "Exporter checks failed" }
     Get-Content export-tests-43h.txt
 
-Pass when the file reports 73 passed. It covers all three seed shapes, exact
+Pass when the file reports 78 passed. It covers all three seed shapes, exact
 source inlining, saved-hook provenance, full-precision named-position
 resolution, and narrow refusals.
-
-Also export a recorded adaptive call using mm_plugin_analyzer. Pass when the
-export refuses specifically because that hook needs Micro-Manager plugin
-capabilities through the Microclaw controller. Fail if it gives the old blanket
-“events are chosen at runtime” reason or “no standalone emitter has been
-implemented.”
 
 ## Step 2 — make one real adaptive program during an ordinary session
 
