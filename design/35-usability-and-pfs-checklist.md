@@ -6678,10 +6678,15 @@ This is an inventory, not permission to close with unresolved blank work. Block
   emitter is faithful: it emits `SurveyProgress(len(positions))` exactly as the
   runner does. It nonetheless blocks 43h from *demonstrating* its central claim,
   because "the same program makes the same decisions" cannot be shown against a
-  runner whose frame count is a race. Fix is plausibly one argument
-  (`len(survey_events)`), but it changes live acquisition behaviour for every
-  adaptive survey and so owes its own rig gate covering both the live and the
-  emitted path.
+  runner whose frame count is a race. **Folded into 43h round 4 by operator
+  decision** — M2/M5 time is owed tomorrow anyway, so it gates alongside the
+  rest. Correction to this entry's first draft: it is **not** "one argument".
+  `SurveyProgress` is constructed at `tools.py:4973` before `survey_events`
+  exists (they are built inside `_acquire_survey_with_detector`), so it is one
+  line plus a decision about where the total is set. One production construction
+  site, one caller. The emitter at `tools.py:792` must keep counting whatever
+  the runner counts; fixing one and leaving the other is the exact divergence
+  this block exists to prevent.
 - **The emitted script overwrites the original session's hook log.** Same round.
   `_log_path` is emitted as the recorded absolute path
   (`_log_path = 'C:\\…\\quality_survey_hook.log'`), so rerunning the kept script
