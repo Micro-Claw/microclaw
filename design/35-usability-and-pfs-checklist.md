@@ -351,7 +351,63 @@ and the only branches on `origin` besides `main` are
   second merges `main` first**. Eight blocks remain after them: 43c, 43e, 43f,
   43g, 43h, 43i, 43j, 43k.
 
-### State at the 2026-08-09 close of the third Track F session — read this before assigning anything
+### State at the 2026-08-10 close of the fourth Track F session — read this before assigning anything
+
+**This is the live note. It supersedes every other State-at note in this
+section**, all of which are kept only for their round history. Position is not
+recency — read the heading, not the order.
+
+Written at `b150c17` with a boundary commit expected after it, so **verify
+against the repository rather than against that hash.** What should hold:
+`git log --oneline origin/main..main` empty, working tree clean, and the only
+branches on `origin` besides `main` are `design34/focus-system-authorization`
+(6a), `florian/setup-claude-workflow` and `port-to-jpype-acqj` — **no Track F
+branch open.** One worktree besides this one: `../microclaw-6a`, idle at
+`4994f3e`.
+
+- **43g is MERGED and fully closed** (`113f23b`) — demo gate PASS, ledger row
+  closed with its design-reconciliation cell filled, coordination notes in
+  `design/prompts.md`, design gate merged (`b150c17`), branch and worktree
+  deleted. **Track F merged: 43a, 43m, 43b, 43d, 43e, 43c, 43g. Five remain,
+  none started: 43f, 43h, 43i, 43j, 43k.**
+- **Order is 43h → 43i, then 43f and 43j; 43k stays design-only and last.**
+  Changed 2026-08-10 by operator ruling. 43h before 43i is design/43's own
+  reasoning (refocus-and-re-judge built inside a runner that already exports)
+  and is untouched. **43i moved up because 43g's study changed what it needs**:
+  it is no longer waiting on a verdict statistic, it *is* the verdict.
+- **43g merged NARROWED and does not close F6.** Read `design/43` F5 and F6 —
+  both now carry measured corrections — plus `design/43-block43g-gate.md`. The
+  short version: on the data both findings came from, no single-frame intensity
+  or texture statistic separates cells from a diffuse bright gradient, and the
+  focus response is what identified them. What 43g ships is a **gate**, stable
+  where `min_snr` is on a cliff and the only ranking signal that survives on
+  beads.
+- **Do not re-propose a single-frame discriminator from theory.** One was
+  proposed and withdrawn inside a day on circular labels. The carried-forward
+  register says what a proposal must defeat, and names the labelled set to
+  defeat it with.
+- **Suite baseline: 1709 passed / 99 skipped / 3 expected warnings, 1808
+  collected** on macOS at `113f23b`. The demo machine (Windows) measured
+  1692 / 116 / 1808 at the gate — same collected total, and the 116-skip count
+  every Track F Windows run has produced. Re-measure; derive the total from
+  passed + skipped; diff collected IDs against the block's start commit.
+- **Most gate evidence is already on disk.** The archive is
+  `~/Documents/Documents - Beyonce/Projects/Micro-Claw` — note the hyphen, it
+  does not match a `*microclaw*` glob. 43g's whole measurement half ran offline
+  against saved data that had been assumed to require rig time. **Check it
+  before booking a rig session**, and see the two standing constraints this
+  produced.
+- **Two carried-forward findings were added**, both in §"Still open, not yet
+  scheduled": the withdrawn texture measure with the evidence that killed it,
+  and mosaic zero-padding corrupting every `ImageStats` statistic (pre-existing,
+  reaches `snr` and `focus_metric`, sized as its own block).
+
+### State at the 2026-08-09 close of the third Track F session — SUPERSEDED, kept for the round history
+
+> **Retired. Do not act on this note** — it describes 43g as next and says its
+> calibration needs a rig. 43g has since merged, narrowed, gated on the demo
+> machine, with its calibration done offline. The live note is above it.
+
 
 **This is the live note. It supersedes every other State-at note in this
 section**, all of which are kept only for their round history. Position is not
@@ -784,7 +840,7 @@ assistant's narration when judging whether a guard fired.
 | 43d | Nestor | none | `design43/report-shapes` (deleted) | `04c0654` | `8635d7c` + `9b98b0b` (two review rounds returned) + `a7a415d` (coordinator fixes) + `010701a` (runbook total corrected); runbook pin `a7a415d` | **M5 2026-08-09 — G1, G2, G3 all PASS; all three known-bad patterns read 0** (`43d-m5`). Suite 1657 passed / 116 skipped / 0 failed / 1773 collected, skips equal to 43b's M5 run. Gate folded into a real 640-trigger session rather than run as a script | `53395d2` | **done** `53e3f12` — design/43 F8's stub corrected (`hook_actions` is omitted, not zeroed, when no typed action was observed) with the surviving two-kind projection recorded as still owed; F11's two-value list corrected to three (`partially_explicit`); suggested-order item 4 struck through |
 | 43e | Nestor | none | `design43/builtin-offline-adapters` (deleted) | `eb577d8` | `452dbc5` + `3d30c1f` (review round 1 returned) + `9bae1ba` + `256cc18` (two coordinator fixes, each after a rig round); runbook pinned `256cc18` | **M5, three rounds, 2026-08-09 (`43e-m5`, `43e-m5-round2`). Round 1: G1 FAIL — the adapters were correct and unreachable. Round 2: Step 0 (1671 + 116 = 1787), G1, G2 (both precedence branches), G4, Step 1 all PASS. Round 3: G3 PASS, no hardware tool called in the session.** `256cc18`'s two corrected hints are **ungated** — round 3 had no failing call | `0d1a501` | **done** — design/43 F15 annotated with the four things its stub did not say plus the two successors owed; F10 extended to the OSError siblings; F12's retired half named; suggested-order item 5 struck through |
 | 43f | Nestor | 43a merged (its prompt names the key this creates) | `design43/rig-profile` | | | required | | |
-| 43g | Nestor | none | `design43/coverage-statistics` | `daefb7d` | `692d2b7` + `ebc4995` + `9c6a291` (two review rounds returned) + `a5e908a` + `3cd78de` + `714a0ef` (three coordinator fixes); gate doc + study scripts `d33eeb6`, pinned `3cd78de` | **Measurement half DONE offline 2026-08-10** against the saved Nestor tiles, control exact (recomputed snr == logged snr, 0.0000, on 313 + 36 tiles); `min_snr` sweep is the calibration. **Block NARROWED** — does not close F6, does not supply F5's measurement. **beads met** (`stitch_test_1`, six fields, join verified). **Demo 2026-08-10 (`43g-demo`): Step 0 PASS on Windows — 1692 passed / 116 skipped / 0 failed / 1808 collected, collected total equal to macOS and skips equal to every prior Track F Windows run. G1 PASS on reach** — asked "which of those tiles has the most stuff in it?" with no statistic named, the agent chose `signal_coverage` unprompted, said why, and called `rank_hook_log(metric="signal_coverage")`. **Discrimination NOT exercised** (demo camera returned bit-identical frames; nine-way tie at 0.0) and the **saturation refusal NOT exercised** — both rest on the offline measurements and unit tests | `113f23b` | 
+| 43g | Nestor | none | `design43/coverage-statistics` | `daefb7d` | `692d2b7` + `ebc4995` + `9c6a291` (two review rounds returned) + `a5e908a` + `3cd78de` + `714a0ef` (three coordinator fixes); gate doc + study scripts `d33eeb6`, pinned `3cd78de` | **Measurement half DONE offline 2026-08-10** against the saved Nestor tiles, control exact (recomputed snr == logged snr, 0.0000, on 313 + 36 tiles); `min_snr` sweep is the calibration. **Block NARROWED** — does not close F6, does not supply F5's measurement. **beads met** (`stitch_test_1`, six fields, join verified). **Demo 2026-08-10 (`43g-demo`): Step 0 PASS on Windows — 1692 passed / 116 skipped / 0 failed / 1808 collected, collected total equal to macOS and skips equal to every prior Track F Windows run. G1 PASS on reach** — asked "which of those tiles has the most stuff in it?" with no statistic named, the agent chose `signal_coverage` unprompted, said why, and called `rank_hook_log(metric="signal_coverage")`. **Discrimination NOT exercised** (demo camera returned bit-identical frames; nine-way tie at 0.0) and the **saturation refusal NOT exercised** — both rest on the offline measurements and unit tests | `113f23b` | **done** `b150c17` — design/43 F6 **corrected, not annotated**: its account of `scan300_488_r12_c15` as a bright corner is wrong (coverage 0.148, concentration 0.137, inside the good-tile band), and the statistic added to catch it does not flag it. F5's "structure_coverage high" premise likewise fails — 0.0000 on all six material tiles, which are 20× brighter than glass, not dimmer. **F6 explicitly NOT closed**; F5 promoted from blocked-on-43g to being the measurement. Suggested-order items 7 and 9 rewritten |
 | 43h | Nestor | none | `design43/emit-adaptive-runs` | | | **required** — run the emitted script with microclaw closed | | |
 | 43i | Nestor | 43g, 43h | `design43/survey-refocus` | | | required | | |
 | 43j | Nestor | 43e (retires half of F12) | `design43/hooks-and-timelapse-observation` | | | required | | |
