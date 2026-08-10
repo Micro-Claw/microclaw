@@ -1320,6 +1320,20 @@ def test_adaptive_survey_without_channel_replays_recorded_exposure(tmp_path):
     assert "core.set_exposure(200)" in source
 
 
+def test_emitted_multiframe_survey_counts_the_event_plan(tmp_path):
+    _, _, source = export(tmp_path, [call("run_adaptive_survey", {
+        "protocol": "timelapse",
+        "protocol_params": {"n_frames": 3, "interval_s": 0},
+        "positions": [
+            {"name": "p0", "x_um": 1, "y_um": 2},
+            {"name": "p1", "x_um": 3, "y_um": 4},
+        ],
+        "save_dir": "session", "hook_strategy": "snr_observer",
+    })])
+    assert "progress = SurveyProgress(len(events))" in source
+    assert "progress = SurveyProgress(2)" not in source
+
+
 @pytest.mark.parametrize("tool, params", [
     ("run_adaptive_timelapse", {
         "n_frames": 2, "interval_s": 0, "save_dir": "session",

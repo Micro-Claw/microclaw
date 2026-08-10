@@ -601,6 +601,72 @@ class TestAcquireSurveyWithDetector:
         assert "3 position(s)" in result["status"]
         assert result["log_path"] == log_path
 
+    def test_multiframe_adaptive_plan_is_fully_dispatched(
+        self, mock_ctrl, unconstrained_guard, tmp_path, monkeypatch
+    ):
+        """Completion counts events, not positions: 2 tiles x 3 frames is 6."""
+        from microclaw import tools
+
+        planned = [
+            {"axes": {"position": f"tile_{tile}", "time": frame}}
+            for tile in range(2) for frame in range(3)
+        ]
+        monkeypatch.setattr(tools, "_build_acquisition_events", lambda **_k: planned)
+        sent = []
+
+        class ContinueAll(HookBase):
+            frames = 0
+
+            def image_process_fn(self, image, metadata, event_queue):
+                self.frames += 1
+                if self.frames < len(self.survey_events):
+                    self.candidates.put(self.survey_events[self.frames])
+                self.progress.image_done()
+                return image, metadata
+
+        hook = ContinueAll()
+        progress = SurveyProgress(2)  # the production caller's old position count
+        candidates = queue.Queue()
+
+        def acquire(_guard, _save_dir, _name, events, hook=None, **_kwargs):
+            acq = _FakeAcq()
+            condition = threading.Condition()
+
+            def dispatch():
+                for event in events(acq):
+                    with condition:
+                        sent.append(event)
+                        condition.notify_all()
+
+            source = threading.Thread(target=dispatch)
+            source.start()
+            processed = 0
+            while source.is_alive() or processed < len(sent):
+                with condition:
+                    condition.wait_for(lambda: processed < len(sent) or not source.is_alive(), .2)
+                    if processed >= len(sent):
+                        continue
+                    event = sent[processed]
+                if processed >= 2:
+                    # Once the position-sized counter reaches two, let the
+                    # source observe an empty candidate queue before frame 3
+                    # returns. This is the measured live race, deterministically.
+                    time.sleep(0.08)
+                hook.image_process_fn(object(), {"Axes": event["axes"]}, acq._event_queue)
+                processed += 1
+            source.join(1)
+            return str(tmp_path / "dataset")
+
+        monkeypatch.setattr(tools, "_acquire_with_hooks", acquire)
+        _acquire_survey_with_detector(
+            mock_ctrl, unconstrained_guard, self._positions(2), str(tmp_path), "survey",
+            hook=hook, progress=progress, candidates=candidates, adaptive=True,
+            num_time_points=3, time_interval_s=0,
+        )
+
+        assert sent == planned
+        assert progress.n_done == len(planned)
+
 
 # ── Fix 1: the docs must not promise what silently does nothing ──────────────
 

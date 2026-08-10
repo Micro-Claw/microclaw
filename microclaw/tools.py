@@ -859,7 +859,7 @@ def _emit_adaptive(params: RecordedParams, kind: str) -> str:
             common.append(f"core.set_exposure({pp['exposure_ms']!r})")
         common.extend([
             f"events = multi_d_acquisition_events(**{{k: v for k, v in {shape!r}.items() if v is not None}})",
-            "candidates = queue.Queue()", f"progress = SurveyProgress({len(positions)})",
+            "candidates = queue.Queue()", "progress = SurveyProgress(len(events))",
             *( ["hook.configure_adaptive(events=events, candidates=candidates, progress=progress, guard=guard, max_events=len(events))"] if saved else ["hook.survey_events = events", "hook.candidates = candidates", "hook.progress = progress"] ),
             f"event_source = _survey_event_stream(events, candidates, progress, {params.get('max_idle_s', 60.0)!r}, hook, adaptive=True, max_events=len(events))",
             "_hook_callbacks = {name: callback for name, callback in {"
@@ -4723,6 +4723,13 @@ class SurveyProgress:
         with self._lock:
             self._done += 1
 
+    def set_total(self, n_survey: int) -> None:
+        """Set the event total once the acquisition plan has been built."""
+        with self._lock:
+            if self._done:
+                raise RuntimeError("survey total cannot change after images arrive")
+            self._n_survey = n_survey
+
     def done_early(self) -> None:
         """The hook decided the survey is over before n_survey images came
         back — the adaptive runner's stop signal (design/27 Fix 4). Counting
@@ -4974,6 +4981,10 @@ def _acquire_survey_with_detector(
         xy_positions=[(p["x_um"], p["y_um"]) for p in positions],
         **shape_kwargs,
     )
+    # Completion is measured in returned images, so its total is the event
+    # plan, not the number of XY positions. A multi-frame tile contributes one
+    # completion unit per frame.
+    progress.set_total(len(survey_events))
 
     _configure_hook_capabilities(hook, ctrl, guard, save_dir, name,
                                  illumination_envelope, artifact_limits)
