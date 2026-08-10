@@ -1307,6 +1307,57 @@ def test_emitted_free_name_guard_detects_a_removed_inline(tmp_path):
     assert "SurveyProgress" in _undefined_emitted_names(broken)
 
 
+def top_level_assignments(source):
+    """Names bound by a top-level assignment in an emitted script."""
+    import ast
+
+    return {t.id for node in ast.parse(source).body
+            if isinstance(node, ast.Assign) for t in node.targets
+            if isinstance(t, ast.Name)}
+
+
+def test_a_session_without_an_adaptive_run_carries_no_adaptive_preamble(tmp_path):
+    """The adaptive imports are conditional, like the blocks that need them.
+
+    Found in the 2026-08-10 demo gate: a snap-only session exported a script
+    carrying `hashlib`, `io`, `json`, `logging`, `queue`, `threading`, `sys`,
+    `ModuleType`, `asdict`, `datetime` and an unused `logger`, none of which
+    anything in it reached. Harmless to run and wrong for an artifact whose
+    whole point is being readable and keepable.
+    """
+    import ast
+
+    def top_level_imports(source):
+        # Parsed, not substring-matched: `io` occurs inside `annotations`, which
+        # is how the first version of this test failed against a correct fix.
+        names = set()
+        for node in ast.parse(source).body:
+            if isinstance(node, ast.Import):
+                names |= {a.asname or a.name.split(".")[0] for a in node.names}
+            elif isinstance(node, ast.ImportFrom):
+                names |= {a.asname or a.name for a in node.names}
+        return names
+
+    adaptive_only = {"hashlib", "io", "json", "logging", "queue", "threading",
+                     "sys", "ModuleType", "asdict", "datetime", "timezone"}
+
+    _, _, snap = export(tmp_path, [call("snap_and_analyze", {})])
+    assert not (top_level_imports(snap) & adaptive_only)
+    assert "logger" not in top_level_assignments(snap)
+    assert not _undefined_emitted_names(snap)
+
+    # ...and the adaptive export still has every one of them, because the
+    # inlined runner does reach them. Both directions, or this test would pass
+    # on an exporter that simply stopped emitting the imports.
+    _, _, adaptive = export(tmp_path, [call("run_adaptive_timelapse", {
+        "n_frames": 2, "interval_s": 0, "save_dir": "session",
+        "hook_strategy": "snr_observer",
+    })])
+    assert adaptive_only <= top_level_imports(adaptive)
+    assert "logger" in top_level_assignments(adaptive)
+    assert not _undefined_emitted_names(adaptive)
+
+
 def test_adaptive_export_refuses_when_safety_constraints_are_unavailable(tmp_path):
     """Unreadable limits refuse the adaptive STEP, not the whole export.
 

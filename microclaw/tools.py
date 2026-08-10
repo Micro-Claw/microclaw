@@ -880,22 +880,27 @@ def export_session_script(
         name == "set_channel" and params.result.get("effects")
         for name, params in recorded
     )
+    # Every one of these is reached only by the adaptive block: hashlib/io/json
+    # by the hook artifact and log writers, queue by the candidate stream,
+    # threading by SurveyProgress, sys+ModuleType by the module shim, asdict and
+    # datetime by the decision dataclasses and the observation envelope, logging
+    # by _note_budget_exhausted. Conditional for the same reason the analysis and
+    # channel blocks are: a snap-only session was carrying ten unused imports and
+    # an unused logger into the script the operator keeps (demo gate, 2026-08-10).
+    adaptive_imports = [
+        "import hashlib", "import io", "import json", "import logging",
+        "import queue", "import sys", "import threading",
+        "from datetime import datetime, timezone",
+        "from types import ModuleType",
+    ] if adaptive_used else []
     lines = [
         "from __future__ import annotations",
-        "import hashlib",
-        "import io",
-        "import json",
-        "import logging",
         "import math",
-        "import queue",
-        "import threading",
         "import time",
-        "import sys",
-        "from dataclasses import asdict, dataclass",
-        "from datetime import datetime, timezone",
+        *adaptive_imports,
+        f"from dataclasses import {'asdict, dataclass' if adaptive_used else 'dataclass'}",
         "from pathlib import Path",
         "from types import SimpleNamespace",
-        "from types import ModuleType",
         "from typing import Any, Callable, NamedTuple, Optional",
         "import numpy as np",
         "from pycromanager import Acquisition, Core, multi_d_acquisition_events",
@@ -907,7 +912,7 @@ def export_session_script(
         "",
         "core = Core()",
         "mm = SimpleNamespace(core=core)",
-        "logger = logging.getLogger(__name__)",
+        *(["logger = logging.getLogger(__name__)"] if adaptive_used else []),
     ]
     emitted = 0
 
