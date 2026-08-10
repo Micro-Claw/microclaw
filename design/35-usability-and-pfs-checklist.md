@@ -371,6 +371,27 @@ and the only branches on `origin` besides `main` are
 section**, all of which are kept only for their round history. Position is not
 recency — read the heading, not the order.
 
+> **43h IS IN FLIGHT as of 2026-08-10 — this note's branch and remaining-block
+> lines below are stale, and the 43h ledger row is authoritative.** Branch
+> `design43/emit-adaptive-runs` is open and pushed at `f191f70`, worktree
+> `../microclaw-43h`, runbook `design/43-block43h-rig-gate.md` on that branch
+> pinned `ce4317d`. Implementation is complete over four rounds (three review
+> rounds returned plus five coordinator fixes) and **the block is at step 5,
+> waiting on the operator**, not on any runner.
+>
+> Demo rounds 1–3 are recorded in the ledger row: Steps 0, 1 and 2a PASS and
+> Step 3 PASS on the standalone-execution claim. **Owed: Step 4 on M5 or M2**,
+> which now also carries 4a (compare the live run against the emitted one at
+> more than one frame per position) and is the only place 3b's stop limb can be
+> exercised, because a content threshold cannot fire on the demo's contentless
+> frames.
+>
+> Expected suite at the pin: **1745 + 99 = 1844** on macOS, **1728 + 116 = 1844**
+> on Windows; the exporter file is **93**.
+>
+> Four remaining Track F blocks are still unstarted: 43f, 43i, 43j, 43k. 43i
+> depends on 43h merging.
+
 Written at `b150c17` with a boundary commit expected after it, so **verify
 against the repository rather than against that hash.** What should hold:
 `git log --oneline origin/main..main` empty, working tree clean, and the only
