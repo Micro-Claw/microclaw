@@ -784,7 +784,7 @@ assistant's narration when judging whether a guard fired.
 | 43d | Nestor | none | `design43/report-shapes` (deleted) | `04c0654` | `8635d7c` + `9b98b0b` (two review rounds returned) + `a7a415d` (coordinator fixes) + `010701a` (runbook total corrected); runbook pin `a7a415d` | **M5 2026-08-09 — G1, G2, G3 all PASS; all three known-bad patterns read 0** (`43d-m5`). Suite 1657 passed / 116 skipped / 0 failed / 1773 collected, skips equal to 43b's M5 run. Gate folded into a real 640-trigger session rather than run as a script | `53395d2` | **done** `53e3f12` — design/43 F8's stub corrected (`hook_actions` is omitted, not zeroed, when no typed action was observed) with the surviving two-kind projection recorded as still owed; F11's two-value list corrected to three (`partially_explicit`); suggested-order item 4 struck through |
 | 43e | Nestor | none | `design43/builtin-offline-adapters` (deleted) | `eb577d8` | `452dbc5` + `3d30c1f` (review round 1 returned) + `9bae1ba` + `256cc18` (two coordinator fixes, each after a rig round); runbook pinned `256cc18` | **M5, three rounds, 2026-08-09 (`43e-m5`, `43e-m5-round2`). Round 1: G1 FAIL — the adapters were correct and unreachable. Round 2: Step 0 (1671 + 116 = 1787), G1, G2 (both precedence branches), G4, Step 1 all PASS. Round 3: G3 PASS, no hardware tool called in the session.** `256cc18`'s two corrected hints are **ungated** — round 3 had no failing call | `0d1a501` | **done** — design/43 F15 annotated with the four things its stub did not say plus the two successors owed; F10 extended to the OSError siblings; F12's retired half named; suggested-order item 5 struck through |
 | 43f | Nestor | 43a merged (its prompt names the key this creates) | `design43/rig-profile` | | | required | | |
-| 43g | Nestor | none | `design43/coverage-statistics` | `daefb7d` | | **required — beads + a diffuse field**; nothing ranks on it until calibrated, and what needs calibrating includes `min_snr` itself (43e's `package_default_uncalibrated` 3.1) | | |
+| 43g | Nestor | none | `design43/coverage-statistics` | `daefb7d` | `692d2b7` + `ebc4995` + `9c6a291` (two review rounds returned) + `a5e908a` + `3cd78de` (two coordinator fixes); gate doc + study scripts `d33eeb6`, pinned `3cd78de` | **Measurement half DONE offline 2026-08-10** against the saved Nestor tiles, control exact (recomputed snr == logged snr, 0.0000, on 313 + 36 tiles); `min_snr` sweep is the calibration. **Block NARROWED** — does not close F6, does not supply F5's measurement. **Session G1 (reach, demo config) owed; beads owed** — no saved bead pixels exist | | |
 | 43h | Nestor | none | `design43/emit-adaptive-runs` | | | **required** — run the emitted script with microclaw closed | | |
 | 43i | Nestor | 43g, 43h | `design43/survey-refocus` | | | required | | |
 | 43j | Nestor | 43e (retires half of F12) | `design43/hooks-and-timelapse-observation` | | | required | | |
@@ -6032,12 +6032,40 @@ the fact reaching its point of use. Ships the key 43a's prompt text refers to.
       `illuminated_field`), not only the preamble.
 - [ ] This is the block that makes 43a's `camera_triggers_lasers` sentence live.
 
-## 43g. One bright corner beat the whole field
+## 43g. One bright corner beat the whole field — **NARROWED 2026-08-10**
 
 Branch: `design43/coverage-statistics`
 
 Source: design/43 F6. Extent alongside intensity, in the one place statistics are
 defined, so every observation record and `rank_hook_log` gets it for free.
+
+> **This block no longer claims to close F6, and no longer supplies the
+> measurement 43i was told to wait for.** Narrowed by the operator's ruling of
+> 2026-08-10 after an offline study against the saved 2026-08-06 Nestor data
+> (`design/43-block43g-gate.md` §"What the offline study already settled";
+> scripts `design/43-block43g-offline-study.py` and `-f5-study.py`). The control
+> is exact — recomputed snr reproduced the logged snr to 0.0000 on 313 tiles of
+> the 488 raster and all 36 of the 561 raster — and the result is negative in
+> both directions:
+>
+> - **F6's own tile** `scan300_488_r12_c15` ranks #1 by snr and #2 by coverage.
+>   `signal_concentration` reads **0.137** on it, inside the 0.09–0.14 band every
+>   good tile occupies. F6's description of it as a small bright corner is wrong:
+>   `signal_coverage` 0.148, a broad bright region.
+> - **F5's 36-tile raster** inverts completely. The six tiles with real material
+>   read `signal_coverage` and `structure_coverage` of **0.0000**; all 27
+>   bare-glass tiles read 0.0031–0.0049. The material tiles are 20× brighter
+>   (median 3963 vs 220) and score lower because a frame uniformly full of signal
+>   has an enormous MAD — no background-relative threshold can see signal that
+>   has become the background.
+>
+> **What it does deliver, and what it now ships as:** a better gate. A coverage
+> threshold of 0.05 is flat at 5–6 tiles of 324 across `min_snr` 2.5–3.5, where
+> `min_snr` itself is on a cliff (13 tiles at 3.1, 60 at 2.8). Coverage is a
+> refocus **trigger** for 43i, not a verdict.
+>
+> **Do not re-propose a single-frame texture statistic from theory.** That was
+> proposed and withdrawn the same day; see the carried-forward register.
 
 - [ ] `signal_coverage`, `structure_coverage`, `signal_concentration` on
       `ImageStats`. `snr` is a tail statistic and stays what it is.
@@ -6076,9 +6104,19 @@ defined, so every observation record and `rank_hook_log` gets it for free.
       missing-calibration message there, and whichever assignment runs second
       wins. A scope statement that disappears exactly when the rig is
       uncalibrated is worse than none.
-- [ ] **Needs rig calibration before anything ranks on it** — beads, the diffuse
-      field design/36 still owes, and this session's saved 561 tiles, which are a
-      free labelled set with `ridge_coverage`/`snr` already logged.
+- [x] **Calibration done offline, not on a rig — 2026-08-10.** The saved Nestor
+      tiles turned out to be a complete labelled set with pixels, so the
+      calibration is a re-runnable computation rather than one shot at the
+      microscope. The `min_snr` sweep is in the gate doc. **Beads remain owed**:
+      `multicolor_bead_run_m5` holds only the history and confirmations, and no
+      saved bead pixels exist anywhere. The diffuse field design/36 owed is
+      *met* — F5's raster is one, and it is what produced the negative result.
+- [x] **Coverage ranking refuses a clipped frame** (`3cd78de`). Found by the
+      offline study: the two highest-`signal_coverage` tiles of 324 were 4.0% and
+      19.8% saturated, both frames snr had already refused. Coverage has no
+      validity flag by design, so the existing saturation gate is applied at the
+      ranking boundary, reusing `invalid_rows` rather than reintroducing a
+      `None`-valued statistic.
 - [ ] **The threshold being calibrated is `min_snr`, not only the three new
       numbers, and it is already the known-wrong one.** F6's `coverage_stats`
       thresholds at `background + min_snr · noise`; `min_snr` resolves through
@@ -6130,8 +6168,28 @@ what turns a session into something the operator keeps. Independent of F5.
 
 Branch: `design43/survey-refocus`
 
-Source: design/43 F5. Depends on 43g for the measurement that makes the request
-answerable, and lands after 43h so it is built inside a runner that exports.
+Source: design/43 F5. Lands after 43h so it is built inside a runner that
+exports.
+
+> **Its dependency on 43g changed on 2026-08-10, and this block got more
+> important rather than less.** 43i was scheduled after 43g "for the measurement
+> that makes the request answerable". 43g's offline study showed no single-frame
+> statistic — intensity or texture — separates cells from a diffuse bright
+> gradient on real data, and that **the discriminator which worked in both F5 and
+> F6 was the focus response itself**: F6's tile was exposed by autofocus refusing
+> it (contrast 0.124), F5's tiles confirmed by hand-refocus converging at
+> 9.6–42.8. So this block is not waiting on a verdict statistic; it *is* the
+> verdict. What it needs from 43g is only a cheap **trigger** — is there more
+> light here than background, worth spending a sweep on — which narrowed
+> `signal_coverage` already provides.
+>
+> The test is asymmetric, and that is what makes it affordable: convergence does
+> not prove cells, but failure to converge disproves them.
+>
+> **Gate criterion, from the operator's own framing:** on a raster containing
+> tiles like frames 20 and 17 of `mt_search_561/mt_raster_1`, the survey should
+> spend a refocus there and report whether it converged; on a tile like
+> `scan300_488_r12_c15`, it should report that it did not.
 
 - [ ] `RequestAutofocus` becomes supported in `run_adaptive_survey` under an
       authorized budget — a third capability of the same kind as
@@ -6372,6 +6430,42 @@ schedule them or record a reason at block 12.
 
 This is an inventory, not permission to close with unresolved blank work. Block
 12 assigns every row one of the explicit dispositions above.
+
+- **No single-frame statistic separated cells from a diffuse bright gradient on
+  real data — and a texture block was proposed and withdrawn on the strength of
+  it.** From 43g's offline study, 2026-08-10. Measured on the saved Nestor
+  tiles: `signal_coverage`, `structure_coverage` and `signal_concentration` all
+  rank F5's six real-material tiles *below* all 27 bare-glass tiles, and
+  `signal_concentration` reads 0.137 on F6's tile, inside the band every good
+  tile occupies. A scale-free texture measure (`ridge_coverage`, Sato tubeness,
+  thresholded against the response image's own MAD) looked like the answer and
+  **did not survive inspection**: its apparent separation was circular, because
+  the material/glass labels had been defined with it; Spearman against median
+  intensity is 0.649; and the one tile pair where it disagrees with brightness
+  (frames 12 and 21 of `mt_search_561/mt_raster_1`) is **not distinguishable by
+  eye** — the operator looked. The two tiles that *are* confirmed cells by eye
+  (frames 20 and 17) are the two brightest in the raster, so plain intensity
+  finds them. **Do not re-propose a single-frame discriminator without a
+  labelled set that defeats intensity**; the tiles above plus design/38's bead
+  fields are that set when someone wants to try. The live hypothesis is instead
+  block 43i: the focus response is the discriminator.
+  One reframing worth keeping — the operator's: Sato flagging beads as well as
+  filaments is the hook's *name* being wrong, not its measurement. As a general
+  "is there structure here" detector it was right twice; only the label said
+  filaments.
+- **A stitched mosaic's zero padding corrupts every statistic in
+  `ImageStats`, not just coverage.** From 43g's round-2 review, 2026-08-10, and
+  confirmed by the implementer's own sweep. `dataset_mosaic.py:105` allocates the
+  canvas with `np.zeros(...)`, which is a reasonable thing for it to do — but the
+  padding then enters the frame-wide median and MAD that `snr`, `focus_metric`
+  and the coverage statistics are all built on. Measured on 256² sCMOS tiles over
+  a 1024² canvas, the degradation is smooth and silent: at 38% padding MAD reads
+  18 against a true 3.0 and coverage is wrong by 2.7×, with no degenerate branch
+  firing; `focus_metric` falls 1425.64 → 677.56 at 75% padding. **Pre-existing,
+  and not 43g's to fix.** The mosaic already keeps a `coverage_count` array
+  beside the canvas, so measuring over the covered region is the answer. Size it
+  as its own block with its own gate; do not add a mask parameter to
+  `coverage_stats`.
 
 - **A model-invented rule must not override an explicit operator instruction.**
   From 43c's M5 round 2, 2026-08-09. Asked to step laser power from 1% to 50% in
@@ -6750,6 +6844,31 @@ This is an inventory, not permission to close with unresolved blank work. Block
   only because it forbade naming the tool in the request. Added 2026-08-09. When
   a block adds a capability an agent is supposed to *choose*, at least one
   criterion must be phrased in the operator's words with the tool unnamed.
+- **A test for a statistic that exists to catch a failure must first reproduce
+  the failure.** Added 2026-08-10, after block 43g needed three review rounds
+  for the same defect at three different depths. Round 1's blur test used a
+  field so bright that its assertion passed whether or not the mechanism worked.
+  Round 2 asserted a frame with visible structure reads zero extent. Round 3's
+  bright-corner fixture put the corner at 0.39% of the frame, just under the
+  0.5% tail p99.5 is taken over, so `snr` was never fooled and there was nothing
+  for the new statistic to catch. Every round had a green suite and an accurate
+  self-report. **Write the failing case first and confirm the old code fails
+  it**; a fixture that merely exercises the code path is not a test of the
+  finding. The same discipline applies one level up: 43g's own remedy was
+  validated against a synthetic model of F5 and did not survive contact with
+  F5's real frames.
+- **An offline re-analysis of saved data is not rig evidence, and should be
+  preferred where it is possible.** Added 2026-08-10. 43g's measurement half was
+  scheduled as a rig gate and turned out to be a computation over datasets
+  already on disk — reproducible, re-runnable under a swept threshold, and
+  strictly better than one session at the microscope. Step 5 keeps gates with the
+  operator because a human must observe real hardware; it does not require
+  spending microscope time on arithmetic. **Check the evidence archive before
+  scheduling a rig session**, and keep for the session only what needs a human,
+  a rig, or a live agent — for 43g that was one reach criterion on the demo
+  config. Search the archive by its real folder names; `Micro-Claw` does not
+  match a `*microclaw*` glob, which is how the coordinator missed 195 MB of
+  labelled data on the first pass.
 - **A ledger row is closed only when its design-reconciliation cell is filled.**
   Both 43b and 43d ran and merged their design gates while leaving that cell
   empty, which reads exactly like step 10 never happening. Audit the row, not
