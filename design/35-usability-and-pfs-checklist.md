@@ -416,6 +416,28 @@ branch open.** One worktree besides this one: `../microclaw-6a`, idle at
   and mosaic zero-padding corrupting every `ImageStats` statistic (pre-existing,
   reaches `snr` and `focus_metric`, sized as its own block).
 
+> **Re-verified 2026-08-10 at assignment of 43h**, on `main` at `735771f`. Every
+> claim in this note held: `origin/main..main` empty, clean tree, remote branches
+> exactly `design34/focus-system-authorization`, `florian/setup-claude-workflow`
+> and `port-to-jpype-acqj` with no Track F branch open, one idle worktree at
+> `../microclaw-6a` (`4994f3e`), and the suite baseline re-measured **1709 passed
+> / 99 skipped / 3 expected warnings, 1808 collected** on macOS — the note's own
+> number, unchanged. **43h is assigned**, per this note's sequencing ruling.
+>
+> Seven facts the 43h entry did not carry, found by reading the code rather than
+> design/43 — all now in that entry. The three that change the shape of the work:
+> the emitted loop's `hook` argument is the **`UntrustedHookAdapter`**, not the
+> user's hook, so "inline the saved hook file verbatim" emits a runner calling
+> methods nothing defines; a survey seeded by `position_names` has **no
+> resolution path at all** today, so F14's stub refuses every such run, and the
+> coordinates it needs are already in the result as `tiles_planned`; and
+> `analysis_used` is computed from a **fixed list of four tool names**, so an
+> emitted hook that calls `compute_stats` gets no inlined analysis — the
+> block-13/41b `NameError` class for the third time. F14's own dependency audit
+> of `hooks.py` and `hook_decisions.py` was checked line by line and **holds
+> exactly**; the barrier it did not audit is that two registry hooks are
+> constructed with `ctrl` and `guard`.
+
 ### State at the 2026-08-09 close of the third Track F session — SUPERSEDED, kept for the round history
 
 > **Retired. Do not act on this note** — it describes 43g as next and says its
@@ -6225,27 +6247,107 @@ Branch: `design43/emit-adaptive-runs`
 Source: design/43 F14. The largest item here and the highest-value one: it is
 what turns a session into something the operator keeps. Independent of F5.
 
+> **Line numbers in F14 have drifted.** The three `@refuses` decorators are at
+> `tools.py:4039` (`run_adaptive_zstack`), `:4105` (`run_adaptive_timelapse`) and
+> `:4580` (`run_adaptive_survey`), not `:3683/:3749/:4224`. Verified at
+> assignment; F14's text is otherwise accurate about them, and they carry one
+> identical reason string.
+
 - [ ] Emit the **program** — seed plan, hook source, decision loop — never the
       trace. The refusal correctly rejects the trace and then generalises it into
       a rule about all of them; the operator who wants the trace already has
       `validate_positions` + `run_multiposition_acquisition`.
+- [ ] **The three tools are not one shape, and F14's stub covers only one of
+      them.** `run_adaptive_zstack` and `run_adaptive_timelapse` have **no
+      position list at all** — their seed plan is a `(z_start, z_end, z_step)` or
+      an `(n_frames, interval_s)` pair plus a hook, so the "static seed plan"
+      half is trivial for them and the whole difficulty is the hook and the
+      loop. Only `run_adaptive_survey` has positions. Do all three or say which
+      you did and why; a block that emits the survey and leaves the other two
+      refusing has not retired the refusal.
+- [ ] **A survey seeded by `position_names` has no resolution path today, and
+      F14's stub refuses every one of them.** `_resolve_recorded_position_names`
+      short-circuits on `name != "run_multiposition_acquisition"`
+      (`tools.py:487`), so `params["positions"]` and
+      `params["_position_resolution_error"]` — **both** read by the stub — are
+      never populated for an adaptive run. The coordinates are already recorded:
+      `run_adaptive_survey` writes `tiles_planned` as `{position, x_um, y_um}`
+      per resolved tile (`tools.py:4729`), which is the same result-derived route
+      `_emit_multiposition` already takes at `:162–173`. Either extend the
+      resolver's tool test or read `tiles_planned` — **state which, and note the
+      rounding**: `tiles_planned` is rounded to 3 dp and the multiposition path
+      is not, so an emitted script may image a coordinate the session did not.
+- [ ] **The `hook` the emitted loop calls is the `UntrustedHookAdapter`, not the
+      user's hook.** `_survey_event_stream` calls `hook.note_stalled`
+      (`:4430`), `hook.note_aborted` (`:4419`) and `_note_budget_exhausted(hook,
+      …)` → `hook.note_budget_exhausted` (`:925`); all three are adapter methods,
+      and `UntrustedHookAdapter._dispatch` (`hook_decisions.py:356`, the
+      `ContinueSurvey` limb at `:471–477`) is what turns a proposal into the
+      next event. So F14's "inline the file
+      verbatim" is necessary and **not sufficient** — inline the adapter too, or
+      the emitted runner calls methods nothing defines. F14 knows this as its
+      item 3; its stub's `_hook_constructor` reads as if the hook were bare.
 - [ ] `_runner_source()` follows `_analysis_source()`: `inspect.getsource` over
       the real loop, **never a re-write in the emitter**. `_survey_event_stream`
       has design/24 and design/27 written into it and a hand-copied copy that
       drifts reintroduces ghost exposures silently.
+- [ ] **The free-name closure is larger than the hook, and the preamble imports
+      none of it.** `_survey_event_stream` reaches `queue`, `time`,
+      `_CANDIDATE_POLL_S` (`:4328`), `_note_budget_exhausted` (`:925`, which
+      closes over the module `logger`) and `SurveyProgress` (`:4268`, which uses
+      `threading`); the adapter reaches `HookBase.where` (`hooks.py:117`) and
+      `analysis_observation_record` (`hooks.py:16`) on **every frame**, through
+      the two function-local imports at `hook_decisions.py:322` and `:539`. The
+      emitted preamble (`tools.py:588–596`) imports no `queue`, `threading` or
+      `logging` today.
+- [ ] **`analysis_used` is a fixed list of four tool names** (`tools.py:574–579`)
+      — `snap_and_analyze`, `run_autofocus`, and the two `protocol == "snap"`
+      cases. An emitted hook that calls `compute_stats` therefore gets **no
+      inlined analysis**, and the script `NameError`s on the rig: the block-13 /
+      41b failure class for the third time, arriving from the tool-name side
+      rather than the helper-list side.
 - [ ] **Extend the free-name test to the adaptive path before writing the
       emitter, not after.** `test_emitted_inline_defines_every_name_it_uses`
-      exists because two green branches broke together on a rig; the adaptive
-      emitter has strictly more surface for the same failure.
+      (`tests/test_session_script_export.py:999`) is parametrized over the
+      records that trigger an inline and its own docstring says to add a param
+      whenever the exporter learns to inline something new. Confirm the new param
+      **fails** before the emitter exists; a guard that passes either way is not
+      guarding this.
 - [ ] The guard's bounds emit as literals with the check kept. This does not
       widen the exporter's existing accepted position — an exported script is the
       operator's own, run under their supervision — and the header says so.
+      **What the stand-in must implement is fixed by the dispatch, not by
+      taste**: `check_xy` and `check_z` (`hook_decisions.py:503–505`), and, only
+      if an `illumination_envelope` was authorized, `check_illumination` plus
+      `illumination_to_percent` / `illumination_from_percent` (`:394–424`). Those
+      last two are rig-config conversions; if they cannot be rendered as
+      literals, that limb is a `CannotEmit`, not a guess.
 - [ ] The refusal gets **narrower, not deleted**: `CannotEmit` stays for an
       unrecoverable hook source, an unresolvable named position, and a capability
-      the script has no equivalent for.
+      the script has no equivalent for. **One such capability is already known:**
+      `_resolve_hook` injects `ctrl` and `guard` into any registry hook whose
+      `__init__` names them (`tools.py:3812–3818`), and `mm_plugin_analyzer` /
+      `autofocus_mm_plugin` both do — they call Micro-Manager's plugin system
+      over the bridge, which a standalone script has no equivalent for. The
+      emittable registry subset is `snr_observer`, `position_filter`,
+      `intensity_adaptive`, `focus_feedback`, `autofocus_per_position`.
+- [ ] **Rewrite `test_adaptive_runs_refuse_with_the_architectural_reason`
+      (`:969`), do not delete it.** It encodes an M5 round-4 finding — the
+      refusal must never read "no standalone emitter has been implemented" — and
+      its replacement should assert the narrow `CannotEmit` reasons with the same
+      force.
+- [ ] **Scope: one hook, not a composition.** `hook_strategy` may be a list under
+      `_resolve_hooks` (`:3865`) → `CompositeHook`, but all three adaptive tools
+      call `_resolve_hook` (singular) at `:4073`, `:4136` and `:4669`, so
+      composition is out of scope. Do not silently assume `hook_strategy` is a
+      string; refuse a list with a reason.
 - [ ] **Post-merge design gate: `CLAUDE.md`'s export paragraph must be amended**
       when this lands — its list of three non-emittable things becomes two. Do not
       edit it before the code changes; today the paragraph is accurate.
+- [ ] **Rig gate: run the emitted script with microclaw closed**, per the ledger
+      row, and run the full suite on the same machine (standing constraint). A
+      script that only imports cleanly proves nothing about a runner whose whole
+      subject is what happens over minutes of real acquisition.
 
 ## 43i. "When you see a tile with higher signal, use it to focus"
 
@@ -6549,6 +6651,20 @@ This is an inventory, not permission to close with unresolved blank work. Block
   beside the canvas, so measuring over the covered region is the answer. Size it
   as its own block with its own gate; do not add a mask parameter to
   `coverage_stats`.
+- **An exported hooked acquisition silently drops the hook's measurement, and
+  the script does not say so.** Found at 43h's assignment, 2026-08-10, reading
+  the exporter rather than design/43. `_emit_multiposition` (`tools.py:150–157`)
+  lets an `_microclaw_observation_only` hook through and then emits a plain
+  `multi_d_acquisition_events` with **no hook attached at all**;
+  `test_observation_only_hook_emits_hardware_but_decision_hook_refuses` pins
+  exactly that. It is defensible — an observation-only hook changes no hardware,
+  so the acquisition really is reproduced — but the operator gets a script that
+  images what the session imaged and measures nothing, with no comment saying a
+  measurement was there. **Not 43h's work**: 43h's subject is a hook that *is*
+  the program, and this is a hook that was only watching. The cheap fix is one
+  emitted comment line naming the dropped hook; the expensive one is inlining an
+  observation hook the same way 43h will inline an adaptive one. Decide which at
+  block 12 rather than widening 43h.
 
 - **A model-invented rule must not override an explicit operator instruction.**
   From 43c's M5 round 2, 2026-08-09. Asked to step laser power from 1% to 50% in
