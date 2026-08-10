@@ -5552,3 +5552,85 @@ code — it is a habit taught by the ratchet's own "Step up gradually" message �
 and following it turned one authorized write into three and hid the limit the
 operator was testing. It diagnosed itself correctly when challenged. Carried
 forward: **a model-invented rule must not override an explicit instruction.**
+
+## Block 43g — coverage statistics (design/43 F6, merged 2026-08-10)
+
+Three implementation rounds by an operator-driven codex runner, three coordinator
+fixes, and a gate that stopped being a rig gate halfway through. The code is a
+small, correct addition. **The block's headline outcome is a negative result that
+narrowed its own scope**, and the process lessons are worth more than the diff.
+
+**The evidence was already on disk, and the gate was scheduled at a microscope
+anyway.** 43g was assigned with "needs rig calibration before anything ranks on
+it — beads, a diffuse field, and this session's saved 561 tiles". The saved
+tiles turned out to be a complete labelled set *with pixels* — 324 tiles joined
+to the observation records the shipped code wrote on the day, control exact
+(recomputed snr reproduced logged snr to 0.0000). The calibration became a
+re-runnable computation instead of one shot at the rig, and the `min_snr` sweep
+is something a threshold change can be re-measured against. **Check the evidence
+archive before booking rig time.** The coordinator missed 195 MB of it on the
+first pass by globbing `*microclaw*`, which does not match the folder name
+`Micro-Claw`.
+
+**Then declared a whole data class absent from one subfolder.** Having found the
+archive, the gate doc said no saved bead pixels existed anywhere, on the strength
+of `multicolor_bead_run_m5` holding only JSONs. Most saved data in the project is
+beads. The operator corrected it; the bead fields then **found a defect in the
+coordinator's own saturation fix**, which had applied snr's 0.01% clipping gate
+to coverage and would have refused all six real bead fields — on a sample class
+where snr is refused too, so coverage was the only ranking signal left. Coverage
+got its own 1% limit. *Absence of evidence in one directory is not absence of the
+data.*
+
+**Three review rounds, one defect shape.** Every round returned a green suite and
+an accurate self-report, and every round had a test that made unverified
+behaviour look verified: round 1's blur test used a field so bright the assertion
+held whether or not the mechanism worked; round 2 asserted a frame with visible
+structure reads zero extent; round 3's bright-corner fixture sat at 0.39% of the
+frame, just under the 0.5% tail p99.5 is taken over, so snr was never fooled and
+there was nothing for the new statistic to catch. **Write the failing case first
+and confirm the old code fails it.** The coordinator made the same mistake one
+level up: its round-1 remedy was validated against a synthetic model of F5 and
+did not survive F5's real frames.
+
+**The negative result.** On the data both findings came from, the statistics do
+not do what the findings asked. F6's own tile ranks #1 by snr and #2 by coverage,
+with `signal_concentration` 0.137 — inside the band every good tile occupies —
+and F6's description of it as a small bright corner is simply wrong (coverage
+0.148, a broad bright region). On F5's 36-tile raster the ranking **inverts**:
+six real-material tiles at 0.0000, all 27 bare-glass tiles at 0.0031–0.0049,
+because material 20× brighter than glass has become its own background and no
+background-relative threshold can see it.
+
+**A texture measure was proposed and withdrawn the same day.** `ridge_coverage`
+looked like the answer until the operator asked why it works. Its apparent
+two-orders-of-magnitude separation was **circular** — the material/glass labels
+had been defined with it. Spearman against median intensity is 0.649. And the one
+tile pair where it disagrees with brightness, frames 12 and 21, the operator
+could not tell apart by eye. The two tiles that *are* confirmed cells, frames 20
+and 17, are the two brightest in the raster, so intensity finds them.
+**Ask what the ground truth is before building on a discriminator.**
+
+**What the findings actually needed was the focus response.** F6's tile was
+exposed by autofocus refusing it (contrast 0.124); F5's tiles were confirmed by
+hand-refocus converging at 9.6–42.8. The discriminator in both cases is whether
+the field comes into focus, which is block 43i — so 43i was promoted from
+"blocked on 43g's measurement" to "is the measurement", needing only a cheap
+trigger from 43g. The test is asymmetric and that is what makes it affordable:
+convergence does not prove cells, failure to converge disproves them.
+
+**What 43g ships, honestly.** A better gate. A coverage threshold of 0.05 holds
+5–6 tiles of 324 across `min_snr` 2.5–3.5, where `min_snr` itself moves 13→60 in
+one step. On beads it is the *only* ranking signal, since snr is refused on every
+bead field. That is a real improvement and a smaller claim than the block was
+assigned with.
+
+**Gate split, and what it could not test.** Discrimination was settled offline on
+real data; the demo session tested reach only. Asked "which of those tiles has
+the most stuff in it?" with no statistic named, the agent chose `signal_coverage`
+unprompted and said why — but the demo camera returned bit-identical frames, so
+all nine tiles tied at 0.0 and the ranking's discriminating behaviour was not
+exercised. The saturation refusal was likewise unexercised on-rig. Both rest on
+the offline measurements and unit tests, and the gate record says so. One
+behaviour noted rather than fixed: the agent answered from the log it had already
+read and called `rank_hook_log` only after being invited to.
