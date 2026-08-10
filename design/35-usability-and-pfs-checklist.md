@@ -6737,6 +6737,16 @@ This is an inventory, not permission to close with unresolved blank work. Block
   through the guard like every other path, with the confirmation that implies.
   Note it would also have removed the need for the hand-written file that this
   gate round then had to be told to disregard.
+- **The import-stripping check and the emitted analysis block can disagree by
+  construction.** Noted during 43h review round 4, 2026-08-10, deliberately not
+  fixed. `_adaptive_hook_export` and `_adaptive_runner_source` build the set of
+  available names with `_analysis_source(include_autofocus=True)`, while
+  `export_session_script` emits `_analysis_source(include_autofocus=autofocus_used)`.
+  A hook importing an autofocus symbol would therefore pass the check and
+  `NameError` at runtime. **Unreachable today** — `autofocus_used = adaptive_used
+  or ...`, so it is always True wherever the stripping runs — so this is a latent
+  coupling, not a live defect. One line to close (pass the same flag) whenever
+  that file is next open; recorded so it is not rediscovered as a mystery.
 - **The exporter had no guard that what it wrote was valid Python.** Found in
   43h review round 4, 2026-08-10, and fixed there (`ce4317d`). Removing package
   imports by line number emptied any block whose only statement was the import —
