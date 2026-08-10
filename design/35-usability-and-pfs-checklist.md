@@ -6638,6 +6638,48 @@ This is an inventory, not permission to close with unresolved blank work. Block
   filaments is the hook's *name* being wrong, not its measurement. As a general
   "is there structure here" detector it was right twice; only the label said
   filaments.
+- **The emitted "standalone" script is not microclaw-free; it fakes the package
+  into `sys.modules`.** Operator finding, demo round 2, 2026-08-10 — *"it would
+  be good if it didn't rely on microclaw imports to run"*. The artifact carries
+  **18** `microclaw` references, including two module-level
+  `from microclaw.hook_decisions import ContinueSurvey, StopSurvey, HookResult`
+  lines inside the inlined hook source, function-local
+  `from microclaw.hooks import …` inside the inlined adapter, and a shim that
+  assigns four fake modules into `sys.modules` so all of it resolves. It runs —
+  and it reads, to a human and to any static check, as depending on microclaw,
+  which is the opposite of what `CLAUDE.md` promises the artifact is.
+  **It is also latently broken.** The shim hand-lists four modules and a fixed
+  name set; `microclaw.image_analysis` is **not** among them, so a saved hook
+  that writes the natural `from microclaw.image_analysis import snr` gets an
+  `ImportError` on the rig *even though `snr` is inlined a few hundred lines
+  above*. The free-name guard cannot see this — an `ImportFrom` binds the name
+  as far as AST scanning goes — so it is the block-13/41b failure class arriving
+  through the import door instead of the name door.
+  **Partly 43h's own doing**: the shim is new in that block, so there is a case
+  for folding this in rather than deferring it. Recommended direction, for a
+  decision rather than a default: **drop `microclaw` imports from inlined source
+  instead of shimming them.** Every name they bind is already defined at module
+  level in the emitted script, so removing the line changes no behaviour and is
+  not a paraphrase of logic the way re-writing the runner would be. It also buys
+  a property worth having and trivially testable — *the emitted script contains
+  the string `microclaw` nowhere* — which is far stronger than a shim that must
+  be kept in sync with what hooks happen to import.
+- **Microclaw cannot write a text file to disk, and the operator had to copy a
+  script out of the chat window.** Same session. Asked for a portable script
+  saved beside the dataset, the agent said it would save it and then correctly
+  retracted: *"I do not have a tool that writes an arbitrary text file to disk …
+  None of them can place a hand-written `.py` at
+  `C:\Users\rieslab\microclaw_data\repeat_metric_survey\`."*
+  `generate_and_save_hook` writes only to `~/.microclaw/hooks/`,
+  `export_session_script` writes only its own compiled output, and nothing else
+  writes files. The operator asked for a clean code block and pasted it by hand.
+  This lands directly on F14's premise — the point of the block is that the
+  operator *walks away with a script* — and a capability whose last mile is
+  copy-paste from a transcript is not that. The agent's handling was right, and
+  the gap is real. Size it as its own block: a bounded write, workspace-resolved
+  through the guard like every other path, with the confirmation that implies.
+  Note it would also have removed the need for the hand-written file that this
+  gate round then had to be told to disregard.
 - **Fifteen registry tools still have no export decoration, and each one halts
   any script that recorded it.** Found by sweeping `TOOL_REGISTRY` after block
   43h's demo round 2, 2026-08-10, where the sixteenth — `generate_and_save_hook`
