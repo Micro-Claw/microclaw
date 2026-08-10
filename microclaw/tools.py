@@ -597,8 +597,8 @@ def _adaptive_runner_source() -> str:
         f"_CANDIDATE_POLL_S = {_CANDIDATE_POLL_S!r}\n",
         inspect.getsource(_note_budget_exhausted),
         inspect.getsource(_survey_event_stream),
-        '''# Satisfy the exact function-local imports in the inlined sources
-# without requiring Microclaw to be installed beside this script.
+        '''# This local module shim satisfies the exact function-local imports in
+# the inlined sources; it contains only the definitions embedded in this script.
 _microclaw_module = ModuleType(\"microclaw\")
 _hooks_module = ModuleType(\"microclaw.hooks\")
 _hooks_module.HookBase = HookBase
@@ -610,12 +610,11 @@ for _name in (\"MoveStage\", \"AcquireAt\", \"SetExposure\", \"ContinueSurvey\",
     setattr(_decisions_module, _name, globals()[_name])
 _autofocus_module = ModuleType(\"microclaw.autofocus\")
 for _name in (\"coarse_then_fine_autofocus\", \"coarse_then_fine_plane_count\"):
-    if _name in globals():
-        setattr(_autofocus_module, _name, globals()[_name])
-sys.modules.setdefault(\"microclaw\", _microclaw_module)
-sys.modules.setdefault(\"microclaw.hooks\", _hooks_module)
-sys.modules.setdefault(\"microclaw.hook_decisions\", _decisions_module)
-sys.modules.setdefault(\"microclaw.autofocus\", _autofocus_module)
+    setattr(_autofocus_module, _name, globals()[_name])
+sys.modules[\"microclaw\"] = _microclaw_module
+sys.modules[\"microclaw.hooks\"] = _hooks_module
+sys.modules[\"microclaw.hook_decisions\"] = _decisions_module
+sys.modules[\"microclaw.autofocus\"] = _autofocus_module
 ''',
     ])
     return "\n".join(parts)
@@ -624,6 +623,8 @@ sys.modules.setdefault(\"microclaw.autofocus\", _autofocus_module)
 def _export_guard_source(limits: dict[str, Any]) -> str:
     """Render the acquisition-time motion bounds as a small literal guard."""
     return f'''# These are the limits recorded at export time; editing this dict edits the limits.
+# Seed-plan XY/Z events are checked here before acquisition; any additional
+# hardware action implemented inside a precoded hook remains that hook's responsibility.
 _LIMITS = {limits!r}
 class SafetyViolation(Exception):
     pass
@@ -727,11 +728,16 @@ def _emit_adaptive(params: RecordedParams, kind: str) -> str:
         _export_guard_source(limits), hook_source,
         f"_log_path = {params.get('log_path')!r}", f"hook = {constructor}",
     ]
+    from microclaw.authorization import CHANNEL_CONFIG_GROUP
     channel = params.get("channel")
     shape: dict[str, Any]
     if kind == "zstack":
         shape = {"z_start": params["z_start_um"], "z_end": params["z_end_um"],
                  "z_step": params["z_step_um"]}
+        common.extend([
+            f"guard.check_z({params['z_start_um']!r})",
+            f"guard.check_z({params['z_end_um']!r})",
+        ])
     elif kind == "timelapse":
         shape = {"num_time_points": params["n_frames"],
                  "time_interval_s": params["interval_s"]}
@@ -757,11 +763,23 @@ def _emit_adaptive(params: RecordedParams, kind: str) -> str:
             raise CannotEmit(f"unknown recorded adaptive survey protocol {protocol!r}")
         shape["xy_positions"] = [(p["x_um"], p["y_um"]) for p in positions]
         shape["position_labels"] = [p["name"] for p in positions]
+        common.extend(
+            f"guard.check_xy({p['x_um']!r}, {p['y_um']!r})" for p in positions
+        )
+        if protocol == "zstack":
+            common.extend([
+                f"guard.check_z({pp['z_start_um']!r})",
+                f"guard.check_z({pp['z_end_um']!r})",
+            ])
+        if pp.get("exposure_ms") is not None:
+            common.append(f"guard.check_exposure({pp['exposure_ms']!r})")
         if pp.get("channel"):
-            shape["channel_group"] = "Channel"
+            shape["channel_group"] = CHANNEL_CONFIG_GROUP
             shape["channels"] = [pp["channel"]]
             if pp.get("exposure_ms") is not None:
                 shape["channel_exposures_ms"] = [pp["exposure_ms"]]
+        elif pp.get("exposure_ms") is not None:
+            common.append(f"core.set_exposure({pp['exposure_ms']!r})")
         common.extend([
             f"events = multi_d_acquisition_events(**{{k: v for k, v in {shape!r}.items() if v is not None}})",
             "candidates = queue.Queue()", f"progress = SurveyProgress({len(positions)})",
@@ -771,19 +789,19 @@ def _emit_adaptive(params: RecordedParams, kind: str) -> str:
             "'image_process_fn': getattr(hook, 'image_process_fn', None), "
             "'post_hardware_hook_fn': getattr(hook, 'post_hardware_hook_fn', None)"
             "}.items() if callback is not None}",
-            f"with Acquisition(directory={params.get('save_dir')!r}, name={params.get('name', 'survey')!r}, show_display=True, **_hook_callbacks) as acq:",
+            f"with Acquisition(directory=str(_HERE), name={params.get('name', 'survey')!r}, show_display=True, **_hook_callbacks) as acq:",
             "    acq.acquire(event_source(acq))",
         ])
         return "\n\n".join(common)
     if channel:
-        shape.update(channel_group="Channel", channels=[channel])
+        shape.update(channel_group=CHANNEL_CONFIG_GROUP, channels=[channel])
     common.extend([
         f"events = multi_d_acquisition_events(**{shape!r})",
         "_hook_callbacks = {name: callback for name, callback in {"
         "'image_process_fn': getattr(hook, 'image_process_fn', None), "
         "'post_hardware_hook_fn': getattr(hook, 'post_hardware_hook_fn', None)"
         "}.items() if callback is not None}",
-        f"with Acquisition(directory={params.get('save_dir')!r}, name={params.get('name', 'adaptive')!r}, show_display=True, **_hook_callbacks) as acq:",
+        f"with Acquisition(directory=str(_HERE), name={params.get('name', 'adaptive')!r}, show_display=True, **_hook_callbacks) as acq:",
         "    acq.acquire(events)",
     ])
     return "\n\n".join(common)
@@ -819,7 +837,7 @@ def export_session_script(
             and params.get("protocol") == "snap")
         for name, params in recorded
     )
-    autofocus_used = any(
+    autofocus_used = adaptive_used or any(
         name == "run_autofocus" or params.get("hook_strategy") == "autofocus_per_position"
         for name, params in recorded
     )

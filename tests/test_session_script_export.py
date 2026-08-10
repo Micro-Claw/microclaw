@@ -772,6 +772,61 @@ def test_named_multiposition_refuses_after_a_failed_mark(tmp_path):
     assert "xyz_positions" not in source
 
 
+def _undefined_emitted_names(source):
+    """Return runtime global loads not bound by an emitted top-level block."""
+    import ast, builtins
+
+    tree = ast.parse(source)
+    defined = {n.name for n in ast.walk(tree)
+               if isinstance(n, (ast.FunctionDef, ast.ClassDef))}
+    defined |= {t.id for n in ast.walk(tree) if isinstance(n, ast.Assign)
+                for t in n.targets if isinstance(t, ast.Name)}
+    defined |= {a.asname or a.name.split(".")[0]
+                for n in ast.walk(tree)
+                if isinstance(n, (ast.Import, ast.ImportFrom)) for a in n.names}
+
+    annotated: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            args = node.args
+            slots = [arg.annotation for arg in (
+                *args.posonlyargs, *args.args, *args.kwonlyargs,
+                *(a for a in (args.vararg, args.kwarg) if a is not None),
+            )] + [node.returns]
+        elif isinstance(node, ast.AnnAssign):
+            slots = [node.annotation]
+        else:
+            continue
+        for slot in slots:
+            if slot is not None:
+                annotated.update(id(item) for item in ast.walk(slot))
+
+    undefined = set()
+    # Only top-level definitions begin a scope scan. Walking the whole tree
+    # would visit event_stream independently and lose parameters bound by its
+    # enclosing survey-event-stream and factory closures.
+    for node in tree.body:
+        if not isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+            continue
+        local = {a.arg for f in ast.walk(node)
+                 if isinstance(f, ast.FunctionDef)
+                 for a in (*f.args.posonlyargs, *f.args.args, *f.args.kwonlyargs,
+                           *(x for x in (f.args.vararg, f.args.kwarg)
+                             if x is not None))}
+        local |= {n.id for n in ast.walk(node)
+                  if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)}
+        local |= {n.name for n in ast.walk(node)
+                  if isinstance(n, ast.ExceptHandler) and n.name}
+        undefined.update(
+            n.id for n in ast.walk(node)
+            if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
+            and id(n) not in annotated
+            and n.id not in defined and n.id not in local
+            and not hasattr(builtins, n.id)
+        )
+    return undefined
+
+
 @pytest.mark.parametrize("records", [
     [call("run_timelapse", {"n_frames": 1, "interval_s": 0,
                             "save_dir": "/recorded"})],
@@ -1007,6 +1062,12 @@ def test_all_adaptive_program_shapes_emit_seed_hook_and_runner(
     assert inspect.getsource(tools._survey_event_stream) in source
     assert inspect.getsource(tools.SurveyProgress) in source
     assert "class SNRObservationHook" in source
+    assert "directory=str(_HERE)" in source
+    if tool == "run_adaptive_zstack":
+        assert "guard.check_z(-2)" in source
+        assert "guard.check_z(2)" in source
+    elif tool == "run_adaptive_survey":
+        assert "guard.check_xy(1.25, 2.5)" in source
     assert "# NOT EMITTED:" not in source
     compile(source, str(tmp_path / "routine.py"), "exec")
 
@@ -1064,6 +1125,93 @@ def test_saved_adaptive_hook_source_and_manifest_pin_are_inlined(
     assert "UntrustedHookAdapter(Saved(" in source
 
 
+def test_adaptive_survey_without_channel_replays_recorded_exposure(tmp_path):
+    _, _, source = export(tmp_path, [call("run_adaptive_survey", {
+        "protocol": "timelapse",
+        "protocol_params": {"n_frames": 1, "interval_s": 0, "exposure_ms": 200},
+        "positions": [{"name": "p0", "x_um": 1, "y_um": 2}],
+        "save_dir": "session", "hook_strategy": "snr_observer",
+    })])
+    assert "guard.check_exposure(200)" in source
+    assert "core.set_exposure(200)" in source
+
+
+@pytest.mark.parametrize("tool, params", [
+    ("run_adaptive_timelapse", {
+        "n_frames": 2, "interval_s": 0, "save_dir": "session",
+        "hook_strategy": "snr_observer", "channel": "DAPI",
+    }),
+    ("run_adaptive_survey", {
+        "protocol": "timelapse",
+        "protocol_params": {"n_frames": 1, "channel": "DAPI"},
+        "positions": [{"name": "p0", "x_um": 1, "y_um": 2}],
+        "save_dir": "session", "hook_strategy": "snr_observer",
+    }),
+])
+def test_adaptive_emitters_use_shared_channel_group(
+    tmp_path, monkeypatch, tool, params
+):
+    import microclaw.authorization as authorization
+
+    monkeypatch.setattr(authorization, "CHANNEL_CONFIG_GROUP", "RigChannels")
+    _, _, source = export(tmp_path, [call(tool, params)])
+    assert "'channel_group': 'RigChannels'" in source
+    assert "'channel_group': 'Channel'" not in source
+
+
+def test_emitted_adaptive_seed_check_refuses_out_of_bounds_before_acquisition(
+    tmp_path,
+):
+    import sys
+    guard = Guard(tmp_path)
+    guard._c = SimpleNamespace(
+        stage=SimpleNamespace(
+            x_min=-10, x_max=10, y_min=-10, y_max=10, z_min=-5, z_max=5,
+        ),
+        camera=SimpleNamespace(max_exposure_ms=100),
+        analysis=SimpleNamespace(min_snr=None),
+    )
+    records = [call("run_adaptive_survey", {
+        "protocol": "timelapse", "protocol_params": {"n_frames": 1},
+        "positions": [{"name": "unsafe", "x_um": 11, "y_um": 0}],
+        "save_dir": "session", "hook_strategy": "snr_observer",
+    })]
+    tools.export_session_script(None, guard, "routine.py", records)
+    source = (tmp_path / "routine.py").read_text(encoding="utf-8").replace(
+        "from pycromanager import Acquisition, Core, multi_d_acquisition_events", ""
+    )
+
+    class Acquisition:
+        entered = False
+        def __init__(self, **_kwargs): pass
+        def __enter__(self):
+            self.entered = True
+            return self
+        def __exit__(self, *_args): pass
+        def acquire(self, _events): pass
+
+    module_names = (
+        "microclaw", "microclaw.hooks", "microclaw.hook_decisions",
+        "microclaw.autofocus",
+    )
+    original_modules = {name: sys.modules.get(name) for name in module_names}
+    try:
+        with pytest.raises(Exception, match="recorded maximum 10"):
+            exec(compile(source, "routine.py", "exec"), {
+                "__file__": str(tmp_path / "routine.py"),
+                "Core": lambda: SimpleNamespace(),
+                "Acquisition": Acquisition,
+                "multi_d_acquisition_events": lambda **kwargs: [kwargs],
+            })
+    finally:
+        for name, module in original_modules.items():
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
+    assert Acquisition.entered is False
+
+
 @pytest.mark.parametrize("records", [
     pytest.param([call("snap_and_analyze", {})], id="analysis"),
     pytest.param(
@@ -1105,61 +1253,15 @@ def test_emitted_inline_defines_every_name_it_uses(tmp_path, records):
     inlined, and the script `NameError`s on the rig. Add a param here whenever
     the exporter learns to inline something new.
     """
-    import ast, builtins
-
     _, _, source = export(tmp_path, records)
     assert "# NOT EMITTED:" not in source
-    tree = ast.parse(source)
-    defined = {n.name for n in ast.walk(tree)
-               if isinstance(n, (ast.FunctionDef, ast.ClassDef))}
-    defined |= {t.id for n in ast.walk(tree) if isinstance(n, ast.Assign)
-                for t in n.targets if isinstance(t, ast.Name)}
-    defined |= {a.asname or a.name.split(".")[0]
-                for n in ast.walk(tree)
-                if isinstance(n, (ast.Import, ast.ImportFrom)) for a in n.names}
-    defined |= {a.arg for f in ast.walk(tree) if isinstance(f, ast.FunctionDef)
-                for a in (*f.args.posonlyargs, *f.args.args, *f.args.kwonlyargs,
-                          *(x for x in (f.args.vararg, f.args.kwarg)
-                            if x is not None))}
+    assert not _undefined_emitted_names(source)
 
-    # Annotations never evaluate. The emitted script opens with
-    # `from __future__ import annotations`, so `ctrl: MicroscopeController` is a
-    # string at runtime, not a load -- scanning it would fail a script that runs
-    # perfectly (it did, the moment this guard was widened past the analysis).
-    # The invariant is "would this NameError on the rig", so model that.
-    annotated: set[int] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            args = node.args
-            slots = [arg.annotation for arg in (
-                *args.posonlyargs, *args.args, *args.kwonlyargs,
-                *(a for a in (args.vararg, args.kwarg) if a is not None),
-            )] + [node.returns]
-        elif isinstance(node, ast.AnnAssign):
-            slots = [node.annotation]
-        else:
-            continue
-        for slot in slots:
-            if slot is not None:
-                annotated.update(id(item) for item in ast.walk(slot))
 
-    for node in ast.walk(tree):
-        if not isinstance(node, (ast.FunctionDef, ast.ClassDef)):
-            continue
-        # Every name bound anywhere in the body: assignment, tuple unpacking,
-        # for-targets, comprehensions, with-as. Store context covers them all.
-        local = {a.arg for f in ast.walk(node)
-                 if isinstance(f, ast.FunctionDef)
-                 for a in (*f.args.posonlyargs, *f.args.args, *f.args.kwonlyargs,
-                           *(x for x in (f.args.vararg, f.args.kwarg)
-                             if x is not None))}
-        local |= {n.id for n in ast.walk(node)
-                  if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)}
-        local |= {n.name for n in ast.walk(node)
-                  if isinstance(n, ast.ExceptHandler) and n.name}
-        for name in (n.id for n in ast.walk(node)
-                     if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
-                     and id(n) not in annotated):
-            assert (name in defined or name in local
-                    or hasattr(builtins, name)), (
-                f"emitted script references {name!r} but never defines it")
+def test_emitted_free_name_guard_detects_a_removed_inline(tmp_path):
+    _, _, source = export(tmp_path, [call("run_adaptive_timelapse", {
+        "n_frames": 2, "interval_s": 0, "save_dir": "session",
+        "hook_strategy": "snr_observer",
+    })])
+    broken = source.replace(inspect.getsource(image_analysis.resolve_min_snr), "")
+    assert "resolve_min_snr" in _undefined_emitted_names(broken)
