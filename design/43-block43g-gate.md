@@ -63,11 +63,39 @@ Sweeping the threshold over the 324-tile raster:
 but a coverage gate of 0.05 is flat at 5–6 tiles across the whole 2.5–3.5 band.
 Gate on coverage magnitude, not on `min_snr` alone.
 
-**2. Coverage ranked clipped frames first, and now refuses them.** Two of the
-top two tiles by `signal_coverage` were 4.0% and 19.8% saturated — frames snr
-had already refused. Fixed in `3cd78de`; four tiles of 324 are affected.
+**2. Coverage ranked clipped frames first, and now refuses them — under its own
+limit, not snr's.** Two of the top two tiles by `signal_coverage` were 4.0% and
+19.8% saturated, frames snr had already refused (four of 324 are affected).
+Coverage now applies `MAX_SATURATED_FRACTION_FOR_COVERAGE = 1%`, which is 100×
+looser than the SNR gate: coverage is a fraction, not a tail statistic, so a
+clipped pixel is still legitimately above threshold whereas a plateau lands
+p99.5 inside itself. The looser limit is required by the bead evidence below —
+the first version of this fix used snr's 0.01% gate and would have refused every
+real bead field measured.
 
-**3. This block does NOT close design/43 F6 or supply F5's measurement.**
+**3. Beads — the limb this gate first recorded as owed, now met.** Six bead
+fields in `stitch_test_cant_open/stitch_test_1`, join verified against the
+session's own `snr_observer.log` (`background_level` and `focus_metric` both
+reproduce exactly):
+
+| field | sat % | `signal_coverage` | `structure_coverage` | `signal_concentration` |
+|---|---|---|---|---|
+| survey_1 | 0.017 | 0.0718 | 0.1250 | 0.807 |
+| near_1 | 0.020 | 0.0958 | 0.1450 | 0.771 |
+| near_2 | 0.074 | 0.1306 | 0.1671 | 0.732 |
+| survey_3 | 0.077 | 0.1760 | 0.1959 | 0.477 |
+| survey_2 | 0.150 | 0.1646 | 0.1823 | 0.564 |
+| near_3 | 0.220 | 0.1777 | 0.2034 | 0.615 |
+
+The trio behaves sensibly on a punctate field: moderate coverage with high
+concentration (0.48–0.81) is exactly the signature of sparse bright puncta, and
+it is well separated from the 0.09–0.14 concentration band the extended cell
+fields occupy. **`snr` is refused on all six** — every bead field clips a few
+bead centres — so on this sample class the coverage statistics are the only
+ranking signal available, which is a stronger argument for the block than the
+one F6 made.
+
+**4. This block does NOT close design/43 F6 or supply F5's measurement.**
 Measured, not assumed:
 
 - F6's tile `scan300_488_r12_c15` ranks #1 by snr and #2 by coverage. Its
@@ -141,6 +169,9 @@ phrasing is the evidence here, not the numbers.
   value chosen from it belongs in `safety_config.yaml` as `analysis_min_snr`;
   until one is set, `min_snr_source` reads `package_default_uncalibrated` and
   says so in every record.
-- **Beads.** No saved bead pixel data exists (`multicolor_bead_run_m5` has only
-  the history and confirmations). This limb is **owed**, not met, and is carried
-  forward rather than quietly dropped.
+- **Beads.** Met offline, §3 above. An earlier draft of this doc said no saved
+  bead pixels existed anywhere — that was wrong, generalised from one folder
+  (`multicolor_bead_run_m5`, which holds only a history and confirmations).
+  Most saved data in this project outside the Nestor and amr sessions is beads;
+  `stitch_test_cant_open` is one of many. **Search the evidence archive by its
+  real folder names before declaring a data class absent.**

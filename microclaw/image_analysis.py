@@ -36,6 +36,17 @@ UNCALIBRATED_MIN_SNR_FALLBACK = 3.1
 # The least-clipped measured M5 smiley frame was 0.048% saturated; 0.01%
 # catches it with ~5x margin while tolerating a smaller isolated-pixel tail.
 MAX_SATURATED_FRACTION_FOR_SNR = 0.0001
+#: Coverage tolerates far more clipping than snr does, because it is a fraction
+#: and not a tail statistic: a clipped pixel is still legitimately above the
+#: threshold, whereas a plateau lands p99.5 inside itself and breaks snr.
+#: Bounded by measurement on both sides, and uncalibrated between them. Real
+#: bead fields (`stitch_test_1`, six fields) run 0.017%-0.220% saturated and
+#: are entirely usable — the SNR gate would refuse all six. The tiles that put
+#: clipped frames at the top of a coverage ranking (2026-08-06 M5 raster) were
+#: 4.0% and 19.8%. 1% sits in the ~18x gap between those regimes; it is not a
+#: measured optimum, and if a rig needs its own value it belongs beside
+#: analysis_min_snr in safety_config.yaml (design/43 F6, block 43g).
+MAX_SATURATED_FRACTION_FOR_COVERAGE = 0.01
 
 
 def snr_validity(

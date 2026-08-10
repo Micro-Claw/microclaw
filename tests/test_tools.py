@@ -2803,6 +2803,12 @@ class TestRunAOfflineTools:
         full scale) in the top two slots, and both were frames snr had already
         refused to score. Coverage has no validity flag of its own, so the
         saturation gate has to be applied here (design/43 F6, block 43g).
+
+        The limit is coverage's own and is deliberately far looser than snr's.
+        Real bead fields (`stitch_test_1`) run 0.017%-0.220% saturated because a
+        few bead centres hit full well; snr's 0.01% gate would refuse all six,
+        and they are entirely usable. `beads` below is the least-clipped of them
+        and must stay rankable.
         """
         records = [
             {"schema": "microclaw.analysis-observation/v1", "position": "clipped",
@@ -2811,15 +2817,18 @@ class TestRunAOfflineTools:
             {"schema": "microclaw.analysis-observation/v1", "position": "clean",
              "x_um": 3, "y_um": 4,
              "result": {"signal_coverage": 0.148, "saturated_fraction": 0.0}},
+            {"schema": "microclaw.analysis-observation/v1", "position": "beads",
+             "x_um": 5, "y_um": 6,
+             "result": {"signal_coverage": 0.0958, "saturated_fraction": 0.0002}},
         ]
         result = tools.rank_hook_log(
             mock_ctrl, unconstrained_guard, self._log(tmp_path, records),
             metric="signal_coverage",
         )
-        assert [r["position"] for r in result["ranking"]] == ["clean"]
+        assert [r["position"] for r in result["ranking"]] == ["clean", "beads"]
         assert [r["position"] for r in result["invalid_rows"]] == ["clipped"]
         assert "saturated" in result["invalid_rows"][0]["invalid_reason"]
-        assert result["ranked_entry_count"] == 1
+        assert result["ranked_entry_count"] == 2
 
     def test_rank_hook_log_ranks_a_clipped_frame_when_the_metric_is_snr(
         self, mock_ctrl, unconstrained_guard, tmp_path
