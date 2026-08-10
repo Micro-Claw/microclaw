@@ -1,6 +1,6 @@
 # Block 43h rig gate — emitted adaptive programs
 
-Implementation ancestor: 36c1bd7
+Implementation ancestor: 8fcbd1d
 
 Use PowerShell from the checked-out repository. uv is the single launcher for
 every Python/project command below; do not substitute bare Python for one line.
@@ -27,7 +27,7 @@ Step 4 has run.
 
 ## Step 0 — pin and run the full Windows suite
 
-    git merge-base --is-ancestor 36c1bd7 HEAD
+    git merge-base --is-ancestor 8fcbd1d HEAD
     if ($LASTEXITCODE -ne 0) { throw "Block 43h implementation is not in this checkout" }
 
     uv run python -m pytest -q > suite-43h.txt 2>&1
@@ -37,10 +37,10 @@ Step 4 has run.
     uv run python -m pytest --collect-only -q > collected-43h.txt 2>&1
     if ($LASTEXITCODE -ne 0) { Get-Content collected-43h.txt; throw "Collection failed" }
 
-Expected on the Windows rig for this branch: **1712 passed + 116 skipped = 1828
+Expected on the Windows rig for this branch: **1713 passed + 116 skipped = 1829
 collected**, with 3 expected warnings. The total is derived on this branch, not
 copied from an earlier block. Compare 116 skips with the previous run on this
-same host; stop if tests failed, collection is not 1828, or the skip count rose.
+same host; stop if tests failed, collection is not 1829, or the skip count rose.
 
 ## Step 1 — offline export checks
 
@@ -50,21 +50,55 @@ These checks do not book microscope time.
     if ($LASTEXITCODE -ne 0) { Get-Content export-tests-43h.txt; throw "Exporter checks failed" }
     Get-Content export-tests-43h.txt
 
-Pass when the file reports 79 passed. It covers all three seed shapes, exact
+Pass when the file reports 80 passed. It covers all three seed shapes, exact
 source inlining, saved-hook provenance, full-precision named-position
 resolution, and narrow refusals.
 
 ## Step 2 — make one real adaptive program during an ordinary session
 
-Fold this into an ordinary session with a small, safe plan. At least one request
-must be phrased exactly at the user level, with no tool name, for example:
+> **Round 1 of this gate failed here, and the criterion was at fault.** The
+> request read *"Watch this field for three frames, record the image quality
+> each time, and give me a standalone script I can keep and rerun later"* — and
+> the agent answered it with three `snap_and_analyze` calls and an export, which
+> is a fair reading. Nothing in that sentence required a decision to be made
+> from what was seen, so nothing required an adaptive run, and the emitted
+> script contained none of this block's code. Naming no tool is necessary and
+> **not** sufficient: the request must be one that only the thing under test can
+> answer.
+>
+> The distinguishing feature of an adaptive run is that **what it sees changes
+> what it does next**, and that the decision survives into the script. Both
+> halves have to be in the operator's sentence.
 
-> Watch this field for three frames, record the image quality each time, and
-> give me a standalone script I can keep and rerun later.
+### 2a — reach: does the agent get there unprompted
 
-Pass when the agent reaches the adaptive acquisition and exports a Python script
-without being coached toward an exporter or acquisition function. Record the
-session history and the emitted script.
+Fold this into an ordinary session with a small, safe plan. Phrase it at the
+user level, naming no tool:
+
+> Go through these positions one at a time and have it stop itself once it has
+> seen enough — I don't want to sit and watch it. And give me a script that
+> makes that call on its own when I rerun it next week.
+
+Pass when the agent reaches an adaptive acquisition and exports a script,
+without being coached toward an exporter, a runner or a hook.
+
+**If it does not, that is a finding, not the end of the gate.** Record what it
+did instead — that is the same class as 43e's round 1, where two built-in
+adapters were correct and unreachable — then continue to 2b so the mechanism is
+still tested. Do not skip to Step 3 with a non-adaptive script; it proves
+nothing about this block.
+
+### 2b — mechanism: ask directly if 2a did not land
+
+Only if 2a failed. Ask plainly for an adaptive survey over a handful of
+positions with a hook that stops the run once it has seen two frames, and let
+the agent write and save the hook. Record 2a as FAILED and 2b as the route
+taken; a block gated only through 2b is gated on mechanism and owes a reach
+criterion.
+
+### Inspect the emitted script either way
+
+Record the session history and the emitted script.
 
 Before ending the live session, inspect the script:
 
@@ -77,6 +111,14 @@ Before ending the live session, inspect the script:
   editing the dictionary edits those recorded limits.
 - The script contains no filesystem path into this Microclaw checkout; it writes
   beside itself via `_HERE`.
+
+**Stop here if the script contains no adaptive program.** The cheapest check,
+and the one round 1 needed: the file must contain `_LIMITS`,
+`_survey_event_stream` and `SurveyProgress`, and a `# RECORDED TOOL:
+run_adaptive_*` line. If those are absent, the session never reached this block
+and Step 3 cannot be run against this artifact — go back to 2b.
+
+    Select-String -Path .\PATH-TO-EXPORTED-SCRIPT.py -Pattern '_LIMITS','_survey_event_stream','SurveyProgress','RECORDED TOOL: run_adaptive'
 
 ## Step 3 — close Microclaw and run the emitted program
 
