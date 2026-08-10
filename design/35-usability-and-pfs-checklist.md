@@ -6638,6 +6638,28 @@ This is an inventory, not permission to close with unresolved blank work. Block
   filaments is the hook's *name* being wrong, not its measurement. As a general
   "is there structure here" detector it was right twice; only the label said
   filaments.
+- **`export_session_script` is all-or-nothing, and a protocol-development
+  session is mostly false starts.** Operator finding, demo round 3, 2026-08-10:
+  *"A session where we develop a new protocol is likely to have several bad
+  actions within it as we figure out what is best. We don't want these in the
+  script."* That session ran four adaptive surveys — `quality_survey`,
+  `_v2`, `_optA`, `_opt2`, visibly iterations of one idea with different
+  `hook_params` — and the exported script replays all four, which is why the
+  standalone run produced four datasets. The operator keeps a script that
+  reproduces every attempt they discarded.
+  **Selection belongs in the exporter, not in a file-writing tool.** The
+  exporter's guarantee is that every step was rendered by the `@emits` renderer
+  of the tool that ran; an agent hand-composing a subset is the fabrication path
+  41b exists to close, and round 2 showed what it produces — a hand-written
+  standalone script that bypassed `SafetyGuard` entirely, as the agent itself
+  said. Choosing *which recorded calls to render* keeps the guarantee; composing
+  the file does not.
+  **The hazard to design against is not omission but stale state**: dropping a
+  `set_channel`, an ROI change or a stage move while keeping an acquisition that
+  depended on it yields a script that runs cleanly and images the wrong thing —
+  worse than one that does too much. Excluded steps must appear in the artifact
+  as comments rather than vanishing, and the limitation must be stated where the
+  operator reads it. **Folded into 43h round 4.**
 - **`run_adaptive_survey` counts progress in positions while its plan is in
   frames, so a survey with `n_frames > 1` truncates nondeterministically.**
   Found by 43h's demo round 3, 2026-08-10 — and only findable by running the
