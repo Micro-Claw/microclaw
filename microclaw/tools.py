@@ -549,11 +549,17 @@ def _source_bound_names(source: str) -> set[str]:
     tree = ast.parse(source)
     names = {node.name for node in tree.body
              if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))}
-    names.update(node.id for statement in tree.body for node in ast.walk(statement)
-                 if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store))
+    for statement in tree.body:
+        targets = (
+            statement.targets if isinstance(statement, ast.Assign)
+            else [statement.target] if isinstance(statement, ast.AnnAssign)
+            else []
+        )
+        names.update(node.id for target in targets for node in ast.walk(target)
+                     if isinstance(node, ast.Name))
     names.update(
         alias.asname or alias.name.split(".")[0]
-        for statement in tree.body for node in ast.walk(statement)
+        for node in tree.body
         if isinstance(node, (ast.Import, ast.ImportFrom))
         and not ((isinstance(node, ast.ImportFrom)
                   and (node.module or "").startswith("microclaw"))
