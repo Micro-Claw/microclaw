@@ -25,6 +25,25 @@ narrowed 43g's demo gate to reach only).
 closing Steps 0–3 and leaving Step 4 open; do not mark the block gated until
 Step 4 has run.
 
+### Start here if you are picking this up on M5 or M2
+
+Demo rounds 1–3 already closed **Step 0, Step 1, Step 2a and Step 3** (see the
+43h ledger row in `design/35-usability-and-pfs-checklist.md`). What a rig session
+owes is:
+
+1. **Step 0 again, on this machine.** Standing constraint: a block gated by a rig
+   session runs the full suite there too. It is also the only part of the gate
+   that exercises code this block did not touch.
+2. **Step 4, including 4a** — the sample-driven decision, and the live-versus-
+   emitted frame-count comparison that no round has been able to make.
+3. **Step 3b, which a rig can finally exercise.** It went untested on the demo
+   twice because a content threshold cannot fire on contentless frames. On a real
+   sample it can, so run 3b's shape here and let the hook stop on a measurement
+   rather than a counter.
+
+Steps 2a and 3a do not need repeating unless something about the session makes
+them free.
+
 ## Step 0 — pin and run the full Windows suite
 
     git merge-base --is-ancestor ce4317d HEAD
@@ -182,7 +201,10 @@ shape, both verified in the code at review:
 
 Ask the agent, in the operator's words, for a survey over a handful of positions
 that stops once it has seen two frames. The hook it saves should decide from a
-frame counter or the metadata axes, for example:
+frame counter or the metadata axes, for example — note that the **saved** hook
+imports from `microclaw` and is meant to, because it runs inside Microclaw; the
+exporter strips that import from the emitted copy, which is why Step 2's
+"imports nothing from `microclaw`" check applies to the script and not to this:
 
 ```python
 class StopAfterTwo:
