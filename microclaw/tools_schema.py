@@ -1486,13 +1486,20 @@ TOOLS: list[dict[str, Any]] = [
             "Deterministically rank completed observation records offline. No image "
             "analysis, acquisition, motion, thresholding, network, or adjudicator is "
             "used. The key is descending result metric with ascending position label "
-            "as the tie-break. Returns the full ordering and requested budget views."
+            "as the tie-break. For surveys, prefer metric='signal_coverage' over "
+            "snr: coverage measures field extent, while snr is a tail statistic. "
+            "Coverage deliberately has no validity flag and retains every finite "
+            "row; the returned rows carry the min_snr threshold and source used to "
+            "compute it. Returns the full ordering and requested budget views."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "log_path": {"type": "string"},
-                "metric": {"type": "string", "default": "snr"},
+                "metric": {"type": "string", "default": "snr", "description":
+                    "Ranking statistic. Prefer signal_coverage for survey fields; "
+                    "state another choice and why. Logs recorded before coverage "
+                    "was added are refused rather than ranked silently."},
                 "budgets": {"type": "array", "items": {"type": "integer"}},
                 "position_list_path": {
                     "type": "string",

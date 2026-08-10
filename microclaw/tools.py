@@ -36,6 +36,7 @@ from microclaw.controller import (
 )
 from microclaw.errors import hint_for_error, humanize_java_error
 from microclaw.image_analysis import (
+    MAX_SATURATED_FRACTION_FOR_COVERAGE,
     ImageStats,
     compute_stats,
     detect_features,
@@ -517,7 +518,8 @@ def _analysis_source(*, include_autofocus: bool = False) -> str:
     for fn in (
         image_analysis._reshape_pixels, image_analysis.snap_to_numpy,
         image_analysis.snr, image_analysis.tenengrad,
-        image_analysis.snr_validity, image_analysis.compute_stats,
+        image_analysis.snr_validity, image_analysis.coverage_stats,
+        image_analysis.compute_stats,
     ):
         parts.append(inspect.getsource(fn))
     if include_autofocus:
@@ -2456,6 +2458,9 @@ def snap_and_analyze(
         "min_intensity": round(stats.min_intensity, 1),
         "max_intensity": round(stats.max_intensity, 1),
         "saturated_fraction": round(stats.saturated_fraction, 6),
+        "signal_coverage": round(stats.signal_coverage, 6),
+        "structure_coverage": round(stats.structure_coverage, 6),
+        "signal_concentration": round(stats.signal_concentration, 6),
     }
     restore = _live_restore_report(live_state)
     if restore:
@@ -2702,6 +2707,10 @@ def find_features(
     with _pause_live(ctrl) as live_state:
         image = snap_to_numpy(ctrl)
     out = detect_features(image, min_sigma, max_sigma, threshold_rel)
+    out["detector_scope"] = (
+        "Puncta detector: an extended or filamentous field can contain strong "
+        "signal and still score low here."
+    )
     live_report = _live_restore_report(live_state)
     if live_report:
         out["live_view_restore"] = live_report
@@ -4999,6 +5008,11 @@ def read_hook_log(ctrl: MicroscopeController, guard: SafetyGuard, log_path: str)
             "artifact": {"kind": "hook_log", "path": log_path}}
 
 
+_COVERAGE_METRICS = frozenset({
+    "signal_coverage", "structure_coverage", "signal_concentration",
+})
+
+
 @emits_nothing
 def rank_hook_log(
     ctrl: MicroscopeController,
@@ -5032,6 +5046,11 @@ def rank_hook_log(
         result = entry.get("result") or {}
         missing = [k for k in ("position", "x_um", "y_um") if entry.get(k) is None]
         if metric not in result:
+            if metric in _COVERAGE_METRICS:
+                return {"error": (
+                    f"Entry {i} predates the {metric} statistic; this hook log "
+                    "must be reacquired before it can be ranked by coverage."
+                )}
             missing.append(f"result.{metric}")
         if missing:
             return {"error": f"Entry {i} is missing required field(s): {missing}"}
@@ -5039,15 +5058,31 @@ def rank_hook_log(
             return {"error": f"Duplicate position in hook log: {label}"}
         seen.add(label)
         valid_key = f"{metric}_valid"
-        if result.get(valid_key) is False:
+        saturated = result.get("saturated_fraction")
+        # A coverage statistic has no validity flag of its own (it is defined for
+        # every finite image), so clipping has to be caught here or not at all.
+        # Without this, ranking by coverage puts the overexposed tiles on top --
+        # measured on the 2026-08-06 M5 raster, where the two highest
+        # signal_coverage tiles of 324 were 4.0% and 19.8% saturated and both
+        # were frames snr had refused to score. The limit is coverage's own and
+        # is far looser than snr's: real bead fields run 0.017%-0.220% saturated
+        # and must stay rankable (design/43 F6, block 43g).
+        clipped = (metric in _COVERAGE_METRICS and saturated is not None
+                   and saturated > MAX_SATURATED_FRACTION_FOR_COVERAGE)
+        if result.get(valid_key) is False or clipped:
             invalid_rows.append({
                 "position": label, "x_um": entry["x_um"], "y_um": entry["y_um"],
                 **({"z_um": entry["z_um"]} if entry.get("z_um") is not None else {}),
                 metric: result[metric],
                 valid_key: False,
-                "invalid_reason": result.get(f"{metric}_invalid_reason"),
+                "invalid_reason": (
+                    f"{saturated:.4%} of pixels are saturated (limit "
+                    f"{MAX_SATURATED_FRACTION_FOR_COVERAGE:.4%}); a frame this "
+                    "clipped cannot say how much of the field is sample."
+                    if clipped else result.get(f"{metric}_invalid_reason")
+                ),
                 "focus_metric_valid": result.get("focus_metric_valid"),
-                "saturated_fraction": result.get("saturated_fraction"),
+                "saturated_fraction": saturated,
             })
             continue
         try:
@@ -5063,6 +5098,8 @@ def rank_hook_log(
             valid_key: result.get(valid_key),
             "focus_metric_valid": result.get("focus_metric_valid"),
             "saturated_fraction": result.get("saturated_fraction"),
+            "min_snr": entry.get("parameters", {}).get("min_snr"),
+            "min_snr_source": entry.get("parameters", {}).get("min_snr_source"),
         })
     rows.sort(key=lambda row: (-row[metric], row["position"]))
     for rank, row in enumerate(rows, 1):
@@ -5074,6 +5111,13 @@ def rank_hook_log(
         "log_path": log_path,
         "metric": metric,
         "ranking_key": f"descending result.{metric}, then ascending position label",
+        "metric_validity": (
+            "Coverage statistics deliberately have no validity flag; they are "
+            "defined for every finite image. Their min_snr threshold and source "
+            "travel with each ranked row."
+            if metric in _COVERAGE_METRICS
+            else f"Rows with result.{metric}_valid false are not ranked."
+        ),
         "entry_count": len(rows) + len(invalid_rows),
         "ranked_entry_count": len(rows),
         "invalid_entry_count": len(invalid_rows),

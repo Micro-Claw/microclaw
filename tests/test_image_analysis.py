@@ -44,6 +44,19 @@ def synthetic_puncta(shape=(128, 128), spots=((40, 50), (80, 90), (20, 100)),
     return np.clip(img, 0, None).astype(np.uint16)
 
 
+def simulated_scmos_frame(
+    photons, *, seed=0, ad_offset=100.0, read_noise_e=1.5,
+    electrons_per_count=0.5, qe=0.8, background_photons=1.0,
+):
+    """Photon image through the non-EM noise model used by PYME fakeCam."""
+    rng = np.random.default_rng(seed)
+    photons = np.asarray(photons, dtype=np.float64)
+    read_noise_adu = read_noise_e / electrons_per_count
+    frame = ad_offset + read_noise_adu * rng.standard_normal(photons.shape)
+    frame += rng.poisson(qe * (photons + background_photons)) / electrons_per_count
+    return np.clip(frame, 0, np.iinfo(np.uint16).max).astype(np.uint16)
+
+
 def _tagged_ctrl(pix: bytes, w: int, h: int, bpp: int, n_comp: int):
     """Mock controller whose camera reports the given pixel geometry."""
     ctrl = MagicMock()
@@ -608,6 +621,67 @@ class TestFocusMetricGate:
     def test_warning_names_the_snr_and_the_hazard(self):
         msg = focus_invalid_warning(2.4)
         assert "2.4" in msg and "noise floor" in msg
+
+
+class TestCoverageStats:
+    def test_noisy_camera_frame_separates_empty_from_structured(self):
+        photons = np.zeros((256, 256))
+        structured_photons = photons.copy()
+        structured_photons[64:192, 88:168] = 30
+        structured_photons[80:96, 100:116] = 1000
+        empty = compute_stats(simulated_scmos_frame(photons, seed=10))
+        structured = compute_stats(simulated_scmos_frame(structured_photons, seed=10))
+
+        assert empty.signal_coverage < 0.01
+        assert empty.structure_coverage < 0.005
+        assert structured.signal_coverage > 0.1
+        assert structured.structure_coverage > 0.1
+        assert structured.signal_concentration > empty.signal_concentration + 0.3
+
+    def test_blur_changes_pixel_coverage_but_preserves_structure_extent(self):
+        """F5: diffuse material below the pixel gate separates from glass."""
+        diffuse_photons = np.zeros((256, 256))
+        diffuse_photons[64:192, 88:168] = 3
+        out_of_focus = simulated_scmos_frame(diffuse_photons, seed=12)
+        empty = simulated_scmos_frame(np.zeros_like(diffuse_photons), seed=12)
+
+        field_stats = compute_stats(out_of_focus)
+        empty_stats = compute_stats(empty)
+        assert field_stats.snr < UNCALIBRATED_MIN_SNR_FALLBACK
+        assert field_stats.signal_coverage < 0.01
+        assert field_stats.structure_coverage > 0.1
+        assert empty_stats.structure_coverage < 0.005
+
+    def test_bright_corner_is_concentrated_but_spread_signal_is_not(self):
+        """F6's failure: the corner must WIN on snr, and extent must catch it.
+
+        The corner is 24x24 = 0.88% of the frame, deliberately wider than the
+        0.5% tail p99.5 is taken over. Narrower than that the corner does not
+        define p99.5, snr prefers the spread field unaided, and this test passes
+        without reproducing the failure it exists for: measured on this fixture,
+        a 16x16 corner reads snr 4.05 against the spread field's 239.0, and
+        20x20 reads 3411. That is F6's "1% of the frame is enough to define
+        p99.5" from the other side.
+        """
+        total_photons = 10000 * 16 * 16
+        corner_photons = np.zeros((256, 256))
+        corner_photons[8:32, 8:32] = total_photons / (24 * 24)
+        spread_photons = np.zeros((256, 256))
+        spread_photons[::4, ::4] = total_photons / (64 * 64)  # same total photons
+
+        corner_stats = compute_stats(simulated_scmos_frame(corner_photons, seed=4))
+        spread_stats = compute_stats(simulated_scmos_frame(spread_photons, seed=4))
+        # F6: snr ranks one bright corner above a field that is full of sample.
+        assert corner_stats.snr > spread_stats.snr
+        assert corner_stats.signal_coverage < spread_stats.signal_coverage
+        # ...and concentration is what says the corner is not a full field.
+        assert corner_stats.signal_concentration == pytest.approx(1.0, abs=0.05)
+        assert spread_stats.signal_concentration < 0.2
+
+    def test_empty_camera_frame_has_near_zero_coverage(self):
+        stats = compute_stats(simulated_scmos_frame(np.zeros((64, 64)), seed=20))
+        assert stats.signal_coverage < 0.01
+        assert stats.structure_coverage < 0.005
 
 
 def test_make_thumbnail_returns_valid_png():

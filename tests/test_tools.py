@@ -970,6 +970,9 @@ class TestSnapAndAnalyze:
         # "_gated": focus_metric now travels with focus_metric_valid + snr (design/25).
         assert result["focus_metric_kind"] == "tenengrad_gated"
         assert set(result["metric_valid_for"]) == {"roi", "exposure_ms", "binning"}
+        for metric in ("signal_coverage", "structure_coverage",
+                       "signal_concentration"):
+            assert result[metric] == round(result[metric], 6)
 
     def test_metric_gate_comes_from_rig_config(self, mock_ctrl):
         guard = SafetyGuard(SafetyConstraints(
@@ -2204,6 +2207,8 @@ class TestFindFeatures:
         result = find_features(mock_ctrl, unconstrained_guard)
         assert "offset_from_center_um" not in result
         assert "calibrate_stage_to_camera" in result["note"]
+        assert "Puncta detector" in result["detector_scope"]
+        assert "filamentous" in result["detector_scope"]
 
 
 class TestCenterFeature:
@@ -2768,6 +2773,91 @@ class TestRunAOfflineTools:
                                      self._log(tmp_path, records), budgets=[1, 3])
         assert [r["position"] for r in result["ranking"]] == ["c", "a", "b"]
         assert [r["rank"] for r in result["budget_views"]["3"]] == [1, 2, 3]
+
+    def test_rank_hook_log_prefers_coverage_with_threshold_provenance(
+        self, mock_ctrl, unconstrained_guard, tmp_path
+    ):
+        records = [{
+            "schema": "microclaw.analysis-observation/v1", "position": "field",
+            "x_um": 1, "y_um": 2,
+            "parameters": {"min_snr": 3.1,
+                           "min_snr_source": "package_default_uncalibrated"},
+            "result": {"signal_coverage": 0.25},
+        }]
+        result = tools.rank_hook_log(
+            mock_ctrl, unconstrained_guard, self._log(tmp_path, records),
+            metric="signal_coverage",
+        )
+        assert result["ranking"][0]["min_snr"] == 3.1
+        assert result["ranking"][0]["min_snr_source"] == "package_default_uncalibrated"
+        assert result["ranking"][0]["signal_coverage_valid"] is None
+        assert "deliberately have no validity flag" in result["metric_validity"]
+
+    def test_rank_hook_log_refuses_to_rank_a_clipped_frame_by_coverage(
+        self, mock_ctrl, unconstrained_guard, tmp_path
+    ):
+        """A clipped frame cannot say how much of the field is sample.
+
+        Measured on the 2026-08-06 M5 raster: ranking its 324 tiles by
+        signal_coverage put two saturated tiles (4.0% and 19.8% of pixels at
+        full scale) in the top two slots, and both were frames snr had already
+        refused to score. Coverage has no validity flag of its own, so the
+        saturation gate has to be applied here (design/43 F6, block 43g).
+
+        The limit is coverage's own and is deliberately far looser than snr's.
+        Real bead fields (`stitch_test_1`) run 0.017%-0.220% saturated because a
+        few bead centres hit full well; snr's 0.01% gate would refuse all six,
+        and they are entirely usable. `beads` below is the least-clipped of them
+        and must stay rankable.
+        """
+        records = [
+            {"schema": "microclaw.analysis-observation/v1", "position": "clipped",
+             "x_um": 1, "y_um": 2,
+             "result": {"signal_coverage": 0.229, "saturated_fraction": 0.0404}},
+            {"schema": "microclaw.analysis-observation/v1", "position": "clean",
+             "x_um": 3, "y_um": 4,
+             "result": {"signal_coverage": 0.148, "saturated_fraction": 0.0}},
+            {"schema": "microclaw.analysis-observation/v1", "position": "beads",
+             "x_um": 5, "y_um": 6,
+             "result": {"signal_coverage": 0.0958, "saturated_fraction": 0.0002}},
+        ]
+        result = tools.rank_hook_log(
+            mock_ctrl, unconstrained_guard, self._log(tmp_path, records),
+            metric="signal_coverage",
+        )
+        assert [r["position"] for r in result["ranking"]] == ["clean", "beads"]
+        assert [r["position"] for r in result["invalid_rows"]] == ["clipped"]
+        assert "saturated" in result["invalid_rows"][0]["invalid_reason"]
+        assert result["ranked_entry_count"] == 2
+
+    def test_rank_hook_log_ranks_a_clipped_frame_when_the_metric_is_snr(
+        self, mock_ctrl, unconstrained_guard, tmp_path
+    ):
+        """The saturation gate is coverage's, not a new rule for every metric.
+
+        snr already refuses a clipped frame upstream in snr_validity, so a log
+        whose producer scored one anyway must keep ranking the way it did.
+        """
+        records = [
+            {"schema": "microclaw.analysis-observation/v1", "position": "clipped",
+             "x_um": 1, "y_um": 2,
+             "result": {"snr": 9.0, "saturated_fraction": 0.0404}},
+        ]
+        result = tools.rank_hook_log(
+            mock_ctrl, unconstrained_guard, self._log(tmp_path, records), metric="snr",
+        )
+        assert [r["position"] for r in result["ranking"]] == ["clipped"]
+
+    def test_rank_hook_log_explains_that_old_log_predates_coverage(
+        self, mock_ctrl, unconstrained_guard, tmp_path
+    ):
+        records = [{"position": "old", "x_um": 1, "y_um": 2,
+                    "result": {"snr": 5}}]
+        result = tools.rank_hook_log(
+            mock_ctrl, unconstrained_guard, self._log(tmp_path, records),
+            metric="signal_coverage",
+        )
+        assert "predates the signal_coverage statistic" in result["error"]
 
     def test_rank_hook_log_rejects_duplicates(self, mock_ctrl, unconstrained_guard,
                                                tmp_path):

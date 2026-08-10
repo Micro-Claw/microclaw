@@ -20,6 +20,9 @@ class ImageStats(NamedTuple):
     max_intensity: float
     min_intensity: float
     saturated_fraction: float
+    signal_coverage: float       # pixels above background + min_snr * noise
+    structure_coverage: float    # same threshold after a sigma=2 px blur
+    signal_concentration: float  # brightest 1% share of above-background signal
 
 
 #: Below this SNR, "how sharp is this field?" has no answer, because there is
@@ -33,6 +36,17 @@ UNCALIBRATED_MIN_SNR_FALLBACK = 3.1
 # The least-clipped measured M5 smiley frame was 0.048% saturated; 0.01%
 # catches it with ~5x margin while tolerating a smaller isolated-pixel tail.
 MAX_SATURATED_FRACTION_FOR_SNR = 0.0001
+#: Coverage tolerates far more clipping than snr does, because it is a fraction
+#: and not a tail statistic: a clipped pixel is still legitimately above the
+#: threshold, whereas a plateau lands p99.5 inside itself and breaks snr.
+#: Bounded by measurement on both sides, and uncalibrated between them. Real
+#: bead fields (`stitch_test_1`, six fields) run 0.017%-0.220% saturated and
+#: are entirely usable — the SNR gate would refuse all six. The tiles that put
+#: clipped frames at the top of a coverage ranking (2026-08-06 M5 raster) were
+#: 4.0% and 19.8%. 1% sits in the ~18x gap between those regimes; it is not a
+#: measured optimum, and if a rig needs its own value it belongs beside
+#: analysis_min_snr in safety_config.yaml (design/43 F6, block 43g).
+MAX_SATURATED_FRACTION_FOR_COVERAGE = 0.01
 
 
 def snr_validity(
@@ -108,6 +122,68 @@ def snr(image: np.ndarray, background: float | None = None) -> float:
     if noise <= 0:                  # flat frame (all-zero, or saturated everywhere)
         return 0.0
     return float((np.percentile(img, 99.5) - bg) / noise)
+
+
+def coverage_stats(
+    image: np.ndarray, background: float, noise: float, min_snr: float,
+) -> tuple[float, float, float]:
+    """How much of the field has signal, and how evenly it is spread.
+
+    ``snr`` answers "is the brightest thing here well above noise?" -- a tail
+    statistic that one bright corner satisfies (design/43 F6). These answer
+    "how much of this field is sample?", which is the question a survey asks.
+    ``structure_coverage`` is deliberately blur-then-threshold: an out-of-focus
+    cell is spread and dim, so it can fail a per-pixel test while still being
+    obviously present (design/43 F5). It keeps the original background (the
+    same value reported in ``ImageStats``) but re-estimates noise after the blur.
+    Blurring suppresses camera noise, and retaining the unblurred noise estimate
+    makes the threshold blind to exactly that diffuse structure. Re-estimating
+    the blurred background as well would introduce a second background whose
+    median can move into signal when sample fills most of the field.
+
+    ``signal_concentration`` is the share of positive, above-background signal
+    held by the brightest 1% of pixels. A value near one identifies the bright
+    corner that can dominate SNR without filling the field. Its 1% window is
+    matched to the 0.5% tail ``snr`` takes p99.5 over, which is the band where
+    snr can be fooled at all -- so a bright region much larger than 1% of the
+    frame reads progressively lower (measured: a corner at 0.9% of the frame
+    reads 0.98, at 1.6% reads 0.63, at 3.5% reads 0.29). Read a low value as
+    "not a small bright patch", never as "spread evenly".
+
+    Shot noise makes the noise floor signal-dependent. The frame-wide MAD
+    estimates noise at background; when sample fills much of the field, signal
+    and its shot noise inflate the MAD and raise the threshold. Rig calibration
+    must therefore cover both sparse and sample-filled fields. A real camera
+    frame has a sensor pedestal and read noise, so MAD is not zero; this function
+    does not claim to handle zero-padded mosaics, whose uncovered pixels corrupt
+    the frame-wide background and noise estimates shared by all ``ImageStats``.
+    """
+    from scipy.ndimage import gaussian_filter
+
+    img = image.astype(np.float64)
+    if img.ndim == 3:
+        img = img.mean(axis=-1)
+    threshold = float(background) + float(min_snr) * float(noise)
+    signal_coverage = float(np.mean(img > threshold))
+    blurred = gaussian_filter(img, sigma=2.0)
+    blurred_noise = 1.4826 * float(
+        np.median(np.abs(blurred - np.median(blurred)))
+    )
+    structure_coverage = float(np.mean(
+        blurred > float(background) + float(min_snr) * blurred_noise
+    ))
+
+    positive_signal = np.maximum(img - float(background), 0.0).ravel()
+    total_signal = float(np.sum(positive_signal))
+    if total_signal <= 0:
+        concentration = 0.0
+    else:
+        brightest_count = max(1, int(np.ceil(positive_signal.size * 0.01)))
+        concentration = float(
+            np.sum(np.partition(positive_signal, -brightest_count)[-brightest_count:])
+            / total_signal
+        )
+    return signal_coverage, structure_coverage, concentration
 
 
 def focus_invalid_warning(
@@ -257,12 +333,16 @@ def compute_stats(
     if img.ndim == 3:
         img = img.mean(axis=-1)
     bg = float(np.median(img))           # computed once, shared by snr and the metric
+    noise = 1.4826 * float(np.median(np.abs(img - bg)))
     raw_snr = snr(image, background=bg)
     saturated_fraction = float(np.sum(image >= bit_max) / image.size)
     snr_valid, focus_metric_valid, snr_invalid_reason = snr_validity(
         image, bg, saturated_fraction, min_snr
     )
     reported_snr = round(raw_snr, 2) if snr_valid else None
+    signal_coverage, structure_coverage, signal_concentration = coverage_stats(
+        image, bg, noise, min_snr
+    )
     return ImageStats(
         focus_metric=tenengrad(image),
         focus_metric_valid=focus_metric_valid,
@@ -274,6 +354,9 @@ def compute_stats(
         max_intensity=float(np.max(image)),
         min_intensity=float(np.min(image)),
         saturated_fraction=saturated_fraction,
+        signal_coverage=signal_coverage,
+        structure_coverage=structure_coverage,
+        signal_concentration=signal_concentration,
     )
 
 
