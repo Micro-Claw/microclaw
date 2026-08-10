@@ -615,6 +615,42 @@ structure here, and it is not sharp" — `structure_coverage` high, focus invali
 That is precisely the `ridge_coverage 0.30 / snr 1.46` signature this session
 threw away.
 
+> **Measured 2026-08-10 (block 43g), and the paragraph above does not hold.**
+> The 36-tile raster is `mt_search_561/filament_raster.json` + `mt_raster_1`;
+> control exact. `structure_coverage` is **not** high on those tiles. It is
+> **0.0000** on all six tiles with real material, while all 27 bare-glass tiles
+> read `signal_coverage` 0.0031–0.0049 — a complete **inversion**, glass above
+> sample on every one of the three statistics.
+>
+> The cause is not tuning. Those tiles are **20× brighter** than glass (median
+> 3963 vs 220); their `snr` is low because a frame uniformly full of signal has
+> an enormous MAD. The signal has become the background, and no threshold of the
+> form `background + k · noise` can see it. Blur does not help: blurring
+> something already uniform changes nothing.
+>
+> **The premise "an out-of-focus cell is not bright" is backwards for this
+> data** — it is bright, and *flat*, which is a different problem needing a
+> different measurement.
+>
+> **`ridge_coverage` is not the answer either, though it looked like it.** Its
+> separation on these tiles is circular — the material/glass labels were defined
+> with it. Spearman against median intensity is 0.649. The only tile pair where
+> it disagrees with plain intensity (frames 12 and 21 of the stack) the operator
+> **could not tell apart by eye**, and the two tiles that are confirmed cells
+> (frames 20 and 17) are the two brightest in the raster, so intensity finds
+> them. One reframing worth keeping, the operator's: Sato flagging beads as well
+> as filaments is the hook's *name* being wrong, not its measurement — as a
+> general "is there structure here" detector it was right on both sample classes.
+>
+> **So this finding's mechanism is its own answer.** What identified cells in
+> both F5 and F6 was the focus response: F6's tile was exposed by autofocus
+> refusing it (contrast 0.124), and these tiles were confirmed by hand-refocus
+> converging at 9.6–42.8. **F5 is not blocked on a measurement; F5 is the
+> measurement.** What it needs from 43g is only a cheap trigger — is there more
+> light here than background, worth spending a sweep on — and the test is
+> asymmetric, which is what makes a budget affordable: convergence does not prove
+> cells, but failure to converge disproves them.
+
 **On export.** Adaptive runs refuse to emit today. That refusal is wrong and F14
 replaces it, so this finding adds no new non-emittable surface — it adds
 behaviour that F14 has to carry. Build them in that order if you can: an
@@ -687,6 +723,44 @@ Then:
   you ranked on and why.*
 - `find_features`'s payload names its own scope: *puncta detector; an extended or
   filamentous field can be strong and score low here.*
+
+> **Measured, and this finding's account of its own evidence is wrong.**
+> Block 43g, merged 2026-08-10. The three statistics were computed over the 324
+> saved tiles of this session's own raster, joined to the observation records the
+> shipped code wrote on the day (control exact: recomputed `snr` reproduced
+> logged `snr` to 0.0000).
+>
+> **`scan300_488_r12_c15` is not a bright corner.** It reads `signal_coverage`
+> **0.148** — a broad bright region covering 15% of the field — and
+> `signal_concentration` **0.137**, sitting inside the 0.09–0.14 band that every
+> good tile occupies. The paragraph above reasons from "1% of the frame is enough
+> to define p99.5", and that is true of p99.5 but not true of this tile. **The
+> statistic added to catch this case does not flag it**, and coverage moves the
+> tile only from rank #1 to rank #2 of 324.
+>
+> **What actually disqualified it is in this session's own record**: autofocus
+> refused it, coarse curve monotone to the sweep edge, fine contrast 0.124 — the
+> quote at `[85]` calls it "a diffuse bright gradient, not a sharp focusable
+> feature". That is a sharpness property, and no extent statistic separates a
+> large diffuse glow from a field of cells, because on extent they are alike.
+>
+> **A texture measure was proposed as the fix and withdrawn the same day.** See
+> F5's note below and the checklist's carried-forward register: its apparent
+> separation was circular, and the one tile pair where it disagrees with plain
+> intensity is not distinguishable by eye.
+>
+> **What 43g does deliver** is a better gate, which is a smaller claim than this
+> finding makes: a coverage threshold of 0.05 holds 5–6 tiles of 324 across
+> `min_snr` 2.5–3.5, where `min_snr` itself moves 13→60 tiles in one step from
+> 3.1 to 2.8. On **beads** — six fields, join verified — coverage is the *only*
+> ranking signal available, because every bead field clips a few bead centres and
+> `snr` is refused on all of them. Coverage carries its own clipping limit (1%,
+> 100× looser than snr's) for exactly that reason.
+>
+> **This finding is not closed.** What it asks for needs the focus response, not
+> a still-frame statistic; that is F5's mechanism, and the two findings have the
+> same answer. See `design/43-block43g-gate.md` for the full study and
+> `design/43-block43g-offline-study.py` to re-run it.
 
 Whether these three numbers are the right three is a rig question — check on
 beads, on the diffuse field design/36 still owes, and against this session's
@@ -1343,13 +1417,21 @@ this session had a field where the two would have disagreed (F6).
    caller for `detect_features`.
 6. **F1** (rig profile + interview) — one knowledge category and one prompt
    block; ships the fact F3's rule wants to condition on.
-7. **F6** (coverage statistics) — one place, but it needs rig calibration before
-   anything ranks on it.
+7. ~~**F6** (coverage statistics)~~ — **DONE, block 43g, merged 2026-08-10, and
+   NOT closed.** "It needs rig calibration" was wrong twice over: the calibration
+   was a computation over data already on disk, and what it measured is that
+   these statistics do not answer F6 or F5. They ship as a **gate** — stable
+   where `min_snr` is on a cliff, and the only ranking signal that survives on
+   beads. The finding itself needs the focus response, which is F5.
 8. **F14** (emit adaptive runs) — larger, and the highest-value item here: it is
    what turns a session into something the operator keeps. Independent of F5, and
    better landed first so F5 is built inside a runner that already exports.
-9. **F5** (RequestAutofocus in the survey) — depends on F6 for the measurement
-   that makes it worth asking for, and on F14 for being worth keeping.
+9. **F5** (RequestAutofocus in the survey) — **promoted 2026-08-10.** It does
+   *not* depend on F6 for a verdict statistic: 43g measured that no single-frame
+   intensity or texture statistic separates cells from a diffuse bright gradient,
+   and that the focus response is what identified them in both findings. F5 is
+   the measurement, needing only a cheap trigger from F6's coverage. Still lands
+   after F14 so it is built inside a runner that exports.
 10. **F9 / F12** — hook usability and timelapse observation, whenever their files
     are next open.
 11. **F13** — design first, after F5 and F14 have run on a rig.
