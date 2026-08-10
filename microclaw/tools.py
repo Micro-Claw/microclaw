@@ -531,7 +531,8 @@ def _analysis_source(*, include_autofocus: bool = False) -> str:
             f"MIN_CONTRAST = {autofocus.MIN_CONTRAST!r}\n",
         ])
         for fn in (
-            autofocus.sweep_plane_count, autofocus.curve_contrast,
+            autofocus.sweep_plane_count, autofocus.coarse_then_fine_plane_count,
+            autofocus.curve_contrast,
             autofocus.sweep_autofocus, autofocus._restore,
             autofocus._flat_reason, autofocus._edge_reason,
             autofocus.coarse_then_fine_autofocus,

@@ -1073,10 +1073,19 @@ def test_saved_adaptive_hook_source_and_manifest_pin_are_inlined(
         completed_call("set_channel", {"preset": "640"}, M5_CHANNEL_RESULT),
         id="channel-verification",
     ),
-    pytest.param([call("run_adaptive_timelapse", {
-        "n_frames": 2, "interval_s": 0, "save_dir": "session",
-        "hook_strategy": "snr_observer",
-    })], id="adaptive-runner"),
+    *[
+        pytest.param([call("run_adaptive_timelapse", {
+            "n_frames": 2, "interval_s": 0, "save_dir": "session",
+            "hook_strategy": strategy, "hook_params": hook_params,
+        })], id=f"adaptive-runner-{strategy}")
+        for strategy, hook_params in (
+            ("snr_observer", {}),
+            ("position_filter", {}),
+            ("intensity_adaptive", {"target_mean": 100}),
+            ("focus_feedback", {}),
+            ("autofocus_per_position", {"z_range_um": 2, "z_step_um": 0.5}),
+        )
+    ],
 ])
 def test_emitted_inline_defines_every_name_it_uses(tmp_path, records):
     """Recurrence guard for the block-13/41b integration defect (2026-08-06).
