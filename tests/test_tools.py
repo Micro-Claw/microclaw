@@ -2793,6 +2793,52 @@ class TestRunAOfflineTools:
         assert result["ranking"][0]["signal_coverage_valid"] is None
         assert "deliberately have no validity flag" in result["metric_validity"]
 
+    def test_rank_hook_log_refuses_to_rank_a_clipped_frame_by_coverage(
+        self, mock_ctrl, unconstrained_guard, tmp_path
+    ):
+        """A clipped frame cannot say how much of the field is sample.
+
+        Measured on the 2026-08-06 M5 raster: ranking its 324 tiles by
+        signal_coverage put two saturated tiles (4.0% and 19.8% of pixels at
+        full scale) in the top two slots, and both were frames snr had already
+        refused to score. Coverage has no validity flag of its own, so the
+        saturation gate has to be applied here (design/43 F6, block 43g).
+        """
+        records = [
+            {"schema": "microclaw.analysis-observation/v1", "position": "clipped",
+             "x_um": 1, "y_um": 2,
+             "result": {"signal_coverage": 0.229, "saturated_fraction": 0.0404}},
+            {"schema": "microclaw.analysis-observation/v1", "position": "clean",
+             "x_um": 3, "y_um": 4,
+             "result": {"signal_coverage": 0.148, "saturated_fraction": 0.0}},
+        ]
+        result = tools.rank_hook_log(
+            mock_ctrl, unconstrained_guard, self._log(tmp_path, records),
+            metric="signal_coverage",
+        )
+        assert [r["position"] for r in result["ranking"]] == ["clean"]
+        assert [r["position"] for r in result["invalid_rows"]] == ["clipped"]
+        assert "saturated" in result["invalid_rows"][0]["invalid_reason"]
+        assert result["ranked_entry_count"] == 1
+
+    def test_rank_hook_log_ranks_a_clipped_frame_when_the_metric_is_snr(
+        self, mock_ctrl, unconstrained_guard, tmp_path
+    ):
+        """The saturation gate is coverage's, not a new rule for every metric.
+
+        snr already refuses a clipped frame upstream in snr_validity, so a log
+        whose producer scored one anyway must keep ranking the way it did.
+        """
+        records = [
+            {"schema": "microclaw.analysis-observation/v1", "position": "clipped",
+             "x_um": 1, "y_um": 2,
+             "result": {"snr": 9.0, "saturated_fraction": 0.0404}},
+        ]
+        result = tools.rank_hook_log(
+            mock_ctrl, unconstrained_guard, self._log(tmp_path, records), metric="snr",
+        )
+        assert [r["position"] for r in result["ranking"]] == ["clipped"]
+
     def test_rank_hook_log_explains_that_old_log_predates_coverage(
         self, mock_ctrl, unconstrained_guard, tmp_path
     ):

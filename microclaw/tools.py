@@ -36,6 +36,7 @@ from microclaw.controller import (
 )
 from microclaw.errors import hint_for_error, humanize_java_error
 from microclaw.image_analysis import (
+    MAX_SATURATED_FRACTION_FOR_SNR,
     ImageStats,
     compute_stats,
     detect_features,
@@ -5057,15 +5058,30 @@ def rank_hook_log(
             return {"error": f"Duplicate position in hook log: {label}"}
         seen.add(label)
         valid_key = f"{metric}_valid"
-        if result.get(valid_key) is False:
+        saturated = result.get("saturated_fraction")
+        # A coverage statistic has no validity flag of its own (it is defined for
+        # every finite image), so clipping has to be caught here or not at all.
+        # snr and focus_metric already refuse a clipped frame via snr_validity;
+        # without this, ranking by coverage puts the overexposed tiles on top --
+        # measured on the 2026-08-06 M5 raster, where the two highest
+        # signal_coverage tiles of 324 were 4.0% and 19.8% saturated and both
+        # were frames snr had refused to score (design/43 F6, block 43g).
+        clipped = (metric in _COVERAGE_METRICS and saturated is not None
+                   and saturated > MAX_SATURATED_FRACTION_FOR_SNR)
+        if result.get(valid_key) is False or clipped:
             invalid_rows.append({
                 "position": label, "x_um": entry["x_um"], "y_um": entry["y_um"],
                 **({"z_um": entry["z_um"]} if entry.get("z_um") is not None else {}),
                 metric: result[metric],
                 valid_key: False,
-                "invalid_reason": result.get(f"{metric}_invalid_reason"),
+                "invalid_reason": (
+                    f"{saturated:.4%} of pixels are saturated (limit "
+                    f"{MAX_SATURATED_FRACTION_FOR_SNR:.4%}); a clipped frame "
+                    "cannot say how much of the field is sample."
+                    if clipped else result.get(f"{metric}_invalid_reason")
+                ),
                 "focus_metric_valid": result.get("focus_metric_valid"),
-                "saturated_fraction": result.get("saturated_fraction"),
+                "saturated_fraction": saturated,
             })
             continue
         try:
