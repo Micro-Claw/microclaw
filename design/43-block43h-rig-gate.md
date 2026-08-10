@@ -1,6 +1,6 @@
 # Block 43h rig gate — emitted adaptive programs
 
-Implementation ancestor: 8fcbd1d
+Implementation ancestor: 9dcb09a
 
 Use PowerShell from the checked-out repository. uv is the single launcher for
 every Python/project command below; do not substitute bare Python for one line.
@@ -27,7 +27,7 @@ Step 4 has run.
 
 ## Step 0 — pin and run the full Windows suite
 
-    git merge-base --is-ancestor 8fcbd1d HEAD
+    git merge-base --is-ancestor 9dcb09a HEAD
     if ($LASTEXITCODE -ne 0) { throw "Block 43h implementation is not in this checkout" }
 
     uv run python -m pytest -q > suite-43h.txt 2>&1
@@ -37,10 +37,10 @@ Step 4 has run.
     uv run python -m pytest --collect-only -q > collected-43h.txt 2>&1
     if ($LASTEXITCODE -ne 0) { Get-Content collected-43h.txt; throw "Collection failed" }
 
-Expected on the Windows rig for this branch: **1713 passed + 116 skipped = 1829
+Expected on the Windows rig for this branch: **1714 passed + 116 skipped = 1830
 collected**, with 3 expected warnings. The total is derived on this branch, not
 copied from an earlier block. Compare 116 skips with the previous run on this
-same host; stop if tests failed, collection is not 1829, or the skip count rose.
+same host; stop if tests failed, collection is not 1830, or the skip count rose.
 
 ## Step 1 — offline export checks
 
@@ -50,7 +50,7 @@ These checks do not book microscope time.
     if ($LASTEXITCODE -ne 0) { Get-Content export-tests-43h.txt; throw "Exporter checks failed" }
     Get-Content export-tests-43h.txt
 
-Pass when the file reports 80 passed. It covers all three seed shapes, exact
+Pass when the file reports 81 passed. It covers all three seed shapes, exact
 source inlining, saved-hook provenance, full-precision named-position
 resolution, and narrow refusals.
 
@@ -69,6 +69,14 @@ resolution, and narrow refusals.
 > The distinguishing feature of an adaptive run is that **what it sees changes
 > what it does next**, and that the decision survives into the script. Both
 > halves have to be in the operator's sentence.
+
+> **Round 2 PASSED 2a and failed Step 3, on a defect only a gate could find.**
+> From the sentence below, unprompted, the agent wrote a hook, saved it, ran an
+> adaptive survey with it and exported. The exporter emitted a correct and
+> complete adaptive program — and the script died three lines before reaching it
+> on `generate_and_save_hook`'s refusal, because no fixture had ever exported a
+> session that *created* the hook it then used. Fixed in `9dcb09a`. **Keep 2a's
+> wording; it works.**
 
 ### 2a — reach: does the agent get there unprompted
 
