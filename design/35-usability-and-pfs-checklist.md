@@ -120,7 +120,10 @@ What this file adds, specific to these blocks:
   recorded hash — is solved by pinning with `git merge-base --is-ancestor`
   (`cf13c1a`), not by branch placement. Coordinator bookkeeping stays on `main`.
 
-### State at the 2026-08-05 session boundary — read this before assigning anything
+### State at the 2026-08-05 session boundary — SUPERSEDED, kept for the round history
+
+> **Retired. Do not act on this note** — Track A/B state; its `main` hash and branch list are long stale. The live note is the
+> 2026-08-10 one; find it by its heading, not by position in this file.
 
 Refreshed after Track A closed (block 5b), design/39 merged, and **Track B was
 rescoped against the Nikon sessions** (design/40). Recorded because these facts
@@ -202,7 +205,10 @@ a cold session resumes from the remote alone.
   concurrently with each other and with 6a — 13 is `tools.py`, 41b is the
   emitters plus `image_analysis.py`. 41c follows 41b.
 
-### State at the 2026-08-07 session boundary — read this before assigning anything
+### State at the 2026-08-07 session boundary — SUPERSEDED, kept for the round history
+
+> **Retired. Do not act on this note** — written at `ef91216`, before Track F existed. The live note is the
+> 2026-08-10 one; find it by its heading, not by position in this file.
 
 Step 9's whole point is that a cold session resumes from the remote alone. `main`
 is `ef91216`; `git log --oneline origin/main..main` is empty; no uncommitted
@@ -257,7 +263,10 @@ two `florian/*`, and `port-to-jpype-acqj`.
   commit — that check has now caught silent test loss twice, and on 41c it
   distinguished a *rename* into three parametrized IDs from a deletion.
 
-### State at the 2026-08-09 session boundary — read this before assigning anything
+### State at the 2026-08-09 session boundary — SUPERSEDED, kept for the round history
+
+> **Retired. Do not act on this note** — written at `e6afb06`, before Track F blocks began merging. The live note is the
+> 2026-08-10 one; find it by its heading, not by position in this file.
 
 `main` is `e6afb06`; `git log --oneline origin/main..main` is empty; the working
 tree is clean; the only branches on `origin` besides `main` are
@@ -297,7 +306,12 @@ is idle at `4994f3e` awaiting the Nikon.
   and collected total; diff collected test IDs against the branch's start
   commit.
 
-### State at the 2026-08-09 close of the Track F opening session — read this before assigning anything
+### State at the 2026-08-09 close of the Track F opening session — SUPERSEDED, kept for the round history
+
+> **Retired. Do not act on this note** — it lists ten Track F blocks as
+> remaining, of which seven have since merged. It was the only State-at note
+> that kept an active heading after being superseded. The live note is the
+> 2026-08-10 one at the top of this section.
 
 Supersedes the note above, which was written at the *start* of that session and
 described Track F as unstarted. Written at `a34581b`, with coordinator commits
@@ -842,7 +856,7 @@ assistant's narration when judging whether a guard fired.
 | 43f | Nestor | 43a merged (its prompt names the key this creates) | `design43/rig-profile` | | | required | | |
 | 43g | Nestor | none | `design43/coverage-statistics` | `daefb7d` | `692d2b7` + `ebc4995` + `9c6a291` (two review rounds returned) + `a5e908a` + `3cd78de` + `714a0ef` (three coordinator fixes); gate doc + study scripts `d33eeb6`, pinned `3cd78de` | **Measurement half DONE offline 2026-08-10** against the saved Nestor tiles, control exact (recomputed snr == logged snr, 0.0000, on 313 + 36 tiles); `min_snr` sweep is the calibration. **Block NARROWED** — does not close F6, does not supply F5's measurement. **beads met** (`stitch_test_1`, six fields, join verified). **Demo 2026-08-10 (`43g-demo`): Step 0 PASS on Windows — 1692 passed / 116 skipped / 0 failed / 1808 collected, collected total equal to macOS and skips equal to every prior Track F Windows run. G1 PASS on reach** — asked "which of those tiles has the most stuff in it?" with no statistic named, the agent chose `signal_coverage` unprompted, said why, and called `rank_hook_log(metric="signal_coverage")`. **Discrimination NOT exercised** (demo camera returned bit-identical frames; nine-way tie at 0.0) and the **saturation refusal NOT exercised** — both rest on the offline measurements and unit tests | `113f23b` | **done** `b150c17` — design/43 F6 **corrected, not annotated**: its account of `scan300_488_r12_c15` as a bright corner is wrong (coverage 0.148, concentration 0.137, inside the good-tile band), and the statistic added to catch it does not flag it. F5's "structure_coverage high" premise likewise fails — 0.0000 on all six material tiles, which are 20× brighter than glass, not dimmer. **F6 explicitly NOT closed**; F5 promoted from blocked-on-43g to being the measurement. Suggested-order items 7 and 9 rewritten |
 | 43h | Nestor | none | `design43/emit-adaptive-runs` | | | **required** — run the emitted script with microclaw closed | | |
-| 43i | Nestor | 43g, 43h | `design43/survey-refocus` | | | required | | |
+| 43i | Nestor | 43g merged, 43h | `design43/survey-refocus` | | | required | | |
 | 43j | Nestor | 43e (retires half of F12) | `design43/hooks-and-timelapse-observation` | | | required | | |
 | 43k | Nestor | 43h, 43i **run on a rig** | — design first | | | n/a — design block | | |
 | 9 | Features | operator intake | `design26/generated-adapter-run-b` | | | required | | |
@@ -5892,7 +5906,7 @@ hook dispatching only `DiscardFrame` still reads as two zeros. That last one is
 a narrower version of the same defect and was left rather than widened
 mid-block.
 
-## 43e. Offline analysis ships with no analyses in it — **M5 ROUND 1: G1 FAIL, fixed, round 2 pushed**
+## 43e. [x] Offline analysis ships with no analyses in it — **MERGED 2026-08-09**
 
 ### Rig gate round 1 — M5, 2026-08-09: **G1 FAIL; G4 second limb PASS; Step 1 PASS**
 
@@ -6088,7 +6102,7 @@ the fact reaching its point of use. Ships the key 43a's prompt text refers to.
       `illuminated_field`), not only the preamble.
 - [ ] This is the block that makes 43a's `camera_triggers_lasers` sentence live.
 
-## 43g. One bright corner beat the whole field — **NARROWED 2026-08-10**
+## 43g. [x] One bright corner beat the whole field — **MERGED 2026-08-10, NARROWED**
 
 Branch: `design43/coverage-statistics`
 
@@ -6123,9 +6137,9 @@ defined, so every observation record and `rank_hook_log` gets it for free.
 > **Do not re-propose a single-frame texture statistic from theory.** That was
 > proposed and withdrawn the same day; see the carried-forward register.
 
-- [ ] `signal_coverage`, `structure_coverage`, `signal_concentration` on
+- [x] `signal_coverage`, `structure_coverage`, `signal_concentration` on
       `ImageStats`. `snr` is a tail statistic and stays what it is.
-- [ ] **`ImageStats` is a `NamedTuple`, not F6's `@dataclass`**
+- [x] **`ImageStats` is a `NamedTuple`, not F6's `@dataclass`**
       (`image_analysis.py:12`). Verified at assignment: fields are positional, so
       **append, never insert**; the one construction site
       (`compute_stats`, `:266`) is all-keyword and safe. F6's "every observation
@@ -6135,7 +6149,7 @@ defined, so every observation record and `rank_hook_log` gets it for free.
       so the three numbers reach the hook log and the offline adapter with no
       further change. That also means this block silently changes 43e's shipped
       output; say so in its result rather than letting a rig find it.
-- [ ] **The exporter must inline the new helper, and it will not do so by
+- [x] **The exporter must inline the new helper, and it will not do so by
       itself.** `_analysis_source` (`tools.py:503–522`) inlines a **hand-written
       list** of functions, and its own comment at `:513` says why: block 13 added
       `snr_validity` while 41b was in flight, both branches were green alone, and
@@ -6143,7 +6157,7 @@ defined, so every observation record and `rank_hook_log` gets it for free.
       `compute_stats` reaches is that case exactly. Add it to the list and confirm
       `test_emitted_inline_defines_every_name_it_uses` fails without it — a guard
       that passes either way is not guarding this.
-- [ ] Survey ranking prefers coverage; state it in the `rank_hook_log` schema
+- [x] Survey ranking prefers coverage; state it in the `rank_hook_log` schema
       rather than leaving the model to invent a composite in prose. **Two
       mechanical facts about that tool decide what "prefers" can mean:** it reads
       `f"{metric}_valid"` and routes a `False` to an invalid-rows list
@@ -6154,7 +6168,7 @@ defined, so every observation record and `rank_hook_log` gets it for free.
       before this block returns `missing required field(s): ['result.signal_
       coverage']`. That is the right behaviour — an old log must not rank wrong
       silently — but the message should read as *this log predates the statistic*.
-- [ ] `find_features` names its own scope in its payload: a puncta detector scores
+- [x] `find_features` names its own scope in its payload (`detector_scope`, **not** `note`, which was already taken): a puncta detector scores
       an extended or filamentous field low, which is what happened at `[205]`.
       **Not under the `note` key** — `tools.py:2716` already writes the
       missing-calibration message there, and whichever assignment runs second
@@ -6186,7 +6200,7 @@ defined, so every observation record and `rank_hook_log` gets it for free.
       statistic, so a clipped pixel is still legitimately above threshold. The
       1% line is bounded by measurement on both sides (beads to 0.22%, the
       pathological tiles at 4.0% and 19.8%) and uncalibrated between them.
-- [ ] **The threshold being calibrated is `min_snr`, not only the three new
+- [x] **The threshold being calibrated is `min_snr`, not only the three new
       numbers, and it is already the known-wrong one.** F6's `coverage_stats`
       thresholds at `background + min_snr · noise`; `min_snr` resolves through
       `resolve_min_snr` (`image_analysis.py:75–88`) to
@@ -6198,7 +6212,7 @@ defined, so every observation record and `rank_hook_log` gets it for free.
       `safety_config.yaml` (`safety.py:832`) is the `rig_config` branch of that
       same precedence. A gate that measures three new statistics against an
       uncalibrated gate has measured nothing.
-- [ ] **Gate the reach, not the plumbing** (standing constraint, from 43e). At
+- [x] **Gate the reach, not the plumbing** (standing constraint, from 43e). At
       least one criterion asks in the operator's words — *which of these tiles has
       cells in it* — with no statistic named, and passes only if the ranking used
       coverage and said so. F6's own evidence is a ranking that was mechanically
