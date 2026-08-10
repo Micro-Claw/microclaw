@@ -172,6 +172,26 @@ def test_records_are_injected_and_absent_from_published_schema(tmp_path):
     assert "core.set_xy_position(3, 4)" in (tmp_path / "injected.py").read_text(encoding="utf-8")
 
 
+def test_write_text_file_resolves_writes_and_never_overwrites(tmp_path):
+    guard = Guard(tmp_path)
+    result = tools.write_text_file(None, guard, "kept/protocol.py", "print('kept')\n")
+    path = tmp_path / "kept" / "protocol.py"
+
+    assert guard.seen == ["kept/protocol.py"]
+    assert path.read_text(encoding="utf-8") == "print('kept')\n"
+    assert result["artifact"] == {"kind": "python", "path": str(path)}
+    with pytest.raises(FileExistsError, match="already exists"):
+        tools.write_text_file(None, guard, "kept/protocol.py", "replacement")
+    assert path.read_text(encoding="utf-8") == "print('kept')\n"
+
+
+def test_write_text_file_is_registered_and_emits_nothing():
+    schema = next(tool for tool in TOOLS if tool["name"] == "write_text_file")
+    assert set(schema["input_schema"]["required"]) == {"path", "text"}
+    assert tools.TOOL_REGISTRY["write_text_file"] is tools.write_text_file
+    assert tools.write_text_file._microclaw_emits_nothing is True
+
+
 def test_unemittable_tool_refuses_and_script_cannot_run_past_it(tmp_path):
     _, _, source = export(tmp_path, [
         call("get_system_state", {}),

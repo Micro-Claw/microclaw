@@ -896,6 +896,40 @@ def _emit_adaptive_survey(params: RecordedParams) -> str:
     return _emit_adaptive(params, "survey")
 
 
+def _write_text_output(path: str, text: str, *, overwrite: bool) -> None:
+    """Shared resolved-path writer for exported and operator-authored text."""
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    mode = "w" if overwrite else "x"
+    try:
+        with target.open(mode, encoding="utf-8") as handle:
+            handle.write(text)
+    except FileExistsError:
+        raise FileExistsError(
+            f"Refusing to overwrite: file already exists: {target}"
+        ) from None
+
+
+@emits_nothing
+def write_text_file(
+    ctrl: MicroscopeController,
+    guard: SafetyGuard,
+    path: str,
+    text: str,
+) -> dict:
+    """Write operator-requested text through the normal confirmed path boundary."""
+    resolved = guard.resolve_in_workspace(path)
+    _write_text_output(resolved, text, overwrite=False)
+    return {
+        "status": "Text file written.",
+        "output_path": str(resolved),
+        "artifact": {
+            "kind": "python" if Path(resolved).suffix.lower() == ".py" else "text",
+            "path": str(resolved),
+        },
+    }
+
+
 @emits_nothing
 def export_session_script(
     ctrl: MicroscopeController,
@@ -1035,7 +1069,7 @@ def export_session_script(
         lines.insert(lines.index("core = Core()"),
                      "_HERE = Path(__file__).resolve().parent")
     source = "\n".join(lines) + "\n"
-    Path(path).write_text(source, encoding="utf-8")
+    _write_text_output(path, source, overwrite=True)
     return {
         "status": "Session script exported.",
         "output_path": str(path),
@@ -6738,6 +6772,7 @@ TOOL_REGISTRY = {
     "get_mda_settings": get_mda_settings,
     "run_mda": run_mda,
     "export_session_script": export_session_script,
+    "write_text_file": write_text_file,
     "save_knowledge": save_knowledge,
     "get_knowledge": get_knowledge,
     "delete_knowledge": delete_knowledge,

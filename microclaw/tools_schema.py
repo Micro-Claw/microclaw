@@ -82,6 +82,23 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "write_text_file",
+        "description": (
+            "Write supplied text to a confirmed workspace path without overwriting "
+            "an existing file. Use export_session_script, not this tool, to compile "
+            "recorded hardware calls."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "text": {"type": "string"},
+            },
+            "required": ["path", "text"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "start_live_view",
         "description": "Start the Micro-Manager camera live preview stream.",
         "input_schema": {"type": "object", "properties": {}, "required": []},
