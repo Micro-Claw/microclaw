@@ -16,6 +16,17 @@ class Guard:
     def __init__(self, root):
         self.root = Path(root)
         self.seen = []
+        self._c = SimpleNamespace(
+            stage=SimpleNamespace(
+                x_min=None, x_max=None, y_min=None, y_max=None,
+                z_min=None, z_max=None,
+            ),
+            camera=SimpleNamespace(max_exposure_ms=None),
+        )
+
+    @property
+    def analysis_min_snr(self):
+        return None
 
     def resolve_in_workspace(self, path):
         self.seen.append(path)
@@ -777,13 +788,20 @@ def _undefined_emitted_names(source):
     import ast, builtins
 
     tree = ast.parse(source)
-    defined = {n.name for n in ast.walk(tree)
-               if isinstance(n, (ast.FunctionDef, ast.ClassDef))}
-    defined |= {t.id for n in ast.walk(tree) if isinstance(n, ast.Assign)
-                for t in n.targets if isinstance(t, ast.Name)}
-    defined |= {a.asname or a.name.split(".")[0]
-                for n in ast.walk(tree)
-                if isinstance(n, (ast.Import, ast.ImportFrom)) for a in n.names}
+    definitions = tuple(
+        n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.ClassDef))
+    )
+    statements = tuple(n for n in tree.body if n not in definitions)
+    defined = {n.name for n in definitions}
+    defined |= {
+        n.id for statement in statements for n in ast.walk(statement)
+        if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)
+    }
+    defined |= {
+        a.asname or a.name.split(".")[0]
+        for statement in statements for n in ast.walk(statement)
+        if isinstance(n, (ast.Import, ast.ImportFrom)) for a in n.names
+    }
 
     annotated: set[int] = set()
     for node in ast.walk(tree):
@@ -805,9 +823,7 @@ def _undefined_emitted_names(source):
     # Only top-level definitions begin a scope scan. Walking the whole tree
     # would visit event_stream independently and lose parameters bound by its
     # enclosing survey-event-stream and factory closures.
-    for node in tree.body:
-        if not isinstance(node, (ast.FunctionDef, ast.ClassDef)):
-            continue
+    for node in definitions:
         local = {a.arg for f in ast.walk(node)
                  if isinstance(f, ast.FunctionDef)
                  for a in (*f.args.posonlyargs, *f.args.args, *f.args.kwonlyargs,
@@ -817,6 +833,15 @@ def _undefined_emitted_names(source):
                   if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)}
         local |= {n.name for n in ast.walk(node)
                   if isinstance(n, ast.ExceptHandler) and n.name}
+        local |= {
+            n.name for n in ast.walk(node)
+            if isinstance(n, (ast.FunctionDef, ast.ClassDef))
+        }
+        local |= {
+            a.asname or a.name.split(".")[0]
+            for n in ast.walk(node)
+            if isinstance(n, (ast.Import, ast.ImportFrom)) for a in n.names
+        }
         undefined.update(
             n.id for n in ast.walk(node)
             if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
@@ -824,6 +849,13 @@ def _undefined_emitted_names(source):
             and n.id not in defined and n.id not in local
             and not hasattr(builtins, n.id)
         )
+    undefined.update(
+        n.id for statement in statements for n in ast.walk(statement)
+        if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
+        and id(n) not in annotated
+        and n.id not in defined and n.id != "__file__"
+        and not hasattr(builtins, n.id)
+    )
     return undefined
 
 
@@ -1265,3 +1297,23 @@ def test_emitted_free_name_guard_detects_a_removed_inline(tmp_path):
     })])
     broken = source.replace(inspect.getsource(image_analysis.resolve_min_snr), "")
     assert "resolve_min_snr" in _undefined_emitted_names(broken)
+
+    _, _, survey_source = export(tmp_path, [call("run_adaptive_survey", {
+        "protocol": "timelapse", "protocol_params": {"n_frames": 1},
+        "positions": [{"name": "p0", "x_um": 1, "y_um": 2}],
+        "save_dir": "session", "hook_strategy": "snr_observer",
+    })])
+    broken = survey_source.replace(inspect.getsource(tools.SurveyProgress), "")
+    assert "SurveyProgress" in _undefined_emitted_names(broken)
+
+
+def test_adaptive_export_refuses_when_safety_constraints_are_unavailable(tmp_path):
+    guard = Guard(tmp_path)
+    del guard._c
+    with pytest.raises(tools.CannotEmit, match="safety constraints are unavailable"):
+        tools.export_session_script(None, guard, "routine.py", [
+            call("run_adaptive_timelapse", {
+                "n_frames": 2, "interval_s": 0, "save_dir": "session",
+                "hook_strategy": "snr_observer",
+            })
+        ])

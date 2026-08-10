@@ -841,17 +841,24 @@ def export_session_script(
         name == "run_autofocus" or params.get("hook_strategy") == "autofocus_per_position"
         for name, params in recorded
     )
-    constraints = getattr(guard, "_c", None)
-    stage = getattr(constraints, "stage", None)
-    camera = getattr(constraints, "camera", None)
-    analysis = getattr(constraints, "analysis", None)
-    safety_limits = {
-        "x_um": (getattr(stage, "x_min", None), getattr(stage, "x_max", None)),
-        "y_um": (getattr(stage, "y_min", None), getattr(stage, "y_max", None)),
-        "z_um": (getattr(stage, "z_min", None), getattr(stage, "z_max", None)),
-        "exposure_ms": (0.0, getattr(camera, "max_exposure_ms", None)),
-        "analysis_min_snr": getattr(analysis, "min_snr", None),
-    }
+    safety_limits = None
+    if adaptive_used:
+        try:
+            constraints = guard._c
+            stage = constraints.stage
+            camera = constraints.camera
+            safety_limits = {
+                "x_um": (stage.x_min, stage.x_max),
+                "y_um": (stage.y_min, stage.y_max),
+                "z_um": (stage.z_min, stage.z_max),
+                "exposure_ms": (0.0, camera.max_exposure_ms),
+                "analysis_min_snr": guard.analysis_min_snr,
+            }
+        except AttributeError as exc:
+            raise CannotEmit(
+                "adaptive export safety constraints are unavailable or have an "
+                f"unsupported shape: {exc}"
+            ) from exc
     for name, params in recorded:
         if name.startswith("run_adaptive_"):
             params["_export_safety_limits"] = safety_limits
