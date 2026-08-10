@@ -1,6 +1,6 @@
 # Block 43h rig gate — emitted adaptive programs
 
-Implementation ancestor: 9dcb09a
+Implementation ancestor: ce4317d
 
 Use PowerShell from the checked-out repository. uv is the single launcher for
 every Python/project command below; do not substitute bare Python for one line.
@@ -13,7 +13,7 @@ Git commands only establish the checkout.
 that program runs standalone is a mechanism question, not a sample question. The
 demo config has a real MMCore, a real acquisition engine and a real bridge, so
 the generator that holds the event source open, the terminator, the seed-plan
-guard, the module shim and the adapter's dispatch are all genuinely exercised.
+guard and the adapter's dispatch are all genuinely exercised.
 
 **The demo camera returns bit-identical frames.** That is why Step 3b's hook
 stops on a *frame count read from metadata* rather than on image content: a
@@ -27,7 +27,7 @@ Step 4 has run.
 
 ## Step 0 — pin and run the full Windows suite
 
-    git merge-base --is-ancestor 9dcb09a HEAD
+    git merge-base --is-ancestor ce4317d HEAD
     if ($LASTEXITCODE -ne 0) { throw "Block 43h implementation is not in this checkout" }
 
     uv run python -m pytest -q > suite-43h.txt 2>&1
@@ -37,10 +37,10 @@ Step 4 has run.
     uv run python -m pytest --collect-only -q > collected-43h.txt 2>&1
     if ($LASTEXITCODE -ne 0) { Get-Content collected-43h.txt; throw "Collection failed" }
 
-Expected on the Windows rig for this branch: **1714 passed + 116 skipped = 1830
+Expected on the Windows rig for this branch: **1728 passed + 116 skipped = 1844
 collected**, with 3 expected warnings. The total is derived on this branch, not
 copied from an earlier block. Compare 116 skips with the previous run on this
-same host; stop if tests failed, collection is not 1830, or the skip count rose.
+same host; stop if tests failed, collection is not 1844, or the skip count rose.
 
 ## Step 1 — offline export checks
 
@@ -50,7 +50,7 @@ These checks do not book microscope time.
     if ($LASTEXITCODE -ne 0) { Get-Content export-tests-43h.txt; throw "Exporter checks failed" }
     Get-Content export-tests-43h.txt
 
-Pass when the file reports 81 passed. It covers all three seed shapes, exact
+Pass when the file reports 93 passed. It covers all three seed shapes, exact
 source inlining, saved-hook provenance, full-precision named-position
 resolution, and narrow refusals.
 
@@ -119,6 +119,21 @@ Before ending the live session, inspect the script:
   editing the dictionary edits those recorded limits.
 - The script contains no filesystem path into this Microclaw checkout; it writes
   beside itself via `_HERE`.
+- **It imports nothing from `microclaw`.** New in round 4, from the operator's
+  own request. Exactly two `microclaw` strings may survive, and both are *values*
+  rather than imports — the observation schema id
+  `microclaw.analysis-observation/v1` and the analyzer name
+  `microclaw.image_analysis.compute_stats`. Stripping those would falsify the
+  provenance of the measurement, so they stay on purpose.
+
+      Select-String -Path .\PATH-TO-EXPORTED-SCRIPT.py -Pattern 'import microclaw','from microclaw'
+
+  Pass when that returns nothing.
+- **Its hook log is written beside the script** — `_log_path =
+  _next_available_log_path(_HERE / '<name>')`, not an absolute path into the
+  session's own data directory. Round 3's standalone run overwrote all four of
+  the live session's hook logs, which is what destroyed that round's
+  live-versus-standalone comparison.
 
 **Stop here if the script contains no adaptive program.** The cheapest check,
 and the one round 1 needed: the file must contain `_LIMITS`,
@@ -149,8 +164,8 @@ Run **both** sub-cases. They prove different halves.
 ### 3a — the straight path: adaptive timelapse with `snr_observer`
 
 The seed plan is a full pre-built event list, so no decision is needed to
-advance it. This proves the inlining, the module shim, the `_HERE` output
-directory and the real `Acquisition` under a precoded hook.
+advance it. This proves the inlining, the `_HERE` output directory and the
+real `Acquisition` under a precoded hook.
 
 ### 3b — the decision loop: adaptive survey with a saved counter hook
 
@@ -197,6 +212,39 @@ which is the claim F14 rests on — "searches, and finds that sample's cells".
 On a rig with real structure, run the same shape with a hook whose stop
 condition is a measurement of the image, and pass when the frames the script
 acquires are chosen by what it saw. Record which tiles it took and why.
+
+> **This is also the only place 3b's stop limb has ever been exercised.** It went
+> untested on the demo twice, both times for the same reason: asked for a run
+> that "stops itself once it has seen enough", the agent wrote a *content*
+> threshold, and demo frames have no content (snr 1.41, coverage 0.0), so
+> `StopSurvey` never fired in either the live or the standalone run. On a real
+> sample a content threshold can actually fire, so Step 4 and 3b close together
+> here.
+
+### 4a — the live and the emitted run must agree
+
+**New in round 4, and the reason this step now matters more than it did.** Round
+3 measured the live run at **5 frames** and the exported script at **12**, from
+the same program, the same hook and the same plan — because
+`run_adaptive_survey` sized completion by the *position* count while its plan was
+`positions × n_frames` *events*, making the generator's exit a race. Both runs
+reported `stopped_early=False` under a status line that read *"5 frame(s)
+acquired from a 4-tile plan"*, which sounds correct and hides the truncation.
+
+Fixed in this branch: completion is now set from the built event list, and the
+emitter counts `SurveyProgress(len(events))` so the two runners count the same
+thing. This changes **live** acquisition behaviour, so it needs a rig:
+
+- Run an adaptive survey with **more than one frame per position** — the defect
+  is invisible at one frame per tile.
+- Pass when the live run dispatches **every planned frame** (positions ×
+  n_frames), not merely the position count, and the reported
+  `frames_acquired` matches.
+- Then run the exported script and pass when it acquires **the same number of
+  frames as the live run**. That comparison is the block's central claim, and
+  round 3 could not make it.
+- **Read the hook logs before and after**, and note that the standalone run now
+  writes its own log beside the script rather than overwriting the session's.
 
 Two smaller limbs also stay owed to a real rig, and neither is a demo failure:
 
