@@ -1181,6 +1181,43 @@ def test_adaptive_export_has_no_microclaw_runtime_references(tmp_path):
                                  for a in node.names)))]
 
 
+def test_emitted_adaptive_log_is_beside_script_and_preserves_first_run(tmp_path):
+    recorded_log = tmp_path / "recorded" / "quality_survey_hook.log"
+    _, _, source = export(tmp_path, [call("run_adaptive_timelapse", {
+        "n_frames": 1, "interval_s": 0, "save_dir": "session",
+        "hook_strategy": "snr_observer", "log_path": str(recorded_log),
+    })])
+    executable = source.replace(
+        "from pycromanager import Acquisition, Core, multi_d_acquisition_events", ""
+    )
+
+    class Acquisition:
+        def __init__(self, **_kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *_args): pass
+        def acquire(self, _events): pass
+
+    def run():
+        namespace = {
+            "__file__": str(tmp_path / "routine.py"),
+            "Core": lambda: SimpleNamespace(), "Acquisition": Acquisition,
+            "multi_d_acquisition_events": lambda **kwargs: [kwargs],
+        }
+        exec(compile(executable, "routine.py", "exec"), namespace)
+        return Path(namespace["_log_path"])
+
+    first = run()
+    first.write_text("first run", encoding="utf-8")
+    second = run()
+    second.write_text("second run", encoding="utf-8")
+
+    assert first.parent == tmp_path
+    assert first.name == "quality_survey_hook.log"
+    assert second.parent == tmp_path
+    assert second != first
+    assert first.read_text(encoding="utf-8") == "first run"
+
+
 def test_adaptive_export_refuses_a_stripped_import_it_cannot_resolve(
     tmp_path, monkeypatch
 ):

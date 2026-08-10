@@ -699,6 +699,18 @@ guard = _RecordedSafetyGuard()
 '''
 
 
+def _portable_log_path_source() -> str:
+    return '''def _next_available_log_path(path):
+    """Keep every standalone run log beside this script without collisions."""
+    if not path.exists():
+        return str(path)
+    for number in itertools.count(2):
+        candidate = path.with_name(f"{path.stem}_{number}{path.suffix}")
+        if not candidate.exists():
+            return str(candidate)
+'''
+
+
 def _adaptive_hook_export(params: RecordedParams) -> tuple[str, str, bool]:
     """Return exact hook source, constructor expression, and saved-hook flag."""
     strategy = params.get("hook_strategy")
@@ -785,9 +797,13 @@ def _emit_adaptive(params: RecordedParams, kind: str) -> str:
     if not limits:
         raise CannotEmit(params.get("_export_safety_limits_error")
                          or "the record carries no export-time safety limits")
+    recorded_log = params.get("log_path")
+    log_name = Path(recorded_log).name if recorded_log else None
     common = [
         _export_guard_source(limits), hook_source,
-        f"_log_path = {params.get('log_path')!r}", f"hook = {constructor}",
+        (f"_log_path = _next_available_log_path(_HERE / {log_name!r})"
+         if log_name else "_log_path = None"),
+        f"hook = {constructor}",
     ]
     from microclaw.authorization import CHANNEL_CONFIG_GROUP
     channel = params.get("channel")
@@ -942,7 +958,7 @@ def export_session_script(
     # channel blocks are: a snap-only session was carrying ten unused imports and
     # an unused logger into the script the operator keeps (demo gate, 2026-08-10).
     adaptive_imports = [
-        "import hashlib", "import io", "import json", "import logging",
+        "import hashlib", "import io", "import itertools", "import json", "import logging",
         "import queue", "import threading",
         "from datetime import datetime, timezone",
     ] if adaptive_used else []
@@ -960,6 +976,7 @@ def export_session_script(
         "",
         *(["", _analysis_source(include_autofocus=autofocus_used).rstrip()]
           if analysis_used else []),
+        *(["", _portable_log_path_source().rstrip()] if adaptive_used else []),
         *(["", _adaptive_runner_source().rstrip()] if adaptive_used else []),
         *(["", _channel_verification_source().rstrip()] if channel_writes else []),
         "",
