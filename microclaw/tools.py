@@ -1,4 +1,5 @@
 from __future__ import annotations
+import ast
 import inspect
 import hashlib
 import itertools
@@ -151,7 +152,7 @@ def _emit_multiposition(params: RecordedParams) -> str:
     if hook:
         from microclaw.hooks import PRECODED_HOOK_REGISTRY
         hook_cls = PRECODED_HOOK_REGISTRY.get(hook) if isinstance(hook, str) else None
-        if not getattr(hook_cls, "_microclaw_observation_only", False):
+        if not getattr(hook_cls, "_observation_only", False):
             raise CannotEmit(
                 f"hooked acquisition ({hook!r}): inlining HookBase would import microclaw safety and hook decisions"
             )
@@ -543,6 +544,65 @@ def _analysis_source(*, include_autofocus: bool = False) -> str:
     return "\n".join(parts)
 
 
+def _source_bound_names(source: str) -> set[str]:
+    """Names bound by a standalone block, excluding package-local imports."""
+    tree = ast.parse(source)
+    names = {node.name for node in tree.body
+             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))}
+    names.update(node.id for statement in tree.body for node in ast.walk(statement)
+                 if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store))
+    names.update(
+        alias.asname or alias.name.split(".")[0]
+        for statement in tree.body for node in ast.walk(statement)
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+        and not ((isinstance(node, ast.ImportFrom)
+                  and (node.module or "").startswith("microclaw"))
+                 or (isinstance(node, ast.Import)
+                     and any(a.name.startswith("microclaw") for a in node.names)))
+        for alias in node.names
+    )
+    return names
+
+
+def _without_microclaw_imports(source: str, available: set[str]) -> str:
+    """Remove redundant package imports without rewriting inspected logic."""
+    tree = ast.parse(source)
+    removals: list[tuple[int, int]] = []
+    required: set[str] = set()
+    for node in ast.walk(tree):
+        package_import = (
+            isinstance(node, ast.ImportFrom)
+            and (node.module or "").startswith("microclaw")
+        ) or (
+            isinstance(node, ast.Import)
+            and any(alias.name.startswith("microclaw") for alias in node.names)
+        )
+        if not package_import:
+            continue
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name == "*" or (alias.asname and alias.asname != alias.name):
+                    raise CannotEmit(
+                        "package import cannot be replaced by an inlined symbol: "
+                        + (alias.asname or alias.name)
+                    )
+                required.add(alias.name)
+        else:
+            required.update(alias.asname or alias.name.split(".")[0]
+                            for alias in node.names)
+        removals.append((node.lineno, node.end_lineno or node.lineno))
+    missing = sorted(required - available)
+    if missing:
+        raise CannotEmit(
+            "package import binds symbol(s) not defined by the standalone script: "
+            + ", ".join(missing)
+        )
+    lines = source.splitlines(keepends=True)
+    removed = {line for start, end in removals for line in range(start, end + 1)}
+    return "".join(line for number, line in enumerate(lines, 1)
+                   if number not in removed)
+
+
 def _channel_verification_source() -> str:
     """Return exact source for the read-back check the channel executor ran.
 
@@ -597,27 +657,13 @@ def _adaptive_runner_source() -> str:
         f"_CANDIDATE_POLL_S = {_CANDIDATE_POLL_S!r}\n",
         inspect.getsource(_note_budget_exhausted),
         inspect.getsource(_survey_event_stream),
-        '''# This local module shim satisfies the exact function-local imports in
-# the inlined sources; it contains only the definitions embedded in this script.
-_microclaw_module = ModuleType(\"microclaw\")
-_hooks_module = ModuleType(\"microclaw.hooks\")
-_hooks_module.HookBase = HookBase
-_hooks_module.analysis_observation_record = analysis_observation_record
-_decisions_module = ModuleType(\"microclaw.hook_decisions\")
-for _name in (\"MoveStage\", \"AcquireAt\", \"SetExposure\", \"ContinueSurvey\",
-              \"StopSurvey\", \"RequestAutofocus\", \"SetIlluminationPower\",
-              \"EmitArtifact\", \"DiscardFrame\", \"HookResult\"):
-    setattr(_decisions_module, _name, globals()[_name])
-_autofocus_module = ModuleType(\"microclaw.autofocus\")
-for _name in (\"coarse_then_fine_autofocus\", \"coarse_then_fine_plane_count\"):
-    setattr(_autofocus_module, _name, globals()[_name])
-sys.modules[\"microclaw\"] = _microclaw_module
-sys.modules[\"microclaw.hooks\"] = _hooks_module
-sys.modules[\"microclaw.hook_decisions\"] = _decisions_module
-sys.modules[\"microclaw.autofocus\"] = _autofocus_module
-''',
     ])
-    return "\n".join(parts)
+    source = "\n".join(parts)
+    available = _source_bound_names(source)
+    available.update(_source_bound_names(_analysis_source(include_autofocus=True)))
+    # inspect.getsource supplies the logic. Only package-import lines are
+    # deleted because their names are already inlined into this module.
+    return _without_microclaw_imports(source, available)
 
 
 def _export_guard_source(limits: dict[str, Any]) -> str:
@@ -670,6 +716,10 @@ def _adaptive_hook_export(params: RecordedParams) -> tuple[str, str, bool]:
     if strategy in PRECODED_HOOK_REGISTRY:
         cls = PRECODED_HOOK_REGISTRY[strategy]
         source = inspect.getsource(cls)
+        available = _source_bound_names(_adaptive_runner_source())
+        available.update(_source_bound_names(_analysis_source(include_autofocus=True)))
+        available.update(_source_bound_names(source))
+        source = _without_microclaw_imports(source, available)
         signature = inspect.signature(cls.__init__)
         injected = []
         if "ctrl" in signature.parameters:
@@ -701,6 +751,10 @@ def _adaptive_hook_export(params: RecordedParams) -> tuple[str, str, bool]:
         f"# Saved hook {strategy!r}; manifest sha256: "
         f"{provenance.get('manifest_sha256')}\n" + source
     )
+    available = _source_bound_names(_adaptive_runner_source())
+    available.update(_source_bound_names(_analysis_source(include_autofocus=True)))
+    available.update(_source_bound_names(source))
+    source = _without_microclaw_imports(source, available)
     cls_name = description["class_name"]
     constructor = (
         f"UntrustedHookAdapter({cls_name}(**{params_expr}), log_path=_log_path)"
@@ -882,16 +936,15 @@ def export_session_script(
     )
     # Every one of these is reached only by the adaptive block: hashlib/io/json
     # by the hook artifact and log writers, queue by the candidate stream,
-    # threading by SurveyProgress, sys+ModuleType by the module shim, asdict and
+    # threading by SurveyProgress, asdict and
     # datetime by the decision dataclasses and the observation envelope, logging
     # by _note_budget_exhausted. Conditional for the same reason the analysis and
     # channel blocks are: a snap-only session was carrying ten unused imports and
     # an unused logger into the script the operator keeps (demo gate, 2026-08-10).
     adaptive_imports = [
         "import hashlib", "import io", "import json", "import logging",
-        "import queue", "import sys", "import threading",
+        "import queue", "import threading",
         "from datetime import datetime, timezone",
-        "from types import ModuleType",
     ] if adaptive_used else []
     lines = [
         "from __future__ import annotations",
@@ -4574,7 +4627,7 @@ class SurveyProgress:
 
     Written by the processor thread (the hook), read by the event thread (the
     generator in _acquire_survey_with_detector) — so it is a real cross-thread
-    object, not a counter. Nothing else in microclaw tracks acquisition
+    object, not a counter. Nothing else in the runner tracks acquisition
     progress; this is the one genuinely new primitive design/24 introduces.
     """
 

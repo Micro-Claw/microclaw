@@ -1126,7 +1126,9 @@ def test_adaptive_inline_is_exact_live_decision_source(tmp_path):
         "hook_strategy": "snr_observer",
     })])
     assert inspect.getsource(tools._survey_event_stream) in source
-    assert inspect.getsource(hook_decisions.UntrustedHookAdapter) in source
+    adapter_source = inspect.getsource(hook_decisions.UntrustedHookAdapter)
+    available = tools._source_bound_names(source)
+    assert tools._without_microclaw_imports(adapter_source, available) in source
     assert inspect.getsource(tools._note_budget_exhausted) in source
 
 
@@ -1152,9 +1154,57 @@ def test_saved_adaptive_hook_source_and_manifest_pin_are_inlined(
         "hook_strategy": "saved",
     })])
     assert result["emitted_calls"] == 1
-    assert hook_source in source
+    assert hook_source not in source
+    assert "class Saved:" in source
+    assert "from microclaw" not in source
     assert manifest["saved"]["sha256"] in source
     assert "UntrustedHookAdapter(Saved(" in source
+
+
+def test_adaptive_export_has_no_microclaw_runtime_references(tmp_path):
+    _, _, source = export(tmp_path, [call("run_adaptive_timelapse", {
+        "n_frames": 2, "interval_s": 0, "save_dir": "session",
+        "hook_strategy": "snr_observer",
+    })])
+    # These are durable data identifiers, not runtime dependencies. They are
+    # the only deliberate occurrences of the project name in the artifact.
+    assert source.count("microclaw") == 2
+    assert '"microclaw.analysis-observation/v1"' in source
+    assert '"microclaw.image_analysis.compute_stats"' in source
+    import ast
+    assert not [node for node in ast.walk(ast.parse(source))
+                if isinstance(node, (ast.Import, ast.ImportFrom))
+                and ((isinstance(node, ast.ImportFrom)
+                      and (node.module or "").startswith("microclaw"))
+                     or (isinstance(node, ast.Import)
+                         and any(a.name.startswith("microclaw")
+                                 for a in node.names)))]
+
+
+def test_adaptive_export_refuses_a_stripped_import_it_cannot_resolve(
+    tmp_path, monkeypatch
+):
+    from microclaw.hook_manager import save_hook
+    import microclaw.hook_manager as manager
+
+    hooks_dir = tmp_path / "hooks"
+    monkeypatch.setattr(manager, "HOOKS_DIR", hooks_dir)
+    monkeypatch.setattr(manager, "MANIFEST", hooks_dir / "manifest.json")
+    save_hook(
+        "missing_import",
+        "from microclaw.image_analysis import genuinely_absent\n"
+        "class MissingImport:\n"
+        "    def analyze_frame(self, image, metadata):\n"
+        "        return genuinely_absent(image)\n",
+        "missing import", source="user_provided",
+    )
+    _, result, source = export(tmp_path, [call("run_adaptive_timelapse", {
+        "n_frames": 2, "interval_s": 0, "save_dir": "session",
+        "hook_strategy": "missing_import",
+    })])
+    assert result["emitted_calls"] == 0
+    assert "# NOT EMITTED: run_adaptive_timelapse" in source
+    assert "genuinely_absent" in source
 
 
 def test_adaptive_survey_without_channel_replays_recorded_exposure(tmp_path):
@@ -1354,7 +1404,8 @@ def test_a_session_that_writes_its_own_hook_still_exports_a_runnable_script(
     # The adaptive program is present AND reachable -- the ordering is the whole
     # finding, so assert the program rather than only the absence of the raise.
     assert result["emitted_calls"] == 1
-    assert hook_source in source
+    assert hook_source not in source
+    assert "class Repeat:" in source
     assert "_survey_event_stream" in source
     assert not _undefined_emitted_names(source)
 
@@ -1391,7 +1442,7 @@ def test_a_session_without_an_adaptive_run_carries_no_adaptive_preamble(tmp_path
         return names
 
     adaptive_only = {"hashlib", "io", "json", "logging", "queue", "threading",
-                     "sys", "ModuleType", "asdict", "datetime", "timezone"}
+                     "asdict", "datetime", "timezone"}
 
     _, _, snap = export(tmp_path, [call("snap_and_analyze", {})])
     assert not (top_level_imports(snap) & adaptive_only)
@@ -1406,6 +1457,7 @@ def test_a_session_without_an_adaptive_run_carries_no_adaptive_preamble(tmp_path
         "hook_strategy": "snr_observer",
     })])
     assert adaptive_only <= top_level_imports(adaptive)
+    assert not ({"sys", "ModuleType"} & top_level_imports(adaptive))
     assert "logger" in top_level_assignments(adaptive)
     assert not _undefined_emitted_names(adaptive)
 

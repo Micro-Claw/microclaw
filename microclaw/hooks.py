@@ -488,7 +488,7 @@ class SNRObservationHook(HookBase):
 
     # Script export may omit this processor while preserving the hardware
     # routine exactly: it returns every image unchanged and submits no events.
-    _microclaw_observation_only = True
+    _observation_only = True
 
     def __init__(self, min_snr: float | None = None, log_path: str | None = None,
                  guard=None, calibration_path: str | None = None):
