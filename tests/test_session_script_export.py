@@ -1307,6 +1307,58 @@ def test_emitted_free_name_guard_detects_a_removed_inline(tmp_path):
     assert "SurveyProgress" in _undefined_emitted_names(broken)
 
 
+def test_a_session_that_writes_its_own_hook_still_exports_a_runnable_script(
+    tmp_path, monkeypatch
+):
+    """The demo gate of 2026-08-10, reduced to a record.
+
+    The agent was asked for a run that stops itself and a script to keep. It
+    wrote a hook, saved it, ran an adaptive survey with it, and exported -- the
+    exact workflow F14 exists for. The exporter emitted a complete adaptive
+    program, and the script died three lines before reaching it, because
+    `generate_and_save_hook` carried no export decoration and collected the
+    default `raise RuntimeError` refusal.
+
+    No offline test caught it because none exported a session that CREATED the
+    hook it then used; every fixture referenced a hook that already existed.
+    """
+    from microclaw.hook_manager import save_hook
+    import microclaw.hook_manager as manager
+
+    hooks_dir = tmp_path / "hooks"
+    monkeypatch.setattr(manager, "HOOKS_DIR", hooks_dir)
+    monkeypatch.setattr(manager, "MANIFEST", hooks_dir / "manifest.json")
+    hook_source = (
+        "from microclaw.hook_decisions import ContinueSurvey, HookResult\n"
+        "class Repeat:\n"
+        "    def analyze_frame(self, image, metadata):\n"
+        "        return HookResult({}, actions=(ContinueSurvey(),))\n"
+    )
+    save_hook("repeat", hook_source, "repeat", source="claude_generated")
+
+    _, result, source = export(tmp_path, [
+        call("generate_and_save_hook", {"name": "repeat", "code": hook_source,
+                                        "description": "repeat"}),
+        call("run_adaptive_survey", {
+            "protocol": "timelapse", "protocol_params": {"n_frames": 1},
+            "positions": [{"name": "Pos1", "x_um": 0.0, "y_um": 0.0}],
+            "save_dir": "session", "hook_strategy": "repeat"}),
+    ])
+
+    assert "# RECORDED TOOL: generate_and_save_hook\n# No hardware-routine effect." in source
+    assert "# NOT EMITTED:" not in source
+    # The refusal's own shape, not a bare `raise RuntimeError`: the inlined
+    # DeniedEventQueue legitimately raises one, and matching that read as a
+    # failure against a correct fix.
+    assert "raise RuntimeError('NOT EMITTED" not in source
+    # The adaptive program is present AND reachable -- the ordering is the whole
+    # finding, so assert the program rather than only the absence of the raise.
+    assert result["emitted_calls"] == 1
+    assert hook_source in source
+    assert "_survey_event_stream" in source
+    assert not _undefined_emitted_names(source)
+
+
 def top_level_assignments(source):
     """Names bound by a top-level assignment in an emitted script."""
     import ast

@@ -5762,6 +5762,18 @@ def calibrate_snr_threshold(
 
 # --- Hook management ---
 
+# Saving a hook writes a .py file and a manifest entry under ~/.microclaw/hooks
+# and touches no hardware, so there is nothing for it to reproduce -- and the
+# emitted script does not need it to: an adaptive export inlines the hook's
+# source verbatim, with the manifest sha256 as a provenance comment, so the
+# class exists in the script without the manifest existing anywhere.
+#
+# Undecorated it collected the default refusal, which plants a loud
+# `raise RuntimeError` at the recorded position. The demo gate of 2026-08-10
+# found what that costs: the agent wrote a hook, ran an adaptive survey with it
+# and exported -- the exact workflow F14 exists for -- and the script died three
+# lines before the adaptive program it had correctly emitted.
+@emits_nothing
 def generate_and_save_hook(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
