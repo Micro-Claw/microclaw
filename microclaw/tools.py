@@ -720,10 +720,17 @@ def _emit_adaptive(params: RecordedParams, kind: str) -> str:
             "standalone adaptive runner"
         )
     hook_source, constructor, saved = _adaptive_hook_export(params)
-    limits = params.get("_export_safety_limits") or {
-        "x_um": (None, None), "y_um": (None, None), "z_um": (None, None),
-        "exposure_ms": (0.0, None), "analysis_min_snr": None,
-    }
+    # Refuse here rather than at the top of export_session_script: a refusal
+    # inside the loop becomes a `# NOT EMITTED` step in an otherwise complete
+    # script, which is what every other CannotEmit does. Raising up front threw
+    # away the whole export -- every unrelated call included -- over one
+    # unemittable step. And no default: an unbounded fallback would emit a
+    # script whose header claims recorded limits while checking nothing, which
+    # is the defect this refusal exists to prevent.
+    limits = params.get("_export_safety_limits")
+    if not limits:
+        raise CannotEmit(params.get("_export_safety_limits_error")
+                         or "the record carries no export-time safety limits")
     common = [
         _export_guard_source(limits), hook_source,
         f"_log_path = {params.get('log_path')!r}", f"hook = {constructor}",
@@ -841,8 +848,12 @@ def export_session_script(
         name == "run_autofocus" or params.get("hook_strategy") == "autofocus_per_position"
         for name, params in recorded
     )
-    safety_limits = None
+    safety_limits = safety_limits_error = None
     if adaptive_used:
+        # Read strictly: a renamed field must not degrade to "no limits", which
+        # would emit a script whose header claims recorded bounds while its seed
+        # check accepts anything. Carried to the renderer as a reason rather than
+        # raised here, so one unemittable step refuses on its own line.
         try:
             constraints = guard._c
             stage = constraints.stage
@@ -855,13 +866,14 @@ def export_session_script(
                 "analysis_min_snr": guard.analysis_min_snr,
             }
         except AttributeError as exc:
-            raise CannotEmit(
+            safety_limits_error = (
                 "adaptive export safety constraints are unavailable or have an "
                 f"unsupported shape: {exc}"
-            ) from exc
+            )
     for name, params in recorded:
         if name.startswith("run_adaptive_"):
             params["_export_safety_limits"] = safety_limits
+            params["_export_safety_limits_error"] = safety_limits_error
     # Only a channel switch that actually replayed writes needs the read-back
     # check; a map-less set_config delegation verifies nothing of its own.
     channel_writes = any(

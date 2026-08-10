@@ -1308,12 +1308,29 @@ def test_emitted_free_name_guard_detects_a_removed_inline(tmp_path):
 
 
 def test_adaptive_export_refuses_when_safety_constraints_are_unavailable(tmp_path):
+    """Unreadable limits refuse the adaptive STEP, not the whole export.
+
+    Coordinator fix, review round 2. The first version of this raised
+    `CannotEmit` from the top of `export_session_script`, so a session with
+    forty good calls and one adaptive call wrote no file at all. Every other
+    refusal in this exporter degrades to a `# NOT EMITTED` line inside an
+    otherwise complete script, and this one now does too -- while still never
+    emitting an unbounded `_LIMITS` under a header that claims recorded bounds.
+    """
     guard = Guard(tmp_path)
     del guard._c
-    with pytest.raises(tools.CannotEmit, match="safety constraints are unavailable"):
-        tools.export_session_script(None, guard, "routine.py", [
-            call("run_adaptive_timelapse", {
-                "n_frames": 2, "interval_s": 0, "save_dir": "session",
-                "hook_strategy": "snr_observer",
-            })
-        ])
+    records = (
+        completed_call("go_to_position", {"name": "p1"},
+                       {"x_um": 1.5, "y_um": 2.5, "z_um": 3.5})
+        + [call("run_adaptive_timelapse", {
+            "n_frames": 2, "interval_s": 0, "save_dir": "session",
+            "hook_strategy": "snr_observer"})]
+    )
+    tools.export_session_script(None, guard, "routine.py", records)
+    source = (tmp_path / "routine.py").read_text(encoding="utf-8")
+
+    assert "# NOT EMITTED: run_adaptive_timelapse" in source
+    assert "safety constraints are unavailable" in source
+    # The unrelated step still exported, and no unbounded guard was written.
+    assert "core.set_xy_position(1.5, 2.5)" in source
+    assert "_LIMITS" not in source
