@@ -966,24 +966,102 @@ def test_realistic_emitted_routine_runs_to_completion_against_fake_core(tmp_path
     assert len(acquired) == 2
 
 
-def test_adaptive_runs_refuse_with_the_architectural_reason(tmp_path):
-    """M5 rig gate round 4, 2026-08-06. The exported script stopped at
+@pytest.mark.parametrize(("params", "reason"), [
+    ({"hook_strategy": ["snr_observer"]}, "composition is not supported"),
+    ({"hook_strategy": "mm_plugin_analyzer"}, "plugin capabilities"),
+    ({"hook_strategy": "missing_saved_hook"}, "source is unavailable"),
+    ({"hook_strategy": "snr_observer", "illumination_envelope": {}},
+     "rig-configured raw-value conversions"),
+])
+def test_adaptive_runs_refuse_only_with_a_specific_reason(tmp_path, params, reason):
+    """M5 round-4 guard, narrowed now that adaptive programs are emittable."""
+    base = {"n_frames": 2, "interval_s": 0, "save_dir": "session", **params}
+    _, _, source = export(tmp_path, [call("run_adaptive_timelapse", base)])
+    assert "# NOT EMITTED: run_adaptive_timelapse" in source
+    assert reason in source
+    assert "chosen at runtime by its hook" not in source
+    assert "no standalone emitter has been implemented" not in source
 
-        NOT EMITTED: run_adaptive_survey - no standalone emitter has been
-        implemented for this tool
 
-    which understates it. An adaptive run's events are chosen at runtime by its
-    hook, so it is not an unwritten emitter -- it is the same architectural
-    refusal as the offline mosaic. Emitting the positions it happened to visit
-    would silently convert an adaptive run into a fixed one, which is the
-    reconstruct-from-memory defect this block exists to remove.
-    """
-    for tool in ("run_adaptive_survey", "run_adaptive_zstack",
-                 "run_adaptive_timelapse"):
-        _, _, source = export(tmp_path, [call(tool, {})])
-        assert f"# NOT EMITTED: {tool}" in source
-        assert "chosen at runtime by its hook" in source
-        assert "no standalone emitter has been implemented" not in source
+@pytest.mark.parametrize(("tool", "params", "seed"), [
+    ("run_adaptive_zstack", {
+        "z_start_um": -2, "z_end_um": 2, "z_step_um": 0.5,
+        "save_dir": "session", "hook_strategy": "snr_observer",
+    }, "'z_start': -2"),
+    ("run_adaptive_timelapse", {
+        "n_frames": 3, "interval_s": 1.5, "save_dir": "session",
+        "hook_strategy": "snr_observer",
+    }, "'num_time_points': 3"),
+    ("run_adaptive_survey", {
+        "protocol": "timelapse", "protocol_params": {"n_frames": 1},
+        "positions": [{"name": "p0", "x_um": 1.25, "y_um": 2.5}],
+        "save_dir": "session", "hook_strategy": "snr_observer",
+    }, "'xy_positions': [(1.25, 2.5)]"),
+])
+def test_all_adaptive_program_shapes_emit_seed_hook_and_runner(
+    tmp_path, tool, params, seed
+):
+    _, result, source = export(tmp_path, [call(tool, params)])
+    assert result["emitted_calls"] == 1
+    assert seed in source
+    assert inspect.getsource(tools._survey_event_stream) in source
+    assert inspect.getsource(tools.SurveyProgress) in source
+    assert "class SNRObservationHook" in source
+    assert "# NOT EMITTED:" not in source
+    compile(source, str(tmp_path / "routine.py"), "exec")
+
+
+def test_named_adaptive_survey_resolves_full_precision_position_list_seed(tmp_path):
+    records = completed_call("get_position_list", {}, {
+        "positions": [{"name": "p0", "x_um": 1.23456, "y_um": 8.76543}]
+    }) + completed_call("run_adaptive_survey", {
+        "protocol": "timelapse", "protocol_params": {"n_frames": 1},
+        "position_names": ["p0"], "save_dir": "session",
+        "hook_strategy": "snr_observer",
+    }, {"tiles_planned": [{"position": "p0", "x_um": 1.235, "y_um": 8.765}]})
+    _, result, source = export(tmp_path, records)
+    assert result["emitted_calls"] == 1
+    assert "'xy_positions': [(1.23456, 8.76543)]" in source
+    assert "'xy_positions': [(1.235, 8.765)]" not in source
+
+
+def test_adaptive_inline_is_exact_live_decision_source(tmp_path):
+    from microclaw import hook_decisions
+
+    _, _, source = export(tmp_path, [call("run_adaptive_timelapse", {
+        "n_frames": 2, "interval_s": 0, "save_dir": "session",
+        "hook_strategy": "snr_observer",
+    })])
+    assert inspect.getsource(tools._survey_event_stream) in source
+    assert inspect.getsource(hook_decisions.UntrustedHookAdapter) in source
+    assert inspect.getsource(tools._note_budget_exhausted) in source
+
+
+def test_saved_adaptive_hook_source_and_manifest_pin_are_inlined(
+    tmp_path, monkeypatch
+):
+    from microclaw.hook_manager import save_hook
+    import microclaw.hook_manager as manager
+
+    hooks_dir = tmp_path / "hooks"
+    monkeypatch.setattr(manager, "HOOKS_DIR", hooks_dir)
+    monkeypatch.setattr(manager, "MANIFEST", hooks_dir / "manifest.json")
+    hook_source = (
+        "from microclaw.hook_decisions import ContinueSurvey, HookResult\n"
+        "class Saved:\n"
+        "    def analyze_frame(self, image, metadata):\n"
+        "        return HookResult({}, actions=(ContinueSurvey(),))\n"
+    )
+    save_hook("saved", hook_source, "continue", source="user_provided")
+    manifest = json.loads((hooks_dir / "manifest.json").read_text(encoding="utf-8"))
+    _, result, source = export(tmp_path, [call("run_adaptive_timelapse", {
+        "n_frames": 2, "interval_s": 0, "save_dir": "session",
+        "hook_strategy": "saved",
+    })])
+    assert result["emitted_calls"] == 1
+    assert hook_source in source
+    assert manifest["saved"]["sha256"] in source
+    assert "UntrustedHookAdapter(Saved(" in source
 
 
 @pytest.mark.parametrize("records", [
@@ -995,6 +1073,10 @@ def test_adaptive_runs_refuse_with_the_architectural_reason(tmp_path):
         completed_call("set_channel", {"preset": "640"}, M5_CHANNEL_RESULT),
         id="channel-verification",
     ),
+    pytest.param([call("run_adaptive_timelapse", {
+        "n_frames": 2, "interval_s": 0, "save_dir": "session",
+        "hook_strategy": "snr_observer",
+    })], id="adaptive-runner"),
 ])
 def test_emitted_inline_defines_every_name_it_uses(tmp_path, records):
     """Recurrence guard for the block-13/41b integration defect (2026-08-06).
@@ -1017,6 +1099,7 @@ def test_emitted_inline_defines_every_name_it_uses(tmp_path, records):
     import ast, builtins
 
     _, _, source = export(tmp_path, records)
+    assert "# NOT EMITTED:" not in source
     tree = ast.parse(source)
     defined = {n.name for n in ast.walk(tree)
                if isinstance(n, (ast.FunctionDef, ast.ClassDef))}
@@ -1025,6 +1108,10 @@ def test_emitted_inline_defines_every_name_it_uses(tmp_path, records):
     defined |= {a.asname or a.name.split(".")[0]
                 for n in ast.walk(tree)
                 if isinstance(n, (ast.Import, ast.ImportFrom)) for a in n.names}
+    defined |= {a.arg for f in ast.walk(tree) if isinstance(f, ast.FunctionDef)
+                for a in (*f.args.posonlyargs, *f.args.args, *f.args.kwonlyargs,
+                          *(x for x in (f.args.vararg, f.args.kwarg)
+                            if x is not None))}
 
     # Annotations never evaluate. The emitted script opens with
     # `from __future__ import annotations`, so `ctrl: MicroscopeController` is a
@@ -1053,9 +1140,14 @@ def test_emitted_inline_defines_every_name_it_uses(tmp_path, records):
         # Every name bound anywhere in the body: assignment, tuple unpacking,
         # for-targets, comprehensions, with-as. Store context covers them all.
         local = {a.arg for f in ast.walk(node)
-                 if isinstance(f, ast.FunctionDef) for a in f.args.args}
+                 if isinstance(f, ast.FunctionDef)
+                 for a in (*f.args.posonlyargs, *f.args.args, *f.args.kwonlyargs,
+                           *(x for x in (f.args.vararg, f.args.kwarg)
+                             if x is not None))}
         local |= {n.id for n in ast.walk(node)
                   if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)}
+        local |= {n.name for n in ast.walk(node)
+                  if isinstance(n, ast.ExceptHandler) and n.name}
         for name in (n.id for n in ast.walk(node)
                      if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
                      and id(n) not in annotated):

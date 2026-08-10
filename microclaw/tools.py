@@ -484,7 +484,8 @@ def _resolve_recorded_position_names(
                 # mark can make subsequent named-position resolution trustworthy.
                 state = None
 
-        if name != "run_multiposition_acquisition" or params.get("positions") is not None:
+        if (name not in {"run_multiposition_acquisition", "run_adaptive_survey"}
+                or params.get("positions") is not None):
             continue
         requested = params.get("position_names")
         if not isinstance(requested, list):
@@ -518,7 +519,8 @@ def _analysis_source(*, include_autofocus: bool = False) -> str:
     for fn in (
         image_analysis._reshape_pixels, image_analysis.snap_to_numpy,
         image_analysis.snr, image_analysis.tenengrad,
-        image_analysis.snr_validity, image_analysis.coverage_stats,
+        image_analysis.snr_validity, image_analysis.resolve_min_snr,
+        image_analysis.coverage_stats,
         image_analysis.compute_stats,
     ):
         parts.append(inspect.getsource(fn))
@@ -560,6 +562,244 @@ def _channel_verification_source() -> str:
     ))
 
 
+def _adaptive_runner_source() -> str:
+    """Return the exact adaptive decision machinery used by the live runner."""
+    from microclaw import __version__, hook_decisions, hooks
+
+    decision_items = (
+        hook_decisions.MoveStage, hook_decisions.AcquireAt,
+        hook_decisions.SetExposure, hook_decisions.ContinueSurvey,
+        hook_decisions.StopSurvey, hook_decisions.RequestAutofocus,
+        hook_decisions.SetIlluminationPower, hook_decisions.EmitArtifact,
+        hook_decisions.DiscardFrame, hook_decisions.HookResult,
+    )
+    parts = [f"__version__ = {__version__!r}\n"]
+    parts.extend(inspect.getsource(item) for item in decision_items)
+    parts.extend([
+        "HookAction = (MoveStage | AcquireAt | SetExposure | ContinueSurvey | "
+        "StopSurvey | RequestAutofocus | SetIlluminationPower | EmitArtifact | "
+        "DiscardFrame)\n",
+        "_ACTION_TYPES = {cls.__dataclass_fields__['kind'].default: cls for cls in "
+        "(MoveStage, AcquireAt, SetExposure, ContinueSurvey, StopSurvey, "
+        "RequestAutofocus, SetIlluminationPower, EmitArtifact, DiscardFrame)}\n",
+    ])
+    parts.extend([
+        inspect.getsource(hook_decisions.parse_action),
+        inspect.getsource(hook_decisions.write_hook_artifact),
+        inspect.getsource(hook_decisions.DeniedEventQueue),
+        inspect.getsource(hook_decisions.UntrustedHookAdapter),
+        inspect.getsource(hooks.analysis_observation_record),
+        inspect.getsource(hooks.write_analysis_observation),
+        inspect.getsource(hooks._frame_index),
+        inspect.getsource(hooks.HookBase),
+        inspect.getsource(SurveyProgress),
+        f"_CANDIDATE_POLL_S = {_CANDIDATE_POLL_S!r}\n",
+        inspect.getsource(_note_budget_exhausted),
+        inspect.getsource(_survey_event_stream),
+        '''# Satisfy the exact function-local imports in the inlined sources
+# without requiring Microclaw to be installed beside this script.
+_microclaw_module = ModuleType(\"microclaw\")
+_hooks_module = ModuleType(\"microclaw.hooks\")
+_hooks_module.HookBase = HookBase
+_hooks_module.analysis_observation_record = analysis_observation_record
+_decisions_module = ModuleType(\"microclaw.hook_decisions\")
+for _name in (\"MoveStage\", \"AcquireAt\", \"SetExposure\", \"ContinueSurvey\",
+              \"StopSurvey\", \"RequestAutofocus\", \"SetIlluminationPower\",
+              \"EmitArtifact\", \"DiscardFrame\", \"HookResult\"):
+    setattr(_decisions_module, _name, globals()[_name])
+_autofocus_module = ModuleType(\"microclaw.autofocus\")
+for _name in (\"coarse_then_fine_autofocus\", \"coarse_then_fine_plane_count\"):
+    if _name in globals():
+        setattr(_autofocus_module, _name, globals()[_name])
+sys.modules.setdefault(\"microclaw\", _microclaw_module)
+sys.modules.setdefault(\"microclaw.hooks\", _hooks_module)
+sys.modules.setdefault(\"microclaw.hook_decisions\", _decisions_module)
+sys.modules.setdefault(\"microclaw.autofocus\", _autofocus_module)
+''',
+    ])
+    return "\n".join(parts)
+
+
+def _export_guard_source(limits: dict[str, Any]) -> str:
+    """Render the acquisition-time motion bounds as a small literal guard."""
+    return f'''# These are the limits recorded at export time; editing this dict edits the limits.
+_LIMITS = {limits!r}
+class SafetyViolation(Exception):
+    pass
+
+class _RecordedSafetyGuard:
+    def _bounded(self, value, low, high, label):
+        value = float(value)
+        if not math.isfinite(value):
+            raise SafetyViolation(f"{{label}} must be finite")
+        if low is not None and value < low:
+            raise SafetyViolation(f"{{label}}={{value}} is below recorded minimum {{low}}")
+        if high is not None and value > high:
+            raise SafetyViolation(f"{{label}}={{value}} exceeds recorded maximum {{high}}")
+    def check_xy(self, x, y):
+        self._bounded(x, _LIMITS["x_um"][0], _LIMITS["x_um"][1], "X")
+        self._bounded(y, _LIMITS["y_um"][0], _LIMITS["y_um"][1], "Y")
+    def check_z(self, z):
+        self._bounded(z, _LIMITS["z_um"][0], _LIMITS["z_um"][1], "Z")
+    def check_exposure(self, exposure_ms):
+        self._bounded(exposure_ms, 0.0, _LIMITS["exposure_ms"][1], "Exposure")
+    @property
+    def analysis_min_snr(self):
+        return _LIMITS.get("analysis_min_snr")
+
+guard = _RecordedSafetyGuard()
+'''
+
+
+def _adaptive_hook_export(params: RecordedParams) -> tuple[str, str, bool]:
+    """Return exact hook source, constructor expression, and saved-hook flag."""
+    strategy = params.get("hook_strategy")
+    if isinstance(strategy, list):
+        raise CannotEmit("adaptive hook composition is not supported by the standalone runner")
+    if not isinstance(strategy, str) or not strategy:
+        raise CannotEmit("the record contains no single hook strategy")
+    if strategy in {"mm_plugin_analyzer", "autofocus_mm_plugin"}:
+        raise CannotEmit(
+            f"hook {strategy!r} requires Micro-Manager plugin capabilities through "
+            "the Microclaw controller and has no standalone equivalent"
+        )
+    params_expr = repr(dict(params.get("hook_params") or {}))
+    from microclaw.hooks import PRECODED_HOOK_REGISTRY
+    if strategy in PRECODED_HOOK_REGISTRY:
+        cls = PRECODED_HOOK_REGISTRY[strategy]
+        source = inspect.getsource(cls)
+        signature = inspect.signature(cls.__init__)
+        injected = []
+        if "ctrl" in signature.parameters:
+            injected.append("'ctrl': mm")
+        if "guard" in signature.parameters:
+            injected.append("'guard': guard")
+        extras = (", " + ", ".join(injected)) if injected else ""
+        constructor = (
+            f"{cls.__name__}(**{{**{params_expr}, 'log_path': _log_path{extras}}})"
+        )
+        # The five emittable built-ins share these exact bases/helpers. Analysis
+        # and autofocus functions are supplied by the existing inline path.
+        return source, constructor, False
+
+    from microclaw.hook_manager import describe_saved_hook
+    description = describe_saved_hook(strategy)
+    if description.get("error"):
+        raise CannotEmit(f"saved hook source is unavailable: {description['error']}")
+    reasons = description.get("resolve_refusal", {}).get("reasons", [])
+    if reasons:
+        raise CannotEmit("saved hook source is not exportable: " + "; ".join(reasons))
+    provenance = description["provenance"]
+    path = Path(provenance["path"])
+    try:
+        source = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise CannotEmit(f"saved hook source is unavailable: {exc}") from exc
+    source = (
+        f"# Saved hook {strategy!r}; manifest sha256: "
+        f"{provenance.get('manifest_sha256')}\n" + source
+    )
+    cls_name = description["class_name"]
+    constructor = (
+        f"UntrustedHookAdapter({cls_name}(**{params_expr}), log_path=_log_path)"
+    )
+    return source, constructor, True
+
+
+def _emit_adaptive(params: RecordedParams, kind: str) -> str:
+    if params.get("illumination_envelope") is not None:
+        raise CannotEmit(
+            "the authorized illumination envelope depends on rig-configured raw-value "
+            "conversions that are not recorded as exportable literals"
+        )
+    if params.get("artifact_limits") is not None:
+        raise CannotEmit(
+            "the authorized hook artifact budget is not represented by the "
+            "standalone adaptive runner"
+        )
+    hook_source, constructor, saved = _adaptive_hook_export(params)
+    limits = params.get("_export_safety_limits") or {
+        "x_um": (None, None), "y_um": (None, None), "z_um": (None, None),
+        "exposure_ms": (0.0, None), "analysis_min_snr": None,
+    }
+    common = [
+        _export_guard_source(limits), hook_source,
+        f"_log_path = {params.get('log_path')!r}", f"hook = {constructor}",
+    ]
+    channel = params.get("channel")
+    shape: dict[str, Any]
+    if kind == "zstack":
+        shape = {"z_start": params["z_start_um"], "z_end": params["z_end_um"],
+                 "z_step": params["z_step_um"]}
+    elif kind == "timelapse":
+        shape = {"num_time_points": params["n_frames"],
+                 "time_interval_s": params["interval_s"]}
+    else:
+        positions = params.get("positions")
+        if positions is None:
+            raise CannotEmit(params.get(
+                "_position_resolution_error",
+                "the record contains no resolved adaptive survey seed positions",
+            ))
+        if not positions or any(p.get("name") is None or p.get("x_um") is None
+                                or p.get("y_um") is None for p in positions):
+            raise CannotEmit("the record contains an incomplete adaptive survey seed position")
+        protocol = params.get("protocol")
+        pp = dict(params.get("protocol_params") or {})
+        if protocol == "timelapse":
+            shape = {"num_time_points": pp["n_frames"],
+                     "time_interval_s": pp.get("interval_s", 0)}
+        elif protocol == "zstack":
+            shape = {"z_start": pp["z_start_um"], "z_end": pp["z_end_um"],
+                     "z_step": pp["z_step_um"]}
+        else:
+            raise CannotEmit(f"unknown recorded adaptive survey protocol {protocol!r}")
+        shape["xy_positions"] = [(p["x_um"], p["y_um"]) for p in positions]
+        shape["position_labels"] = [p["name"] for p in positions]
+        if pp.get("channel"):
+            shape["channel_group"] = "Channel"
+            shape["channels"] = [pp["channel"]]
+            if pp.get("exposure_ms") is not None:
+                shape["channel_exposures_ms"] = [pp["exposure_ms"]]
+        common.extend([
+            f"events = multi_d_acquisition_events(**{{k: v for k, v in {shape!r}.items() if v is not None}})",
+            "candidates = queue.Queue()", f"progress = SurveyProgress({len(positions)})",
+            *( ["hook.configure_adaptive(events=events, candidates=candidates, progress=progress, guard=guard, max_events=len(events))"] if saved else ["hook.survey_events = events", "hook.candidates = candidates", "hook.progress = progress"] ),
+            f"event_source = _survey_event_stream(events, candidates, progress, {params.get('max_idle_s', 60.0)!r}, hook, adaptive=True, max_events=len(events))",
+            "_hook_callbacks = {name: callback for name, callback in {"
+            "'image_process_fn': getattr(hook, 'image_process_fn', None), "
+            "'post_hardware_hook_fn': getattr(hook, 'post_hardware_hook_fn', None)"
+            "}.items() if callback is not None}",
+            f"with Acquisition(directory={params.get('save_dir')!r}, name={params.get('name', 'survey')!r}, show_display=True, **_hook_callbacks) as acq:",
+            "    acq.acquire(event_source(acq))",
+        ])
+        return "\n\n".join(common)
+    if channel:
+        shape.update(channel_group="Channel", channels=[channel])
+    common.extend([
+        f"events = multi_d_acquisition_events(**{shape!r})",
+        "_hook_callbacks = {name: callback for name, callback in {"
+        "'image_process_fn': getattr(hook, 'image_process_fn', None), "
+        "'post_hardware_hook_fn': getattr(hook, 'post_hardware_hook_fn', None)"
+        "}.items() if callback is not None}",
+        f"with Acquisition(directory={params.get('save_dir')!r}, name={params.get('name', 'adaptive')!r}, show_display=True, **_hook_callbacks) as acq:",
+        "    acq.acquire(events)",
+    ])
+    return "\n\n".join(common)
+
+
+def _emit_adaptive_zstack(params: RecordedParams) -> str:
+    return _emit_adaptive(params, "zstack")
+
+
+def _emit_adaptive_timelapse(params: RecordedParams) -> str:
+    return _emit_adaptive(params, "timelapse")
+
+
+def _emit_adaptive_survey(params: RecordedParams) -> str:
+    return _emit_adaptive(params, "survey")
+
+
 @emits_nothing
 def export_session_script(
     ctrl: MicroscopeController,
@@ -571,13 +811,31 @@ def export_session_script(
     path = guard.resolve_in_workspace(output_path)
     recorded = _recorded_tool_calls(records)
     _resolve_recorded_position_names(recorded)
-    analysis_used = any(
+    adaptive_used = any(name.startswith("run_adaptive_") for name, _ in recorded)
+    analysis_used = adaptive_used or any(
         name in {"snap_and_analyze", "run_autofocus"}
         or (name in {"run_multiposition_acquisition", "run_tile_acquisition"}
             and params.get("protocol") == "snap")
         for name, params in recorded
     )
-    autofocus_used = any(name == "run_autofocus" for name, _params in recorded)
+    autofocus_used = any(
+        name == "run_autofocus" or params.get("hook_strategy") == "autofocus_per_position"
+        for name, params in recorded
+    )
+    constraints = getattr(guard, "_c", None)
+    stage = getattr(constraints, "stage", None)
+    camera = getattr(constraints, "camera", None)
+    analysis = getattr(constraints, "analysis", None)
+    safety_limits = {
+        "x_um": (getattr(stage, "x_min", None), getattr(stage, "x_max", None)),
+        "y_um": (getattr(stage, "y_min", None), getattr(stage, "y_max", None)),
+        "z_um": (getattr(stage, "z_min", None), getattr(stage, "z_max", None)),
+        "exposure_ms": (0.0, getattr(camera, "max_exposure_ms", None)),
+        "analysis_min_snr": getattr(analysis, "min_snr", None),
+    }
+    for name, params in recorded:
+        if name.startswith("run_adaptive_"):
+            params["_export_safety_limits"] = safety_limits
     # Only a channel switch that actually replayed writes needs the read-back
     # check; a map-less set_config delegation verifies nothing of its own.
     channel_writes = any(
@@ -586,21 +844,32 @@ def export_session_script(
     )
     lines = [
         "from __future__ import annotations",
+        "import hashlib",
+        "import io",
+        "import json",
+        "import logging",
         "import math",
+        "import queue",
+        "import threading",
         "import time",
-        "from dataclasses import dataclass",
+        "import sys",
+        "from dataclasses import asdict, dataclass",
+        "from datetime import datetime, timezone",
         "from pathlib import Path",
         "from types import SimpleNamespace",
+        "from types import ModuleType",
         "from typing import Any, Callable, NamedTuple, Optional",
         "import numpy as np",
         "from pycromanager import Acquisition, Core, multi_d_acquisition_events",
         "",
         *(["", _analysis_source(include_autofocus=autofocus_used).rstrip()]
           if analysis_used else []),
+        *(["", _adaptive_runner_source().rstrip()] if adaptive_used else []),
         *(["", _channel_verification_source().rstrip()] if channel_writes else []),
         "",
         "core = Core()",
         "mm = SimpleNamespace(core=core)",
+        "logger = logging.getLogger(__name__)",
     ]
     emitted = 0
 
@@ -4036,11 +4305,7 @@ def _adaptive_result(
     return result
 
 
-@refuses(
-    "an adaptive run's events are chosen at runtime by its hook, so there is "
-    "no static event list to render; emitting the positions it happened to "
-    "visit would silently turn an adaptive run into a fixed one"
-)
+@emits(_emit_adaptive_zstack)
 @_acquisition_entry_point
 def run_adaptive_zstack(
     ctrl: MicroscopeController,
@@ -4102,11 +4367,7 @@ def run_adaptive_zstack(
     )
 
 
-@refuses(
-    "an adaptive run's events are chosen at runtime by its hook, so there is "
-    "no static event list to render; emitting the positions it happened to "
-    "visit would silently turn an adaptive run into a fixed one"
-)
+@emits(_emit_adaptive_timelapse)
 @_acquisition_entry_point
 def run_adaptive_timelapse(
     ctrl: MicroscopeController,
@@ -4577,11 +4838,7 @@ def _acquire_survey_with_detector(
     )
 
 
-@refuses(
-    "an adaptive run's events are chosen at runtime by its hook, so there is "
-    "no static event list to render; emitting the positions it happened to "
-    "visit would silently turn an adaptive run into a fixed one"
-)
+@emits(_emit_adaptive_survey)
 @_acquisition_entry_point
 def run_adaptive_survey(
     ctrl: MicroscopeController,
