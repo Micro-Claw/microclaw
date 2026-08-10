@@ -1,6 +1,6 @@
 # Block 43h rig gate — emitted adaptive programs
 
-Implementation ancestor: ac0407b
+Implementation ancestor: 36c1bd7
 
 Use PowerShell from the checked-out repository. uv is the single launcher for
 every Python/project command below; do not substitute bare Python for one line.
@@ -8,7 +8,7 @@ Git commands only establish the checkout.
 
 ## Step 0 — pin and run the full Windows suite
 
-    git merge-base --is-ancestor ac0407b HEAD
+    git merge-base --is-ancestor 36c1bd7 HEAD
     if ($LASTEXITCODE -ne 0) { throw "Block 43h implementation is not in this checkout" }
 
     uv run python -m pytest -q > suite-43h.txt 2>&1
