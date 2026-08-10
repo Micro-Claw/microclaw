@@ -784,7 +784,7 @@ assistant's narration when judging whether a guard fired.
 | 43d | Nestor | none | `design43/report-shapes` (deleted) | `04c0654` | `8635d7c` + `9b98b0b` (two review rounds returned) + `a7a415d` (coordinator fixes) + `010701a` (runbook total corrected); runbook pin `a7a415d` | **M5 2026-08-09 — G1, G2, G3 all PASS; all three known-bad patterns read 0** (`43d-m5`). Suite 1657 passed / 116 skipped / 0 failed / 1773 collected, skips equal to 43b's M5 run. Gate folded into a real 640-trigger session rather than run as a script | `53395d2` | **done** `53e3f12` — design/43 F8's stub corrected (`hook_actions` is omitted, not zeroed, when no typed action was observed) with the surviving two-kind projection recorded as still owed; F11's two-value list corrected to three (`partially_explicit`); suggested-order item 4 struck through |
 | 43e | Nestor | none | `design43/builtin-offline-adapters` (deleted) | `eb577d8` | `452dbc5` + `3d30c1f` (review round 1 returned) + `9bae1ba` + `256cc18` (two coordinator fixes, each after a rig round); runbook pinned `256cc18` | **M5, three rounds, 2026-08-09 (`43e-m5`, `43e-m5-round2`). Round 1: G1 FAIL — the adapters were correct and unreachable. Round 2: Step 0 (1671 + 116 = 1787), G1, G2 (both precedence branches), G4, Step 1 all PASS. Round 3: G3 PASS, no hardware tool called in the session.** `256cc18`'s two corrected hints are **ungated** — round 3 had no failing call | `0d1a501` | **done** — design/43 F15 annotated with the four things its stub did not say plus the two successors owed; F10 extended to the OSError siblings; F12's retired half named; suggested-order item 5 struck through |
 | 43f | Nestor | 43a merged (its prompt names the key this creates) | `design43/rig-profile` | | | required | | |
-| 43g | Nestor | none | `design43/coverage-statistics` | `daefb7d` | `692d2b7` + `ebc4995` + `9c6a291` (two review rounds returned) + `a5e908a` + `3cd78de` (two coordinator fixes); gate doc + study scripts `d33eeb6`, pinned `3cd78de` | **Measurement half DONE offline 2026-08-10** against the saved Nestor tiles, control exact (recomputed snr == logged snr, 0.0000, on 313 + 36 tiles); `min_snr` sweep is the calibration. **Block NARROWED** — does not close F6, does not supply F5's measurement. **Session G1 (reach, demo config) owed; beads owed** — no saved bead pixels exist | | |
+| 43g | Nestor | none | `design43/coverage-statistics` | `daefb7d` | `692d2b7` + `ebc4995` + `9c6a291` (two review rounds returned) + `a5e908a` + `3cd78de` + `714a0ef` (three coordinator fixes); gate doc + study scripts `d33eeb6`, pinned `3cd78de` | **Measurement half DONE offline 2026-08-10** against the saved Nestor tiles, control exact (recomputed snr == logged snr, 0.0000, on 313 + 36 tiles); `min_snr` sweep is the calibration. **Block NARROWED** — does not close F6, does not supply F5's measurement. **beads met** (`stitch_test_1`, six fields, join verified). **Session G1 (reach, demo config) still owed** | | |
 | 43h | Nestor | none | `design43/emit-adaptive-runs` | | | **required** — run the emitted script with microclaw closed | | |
 | 43i | Nestor | 43g, 43h | `design43/survey-refocus` | | | required | | |
 | 43j | Nestor | 43e (retires half of F12) | `design43/hooks-and-timelapse-observation` | | | required | | |
@@ -6107,16 +6107,29 @@ defined, so every observation record and `rank_hook_log` gets it for free.
 - [x] **Calibration done offline, not on a rig — 2026-08-10.** The saved Nestor
       tiles turned out to be a complete labelled set with pixels, so the
       calibration is a re-runnable computation rather than one shot at the
-      microscope. The `min_snr` sweep is in the gate doc. **Beads remain owed**:
-      `multicolor_bead_run_m5` holds only the history and confirmations, and no
-      saved bead pixels exist anywhere. The diffuse field design/36 owed is
-      *met* — F5's raster is one, and it is what produced the negative result.
+      microscope. The `min_snr` sweep is in the gate doc. **Beads are met too**
+      (six fields in `stitch_test_cant_open/stitch_test_1`, join verified): the
+      trio reads moderate coverage with concentration 0.48–0.81, the sparse-
+      puncta signature, cleanly separated from the 0.09–0.14 band the extended
+      cell fields occupy — and `snr` is refused on all six, so coverage is the
+      only ranking signal that survives on beads. The diffuse field design/36
+      owed is *met* — F5's raster is one, and it produced the negative result.
+      **Correction:** this row and the gate doc first said no saved bead pixels
+      existed anywhere, generalised from `multicolor_bead_run_m5` holding only
+      JSONs. Most saved data in the archive outside the Nestor and amr sessions
+      is beads.
 - [x] **Coverage ranking refuses a clipped frame** (`3cd78de`). Found by the
       offline study: the two highest-`signal_coverage` tiles of 324 were 4.0% and
       19.8% saturated, both frames snr had already refused. Coverage has no
       validity flag by design, so the existing saturation gate is applied at the
       ranking boundary, reusing `invalid_rows` rather than reintroducing a
-      `None`-valued statistic.
+      `None`-valued statistic — under **coverage's own** limit
+      (`MAX_SATURATED_FRACTION_FOR_COVERAGE`, 1%), 100× looser than snr's.
+      The first version of this fix used snr's 0.01% gate and would have refused
+      every real bead field measured; coverage is a fraction, not a tail
+      statistic, so a clipped pixel is still legitimately above threshold. The
+      1% line is bounded by measurement on both sides (beads to 0.22%, the
+      pathological tiles at 4.0% and 19.8%) and uncalibrated between them.
 - [ ] **The threshold being calibrated is `min_snr`, not only the three new
       numbers, and it is already the known-wrong one.** F6's `coverage_stats`
       thresholds at `background + min_snr · noise`; `min_snr` resolves through
