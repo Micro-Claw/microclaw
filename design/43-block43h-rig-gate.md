@@ -6,6 +6,25 @@ Use PowerShell from the checked-out repository. uv is the single launcher for
 every Python/project command below; do not substitute bare Python for one line.
 Git commands only establish the checkout.
 
+## Which machine, and what each one can close
+
+**Steps 0–3 run on the demo machine and close the block's core claim.** What
+43h emits is a *program* — seed plan, hook source, decision loop — and whether
+that program runs standalone is a mechanism question, not a sample question. The
+demo config has a real MMCore, a real acquisition engine and a real bridge, so
+the generator that holds the event source open, the terminator, the seed-plan
+guard, the module shim and the adapter's dispatch are all genuinely exercised.
+
+**The demo camera returns bit-identical frames.** That is why Step 3b's hook
+stops on a *frame count read from metadata* rather than on image content: a
+content-driven stop cannot be distinguished from a stuck one when every frame is
+the same, and a criterion that cannot fail is not a criterion (this is what
+narrowed 43g's demo gate to reach only).
+
+**Step 4 needs M5 or M2 and stays owed after a demo PASS.** Record a demo run as
+closing Steps 0–3 and leaving Step 4 open; do not mark the block gated until
+Step 4 has run.
+
 ## Step 0 — pin and run the full Windows suite
 
     git merge-base --is-ancestor 36c1bd7 HEAD
@@ -37,9 +56,8 @@ resolution, and narrow refusals.
 
 ## Step 2 — make one real adaptive program during an ordinary session
 
-Fold this into a session with a sample and a small, safe plan. At least one
-request must be phrased exactly at the user level, with no tool name, for
-example:
+Fold this into an ordinary session with a small, safe plan. At least one request
+must be phrased exactly at the user level, with no tool name, for example:
 
 > Watch this field for three frames, record the image quality each time, and
 > give me a standalone script I can keep and rerun later.
@@ -52,11 +70,13 @@ Before ending the live session, inspect the script:
 
 - Its event seed matches the requested frame interval/count (or Z range, if that
   is the safe session available).
-- It contains the exact hook class, UntrustedHookAdapter, and the adaptive
-  decision source, rather than the tiles/frames observed in this run.
-- _LIMITS contains the rig limits in force at export, and the header says
+- It contains the exact hook class, the adaptive decision source, and — for a
+  saved hook — `UntrustedHookAdapter` plus the manifest sha256 as a provenance
+  comment, rather than the tiles/frames observed in this run.
+- `_LIMITS` contains the rig limits in force at export, and the header says
   editing the dictionary edits those recorded limits.
-- The script contains no filesystem path into this Microclaw checkout.
+- The script contains no filesystem path into this Microclaw checkout; it writes
+  beside itself via `_HERE`.
 
 ## Step 3 — close Microclaw and run the emitted program
 
@@ -74,7 +94,77 @@ for the acquired frames. Importing or compiling the file is not evidence.
 Confirm from the acquisition display/dataset that exactly the seed program ran;
 do not infer success only from an empty terminal.
 
+Run **both** sub-cases. They prove different halves.
+
+### 3a — the straight path: adaptive timelapse with `snr_observer`
+
+The seed plan is a full pre-built event list, so no decision is needed to
+advance it. This proves the inlining, the module shim, the `_HERE` output
+directory and the real `Acquisition` under a precoded hook.
+
+### 3b — the decision loop: adaptive survey with a saved counter hook
+
+**This is the sub-case that makes a demo run worth doing.** Two facts force its
+shape, both verified in the code at review:
+
+- **Only a saved hook can advance an adaptive survey.** No hook in
+  `PRECODED_HOOK_REGISTRY` calls `progress.image_done()` or `candidates.put()`,
+  so a registry hook under `run_adaptive_survey` dispatches the seed tile and
+  then idles out `max_idle_s`. Use a saved hook, which also exercises the
+  manifest-pinned inlining path.
+- **The stop must come from metadata, not pixels.** Every demo frame is
+  identical, so a content threshold either fires at tile 1 or never.
+
+Ask the agent, in the operator's words, for a survey over a handful of positions
+that stops once it has seen two frames. The hook it saves should decide from a
+frame counter or the metadata axes, for example:
+
+```python
+class StopAfterTwo:
+    def analyze_frame(self, image, metadata):
+        from microclaw.hook_decisions import ContinueSurvey, HookResult, StopSurvey
+        self._seen = getattr(self, "_seen", 0) + 1
+        action = StopSurvey() if self._seen >= 2 else ContinueSurvey()
+        return HookResult({"frames_seen": self._seen}, actions=(action,))
+```
+
+Export it, close Microclaw, run the script, and pass only when **all** of these
+hold in the standalone run:
+
+- The dataset contains **2 frames from a plan of more than 2** — the seed plan
+  is in the script, so a run that images every planned tile means `StopSurvey`
+  never reached the dispatch.
+- The script exits cleanly rather than hanging. A stop is *not putting* the next
+  tile; the generator drains and its `finally` puts the terminator. A hang here
+  is the design/24 terminator defect reappearing in the emitted copy.
+- The hook log records the two `frames_seen` observations.
+- Nothing in the run required Microclaw to be importable.
+
+## Step 4 — M5 or M2: the sample-driven decision (NOT closed by the demo)
+
+Steps 0–3 prove the program runs. They do not prove it *adapts to a sample*,
+which is the claim F14 rests on — "searches, and finds that sample's cells".
+On a rig with real structure, run the same shape with a hook whose stop
+condition is a measurement of the image, and pass when the frames the script
+acquires are chosen by what it saw. Record which tiles it took and why.
+
+Two smaller limbs also stay owed to a real rig, and neither is a demo failure:
+
+- **Exposure replay with a consequence.** A channel-less adaptive survey emits
+  `guard.check_exposure(...)` then `core.set_exposure(...)`. The demo can only
+  read the value back; on M5/M2 exposure is dose. Confirm the emitted script
+  sets the exposure the session used and not the camera's current value.
+- **The `Channel` group question.** The emitted events carry
+  `channel_group=CHANNEL_CONFIG_GROUP` (`"Channel"`). The demo config has that
+  group; **M5 does not have one at all**. Note what an M5 session records for an
+  adaptive run's channel and whether the emitted script references a group that
+  rig lacks. This is pre-existing across every emitter, not new in 43h — record
+  it, do not fix it here.
+
+## Archive
+
 Archive suite-43h.txt, collected-43h.txt, export-tests-43h.txt, the session
-history, emitted script, emitted-run-43h.txt, dataset path, and the operator's
-observed pass/fail notes under
-Documents\Documents - Beyonce\Projects\Micro-Claw.
+history, both emitted scripts, emitted-run-43h.txt, the dataset paths and hook
+logs, and the operator's observed pass/fail notes under
+Documents\Documents - Beyonce\Projects\Micro-Claw. Say in the notes which
+machine ran which step.
