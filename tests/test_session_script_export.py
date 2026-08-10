@@ -1197,6 +1197,82 @@ def test_adaptive_inline_is_exact_live_decision_source(tmp_path):
     assert inspect.getsource(tools._note_budget_exhausted) in source
 
 
+@pytest.mark.parametrize("guard_body", [
+    pytest.param(
+        "        try:\n"
+        "            from microclaw.hook_decisions import ContinueSurvey, HookResult\n"
+        "        except ImportError:\n"
+        "            raise\n",
+        id="try-wrapped",
+    ),
+    pytest.param(
+        "        if True:\n"
+        "            from microclaw.hook_decisions import ContinueSurvey, HookResult\n",
+        id="if-guarded",
+    ),
+])
+def test_stripping_a_block_sole_package_import_still_emits_valid_python(
+    tmp_path, monkeypatch, guard_body
+):
+    """Coordinator fix, review round 4.
+
+    Package imports are removed by line number at any nesting depth. Where the
+    import is the ONLY statement of its block, deleting it left an empty block
+    and the exporter wrote a file that could not be parsed -- while reporting
+    `Session script exported.` with `emitted_calls: 1`. The operator would have
+    found out by running it.
+
+    A saved hook is arbitrary code, and `try: from microclaw... except
+    ImportError:` is exactly what someone writes when they intend the hook to be
+    portable, so this is a likely shape rather than an exotic one. `pass` is the
+    correct residue: the name IS bound at module level in the emitted script, so
+    the import succeeded and the fallback must not run.
+    """
+    from microclaw.hook_manager import save_hook
+    import microclaw.hook_manager as manager
+
+    hooks_dir = tmp_path / "hooks"
+    monkeypatch.setattr(manager, "HOOKS_DIR", hooks_dir)
+    monkeypatch.setattr(manager, "MANIFEST", hooks_dir / "manifest.json")
+    hook_source = (
+        "class Portable:\n"
+        "    def analyze_frame(self, image, metadata):\n"
+        + guard_body
+        + "        return HookResult({}, actions=(ContinueSurvey(),))\n"
+    )
+    save_hook("portable", hook_source, "portable", source="user_provided")
+
+    _, result, source = export(tmp_path, [call("run_adaptive_timelapse", {
+        "n_frames": 2, "interval_s": 0, "save_dir": "session",
+        "hook_strategy": "portable",
+    })])
+
+    assert result["emitted_calls"] == 1
+    compile(source, "routine.py", "exec")      # the assertion that was failing
+    assert "from microclaw" not in source
+    assert not _undefined_emitted_names(source)
+
+
+def test_the_exporter_never_writes_a_file_it_cannot_parse(tmp_path, monkeypatch):
+    """The global guard, independent of any one emitter.
+
+    Same round. A malformed emitter must refuse loudly and write nothing rather
+    than hand the operator a file that fails at the first line Python reads.
+    """
+    # Patch the emitter the decorator captured, not the module attribute:
+    # `@emits(_emit_snap_and_analyze)` bound the function object at import time,
+    # so replacing `tools._emit_snap_and_analyze` reaches nothing.
+    monkeypatch.setattr(
+        tools.snap_and_analyze, "_microclaw_emitter",
+        lambda params: "def broken(:\n",
+    )
+    with pytest.raises(tools.CannotEmit, match="does not parse"):
+        tools.export_session_script(
+            None, Guard(tmp_path), "routine.py", [call("snap_and_analyze", {})],
+        )
+    assert not (tmp_path / "routine.py").exists()
+
+
 def test_saved_adaptive_hook_source_and_manifest_pin_are_inlined(
     tmp_path, monkeypatch
 ):

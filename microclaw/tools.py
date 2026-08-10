@@ -605,8 +605,37 @@ def _without_microclaw_imports(source: str, available: set[str]) -> str:
         )
     lines = source.splitlines(keepends=True)
     removed = {line for start, end in removals for line in range(start, end + 1)}
-    return "".join(line for number, line in enumerate(lines, 1)
-                   if number not in removed)
+    stripped = "".join(line for number, line in enumerate(lines, 1)
+                       if number not in removed)
+    try:
+        ast.parse(stripped)
+        return stripped
+    except SyntaxError:
+        pass
+    # The import was the only statement of its block, so deleting it left the
+    # block empty. A saved hook written to be portable is exactly where this
+    # appears -- `try: from microclaw... except ImportError: <fallback>` -- and
+    # `pass` is the semantically correct residue: the name IS bound at module
+    # level in the emitted script, so the import "succeeded" and the fallback
+    # must not run. Deleted at module level, kept as `pass` inside a block.
+    kept = []
+    for number, line in enumerate(lines, 1):
+        if number not in removed:
+            kept.append(line)
+            continue
+        if number in {start for start, _end in removals}:
+            indent = line[:len(line) - len(line.lstrip())]
+            if indent:
+                kept.append(f"{indent}pass\n")
+    patched = "".join(kept)
+    try:
+        ast.parse(patched)
+    except SyntaxError as exc:
+        raise CannotEmit(
+            "removing the package import left source that does not parse: "
+            f"{exc.msg}"
+        ) from exc
+    return patched
 
 
 def _channel_verification_source() -> str:
@@ -1099,6 +1128,20 @@ def export_session_script(
         lines.insert(lines.index("core = Core()"),
                      "_HERE = Path(__file__).resolve().parent")
     source = "\n".join(lines) + "\n"
+    # Never hand over a file that cannot be parsed. Every refusal in this
+    # exporter is a comment plus a loud raise *inside* valid Python, so a
+    # SyntaxError means an emitter produced something malformed -- and the
+    # operator would only find out when they ran it, which is the failure this
+    # whole block exists to remove. Cheap, and it guards every emitter at once
+    # rather than the one that happened to break (2026-08-10).
+    try:
+        ast.parse(source)
+    except SyntaxError as exc:
+        raise CannotEmit(
+            f"the exporter produced source that does not parse at line "
+            f"{exc.lineno}: {exc.msg}. This is an emitter defect; no script was "
+            "written."
+        ) from exc
     _write_text_output(path, source, overwrite=True)
     result = {
         "status": "Session script exported.",
