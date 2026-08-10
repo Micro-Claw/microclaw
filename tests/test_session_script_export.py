@@ -172,6 +172,51 @@ def test_records_are_injected_and_absent_from_published_schema(tmp_path):
     assert "core.set_xy_position(3, 4)" in (tmp_path / "injected.py").read_text(encoding="utf-8")
 
 
+def test_export_can_select_recorded_tool_use_ids_without_hiding_exclusions(tmp_path):
+    records = [
+        call("move_stage_xy", {"x_um": 1, "y_um": 2}),
+        call("run_timelapse", {
+            "n_frames": 1, "interval_s": 0, "save_dir": "discarded",
+        }),
+        call("move_stage_z", {"z_um": 9}),
+    ]
+    guard = Guard(tmp_path)
+    result = tools.export_session_script(
+        None, guard, "selected.py", records, tool_use_ids=["run_timelapse"]
+    )
+    source = (tmp_path / "selected.py").read_text(encoding="utf-8")
+
+    assert result["emitted_calls"] == 1
+    assert result["emitted_tool_use_ids"] == ["run_timelapse"]
+    assert "Hardware state is order- and history-dependent" in result["selection_warning"]
+    assert "# SKIPPED: move_stage_xy" in source
+    assert "# SKIPPED: move_stage_z" in source
+    assert "core.set_xy_position" not in source
+    assert "core.set_position" not in source
+    assert "num_time_points': 1" in source
+    assert "Hardware state is order- and history-dependent" in source
+
+
+def test_export_without_selection_still_emits_the_whole_session(tmp_path):
+    _, result, source = export(tmp_path, [
+        call("move_stage_xy", {"x_um": 1, "y_um": 2}),
+        call("move_stage_z", {"z_um": 9}),
+    ])
+    assert result["emitted_calls"] == 2
+    assert "core.set_xy_position" in source
+    assert "core.set_position" in source
+    assert "selection_warning" not in result
+
+
+def test_export_selection_refuses_unknown_tool_use_id(tmp_path):
+    with pytest.raises(ValueError, match="unknown tool_use id.*typo"):
+        tools.export_session_script(
+            None, Guard(tmp_path), "selected.py",
+            [call("move_stage_xy", {"x_um": 1, "y_um": 2})],
+            tool_use_ids=["typo"],
+        )
+
+
 def test_write_text_file_resolves_writes_and_never_overwrites(tmp_path):
     guard = Guard(tmp_path)
     result = tools.write_text_file(None, guard, "kept/protocol.py", "print('kept')\n")

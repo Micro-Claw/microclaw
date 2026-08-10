@@ -77,6 +77,14 @@ TOOLS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "output_path": {"type": "string"},
+                "tool_use_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Optional recorded tool_use ids to emit. Excluded calls "
+                        "remain visible as SKIPPED comments; dependencies are not inferred."
+                    ),
+                },
             },
             "required": ["output_path"],
         },

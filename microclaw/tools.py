@@ -332,9 +332,9 @@ def _recorded_tool_calls(records: list[dict]) -> list[tuple[str, RecordedParams]
             name = block.get("name") if isinstance(block, dict) else block.name
             params = block.get("input", {}) if isinstance(block, dict) else block.input
             block_id = block.get("id") if isinstance(block, dict) else block.id
-            calls.append((str(name), RecordedParams(
-                dict(params), results.get(str(block_id))
-            )))
+            recorded_params = RecordedParams(dict(params), results.get(str(block_id)))
+            recorded_params["_tool_use_id"] = str(block_id)
+            calls.append((str(name), recorded_params))
     return calls
 
 
@@ -936,21 +936,31 @@ def export_session_script(
     guard: SafetyGuard,
     output_path: str,
     records: list[dict],
+    tool_use_ids: list[str] | None = None,
 ) -> dict:
     """Compile recorded calls to a standalone pycro-manager script."""
     path = guard.resolve_in_workspace(output_path)
     recorded = _recorded_tool_calls(records)
     _resolve_recorded_position_names(recorded)
-    adaptive_used = any(name.startswith("run_adaptive_") for name, _ in recorded)
+    known_ids = {params["_tool_use_id"] for _, params in recorded}
+    selected_ids = set(tool_use_ids) if tool_use_ids is not None else None
+    unknown_ids = sorted((selected_ids or set()) - known_ids)
+    if unknown_ids:
+        raise ValueError("unknown tool_use id(s): " + ", ".join(unknown_ids))
+    included = [
+        (name, params) for name, params in recorded
+        if selected_ids is None or params["_tool_use_id"] in selected_ids
+    ]
+    adaptive_used = any(name.startswith("run_adaptive_") for name, _ in included)
     analysis_used = adaptive_used or any(
         name in {"snap_and_analyze", "run_autofocus"}
         or (name in {"run_multiposition_acquisition", "run_tile_acquisition"}
             and params.get("protocol") == "snap")
-        for name, params in recorded
+        for name, params in included
     )
     autofocus_used = adaptive_used or any(
         name == "run_autofocus" or params.get("hook_strategy") == "autofocus_per_position"
-        for name, params in recorded
+        for name, params in included
     )
     safety_limits = safety_limits_error = None
     if adaptive_used:
@@ -982,7 +992,7 @@ def export_session_script(
     # check; a map-less set_config delegation verifies nothing of its own.
     channel_writes = any(
         name == "set_channel" and params.result.get("effects")
-        for name, params in recorded
+        for name, params in included
     )
     # Every one of these is reached only by the adaptive block: hashlib/io/json
     # by the hook artifact and log writers, queue by the candidate stream,
@@ -996,8 +1006,14 @@ def export_session_script(
         "import queue", "import threading",
         "from datetime import datetime, timezone",
     ] if adaptive_used else []
+    selection_warning = (
+        "Hardware state is order- and history-dependent: excluded setup calls "
+        "such as channel, ROI, and stage changes may be required by kept "
+        "acquisitions. Dependencies were not inferred; review every SKIPPED step."
+    )
     lines = [
         "from __future__ import annotations",
+        *([f"# WARNING: {selection_warning}"] if selected_ids is not None else []),
         "import math",
         "import time",
         *adaptive_imports,
@@ -1019,6 +1035,7 @@ def export_session_script(
         *(["logger = logging.getLogger(__name__)"] if adaptive_used else []),
     ]
     emitted = 0
+    emitted_ids: list[str] = []
 
     def refuse(tool: str, reason: str) -> None:
         """One shape for every refusal: a comment, then a step that cannot run."""
@@ -1032,6 +1049,12 @@ def export_session_script(
         renderer = getattr(fn, "_microclaw_emitter", None)
         lines.append("")
         lines.append(f"# RECORDED TOOL: {name}")
+        if selected_ids is not None and params["_tool_use_id"] not in selected_ids:
+            lines.append(
+                f"# SKIPPED: {name} — excluded by tool_use id selection "
+                f"({params['_tool_use_id']})"
+            )
+            continue
         if fn is not None and getattr(fn, "_microclaw_emits_nothing", False):
             lines.append("# No hardware-routine effect.")
             continue
@@ -1065,17 +1088,26 @@ def export_session_script(
             continue
         lines.extend(rendered.splitlines())
         emitted += 1
+        emitted_ids.append(params["_tool_use_id"])
     if any("_HERE" in line for line in lines):
         lines.insert(lines.index("core = Core()"),
                      "_HERE = Path(__file__).resolve().parent")
     source = "\n".join(lines) + "\n"
     _write_text_output(path, source, overwrite=True)
-    return {
+    result = {
         "status": "Session script exported.",
         "output_path": str(path),
         "emitted_calls": emitted,
+        "emitted_tool_use_ids": emitted_ids,
+        "recorded_calls": [
+            {"tool_use_id": params["_tool_use_id"], "tool": name}
+            for name, params in recorded if name != "export_session_script"
+        ],
         "artifact": {"kind": "python", "path": str(path)},
     }
+    if selected_ids is not None:
+        result["selection_warning"] = selection_warning
+    return result
 
 
 class SessionGrants:
