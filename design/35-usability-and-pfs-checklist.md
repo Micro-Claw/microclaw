@@ -365,11 +365,50 @@ and the only branches on `origin` besides `main` are
   second merges `main` first**. Eight blocks remain after them: 43c, 43e, 43f,
   43g, 43h, 43i, 43j, 43k.
 
-### State at the 2026-08-11 close of block 43f — read this before assigning anything
+### State at the 2026-08-11 assignment of block 43j — read this before assigning anything
 
 **This is the live note. It supersedes every other State-at note in this
 section**, all of which are kept only for their round history. Position is not
 recency — read the heading, not the order.
+
+Verify against the repository rather than against any hash here. What should
+hold: working tree clean, and `origin` carrying `main`,
+`design34/focus-system-authorization` (6a), `florian/setup-claude-workflow`,
+`port-to-jpype-acqj` and — once step 4 pushes it —
+`design43/hooks-and-timelapse-observation` (43j). Worktrees: `../microclaw-6a`,
+idle at `4994f3e`, plus whatever tree 43j's implementer is given.
+
+- **43f is closed** — merged `448c4a4`, coordination notes `caece7f`, design gate
+  `648c2f4`. **Track F merged: 43a, 43m, 43b, 43d, 43e, 43c, 43g, 43h, 43i, 43f.**
+- **43j is assigned**, branch `design43/hooks-and-timelapse-observation`, ledger
+  row opened. **43k is last and stays design-only**; its dependency is satisfied
+  — 43h and 43i have both run on a rig.
+- **Suite baseline: 1790 passed / 99 skipped / 3 warnings, 1889 collected** on
+  macOS at `448c4a4`; Windows expectation 1773 + 116 = 1889.
+- **43j's F12 stub is void and the block was rescoped at assignment.**
+  `run_adaptive_timelapse` already carries the hook trio F12 asks for; what is
+  missing is that pure observation is nowhere advertised in its description, and
+  that it takes neither `exposure_ms` nor `laser_slot` and so cannot serve the
+  SMLM path F12 names. **Operator ruling: fold the two tools into one
+  `run_timelapse` with an optional hook and delete the adaptive twin.** The
+  reconciliation of design/43 F12 to this is the block's step-10 design gate.
+- **Reading the code at assignment has now rescoped three blocks in a row** —
+  43f (three schemas enumerate the category list independently of `CATEGORIES`),
+  43i (F5's stub dispatched through a tool that cannot exist standalone), and
+  now 43j. Budget for it before writing any runner prompt.
+- **Fourteen tools remain undecorated** for export.
+- **Three carried-forward findings sit unscheduled** and none belongs to 43j: the
+  GUI stops tracking after an *exposure* write (seven paths, one measured), the
+  agent starting live view unprompted where that is 640 nm dose (design/43 F3's
+  rule, not 43f's), and the Windows-only socket race in `test_bridge_check.py`
+  that intermittently adds a fourth warning to every gate's expected count. See
+  §"Still open, not yet scheduled".
+
+### State at the 2026-08-11 close of block 43f — SUPERSEDED, kept for the round history
+
+> **Retired. Do not act on this note** — it was written when 43f had just merged
+> and 43j had not started. The live note is the 43j assignment one above it.
+> Kept for 43f's round history.
 
 Verify against the repository rather than against any hash here. What should
 hold: `git log --oneline origin/main..main` empty, working tree clean, and the
@@ -6674,15 +6713,71 @@ Branch: `design43/hooks-and-timelapse-observation`
 Source: design/43 F9 and F12. Paired as design/43 pairs them — "whenever their
 files are next open".
 
-- [ ] F9 — `list_hooks` marks unusable saved hooks inline, and `resolve_refusal`
-      carries the remedy as a call rather than as prose. Two hooks were dead for
-      the whole session and the offer made was to write a third.
-- [ ] F12 — `run_timelapse` gains the `hook_strategy` / `hook_params` /
-      `log_path` trio the other acquisition entry points already have. It is the
-      shape callers already know, and `snr_observer` over 150 frames is the "did
-      anything happen" answer at zero extra exposure.
+**F12's stub is void as written, found by reading the code at assignment.**
+`run_adaptive_timelapse` (`tools.py:4664`) already takes `hook_strategy` /
+`hook_params` / `log_path` over the same events `run_timelapse` builds, and its
+schema entry already lists `snr_observer` among its strategies. Adding the trio
+to `run_timelapse` as F12 writes it would ship a *third* overlapping timelapse
+surface. Two things are actually wrong:
+
+- **The adaptive twin reads as unreachable for observation.** Its description
+  says it is *"for adaptive behaviour — the hook adapts settings (exposure,
+  focus) between frames"*. Nothing advertises "measure every frame and change
+  nothing", which is F12's whole request, and the Nestor agent said
+  *"`run_timelapse` returns no per-frame image statistics"* nine times rather
+  than reaching for it. That is 43e's round-1 lesson verbatim.
+- **It cannot serve the SMLM path F12 names.** It takes neither `exposure_ms`
+  nor `laser_slot`, and the SMLM path is exactly `run_timelapse(interval_s=0)`
+  with the exposure written to the core plus the EMU trigger pre-flight.
+
+**Operator ruling 2026-08-11: fold, do not add.** One timelapse tool with an
+optional hook; `run_adaptive_timelapse` is deleted rather than kept beside it.
+
+- [ ] F12 — `run_timelapse` gains `hook_strategy` / `hook_params` / `log_path`
+      and the two capability arguments the adaptive twin carries,
+      `illumination_envelope` and `artifact_limits`. `_acquire_with_hooks`
+      already accepts a hook, binds the reservation and the artifact directory,
+      and wires both callbacks — the runner change is passing one.
+- [ ] F12 — `run_adaptive_timelapse` is **deleted**, not deprecated: its tool
+      function, its schema entry, its `agent.py:175` prompt line and its
+      emitter go with it. No compatibility shim; this program owes no backward
+      compatibility.
+- [ ] **The hooked branch must emit.** `run_timelapse` today is
+      `@emits(_emit_acquisition(…))`, which renders the acquisition and nothing
+      else — attach a hook to that and the emitted script silently drops the
+      analysis, which is the fabrication the exporter exists to refuse. Route
+      the hooked case through 43h's machinery (`_adaptive_hook_export`,
+      `_adaptive_runner_source`, `_emit_adaptive`), reused and **never
+      re-written in a second emitter**.
+- [ ] `exposure_ms` and `laser_slot` keep working with a hook attached — the
+      SMLM path is why F12 names this tool at all — and the trigger pre-flight
+      still runs before any hardware moves.
+- [ ] F9 — `list_hooks` marks unusable saved hooks inline (`resolvable: false`
+      beside the description), so a hook is never chosen and then discovered to
+      be dead. `describe_saved_hook` already computes exactly this in
+      `resolve_refusal`; reuse it rather than write a second integrity check.
+- [ ] F9 — `resolve_refusal` carries the remedy as a call rather than as prose:
+      `{"tool": "read_hook_from_file", "path": …, "then":
+      "generate_and_save_hook(source='user_provided')", "reexposes": false}`.
+      Two hooks were dead for the whole session and the offer made was to write
+      a third.
+- [ ] A hook that would refuse to resolve also cannot export:
+      `_adaptive_hook_export` reads the same `resolve_refusal.reasons`
+      (`tools.py:788`). What F9 marks in `list_hooks` is the same fact that
+      makes a session's script unemittable, and the two payloads must not
+      describe it two different ways.
 - [ ] Check what 43e already retired before starting: `frame_statistics` over a
-      saved dataset answers half of F12.
+      saved dataset answers F12's *offline* half. What is owed here is the
+      during-the-run half — the operator still learns nothing until the
+      acquisition is over and someone thinks to ask.
+
+**Gate shape, to be settled in the runbook after implementation.** The
+mechanism — a hook attached to a plain timelapse, one log covering every frame,
+a hooked export that contains the hook — is demo-machine work. The `laser_slot`
+pre-flight limb needs M5 or another EMU rig. At least one criterion must be
+phrased in the operator's words with no tool named (§"Standing constraints",
+*gate the reach, not the plumbing*), because the failure this block fixes is a
+tool that existed and was never chosen.
 
 ## 43k. Search in one channel, acquire in another
 
