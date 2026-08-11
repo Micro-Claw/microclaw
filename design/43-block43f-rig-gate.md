@@ -13,7 +13,7 @@ for rig time.
 cd <repo>
 git checkout design43/rig-profile
 git pull
-git merge-base --is-ancestor e958068 HEAD
+git merge-base --is-ancestor b6b689f HEAD
 if ($LASTEXITCODE -eq 0) { "PIN OK" } else { "PIN FAILED - stop and tell the coordinator" }
 ```
 
@@ -52,10 +52,11 @@ if ($LASTEXITCODE -eq 0) { "SUITE PASS" } else { "SUITE FAIL" }
 Get-Content out43f.txt -Tail 3
 ```
 
-**Expect 1770 passed / 116 skipped / 3 warnings, 1886 collected.** macOS at the
-pin is 1787 + 99 = 1886; the 17-test difference is the platform-conditional set
+**Expect 1771 passed / 116 skipped / 3 warnings, 1887 collected.** macOS at the
+pin is 1788 + 99 = 1887; the 17-test difference is the platform-conditional set
 every Track F Windows run has shown. A different *collected* total is a real
-finding.
+finding. (Round 1 measured 1770 + 116 = 1886 and PASSED; the round-2 fix adds one
+test.)
 
 ## Step 1 — the interview happens, and it is a conversation
 
@@ -67,13 +68,19 @@ neutral that is not a task:
 
 > hi
 
-**PASS** if the agent opens the profile conversation itself, **and reads the rig
-before asking** — expect `get_roi`, `get_pixel_size`, `list_devices` calls, and
-questions only about what those could not tell it. It should ask about a few
-topics, in ordinary language, not recite five topic names.
+**PASS** if the agent opens the profile conversation **in its first reply**, and
+**reads the rig before asking** — expect `get_roi`, `get_pixel_size`,
+`list_devices` calls, and questions only about what those could not tell it. It
+should ask about a few topics, in ordinary language, not recite five topic names.
 
 **FAIL** if it asks nothing, if it reads nothing first and interrogates you cold,
 or if it presents a numbered wizard you must complete.
+
+> **Round 1, demo machine, 2026-08-11: FAIL.** Two sessions, no question asked.
+> The block was present and the profile empty — a probe read `3` system blocks,
+> `interview present: True`, all five topics open — so this was the text, not the
+> plumbing. The shipped text said *how* to interview and never said *when*. Fixed
+> in `b6b689f`; this step is the one that re-tests it.
 
 **Report separately, this is the demo-specific limb:** whether it called
 `get_emu_configuration`. The prompt now says to use that tool *only if this rig
@@ -86,11 +93,16 @@ Reset to no profile. Start microclaw and give it work immediately:
 
 > snap an image and tell me what you see
 
-**PASS** if it does the task first. Asking about the profile *afterwards* is
-correct and expected.
+**PASS** requires **both limbs**: it does the task first, **and** it asks about
+the open topics afterwards, in the same reply.
 
 **FAIL** if it interviews you before the snap, or makes the task conditional on
-answering anything.
+answering anything — and equally if it does the task and never asks.
+
+> **This step cannot be scored unless Step 1 passed.** As first written it had
+> only the negative limb, so on round 1 — where the interview never fired at all
+> — it read as a PASS while proving nothing. A criterion that a broken feature
+> satisfies is not a criterion. The positive limb above is the fix.
 
 ## Step 3 — the answer is saved, and an unmatched key is visible
 
