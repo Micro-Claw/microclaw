@@ -1,6 +1,6 @@
 # Block 43h rig gate — emitted adaptive programs
 
-Implementation ancestor: ce4317d
+Implementation ancestor: a8af089
 
 Use PowerShell from the checked-out repository. uv is the single launcher for
 every Python/project command below; do not substitute bare Python for one line.
@@ -46,7 +46,7 @@ them free.
 
 ## Step 0 — pin and run the full Windows suite
 
-    git merge-base --is-ancestor ce4317d HEAD
+    git merge-base --is-ancestor a8af089 HEAD
     if ($LASTEXITCODE -ne 0) { throw "Block 43h implementation is not in this checkout" }
 
     uv run python -m pytest -q > suite-43h.txt 2>&1
@@ -56,10 +56,10 @@ them free.
     uv run python -m pytest --collect-only -q > collected-43h.txt 2>&1
     if ($LASTEXITCODE -ne 0) { Get-Content collected-43h.txt; throw "Collection failed" }
 
-Expected on the Windows rig for this branch: **1728 passed + 116 skipped = 1844
+Expected on the Windows rig for this branch: **1730 passed + 116 skipped = 1846
 collected**, with 3 expected warnings. The total is derived on this branch, not
 copied from an earlier block. Compare 116 skips with the previous run on this
-same host; stop if tests failed, collection is not 1844, or the skip count rose.
+same host; stop if tests failed, collection is not 1846, or the skip count rose.
 
 ## Step 1 — offline export checks
 
@@ -69,7 +69,7 @@ These checks do not book microscope time.
     if ($LASTEXITCODE -ne 0) { Get-Content export-tests-43h.txt; throw "Exporter checks failed" }
     Get-Content export-tests-43h.txt
 
-Pass when the file reports 93 passed. It covers all three seed shapes, exact
+Pass when the file reports 95 passed. It covers all three seed shapes, exact
 source inlining, saved-hook provenance, full-precision named-position
 resolution, and narrow refusals.
 
@@ -125,7 +125,30 @@ criterion.
 
 ### Inspect the emitted script either way
 
-Record the session history and the emitted script.
+> **M5 round 2, 2026-08-11, failed here and it is the check this runbook was
+> missing.** `export_session_script` returned **`emitted_calls: 0`** — the
+> adaptive run refused on named-position resolution — and the agent, reading
+> that correctly and saying so honestly, **hand-wrote an acquisition script with
+> `write_text_file`** to honour the request. The operator ran the hand-written
+> script; it opened one `Acquisition` per frame, and on the stop variant it
+> acquired one frame and then hung the console for five minutes, unkillable by
+> Ctrl+C. None of that is evidence about this block, and all of it looked like
+> it was.
+>
+> **Two rules follow.** Check `emitted_calls` before anything else. And if the
+> export is empty or refuses, the gate has *failed at Step 2* — a hand-written
+> substitute is not a fallback, it is the fabrication path this block exists to
+> remove. Record the refusal and stop; do not run the substitute and do not
+> archive it as though it were the artifact.
+
+**First, check the export actually produced something.** The tool result carries
+`emitted_calls`; anything but a positive number means Step 2 failed, whatever
+the file looks like.
+
+Record the session history and the emitted script — and if the agent also wrote
+a script by hand, archive it clearly labelled so nobody later mistakes it for
+the export. Two `.py` files in one directory look identical at a glance; that is
+how M5 round 2's evidence became hard to read.
 
 Before ending the live session, inspect the script:
 
