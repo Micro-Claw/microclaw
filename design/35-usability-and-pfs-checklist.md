@@ -421,10 +421,31 @@ it — `design43/two-channel-search-acquire` (43k). One worktree besides this on
   merged. Both Windows machines measured 1783 + 116 = 1899 at 43j's round-3 pin.
 - **Reading the code at assignment has now rescoped four consecutive blocks**
   (43f, 43i, 43j, and 43k above). Budget for it before writing any runner prompt.
-- **Five carried-forward findings sit unscheduled.** See §"Still open, not yet
-  scheduled". None is 43k's, and 43k is the last Track F block — so the next
-  coordinator decision after it is which of them gets a block, or whether Track B
-  (the Nikon rig) and Track C reopen first.
+- **The open register holds 50 unscheduled items**, counted 2026-08-11 (52
+  bullets in §"Still open, not yet scheduled", two of them marked Resolved).
+  **Every note in this section since 43j said "five" or "three", and none of
+  those numbers was ever a count** — each named only the findings its own block's
+  gates had just produced, and the phrasing then read as the register's total.
+  Do not carry this number either; the register is one `grep` long.
+
+  Of the 50, **seven are Track F gate findings from 43a–43j with no block**, and
+  they are the live end of the list: the GUI stops tracking after an *exposure*
+  write (seven paths, one measured); the agent starting live view unprompted
+  where that is laser dose (F3's unconditional half); `laser_slot`'s pre-flight
+  guaranteeing less than its schema sells; `camera_triggers_lasers` stored under
+  the wrong rig-profile topic and then not read; `generate_and_save_hook` saving
+  hooks no runner can resolve; the Windows socket race in `test_bridge_check.py`
+  that adds an unexplained fourth warning to every gate; and 43g's result that no
+  single-frame statistic separates cells from a diffuse bright gradient, which is
+  why F6 is not closed.
+- **None of the 50 blocks 43k**, which writes a design document and touches no
+  code. Two are *inputs* its illumination section must name — the `laser_slot`
+  pre-flight guarantee and F3's live-view rule — and the Windows socket race
+  should be cleared before the block that *implements* 43k's design, because that
+  one has a rig gate and this one does not.
+- **43k is the last Track F block**, so the coordinator decision after it is which
+  register items get blocks, or whether Track B (the Nikon rig) and Track C reopen
+  first.
 
 ### State at the 2026-08-11 close of block 43j — SUPERSEDED, kept for the round history
 
@@ -7462,7 +7483,7 @@ This is an inventory, not permission to close with unresolved blank work. Block
   `ast.parse` before writing catches the whole class rather than the one emitter
   that happened to break. Recorded because the *absence* of that guard was the
   real defect: three rounds of emitter work had shipped without it.
-- **Fifteen registry tools still have no export decoration, and each one halts
+- **Fourteen registry tools still have no export decoration, and each one halts
   any script that recorded it.** Found by sweeping `TOOL_REGISTRY` after block
   43h's demo round 2, 2026-08-10, where the sixteenth — `generate_and_save_hook`
   — killed the emitted artifact three lines before the adaptive program it was
@@ -7471,9 +7492,13 @@ This is an inventory, not permission to close with unresolved blank work. Block
   was never triaged and is not exotic: `find_features`, `center_feature`,
   `set_roi`, `clear_roi`, `move_named_stage`, `set_emu_laser_power_percentage`,
   `run_mda`, `run_multiposition_with_autofocus`, `export_dataset_as_tiff`,
-  `run_analysis_on_saved_dataset`, `snap_to_album`, `shutter_declared_
-  illumination`, `calibrate_snr_threshold`, `calibrate_stage_to_camera`,
-  `verify_emu_laser_power_calibration`. Several are routine in an ordinary
+  `snap_to_album`, `shutter_declared_illumination`, `calibrate_snr_threshold`,
+  `calibrate_stage_to_camera`, `verify_emu_laser_power_calibration`.
+  **Re-measured 2026-08-11 at 43k's assignment: fifteen became fourteen** —
+  `run_analysis_on_saved_dataset` carries `@emits_nothing` since 43i, which its
+  round-2 gate forced when the standalone script died on that tool's default
+  refusal at line 1908. The count is a sweep, not a carried number; re-measure it
+  rather than quoting this line. Several are routine in an ordinary
   session, so an export that dies is the likely case rather than the rare one.
   They fall into three groups and each needs a decision, not a sweep of
   `@emits_nothing`: no hardware-routine effect; a real hardware write that owes
