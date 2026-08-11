@@ -658,6 +658,62 @@ adaptive runner that refocuses and re-judges is exactly the script a user wants
 to keep, and there is no point making it better at something it cannot hand
 over.
 
+> **Implemented and gated, block 43i, merged 2026-08-11 (`dd63070`).** M5 PASS at
+> round 5 of five. Six corrections to the above.
+>
+> **The stub's dispatch is wrong and would have made the branch unemittable.** It
+> calls `run_autofocus`, the *tool*, which reaches `_pause_live`,
+> `get_focus_lock_state`, `_sweep_payload` and thumbnails — none of which exist
+> standalone. What shipped calls `_run_autofocus_passes`, which
+> `_analysis_source(include_autofocus=True)` **already inlined into every emitted
+> adaptive script** before this block existed; the script already binds
+> `mm = SimpleNamespace(core=core)`, and the sweep touches only `ctrl.core`. The
+> export cost was therefore close to zero and **43i added no new `CannotEmit`** —
+> the ordering advice in the paragraph above was right for a better reason than
+> it gave.
+>
+> **"The re-exposure is a frame the reservation must already cover" is false.**
+> `candidates.put()` is the only path that increments `emitted` against
+> `max_events`, so a re-queue outside it is an exposure outside the committed
+> reservation (design/27). The authorized budget widens the cap by its own
+> maximum; the *completion total* is a different quantity and rises only as
+> re-exposures are really queued. Sizing those two with one number failed twice on
+> the rig — first dropping a refocus granted at the last tile, then stalling every
+> survey that did not spend its budget.
+>
+> **`configure_adaptive` had neither `ctrl` nor `current_event`**, and `cursor`
+> is not the tile just imaged (`AcquireAt` breaks that relation). The current tile
+> is resolved from MM-stamped metadata through `HookBase.where`.
+>
+> **`microclaw_refocused` in image metadata was an assumption with no precedent.**
+> Nothing in the codebase put a custom key into an event and read it back off the
+> image. The flag is carried **parent-side** and injected into the copy handed to
+> `analyze_frame`, so it never depends on Micro-Manager propagating anything.
+>
+> **The second look needs its own axis, and this is the finding the log could not
+> see.** NDTiff keys frames by their exact axis set: re-using the first look's
+> axes replaced it in the readable index, and stamping `refocus=1` on the second
+> look alone left the axis *ragged*, so every reader enumerating the axis product
+> — `export_dataset_as_tiff` does — generated only `refocus=1` cells and dropped
+> every first look (measured: 4 real frames in, 1 out). The plan now carries
+> `refocus=0`, and a survey with no authorized budget keeps its original axes
+> exactly. **The hook log recorded success in both defects**; only the dataset
+> showed them.
+>
+> **`RequestAutofocus` can be granted and still queue nothing**, and the asymmetry
+> this finding is built on guarantees it: a non-converging sweep is the normal
+> outcome that disproves cells, and it re-queues nothing. A hook returning
+> `RequestAutofocus` alone therefore ends its own survey by omission, on the idle
+> watchdog. `hook_docs` prescribes `(RequestAutofocus(), ContinueSurvey())`; a
+> refused or non-converged refocus lets the routing action behind it through,
+> a granted one defers it and re-asks at the second look.
+>
+> The gate criterion this finding's blockquote set — spend a refocus on a tile
+> like frames 20/17 and report whether it converged, and report that it did not on
+> a tile like `scan300_488_r12_c15` — was met on beads rather than on those tiles:
+> convergence with a second look at the last planned tile (round 3), and
+> non-convergence with `Z restored` and the survey carrying on (round 4).
+
 ---
 
 ## F6 — one bright corner beat the whole field
@@ -1488,15 +1544,20 @@ this session had a field where the two would have disagreed (F6).
    `emitted_calls: 0` and sent the agent off to hand-write a script that hung the
    console. Also fixed a pre-existing runner defect that only became visible once
    the same program could be run twice.
-9. **F5** (RequestAutofocus in the survey) — **promoted 2026-08-10.** It does
-   *not* depend on F6 for a verdict statistic: 43g measured that no single-frame
-   intensity or texture statistic separates cells from a diffuse bright gradient,
-   and that the focus response is what identified them in both findings. F5 is
-   the measurement, needing only a cheap trigger from F6's coverage. Still lands
-   after F14 so it is built inside a runner that exports.
+9. ~~**F5** (RequestAutofocus in the survey)~~ — **DONE, block 43i, merged
+   2026-08-11 (`dd63070`), M5 gate PASS at round 5 of five.** Its promotion of
+   2026-08-10 held: F5 needed no verdict statistic from F6, only a cheap trigger,
+   because the focus response *is* the measurement. Landing after F14 was right
+   for a better reason than the note gave — the sweep stack was already inlined
+   into every emitted adaptive script, so the block added **no new `CannotEmit`**.
+   See F5's own reconciliation blockquote for the six corrections the gate forced,
+   chiefly that the re-exposure was *not* covered by the reservation and that the
+   second look needs its own dataset axis, made dense, or a TIFF export drops
+   every first look while the hook log reports success.
 10. **F9 / F12** — hook usability and timelapse observation, whenever their files
     are next open.
-11. **F13** — design first, after F5 and F14 have run on a rig.
+11. **F13** — design first. **Its dependency is now satisfied: F5 and F14 have
+    both run on a rig** (blocks 43i and 43h, 2026-08-11).
 
 F14 and F15 are the two that change what Microclaw *is* rather than how well it
 behaves: one makes the adaptive work portable, the other makes the standard
