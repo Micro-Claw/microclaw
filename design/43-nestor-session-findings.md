@@ -153,6 +153,72 @@ def get_roi(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     return result
 ```
 
+> **Shipped and gated in block 43f (merged 2026-08-11), over two demo rounds and
+> one M5 round.** The decision holds and the stubs are right about the shape.
+> Seven corrections and additions.
+>
+> **`CATEGORIES` is not the only list of categories**, and this was found by
+> reading the code at assignment rather than on a rig. Three tool schemas
+> enumerate `["samples", "devices", "strategies"]` independently, so the stub as
+> written adds a category the agent cannot write. A test now pins the three enums
+> to `CATEGORIES`. This is 43e's "correct and unreachable" one layer down.
+>
+> **The interview prompt's trigger is load-bearing, and this section's own stub
+> is the only place it survived.** The stub opens *"Before the first task of this
+> session, interview the operator…"*. The implementation rewrote the heading —
+> correctly, because the block also renders for a *partial* profile, so "This rig
+> has no stored profile yet" was false — and the when-clause and the imperative
+> went with it. What shipped described *how* to interview and never said when,
+> and its most forceful sentence was the negative *"never block a task"*. On the
+> demo machine the agent opened two sessions and asked nothing, with the block
+> present and five topics open. A prompt that describes an activity without
+> commanding it does not run.
+>
+> **`rig/` keys are the profile's topics, and anything else is refused.** The
+> stub is silent on keys, and free keys defeat the design quietly: asked to
+> "store this ROI as my permanent crop", the agent invented `saved_roi`, which
+> closed no topic — so the interview would re-ask `illuminated_field` forever —
+> and never reached `get_roi`. In the same reply the agent recited
+> `illuminated_field` as still open without connecting it to what it had just
+> saved, so the open-topics list in the payload is necessary and not sufficient.
+> The refusal is the same shape as the `observed_on` refusal already in that
+> function, and fires before the confirmation. **On M5 it never fired**: the
+> agent read the schema's key description, said `rig` takes only the five topics,
+> and filed the fact correctly — the cheapest place to stop a bad call is the
+> schema the model reads before making it.
+>
+> **The reach is three tools, not one.** `set_roi` and `clear_roi` carry
+> `illuminated_field` too. `clear_roi` is this finding's harm executed rather
+> than proposed.
+>
+> **Five topics cost five confirmations.** `save_knowledge` is gated
+> `kind="knowledge"`, which block 43c made permanently non-grantable, and one
+> entry per topic was chosen deliberately so a skipped topic stays independently
+> open.
+>
+> **The interview must not name an EMU tool unconditionally** — most rigs have
+> none, and on the demo machine `get_emu_configuration` answers with a request
+> for an app directory. Made conditional; M5's agent reached for
+> `check_emu_installed` first, which is what the condition intends.
+>
+> **What M5 measured that no demo could.** `get_roi` carried
+> `illuminated_field`, and the agent planned a 9×9 grid inside a 33 × 34 µm field
+> rather than widening; asked outright whether to widen the ROI it declined, on
+> the physical ground that the extra pixels sit outside the illuminated cone —
+> the inverse of the two unprompted widening offers this finding was written
+> about. With `camera_triggers_lasers` stored under `illumination_path`, it
+> warned before a 16-tile survey and again before a live view that both are
+> 640 nm dose. **That is F3's `SYSTEM_PROMPT` sentence firing for the first time
+> since block 43a shipped it on 2026-08-09**, having read a key nothing wrote
+> until now: a prompt conditioned on a fact no code produces is dormant, not
+> shipped, and it took two blocks to make one sentence real.
+>
+> **One finding this gate produced that belongs to F3, not here.** Before the
+> trigger fact was stored, the agent started live view unprompted — *"so you can
+> watch the survey"* — with 640 enabled. F3's rule says *do not start it "so the
+> user can see"*, and that is the sentence it used. Carried forward rather than
+> folded into a gated branch.
+
 ---
 
 ## F2 — one illumination approval per session, not one per switch
@@ -1527,8 +1593,14 @@ this session had a field where the two would have disagreed (F6).
    F10's error text is extended and half of F12 is retired offline. Two
    successors are owed — a visual artifact for the measurement, and an offline
    caller for `detect_features`.
-6. **F1** (rig profile + interview) — one knowledge category and one prompt
-   block; ships the fact F3's rule wants to condition on.
+6. ~~**F1** (rig profile + interview)~~ — **DONE, block 43f, merged 2026-08-11,
+   demo rounds 1–2 and M5 round 3 PASS.** "One knowledge category and one prompt
+   block" was right about the code and wrong about where the difficulty was:
+   both defects were in prose. The prompt described how to interview and never
+   said when, and the knowledge key was free-form, so a rig fact could be stored
+   under a name that closed no topic and reached no tool. It does ship the fact
+   F3's rule conditions on — and F3's sentence, shipped in 43a on 2026-08-09,
+   had been reading a key nothing wrote until this block.
 7. ~~**F6** (coverage statistics)~~ — **DONE, block 43g, merged 2026-08-10, and
    NOT closed.** "It needs rig calibration" was wrong twice over: the calibration
    was a computation over data already on disk, and what it measured is that
