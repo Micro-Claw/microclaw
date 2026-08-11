@@ -1,6 +1,6 @@
 # Block 43i rig gate — budgeted survey refocus
 
-Implementation ancestor: 10085e2
+Implementation ancestor: f2ea064
 
 ## Round 4 — four things, and Step 4 is the one that keeps getting missed
 
@@ -12,9 +12,62 @@ defect, fixed and measured. Two reporting findings came out of it, both fixed in
 `10085e2` — a finished plan reported as a dose cap, and `RequestAutofocus`
 stranding a survey.
 
-### Run exactly these five things. Nothing else.
+## Round 5 — one survey closes it
 
-This list is the whole of round 4. If a step is not on it, do not spend time on
+Round 4 (`43i-m5-round4`) **PASSED Steps 0, 2, 4, 6, 7a and 7b.** Every step of
+this gate has now passed at least once. What round 5 owes is one defect fix and
+one narrow gap, and **a single run can close both.**
+
+- **Step 4 PASS on the survey path** — three tiles, each `RequestAutofocus`
+  accepted with `autofocus ran and did not converge; Z restored`,
+  `entry_z_um == final_z_um` to the digit, no second look, one record per tile,
+  no retry, survey carrying on. This is the limb three rounds never reached.
+- **7a PASS** (`unsupported-by-run_adaptive_survey`) and **7b PASS**
+  (`focus lock is engaged; autofocus sweep refused`) — produced by the code this
+  time, on hook-log records, not predicted in prose.
+- **Step 2 PASS**, run by accident and worth keeping: from the operator sentence
+  naming no tool, the agent found that `bead_focus_refocus` refocuses *dim*
+  tiles — backwards from the request — and checked the camera cooler against a
+  saved note before exposing anything.
+- **Step 6 PASS on its criteria**: zero `NOT EMITTED`, no `microclaw` imports,
+  parses, ran with Microclaw closed, reproduced the same three non-convergences.
+- **The dataset axis contract is now measured**, including its negative case:
+  `always_round4` ran with no budget and has **no `refocus` axis at all**.
+
+**The defect round 4 found is mine, from round 2.** Completion was sized at plan
+plus *authorized* budget, so a survey that did not spend its refocuses never
+reached its total and died on the idle watchdog: three of four budgeted surveys
+visited every tile and logged `stalled` sixty seconds later, while the one run
+with no budget completed cleanly. Fixed in `f2ea064` — the total is the plan, and
+each re-exposure raises it as it is queued.
+
+### Run exactly these three things
+
+1. **Step 0** — expect **1755 + 116 = 1871**.
+2. **One budgeted survey that converges at least once and does not spend its
+   whole budget**, then export it and run the script standalone. Prompt:
+
+   > Mark three positions, focus properly first, then run an adaptive survey over
+   > them with the `relative_signal_refocus` hook, protocol timelapse, 1 frame,
+   > and `autofocus_budget = {"max_exposures": 60, "z_range_um": 20,
+   > "z_step_um": 0.5, "method": "coarse_then_fine", "settle_ms": 50}`. Show me
+   > the hook log. Then export the session as a standalone script.
+
+   PASS requires **all** of:
+   - at least one `refocused and re-queued this tile` with `converged: true`;
+   - **no `stalled` event in the hook log** — this is the round-4 defect, and the
+     survey should end promptly rather than after a 60-second wait;
+   - `refocus` reading `[0, 1]` in the dataset;
+   - and then, with Microclaw closed, the standalone script reproducing a
+     **re-queue** — round 4's exported survey never converged, so the emitted
+     re-queue path has still never run outside Microclaw. Check its
+     `hook_log_2` for `refocused and re-queued this tile` and its dataset for
+     `refocus: [0, 1]`, and confirm it too logs no `stalled`.
+3. **Nothing else.** Steps 1, 2, 3, 3b, 5, 7 and 8 are all closed.
+
+## Round 4 — superseded, kept for the round history
+
+This list was the whole of round 4. If a step is not on it, do not spend time on
 it; if it is on it, it is needed even if something similar already passed.
 
 1. **Step 0** — the suite moved again (expect 1754 + 116 = 1870).
@@ -107,7 +160,7 @@ the real worst case. Size it deliberately for the sample in front of you.
 
 ## Step 0 — pin and run the full suite on this machine
 
-    git merge-base --is-ancestor 10085e2 HEAD
+    git merge-base --is-ancestor f2ea064 HEAD
     if ($LASTEXITCODE -ne 0) { throw "Block 43i implementation is not in this checkout" }
 
     uv run python -m pytest -q > suite-43i.txt 2>&1
@@ -117,11 +170,11 @@ the real worst case. Size it deliberately for the sample in front of you.
     uv run python -m pytest --collect-only -q > collected-43i.txt 2>&1
     if ($LASTEXITCODE -ne 0) { Get-Content collected-43i.txt; throw "Collection failed" }
 
-macOS measured **1771 passed + 99 skipped = 1870 collected**, 3 warnings. Round 3
-measured 1752 + 116 = 1868 on M5, the same 17-test platform-conditional
-difference every Track F Windows run has shown, so expect **1754 + 116 = 1870**
+macOS measured **1772 passed + 99 skipped = 1871 collected**, 3 warnings. Round 4
+measured 1754 + 116 = 1870 on M5, the same 17-test platform-conditional
+difference every Track F Windows run has shown, so expect **1755 + 116 = 1871**
 here. Derive the total from passed + skipped rather than reading it off. Stop if
-tests failed, if the collected total is not 1870, or if the skip count rose above
+tests failed, if the collected total is not 1871, or if the skip count rose above
 116.
 
 ## Step 1 — offline checks, no microscope time
