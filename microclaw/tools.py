@@ -1,4 +1,5 @@
 from __future__ import annotations
+import ast
 import inspect
 import hashlib
 import itertools
@@ -151,7 +152,7 @@ def _emit_multiposition(params: RecordedParams) -> str:
     if hook:
         from microclaw.hooks import PRECODED_HOOK_REGISTRY
         hook_cls = PRECODED_HOOK_REGISTRY.get(hook) if isinstance(hook, str) else None
-        if not getattr(hook_cls, "_microclaw_observation_only", False):
+        if not getattr(hook_cls, "_observation_only", False):
             raise CannotEmit(
                 f"hooked acquisition ({hook!r}): inlining HookBase would import microclaw safety and hook decisions"
             )
@@ -331,9 +332,9 @@ def _recorded_tool_calls(records: list[dict]) -> list[tuple[str, RecordedParams]
             name = block.get("name") if isinstance(block, dict) else block.name
             params = block.get("input", {}) if isinstance(block, dict) else block.input
             block_id = block.get("id") if isinstance(block, dict) else block.id
-            calls.append((str(name), RecordedParams(
-                dict(params), results.get(str(block_id))
-            )))
+            recorded_params = RecordedParams(dict(params), results.get(str(block_id)))
+            recorded_params["_tool_use_id"] = str(block_id)
+            calls.append((str(name), recorded_params))
     return calls
 
 
@@ -484,7 +485,8 @@ def _resolve_recorded_position_names(
                 # mark can make subsequent named-position resolution trustworthy.
                 state = None
 
-        if name != "run_multiposition_acquisition" or params.get("positions") is not None:
+        if (name not in {"run_multiposition_acquisition", "run_adaptive_survey"}
+                or params.get("positions") is not None):
             continue
         requested = params.get("position_names")
         if not isinstance(requested, list):
@@ -518,7 +520,8 @@ def _analysis_source(*, include_autofocus: bool = False) -> str:
     for fn in (
         image_analysis._reshape_pixels, image_analysis.snap_to_numpy,
         image_analysis.snr, image_analysis.tenengrad,
-        image_analysis.snr_validity, image_analysis.coverage_stats,
+        image_analysis.snr_validity, image_analysis.resolve_min_snr,
+        image_analysis.coverage_stats,
         image_analysis.compute_stats,
     ):
         parts.append(inspect.getsource(fn))
@@ -529,7 +532,8 @@ def _analysis_source(*, include_autofocus: bool = False) -> str:
             f"MIN_CONTRAST = {autofocus.MIN_CONTRAST!r}\n",
         ])
         for fn in (
-            autofocus.sweep_plane_count, autofocus.curve_contrast,
+            autofocus.sweep_plane_count, autofocus.coarse_then_fine_plane_count,
+            autofocus.curve_contrast,
             autofocus.sweep_autofocus, autofocus._restore,
             autofocus._flat_reason, autofocus._edge_reason,
             autofocus.coarse_then_fine_autofocus,
@@ -538,6 +542,100 @@ def _analysis_source(*, include_autofocus: bool = False) -> str:
             parts.append(inspect.getsource(fn))
         parts.append(inspect.getsource(_run_autofocus_passes))
     return "\n".join(parts)
+
+
+def _source_bound_names(source: str) -> set[str]:
+    """Names bound by a standalone block, excluding package-local imports."""
+    tree = ast.parse(source)
+    names = {node.name for node in tree.body
+             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))}
+    for statement in tree.body:
+        targets = (
+            statement.targets if isinstance(statement, ast.Assign)
+            else [statement.target] if isinstance(statement, ast.AnnAssign)
+            else []
+        )
+        names.update(node.id for target in targets for node in ast.walk(target)
+                     if isinstance(node, ast.Name))
+    names.update(
+        alias.asname or alias.name.split(".")[0]
+        for node in tree.body
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+        and not ((isinstance(node, ast.ImportFrom)
+                  and (node.module or "").startswith("microclaw"))
+                 or (isinstance(node, ast.Import)
+                     and any(a.name.startswith("microclaw") for a in node.names)))
+        for alias in node.names
+    )
+    return names
+
+
+def _without_microclaw_imports(source: str, available: set[str]) -> str:
+    """Remove redundant package imports without rewriting inspected logic."""
+    tree = ast.parse(source)
+    removals: list[tuple[int, int]] = []
+    required: set[str] = set()
+    for node in ast.walk(tree):
+        package_import = (
+            isinstance(node, ast.ImportFrom)
+            and (node.module or "").startswith("microclaw")
+        ) or (
+            isinstance(node, ast.Import)
+            and any(alias.name.startswith("microclaw") for alias in node.names)
+        )
+        if not package_import:
+            continue
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name == "*" or (alias.asname and alias.asname != alias.name):
+                    raise CannotEmit(
+                        "package import cannot be replaced by an inlined symbol: "
+                        + (alias.asname or alias.name)
+                    )
+                required.add(alias.name)
+        else:
+            required.update(alias.asname or alias.name.split(".")[0]
+                            for alias in node.names)
+        removals.append((node.lineno, node.end_lineno or node.lineno))
+    missing = sorted(required - available)
+    if missing:
+        raise CannotEmit(
+            "package import binds symbol(s) not defined by the standalone script: "
+            + ", ".join(missing)
+        )
+    lines = source.splitlines(keepends=True)
+    removed = {line for start, end in removals for line in range(start, end + 1)}
+    stripped = "".join(line for number, line in enumerate(lines, 1)
+                       if number not in removed)
+    try:
+        ast.parse(stripped)
+        return stripped
+    except SyntaxError:
+        pass
+    # The import was the only statement of its block, so deleting it left the
+    # block empty. A saved hook written to be portable is exactly where this
+    # appears -- `try: from microclaw... except ImportError: <fallback>` -- and
+    # `pass` is the semantically correct residue: the name IS bound at module
+    # level in the emitted script, so the import "succeeded" and the fallback
+    # must not run. Deleted at module level, kept as `pass` inside a block.
+    kept = []
+    for number, line in enumerate(lines, 1):
+        if number not in removed:
+            kept.append(line)
+            continue
+        if number in {start for start, _end in removals}:
+            indent = line[:len(line) - len(line.lstrip())]
+            if indent:
+                kept.append(f"{indent}pass\n")
+    patched = "".join(kept)
+    try:
+        ast.parse(patched)
+    except SyntaxError as exc:
+        raise CannotEmit(
+            "removing the package import left source that does not parse: "
+            f"{exc.msg}"
+        ) from exc
+    return patched
 
 
 def _channel_verification_source() -> str:
@@ -560,35 +658,422 @@ def _channel_verification_source() -> str:
     ))
 
 
+def _adaptive_runner_source() -> str:
+    """Return the exact adaptive decision machinery used by the live runner."""
+    from microclaw import __version__, hook_decisions, hooks
+
+    decision_items = (
+        hook_decisions.MoveStage, hook_decisions.AcquireAt,
+        hook_decisions.SetExposure, hook_decisions.ContinueSurvey,
+        hook_decisions.StopSurvey, hook_decisions.RequestAutofocus,
+        hook_decisions.SetIlluminationPower, hook_decisions.EmitArtifact,
+        hook_decisions.DiscardFrame, hook_decisions.HookResult,
+    )
+    parts = [f"__version__ = {__version__!r}\n"]
+    parts.extend(inspect.getsource(item) for item in decision_items)
+    parts.extend([
+        "HookAction = (MoveStage | AcquireAt | SetExposure | ContinueSurvey | "
+        "StopSurvey | RequestAutofocus | SetIlluminationPower | EmitArtifact | "
+        "DiscardFrame)\n",
+        "_ACTION_TYPES = {cls.__dataclass_fields__['kind'].default: cls for cls in "
+        "(MoveStage, AcquireAt, SetExposure, ContinueSurvey, StopSurvey, "
+        "RequestAutofocus, SetIlluminationPower, EmitArtifact, DiscardFrame)}\n",
+    ])
+    parts.extend([
+        inspect.getsource(hook_decisions.parse_action),
+        inspect.getsource(hook_decisions.write_hook_artifact),
+        inspect.getsource(hook_decisions.DeniedEventQueue),
+        inspect.getsource(hook_decisions.UntrustedHookAdapter),
+        inspect.getsource(hooks.analysis_observation_record),
+        inspect.getsource(hooks.write_analysis_observation),
+        inspect.getsource(hooks._frame_index),
+        inspect.getsource(hooks.HookBase),
+        inspect.getsource(SurveyProgress),
+        f"_CANDIDATE_POLL_S = {_CANDIDATE_POLL_S!r}\n",
+        inspect.getsource(_note_budget_exhausted),
+        inspect.getsource(_survey_event_stream),
+    ])
+    source = "\n".join(parts)
+    available = _source_bound_names(source)
+    available.update(_source_bound_names(_analysis_source(include_autofocus=True)))
+    # inspect.getsource supplies the logic. Only package-import lines are
+    # deleted because their names are already inlined into this module.
+    return _without_microclaw_imports(source, available)
+
+
+def _export_guard_source(limits: dict[str, Any]) -> str:
+    """Render the acquisition-time motion bounds as a small literal guard."""
+    return f'''# These are the limits recorded at export time; editing this dict edits the limits.
+# Seed-plan XY/Z events are checked here before acquisition; any additional
+# hardware action implemented inside a precoded hook remains that hook's responsibility.
+_LIMITS = {limits!r}
+class SafetyViolation(Exception):
+    pass
+
+class _RecordedSafetyGuard:
+    def _bounded(self, value, low, high, label):
+        value = float(value)
+        if not math.isfinite(value):
+            raise SafetyViolation(f"{{label}} must be finite")
+        if low is not None and value < low:
+            raise SafetyViolation(f"{{label}}={{value}} is below recorded minimum {{low}}")
+        if high is not None and value > high:
+            raise SafetyViolation(f"{{label}}={{value}} exceeds recorded maximum {{high}}")
+    def check_xy(self, x, y):
+        self._bounded(x, _LIMITS["x_um"][0], _LIMITS["x_um"][1], "X")
+        self._bounded(y, _LIMITS["y_um"][0], _LIMITS["y_um"][1], "Y")
+    def check_z(self, z):
+        self._bounded(z, _LIMITS["z_um"][0], _LIMITS["z_um"][1], "Z")
+    def check_exposure(self, exposure_ms):
+        self._bounded(exposure_ms, 0.0, _LIMITS["exposure_ms"][1], "Exposure")
+    @property
+    def analysis_min_snr(self):
+        return _LIMITS.get("analysis_min_snr")
+
+guard = _RecordedSafetyGuard()
+'''
+
+
+def _portable_log_path_source() -> str:
+    return '''def _next_available_log_path(path):
+    """Keep every standalone run log beside this script without collisions."""
+    if not path.exists():
+        return str(path)
+    for number in itertools.count(2):
+        candidate = path.with_name(f"{path.stem}_{number}{path.suffix}")
+        if not candidate.exists():
+            return str(candidate)
+'''
+
+
+def _adaptive_hook_export(params: RecordedParams) -> tuple[str, str, bool]:
+    """Return exact hook source, constructor expression, and saved-hook flag."""
+    strategy = params.get("hook_strategy")
+    if isinstance(strategy, list):
+        raise CannotEmit("adaptive hook composition is not supported by the standalone runner")
+    if not isinstance(strategy, str) or not strategy:
+        raise CannotEmit("the record contains no single hook strategy")
+    if strategy in {"mm_plugin_analyzer", "autofocus_mm_plugin"}:
+        raise CannotEmit(
+            f"hook {strategy!r} requires Micro-Manager plugin capabilities through "
+            "the Microclaw controller and has no standalone equivalent"
+        )
+    params_expr = repr(dict(params.get("hook_params") or {}))
+    from microclaw.hooks import PRECODED_HOOK_REGISTRY
+    if strategy in PRECODED_HOOK_REGISTRY:
+        cls = PRECODED_HOOK_REGISTRY[strategy]
+        source = inspect.getsource(cls)
+        available = _source_bound_names(_adaptive_runner_source())
+        available.update(_source_bound_names(_analysis_source(include_autofocus=True)))
+        available.update(_source_bound_names(source))
+        source = _without_microclaw_imports(source, available)
+        signature = inspect.signature(cls.__init__)
+        injected = []
+        if "ctrl" in signature.parameters:
+            injected.append("'ctrl': mm")
+        if "guard" in signature.parameters:
+            injected.append("'guard': guard")
+        extras = (", " + ", ".join(injected)) if injected else ""
+        constructor = (
+            f"{cls.__name__}(**{{**{params_expr}, 'log_path': _log_path{extras}}})"
+        )
+        # The five emittable built-ins share these exact bases/helpers. Analysis
+        # and autofocus functions are supplied by the existing inline path.
+        return source, constructor, False
+
+    from microclaw.hook_manager import describe_saved_hook
+    description = describe_saved_hook(strategy)
+    if description.get("error"):
+        raise CannotEmit(f"saved hook source is unavailable: {description['error']}")
+    reasons = description.get("resolve_refusal", {}).get("reasons", [])
+    if reasons:
+        raise CannotEmit("saved hook source is not exportable: " + "; ".join(reasons))
+    provenance = description["provenance"]
+    path = Path(provenance["path"])
+    try:
+        source = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise CannotEmit(f"saved hook source is unavailable: {exc}") from exc
+    source = (
+        f"# Saved hook {strategy!r}; manifest sha256: "
+        f"{provenance.get('manifest_sha256')}\n" + source
+    )
+    available = _source_bound_names(_adaptive_runner_source())
+    available.update(_source_bound_names(_analysis_source(include_autofocus=True)))
+    available.update(_source_bound_names(source))
+    source = _without_microclaw_imports(source, available)
+    cls_name = description["class_name"]
+    constructor = (
+        f"UntrustedHookAdapter({cls_name}(**{params_expr}), log_path=_log_path)"
+    )
+    return source, constructor, True
+
+
+def _emit_adaptive(params: RecordedParams, kind: str) -> str:
+    if params.get("illumination_envelope") is not None:
+        raise CannotEmit(
+            "the authorized illumination envelope depends on rig-configured raw-value "
+            "conversions that are not recorded as exportable literals"
+        )
+    if params.get("artifact_limits") is not None:
+        raise CannotEmit(
+            "the authorized hook artifact budget is not represented by the "
+            "standalone adaptive runner"
+        )
+    hook_source, constructor, saved = _adaptive_hook_export(params)
+    # Refuse here rather than at the top of export_session_script: a refusal
+    # inside the loop becomes a `# NOT EMITTED` step in an otherwise complete
+    # script, which is what every other CannotEmit does. Raising up front threw
+    # away the whole export -- every unrelated call included -- over one
+    # unemittable step. And no default: an unbounded fallback would emit a
+    # script whose header claims recorded limits while checking nothing, which
+    # is the defect this refusal exists to prevent.
+    limits = params.get("_export_safety_limits")
+    if not limits:
+        raise CannotEmit(params.get("_export_safety_limits_error")
+                         or "the record carries no export-time safety limits")
+    recorded_log = params.get("log_path")
+    log_name = Path(recorded_log).name if recorded_log else None
+    common = [
+        _export_guard_source(limits), hook_source,
+        (f"_log_path = _next_available_log_path(_HERE / {log_name!r})"
+         if log_name else "_log_path = None"),
+        f"hook = {constructor}",
+    ]
+    from microclaw.authorization import CHANNEL_CONFIG_GROUP
+    channel = params.get("channel")
+    shape: dict[str, Any]
+    if kind == "zstack":
+        shape = {"z_start": params["z_start_um"], "z_end": params["z_end_um"],
+                 "z_step": params["z_step_um"]}
+        common.extend([
+            f"guard.check_z({params['z_start_um']!r})",
+            f"guard.check_z({params['z_end_um']!r})",
+        ])
+    elif kind == "timelapse":
+        shape = {"num_time_points": params["n_frames"],
+                 "time_interval_s": params["interval_s"]}
+    else:
+        positions = params.get("positions")
+        if positions is None:
+            # The run itself recorded the coordinates it resolved, so a name
+            # this exporter cannot re-derive is not a dead end. Same
+            # result-derived route _emit_multiposition takes at :162-173, and
+            # the M5 gate of 2026-08-11 is why it exists: a session that marked
+            # and validated its positions still failed name resolution, the
+            # whole export came back `emitted_calls: 0`, and the agent hand-wrote
+            # an acquisition script to fill the gap -- which is the fabrication
+            # path this exporter exists to remove.
+            #
+            # tiles_planned rounds to 3 dp. That is a nanometre against a stage
+            # that steps in tens of nanometres at best, so it is recorded here
+            # rather than treated as a reason to refuse.
+            planned = params.result.get("tiles_planned")
+            if planned and all(
+                isinstance(tile, dict) and tile.get("position") is not None
+                and tile.get("x_um") is not None and tile.get("y_um") is not None
+                for tile in planned
+            ):
+                positions = [{"name": tile["position"], "x_um": tile["x_um"],
+                              "y_um": tile["y_um"]} for tile in planned]
+            else:
+                raise CannotEmit(params.get(
+                    "_position_resolution_error",
+                    "the record contains no resolved adaptive survey seed positions",
+                ))
+        if not positions or any(p.get("name") is None or p.get("x_um") is None
+                                or p.get("y_um") is None for p in positions):
+            raise CannotEmit("the record contains an incomplete adaptive survey seed position")
+        protocol = params.get("protocol")
+        pp = dict(params.get("protocol_params") or {})
+        if protocol == "timelapse":
+            shape = {"num_time_points": pp["n_frames"],
+                     "time_interval_s": pp.get("interval_s", 0)}
+        elif protocol == "zstack":
+            shape = {"z_start": pp["z_start_um"], "z_end": pp["z_end_um"],
+                     "z_step": pp["z_step_um"]}
+        else:
+            raise CannotEmit(f"unknown recorded adaptive survey protocol {protocol!r}")
+        shape["xy_positions"] = [(p["x_um"], p["y_um"]) for p in positions]
+        shape["position_labels"] = [p["name"] for p in positions]
+        common.extend(
+            f"guard.check_xy({p['x_um']!r}, {p['y_um']!r})" for p in positions
+        )
+        if protocol == "zstack":
+            common.extend([
+                f"guard.check_z({pp['z_start_um']!r})",
+                f"guard.check_z({pp['z_end_um']!r})",
+            ])
+        if pp.get("exposure_ms") is not None:
+            common.append(f"guard.check_exposure({pp['exposure_ms']!r})")
+        if pp.get("channel"):
+            shape["channel_group"] = CHANNEL_CONFIG_GROUP
+            shape["channels"] = [pp["channel"]]
+            if pp.get("exposure_ms") is not None:
+                shape["channel_exposures_ms"] = [pp["exposure_ms"]]
+        elif pp.get("exposure_ms") is not None:
+            common.append(f"core.set_exposure({pp['exposure_ms']!r})")
+        common.extend([
+            f"events = multi_d_acquisition_events(**{{k: v for k, v in {shape!r}.items() if v is not None}})",
+            "candidates = queue.Queue()", "progress = SurveyProgress(len(events))",
+            *( ["hook.configure_adaptive(events=events, candidates=candidates, progress=progress, guard=guard, max_events=len(events))"] if saved else ["hook.survey_events = events", "hook.candidates = candidates", "hook.progress = progress"] ),
+            f"event_source = _survey_event_stream(events, candidates, progress, {params.get('max_idle_s', 60.0)!r}, hook, adaptive=True, max_events=len(events))",
+            "_hook_callbacks = {name: callback for name, callback in {"
+            "'image_process_fn': getattr(hook, 'image_process_fn', None), "
+            "'post_hardware_hook_fn': getattr(hook, 'post_hardware_hook_fn', None)"
+            "}.items() if callback is not None}",
+            f"with Acquisition(directory=str(_HERE), name={params.get('name', 'survey')!r}, show_display=True, **_hook_callbacks) as acq:",
+            "    acq.acquire(event_source(acq))",
+        ])
+        return "\n\n".join(common)
+    if channel:
+        shape.update(channel_group=CHANNEL_CONFIG_GROUP, channels=[channel])
+    common.extend([
+        f"events = multi_d_acquisition_events(**{shape!r})",
+        "_hook_callbacks = {name: callback for name, callback in {"
+        "'image_process_fn': getattr(hook, 'image_process_fn', None), "
+        "'post_hardware_hook_fn': getattr(hook, 'post_hardware_hook_fn', None)"
+        "}.items() if callback is not None}",
+        f"with Acquisition(directory=str(_HERE), name={params.get('name', 'adaptive')!r}, show_display=True, **_hook_callbacks) as acq:",
+        "    acq.acquire(events)",
+    ])
+    return "\n\n".join(common)
+
+
+def _emit_adaptive_zstack(params: RecordedParams) -> str:
+    return _emit_adaptive(params, "zstack")
+
+
+def _emit_adaptive_timelapse(params: RecordedParams) -> str:
+    return _emit_adaptive(params, "timelapse")
+
+
+def _emit_adaptive_survey(params: RecordedParams) -> str:
+    return _emit_adaptive(params, "survey")
+
+
+def _write_text_output(path: str, text: str, *, overwrite: bool) -> None:
+    """Shared resolved-path writer for exported and operator-authored text."""
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    mode = "w" if overwrite else "x"
+    try:
+        with target.open(mode, encoding="utf-8") as handle:
+            handle.write(text)
+    except FileExistsError:
+        raise FileExistsError(
+            f"Refusing to overwrite: file already exists: {target}"
+        ) from None
+
+
+@emits_nothing
+def write_text_file(
+    ctrl: MicroscopeController,
+    guard: SafetyGuard,
+    path: str,
+    text: str,
+) -> dict:
+    """Write operator-requested text through the normal confirmed path boundary."""
+    resolved = guard.resolve_in_workspace(path)
+    _write_text_output(resolved, text, overwrite=False)
+    return {
+        "status": "Text file written.",
+        "output_path": str(resolved),
+        "artifact": {
+            "kind": "python" if Path(resolved).suffix.lower() == ".py" else "text",
+            "path": str(resolved),
+        },
+    }
+
+
 @emits_nothing
 def export_session_script(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
     output_path: str,
     records: list[dict],
+    tool_use_ids: list[str] | None = None,
 ) -> dict:
     """Compile recorded calls to a standalone pycro-manager script."""
     path = guard.resolve_in_workspace(output_path)
     recorded = _recorded_tool_calls(records)
     _resolve_recorded_position_names(recorded)
-    analysis_used = any(
+    known_ids = {params["_tool_use_id"] for _, params in recorded}
+    selected_ids = set(tool_use_ids) if tool_use_ids is not None else None
+    unknown_ids = sorted((selected_ids or set()) - known_ids)
+    if unknown_ids:
+        raise ValueError("unknown tool_use id(s): " + ", ".join(unknown_ids))
+    included = [
+        (name, params) for name, params in recorded
+        if selected_ids is None or params["_tool_use_id"] in selected_ids
+    ]
+    adaptive_used = any(name.startswith("run_adaptive_") for name, _ in included)
+    analysis_used = adaptive_used or any(
         name in {"snap_and_analyze", "run_autofocus"}
         or (name in {"run_multiposition_acquisition", "run_tile_acquisition"}
             and params.get("protocol") == "snap")
-        for name, params in recorded
+        for name, params in included
     )
-    autofocus_used = any(name == "run_autofocus" for name, _params in recorded)
+    autofocus_used = adaptive_used or any(
+        name == "run_autofocus" or params.get("hook_strategy") == "autofocus_per_position"
+        for name, params in included
+    )
+    safety_limits = safety_limits_error = None
+    if adaptive_used:
+        # Read strictly: a renamed field must not degrade to "no limits", which
+        # would emit a script whose header claims recorded bounds while its seed
+        # check accepts anything. Carried to the renderer as a reason rather than
+        # raised here, so one unemittable step refuses on its own line.
+        try:
+            constraints = guard._c
+            stage = constraints.stage
+            camera = constraints.camera
+            safety_limits = {
+                "x_um": (stage.x_min, stage.x_max),
+                "y_um": (stage.y_min, stage.y_max),
+                "z_um": (stage.z_min, stage.z_max),
+                "exposure_ms": (0.0, camera.max_exposure_ms),
+                "analysis_min_snr": guard.analysis_min_snr,
+            }
+        except AttributeError as exc:
+            safety_limits_error = (
+                "adaptive export safety constraints are unavailable or have an "
+                f"unsupported shape: {exc}"
+            )
+    for name, params in recorded:
+        if name.startswith("run_adaptive_"):
+            params["_export_safety_limits"] = safety_limits
+            params["_export_safety_limits_error"] = safety_limits_error
     # Only a channel switch that actually replayed writes needs the read-back
     # check; a map-less set_config delegation verifies nothing of its own.
     channel_writes = any(
         name == "set_channel" and params.result.get("effects")
-        for name, params in recorded
+        for name, params in included
+    )
+    # Every one of these is reached only by the adaptive block: hashlib/io/json
+    # by the hook artifact and log writers, queue by the candidate stream,
+    # threading by SurveyProgress, asdict and
+    # datetime by the decision dataclasses and the observation envelope, logging
+    # by _note_budget_exhausted. Conditional for the same reason the analysis and
+    # channel blocks are: a snap-only session was carrying ten unused imports and
+    # an unused logger into the script the operator keeps (demo gate, 2026-08-10).
+    adaptive_imports = [
+        "import hashlib", "import io", "import itertools", "import json", "import logging",
+        "import queue", "import threading",
+        "from datetime import datetime, timezone",
+    ] if adaptive_used else []
+    selection_warning = (
+        "Hardware state is order- and history-dependent: excluded setup calls "
+        "such as channel, ROI, and stage changes may be required by kept "
+        "acquisitions. Dependencies were not inferred; review every SKIPPED step."
     )
     lines = [
         "from __future__ import annotations",
+        *([f"# WARNING: {selection_warning}"] if selected_ids is not None else []),
         "import math",
         "import time",
-        "from dataclasses import dataclass",
+        *adaptive_imports,
+        f"from dataclasses import {'asdict, dataclass' if adaptive_used else 'dataclass'}",
         "from pathlib import Path",
         "from types import SimpleNamespace",
         "from typing import Any, Callable, NamedTuple, Optional",
@@ -597,12 +1082,16 @@ def export_session_script(
         "",
         *(["", _analysis_source(include_autofocus=autofocus_used).rstrip()]
           if analysis_used else []),
+        *(["", _portable_log_path_source().rstrip()] if adaptive_used else []),
+        *(["", _adaptive_runner_source().rstrip()] if adaptive_used else []),
         *(["", _channel_verification_source().rstrip()] if channel_writes else []),
         "",
         "core = Core()",
         "mm = SimpleNamespace(core=core)",
+        *(["logger = logging.getLogger(__name__)"] if adaptive_used else []),
     ]
     emitted = 0
+    emitted_ids: list[str] = []
 
     def refuse(tool: str, reason: str) -> None:
         """One shape for every refusal: a comment, then a step that cannot run."""
@@ -616,6 +1105,12 @@ def export_session_script(
         renderer = getattr(fn, "_microclaw_emitter", None)
         lines.append("")
         lines.append(f"# RECORDED TOOL: {name}")
+        if selected_ids is not None and params["_tool_use_id"] not in selected_ids:
+            lines.append(
+                f"# SKIPPED: {name} — excluded by tool_use id selection "
+                f"({params['_tool_use_id']})"
+            )
+            continue
         if fn is not None and getattr(fn, "_microclaw_emits_nothing", False):
             lines.append("# No hardware-routine effect.")
             continue
@@ -649,17 +1144,40 @@ def export_session_script(
             continue
         lines.extend(rendered.splitlines())
         emitted += 1
+        emitted_ids.append(params["_tool_use_id"])
     if any("_HERE" in line for line in lines):
         lines.insert(lines.index("core = Core()"),
                      "_HERE = Path(__file__).resolve().parent")
     source = "\n".join(lines) + "\n"
-    Path(path).write_text(source, encoding="utf-8")
-    return {
+    # Never hand over a file that cannot be parsed. Every refusal in this
+    # exporter is a comment plus a loud raise *inside* valid Python, so a
+    # SyntaxError means an emitter produced something malformed -- and the
+    # operator would only find out when they ran it, which is the failure this
+    # whole block exists to remove. Cheap, and it guards every emitter at once
+    # rather than the one that happened to break (2026-08-10).
+    try:
+        ast.parse(source)
+    except SyntaxError as exc:
+        raise CannotEmit(
+            f"the exporter produced source that does not parse at line "
+            f"{exc.lineno}: {exc.msg}. This is an emitter defect; no script was "
+            "written."
+        ) from exc
+    _write_text_output(path, source, overwrite=True)
+    result = {
         "status": "Session script exported.",
         "output_path": str(path),
         "emitted_calls": emitted,
+        "emitted_tool_use_ids": emitted_ids,
+        "recorded_calls": [
+            {"tool_use_id": params["_tool_use_id"], "tool": name}
+            for name, params in recorded if name != "export_session_script"
+        ],
         "artifact": {"kind": "python", "path": str(path)},
     }
+    if selected_ids is not None:
+        result["selection_warning"] = selection_warning
+    return result
 
 
 class SessionGrants:
@@ -4036,11 +4554,7 @@ def _adaptive_result(
     return result
 
 
-@refuses(
-    "an adaptive run's events are chosen at runtime by its hook, so there is "
-    "no static event list to render; emitting the positions it happened to "
-    "visit would silently turn an adaptive run into a fixed one"
-)
+@emits(_emit_adaptive_zstack)
 @_acquisition_entry_point
 def run_adaptive_zstack(
     ctrl: MicroscopeController,
@@ -4102,11 +4616,7 @@ def run_adaptive_zstack(
     )
 
 
-@refuses(
-    "an adaptive run's events are chosen at runtime by its hook, so there is "
-    "no static event list to render; emitting the positions it happened to "
-    "visit would silently turn an adaptive run into a fixed one"
-)
+@emits(_emit_adaptive_timelapse)
 @_acquisition_entry_point
 def run_adaptive_timelapse(
     ctrl: MicroscopeController,
@@ -4270,7 +4780,7 @@ class SurveyProgress:
 
     Written by the processor thread (the hook), read by the event thread (the
     generator in _acquire_survey_with_detector) — so it is a real cross-thread
-    object, not a counter. Nothing else in microclaw tracks acquisition
+    object, not a counter. Nothing else in the runner tracks acquisition
     progress; this is the one genuinely new primitive design/24 introduces.
     """
 
@@ -4282,6 +4792,13 @@ class SurveyProgress:
     def image_done(self) -> None:
         with self._lock:
             self._done += 1
+
+    def set_total(self, n_survey: int) -> None:
+        """Set the event total once the acquisition plan has been built."""
+        with self._lock:
+            if self._done:
+                raise RuntimeError("survey total cannot change after images arrive")
+            self._n_survey = n_survey
 
     def done_early(self) -> None:
         """The hook decided the survey is over before n_survey images came
@@ -4534,6 +5051,10 @@ def _acquire_survey_with_detector(
         xy_positions=[(p["x_um"], p["y_um"]) for p in positions],
         **shape_kwargs,
     )
+    # Completion is measured in returned images, so its total is the event
+    # plan, not the number of XY positions. A multi-frame tile contributes one
+    # completion unit per frame.
+    progress.set_total(len(survey_events))
 
     _configure_hook_capabilities(hook, ctrl, guard, save_dir, name,
                                  illumination_envelope, artifact_limits)
@@ -4577,11 +5098,7 @@ def _acquire_survey_with_detector(
     )
 
 
-@refuses(
-    "an adaptive run's events are chosen at runtime by its hook, so there is "
-    "no static event list to render; emitting the positions it happened to "
-    "visit would silently turn an adaptive run into a fixed one"
-)
+@emits(_emit_adaptive_survey)
 @_acquisition_entry_point
 def run_adaptive_survey(
     ctrl: MicroscopeController,
@@ -5462,6 +5979,18 @@ def calibrate_snr_threshold(
 
 # --- Hook management ---
 
+# Saving a hook writes a .py file and a manifest entry under ~/.microclaw/hooks
+# and touches no hardware, so there is nothing for it to reproduce -- and the
+# emitted script does not need it to: an adaptive export inlines the hook's
+# source verbatim, with the manifest sha256 as a provenance comment, so the
+# class exists in the script without the manifest existing anywhere.
+#
+# Undecorated it collected the default refusal, which plants a loud
+# `raise RuntimeError` at the recorded position. The demo gate of 2026-08-10
+# found what that costs: the agent wrote a hook, ran an adaptive survey with it
+# and exported -- the exact workflow F14 exists for -- and the script died three
+# lines before the adaptive program it had correctly emitted.
+@emits_nothing
 def generate_and_save_hook(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -6356,6 +6885,7 @@ TOOL_REGISTRY = {
     "get_mda_settings": get_mda_settings,
     "run_mda": run_mda,
     "export_session_script": export_session_script,
+    "write_text_file": write_text_file,
     "save_knowledge": save_knowledge,
     "get_knowledge": get_knowledge,
     "delete_knowledge": delete_knowledge,

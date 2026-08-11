@@ -77,8 +77,39 @@ TOOLS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "output_path": {"type": "string"},
+                "tool_use_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Optional recorded tool_use ids to emit. Excluded calls "
+                        "remain visible as SKIPPED comments; dependencies are not inferred."
+                    ),
+                },
             },
             "required": ["output_path"],
+        },
+    },
+    {
+        "name": "write_text_file",
+        "description": (
+            "Write supplied text to a confirmed workspace path without overwriting "
+            "an existing file. Use export_session_script, not this tool, to compile "
+            "recorded hardware calls. If that export refuses or emits nothing and "
+            "you write acquisition code by hand instead, that is allowed and often "
+            "more useful than nothing — but in the same message say plainly that it "
+            "is NOT the exported artifact, that nothing has run or checked it, and "
+            "that it may not work. Report the export's refusal as well: it is a "
+            "defect worth fixing, and a hand-written script that quietly stands in "
+            "for the export hides it."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "text": {"type": "string"},
+            },
+            "required": ["path", "text"],
+            "additionalProperties": False,
         },
     },
     {

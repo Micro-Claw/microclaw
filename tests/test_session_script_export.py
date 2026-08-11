@@ -16,6 +16,17 @@ class Guard:
     def __init__(self, root):
         self.root = Path(root)
         self.seen = []
+        self._c = SimpleNamespace(
+            stage=SimpleNamespace(
+                x_min=None, x_max=None, y_min=None, y_max=None,
+                z_min=None, z_max=None,
+            ),
+            camera=SimpleNamespace(max_exposure_ms=None),
+        )
+
+    @property
+    def analysis_min_snr(self):
+        return None
 
     def resolve_in_workspace(self, path):
         self.seen.append(path)
@@ -159,6 +170,71 @@ def test_records_are_injected_and_absent_from_published_schema(tmp_path):
     ))
     assert result["emitted_calls"] == 1
     assert "core.set_xy_position(3, 4)" in (tmp_path / "injected.py").read_text(encoding="utf-8")
+
+
+def test_export_can_select_recorded_tool_use_ids_without_hiding_exclusions(tmp_path):
+    records = [
+        call("move_stage_xy", {"x_um": 1, "y_um": 2}),
+        call("run_timelapse", {
+            "n_frames": 1, "interval_s": 0, "save_dir": "discarded",
+        }),
+        call("move_stage_z", {"z_um": 9}),
+    ]
+    guard = Guard(tmp_path)
+    result = tools.export_session_script(
+        None, guard, "selected.py", records, tool_use_ids=["run_timelapse"]
+    )
+    source = (tmp_path / "selected.py").read_text(encoding="utf-8")
+
+    assert result["emitted_calls"] == 1
+    assert result["emitted_tool_use_ids"] == ["run_timelapse"]
+    assert "Hardware state is order- and history-dependent" in result["selection_warning"]
+    assert "# SKIPPED: move_stage_xy" in source
+    assert "# SKIPPED: move_stage_z" in source
+    assert "core.set_xy_position" not in source
+    assert "core.set_position" not in source
+    assert "num_time_points': 1" in source
+    assert "Hardware state is order- and history-dependent" in source
+
+
+def test_export_without_selection_still_emits_the_whole_session(tmp_path):
+    _, result, source = export(tmp_path, [
+        call("move_stage_xy", {"x_um": 1, "y_um": 2}),
+        call("move_stage_z", {"z_um": 9}),
+    ])
+    assert result["emitted_calls"] == 2
+    assert "core.set_xy_position" in source
+    assert "core.set_position" in source
+    assert "selection_warning" not in result
+
+
+def test_export_selection_refuses_unknown_tool_use_id(tmp_path):
+    with pytest.raises(ValueError, match="unknown tool_use id.*typo"):
+        tools.export_session_script(
+            None, Guard(tmp_path), "selected.py",
+            [call("move_stage_xy", {"x_um": 1, "y_um": 2})],
+            tool_use_ids=["typo"],
+        )
+
+
+def test_write_text_file_resolves_writes_and_never_overwrites(tmp_path):
+    guard = Guard(tmp_path)
+    result = tools.write_text_file(None, guard, "kept/protocol.py", "print('kept')\n")
+    path = tmp_path / "kept" / "protocol.py"
+
+    assert guard.seen == ["kept/protocol.py"]
+    assert path.read_text(encoding="utf-8") == "print('kept')\n"
+    assert result["artifact"] == {"kind": "python", "path": str(path)}
+    with pytest.raises(FileExistsError, match="already exists"):
+        tools.write_text_file(None, guard, "kept/protocol.py", "replacement")
+    assert path.read_text(encoding="utf-8") == "print('kept')\n"
+
+
+def test_write_text_file_is_registered_and_emits_nothing():
+    schema = next(tool for tool in TOOLS if tool["name"] == "write_text_file")
+    assert set(schema["input_schema"]["required"]) == {"path", "text"}
+    assert tools.TOOL_REGISTRY["write_text_file"] is tools.write_text_file
+    assert tools.write_text_file._microclaw_emits_nothing is True
 
 
 def test_unemittable_tool_refuses_and_script_cannot_run_past_it(tmp_path):
@@ -772,6 +848,82 @@ def test_named_multiposition_refuses_after_a_failed_mark(tmp_path):
     assert "xyz_positions" not in source
 
 
+def _undefined_emitted_names(source):
+    """Return runtime global loads not bound by an emitted top-level block."""
+    import ast, builtins
+
+    tree = ast.parse(source)
+    definitions = tuple(
+        n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.ClassDef))
+    )
+    statements = tuple(n for n in tree.body if n not in definitions)
+    defined = {n.name for n in definitions}
+    defined |= {
+        n.id for statement in statements for n in ast.walk(statement)
+        if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)
+    }
+    defined |= {
+        a.asname or a.name.split(".")[0]
+        for statement in statements for n in ast.walk(statement)
+        if isinstance(n, (ast.Import, ast.ImportFrom)) for a in n.names
+    }
+
+    annotated: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            args = node.args
+            slots = [arg.annotation for arg in (
+                *args.posonlyargs, *args.args, *args.kwonlyargs,
+                *(a for a in (args.vararg, args.kwarg) if a is not None),
+            )] + [node.returns]
+        elif isinstance(node, ast.AnnAssign):
+            slots = [node.annotation]
+        else:
+            continue
+        for slot in slots:
+            if slot is not None:
+                annotated.update(id(item) for item in ast.walk(slot))
+
+    undefined = set()
+    # Only top-level definitions begin a scope scan. Walking the whole tree
+    # would visit event_stream independently and lose parameters bound by its
+    # enclosing survey-event-stream and factory closures.
+    for node in definitions:
+        local = {a.arg for f in ast.walk(node)
+                 if isinstance(f, ast.FunctionDef)
+                 for a in (*f.args.posonlyargs, *f.args.args, *f.args.kwonlyargs,
+                           *(x for x in (f.args.vararg, f.args.kwarg)
+                             if x is not None))}
+        local |= {n.id for n in ast.walk(node)
+                  if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)}
+        local |= {n.name for n in ast.walk(node)
+                  if isinstance(n, ast.ExceptHandler) and n.name}
+        local |= {
+            n.name for n in ast.walk(node)
+            if isinstance(n, (ast.FunctionDef, ast.ClassDef))
+        }
+        local |= {
+            a.asname or a.name.split(".")[0]
+            for n in ast.walk(node)
+            if isinstance(n, (ast.Import, ast.ImportFrom)) for a in n.names
+        }
+        undefined.update(
+            n.id for n in ast.walk(node)
+            if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
+            and id(n) not in annotated
+            and n.id not in defined and n.id not in local
+            and not hasattr(builtins, n.id)
+        )
+    undefined.update(
+        n.id for statement in statements for n in ast.walk(statement)
+        if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
+        and id(n) not in annotated
+        and n.id not in defined and n.id != "__file__"
+        and not hasattr(builtins, n.id)
+    )
+    return undefined
+
+
 @pytest.mark.parametrize("records", [
     [call("run_timelapse", {"n_frames": 1, "interval_s": 0,
                             "save_dir": "/recorded"})],
@@ -966,24 +1118,417 @@ def test_realistic_emitted_routine_runs_to_completion_against_fake_core(tmp_path
     assert len(acquired) == 2
 
 
-def test_adaptive_runs_refuse_with_the_architectural_reason(tmp_path):
-    """M5 rig gate round 4, 2026-08-06. The exported script stopped at
+@pytest.mark.parametrize(("params", "reason"), [
+    ({"hook_strategy": ["snr_observer"]}, "composition is not supported"),
+    ({"hook_strategy": "mm_plugin_analyzer"}, "plugin capabilities"),
+    ({"hook_strategy": "missing_saved_hook"}, "source is unavailable"),
+    ({"hook_strategy": "snr_observer", "illumination_envelope": {}},
+     "rig-configured raw-value conversions"),
+])
+def test_adaptive_runs_refuse_only_with_a_specific_reason(tmp_path, params, reason):
+    """M5 round-4 guard, narrowed now that adaptive programs are emittable."""
+    base = {"n_frames": 2, "interval_s": 0, "save_dir": "session", **params}
+    _, _, source = export(tmp_path, [call("run_adaptive_timelapse", base)])
+    assert "# NOT EMITTED: run_adaptive_timelapse" in source
+    assert reason in source
+    assert "chosen at runtime by its hook" not in source
+    assert "no standalone emitter has been implemented" not in source
 
-        NOT EMITTED: run_adaptive_survey - no standalone emitter has been
-        implemented for this tool
 
-    which understates it. An adaptive run's events are chosen at runtime by its
-    hook, so it is not an unwritten emitter -- it is the same architectural
-    refusal as the offline mosaic. Emitting the positions it happened to visit
-    would silently convert an adaptive run into a fixed one, which is the
-    reconstruct-from-memory defect this block exists to remove.
+@pytest.mark.parametrize(("tool", "params", "seed"), [
+    ("run_adaptive_zstack", {
+        "z_start_um": -2, "z_end_um": 2, "z_step_um": 0.5,
+        "save_dir": "session", "hook_strategy": "snr_observer",
+    }, "'z_start': -2"),
+    ("run_adaptive_timelapse", {
+        "n_frames": 3, "interval_s": 1.5, "save_dir": "session",
+        "hook_strategy": "snr_observer",
+    }, "'num_time_points': 3"),
+    ("run_adaptive_survey", {
+        "protocol": "timelapse", "protocol_params": {"n_frames": 1},
+        "positions": [{"name": "p0", "x_um": 1.25, "y_um": 2.5}],
+        "save_dir": "session", "hook_strategy": "snr_observer",
+    }, "'xy_positions': [(1.25, 2.5)]"),
+])
+def test_all_adaptive_program_shapes_emit_seed_hook_and_runner(
+    tmp_path, tool, params, seed
+):
+    _, result, source = export(tmp_path, [call(tool, params)])
+    assert result["emitted_calls"] == 1
+    assert seed in source
+    assert inspect.getsource(tools._survey_event_stream) in source
+    assert inspect.getsource(tools.SurveyProgress) in source
+    assert "class SNRObservationHook" in source
+    assert "directory=str(_HERE)" in source
+    if tool == "run_adaptive_zstack":
+        assert "guard.check_z(-2)" in source
+        assert "guard.check_z(2)" in source
+    elif tool == "run_adaptive_survey":
+        assert "guard.check_xy(1.25, 2.5)" in source
+    assert "# NOT EMITTED:" not in source
+    compile(source, str(tmp_path / "routine.py"), "exec")
+
+
+def test_named_adaptive_survey_resolves_full_precision_position_list_seed(tmp_path):
+    records = completed_call("get_position_list", {}, {
+        "positions": [{"name": "p0", "x_um": 1.23456, "y_um": 8.76543}]
+    }) + completed_call("run_adaptive_survey", {
+        "protocol": "timelapse", "protocol_params": {"n_frames": 1},
+        "position_names": ["p0"], "save_dir": "session",
+        "hook_strategy": "snr_observer",
+    }, {"tiles_planned": [{"position": "p0", "x_um": 1.235, "y_um": 8.765}]})
+    _, result, source = export(tmp_path, records)
+    assert result["emitted_calls"] == 1
+    assert "'xy_positions': [(1.23456, 8.76543)]" in source
+    assert "'xy_positions': [(1.235, 8.765)]" not in source
+
+
+def test_adaptive_inline_is_exact_live_decision_source(tmp_path):
+    from microclaw import hook_decisions
+
+    _, _, source = export(tmp_path, [call("run_adaptive_timelapse", {
+        "n_frames": 2, "interval_s": 0, "save_dir": "session",
+        "hook_strategy": "snr_observer",
+    })])
+    assert inspect.getsource(tools._survey_event_stream) in source
+    adapter_source = inspect.getsource(hook_decisions.UntrustedHookAdapter)
+    available = tools._source_bound_names(source)
+    assert tools._without_microclaw_imports(adapter_source, available) in source
+    assert inspect.getsource(tools._note_budget_exhausted) in source
+
+
+@pytest.mark.parametrize("guard_body", [
+    pytest.param(
+        "        try:\n"
+        "            from microclaw.hook_decisions import ContinueSurvey, HookResult\n"
+        "        except ImportError:\n"
+        "            raise\n",
+        id="try-wrapped",
+    ),
+    pytest.param(
+        "        if True:\n"
+        "            from microclaw.hook_decisions import ContinueSurvey, HookResult\n",
+        id="if-guarded",
+    ),
+])
+def test_stripping_a_block_sole_package_import_still_emits_valid_python(
+    tmp_path, monkeypatch, guard_body
+):
+    """Coordinator fix, review round 4.
+
+    Package imports are removed by line number at any nesting depth. Where the
+    import is the ONLY statement of its block, deleting it left an empty block
+    and the exporter wrote a file that could not be parsed -- while reporting
+    `Session script exported.` with `emitted_calls: 1`. The operator would have
+    found out by running it.
+
+    A saved hook is arbitrary code, and `try: from microclaw... except
+    ImportError:` is exactly what someone writes when they intend the hook to be
+    portable, so this is a likely shape rather than an exotic one. `pass` is the
+    correct residue: the name IS bound at module level in the emitted script, so
+    the import succeeded and the fallback must not run.
     """
-    for tool in ("run_adaptive_survey", "run_adaptive_zstack",
-                 "run_adaptive_timelapse"):
-        _, _, source = export(tmp_path, [call(tool, {})])
-        assert f"# NOT EMITTED: {tool}" in source
-        assert "chosen at runtime by its hook" in source
-        assert "no standalone emitter has been implemented" not in source
+    from microclaw.hook_manager import save_hook
+    import microclaw.hook_manager as manager
+
+    hooks_dir = tmp_path / "hooks"
+    monkeypatch.setattr(manager, "HOOKS_DIR", hooks_dir)
+    monkeypatch.setattr(manager, "MANIFEST", hooks_dir / "manifest.json")
+    hook_source = (
+        "class Portable:\n"
+        "    def analyze_frame(self, image, metadata):\n"
+        + guard_body
+        + "        return HookResult({}, actions=(ContinueSurvey(),))\n"
+    )
+    save_hook("portable", hook_source, "portable", source="user_provided")
+
+    _, result, source = export(tmp_path, [call("run_adaptive_timelapse", {
+        "n_frames": 2, "interval_s": 0, "save_dir": "session",
+        "hook_strategy": "portable",
+    })])
+
+    assert result["emitted_calls"] == 1
+    compile(source, "routine.py", "exec")      # the assertion that was failing
+    assert "from microclaw" not in source
+    assert not _undefined_emitted_names(source)
+
+
+def test_unresolvable_survey_names_fall_back_to_the_recorded_tiles(tmp_path):
+    """M5 gate, 2026-08-11. The whole export came back `emitted_calls: 0`.
+
+    A real session marked and validated its positions and STILL failed name
+    resolution — an intervening `validate_positions`/`mark_position` sequence
+    leaves state that cannot resolve `pos_1`. Refusing was safe but useless: the
+    operator got no runnable script, and the agent hand-wrote an acquisition
+    script to fill the gap, which is the fabrication path this exporter exists
+    to remove.
+
+    The run recorded the coordinates it actually resolved, so a name this
+    exporter cannot re-derive is not a dead end. Same result-derived route
+    `_emit_multiposition` already takes.
+    """
+    records = completed_call(
+        "run_adaptive_survey",
+        {"protocol": "timelapse", "protocol_params": {"n_frames": 3, "interval_s": 0},
+         "position_names": ["pos_1", "pos_2"], "save_dir": "session",
+         "hook_strategy": "snr_observer"},
+        {"status": "Adaptive survey: 6 frame(s) acquired from a 2-tile plan.",
+         "tiles_planned": [{"position": "pos_1", "x_um": -819.7, "y_um": 566.0},
+                           {"position": "pos_2", "x_um": -784.7, "y_um": 566.0}]},
+    )
+    _, result, source = export(tmp_path, records)
+
+    assert result["emitted_calls"] == 1
+    assert "# NOT EMITTED:" not in source
+    assert "'xy_positions': [(-819.7, 566.0), (-784.7, 566.0)]" in source
+    assert "'position_labels': ['pos_1', 'pos_2']" in source
+    compile(source, "routine.py", "exec")
+
+
+def test_a_survey_with_neither_names_nor_recorded_tiles_still_refuses(tmp_path):
+    """The fallback must not become a licence to invent coordinates."""
+    records = completed_call(
+        "run_adaptive_survey",
+        {"protocol": "timelapse", "protocol_params": {"n_frames": 1},
+         "position_names": ["pos_1"], "save_dir": "session",
+         "hook_strategy": "snr_observer"},
+        {"status": "Adaptive survey: 0 frame(s) acquired from a 1-tile plan."},
+    )
+    _, _, source = export(tmp_path, records)
+    assert "# NOT EMITTED: run_adaptive_survey" in source
+
+
+def test_the_exporter_never_writes_a_file_it_cannot_parse(tmp_path, monkeypatch):
+    """The global guard, independent of any one emitter.
+
+    Same round. A malformed emitter must refuse loudly and write nothing rather
+    than hand the operator a file that fails at the first line Python reads.
+    """
+    # Patch the emitter the decorator captured, not the module attribute:
+    # `@emits(_emit_snap_and_analyze)` bound the function object at import time,
+    # so replacing `tools._emit_snap_and_analyze` reaches nothing.
+    monkeypatch.setattr(
+        tools.snap_and_analyze, "_microclaw_emitter",
+        lambda params: "def broken(:\n",
+    )
+    with pytest.raises(tools.CannotEmit, match="does not parse"):
+        tools.export_session_script(
+            None, Guard(tmp_path), "routine.py", [call("snap_and_analyze", {})],
+        )
+    assert not (tmp_path / "routine.py").exists()
+
+
+def test_saved_adaptive_hook_source_and_manifest_pin_are_inlined(
+    tmp_path, monkeypatch
+):
+    from microclaw.hook_manager import save_hook
+    import microclaw.hook_manager as manager
+
+    hooks_dir = tmp_path / "hooks"
+    monkeypatch.setattr(manager, "HOOKS_DIR", hooks_dir)
+    monkeypatch.setattr(manager, "MANIFEST", hooks_dir / "manifest.json")
+    hook_source = (
+        "from microclaw.hook_decisions import ContinueSurvey, HookResult\n"
+        "class Saved:\n"
+        "    def analyze_frame(self, image, metadata):\n"
+        "        return HookResult({}, actions=(ContinueSurvey(),))\n"
+    )
+    save_hook("saved", hook_source, "continue", source="user_provided")
+    manifest = json.loads((hooks_dir / "manifest.json").read_text(encoding="utf-8"))
+    _, result, source = export(tmp_path, [call("run_adaptive_timelapse", {
+        "n_frames": 2, "interval_s": 0, "save_dir": "session",
+        "hook_strategy": "saved",
+    })])
+    assert result["emitted_calls"] == 1
+    assert hook_source not in source
+    assert "class Saved:" in source
+    assert "from microclaw" not in source
+    assert manifest["saved"]["sha256"] in source
+    assert "UntrustedHookAdapter(Saved(" in source
+
+
+def test_adaptive_export_has_no_microclaw_runtime_references(tmp_path):
+    _, _, source = export(tmp_path, [call("run_adaptive_timelapse", {
+        "n_frames": 2, "interval_s": 0, "save_dir": "session",
+        "hook_strategy": "snr_observer",
+    })])
+    # These are durable data identifiers, not runtime dependencies. They are
+    # the only deliberate occurrences of the project name in the artifact.
+    assert source.count("microclaw") == 2
+    assert '"microclaw.analysis-observation/v1"' in source
+    assert '"microclaw.image_analysis.compute_stats"' in source
+    import ast
+    assert not [node for node in ast.walk(ast.parse(source))
+                if isinstance(node, (ast.Import, ast.ImportFrom))
+                and ((isinstance(node, ast.ImportFrom)
+                      and (node.module or "").startswith("microclaw"))
+                     or (isinstance(node, ast.Import)
+                         and any(a.name.startswith("microclaw")
+                                 for a in node.names)))]
+
+
+def test_emitted_adaptive_log_is_beside_script_and_preserves_first_run(tmp_path):
+    recorded_log = tmp_path / "recorded" / "quality_survey_hook.log"
+    _, _, source = export(tmp_path, [call("run_adaptive_timelapse", {
+        "n_frames": 1, "interval_s": 0, "save_dir": "session",
+        "hook_strategy": "snr_observer", "log_path": str(recorded_log),
+    })])
+    executable = source.replace(
+        "from pycromanager import Acquisition, Core, multi_d_acquisition_events", ""
+    )
+
+    class Acquisition:
+        def __init__(self, **_kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *_args): pass
+        def acquire(self, _events): pass
+
+    def run():
+        namespace = {
+            "__file__": str(tmp_path / "routine.py"),
+            "Core": lambda: SimpleNamespace(), "Acquisition": Acquisition,
+            "multi_d_acquisition_events": lambda **kwargs: [kwargs],
+        }
+        exec(compile(executable, "routine.py", "exec"), namespace)
+        return Path(namespace["_log_path"])
+
+    first = run()
+    first.write_text("first run", encoding="utf-8")
+    second = run()
+    second.write_text("second run", encoding="utf-8")
+
+    assert first.parent == tmp_path
+    assert first.name == "quality_survey_hook.log"
+    assert second.parent == tmp_path
+    assert second != first
+    assert first.read_text(encoding="utf-8") == "first run"
+
+
+def test_adaptive_export_refuses_a_stripped_import_it_cannot_resolve(
+    tmp_path, monkeypatch
+):
+    from microclaw.hook_manager import save_hook
+    import microclaw.hook_manager as manager
+
+    hooks_dir = tmp_path / "hooks"
+    monkeypatch.setattr(manager, "HOOKS_DIR", hooks_dir)
+    monkeypatch.setattr(manager, "MANIFEST", hooks_dir / "manifest.json")
+    save_hook(
+        "missing_import",
+        "from microclaw.image_analysis import genuinely_absent\n"
+        "class MissingImport:\n"
+        "    def analyze_frame(self, image, metadata):\n"
+        "        return genuinely_absent(image)\n",
+        "missing import", source="user_provided",
+    )
+    _, result, source = export(tmp_path, [call("run_adaptive_timelapse", {
+        "n_frames": 2, "interval_s": 0, "save_dir": "session",
+        "hook_strategy": "missing_import",
+    })])
+    assert result["emitted_calls"] == 0
+    assert "# NOT EMITTED: run_adaptive_timelapse" in source
+    assert "genuinely_absent" in source
+
+
+def test_adaptive_survey_without_channel_replays_recorded_exposure(tmp_path):
+    _, _, source = export(tmp_path, [call("run_adaptive_survey", {
+        "protocol": "timelapse",
+        "protocol_params": {"n_frames": 1, "interval_s": 0, "exposure_ms": 200},
+        "positions": [{"name": "p0", "x_um": 1, "y_um": 2}],
+        "save_dir": "session", "hook_strategy": "snr_observer",
+    })])
+    assert "guard.check_exposure(200)" in source
+    assert "core.set_exposure(200)" in source
+
+
+def test_emitted_multiframe_survey_counts_the_event_plan(tmp_path):
+    _, _, source = export(tmp_path, [call("run_adaptive_survey", {
+        "protocol": "timelapse",
+        "protocol_params": {"n_frames": 3, "interval_s": 0},
+        "positions": [
+            {"name": "p0", "x_um": 1, "y_um": 2},
+            {"name": "p1", "x_um": 3, "y_um": 4},
+        ],
+        "save_dir": "session", "hook_strategy": "snr_observer",
+    })])
+    assert "progress = SurveyProgress(len(events))" in source
+    assert "progress = SurveyProgress(2)" not in source
+
+
+@pytest.mark.parametrize("tool, params", [
+    ("run_adaptive_timelapse", {
+        "n_frames": 2, "interval_s": 0, "save_dir": "session",
+        "hook_strategy": "snr_observer", "channel": "DAPI",
+    }),
+    ("run_adaptive_survey", {
+        "protocol": "timelapse",
+        "protocol_params": {"n_frames": 1, "channel": "DAPI"},
+        "positions": [{"name": "p0", "x_um": 1, "y_um": 2}],
+        "save_dir": "session", "hook_strategy": "snr_observer",
+    }),
+])
+def test_adaptive_emitters_use_shared_channel_group(
+    tmp_path, monkeypatch, tool, params
+):
+    import microclaw.authorization as authorization
+
+    monkeypatch.setattr(authorization, "CHANNEL_CONFIG_GROUP", "RigChannels")
+    _, _, source = export(tmp_path, [call(tool, params)])
+    assert "'channel_group': 'RigChannels'" in source
+    assert "'channel_group': 'Channel'" not in source
+
+
+def test_emitted_adaptive_seed_check_refuses_out_of_bounds_before_acquisition(
+    tmp_path,
+):
+    import sys
+    guard = Guard(tmp_path)
+    guard._c = SimpleNamespace(
+        stage=SimpleNamespace(
+            x_min=-10, x_max=10, y_min=-10, y_max=10, z_min=-5, z_max=5,
+        ),
+        camera=SimpleNamespace(max_exposure_ms=100),
+        analysis=SimpleNamespace(min_snr=None),
+    )
+    records = [call("run_adaptive_survey", {
+        "protocol": "timelapse", "protocol_params": {"n_frames": 1},
+        "positions": [{"name": "unsafe", "x_um": 11, "y_um": 0}],
+        "save_dir": "session", "hook_strategy": "snr_observer",
+    })]
+    tools.export_session_script(None, guard, "routine.py", records)
+    source = (tmp_path / "routine.py").read_text(encoding="utf-8").replace(
+        "from pycromanager import Acquisition, Core, multi_d_acquisition_events", ""
+    )
+
+    class Acquisition:
+        entered = False
+        def __init__(self, **_kwargs): pass
+        def __enter__(self):
+            self.entered = True
+            return self
+        def __exit__(self, *_args): pass
+        def acquire(self, _events): pass
+
+    module_names = (
+        "microclaw", "microclaw.hooks", "microclaw.hook_decisions",
+        "microclaw.autofocus",
+    )
+    original_modules = {name: sys.modules.get(name) for name in module_names}
+    try:
+        with pytest.raises(Exception, match="recorded maximum 10"):
+            exec(compile(source, "routine.py", "exec"), {
+                "__file__": str(tmp_path / "routine.py"),
+                "Core": lambda: SimpleNamespace(),
+                "Acquisition": Acquisition,
+                "multi_d_acquisition_events": lambda **kwargs: [kwargs],
+            })
+    finally:
+        for name, module in original_modules.items():
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
+    assert Acquisition.entered is False
 
 
 @pytest.mark.parametrize("records", [
@@ -995,6 +1540,19 @@ def test_adaptive_runs_refuse_with_the_architectural_reason(tmp_path):
         completed_call("set_channel", {"preset": "640"}, M5_CHANNEL_RESULT),
         id="channel-verification",
     ),
+    *[
+        pytest.param([call("run_adaptive_timelapse", {
+            "n_frames": 2, "interval_s": 0, "save_dir": "session",
+            "hook_strategy": strategy, "hook_params": hook_params,
+        })], id=f"adaptive-runner-{strategy}")
+        for strategy, hook_params in (
+            ("snr_observer", {}),
+            ("position_filter", {}),
+            ("intensity_adaptive", {"target_mean": 100}),
+            ("focus_feedback", {}),
+            ("autofocus_per_position", {"z_range_um": 2, "z_step_um": 0.5}),
+        )
+    ],
 ])
 def test_emitted_inline_defines_every_name_it_uses(tmp_path, records):
     """Recurrence guard for the block-13/41b integration defect (2026-08-06).
@@ -1014,51 +1572,157 @@ def test_emitted_inline_defines_every_name_it_uses(tmp_path, records):
     inlined, and the script `NameError`s on the rig. Add a param here whenever
     the exporter learns to inline something new.
     """
-    import ast, builtins
-
     _, _, source = export(tmp_path, records)
-    tree = ast.parse(source)
-    defined = {n.name for n in ast.walk(tree)
-               if isinstance(n, (ast.FunctionDef, ast.ClassDef))}
-    defined |= {t.id for n in ast.walk(tree) if isinstance(n, ast.Assign)
-                for t in n.targets if isinstance(t, ast.Name)}
-    defined |= {a.asname or a.name.split(".")[0]
-                for n in ast.walk(tree)
-                if isinstance(n, (ast.Import, ast.ImportFrom)) for a in n.names}
+    assert "# NOT EMITTED:" not in source
+    assert not _undefined_emitted_names(source)
 
-    # Annotations never evaluate. The emitted script opens with
-    # `from __future__ import annotations`, so `ctrl: MicroscopeController` is a
-    # string at runtime, not a load -- scanning it would fail a script that runs
-    # perfectly (it did, the moment this guard was widened past the analysis).
-    # The invariant is "would this NameError on the rig", so model that.
-    annotated: set[int] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            args = node.args
-            slots = [arg.annotation for arg in (
-                *args.posonlyargs, *args.args, *args.kwonlyargs,
-                *(a for a in (args.vararg, args.kwarg) if a is not None),
-            )] + [node.returns]
-        elif isinstance(node, ast.AnnAssign):
-            slots = [node.annotation]
-        else:
-            continue
-        for slot in slots:
-            if slot is not None:
-                annotated.update(id(item) for item in ast.walk(slot))
 
-    for node in ast.walk(tree):
-        if not isinstance(node, (ast.FunctionDef, ast.ClassDef)):
-            continue
-        # Every name bound anywhere in the body: assignment, tuple unpacking,
-        # for-targets, comprehensions, with-as. Store context covers them all.
-        local = {a.arg for f in ast.walk(node)
-                 if isinstance(f, ast.FunctionDef) for a in f.args.args}
-        local |= {n.id for n in ast.walk(node)
-                  if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)}
-        for name in (n.id for n in ast.walk(node)
-                     if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
-                     and id(n) not in annotated):
-            assert (name in defined or name in local
-                    or hasattr(builtins, name)), (
-                f"emitted script references {name!r} but never defines it")
+def test_emitted_free_name_guard_detects_a_removed_inline(tmp_path):
+    _, _, source = export(tmp_path, [call("run_adaptive_timelapse", {
+        "n_frames": 2, "interval_s": 0, "save_dir": "session",
+        "hook_strategy": "snr_observer",
+    })])
+    broken = source.replace(inspect.getsource(image_analysis.resolve_min_snr), "")
+    assert "resolve_min_snr" in _undefined_emitted_names(broken)
+
+    _, _, survey_source = export(tmp_path, [call("run_adaptive_survey", {
+        "protocol": "timelapse", "protocol_params": {"n_frames": 1},
+        "positions": [{"name": "p0", "x_um": 1, "y_um": 2}],
+        "save_dir": "session", "hook_strategy": "snr_observer",
+    })])
+    broken = survey_source.replace(inspect.getsource(tools.SurveyProgress), "")
+    assert "SurveyProgress" in _undefined_emitted_names(broken)
+
+
+def test_a_session_that_writes_its_own_hook_still_exports_a_runnable_script(
+    tmp_path, monkeypatch
+):
+    """The demo gate of 2026-08-10, reduced to a record.
+
+    The agent was asked for a run that stops itself and a script to keep. It
+    wrote a hook, saved it, ran an adaptive survey with it, and exported -- the
+    exact workflow F14 exists for. The exporter emitted a complete adaptive
+    program, and the script died three lines before reaching it, because
+    `generate_and_save_hook` carried no export decoration and collected the
+    default `raise RuntimeError` refusal.
+
+    No offline test caught it because none exported a session that CREATED the
+    hook it then used; every fixture referenced a hook that already existed.
+    """
+    from microclaw.hook_manager import save_hook
+    import microclaw.hook_manager as manager
+
+    hooks_dir = tmp_path / "hooks"
+    monkeypatch.setattr(manager, "HOOKS_DIR", hooks_dir)
+    monkeypatch.setattr(manager, "MANIFEST", hooks_dir / "manifest.json")
+    hook_source = (
+        "from microclaw.hook_decisions import ContinueSurvey, HookResult\n"
+        "class Repeat:\n"
+        "    def analyze_frame(self, image, metadata):\n"
+        "        return HookResult({}, actions=(ContinueSurvey(),))\n"
+    )
+    save_hook("repeat", hook_source, "repeat", source="claude_generated")
+
+    _, result, source = export(tmp_path, [
+        call("generate_and_save_hook", {"name": "repeat", "code": hook_source,
+                                        "description": "repeat"}),
+        call("run_adaptive_survey", {
+            "protocol": "timelapse", "protocol_params": {"n_frames": 1},
+            "positions": [{"name": "Pos1", "x_um": 0.0, "y_um": 0.0}],
+            "save_dir": "session", "hook_strategy": "repeat"}),
+    ])
+
+    assert "# RECORDED TOOL: generate_and_save_hook\n# No hardware-routine effect." in source
+    assert "# NOT EMITTED:" not in source
+    # The refusal's own shape, not a bare `raise RuntimeError`: the inlined
+    # DeniedEventQueue legitimately raises one, and matching that read as a
+    # failure against a correct fix.
+    assert "raise RuntimeError('NOT EMITTED" not in source
+    # The adaptive program is present AND reachable -- the ordering is the whole
+    # finding, so assert the program rather than only the absence of the raise.
+    assert result["emitted_calls"] == 1
+    assert hook_source not in source
+    assert "class Repeat:" in source
+    assert "_survey_event_stream" in source
+    assert not _undefined_emitted_names(source)
+
+
+def top_level_assignments(source):
+    """Names bound by a top-level assignment in an emitted script."""
+    import ast
+
+    return {t.id for node in ast.parse(source).body
+            if isinstance(node, ast.Assign) for t in node.targets
+            if isinstance(t, ast.Name)}
+
+
+def test_a_session_without_an_adaptive_run_carries_no_adaptive_preamble(tmp_path):
+    """The adaptive imports are conditional, like the blocks that need them.
+
+    Found in the 2026-08-10 demo gate: a snap-only session exported a script
+    carrying `hashlib`, `io`, `json`, `logging`, `queue`, `threading`, `sys`,
+    `ModuleType`, `asdict`, `datetime` and an unused `logger`, none of which
+    anything in it reached. Harmless to run and wrong for an artifact whose
+    whole point is being readable and keepable.
+    """
+    import ast
+
+    def top_level_imports(source):
+        # Parsed, not substring-matched: `io` occurs inside `annotations`, which
+        # is how the first version of this test failed against a correct fix.
+        names = set()
+        for node in ast.parse(source).body:
+            if isinstance(node, ast.Import):
+                names |= {a.asname or a.name.split(".")[0] for a in node.names}
+            elif isinstance(node, ast.ImportFrom):
+                names |= {a.asname or a.name for a in node.names}
+        return names
+
+    adaptive_only = {"hashlib", "io", "json", "logging", "queue", "threading",
+                     "asdict", "datetime", "timezone"}
+
+    _, _, snap = export(tmp_path, [call("snap_and_analyze", {})])
+    assert not (top_level_imports(snap) & adaptive_only)
+    assert "logger" not in top_level_assignments(snap)
+    assert not _undefined_emitted_names(snap)
+
+    # ...and the adaptive export still has every one of them, because the
+    # inlined runner does reach them. Both directions, or this test would pass
+    # on an exporter that simply stopped emitting the imports.
+    _, _, adaptive = export(tmp_path, [call("run_adaptive_timelapse", {
+        "n_frames": 2, "interval_s": 0, "save_dir": "session",
+        "hook_strategy": "snr_observer",
+    })])
+    assert adaptive_only <= top_level_imports(adaptive)
+    assert not ({"sys", "ModuleType"} & top_level_imports(adaptive))
+    assert "logger" in top_level_assignments(adaptive)
+    assert not _undefined_emitted_names(adaptive)
+
+
+def test_adaptive_export_refuses_when_safety_constraints_are_unavailable(tmp_path):
+    """Unreadable limits refuse the adaptive STEP, not the whole export.
+
+    Coordinator fix, review round 2. The first version of this raised
+    `CannotEmit` from the top of `export_session_script`, so a session with
+    forty good calls and one adaptive call wrote no file at all. Every other
+    refusal in this exporter degrades to a `# NOT EMITTED` line inside an
+    otherwise complete script, and this one now does too -- while still never
+    emitting an unbounded `_LIMITS` under a header that claims recorded bounds.
+    """
+    guard = Guard(tmp_path)
+    del guard._c
+    records = (
+        completed_call("go_to_position", {"name": "p1"},
+                       {"x_um": 1.5, "y_um": 2.5, "z_um": 3.5})
+        + [call("run_adaptive_timelapse", {
+            "n_frames": 2, "interval_s": 0, "save_dir": "session",
+            "hook_strategy": "snr_observer"})]
+    )
+    tools.export_session_script(None, guard, "routine.py", records)
+    source = (tmp_path / "routine.py").read_text(encoding="utf-8")
+
+    assert "# NOT EMITTED: run_adaptive_timelapse" in source
+    assert "safety constraints are unavailable" in source
+    # The unrelated step still exported, and no unbounded guard was written.
+    assert "core.set_xy_position(1.5, 2.5)" in source
+    assert "_LIMITS" not in source
