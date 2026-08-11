@@ -23,7 +23,7 @@ shape.
 Add one optional `acquire_on_hit` argument to `run_adaptive_survey`; do not add a
 tool or a new hook action. When absent, `AcquireAt` keeps its current immediate
 revisit semantics. When present, `AcquireAt` validates the same planned target
-but records it once in a parent-owned hit set; after the search stream closes,
+but records it once in a parent-owned hit list; after the search stream closes,
 the parent switches channel once and runs one multiposition timelapse or Z-stack
 over the hits.
 
@@ -44,12 +44,50 @@ acquire_on_hit={
 }
 ```
 
+Each accepted hit is `{name, x_um, y_um, z_um}`. The trusted parent reads and
+guards the focus device's current Z when it accepts the action, so a second look
+after converged autofocus records the converged plane; autofocus already reports
+that plane as `final_z_um` (`microclaw/hook_decisions.py:565-603`). The acquire
+pass restores each hit's Z before its timelapse, using the existing multiposition
+position shape and move (`microclaw/tools.py:3944-3963`,
+`microclaw/tools.py:4056-4060`). For an acquire Z-stack, its start/end are offsets
+from each hit Z and are expanded to guarded absolute bounds before reservation;
+an absolute range shared by all hits would discard the focus decision. This is a
+deliberate correction to the survey's current XY-only position contract
+(`microclaw/tools.py:5221-5225`).
+
 This folds into the existing survey and acquisition shapes. `run_timelapse` and
 `run_zstack` already take hooks and their acquisition settings
 (`microclaw/tools.py:2424-2441`, `microclaw/tools.py:2572-2589`), while
 `run_multiposition_acquisition` already represents one protocol over many
 positions (`microclaw/tools.py:4037-4087`). The implementation should extract or
 reuse their internal event-building path, not call decorated tools from a tool.
+
+## Reachability and reporting
+
+`hook_docs` must say that `AcquireAt(position)` means an immediate guarded revisit
+normally, but under `acquire_on_hit` it records that planned tile and its current
+Z for the later phase; it must show `AcquireAt` beside the existing autofocus
+routing prescription. The tool schema must name the operator sentence this
+argument serves—“search in one channel, acquire only detected tiles in another”—
+and spell out channel, protocol/parameters, `max_hits`, deferred semantics, and
+worst-case dose. `SYSTEM_PROMPT` needs one routing sentence in its hook-acquisition
+section: use this composite for conditional two-channel work, rather than manually
+looping through a hook log. Today the hook reference only says `AcquireAt` is
+supported (`microclaw/hook_docs.py:128-145`), the schema names only stop/refine and
+autofocus (`microclaw/tools_schema.py:1279-1309`), and the prompt's hook section
+does not name this workflow (`microclaw/agent.py:174-180`).
+
+A deferred acceptance is logged as **“planned tile recorded for acquire phase”**,
+never the current **“planned event passed guard and committed reservation”**
+(`microclaw/hook_decisions.py:634-668`). Refuse distinctly with **“acquire phase
+max_hits exhausted”** and **“planned tile is already recorded for acquire phase”**;
+position absent and ambiguous retain their distinct current reasons
+(`microclaw/hook_decisions.py:642-656`). The result always reports
+`hits_recorded`, `hits_acquired`, `max_hits_reached`, and
+`acquire_phase_ran`. Thus zero hits is a successful search with
+`hits_recorded=0`, `hits_acquired=0`, and `acquire_phase_ran=false`, not an
+acquisition failure.
 
 ## Alternatives, ranked
 
@@ -58,7 +96,7 @@ reuse their internal event-building path, not call decorated tools from a tool.
    `set_channel` route: authorization-map rigs call `execute_channel_plan`, and
    map-less rigs call `set_config` (`microclaw/tools.py:1975-1992`). It has one
    explicit worst-case hit bound, one switch per phase, and one argument on an
-   existing tool. The parent-owned hit set also avoids making the hook log a
+   existing tool. The parent-owned hit list also avoids making the hook log a
    control channel.
 2. **One seed plan containing both 561 and 488 events.** This costs no new
    dispatch, but loses on rig reach: acquisition events express channels only as
@@ -134,6 +172,9 @@ recorded device/property writes for a channel plan, or `set_config` for a config
 group (`microclaw/tools.py:1937-1971`). `_emit_adaptive_survey` remains the
 adjacent renderer and delegates to `_emit_adaptive`
 (`microclaw/tools.py:1008-1009`); extend that path rather than copy the loop.
+The emitted hit records retain `z_um`; the existing multiposition emitter already
+preserves and applies a supplied per-position Z (`microclaw/tools.py:153-176`,
+`microclaw/tools.py:228-231`).
 
 Existing `CannotEmit` cases survive: composed or absent hooks, plugin hooks with
 controller-only capabilities, unavailable or invalid saved-hook source
@@ -151,11 +192,14 @@ submitting a derived event beyond them.
 ## Follow-on blocks and gates
 
 1. Implement `acquire_on_hit`, deferred/deduplicated `AcquireAt`, two reservations,
-   and the live two-phase runner. Unit-gate absent-argument non-regression,
+   hit-time Z capture/restoration, result fields, and the live two-phase runner.
+   Unit-gate absent-argument non-regression, exact accept/refusal records,
    `max_hits`, duplicate hits, zero hits, refusal before the first exposure, and
    reservation completion/unused capacity.
 2. Extend the adjacent adaptive emitter and its free-name/parse tests. Prove the
-   emitted program selects fresh hits rather than replaying recorded coordinates.
+   emitted program selects fresh hits and restores their Z rather than replaying
+   recorded coordinates. Update `hook_docs`, the tool schema, and `SYSTEM_PROMPT`
+   in this block; reachability is acceptance evidence, not follow-up documentation.
 3. Gate first on M5: EMU channel plans, no `Channel` group, camera-triggered
    lasers. Verify 561 search, exactly one 488 switch, both enable audit streams,
    acquire-frame dose, zero-hit no-switch/no-acquire, and standalone replay with
