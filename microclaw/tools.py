@@ -2435,6 +2435,12 @@ def run_zstack(
     # Before set_exposure and before the sweep: an out-of-workspace save_dir
     # must not cost an acquisition to discover.
     save_dir = guard.resolve_in_workspace(save_dir)
+    if _reservation is not None and hook_strategy:
+        raise ValueError(
+            "A hook cannot be nested in a reserved per-position protocol. Pass "
+            "run_multiposition_acquisition(hook_strategy=...) instead; it uses one "
+            "Acquisition and one hook log across every position."
+        )
     guard.check_z(z_start_um)
     guard.check_z(z_end_um)
     if channel:
@@ -2473,19 +2479,20 @@ def run_zstack(
         )
     except _HookedAcquisitionFailure as exc:
         return _hooked_failure_result(exc, log_path)
+    result = {
+        "status": "Z-stack complete.", "dataset_path": dataset_path,
+        **_reservation_report(reservation),
+    }
     if hook is not None:
-        return _adaptive_result(
+        result.update(_adaptive_result(
             dataset_path, log_path, status="Z-stack complete.",
             frames_planned=len(events), frames_acquired=len(events),
             started_at=started_at.isoformat(),
             completed_at=datetime.now(timezone.utc).isoformat(),
             duration_s=round(time.monotonic() - started, 6),
             **_reservation_report(reservation),
-        )
-    return {
-        "status": "Z-stack complete.", "dataset_path": dataset_path,
-        **_reservation_report(reservation),
-    }
+        ))
+    return result
 
 
 def _verify_trigger_line_armed(ctrl: MicroscopeController, laser_slot: int) -> dict:
@@ -2574,6 +2581,12 @@ def run_timelapse(
     _reservation: Reservation | None = None,
 ) -> dict:
     save_dir = guard.resolve_in_workspace(save_dir)   # before any hardware moves
+    if _reservation is not None and hook_strategy:
+        raise ValueError(
+            "A hook cannot be nested in a reserved per-position protocol. Pass "
+            "run_multiposition_acquisition(hook_strategy=...) instead; it uses one "
+            "Acquisition and one hook log across every position."
+        )
     trigger_preflight = None
     if laser_slot is not None:
         trigger_preflight = _verify_trigger_line_armed(ctrl, laser_slot)
@@ -6956,8 +6969,6 @@ TOOL_REGISTRY = {
     "calibrate_stage_to_camera": calibrate_stage_to_camera,
     "find_features": find_features,
     "center_feature": center_feature,
-    "run_zstack": run_zstack,
-    "run_timelapse": run_timelapse,
     "export_dataset_as_tiff": export_dataset_as_tiff,
     "build_stage_coordinate_mosaic": build_stage_coordinate_mosaic,
     "run_analysis_on_saved_dataset": run_analysis_on_saved_dataset,

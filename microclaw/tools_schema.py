@@ -459,7 +459,10 @@ TOOLS: list[dict[str, Any]] = [
             "settings between planes, or measure every plane without changing the "
             "acquisition; for observation use snr_observer and call read_hook_log "
             "afterwards. Hooks cannot skip planes or stop early; use "
-            "run_adaptive_survey for stop-on-condition work."
+            "run_adaptive_survey for stop-on-condition work. Call list_hooks() "
+            "to include saved hooks. Hardware-moving plugin hooks require both "
+            "plugins.allow_hardware_motion: true and property_authorization.mode: "
+            "degraded_trusted_plugins, plus a restart."
         ),
         "input_schema": {
             "type": "object",
@@ -503,7 +506,11 @@ TOOLS: list[dict[str, Any]] = [
             "settings between frames, or measure every frame without changing the "
             "acquisition; for observation use snr_observer and call read_hook_log "
             "afterwards. Hooks cannot skip frames or stop early; use "
-            "run_adaptive_survey for stop-on-condition work. On an EMU/htSMLM rig, pass laser_slot "
+            "run_adaptive_survey for stop-on-condition work. Call list_hooks() "
+            "to include saved hooks. Hardware-moving plugin hooks require both "
+            "plugins.allow_hardware_motion: true and property_authorization.mode: "
+            "degraded_trusted_plugins, plus a restart. "
+            "On an EMU/htSMLM rig, pass laser_slot "
             "(the EMU slot of the excitation laser, from get_emu_laser_map) so the "
             "pre-flight can verify that laser's trigger line will actually fire — "
             "otherwise a gated-off laser silently produces blank frames."
