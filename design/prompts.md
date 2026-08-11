@@ -5968,3 +5968,62 @@ narrow guarantee, and it is not what `run_timelapse`'s schema promises: it sells
 frames", while a *disabled* laser produces exactly blank frames and passes.
 Carried forward. The agent named the gap itself — "the pre-flight only ever
 checked trigger mode; it never confirmed enable".
+
+## Block 43k — search in one channel, acquire in another (design/43 F13, merged 2026-08-11)
+
+The one design-only block of Track F. One implementation round by codex, one
+review round, one coordinator fix. No code, no rig gate; the deliverable is
+`design/44-two-channel-search-and-acquire.md` and the block that comes after it.
+
+**Reading the code at assignment rescoped it before the runner prompt was
+written — the fourth block in a row.** F13 asks for "a second acquisition in a
+different channel at tiles the hook selected", one sentence containing a solved
+half and an unsolved one. `AcquireAt` has been dispatched against the planned
+event list since 43i's neighbourhood: it resolves an index or a unique label,
+guards XY/Z, charges the cap and queues the event. Tile *selection* was never
+missing. What is missing is applying a different channel, exposure and shape to
+that selection. The prompt was written around that split rather than around
+F13's wording, and the design landed on it directly.
+
+**The rig fact that decides the mechanism was in a code comment, not a rig
+session.** `_build_acquisition_events` hard-codes `channel_group="Channel"`, and
+`CHANNEL_CONFIG_GROUP` carries a comment recording that M5's measured allowed
+groups were only `["", "System"]`. So the obvious design — one seed plan holding
+both channels as event axes — cannot run on the rig the finding came from. The
+guard that refuses it (`_check_acquisition_channel`) had already written the
+answer into its own error message: *"Call set_channel first and run the
+acquisition without a channel argument — once per channel if the run needs more
+than one."* **The code anticipated the design; nobody had read the refusal as
+advice.**
+
+**Review found three things, and only the third moved the decision.** The first
+two are this project's standing failure modes arriving on schedule: a mechanism
+specified with no `hook_docs`, schema or `SYSTEM_PROMPT` work named — 43e, 43j
+and 43f each lost a round or a whole gate to exactly that, and this one is worse
+exposed because the argument is *hook-facing*; and a typed action changing
+meaning by mode with nothing in the log or the payload to say which happened,
+which is F8's subject. The third was a hole in the workflow the design exists to
+serve: `run_adaptive_survey` supports no per-position Z and `RequestAutofocus`
+moves Z globally, so a second pass over the hits would image **every hit at
+whatever Z the last refocus left**. The Nestor session autofocused at each tile
+before its 488 burst. A composite that cannot do that does not replace the nine
+sequences it was built to replace. The fix was already in the codebase —
+`run_multiposition_acquisition` takes `{x_um, y_um, name, z_um?}` and its emitter
+renders per-position Z — so hits now carry the converged plane.
+
+**The coordinator fix was a naming collision, and it is the same defect 43j's
+gate found in a different costume.** The revision specified the acquire
+Z-stack's range as *offsets from each hit Z*, while `z_start_um`/`z_end_um` are
+absolute everywhere else in the package — `_protocol_shape_kwargs` hands them
+straight to pycro-manager, and the survey's own docstring says a zstack protocol
+sweeps the same absolute range at every tile. Same keys, second meaning,
+`z_start_um: 10.0` silently becoming `hit_z + 10`. Renamed to
+`z_offset_start_um`/`z_offset_end_um`, with the absolute keys refused by name.
+**A value that was correct for the tool it was copied from and wrong where it
+landed** — 43j's dataset-name fallback, one design earlier.
+
+**A design block's review is the same review.** Read the artifact against the
+code, not against the report: every `file.py:line` in both rounds was re-read,
+and the citations held, including the two that looked most like a rig fact
+smuggled into package code. What review caught was never a false citation — it
+was the three things the document did not say.

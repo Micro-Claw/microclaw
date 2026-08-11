@@ -1230,6 +1230,52 @@ channel, at tiles the hook selected. That is a genuine new capability. Worth
 designing deliberately, after F5 lands and on the evidence of how it behaves —
 not folded into F5 as an extra.
 
+> **Designed by block 43k, merged 2026-08-11 (`f3e19ee`), and the sentence above
+> is wrong about which half was missing.** Selecting a tile is already solved:
+> `AcquireAt` resolves a planned index or unique label, guards XY/Z, charges the
+> adaptive cap and queues the event (`hook_decisions.py:634`–`668`). What is
+> missing is applying a **different channel, exposure and acquisition shape** to
+> that selection. The capability is real but narrower than "a second acquisition
+> at tiles the hook selected" implies.
+>
+> **The mechanism is one optional `acquire_on_hit` argument on
+> `run_adaptive_survey`** — no new tool, no new hook action. With it present,
+> `AcquireAt` records a bounded, deduplicated hit together with the parent's
+> current focus Z; after the search stream closes the parent switches channel
+> once, restores each hit's Z, and runs one batched timelapse or relative Z-stack
+> over the hits. Both channels are **parent-applied phase settings over
+> channel-less events**, because `_build_acquisition_events` expresses a channel
+> only as Micro-Manager's hard-coded `"Channel"` axis and **M5 has no such
+> group**. The refusal that enforces this had already written the design into its
+> own error message: *"Call `set_channel` first and run the acquisition without a
+> channel argument — once per channel if the run needs more than one"*
+> (`tools.py:1911`–`1933`).
+>
+> **Two of F13's premises changed under it before the design was written.** 43i's
+> accounting rule means a 488 burst needs its own planned reservation rather than
+> an event derived after authorization — search dose and worst-case acquire dose
+> are reserved separately, before the first exposure. And 43j's fold means
+> `run_timelapse` and `run_zstack` already take hooks, so the composite is built
+> from tools that exist rather than from adaptive twins that no longer do.
+>
+> **The design's own hole was focus, and it is the half this finding's session
+> actually performed.** A survey supports no per-position Z and `RequestAutofocus`
+> moves Z globally, so a second pass would image **every hit at whatever Z the
+> last refocus left** — while the Nestor liturgy autofocused at each tile before
+> its 488 burst. Hits therefore carry the converged plane, reusing the
+> `{x_um, y_um, name, z_um?}` position shape `run_multiposition_acquisition` and
+> its emitter already support. A composite that could not do this would not
+> replace the nine sequences it exists to replace.
+>
+> **Two open findings stay inputs rather than guarantees.** `laser_slot` proves
+> only that a trigger line is armed — not that the laser's enable or emission path
+> is live — so the design relies on verified channel-plan writes instead; and the
+> runner must not start live view, which on a camera-triggered-laser rig is dose
+> outside both reservations.
+>
+> The specification is `design/44-two-channel-search-and-acquire.md`; block 43n
+> implements it.
+
 What makes it worth building at all is F14. A "search 561, acquire 488 on hits"
 runner that only exists inside a Microclaw session saves this operator nine
 sequences once. The same runner, emittable, is the thing they run on every
@@ -1705,8 +1751,15 @@ this session had a field where the two would have disagreed (F6).
     touched afterwards, not in the fold: a hook smuggled through
     `protocol_params` with its dose discarded, and an emitter fallback that named
     the standalone script's dataset differently from the live run's.
-11. **F13** — design first. **Its dependency is now satisfied: F5 and F14 have
-    both run on a rig** (blocks 43i and 43h, 2026-08-11).
+11. ~~**F13** — design first.~~ — **DESIGNED, block 43k, merged 2026-08-11.**
+    "A genuine new capability" was right and mislocated: tile selection was
+    already solved by `AcquireAt`, and what was missing is per-tile channel,
+    exposure and shape. The decision is one optional `acquire_on_hit` argument
+    with a parent-side second pass — no new tool, no new action — because the
+    obvious design, one seed plan carrying both channels as event axes, cannot
+    run on a rig with no `Channel` config group, which is the rig this session
+    was recorded on. See F13's own reconciliation blockquote, and
+    `design/44-two-channel-search-and-acquire.md`. Block 43n implements it.
 
 F14 and F15 are the two that change what Microclaw *is* rather than how well it
 behaves: one makes the adaptive work portable, the other makes the standard
