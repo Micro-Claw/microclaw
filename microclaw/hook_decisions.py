@@ -593,6 +593,10 @@ class UntrustedHookAdapter:
                 refocused_event["z"] = result.final_z_um
             ctx["candidates"].put(refocused_event)
             ctx["emitted"] += 1
+            # The survey will now receive one frame more than its plan. Raised
+            # here rather than sized from the budget up front, so a survey that
+            # never spends its refocuses still completes instead of idling out.
+            ctx["progress"].expect_one_more()
             af["remaining"] -= 1
             af["second_look_tiles"].add(tile)
             ctx["refocus_requeued"] = True

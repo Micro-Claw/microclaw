@@ -944,7 +944,7 @@ def _emit_adaptive(params: RecordedParams, kind: str) -> str:
         common.extend([
             f"events = multi_d_acquisition_events(**{{k: v for k, v in {shape!r}.items() if v is not None}})",
             "candidates = queue.Queue()",
-            f"progress = SurveyProgress(len(events){_plus_reexposures})",
+            "progress = SurveyProgress(len(events))",
             *( (["# Standalone scripts cannot query focus-lock state; disengage the lock before running.", f"hook.configure_autofocus(ctrl=mm, guard=guard, focus_lock_check=None, **{autofocus_budget!r}, sweep_exposures={autofocus_sweep_exposures!r})"] if autofocus_budget is not None else []) if saved else [] ),
             *( [f"hook.configure_adaptive(events=events, candidates=candidates, progress=progress, guard=guard, max_events=len(events){_plus_reexposures})"] if saved else ["hook.survey_events = events", "hook.candidates = candidates", "hook.progress = progress"] ),
             f"event_source = _survey_event_stream(events, candidates, progress, {params.get('max_idle_s', 60.0)!r}, hook, adaptive=True, max_events=len(events){_plus_reexposures})",
@@ -4832,6 +4832,22 @@ class SurveyProgress:
                 raise RuntimeError("survey total cannot change after images arrive")
             self._n_survey = n_survey
 
+    def expect_one_more(self) -> None:
+        """An extra frame has just been committed to the candidates queue.
+
+        Completion is measured against frames the survey will actually receive,
+        so an authorized refocus raises the total only when its re-exposure is
+        really queued. Sizing by the authorized budget instead means a survey
+        that does not spend it never reaches its total and dies on the idle
+        watchdog: on M5 2026-08-11 three of four budgeted surveys visited every
+        planned tile and still logged `stalled` sixty seconds later, while the
+        one run with no budget completed cleanly. Called before image_done() for
+        the frame that produced the extra event, so the total can never trail
+        the count.
+        """
+        with self._lock:
+            self._n_survey += 1
+
     def done_early(self) -> None:
         """The hook decided the survey is over before n_survey images came
         back — the adaptive runner's stop signal (design/27 Fix 4). Counting
@@ -5121,18 +5137,12 @@ def _acquire_survey_with_detector(
 
     # Completion is measured in returned images, so its total is the event
     # plan, not the number of XY positions. A multi-frame tile contributes one
-    # completion unit per frame -- and an authorized refocus contributes one
-    # more, which is why this is sized after the budget is known rather than
-    # beside the event plan.
-    #
-    # M5 2026-08-11, round 2: sized at len(survey_events) alone, the survey was
-    # already complete when the last tile's image arrived, so the re-exposure
-    # its hook had just been granted was dropped when the generator put the
-    # terminator. The hook log recorded "refocused and re-queued this tile", the
-    # sweep's dose was spent, and the second look never happened. Same defect
-    # class as 43h round 4's positions-versus-events sizing: max_events was
-    # widened for the budget in three places and this total was not.
-    progress.set_total(len(survey_events) + autofocus_reexposures)
+    # completion unit per frame; a refocus adds its re-exposure through
+    # SurveyProgress.expect_one_more() at the moment it is queued, never from
+    # the authorized budget -- see that method for what sizing it up front cost.
+    # max_events below is the dose *cap* and does carry the budget, which is a
+    # different quantity from what the survey expects to receive.
+    progress.set_total(len(survey_events))
 
     if isinstance(hook, UntrustedHookAdapter):
         if adaptive:

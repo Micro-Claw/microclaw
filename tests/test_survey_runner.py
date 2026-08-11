@@ -1215,20 +1215,24 @@ class TestRunAdaptiveSurvey:
         assert not captured, "every refusal above must precede the acquisition"
 
 
-# ── completion must count authorized re-exposures (M5 2026-08-11, round 2) ───
+# ── completion counts re-exposures TAKEN, not authorized (M5 rounds 2 and 4) ──
 
-def test_completion_total_includes_authorized_refocus_reexposures(
+def test_completion_total_is_the_plan_and_rises_only_when_a_refocus_is_queued(
     tmp_path, monkeypatch, unconstrained_guard
 ):
-    """A refocus granted at the last tile was silently dropped on M5.
+    """Two M5 findings, one contract.
 
-    Sized at len(survey_events) alone, the survey reported complete as the last
-    tile's image arrived; the generator put the terminator, and the re-exposure
-    the hook had just been granted went into a queue nobody was reading. The
-    hook log said "refocused and re-queued this tile", the sweep's dose was
-    already spent, and the second look never happened. max_events was widened
-    for the budget in three places and this total was not — the same defect
-    class as 43h round 4's positions-versus-events sizing.
+    Round 2: sized at the plan alone, a refocus granted at the LAST tile was
+    dropped — the survey reported complete as that tile's image arrived and the
+    generator put the terminator over the re-queued event.
+
+    Round 4: sized at plan + *authorized* budget, a survey that never spends its
+    refocuses never reaches its total, so it died on the idle watchdog instead of
+    completing. Three of four budgeted surveys logged `stalled` after visiting
+    every planned tile; the one run with no budget completed cleanly.
+
+    The contract that satisfies both: the total is the plan, and each re-exposure
+    raises it at the moment it is really queued.
     """
     from types import SimpleNamespace
 
@@ -1271,12 +1275,27 @@ def test_completion_total_includes_authorized_refocus_reexposures(
             num_time_points=1, time_interval_s=0,
         )
 
-    reexposures = hook.planned_refocus_reexposures()
-    assert reexposures == 2, "8 exposures buy two 3-plane sweeps plus their two looks"
-    assert sizes["total"] == n_tiles + reexposures
+    # Authorizing two refocuses must not inflate what the survey expects.
+    assert hook.planned_refocus_reexposures() == 2
+    assert sizes["total"] == n_tiles, (
+        "an authorized budget the survey may never spend must not become an "
+        "expectation the survey can never meet"
+    )
 
-    # The invariant that failed on the rig: a plan's worth of images is not the
-    # whole survey once re-exposures are authorized.
+    # A survey that takes none of them still finishes.
     for _ in range(n_tiles):
         progress.image_done()
-    assert not progress.survey_complete()
+    assert progress.survey_complete()
+
+
+def test_a_queued_reexposure_keeps_the_survey_open_past_its_plan():
+    """Round 2's last-tile drop, expressed on SurveyProgress alone."""
+    progress = SurveyProgress(2)
+    progress.image_done()
+    progress.expect_one_more()      # a refocus is queued on the last planned tile
+    progress.image_done()
+    assert not progress.survey_complete(), (
+        "the generator must stay open for a re-exposure it has just been handed"
+    )
+    progress.image_done()
+    assert progress.survey_complete()

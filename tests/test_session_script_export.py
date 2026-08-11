@@ -1517,11 +1517,15 @@ def test_refocusing_survey_emits_the_same_budgeted_second_look_program(
     assert "'max_exposures': 4" in source
     assert "sweep_exposures=3" in source
     assert "max_events=len(events) + 1" in source
-    # Completion is sized the same way the live runner sizes it. On M5
-    # 2026-08-11 the live total omitted the re-exposures and the survey finished
-    # before the last tile's granted refocus could be re-exposed; the emitted
-    # script carried the identical arithmetic, so it was latent there too.
-    assert "progress = SurveyProgress(len(events) + 1)" in source
+    # Completion is sized the same way the live runner sizes it: the plan, plus
+    # whatever the adapter's expect_one_more() adds as re-exposures are actually
+    # queued. Sizing it by the authorized budget instead stalled three of four
+    # budgeted surveys on M5 2026-08-11, and the emitted script carried the same
+    # arithmetic, so the divergence would have been latent here too.
+    assert "progress = SurveyProgress(len(events))" in source
+    assert "expect_one_more" in source, (
+        "the emitted decision loop must raise its own completion total"
+    )
     assert "microclaw_refocused" in source
     compile(source, "routine.py", "exec")
     assert not _undefined_emitted_names(source)
