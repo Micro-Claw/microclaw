@@ -135,20 +135,26 @@ criterion.
 > Ctrl+C. None of that is evidence about this block, and all of it looked like
 > it was.
 >
-> **Two rules follow.** Check `emitted_calls` before anything else. And if the
-> export is empty or refuses, the gate has *failed at Step 2* — a hand-written
-> substitute is not a fallback, it is the fabrication path this block exists to
-> remove. Record the refusal and stop; do not run the substitute and do not
-> archive it as though it were the artifact.
+> **The rule that follows is about evidence, not about what the agent should
+> do.** Operator ruling, 2026-08-11: writing the script by hand is *allowed and
+> often more useful than nothing*, provided the agent says plainly that it is
+> not the exported artifact and may not work. What must not happen is a
+> hand-written script being **read as a result for this block** — it exercises
+> none of this code, so running it proves nothing here either way.
 
 **First, check the export actually produced something.** The tool result carries
-`emitted_calls`; anything but a positive number means Step 2 failed, whatever
-the file looks like.
+`emitted_calls`; anything but a positive number means **Step 2 failed**, whatever
+the file looks like, and Step 3 has nothing to run against. Record the refusal
+verbatim — an empty export is the most valuable finding this gate can produce,
+and M5 round 2 shows it is invisible unless you look for it.
 
-Record the session history and the emitted script — and if the agent also wrote
-a script by hand, archive it clearly labelled so nobody later mistakes it for
-the export. Two `.py` files in one directory look identical at a glance; that is
-how M5 round 2's evidence became hard to read.
+Record the session history and the emitted script. **If the agent also wrote a
+script by hand, archive it under a name that cannot be confused with the
+export** — running it is the operator's call, and its result belongs in the notes
+as a separate observation, not as Step 3. Two `.py` files in one directory look
+identical at a glance; that is how M5 round 2's evidence became hard to read,
+and how a five-minute console hang in hand-written code briefly looked like a
+defect in this block.
 
 Before ending the live session, inspect the script:
 
