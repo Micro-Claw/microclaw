@@ -19,6 +19,27 @@ def _guard(**limits):
     )
 
 
+@pytest.mark.parametrize(("tool_name", "shape"), [
+    ("run_timelapse", {"n_frames": 2, "interval_s": 0}),
+    ("run_zstack", {"z_start_um": 0, "z_end_um": 1, "z_step_um": 1}),
+])
+def test_reserved_per_position_protocol_refuses_nested_hook_before_hardware(
+    tool_name, shape
+):
+    from microclaw import tools
+
+    ctrl = MagicMock()
+    guard = MagicMock()
+    guard.resolve_in_workspace.return_value = "/safe"
+    with pytest.raises(ValueError, match=r"run_multiposition_acquisition\(hook_strategy="):
+        getattr(tools, tool_name)(
+            ctrl, guard, save_dir="requested", hook_strategy="focus_feedback",
+            _reservation=MagicMock(), **shape,
+        )
+    ctrl.core.assert_not_called()
+    assert not ctrl.core.method_calls
+
+
 def test_plan_uses_camera_geometry_and_time_axis():
     ctrl = MagicMock()
     ctrl.core.get_exposure.return_value = 10
@@ -254,8 +275,8 @@ def test_list_acquisition_passes_the_list_directly_to_acquire(monkeypatch, tmp_p
             "_plan_protocol_repetitions",
             "_authorize_acquisition",
         ),
-        ("run_adaptive_zstack", "plan_events", "_authorize_acquisition"),
-        ("run_adaptive_timelapse", "plan_events", "_authorize_acquisition"),
+        ("run_zstack", "plan_events", "_authorize_acquisition"),
+        ("run_timelapse", "plan_events", "_authorize_acquisition"),
         (
             "run_adaptive_survey",
             "_acquire_survey_with_detector",
@@ -321,5 +342,5 @@ def test_planner_reachable_public_tools_cannot_bypass_map_registration():
     assert candidates - {"run_mda"} == {
         "run_zstack", "run_timelapse", "run_multiposition_acquisition",
         "run_tile_acquisition", "run_multiposition_with_autofocus",
-        "run_adaptive_zstack", "run_adaptive_timelapse", "run_adaptive_survey",
+        "run_zstack", "run_timelapse", "run_adaptive_survey",
     }

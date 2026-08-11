@@ -48,7 +48,7 @@ def test_schema_matches_signature(name):
 
 
 @pytest.mark.parametrize("name", [
-    "run_adaptive_zstack", "run_adaptive_timelapse", "run_adaptive_survey",
+    "run_zstack", "run_timelapse", "run_adaptive_survey",
     "run_multiposition_acquisition",
 ])
 def test_hook_capability_parameters_are_declared(name):

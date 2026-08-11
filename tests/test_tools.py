@@ -1686,7 +1686,7 @@ class _RecordingHook:
 class TestHookedGridAcquisition:
     """design/19 F2/F3: a grid with a hook is ONE acquisition over all positions,
     not N degenerate single-plane z-stacks. The agent spelled a 3x3 grid as nine
-    run_adaptive_zstack calls with z_start == z_end, because no grid tool took a
+    run_zstack calls with z_start == z_end, because no grid tool took a
     hook — nine datasets and nine logs to recover nine numbers."""
 
     @pytest.fixture
@@ -2436,6 +2436,30 @@ class TestTimelapseTriggerPreflight:
                                save_dir="/tmp")
         assert result["status"] == "Timelapse complete."
 
+    def test_gated_off_trigger_refused_before_a_hook_is_resolved(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        """The pre-flight is upstream of every hook step, and must stay there.
+
+        Block 43j folded hook resolution into this function; the pre-flight
+        refusal must still arrive before `_prepare_log_path`, `_resolve_hook` or
+        any capability configuration runs. M5 gated the armed limb with a hook
+        attached (200 frames, 200 log records); this pins the refusing limb,
+        which the rig round did not reach.
+        """
+        from microclaw import tools
+        self._setup(mock_ctrl, monkeypatch, mode="0 - Off")
+        reached = []
+        monkeypatch.setattr(tools, "_prepare_log_path",
+                            lambda *a, **k: reached.append("log_path"))
+        monkeypatch.setattr(tools, "_resolve_hook",
+                            lambda *a, **k: reached.append("resolve"))
+        with pytest.raises(SafetyViolation, match="trigger line is not armed"):
+            tools.run_timelapse(mock_ctrl, unconstrained_guard, n_frames=100,
+                                interval_s=0, save_dir="/tmp", laser_slot=3,
+                                hook_strategy="snr_observer")
+        assert reached == []
+
 
 class TestExportDatasetAllAxes:
     def test_present_coord_helper_uses_strings_sparse_axes_and_selection(self):
@@ -2639,7 +2663,7 @@ class TestAcquisitionsRespectTheWorkspace:
         monkeypatch.setattr(tools, "_acquire_with_hooks",
                             lambda *a, **k: pytest.fail("acquisition should not start"))
         with pytest.raises(SafetyViolation, match="escapes"):
-            tools.run_adaptive_zstack(
+            tools.run_zstack(
                 mock_ctrl, ws_guard, z_start_um=0, z_end_um=10, z_step_um=1,
                 save_dir="/somewhere/else", hook_strategy="autofocus_per_position",
                 log_path="/somewhere/else/log.json",

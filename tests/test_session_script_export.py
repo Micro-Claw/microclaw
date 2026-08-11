@@ -1128,19 +1128,19 @@ def test_realistic_emitted_routine_runs_to_completion_against_fake_core(tmp_path
 def test_adaptive_runs_refuse_only_with_a_specific_reason(tmp_path, params, reason):
     """M5 round-4 guard, narrowed now that adaptive programs are emittable."""
     base = {"n_frames": 2, "interval_s": 0, "save_dir": "session", **params}
-    _, _, source = export(tmp_path, [call("run_adaptive_timelapse", base)])
-    assert "# NOT EMITTED: run_adaptive_timelapse" in source
+    _, _, source = export(tmp_path, [call("run_timelapse", base)])
+    assert "# NOT EMITTED: run_timelapse" in source
     assert reason in source
     assert "chosen at runtime by its hook" not in source
     assert "no standalone emitter has been implemented" not in source
 
 
 @pytest.mark.parametrize(("tool", "params", "seed"), [
-    ("run_adaptive_zstack", {
+    ("run_zstack", {
         "z_start_um": -2, "z_end_um": 2, "z_step_um": 0.5,
         "save_dir": "session", "hook_strategy": "snr_observer",
     }, "'z_start': -2"),
-    ("run_adaptive_timelapse", {
+    ("run_timelapse", {
         "n_frames": 3, "interval_s": 1.5, "save_dir": "session",
         "hook_strategy": "snr_observer",
     }, "'num_time_points': 3"),
@@ -1160,13 +1160,58 @@ def test_all_adaptive_program_shapes_emit_seed_hook_and_runner(
     assert inspect.getsource(tools.SurveyProgress) in source
     assert "class SNRObservationHook" in source
     assert "directory=str(_HERE)" in source
-    if tool == "run_adaptive_zstack":
+    if tool == "run_zstack":
         assert "guard.check_z(-2)" in source
         assert "guard.check_z(2)" in source
     elif tool == "run_adaptive_survey":
         assert "guard.check_xy(1.25, 2.5)" in source
     assert "# NOT EMITTED:" not in source
     compile(source, str(tmp_path / "routine.py"), "exec")
+
+
+@pytest.mark.parametrize(("tool", "shape"), [
+    ("run_timelapse", {"n_frames": 3, "interval_s": 0}),
+    ("run_zstack", {"z_start_um": -1, "z_end_um": 1, "z_step_um": 1}),
+])
+@pytest.mark.parametrize("channel", [None, "DAPI"])
+def test_folded_hooked_acquisitions_emit_recorded_exposure(tmp_path, tool, shape, channel):
+    params = {**shape, "save_dir": "session", "hook_strategy": "snr_observer",
+              "exposure_ms": 17.5, "channel": channel}
+    _, result, source = export(tmp_path, [call(tool, params)])
+    assert result["emitted_calls"] == 1
+    assert "guard.check_exposure(17.5)" in source
+    if channel:
+        assert "'channel_exposures_ms': [17.5]" in source
+    else:
+        assert "core.set_exposure(17.5)" in source
+    assert "class SNRObservationHook" in source
+    assert "# NOT EMITTED:" not in source
+    compile(source, str(tmp_path / "routine.py"), "exec")
+
+
+@pytest.mark.parametrize(("tool", "shape", "expected"), [
+    ("run_timelapse", {"n_frames": 2, "interval_s": 0}, "timelapse"),
+    ("run_zstack", {"z_start_um": 0, "z_end_um": 1, "z_step_um": 1}, "zstack"),
+])
+def test_hooked_export_names_the_dataset_the_tool_would_have_named(
+    tmp_path, tool, shape, expected
+):
+    """A hooked run that named no dataset must emit the TOOL's default name.
+
+    The emitter's fallback was "adaptive", which agreed with the two adaptive
+    twins by coincidence. Block 43j folded them into run_timelapse/run_zstack,
+    whose defaults are "timelapse"/"zstack" — so the hooked branch would have
+    emitted a differently named dataset than both the live run and its own
+    hookless branch, silently breaking the reproduce-the-run comparison 43h's
+    gate rests on.
+    """
+    _, _, hooked = export(tmp_path, [call(tool, {
+        **shape, "save_dir": "session", "hook_strategy": "snr_observer",
+    })])
+    _, _, plain = export(tmp_path, [call(tool, {**shape, "save_dir": "session"})])
+    assert f"name={expected!r}" in hooked
+    assert f"name={expected!r}" in plain
+    assert "name='adaptive'" not in hooked
 
 
 def test_named_adaptive_survey_resolves_full_precision_position_list_seed(tmp_path):
@@ -1186,7 +1231,7 @@ def test_named_adaptive_survey_resolves_full_precision_position_list_seed(tmp_pa
 def test_adaptive_inline_is_exact_live_decision_source(tmp_path):
     from microclaw import hook_decisions
 
-    _, _, source = export(tmp_path, [call("run_adaptive_timelapse", {
+    _, _, source = export(tmp_path, [call("run_timelapse", {
         "n_frames": 2, "interval_s": 0, "save_dir": "session",
         "hook_strategy": "snr_observer",
     })])
@@ -1242,7 +1287,7 @@ def test_stripping_a_block_sole_package_import_still_emits_valid_python(
     )
     save_hook("portable", hook_source, "portable", source="user_provided")
 
-    _, result, source = export(tmp_path, [call("run_adaptive_timelapse", {
+    _, result, source = export(tmp_path, [call("run_timelapse", {
         "n_frames": 2, "interval_s": 0, "save_dir": "session",
         "hook_strategy": "portable",
     })])
@@ -1335,7 +1380,7 @@ def test_saved_adaptive_hook_source_and_manifest_pin_are_inlined(
     )
     save_hook("saved", hook_source, "continue", source="user_provided")
     manifest = json.loads((hooks_dir / "manifest.json").read_text(encoding="utf-8"))
-    _, result, source = export(tmp_path, [call("run_adaptive_timelapse", {
+    _, result, source = export(tmp_path, [call("run_timelapse", {
         "n_frames": 2, "interval_s": 0, "save_dir": "session",
         "hook_strategy": "saved",
     })])
@@ -1348,7 +1393,7 @@ def test_saved_adaptive_hook_source_and_manifest_pin_are_inlined(
 
 
 def test_adaptive_export_has_no_microclaw_runtime_references(tmp_path):
-    _, _, source = export(tmp_path, [call("run_adaptive_timelapse", {
+    _, _, source = export(tmp_path, [call("run_timelapse", {
         "n_frames": 2, "interval_s": 0, "save_dir": "session",
         "hook_strategy": "snr_observer",
     })])
@@ -1370,7 +1415,7 @@ def test_adaptive_export_has_no_microclaw_runtime_references(tmp_path):
 
 def test_emitted_adaptive_log_is_beside_script_and_preserves_first_run(tmp_path):
     recorded_log = tmp_path / "recorded" / "quality_survey_hook.log"
-    _, _, source = export(tmp_path, [call("run_adaptive_timelapse", {
+    _, _, source = export(tmp_path, [call("run_timelapse", {
         "n_frames": 1, "interval_s": 0, "save_dir": "session",
         "hook_strategy": "snr_observer", "log_path": str(recorded_log),
     })])
@@ -1422,12 +1467,12 @@ def test_adaptive_export_refuses_a_stripped_import_it_cannot_resolve(
         "        return genuinely_absent(image)\n",
         "missing import", source="user_provided",
     )
-    _, result, source = export(tmp_path, [call("run_adaptive_timelapse", {
+    _, result, source = export(tmp_path, [call("run_timelapse", {
         "n_frames": 2, "interval_s": 0, "save_dir": "session",
         "hook_strategy": "missing_import",
     })])
     assert result["emitted_calls"] == 0
-    assert "# NOT EMITTED: run_adaptive_timelapse" in source
+    assert "# NOT EMITTED: run_timelapse" in source
     assert "genuinely_absent" in source
 
 
@@ -1546,7 +1591,7 @@ def test_emitted_multiframe_survey_counts_the_event_plan(tmp_path):
 
 
 @pytest.mark.parametrize("tool, params", [
-    ("run_adaptive_timelapse", {
+    ("run_timelapse", {
         "n_frames": 2, "interval_s": 0, "save_dir": "session",
         "hook_strategy": "snr_observer", "channel": "DAPI",
     }),
@@ -1631,7 +1676,7 @@ def test_emitted_adaptive_seed_check_refuses_out_of_bounds_before_acquisition(
         id="channel-verification",
     ),
     *[
-        pytest.param([call("run_adaptive_timelapse", {
+        pytest.param([call("run_timelapse", {
             "n_frames": 2, "interval_s": 0, "save_dir": "session",
             "hook_strategy": strategy, "hook_params": hook_params,
         })], id=f"adaptive-runner-{strategy}")
@@ -1668,7 +1713,7 @@ def test_emitted_inline_defines_every_name_it_uses(tmp_path, records):
 
 
 def test_emitted_free_name_guard_detects_a_removed_inline(tmp_path):
-    _, _, source = export(tmp_path, [call("run_adaptive_timelapse", {
+    _, _, source = export(tmp_path, [call("run_timelapse", {
         "n_frames": 2, "interval_s": 0, "save_dir": "session",
         "hook_strategy": "snr_observer",
     })])
@@ -1779,7 +1824,7 @@ def test_a_session_without_an_adaptive_run_carries_no_adaptive_preamble(tmp_path
     # ...and the adaptive export still has every one of them, because the
     # inlined runner does reach them. Both directions, or this test would pass
     # on an exporter that simply stopped emitting the imports.
-    _, _, adaptive = export(tmp_path, [call("run_adaptive_timelapse", {
+    _, _, adaptive = export(tmp_path, [call("run_timelapse", {
         "n_frames": 2, "interval_s": 0, "save_dir": "session",
         "hook_strategy": "snr_observer",
     })])
@@ -1804,14 +1849,14 @@ def test_adaptive_export_refuses_when_safety_constraints_are_unavailable(tmp_pat
     records = (
         completed_call("go_to_position", {"name": "p1"},
                        {"x_um": 1.5, "y_um": 2.5, "z_um": 3.5})
-        + [call("run_adaptive_timelapse", {
+        + [call("run_timelapse", {
             "n_frames": 2, "interval_s": 0, "save_dir": "session",
             "hook_strategy": "snr_observer"})]
     )
     tools.export_session_script(None, guard, "routine.py", records)
     source = (tmp_path / "routine.py").read_text(encoding="utf-8")
 
-    assert "# NOT EMITTED: run_adaptive_timelapse" in source
+    assert "# NOT EMITTED: run_timelapse" in source
     assert "safety constraints are unavailable" in source
     # The unrelated step still exported, and no unbounded guard was written.
     assert "core.set_xy_position(1.5, 2.5)" in source

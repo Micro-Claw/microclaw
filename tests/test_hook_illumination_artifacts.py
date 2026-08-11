@@ -44,8 +44,8 @@ def test_envelope_confirmation_precedes_reservation(monkeypatch, tmp_path):
     reservation = MagicMock(has_overrun=False)
     monkeypatch.setattr(tools, "_authorize_acquisition", lambda *a: order.append("reserve") or reservation)
     monkeypatch.setattr(tools, "_acquire_with_hooks", lambda *a, **k: str(tmp_path / "data"))
-    tools.run_adaptive_timelapse(
-        ctrl, _guard(), 1, 0, str(tmp_path), "generated",
+    tools.run_timelapse(
+        ctrl, _guard(), 1, 0, str(tmp_path), hook_strategy="generated",
         illumination_envelope={"device": "Laser", "property": "Power",
                                "max_power_percent": 10, "max_writes": 2},
     )
@@ -62,8 +62,8 @@ def test_declined_envelope_stops_before_reservation(monkeypatch, tmp_path):
     reserve = MagicMock()
     monkeypatch.setattr(tools, "_authorize_acquisition", reserve)
     with pytest.raises(SafetyViolation, match="not started"):
-        tools.run_adaptive_timelapse(
-            ctrl, _guard(), 1, 0, str(tmp_path), "generated",
+        tools.run_timelapse(
+                ctrl, _guard(), 1, 0, str(tmp_path), hook_strategy="generated",
             illumination_envelope={"device": "Laser", "property": "Power",
                                    "max_power_percent": 10, "max_writes": 2},
         )

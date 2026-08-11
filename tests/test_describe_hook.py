@@ -107,6 +107,27 @@ class Legacy(Base):
     ]
 
 
+def test_list_hooks_marks_dead_saved_hook_with_shared_refusal_and_remedy(
+    tmp_path, monkeypatch, mock_ctrl, unconstrained_guard
+):
+    path, entry = _install_saved(tmp_path, monkeypatch, "dead", '''
+class Dead:
+    def analyze_frame(self, image, metadata): return None
+''')
+    path.write_text(path.read_text(encoding="utf-8") + "# changed\n", encoding="utf-8")
+    result = list_hooks(mock_ctrl, unconstrained_guard)
+    saved = result["saved"]["dead"]
+    assert saved["resolvable"] is False
+    assert saved["resolve_refusal"]["reasons"] == [
+        "saved hook file sha256 does not match manifest"
+    ]
+    assert saved["resolve_refusal"]["remedy"] == {
+        "tool": "read_hook_from_file", "path": str(path),
+        "then": "generate_and_save_hook(source='user_provided')",
+        "reexposes": False,
+    }
+
+
 def test_saved_log_path_alone_is_refused(
     tmp_path, monkeypatch, mock_ctrl, unconstrained_guard
 ):
@@ -117,10 +138,9 @@ class Logger:
 '''
     _install_saved(tmp_path, monkeypatch, "logger", code)
     result = describe_hook(mock_ctrl, unconstrained_guard, "logger")
-    assert result["resolve_refusal"] == {
-        "would_refuse": True,
-        "reasons": ["saved hook constructor takes log_path"],
-    }
+    assert result["resolve_refusal"]["would_refuse"] is True
+    assert result["resolve_refusal"]["reasons"] == ["saved hook constructor takes log_path"]
+    assert result["resolve_refusal"]["remedy"]["path"].endswith("logger.py")
 
 
 def test_precoded_hook_reports_injected_parameters(
@@ -169,10 +189,11 @@ def test_hash_mismatch_is_described(
     assert provenance["matches_manifest"] is False
     assert provenance["manifest_sha256"] == entry["sha256"]
     assert provenance["actual_sha256"] == hashlib.sha256(changed.encode("utf-8")).hexdigest()
-    assert result["resolve_refusal"] == {
-        "would_refuse": True,
-        "reasons": ["saved hook file sha256 does not match manifest"],
-    }
+    assert result["resolve_refusal"]["would_refuse"] is True
+    assert result["resolve_refusal"]["reasons"] == [
+        "saved hook file sha256 does not match manifest"
+    ]
+    assert result["resolve_refusal"]["remedy"]["path"] == str(path)
 
 
 def test_unpinned_hook_is_described(
@@ -186,10 +207,55 @@ def test_unpinned_hook_is_described(
     assert result["provenance"]["manifest_sha256"] is None
     assert result["provenance"]["actual_sha256"]
     assert result["provenance"]["matches_manifest"] is False
-    assert result["resolve_refusal"] == {
-        "would_refuse": True,
-        "reasons": ["saved hook has no manifest sha256 pin"],
-    }
+    assert result["resolve_refusal"]["would_refuse"] is True
+    assert result["resolve_refusal"]["reasons"] == [
+        "saved hook has no manifest sha256 pin"
+    ]
+    assert result["resolve_refusal"]["remedy"]["reexposes"] is False
+
+
+def test_remedy_says_when_re_review_alone_cannot_clear_the_refusal(
+    tmp_path, monkeypatch, mock_ctrl, unconstrained_guard
+):
+    """A source-contract refusal is not cleared by re-saving the same bytes.
+
+    Demo gate, 2026-08-11: a hook refused for a hash mismatch AND for
+    subclassing HookBase / taking log_path was reported to the operator as
+    needing re-review, with the two contract reasons dismissed as "just
+    describing its structure, not faults". The remedy was attached to every
+    reason indiscriminately, so ranking them was left to the reader.
+    """
+    code = (
+        "from microclaw.hooks import HookBase\n"
+        "class H(HookBase):\n"
+        " def __init__(self, log_path=None): pass\n"
+        " def analyze_frame(self, image, metadata): pass\n"
+    )
+    path, _ = _install_saved(tmp_path, monkeypatch, "born_dead", code)
+    result = describe_hook(mock_ctrl, unconstrained_guard, "born_dead")
+
+    refusal = result["resolve_refusal"]
+    assert refusal["would_refuse"] is True
+    assert "saved hook subclasses HookBase" in refusal["reasons"]
+    remedy = refusal["remedy"]
+    assert remedy["path"] == str(path)
+    assert "saved hook subclasses HookBase" in remedy["insufficient_for"]
+    assert "saved hook constructor takes log_path" in remedy["insufficient_for"]
+    assert "source has to change" in remedy["note"]
+
+
+def test_remedy_is_sufficient_on_its_own_for_a_pin_only_refusal(
+    tmp_path, monkeypatch, mock_ctrl, unconstrained_guard
+):
+    """The other side: a pin refusal IS cleared by re-review, and says nothing more."""
+    code = "class H:\n def analyze_frame(self, image, metadata): pass\n"
+    _install_saved(tmp_path, monkeypatch, "pin_only", code, pinned=False)
+    remedy = describe_hook(
+        mock_ctrl, unconstrained_guard, "pin_only"
+    )["resolve_refusal"]["remedy"]
+
+    assert "insufficient_for" not in remedy
+    assert "note" not in remedy
 
 
 def test_malformed_source_returns_error_and_does_not_break_listing(

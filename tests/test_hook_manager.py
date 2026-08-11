@@ -310,9 +310,8 @@ class TestHashPinnedLoad:
             completed_dataset._load_saved_adapter("h")
         described = describe_saved_hook("h")
         assert described["provenance"]["legacy_newline_pin"] is True
-        assert described["resolve_refusal"] == {
-            "would_refuse": True,
-            "reasons": [
-                "saved hook uses a legacy newline-normalized hash; review and re-save it"
-            ],
-        }
+        assert described["resolve_refusal"]["would_refuse"] is True
+        assert described["resolve_refusal"]["reasons"] == [
+            "saved hook uses a legacy newline-normalized hash; review and re-save it"
+        ]
+        assert described["resolve_refusal"]["remedy"]["path"] == str(self.dir / "h.py")

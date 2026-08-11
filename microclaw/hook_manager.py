@@ -476,6 +476,10 @@ def describe_saved_hook(name: str) -> dict[str, Any]:
         )
     elif entry["sha256"] != actual_sha256:
         refusal_reasons.append("saved hook file sha256 does not match manifest")
+    # Two kinds of refusal, and re-review clears only the first. A pin reason is
+    # about this file's provenance; the reasons below are properties of the
+    # source itself, and re-saving the same bytes reproduces them exactly.
+    unpinned_only = list(refusal_reasons)
     if hookbase_subclass:
         refusal_reasons.append("saved hook subclasses HookBase")
     if "log_path" in parameter_names:
@@ -484,10 +488,33 @@ def describe_saved_hook(name: str) -> dict[str, Any]:
     refusal_reasons.extend(
         f"current hook contract violation: {error}" for error in contract_errors
     )
+    source_reasons = refusal_reasons[len(unpinned_only):]
     stripped = [
         parameter for parameter in FORBIDDEN_SAVED_HOOK_PARAMS
         if parameter in parameter_names
     ]
+    remedy = None
+    if refusal_reasons:
+        remedy = {
+            "tool": "read_hook_from_file",
+            "path": str(path),
+            "then": "generate_and_save_hook(source='user_provided')",
+            "reexposes": False,
+        }
+        if source_reasons:
+            # The remedy alone is a false promise here, and a reader who ranks
+            # the reasons by eye gets it backwards: the demo gate of 2026-08-11
+            # saw the agent call these two "just describing its structure, not
+            # faults" and offer a re-review that could not have worked.
+            remedy["insufficient_for"] = source_reasons
+            remedy["note"] = (
+                "Re-review alone will not make this hook usable. The reasons "
+                "listed in insufficient_for are properties of the source, not "
+                "of its pin, so re-saving the same file reproduces them. The "
+                "source has to change first: a saved hook must not inherit "
+                "HookBase, must not take log_path, and provides "
+                "analyze_frame(image, metadata) returning a HookResult."
+            )
     return {
         "name": name,
         "kind": "saved",
@@ -499,6 +526,7 @@ def describe_saved_hook(name: str) -> dict[str, Any]:
         "resolve_refusal": {
             "would_refuse": bool(refusal_reasons),
             "reasons": refusal_reasons,
+            **({"remedy": remedy} if remedy else {}),
         },
         "parameter_handling": {"stripped": stripped, "injected": []},
         "provenance": provenance,
