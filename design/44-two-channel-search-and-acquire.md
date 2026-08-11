@@ -56,6 +56,18 @@ an absolute range shared by all hits would discard the focus decision. This is a
 deliberate correction to the survey's current XY-only position contract
 (`microclaw/tools.py:5221-5225`).
 
+**Those offsets must not be called `z_start_um` / `z_end_um`.** Those keys are
+absolute everywhere else — `_protocol_shape_kwargs` hands them straight to
+pycro-manager (`microclaw/tools.py:3910-3914`), and the survey's own docstring
+says a zstack protocol sweeps *the same absolute Z range at every tile*
+(`microclaw/tools.py:5221-5225`). Reusing them here for a relative range means
+`z_start_um: 10.0` silently becomes `hit_z + 10`. Name them
+`z_offset_start_um` / `z_offset_end_um`, keep `z_step_um`, and refuse the
+absolute keys inside `acquire_on_hit.protocol_params` by name rather than
+accepting them under a second meaning. This is 43j's dataset-name fallback in a
+new place: a value that was correct for the tool it was copied from, and wrong
+where it landed, with nothing to catch it.
+
 This folds into the existing survey and acquisition shapes. `run_timelapse` and
 `run_zstack` already take hooks and their acquisition settings
 (`microclaw/tools.py:2424-2441`, `microclaw/tools.py:2572-2589`), while
