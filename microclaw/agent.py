@@ -295,8 +295,9 @@ def _system_blocks() -> list[dict[str, Any]]:
 
 RIG_INTERVIEW_PROMPT = """## Complete this rig's profile conversationally
 
-Read the rig first with get_roi, get_pixel_size, list_devices, and
-get_emu_configuration. Ask only about facts those tools could not determine.
+Read the rig first with get_roi, get_pixel_size, and list_devices; if this rig
+has an EMU plugin, also use get_emu_configuration. Ask only about facts those
+tools could not determine.
 Ask about a few topics at a time, in the operator's language, and let the
 operator skip anything. Save each answered topic with
 save_knowledge(category="rig", key=<topic>); an unanswered topic stays open and

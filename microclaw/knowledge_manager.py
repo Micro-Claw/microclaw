@@ -16,6 +16,8 @@ RIG_TOPICS = (
 def rig_profile_gaps(knowledge: dict) -> list[str]:
     """Return rig-profile topics that have no stored answer."""
     stored = knowledge.get("rig") or {}
+    if not isinstance(stored, dict):
+        stored = {}
     return [topic for topic in RIG_TOPICS if topic not in stored]
 
 
@@ -52,7 +54,11 @@ def delete_entry(category: str, key: str) -> bool:
 
 
 def _fenced_yaml(data: dict) -> str:
-    content = yaml.dump(data, default_flow_style=False, allow_unicode=True)
+    # The caller constructs category mappings in CATEGORIES order; preserve it
+    # so rig facts stay first rather than relying on alphabetical coincidence.
+    content = yaml.dump(
+        data, default_flow_style=False, allow_unicode=True, sort_keys=False
+    )
     # A saved value containing ``` would otherwise close the fence early and let
     # stored data escape into instruction context. Replace the fence character
     # so the block can't be broken out of.

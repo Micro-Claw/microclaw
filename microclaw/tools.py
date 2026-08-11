@@ -1653,6 +1653,8 @@ def _with_illuminated_field(result: dict) -> dict:
     """Attach a stored rig crop fact at every ROI decision point."""
     from microclaw.knowledge_manager import load_knowledge
     rig = load_knowledge().get("rig") or {}
+    if not isinstance(rig, dict):
+        return result
     if "illuminated_field" in rig:
         result["illuminated_field"] = rig["illuminated_field"]
     return result
@@ -6335,7 +6337,11 @@ def save_knowledge(
 ) -> dict:
     """Persist a knowledge base entry. Gated by an in-code confirmation."""
     import yaml
-    from microclaw.knowledge_manager import save_entry
+    from microclaw.knowledge_manager import (
+        load_knowledge,
+        rig_profile_gaps,
+        save_entry,
+    )
     # A devices/ entry can suppress an alarm (design/21 S4); it must name the
     # hardware it was observed on, or it detaches from its trigger and applies
     # to whatever camera is loaded next.
@@ -6354,7 +6360,15 @@ def save_knowledge(
         save_entry(category, key, value)
     except ValueError as e:
         return {"error": str(e)}
-    return {"status": f"Saved '{key}' under '{category}'.", "category": category, "key": key, "value": value}
+    result = {
+        "status": f"Saved '{key}' under '{category}'.",
+        "category": category,
+        "key": key,
+        "value": value,
+    }
+    if category == "rig":
+        result["remaining_rig_profile_topics"] = rig_profile_gaps(load_knowledge())
+    return result
 
 
 @emits_nothing

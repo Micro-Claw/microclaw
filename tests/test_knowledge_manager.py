@@ -30,6 +30,12 @@ def test_rig_profile_gaps_empty_partial_and_full():
     assert rig_profile_gaps({"rig": {topic: {} for topic in RIG_TOPICS}}) == []
 
 
+def test_rig_profile_scalar_leaves_every_topic_open():
+    assert rig_profile_gaps({"rig": "illuminated_field is deliberate"}) == list(
+        RIG_TOPICS
+    )
+
+
 def test_knowledge_tool_category_schemas_match_categories():
     for name in ("save_knowledge", "get_knowledge", "delete_knowledge"):
         schema = next(tool for tool in TOOLS if tool["name"] == name)

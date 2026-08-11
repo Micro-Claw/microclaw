@@ -3609,6 +3609,18 @@ class TestSaveKnowledgeConfirmation:
         assert "status" in result
         assert saved
 
+    def test_rig_save_reports_topics_still_open_after_a_near_miss_key(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        from microclaw import tools
+        from microclaw.knowledge_manager import RIG_TOPICS
+        monkeypatch.setattr(tools, "CONFIRM_FN", lambda s, kind="action": True)
+        result = tools.save_knowledge(
+            mock_ctrl, unconstrained_guard, category="rig",
+            key="illuminated_roi", value={"deliberate": True},
+        )
+        assert result["remaining_rig_profile_topics"] == list(RIG_TOPICS)
+
     def test_the_gate_receives_the_knowledge_kind(
         self, mock_ctrl, unconstrained_guard, monkeypatch
     ):
@@ -3673,6 +3685,21 @@ class TestRoiRigKnowledge:
         else:
             result = tools.clear_roi(mock_ctrl, unconstrained_guard)
         assert result["illuminated_field"] == field
+
+    def test_get_roi_ignores_a_hand_edited_scalar_rig_profile(
+        self, mock_ctrl, unconstrained_guard
+    ):
+        from microclaw import knowledge_manager
+        knowledge_manager.KNOWLEDGE_PATH.write_text(
+            "rig: illuminated_field is a deliberate crop\n", encoding="utf-8"
+        )
+        mock_ctrl.core.get_roi.return_value = types.SimpleNamespace(
+            x=1, y=2, width=3, height=4
+        )
+        assert tools.get_roi(mock_ctrl, unconstrained_guard) == {
+            "x": 1, "y": 2, "width": 3, "height": 4,
+        }
+
 
 class TestListDeviceProperties:
     def _make_sv(self, items):
