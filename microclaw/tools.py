@@ -812,7 +812,15 @@ def _adaptive_hook_export(params: RecordedParams) -> tuple[str, str, bool]:
     return source, constructor, True
 
 
-def _emit_adaptive(params: RecordedParams, kind: str) -> str:
+def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adaptive") -> str:
+    # default_name is the emitting TOOL's own default, not a constant. It was
+    # "adaptive" for both twins, so a hardcoded fallback agreed with them by
+    # coincidence; after block 43j folded them into run_timelapse/run_zstack the
+    # defaults are "timelapse"/"zstack", and a hooked run that named no dataset
+    # would have been emitted as `name='adaptive'` while the same tool's hookless
+    # branch emitted the right one. A standalone script that writes a differently
+    # named dataset is the reproduce-the-run comparison 43h's gate rests on,
+    # broken silently.
     if params.get("illumination_envelope") is not None:
         raise CannotEmit(
             "the authorized illumination envelope depends on rig-configured raw-value "
@@ -973,7 +981,7 @@ def _emit_adaptive(params: RecordedParams, kind: str) -> str:
         "'image_process_fn': getattr(hook, 'image_process_fn', None), "
         "'post_hardware_hook_fn': getattr(hook, 'post_hardware_hook_fn', None)"
         "}.items() if callback is not None}",
-        f"with Acquisition(directory=str(_HERE), name={params.get('name', 'adaptive')!r}, show_display=True, **_hook_callbacks) as acq:",
+        f"with Acquisition(directory=str(_HERE), name={params.get('name', default_name)!r}, show_display=True, **_hook_callbacks) as acq:",
         "    acq.acquire(events)",
     ])
     return "\n\n".join(common)
@@ -981,7 +989,7 @@ def _emit_adaptive(params: RecordedParams, kind: str) -> str:
 
 def _emit_zstack(params: RecordedParams) -> str:
     if params.get("hook_strategy"):
-        return _emit_adaptive(params, "zstack")
+        return _emit_adaptive(params, "zstack", "zstack")
     return _emit_acquisition({
         "z_start": params["z_start_um"], "z_end": params["z_end_um"],
         "z_step": params["z_step_um"],
@@ -990,7 +998,7 @@ def _emit_zstack(params: RecordedParams) -> str:
 
 def _emit_timelapse(params: RecordedParams) -> str:
     if params.get("hook_strategy"):
-        return _emit_adaptive(params, "timelapse")
+        return _emit_adaptive(params, "timelapse", "timelapse")
     return _emit_acquisition({
         "num_time_points": params["n_frames"],
         "time_interval_s": params["interval_s"],

@@ -1189,6 +1189,31 @@ def test_folded_hooked_acquisitions_emit_recorded_exposure(tmp_path, tool, shape
     compile(source, str(tmp_path / "routine.py"), "exec")
 
 
+@pytest.mark.parametrize(("tool", "shape", "expected"), [
+    ("run_timelapse", {"n_frames": 2, "interval_s": 0}, "timelapse"),
+    ("run_zstack", {"z_start_um": 0, "z_end_um": 1, "z_step_um": 1}, "zstack"),
+])
+def test_hooked_export_names_the_dataset_the_tool_would_have_named(
+    tmp_path, tool, shape, expected
+):
+    """A hooked run that named no dataset must emit the TOOL's default name.
+
+    The emitter's fallback was "adaptive", which agreed with the two adaptive
+    twins by coincidence. Block 43j folded them into run_timelapse/run_zstack,
+    whose defaults are "timelapse"/"zstack" — so the hooked branch would have
+    emitted a differently named dataset than both the live run and its own
+    hookless branch, silently breaking the reproduce-the-run comparison 43h's
+    gate rests on.
+    """
+    _, _, hooked = export(tmp_path, [call(tool, {
+        **shape, "save_dir": "session", "hook_strategy": "snr_observer",
+    })])
+    _, _, plain = export(tmp_path, [call(tool, {**shape, "save_dir": "session"})])
+    assert f"name={expected!r}" in hooked
+    assert f"name={expected!r}" in plain
+    assert "name='adaptive'" not in hooked
+
+
 def test_named_adaptive_survey_resolves_full_precision_position_list_seed(tmp_path):
     records = completed_call("get_position_list", {}, {
         "positions": [{"name": "p0", "x_um": 1.23456, "y_um": 8.76543}]
