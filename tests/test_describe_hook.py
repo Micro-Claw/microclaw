@@ -214,6 +214,50 @@ def test_unpinned_hook_is_described(
     assert result["resolve_refusal"]["remedy"]["reexposes"] is False
 
 
+def test_remedy_says_when_re_review_alone_cannot_clear_the_refusal(
+    tmp_path, monkeypatch, mock_ctrl, unconstrained_guard
+):
+    """A source-contract refusal is not cleared by re-saving the same bytes.
+
+    Demo gate, 2026-08-11: a hook refused for a hash mismatch AND for
+    subclassing HookBase / taking log_path was reported to the operator as
+    needing re-review, with the two contract reasons dismissed as "just
+    describing its structure, not faults". The remedy was attached to every
+    reason indiscriminately, so ranking them was left to the reader.
+    """
+    code = (
+        "from microclaw.hooks import HookBase\n"
+        "class H(HookBase):\n"
+        " def __init__(self, log_path=None): pass\n"
+        " def analyze_frame(self, image, metadata): pass\n"
+    )
+    path, _ = _install_saved(tmp_path, monkeypatch, "born_dead", code)
+    result = describe_hook(mock_ctrl, unconstrained_guard, "born_dead")
+
+    refusal = result["resolve_refusal"]
+    assert refusal["would_refuse"] is True
+    assert "saved hook subclasses HookBase" in refusal["reasons"]
+    remedy = refusal["remedy"]
+    assert remedy["path"] == str(path)
+    assert "saved hook subclasses HookBase" in remedy["insufficient_for"]
+    assert "saved hook constructor takes log_path" in remedy["insufficient_for"]
+    assert "source has to change" in remedy["note"]
+
+
+def test_remedy_is_sufficient_on_its_own_for_a_pin_only_refusal(
+    tmp_path, monkeypatch, mock_ctrl, unconstrained_guard
+):
+    """The other side: a pin refusal IS cleared by re-review, and says nothing more."""
+    code = "class H:\n def analyze_frame(self, image, metadata): pass\n"
+    _install_saved(tmp_path, monkeypatch, "pin_only", code, pinned=False)
+    remedy = describe_hook(
+        mock_ctrl, unconstrained_guard, "pin_only"
+    )["resolve_refusal"]["remedy"]
+
+    assert "insufficient_for" not in remedy
+    assert "note" not in remedy
+
+
 def test_malformed_source_returns_error_and_does_not_break_listing(
     tmp_path, monkeypatch, mock_ctrl, unconstrained_guard
 ):
