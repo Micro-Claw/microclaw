@@ -371,93 +371,26 @@ and the only branches on `origin` besides `main` are
 section**, all of which are kept only for their round history. Position is not
 recency — read the heading, not the order.
 
-> **43h IS IN FLIGHT as of 2026-08-10 — this note's branch and remaining-block
-> lines below are stale, and the 43h ledger row is authoritative.** Branch
-> `design43/emit-adaptive-runs` is open and pushed at `f191f70`, worktree
-> `../microclaw-43h`, runbook `design/43-block43h-rig-gate.md` on that branch
-> pinned `ce4317d`. Implementation is complete over four rounds (three review
-> rounds returned plus five coordinator fixes) and **the block is at step 5,
-> waiting on the operator**, not on any runner.
+> **43h is MERGED and fully closed, 2026-08-11** (`6c0eeb6`) — M5 gate PASS over
+> three rounds after three demo rounds, ledger row closed with its
+> design-reconciliation cell filled, coordination notes in `design/prompts.md`,
+> design gate merged (`3644020` + the design/43 F14 reconciliation), branch and
+> worktree deleted locally and on `origin`. **Track F merged: 43a, 43m, 43b, 43d,
+> 43e, 43c, 43g, 43h. Four remain, none started: 43f, 43i, 43j, 43k.**
 >
-> Demo rounds 1–3 are recorded in the ledger row: Steps 0, 1 and 2a PASS and
-> Step 3 PASS on the standalone-execution claim. **Owed: Step 4 on M5 or M2**,
-> which now also carries 4a (compare the live run against the emitted one at
-> more than one frame per position) and is the only place 3b's stop limb can be
-> exercised, because a content threshold cannot fire on the demo's contentless
-> frames.
+> **43i is now unblocked and is next**, per this note's ordering. It is the block
+> design/43 promoted because 43g measured that the focus response *is* the
+> discriminator, and 43h landing means it is built inside a runner that exports.
 >
-> Expected suite at the pin: **1745 + 99 = 1844** on macOS, **1728 + 116 = 1844**
-> on Windows; the exporter file is **93**.
+> Suite baseline: **1747 passed / 99 skipped / 3 warnings, 1846 collected** on
+> macOS at `6c0eeb6`; M5 measured 1730 + 116 = 1846. Re-measure; derive the total
+> from passed + skipped.
 >
-> Four remaining Track F blocks are still unstarted: 43f, 43i, 43j, 43k. 43i
-> depends on 43h merging.
-
-Written at `b150c17` with a boundary commit expected after it, so **verify
-against the repository rather than against that hash.** What should hold:
-`git log --oneline origin/main..main` empty, working tree clean, and the only
-branches on `origin` besides `main` are `design34/focus-system-authorization`
-(6a), `florian/setup-claude-workflow` and `port-to-jpype-acqj` — **no Track F
-branch open.** One worktree besides this one: `../microclaw-6a`, idle at
-`4994f3e`.
-
-- **43g is MERGED and fully closed** (`113f23b`) — demo gate PASS, ledger row
-  closed with its design-reconciliation cell filled, coordination notes in
-  `design/prompts.md`, design gate merged (`b150c17`), branch and worktree
-  deleted. **Track F merged: 43a, 43m, 43b, 43d, 43e, 43c, 43g. Five remain,
-  none started: 43f, 43h, 43i, 43j, 43k.**
-- **Order is 43h → 43i, then 43f and 43j; 43k stays design-only and last.**
-  Changed 2026-08-10 by operator ruling. 43h before 43i is design/43's own
-  reasoning (refocus-and-re-judge built inside a runner that already exports)
-  and is untouched. **43i moved up because 43g's study changed what it needs**:
-  it is no longer waiting on a verdict statistic, it *is* the verdict.
-- **43g merged NARROWED and does not close F6.** Read `design/43` F5 and F6 —
-  both now carry measured corrections — plus `design/43-block43g-gate.md`. The
-  short version: on the data both findings came from, no single-frame intensity
-  or texture statistic separates cells from a diffuse bright gradient, and the
-  focus response is what identified them. What 43g ships is a **gate**, stable
-  where `min_snr` is on a cliff and the only ranking signal that survives on
-  beads.
-- **Do not re-propose a single-frame discriminator from theory.** One was
-  proposed and withdrawn inside a day on circular labels. The carried-forward
-  register says what a proposal must defeat, and names the labelled set to
-  defeat it with.
-- **Suite baseline: 1709 passed / 99 skipped / 3 expected warnings, 1808
-  collected** on macOS at `113f23b`. The demo machine (Windows) measured
-  1692 / 116 / 1808 at the gate — same collected total, and the 116-skip count
-  every Track F Windows run has produced. Re-measure; derive the total from
-  passed + skipped; diff collected IDs against the block's start commit.
-- **Most gate evidence is already on disk.** The archive is
-  `~/Documents/Documents - Beyonce/Projects/Micro-Claw` — note the hyphen, it
-  does not match a `*microclaw*` glob. 43g's whole measurement half ran offline
-  against saved data that had been assumed to require rig time. **Check it
-  before booking a rig session**, and see the two standing constraints this
-  produced.
-- **Two carried-forward findings were added**, both in §"Still open, not yet
-  scheduled": the withdrawn texture measure with the evidence that killed it,
-  and mosaic zero-padding corrupting every `ImageStats` statistic (pre-existing,
-  reaches `snr` and `focus_metric`, sized as its own block).
-
-> **Re-verified 2026-08-10 at assignment of 43h**, on `main` at `735771f`. Every
-> claim in this note held: `origin/main..main` empty, clean tree, remote branches
-> exactly `design34/focus-system-authorization`, `florian/setup-claude-workflow`
-> and `port-to-jpype-acqj` with no Track F branch open, one idle worktree at
-> `../microclaw-6a` (`4994f3e`), and the suite baseline re-measured **1709 passed
-> / 99 skipped / 3 expected warnings, 1808 collected** on macOS — the note's own
-> number, unchanged. **43h is assigned**, per this note's sequencing ruling.
->
-> Seven facts the 43h entry did not carry, found by reading the code rather than
-> design/43 — all now in that entry. The three that change the shape of the work:
-> the emitted loop's `hook` argument is the **`UntrustedHookAdapter`**, not the
-> user's hook, so "inline the saved hook file verbatim" emits a runner calling
-> methods nothing defines; a survey seeded by `position_names` has **no
-> resolution path at all** today, so F14's stub refuses every such run, and the
-> coordinates it needs are already in the result as `tiles_planned`; and
-> `analysis_used` is computed from a **fixed list of four tool names**, so an
-> emitted hook that calls `compute_stats` gets no inlined analysis — the
-> block-13/41b `NameError` class for the third time. F14's own dependency audit
-> of `hooks.py` and `hook_decisions.py` was checked line by line and **holds
-> exactly**; the barrier it did not audit is that two registry hooks are
-> constructed with `ctrl` and `guard`.
+> Two 43h limbs shipped rig-ungated with reasons recorded in the ledger row, and
+> five carried-forward items were added — most consequentially that **fifteen
+> registry tools still have no export decoration**, each of which plants a
+> `raise` in any exported script that recorded it. That is now also a rule in
+> `CLAUDE.md`.
 
 ### State at the 2026-08-09 close of the third Track F session — SUPERSEDED, kept for the round history
 
@@ -898,7 +831,7 @@ assistant's narration when judging whether a guard fired.
 | 43e | Nestor | none | `design43/builtin-offline-adapters` (deleted) | `eb577d8` | `452dbc5` + `3d30c1f` (review round 1 returned) + `9bae1ba` + `256cc18` (two coordinator fixes, each after a rig round); runbook pinned `256cc18` | **M5, three rounds, 2026-08-09 (`43e-m5`, `43e-m5-round2`). Round 1: G1 FAIL — the adapters were correct and unreachable. Round 2: Step 0 (1671 + 116 = 1787), G1, G2 (both precedence branches), G4, Step 1 all PASS. Round 3: G3 PASS, no hardware tool called in the session.** `256cc18`'s two corrected hints are **ungated** — round 3 had no failing call | `0d1a501` | **done** — design/43 F15 annotated with the four things its stub did not say plus the two successors owed; F10 extended to the OSError siblings; F12's retired half named; suggested-order item 5 struck through |
 | 43f | Nestor | 43a merged (its prompt names the key this creates) | `design43/rig-profile` | | | required | | |
 | 43g | Nestor | none | `design43/coverage-statistics` | `daefb7d` | `692d2b7` + `ebc4995` + `9c6a291` (two review rounds returned) + `a5e908a` + `3cd78de` + `714a0ef` (three coordinator fixes); gate doc + study scripts `d33eeb6`, pinned `3cd78de` | **Measurement half DONE offline 2026-08-10** against the saved Nestor tiles, control exact (recomputed snr == logged snr, 0.0000, on 313 + 36 tiles); `min_snr` sweep is the calibration. **Block NARROWED** — does not close F6, does not supply F5's measurement. **beads met** (`stitch_test_1`, six fields, join verified). **Demo 2026-08-10 (`43g-demo`): Step 0 PASS on Windows — 1692 passed / 116 skipped / 0 failed / 1808 collected, collected total equal to macOS and skips equal to every prior Track F Windows run. G1 PASS on reach** — asked "which of those tiles has the most stuff in it?" with no statistic named, the agent chose `signal_coverage` unprompted, said why, and called `rank_hook_log(metric="signal_coverage")`. **Discrimination NOT exercised** (demo camera returned bit-identical frames; nine-way tie at 0.0) and the **saturation refusal NOT exercised** — both rest on the offline measurements and unit tests | `113f23b` | **done** `b150c17` — design/43 F6 **corrected, not annotated**: its account of `scan300_488_r12_c15` as a bright corner is wrong (coverage 0.148, concentration 0.137, inside the good-tile band), and the statistic added to catch it does not flag it. F5's "structure_coverage high" premise likewise fails — 0.0000 on all six material tiles, which are 20× brighter than glass, not dimmer. **F6 explicitly NOT closed**; F5 promoted from blocked-on-43g to being the measurement. Suggested-order items 7 and 9 rewritten |
-| 43h | Nestor | none | `design43/emit-adaptive-runs` | `1c28e92` | `43d0bbb` + `d9f8169` + `040a113` + `ac0407b` (two review rounds returned) + `36c1bd7` (coordinator fix); runbook `c2076e0`/`a7177d4`/`57c936a`/`984fb5f`/`ebcd749`, pinned `36c1bd7` | **required** — run the emitted script with microclaw closed, and run the full suite on the same machine. **Pushed 2026-08-10, awaiting a rig.** macOS baseline at the pin: 1729 passed / 99 skipped / 3 warnings / 1828 collected; Windows expectation 1712 + 116 = 1828. **Split demo/M5 2026-08-10** (`7f49243`): Steps 0–3 run on the demo machine and close the standalone-execution claim, because that is a mechanism question and the demo has a real core, engine and bridge; **Step 4 needs M5 or M2 and stays owed** — the demo camera returns bit-identical frames, so no criterion there can show the program adapting to a *sample*. Step 3b drives the decision loop from a saved hook stopping on a metadata frame count, since **no `PRECODED_HOOK_REGISTRY` hook calls `progress.image_done()` or `candidates.put()`** and therefore none can advance an adaptive survey at all. **Demo round 1 2026-08-10 (`43h-demo`): Step 0 PASS (1712 + 116 = 1828, 3 warnings, skips equal to every prior Track F Windows run) and Step 1 PASS (79). Step 2 FAILED and the criterion was at fault — the session answered "watch this field for three frames … give me a standalone script" with three `snap_and_analyze` calls, a fair reading, and the emitted script contained no `_LIMITS`, `SurveyProgress` or `_survey_event_stream`. Step 3 VOID**: `emitted-run-43h.txt` is 0 bytes, consistent with a snap script that prints nothing, and proves nothing about this block. Two coordinator fixes followed (`8fcbd1d` preamble, `ff25276` runbook), suite 1730 + 99 = 1829. **Demo round 2 2026-08-10 (`43h-demo-round2`): Step 0 PASS (1713 + 116 = 1829), Step 1 PASS (80), Step 2a PASS — from the rewritten sentence, unprompted, the agent wrote a hook, saved it, ran an adaptive survey with it (10 hook-log rows, real `ContinueSurvey` dispatches across Pos1–Pos4) and exported. Step 3 FAIL**, on a defect no offline test could produce: the exporter emitted a correct and complete adaptive program at line 1560 of the artifact and the script died at line 1558 on `generate_and_save_hook`'s default refusal. Fixed `9dcb09a` (`@emits_nothing` — it touches no hardware and the hook source is already inlined verbatim). Suite 1731 + 99 = 1830, exporter file 81. **Round 4 (codex) landed all five open items** `2a474b5`+`2b08a6f`+`73c6ae1`+`a81538e`+`7161db6`+`8ddb65a`+`9961402`, plus coordinator fix `ce4317d`: microclaw imports stripped from inlined source rather than shimmed (only the two provenance *values* survive), standalone logs written beside the script with collision suffixes, `write_text_file`, `tool_use_id` selection with excluded steps visible as `# SKIPPED` and a stale-state warning in both header and result, and `SurveyProgress` sized from the event plan in runner *and* emitter. Suite 1745 + 99 = 1844, exporter file 93. **M5 2026-08-11 (`43h-m5`): Step 0 PASS (1728 + 116 = 1844, 3 warnings), Step 2a PASS, Step 3/3b PASS, Step 4 PASS.** From a fully operator-worded request naming no tool, the agent marked five positions, wrote a **content-based** stop hook (`min_snr` 5.0, `stop_after` 2), ran the survey — `ContinueSurvey` at pos_1, `StopSurvey` at pos_2, `stopped_early=True`, 2 frames of a 5-tile plan — and exported. **Microclaw was closed for both standalone runs** (operator confirmed; an earlier note saying "Micro-Manager" was their typo — MM and the bridge stayed up, as the gate requires). **The standalone script was then run twice and reproduced the decision exactly both times**: same positions, same actions, same reasons, three byte-identical datasets. Round 4's items proven on rig evidence: the artifact has **no `microclaw` imports** (one surviving string, a schema value), zero `NOT EMITTED`, and `_log_path = _next_available_log_path(_HERE / …)` produced `_hook.log`, `_hook_2.log`, `_hook_3.log` with the live log intact — the round-3 overwrite defect fixed and measured. **M5 round 2 2026-08-11 (`43h-m5-round2`): item 5 GATED on the live path** — `run_adaptive_survey` over 3 positions x 3 frames returned *"9 frame(s) acquired from a 3-tile plan"*, `stopped_early=False`, where the old sizing truncated to ~4; a tighter threshold then gave *"2 frame(s) … stopped early"*. **But Step 2 FAILED with `emitted_calls: 0`** — the survey used `position_names`, resolution could not re-derive `pos_1` despite `get_position_list` + `validate_positions` + `mark_position`, and round 4 shipped the resolver without the `tiles_planned` fallback the assignment named. The agent then hand-wrote acquisition code with `write_text_file` and the operator ran that; it opens one `Acquisition` per frame and reads the dataset after `__exit__`, and on the stop variant it hung the console five minutes, unkillable — **hand-written code, not this block's runner**, and no evidence about 43h either way. Fixed `a8af089` (fallback) and `3fc5e34` (the tool now must say a hand-written script is not the export and report the refusal; operator ruling that writing one is still better than nothing). Suite 1747 + 99 = 1846, exporter file 95. **M5 round 3 2026-08-11 (`43h-m5-round3`) — GATE PASS.** Step 0 (1730 + 116 = 1846), Step 2 (`emitted_calls` 1 and 6, zero `NOT EMITTED`, no hand-written script offered or run), Step 3/3b/Step 4 all PASS with Microclaw closed. **The 50 ms survey reproduced to every digit**: live pos1 `sat_px=5, sat_frac=4.946185501741057e-05` → Continue, pos2 `sat_px=30, sat_frac=2.967711301044634e-04` → Stop; the standalone run recorded identical statistics and the same decisions, 450933 vs 450930 bytes. The other survey diverged and **not because of this code**: it used `sat_frac_thresh: 0.0`, where one saturated pixel decides, and pos1 read 26 / 0 / 5 saturated pixels across three runs — including **two runs of the same emitted script disagreeing with each other**, which locates the nondeterminism in the specimen. A knife-edge criterion cannot demonstrate reproducibility. **Two limbs ship rig-ungated with reasons**: the `tiles_planned` fallback (`a8af089`) was not exercised because this session passed explicit `positions`, and the *emitted* multi-frame full dispatch was never reached because both surveys stopped early — the live half of that is gated at round 2's 9-of-9, the emitter emits the same expression, and both are unit-pinned. The earlier note that 4a was PARTIAL is superseded on the live half and still stands for the emitted half: the survey ran `n_frames: 1`, where positions == events, so the `SurveyProgress` sizing change is not distinguishable. Its unit regression is verified failing without the fix, but the change alters live dose on a multi-frame survey and has no rig observation **Demo round 3 2026-08-10 (`43h-demo-round3`): Step 0 PASS (1714 + 116 = 1830), Step 1 PASS (81), Step 2a PASS again, Step 3 PASS on the headline claim** — zero `NOT EMITTED` in the artifact, and with Microclaw closed the script ran **four** adaptive surveys back to back (datasets `*_2` all stamped 15:52:20–15:52:23 against live `*_1` at 15:39–15:46), driving the real adapter dispatch (12 `ContinueSurvey` rows per log) and exiting cleanly. **3b's stop limb NOT exercised** — the agent wrote a *content*-threshold hook (`min_snr` 5.0, `min_coverage` 0.02) and demo frames carry no content (snr 1.41, coverage 0.0), so `StopSurvey` never fired in either run; the runbook's metadata-count hook is an example the operator's own words did not force. **Two defects found, neither an emitter bug** — see the carried-forward register: `SurveyProgress` sized in positions against an events plan (live 5 frames, standalone 12, from the same program), and the emitted script overwriting the original session's hook log | | |
+| 43h | Nestor | none | `design43/emit-adaptive-runs` | `1c28e92` | `43d0bbb` + `d9f8169` + `040a113` + `ac0407b` (two review rounds returned) + `36c1bd7` (coordinator fix); runbook `c2076e0`/`a7177d4`/`57c936a`/`984fb5f`/`ebcd749`, pinned `36c1bd7` | **required** — run the emitted script with microclaw closed, and run the full suite on the same machine. **Pushed 2026-08-10, awaiting a rig.** macOS baseline at the pin: 1729 passed / 99 skipped / 3 warnings / 1828 collected; Windows expectation 1712 + 116 = 1828. **Split demo/M5 2026-08-10** (`7f49243`): Steps 0–3 run on the demo machine and close the standalone-execution claim, because that is a mechanism question and the demo has a real core, engine and bridge; **Step 4 needs M5 or M2 and stays owed** — the demo camera returns bit-identical frames, so no criterion there can show the program adapting to a *sample*. Step 3b drives the decision loop from a saved hook stopping on a metadata frame count, since **no `PRECODED_HOOK_REGISTRY` hook calls `progress.image_done()` or `candidates.put()`** and therefore none can advance an adaptive survey at all. **Demo round 1 2026-08-10 (`43h-demo`): Step 0 PASS (1712 + 116 = 1828, 3 warnings, skips equal to every prior Track F Windows run) and Step 1 PASS (79). Step 2 FAILED and the criterion was at fault — the session answered "watch this field for three frames … give me a standalone script" with three `snap_and_analyze` calls, a fair reading, and the emitted script contained no `_LIMITS`, `SurveyProgress` or `_survey_event_stream`. Step 3 VOID**: `emitted-run-43h.txt` is 0 bytes, consistent with a snap script that prints nothing, and proves nothing about this block. Two coordinator fixes followed (`8fcbd1d` preamble, `ff25276` runbook), suite 1730 + 99 = 1829. **Demo round 2 2026-08-10 (`43h-demo-round2`): Step 0 PASS (1713 + 116 = 1829), Step 1 PASS (80), Step 2a PASS — from the rewritten sentence, unprompted, the agent wrote a hook, saved it, ran an adaptive survey with it (10 hook-log rows, real `ContinueSurvey` dispatches across Pos1–Pos4) and exported. Step 3 FAIL**, on a defect no offline test could produce: the exporter emitted a correct and complete adaptive program at line 1560 of the artifact and the script died at line 1558 on `generate_and_save_hook`'s default refusal. Fixed `9dcb09a` (`@emits_nothing` — it touches no hardware and the hook source is already inlined verbatim). Suite 1731 + 99 = 1830, exporter file 81. **Round 4 (codex) landed all five open items** `2a474b5`+`2b08a6f`+`73c6ae1`+`a81538e`+`7161db6`+`8ddb65a`+`9961402`, plus coordinator fix `ce4317d`: microclaw imports stripped from inlined source rather than shimmed (only the two provenance *values* survive), standalone logs written beside the script with collision suffixes, `write_text_file`, `tool_use_id` selection with excluded steps visible as `# SKIPPED` and a stale-state warning in both header and result, and `SurveyProgress` sized from the event plan in runner *and* emitter. Suite 1745 + 99 = 1844, exporter file 93. **M5 2026-08-11 (`43h-m5`): Step 0 PASS (1728 + 116 = 1844, 3 warnings), Step 2a PASS, Step 3/3b PASS, Step 4 PASS.** From a fully operator-worded request naming no tool, the agent marked five positions, wrote a **content-based** stop hook (`min_snr` 5.0, `stop_after` 2), ran the survey — `ContinueSurvey` at pos_1, `StopSurvey` at pos_2, `stopped_early=True`, 2 frames of a 5-tile plan — and exported. **Microclaw was closed for both standalone runs** (operator confirmed; an earlier note saying "Micro-Manager" was their typo — MM and the bridge stayed up, as the gate requires). **The standalone script was then run twice and reproduced the decision exactly both times**: same positions, same actions, same reasons, three byte-identical datasets. Round 4's items proven on rig evidence: the artifact has **no `microclaw` imports** (one surviving string, a schema value), zero `NOT EMITTED`, and `_log_path = _next_available_log_path(_HERE / …)` produced `_hook.log`, `_hook_2.log`, `_hook_3.log` with the live log intact — the round-3 overwrite defect fixed and measured. **M5 round 2 2026-08-11 (`43h-m5-round2`): item 5 GATED on the live path** — `run_adaptive_survey` over 3 positions x 3 frames returned *"9 frame(s) acquired from a 3-tile plan"*, `stopped_early=False`, where the old sizing truncated to ~4; a tighter threshold then gave *"2 frame(s) … stopped early"*. **But Step 2 FAILED with `emitted_calls: 0`** — the survey used `position_names`, resolution could not re-derive `pos_1` despite `get_position_list` + `validate_positions` + `mark_position`, and round 4 shipped the resolver without the `tiles_planned` fallback the assignment named. The agent then hand-wrote acquisition code with `write_text_file` and the operator ran that; it opens one `Acquisition` per frame and reads the dataset after `__exit__`, and on the stop variant it hung the console five minutes, unkillable — **hand-written code, not this block's runner**, and no evidence about 43h either way. Fixed `a8af089` (fallback) and `3fc5e34` (the tool now must say a hand-written script is not the export and report the refusal; operator ruling that writing one is still better than nothing). Suite 1747 + 99 = 1846, exporter file 95. **M5 round 3 2026-08-11 (`43h-m5-round3`) — GATE PASS.** Step 0 (1730 + 116 = 1846), Step 2 (`emitted_calls` 1 and 6, zero `NOT EMITTED`, no hand-written script offered or run), Step 3/3b/Step 4 all PASS with Microclaw closed. **The 50 ms survey reproduced to every digit**: live pos1 `sat_px=5, sat_frac=4.946185501741057e-05` → Continue, pos2 `sat_px=30, sat_frac=2.967711301044634e-04` → Stop; the standalone run recorded identical statistics and the same decisions, 450933 vs 450930 bytes. The other survey diverged and **not because of this code**: it used `sat_frac_thresh: 0.0`, where one saturated pixel decides, and pos1 read 26 / 0 / 5 saturated pixels across three runs — including **two runs of the same emitted script disagreeing with each other**, which locates the nondeterminism in the specimen. A knife-edge criterion cannot demonstrate reproducibility. **Two limbs ship rig-ungated with reasons**: the `tiles_planned` fallback (`a8af089`) was not exercised because this session passed explicit `positions`, and the *emitted* multi-frame full dispatch was never reached because both surveys stopped early — the live half of that is gated at round 2's 9-of-9, the emitter emits the same expression, and both are unit-pinned. The earlier note that 4a was PARTIAL is superseded on the live half and still stands for the emitted half: the survey ran `n_frames: 1`, where positions == events, so the `SurveyProgress` sizing change is not distinguishable. Its unit regression is verified failing without the fix, but the change alters live dose on a multi-frame survey and has no rig observation **Demo round 3 2026-08-10 (`43h-demo-round3`): Step 0 PASS (1714 + 116 = 1830), Step 1 PASS (81), Step 2a PASS again, Step 3 PASS on the headline claim** — zero `NOT EMITTED` in the artifact, and with Microclaw closed the script ran **four** adaptive surveys back to back (datasets `*_2` all stamped 15:52:20–15:52:23 against live `*_1` at 15:39–15:46), driving the real adapter dispatch (12 `ContinueSurvey` rows per log) and exiting cleanly. **3b's stop limb NOT exercised** — the agent wrote a *content*-threshold hook (`min_snr` 5.0, `min_coverage` 0.02) and demo frames carry no content (snr 1.41, coverage 0.0), so `StopSurvey` never fired in either run; the runbook's metadata-count hook is an example the operator's own words did not force. **Two defects found, neither an emitter bug** — see the carried-forward register: `SurveyProgress` sized in positions against an events plan (live 5 frames, standalone 12, from the same program), and the emitted script overwriting the original session's hook log. *(Round segments above were appended as each round returned and are not in chronological order — each carries its own date; the demo rounds are 2026-08-10 and the M5 rounds 2026-08-11.)* | `6c0eeb6` | **done** `3644020` + design/43 gate — `CLAUDE.md`'s export paragraph corrected from three non-emittable things to two, with the getsource rule, the surviving `CannotEmit` cases, and a new decorate-every-tool rule that names the undecorated fifteen; design/43 F14 reconciled with six corrections, chiefly that its "a named position the record cannot resolve (already handled)" was false in both directions; suggested-order item 8 struck through |
 | 43i | Nestor | 43g merged, 43h | `design43/survey-refocus` | | | required | | |
 | 43j | Nestor | 43e (retires half of F12) | `design43/hooks-and-timelapse-observation` | | | required | | |
 | 43k | Nestor | 43h, 43i **run on a rig** | — design first | | | n/a — design block | | |
@@ -6261,7 +6194,7 @@ defined, so every observation record and `rank_hook_log` gets it for free.
       coverage and said so. F6's own evidence is a ranking that was mechanically
       correct and picked a bright corner.
 
-## 43h. Adaptive runs must be emittable
+## 43h. [x] Adaptive runs must be emittable — **MERGED 2026-08-11**
 
 Branch: `design43/emit-adaptive-runs`
 
@@ -6274,11 +6207,11 @@ what turns a session into something the operator keeps. Independent of F5.
 > assignment; F14's text is otherwise accurate about them, and they carry one
 > identical reason string.
 
-- [ ] Emit the **program** — seed plan, hook source, decision loop — never the
+- [x] Emit the **program** — seed plan, hook source, decision loop — never the
       trace. The refusal correctly rejects the trace and then generalises it into
       a rule about all of them; the operator who wants the trace already has
       `validate_positions` + `run_multiposition_acquisition`.
-- [ ] **The three tools are not one shape, and F14's stub covers only one of
+- [x] **The three tools are not one shape, and F14's stub covers only one of
       them.** `run_adaptive_zstack` and `run_adaptive_timelapse` have **no
       position list at all** — their seed plan is a `(z_start, z_end, z_step)` or
       an `(n_frames, interval_s)` pair plus a hook, so the "static seed plan"
@@ -6286,7 +6219,7 @@ what turns a session into something the operator keeps. Independent of F5.
       loop. Only `run_adaptive_survey` has positions. Do all three or say which
       you did and why; a block that emits the survey and leaves the other two
       refusing has not retired the refusal.
-- [ ] **A survey seeded by `position_names` has no resolution path today, and
+- [x] **A survey seeded by `position_names` has no resolution path today, and
       F14's stub refuses every one of them.** `_resolve_recorded_position_names`
       short-circuits on `name != "run_multiposition_acquisition"`
       (`tools.py:487`), so `params["positions"]` and
@@ -6298,7 +6231,7 @@ what turns a session into something the operator keeps. Independent of F5.
       resolver's tool test or read `tiles_planned` — **state which, and note the
       rounding**: `tiles_planned` is rounded to 3 dp and the multiposition path
       is not, so an emitted script may image a coordinate the session did not.
-- [ ] **The `hook` the emitted loop calls is the `UntrustedHookAdapter`, not the
+- [x] **The `hook` the emitted loop calls is the `UntrustedHookAdapter`, not the
       user's hook.** `_survey_event_stream` calls `hook.note_stalled`
       (`:4430`), `hook.note_aborted` (`:4419`) and `_note_budget_exhausted(hook,
       …)` → `hook.note_budget_exhausted` (`:925`); all three are adapter methods,
@@ -6308,11 +6241,11 @@ what turns a session into something the operator keeps. Independent of F5.
       verbatim" is necessary and **not sufficient** — inline the adapter too, or
       the emitted runner calls methods nothing defines. F14 knows this as its
       item 3; its stub's `_hook_constructor` reads as if the hook were bare.
-- [ ] `_runner_source()` follows `_analysis_source()`: `inspect.getsource` over
+- [x] `_runner_source()` follows `_analysis_source()`: `inspect.getsource` over
       the real loop, **never a re-write in the emitter**. `_survey_event_stream`
       has design/24 and design/27 written into it and a hand-copied copy that
       drifts reintroduces ghost exposures silently.
-- [ ] **The free-name closure is larger than the hook, and the preamble imports
+- [x] **The free-name closure is larger than the hook, and the preamble imports
       none of it.** `_survey_event_stream` reaches `queue`, `time`,
       `_CANDIDATE_POLL_S` (`:4328`), `_note_budget_exhausted` (`:925`, which
       closes over the module `logger`) and `SurveyProgress` (`:4268`, which uses
@@ -6321,20 +6254,20 @@ what turns a session into something the operator keeps. Independent of F5.
       the two function-local imports at `hook_decisions.py:322` and `:539`. The
       emitted preamble (`tools.py:588–596`) imports no `queue`, `threading` or
       `logging` today.
-- [ ] **`analysis_used` is a fixed list of four tool names** (`tools.py:574–579`)
+- [x] **`analysis_used` is a fixed list of four tool names** (`tools.py:574–579`)
       — `snap_and_analyze`, `run_autofocus`, and the two `protocol == "snap"`
       cases. An emitted hook that calls `compute_stats` therefore gets **no
       inlined analysis**, and the script `NameError`s on the rig: the block-13 /
       41b failure class for the third time, arriving from the tool-name side
       rather than the helper-list side.
-- [ ] **Extend the free-name test to the adaptive path before writing the
+- [x] **Extend the free-name test to the adaptive path before writing the
       emitter, not after.** `test_emitted_inline_defines_every_name_it_uses`
       (`tests/test_session_script_export.py:999`) is parametrized over the
       records that trigger an inline and its own docstring says to add a param
       whenever the exporter learns to inline something new. Confirm the new param
       **fails** before the emitter exists; a guard that passes either way is not
       guarding this.
-- [ ] The guard's bounds emit as literals with the check kept. This does not
+- [x] The guard's bounds emit as literals with the check kept. This does not
       widen the exporter's existing accepted position — an exported script is the
       operator's own, run under their supervision — and the header says so.
       **What the stand-in must implement is fixed by the dispatch, not by
@@ -6343,7 +6276,7 @@ what turns a session into something the operator keeps. Independent of F5.
       `illumination_to_percent` / `illumination_from_percent` (`:394–424`). Those
       last two are rig-config conversions; if they cannot be rendered as
       literals, that limb is a `CannotEmit`, not a guess.
-- [ ] The refusal gets **narrower, not deleted**: `CannotEmit` stays for an
+- [x] The refusal gets **narrower, not deleted**: `CannotEmit` stays for an
       unrecoverable hook source, an unresolvable named position, and a capability
       the script has no equivalent for. **One such capability is already known:**
       `_resolve_hook` injects `ctrl` and `guard` into any registry hook whose
@@ -6352,20 +6285,20 @@ what turns a session into something the operator keeps. Independent of F5.
       over the bridge, which a standalone script has no equivalent for. The
       emittable registry subset is `snr_observer`, `position_filter`,
       `intensity_adaptive`, `focus_feedback`, `autofocus_per_position`.
-- [ ] **Rewrite `test_adaptive_runs_refuse_with_the_architectural_reason`
+- [x] **Rewrite `test_adaptive_runs_refuse_with_the_architectural_reason`
       (`:969`), do not delete it.** It encodes an M5 round-4 finding — the
       refusal must never read "no standalone emitter has been implemented" — and
       its replacement should assert the narrow `CannotEmit` reasons with the same
       force.
-- [ ] **Scope: one hook, not a composition.** `hook_strategy` may be a list under
+- [x] **Scope: one hook, not a composition.** `hook_strategy` may be a list under
       `_resolve_hooks` (`:3865`) → `CompositeHook`, but all three adaptive tools
       call `_resolve_hook` (singular) at `:4073`, `:4136` and `:4669`, so
       composition is out of scope. Do not silently assume `hook_strategy` is a
       string; refuse a list with a reason.
-- [ ] **Post-merge design gate: `CLAUDE.md`'s export paragraph must be amended**
+- [x] **Post-merge design gate: `CLAUDE.md`'s export paragraph must be amended**
       when this lands — its list of three non-emittable things becomes two. Do not
       edit it before the code changes; today the paragraph is accurate.
-- [ ] **Rig gate: run the emitted script with microclaw closed**, per the ledger
+- [x] **Rig gate: run the emitted script with microclaw closed**, per the ledger
       row, and run the full suite on the same machine (standing constraint). A
       script that only imports cleanly proves nothing about a runner whose whole
       subject is what happens over minutes of real acquisition.
