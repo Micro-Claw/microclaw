@@ -32,10 +32,13 @@ replacement for it.
   walks the session record and emits each call through an `@emits` renderer that
   lives **next to the tool it emits, never in a registry**. Analysis is inlined
   from source with `inspect.getsource`, so the emitted `snr()` *is* the one that
-  ran. Two things are **not** emittable, and refuse with a reason rather than
-  guessing: the offline mosaic (its dependencies reach the package calibration
-  module, so inlining would not be standalone) and `set_channel` under an
-  authorization map (block 41c owns making that emittable). A tool with no
+  ran. **One** thing is not emittable and refuses with a reason rather than
+  guessing: the offline mosaic, whose dependencies reach the package calibration
+  module, so inlining would not be standalone. (`set_channel` was the second
+  until block 41c; it now emits both routes — the recorded device/property
+  effects for the authorization-map path, the `set_config` that ran for the
+  map-less one — and raises `CannotEmit` only for a call with no recorded
+  result.) A tool with no
   emitter emits `# NOT EMITTED: <tool>` and a loud `RuntimeError`; a plausible
   fabrication of a step is the defect being fixed, not a fallback. The emitted
   script must import nothing from `microclaw` and is parsed before it is
@@ -81,8 +84,9 @@ replacement for it.
   `raise RuntimeError` in every exported script that recorded it. That is how
   43h's second gate died: `generate_and_save_hook` was undecorated, so a session
   that wrote the hook it then used killed its own script three lines before the
-  adaptive program it had correctly emitted. Fifteen tools are still undecorated
-  and are tracked in the checklist's carried-forward register.
+  adaptive program it had correctly emitted. Fourteen tools are still undecorated
+  (measured over `TOOL_REGISTRY`, 2026-08-11) and are tracked in the checklist's
+  carried-forward register.
 
 ## Engineering principles
 
