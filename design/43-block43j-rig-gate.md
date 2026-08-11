@@ -1,8 +1,51 @@
 # Block 43j rig gate — hooks fold into the timelapse and Z-stack tools
 
-Implementation ancestor: `673e721`
+Implementation ancestor: `25510bb`
 
-## Round 2 — two things left — **THIS IS THE LIVE ROUND**
+## Round 3 — one step, two minutes of rig time — **THIS IS THE LIVE ROUND**
+
+Every other step of this gate has passed. **Run Step 7b and nothing else.**
+
+Round 2 closed Step 6 on the demo machine — the agent separated the two refusal
+kinds unprompted, said re-review alone would not fix a source-contract refusal,
+and still called re-review correct for the legacy-hash hooks. **M5 passed Step 7a**:
+`run_timelapse` with `laser_slot=3`, 200 frames at 20 ms and `snr_observer`
+returned `trigger_preflight: trigger line is armed` **and** a log with exactly 200
+records — the pre-flight and the hook working in one call, which is what the fold
+had to preserve. The session ended before 7b.
+
+### Step 0 first — the suite moved
+
+Two commits landed since round 2, so re-run Step 0 as written below. Expect
+**1783 + 116 = 1899** (macOS measures 1800 + 99 = 1899). Pin against `25510bb`.
+
+### Then Step 7b, on M5 or M2
+
+Set the excitation slot's trigger mode to `0 - Off` (or its `Sequence` to 0)
+through the Micro-Manager GUI, then ask for the same acquisition 7a ran:
+
+> run a 200-frame SMLM timelapse at 20 ms with no interval on laser slot 3,
+> with the snr_observer hook, and show me the log
+
+PASS requires **all** of:
+
+- the call is **refused**, and the refusal names the slot and the property it
+  read — not a generic failure;
+- **nothing was acquired**: no new dataset directory under the save directory,
+  and no hook log for the refused run. Check the directory rather than taking
+  the agent's word;
+- the agent reports the refusal rather than working around it — it must not
+  re-arm the trigger itself, and it must not retry without `laser_slot`.
+
+**Restore the trigger mode afterwards.**
+
+Why this one step is worth the trip: the refusal itself is pre-existing code, but
+the fold inserted hook resolution into the same function, and the contract is
+that the pre-flight stays upstream of all of it. `25510bb` asserts that
+`_prepare_log_path` and `_resolve_hook` are never reached when the trigger is
+gated off; this is the same claim against real hardware.
+
+## Round 2 — superseded, kept for the round history
 
 Everything below this section is the original runbook, kept because Steps 0–5
 are closed by round 1 and their criteria are the record of how.
@@ -85,7 +128,7 @@ the case this block exists for.
 
 ## Step 0 — pin and run the full suite on this machine
 
-    git merge-base --is-ancestor f36ea89 HEAD
+    git merge-base --is-ancestor 25510bb HEAD
     if ($LASTEXITCODE -ne 0) { throw "Block 43j implementation is not in this checkout" }
 
     uv run python -m pytest -q > suite-43j.txt 2>&1
@@ -95,11 +138,11 @@ the case this block exists for.
     uv run python -m pytest --collect-only -q > collected-43j.txt 2>&1
     if ($LASTEXITCODE -ne 0) { Get-Content collected-43j.txt; throw "Collection failed" }
 
-macOS measured **1797 passed + 99 skipped = 1896 collected**, 3 warnings, at the
-pin. Windows has shown the same 17-test platform-conditional difference on every
-Track F run, so expect **1780 + 116 = 1896** here. Derive the total from
+macOS measured **1800 passed + 99 skipped = 1899 collected**, 3 warnings, at the
+round-3 pin (1797 + 99 = 1896 at round 1's). Windows has shown the same 17-test platform-conditional difference on every
+Track F run, so expect **1783 + 116 = 1899** here. Derive the total from
 passed + skipped rather than reading it off. Stop if tests failed, if the
-collected total is not 1896, or if the skip count rose above 116.
+collected total is not 1899, or if the skip count rose above 116.
 
 **A fourth warning may appear and is not this block.** `test_bridge_check.py`
 has a known Windows-only socket race that intermittently raises
