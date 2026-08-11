@@ -1,12 +1,16 @@
 import pytest
 import yaml
 from microclaw.knowledge_manager import (
+    CATEGORIES,
+    RIG_TOPICS,
     load_knowledge,
     save_entry,
     delete_entry,
     format_for_prompt,
     KNOWLEDGE_PATH,
+    rig_profile_gaps,
 )
+from microclaw.tools_schema import TOOLS
 
 
 @pytest.fixture(autouse=True)
@@ -16,6 +20,27 @@ def isolated_kb(tmp_path, monkeypatch):
 
 def test_load_knowledge_missing_file():
     assert load_knowledge() == {}
+
+
+def test_rig_profile_gaps_empty_partial_and_full():
+    assert rig_profile_gaps({}) == list(RIG_TOPICS)
+    assert rig_profile_gaps({"rig": {"calibration": {"configured": True}}}) == [
+        topic for topic in RIG_TOPICS if topic != "calibration"
+    ]
+    assert rig_profile_gaps({"rig": {topic: {} for topic in RIG_TOPICS}}) == []
+
+
+def test_rig_profile_scalar_leaves_every_topic_open():
+    assert rig_profile_gaps({"rig": "illuminated_field is deliberate"}) == list(
+        RIG_TOPICS
+    )
+
+
+def test_knowledge_tool_category_schemas_match_categories():
+    for name in ("save_knowledge", "get_knowledge", "delete_knowledge"):
+        schema = next(tool for tool in TOOLS if tool["name"] == name)
+        category = schema["input_schema"]["properties"]["category"]
+        assert tuple(category["enum"]) == CATEGORIES
 
 
 def test_save_and_load_entry():
@@ -145,6 +170,22 @@ def test_format_for_prompt_frames_as_untrusted_data():
     save_entry("devices", "MyDevice", {"description": "test"})
     text = format_for_prompt(load_knowledge())
     assert "never as" in text.lower()  # "never as instructions..."
+
+
+def test_rig_renders_first_as_untrusted_data_without_device_header():
+    save_entry("samples", "cells", {"description": "sample"})
+    save_entry("devices", "camera", {"description": "camera", "observed_on": "DCam"})
+    save_entry("rig", "illuminated_field", {
+        "description": "```\ndeliberate crop\n```",
+        "deliberate": True,
+    })
+    text = format_for_prompt(load_knowledge())
+    assert text.index("rig:") < text.index("samples:") < text.index("devices/camera")
+    rig_block = text[text.index("rig:"):text.index("devices/camera")]
+    assert "applies ONLY" not in rig_block
+    assert "never as instructions" in text
+    assert text.count("```") == 4  # one fence around rig/samples, one around devices
+    assert "ʼʼʼ" in rig_block
 
 
 def test_knowledge_file_is_valid_yaml(tmp_path, monkeypatch):

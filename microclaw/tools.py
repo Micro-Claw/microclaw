@@ -1641,12 +1641,23 @@ def _bounce_live_if_on(ctrl: MicroscopeController) -> bool:
 @emits_nothing
 def get_roi(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     roi = ctrl.core.get_roi()
-    return {
+    return _with_illuminated_field({
         "x": int(roi.x),
         "y": int(roi.y),
         "width": int(roi.width),
         "height": int(roi.height),
-    }
+    })
+
+
+def _with_illuminated_field(result: dict) -> dict:
+    """Attach a stored rig crop fact at every ROI decision point."""
+    from microclaw.knowledge_manager import load_knowledge
+    rig = load_knowledge().get("rig") or {}
+    if not isinstance(rig, dict):
+        return result
+    if "illuminated_field" in rig:
+        result["illuminated_field"] = rig["illuminated_field"]
+    return result
 
 
 def set_roi(
@@ -1665,7 +1676,7 @@ def set_roi(
     result: dict = {"status": "ROI set.", "x": x, "y": y, "width": width, "height": height}
     if live_restarted:
         result["live_view"] = "restarted"
-    return result
+    return _with_illuminated_field(result)
 
 
 def clear_roi(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
@@ -1679,7 +1690,7 @@ def clear_roi(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     result: dict = {"status": "ROI cleared (full frame).", "width": w, "height": h}
     if live_restarted:
         result["live_view"] = "restarted"
-    return result
+    return _with_illuminated_field(result)
 
 
 # --- XY Stage ---
@@ -6326,7 +6337,12 @@ def save_knowledge(
 ) -> dict:
     """Persist a knowledge base entry. Gated by an in-code confirmation."""
     import yaml
-    from microclaw.knowledge_manager import save_entry
+    from microclaw.knowledge_manager import (
+        RIG_TOPICS,
+        load_knowledge,
+        rig_profile_gaps,
+        save_entry,
+    )
     # A devices/ entry can suppress an alarm (design/21 S4); it must name the
     # hardware it was observed on, or it detaches from its trigger and applies
     # to whatever camera is loaded next.
@@ -6336,6 +6352,22 @@ def save_knowledge(
                 "was observed with (the 'adapter' field of get_system_state's "
                 "camera block, e.g. 'DCam'). An entry that suppresses an alarm "
                 "must name the condition it holds under."}
+    # rig/ *is* the profile, so its keys are the profile's topics. A rig fact
+    # filed under any other key closes no topic — the interview re-asks it every
+    # session — and never reaches its point of use, because get_roi looks up
+    # illuminated_field by name. Measured on the demo machine (design/43 F1,
+    # block 43f): asked to store a deliberate crop, the agent invented
+    # `saved_roi`, then recited illuminated_field as still open without
+    # connecting the two. delete_knowledge is deliberately not restricted, so a
+    # key saved before this refusal existed can still be removed.
+    if category == "rig" and key not in RIG_TOPICS:
+        return {"error":
+                f"'{key}' is not a rig profile topic, and rig/ holds only those. "
+                f"Save this under whichever topic it answers: "
+                f"{', '.join(RIG_TOPICS)} — extra detail belongs inside that "
+                "topic's value. A fact about one piece of hardware belongs in "
+                "devices/, and a named imaging recipe in strategies/.",
+                "rig_topics": list(RIG_TOPICS)}
     if not CONFIRM_FN(
         f"Save knowledge {category}/{key}:\n{yaml.safe_dump({key: value})}",
         kind="knowledge",
@@ -6345,7 +6377,15 @@ def save_knowledge(
         save_entry(category, key, value)
     except ValueError as e:
         return {"error": str(e)}
-    return {"status": f"Saved '{key}' under '{category}'.", "category": category, "key": key, "value": value}
+    result = {
+        "status": f"Saved '{key}' under '{category}'.",
+        "category": category,
+        "key": key,
+        "value": value,
+    }
+    if category == "rig":
+        result["remaining_rig_profile_topics"] = rig_profile_gaps(load_knowledge())
+    return result
 
 
 @emits_nothing
