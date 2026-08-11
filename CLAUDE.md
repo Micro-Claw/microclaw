@@ -32,14 +32,29 @@ replacement for it.
   walks the session record and emits each call through an `@emits` renderer that
   lives **next to the tool it emits, never in a registry**. Analysis is inlined
   from source with `inspect.getsource`, so the emitted `snr()` *is* the one that
-  ran. Three things are **not** emittable, and refuse with a reason rather than
+  ran. Two things are **not** emittable, and refuse with a reason rather than
   guessing: the offline mosaic (its dependencies reach the package calibration
-  module, so inlining would not be standalone), adaptive runs (their events are
-  chosen at runtime by a hook — emitting the positions one happened to visit
-  would silently turn an adaptive run into a fixed one), and `set_channel` under
-  an authorization map (block 41c owns making that emittable). A tool with no
+  module, so inlining would not be standalone) and `set_channel` under an
+  authorization map (block 41c owns making that emittable). A tool with no
   emitter emits `# NOT EMITTED: <tool>` and a loud `RuntimeError`; a plausible
-  fabrication of a step is the defect being fixed, not a fallback.
+  fabrication of a step is the defect being fixed, not a fallback. The emitted
+  script must import nothing from `microclaw` and is parsed before it is
+  written — an exporter that hands over a file which does not compile has
+  already failed.
+
+  **Adaptive runs emit the program, not the trace** (block 43h, merged
+  2026-08-11). The old refusal said their events are chosen at runtime so there
+  is nothing static to render; that is true of the tiles one run happened to
+  visit and false as a rule about the rule that chose them. `run_adaptive_survey`
+  / `run_adaptive_timelapse` / `run_adaptive_zstack` emit the seed plan, the
+  hook's exact source, and the decision loop — `_survey_event_stream` and
+  `UntrustedHookAdapter` inlined with `inspect.getsource`, **never re-written in
+  the emitter**, because design/24 and design/27 are written into that loop and a
+  hand-copied copy that drifts reintroduces ghost exposures silently. `CannotEmit`
+  survives for the narrow cases: an unrecoverable hook source, an unresolvable
+  seed position, a hook reaching a capability the script has no equivalent for
+  (`mm_plugin_analyzer` and `autofocus_mm_plugin` take `ctrl`/`guard`), and an
+  authorized illumination envelope whose conversions are rig-configured.
 
   **If you add a helper to `image_analysis`, the exporter must inline it.**
   `test_emitted_inline_defines_every_name_it_uses`
@@ -47,6 +62,14 @@ replacement for it.
   because block 13 added `snr_validity()` while 41b was in flight: both branches
   were green alone and, merged, every exported script raised `NameError` at
   runtime on the rig.
+
+  **If you add a tool, decorate it** — `@emits`, `@emits_nothing` or `@refuses`.
+  An undecorated tool collects the default refusal, which plants a
+  `raise RuntimeError` in every exported script that recorded it. That is how
+  43h's second gate died: `generate_and_save_hook` was undecorated, so a session
+  that wrote the hook it then used killed its own script three lines before the
+  adaptive program it had correctly emitted. Fifteen tools are still undecorated
+  and are tracked in the checklist's carried-forward register.
 
 ## Engineering principles
 
