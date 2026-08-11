@@ -40,7 +40,8 @@ class TestRigInterviewSystemBlock:
             assert topic not in interview["text"]
         assert "Never block a task" in interview["text"]
         assert "Never re-ask a stored topic" in interview["text"]
-        assert "if this rig\nhas an EMU plugin" in interview["text"]
+        # Whitespace-normalized: the clause is the contract, its line wrap is not.
+        assert "if this rig has an EMU plugin" in " ".join(interview["text"].split())
         assert all("cache_control" in block for block in blocks[:-1])
 
     def test_interview_is_omitted_when_profile_is_complete(self):
