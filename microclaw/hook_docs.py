@@ -208,6 +208,27 @@ so the survey eventually reports a watchdog stall. Actions placed after the
 initial ``RequestAutofocus`` are refused and logged because focused pixels must
 be judged before another survey event is submitted.
 
+**A hook must never rely on ``RequestAutofocus`` to keep the survey moving.** It
+is the only action that can be *granted* and still queue nothing: it is refused
+when no budget was authorized, when the exposure budget is exhausted, when the
+tile was already refocused, when the guard or the focus lock rejects the sweep —
+and when the sweep is accepted but does not converge, which is a normal outcome
+this capability is built around. In every one of those cases nothing is
+dispatched, and a hook that returned ``RequestAutofocus`` alone has ended the
+survey by omission: it idles out ``max_idle_s`` and reports a stall. On M5,
+2026-08-11, a budget sized below a single sweep did exactly that and cost a
+three-tile run after two tiles.
+
+So decide routing on this frame regardless. Ask for the refocus *and* say where
+to go if it does not happen. The two branches both work: if the refocus is
+refused or does not converge, the ``ContinueSurvey`` behind it is dispatched
+normally and the scan advances; if it is granted, that ``ContinueSurvey`` is
+refused with ``not dispatched until the refocused tile is judged`` and you are
+called again on the focused frame, where you route it then::
+
+    # returns the tile to us focused if it can, and keeps the scan alive if not
+    return HookResult(stats, actions=(RequestAutofocus(), ContinueSurvey()))
+
 On convergence the survey deliberately adopts the new focus plane. Timelapse
 survey events carry no Z, so the refocused exposure and later tiles remain at
 that Z; a non-converging sweep restores the entry Z. Both first and second looks

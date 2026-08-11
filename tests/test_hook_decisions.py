@@ -1000,3 +1000,85 @@ def test_survey_without_autofocus_budget_keeps_its_axes_untouched():
                                progress=SurveyProgress(2), guard=_Guard(),
                                max_events=2)
     assert [e["axes"] for e in planned] == [{"position": "p0"}, {"position": "p1"}]
+
+
+def test_a_finished_plan_is_reported_as_finished_not_as_a_dose_cap(tmp_path, monkeypatch):
+    """M5 2026-08-11 round 3: the last tile's ContinueSurvey said the wrong thing.
+
+    An authorized refocus widens max_events by the re-exposures it may take, so a
+    three-tile survey that spent its one re-exposure satisfies BOTH the
+    reservation check and the cursor check at the last tile. The reservation
+    message won, and "outside committed reservation" reads as a dose cap when the
+    survey had simply run out of tiles.
+    """
+    from microclaw.autofocus import AutofocusResult, SweepResult
+    import microclaw.tools as tools
+
+    class Hook:
+        def analyze_frame(self, _image, metadata):
+            # Only the first tile asks for a refocus; the last one just tries to
+            # advance, which is where the wrong message appeared.
+            if metadata["PositionName"] == "p0" and not metadata["microclaw_refocused"]:
+                return HookResult({}, (RequestAutofocus(),))
+            return HookResult({}, (ContinueSurvey(),))
+
+    sweep = SweepResult([9, 10, 11], [1, 2, 1], 10, True)
+    monkeypatch.setattr(tools, "_run_autofocus_passes", lambda *a: AutofocusResult(
+        sweep, None, 10, 10, True, False, None
+    ))
+    adapter = UntrustedHookAdapter(Hook(), str(tmp_path / "hook.json"))
+    candidates, progress = queue.Queue(), SurveyProgress(2)
+    adapter.configure_autofocus(
+        ctrl=type("Ctrl", (), {"core": type("Core", (), {
+            "get_position": lambda self: 10.0,
+        })()})(), guard=_Guard(), max_exposures=4, z_range_um=2,
+        z_step_um=1, method="single_sweep", settle_ms=0, sweep_exposures=3,
+    )
+    events = _events(2)
+    adapter.configure_adaptive(events=events, candidates=candidates,
+                               progress=progress, guard=_Guard(),
+                               max_events=2 + adapter.planned_refocus_reexposures())
+    md = {"PositionName": "p0", "XPosition_um_Intended": 0.0,
+          "YPosition_um_Intended": 0.0}
+    adapter.image_process_fn(np.zeros((2, 2)), md, object())      # refocus p0
+    adapter.image_process_fn(np.zeros((2, 2)), md, object())      # second look -> p1
+    md1 = {"PositionName": "p1", "XPosition_um_Intended": 1.0,
+           "YPosition_um_Intended": 2.0}
+    adapter.image_process_fn(np.zeros((2, 2)), md1, object())     # p1: nothing left
+
+    assert adapter._log[-1]["decision"] == "refused"
+    assert adapter._log[-1]["reason"] == "planned survey cursor is already at the end"
+
+
+def test_a_refused_refocus_still_lets_the_survey_advance(tmp_path):
+    """The stall trap from M5 round 3, and the pattern hook_docs now prescribes.
+
+    A budget below one sweep refuses the refocus. A hook that also proposed a
+    route must still be routed, or the survey idles out max_idle_s and dies —
+    which cost a three-tile run after two tiles.
+    """
+    class Hook:
+        def analyze_frame(self, _image, _metadata):
+            return HookResult({}, (RequestAutofocus(), ContinueSurvey()))
+
+    adapter = UntrustedHookAdapter(Hook(), str(tmp_path / "hook.json"))
+    candidates, progress = queue.Queue(), SurveyProgress(3)
+    adapter.configure_autofocus(
+        ctrl=type("Ctrl", (), {"core": type("Core", (), {
+            "get_position": lambda self: 10.0,
+        })()})(), guard=_Guard(), max_exposures=2, z_range_um=2,
+        z_step_um=1, method="single_sweep", settle_ms=0, sweep_exposures=3,
+    )
+    adapter.configure_adaptive(events=_events(3), candidates=candidates,
+                               progress=progress, guard=_Guard(), max_events=3)
+    adapter.image_process_fn(
+        np.zeros((2, 2)),
+        {"PositionName": "p0", "XPosition_um_Intended": 0.0,
+         "YPosition_um_Intended": 0.0}, object())
+
+    assert candidates.get_nowait()["axes"]["position"] == "p1", (
+        "a refused refocus must not swallow the routing action behind it"
+    )
+    kinds = [(r["action"]["kind"], r["decision"]) for r in adapter._log
+             if r.get("event") == "hook_action"]
+    assert kinds == [("RequestAutofocus", "refused"), ("ContinueSurvey", "accepted")]

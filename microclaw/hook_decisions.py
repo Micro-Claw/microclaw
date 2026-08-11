@@ -606,17 +606,25 @@ class UntrustedHookAdapter:
             ctx["progress"].done_early()
             self._accept(metadata, action, "survey stopped before another tile was dispatched")
             return
+        events = ctx["events"]
+        # A finished plan is reported as a finished plan. Checked before the
+        # reservation because an authorized refocus widens max_events by exactly
+        # the re-exposures it may take, so on M5 2026-08-11 a three-tile survey
+        # that spent its one re-exposure satisfied both conditions at the last
+        # tile and reported "outside committed reservation" -- which reads as a
+        # dose cap when the survey had simply run out of tiles. Refusing here
+        # dispatches nothing either way, so the order cannot admit an exposure.
+        if isinstance(action, ContinueSurvey) and ctx["cursor"] >= len(events):
+            self._refuse(metadata, action, "planned survey cursor is already at the end")
+            return
         if ctx["emitted"] >= ctx["max_events"]:
             self._refuse(
                 metadata, action,
                 "outside committed reservation: all planned frame slots are already dispatched",
             )
             return
-        events = ctx["events"]
         if isinstance(action, ContinueSurvey):
-            if ctx["cursor"] >= len(events):
-                self._refuse(metadata, action, "planned survey cursor is already at the end")
-                return
+            # The cursor-at-end refusal is made above, before the reservation.
             event = events[ctx["cursor"]]
             ctx["cursor"] += 1
         else:
