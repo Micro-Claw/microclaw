@@ -1,6 +1,30 @@
 # Block 43i rig gate — budgeted survey refocus
 
-Implementation ancestor: 5aaa70d
+Implementation ancestor: 10085e2
+
+## Round 4 — four things, and Step 4 is the one that keeps getting missed
+
+Round 3 (`43i-m5-round3`) **PASSED Steps 0, 1, 3, 3b and 5, and one limb of 7.**
+**3b is the block's own mechanism and it is now gated:** run 3's plan ran
+`bead_pos_1 → bead_pos_3 → bead_pos_2`, so `bead_pos_2` was the *last* tile, it
+took the refocus, and its `refocus=1` frame is in the dataset. That is round 2's
+defect, fixed and measured. Two reporting findings came out of it, both fixed in
+`10085e2` — a finished plan reported as a dose cap, and `RequestAutofocus`
+stranding a survey.
+
+**Round 4 owes exactly four things. Two have never run in three rounds.**
+
+1. **Step 0** — the suite moved again.
+2. **Step 4 — never exercised in rounds 1, 2 or 3.** Its instructions are now
+   arithmetic rather than advice; see the step.
+3. **Step 6 — not run in round 3 at all** (no `export_session_script` call in the
+   session). It is the compile-to-script principle and cannot be skipped again.
+4. **Step 7's other two limbs** — the focus-lock refusal and the no-budget
+   refusal. Round 3 closed only the exhausted-budget limb, and closed it
+   properly: 8 authorized exposures against a sweep costing 21 gave
+   `authorized autofocus exposure budget exhausted`, which is exactly right.
+
+Nothing else needs repeating.
 
 ## Round 3 — what M5 round 2 closed, and the one new criterion
 
@@ -73,7 +97,7 @@ the real worst case. Size it deliberately for the sample in front of you.
 
 ## Step 0 — pin and run the full suite on this machine
 
-    git merge-base --is-ancestor 5aaa70d HEAD
+    git merge-base --is-ancestor 10085e2 HEAD
     if ($LASTEXITCODE -ne 0) { throw "Block 43i implementation is not in this checkout" }
 
     uv run python -m pytest -q > suite-43i.txt 2>&1
@@ -83,11 +107,11 @@ the real worst case. Size it deliberately for the sample in front of you.
     uv run python -m pytest --collect-only -q > collected-43i.txt 2>&1
     if ($LASTEXITCODE -ne 0) { Get-Content collected-43i.txt; throw "Collection failed" }
 
-macOS measured **1769 passed + 99 skipped = 1868 collected**, 3 warnings. Round 2
-measured 1750 + 116 = 1866 on M5, the same 17-test platform-conditional
-difference every Track F Windows run has shown, so expect **1752 + 116 = 1868**
+macOS measured **1771 passed + 99 skipped = 1870 collected**, 3 warnings. Round 3
+measured 1752 + 116 = 1868 on M5, the same 17-test platform-conditional
+difference every Track F Windows run has shown, so expect **1754 + 116 = 1870**
 here. Derive the total from passed + skipped rather than reading it off. Stop if
-tests failed, if the collected total is not 1868, or if the skip count rose above
+tests failed, if the collected total is not 1870, or if the skip count rose above
 116.
 
 ## Step 1 — offline checks, no microscope time
@@ -152,20 +176,33 @@ the log** — the log looked correct while the frame was missing.
 
 ## Step 4 — the negative limb: a sweep that does not converge
 
-**You do not need a sample with empty fields.** Round 1 could not run this step
-for want of one, and the step was over-specified: what it measures is the sweep
-refusing to call a curve a focus peak, and a bead sample can produce that on
-demand. Either of these works, on the beads already on the stage:
+**Unexercised in rounds 1, 2 and 3. It needs no special sample and about two
+minutes.** Take round 3's working survey and change two things:
 
-- **Put focus outside the sweep window.** Defocus by well over `z_range_um`, then
-  run with a narrow range (a few µm). The metric curve is noise, `curve_contrast`
-  falls under `MIN_CONTRAST`, and the flat-curve refusal fires.
-- **Or put focus at the window's edge.** Centre the sweep so the true plane sits
-  at a boundary. The peak pins at the edge and design/28 F1's non-convergence
-  fires instead. Either reason is a PASS for this step; record which one you got.
+- **Defocus by ~10 µm** with `move_stage_z` before starting, so the true focal
+  plane is far outside the window you are about to sweep.
+- **Use a narrow window:** `autofocus_budget = {"max_exposures": 24,
+  "z_range_um": 2, "z_step_um": 0.5, "method": "coarse_then_fine",
+  "settle_ms": 50}`.
 
-A field of bare glass — `scan300_488_r12_c15` is the reference case — is still
-the most faithful version if you ever have one, but it is not required.
+That window costs **7 planes** per refocus, so 24 exposures authorize two full
+refocuses (8 each) with room to spare — the budget will not be what refuses.
+Round 3's own budget of 8 against a 20 µm window costing 21 is why its first run
+refused on budget instead; do not repeat that pairing here.
+
+PASS requires `decision: accepted` with reason **`autofocus ran and did not
+converge; Z restored`**, `entry_z_um` equal to `final_z_um`, no second look for
+that tile, no widening, no retry, and the survey carrying on. The `reason` inside
+the `autofocus` block says which refusal you got — a flat curve
+(`curve_contrast` under `MIN_CONTRAST`) or a peak pinned at the sweep boundary
+(design/28 F1). **Either is a PASS**; record which.
+
+This limb is what makes the feature affordable: convergence does not prove cells,
+but failure to converge disproves them. It is also the only limb of the sweep
+contract that three rounds of green have never touched.
+
+A field of bare glass — `scan300_488_r12_c15` is the reference case — is a more
+faithful version if you ever have one, but it is not required and never was.
 
 PASS requires: `decision: accepted`, reason `autofocus ran and did not converge;
 Z restored`, no second look for that tile, **no widening and no retry**, and the
