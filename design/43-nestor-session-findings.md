@@ -1037,6 +1037,33 @@ operator would probably have picked.
    Re-review costs one read and a human yes; the agent should be able to see
    that.
 
+> **Shipped and gated in block 43j (merged 2026-08-11), with one correction the
+> stub above needs.** `list_hooks` marks `resolvable` inline off the same
+> `describe_saved_hook` the exporter already consults, and the demo gate produced
+> the behaviour this finding exists for: the agent reported the hook unusable
+> *before* attempting a run and offered re-review rather than writing a third
+> hook.
+>
+> **The remedy is not always the remedy, and attaching it to every refusal made
+> the payload lie by omission.** Round 1: told a hook was refused for a hash
+> mismatch **and** for subclassing `HookBase` **and** for taking `log_path`, the
+> agent called the last two *"just describing its structure, not faults"* and
+> offered a re-review that could not have worked — re-saving the same bytes
+> reproduces both. **A pin refusal is about this file's provenance and re-review
+> clears it; a source refusal is a property of the source and needs the source
+> changed.** The remedy now carries `insufficient_for` and says so, and round 2
+> measured the agent making exactly that distinction unprompted.
+>
+> **What this gate found upstream of F9, and did not fix:**
+> `generate_and_save_hook` saved that hook in the first place.
+> `validate_hook_contract` checks for `analyze_frame` only when
+> `runner_contract="adaptive"`, so the default path validates against a weaker
+> contract than `_resolve_hook` enforces — a hook can be saved, reported
+> successful, recommended for a timelapse, and be **dead on arrival**. F9 made
+> that visible where the hook is chosen; it is preventable one step earlier, and
+> `describe_saved_hook` already computes the whole refusal set. Carried forward
+> in the checklist's open register.
+
 ## F10 — an unknown adapter name was reported as a possible hardware fault
 
 `[40]`:
@@ -1136,8 +1163,48 @@ know.
 > kinesin timelapses at zero exposure — *"no reliable evidence of anything
 > visibly present"*, with the reasoning and the caveats. **What remains owed is
 > the during-the-run half**: the operator still learns nothing until the
-> acquisition is over and someone thinks to ask. The trio above is still the
-> right fix for that half.
+> acquisition is over and someone thinks to ask.
+
+> **CLOSED by block 43j (merged 2026-08-11) — and the fix above is not the fix
+> that shipped, because the tool this finding asks for already existed.**
+> `run_adaptive_timelapse` took `hook_strategy` / `hook_params` / `log_path` over
+> the same events `run_timelapse` builds, and listed `snr_observer` in its own
+> schema. Adding the trio to `run_timelapse` as written would have shipped a
+> third overlapping timelapse surface.
+>
+> **What was actually wrong was the description and two missing arguments.** The
+> twin was advertised as being *"for adaptive behaviour — the hook adapts settings
+> (exposure, focus) between frames"*, so **observation — this finding's entire
+> request — was nowhere named**, and the Nestor agent said *"`run_timelapse`
+> returns no per-frame image statistics"* nine times rather than reach for it.
+> And it took neither `exposure_ms` nor `laser_slot`, so it could not serve the
+> SMLM path this finding invokes as its reason for naming `run_timelapse` at all.
+> **43e's lesson, arriving from a third direction: a capability nothing names is
+> not shipped.**
+>
+> **What shipped is the fold.** One `run_timelapse` and one `run_zstack`, each
+> with an optional hook; both `run_adaptive_*` twins deleted, no shim. The Z-stack
+> pair went with it by a second operator ruling the same day: folding one pair
+> alone leaves a surface where a hook attaches to a timelapse and not to a
+> Z-stack, and the hazard is not the rejected argument — a loud `TypeError` — but
+> **inference from absence**, an agent concluding from a tool list that timelapse
+> observation is unsupported. That is this finding's own failure recreated by its
+> fix. `run_adaptive_survey` is not folded: early stopping, a seed position list
+> and a generator runner make it a different tool.
+>
+> **The demo gate measured the reach on first contact.** From an operator sentence
+> naming no tool — one that 43e's offline `frame_statistics` could have answered
+> without touching the block — the agent replied *"a timelapse with per-frame
+> signal logging is exactly the `snr_observer` hook"* and called
+> `run_timelapse(hook_strategy=…)` then `read_hook_log`. 20 records for 20 frames,
+> 10 for 10 planes; the hooked result a strict superset of the plain one; the
+> hookless result carrying no hook fields at all.
+>
+> **M5 closed the limb no demo could**: 200 frames at 20 ms on `laser_slot=3` with
+> the hook attached returned `trigger_preflight: trigger line is armed` **and** a
+> 200-record log, and with the trigger gated off the same call was refused by
+> name with nothing acquired. **F12 is closed in both halves** — offline by 43e,
+> during-the-run by 43j.
 
 ## F13 — the workflow the operator wanted was nine hand-driven sequences
 
@@ -1626,8 +1693,18 @@ this session had a field where the two would have disagreed (F6).
    chiefly that the re-exposure was *not* covered by the reservation and that the
    second look needs its own dataset axis, made dense, or a TIFF export drops
    every first look while the hook log reports success.
-10. **F9 / F12** — hook usability and timelapse observation, whenever their files
-    are next open.
+10. ~~**F9 / F12** — hook usability and timelapse observation~~ — **DONE, block
+    43j, merged 2026-08-11, demo rounds 1–2 and M5 rounds 1–2 PASS.** "Whenever
+    their files are next open" was the right instinct for the wrong reason: F12's
+    fix cost almost nothing to build because **the tool it asked for already
+    existed**, and the block's real work was a description, two missing
+    arguments, and deleting the twin. The gate ran six of seven steps on the demo
+    machine — a feature that *records* frames rather than deciding between them
+    is indifferent to the demo camera's identical frames — and needed M5 only for
+    the EMU trigger pre-flight. Both defects of consequence were in what the fold
+    touched afterwards, not in the fold: a hook smuggled through
+    `protocol_params` with its dose discarded, and an emitter fallback that named
+    the standalone script's dataset differently from the live run's.
 11. **F13** — design first. **Its dependency is now satisfied: F5 and F14 have
     both run on a rig** (blocks 43i and 43h, 2026-08-11).
 

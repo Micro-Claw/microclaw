@@ -5885,3 +5885,86 @@ two blocks to make one sentence real.
 the trigger fact was stored, the agent started live view unprompted — "so you can
 watch the survey" — with 640 enabled. That is design/43 F3's rule violated
 verbatim, and it belongs to F3 rather than to this block.
+
+## Block 43j — hooks fold into the acquisition tools (design/43 F9 + F12, merged 2026-08-11)
+
+Two implementation rounds by codex, three coordinator fixes, two demo rounds and
+two M5 rounds. **The block that F12 asked for did not need building: the tool
+already existed.**
+
+**Reading the code at assignment voided the stub outright, and that is now three
+blocks running.** F12 asks for `run_timelapse` to gain the
+`hook_strategy`/`hook_params`/`log_path` trio "the other acquisition entry points
+already have" — and `run_adaptive_timelapse` already had exactly that, over the
+same events, with `snr_observer` named in its own schema. What was actually wrong
+was that its description advertised only *adaptive behaviour*, so observation —
+F12's entire request — was nowhere named, and that it took neither `exposure_ms`
+nor `laser_slot` and so could not serve the SMLM path F12 invokes as its reason.
+Nine times in the Nestor session the agent said "run_timelapse returns no
+per-frame image statistics" rather than reach for the tool that would have
+answered it. **43e's lesson, one more time: a capability nothing names is not
+shipped.**
+
+**Folding beat adding, and the symmetry question was worth asking out loud.** The
+operator ruling was one timelapse tool with an optional hook, the twin deleted.
+Their follow-up — `run_zstack`/`run_adaptive_zstack` mirrored the same pair, so
+does the asymmetry matter? — turned out to be the more important half. The
+hazard is not the rejected argument, which is a loud `TypeError`; it is
+**inference from absence**: an agent that sees no adaptive timelapse in the tool
+list concludes timelapse observation is unsupported. That is F12's own failure
+recreated by F12's fix. Both folds also landed the missing exposure on one shared
+emitter branch, so splitting them would have re-opened code the first block had
+just gated. `run_adaptive_survey` stayed unfolded: early stopping, a seed
+position list and a generator runner make it a different tool, not the same one
+with a flag.
+
+**Every defect this block had was in something adjacent to the fold, never in
+the fold.** Review round 1 found four. The one that mattered: `protocol_params`
+is forwarded unfiltered from `run_multiposition_acquisition` into the
+per-position tool, so `hook_strategy` — a `TypeError` before the fold — became a
+hook resolved once per position *with its dose discarded*, because `_reservation`
+short-circuits the `_plan_with_hook_dose` result. Also, the `autofocus_mm_plugin`
+gating paragraph lived on exactly the two deleted schemas and afterwards sat on
+no acquisition schema at all. **Deleting a tool deletes whatever its description
+was carrying**, and nothing checks that.
+
+**The defect no test could see lived in the generated script.** `_emit_adaptive`
+fell back to the literal name `"adaptive"`, which agreed with the deleted twins
+by coincidence; after the fold the defaults are `"timelapse"` and `"zstack"`, so
+a hooked run that named no dataset emitted one name while the same tool's
+hookless branch emitted another — the live run and the standalone script writing
+differently named datasets, which is the comparison 43h's gate rests on. Green
+suite, accurate self-report, visible only by reading the emitted source. **43i's
+"read the artifact, not the log" arriving one layer earlier.**
+
+**A gate can pass every criterion it has and still be one criterion short.** Demo
+round 1's Step 6 passed on marking, on reporting before attempting, and on
+offering re-review rather than a new hook — and inside that pass the agent
+dismissed two hard refusals as *"just describing its structure, not faults"* and
+offered a remedy that could not have worked, because re-saving the same bytes
+reproduces them. The remedy was attached to every reason indiscriminately, so
+ranking them was left to the reader and the reader got it backwards. Nothing in
+the step asked whether the remedy it offered could work.
+
+**Writing a criterion whose wrong answer is informative.** Step 2 asked, naming
+no tool, for a timelapse that records each frame's signal *as it is acquired* —
+a sentence 43e's offline `frame_statistics` answers perfectly well without
+touching this block. Rather than engineer around that, the step scored the
+offline route as a recorded reach finding. It passed on first contact instead:
+*"a timelapse with per-frame signal logging is exactly the `snr_observer` hook."*
+
+**Almost the whole gate ran on the demo machine, and that was a property of the
+block rather than a compromise.** The feature *records* frames rather than
+deciding between them, so the bit-identical demo frames that voided criteria in
+43g and 43h cost this gate nothing. Six of seven steps demo; only the EMU
+`laser_slot` pre-flight needed M5. **Check what the feature actually needs from a
+rig before booking rig time.**
+
+**The operator's mistake produced the gate's best finding.** Asked to gate the
+trigger off, they first turned the *laser* off — and the acquisition ran, 200
+frames, pre-flight satisfied. That is correct behaviour by the pre-flight's own
+narrow guarantee, and it is not what `run_timelapse`'s schema promises: it sells
+`laser_slot` as protection against "a gated-off laser silently produces blank
+frames", while a *disabled* laser produces exactly blank frames and passes.
+Carried forward. The agent named the gap itself — "the pre-flight only ever
+checked trigger mode; it never confirmed enable".
