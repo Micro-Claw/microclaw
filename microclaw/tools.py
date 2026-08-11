@@ -25,9 +25,11 @@ from ndstorage import Dataset
 
 from microclaw.autofocus import (
     AutofocusResult,
+    coarse_then_fine_plane_count,
     coarse_then_fine_autofocus,
     curve_contrast,
     single_sweep_autofocus,
+    sweep_plane_count,
 )
 from microclaw.controller import (
     MicroscopeController,
@@ -49,6 +51,7 @@ from microclaw.image_analysis import (
     snap_to_numpy_displayed,
     tenengrad,
 )
+from microclaw.paths import TEXT_SUFFIXES, open_in_editor
 from microclaw.safety import SafetyGuard, SafetyViolation
 from microclaw.acquisition import AcquisitionLedger, AcquisitionPlan, Reservation, plan_events
 from microclaw.calibration import resolve_calibration
@@ -821,6 +824,31 @@ def _emit_adaptive(params: RecordedParams, kind: str) -> str:
             "standalone adaptive runner"
         )
     hook_source, constructor, saved = _adaptive_hook_export(params)
+    autofocus_budget = params.get("autofocus_budget")
+    autofocus_sweep_exposures = 0
+    autofocus_reexposures = 0
+    if autofocus_budget is not None:
+        if kind != "survey" or not saved:
+            raise CannotEmit("autofocus_budget applies only to a saved adaptive survey hook")
+        if autofocus_budget["method"] == "coarse_then_fine":
+            autofocus_sweep_exposures = coarse_then_fine_plane_count(
+                autofocus_budget["z_range_um"],
+                max(autofocus_budget["z_step_um"] * 5, 1.0),
+                autofocus_budget["z_step_um"],
+            )
+        else:
+            autofocus_sweep_exposures = sweep_plane_count(
+                -autofocus_budget["z_range_um"] / 2,
+                autofocus_budget["z_range_um"] / 2,
+                autofocus_budget["z_step_um"],
+            )
+        autofocus_reexposures = (
+            autofocus_budget["max_exposures"] // (autofocus_sweep_exposures + 1)
+        )
+    # A survey with no authorized refocus must emit exactly the script it emitted
+    # before this capability existed -- "+ 0" everywhere would be noise in every
+    # unrelated export.
+    _plus_reexposures = f" + {autofocus_reexposures!r}" if autofocus_reexposures else ""
     # Refuse here rather than at the top of export_session_script: a refusal
     # inside the loop becomes a `# NOT EMITTED` step in an otherwise complete
     # script, which is what every other CannotEmit does. Raising up front threw
@@ -915,9 +943,11 @@ def _emit_adaptive(params: RecordedParams, kind: str) -> str:
             common.append(f"core.set_exposure({pp['exposure_ms']!r})")
         common.extend([
             f"events = multi_d_acquisition_events(**{{k: v for k, v in {shape!r}.items() if v is not None}})",
-            "candidates = queue.Queue()", "progress = SurveyProgress(len(events))",
-            *( ["hook.configure_adaptive(events=events, candidates=candidates, progress=progress, guard=guard, max_events=len(events))"] if saved else ["hook.survey_events = events", "hook.candidates = candidates", "hook.progress = progress"] ),
-            f"event_source = _survey_event_stream(events, candidates, progress, {params.get('max_idle_s', 60.0)!r}, hook, adaptive=True, max_events=len(events))",
+            "candidates = queue.Queue()",
+            "progress = SurveyProgress(len(events))",
+            *( (["# Standalone scripts cannot query focus-lock state; disengage the lock before running.", f"hook.configure_autofocus(ctrl=mm, guard=guard, focus_lock_check=None, **{autofocus_budget!r}, sweep_exposures={autofocus_sweep_exposures!r})"] if autofocus_budget is not None else []) if saved else [] ),
+            *( [f"hook.configure_adaptive(events=events, candidates=candidates, progress=progress, guard=guard, max_events=len(events){_plus_reexposures})"] if saved else ["hook.survey_events = events", "hook.candidates = candidates", "hook.progress = progress"] ),
+            f"event_source = _survey_event_stream(events, candidates, progress, {params.get('max_idle_s', 60.0)!r}, hook, adaptive=True, max_events=len(events){_plus_reexposures})",
             "_hook_callbacks = {name: callback for name, callback in {"
             "'image_process_fn': getattr(hook, 'image_process_fn', None), "
             "'post_hardware_hook_fn': getattr(hook, 'post_hardware_hook_fn', None)"
@@ -2831,6 +2861,7 @@ def build_stage_coordinate_mosaic(
     return result
 
 
+@emits_nothing
 def run_analysis_on_saved_dataset(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -4416,15 +4447,16 @@ def _resolve_hooks(
 
 def _plan_with_hook_dose(plan: AcquisitionPlan, hook: Any) -> AcquisitionPlan:
     """Add worst-case hook-fired exposures to an event-plan reservation."""
+    extra_absolute = getattr(hook, "planned_extra_exposures", lambda: 0)()
     extra_per_event = getattr(
         hook, "planned_extra_exposures_per_event", lambda: 0
     )()
     # Non-dose hooks leave the plan completely transparent. Besides avoiding
     # needless reconstruction, this preserves capability-confirmation ordering
     # without adding a new plan-inspection contract to that path.
-    if extra_per_event == 0:
+    if extra_per_event == 0 and extra_absolute == 0:
         return plan
-    extra = plan.frames * extra_per_event
+    extra = plan.frames * extra_per_event + extra_absolute
     return AcquisitionPlan(
         frames=plan.frames + extra,
         exposure_ms_per_frame=plan.exposure_ms_per_frame,
@@ -4800,6 +4832,22 @@ class SurveyProgress:
                 raise RuntimeError("survey total cannot change after images arrive")
             self._n_survey = n_survey
 
+    def expect_one_more(self) -> None:
+        """An extra frame has just been committed to the candidates queue.
+
+        Completion is measured against frames the survey will actually receive,
+        so an authorized refocus raises the total only when its re-exposure is
+        really queued. Sizing by the authorized budget instead means a survey
+        that does not spend it never reaches its total and dies on the idle
+        watchdog: on M5 2026-08-11 three of four budgeted surveys visited every
+        planned tile and still logged `stalled` sixty seconds later, while the
+        one run with no budget completed cleanly. Called before image_done() for
+        the frame that produced the extra event, so the total can never trail
+        the count.
+        """
+        with self._lock:
+            self._n_survey += 1
+
     def done_early(self) -> None:
         """The hook decided the survey is over before n_survey images came
         back — the adaptive runner's stop signal (design/27 Fix 4). Counting
@@ -4975,6 +5023,7 @@ def _acquire_survey_with_detector(
     adaptive: bool = False,
     illumination_envelope: dict | None = None,
     artifact_limits: dict | None = None,
+    autofocus_budget: dict | None = None,
     **shape_kwargs: Any,
 ) -> dict:
     """One survey acquisition whose event stream a detector hook can EXTEND.
@@ -5051,19 +5100,55 @@ def _acquire_survey_with_detector(
         xy_positions=[(p["x_um"], p["y_um"]) for p in positions],
         **shape_kwargs,
     )
-    # Completion is measured in returned images, so its total is the event
-    # plan, not the number of XY positions. A multi-frame tile contributes one
-    # completion unit per frame.
-    progress.set_total(len(survey_events))
-
     _configure_hook_capabilities(hook, ctrl, guard, save_dir, name,
                                  illumination_envelope, artifact_limits)
+
+    autofocus_reexposures = 0
+    if autofocus_budget is not None:
+        if not isinstance(hook, UntrustedHookAdapter):
+            raise ValueError("autofocus_budget applies only to saved generated hooks.")
+        allowed = {"max_exposures", "z_range_um", "z_step_um", "method", "settle_ms"}
+        if set(autofocus_budget) != allowed:
+            raise ValueError(f"autofocus_budget must contain exactly {sorted(allowed)}.")
+        budget = dict(autofocus_budget)
+        if isinstance(budget["max_exposures"], bool) or not isinstance(budget["max_exposures"], int) or budget["max_exposures"] <= 0:
+            raise ValueError("autofocus_budget max_exposures must be a positive integer.")
+        for key in ("z_range_um", "z_step_um"):
+            value = budget[key]
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
+                raise ValueError(f"autofocus_budget {key} must be finite and positive.")
+        if budget["method"] not in {"coarse_then_fine", "single_sweep"}:
+            raise ValueError("autofocus_budget method must be 'coarse_then_fine' or 'single_sweep'.")
+        if isinstance(budget["settle_ms"], bool) or not isinstance(budget["settle_ms"], int) or budget["settle_ms"] < 0:
+            raise ValueError("autofocus_budget settle_ms must be a non-negative integer.")
+        sweep_exposures = (
+            coarse_then_fine_plane_count(budget["z_range_um"],
+                                          max(budget["z_step_um"] * 5, 1.0),
+                                          budget["z_step_um"])
+            if budget["method"] == "coarse_then_fine" else
+            sweep_plane_count(-budget["z_range_um"] / 2,
+                              budget["z_range_um"] / 2, budget["z_step_um"])
+        )
+        hook.configure_autofocus(
+            ctrl=ctrl, guard=guard, sweep_exposures=sweep_exposures,
+            focus_lock_check=lambda: get_focus_lock_state(ctrl, guard), **budget,
+        )
+        autofocus_reexposures = hook.planned_refocus_reexposures()
+
+    # Completion is measured in returned images, so its total is the event
+    # plan, not the number of XY positions. A multi-frame tile contributes one
+    # completion unit per frame; a refocus adds its re-exposure through
+    # SurveyProgress.expect_one_more() at the moment it is queued, never from
+    # the authorized budget -- see that method for what sizing it up front cost.
+    # max_events below is the dose *cap* and does carry the budget, which is a
+    # different quantity from what the survey expects to receive.
+    progress.set_total(len(survey_events))
 
     if isinstance(hook, UntrustedHookAdapter):
         if adaptive:
             hook.configure_adaptive(
                 events=survey_events, candidates=candidates, progress=progress,
-                guard=guard, max_events=len(survey_events),
+                guard=guard, max_events=len(survey_events) + autofocus_reexposures,
             )
     else:
         # Reviewed built-ins retain the legacy direct control contract.
@@ -5078,7 +5163,8 @@ def _acquire_survey_with_detector(
         hook.survey_events = survey_events
     events = _survey_event_stream(survey_events, candidates, progress, max_idle_s, hook,
                                   adaptive=adaptive,
-                                  max_events=len(survey_events) if adaptive else None)
+                                  max_events=(len(survey_events) + autofocus_reexposures)
+                                  if adaptive else None)
     reservation = (
         _authorize_acquisition(
             ctrl, guard, _plan_with_hook_dose(
@@ -5116,6 +5202,7 @@ def run_adaptive_survey(
     preserve_unsupported: bool = False,
     illumination_envelope: dict | None = None,
     artifact_limits: dict | None = None,
+    autofocus_budget: dict | None = None,
 ) -> dict:
     """Acquire positions one at a time; the hook decides whether the next
     position is acquired at all.
@@ -5195,7 +5282,7 @@ def run_adaptive_survey(
         max_idle_s=max_idle_s,
         channel=params.get("channel"), exposure_ms=params.get("exposure_ms"),
         adaptive=True, illumination_envelope=illumination_envelope,
-        artifact_limits=artifact_limits, **shape,
+        artifact_limits=artifact_limits, autofocus_budget=autofocus_budget, **shape,
     )
     # The batched status ("complete across 9 position(s)") is exactly the
     # sentence that made 5 ghost exposures read as a clean early stop
@@ -5456,6 +5543,20 @@ def open_artifact(
     resolved = Path(guard.resolve_readable_path(path))
     if not resolved.exists():
         return {"error": f"Artifact not found: {resolved}"}
+
+    if resolved.suffix.lower() in TEXT_SUFFIXES:
+        # ImageJ reads the first bytes as an image header, fails, and can leave
+        # the bridge wedged: on M5 2026-08-11 an exported .py produced
+        # "not a TIFF file: header=b'from'" and cost a Micro-Manager restart
+        # mid-gate. Text opens the way `microclaw init` opens safety_config.yaml.
+        via = open_in_editor(resolved)
+        return {
+            "path": str(resolved), "opened": True, "via": via, "windows": [],
+            "provenance": (
+                "Opened as text in this machine's editor, not in ImageJ — "
+                "ImageJ reads files as images and cannot display a script."
+            ),
+        }
 
     # open_in_imagej's keys are lifted, not nested. Nesting them under a key of
     # their own gave the payload a top-level `opened` that was a *dict* — truthy

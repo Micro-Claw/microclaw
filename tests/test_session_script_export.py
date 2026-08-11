@@ -1354,9 +1354,10 @@ def test_adaptive_export_has_no_microclaw_runtime_references(tmp_path):
     })])
     # These are durable data identifiers, not runtime dependencies. They are
     # the only deliberate occurrences of the project name in the artifact.
-    assert source.count("microclaw") == 2
+    assert source.count("microclaw") == 3
     assert '"microclaw.analysis-observation/v1"' in source
     assert '"microclaw.image_analysis.compute_stats"' in source
+    assert '"microclaw_refocused"' in source
     import ast
     assert not [node for node in ast.walk(ast.parse(source))
                 if isinstance(node, (ast.Import, ast.ImportFrom))
@@ -1439,6 +1440,95 @@ def test_adaptive_survey_without_channel_replays_recorded_exposure(tmp_path):
     })])
     assert "guard.check_exposure(200)" in source
     assert "core.set_exposure(200)" in source
+
+
+def test_refocusing_survey_emits_the_same_budgeted_second_look_program(
+    tmp_path, monkeypatch
+):
+    """One assertion boundary pins the live budget contract to its export."""
+    from microclaw.hook_manager import save_hook
+    import microclaw.hook_manager as manager
+
+    hooks_dir = tmp_path / "hooks"
+    monkeypatch.setattr(manager, "HOOKS_DIR", hooks_dir)
+    monkeypatch.setattr(manager, "MANIFEST", hooks_dir / "manifest.json")
+    save_hook(
+        "refocus",
+        "from microclaw.hook_decisions import ContinueSurvey, HookResult, RequestAutofocus\n"
+        "class Refocus:\n"
+        "    def analyze_frame(self, image, metadata):\n"
+        "        if metadata.get('microclaw_refocused'):\n"
+        "            return HookResult({'second_look': True}, actions=(ContinueSurvey(),))\n"
+        "        return HookResult({}, actions=(RequestAutofocus(),))\n",
+        "refocus once", source="user_provided",
+    )
+    budget = {"max_exposures": 4, "z_range_um": 2.0, "z_step_um": 1.0,
+              "method": "single_sweep", "settle_ms": 0}
+    # Drive the live adapter with the same budget before inspecting its emitted
+    # program. Four exposures buy exactly one 3-plane sweep plus one second look.
+    import queue
+    from microclaw.hook_decisions import UntrustedHookAdapter
+    live_hook = manager.load_hook_class("refocus")()
+    adapter = UntrustedHookAdapter(live_hook)
+    candidates = queue.Queue()
+    progress = tools.SurveyProgress(2)
+    events = [{"axes": {"position": "p0"}, "x": 1.0, "y": 2.0},
+              {"axes": {"position": "p1"}, "x": 3.0, "y": 4.0}]
+    class LiveGuard:
+        def check_z(self, _z): pass
+        def check_xy(self, _x, _y): pass
+    ctrl = SimpleNamespace(core=SimpleNamespace(get_position=lambda: 10.0))
+    sweep = autofocus.SweepResult([9, 10, 11], [1, 2, 1], 10, True)
+    real_autofocus_passes = tools._run_autofocus_passes
+    monkeypatch.setattr(tools, "_run_autofocus_passes", lambda *a: autofocus.AutofocusResult(
+        sweep, None, 10, 10, True, False, None
+    ))
+    adapter.configure_autofocus(
+        ctrl=ctrl, guard=LiveGuard(), sweep_exposures=3,
+        focus_lock_check=lambda: {"engaged": False}, **budget,
+    )
+    adapter.configure_adaptive(events=events, candidates=candidates,
+                               progress=progress, guard=LiveGuard(), max_events=3)
+    metadata = {"PositionName": "p0", "XPosition_um_Intended": 1.0,
+                "YPosition_um_Intended": 2.0}
+    adapter.image_process_fn(np.zeros((2, 2)), metadata, object())
+    adapter.image_process_fn(np.zeros((2, 2)), metadata, object())
+    assert candidates.get_nowait()["axes"] == {"position": "p0", "refocus": 1}
+    assert candidates.get_nowait()["axes"]["position"] == "p1"
+    assert live_hook.__dict__ == {}  # no ctrl/guard/queue leaked to saved source
+    assert any(r.get("reason") == "refocused and re-queued this tile"
+               for r in adapter._log)
+    assert any(r.get("result") == {"second_look": True} for r in adapter._log)
+    assert adapter._log[-1]["reason"] == "planned event passed guard and committed reservation"
+    monkeypatch.setattr(tools, "_run_autofocus_passes", real_autofocus_passes)
+
+    _, result, source = export(tmp_path, [call("run_adaptive_survey", {
+        "protocol": "timelapse", "protocol_params": {"n_frames": 1},
+        "positions": [{"name": "p0", "x_um": 1, "y_um": 2}],
+        "save_dir": "session", "hook_strategy": "refocus",
+        "autofocus_budget": budget,
+    })])
+
+    assert result["emitted_calls"] == 1
+    assert "# NOT EMITTED:" not in source
+    assert "from microclaw" not in source
+    assert "configure_autofocus(ctrl=mm, guard=guard, focus_lock_check=None" in source
+    assert "Standalone scripts cannot query focus-lock state" in source
+    assert "'max_exposures': 4" in source
+    assert "sweep_exposures=3" in source
+    assert "max_events=len(events) + 1" in source
+    # Completion is sized the same way the live runner sizes it: the plan, plus
+    # whatever the adapter's expect_one_more() adds as re-exposures are actually
+    # queued. Sizing it by the authorized budget instead stalled three of four
+    # budgeted surveys on M5 2026-08-11, and the emitted script carried the same
+    # arithmetic, so the divergence would have been latent here too.
+    assert "progress = SurveyProgress(len(events))" in source
+    assert "expect_one_more" in source, (
+        "the emitted decision loop must raise its own completion total"
+    )
+    assert "microclaw_refocused" in source
+    compile(source, "routine.py", "exec")
+    assert not _undefined_emitted_names(source)
 
 
 def test_emitted_multiframe_survey_counts_the_event_plan(tmp_path):
@@ -1726,3 +1816,35 @@ def test_adaptive_export_refuses_when_safety_constraints_are_unavailable(tmp_pat
     # The unrelated step still exported, and no unbounded guard was written.
     assert "core.set_xy_position(1.5, 2.5)" in source
     assert "_LIMITS" not in source
+
+
+def test_offline_analysis_does_not_kill_the_script_it_follows(tmp_path):
+    """M5 2026-08-11 round 2: the adaptive program ran, then line 1908 raised.
+
+    `run_analysis_on_saved_dataset` was one of the undecorated registry tools,
+    so it collected the default refusal and planted a RuntimeError at the end of
+    a script whose acquisition had already succeeded. It reads saved pixels and
+    is documented as never forwarding `ctrl`, so it has no hardware-routine
+    effect to reproduce -- the same call 43h made for `generate_and_save_hook`.
+    """
+    from microclaw.tools import run_analysis_on_saved_dataset
+    assert run_analysis_on_saved_dataset._microclaw_emits_nothing is True
+
+    _, result, source = export(tmp_path, [
+        call("run_adaptive_survey", {
+            "protocol": "timelapse", "protocol_params": {"n_frames": 1},
+            "positions": [{"name": "p0", "x_um": 1, "y_um": 2}],
+            "save_dir": "session", "hook_strategy": "snr_observer",
+        }),
+        call("run_analysis_on_saved_dataset", {
+            "dataset_path": "session/survey_1", "adapter": "frame_statistics",
+            "axis_selection": {}, "input_kind": "frame", "parameters": {},
+            "output_dir": "session",
+        }),
+    ])
+    assert "# NOT EMITTED:" not in source
+    # Narrow on purpose: the inlined DeniedEventQueue raises a RuntimeError of
+    # its own, and asserting on the bare class name matches that instead.
+    assert "raise RuntimeError('NOT EMITTED" not in source
+    assert result["emitted_calls"] == 1
+    compile(source, "routine.py", "exec")

@@ -422,6 +422,26 @@ branch open.** One worktree besides this one: `../microclaw-6a`, idle at
   the gate. Two of the six rounds measured nothing because of this. It is now a
   standing constraint.
 
+> **Re-verified 2026-08-11 at assignment of 43i**, on `main` at `927c214`. Every
+> claim in this note held: `origin/main..main` empty, clean tree, remote branches
+> exactly `design34/focus-system-authorization`, `florian/setup-claude-workflow`
+> and `port-to-jpype-acqj` with no Track F branch open, and one idle worktree at
+> `../microclaw-6a` (`4994f3e`). **43i is assigned**, per this note's sequencing
+> ruling; branch `design43/survey-refocus` from `927c214`.
+>
+> Nine facts the 43i entry did not carry, found by reading the code rather than
+> design/43 — all now in that entry. The two that change the shape of the work:
+> F5's stub calls the **`run_autofocus` tool** from `_dispatch`, which reaches
+> `_pause_live`, `get_focus_lock_state` and thumbnails and would make the branch
+> unemittable, where `_run_autofocus_passes` and the whole sweep stack are
+> **already inlined into every emitted adaptive script** by
+> `_analysis_source(include_autofocus=True)` — so the export cost of this block is
+> near zero and it should add **no new `CannotEmit`**; and the stub's claim that
+> the re-exposure "is a frame the reservation must already cover" is **false** —
+> `candidates.put()` is the only thing that increments `emitted` against
+> `max_events`, so a re-queue outside it is an exposure outside the committed
+> reservation, which is design/27's subject.
+
 ### State at the 2026-08-10 close of the fourth Track F session — SUPERSEDED, kept for the round history
 
 > **Retired. Do not act on this note** — it was written when 43g had just merged
@@ -936,7 +956,7 @@ assistant's narration when judging whether a guard fired.
 | 43f | Nestor | 43a merged (its prompt names the key this creates) | `design43/rig-profile` | | | required | | |
 | 43g | Nestor | none | `design43/coverage-statistics` | `daefb7d` | `692d2b7` + `ebc4995` + `9c6a291` (two review rounds returned) + `a5e908a` + `3cd78de` + `714a0ef` (three coordinator fixes); gate doc + study scripts `d33eeb6`, pinned `3cd78de` | **Measurement half DONE offline 2026-08-10** against the saved Nestor tiles, control exact (recomputed snr == logged snr, 0.0000, on 313 + 36 tiles); `min_snr` sweep is the calibration. **Block NARROWED** — does not close F6, does not supply F5's measurement. **beads met** (`stitch_test_1`, six fields, join verified). **Demo 2026-08-10 (`43g-demo`): Step 0 PASS on Windows — 1692 passed / 116 skipped / 0 failed / 1808 collected, collected total equal to macOS and skips equal to every prior Track F Windows run. G1 PASS on reach** — asked "which of those tiles has the most stuff in it?" with no statistic named, the agent chose `signal_coverage` unprompted, said why, and called `rank_hook_log(metric="signal_coverage")`. **Discrimination NOT exercised** (demo camera returned bit-identical frames; nine-way tie at 0.0) and the **saturation refusal NOT exercised** — both rest on the offline measurements and unit tests | `113f23b` | **done** `b150c17` — design/43 F6 **corrected, not annotated**: its account of `scan300_488_r12_c15` as a bright corner is wrong (coverage 0.148, concentration 0.137, inside the good-tile band), and the statistic added to catch it does not flag it. F5's "structure_coverage high" premise likewise fails — 0.0000 on all six material tiles, which are 20× brighter than glass, not dimmer. **F6 explicitly NOT closed**; F5 promoted from blocked-on-43g to being the measurement. Suggested-order items 7 and 9 rewritten |
 | 43h | Nestor | none | `design43/emit-adaptive-runs` | `1c28e92` | `43d0bbb` + `d9f8169` + `040a113` + `ac0407b` (two review rounds returned) + `36c1bd7` (coordinator fix); runbook `c2076e0`/`a7177d4`/`57c936a`/`984fb5f`/`ebcd749`, pinned `36c1bd7` | **required** — run the emitted script with microclaw closed, and run the full suite on the same machine. **Pushed 2026-08-10, awaiting a rig.** macOS baseline at the pin: 1729 passed / 99 skipped / 3 warnings / 1828 collected; Windows expectation 1712 + 116 = 1828. **Split demo/M5 2026-08-10** (`7f49243`): Steps 0–3 run on the demo machine and close the standalone-execution claim, because that is a mechanism question and the demo has a real core, engine and bridge; **Step 4 needs M5 or M2 and stays owed** — the demo camera returns bit-identical frames, so no criterion there can show the program adapting to a *sample*. Step 3b drives the decision loop from a saved hook stopping on a metadata frame count, since **no `PRECODED_HOOK_REGISTRY` hook calls `progress.image_done()` or `candidates.put()`** and therefore none can advance an adaptive survey at all. **Demo round 1 2026-08-10 (`43h-demo`): Step 0 PASS (1712 + 116 = 1828, 3 warnings, skips equal to every prior Track F Windows run) and Step 1 PASS (79). Step 2 FAILED and the criterion was at fault — the session answered "watch this field for three frames … give me a standalone script" with three `snap_and_analyze` calls, a fair reading, and the emitted script contained no `_LIMITS`, `SurveyProgress` or `_survey_event_stream`. Step 3 VOID**: `emitted-run-43h.txt` is 0 bytes, consistent with a snap script that prints nothing, and proves nothing about this block. Two coordinator fixes followed (`8fcbd1d` preamble, `ff25276` runbook), suite 1730 + 99 = 1829. **Demo round 2 2026-08-10 (`43h-demo-round2`): Step 0 PASS (1713 + 116 = 1829), Step 1 PASS (80), Step 2a PASS — from the rewritten sentence, unprompted, the agent wrote a hook, saved it, ran an adaptive survey with it (10 hook-log rows, real `ContinueSurvey` dispatches across Pos1–Pos4) and exported. Step 3 FAIL**, on a defect no offline test could produce: the exporter emitted a correct and complete adaptive program at line 1560 of the artifact and the script died at line 1558 on `generate_and_save_hook`'s default refusal. Fixed `9dcb09a` (`@emits_nothing` — it touches no hardware and the hook source is already inlined verbatim). Suite 1731 + 99 = 1830, exporter file 81. **Round 4 (codex) landed all five open items** `2a474b5`+`2b08a6f`+`73c6ae1`+`a81538e`+`7161db6`+`8ddb65a`+`9961402`, plus coordinator fix `ce4317d`: microclaw imports stripped from inlined source rather than shimmed (only the two provenance *values* survive), standalone logs written beside the script with collision suffixes, `write_text_file`, `tool_use_id` selection with excluded steps visible as `# SKIPPED` and a stale-state warning in both header and result, and `SurveyProgress` sized from the event plan in runner *and* emitter. Suite 1745 + 99 = 1844, exporter file 93. **M5 2026-08-11 (`43h-m5`): Step 0 PASS (1728 + 116 = 1844, 3 warnings), Step 2a PASS, Step 3/3b PASS, Step 4 PASS.** From a fully operator-worded request naming no tool, the agent marked five positions, wrote a **content-based** stop hook (`min_snr` 5.0, `stop_after` 2), ran the survey — `ContinueSurvey` at pos_1, `StopSurvey` at pos_2, `stopped_early=True`, 2 frames of a 5-tile plan — and exported. **Microclaw was closed for both standalone runs** (operator confirmed; an earlier note saying "Micro-Manager" was their typo — MM and the bridge stayed up, as the gate requires). **The standalone script was then run twice and reproduced the decision exactly both times**: same positions, same actions, same reasons, three byte-identical datasets. Round 4's items proven on rig evidence: the artifact has **no `microclaw` imports** (one surviving string, a schema value), zero `NOT EMITTED`, and `_log_path = _next_available_log_path(_HERE / …)` produced `_hook.log`, `_hook_2.log`, `_hook_3.log` with the live log intact — the round-3 overwrite defect fixed and measured. **M5 round 2 2026-08-11 (`43h-m5-round2`): item 5 GATED on the live path** — `run_adaptive_survey` over 3 positions x 3 frames returned *"9 frame(s) acquired from a 3-tile plan"*, `stopped_early=False`, where the old sizing truncated to ~4; a tighter threshold then gave *"2 frame(s) … stopped early"*. **But Step 2 FAILED with `emitted_calls: 0`** — the survey used `position_names`, resolution could not re-derive `pos_1` despite `get_position_list` + `validate_positions` + `mark_position`, and round 4 shipped the resolver without the `tiles_planned` fallback the assignment named. The agent then hand-wrote acquisition code with `write_text_file` and the operator ran that; it opens one `Acquisition` per frame and reads the dataset after `__exit__`, and on the stop variant it hung the console five minutes, unkillable — **hand-written code, not this block's runner**, and no evidence about 43h either way. Fixed `a8af089` (fallback) and `3fc5e34` (the tool now must say a hand-written script is not the export and report the refusal; operator ruling that writing one is still better than nothing). Suite 1747 + 99 = 1846, exporter file 95. **M5 round 3 2026-08-11 (`43h-m5-round3`) — GATE PASS.** Step 0 (1730 + 116 = 1846), Step 2 (`emitted_calls` 1 and 6, zero `NOT EMITTED`, no hand-written script offered or run), Step 3/3b/Step 4 all PASS with Microclaw closed. **The 50 ms survey reproduced to every digit**: live pos1 `sat_px=5, sat_frac=4.946185501741057e-05` → Continue, pos2 `sat_px=30, sat_frac=2.967711301044634e-04` → Stop; the standalone run recorded identical statistics and the same decisions, 450933 vs 450930 bytes. The other survey diverged and **not because of this code**: it used `sat_frac_thresh: 0.0`, where one saturated pixel decides, and pos1 read 26 / 0 / 5 saturated pixels across three runs — including **two runs of the same emitted script disagreeing with each other**, which locates the nondeterminism in the specimen. A knife-edge criterion cannot demonstrate reproducibility. **Two limbs ship rig-ungated with reasons**: the `tiles_planned` fallback (`a8af089`) was not exercised because this session passed explicit `positions`, and the *emitted* multi-frame full dispatch was never reached because both surveys stopped early — the live half of that is gated at round 2's 9-of-9, the emitter emits the same expression, and both are unit-pinned. The earlier note that 4a was PARTIAL is superseded on the live half and still stands for the emitted half: the survey ran `n_frames: 1`, where positions == events, so the `SurveyProgress` sizing change is not distinguishable. Its unit regression is verified failing without the fix, but the change alters live dose on a multi-frame survey and has no rig observation **Demo round 3 2026-08-10 (`43h-demo-round3`): Step 0 PASS (1714 + 116 = 1830), Step 1 PASS (81), Step 2a PASS again, Step 3 PASS on the headline claim** — zero `NOT EMITTED` in the artifact, and with Microclaw closed the script ran **four** adaptive surveys back to back (datasets `*_2` all stamped 15:52:20–15:52:23 against live `*_1` at 15:39–15:46), driving the real adapter dispatch (12 `ContinueSurvey` rows per log) and exiting cleanly. **3b's stop limb NOT exercised** — the agent wrote a *content*-threshold hook (`min_snr` 5.0, `min_coverage` 0.02) and demo frames carry no content (snr 1.41, coverage 0.0), so `StopSurvey` never fired in either run; the runbook's metadata-count hook is an example the operator's own words did not force. **Two defects found, neither an emitter bug** — see the carried-forward register: `SurveyProgress` sized in positions against an events plan (live 5 frames, standalone 12, from the same program), and the emitted script overwriting the original session's hook log. *(Round segments above were appended as each round returned and are not in chronological order — each carries its own date; the demo rounds are 2026-08-10 and the M5 rounds 2026-08-11.)* | `6c0eeb6` | **done** `3644020` + design/43 gate — `CLAUDE.md`'s export paragraph corrected from three non-emittable things to two, with the getsource rule, the surviving `CannotEmit` cases, and a new decorate-every-tool rule that names the undecorated fifteen; design/43 F14 reconciled with six corrections, chiefly that its "a named position the record cannot resolve (already handled)" was false in both directions; suggested-order item 8 struck through |
-| 43i | Nestor | 43g merged, 43h | `design43/survey-refocus` | | | required | | |
+| 43i | Nestor | 43g merged, 43h — **both merged, dependencies met** | `design43/survey-refocus` | `927c214` | | required — the refocus limb must be exercised on a rig with real sample structure, and the emitted script must reproduce the same refocus decision with Microclaw closed | | |
 | 43j | Nestor | 43e (retires half of F12) | `design43/hooks-and-timelapse-observation` | | | required | | |
 | 43k | Nestor | 43h, 43i **run on a rig** | — design first | | | n/a — design block | | |
 | 9 | Features | operator intake | `design26/generated-adapter-run-b` | | | required | | |
@@ -6434,6 +6454,69 @@ exports.
 > spend a refocus there and report whether it converged; on a tile like
 > `scan300_488_r12_c15`, it should report that it did not.
 
+> **Nine facts the entry did not carry, found by reading the code at assignment
+> rather than design/43.** F5's stub predates 43h and is wrong in two places that
+> change the shape of the work.
+>
+> 1. **Do not call the `run_autofocus` tool from `_dispatch`,** as the stub does.
+>    It reaches `get_focus_lock_state`, `_pause_live`, `_sweep_payload` and
+>    thumbnails, none of which exist standalone. Call `_run_autofocus_passes`,
+>    which `_analysis_source(include_autofocus=True)` (`tools.py:528-543`)
+>    **already inlines** into every emitted adaptive script along with
+>    `sweep_autofocus`, `coarse_then_fine_autofocus`, `curve_contrast`,
+>    `_restore`, `_flat_reason`, `_edge_reason` and `MIN_CONTRAST`. Design/28 F1's
+>    restore-on-flat-or-edge lives in `coarse_then_fine_autofocus`, so the stub's
+>    "Z is unmoved on a non-converging sweep" survives the switch intact.
+> 2. **Export is therefore nearly free, and that is the argument for building it
+>    this way.** The emitted decision loop is `UntrustedHookAdapter` inlined with
+>    `inspect.getsource`, so a branch added to `_dispatch` is emitted by
+>    construction. The script already binds `mm = SimpleNamespace(core=core)`
+>    (`tools.py:1090`) and the sweep stack touches only `ctrl.core` and
+>    `snap_to_numpy(ctrl)`, so `mm` *is* the `ctrl` the branch needs; the emitted
+>    `_RecordedSafetyGuard` already has `check_z`. **No new `CannotEmit` for the
+>    refocus itself** — if one appears, the block has gone wrong.
+> 3. **`_emit_adaptive` has to pass the budget too.** `tools.py:919` emits the
+>    `configure_adaptive(...)` call as a literal string. A budget the live runner
+>    configures and the emitter omits is a silent divergence — the live run
+>    refocuses, the script does not, and nothing fails. Same class as 43h's
+>    `SurveyProgress` sizing defect: 5 frames live, 12 standalone, one program.
+> 4. **The typed path is saved-hook only.** For precoded hooks `_emit_adaptive`
+>    emits the direct contract (`hook.survey_events = …`), which never reaches
+>    `_dispatch`. `RequestAutofocus` is a typed action, so this capability exists
+>    for saved hooks and the adapter path. Say it in the docs rather than
+>    discovering it at the gate.
+> 5. **`configure_adaptive` has neither `ctrl` nor `current_event`**
+>    (`hook_decisions.py:278-283` binds events, candidates, progress, guard,
+>    max_events, emitted, cursor). Both are the stub's invention. And `cursor` is
+>    *not* the tile just imaged — it points at the next event, and `AcquireAt`
+>    breaks the linear relation. Resolve the current tile from `metadata`:
+>    `HookBase.where()` reads `PositionName` / `XPosition_um_Intended` /
+>    `YPosition_um_Intended`, present for every multi-position acquisition
+>    (design/23 F2).
+> 6. **The re-exposure is not covered by the reservation, though the stub says it
+>    is.** `_dispatch` refuses at `ctx["emitted"] >= ctx["max_events"]`
+>    (`:464`) and `candidates.put()` at `:509` is the only path that increments
+>    `emitted`. A re-queue that bypasses that counter is an exposure outside the
+>    committed reservation, which is design/27's entire subject. **Decide it
+>    explicitly** — either the re-exposure consumes a plan slot, and a late
+>    refocus therefore costs the last tile, or the authorized budget widens the
+>    reservation by its own maximum. Record the choice in the ledger row.
+> 7. **Budget the sweep in exposures, not in sweeps.** One sweep is 20–60 frames,
+>    and `coarse_then_fine_plane_count` / `sweep_plane_count` compute exactly how
+>    many *before* it runs. `illumination_envelope` and `artifact_limits` each
+>    bound a real quantity; `{"max_events": 3}` bounds a count of permissions.
+> 8. **`microclaw_refocused` arriving in metadata is an assumption with no
+>    precedent here.** Every metadata key microclaw reads is MM-stamped; nothing
+>    in the codebase puts a custom key into an event and reads it back off the
+>    image. Verify it reaches `analyze_frame` **before** building the second-look
+>    contract on it, and carry the flag parent-side if it does not. The hook
+>    seeing the flag is a gate criterion, not a detail.
+> 9. **Focus lock.** `run_autofocus` refuses to sweep against an engaged lock
+>    (`tools.py:3381`) because the servo fights the sweep and the curve is
+>    meaningless. `_run_autofocus_passes` carries no such check and the emitted
+>    script has no `get_focus_lock_state`. Decide what the live branch does, and
+>    state plainly what the standalone script does not.
+
 - [ ] `RequestAutofocus` becomes supported in `run_adaptive_survey` under an
       authorized budget — a third capability of the same kind as
       `illumination_envelope` and `artifact_limits`, not a new mechanism.
@@ -6673,6 +6756,40 @@ schedule them or record a reason at block 12.
 
 This is an inventory, not permission to close with unresolved blank work. Block
 12 assigns every row one of the explicit dispositions above.
+
+- **The GUI stops tracking after an *exposure* write, and six other write paths
+  never refresh either.** Operator-observed on M5, 2026-08-11, in a TIRF session
+  on 43i's branch: Microclaw read 20 ms while Micro-Manager's Exposure [ms] box
+  showed 50, and Tools → Refresh GUI revealed the 20. This is design/43 F4's
+  class, and **block 43b did not close it** — 43b covered the property and config
+  writers (`set_channel`, `set_device_property`, `set_focus_lock`,
+  `set_emu_laser_power_percentage` all call `ctrl.refresh_gui()`), and nothing
+  else does. Swept at `5aaa70d`, every tool that writes GUI-visible state:
+
+  | writer | what goes stale | evidence |
+  | --- | --- | --- |
+  | `set_exposure` | Exposure [ms] | **measured** |
+  | `run_timelapse`, `run_zstack` | eventless exposure write | inspection |
+  | `_acquire_positions_with_hook`, `_acquire_survey_with_detector` | same write — the multiposition/tile/**adaptive survey** path | inspection |
+  | `set_roi`, `clear_roi` | ROI | inspection |
+  | `move_named_stage`, `move_stage_xy`, `move_stage_z` | stage position display | inspection |
+
+  Only the first row is measured; the rest are unrefreshed *by inspection* and
+  each needs the same one-glance rig check before it is called a defect.
+  `refresh_gui` is best-effort, never raises, and repaints from a cache that is
+  already current after a core write, so the fix is cheap where it is wanted —
+  the open question is which of these the operator wants repainted, not whether
+  it can be.
+
+  **Origin of the specific 20 ms is undetermined and should not be guessed.** It
+  is absent from that session's history (no `set_exposure`, no `exposure_ms` on
+  any call, four `run_timelapse` calls passing none) and from 43i round 2's, so
+  it predates both — itself consistent with a stale GUI persisting across
+  sessions until something refreshes it.
+
+  Deliberately **not** folded into 43i: that branch is about survey refocus, and
+  operator ruling of 2026-08-11 was to carry this as its own block rather than
+  mix an unrelated fix into a gated branch.
 
 - **No single-frame statistic separated cells from a diffuse bright gradient on
   real data — and a texture block was proposed and withdrawn on the strength of

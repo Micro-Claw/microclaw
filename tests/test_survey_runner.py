@@ -1213,3 +1213,89 @@ class TestRunAdaptiveSurvey:
             protocol_params={"n_frames": 1, "interval_s": 0})
         assert "list_hooks" in unknown["error"]
         assert not captured, "every refusal above must precede the acquisition"
+
+
+# ── completion counts re-exposures TAKEN, not authorized (M5 rounds 2 and 4) ──
+
+def test_completion_total_is_the_plan_and_rises_only_when_a_refocus_is_queued(
+    tmp_path, monkeypatch, unconstrained_guard
+):
+    """Two M5 findings, one contract.
+
+    Round 2: sized at the plan alone, a refocus granted at the LAST tile was
+    dropped — the survey reported complete as that tile's image arrived and the
+    generator put the terminator over the re-queued event.
+
+    Round 4: sized at plan + *authorized* budget, a survey that never spends its
+    refocuses never reaches its total, so it died on the idle watchdog instead of
+    completing. Three of four budgeted surveys logged `stalled` after visiting
+    every planned tile; the one run with no budget completed cleanly.
+
+    The contract that satisfies both: the total is the plan, and each re-exposure
+    raises it at the moment it is really queued.
+    """
+    from types import SimpleNamespace
+
+    from microclaw import tools
+    from microclaw.acquisition import AcquisitionPlan
+    from microclaw.hook_decisions import UntrustedHookAdapter
+
+    n_tiles = 3
+    progress = SurveyProgress(n_tiles)
+    sizes: dict = {}
+
+    monkeypatch.setattr(tools, "_acquire_with_hooks",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("stop")))
+    monkeypatch.setattr(tools, "_authorize_acquisition", lambda *a, **k: None)
+    monkeypatch.setattr(tools, "get_focus_lock_state", lambda *a, **k: {"engaged": False})
+    monkeypatch.setattr(tools, "plan_events", lambda *a, **k: AcquisitionPlan(
+        frames=n_tiles, exposure_ms_per_frame=10.0,
+        estimated_duration_s=1.0, estimated_bytes=100))
+    real_set_total = SurveyProgress.set_total
+    monkeypatch.setattr(SurveyProgress, "set_total",
+                        lambda self, n: (sizes.__setitem__("total", n),
+                                         real_set_total(self, n))[1])
+
+    class Hook:
+        def analyze_frame(self, image, metadata):
+            return None
+
+    hook = UntrustedHookAdapter(Hook())
+    ctrl = SimpleNamespace(core=SimpleNamespace(get_position=lambda: 10.0,
+                                                get_focus_device=lambda: "Z"))
+    with pytest.raises(RuntimeError, match="stop"):
+        tools._acquire_survey_with_detector(
+            ctrl, unconstrained_guard,
+            [{"name": f"p{i}", "x_um": float(i), "y_um": 0.0} for i in range(n_tiles)],
+            str(tmp_path), "survey", hook=hook, progress=progress,
+            candidates=queue.Queue(), max_idle_s=5.0, adaptive=True,
+            autofocus_budget={"max_exposures": 8, "z_range_um": 2.0,
+                              "z_step_um": 1.0, "method": "single_sweep",
+                              "settle_ms": 0},
+            num_time_points=1, time_interval_s=0,
+        )
+
+    # Authorizing two refocuses must not inflate what the survey expects.
+    assert hook.planned_refocus_reexposures() == 2
+    assert sizes["total"] == n_tiles, (
+        "an authorized budget the survey may never spend must not become an "
+        "expectation the survey can never meet"
+    )
+
+    # A survey that takes none of them still finishes.
+    for _ in range(n_tiles):
+        progress.image_done()
+    assert progress.survey_complete()
+
+
+def test_a_queued_reexposure_keeps_the_survey_open_past_its_plan():
+    """Round 2's last-tile drop, expressed on SurveyProgress alone."""
+    progress = SurveyProgress(2)
+    progress.image_done()
+    progress.expect_one_more()      # a refocus is queued on the last planned tile
+    progress.image_done()
+    assert not progress.survey_complete(), (
+        "the generator must stay open for a re-exposure it has just been handed"
+    )
+    progress.image_done()
+    assert progress.survey_complete()

@@ -34,6 +34,24 @@ _HOOK_ARTIFACT_LIMITS_SCHEMA = {
     "additionalProperties": False,
 }
 
+_ADAPTIVE_AUTOFOCUS_BUDGET_SCHEMA = {
+    "type": "object",
+    "description": (
+        "Optional exposure budget authorizing RequestAutofocus from a saved or "
+        "generated adaptive survey hook. max_exposures bounds autofocus sweep "
+        "snaps plus refocused-tile re-exposures; each tile may be refocused once."
+    ),
+    "properties": {
+        "max_exposures": {"type": "integer"},
+        "z_range_um": {"type": "number"},
+        "z_step_um": {"type": "number"},
+        "method": {"type": "string", "enum": ["coarse_then_fine", "single_sweep"]},
+        "settle_ms": {"type": "integer"},
+    },
+    "required": ["max_exposures", "z_range_um", "z_step_um", "method", "settle_ms"],
+    "additionalProperties": False,
+}
+
 _CALIBRATION_REF_SCHEMA = {
     "description": (
         "Optional tagged calibration reference. Omit it to use calibration recorded "
@@ -1347,6 +1365,9 @@ TOOLS: list[dict[str, Any]] = [
             "metadata) and returns a HookResult whose actions include "
             "ContinueSurvey (acquire the next planned tile) or StopSurvey (end "
             "the scan); the trusted parent, not the hook, dispatches them. It "
+            "may also request one refocus of a promising tile when the caller "
+            "provides an exposure-bounded autofocus_budget; the refocused frame "
+            "is judged again with metadata['microclaw_refocused'] true. It "
             "never receives ctrl, guard, or a queue. A reviewed built-in from "
             "the pre-coded registry keeps the older direct contract: the runner "
             "sets hook.survey_events, hook.candidates and hook.progress, and the "
@@ -1451,6 +1472,7 @@ TOOLS: list[dict[str, Any]] = [
                 },
                 "illumination_envelope": _HOOK_ILLUMINATION_ENVELOPE_SCHEMA,
                 "artifact_limits": _HOOK_ARTIFACT_LIMITS_SCHEMA,
+                "autofocus_budget": _ADAPTIVE_AUTOFOCUS_BUDGET_SCHEMA,
             },
             "required": ["protocol", "save_dir", "hook_strategy"],
         },
