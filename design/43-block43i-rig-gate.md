@@ -2,17 +2,10 @@
 
 Implementation ancestor: f2ea064
 
-## Round 4 — four things, and Step 4 is the one that keeps getting missed
+## Round 5 — one survey closes it — **THIS IS THE LIVE ROUND**
 
-Round 3 (`43i-m5-round3`) **PASSED Steps 0, 1, 3, 3b and 5, and one limb of 7.**
-**3b is the block's own mechanism and it is now gated:** run 3's plan ran
-`bead_pos_1 → bead_pos_3 → bead_pos_2`, so `bead_pos_2` was the *last* tile, it
-took the refocus, and its `refocus=1` frame is in the dataset. That is round 2's
-defect, fixed and measured. Two reporting findings came out of it, both fixed in
-`10085e2` — a finished plan reported as a dose cap, and `RequestAutofocus`
-stranding a survey.
-
-## Round 5 — one survey closes it
+Every section below this one is history, kept for the round record. Position is
+not recency: read the heading.
 
 Round 4 (`43i-m5-round4`) **PASSED Steps 0, 2, 4, 6, 7a and 7b.** Every step of
 this gate has now passed at least once. What round 5 owes is one defect fix and
@@ -66,6 +59,14 @@ each re-exposure raises it as it is queued.
 3. **Nothing else.** Steps 1, 2, 3, 3b, 5, 7 and 8 are all closed.
 
 ## Round 4 — superseded, kept for the round history
+
+Round 3 (`43i-m5-round3`) **PASSED Steps 0, 1, 3, 3b and 5, and one limb of 7.**
+**3b is the block's own mechanism and it was gated there:** run 3's plan ran
+`bead_pos_1 → bead_pos_3 → bead_pos_2`, so `bead_pos_2` was the *last* tile, it
+took the refocus, and its `refocus=1` frame is in the dataset. That is round 2's
+defect, fixed and measured. Two reporting findings came out of it, both fixed in
+`10085e2` — a finished plan reported as a dose cap, and `RequestAutofocus`
+stranding a survey.
 
 This list was the whole of round 4. If a step is not on it, do not spend time on
 it; if it is on it, it is needed even if something similar already passed.
