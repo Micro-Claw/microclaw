@@ -5714,3 +5714,81 @@ block is what made that possible.
 fallback, because the gating session happened to pass explicit positions, and the
 *emitted* multi-frame full dispatch, because both surveys stopped early. Both are
 unit-pinned in each direction, and the live half of the second is gated.
+
+## Block 43i — budgeted survey refocus (design/43 F5, merged 2026-08-11)
+
+Two implementation rounds by codex, four coordinator fixes, and **five M5 rounds**
+— the most rig rounds of any Track F block. Every defect that mattered was found
+by reading the artifact the rig produced, and **not one of them was a failure of
+the feature under test.** The refocus worked from round 1. What kept failing was
+everything the refocus touched afterwards.
+
+**Reading the code at assignment saved the block, and F5's stub was wrong twice.**
+The stub dispatched through the `run_autofocus` *tool*, which reaches
+`_pause_live`, `get_focus_lock_state`, `_sweep_payload` and thumbnails — none of
+which exist standalone, so the branch as written would have been unemittable for
+exactly the runner F5 calls "the script a user wants to keep". The sweep stack
+underneath it (`_run_autofocus_passes` and friends) was **already inlined into
+every emitted adaptive script** by `_analysis_source(include_autofocus=True)`,
+and the script already binds `mm = SimpleNamespace(core=core)`, which is the
+`ctrl` a sweep needs since it only ever touches `ctrl.core`. Calling that instead
+made the export cost close to zero and the block added **no new `CannotEmit`**.
+The stub's second error: "the re-exposure is a frame the reservation must already
+cover" is false — `candidates.put()` is the only path that increments `emitted`
+against `max_events`, so a re-queue outside it is an exposure outside the
+committed reservation, which is design/27's subject.
+
+**The dataset is a separate artifact from the log, and the log lied about it
+twice.** Round 1: the second look re-used the first look's axes, and NDTiff keys
+frames by their exact axis set, so it replaced the first in the readable index —
+established by an offline probe, not guessed. Round 2: the `refocus=1` axis fixed
+that and moved the loss downstream, because first looks carried *no* refocus key,
+`dataset.axes["refocus"]` read `[1]`, and every reader enumerating the axis
+product — `export_dataset_as_tiff` does exactly this — generated only
+`refocus=1` cells. Measured on the gate's own dataset: **4 real frames in, 3
+combos out, 1 real frame and 2 zeros.** In both cases the hook log recorded
+success. **A criterion that reads the log cannot see either defect**, which is
+why Step 5 was written as a dataset check and why it was the step that failed.
+
+**Sizing a completion total is harder than it looks, and I got it wrong in both
+directions.** Round 2 found a refocus granted at the *last* tile whose
+re-exposure was dropped: `max_events` had been widened for the budget in three
+places and `progress.set_total` in none, so the survey completed as the last
+image arrived and the generator put the terminator over the re-queued event. My
+fix sized the total at plan + *authorized* budget — and round 4 showed that a
+survey which does not spend its budget then never reaches its total and dies on
+the idle watchdog. The correlation was exact and the round contained its own
+control: three budgeted surveys stalled after visiting every tile, and the one
+run with no budget completed cleanly. The contract that satisfies both:
+**the total is the plan, and each re-exposure raises it at the moment it is
+actually queued.** A dose *cap* and what a survey expects to receive are
+different quantities and must not share a number.
+
+**Two gate-design failures were mine, and both cost a round.** Steps 4 and 7
+never said *which* autofocus implementation they meant. `run_autofocus` has its
+own lock check, guard check and flat-curve refusal — all pre-existing — and 43i
+added a second implementation inside `_dispatch` reached only through a hook's
+`RequestAutofocus`. Round 3 exercised the tool thoroughly and correctly, and none
+of it touched this block; the operator was right to be confused when it did not
+count. And round 3's handoff listed Steps 0, 3b, 4 and 7 and **did not name Step
+6**, which I then faulted the round for skipping. **The round's list in the
+runbook and the list in the handoff message must be the same list**, and a step
+that names a behaviour must also name the code path that implements it.
+
+**A refusal is not the same as a stop, and the gate found the gap.** Round 3's
+first run died because `RequestAutofocus` is the only action that can be
+*granted* and still queue nothing — refused for five distinct reasons, or
+accepted and non-converging, which is a normal outcome the capability is built
+around. A hook returning it alone ends the survey by omission. `hook_docs` now
+prescribes `(RequestAutofocus(), ContinueSurvey())` and both branches are pinned:
+a refused refocus lets the routing action behind it through, a granted one defers
+it and re-asks at the second look. The gate hook written for round 4 exists for
+the same reason — a hook that only asks when it likes the signal is a poor
+instrument for the negative limbs.
+
+**Carried forward, found by a session on this branch rather than by the gate:**
+the GUI stops tracking after an *exposure* write. Block 43b closed design/43 F4
+for property and config writers only; a sweep of every tool that writes
+GUI-visible state found seven more paths with no refresh, including the adaptive
+survey's own eventless exposure write. Only the exposure row is measured. It was
+kept off this branch by operator ruling rather than folded in.
