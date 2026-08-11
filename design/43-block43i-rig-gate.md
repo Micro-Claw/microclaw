@@ -12,19 +12,29 @@ defect, fixed and measured. Two reporting findings came out of it, both fixed in
 `10085e2` — a finished plan reported as a dose cap, and `RequestAutofocus`
 stranding a survey.
 
-**Round 4 owes exactly four things. Two have never run in three rounds.**
+### Run exactly these five things. Nothing else.
 
-1. **Step 0** — the suite moved again.
-2. **Step 4 — never exercised in rounds 1, 2 or 3.** Its instructions are now
-   arithmetic rather than advice; see the step.
-3. **Step 6 — not run in round 3 at all** (no `export_session_script` call in the
-   session). It is the compile-to-script principle and cannot be skipped again.
-4. **Step 7's other two limbs** — the focus-lock refusal and the no-budget
-   refusal. Round 3 closed only the exhausted-budget limb, and closed it
-   properly: 8 authorized exposures against a sweep costing 21 gave
-   `authorized autofocus exposure budget exhausted`, which is exactly right.
+This list is the whole of round 4. If a step is not on it, do not spend time on
+it; if it is on it, it is needed even if something similar already passed.
 
-Nothing else needs repeating.
+1. **Step 0** — the suite moved again (expect 1754 + 116 = 1870).
+2. **Step 4** — the non-converging sweep, **inside a survey**. See "Which code
+   path" below first: round 3 measured this on `run_autofocus`, which is not the
+   code this block added.
+3. **Step 6** — export the session, close Microclaw, run the script. **This was
+   not asked for in round 3 and that omission was mine.** It is the
+   compile-to-script principle and it is the last unmeasured claim of the block.
+4. **Step 7a and 7b** — the no-budget refusal and the focus-lock refusal, both as
+   survey hook-log records. 7c already passed; do not re-run it.
+5. **Step 8 is already passed. Steps 2, 3, 3b and 5 are already passed.** Skip
+   them.
+
+Two corrections to what round 3 was told, both mine:
+
+- Round 3's handoff named Steps 0, 3b, 4 and 7 and **did not name Step 6**, then
+  the round was faulted for skipping it. It is named above.
+- Steps 4 and 7 never said *which* autofocus implementation they meant, and round
+  3 reasonably exercised the tool. The section below now says it outright.
 
 ## Round 3 — what M5 round 2 closed, and the one new criterion
 
@@ -174,43 +184,105 @@ second-look observation for it in the hook log. Round 2 produced the accepted
 `RequestAutofocus` record with no frame behind it, so **check the dataset, not
 the log** — the log looked correct while the frame was missing.
 
+## Which code path Steps 4 and 7 measure — read this first
+
+**Round 3 measured non-convergence and the focus lock on the wrong path, because
+this runbook did not say which path it meant. That was the runbook's fault.**
+
+`run_autofocus` — the standalone tool — has its own focus-lock check, its own
+guard check and its own flat-curve refusal. All of that is pre-existing code
+(design/28 F1, design/36) and **none of it is what block 43i added.** Round 3
+exercised it thoroughly and correctly: two calls returned
+`converged: false, moved: false` with `Coarse focus metric is flat (contrast 0.07
+< 0.15) … Z was NOT moved`, which is real evidence that the sweep and its restore
+work.
+
+What 43i added is a **second, separate** implementation of those checks inside
+`UntrustedHookAdapter._dispatch`, reached only when a **survey hook proposes
+`RequestAutofocus`**. It has its own lock check, its own guard check, and its own
+non-convergence handling — including the parts nothing else has: *do not
+re-queue, do not retry, and let the survey carry on*. Every criterion below must
+therefore appear **in a survey's hook log**, not in a `run_autofocus` reply.
+
+The quick test of whether evidence counts: **it is in a `survey_log*.json`, and
+the record has `"action": {"kind": "RequestAutofocus"}`.** A tool reply is not
+evidence for these steps, and an agent *saying* it cannot sweep under a focus
+lock is not evidence for anything — in round 3 the lock refusal was predicted in
+prose and never produced by the code.
+
+### The gate hook — save this once, use it for Steps 4 and 7
+
+Round 3's `relative_signal_refocus` only asks for a refocus when it likes the
+signal, which makes it a poor instrument for the negative limbs: on a defocused
+field it may simply not ask. This one always asks, and always routes.
+
+Prompt:
+
+> Save a hook called `gate_always_refocus` with exactly this source, then show me
+> `list_hooks` to confirm it registered:
+>
+> ```python
+> from microclaw.hook_decisions import ContinueSurvey, HookResult, RequestAutofocus
+>
+> class GateAlwaysRefocus:
+>     """Ask for a refocus at every first look, and always route the survey."""
+>
+>     def analyze_frame(self, image, metadata):
+>         if metadata.get("microclaw_refocused"):
+>             return HookResult({"pass": "second_look"},
+>                               actions=(ContinueSurvey(),))
+>         return HookResult({"pass": "first_look"},
+>                           actions=(RequestAutofocus(), ContinueSurvey()))
+> ```
+
+The trailing `ContinueSurvey` is the pattern `hook_docs` now prescribes and is
+what keeps these runs alive: when the refocus is refused or does not converge,
+nothing is re-queued, and without it the survey idles out `max_idle_s` and dies —
+which is exactly what killed round 3's first run.
+
 ## Step 4 — the negative limb: a sweep that does not converge
 
-**Unexercised in rounds 1, 2 and 3. It needs no special sample and about two
-minutes.** Take round 3's working survey and change two things:
+**Never exercised on the survey path in three rounds.** It needs no special
+sample and about two minutes.
 
-- **Defocus by ~10 µm** with `move_stage_z` before starting, so the true focal
-  plane is far outside the window you are about to sweep.
-- **Use a narrow window:** `autofocus_budget = {"max_exposures": 24,
-  "z_range_um": 2, "z_step_um": 0.5, "method": "coarse_then_fine",
-  "settle_ms": 50}`.
+Actions:
+
+1. Mark two or three positions as usual.
+2. **Defocus by ~10 µm**: *"move Z by +10 µm"* — so the true focal plane is far
+   outside the window about to be swept.
+3. Prompt:
+
+   > Run an adaptive survey over those positions with the `gate_always_refocus`
+   > hook, protocol timelapse, 1 frame, and
+   > `autofocus_budget = {"max_exposures": 24, "z_range_um": 2, "z_step_um": 0.5,
+   > "method": "coarse_then_fine", "settle_ms": 50}`. Then show me the hook log.
 
 That window costs **7 planes** per refocus, so 24 exposures authorize two full
-refocuses (8 each) with room to spare — the budget will not be what refuses.
-Round 3's own budget of 8 against a 20 µm window costing 21 is why its first run
-refused on budget instead; do not repeat that pairing here.
+refocuses at 8 each — **the budget cannot be what refuses.** Round 3's budget of
+8 against a 20 µm window costing 21 is why its first run refused on budget
+instead; do not repeat that pairing here.
 
-PASS requires `decision: accepted` with reason **`autofocus ran and did not
-converge; Z restored`**, `entry_z_um` equal to `final_z_um`, no second look for
-that tile, no widening, no retry, and the survey carrying on. The `reason` inside
-the `autofocus` block says which refusal you got — a flat curve
+PASS requires, in the survey's hook log:
+
+- a `RequestAutofocus` record with `"decision": "accepted"` and reason
+  **`autofocus ran and did not converge; Z restored`**;
+- `entry_z_um` equal to `final_z_um` inside its `autofocus` block;
+- **no second look** for that tile — no `refocus=1` frame, no `after_refocus`
+  observation;
+- **no widening and no retry** — exactly one `RequestAutofocus` record per tile;
+- and the survey **carrying on** to the next planned tile.
+
+The `reason` inside the `autofocus` block says which refusal fired — a flat curve
 (`curve_contrast` under `MIN_CONTRAST`) or a peak pinned at the sweep boundary
-(design/28 F1). **Either is a PASS**; record which.
+(design/28 F1). **Either is a PASS**; record which one you got.
 
-This limb is what makes the feature affordable: convergence does not prove cells,
-but failure to converge disproves them. It is also the only limb of the sweep
-contract that three rounds of green have never touched.
+If the sweep converges anyway, the defocus was not far enough for a 2 µm window:
+increase it to 20 µm and re-run. This limb is what makes the feature affordable —
+convergence does not prove cells, but failure to converge disproves them — and it
+is the only part of the sweep contract three rounds of green have never touched.
 
 A field of bare glass — `scan300_488_r12_c15` is the reference case — is a more
 faithful version if you ever have one, but it is not required and never was.
-
-PASS requires: `decision: accepted`, reason `autofocus ran and did not converge;
-Z restored`, no second look for that tile, **no widening and no retry**, and the
-survey carrying on to the next tile. Confirm from the log that `entry_z_um` and
-`final_z_um` are equal.
-
-This limb is the one that makes the feature affordable: convergence does not
-prove cells, but failure to converge disproves them.
 
 ## Step 5 — both looks survive in the saved dataset
 
@@ -243,11 +315,24 @@ zero-padding an absent cell is expected; losing a frame that was acquired is not
 
 ## Step 6 — the emitted script reproduces the refocus decision standalone
 
-Export the session, then **close Microclaw** (leave Micro-Manager and the bridge
-running — the script needs the core) and run the script by itself.
+Run this after a survey that **did** refocus — Step 4's non-converging run does
+not exercise the re-queue, so use one of Step 3's converging surveys, or simply
+re-focus first and run the `gate_always_refocus` hook once with the 24-exposure
+budget so a refocus is granted.
+
+Prompt:
+
+> Export this session as a standalone script.
+
+Then **close Microclaw** — leave Micro-Manager and the bridge running, the script
+needs the core — and run it by itself:
 
     uv run python <exported-script>.py > emitted-run-43i.txt 2>&1
     Get-Content emitted-run-43i.txt
+
+A 0-byte `emitted-run-43i.txt` is not by itself a failure: the script prints
+nothing on success, and round 1's evidence was its hook log and dataset. Judge it
+on those, and on the file having been written at all.
 
 PASS requires: zero `NOT EMITTED` in the artifact, **the script running to
 completion** (round 2's died at line 1908 on an undecorated tool's refusal, after
@@ -272,16 +357,41 @@ present in the file.
 
 ## Step 7 — the refusals are visible
 
-Cheap, and it closes the capability's shape. Re-run a short survey with
-`autofocus_budget` sized below one sweep (`max_exposures` less than the sweep's
-plane count) and confirm the log records
-`authorized autofocus exposure budget exhausted` rather than silently skipping.
+Three short surveys with the `gate_always_refocus` hook, two positions each. All
+three criteria are records **in the survey's hook log**, on a
+`"kind": "RequestAutofocus"` action — not tool replies. **`run_autofocus` cannot
+answer any of these**, and neither can the agent saying what would happen.
 
-With the focus lock engaged, confirm `focus lock is engaged; autofocus sweep
-refused`.
+**7a — no budget authorized.** Round 3 never ran this; it is the pre-43i
+behaviour and it must still be intact.
 
-Run a survey with **no** `autofocus_budget` and a hook that requests autofocus,
-and confirm `unsupported-by-run_adaptive_survey` — the pre-43i behaviour, intact.
+> Run an adaptive survey over those two positions with the `gate_always_refocus`
+> hook, protocol timelapse, 1 frame, and **no** `autofocus_budget`. Show me the
+> hook log.
+
+PASS: `"decision": "refused"`, reason **`unsupported-by-run_adaptive_survey`**,
+and the survey still completes both tiles (the hook's `ContinueSurvey` carries
+it).
+
+**7b — focus lock engaged.** Round 3's agent *stated* this refusal and the code
+never produced it; the lock was disengaged before every survey.
+
+> Turn the focus lock **on**, then run the same survey again **with**
+> `autofocus_budget = {"max_exposures": 24, "z_range_um": 2, "z_step_um": 0.5,
+> "method": "coarse_then_fine", "settle_ms": 50}`. Show me the hook log.
+
+PASS: `"decision": "refused"`, reason **`focus lock is engaged; autofocus sweep
+refused`**, no Z motion, and the survey completing. Turn the lock back off
+afterwards.
+
+**7c — budget exhausted.** *Already PASSED in round 3* — 8 authorized exposures
+against a 20 µm window costing 21 gave `authorized autofocus exposure budget
+exhausted`. Do not re-run it.
+
+**Optional 7d, if it comes free.** A budget whose sweep would leave the Z limits
+refuses with `SafetyGuard refused autofocus sweep`. Round 3 hit the equivalent on
+the *tool* path (`Z=-4.6 µm is below the minimum allowed`) with
+`z_range_um: 60` near Z≈25 µm, so the same range in a survey budget should do it.
 
 ## Step 8 — the script opens as text, and the bridge survives it
 
