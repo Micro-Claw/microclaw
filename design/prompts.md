@@ -5634,3 +5634,83 @@ exercised. The saturation refusal was likewise unexercised on-rig. Both rest on
 the offline measurements and unit tests, and the gate record says so. One
 behaviour noted rather than fixed: the agent answered from the log it had already
 read and called `rank_hook_log` only after being invited to.
+
+## Block 43h — adaptive runs must be emittable (design/43 F14, merged 2026-08-11)
+
+Four implementation rounds — three by a Claude runner, one by codex — plus eight
+coordinator fixes, three demo gate rounds and three M5 rounds. The largest block
+in Track F, and the one where the gate earned its keep most clearly: **every
+defect that mattered was found by running the artifact, and none of them could
+have been found by a test.**
+
+**The refusal was a category error, and reading the code at assignment found
+seven more.** F14's argument — that refusing to emit the *trace* had been
+generalised into a rule about the *program* — was right and its stubs were not.
+The three tools are not one shape (zstack and timelapse have no position list at
+all). The loop's `hook` argument is the `UntrustedHookAdapter`, not the user's
+hook, so "inline the file verbatim" emits a runner calling methods nothing
+defines. A survey seeded by `position_names` had no resolution path whatsoever,
+so the stub refused every one. And `analysis_used` was a fixed list of four tool
+names, so an emitted hook calling `compute_stats` would have `NameError`d — the
+block-13/41b class, arriving from the tool-name side. **Read the code the block
+touches before writing the entry**; design docs age against the code they
+describe.
+
+**Four review rounds, and the first three each returned a green suite with a
+real defect behind it.** Round 1 had disabled the free-name guard globally to
+clear five closure false positives — the one test the entry singled out as the
+thing to strengthen — and had an emitted survey silently dropping the recorded
+exposure, and no emitted script ever checked its seed plan against the limits its
+own header claimed. Round 2 fixed the limits read and made it raise from the top
+of the exporter, so one unemittable step threw away an entire session's export.
+Round 3's strict read was right; its test pinned the raise, and so pinned the
+defect. **A test that pins the behaviour you just wrote is not a regression
+test.**
+
+**Three gate rounds on the demo machine, and the first two measured nothing.**
+Round 1's Step 2 asked to "watch this field for three frames and give me a
+standalone script", and the agent answered with three snaps — a fair reading.
+Naming no tool is necessary and not sufficient; **the request must be one only
+the thing under test can answer**, and the criterion must be split so a reach
+failure does not void the mechanism test. Round 2 then failed because
+`generate_and_save_hook` carried no export decoration, so a session that wrote
+the hook it then used planted a `raise` three lines before its own adaptive
+program. No fixture had ever exported a session that *created* the hook it used.
+
+**M5 round 2 is the one to remember.** The export returned `emitted_calls: 0` —
+named-position resolution could not re-derive `pos_1` even after
+`get_position_list`, `validate_positions` and `mark_position` — and the agent,
+reading that correctly and saying so honestly, hand-wrote an acquisition script
+with the `write_text_file` tool this very block had just shipped. The operator
+ran it; it opened one `Acquisition` per frame and hung the console for five
+minutes, unkillable. **A refusing exporter summons the fabrication path it
+exists to remove.** The operator's ruling was the right one and is now in the
+tool's description: writing the substitute is more useful than nothing, provided
+it says plainly that it is not the exported artifact and the refusal is reported.
+The fix was the fallback the assignment had already named and the runner had
+skipped — the run records the coordinates it resolved, so a name the exporter
+cannot re-derive is not a dead end.
+
+**What the rig proved, and what a knife-edge cannot.** M5 round 3's 50 ms survey
+reproduced to every digit with Microclaw closed: identical saturation
+statistics, identical Continue/Stop decisions, matching frame counts. The other
+survey in the same session diverged — and the evidence located why, because
+**two runs of the same emitted script disagreed with each other** (pos1 read 26,
+0 and 5 saturated pixels across three runs). It used a zero saturation
+tolerance, where one pixel decides. Identical code diverging puts the
+nondeterminism in the specimen. *A criterion balanced on a single pixel cannot
+demonstrate reproducibility, however real the sample.*
+
+**The pre-existing defect the block surfaced by being able to run twice.**
+`run_adaptive_survey` counted completion in **positions** while its plan is in
+**events**, so a multi-frame survey was "complete" long before its plan was
+dispatched and the generator's exit became a race: live 5 frames, exported 12,
+same program, both reporting `stopped_early: false` under a status line that
+sounded correct. Fixed in runner and emitter together, and measured at 9 of 9 on
+M5. **Being able to run the same program twice is itself a diagnostic**, and this
+block is what made that possible.
+
+**Two limbs ship rig-ungated with their reasons recorded** — the `tiles_planned`
+fallback, because the gating session happened to pass explicit positions, and the
+*emitted* multi-frame full dispatch, because both surveys stopped early. Both are
+unit-pinned in each direction, and the live half of the second is gated.
