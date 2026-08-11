@@ -16,8 +16,42 @@ from microclaw.agent import (
     SYSTEM_PROMPT,
     run_agent,
     run_agent_iter,
+    _system_blocks,
 )
 from microclaw.safety import SafetyConstraints, SafetyGuard
+
+
+class TestRigInterviewSystemBlock:
+    @pytest.fixture(autouse=True)
+    def _knowledge_path(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(
+            "microclaw.knowledge_manager.KNOWLEDGE_PATH", tmp_path / "knowledge.yaml"
+        )
+
+    def test_interview_names_only_remaining_topics_and_is_not_cached(self):
+        from microclaw.knowledge_manager import RIG_TOPICS, save_entry
+        for topic in RIG_TOPICS[:-1]:
+            save_entry("rig", topic, {"description": "answered"})
+        blocks = _system_blocks()
+        interview = blocks[-1]
+        assert "cache_control" not in interview
+        assert RIG_TOPICS[-1] in interview["text"]
+        for topic in RIG_TOPICS[:-1]:
+            assert topic not in interview["text"]
+        assert "Never block a task" in interview["text"]
+        assert "Never re-ask a stored topic" in interview["text"]
+        assert all("cache_control" in block for block in blocks[:-1])
+
+    def test_interview_is_omitted_when_profile_is_complete(self):
+        from microclaw.knowledge_manager import RIG_TOPICS, save_entry
+        for topic in RIG_TOPICS:
+            save_entry("rig", topic, {"description": "answered"})
+        blocks = _system_blocks()
+        assert len(blocks) == 2
+        assert all("cache_control" in block for block in blocks)
+        assert "Complete this rig's profile" not in "\n".join(
+            block["text"] for block in blocks
+        )
 
 
 class FakeStream:

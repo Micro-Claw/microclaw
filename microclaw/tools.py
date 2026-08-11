@@ -1641,12 +1641,21 @@ def _bounce_live_if_on(ctrl: MicroscopeController) -> bool:
 @emits_nothing
 def get_roi(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     roi = ctrl.core.get_roi()
-    return {
+    return _with_illuminated_field({
         "x": int(roi.x),
         "y": int(roi.y),
         "width": int(roi.width),
         "height": int(roi.height),
-    }
+    })
+
+
+def _with_illuminated_field(result: dict) -> dict:
+    """Attach a stored rig crop fact at every ROI decision point."""
+    from microclaw.knowledge_manager import load_knowledge
+    rig = load_knowledge().get("rig") or {}
+    if "illuminated_field" in rig:
+        result["illuminated_field"] = rig["illuminated_field"]
+    return result
 
 
 def set_roi(
@@ -1665,7 +1674,7 @@ def set_roi(
     result: dict = {"status": "ROI set.", "x": x, "y": y, "width": width, "height": height}
     if live_restarted:
         result["live_view"] = "restarted"
-    return result
+    return _with_illuminated_field(result)
 
 
 def clear_roi(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
@@ -1679,7 +1688,7 @@ def clear_roi(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     result: dict = {"status": "ROI cleared (full frame).", "width": w, "height": h}
     if live_restarted:
         result["live_view"] = "restarted"
-    return result
+    return _with_illuminated_field(result)
 
 
 # --- XY Stage ---

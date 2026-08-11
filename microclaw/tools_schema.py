@@ -2023,7 +2023,7 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "save_knowledge",
         "description": (
-            "Save a non-standard fact about a sample, device, or imaging strategy to "
+            "Save a fact about this rig, a sample, device, or imaging strategy to "
             "the user's persistent knowledge base (~/.microclaw/knowledge.yaml). "
             "This information is loaded automatically in future sessions. "
             "Only call after the user has confirmed they want it saved."
@@ -2033,9 +2033,11 @@ TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "category": {
                     "type": "string",
-                    "enum": ["samples", "devices", "strategies"],
+                    "enum": ["rig", "samples", "devices", "strategies"],
                     "description": (
-                        "'samples' for sample/specimen profiles, "
+                        "'rig' for installation-wide facts such as the illuminated "
+                        "field, illumination path, calibration status, device roles, "
+                        "and emission filters; 'samples' for sample/specimen profiles, "
                         "'devices' for non-standard hardware mappings and roles, "
                         "'strategies' for named imaging recipes."
                     ),
@@ -2071,8 +2073,13 @@ TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "category": {
                     "type": "string",
-                    "enum": ["samples", "devices", "strategies"],
-                    "description": "Category to retrieve. Omit to return all categories.",
+                    "enum": ["rig", "samples", "devices", "strategies"],
+                    "description": (
+                        "Category to retrieve. 'rig' contains installation-wide facts "
+                        "such as the illuminated field, illumination path, calibration "
+                        "status, device roles, and emission filters. Omit to return all "
+                        "categories."
+                    ),
                 },
             },
             "required": [],
@@ -2086,7 +2093,12 @@ TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "category": {
                     "type": "string",
-                    "enum": ["samples", "devices", "strategies"],
+                    "enum": ["rig", "samples", "devices", "strategies"],
+                    "description": (
+                        "Use 'rig' for installation-wide facts such as the illuminated "
+                        "field, illumination path, calibration status, device roles, "
+                        "and emission filters."
+                    ),
                 },
                 "key": {
                     "type": "string",

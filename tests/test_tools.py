@@ -1,6 +1,7 @@
 import json
 import math
 import os
+import types
 from pathlib import Path
 from unittest.mock import MagicMock, call
 
@@ -3591,6 +3592,23 @@ class TestSaveKnowledgeConfirmation:
         )
         assert "status" in result
 
+    def test_a_rig_entry_does_not_require_observed_on(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        from microclaw import tools
+        monkeypatch.setattr(tools, "CONFIRM_FN", lambda s, kind="action": True)
+        saved = []
+        monkeypatch.setattr(
+            "microclaw.knowledge_manager.save_entry",
+            lambda *args, **kwargs: saved.append(args),
+        )
+        result = tools.save_knowledge(
+            mock_ctrl, unconstrained_guard, category="rig",
+            key="illuminated_field", value={"deliberate": True},
+        )
+        assert "status" in result
+        assert saved
+
     def test_the_gate_receives_the_knowledge_kind(
         self, mock_ctrl, unconstrained_guard, monkeypatch
     ):
@@ -3607,6 +3625,54 @@ class TestSaveKnowledgeConfirmation:
         )
         assert seen["kind"] == "knowledge"
 
+
+class TestRoiRigKnowledge:
+    @pytest.fixture(autouse=True)
+    def _knowledge_path(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(
+            "microclaw.knowledge_manager.KNOWLEDGE_PATH", tmp_path / "knowledge.yaml"
+        )
+
+    @pytest.mark.parametrize("tool_name", ["get_roi", "set_roi", "clear_roi"])
+    def test_roi_results_have_no_illuminated_field_when_none_is_stored(
+        self, tool_name, mock_ctrl, unconstrained_guard
+    ):
+        roi = types.SimpleNamespace(x=1, y=2, width=3, height=4)
+        mock_ctrl.core.get_roi.return_value = roi
+        mock_ctrl.core.get_camera_device.return_value = "Camera"
+        mock_ctrl.core.get_image_width.return_value = 512
+        mock_ctrl.core.get_image_height.return_value = 256
+        mock_ctrl.studio.live().is_live_mode_on.return_value = False
+        if tool_name == "get_roi":
+            result = tools.get_roi(mock_ctrl, unconstrained_guard)
+            assert result == {"x": 1, "y": 2, "width": 3, "height": 4}
+        elif tool_name == "set_roi":
+            result = tools.set_roi(mock_ctrl, unconstrained_guard, 1, 2, 3, 4)
+        else:
+            result = tools.clear_roi(mock_ctrl, unconstrained_guard)
+        assert "illuminated_field" not in result
+
+    @pytest.mark.parametrize("tool_name", ["get_roi", "set_roi", "clear_roi"])
+    def test_roi_results_include_stored_illuminated_field(
+        self, tool_name, mock_ctrl, unconstrained_guard
+    ):
+        from microclaw.knowledge_manager import save_entry
+        field = {"deliberate": True, "note": "only this region is lit"}
+        save_entry("rig", "illuminated_field", field)
+        mock_ctrl.core.get_roi.return_value = types.SimpleNamespace(
+            x=1, y=2, width=3, height=4
+        )
+        mock_ctrl.core.get_camera_device.return_value = "Camera"
+        mock_ctrl.core.get_image_width.return_value = 512
+        mock_ctrl.core.get_image_height.return_value = 256
+        mock_ctrl.studio.live().is_live_mode_on.return_value = False
+        if tool_name == "get_roi":
+            result = tools.get_roi(mock_ctrl, unconstrained_guard)
+        elif tool_name == "set_roi":
+            result = tools.set_roi(mock_ctrl, unconstrained_guard, 1, 2, 3, 4)
+        else:
+            result = tools.clear_roi(mock_ctrl, unconstrained_guard)
+        assert result["illuminated_field"] == field
 
 class TestListDeviceProperties:
     def _make_sv(self, items):

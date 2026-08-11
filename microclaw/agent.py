@@ -8,7 +8,11 @@ import time
 import anthropic
 
 from microclaw.controller import MicroscopeController
-from microclaw.knowledge_manager import format_for_prompt, load_knowledge
+from microclaw.knowledge_manager import (
+    format_for_prompt,
+    load_knowledge,
+    rig_profile_gaps,
+)
 from microclaw.safety import SafetyGuard
 from microclaw.tools import execute_tool
 from microclaw.tools_schema import TOOLS_CACHED
@@ -74,6 +78,7 @@ def known_models() -> list[str]:
 SYSTEM_PROMPT = """You are Microclaw, an AI assistant that controls a Micro-Manager microscope.
 
 The biologist is watching the Micro-Manager GUI. Every tool call you make is immediately reflected there: images appear in the viewer, the stage position display updates, acquisitions play out in the acquisition window. Live view is for the operator's eyes, not yours — you read images through `snap_and_analyze` and hooks, never off the live canvas. Start it when they ask, or when they are about to watch something worth watching (a navigation), and stop it when that is over. Do not start it "so the user can see", and never leave it running after an acquisition finishes. On a rig whose profile records `camera_triggers_lasers: true`, a running live view is continuous exposure: say so before you start one, and account for it the way you account for any other dose.
+Rig-specific facts are stored under `rig/` in the knowledge-base data supplied with this prompt; use them when interpreting hardware state and proposing actions.
 
 Guidelines:
 - Before executing a multi-step protocol, call get_system_state to orient yourself.
@@ -271,12 +276,37 @@ def _system_blocks() -> list[dict[str, Any]]:
             "cache_control": {"type": "ephemeral"},
         }
     ]
-    kb_text = format_for_prompt(load_knowledge())
+    knowledge = load_knowledge()
+    kb_text = format_for_prompt(knowledge)
     if kb_text:
         blocks.append(
             {"type": "text", "text": kb_text, "cache_control": {"type": "ephemeral"}}
         )
+    gaps = rig_profile_gaps(knowledge)
+    if gaps:
+        blocks.append({
+            "type": "text",
+            "text": RIG_INTERVIEW_PROMPT.format(
+                topics="\n".join(f"  - {topic}" for topic in gaps)
+            ),
+        })
     return blocks
+
+
+RIG_INTERVIEW_PROMPT = """## Complete this rig's profile conversationally
+
+Read the rig first with get_roi, get_pixel_size, list_devices, and
+get_emu_configuration. Ask only about facts those tools could not determine.
+Ask about a few topics at a time, in the operator's language, and let the
+operator skip anything. Save each answered topic with
+save_knowledge(category="rig", key=<topic>); an unanswered topic stays open and
+may be asked again next session.
+
+Topics still open:
+{topics}
+
+Never block a task on this interview. If the operator wants to start working,
+do the task and ask afterwards. Never re-ask a stored topic."""
 
 
 def _stream_one_round(messages, system_blocks, model, context_provider=None):
