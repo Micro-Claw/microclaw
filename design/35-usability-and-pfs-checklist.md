@@ -6757,6 +6757,40 @@ schedule them or record a reason at block 12.
 This is an inventory, not permission to close with unresolved blank work. Block
 12 assigns every row one of the explicit dispositions above.
 
+- **The GUI stops tracking after an *exposure* write, and six other write paths
+  never refresh either.** Operator-observed on M5, 2026-08-11, in a TIRF session
+  on 43i's branch: Microclaw read 20 ms while Micro-Manager's Exposure [ms] box
+  showed 50, and Tools → Refresh GUI revealed the 20. This is design/43 F4's
+  class, and **block 43b did not close it** — 43b covered the property and config
+  writers (`set_channel`, `set_device_property`, `set_focus_lock`,
+  `set_emu_laser_power_percentage` all call `ctrl.refresh_gui()`), and nothing
+  else does. Swept at `5aaa70d`, every tool that writes GUI-visible state:
+
+  | writer | what goes stale | evidence |
+  | --- | --- | --- |
+  | `set_exposure` | Exposure [ms] | **measured** |
+  | `run_timelapse`, `run_zstack` | eventless exposure write | inspection |
+  | `_acquire_positions_with_hook`, `_acquire_survey_with_detector` | same write — the multiposition/tile/**adaptive survey** path | inspection |
+  | `set_roi`, `clear_roi` | ROI | inspection |
+  | `move_named_stage`, `move_stage_xy`, `move_stage_z` | stage position display | inspection |
+
+  Only the first row is measured; the rest are unrefreshed *by inspection* and
+  each needs the same one-glance rig check before it is called a defect.
+  `refresh_gui` is best-effort, never raises, and repaints from a cache that is
+  already current after a core write, so the fix is cheap where it is wanted —
+  the open question is which of these the operator wants repainted, not whether
+  it can be.
+
+  **Origin of the specific 20 ms is undetermined and should not be guessed.** It
+  is absent from that session's history (no `set_exposure`, no `exposure_ms` on
+  any call, four `run_timelapse` calls passing none) and from 43i round 2's, so
+  it predates both — itself consistent with a stale GUI persisting across
+  sessions until something refreshes it.
+
+  Deliberately **not** folded into 43i: that branch is about survey refocus, and
+  operator ruling of 2026-08-11 was to carry this as its own block rather than
+  mix an unrelated fix into a gated branch.
+
 - **No single-frame statistic separated cells from a diffuse bright gradient on
   real data — and a texture block was proposed and withdrawn on the strength of
   it.** From 43g's offline study, 2026-08-10. Measured on the saved Nestor
