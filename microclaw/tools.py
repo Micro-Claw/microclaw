@@ -845,6 +845,10 @@ def _emit_adaptive(params: RecordedParams, kind: str) -> str:
         autofocus_reexposures = (
             autofocus_budget["max_exposures"] // (autofocus_sweep_exposures + 1)
         )
+    # A survey with no authorized refocus must emit exactly the script it emitted
+    # before this capability existed -- "+ 0" everywhere would be noise in every
+    # unrelated export.
+    _plus_reexposures = f" + {autofocus_reexposures!r}" if autofocus_reexposures else ""
     # Refuse here rather than at the top of export_session_script: a refusal
     # inside the loop becomes a `# NOT EMITTED` step in an otherwise complete
     # script, which is what every other CannotEmit does. Raising up front threw
@@ -939,10 +943,11 @@ def _emit_adaptive(params: RecordedParams, kind: str) -> str:
             common.append(f"core.set_exposure({pp['exposure_ms']!r})")
         common.extend([
             f"events = multi_d_acquisition_events(**{{k: v for k, v in {shape!r}.items() if v is not None}})",
-            "candidates = queue.Queue()", "progress = SurveyProgress(len(events))",
+            "candidates = queue.Queue()",
+            f"progress = SurveyProgress(len(events){_plus_reexposures})",
             *( (["# Standalone scripts cannot query focus-lock state; disengage the lock before running.", f"hook.configure_autofocus(ctrl=mm, guard=guard, focus_lock_check=None, **{autofocus_budget!r}, sweep_exposures={autofocus_sweep_exposures!r})"] if autofocus_budget is not None else []) if saved else [] ),
-            *( [f"hook.configure_adaptive(events=events, candidates=candidates, progress=progress, guard=guard, max_events=len(events) + {autofocus_reexposures!r})"] if saved else ["hook.survey_events = events", "hook.candidates = candidates", "hook.progress = progress"] ),
-            f"event_source = _survey_event_stream(events, candidates, progress, {params.get('max_idle_s', 60.0)!r}, hook, adaptive=True, max_events=len(events) + {autofocus_reexposures!r})",
+            *( [f"hook.configure_adaptive(events=events, candidates=candidates, progress=progress, guard=guard, max_events=len(events){_plus_reexposures})"] if saved else ["hook.survey_events = events", "hook.candidates = candidates", "hook.progress = progress"] ),
+            f"event_source = _survey_event_stream(events, candidates, progress, {params.get('max_idle_s', 60.0)!r}, hook, adaptive=True, max_events=len(events){_plus_reexposures})",
             "_hook_callbacks = {name: callback for name, callback in {"
             "'image_process_fn': getattr(hook, 'image_process_fn', None), "
             "'post_hardware_hook_fn': getattr(hook, 'post_hardware_hook_fn', None)"
@@ -2856,6 +2861,7 @@ def build_stage_coordinate_mosaic(
     return result
 
 
+@emits_nothing
 def run_analysis_on_saved_dataset(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -5078,11 +5084,6 @@ def _acquire_survey_with_detector(
         xy_positions=[(p["x_um"], p["y_um"]) for p in positions],
         **shape_kwargs,
     )
-    # Completion is measured in returned images, so its total is the event
-    # plan, not the number of XY positions. A multi-frame tile contributes one
-    # completion unit per frame.
-    progress.set_total(len(survey_events))
-
     _configure_hook_capabilities(hook, ctrl, guard, save_dir, name,
                                  illumination_envelope, artifact_limits)
 
@@ -5117,6 +5118,21 @@ def _acquire_survey_with_detector(
             focus_lock_check=lambda: get_focus_lock_state(ctrl, guard), **budget,
         )
         autofocus_reexposures = hook.planned_refocus_reexposures()
+
+    # Completion is measured in returned images, so its total is the event
+    # plan, not the number of XY positions. A multi-frame tile contributes one
+    # completion unit per frame -- and an authorized refocus contributes one
+    # more, which is why this is sized after the budget is known rather than
+    # beside the event plan.
+    #
+    # M5 2026-08-11, round 2: sized at len(survey_events) alone, the survey was
+    # already complete when the last tile's image arrived, so the re-exposure
+    # its hook had just been granted was dropped when the generator put the
+    # terminator. The hook log recorded "refocused and re-queued this tile", the
+    # sweep's dose was spent, and the second look never happened. Same defect
+    # class as 43h round 4's positions-versus-events sizing: max_events was
+    # widened for the budget in three places and this total was not.
+    progress.set_total(len(survey_events) + autofocus_reexposures)
 
     if isinstance(hook, UntrustedHookAdapter):
         if adaptive:

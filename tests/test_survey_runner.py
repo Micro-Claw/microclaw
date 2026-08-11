@@ -1213,3 +1213,70 @@ class TestRunAdaptiveSurvey:
             protocol_params={"n_frames": 1, "interval_s": 0})
         assert "list_hooks" in unknown["error"]
         assert not captured, "every refusal above must precede the acquisition"
+
+
+# ── completion must count authorized re-exposures (M5 2026-08-11, round 2) ───
+
+def test_completion_total_includes_authorized_refocus_reexposures(
+    tmp_path, monkeypatch, unconstrained_guard
+):
+    """A refocus granted at the last tile was silently dropped on M5.
+
+    Sized at len(survey_events) alone, the survey reported complete as the last
+    tile's image arrived; the generator put the terminator, and the re-exposure
+    the hook had just been granted went into a queue nobody was reading. The
+    hook log said "refocused and re-queued this tile", the sweep's dose was
+    already spent, and the second look never happened. max_events was widened
+    for the budget in three places and this total was not — the same defect
+    class as 43h round 4's positions-versus-events sizing.
+    """
+    from types import SimpleNamespace
+
+    from microclaw import tools
+    from microclaw.acquisition import AcquisitionPlan
+    from microclaw.hook_decisions import UntrustedHookAdapter
+
+    n_tiles = 3
+    progress = SurveyProgress(n_tiles)
+    sizes: dict = {}
+
+    monkeypatch.setattr(tools, "_acquire_with_hooks",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("stop")))
+    monkeypatch.setattr(tools, "_authorize_acquisition", lambda *a, **k: None)
+    monkeypatch.setattr(tools, "get_focus_lock_state", lambda *a, **k: {"engaged": False})
+    monkeypatch.setattr(tools, "plan_events", lambda *a, **k: AcquisitionPlan(
+        frames=n_tiles, exposure_ms_per_frame=10.0,
+        estimated_duration_s=1.0, estimated_bytes=100))
+    real_set_total = SurveyProgress.set_total
+    monkeypatch.setattr(SurveyProgress, "set_total",
+                        lambda self, n: (sizes.__setitem__("total", n),
+                                         real_set_total(self, n))[1])
+
+    class Hook:
+        def analyze_frame(self, image, metadata):
+            return None
+
+    hook = UntrustedHookAdapter(Hook())
+    ctrl = SimpleNamespace(core=SimpleNamespace(get_position=lambda: 10.0,
+                                                get_focus_device=lambda: "Z"))
+    with pytest.raises(RuntimeError, match="stop"):
+        tools._acquire_survey_with_detector(
+            ctrl, unconstrained_guard,
+            [{"name": f"p{i}", "x_um": float(i), "y_um": 0.0} for i in range(n_tiles)],
+            str(tmp_path), "survey", hook=hook, progress=progress,
+            candidates=queue.Queue(), max_idle_s=5.0, adaptive=True,
+            autofocus_budget={"max_exposures": 8, "z_range_um": 2.0,
+                              "z_step_um": 1.0, "method": "single_sweep",
+                              "settle_ms": 0},
+            num_time_points=1, time_interval_s=0,
+        )
+
+    reexposures = hook.planned_refocus_reexposures()
+    assert reexposures == 2, "8 exposures buy two 3-plane sweeps plus their two looks"
+    assert sizes["total"] == n_tiles + reexposures
+
+    # The invariant that failed on the rig: a plan's worth of images is not the
+    # whole survey once re-exposures are authorized.
+    for _ in range(n_tiles):
+        progress.image_done()
+    assert not progress.survey_complete()

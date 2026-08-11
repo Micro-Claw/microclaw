@@ -1517,6 +1517,11 @@ def test_refocusing_survey_emits_the_same_budgeted_second_look_program(
     assert "'max_exposures': 4" in source
     assert "sweep_exposures=3" in source
     assert "max_events=len(events) + 1" in source
+    # Completion is sized the same way the live runner sizes it. On M5
+    # 2026-08-11 the live total omitted the re-exposures and the survey finished
+    # before the last tile's granted refocus could be re-exposed; the emitted
+    # script carried the identical arithmetic, so it was latent there too.
+    assert "progress = SurveyProgress(len(events) + 1)" in source
     assert "microclaw_refocused" in source
     compile(source, "routine.py", "exec")
     assert not _undefined_emitted_names(source)
@@ -1807,3 +1812,35 @@ def test_adaptive_export_refuses_when_safety_constraints_are_unavailable(tmp_pat
     # The unrelated step still exported, and no unbounded guard was written.
     assert "core.set_xy_position(1.5, 2.5)" in source
     assert "_LIMITS" not in source
+
+
+def test_offline_analysis_does_not_kill_the_script_it_follows(tmp_path):
+    """M5 2026-08-11 round 2: the adaptive program ran, then line 1908 raised.
+
+    `run_analysis_on_saved_dataset` was one of the undecorated registry tools,
+    so it collected the default refusal and planted a RuntimeError at the end of
+    a script whose acquisition had already succeeded. It reads saved pixels and
+    is documented as never forwarding `ctrl`, so it has no hardware-routine
+    effect to reproduce -- the same call 43h made for `generate_and_save_hook`.
+    """
+    from microclaw.tools import run_analysis_on_saved_dataset
+    assert run_analysis_on_saved_dataset._microclaw_emits_nothing is True
+
+    _, result, source = export(tmp_path, [
+        call("run_adaptive_survey", {
+            "protocol": "timelapse", "protocol_params": {"n_frames": 1},
+            "positions": [{"name": "p0", "x_um": 1, "y_um": 2}],
+            "save_dir": "session", "hook_strategy": "snr_observer",
+        }),
+        call("run_analysis_on_saved_dataset", {
+            "dataset_path": "session/survey_1", "adapter": "frame_statistics",
+            "axis_selection": {}, "input_kind": "frame", "parameters": {},
+            "output_dir": "session",
+        }),
+    ])
+    assert "# NOT EMITTED:" not in source
+    # Narrow on purpose: the inlined DeniedEventQueue raises a RuntimeError of
+    # its own, and asserting on the bare class name matches that instead.
+    assert "raise RuntimeError('NOT EMITTED" not in source
+    assert result["emitted_calls"] == 1
+    compile(source, "routine.py", "exec")
