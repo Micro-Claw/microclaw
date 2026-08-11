@@ -365,31 +365,41 @@ and the only branches on `origin` besides `main` are
   second merges `main` first**. Eight blocks remain after them: 43c, 43e, 43f,
   43g, 43h, 43i, 43j, 43k.
 
-### State at the 2026-08-11 assignment of block 43k — read this before assigning anything
+### State at the 2026-08-11 close of block 43k — read this before assigning anything
 
 **This is the live note. It supersedes every other State-at note in this
 section**, all of which are kept only for their round history. Position is not
 recency — read the heading, not the order.
 
 Verify against the repository rather than against any hash here. What should
-hold: `git log --oneline origin/main..main` empty, working tree clean, and
-`origin` carrying `main`, `design34/focus-system-authorization` (6a),
-`florian/setup-claude-workflow`, `port-to-jpype-acqj` and — once step 4 pushes
-it — `design43/two-channel-search-acquire` (43k). One worktree besides this one:
-`../microclaw-6a`, idle at `4994f3e`, plus whatever tree 43k's designer is given.
+hold: `git log --oneline origin/main..main` empty, working tree clean, and the
+only branches on `origin` besides `main` are `design34/focus-system-authorization`
+(6a), `florian/setup-claude-workflow` and `port-to-jpype-acqj` — **no Track F
+branch open.** One worktree besides this one: `../microclaw-6a`, idle at
+`4994f3e`.
 
-- **43j is fully closed** — merged `37e3276`, coordination notes `a011de5`,
-  design gate `97cf09e`, ledger cell `72b68a2`. The close-of-43j note below says
-  its design gate is owed; the gate ran after that note was written, so **that
-  bullet is stale and this one replaces it**.
-- **Track F merged: 43a, 43m, 43b, 43d, 43e, 43c, 43g, 43h, 43i, 43f, 43j. One
-  remains: 43k**, and its dependency is satisfied — 43h and 43i have both run on
-  a rig.
-- **43k is design-only.** It produces a design document and no code, it has no
-  rig gate, and its step 10 is the reconciliation of design/43 F13 to whatever it
-  decides. Its output is `design/44-two-channel-search-and-acquire.md`, on the
-  precedent of design/28 F5 → design/29: a capability design gets its own short
-  doc rather than growing inside a session-findings file.
+- **43k is MERGED** (`f3e19ee`) and its design gate is run: design/43 F13
+  corrected rather than annotated, coordination notes in `design/prompts.md`,
+  ledger row closed, follow-on block **43n** opened with a row and a section.
+  Branch deleted locally and on `origin`; its worktree removed.
+- **Track F is complete as scheduled: 43a, 43m, 43b, 43d, 43e, 43c, 43g, 43h,
+  43i, 43f, 43j, 43k.** Nothing from the original twelve remains.
+- **The next block is 43n** — implement `acquire_on_hit` from
+  `design/44-two-channel-search-and-acquire.md`. It is not an original Track F
+  block; it is 43k's output. Nothing forces it to be next: the alternative is a
+  register item, or reopening Track B (the Nikon rig, blocks 6/6a/7a/7b/8, all
+  waiting on a rig that is not here) or Track C. **That choice is the
+  coordinator's next decision and it has not been made.**
+- **Before 43n's rig gate, clear the Windows socket race in
+  `test_bridge_check.py`** (open register). Every Track F gate states an expected
+  warning count, and an unexplained fourth costs a round of diagnosis.
+- **What 43k proved about assignment.** Reading the code at assignment rescoped
+  the fourth consecutive block, and this time the answer was already written in a
+  refusal message nobody had read as advice: `_check_acquisition_channel` tells a
+  non-config-group rig to call `set_channel` first and run without a channel
+  argument, *"once per channel if the run needs more than one"* — which is the
+  design 43k arrived at independently. **Read the refusals, not just the
+  functions.**
 - **Reading the code at assignment (2026-08-11) found four facts F13 does not
   know**, and they move the block's centre of gravity:
   - **`AcquireAt` is already supported** by `run_adaptive_survey`. It selects a
@@ -451,8 +461,8 @@ it — `design43/two-channel-search-acquire` (43k). One worktree besides this on
 
 > **Retired. Do not act on this note** — its "the design gate is owed" bullet was
 > written before the gate ran (`97cf09e`), and its branch list predates 43k's.
-> The live note is the assignment-of-43k one above it. Kept for 43j's round
-> history.
+> The live note is the close-of-43k one at the top of this section. Kept for
+> 43j's round history.
 
 Verify against the repository rather than against any hash here. What should
 hold: `git log --oneline origin/main..main` empty, working tree clean, and the
@@ -1242,7 +1252,8 @@ assistant's narration when judging whether a guard fired.
 | 43h | Nestor | none | `design43/emit-adaptive-runs` | `1c28e92` | `43d0bbb` + `d9f8169` + `040a113` + `ac0407b` (two review rounds returned) + `36c1bd7` (coordinator fix); runbook `c2076e0`/`a7177d4`/`57c936a`/`984fb5f`/`ebcd749`, pinned `36c1bd7` | **required** — run the emitted script with microclaw closed, and run the full suite on the same machine. **Pushed 2026-08-10, awaiting a rig.** macOS baseline at the pin: 1729 passed / 99 skipped / 3 warnings / 1828 collected; Windows expectation 1712 + 116 = 1828. **Split demo/M5 2026-08-10** (`7f49243`): Steps 0–3 run on the demo machine and close the standalone-execution claim, because that is a mechanism question and the demo has a real core, engine and bridge; **Step 4 needs M5 or M2 and stays owed** — the demo camera returns bit-identical frames, so no criterion there can show the program adapting to a *sample*. Step 3b drives the decision loop from a saved hook stopping on a metadata frame count, since **no `PRECODED_HOOK_REGISTRY` hook calls `progress.image_done()` or `candidates.put()`** and therefore none can advance an adaptive survey at all. **Demo round 1 2026-08-10 (`43h-demo`): Step 0 PASS (1712 + 116 = 1828, 3 warnings, skips equal to every prior Track F Windows run) and Step 1 PASS (79). Step 2 FAILED and the criterion was at fault — the session answered "watch this field for three frames … give me a standalone script" with three `snap_and_analyze` calls, a fair reading, and the emitted script contained no `_LIMITS`, `SurveyProgress` or `_survey_event_stream`. Step 3 VOID**: `emitted-run-43h.txt` is 0 bytes, consistent with a snap script that prints nothing, and proves nothing about this block. Two coordinator fixes followed (`8fcbd1d` preamble, `ff25276` runbook), suite 1730 + 99 = 1829. **Demo round 2 2026-08-10 (`43h-demo-round2`): Step 0 PASS (1713 + 116 = 1829), Step 1 PASS (80), Step 2a PASS — from the rewritten sentence, unprompted, the agent wrote a hook, saved it, ran an adaptive survey with it (10 hook-log rows, real `ContinueSurvey` dispatches across Pos1–Pos4) and exported. Step 3 FAIL**, on a defect no offline test could produce: the exporter emitted a correct and complete adaptive program at line 1560 of the artifact and the script died at line 1558 on `generate_and_save_hook`'s default refusal. Fixed `9dcb09a` (`@emits_nothing` — it touches no hardware and the hook source is already inlined verbatim). Suite 1731 + 99 = 1830, exporter file 81. **Round 4 (codex) landed all five open items** `2a474b5`+`2b08a6f`+`73c6ae1`+`a81538e`+`7161db6`+`8ddb65a`+`9961402`, plus coordinator fix `ce4317d`: microclaw imports stripped from inlined source rather than shimmed (only the two provenance *values* survive), standalone logs written beside the script with collision suffixes, `write_text_file`, `tool_use_id` selection with excluded steps visible as `# SKIPPED` and a stale-state warning in both header and result, and `SurveyProgress` sized from the event plan in runner *and* emitter. Suite 1745 + 99 = 1844, exporter file 93. **M5 2026-08-11 (`43h-m5`): Step 0 PASS (1728 + 116 = 1844, 3 warnings), Step 2a PASS, Step 3/3b PASS, Step 4 PASS.** From a fully operator-worded request naming no tool, the agent marked five positions, wrote a **content-based** stop hook (`min_snr` 5.0, `stop_after` 2), ran the survey — `ContinueSurvey` at pos_1, `StopSurvey` at pos_2, `stopped_early=True`, 2 frames of a 5-tile plan — and exported. **Microclaw was closed for both standalone runs** (operator confirmed; an earlier note saying "Micro-Manager" was their typo — MM and the bridge stayed up, as the gate requires). **The standalone script was then run twice and reproduced the decision exactly both times**: same positions, same actions, same reasons, three byte-identical datasets. Round 4's items proven on rig evidence: the artifact has **no `microclaw` imports** (one surviving string, a schema value), zero `NOT EMITTED`, and `_log_path = _next_available_log_path(_HERE / …)` produced `_hook.log`, `_hook_2.log`, `_hook_3.log` with the live log intact — the round-3 overwrite defect fixed and measured. **M5 round 2 2026-08-11 (`43h-m5-round2`): item 5 GATED on the live path** — `run_adaptive_survey` over 3 positions x 3 frames returned *"9 frame(s) acquired from a 3-tile plan"*, `stopped_early=False`, where the old sizing truncated to ~4; a tighter threshold then gave *"2 frame(s) … stopped early"*. **But Step 2 FAILED with `emitted_calls: 0`** — the survey used `position_names`, resolution could not re-derive `pos_1` despite `get_position_list` + `validate_positions` + `mark_position`, and round 4 shipped the resolver without the `tiles_planned` fallback the assignment named. The agent then hand-wrote acquisition code with `write_text_file` and the operator ran that; it opens one `Acquisition` per frame and reads the dataset after `__exit__`, and on the stop variant it hung the console five minutes, unkillable — **hand-written code, not this block's runner**, and no evidence about 43h either way. Fixed `a8af089` (fallback) and `3fc5e34` (the tool now must say a hand-written script is not the export and report the refusal; operator ruling that writing one is still better than nothing). Suite 1747 + 99 = 1846, exporter file 95. **M5 round 3 2026-08-11 (`43h-m5-round3`) — GATE PASS.** Step 0 (1730 + 116 = 1846), Step 2 (`emitted_calls` 1 and 6, zero `NOT EMITTED`, no hand-written script offered or run), Step 3/3b/Step 4 all PASS with Microclaw closed. **The 50 ms survey reproduced to every digit**: live pos1 `sat_px=5, sat_frac=4.946185501741057e-05` → Continue, pos2 `sat_px=30, sat_frac=2.967711301044634e-04` → Stop; the standalone run recorded identical statistics and the same decisions, 450933 vs 450930 bytes. The other survey diverged and **not because of this code**: it used `sat_frac_thresh: 0.0`, where one saturated pixel decides, and pos1 read 26 / 0 / 5 saturated pixels across three runs — including **two runs of the same emitted script disagreeing with each other**, which locates the nondeterminism in the specimen. A knife-edge criterion cannot demonstrate reproducibility. **Two limbs ship rig-ungated with reasons**: the `tiles_planned` fallback (`a8af089`) was not exercised because this session passed explicit `positions`, and the *emitted* multi-frame full dispatch was never reached because both surveys stopped early — the live half of that is gated at round 2's 9-of-9, the emitter emits the same expression, and both are unit-pinned. The earlier note that 4a was PARTIAL is superseded on the live half and still stands for the emitted half: the survey ran `n_frames: 1`, where positions == events, so the `SurveyProgress` sizing change is not distinguishable. Its unit regression is verified failing without the fix, but the change alters live dose on a multi-frame survey and has no rig observation **Demo round 3 2026-08-10 (`43h-demo-round3`): Step 0 PASS (1714 + 116 = 1830), Step 1 PASS (81), Step 2a PASS again, Step 3 PASS on the headline claim** — zero `NOT EMITTED` in the artifact, and with Microclaw closed the script ran **four** adaptive surveys back to back (datasets `*_2` all stamped 15:52:20–15:52:23 against live `*_1` at 15:39–15:46), driving the real adapter dispatch (12 `ContinueSurvey` rows per log) and exiting cleanly. **3b's stop limb NOT exercised** — the agent wrote a *content*-threshold hook (`min_snr` 5.0, `min_coverage` 0.02) and demo frames carry no content (snr 1.41, coverage 0.0), so `StopSurvey` never fired in either run; the runbook's metadata-count hook is an example the operator's own words did not force. **Two defects found, neither an emitter bug** — see the carried-forward register: `SurveyProgress` sized in positions against an events plan (live 5 frames, standalone 12, from the same program), and the emitted script overwriting the original session's hook log. *(Round segments above were appended as each round returned and are not in chronological order — each carries its own date; the demo rounds are 2026-08-10 and the M5 rounds 2026-08-11.)* | `6c0eeb6` | **done** `3644020` + design/43 gate — `CLAUDE.md`'s export paragraph corrected from three non-emittable things to two, with the getsource rule, the surviving `CannotEmit` cases, and a new decorate-every-tool rule that names the undecorated fifteen; design/43 F14 reconciled with six corrections, chiefly that its "a named position the record cannot resolve (already handled)" was false in both directions; suggested-order item 8 struck through |
 | 43i | Nestor | 43g merged, 43h — both merged | `design43/survey-refocus` (deleted) | `927c214` | `9b0cac5` + `bb12d95` (two review rounds returned); coordinator fixes `161d680`, `5aaa70d`, `10085e2`, `f2ea064`; runbook `d0daf30` re-pinned four times, last `f2ea064` | **M5, five rounds, 2026-08-11 — GATE PASS at round 5** (`43i-m5`, `-round2`…`-round5`). Round 1: Steps 0/1/3/6 + 7c PASS, live and standalone agreeing to every digit (48.96335 → 50.79668333); **Step 5 FAIL** — the `refocus=1` axis stopped the overwrite and moved the loss downstream, `dataset.axes["refocus"]` read `[1]` and the exporter's own traversal recovered **1 of 4** real frames; **Step 4 NOT RUN**, the step demanded a sample with empty fields when it measures a curve. Round 2: Step 5 PASS (**4 of 4**), Step 8 PASS (`via: os.startfile`, no wedged bridge); **a refocus granted at the last tile was dropped** — `pos_3` accepted with no `refocus=1` frame — and the standalone script died at line 1908 on `run_analysis_on_saved_dataset`'s default refusal *after* its adaptive program had run. Round 3: **Step 3b PASS**, the block's own mechanism — plan `pos_1 → pos_3 → pos_2` put the refocused tile last and its frame is in the dataset; found a finished plan reported as a dose cap, and a survey stranded by a `RequestAutofocus` that queued nothing. **Rounds 1–3 measured Steps 4 and 7 on `run_autofocus`, not on the survey path — a runbook failure, corrected by naming the code path.** Round 4: **Step 4 PASS on the survey path** (three tiles, `autofocus ran and did not converge; Z restored`, entry == final to the digit, no second look, no retry, survey carrying on), **7a** (`unsupported-by-run_adaptive_survey`) and **7b** (`focus lock is engaged; autofocus sweep refused`) PASS as hook-log records, **Step 2 PASS** run by accident — from a sentence naming no tool the agent found `bead_focus_refocus` refocuses *dim* tiles and checked the camera cooler against a saved note before exposing; the axis contract measured including its negative case (**no budget → no `refocus` axis at all**); and **the round-2 fix was found to stall every under-spent budget**, three of four surveys logging `stalled` after visiting every tile against a no-budget control that did not. Round 5: **PASS** — refocus converged and re-queued, **no `stalled`**, `refocus: [0, 1]`, and the standalone script reproduced the **re-queue** with Microclaw closed, same dataset shape, zero `NOT EMITTED`, no `microclaw` imports. Suite 1755 + 116 = 1871 | `dd63070` | |
 | 43j | Nestor | 43e (retires half of F12) | `design43/hooks-and-timelapse-observation` | `4cee6f7` (re-pointed from `5afa5aa` when the second ruling landed, before any implementation commit) | `5620b45` + `e208c7f` (review round 1 returned, four findings) + `f36ea89` (coordinator fix); runbook `c288746` pinned `f36ea89` | **required** — the mechanism is demo-machine work; the `laser_slot` pre-flight limb needs M5 or another EMU rig. **Rescoped at assignment 2026-08-11, twice**: F12's stub is void because `run_adaptive_timelapse` already carries the hook trio, so the block folds the two timelapse tools into one with an optional hook and deletes the adaptive twin (operator ruling). A second ruling the same day extended it to the Z-stack pair, because folding one pair alone leaves an asymmetric surface whose real cost is inference from absence — the F12 failure recreated by F12's fix — and because both folds land the exposure fix on one shared emitter branch. `run_adaptive_survey` is not folded. The hooked branch must emit through 43h's `_adaptive_hook_export` / `_adaptive_runner_source` rather than through `_emit_acquisition`, which would drop the analysis silently. **Pushed 2026-08-11, awaiting the demo machine.** macOS at the pin: 1797 passed / 99 skipped / 3 warnings, 1896 collected; Windows expectation 1780 + 116 = 1896. **Gate is almost entirely demo-machine work by design** — the feature records frames rather than deciding between them, so the demo camera's bit-identical frames cost it nothing; Steps 0–6 close the mechanism and both reach criteria, and **only Step 7 needs M5 or M2**, being the EMU `laser_slot` pre-flight under a hook. **Review round 1 returned four findings, one substantive:** `run_multiposition_acquisition` forwards `protocol_params` unfiltered into the folded tools, so `hook_strategy` — a `TypeError` before the fold — resolved one hook per position *and* had its dose silently discarded, because `_reservation` short-circuits the `_plan_with_hook_dose` result. Also: the `autofocus_mm_plugin` gating paragraph lived on exactly the two deleted schemas and afterwards sat on no acquisition schema at all; duplicate `TOOL_REGISTRY` keys; and the two folded tools assembling their hooked result differently. **The coordinator fix is the one no test saw:** `_emit_adaptive`'s dataset-name fallback was the literal `adaptive`, which agreed with the deleted twins by coincidence, so a hooked run that named no dataset emitted `name='adaptive'` while the same tool's hookless branch emitted the right one — the live run and the standalone script writing differently named datasets, which is the comparison 43h's gate rests on. Found by reading the generated script, not by a failing test. **Demo round 1 2026-08-11 (`43j-demo`): Steps 0, 1, 2, 3, 4, 5 and 6 all PASS.** Step 0 read 1780 + 116 = 1896 exactly, 3 warnings, skips equal to every prior Track F Windows run. **Step 2 passed on first contact and is the reach criterion this block existed to earn**: from the operator sentence naming no tool, the agent answered *"a timelapse with per-frame signal logging is exactly the `snr_observer` hook — it measures every frame as it's acquired"* and called `run_timelapse(hook_strategy="snr_observer")` then `read_hook_log`, rather than the offline `frame_statistics` route the step was written to catch as a legitimate wrong answer. Step 3: 20 log records for 20 frames, 10 for 10 planes, both read. **Step 4 measured the fold's central claim** — the hooked result is a strict superset (`status`, `dataset_path`, `declared_illumination_properties` **plus** `artifact`, `frames_planned/acquired`, timings, `log_path`, `hint`) and the hookless result carries none of the hook fields. **Step 5 PASS including the coordinator fix that had never left a unit test**: the emitted script named its datasets `timelapse_43j` / `zstack_43j` / `timelapse_43j_nohook`, never `adaptive`; four emitted calls, zero `NOT EMITTED`, no `microclaw` imports; run standalone it reproduced byte-identical dataset sizes and identical log record counts, with the three originals untouched — logs at 19:59:01–03 against an export at 19:57:42 and live runs at 19:55–19:56. `emitted-run-43j.txt` is 0 bytes, consistent with a script that prints nothing; the artifacts carry the proof instead. **Step 6 PASS on every criterion, and the criteria were one short.** `list_hooks` marked `gate43j_probe` `resolvable: false` inline with its three reasons and the remedy as a call, five other saved hooks carried the legacy-pin refusal and two read `resolvable: true`, and the agent reported the hook unusable *before* attempting it and offered re-review rather than writing a new one — the Nestor failure inverted. But told the refusal was a hash mismatch **and** `subclasses HookBase` **and** `takes log_path`, it called the latter two *"just describing its structure, not faults"* and offered a remedy that could not have worked, because re-saving the same bytes reproduces both. **The remedy was attached to every reason indiscriminately, so ranking them was left to the reader and the reader got it backwards.** Fixed `673e721`, failing-first test, plus the pin-only negative case; runbook re-pinned `20214b5`, suite 1799 + 99 = 1898, Windows expectation 1782 + 116 = 1898. Round 2 re-runs **Step 6 only**, plus Step 7 on M5 or M2 — the EMU `laser_slot` limb, the one thing no demo can run. Incidental: the folded `run_zstack` was refused by `guard.check_z` for a range below the Z minimum and the agent recovered by shifting it, so the fold did not bypass the guard. **Demo round 2 + M5 round 2, 2026-08-11 (`43j-demo-round2`, `43j-m5`): Step 0 PASS on both machines (1782 + 116 = 1898 exactly, 3 warnings, 141 offline), Step 6 PASS, Step 7a PASS, Step 7b NOT RUN.** **Step 6's re-run gated `673e721`**: the agent separated the two refusal kinds unprompted — *"unlike the others its problem is **not** just a stale hash"*, *"re-review alone will not fix it"* — named what the contract requires instead (no `HookBase`, no `log_path`, `analyze_frame` returning a `HookResult`), offered `snr_observer` or a rewrite, and still called re-review correct for the legacy-hash hooks. Round 1's "just describing its structure, not faults" is gone. **Step 7a is the limb no demo could reach and it passed in one call**: `run_timelapse(n_frames=200, exposure_ms=20, interval_s=0, laser_slot=3, hook_strategy="snr_observer")` returned `trigger_preflight` with `guarantee: trigger line is armed` (Mode3 `2 - Rising`, Sequence3 `65535`) **and** a hook log of exactly 200 records — the EMU pre-flight and the hook working together, which is precisely what the fold had to preserve. **7b was not reached**: the session turned to two questions the operator raised and ended. Pinned instead at `25510bb` — with the trigger gated off the refusal fires and neither `_prepare_log_path` nor `_resolve_hook` is reached, so the pre-flight is provably upstream of every hook step the fold added — and **operator ruling 2026-08-11 was to run it on a rig anyway rather than retire it**, since flipping Mode3 to Off costs two minutes. Round 3 runs Step 0 and Step 7b only; runbook re-pinned `351bea6`, suite 1800 + 99 = 1899, Windows expectation 1783 + 116 = 1899. **Two findings this session produced that belong to 43f/F3, not here**, both filed in §"Still open": `camera_triggers_lasers: true` is stored under `illuminated_field` rather than `illumination_path`, and the agent queried the laser enable rather than reading it; and it over-fitted an explanation to a dark frame — steering toward a trigger-source fix when the cause was no sample on the stage — then said so plainly when challenged. **M5 round 2 2026-08-11 (`43j-m5-round2`) — GATE PASS.** Step 7b refused with *"Laser slot 3 trigger mode is '0 - Off': the trigger line is not armed. Set Laser Trigger.Mode3 to an armed mode (e.g. '4 - Follow') first"* — naming slot, property and value — and **nothing was acquired**: no dataset directory and no hook log for the refused run. The agent did not work around it: **zero `set_device_property` calls in the entire session**, no `Mode3` write, and no retry without `laser_slot`; it read the contradiction instead — *"this is exactly the kind of contradiction worth reading carefully rather than working around"*. Three hooked 200-frame SMLM acquisitions in the same session each produced a 200-record log, and one was scored offline with `frame_statistics`, so F12's two halves ran side by side. **The operator's own mis-step produced the gate's best finding**: asked to gate the trigger off they first turned the *laser* off, and the acquisition ran to 200 frames with the pre-flight satisfied — correct by its narrow guarantee, and not what the schema sells `laser_slot` as. Carried forward | `37e3276` | **done** `97cf09e` — `CLAUDE.md`'s adaptive-emission paragraph corrected (it named two tools that no longer exist) and given the rule this gate earned: a tool that takes a hook has two emitters, the hookless one must not change, and an emitter's fallbacks are the tool's defaults rather than constants. design/43 F12 **corrected, not annotated** on 43g's precedent — its stub is void because `run_adaptive_timelapse` already carried the trio, so what shipped is the fold, and F12 is now closed in both halves (offline by 43e, during-the-run by 43j). F9 annotated with the remedy correction (`insufficient_for`) and the save-time gap upstream of it. Suggested-order item 10 struck through |
-| 43k | Nestor | 43h, 43i **run on a rig** — **satisfied 2026-08-11** | `design43/two-channel-search-acquire` | `43d2822` | | n/a — design block, no code and no rig gate | | |
+| 43k | Nestor | 43h, 43i **run on a rig** — **satisfied 2026-08-11** | `design43/two-channel-search-acquire` (deleted) | `43d2822` | `d6f52e4` + `cadff6c` (review round 1 returned, three findings) + `e0c4ba4` (coordinator fix) | n/a — design block, no code and no rig gate. Reviewed as a diff is reviewed: every `file.py:line` in both rounds re-read against the code, and all of them held. **Round 1 returned three findings**, two of them this project's standing failure modes — a mechanism specified with no `hook_docs`/schema/`SYSTEM_PROMPT` work named (43e, 43j and 43f each lost a round to that, and `acquire_on_hit` is worse exposed because it is hook-facing), and a typed action changing meaning by mode with nothing in the log or payload to say which happened (F8's subject). **The third moved the design**: the survey supports no per-position Z and `RequestAutofocus` moves Z globally, so a second pass would image every hit at whatever Z the last refocus left — while the session this serves autofocused at each tile before its 488 burst. Hits now carry the converged plane, reusing the `{x_um, y_um, name, z_um?}` shape `run_multiposition_acquisition` and its emitter already support. **Coordinator fix `e0c4ba4`**: the acquire Z-stack's relative range must not reuse `z_start_um`/`z_end_um`, which are absolute everywhere else, or `z_start_um: 10.0` silently means `hit_z + 10` — 43j's dataset-name fallback in a new costume | `f3e19ee` | **done** — design/43 F13 **corrected, not annotated**: its "genuine new capability" is narrower than stated, because tile selection was already solved. Follow-on block 43n opened with its row and section |
+| 43n | Nestor | 43k merged (`design/44` is its specification) | `design43/acquire-on-hit` | | | **required — M5 first** (EMU channel plans, no `Channel` group, camera-triggered lasers), then a `Channel`-group machine for the preset route. A demo machine can prove event counts, phase order, bounds, logs and replay, but not that 561 evidence selected a biological hit | | |
 | 9 | Features | operator intake | `design26/generated-adapter-run-b` | | | required | | |
 | 10 | Features | 9; optional | `design26/few-shot-run-c` | | | required or marked skipped | | |
 | 11 | Features | accepted Run B fixtures | `design32/hook-worker-isolation` | | | regression required | | |
@@ -6947,15 +6958,16 @@ phrased in the operator's words with no tool named (§"Standing constraints",
 *gate the reach, not the plumbing*), because the failure this block fixes is a
 tool that existed and was never chosen.
 
-## 43k. Search in one channel, acquire in another
+## 43k. [x] Search in one channel, acquire in another — **MERGED 2026-08-11**
 
-Branch: `design43/two-channel-search-acquire` — **design only, no code**
+Branch: `design43/two-channel-search-acquire` (deleted) — **design only, no code**.
+Merged `f3e19ee`; the design is `design/44-two-channel-search-and-acquire.md`.
 
 Source: design/43 F13. Explicitly *not a fix yet*. The composite the session
 asked for in one sentence at `[90]`, which cost nine hand-driven sequences of
 twelve calls each.
 
-- [ ] **Do not fold this into 43i.** F5 supplies one half; the other half is a
+- [x] **Do not fold this into 43i.** F5 supplies one half; the other half is a
       second acquisition in a different channel at tiles the hook selected, and
       that is a genuine new capability.
 - [x] Design it after 43i and 43h have run on a rig, on the evidence of how they
@@ -6970,7 +6982,7 @@ read on a rig. No code, no tool, no test lands in this block; what it produces i
 the block that comes after it. Precedent for the promotion out of a findings doc:
 design/28 F5 → design/29.
 
-- [ ] **Start from what the code does, not from F13's prose.** Four facts the
+- [x] **Start from what the code does, not from F13's prose.** Four facts the
       finding does not know, measured at assignment 2026-08-11 and recorded in
       the live State-at note: `AcquireAt` is already dispatched against the
       planned event list, so tile *selection* is solved and only per-tile
@@ -6979,32 +6991,114 @@ design/28 F5 → design/29.
       `channel_group="Channel"` — a group **M5 does not have**; 43i's reservation
       rule binds any second acquisition; and 43j gave `run_timelapse` /
       `run_zstack` optional hooks.
-- [ ] **Decide the mechanism between named alternatives, and say why the losers
+- [x] **Decide the mechanism between named alternatives, and say why the losers
       lose.** At least: a seed plan that already contains both phases and lets
       `AcquireAt` pick the acquire events; a parent-side channel switch dispatched
       from a typed action mid-survey; and a two-pass composite over tools that
       already exist (survey → hit list → acquire), which is what the operator did
       by hand. Rank them on rig reach (does it work with no `Channel` group?),
       dose accounting, and emittability.
-- [ ] **Emittability is a first-class criterion, not an afterthought.** F13's own
+- [x] **Emittability is a first-class criterion, not an afterthought.** F13's own
       argument is that the composite is worth building *because* it can leave the
       session. Say for the chosen mechanism what the emitted script contains and
       which `CannotEmit` cases survive. `set_channel` emits both routes today.
-- [ ] **Name the illumination and dose story explicitly.** Two channels means two
+- [x] **Name the illumination and dose story explicitly.** Two channels means two
       enable paths, and the 488 burst is the large dose in the session F13 came
       from. F2's grant and the acquisition reservation both apply; state how,
       rather than leaving it to the implementing block.
-- [ ] **Scope the follow-on block(s)** the design implies — including whether the
+- [x] **Scope the follow-on block(s)** the design implies — including whether the
       rig gate is M5 (EMU, no `Channel` group) or a demo/`Channel`-group machine,
       and what a demo camera's identical frames cannot show.
 
 Post-merge design gate:
 
-- [ ] Mandatory: reconcile design/43 F13 to what was decided — a blockquote under
+- [x] Mandatory: reconcile design/43 F13 to what was decided — a blockquote under
       F13, in the shape 43g/43j used, saying which of its premises survived. If
       the design contradicts F13, **correct F13 rather than annotating it**.
-- [ ] Open the follow-on block's row in the ledger and its section in this file,
-      so the implementation has somewhere to be assigned from.
+      **Done 2026-08-11: corrected, not annotated** — "a genuine new capability"
+      is narrower than F13 states, because `AcquireAt` already resolves, guards,
+      reserves and queues a planned tile.
+- [x] Open the follow-on block's row in the ledger and its section in this file,
+      so the implementation has somewhere to be assigned from. **Done — block
+      43n below.**
+
+**What it decided.** One optional `acquire_on_hit` argument on
+`run_adaptive_survey` — no new tool, no new hook action. With it present,
+`AcquireAt` records a bounded, deduplicated hit together with the parent's
+current focus Z; after the search stream closes the parent switches channel once,
+restores each hit's Z, and runs one batched timelapse or relative Z-stack over
+the hits. Both channels are parent-applied phase settings over channel-less
+events, which is what lets it run on a rig with no `Channel` config group. Search
+dose and worst-case acquire dose are reserved separately before the first
+exposure; the emitted script carries the seed plan, the exact hook, the real
+decision loop and both channels' recorded effects — the program, not the hit list.
+
+**Three things the review had to add**, all recorded in the ledger row: the
+reachability work (`hook_docs`, tool schema, `SYSTEM_PROMPT`) as acceptance
+evidence rather than follow-up documentation; distinct accept and refusal strings
+plus explicit result fields, so a deferred hit is distinguishable from an
+immediate revisit and a zero-hit run does not read as a failure; and hit-time Z
+capture, without which every hit is imaged at whatever Z the last refocus left.
+
+## 43n. Implement `acquire_on_hit` — the two-channel search/acquire runner
+
+Branch: `design43/acquire-on-hit` — **not created; assign first**
+
+Source: `design/44-two-channel-search-and-acquire.md`, which block 43k merged
+2026-08-11 (`f3e19ee`). Read design/44 before this list; it names every code
+path, and these items are its acceptance shape, not a second specification.
+
+- [ ] `acquire_on_hit` on `run_adaptive_survey`: deferred, deduplicated,
+      `max_hits`-bounded `AcquireAt`, hit-time `{name, x_um, y_um, z_um}` capture,
+      the parent-side phase switch, and per-hit Z restoration on the acquire pass.
+      **Absent-argument behaviour must not change** — `AcquireAt` keeps its
+      immediate revisit semantics, and a plain adaptive survey must be
+      byte-identical in plan, dose and payload. This is 43j's "a tool that takes a
+      hook has two emitters and the hookless one must not change", one layer up.
+- [ ] **Two reservations, calculated independently and taken before the first
+      search exposure**: the full search plan including authorized autofocus dose,
+      and a worst-case acquire plan of `max_hits × frames_per_hit` at the acquire
+      exposure. Do not flatten the phases into one average — `AcquisitionPlan`
+      carries a single `exposure_ms_per_frame`, so one plan cannot describe both.
+- [ ] `z_offset_start_um` / `z_offset_end_um` for a relative acquire Z-stack, with
+      the absolute `z_start_um` / `z_end_um` **refused by name** inside
+      `acquire_on_hit.protocol_params`. Same-key-two-meanings is the defect
+      design/44's last section exists to prevent.
+- [ ] **Reachability is acceptance evidence, not follow-up documentation**:
+      `hook_docs` on what `AcquireAt` means under a deferred survey, the tool
+      schema on the operator sentence this serves, one routing sentence in
+      `SYSTEM_PROMPT`. A gate step must reach the feature **from an operator
+      sentence naming no tool** — the reach criterion 43h, 43j and 43e all turned
+      on. Correct and unreachable is the failure mode of record here.
+- [ ] Distinct records: `"planned tile recorded for acquire phase"` on accept;
+      `"acquire phase max_hits exhausted"` and `"planned tile is already recorded
+      for acquire phase"` as separate refusals, with absent and ambiguous keeping
+      their current distinct reasons. Result always carries `hits_recorded`,
+      `hits_acquired`, `max_hits_reached`, `acquire_phase_ran`.
+- [ ] Extend the adjacent adaptive emitter and its free-name/parse tests. The
+      emitted program must select **fresh** hits and restore their Z, never replay
+      this run's coordinates. Add a `CannotEmit` for a phase with no recorded
+      executable channel effects, matching `set_channel`'s existing refusal.
+
+Rig gate — **M5 first** (EMU channel plans, no `Channel` group, camera-triggered
+lasers), then a `Channel`-group machine for the preset route:
+
+- [ ] 561 search, exactly one 488 switch, both enable audit streams, acquire-frame
+      dose against the reservation, the zero-hit path switching and acquiring
+      nothing, and standalone replay with Microclaw closed.
+- [ ] A demo machine can prove event counts, phase order, bounds, logs and script
+      replay. Its identical frames **cannot** prove that 561 evidence selected a
+      biological hit or that the burst contains the intended structure. Split the
+      runbook on that line before booking rig time — 43j's lesson.
+- [ ] **Clear the Windows socket race in `test_bridge_check.py` first** (open
+      register), or this gate spends a round diagnosing a fourth warning that is
+      not its own.
+
+Post-merge design gate:
+
+- [ ] Reconcile `design/44` to what the rig measured, in the shape design/43's
+      findings use: what its stubs got wrong, and what the gate proved that no
+      offline test could.
 
 ---
 
