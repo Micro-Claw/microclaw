@@ -856,10 +856,31 @@ def _emit_adaptive(params: RecordedParams, kind: str) -> str:
     else:
         positions = params.get("positions")
         if positions is None:
-            raise CannotEmit(params.get(
-                "_position_resolution_error",
-                "the record contains no resolved adaptive survey seed positions",
-            ))
+            # The run itself recorded the coordinates it resolved, so a name
+            # this exporter cannot re-derive is not a dead end. Same
+            # result-derived route _emit_multiposition takes at :162-173, and
+            # the M5 gate of 2026-08-11 is why it exists: a session that marked
+            # and validated its positions still failed name resolution, the
+            # whole export came back `emitted_calls: 0`, and the agent hand-wrote
+            # an acquisition script to fill the gap -- which is the fabrication
+            # path this exporter exists to remove.
+            #
+            # tiles_planned rounds to 3 dp. That is a nanometre against a stage
+            # that steps in tens of nanometres at best, so it is recorded here
+            # rather than treated as a reason to refuse.
+            planned = params.result.get("tiles_planned")
+            if planned and all(
+                isinstance(tile, dict) and tile.get("position") is not None
+                and tile.get("x_um") is not None and tile.get("y_um") is not None
+                for tile in planned
+            ):
+                positions = [{"name": tile["position"], "x_um": tile["x_um"],
+                              "y_um": tile["y_um"]} for tile in planned]
+            else:
+                raise CannotEmit(params.get(
+                    "_position_resolution_error",
+                    "the record contains no resolved adaptive survey seed positions",
+                ))
         if not positions or any(p.get("name") is None or p.get("x_um") is None
                                 or p.get("y_um") is None for p in positions):
             raise CannotEmit("the record contains an incomplete adaptive survey seed position")

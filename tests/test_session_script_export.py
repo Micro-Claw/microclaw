@@ -1253,6 +1253,51 @@ def test_stripping_a_block_sole_package_import_still_emits_valid_python(
     assert not _undefined_emitted_names(source)
 
 
+def test_unresolvable_survey_names_fall_back_to_the_recorded_tiles(tmp_path):
+    """M5 gate, 2026-08-11. The whole export came back `emitted_calls: 0`.
+
+    A real session marked and validated its positions and STILL failed name
+    resolution — an intervening `validate_positions`/`mark_position` sequence
+    leaves state that cannot resolve `pos_1`. Refusing was safe but useless: the
+    operator got no runnable script, and the agent hand-wrote an acquisition
+    script to fill the gap, which is the fabrication path this exporter exists
+    to remove.
+
+    The run recorded the coordinates it actually resolved, so a name this
+    exporter cannot re-derive is not a dead end. Same result-derived route
+    `_emit_multiposition` already takes.
+    """
+    records = completed_call(
+        "run_adaptive_survey",
+        {"protocol": "timelapse", "protocol_params": {"n_frames": 3, "interval_s": 0},
+         "position_names": ["pos_1", "pos_2"], "save_dir": "session",
+         "hook_strategy": "snr_observer"},
+        {"status": "Adaptive survey: 6 frame(s) acquired from a 2-tile plan.",
+         "tiles_planned": [{"position": "pos_1", "x_um": -819.7, "y_um": 566.0},
+                           {"position": "pos_2", "x_um": -784.7, "y_um": 566.0}]},
+    )
+    _, result, source = export(tmp_path, records)
+
+    assert result["emitted_calls"] == 1
+    assert "# NOT EMITTED:" not in source
+    assert "'xy_positions': [(-819.7, 566.0), (-784.7, 566.0)]" in source
+    assert "'position_labels': ['pos_1', 'pos_2']" in source
+    compile(source, "routine.py", "exec")
+
+
+def test_a_survey_with_neither_names_nor_recorded_tiles_still_refuses(tmp_path):
+    """The fallback must not become a licence to invent coordinates."""
+    records = completed_call(
+        "run_adaptive_survey",
+        {"protocol": "timelapse", "protocol_params": {"n_frames": 1},
+         "position_names": ["pos_1"], "save_dir": "session",
+         "hook_strategy": "snr_observer"},
+        {"status": "Adaptive survey: 0 frame(s) acquired from a 1-tile plan."},
+    )
+    _, _, source = export(tmp_path, records)
+    assert "# NOT EMITTED: run_adaptive_survey" in source
+
+
 def test_the_exporter_never_writes_a_file_it_cannot_parse(tmp_path, monkeypatch):
     """The global guard, independent of any one emitter.
 
