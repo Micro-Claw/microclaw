@@ -1,6 +1,26 @@
 # Block 43i rig gate — budgeted survey refocus
 
-Implementation ancestor: bb12d95
+Implementation ancestor: 161d680
+
+## Round 2 — what the M5 run of 2026-08-11 already closed
+
+Round 1 (`43i-m5`) **passed Steps 0, 1, 3, 6 and 7's first limb** and found two
+defects, both now fixed in `161d680`. Do not repeat what passed unless it comes
+free with something else.
+
+What round 2 owes:
+
+- **Step 0 again** — the suite moved (10 new tests) and a rig-gated block runs the
+  full suite on its own machine.
+- **Step 4**, which round 1 could not run: see its rewritten instructions below.
+  You do not need a different sample.
+- **Step 5**, which round 1 **FAILED**. This is the round's main event.
+- **Step 8**, new, verifying the second fix.
+
+Round 1's live and standalone runs agreed to every digit — `entry_z_um`
+48.96335 → `final_z_um` 50.79668333 in both, same positions, same actions, same
+order — so Step 6's reproducibility claim is closed unless Step 5's fix disturbs
+it. Re-run Step 6 anyway, because the dataset shape is what changed.
 
 Use PowerShell from the checked-out repository. uv is the single launcher for
 every Python/project command below; do not substitute bare Python for one line.
@@ -30,7 +50,7 @@ the real worst case. Size it deliberately for the sample in front of you.
 
 ## Step 0 — pin and run the full suite on this machine
 
-    git merge-base --is-ancestor bb12d95 HEAD
+    git merge-base --is-ancestor 161d680 HEAD
     if ($LASTEXITCODE -ne 0) { throw "Block 43i implementation is not in this checkout" }
 
     uv run python -m pytest -q > suite-43i.txt 2>&1
@@ -40,11 +60,12 @@ the real worst case. Size it deliberately for the sample in front of you.
     uv run python -m pytest --collect-only -q > collected-43i.txt 2>&1
     if ($LASTEXITCODE -ne 0) { Get-Content collected-43i.txt; throw "Collection failed" }
 
-macOS measured **1757 passed + 99 skipped = 1856 collected**, 3 warnings. Every
-Track F Windows run has shown the same 17-test platform-conditional difference
-and a 116 skip count, so expect **1740 + 116 = 1856** here. Derive the total from
-passed + skipped rather than reading it off. Stop if tests failed, if the
-collected total is not 1856, or if the skip count rose above 116.
+macOS measured **1767 passed + 99 skipped = 1866 collected**, 3 warnings. Round 1
+measured 1740 + 116 = 1856 on M5, the same 17-test platform-conditional
+difference every Track F Windows run has shown, so expect **1750 + 116 = 1866**
+here. Derive the total from passed + skipped rather than reading it off. Stop if
+tests failed, if the collected total is not 1866, or if the skip count rose above
+116.
 
 ## Step 1 — offline checks, no microscope time
 
@@ -96,8 +117,20 @@ refocus there and report whether it converged.
 
 ## Step 4 — the negative limb: a sweep that does not converge
 
-On bare glass or a flat, structureless field — `scan300_488_r12_c15` is the
-reference case — the sweep must run and **fail** to converge.
+**You do not need a sample with empty fields.** Round 1 could not run this step
+for want of one, and the step was over-specified: what it measures is the sweep
+refusing to call a curve a focus peak, and a bead sample can produce that on
+demand. Either of these works, on the beads already on the stage:
+
+- **Put focus outside the sweep window.** Defocus by well over `z_range_um`, then
+  run with a narrow range (a few µm). The metric curve is noise, `curve_contrast`
+  falls under `MIN_CONTRAST`, and the flat-curve refusal fires.
+- **Or put focus at the window's edge.** Centre the sweep so the true plane sits
+  at a boundary. The peak pins at the edge and design/28 F1's non-convergence
+  fires instead. Either reason is a PASS for this step; record which one you got.
+
+A field of bare glass — `scan300_488_r12_c15` is the reference case — is still
+the most faithful version if you ever have one, but it is not required.
 
 PASS requires: `decision: accepted`, reason `autofocus ran and did not converge;
 Z restored`, no second look for that tile, **no widening and no retry**, and the
@@ -109,27 +142,32 @@ prove cells, but failure to converge disproves them.
 
 ## Step 5 — both looks survive in the saved dataset
 
-**This is a rig step, not an offline one.** An offline probe already established
-that NDTiff indexes identical axes as a single readable frame, which is why the
-re-exposure carries a `refocus=1` axis. What that probe could not establish is
-whether the **acquisition engine** accepts an event carrying an axis that was not
-in the `multi_d_acquisition_events` plan.
+**Round 1 FAILED this step, and it is the reason there is a round 2.** Both looks
+were stored and individually readable — the engine does accept the extra axis —
+but the axis was **ragged**: first looks carried no `refocus` key at all, so
+`dataset.axes["refocus"]` read `[1]` and every reader that enumerates the
+Cartesian product of the axes generated only `refocus=1` cells. Measured against
+round 1's own dataset: 4 real frames in, 3 combos out, **1 real frame and 2
+zeros** — all three first looks silently dropped by a TIFF export. `161d680`
+stamps `refocus=0` on the plan so the axis is dense.
 
-On the dataset from Step 3:
+Run this against the dataset from Step 3, substituting its path:
 
-    uv run microclaw view-history
+    uv run python -c "from ndstorage import Dataset; d=Dataset(r'<dataset>'); print({k: sorted(v) for k,v in d.axes.items()}); print(len(d.index), 'frames')"
 
-Then read the dataset back and confirm the refocused position has **two readable
-frames**, one at `refocus` absent/0 and one at `refocus=1`, with visibly
-different focus. If the axis was rejected by the engine, or if only one frame
-comes back, that is a FAIL and it is the finding — the hook log will report
-success either way, which is exactly why this step exists.
+PASS requires **`refocus` reporting `[0, 1]`**, and the frame count matching the
+tiles acquired plus the refocused re-exposures. `[1]` alone is the round-1 defect
+unfixed. Then confirm the refocused position has two readable frames, at
+`refocus=0` and `refocus=1`, with visibly different focus.
 
-Note for the report: a survey where one tile of many was refocused produces a
-ragged `refocus` axis, so a TIFF export of it will zero-pad the absent cells.
-Zero-padding corrupting `ImageStats` statistics is already a carried-forward
-finding sized as its own block; record whether you see it here, but it is not
-this block's failure.
+The hook log reports success either way — that is exactly why this step exists,
+and why it is measured on the dataset rather than on the log.
+
+Note for the report: a survey where one tile of many was refocused still leaves
+genuinely absent cells (`refocus=1` at the tiles never refocused), which a TIFF
+export zero-pads. That is the already-registered zero-padding finding, sized as
+its own block, and it is not this block's failure. The difference that matters:
+zero-padding an absent cell is expected; losing a frame that was acquired is not.
 
 ## Step 6 — the emitted script reproduces the refocus decision standalone
 
@@ -161,6 +199,21 @@ refused`.
 
 Run a survey with **no** `autofocus_budget` and a hook that requests autofocus,
 and confirm `unsupported-by-run_adaptive_survey` — the pre-43i behaviour, intact.
+
+## Step 8 — the script opens as text, and the bridge survives it
+
+Round 1's second defect: the agent offered to open the exported script, called
+`open_artifact` on the `.py`, and ImageJ read `from ...` as an image header
+(`not a TIFF file: header=b'from'`). The ZMQ bridge was left wedged and
+Micro-Manager had to be restarted, mid-gate.
+
+After Step 6, ask to see the exported script. PASS requires: it opens in this
+machine's **text editor**, the payload's `via` names that mechanism rather than
+`ij.IJ.open`, and **the bridge still works afterwards** — call any read-only tool
+(`get_position`, say) and confirm it answers without a restart.
+
+Then open an image artifact in the same session and confirm it still goes to
+ImageJ. The fix must not have captured the tool's actual job.
 
 ## Reporting
 
