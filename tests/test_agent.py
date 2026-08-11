@@ -41,8 +41,23 @@ class TestRigInterviewSystemBlock:
         assert "Never block a task" in interview["text"]
         assert "Never re-ask a stored topic" in interview["text"]
         # Whitespace-normalized: the clause is the contract, its line wrap is not.
-        assert "if this rig has an EMU plugin" in " ".join(interview["text"].split())
+        flat = " ".join(interview["text"].split())
+        assert "if this rig has an EMU plugin" in flat
         assert all("cache_control" in block for block in blocks[:-1])
+
+    def test_interview_says_when_to_ask(self):
+        """The demo gate's round-1 FAIL, pinned.
+
+        The first shipped text described *how* to interview and never said
+        *when*, so on the demo machine the block was in the prompt, the profile
+        had five open topics, and the agent opened two sessions without asking
+        anything. Its most forceful sentence was the negative one — never block
+        a task — which is the only clause a request for work matches.
+        """
+        blocks = _system_blocks()
+        flat = " ".join(blocks[-1]["text"].split())
+        assert "first reply of this session" in flat
+        assert "Interview the operator" in flat
 
     def test_interview_is_omitted_when_profile_is_complete(self):
         from microclaw.knowledge_manager import RIG_TOPICS, save_entry

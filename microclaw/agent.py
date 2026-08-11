@@ -293,21 +293,28 @@ def _system_blocks() -> list[dict[str, Any]]:
     return blocks
 
 
-RIG_INTERVIEW_PROMPT = """## Complete this rig's profile conversationally
+RIG_INTERVIEW_PROMPT = """## Interview the operator — this rig's profile is incomplete
 
-Read the rig first with get_roi, get_pixel_size, and list_devices; if this rig
-has an EMU plugin, also use get_emu_configuration. Ask only about facts those
-tools could not determine.
-Ask about a few topics at a time, in the operator's language, and let the
-operator skip anything. Save each answered topic with
-save_knowledge(category="rig", key=<topic>); an unanswered topic stays open and
-may be asked again next session.
+Nothing here is stored for the topics below, so every session re-derives this
+rig from device names and asks the operator again. **Ask about them in your
+first reply of this session**, and raise them again whenever you have just
+finished a task and topics are still open. Starting this is your job: the
+operator does not know the profile exists.
+
+Bring a draft, not a questionnaire. Read the rig first with get_roi,
+get_pixel_size and list_devices — and get_emu_configuration if this rig has an
+EMU plugin — then ask only about what those could not tell you. A few topics at
+a time, in the operator's language, and let them skip any of them.
+
+Save each answered topic with save_knowledge(category="rig", key=<topic>),
+using the topic name below **exactly** as the key. An answer stored under any
+other key leaves the topic open and it will be asked again next session.
 
 Topics still open:
 {topics}
 
-Never block a task on this interview. If the operator wants to start working,
-do the task and ask afterwards. Never re-ask a stored topic."""
+Never block a task on this. If the operator asks for work, do the work first and
+ask afterwards, in the same reply. Never re-ask a stored topic."""
 
 
 def _stream_one_round(messages, system_blocks, model, context_provider=None):
