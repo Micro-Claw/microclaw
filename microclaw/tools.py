@@ -51,6 +51,7 @@ from microclaw.image_analysis import (
     snap_to_numpy_displayed,
     tenengrad,
 )
+from microclaw.paths import TEXT_SUFFIXES, open_in_editor
 from microclaw.safety import SafetyGuard, SafetyViolation
 from microclaw.acquisition import AcquisitionLedger, AcquisitionPlan, Reservation, plan_events
 from microclaw.calibration import resolve_calibration
@@ -5516,6 +5517,20 @@ def open_artifact(
     resolved = Path(guard.resolve_readable_path(path))
     if not resolved.exists():
         return {"error": f"Artifact not found: {resolved}"}
+
+    if resolved.suffix.lower() in TEXT_SUFFIXES:
+        # ImageJ reads the first bytes as an image header, fails, and can leave
+        # the bridge wedged: on M5 2026-08-11 an exported .py produced
+        # "not a TIFF file: header=b'from'" and cost a Micro-Manager restart
+        # mid-gate. Text opens the way `microclaw init` opens safety_config.yaml.
+        via = open_in_editor(resolved)
+        return {
+            "path": str(resolved), "opened": True, "via": via, "windows": [],
+            "provenance": (
+                "Opened as text in this machine's editor, not in ImageJ — "
+                "ImageJ reads files as images and cannot display a script."
+            ),
+        }
 
     # open_in_imagej's keys are lifted, not nested. Nesting them under a key of
     # their own gave the payload a top-level `opened` that was a *dict* — truthy

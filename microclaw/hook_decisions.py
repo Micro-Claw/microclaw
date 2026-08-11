@@ -278,6 +278,23 @@ class UntrustedHookAdapter:
 
     def configure_adaptive(self, *, events, candidates, progress, guard,
                            max_events: int) -> None:
+        if self._autofocus_context is not None:
+            # Make the refocus axis DENSE before the plan is dispatched. NDTiff
+            # keys each frame by its exact axis set, so a second look carrying
+            # refocus=1 against first looks carrying no such key leaves
+            # dataset.axes["refocus"] == [1]: every reader that enumerates the
+            # Cartesian product of the axes -- export_dataset_as_tiff does
+            # exactly this -- then generates only refocus=1 combinations and
+            # silently drops every first look. Measured on M5 2026-08-11, where
+            # a 4-frame dataset exported as 1 real frame and 2 zeros.
+            #
+            # Stamped here, on the shared event dicts, because this is the one
+            # call both the live runner and the emitted script make with the
+            # same list the event stream will yield. Requires configure_autofocus
+            # first; both callers do that, and an unauthorized run must keep its
+            # current axes exactly, so there is nothing to stamp without it.
+            for event in events:
+                event.setdefault("axes", {}).setdefault("refocus", 0)
         self._context = {
             "events": list(events), "candidates": candidates, "progress": progress,
             "guard": guard, "max_events": max_events, "emitted": 1, "cursor": 1,

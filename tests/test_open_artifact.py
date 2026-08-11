@@ -631,3 +631,54 @@ def test_agent_prompt_tells_it_to_call_and_stop():
     from microclaw.agent import SYSTEM_PROMPT
     assert "open_artifact and stop there" in SYSTEM_PROMPT
     assert "Never tell them to open it in FIJI" in SYSTEM_PROMPT
+
+
+# --- Text files never reach ImageJ ------------------------------------------ #
+
+def test_a_script_opens_in_the_text_editor_and_never_reaches_imagej(
+    tmp_path, default_guard, no_thumbnails, monkeypatch
+):
+    """M5, 2026-08-11: an exported session script was handed to open_artifact.
+
+    ImageJ read its first bytes as an image header ("not a TIFF file:
+    header=b'from'") and the ZMQ bridge was left wedged badly enough to need a
+    Micro-Manager restart, mid rig gate. A script is text; it opens the way
+    `microclaw init` opens safety_config.yaml.
+    """
+    script = tmp_path / "session.py"
+    script.write_text("from pycromanager import Core\n", encoding="utf-8")
+
+    opened = []
+    monkeypatch.setattr("microclaw.tools.open_in_editor",
+                        lambda path: opened.append(Path(path)) or "os.startfile")
+    ctrl = MagicMock(spec=MicroscopeController)
+    ctrl.open_in_imagej.side_effect = AssertionError(
+        "text must never be handed to the ImageJ bridge"
+    )
+
+    result = open_artifact(ctrl, default_guard, str(script))
+
+    assert opened == [script]
+    ctrl.open_in_imagej.assert_not_called()
+    assert result["opened"] is True
+    assert result["windows"] == []
+    assert "ImageJ" in result["provenance"]
+
+
+@pytest.mark.parametrize("suffix", [".py", ".json", ".yaml", ".log", ".md", ".csv"])
+def test_every_text_suffix_takes_the_editor_route(
+    suffix, tmp_path, default_guard, monkeypatch
+):
+    path = tmp_path / f"artifact{suffix}"
+    path.write_text("x\n", encoding="utf-8")
+    monkeypatch.setattr("microclaw.tools.open_in_editor", lambda _p: "stub")
+    ctrl = MagicMock(spec=MicroscopeController)
+    ctrl.open_in_imagej.side_effect = AssertionError("must not reach ImageJ")
+    assert open_artifact(ctrl, default_guard, str(path))["via"] == "stub"
+
+
+def test_images_still_go_to_imagej(opening_ctrl, default_guard, no_thumbnails):
+    """The text branch must not capture the tool's actual job."""
+    result = open_artifact(opening_ctrl, default_guard, str(FIXTURES / "mosaic.tiff"))
+    opening_ctrl.open_in_imagej.assert_called_once()
+    assert result["via"] == "ij.IJ.open"

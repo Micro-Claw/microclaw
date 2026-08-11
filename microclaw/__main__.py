@@ -29,7 +29,7 @@ from microclaw.conversation import (
     load_history,
     prune_transcripts,
 )
-from microclaw.paths import default_safety_config
+from microclaw.paths import default_safety_config, open_in_editor
 from microclaw.safety import SafetyGuard
 
 # Compatibility seam for tests/embedders. Restricted commands leave this as
@@ -87,23 +87,10 @@ def view_history(path, open_browser=True):
 def _open_in_editor(path):
     """Show `path` to the user in whatever edits text on this machine.
 
-    os.startfile raises if the extension has no registered handler, and nothing
-    in a base Windows install claims .yaml (design/17 spike Q6 found VS Code
-    only because that box has it). An unhandled OSError here would abort `init`
-    at exactly the moment the user needs the file in front of them.
+    Thin alias: the implementation moved to `paths` when `open_artifact` needed
+    the same behaviour for a session's own exported script (M5, 2026-08-11).
     """
-    try:
-        if sys.platform == "win32":
-            os.startfile(path)  # noqa: S606 — the path is ours, not user input
-        elif sys.platform == "darwin":
-            subprocess.Popen(["open", "-t", str(path)])
-        else:
-            subprocess.Popen([os.environ.get("EDITOR") or "xdg-open", str(path)])
-    except (OSError, AttributeError):
-        if sys.platform == "win32":
-            subprocess.Popen(["notepad.exe", str(path)])
-        else:
-            print(f"Open this file in an editor: {path}")
+    return open_in_editor(path)
 
 
 def init(args):

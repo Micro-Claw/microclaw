@@ -939,3 +939,64 @@ def test_composed_observers_cannot_reach_each_other_through_nested_metadata():
 
     assert victim.seen == ("p0", 0), "an observer saw another observer's edits"
     assert metadata == {"Axes": {"position": "p0"}}, "the parent's metadata was mutated"
+
+
+def test_refocus_axis_is_dense_so_first_looks_stay_enumerable(tmp_path, monkeypatch):
+    """M5, 2026-08-11: the second look stopped overwriting the first and the
+    first looks became unreachable instead.
+
+    NDTiff keys every frame by its exact axis set. With refocus=1 on the second
+    look and no such key on the first, `dataset.axes["refocus"]` reads [1], and
+    any reader enumerating the Cartesian product of the axes generates only
+    refocus=1 cells. `export_dataset_as_tiff` does exactly that: the M5 dataset
+    held 4 real frames and exported as 1 real frame plus 2 zeros. Stamping
+    refocus=0 on the plan makes the axis dense, so both looks enumerate.
+    """
+    from microclaw.autofocus import AutofocusResult, SweepResult
+    import microclaw.tools as tools
+
+    class Hook:
+        def analyze_frame(self, _image, metadata):
+            return HookResult({}, () if metadata["microclaw_refocused"]
+                              else (RequestAutofocus(),))
+
+    sweep = SweepResult([9, 10, 11], [1, 2, 1], 10, True)
+    monkeypatch.setattr(tools, "_run_autofocus_passes", lambda *a: AutofocusResult(
+        sweep, None, 10, 10, True, False, None
+    ))
+    adapter = UntrustedHookAdapter(Hook(), str(tmp_path / "hook.json"))
+    candidates, progress = queue.Queue(), SurveyProgress(3)
+    planned = _events(3)
+    adapter.configure_autofocus(
+        ctrl=type("Ctrl", (), {"core": type("Core", (), {
+            "get_position": lambda self: 10.0,
+        })()})(), guard=_Guard(), max_exposures=8, z_range_um=2,
+        z_step_um=1, method="single_sweep", settle_ms=0, sweep_exposures=3,
+    )
+    adapter.configure_adaptive(events=planned, candidates=candidates,
+                               progress=progress, guard=_Guard(), max_events=5)
+
+    # The plan itself now carries the axis, so the stream yields it too.
+    assert [e["axes"]["refocus"] for e in planned] == [0, 0, 0]
+
+    adapter.image_process_fn(
+        np.zeros((2, 2)),
+        {"PositionName": "p0", "XPosition_um_Intended": 0.0,
+         "YPosition_um_Intended": 0.0}, object(),
+    )
+    second = candidates.get_nowait()
+    assert second["axes"] == {"position": "p0", "refocus": 1}
+
+    # Both values are present across the frames a reader would index, which is
+    # the property that was actually missing on the rig.
+    assert {e["axes"]["refocus"] for e in planned} | {second["axes"]["refocus"]} == {0, 1}
+
+
+def test_survey_without_autofocus_budget_keeps_its_axes_untouched():
+    """An unauthorized run must produce exactly the dataset shape it did before."""
+    adapter = UntrustedHookAdapter(type("Hook", (), {})())
+    planned = _events(2)
+    adapter.configure_adaptive(events=planned, candidates=queue.Queue(),
+                               progress=SurveyProgress(2), guard=_Guard(),
+                               max_events=2)
+    assert [e["axes"] for e in planned] == [{"position": "p0"}, {"position": "p1"}]

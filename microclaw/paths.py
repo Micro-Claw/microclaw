@@ -9,9 +9,48 @@ see `desktop_dir`.
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 APP = "microclaw"
+
+# Files whose contents are text. Handing one of these to ImageJ makes it read
+# the first bytes as an image header and fail -- and on M5 2026-08-11 that
+# wedged the ZMQ bridge badly enough to need a Micro-Manager restart, on a
+# session's own exported script. Text goes to a text editor.
+TEXT_SUFFIXES = frozenset({
+    ".py", ".txt", ".json", ".jsonl", ".yaml", ".yml", ".md", ".log", ".csv",
+})
+
+
+def open_in_editor(path) -> str:
+    """Show `path` to the user in whatever edits text on this machine.
+
+    os.startfile raises if the extension has no registered handler, and nothing
+    in a base Windows install claims .yaml (design/17 spike Q6 found VS Code
+    only because that box has it). An unhandled OSError here would abort `init`
+    at exactly the moment the user needs the file in front of them.
+
+    Returns the mechanism used, so a caller that must report what it did can say
+    so rather than guess.
+    """
+    try:
+        if sys.platform == "win32":
+            os.startfile(path)  # noqa: S606 — the path is ours, not user input
+            return "os.startfile"
+        if sys.platform == "darwin":
+            subprocess.Popen(["open", "-t", str(path)])
+            return "open -t"
+        editor = os.environ.get("EDITOR") or "xdg-open"
+        subprocess.Popen([editor, str(path)])
+        return editor
+    except (OSError, AttributeError):
+        if sys.platform == "win32":
+            subprocess.Popen(["notepad.exe", str(path)])
+            return "notepad.exe"
+        print(f"Open this file in an editor: {path}")
+        return "printed path"
 
 
 def user_config_dir() -> Path:
