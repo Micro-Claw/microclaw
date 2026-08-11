@@ -2,10 +2,14 @@
 
 Branch `design43/rig-profile`. Source: design/43 F1, checklist §43f.
 
-Steps 0–5 run on the **demo machine**. Step 6 needs M5 or M2 and is the only
+Steps 0–5c run on the **demo machine**. Step 6 needs M5 or M2 and is the only
 part that cannot be answered on the demo, because it asserts two facts about
-real optics. Run 0–5 first and return them; do not hold the demo results waiting
+real optics. Run 0–5c first and return them; do not hold the demo results waiting
 for rig time.
+
+**Round 3 is a re-run of Steps 5 and 5c only.** Steps 0–4 all passed at round 2
+and their code is unchanged since; re-run Step 0 only if you want the current
+counts.
 
 ## Pin the implementation
 
@@ -13,7 +17,7 @@ for rig time.
 cd <repo>
 git checkout design43/rig-profile
 git pull
-git merge-base --is-ancestor b6b689f HEAD
+git merge-base --is-ancestor 1149428 HEAD
 if ($LASTEXITCODE -eq 0) { "PIN OK" } else { "PIN FAILED - stop and tell the coordinator" }
 ```
 
@@ -52,11 +56,17 @@ if ($LASTEXITCODE -eq 0) { "SUITE PASS" } else { "SUITE FAIL" }
 Get-Content out43f.txt -Tail 3
 ```
 
-**Expect 1771 passed / 116 skipped / 3 warnings, 1887 collected.** macOS at the
-pin is 1788 + 99 = 1887; the 17-test difference is the platform-conditional set
-every Track F Windows run has shown. A different *collected* total is a real
-finding. (Round 1 measured 1770 + 116 = 1886 and PASSED; the round-2 fix adds one
-test.)
+**Expect 1773 passed / 116 skipped, 1889 collected.** macOS at the pin is
+1790 + 99 = 1889; the 17-test difference is the platform-conditional set every
+Track F Windows run has shown. A different *collected* total is a real finding.
+
+**Warnings: 3 expected, 4 tolerated.** Round 2 measured a fourth —
+`PytestUnhandledThreadExceptionWarning` from
+`tests/test_bridge_check.py::test_tcp_listener_without_zmq_handshake_is_not_ready`,
+`WinError 10038` inside that test's own helper thread when the listener closes
+while `accept()` is blocked. Windows-only, intermittent (round 1 showed 3), test
+still passes, and nothing to do with this block. Report which you get; a *fifth*
+would be a finding.
 
 ## Step 1 — the interview happens, and it is a conversation
 
@@ -120,11 +130,11 @@ next sentence is consistent with what is still open.
 **FAIL** if it cannot save to `rig` at all, or if it saves under a category like
 `devices` instead.
 
-**The interesting case, and the reason this step exists:** if the agent stores the
-answer under a key that is not one of the five topics, the save succeeds and
-`remaining_rig_profile_topics` comes back still listing that topic. Record
-whether the agent noticed and corrected itself. Either outcome is information —
-this is the one defect in this block that no offline test can see.
+**Round 2: PASS.** Every save in that round used the exact topic name, and the
+agent quoted `remaining_rig_profile_topics` back — *"the save tool itself will
+tell me exactly what remains open"*. The key-invention case this step was written
+to catch appeared in Step 5 instead, on a freeform request rather than an
+interview answer, and is now refused outright: Step 5c owns it.
 
 Then check the file:
 
@@ -152,9 +162,18 @@ exists to stop — or if it never asks again about the one you skipped.
 Code path: `_with_illuminated_field` on `get_roi`, `set_roi` and `clear_roi`
 (`tools.py:1641`–`:1695`).
 
-Set a deliberately small ROI in Micro-Manager, then tell microclaw, in your own
-words, that the crop is deliberate and must not be widened — and let it store
-that as the `illuminated_field` topic. In a **new session**, say:
+Set a deliberately small ROI in Micro-Manager. Then, **answering the interview's
+own `illuminated_field` question**, tell microclaw in your own words that the
+crop is deliberate and must not be widened. Round 2 shows why the wording of this
+instruction matters: asked to "store this ROI as my permanent crop" as a freeform
+request, the agent filed it under a key of its own invention and the topic stayed
+open. Confirm before continuing that the entry landed under `illuminated_field`:
+
+```powershell
+Get-Content "$HOME\.microclaw\knowledge.yaml"
+```
+
+In a **new session**, say:
 
 > I want to survey a 300 µm area
 
@@ -169,6 +188,35 @@ crop this small — that is the exact turn F1 was written about.
 and really cropped, so the plumbing and the agent's use of the fact are genuinely
 measured here. What is *not* measured is the physical claim behind it — that only
 part of the chip is illuminated. That is Step 6.
+
+> **Round 2, demo machine, 2026-08-11: the reach limb FAILED and is re-run here.**
+> The agent stored the crop under `saved_roi`, so `get_roi` returned bare
+> coordinates with no `illuminated_field`. It did *not* propose widening and did
+> call it "your saved deliberate crop" — but it knew that from the rendered
+> knowledge-base block, **not** from the mechanism this step tests. A behaviour
+> that passes for the wrong reason is not a pass. Fixed in `1149428`; Step 5c
+> below is the fix's own criterion.
+
+## Step 5c — a rig key that is not a topic is refused
+
+Code path: the `category == "rig"` branch of `save_knowledge`, before `CONFIRM_FN`.
+
+In a session with topics still open, make the *freeform* request that failed in
+round 2:
+
+> Can you store this ROI as my permanent crop?
+
+**PASS** if the agent is refused when it invents a key, the refusal names the five
+topics, **you are never prompted to approve that save**, and the agent then
+re-saves under `illuminated_field` — after which the topic is closed and
+`get_roi` carries the fact.
+
+**FAIL** if it is refused and gives up rather than re-filing, or if you get a
+confirmation prompt for a save that is then refused anyway.
+
+The demo machine currently holds a `rig/saved_roi` entry from round 2. Deleting it
+is a fair way to start this step, and `delete_knowledge` is deliberately not
+restricted so that it can be.
 
 ## Step 6 — M5 or M2 only: the two facts that need real optics
 
