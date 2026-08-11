@@ -3609,7 +3609,7 @@ class TestSaveKnowledgeConfirmation:
         assert "status" in result
         assert saved
 
-    def test_rig_save_reports_topics_still_open_after_a_near_miss_key(
+    def test_rig_save_reports_topics_still_open(
         self, mock_ctrl, unconstrained_guard, monkeypatch
     ):
         from microclaw import tools
@@ -3617,9 +3617,55 @@ class TestSaveKnowledgeConfirmation:
         monkeypatch.setattr(tools, "CONFIRM_FN", lambda s, kind="action": True)
         result = tools.save_knowledge(
             mock_ctrl, unconstrained_guard, category="rig",
-            key="illuminated_roi", value={"deliberate": True},
+            key="illuminated_field", value={"deliberate": True},
         )
-        assert result["remaining_rig_profile_topics"] == list(RIG_TOPICS)
+        assert result["remaining_rig_profile_topics"] == [
+            t for t in RIG_TOPICS if t != "illuminated_field"
+        ]
+
+    def test_a_rig_key_that_is_not_a_topic_is_refused_before_the_prompt(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        """The demo gate's Step 5 defect, pinned.
+
+        Asked to store a deliberate crop, the agent invented the key
+        `saved_roi`. The save succeeded, closed no topic, and left get_roi
+        without the fact it needed — and the agent then recited
+        illuminated_field as still open without connecting the two. rig/ is the
+        profile, so its keys are the profile's topics.
+        """
+        from microclaw import tools
+        from microclaw.knowledge_manager import RIG_TOPICS
+        prompted, saved = [], []
+        monkeypatch.setattr(
+            tools, "CONFIRM_FN",
+            lambda s, kind="action": prompted.append(kind) or True,
+        )
+        monkeypatch.setattr(
+            "microclaw.knowledge_manager.save_entry",
+            lambda *args, **kwargs: saved.append(args),
+        )
+        result = tools.save_knowledge(
+            mock_ctrl, unconstrained_guard, category="rig",
+            key="saved_roi", value={"x": 113, "y": 165},
+        )
+        assert "saved_roi" in result["error"]
+        assert result["rig_topics"] == list(RIG_TOPICS)
+        for topic in RIG_TOPICS:
+            assert topic in result["error"]
+        assert not saved      # nothing was written
+        assert not prompted   # and the operator was not asked about a doomed save
+
+    def test_a_rig_key_saved_before_the_refusal_can_still_be_deleted(
+        self, mock_ctrl, unconstrained_guard
+    ):
+        from microclaw import tools
+        from microclaw.knowledge_manager import save_entry
+        save_entry("rig", "saved_roi", {"x": 113})
+        result = tools.delete_knowledge(
+            mock_ctrl, unconstrained_guard, category="rig", key="saved_roi",
+        )
+        assert "status" in result
 
     def test_the_gate_receives_the_knowledge_kind(
         self, mock_ctrl, unconstrained_guard, monkeypatch

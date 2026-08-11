@@ -2046,7 +2046,12 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "string",
                     "description": (
                         "Short identifier for the entry, e.g. 'U2OS_actin_Alexa647' "
-                        "or 'Thorlabs-ELL-9'. Use underscores, no spaces."
+                        "or 'Thorlabs-ELL-9'. Use underscores, no spaces. "
+                        "For category 'rig' the key must be one of the profile "
+                        "topics — illuminated_field, illumination_path, "
+                        "calibration, device_roles, emission_filters — and any "
+                        "other key is refused; put extra detail inside that "
+                        "topic's value."
                     ),
                 },
                 "value": {

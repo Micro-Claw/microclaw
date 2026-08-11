@@ -6338,6 +6338,7 @@ def save_knowledge(
     """Persist a knowledge base entry. Gated by an in-code confirmation."""
     import yaml
     from microclaw.knowledge_manager import (
+        RIG_TOPICS,
         load_knowledge,
         rig_profile_gaps,
         save_entry,
@@ -6351,6 +6352,22 @@ def save_knowledge(
                 "was observed with (the 'adapter' field of get_system_state's "
                 "camera block, e.g. 'DCam'). An entry that suppresses an alarm "
                 "must name the condition it holds under."}
+    # rig/ *is* the profile, so its keys are the profile's topics. A rig fact
+    # filed under any other key closes no topic — the interview re-asks it every
+    # session — and never reaches its point of use, because get_roi looks up
+    # illuminated_field by name. Measured on the demo machine (design/43 F1,
+    # block 43f): asked to store a deliberate crop, the agent invented
+    # `saved_roi`, then recited illuminated_field as still open without
+    # connecting the two. delete_knowledge is deliberately not restricted, so a
+    # key saved before this refusal existed can still be removed.
+    if category == "rig" and key not in RIG_TOPICS:
+        return {"error":
+                f"'{key}' is not a rig profile topic, and rig/ holds only those. "
+                f"Save this under whichever topic it answers: "
+                f"{', '.join(RIG_TOPICS)} — extra detail belongs inside that "
+                "topic's value. A fact about one piece of hardware belongs in "
+                "devices/, and a named imaging recipe in strategies/.",
+                "rig_topics": list(RIG_TOPICS)}
     if not CONFIRM_FN(
         f"Save knowledge {category}/{key}:\n{yaml.safe_dump({key: value})}",
         kind="knowledge",
