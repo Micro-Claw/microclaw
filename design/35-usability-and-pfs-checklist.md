@@ -365,32 +365,136 @@ and the only branches on `origin` besides `main` are
   second merges `main` first**. Eight blocks remain after them: 43c, 43e, 43f,
   43g, 43h, 43i, 43j, 43k.
 
-### State at the 2026-08-10 close of the fourth Track F session — read this before assigning anything
+### State at the 2026-08-11 close of the fifth Track F session — read this before assigning anything
 
 **This is the live note. It supersedes every other State-at note in this
 section**, all of which are kept only for their round history. Position is not
 recency — read the heading, not the order.
 
-> **43h is MERGED and fully closed, 2026-08-11** (`6c0eeb6`) — M5 gate PASS over
-> three rounds after three demo rounds, ledger row closed with its
-> design-reconciliation cell filled, coordination notes in `design/prompts.md`,
-> design gate merged (`3644020` + the design/43 F14 reconciliation), branch and
-> worktree deleted locally and on `origin`. **Track F merged: 43a, 43m, 43b, 43d,
-> 43e, 43c, 43g, 43h. Four remain, none started: 43f, 43i, 43j, 43k.**
+Written at `3d0e56e` with a boundary commit expected after it, so **verify
+against the repository rather than against that hash.** What should hold:
+`git log --oneline origin/main..main` empty, working tree clean, and the only
+branches on `origin` besides `main` are `design34/focus-system-authorization`
+(6a), `florian/setup-claude-workflow` and `port-to-jpype-acqj` — **no Track F
+branch open.** One worktree besides this one: `../microclaw-6a`, idle at
+`4994f3e`.
+
+- **43h is MERGED and fully closed** (`6c0eeb6`) — M5 gate PASS over three rounds
+  after three demo rounds, ledger row closed with its design-reconciliation cell
+  filled, coordination notes in `design/prompts.md`, design gate merged
+  (`3644020` for `CLAUDE.md` plus `5028da8` reconciling design/43 F14), branch and
+  worktree deleted locally and on `origin`. **Track F merged: 43a, 43m, 43b, 43d,
+  43e, 43c, 43g, 43h. Four remain, none started: 43f, 43i, 43j, 43k.**
+- **43i is unblocked and is next.** Both its dependencies are merged. It is the
+  block design/43 promoted once 43g measured that no single-frame statistic
+  separates cells from a diffuse bright gradient and that **the focus response is
+  the discriminator**; 43h landing means it is built inside a runner that
+  exports, which is why it was sequenced second. Read design/43 F5 and the 43i
+  entry's 2026-08-10 note before assigning — F5's original "structure_coverage
+  high" premise is measured false and the entry says what replaced it.
+- **Order for the rest is 43i, then 43f and 43j; 43k stays design-only and
+  last.** Operator ruling, 2026-08-10, unchanged.
+- **Suite baseline: 1747 passed / 99 skipped / 3 warnings, 1846 collected** on
+  macOS at `6c0eeb6`. M5 measured **1730 + 116 = 1846** — the same 17-test
+  Windows platform-conditional difference every Track F run has shown.
+  Re-measure; derive the total from passed + skipped; diff collected IDs against
+  the block's start commit.
+- **`CLAUDE.md` changed in this block and is worth re-reading before the next
+  one.** Its export paragraph now lists two non-emittable things rather than
+  three, states the `inspect.getsource` rule for the adaptive loop, and adds a
+  standing rule that **every new tool must be decorated** `@emits` /
+  `@emits_nothing` / `@refuses` — an undecorated tool plants a `raise` in every
+  exported script that recorded it.
+- **Five carried-forward items were added by 43h**, in §"Still open, not yet
+  scheduled": fifteen undecorated registry tools; emitted scripts hard-coding
+  their positions rather than reading the stage list (the operator asked for
+  this); the exporter's missing parse guard, now fixed but recorded because its
+  absence was the real defect; a latent coupling between the import check and the
+  emitted analysis block; and the `export_session_script` selection work, which
+  shipped.
+- **Two 43h limbs ship rig-ungated with reasons in the ledger row** — the
+  `tiles_planned` fallback and the *emitted* multi-frame full dispatch. Both are
+  unit-pinned in both directions and the live half of the second is gated at
+  9-of-9 on M5. Do not re-derive these as open questions.
+- **One process lesson worth carrying**, from 43h's six gate rounds: an
+  unnamed-tool criterion must also be *unanswerable without the thing under
+  test*, and reach must be split from mechanism so a reach failure does not void
+  the gate. Two of the six rounds measured nothing because of this. It is now a
+  standing constraint.
+
+### State at the 2026-08-10 close of the fourth Track F session — SUPERSEDED, kept for the round history
+
+> **Retired. Do not act on this note** — it was written when 43g had just merged
+> and 43h had not started, so its branch list, remaining-block count and suite
+> baseline are all stale. The live note is the 2026-08-11 one above it. Kept for
+> the 43g round history and for the sequencing ruling it records.
+
+Written at `b150c17` with a boundary commit expected after it, so **verify
+against the repository rather than against that hash.** What should hold:
+`git log --oneline origin/main..main` empty, working tree clean, and the only
+branches on `origin` besides `main` are `design34/focus-system-authorization`
+(6a), `florian/setup-claude-workflow` and `port-to-jpype-acqj` — **no Track F
+branch open.** One worktree besides this one: `../microclaw-6a`, idle at
+`4994f3e`.
+
+- **43g is MERGED and fully closed** (`113f23b`) — demo gate PASS, ledger row
+  closed with its design-reconciliation cell filled, coordination notes in
+  `design/prompts.md`, design gate merged (`b150c17`), branch and worktree
+  deleted. **Track F merged: 43a, 43m, 43b, 43d, 43e, 43c, 43g. Five remain,
+  none started: 43f, 43h, 43i, 43j, 43k.**
+- **Order is 43h → 43i, then 43f and 43j; 43k stays design-only and last.**
+  Changed 2026-08-10 by operator ruling. 43h before 43i is design/43's own
+  reasoning (refocus-and-re-judge built inside a runner that already exports)
+  and is untouched. **43i moved up because 43g's study changed what it needs**:
+  it is no longer waiting on a verdict statistic, it *is* the verdict.
+- **43g merged NARROWED and does not close F6.** Read `design/43` F5 and F6 —
+  both now carry measured corrections — plus `design/43-block43g-gate.md`. The
+  short version: on the data both findings came from, no single-frame intensity
+  or texture statistic separates cells from a diffuse bright gradient, and the
+  focus response is what identified them. What 43g ships is a **gate**, stable
+  where `min_snr` is on a cliff and the only ranking signal that survives on
+  beads.
+- **Do not re-propose a single-frame discriminator from theory.** One was
+  proposed and withdrawn inside a day on circular labels. The carried-forward
+  register says what a proposal must defeat, and names the labelled set to
+  defeat it with.
+- **Suite baseline: 1709 passed / 99 skipped / 3 expected warnings, 1808
+  collected** on macOS at `113f23b`. The demo machine (Windows) measured
+  1692 / 116 / 1808 at the gate — same collected total, and the 116-skip count
+  every Track F Windows run has produced. Re-measure; derive the total from
+  passed + skipped; diff collected IDs against the block's start commit.
+- **Most gate evidence is already on disk.** The archive is
+  `~/Documents/Documents - Beyonce/Projects/Micro-Claw` — note the hyphen, it
+  does not match a `*microclaw*` glob. 43g's whole measurement half ran offline
+  against saved data that had been assumed to require rig time. **Check it
+  before booking a rig session**, and see the two standing constraints this
+  produced.
+- **Two carried-forward findings were added**, both in §"Still open, not yet
+  scheduled": the withdrawn texture measure with the evidence that killed it,
+  and mosaic zero-padding corrupting every `ImageStats` statistic (pre-existing,
+  reaches `snr` and `focus_metric`, sized as its own block).
+
+> **Re-verified 2026-08-10 at assignment of 43h**, on `main` at `735771f`. Every
+> claim in this note held: `origin/main..main` empty, clean tree, remote branches
+> exactly `design34/focus-system-authorization`, `florian/setup-claude-workflow`
+> and `port-to-jpype-acqj` with no Track F branch open, one idle worktree at
+> `../microclaw-6a` (`4994f3e`), and the suite baseline re-measured **1709 passed
+> / 99 skipped / 3 expected warnings, 1808 collected** on macOS — the note's own
+> number, unchanged. **43h is assigned**, per this note's sequencing ruling.
 >
-> **43i is now unblocked and is next**, per this note's ordering. It is the block
-> design/43 promoted because 43g measured that the focus response *is* the
-> discriminator, and 43h landing means it is built inside a runner that exports.
->
-> Suite baseline: **1747 passed / 99 skipped / 3 warnings, 1846 collected** on
-> macOS at `6c0eeb6`; M5 measured 1730 + 116 = 1846. Re-measure; derive the total
-> from passed + skipped.
->
-> Two 43h limbs shipped rig-ungated with reasons recorded in the ledger row, and
-> five carried-forward items were added — most consequentially that **fifteen
-> registry tools still have no export decoration**, each of which plants a
-> `raise` in any exported script that recorded it. That is now also a rule in
-> `CLAUDE.md`.
+> Seven facts the 43h entry did not carry, found by reading the code rather than
+> design/43 — all now in that entry. The three that change the shape of the work:
+> the emitted loop's `hook` argument is the **`UntrustedHookAdapter`**, not the
+> user's hook, so "inline the saved hook file verbatim" emits a runner calling
+> methods nothing defines; a survey seeded by `position_names` has **no
+> resolution path at all** today, so F14's stub refuses every such run, and the
+> coordinates it needs are already in the result as `tiles_planned`; and
+> `analysis_used` is computed from a **fixed list of four tool names**, so an
+> emitted hook that calls `compute_stats` gets no inlined analysis — the
+> block-13/41b `NameError` class for the third time. F14's own dependency audit
+> of `hooks.py` and `hook_decisions.py` was checked line by line and **holds
+> exactly**; the barrier it did not audit is that two registry hooks are
+> constructed with `ctrl` and `guard`.
 
 ### State at the 2026-08-09 close of the third Track F session — SUPERSEDED, kept for the round history
 
