@@ -1214,6 +1214,144 @@ class TestRunAdaptiveSurvey:
         assert "list_hooks" in unknown["error"]
         assert not captured, "every refusal above must precede the acquisition"
 
+    def test_acquire_on_hit_reserves_both_phases_then_restores_hit_z(
+        self, mock_ctrl, unconstrained_guard, monkeypatch, tmp_path
+    ):
+        import numpy as np
+        from microclaw import tools
+        from microclaw.acquisition import AcquisitionPlan
+        from microclaw.hook_decisions import AcquireAt, HookResult, UntrustedHookAdapter
+
+        class HitHook:
+            def analyze_frame(self, _image, _metadata):
+                return HookResult({}, (AcquireAt("tile_0"),))
+
+        adapter = UntrustedHookAdapter(HitHook(), str(tmp_path / "hook.json"))
+        monkeypatch.setattr(tools, "_resolve_hook", lambda *_a, **_k: adapter)
+        mock_ctrl.core.get_position.return_value = 17.25
+        timeline, reservations, acquire_events = [], [], []
+
+        class FakeReservation:
+            def __init__(self, plan):
+                self.plan, self.completed_frames = plan, 0
+                self.overrun_frames = 0
+            @property
+            def has_overrun(self): return False
+            def commit_frame(self):
+                self.completed_frames += 1
+                return self.completed_frames <= self.plan.frames
+            def close(self): pass
+
+        def authorize(_ctrl, _guard, plan, **_kwargs):
+            timeline.append(("reserve", plan.frames, plan.exposure_ms_per_frame))
+            reservation = FakeReservation(plan)
+            reservations.append(reservation)
+            return reservation
+
+        monkeypatch.setattr(tools, "_authorize_acquisition", authorize)
+        monkeypatch.setattr(tools, "_set_channel_for_composite",
+                            lambda _c, _g, channel: timeline.append(
+                                ("channel", channel)) or {"config_group": "Channel"})
+        monkeypatch.setattr(tools, "_plan_protocol_repetitions",
+                            lambda _c, _p, pp, repetitions: AcquisitionPlan(
+                                pp["n_frames"] * repetitions,
+                                pp["exposure_ms"], 1, 1))
+
+        def acquire(_guard, _save, name, events, hook=None, reservation=None, **_kw):
+            timeline.append(("acquire", name))
+            if hook is not None:
+                hook.image_process_fn(
+                    np.zeros((2, 2), dtype=np.uint16),
+                    {"Axes": {"position": 0}}, object(),
+                )
+            else:
+                acquire_events.extend(events)
+                for _event in events:
+                    reservation.commit_frame()
+            return f"/ws/{name}"
+
+        monkeypatch.setattr(tools, "_acquire_with_hooks", acquire)
+        result = tools.run_adaptive_survey(
+            mock_ctrl, unconstrained_guard, protocol="timelapse",
+            protocol_params={"n_frames": 1, "interval_s": 0,
+                             "channel": "561", "exposure_ms": 5},
+            positions=self._positions(1), save_dir=str(tmp_path),
+            hook_strategy="saved", log_path=str(tmp_path / "hook.json"),
+            acquire_on_hit={
+                "channel": "488", "protocol": "timelapse", "max_hits": 2,
+                "protocol_params": {"n_frames": 3, "interval_s": 0,
+                                    "exposure_ms": 20},
+            },
+        )
+
+        first_acquire = next(i for i, item in enumerate(timeline)
+                             if item[0] == "acquire")
+        assert [item[0] for item in timeline[:first_acquire]].count("reserve") == 2
+        assert [(r.plan.frames, r.plan.exposure_ms_per_frame) for r in reservations] == [
+            (1, 5.0), (6, 20),
+        ]
+        assert [event["z"] for event in acquire_events] == [17.25] * 3
+        assert result["hits_recorded"] == result["hits_acquired"] == 1
+        assert result["acquire_frames_reserved"] == 6
+        assert result["acquire_frames_accounted"] == 3
+        assert result["acquire_frames_unused"] == 3
+        assert result["acquire_phase_ran"] is True
+        assert result["max_hits_reached"] is False
+
+    def test_acquire_on_hit_absolute_z_refuses_before_exposure(
+        self, mock_ctrl, unconstrained_guard, captured, tmp_path
+    ):
+        from microclaw.tools import run_adaptive_survey
+
+        result = run_adaptive_survey(
+            mock_ctrl, unconstrained_guard, protocol="timelapse",
+            protocol_params={"n_frames": 1, "channel": "561"},
+            positions=self._positions(1), save_dir=str(tmp_path),
+            hook_strategy="probe", acquire_on_hit={
+                "channel": "488", "protocol": "zstack", "max_hits": 1,
+                "protocol_params": {"z_start_um": -1, "z_end_um": 1,
+                                    "z_step_um": 1},
+            },
+        )
+        assert "refuses absolute z_start_um/z_end_um" in result["error"]
+        assert not captured
+
+    def test_acquire_on_hit_zero_hits_is_success_and_does_not_switch_acquire(
+        self, mock_ctrl, unconstrained_guard, captured, monkeypatch, tmp_path
+    ):
+        from microclaw import tools
+        from microclaw.acquisition import AcquisitionPlan
+
+        class Reservation:
+            has_overrun = False
+            overrun_frames = 0
+            completed_frames = 0
+            def __init__(self, plan): self.plan = plan
+            def close(self): pass
+
+        channels = []
+        monkeypatch.setattr(tools, "_set_channel_for_composite",
+                            lambda _c, _g, channel: channels.append(channel)
+                            or {"config_group": "Channel"})
+        monkeypatch.setattr(tools, "_authorize_acquisition",
+                            lambda _c, _g, plan, **_k: Reservation(plan))
+        monkeypatch.setattr(tools, "_plan_protocol_repetitions",
+                            lambda *_a, **_k: AcquisitionPlan(4, 20, 1, 1))
+        result = tools.run_adaptive_survey(
+            mock_ctrl, unconstrained_guard, protocol="timelapse",
+            protocol_params={"n_frames": 1, "channel": "561", "exposure_ms": 5},
+            positions=self._positions(1), save_dir=str(tmp_path), hook_strategy="probe",
+            acquire_on_hit={
+                "channel": "488", "protocol": "timelapse", "max_hits": 2,
+                "protocol_params": {"n_frames": 2, "exposure_ms": 20},
+            },
+        )
+        assert channels == ["561"]
+        assert result["hits_recorded"] == result["hits_acquired"] == 0
+        assert result["acquire_phase_ran"] is False
+        assert result["max_hits_reached"] is False
+        assert result["acquire_frames_unused"] == 4
+
 
 # ── completion counts re-exposures TAKEN, not authorized (M5 rounds 2 and 4) ──
 
