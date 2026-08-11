@@ -1,6 +1,29 @@
 # Block 43i rig gate — budgeted survey refocus
 
-Implementation ancestor: 161d680
+Implementation ancestor: 5aaa70d
+
+## Round 3 — what M5 round 2 closed, and the one new criterion
+
+Round 2 (`43i-m5-round2`) **PASSED Steps 0, 1, 5 and 8.** Step 5 is closed
+properly: `refocus` reads `[0, 1]` on all three datasets, and the gate's own
+dataset now recovers **4 of 4** real frames through the exporter's traversal
+where round 1 recovered 1 of 4. Step 8 passed on Windows —
+`"opened": true, "via": "os.startfile"`, no ImageJ, no wedged bridge.
+
+It found two more defects, both fixed in `5aaa70d`:
+
+- **A refocus granted at the last tile was silently dropped.** `pos_3` accepted a
+  refocus and no `refocus=1` frame for it exists: completion was sized without
+  the authorized re-exposures, so the survey ended as the last tile's image
+  arrived and the re-queued event went into a queue nobody was reading. The
+  sweep's dose was spent and the hook log still said "refocused and re-queued
+  this tile". **Step 3 gains a criterion for exactly this case.**
+- **The standalone script died at line 1908** on
+  `run_analysis_on_saved_dataset`'s default refusal — one of the undecorated
+  fifteen — *after* correctly running the adaptive program. Now `@emits_nothing`.
+
+**Still never exercised, in either round: Step 4 and Step 7.** Both are cheap and
+neither needs a different sample. They are the round's main remaining debt.
 
 ## Round 2 — what the M5 run of 2026-08-11 already closed
 
@@ -50,7 +73,7 @@ the real worst case. Size it deliberately for the sample in front of you.
 
 ## Step 0 — pin and run the full suite on this machine
 
-    git merge-base --is-ancestor 161d680 HEAD
+    git merge-base --is-ancestor 5aaa70d HEAD
     if ($LASTEXITCODE -ne 0) { throw "Block 43i implementation is not in this checkout" }
 
     uv run python -m pytest -q > suite-43i.txt 2>&1
@@ -60,11 +83,11 @@ the real worst case. Size it deliberately for the sample in front of you.
     uv run python -m pytest --collect-only -q > collected-43i.txt 2>&1
     if ($LASTEXITCODE -ne 0) { Get-Content collected-43i.txt; throw "Collection failed" }
 
-macOS measured **1767 passed + 99 skipped = 1866 collected**, 3 warnings. Round 1
-measured 1740 + 116 = 1856 on M5, the same 17-test platform-conditional
-difference every Track F Windows run has shown, so expect **1750 + 116 = 1866**
+macOS measured **1769 passed + 99 skipped = 1868 collected**, 3 warnings. Round 2
+measured 1750 + 116 = 1866 on M5, the same 17-test platform-conditional
+difference every Track F Windows run has shown, so expect **1752 + 116 = 1868**
 here. Derive the total from passed + skipped rather than reading it off. Stop if
-tests failed, if the collected total is not 1866, or if the skip count rose above
+tests failed, if the collected total is not 1868, or if the skip count rose above
 116.
 
 ## Step 1 — offline checks, no microscope time
@@ -114,6 +137,18 @@ PASS requires all of:
 The operator's framing of this criterion: on a raster containing tiles like
 frames 20 and 17 of `mt_search_561/mt_raster_1`, the survey should spend a
 refocus there and report whether it converged.
+
+### 3b — the refocus must survive at the *last* tile
+
+This is round 2's defect and the one thing round 3 must show. Arrange a survey
+where the **final planned tile** is the one that gets refocused — the simplest
+version is a plan whose last position is the out-of-focus one, since the earlier
+tiles will not request a sweep.
+
+PASS requires a `refocus=1` frame **for that last tile** in the dataset, and a
+second-look observation for it in the hook log. Round 2 produced the accepted
+`RequestAutofocus` record with no frame behind it, so **check the dataset, not
+the log** — the log looked correct while the frame was missing.
 
 ## Step 4 — the negative limb: a sweep that does not converge
 
@@ -177,10 +212,21 @@ running — the script needs the core) and run the script by itself.
     uv run python <exported-script>.py > emitted-run-43i.txt 2>&1
     Get-Content emitted-run-43i.txt
 
-PASS requires: zero `NOT EMITTED` in the artifact, no `microclaw` imports, and
-the standalone run reaching the same refocus decision at the same tile — same
-convergence verdict, same second look, same advance. The script writes its hook
-log beside itself with a collision suffix, so compare it against the live one.
+PASS requires: zero `NOT EMITTED` in the artifact, **the script running to
+completion** (round 2's died at line 1908 on an undecorated tool's refusal, after
+the adaptive program had already run), no `microclaw` imports, and the standalone
+run reaching the same refocus decision at the same tile. The script writes its
+hook log beside itself with a collision suffix, so compare it against the live
+one.
+
+**On comparing the two runs.** A converged refocus deliberately adopts the new Z,
+so the standalone script starts from wherever the live run left the stage. Round
+2's live run moved Z by 1.5 µm at `pos_2` and the standalone found it already in
+focus (`50.79184 → 50.79184`), which then changed what the hook decided at
+`pos_3`. That is the sample and the stage, not this code. Compare **mechanism** —
+sweep ran, re-queue happened, second look was judged, dense axis in the dataset —
+and treat a decision that differs *with an explained Z difference* as a PASS,
+recording the entry Z of each run.
 
 The script's `configure_autofocus` line passes `focus_lock_check=None` under a
 comment saying so: a standalone script has no generic focus-lock query.
