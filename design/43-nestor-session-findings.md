@@ -1166,6 +1166,62 @@ resolve (already handled), a hook that reached a capability the script has no
 equivalent for. Those keep `CannotEmit` with a specific reason. What goes away
 is the blanket `@refuses` on the tool itself.
 
+> **Shipped and gated in block 43h (merged 2026-08-11), over four review rounds,
+> three demo gate rounds and three M5 rounds.** The argument above holds and the
+> analysis under it is accurate — including the dependency audit, which was
+> checked line by line at assignment. Six corrections and additions this section
+> does not say:
+>
+> **"A named position the record cannot resolve (already handled)" was false.**
+> `_resolve_recorded_position_names` short-circuited on the tool name, so
+> `positions` and `_position_resolution_error` — the two fields the stub reads —
+> were never populated for an adaptive run at all. Extending the resolver was not
+> enough either: on M5 a session that called `get_position_list`,
+> `validate_positions` **and** `mark_position` still could not re-derive `pos_1`,
+> and the whole export came back `emitted_calls: 0`. The answer is that the run
+> already recorded the coordinates it resolved — `tiles_planned` — which is the
+> same result-derived route `_emit_multiposition` takes.
+>
+> **The stub is one tool of three.** `run_adaptive_zstack` and
+> `run_adaptive_timelapse` have no position list at all; their seed plan is a Z
+> range or an `(n_frames, interval)` pair, and the whole difficulty is the hook
+> and the loop.
+>
+> **The loop's `hook` is the `UntrustedHookAdapter`, not the user's hook.**
+> `_survey_event_stream` calls `note_stalled`, `note_aborted` and
+> `note_budget_exhausted`, and `_dispatch` is what turns a `ContinueSurvey` into
+> the next event. "Inline the file verbatim" emits a runner calling methods
+> nothing defines; the adapter, `HookBase.where` and
+> `analysis_observation_record` are inlined too.
+>
+> **Emitting standalone code is not the same as emitting microclaw-free code.**
+> Inlined source keeps its own `from microclaw...` imports, and the first
+> implementation satisfied them by faking four modules into `sys.modules` — which
+> ran, read as a dependency, and left `microclaw.image_analysis` unshimmed so a
+> hook importing `snr` would `ImportError` beside the inlined `snr`. The imports
+> are now removed rather than shimmed, and the emitted script is parsed before it
+> is written.
+>
+> **Saving a hook halted the script that inlines it.** `generate_and_save_hook`
+> carried no export decoration, so a session that wrote the hook it then used —
+> the exact workflow this finding is about — planted a `raise` three lines before
+> its own adaptive program. A tool with no emitter is not a neutral omission.
+>
+> **The gate found a pre-existing defect that only a rerun could expose.**
+> `run_adaptive_survey` counted completion in positions against a plan in events,
+> so a multi-frame survey truncated on a race: live 5 frames, exported 12, same
+> program, both reporting `stopped_early: false`. Fixed in runner and emitter
+> together and measured at 9 of 9 on M5. **Being able to run the same program
+> twice is itself a diagnostic** — which is what this finding buys, beyond
+> portability.
+>
+> **What the rig measured.** M5's 50 ms survey reproduced to every digit with
+> Microclaw closed: identical saturation statistics, identical Continue/Stop
+> decisions, matching frame counts. A second survey in the same session used a
+> zero saturation tolerance and diverged — but two runs of the *same emitted
+> script* disagreed with each other, which puts that nondeterminism in the
+> specimen rather than the program.
+
 ### Stubs
 
 ```python
@@ -1423,9 +1479,15 @@ this session had a field where the two would have disagreed (F6).
    these statistics do not answer F6 or F5. They ship as a **gate** — stable
    where `min_snr` is on a cliff, and the only ranking signal that survives on
    beads. The finding itself needs the focus response, which is F5.
-8. **F14** (emit adaptive runs) — larger, and the highest-value item here: it is
-   what turns a session into something the operator keeps. Independent of F5, and
-   better landed first so F5 is built inside a runner that already exports.
+8. ~~**F14** (emit adaptive runs)~~ — **DONE, block 43h, merged 2026-08-11, M5
+   gate PASS over three rounds.** "Larger" was right and understated it: four
+   review rounds, eight coordinator fixes, six gate rounds. "Independent of F5"
+   holds. The refusal's reasoning was sound and its stubs were wrong in six
+   places — most consequentially that named-position resolution was described as
+   "already handled" when it did not exist, which on M5 produced an export of
+   `emitted_calls: 0` and sent the agent off to hand-write a script that hung the
+   console. Also fixed a pre-existing runner defect that only became visible once
+   the same program could be run twice.
 9. **F5** (RequestAutofocus in the survey) — **promoted 2026-08-10.** It does
    *not* depend on F6 for a verdict statistic: 43g measured that no single-frame
    intensity or texture statistic separates cells from a diffuse bright gradient,
