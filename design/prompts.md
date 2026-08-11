@@ -5807,3 +5807,81 @@ for property and config writers only; a sweep of every tool that writes
 GUI-visible state found seven more paths with no refresh, including the adaptive
 survey's own eventless exposure write. Only the exposure row is measured. It was
 kept off this branch by operator ruling rather than folded in.
+
+## Block 43f — the rig profile and its interview (design/43 F1, merged 2026-08-11)
+
+Two implementation rounds by codex, three coordinator fixes, and three gate
+rounds — two on the demo machine, one on M5. **Both defects that mattered were
+in prose, not in code**, and neither was findable off the rig: a system-prompt
+block that said how to interview and never said when, and a knowledge-base key
+the model was free to invent.
+
+**"Correct and unreachable" has more than one layer, and this block hit two of
+them.** 43e's lesson was that a built-in nobody names in a tool description is
+never called. Reading the code at assignment found the same shape one level down:
+three tool schemas enumerate the category list independently of `CATEGORIES`, so
+a `rig` category added only to `knowledge_manager` would have been unwritable by
+the agent — shipped, tested, green, and dead. The drift test that pins the three
+enums to `CATEGORIES` is the cheapest thing in this block and the one most likely
+to matter later.
+
+**A prompt that says how but not when does nothing.** F1's stub opened *"Before
+the first task of this session, interview the operator about the microscope"*.
+Review round 1 rewrote the heading — a real improvement, because the block also
+shows for a *partial* profile — and the when-clause and the imperative went with
+it. What shipped opened "Read the rig first with get_roi…", a precondition on an
+activity never actually commanded, whose most forceful sentence was the negative
+one, "Never block a task". On the demo machine the agent opened two sessions and
+asked nothing. **I approved that rewrite without noticing**, which is the review
+lesson: when a heading changes, check what the old heading was carrying.
+
+**Rule out the environment with a probe before writing the fix.** One command on
+the demo machine printed `microclaw.__file__`, the stored `rig` section, the gap
+list and whether the interview text was in `_system_blocks()` — settling in ten
+seconds that the install was editable, the profile empty, and the block present.
+Without it the plausible diagnosis was a stale install, and the fix would have
+been written for a hazard that did not exist.
+
+**A gate criterion a broken feature satisfies is not a criterion.** Step 2 —
+"never blocks a task" — was written with only its negative limb, so on round 1,
+where the interview never fired at all, it read as a pass while proving nothing.
+It now requires the positive limb too: do the task, *then* ask. Any step whose
+subject is "X does not happen" needs a second limb that fails when X is
+impossible.
+
+**The behaviour passed for the wrong reason, and that is not a pass.** Round 2's
+Step 5 saw the agent decline to widen a deliberate crop and call it "your saved
+deliberate crop" — while `get_roi` returned bare coordinates. It knew from the
+rendered knowledge-base block, not from the mechanism the block exists to build.
+Scoring that PASS would have shipped an unexercised feature with a rig record
+saying it worked.
+
+**A free-form key defeats a fixed vocabulary quietly.** Asked to "store this ROI
+as my permanent crop", the agent invented `saved_roi`. The save succeeded, closed
+no topic, never reached `get_roi` — and in the same reply the agent recited
+`illuminated_field` as still open without connecting it to what it had just
+written. The payload already listed the open topics; **it was read and not acted
+on**, which is why the operator ruling took the closed vocabulary over a louder
+warning. `rig/` *is* the profile, so its keys are the profile's topics.
+
+**And the refusal never fired on the rig, because the schema description got
+there first.** On M5 the agent read the key description, said outright that `rig`
+accepts only the five topics, and proposed a `devices/` note instead — then filed
+the fact under `illuminated_field` the moment the operator said the crop was
+about illumination. The guard is unit-pinned and rig-unexercised, and that is the
+better outcome: the cheapest place to stop a bad call is the schema the model
+reads before making it.
+
+**What M5 bought that no demo could.** `get_roi` carried `illuminated_field` and
+the agent planned a 9×9 grid inside the crop; asked outright whether to widen the
+ROI, it declined and gave the physical reason. And with `camera_triggers_lasers`
+stored, it warned before a survey and before a live view that both are 640 nm
+dose — **block 43a's prompt sentence firing for the first time since it shipped
+on 2026-08-09**, having read a key nothing wrote until this block. A prompt
+sentence conditioned on a fact no code produces is dormant, not shipped; it took
+two blocks to make one sentence real.
+
+**Carried forward, found by this gate and not folded in:** in Step 6a, *before*
+the trigger fact was stored, the agent started live view unprompted — "so you can
+watch the survey" — with 640 enabled. That is design/43 F3's rule violated
+verbatim, and it belongs to F3 rather than to this block.
