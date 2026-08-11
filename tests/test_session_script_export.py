@@ -1354,9 +1354,10 @@ def test_adaptive_export_has_no_microclaw_runtime_references(tmp_path):
     })])
     # These are durable data identifiers, not runtime dependencies. They are
     # the only deliberate occurrences of the project name in the artifact.
-    assert source.count("microclaw") == 2
+    assert source.count("microclaw") == 3
     assert '"microclaw.analysis-observation/v1"' in source
     assert '"microclaw.image_analysis.compute_stats"' in source
+    assert '"microclaw_refocused"' in source
     import ast
     assert not [node for node in ast.walk(ast.parse(source))
                 if isinstance(node, (ast.Import, ast.ImportFrom))
@@ -1439,6 +1440,80 @@ def test_adaptive_survey_without_channel_replays_recorded_exposure(tmp_path):
     })])
     assert "guard.check_exposure(200)" in source
     assert "core.set_exposure(200)" in source
+
+
+def test_refocusing_survey_emits_the_same_budgeted_second_look_program(
+    tmp_path, monkeypatch
+):
+    """One assertion boundary pins the live budget contract to its export."""
+    from microclaw.hook_manager import save_hook
+    import microclaw.hook_manager as manager
+
+    hooks_dir = tmp_path / "hooks"
+    monkeypatch.setattr(manager, "HOOKS_DIR", hooks_dir)
+    monkeypatch.setattr(manager, "MANIFEST", hooks_dir / "manifest.json")
+    save_hook(
+        "refocus",
+        "from microclaw.hook_decisions import HookResult, RequestAutofocus\n"
+        "class Refocus:\n"
+        "    def analyze_frame(self, image, metadata):\n"
+        "        if metadata.get('microclaw_refocused'):\n"
+        "            return HookResult({'second_look': True})\n"
+        "        return HookResult({}, actions=(RequestAutofocus(),))\n",
+        "refocus once", source="user_provided",
+    )
+    budget = {"max_exposures": 4, "z_range_um": 2.0, "z_step_um": 1.0,
+              "method": "single_sweep", "settle_ms": 0}
+    # Drive the live adapter with the same budget before inspecting its emitted
+    # program. Four exposures buy exactly one 3-plane sweep plus one second look.
+    import queue
+    from microclaw.hook_decisions import UntrustedHookAdapter
+    live_hook = manager.load_hook_class("refocus")()
+    adapter = UntrustedHookAdapter(live_hook)
+    candidates = queue.Queue()
+    progress = tools.SurveyProgress(1)
+    event = {"axes": {"position": "p0"}, "x": 1.0, "y": 2.0}
+    class LiveGuard:
+        def check_z(self, _z): pass
+        def check_xy(self, _x, _y): pass
+    ctrl = SimpleNamespace(core=SimpleNamespace(get_position=lambda: 10.0))
+    sweep = autofocus.SweepResult([9, 10, 11], [1, 2, 1], 10, True)
+    real_autofocus_passes = tools._run_autofocus_passes
+    monkeypatch.setattr(tools, "_run_autofocus_passes", lambda *a: autofocus.AutofocusResult(
+        sweep, None, 10, 10, True, False, None
+    ))
+    adapter.configure_autofocus(
+        ctrl=ctrl, guard=LiveGuard(), sweep_exposures=3,
+        focus_lock_check=lambda: {"engaged": False}, **budget,
+    )
+    adapter.configure_adaptive(events=[event], candidates=candidates,
+                               progress=progress, guard=LiveGuard(), max_events=2)
+    metadata = {"PositionName": "p0", "XPosition_um_Intended": 1.0,
+                "YPosition_um_Intended": 2.0}
+    adapter.image_process_fn(np.zeros((2, 2)), metadata, object())
+    adapter.image_process_fn(np.zeros((2, 2)), metadata, object())
+    assert live_hook.__dict__ == {}  # no ctrl/guard/queue leaked to saved source
+    assert adapter._log[-2]["reason"] == "refocused and re-queued this tile"
+    assert adapter._log[-1]["result"] == {"second_look": True}
+    monkeypatch.setattr(tools, "_run_autofocus_passes", real_autofocus_passes)
+
+    _, result, source = export(tmp_path, [call("run_adaptive_survey", {
+        "protocol": "timelapse", "protocol_params": {"n_frames": 1},
+        "positions": [{"name": "p0", "x_um": 1, "y_um": 2}],
+        "save_dir": "session", "hook_strategy": "refocus",
+        "autofocus_budget": budget,
+    })])
+
+    assert result["emitted_calls"] == 1
+    assert "# NOT EMITTED:" not in source
+    assert "from microclaw" not in source
+    assert "configure_autofocus(ctrl=mm, guard=guard, focus_lock_check=None" in source
+    assert "'max_exposures': 4" in source
+    assert "sweep_exposures=3" in source
+    assert "max_events=len(events) + 1" in source
+    assert "microclaw_refocused" in source
+    compile(source, "routine.py", "exec")
+    assert not _undefined_emitted_names(source)
 
 
 def test_emitted_multiframe_survey_counts_the_event_plan(tmp_path):

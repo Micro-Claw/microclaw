@@ -258,6 +258,7 @@ class UntrustedHookAdapter:
         self._context: dict[str, Any] | None = None
         self._illumination_context: dict[str, Any] | None = None
         self._artifact_context: dict[str, Any] | None = None
+        self._autofocus_context: dict[str, Any] | None = None
         self._action_counts: dict[str, int] = {}
 
     @property
@@ -281,6 +282,32 @@ class UntrustedHookAdapter:
             "events": list(events), "candidates": candidates, "progress": progress,
             "guard": guard, "max_events": max_events, "emitted": 1, "cursor": 1,
         }
+
+    def configure_autofocus(self, *, ctrl, guard, max_exposures: int,
+                            z_range_um: float, z_step_um: float, method: str,
+                            settle_ms: int, sweep_exposures: int,
+                            focus_lock_check=None) -> None:
+        """Authorize bounded autofocus proposals for an adaptive survey."""
+        self._autofocus_context = {
+            "ctrl": ctrl, "guard": guard, "remaining": max_exposures,
+            "z_range_um": z_range_um, "z_step_um": z_step_um,
+            "method": method, "settle_ms": settle_ms,
+            "sweep_exposures": sweep_exposures,
+            "focus_lock_check": focus_lock_check, "refocused_tiles": set(),
+            "second_look_tiles": set(),
+        }
+
+    def planned_extra_exposures(self) -> int:
+        """Worst-case sweep and re-exposure dose authorized for this run."""
+        if self._autofocus_context is None:
+            return 0
+        return self._autofocus_context["remaining"]
+
+    def planned_refocus_reexposures(self) -> int:
+        if self._autofocus_context is None:
+            return 0
+        cost = self._autofocus_context["sweep_exposures"] + 1
+        return self._autofocus_context["remaining"] // cost
 
     def configure_illumination(self, *, core, guard, device: str, property: str,
                                max_power_percent: float, max_writes: int,
@@ -352,6 +379,40 @@ class UntrustedHookAdapter:
                 **fields: Any) -> None:
         self._record(metadata, event="hook_action", action=self._action_record(action),
                      decision="accepted", reason=reason, **fields)
+
+    @staticmethod
+    def _tile_key(metadata: dict) -> tuple:
+        axes = metadata.get("Axes") or {}
+        position = metadata.get("PositionName", axes.get("position"))
+        if position is not None:
+            return ("position", position)
+        return (
+            "xy", metadata.get("XPosition_um_Intended"),
+            metadata.get("YPosition_um_Intended"),
+        )
+
+    @staticmethod
+    def _current_event(events: list[dict], metadata: dict) -> dict | None:
+        """Resolve the exposed event from MM-stamped position/axis metadata."""
+        axes = metadata.get("Axes") or {}
+        position = metadata.get("PositionName")
+        matches = []
+        for event in events:
+            event_axes = event.get("axes") or {}
+            if position is not None and event_axes.get("position") != position:
+                continue
+            if any(key != "position" and key in event_axes and event_axes[key] != value
+                   for key, value in axes.items()):
+                continue
+            matches.append(event)
+        if len(matches) == 1:
+            return matches[0]
+        x = metadata.get("XPosition_um_Intended")
+        y = metadata.get("YPosition_um_Intended")
+        xy_matches = [event for event in matches
+                      if (x is None or event.get("x") == x)
+                      and (y is None or event.get("y") == y)]
+        return xy_matches[0] if len(xy_matches) == 1 else None
 
     def _dispatch(self, action: HookAction, metadata: dict) -> str | None:
         self._action_counts[action.kind] = self._action_counts.get(action.kind, 0) + 1
@@ -454,7 +515,76 @@ class UntrustedHookAdapter:
             else:
                 self._refuse(metadata, action, "unsupported-by-this-runner")
             return
-        if isinstance(action, (MoveStage, SetExposure, RequestAutofocus)):
+        if isinstance(action, RequestAutofocus):
+            af = self._autofocus_context
+            if af is None:
+                self._refuse(metadata, action, "unsupported-by-run_adaptive_survey")
+                return
+            tile = self._tile_key(metadata)
+            if tile in af["refocused_tiles"]:
+                self._refuse(metadata, action, "this tile has already been refocused")
+                return
+            required = af["sweep_exposures"] + 1
+            if af["remaining"] < required:
+                self._refuse(metadata, action, "authorized autofocus exposure budget exhausted")
+                return
+            event = self._current_event(ctx["events"], metadata)
+            if event is None:
+                self._refuse(metadata, action, "current tile could not be resolved from image metadata")
+                return
+            lock_check = af["focus_lock_check"]
+            if lock_check is not None:
+                try:
+                    lock = lock_check()
+                except Exception as exc:
+                    self._refuse(metadata, action,
+                                 f"focus lock state could not be read: {exc}")
+                    return
+                if lock.get("engaged"):
+                    self._refuse(metadata, action,
+                                 "focus lock is engaged; autofocus sweep refused")
+                    return
+            try:
+                entry_z = af["ctrl"].core.get_position()
+                af["guard"].check_z(entry_z - af["z_range_um"] / 2)
+                af["guard"].check_z(entry_z + af["z_range_um"] / 2)
+            except Exception as exc:
+                self._refuse(metadata, action,
+                             f"SafetyGuard refused autofocus sweep: {exc}")
+                return
+            from microclaw.tools import _run_autofocus_passes
+            result = _run_autofocus_passes(
+                af["ctrl"], af["z_range_um"], af["z_step_um"],
+                af["method"], af["settle_ms"],
+            )
+            af["remaining"] -= af["sweep_exposures"]
+            af["refocused_tiles"].add(tile)
+            outcome = {
+                "converged": result.converged, "moved": result.moved,
+                "reason": result.reason, "entry_z_um": result.entry_z_um,
+                "final_z_um": result.final_z_um,
+            }
+            if not result.converged:
+                self._accept(metadata, action,
+                             "autofocus ran and did not converge; Z restored",
+                             autofocus=outcome)
+                return
+            if ctx["emitted"] >= ctx["max_events"]:
+                self._refuse(metadata, action,
+                             "outside committed reservation: refocused tile cannot be re-exposed")
+                return
+            refocused_event = dict(event)
+            if refocused_event.get("z") is not None:
+                refocused_event["z"] = result.final_z_um
+            ctx["candidates"].put(refocused_event)
+            ctx["emitted"] += 1
+            af["remaining"] -= 1
+            af["second_look_tiles"].add(tile)
+            ctx["refocus_requeued"] = True
+            self._accept(metadata, action, "refocused and re-queued this tile",
+                         autofocus=outcome)
+            return
+        if isinstance(action, (MoveStage, SetExposure)):
             self._refuse(metadata, action, "unsupported-by-run_adaptive_survey")
             return
         if isinstance(action, StopSurvey):
@@ -513,7 +643,15 @@ class UntrustedHookAdapter:
     def image_process_fn(self, image, metadata, _hardware_event_queue):
         try:
             if hasattr(self.hook, "analyze_frame"):
-                raw = self.hook.analyze_frame(image, metadata)
+                hook_metadata = dict(metadata)
+                af = self._autofocus_context
+                if af is not None:
+                    tile = self._tile_key(metadata)
+                    second_look = tile in af["second_look_tiles"]
+                    hook_metadata["microclaw_refocused"] = second_look
+                    if second_look:
+                        af["second_look_tiles"].remove(tile)
+                raw = self.hook.analyze_frame(image, hook_metadata)
                 if raw is None:
                     result = HookResult({})
                 elif isinstance(raw, HookResult):
@@ -550,12 +688,19 @@ class UntrustedHookAdapter:
                 self._record(metadata, **observation)
                 observation_index = len(self._log) - 1
                 discard = False
+                if self._context is not None:
+                    self._context["refocus_requeued"] = False
                 for action in actions:
                     artifact_hash = self._dispatch(action, metadata)
                     if artifact_hash:
                         self._log[observation_index]["artifact_sha256"] = artifact_hash
                         self._write_log()
                     discard = discard or isinstance(action, DiscardFrame)
+                    if (self._context is not None and
+                            self._context.get("refocus_requeued")):
+                        # The hook must judge the focused pixels before it can
+                        # submit another survey event.
+                        break
                 returned = None if discard else (image, metadata)
                 if discard:
                     self._record(metadata, event="legacy_hook_frame", outcome="discarded")

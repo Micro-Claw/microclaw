@@ -192,9 +192,21 @@ DiscardFrame returns None from the parent image processor after recording the
 observation. The position is still moved to and still exposed: discard saves storage,
 not dose. It does not skip acquisition or reduce dose (design/27).
 
-``RequestAutofocus`` remains unhonored by every runner. Compose the reviewed
-``autofocus_per_position`` hook instead; the decision proposal is not a working
-autofocus mechanism.
+``RequestAutofocus`` is honored only by ``run_adaptive_survey`` for a saved or
+generated hook when the caller supplies ``autofocus_budget``. The budget counts
+camera exposures (sweep planes plus the refocused-tile re-exposure), and each
+tile may be refocused once. A converged tile is shown to ``analyze_frame`` again
+with ``metadata["microclaw_refocused"] is True``; the first look has False. The
+trusted parent carries this flag rather than assuming Micro-Manager copies a
+custom event key into image metadata. A failed sweep is logged and carried past
+without widening or retrying it.
+
+The live runner refuses a proposal while Micro-Manager's focus lock is engaged.
+A standalone exported script has no generic focus-lock query, so it cannot make
+that check: disengage the lock before running the script. It retains the same
+recorded Z guard, exposure budget, one-refocus-per-tile rule, and focus sweep.
+Precoded hooks use the direct runner contract and do not route typed actions
+through the saved-hook adapter, so ``RequestAutofocus`` is not available to them.
 
 ### image_process_fn(image: np.ndarray, metadata: dict, event_queue) -> tuple | None
 
@@ -400,8 +412,8 @@ there is no hard deadline, memory cap, network isolation, or native-crash recove
   Record measurements / propose action   analyze_frame → HookResult
   Adjust exposure or settings per frame  SetExposure proposal (currently refused
                                            by run_adaptive_survey)
-  Autofocus before each image capture    RequestAutofocus proposal (currently
-                                           refused by run_adaptive_survey)
+  Refocus a promising survey tile       RequestAutofocus from a saved hook +
+                                           run_adaptive_survey autofocus_budget
   Redirect stage before hardware moves   pre_hardware_hook_fn (native pycro-manager;
                                            not yet wired by Microclaw)
   Stop acquiring based on the images     run_adaptive_survey + adaptive hook

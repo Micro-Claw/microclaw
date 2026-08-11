@@ -60,6 +60,15 @@ def test_hook_capability_parameters_are_declared(name):
     assert "confirmed once before" in description
 
 
+def test_adaptive_survey_declares_exposure_bounded_autofocus():
+    props = _SCHEMA_BY_NAME["run_adaptive_survey"]["input_schema"]["properties"]
+    budget = props["autofocus_budget"]
+    assert set(budget["required"]) == {
+        "max_exposures", "z_range_um", "z_step_um", "method", "settle_ms",
+    }
+    assert "sweep snaps plus refocused-tile re-exposures" in budget["description"]
+
+
 def test_run_autofocus_description_says_sweep_is_headless():
     description = _SCHEMA_BY_NAME["run_autofocus"]["description"]
     assert "sweep is headless" in description
