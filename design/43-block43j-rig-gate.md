@@ -1,6 +1,62 @@
 # Block 43j rig gate — hooks fold into the timelapse and Z-stack tools
 
-Implementation ancestor: `f36ea89`
+Implementation ancestor: `673e721`
+
+## Round 2 — two things left — **THIS IS THE LIVE ROUND**
+
+Everything below this section is the original runbook, kept because Steps 0–5
+are closed by round 1 and their criteria are the record of how.
+
+**Demo round 1 (`43j-demo`, 2026-08-11) PASSED Steps 0, 1, 2, 3, 4, 5 and 6.**
+Step 0 read 1780 + 116 = 1896 exactly, 3 warnings, skips unchanged. Step 2
+passed **on first contact**: from the operator sentence naming no tool, the
+agent went straight to `run_timelapse` with `hook_strategy: snr_observer` and
+then `read_hook_log`, rather than taking the offline `frame_statistics` route
+the step was written to catch. Logs carried 20 records for 20 frames and 10 for
+10 planes; the hookless result carried no `log_path`, no `hint` and no
+`artifact`; the standalone script reproduced all four acquisitions with the
+originals intact.
+
+Round 2 exists for **one fix and one step that no demo machine can run.**
+
+### 1. Re-run Step 6 only
+
+Round 1 passed Step 6 on every criterion in it, and then showed the criteria
+were one short. Told a hook was refused for three reasons — a hash mismatch
+**and** `subclasses HookBase` **and** `constructor takes log_path` — the agent
+reported the last two as *"just describing its structure, not faults"* and
+offered a re-review that could not have worked: re-saving the same bytes
+reproduces both. The remedy was attached to every reason indiscriminately, so
+ranking them was left to the reader, and the reader got it backwards.
+
+Fixed in `673e721`: a remedy that cannot clear every reason now carries
+`insufficient_for` and says the source has to change first.
+
+Re-run **Step 6 as written below**, with one addition to its PASS list:
+
+- when a hook is refused for a source-contract reason, the agent must say that
+  re-review alone will **not** fix it and that the source has to change —
+  dropping `HookBase` and `log_path`, adding
+  `analyze_frame(image, metadata)`. If it repeats round 1's "not faults"
+  reading, that is a FAIL.
+
+`gate43j_probe` is still on the demo machine in exactly the state that produced
+this, so the step needs no setup: skip straight to the new session.
+
+### 2. Step 7 — **M5 or M2**, and it is the only rig limb in this gate
+
+Unchanged from below. The EMU `laser_slot` pre-flight under a hook, both limbs.
+
+### Also worth confirming in one line
+
+Round 1's `emitted-run-43j.txt` is 0 bytes, which is consistent with a script
+that prints nothing — and the artifacts prove the run happened anyway: the three
+standalone logs were written at 19:59:01–03, after the 19:57:42 export, with the
+originals from 19:55–19:56 untouched. **Please confirm Microclaw was closed for
+that run**; nothing in the evidence can show it, and the claim the gate makes
+rests on it.
+
+## Original runbook — Steps 0–5 closed by round 1
 
 ## What this block changed
 
