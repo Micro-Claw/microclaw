@@ -45,9 +45,11 @@ replacement for it.
   **Adaptive runs emit the program, not the trace** (block 43h, merged
   2026-08-11). The old refusal said their events are chosen at runtime so there
   is nothing static to render; that is true of the tiles one run happened to
-  visit and false as a rule about the rule that chose them. `run_adaptive_survey`
-  / `run_adaptive_timelapse` / `run_adaptive_zstack` emit the seed plan, the
-  hook's exact source, and the decision loop — `_survey_event_stream` and
+  visit and false as a rule about the rule that chose them. `run_adaptive_survey`,
+  and `run_timelapse` / `run_zstack` **when a hook is attached** (block 43j,
+  merged 2026-08-11, folded the two `run_adaptive_*` twins into them), emit the
+  seed plan, the hook's exact source, and the decision loop — `_survey_event_stream`
+  and
   `UntrustedHookAdapter` inlined with `inspect.getsource`, **never re-written in
   the emitter**, because design/24 and design/27 are written into that loop and a
   hand-copied copy that drifts reintroduces ghost exposures silently. `CannotEmit`
@@ -55,6 +57,17 @@ replacement for it.
   seed position, a hook reaching a capability the script has no equivalent for
   (`mm_plugin_analyzer` and `autofocus_mm_plugin` take `ctrl`/`guard`), and an
   authorized illumination envelope whose conversions are rig-configured.
+
+  **A tool that takes a hook has two emitters, and the hookless one must not
+  change.** `run_timelapse` and `run_zstack` route to `_emit_adaptive` only when
+  `hook_strategy` is set, and to `_emit_acquisition` otherwise — a plain SMLM
+  timelapse must not start emitting an adaptive runner. Two things 43j's gate
+  proved worth stating: an emitter's fallbacks are the *tool's* defaults, not
+  constants (its dataset-name fallback had been the literal `"adaptive"`, right
+  for the deleted twins and silently wrong afterwards, so the live run and the
+  standalone script wrote differently named datasets); and every argument the
+  tool accepts must reach the emitted script, because `_emit_adaptive`'s
+  non-survey branches carried no exposure at all until a folded tool brought one.
 
   **If you add a helper to `image_analysis`, the exporter must inline it.**
   `test_emitted_inline_defines_every_name_it_uses`
