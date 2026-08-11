@@ -956,8 +956,17 @@ def _emit_adaptive(params: RecordedParams, kind: str) -> str:
             "    acq.acquire(event_source(acq))",
         ])
         return "\n\n".join(common)
+    exposure_ms = params.get("exposure_ms")
+    if exposure_ms is not None:
+        common.append(f"guard.check_exposure({exposure_ms!r})")
     if channel:
         shape.update(channel_group=CHANNEL_CONFIG_GROUP, channels=[channel])
+        if exposure_ms is not None:
+            shape["channel_exposures_ms"] = [exposure_ms]
+    elif exposure_ms is not None:
+        common.append(f"core.set_exposure({exposure_ms!r})")
+    # laser_slot verifies the rig's trigger pre-flight; it is not a hardware
+    # action and therefore intentionally emits no standalone script line.
     common.extend([
         f"events = multi_d_acquisition_events(**{shape!r})",
         "_hook_callbacks = {name: callback for name, callback in {"
@@ -970,12 +979,22 @@ def _emit_adaptive(params: RecordedParams, kind: str) -> str:
     return "\n\n".join(common)
 
 
-def _emit_adaptive_zstack(params: RecordedParams) -> str:
-    return _emit_adaptive(params, "zstack")
+def _emit_zstack(params: RecordedParams) -> str:
+    if params.get("hook_strategy"):
+        return _emit_adaptive(params, "zstack")
+    return _emit_acquisition({
+        "z_start": params["z_start_um"], "z_end": params["z_end_um"],
+        "z_step": params["z_step_um"],
+    }, params, "zstack")
 
 
-def _emit_adaptive_timelapse(params: RecordedParams) -> str:
-    return _emit_adaptive(params, "timelapse")
+def _emit_timelapse(params: RecordedParams) -> str:
+    if params.get("hook_strategy"):
+        return _emit_adaptive(params, "timelapse")
+    return _emit_acquisition({
+        "num_time_points": params["n_frames"],
+        "time_interval_s": params["interval_s"],
+    }, params, "timelapse")
 
 
 def _emit_adaptive_survey(params: RecordedParams) -> str:
@@ -1037,7 +1056,12 @@ def export_session_script(
         (name, params) for name, params in recorded
         if selected_ids is None or params["_tool_use_id"] in selected_ids
     ]
-    adaptive_used = any(name.startswith("run_adaptive_") for name, _ in included)
+    adaptive_used = any(
+        name.startswith("run_adaptive_") or (
+            name in {"run_timelapse", "run_zstack"} and params.get("hook_strategy")
+        )
+        for name, params in included
+    )
     analysis_used = adaptive_used or any(
         name in {"snap_and_analyze", "run_autofocus"}
         or (name in {"run_multiposition_acquisition", "run_tile_acquisition"}
@@ -1071,7 +1095,9 @@ def export_session_script(
                 f"unsupported shape: {exc}"
             )
     for name, params in recorded:
-        if name.startswith("run_adaptive_"):
+        if name.startswith("run_adaptive_") or (
+            name in {"run_timelapse", "run_zstack"} and params.get("hook_strategy")
+        ):
             params["_export_safety_limits"] = safety_limits
             params["_export_safety_limits_error"] = safety_limits_error
     # Only a channel switch that actually replayed writes needs the read-back
@@ -2388,9 +2414,7 @@ def _acq_dataset_path(acq, save_dir: str, name: str) -> str:
 
 
 @_acquisition_entry_point
-@emits(lambda p: _emit_acquisition({
-    "z_start": p["z_start_um"], "z_end": p["z_end_um"], "z_step": p["z_step_um"]
-}, p, "zstack"))
+@emits(_emit_zstack)
 def run_zstack(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -2401,6 +2425,11 @@ def run_zstack(
     channel: str | None = None,
     exposure_ms: float | None = None,
     name: str = "zstack",
+    hook_strategy: str | None = None,
+    hook_params: dict | None = None,
+    log_path: str | None = None,
+    illumination_envelope: dict | None = None,
+    artifact_limits: dict | None = None,
     _reservation: Reservation | None = None,
 ) -> dict:
     # Before set_exposure and before the sweep: an out-of-workspace save_dir
@@ -2419,13 +2448,40 @@ def run_zstack(
         channel=channel, exposure_ms=exposure_ms,
         z_start=z_start_um, z_end=z_end_um, z_step=z_step_um,
     )
-    reservation = _reservation or _authorize_acquisition(
-        ctrl, guard, plan_events(ctrl, events, exposure_ms)
-    )
-    dataset_path = _acquire_with_hooks(
-        guard, save_dir, name, events, reservation=reservation,
-        close_reservation=_reservation is None,
-    )
+    hook = None
+    log_path = _prepare_log_path(guard, log_path) if hook_strategy else None
+    if hook_strategy:
+        try:
+            hook = _resolve_hook(ctrl, guard, hook_strategy, hook_params, log_path)
+        except ValueError as exc:
+            return {"error": str(exc)}
+        try:
+            _configure_hook_capabilities(hook, ctrl, guard, save_dir, name,
+                                         illumination_envelope, artifact_limits)
+        except _HookArtifactBudgetError as exc:
+            return {"error": str(exc)}
+    plan = plan_events(ctrl, events, exposure_ms)
+    if hook is not None:
+        plan = _plan_with_hook_dose(plan, hook)
+    reservation = _reservation or _authorize_acquisition(ctrl, guard, plan)
+    started_at = datetime.now(timezone.utc)
+    started = time.monotonic()
+    try:
+        dataset_path = _acquire_with_hooks(
+            guard, save_dir, name, events, hook, reservation=reservation,
+            close_reservation=_reservation is None,
+        )
+    except _HookedAcquisitionFailure as exc:
+        return _hooked_failure_result(exc, log_path)
+    if hook is not None:
+        return _adaptive_result(
+            dataset_path, log_path, status="Z-stack complete.",
+            frames_planned=len(events), frames_acquired=len(events),
+            started_at=started_at.isoformat(),
+            completed_at=datetime.now(timezone.utc).isoformat(),
+            duration_s=round(time.monotonic() - started, 6),
+            **_reservation_report(reservation),
+        )
     return {
         "status": "Z-stack complete.", "dataset_path": dataset_path,
         **_reservation_report(reservation),
@@ -2499,9 +2555,7 @@ def shutter_declared_illumination(
 
 
 @_acquisition_entry_point
-@emits(lambda p: _emit_acquisition({
-    "num_time_points": p["n_frames"], "time_interval_s": p["interval_s"]
-}, p, "timelapse"))
+@emits(_emit_timelapse)
 def run_timelapse(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -2512,6 +2566,11 @@ def run_timelapse(
     exposure_ms: float | None = None,
     name: str = "timelapse",
     laser_slot: int | None = None,
+    hook_strategy: str | None = None,
+    hook_params: dict | None = None,
+    log_path: str | None = None,
+    illumination_envelope: dict | None = None,
+    artifact_limits: dict | None = None,
     _reservation: Reservation | None = None,
 ) -> dict:
     save_dir = guard.resolve_in_workspace(save_dir)   # before any hardware moves
@@ -2532,13 +2591,31 @@ def run_timelapse(
         channel=channel, exposure_ms=exposure_ms,
         num_time_points=n_frames, time_interval_s=interval_s,
     )
-    reservation = _reservation or _authorize_acquisition(
-        ctrl, guard, plan_events(ctrl, events, exposure_ms)
-    )
-    dataset_path = _acquire_with_hooks(
-        guard, save_dir, name, events, reservation=reservation,
-        close_reservation=_reservation is None,
-    )
+    hook = None
+    log_path = _prepare_log_path(guard, log_path) if hook_strategy else None
+    if hook_strategy:
+        try:
+            hook = _resolve_hook(ctrl, guard, hook_strategy, hook_params, log_path)
+        except ValueError as exc:
+            return {"error": str(exc)}
+        try:
+            _configure_hook_capabilities(hook, ctrl, guard, save_dir, name,
+                                         illumination_envelope, artifact_limits)
+        except _HookArtifactBudgetError as exc:
+            return {"error": str(exc)}
+    plan = plan_events(ctrl, events, exposure_ms)
+    if hook is not None:
+        plan = _plan_with_hook_dose(plan, hook)
+    reservation = _reservation or _authorize_acquisition(ctrl, guard, plan)
+    started_at = datetime.now(timezone.utc)
+    started = time.monotonic()
+    try:
+        dataset_path = _acquire_with_hooks(
+            guard, save_dir, name, events, hook, reservation=reservation,
+            close_reservation=_reservation is None,
+        )
+    except _HookedAcquisitionFailure as exc:
+        return _hooked_failure_result(exc, log_path)
     result = {
         "status": "Timelapse complete.", "dataset_path": dataset_path,
         **_reservation_report(reservation),
@@ -2548,6 +2625,15 @@ def run_timelapse(
     illumination = guard.declared_illumination_state(ctrl.core)
     if illumination:
         result["declared_illumination_properties"] = illumination
+    if hook is not None:
+        result.update(_adaptive_result(
+            dataset_path, log_path, status="Timelapse complete.",
+            frames_planned=len(events), frames_acquired=len(events),
+            started_at=started_at.isoformat(),
+            completed_at=datetime.now(timezone.utc).isoformat(),
+            duration_s=round(time.monotonic() - started, 6),
+            **_reservation_report(reservation),
+        ))
     return result
 
 
@@ -4597,121 +4683,6 @@ def _adaptive_result(
     return result
 
 
-@emits(_emit_adaptive_zstack)
-@_acquisition_entry_point
-def run_adaptive_zstack(
-    ctrl: MicroscopeController,
-    guard: SafetyGuard,
-    z_start_um: float,
-    z_end_um: float,
-    z_step_um: float,
-    save_dir: str,
-    hook_strategy: str,
-    hook_params: dict | None = None,
-    channel: str | None = None,
-    name: str = "adaptive",
-    log_path: str | None = None,
-    illumination_envelope: dict | None = None,
-    artifact_limits: dict | None = None,
-) -> dict:
-    """Run a Z-stack acquisition with a hook strategy for adaptive behaviour.
-
-    hook_strategy: a key from PRECODED_HOOK_REGISTRY or a saved hook name.
-    After the acquisition, call read_hook_log(log_path) to retrieve results.
-    """
-    save_dir = guard.resolve_in_workspace(save_dir)
-    log_path = _prepare_log_path(guard, log_path)
-    guard.check_z(z_start_um)
-    guard.check_z(z_end_um)
-    if channel:
-        _check_acquisition_channel(ctrl, guard, channel)
-
-    try:
-        hook = _resolve_hook(ctrl, guard, hook_strategy, hook_params, log_path)
-    except ValueError as e:
-        return {"error": str(e)}
-
-    events = _build_acquisition_events(
-        channel=channel, z_start=z_start_um, z_end=z_end_um, z_step=z_step_um,
-    )
-    try:
-        _configure_hook_capabilities(hook, ctrl, guard, save_dir, name,
-                                     illumination_envelope, artifact_limits)
-    except _HookArtifactBudgetError as exc:
-        return {"error": str(exc)}
-    reservation = _authorize_acquisition(
-        ctrl, guard, _plan_with_hook_dose(plan_events(ctrl, events, None), hook)
-    )
-    started_at = datetime.now(timezone.utc)
-    started = time.monotonic()
-    try:
-        dataset_path = _acquire_with_hooks(
-            guard, save_dir, name, events, hook, reservation=reservation
-        )
-    except _HookedAcquisitionFailure as exc:
-        return _hooked_failure_result(exc, log_path)
-    completed_at = datetime.now(timezone.utc)
-    return _adaptive_result(
-        dataset_path, log_path, frames_planned=len(events), frames_acquired=len(events),
-        started_at=started_at.isoformat(), completed_at=completed_at.isoformat(),
-        duration_s=round(time.monotonic() - started, 6),
-        **_reservation_report(reservation),
-    )
-
-
-@emits(_emit_adaptive_timelapse)
-@_acquisition_entry_point
-def run_adaptive_timelapse(
-    ctrl: MicroscopeController,
-    guard: SafetyGuard,
-    n_frames: int,
-    interval_s: float,
-    save_dir: str,
-    hook_strategy: str,
-    hook_params: dict | None = None,
-    channel: str | None = None,
-    name: str = "adaptive",
-    log_path: str | None = None,
-    illumination_envelope: dict | None = None,
-    artifact_limits: dict | None = None,
-) -> dict:
-    """Run a timelapse acquisition with a hook strategy for adaptive behaviour.
-
-    hook_strategy: a key from PRECODED_HOOK_REGISTRY or a saved hook name.
-    After the acquisition, call read_hook_log(log_path) to retrieve results.
-    """
-    save_dir = guard.resolve_in_workspace(save_dir)
-    log_path = _prepare_log_path(guard, log_path)
-    if channel:
-        _check_acquisition_channel(ctrl, guard, channel)
-
-    try:
-        hook = _resolve_hook(ctrl, guard, hook_strategy, hook_params, log_path)
-    except ValueError as e:
-        return {"error": str(e)}
-
-    events = _build_acquisition_events(
-        channel=channel, num_time_points=n_frames, time_interval_s=interval_s,
-    )
-    _configure_hook_capabilities(hook, ctrl, guard, save_dir, name,
-                                 illumination_envelope, artifact_limits)
-    reservation = _authorize_acquisition(
-        ctrl, guard, _plan_with_hook_dose(plan_events(ctrl, events, None), hook)
-    )
-    started_at = datetime.now(timezone.utc)
-    started = time.monotonic()
-    dataset_path = _acquire_with_hooks(
-        guard, save_dir, name, events, hook, reservation=reservation
-    )
-    completed_at = datetime.now(timezone.utc)
-    return _adaptive_result(
-        dataset_path, log_path, frames_planned=len(events), frames_acquired=len(events),
-        started_at=started_at.isoformat(), completed_at=completed_at.isoformat(),
-        duration_s=round(time.monotonic() - started, 6),
-        **_reservation_report(reservation),
-    )
-
-
 def _acquire_positions_with_hook(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -5085,8 +5056,8 @@ def _acquire_survey_with_detector(
                 "cannot propose ContinueSurvey or StopSurvey and can never "
                 "advance an adaptive survey past the seed tile. Give it an "
                 "analyze_frame(image, metadata) method, or run it under a "
-                "batched runner (run_tile_acquisition, run_adaptive_timelapse, "
-                "run_adaptive_zstack)."
+                "batched runner (run_tile_acquisition, run_timelapse, "
+                "run_zstack)."
             )
     save_dir = guard.resolve_in_workspace(save_dir)
 
@@ -6178,10 +6149,18 @@ def read_hook_from_file(
 def list_hooks(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     """List all available hook strategies (pre-coded and saved)."""
     from microclaw.hooks import PRECODED_HOOK_REGISTRY
-    from microclaw.hook_manager import list_saved_hooks
+    from microclaw.hook_manager import describe_saved_hook, list_saved_hooks
+    saved = list_saved_hooks()
+    for name, entry in saved.items():
+        described = describe_saved_hook(name)
+        refusal = described.get("resolve_refusal")
+        if refusal is None:
+            refusal = {"would_refuse": True, "reasons": [described["error"]]}
+        entry["resolvable"] = not refusal["would_refuse"]
+        entry["resolve_refusal"] = refusal
     return {
         "precoded": list(PRECODED_HOOK_REGISTRY.keys()),
-        "saved": list_saved_hooks(),
+        "saved": saved,
         "hint": "Call describe_hook(name) to see constructor parameters and resolve-time compatibility.",
     }
 
@@ -6994,8 +6973,8 @@ TOOL_REGISTRY = {
     "run_multiposition_acquisition": run_multiposition_acquisition,
     "run_tile_acquisition": run_tile_acquisition,
     "run_multiposition_with_autofocus": run_multiposition_with_autofocus,
-    "run_adaptive_zstack": run_adaptive_zstack,
-    "run_adaptive_timelapse": run_adaptive_timelapse,
+    "run_zstack": run_zstack,
+    "run_timelapse": run_timelapse,
     "run_adaptive_survey": run_adaptive_survey,
     "open_artifact": open_artifact,
     "read_hook_log": read_hook_log,

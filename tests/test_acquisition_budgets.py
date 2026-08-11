@@ -254,8 +254,8 @@ def test_list_acquisition_passes_the_list_directly_to_acquire(monkeypatch, tmp_p
             "_plan_protocol_repetitions",
             "_authorize_acquisition",
         ),
-        ("run_adaptive_zstack", "plan_events", "_authorize_acquisition"),
-        ("run_adaptive_timelapse", "plan_events", "_authorize_acquisition"),
+        ("run_zstack", "plan_events", "_authorize_acquisition"),
+        ("run_timelapse", "plan_events", "_authorize_acquisition"),
         (
             "run_adaptive_survey",
             "_acquire_survey_with_detector",
@@ -321,5 +321,5 @@ def test_planner_reachable_public_tools_cannot_bypass_map_registration():
     assert candidates - {"run_mda"} == {
         "run_zstack", "run_timelapse", "run_multiposition_acquisition",
         "run_tile_acquisition", "run_multiposition_with_autofocus",
-        "run_adaptive_zstack", "run_adaptive_timelapse", "run_adaptive_survey",
+        "run_zstack", "run_timelapse", "run_adaptive_survey",
     }

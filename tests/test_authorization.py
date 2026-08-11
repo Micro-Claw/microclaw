@@ -184,8 +184,8 @@ def test_complete_map_covers_dedicated_autofocus_and_acquisition_paths():
         "acquisition-tool:run_multiposition_acquisition",
         "acquisition-tool:run_tile_acquisition",
         "acquisition-tool:run_multiposition_with_autofocus",
-        "acquisition-tool:run_adaptive_zstack",
-        "acquisition-tool:run_adaptive_timelapse",
+        "acquisition-tool:run_zstack",
+        "acquisition-tool:run_timelapse",
         "acquisition-tool:run_adaptive_survey",
     }
     inventory = {
@@ -239,7 +239,7 @@ def test_incomplete_dose_policy_suspends_claim_in_degraded_mode():
         entry for entry in report.entries
         if entry.path.startswith("acquisition-tool:")
     ]
-    assert len(tool_entries) == 8
+    assert len(tool_entries) == 6
     assert {entry.classification for entry in tool_entries} == {"trusted_degraded"}
     assert all("complete typed dose policy is unavailable" in entry.detail
                for entry in tool_entries)

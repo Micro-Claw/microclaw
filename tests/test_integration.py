@@ -806,9 +806,9 @@ def test_multiposition_with_autofocus_autofocus_range_blocked(headless_mm):
 # ---------------------------------------------------------------------------
 
 def test_autofocus_hook(headless_mm, unconstrained_guard, tmp_path):
-    from microclaw.tools import run_adaptive_zstack
+    from microclaw.tools import run_zstack
     log_path = str(tmp_path / "af_log.json")
-    result = run_adaptive_zstack(
+    result = run_zstack(
         headless_mm, unconstrained_guard,
         z_start_um=45, z_end_um=55, z_step_um=2,
         save_dir=str(tmp_path), name="af_hook_test",
@@ -825,11 +825,11 @@ def test_autofocus_hook(headless_mm, unconstrained_guard, tmp_path):
 
 
 def test_focus_feedback_hook(headless_mm, unconstrained_guard, tmp_path):
-    from microclaw.tools import run_adaptive_zstack
+    from microclaw.tools import run_zstack
     log_path = str(tmp_path / "focus_log.json")
     # Single-slice "stack" so image_process_fn is called at least once
     current_z = headless_mm.core.get_position()
-    result = run_adaptive_zstack(
+    result = run_zstack(
         headless_mm, unconstrained_guard,
         z_start_um=current_z, z_end_um=current_z + 2.0, z_step_um=1.0,
         save_dir=str(tmp_path), name="focus_feedback_test",
@@ -848,9 +848,9 @@ def test_focus_feedback_hook(headless_mm, unconstrained_guard, tmp_path):
 def test_focus_feedback_hook_on_timelapse(headless_mm, unconstrained_guard, tmp_path):
     # focus_feedback is a per-frame timelapse hook; this exercises the path that
     # was previously impossible when adaptive acquisition was Z-stack-only.
-    from microclaw.tools import run_adaptive_timelapse
+    from microclaw.tools import run_timelapse
     log_path = str(tmp_path / "focus_tl_log.json")
-    result = run_adaptive_timelapse(
+    result = run_timelapse(
         headless_mm, unconstrained_guard,
         n_frames=3, interval_s=0.0,
         save_dir=str(tmp_path), name="focus_feedback_tl_test",
@@ -867,8 +867,8 @@ def test_focus_feedback_hook_on_timelapse(headless_mm, unconstrained_guard, tmp_
 
 
 def test_unknown_hook_strategy_timelapse_returns_error(headless_mm, unconstrained_guard, tmp_path):
-    from microclaw.tools import run_adaptive_timelapse
-    result = run_adaptive_timelapse(
+    from microclaw.tools import run_timelapse
+    result = run_timelapse(
         headless_mm, unconstrained_guard,
         n_frames=2, interval_s=0.0,
         save_dir=str(tmp_path), name="bad_strategy_tl",
@@ -878,11 +878,11 @@ def test_unknown_hook_strategy_timelapse_returns_error(headless_mm, unconstraine
 
 
 def test_intensity_adaptive_hook(headless_mm, unconstrained_guard, tmp_path):
-    from microclaw.tools import get_system_state, run_adaptive_zstack
+    from microclaw.tools import get_system_state, run_zstack
     log_path = str(tmp_path / "intensity_log.json")
     state = get_system_state(headless_mm, unconstrained_guard)
     current_z = state["z_um"]
-    result = run_adaptive_zstack(
+    result = run_zstack(
         headless_mm, unconstrained_guard,
         z_start_um=current_z, z_end_um=current_z + 2.0, z_step_um=1.0,
         save_dir=str(tmp_path), name="intensity_test",
@@ -894,11 +894,11 @@ def test_intensity_adaptive_hook(headless_mm, unconstrained_guard, tmp_path):
 
 
 def test_position_filter_hook_passes_nonzero_images(headless_mm, unconstrained_guard, tmp_path):
-    from microclaw.tools import run_adaptive_zstack
+    from microclaw.tools import run_zstack
     log_path = str(tmp_path / "filter_log.json")
     current_z = headless_mm.core.get_position()
     # Set threshold to 0 — Demo camera images should always pass
-    result = run_adaptive_zstack(
+    result = run_zstack(
         headless_mm, unconstrained_guard,
         z_start_um=current_z, z_end_um=current_z + 2.0, z_step_um=1.0,
         save_dir=str(tmp_path), name="filter_pass_test",
@@ -914,11 +914,11 @@ def test_position_filter_hook_passes_nonzero_images(headless_mm, unconstrained_g
 
 
 def test_position_filter_hook_rejects_bright_threshold(headless_mm, unconstrained_guard, tmp_path):
-    from microclaw.tools import run_adaptive_zstack
+    from microclaw.tools import run_zstack
     log_path = str(tmp_path / "filter_reject_log.json")
     current_z = headless_mm.core.get_position()
     # Set threshold above any real intensity — all positions should be rejected
-    result = run_adaptive_zstack(
+    result = run_zstack(
         headless_mm, unconstrained_guard,
         z_start_um=current_z, z_end_um=current_z + 2.0, z_step_um=1.0,
         save_dir=str(tmp_path), name="filter_reject_test",
@@ -933,9 +933,9 @@ def test_position_filter_hook_rejects_bright_threshold(headless_mm, unconstraine
 
 
 def test_unknown_hook_strategy_returns_error(headless_mm, unconstrained_guard, tmp_path):
-    from microclaw.tools import run_adaptive_zstack
+    from microclaw.tools import run_zstack
     current_z = headless_mm.core.get_position()
-    result = run_adaptive_zstack(
+    result = run_zstack(
         headless_mm, unconstrained_guard,
         z_start_um=current_z, z_end_um=current_z + 2.0, z_step_um=1.0,
         save_dir=str(tmp_path), name="bad_strategy",
@@ -949,9 +949,9 @@ def test_unknown_hook_strategy_returns_error(headless_mm, unconstrained_guard, t
 # ---------------------------------------------------------------------------
 
 def test_read_hook_log_after_acquisition(headless_mm, unconstrained_guard, tmp_path):
-    from microclaw.tools import read_hook_log, run_adaptive_zstack
+    from microclaw.tools import read_hook_log, run_zstack
     log_path = str(tmp_path / "log.json")
-    run_adaptive_zstack(
+    run_zstack(
         headless_mm, unconstrained_guard,
         z_start_um=45, z_end_um=51, z_step_um=2,
         save_dir=str(tmp_path), name="log_test",
@@ -1032,7 +1032,7 @@ def test_generate_save_and_use_custom_hook(headless_mm, unconstrained_guard, tmp
     monkeypatch.setattr(hm, "HOOKS_DIR", tmp_path)
     monkeypatch.setattr(hm, "MANIFEST", tmp_path / "manifest.json")
 
-    from microclaw.tools import generate_and_save_hook, list_hooks, run_adaptive_zstack
+    from microclaw.tools import generate_and_save_hook, list_hooks, run_zstack
 
     code = (
         "from __future__ import annotations\n"
@@ -1072,7 +1072,7 @@ def test_generate_save_and_use_custom_hook(headless_mm, unconstrained_guard, tmp
     # needs the headless_mm fixture.
     log_path = str(tmp_path / "mean_log.json")
     current_z = headless_mm.core.get_position()
-    result = run_adaptive_zstack(
+    result = run_zstack(
         headless_mm, unconstrained_guard,
         z_start_um=current_z, z_end_um=current_z + 2.0, z_step_um=1.0,
         save_dir=str(tmp_path), name="custom_hook_run",
@@ -1095,7 +1095,7 @@ def test_a_saved_hook_that_keeps_no_log_of_its_own_still_runs(
     monkeypatch.setattr(hm, "HOOKS_DIR", tmp_path)
     monkeypatch.setattr(hm, "MANIFEST", tmp_path / "manifest.json")
 
-    from microclaw.tools import generate_and_save_hook, run_adaptive_zstack
+    from microclaw.tools import generate_and_save_hook, run_zstack
 
     generate_and_save_hook(
         headless_mm, unconstrained_guard,
@@ -1111,7 +1111,7 @@ def test_a_saved_hook_that_keeps_no_log_of_its_own_still_runs(
 
     log_path = str(tmp_path / "quiet_log.json")
     current_z = headless_mm.core.get_position()
-    result = run_adaptive_zstack(
+    result = run_zstack(
         headless_mm, unconstrained_guard,
         z_start_um=current_z, z_end_um=current_z + 2.0, z_step_um=1.0,
         save_dir=str(tmp_path), name="quiet_hook_run",
@@ -1168,12 +1168,12 @@ def test_autofocus_mm_plugin_hook_blocked_without_motion_flag(headless_mm, tmp_p
     # The hardware-motion gate is enforced at hook construction, before any
     # hardware is touched, so this needs neither #2401 nor a working autofocus.
     from microclaw.safety import SafetyConstraints, SafetyGuard, SafetyViolation
-    from microclaw.tools import run_adaptive_zstack
+    from microclaw.tools import run_zstack
 
     default_motion_off = SafetyGuard(SafetyConstraints())  # allow_hardware_motion=False
     current_z = headless_mm.core.get_position()
     with pytest.raises(SafetyViolation, match="allow_hardware_motion"):
-        run_adaptive_zstack(
+        run_zstack(
             headless_mm, default_motion_off,
             z_start_um=current_z, z_end_um=current_z + 2.0, z_step_um=1.0,
             save_dir=str(tmp_path), name="af_plugin_blocked",
@@ -1190,7 +1190,7 @@ def test_autofocus_mm_plugin_hook(headless_mm, tmp_path):
         SafetyGuard,
         StageConstraints,
     )
-    from microclaw.tools import list_mm_plugins, run_adaptive_zstack
+    from microclaw.tools import list_mm_plugins, run_zstack
 
     autofocus_plugins = list_mm_plugins(headless_mm, SafetyGuard(SafetyConstraints()))[
         "plugins"
@@ -1211,7 +1211,7 @@ def test_autofocus_mm_plugin_hook(headless_mm, tmp_path):
     log_path = str(tmp_path / "af_plugin_log.json")
     current_z = headless_mm.core.get_position()
     try:
-        result = run_adaptive_zstack(
+        result = run_zstack(
             headless_mm, motion_guard,
             z_start_um=current_z, z_end_um=current_z + 2.0, z_step_um=1.0,
             save_dir=str(tmp_path), name="af_plugin_test",

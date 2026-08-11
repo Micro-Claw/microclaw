@@ -107,6 +107,27 @@ class Legacy(Base):
     ]
 
 
+def test_list_hooks_marks_dead_saved_hook_with_shared_refusal_and_remedy(
+    tmp_path, monkeypatch, mock_ctrl, unconstrained_guard
+):
+    path, entry = _install_saved(tmp_path, monkeypatch, "dead", '''
+class Dead:
+    def analyze_frame(self, image, metadata): return None
+''')
+    path.write_text(path.read_text(encoding="utf-8") + "# changed\n", encoding="utf-8")
+    result = list_hooks(mock_ctrl, unconstrained_guard)
+    saved = result["saved"]["dead"]
+    assert saved["resolvable"] is False
+    assert saved["resolve_refusal"]["reasons"] == [
+        "saved hook file sha256 does not match manifest"
+    ]
+    assert saved["resolve_refusal"]["remedy"] == {
+        "tool": "read_hook_from_file", "path": str(path),
+        "then": "generate_and_save_hook(source='user_provided')",
+        "reexposes": False,
+    }
+
+
 def test_saved_log_path_alone_is_refused(
     tmp_path, monkeypatch, mock_ctrl, unconstrained_guard
 ):
@@ -117,10 +138,9 @@ class Logger:
 '''
     _install_saved(tmp_path, monkeypatch, "logger", code)
     result = describe_hook(mock_ctrl, unconstrained_guard, "logger")
-    assert result["resolve_refusal"] == {
-        "would_refuse": True,
-        "reasons": ["saved hook constructor takes log_path"],
-    }
+    assert result["resolve_refusal"]["would_refuse"] is True
+    assert result["resolve_refusal"]["reasons"] == ["saved hook constructor takes log_path"]
+    assert result["resolve_refusal"]["remedy"]["path"].endswith("logger.py")
 
 
 def test_precoded_hook_reports_injected_parameters(
@@ -169,10 +189,11 @@ def test_hash_mismatch_is_described(
     assert provenance["matches_manifest"] is False
     assert provenance["manifest_sha256"] == entry["sha256"]
     assert provenance["actual_sha256"] == hashlib.sha256(changed.encode("utf-8")).hexdigest()
-    assert result["resolve_refusal"] == {
-        "would_refuse": True,
-        "reasons": ["saved hook file sha256 does not match manifest"],
-    }
+    assert result["resolve_refusal"]["would_refuse"] is True
+    assert result["resolve_refusal"]["reasons"] == [
+        "saved hook file sha256 does not match manifest"
+    ]
+    assert result["resolve_refusal"]["remedy"]["path"] == str(path)
 
 
 def test_unpinned_hook_is_described(
@@ -186,10 +207,11 @@ def test_unpinned_hook_is_described(
     assert result["provenance"]["manifest_sha256"] is None
     assert result["provenance"]["actual_sha256"]
     assert result["provenance"]["matches_manifest"] is False
-    assert result["resolve_refusal"] == {
-        "would_refuse": True,
-        "reasons": ["saved hook has no manifest sha256 pin"],
-    }
+    assert result["resolve_refusal"]["would_refuse"] is True
+    assert result["resolve_refusal"]["reasons"] == [
+        "saved hook has no manifest sha256 pin"
+    ]
+    assert result["resolve_refusal"]["remedy"]["reexposes"] is False
 
 
 def test_malformed_source_returns_error_and_does_not_break_listing(

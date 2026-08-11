@@ -78,7 +78,7 @@ def test_all_write_and_serve_owners_remain_on_the_confined_resolver():
             "export_dataset_as_tiff", "build_stage_coordinate_mosaic",
             "save_position_list",
             "run_multiposition_acquisition", "run_multiposition_with_autofocus",
-            "_prepare_log_path", "run_adaptive_zstack", "run_adaptive_timelapse",
+            "_prepare_log_path", "run_zstack", "run_timelapse",
             "_acquire_positions_with_hook", "_acquire_survey_with_detector",
             "inspect_artifacts", "calibrate_snr_threshold", "run_mda",
             "export_session_script", "write_text_file",

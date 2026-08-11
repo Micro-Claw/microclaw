@@ -1686,7 +1686,7 @@ class _RecordingHook:
 class TestHookedGridAcquisition:
     """design/19 F2/F3: a grid with a hook is ONE acquisition over all positions,
     not N degenerate single-plane z-stacks. The agent spelled a 3x3 grid as nine
-    run_adaptive_zstack calls with z_start == z_end, because no grid tool took a
+    run_zstack calls with z_start == z_end, because no grid tool took a
     hook — nine datasets and nine logs to recover nine numbers."""
 
     @pytest.fixture
@@ -2639,7 +2639,7 @@ class TestAcquisitionsRespectTheWorkspace:
         monkeypatch.setattr(tools, "_acquire_with_hooks",
                             lambda *a, **k: pytest.fail("acquisition should not start"))
         with pytest.raises(SafetyViolation, match="escapes"):
-            tools.run_adaptive_zstack(
+            tools.run_zstack(
                 mock_ctrl, ws_guard, z_start_um=0, z_end_um=10, z_step_um=1,
                 save_dir="/somewhere/else", hook_strategy="autofocus_per_position",
                 log_path="/somewhere/else/log.json",

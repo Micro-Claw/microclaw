@@ -455,8 +455,11 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "run_zstack",
         "description": (
-            "Run a Z-stack acquisition. Moves Z from z_start to z_end in z_step "
-            "increments, capturing one image per step. Saves the dataset to save_dir."
+            "Run a fixed Z-stack, plain or with an optional hook. A hook may adapt "
+            "settings between planes, or measure every plane without changing the "
+            "acquisition; for observation use snr_observer and call read_hook_log "
+            "afterwards. Hooks cannot skip planes or stop early; use "
+            "run_adaptive_survey for stop-on-condition work."
         ),
         "input_schema": {
             "type": "object",
@@ -484,6 +487,11 @@ TOOLS: list[dict[str, Any]] = [
                     "description": "Dataset name. Defaults to 'zstack'.",
                     "default": "zstack",
                 },
+                "hook_strategy": {"type": "string", "description": "Optional hook from list_hooks."},
+                "hook_params": {"type": "object", "description": "Hook constructor parameters."},
+                "log_path": {"type": "string", "description": "Hook output log path."},
+                "illumination_envelope": _HOOK_ILLUMINATION_ENVELOPE_SCHEMA,
+                "artifact_limits": _HOOK_ARTIFACT_LIMITS_SCHEMA,
             },
             "required": ["z_start_um", "z_end_um", "z_step_um", "save_dir"],
         },
@@ -491,7 +499,11 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "run_timelapse",
         "description": (
-            "Run a timelapse acquisition. On an EMU/htSMLM rig, pass laser_slot "
+            "Run a fixed timelapse, plain or with an optional hook. A hook may adapt "
+            "settings between frames, or measure every frame without changing the "
+            "acquisition; for observation use snr_observer and call read_hook_log "
+            "afterwards. Hooks cannot skip frames or stop early; use "
+            "run_adaptive_survey for stop-on-condition work. On an EMU/htSMLM rig, pass laser_slot "
             "(the EMU slot of the excitation laser, from get_emu_laser_map) so the "
             "pre-flight can verify that laser's trigger line will actually fire — "
             "otherwise a gated-off laser silently produces blank frames."
@@ -513,6 +525,11 @@ TOOLS: list[dict[str, Any]] = [
                         "slot's trigger mode is '0 - Off' or its sequence is 0."
                     ),
                 },
+                "hook_strategy": {"type": "string", "description": "Optional hook from list_hooks."},
+                "hook_params": {"type": "object", "description": "Hook constructor parameters."},
+                "log_path": {"type": "string", "description": "Hook output log path."},
+                "illumination_envelope": _HOOK_ILLUMINATION_ENVELOPE_SCHEMA,
+                "artifact_limits": _HOOK_ARTIFACT_LIMITS_SCHEMA,
             },
             "required": ["n_frames", "interval_s", "save_dir"],
         },
@@ -1249,107 +1266,6 @@ TOOLS: list[dict[str, Any]] = [
                 },
             },
             "required": ["z_range_um", "z_step_um", "protocol", "save_dir"],
-        },
-    },
-    {
-        "name": "run_adaptive_zstack",
-        "description": (
-            "Run a Z-stack acquisition with a hook strategy for adaptive behaviour "
-            "— the hook adapts settings (exposure, focus) between frames of a FIXED "
-            "plane sequence at the current position; it cannot skip planes or stop "
-            "early (for stop-on-condition use run_adaptive_survey). "
-            "Pre-coded strategies: autofocus_per_position, focus_feedback, "
-            "intensity_adaptive, position_filter, snr_observer, mm_plugin_analyzer, autofocus_mm_plugin. "
-            "The mm_plugin_analyzer and autofocus_mm_plugin strategies delegate to an "
-            "installed Micro-Manager plugin (see list_mm_plugins); autofocus_mm_plugin "
-            "requires BOTH plugins.allow_hardware_motion: true AND property_authorization.mode: degraded_trusted_plugins in safety_config.yaml (the motion flag alone is refused at startup in guaranteed mode), plus a restart. "
-            "Call list_hooks() to see all available strategies including saved hooks. "
-            "After the acquisition, call read_hook_log(log_path) to retrieve results."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "z_start_um": {"type": "number", "description": "Start Z in µm."},
-                "z_end_um": {"type": "number", "description": "End Z in µm."},
-                "z_step_um": {"type": "number", "description": "Step size in µm."},
-                "save_dir": {"type": "string", "description": "Directory to save the dataset."},
-                "hook_strategy": {
-                    "type": "string",
-                    "description": "Hook strategy name (from list_hooks).",
-                },
-                "hook_params": {
-                    "type": "object",
-                    "description": "Parameters passed to the hook constructor.",
-                },
-                "channel": {
-                    "type": "string",
-                    "description": "Channel preset (optional).",
-                },
-                "name": {
-                    "type": "string",
-                    "description": "Dataset name (default 'adaptive').",
-                    "default": "adaptive",
-                },
-                "log_path": {
-                    "type": "string",
-                    "description": "Path for the hook's output log (optional).",
-                },
-                "illumination_envelope": _HOOK_ILLUMINATION_ENVELOPE_SCHEMA,
-                "artifact_limits": _HOOK_ARTIFACT_LIMITS_SCHEMA,
-            },
-            "required": ["z_start_um", "z_end_um", "z_step_um", "save_dir", "hook_strategy"],
-        },
-    },
-    {
-        "name": "run_adaptive_timelapse",
-        "description": (
-            "Run a timelapse acquisition with a hook strategy for adaptive behaviour "
-            "— the hook adapts settings (exposure, focus) between frames of a FIXED "
-            "frame sequence at the current position; it cannot skip frames or stop "
-            "early (for stop-on-condition use run_adaptive_survey). "
-            "Pre-coded strategies: autofocus_per_position, focus_feedback, "
-            "intensity_adaptive, position_filter, snr_observer, mm_plugin_analyzer, autofocus_mm_plugin. "
-            "focus_feedback corrects Z drift per frame and is well suited to timelapses. "
-            "The mm_plugin_analyzer and autofocus_mm_plugin strategies delegate to an "
-            "installed Micro-Manager plugin (see list_mm_plugins); autofocus_mm_plugin "
-            "requires BOTH plugins.allow_hardware_motion: true AND property_authorization.mode: degraded_trusted_plugins in safety_config.yaml (the motion flag alone is refused at startup in guaranteed mode), plus a restart. "
-            "Call list_hooks() to see all available strategies including saved hooks. "
-            "After the acquisition, call read_hook_log(log_path) to retrieve results."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "n_frames": {"type": "integer", "description": "Number of frames."},
-                "interval_s": {
-                    "type": "number",
-                    "description": "Interval between frames in seconds.",
-                },
-                "save_dir": {"type": "string", "description": "Directory to save the dataset."},
-                "hook_strategy": {
-                    "type": "string",
-                    "description": "Hook strategy name (from list_hooks).",
-                },
-                "hook_params": {
-                    "type": "object",
-                    "description": "Parameters passed to the hook constructor.",
-                },
-                "channel": {
-                    "type": "string",
-                    "description": "Channel preset (optional).",
-                },
-                "name": {
-                    "type": "string",
-                    "description": "Dataset name (default 'adaptive').",
-                    "default": "adaptive",
-                },
-                "log_path": {
-                    "type": "string",
-                    "description": "Path for the hook's output log (optional).",
-                },
-                "illumination_envelope": _HOOK_ILLUMINATION_ENVELOPE_SCHEMA,
-                "artifact_limits": _HOOK_ARTIFACT_LIMITS_SCHEMA,
-            },
-            "required": ["n_frames", "interval_s", "save_dir", "hook_strategy"],
         },
     },
     {

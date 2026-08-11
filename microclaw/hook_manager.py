@@ -488,6 +488,14 @@ def describe_saved_hook(name: str) -> dict[str, Any]:
         parameter for parameter in FORBIDDEN_SAVED_HOOK_PARAMS
         if parameter in parameter_names
     ]
+    remedy = None
+    if refusal_reasons:
+        remedy = {
+            "tool": "read_hook_from_file",
+            "path": str(path),
+            "then": "generate_and_save_hook(source='user_provided')",
+            "reexposes": False,
+        }
     return {
         "name": name,
         "kind": "saved",
@@ -499,6 +507,7 @@ def describe_saved_hook(name: str) -> dict[str, Any]:
         "resolve_refusal": {
             "would_refuse": bool(refusal_reasons),
             "reasons": refusal_reasons,
+            **({"remedy": remedy} if remedy else {}),
         },
         "parameter_handling": {"stripped": stripped, "injected": []},
         "provenance": provenance,
