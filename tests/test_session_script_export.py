@@ -1454,11 +1454,11 @@ def test_refocusing_survey_emits_the_same_budgeted_second_look_program(
     monkeypatch.setattr(manager, "MANIFEST", hooks_dir / "manifest.json")
     save_hook(
         "refocus",
-        "from microclaw.hook_decisions import HookResult, RequestAutofocus\n"
+        "from microclaw.hook_decisions import ContinueSurvey, HookResult, RequestAutofocus\n"
         "class Refocus:\n"
         "    def analyze_frame(self, image, metadata):\n"
         "        if metadata.get('microclaw_refocused'):\n"
-        "            return HookResult({'second_look': True})\n"
+        "            return HookResult({'second_look': True}, actions=(ContinueSurvey(),))\n"
         "        return HookResult({}, actions=(RequestAutofocus(),))\n",
         "refocus once", source="user_provided",
     )
@@ -1471,8 +1471,9 @@ def test_refocusing_survey_emits_the_same_budgeted_second_look_program(
     live_hook = manager.load_hook_class("refocus")()
     adapter = UntrustedHookAdapter(live_hook)
     candidates = queue.Queue()
-    progress = tools.SurveyProgress(1)
-    event = {"axes": {"position": "p0"}, "x": 1.0, "y": 2.0}
+    progress = tools.SurveyProgress(2)
+    events = [{"axes": {"position": "p0"}, "x": 1.0, "y": 2.0},
+              {"axes": {"position": "p1"}, "x": 3.0, "y": 4.0}]
     class LiveGuard:
         def check_z(self, _z): pass
         def check_xy(self, _x, _y): pass
@@ -1486,15 +1487,19 @@ def test_refocusing_survey_emits_the_same_budgeted_second_look_program(
         ctrl=ctrl, guard=LiveGuard(), sweep_exposures=3,
         focus_lock_check=lambda: {"engaged": False}, **budget,
     )
-    adapter.configure_adaptive(events=[event], candidates=candidates,
-                               progress=progress, guard=LiveGuard(), max_events=2)
+    adapter.configure_adaptive(events=events, candidates=candidates,
+                               progress=progress, guard=LiveGuard(), max_events=3)
     metadata = {"PositionName": "p0", "XPosition_um_Intended": 1.0,
                 "YPosition_um_Intended": 2.0}
     adapter.image_process_fn(np.zeros((2, 2)), metadata, object())
     adapter.image_process_fn(np.zeros((2, 2)), metadata, object())
+    assert candidates.get_nowait()["axes"] == {"position": "p0", "refocus": 1}
+    assert candidates.get_nowait()["axes"]["position"] == "p1"
     assert live_hook.__dict__ == {}  # no ctrl/guard/queue leaked to saved source
-    assert adapter._log[-2]["reason"] == "refocused and re-queued this tile"
-    assert adapter._log[-1]["result"] == {"second_look": True}
+    assert any(r.get("reason") == "refocused and re-queued this tile"
+               for r in adapter._log)
+    assert any(r.get("result") == {"second_look": True} for r in adapter._log)
+    assert adapter._log[-1]["reason"] == "planned event passed guard and committed reservation"
     monkeypatch.setattr(tools, "_run_autofocus_passes", real_autofocus_passes)
 
     _, result, source = export(tmp_path, [call("run_adaptive_survey", {
@@ -1508,6 +1513,7 @@ def test_refocusing_survey_emits_the_same_budgeted_second_look_program(
     assert "# NOT EMITTED:" not in source
     assert "from microclaw" not in source
     assert "configure_autofocus(ctrl=mm, guard=guard, focus_lock_check=None" in source
+    assert "Standalone scripts cannot query focus-lock state" in source
     assert "'max_exposures': 4" in source
     assert "sweep_exposures=3" in source
     assert "max_events=len(events) + 1" in source

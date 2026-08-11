@@ -381,17 +381,6 @@ class UntrustedHookAdapter:
                      decision="accepted", reason=reason, **fields)
 
     @staticmethod
-    def _tile_key(metadata: dict) -> tuple:
-        axes = metadata.get("Axes") or {}
-        position = metadata.get("PositionName", axes.get("position"))
-        if position is not None:
-            return ("position", position)
-        return (
-            "xy", metadata.get("XPosition_um_Intended"),
-            metadata.get("YPosition_um_Intended"),
-        )
-
-    @staticmethod
     def _current_event(events: list[dict], metadata: dict) -> dict | None:
         """Resolve the exposed event from MM-stamped position/axis metadata."""
         axes = metadata.get("Axes") or {}
@@ -520,7 +509,11 @@ class UntrustedHookAdapter:
             if af is None:
                 self._refuse(metadata, action, "unsupported-by-run_adaptive_survey")
                 return
-            tile = self._tile_key(metadata)
+            from microclaw.hooks import HookBase
+            where = HookBase.where(metadata)
+            tile = (("position", where["position"])
+                    if where.get("position") is not None else
+                    ("xy", where.get("x_um"), where.get("y_um")))
             if tile in af["refocused_tiles"]:
                 self._refuse(metadata, action, "this tile has already been refocused")
                 return
@@ -574,6 +567,11 @@ class UntrustedHookAdapter:
                              "outside committed reservation: refocused tile cannot be re-exposed")
                 return
             refocused_event = dict(event)
+            refocused_event["axes"] = dict(event.get("axes") or {})
+            # NDTiff indexes frames by their complete axes key. Reusing the
+            # first look's axes makes the second replace it in the readable
+            # index, so distinguish the focused look explicitly.
+            refocused_event["axes"]["refocus"] = 1
             if refocused_event.get("z") is not None:
                 refocused_event["z"] = result.final_z_um
             ctx["candidates"].put(refocused_event)
@@ -646,7 +644,11 @@ class UntrustedHookAdapter:
                 hook_metadata = dict(metadata)
                 af = self._autofocus_context
                 if af is not None:
-                    tile = self._tile_key(metadata)
+                    from microclaw.hooks import HookBase
+                    where = HookBase.where(metadata)
+                    tile = (("position", where["position"])
+                            if where.get("position") is not None else
+                            ("xy", where.get("x_um"), where.get("y_um")))
                     second_look = tile in af["second_look_tiles"]
                     hook_metadata["microclaw_refocused"] = second_look
                     if second_look:
@@ -690,7 +692,7 @@ class UntrustedHookAdapter:
                 discard = False
                 if self._context is not None:
                     self._context["refocus_requeued"] = False
-                for action in actions:
+                for index, action in enumerate(actions):
                     artifact_hash = self._dispatch(action, metadata)
                     if artifact_hash:
                         self._log[observation_index]["artifact_sha256"] = artifact_hash
@@ -699,7 +701,18 @@ class UntrustedHookAdapter:
                     if (self._context is not None and
                             self._context.get("refocus_requeued")):
                         # The hook must judge the focused pixels before it can
-                        # submit another survey event.
+                        # submit another survey event. Every deferred proposal
+                        # still crosses the audit boundary: silently dropping it
+                        # would under-report hook_actions and hide why a tile was
+                        # not acquired.
+                        for deferred in actions[index + 1:]:
+                            self._action_counts[deferred.kind] = (
+                                self._action_counts.get(deferred.kind, 0) + 1
+                            )
+                            self._refuse(
+                                metadata, deferred,
+                                "not dispatched until the refocused tile is judged",
+                            )
                         break
                 returned = None if discard else (image, metadata)
                 if discard:

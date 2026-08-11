@@ -182,10 +182,92 @@ def test_refocus_requeues_one_second_look_and_then_refuses_same_tile(tmp_path, m
     metadata = {"PositionName": "p0", "XPosition_um_Intended": 0.0,
                 "YPosition_um_Intended": 0.0}
     adapter.image_process_fn(np.zeros((2, 2)), metadata, object())
-    assert candidates.get_nowait()["axes"]["position"] == "p0"
+    refocused = candidates.get_nowait()
+    assert refocused["axes"] == {"position": "p0", "refocus": 1}
     adapter.image_process_fn(np.zeros((2, 2)), metadata, object())
     assert seen == [False, True]
     assert adapter._log[-1]["reason"] == "this tile has already been refocused"
+
+
+def test_actions_after_refocus_are_counted_and_refused_not_dropped(tmp_path, monkeypatch):
+    from microclaw.autofocus import AutofocusResult, SweepResult
+    import microclaw.tools as tools
+
+    class Hook:
+        def analyze_frame(self, _image, _metadata):
+            return HookResult({}, (RequestAutofocus(), ContinueSurvey()))
+
+    sweep = SweepResult([9, 10, 11], [1, 2, 1], 10, True)
+    monkeypatch.setattr(tools, "_run_autofocus_passes", lambda *a: AutofocusResult(
+        sweep, None, 10, 10, True, False, None
+    ))
+    adapter = UntrustedHookAdapter(Hook(), str(tmp_path / "hook.json"))
+    candidates, progress = queue.Queue(), SurveyProgress(3)
+    adapter.configure_autofocus(
+        ctrl=type("Ctrl", (), {"core": type("Core", (), {
+            "get_position": lambda self: 10.0,
+        })()})(), guard=_Guard(), max_exposures=8, z_range_um=2,
+        z_step_um=1, method="single_sweep", settle_ms=0, sweep_exposures=3,
+    )
+    adapter.configure_adaptive(events=_events(3), candidates=candidates,
+                               progress=progress, guard=_Guard(), max_events=5)
+    adapter.image_process_fn(
+        np.zeros((2, 2)),
+        {"PositionName": "p0", "XPosition_um_Intended": 0.0,
+         "YPosition_um_Intended": 0.0}, object(),
+    )
+    assert [candidates.get_nowait()["axes"]["position"]] == ["p0"]
+    assert adapter.action_counts == {"RequestAutofocus": 1, "ContinueSurvey": 1}
+    refused = adapter._log[-1]
+    assert refused["action"]["kind"] == "ContinueSurvey"
+    assert refused["decision"] == "refused"
+    assert refused["reason"] == "not dispatched until the refocused tile is judged"
+
+
+def test_converged_refocus_plane_is_adopted_by_later_timelapse_tiles(
+    tmp_path, monkeypatch
+):
+    from microclaw.autofocus import AutofocusResult, SweepResult
+    import microclaw.tools as tools
+
+    seen = []
+    class Core:
+        z = 10.0
+        def get_position(self): return self.z
+    core = Core()
+    class Hook:
+        def analyze_frame(self, _image, metadata):
+            seen.append((metadata["PositionName"], metadata["microclaw_refocused"]))
+            return HookResult({}, (
+                ContinueSurvey() if metadata["microclaw_refocused"]
+                else RequestAutofocus(),
+            ))
+
+    sweep = SweepResult([9, 10, 11], [1, 2, 3], 12, True)
+    def focus(*_args):
+        core.z = 12.0
+        return AutofocusResult(sweep, None, 10, 12, True, True, None)
+    monkeypatch.setattr(tools, "_run_autofocus_passes", focus)
+    adapter = UntrustedHookAdapter(Hook(), str(tmp_path / "hook.json"))
+    candidates, progress = queue.Queue(), SurveyProgress(2)
+    adapter.configure_autofocus(
+        ctrl=type("Ctrl", (), {"core": core})(), guard=_Guard(), max_exposures=4,
+        z_range_um=2, z_step_um=1, method="single_sweep", settle_ms=0,
+        sweep_exposures=3,
+    )
+    adapter.configure_adaptive(events=_events(2), candidates=candidates,
+                               progress=progress, guard=_Guard(), max_events=3)
+    p0 = {"PositionName": "p0", "XPosition_um_Intended": 0.0,
+          "YPosition_um_Intended": 0.0}
+    adapter.image_process_fn(np.zeros((2, 2)), p0, object())
+    refocused = candidates.get_nowait()
+    assert "z" not in refocused
+    adapter.image_process_fn(np.zeros((2, 2)), p0, object())
+    next_tile = candidates.get_nowait()
+    assert next_tile["axes"]["position"] == "p1"
+    assert "z" not in next_tile
+    assert core.z == 12.0
+    assert seen == [("p0", False), ("p0", True)]
 
 
 @pytest.mark.parametrize("case, expected", [

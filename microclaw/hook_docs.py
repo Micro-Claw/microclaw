@@ -201,6 +201,19 @@ trusted parent carries this flag rather than assuming Micro-Manager copies a
 custom event key into image metadata. A failed sweep is logged and carried past
 without widening or retrying it.
 
+The second look is still an adaptive survey decision point: it must return
+``ContinueSurvey`` or ``StopSurvey`` (or another supported routing action).
+Returning measurements with no routing action leaves no next event to dispatch,
+so the survey eventually reports a watchdog stall. Actions placed after the
+initial ``RequestAutofocus`` are refused and logged because focused pixels must
+be judged before another survey event is submitted.
+
+On convergence the survey deliberately adopts the new focus plane. Timelapse
+survey events carry no Z, so the refocused exposure and later tiles remain at
+that Z; a non-converging sweep restores the entry Z. Both first and second looks
+remain in the dataset: the re-exposure carries a ``refocus=1`` axis because
+NDTiff otherwise indexes identical axes as one readable frame.
+
 The live runner refuses a proposal while Micro-Manager's focus lock is engaged.
 A standalone exported script has no generic focus-lock query, so it cannot make
 that check: disengage the lock before running the script. It retains the same
