@@ -5786,6 +5786,21 @@ it and re-asks at the second look. The gate hook written for round 4 exists for
 the same reason — a hook that only asks when it likes the signal is a poor
 instrument for the negative limbs.
 
+**Step 1 must end with the coordinator's tree back on `main`.** Creating the block
+branch with `git checkout -b` leaves the coordinator holding it, and the runner's
+first command — `git worktree add ../microclaw-43i design43/survey-refocus` —
+then fails with *"already used by worktree at /Users/zachcm/Code/microclaw"*. The
+43i runner hit this immediately and stopped rather than improvising, which was
+right, and it cost a relay round trip. The workflow already says one worktree per
+concurrent agent; the coordinator's tree is one of those trees, and it was left
+holding the resource being handed away.
+
+**A blunt `git checkout -- <file>` is the same failure at file scale.** Twice in
+this block I used it to undo a scripted experiment on a file that also held
+uncommitted real work, and lost the fix along with the experiment. Both times the
+tests caught it immediately, but the safe form is to copy the file aside, or to
+commit the fix first and experiment after.
+
 **Carried forward, found by a session on this branch rather than by the gate:**
 the GUI stops tracking after an *exposure* write. Block 43b closed design/43 F4
 for property and config writers only; a sweep of every tool that writes
