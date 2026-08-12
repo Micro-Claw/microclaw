@@ -135,8 +135,57 @@ thing on this page to be wrong.**
 
 ## A2 — positive-hit mechanism
 
-Use a saved hook that fires deterministically on demo frames, so hits are
-reachable without optical evidence. Retain the complete audit and hook log.
+Round 1 did not run this step — its hook found nothing, so the whole positive
+path is still unexercised. "Use a deterministic hook" was also all this step used
+to say, which was not enough to act on. Here is the exact one.
+
+**Do not reach for this from operator language.** A1 already proved reach; A2 is
+a mechanism test, so naming the tool and dictating the hook is correct. Paste
+this as one message:
+
+> Save this hook exactly as written, under the name `a2_deterministic`, then use
+> it.
+>
+> ```python
+> from microclaw.hook_decisions import AcquireAt, ContinueSurvey, HookResult
+>
+> class A2Deterministic:
+>     """Deterministic gate hook: ignores image content entirely."""
+>
+>     def __init__(self, **_kwargs):
+>         self.frame = -1
+>
+>     def analyze_frame(self, image, metadata):
+>         self.frame += 1
+>         actions = []
+>         if self.frame > 0:
+>             actions.append(AcquireAt(self.frame - 1))
+>         actions.append(AcquireAt(self.frame))
+>         actions.append(ContinueSurvey())
+>         return HookResult({"frame": self.frame, "deterministic": True},
+>                           tuple(actions))
+> ```
+>
+> Then run an adaptive survey over the marked fields field_1, field_2 and
+> field_3, searching in Rhodamine with one frame per field, and acquire_on_hit
+> set to channel FITC, protocol timelapse, 3 frames, max_hits 2. Save the hook
+> log beside the data. When it finishes, show me the complete result JSON and
+> every decision record in the hook log.
+
+The hook re-requests the previous tile before the current one, which is what
+produces all three acquire-phase records in a single run. Driven through the real
+`UntrustedHookAdapter` before being written here, it yields, in order: accept
+(field_1), duplicate (field_1), accept (field_2), duplicate (field_2), max_hits
+exhausted (field_3), then `planned survey cursor is already at the end` — that
+last one is **normal** and appears in round 1's passing log too.
+
+It ignores image content on purpose, so it proves the mechanism and nothing about
+detection. That is this step's remit; real detection is B2.
+
+If the three marked fields no longer exist on the machine, ask the agent to
+re-mark three separated fields first, then paste the message above.
+
+Retain the complete audit and hook log.
 
 **Expect to be asked about the acquire channel before any search frame, and
 expect the order to look backwards.** Both reservations are taken, and the
@@ -161,6 +210,14 @@ Pass requires all of:
   `acquire_phase_ran`;
 - acquired positions are unique, and their submitted Z values equal their
   hit-time focus Z values.
+
+With the hook above and `max_hits=2` the expected result is exact, so score
+against these numbers rather than judging: `hits_recorded=2`, `hits_acquired=2`,
+`max_hits_reached=true`, `acquire_phase_ran=true`,
+`acquire_frames_reserved=6` (2 × 3), `acquire_frames_accounted=6`,
+`acquire_frames_unused=0`, and a second dataset named `<name>_acquire` beside the
+search one. Round 1's zero-hit run reserved the same 6 and accounted 0, so the
+pair of runs brackets the reservation arithmetic from both ends.
 
 These are counting and record-reading limbs only. **Do not score any optical
 claim here** — that is B2, and a demo run that matches every count above is not
