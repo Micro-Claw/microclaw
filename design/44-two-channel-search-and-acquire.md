@@ -223,3 +223,77 @@ replay. Its identical frames cannot prove that 561 evidence selected a biologica
 hit, that 488 differs optically from 561, that an enable line emitted light, or
 that the acquired burst contains the intended structure; those require M5 plus
 operator-visible images.
+
+## What the gate measured (block 43n, merged 2026-08-12)
+
+Written after the fact. Four things this document got wrong or did not say, and
+four the rig proved that no offline test could.
+
+**The emitter seam has a third layer this document missed.** It said to add a
+`CannotEmit` when a phase lacks recorded executable channel effects, and that was
+right. It did not notice that `_channel_verification_source`'s inlining is gated
+on the *tool name* `set_channel` (`channel_writes`, `tools.py`), so an emitter
+rendering `_verify_property` from inside `run_adaptive_survey` emitted a call to
+a helper the script never defined. **The script compiled and passed every static
+check the exporter performs**, and died at runtime on the rig. Fixed
+structurally: render the body first, then inline helpers based on what the body
+contains. Both export tests had supplied the `config_group` branch, which emits
+no `_verify_property` at all — a test that only ever exercises one branch of a
+two-branch renderer cannot see this class of defect.
+
+**`acquire_on_hit` requires a saved hook, and this document did not say so.**
+Registry built-ins keep the direct `candidates.put()` contract and never produce
+a typed `AcquireAt`, so with one attached the run silently became a
+search-channel-only survey reporting `hits_recorded=0` — which this document
+defines as a *successful* zero-hit search. Now refused by name at the tool
+boundary.
+
+**A zero-hit run must still export.** Its `channel_effects["acquire"]` is
+correctly absent, and the first implementation refused to emit on that basis —
+making the one outcome this document calls a success unexportable. The acquire
+*program* is fixed by the argument and does not depend on what a run happened to
+hit; refusing there is the trace-thinking block 43h overturned. `CannotEmit` now
+fires only for a phase that **executed** without reproducible effects.
+
+**The gate order in §"Follow-on blocks and gates" item 3 was wrong.** It said M5
+first, then a `Channel`-group machine. Demo-first is correct and found the
+`_verify_property` defect on its first outing. The premise behind the ordering
+was also wrong: `set_channel` branches on `_has_channel_authorization_map`, not
+on channel source, and the demo rig has **both** a `Channel` group and a map. It
+therefore exercises the effects-triple route, and **the map-less `set_config`
+route remains rig-untested** — unit tests only.
+
+What the rig proved that offline work could not:
+
+1. **The emitted program re-runs the rule.** On M5 the standalone run selected a
+   *different hit set* than the live run (live `field_2`/`field_3`; standalone
+   `field_1`/`field_2`, `field_3` refused as `max_hits exhausted`). On a demo
+   whose frames are identical, a fresh choice and a replayed one are
+   indistinguishable; only a real sample separates them.
+2. **Per-hit Z is per-hit.** The two hits carried 52.077 and 51.578 — each its
+   own autofocus-converged plane. A demo stage that never moves records the same
+   Z twice and proves nothing.
+3. **The enable line emits light.** The 488 burst measured p99.9 ~3,400 and max
+   ~10,000 (uint16) against an audit showing `Laser 2` for search and `Laser 3`
+   for acquire. On a camera-triggered rig an enable that did not take gives a
+   dark burst. B3 is the negative control: 488 authorized, never applied, no
+   acquire dataset, and no third enable in the audit.
+4. **The error path releases both reservations.** An unplanned EMU serial timeout
+   killed the first survey *after* both reservations were taken (`applied=[]`);
+   the retry reserved a clean 6. That path had never run outside a unit test.
+
+**Two consequences of the chosen alternative, now on the record.** Because
+channel is a phase setting rather than an event axis, the datasets carry **no
+channel axis**: search and acquire land in separate directories and neither
+records which channel it was, so the only channel evidence is the directory name
+and the audit. And an adaptive run with refocus writes a **dense hypercube with
+real padding** — M5's search dataset is 3 positions x 2 refocus = 6 slots for 5
+frames, with `field_1 refocus=1` all zeros. Both are filed in the checklist's
+open register; both surfaced because an operator could not map TIFF frames to
+positions.
+
+**Untested by operator ruling, 2026-08-12:** whether an acquired burst contains
+the structure the hook scored for. The M5 sample was beads with a
+filament-scoring hook. Beads appear in both channels, so detection was exercised
+in two channels; the structure claim is recorded as untested rather than
+inferred, and did not block the gate.
