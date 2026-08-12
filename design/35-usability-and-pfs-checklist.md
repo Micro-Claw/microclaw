@@ -403,8 +403,41 @@ this one: `../microclaw-6a`, idle at `4994f3e`.
 - **The open register is 52 items**, counted at this note. **Do not filter it with
   a bare `grep -v CLOSED`** — that matches "UV activation **closed**-loop test"
   and silently reports 51. Filter on the leading marker, not the substring.
-- **Block 46's demo gate ran 2026-08-12 and its Part A is `NOT TESTED`, not
-  passed.** The automated gate passed (458 tests, coordinator-matched) and the
+- **Block 46's §3 A/B came back 2026-08-12 and the result is STOP: the demo
+  machine repaints without our code, and the block would not have fixed the
+  observation that motivated it.** Two separate findings, both measured, neither
+  a matter of opinion.
+
+  **(1) Measured on the demo machine, on `main`.** `main`'s `set_exposure` is
+  `guard → ctrl.core.set_exposure → return`, with no repaint anywhere in it. The
+  operator set the GUI box to 50 by hand, ran a single `set_exposure(20)` — the
+  history shows one tool call and nothing else — and **the Exposure box updated
+  to 20 by itself.** Micro-Manager repaints on a ZMQ core write on this machine,
+  so block 46's eleven calls are a **no-op here for exposure**. This kills the
+  "Script Panel repaints after running a script" explanation; it is the other
+  one. Per §3a, Part A is `NOT TESTED — machine self-repaints`, and the nine
+  rows recorded on 2026-08-12 remain meaningless rather than becoming failures.
+
+  **(2) The design objection, from the register's own record of the M5
+  session.** Every one of the eleven call sites hangs a repaint on a *write*. The
+  M5 session that observed the stale box made **no exposure write at all** — no
+  `set_exposure`, no `exposure_ms` on any call, four `run_timelapse` calls
+  passing none. So **not one of the eleven calls would have fired during the
+  session the block exists to fix.** The staleness persisted from before it, and
+  nothing in block 46 repaints on read, on attach, or at session start. This
+  holds whether or not M5 self-repaints, and it was derivable at assignment from
+  a paragraph already in this file. The coordinator did not derive it.
+
+  **What is still unknown, and is one cheap experiment.** Only the *exposure* row
+  was measured. Whether MM also self-repaints for stage position and ROI is
+  untested, and the answer decides whether any of the eleven calls survive. **The
+  experiment is to run the rest of Part A on `main`, not on the branch**: a row
+  that stays stale on `main` is a row where the fix earns its keep; a row that
+  repaints on its own is a call to delete. ROI is the most likely survivor and
+  the least testable right now, since it is blocked behind block 47.
+
+- **Block 46's first demo gate ran 2026-08-12 and its Part A was `NOT TESTED`,
+  not passed.** The automated gate passed (458 tests, coordinator-matched) and the
   routing traps worked — the session called `run_multiposition_acquisition` and
   `run_adaptive_survey`, the two steps round 1 rewrote. But **the runbook's
   Script Panel could not manufacture a stale display**: on the demo machine,
