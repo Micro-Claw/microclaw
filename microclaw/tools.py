@@ -156,6 +156,11 @@ def _emit_multiposition(params: RecordedParams) -> str:
     omitted_hook_comment = ""
     if hook:
         from microclaw.hooks import PRECODED_HOOK_REGISTRY
+        if isinstance(hook, list):
+            raise CannotEmit(
+                "composed hooks: the fixed-plan exporter cannot inline their "
+                "adapters and observation logs"
+            )
         hook_cls = PRECODED_HOOK_REGISTRY.get(hook) if isinstance(hook, str) else None
         if hook_cls is None:
             raise CannotEmit(

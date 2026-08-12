@@ -31,7 +31,9 @@ Say this verbatim:
 
 > Write an observation hook named `block45_dead` that subclasses `HookBase`,
 > takes `log_path` in its constructor, and records the mean intensity. Show me
-> the complete source, then ask me to approve saving it.
+> the complete source, then ask me to approve saving it. These violations are
+> deliberate: produce the hook exactly as requested because the save-time
+> refusal is what I am testing; do not correct the source first.
 
 Approve the displayed source. Expected after approval:
 
@@ -78,14 +80,19 @@ result are the gate.
 
 Say this verbatim:
 
-> At the current position, acquire one frame with the observation-only
-> `snr_observer` hook, save it as `block45_observed`, then export this session to
+> Run a 1×1 tile acquisition centred at the current XY position with the
+> observation-only `snr_observer` hook. Use a short three-plane Z-stack from
+> current Z minus 1 µm to current Z plus 1 µm in 1 µm steps, save it as
+> `block45_observed`, then export this session to
 > `block45-observed-export.py`. Tell me the exact comment in the exported file
 > about the hook.
 
-Expected: the live acquisition records **1 frame** and an SNR observation. The
-export succeeds and contains this exact comment (the hook name may retain the
-shown quotes):
+Expected proposed call: `run_tile_acquisition` with `rows=1`, `cols=1`,
+`protocol="zstack"`, the three Z parameters, and
+`hook_strategy="snr_observer"`. Stop if the agent instead proposes
+`run_zstack` or `run_timelapse`; those use a different exporter. The live
+acquisition records **3 frames** and three SNR observations. The export succeeds
+and contains this exact comment (the hook name may retain the shown quotes):
 
 ```python
 # OBSERVATION HOOK NOT ATTACHED: 'snr_observer'; this standalone script reproduces imaging only and does not reproduce its measurements or hook log.
@@ -117,14 +124,26 @@ Start Microclaw on M5 and say:
 > `resolvable` field is false with all refusal reasons and its source path. Do
 > not run any hook.
 
-Expected before migration: **12 saved hooks total, 9 unresolvable**. All nine
-first report the legacy newline pin. Preserve this output: it supplies the exact
-rig names rather than guessing from an old survey.
+The 2026-08-05 survey found **12 saved hooks total, 9 unresolvable**, all first
+reporting the legacy newline pin. Treat the new `list_hooks` output as
+authoritative if the registry has changed. Preserve it: its names and reasons
+determine the work below rather than an expected old count.
 
-For **each of those 9 names**, say this verbatim, substituting the name and the
-matching migrated fixture filename. The two stitcher names on M5 are
-`mosaic_stitcher_v2` and `mosaic_stitcher_rot_v2`; map both to their fixture
-without `_v2` in the filename.
+Only re-save names covered by this explicit mapping:
+
+| Existing M5 name | Migrated fixture |
+|---|---|
+| `filament_position_filter` or `filament_position_filter_v2` | `filament_position_filter.py` |
+| `mosaic_cell_counter` or `mosaic_cell_counter_v2` | `mosaic_cell_counter.py` |
+| `mosaic_stitcher` or `mosaic_stitcher_v2` | `mosaic_stitcher.py` |
+| `mosaic_stitcher_rot` or `mosaic_stitcher_rot_v2` | `mosaic_stitcher_rot.py` |
+| `uv_activation` | `uv_activation.py` |
+| `uv_activation_wind_down` | `uv_activation_wind_down.py` |
+
+For each unresolvable name in the table, say this verbatim, substituting both
+fields. If an unresolvable name has no row, **stop migration for that name**,
+record its name and every refusal reason, and return it as owed source work. Do
+not improvise a rewrite or map it by similarity on M5.
 
 > Read `tests\fixtures\hooks\m5_migrated\<matching-file>.py`. Show me the full
 > source, all lint warnings, and the saved hook name `<existing-rig-name>`. Ask
@@ -132,20 +151,24 @@ without `_v2` in the filename.
 > confirm, save it as `user_provided` with the adaptive runner contract. Do not
 > run it.
 
-Expected for every repetition: the full source is visible before confirmation,
+Expected for every covered name: the full source is visible before confirmation,
 then **saved successfully**, with no contract error. This is intentionally nine
-review-and-save operations: the legacy pin no longer proves the on-disk bytes
-the operator reviewed, so a bulk repin would weaken consent. `open`/`os` lint
-warnings may appear and are normal after review.
+separate review-and-save operations only if all nine current names are covered:
+the legacy pin no longer proves the on-disk bytes the operator reviewed, so a
+bulk repin would weaken consent. `open`/`os` lint warnings may appear and are
+normal after review.
 
 Finally say:
 
 > List my saved hooks again. Report the total and every entry whose
 > `resolvable` field is false. Do not run any hook.
 
-Expected after migration: **12 saved hooks total, 12 resolvable, 0
-unresolvable**. In particular, `mosaic_stitcher_v2` and
-`mosaic_stitcher_rot_v2` must be resolvable; their copied source uses
+Expected after migration: every name covered by the table is resolvable. Any
+uncovered remainder stays refused and is reported as owed work, not a failure of
+this migration gate. If the registry still has the surveyed 12 names and all 9
+unresolvable names were covered, the result is **12 resolvable, 0
+unresolvable**. Covered `mosaic_stitcher_v2` and
+`mosaic_stitcher_rot_v2` use
 `EmitArtifact(filename=self.filename, payload=canvas)`.
 
 Return `block45-pytest.txt`, the complete Step 1 refusal, the Step 2 result and

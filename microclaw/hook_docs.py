@@ -262,9 +262,10 @@ Called after every image arrives from the camera, before it is saved.
     microclaw runner silently discards anything a hook puts there: it adds no
     event, and event_queue.put(None) does NOT end the acquisition early.
 
-To key a log entry to the image's place in the acquisition, call
-self.log(metadata, ...) on HookBase: it stamps position/x_um/y_um/z_um for you
-from the image metadata, so every entry is self-describing.
+For a saved `analyze_frame` hook, return measurements in `HookResult`; the
+trusted parent writes the log and stamps position/x_um/y_um/z_um from the image
+metadata, so every entry is self-describing. `HookBase.log` is only for trusted
+pre-coded registry hooks and must not be used as a saved-hook pattern.
 
 If you read the metadata yourself: a multi-position acquisition carries
 "PositionName", "XPosition_um_Intended" and "YPosition_um_Intended"; a Z-stack

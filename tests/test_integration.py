@@ -1065,15 +1065,22 @@ def test_generate_save_and_use_custom_hook(headless_mm, unconstrained_guard, tmp
     assert "source has to change" in save_result["resolve_refusal"]["remedy"]["note"]
     assert "mean_logger" not in list_hooks(headless_mm, unconstrained_guard)["saved"]
 
-    # Block 7: this hook keeps its own log, which the saved-hook boundary no
-    # longer permits — the trusted parent owns the audit record. Left to run it
-    # would take every exposure and record none of its means, so the refusal must
-    # arrive before the acquisition, not after. The 2026-07-27 demo gate caught
-    # exactly this case; before that it was invisible off-rig, because this test
-    # needs the headless_mm fixture.
+    # The save refusal and resolver must compose: because no dead artifact was
+    # written, attaching its requested name reaches the ordinary unknown-hook
+    # refusal before the headless acquisition can move or expose anything.
     log_path = str(tmp_path / "mean_log.json")
     current_z = headless_mm.core.get_position()
+    result = run_zstack(
+        headless_mm, unconstrained_guard,
+        z_start_um=current_z, z_end_um=current_z + 2.0, z_step_um=1.0,
+        save_dir=str(tmp_path), name="custom_hook_run",
+        hook_strategy="mean_logger", hook_params={}, log_path=log_path,
+    )
+
+    assert "error" in result and "Unknown hook strategy 'mean_logger'" in result["error"]
+    assert "Run list_hooks()" in result["error"]
     assert headless_mm.core.get_position() == current_z
+    assert not (tmp_path / "custom_hook_run").exists(), "nothing may be acquired"
     assert not Path(log_path).exists(), "nothing may be acquired or logged"
 
 

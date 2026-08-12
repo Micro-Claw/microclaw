@@ -539,6 +539,10 @@ def describe_saved_hook(name: str) -> dict[str, Any]:
             "reexposes": False,
         }
         if source_reasons:
+            # Unlike save-time source_refusal, this list also includes contract
+            # errors found while describing already-saved bytes. Both use the
+            # same note because neither kind is cleared by re-saving unchanged
+            # source.
             # The remedy alone is a false promise here, and a reader who ranks
             # the reasons by eye gets it backwards: the demo gate of 2026-08-11
             # saw the agent call these two "just describing its structure, not
