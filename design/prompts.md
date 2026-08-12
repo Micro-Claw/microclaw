@@ -6187,3 +6187,77 @@ authoritative is what kept the round on the real names.
 shipped without a further rig round: pure static analysis, no hardware surface,
 and the rig had already supplied the failing case. Step 4's remainder is
 operator-owned follow-up, not an open gate.
+
+## Block 46 — the GUI-refresh sweep (assigned 2026-08-12, **DROPPED unmerged**)
+
+**The block was refuted by its own gate, and the code was never the problem.**
+Eleven `ctrl.refresh_gui()` calls, implemented cleanly through one returned
+review round. Micro-Manager publishes `PropertiesChangedEvent` and repaints
+itself; the existing six calls on `main` are block 43b's **EMU** fix, which is a
+different claim and stays. Nothing merged.
+
+**The coordinator shipped a gate that could not fail, and nine PASS rows were
+worth zero.** §3 manufactured staleness with the Script Panel — which repaints
+when you press Run — so every row observed a repaint that would have happened
+anyway. The operator spotted it by asking what the step was *for*, not by
+failing it. Replacing it with an **A/B against `main`** refuted the whole block
+in one prompt: on a build containing no repaint at all, the Exposure box still
+updated 50 → 20. **Before booking rig time, ask what result would falsify the
+block and check the runbook can produce it.**
+
+**The fatal objection needed no rig and was available at assignment.** Every one
+of the eleven calls hung a repaint on a *write*, and the M5 session that
+motivated the block made no exposure write — the checklist said so, in the
+paragraph directly above the one that was read. A fix must be checked against
+the *reported symptom*, not against the class of defect it resembles.
+
+**Two things survived the drop.** Review round 1's four findings were real
+regardless: two runbook steps would have produced a false PASS by exercising a
+different call site than the one they named — `run_timelapse` instead of
+`_acquire_positions_with_hook`, and a tool that does not exist for
+`_acquire_survey_with_detector`. And the register entry now carries the
+recurrence investigation: on M5, fresh session, each property changed
+individually with a written description per property and an EMU laser as the
+known-good control. **The question is which property stopped publishing its
+event, not whether microclaw should repaint everything.**
+
+## Block 47 — camera ROI typed capability (merged 2026-08-12, `a80fa87`)
+
+**A working feature had silently stopped, and nobody had noticed for three
+weeks.** `set_roi`/`clear_roi` worked from `55e9eb8` (2026-06-20); the Phase-1
+authorization map landed in `2599869` (2026-07-22) and emitted `camera-roi` as
+`excluded` because no typed capability existed to classify it. design/33 recorded
+the deferral honestly and the phase was never scheduled. **It was found by an
+operator hitting it during another block's gate** — not by a test, and not by
+review.
+
+**The refusal actively misdirected.** It told the operator the safety config
+would have to change, while the exclusion was hard-coded. A refusal that names a
+remedy must name one that exists; both `camera-roi` and `mmstudio-mda` now say
+plainly that they are code-level and that config cannot help.
+
+**The rig overturned a guard the review had only argued about.** Round 1 bounded
+a requested ROI by the *current* ROI, making `set_roi` shrink-only and refusing
+repositioning that worked before the map — with the shrink-only rule encoded in a
+test, under `unconstrained_guard`. Round 2 replaced it with integrality,
+nonnegative origin and positive size. The gate's opposite-corner step then
+**measured** the question: from a crop at `(0,0,128,128)` the camera accepted
+`set_roi(384,384,128,128)`. MMCore takes full-frame coordinates. **Current ROI is
+state, not a limit** — and the honest response to an envelope you cannot know
+(`getImageWidth`/`getImageHeight` describe the image buffer, not the sensor) is
+to guard what is invalid independently of the adapter and let the adapter refuse
+the rest.
+
+**One of the two blocking findings was the coordinator's own acceptance item**,
+which required `clear_roi` to pass through a guard that has nothing to validate.
+The runner implemented it literally and correctly; the requirement was the
+defect, and it was recorded as a coordinator error rather than reworded. The
+resulting call could only have refused the one operation that recovers from a bad
+ROI.
+
+**The gate found that the restored capability could not be exported.** Both tools
+were undecorated, so a session touching ROI produced a script that died on line
+17 — the second time after 43h that an undecorated tool killed a gate's own
+script. Emitters were folded in before merge, the export test inverted rather
+than deleted, and undecorated tools went 14 → 12. **A new capability is not
+finished until it can appear in an exported script**, now stated in `CLAUDE.md`.
