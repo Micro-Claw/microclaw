@@ -7512,6 +7512,22 @@ This is an inventory, not permission to close with unresolved blank work. Block
   Windows repro loop before any fix**, in the shape that settled the
   `test_bridge_check.py` race: run the single test N times and report how many
   fail. One failure under load is a data point, not a diagnosis.
+
+  **Instrumented rather than looped, 2026-08-12: `design/35-webserve-flake-probe.py`**
+  (merged `716b23b`, booked as Step 0b of 43n's demo pre-gate and explicitly
+  outside that gate's verdict). **A bare loop of the failing test is the wrong
+  instrument** — the failure appeared inside a loaded 87.85 s full-suite run,
+  so running that test alone removes the condition that produced it and a
+  green loop would prove nothing. The probe keeps the load and reports the one
+  number that separates the hypotheses: virtual `elapsed` at the end, at the
+  15 s deadline for H1 (budget spent in virtual seconds while `join()` waits
+  in wall seconds) versus still small for H2 (blocked in `create_connection`
+  against a socket nothing ever accepts). **macOS calibration is already a
+  finding**: `e@listen` reads 0.00 over 12 rounds at two load levels, so the
+  worker makes zero poll iterations before `listen()` — its first connect is
+  still in flight. If Windows shows that column climbing, the platforms take
+  different paths through the same test. **All-`OK` is a real result** and
+  rules both hypotheses out rather than proving the test fine.
 - **A Windows-only socket race in `test_bridge_check.py` intermittently adds a
   fourth warning.** Measured on the demo machine, 43f round 2, 2026-08-11:
   `test_tcp_listener_without_zmq_handshake_is_not_ready` closes its listener
