@@ -1,6 +1,6 @@
 # Block 47 rig gate — camera ROI typed capability
 
-Implementation ancestor: `73a378d`
+Implementation ancestor: `9018188`
 
 Run every step on the **demo machine** from this branch. The demo carries this
 whole gate: ROI is camera geometry and its camera has a sensor. Block 46 A2
@@ -15,15 +15,15 @@ Use PowerShell from the checkout. Preserve `block47-pytest.txt`,
 Paste:
 
 ```powershell
-git merge-base --is-ancestor 73a378d HEAD
+git merge-base --is-ancestor 9018188 HEAD
 Write-Host "implementation ancestor exit code (expected 0):" $LASTEXITCODE
 python -m pytest -q > block47-pytest.txt 2>&1
 Write-Host "pytest exit code (expected 0):" $LASTEXITCODE
 Get-Content block47-pytest.txt
 ```
 
-Expected on macOS for this implementation: **1833 passed, 99 skipped, 3
-warnings = 1932 collected**. Windows skip counts may differ. Record the exact
+Expected on macOS for this implementation: **1832 passed, 99 skipped, 3
+warnings = 1931 collected**. Windows skip counts may differ. Record the exact
 passed and skipped counts and compare the skipped count with the previous full
 suite on this same host. Both printed exit codes must be **0**. A higher skip
 count than the previous host run is **NOT TESTED**, even if pytest is green.
@@ -49,25 +49,25 @@ device. There must be no excluded `camera-roi` entry. `mmstudio-mda` remains
 If an explicit safety file was required but omitted, the command tested no
 map. Correct the command and rerun; otherwise record **NOT TESTED**.
 
-## Step 2 — real ROI takes effect through the named tools
+## Step 2 — establish full frame, then apply a corner crop
 
 Start a normal Microclaw agent session against the demo safety config. This
-step must route through the agent tools named **`get_roi`, `set_roi`, then
-`get_roi`**. Say this verbatim:
+step must route through the agent tools named **`clear_roi`, `get_roi`,
+`set_roi`, then `get_roi`**. Say this verbatim:
 
-> Use `get_roi` and report its exact x, y, width, and height. Then use `set_roi`
-> to set a positive rectangle wholly inside those returned bounds: keep the
-> same x and y, and use half the returned width and half the returned height,
-> rounded down to integers. Then use `get_roi` again and report the camera's
-> exact resulting rectangle. Do not use a raw property write, a generated
-> script, or any acquisition tool.
+> Use `clear_roi` once, then use `get_roi` and report the exact full-frame x, y,
+> width, and height. Call those values FULL_X, FULL_Y, FULL_WIDTH, and
+> FULL_HEIGHT. Use `set_roi` to set a corner crop at FULL_X, FULL_Y whose width
+> is floor(FULL_WIDTH / 4) and height is floor(FULL_HEIGHT / 4). Then use
+> `get_roi` again and report the exact resulting rectangle. Do not use a raw
+> property write, a generated script, or any acquisition tool.
 
 Expected:
 
-- the first `get_roi` reports a positive rectangle;
+- `clear_roi` succeeds and the first `get_roi` reports a positive full frame;
 - `set_roi` succeeds with `ROI set.` and does **not** mention exclusion or a
   safety-config remedy;
-- the second `get_roi` reports the requested half-size rectangle (or the
+- the second `get_roi` reports the requested quarter-size rectangle (or the
   camera's documented hardware-aligned rectangle, which must still be a real
   smaller crop visible in Micro-Manager);
 - the transcript visibly names all three tool calls.
@@ -76,27 +76,51 @@ If the agent uses `set_device_property`, Java/Python directly, or any tool other
 than the named sequence, record **NOT TESTED**. Seeing a crop in the GUI after a
 different call site is not evidence for this block.
 
-## Step 3 — an out-of-bounds ROI is refused by the guard
+## Step 3 — measure whether the adapter accepts repositioning outside the crop
 
-This step must route through the agent tools **`get_roi` then `set_roi`**. Say
-this verbatim:
+This step must route through the agent tools **`set_roi` then `get_roi`** and
+must use the full-frame dimensions recorded in Step 2. Say this verbatim:
 
-> Use `get_roi` once. Then call `set_roi` with x equal to the returned x, y
-> equal to the returned y, width equal to the returned width plus 1, and height
-> equal to the returned height. This invalid request is deliberate. Report the
-> complete refusal verbatim and do not retry, clear, clamp, or correct it.
+> Using the exact FULL_X, FULL_Y, FULL_WIDTH, and FULL_HEIGHT recorded in Step
+> 2, use `set_roi` to request an equal-sized quarter-frame crop in the opposite
+> corner: x = FULL_X + FULL_WIDTH - floor(FULL_WIDTH / 4), y = FULL_Y +
+> FULL_HEIGHT - floor(FULL_HEIGHT / 4), width = floor(FULL_WIDTH / 4), height =
+> floor(FULL_HEIGHT / 4). This rectangle is fully inside the sensor but entirely
+> outside the current crop. Do not clear first and do not clamp or retry. Report
+> the raw `set_roi` outcome verbatim, then use `get_roi` once and report the
+> actual rectangle.
 
-Expected: `set_roi` is refused before hardware mutation with a `SafetyViolation`
-whose reason says the requested rectangle is **outside the camera-reported
-bounds** and says to clear the ROI first before expanding or repositioning.
-It must not say `camera-roi` is excluded, must not recommend editing the safety
-config, and the ROI visible in Micro-Manager must remain unchanged from Step 2.
+This is a measurement, not a predetermined PASS outcome. Record one of:
 
-If the agent clamps/corrects the rectangle, calls a different tool, or retries,
-record **NOT TESTED**. A camera-adapter exception is a failure: this negative
-case must be refused by Microclaw's guard before it reaches the adapter.
+- **ACCEPTED:** `set_roi` succeeds and `get_roi` reports the opposite-corner
+  crop (or a documented hardware-aligned version of it); or
+- **ADAPTER REFUSED:** preserve the complete camera-adapter error and confirm
+  `get_roi` still reports the Step-2 crop.
 
-## Step 4 — clear is guarded and restores full frame
+Either raw outcome is evidence if it came from the named tool without an
+intervening clear. A Microclaw `SafetyViolation`, an authorization-map refusal,
+or safety-config advice is a gate failure: Microclaw must pass valid positive
+integer geometry to the adapter.
+
+If the agent clears, clamps/corrects the rectangle, calls a different tool, or
+retries, record **NOT TESTED**.
+
+## Step 4 — adapter-independent nonsense is refused by the guard
+
+This step must route through the agent tools **`get_roi`, `set_roi`, then
+`get_roi`**. Say this verbatim:
+
+> Use `get_roi` and record the current rectangle. Then call `set_roi` with x=0,
+> y=0, width=0, and height=10. This invalid request is deliberate. Report the
+> complete refusal verbatim and do not retry or correct it. Then use `get_roi`
+> again and report the rectangle.
+
+Expected: `set_roi` is refused by `SafetyGuard` because width and height must
+be positive; the two `get_roi` results are identical, proving no camera write
+occurred. An adapter exception, authorization refusal, correction, retry, or
+different routing is **NOT TESTED**.
+
+## Step 5 — clear restores full frame without reading or guarding geometry
 
 This step must route through the agent tools **`clear_roi` then `get_roi`**. Say
 this verbatim:
@@ -111,9 +135,9 @@ shows the full frame. No authorization-map or safety-config refusal appears.
 The transcript must visibly name `clear_roi` and `get_roi`.
 
 Wrong routing is **NOT TESTED**. In particular, calling `set_roi` with the old
-dimensions does not test `clear_roi`'s separate guard call.
+dimensions does not test `clear_roi`.
 
-## Step 5 — export remains standalone and refuses to invent ROI support
+## Step 6 — export remains standalone and refuses to invent ROI support
 
 This step routes through the agent tool **`export_session_script`**. Say this
 verbatim:
@@ -138,8 +162,9 @@ Return:
 - the two Step-0 exit codes and complete pytest totals, including collected and
   skipped counts plus the previous skip count from this host;
 - `block47-authorization-map.txt`;
-- the complete agent transcript for Steps 2–5;
-- the Step-3 guard refusal verbatim and confirmation the Step-2 crop remained;
+- the complete agent transcript for Steps 2–6;
+- the Step-3 raw adapter outcome and resulting ROI;
+- the Step-4 guard refusal verbatim and matching before/after ROI;
 - `block47-roi-export.py`;
 - the machine name/configuration used. A pass on any machine must say which
   machine actually ran it; do not report generic demo sufficiency as measured.
