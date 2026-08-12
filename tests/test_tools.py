@@ -3823,6 +3823,34 @@ class TestRoiRigKnowledge:
             "x": 1, "y": 2, "width": 3, "height": 4,
         }
 
+    def test_set_roi_guards_nonsense_but_not_camera_specific_bounds(
+        self, mock_ctrl, unconstrained_guard
+    ):
+        mock_ctrl.core.get_roi.return_value = types.SimpleNamespace(
+            x=10, y=20, width=100, height=80
+        )
+        mock_ctrl.core.get_camera_device.return_value = "Camera"
+        mock_ctrl.studio.live().is_live_mode_on.return_value = False
+        tools.set_roi(mock_ctrl, unconstrained_guard, 0, 0, 50, 50)
+        mock_ctrl.core.set_roi.assert_called_once_with(0, 0, 50, 50)
+        mock_ctrl.core.get_roi.assert_not_called()
+
+        mock_ctrl.core.set_roi.reset_mock()
+        for args in ((-1, 0, 10, 10), (0, 0, 0, 10), (True, 0, 10, 10)):
+            with pytest.raises(SafetyViolation):
+                tools.set_roi(mock_ctrl, unconstrained_guard, *args)
+        mock_ctrl.core.set_roi.assert_not_called()
+
+    def test_set_roi_accepts_a_positive_crop_inside_current_camera_geometry(
+        self, mock_ctrl, unconstrained_guard
+    ):
+        mock_ctrl.core.get_roi.return_value = types.SimpleNamespace(
+            x=0, y=0, width=512, height=256
+        )
+        mock_ctrl.core.get_camera_device.return_value = "Camera"
+        mock_ctrl.studio.live().is_live_mode_on.return_value = False
+        tools.set_roi(mock_ctrl, unconstrained_guard, 10, 20, 100, 80)
+        mock_ctrl.core.set_roi.assert_called_once_with(10, 20, 100, 80)
 
 class TestListDeviceProperties:
     def _make_sv(self, items):

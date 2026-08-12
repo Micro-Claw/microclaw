@@ -91,6 +91,32 @@ def test_recorded_stage_and_acquisition_emit_standalone_script(tmp_path):
     compile(source, str(tmp_path / "routine.py"), "exec")
 
 
+@pytest.mark.parametrize("name,params,expected", [
+    ("set_roi", {"x": 0, "y": 0, "width": 128, "height": 64},
+     "core.set_roi(0, 0, 128, 64)"),
+    ("clear_roi", {}, "core.clear_roi()"),
+])
+def test_roi_writes_emit_the_bare_core_call(tmp_path, name, params, expected):
+    """ROI is a typed capability since block 47, so it must reach a script.
+
+    Measured on the demo machine 2026-08-12, before the emitters landed: a
+    session that touched ROI exported a file whose third line was
+    `raise RuntimeError('NOT EMITTED: clear_roi ...')`, so the whole script died
+    before its first hardware call. The guard and the authorization map are
+    microclaw policy rather than hardware effect and must not appear here;
+    geometry an adapter would reject still fails, on the adapter.
+    """
+    _, result, source = export(tmp_path, [call(name, params)])
+    assert result["emitted_calls"] == 1
+    assert expected in source
+    assert "NOT EMITTED" not in source
+    assert "RuntimeError" not in source
+    assert "check_roi" not in source
+    assert "authorize_path" not in source
+    assert "import microclaw" not in source
+    compile(source, str(tmp_path / "routine.py"), "exec")
+
+
 def test_committed_example_is_an_actual_export():
     fixture = Path(__file__).parent / "fixtures" / "exported_stage_acquisition.py"
     source = fixture.read_text(encoding="utf-8")

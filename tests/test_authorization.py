@@ -5,7 +5,10 @@ from types import SimpleNamespace
 import pytest
 
 from microclaw.authorization import (
+    AuthorizationEntry,
+    AuthorizationMap,
     RigAuthorizationError,
+    authorize_path,
     authorize_channel,
     authorize_property_write,
     validate_live_rig,
@@ -261,6 +264,46 @@ def test_mda_remains_excluded_and_is_not_admitted_by_dose_policy():
     mda = [entry for entry in report.entries if entry.path == "mmstudio-mda"]
     assert len(mda) == 1 and mda[0].classification == "excluded"
     assert not any(entry.path == "acquisition-tool:run_mda" for entry in report.entries)
+
+
+def test_camera_roi_is_a_built_in_geometry_capability_beside_exposure():
+    report = validate_live_rig(Controller(), parsed())
+    roi = [entry for entry in report.entries if entry.path == "camera-roi"]
+    assert len(roi) == 1
+    assert roi[0].classification == "built_in_typed_capability"
+    assert roi[0].capability == "camera-roi"
+    assert roi[0].device == "Cam"
+    assert "dose" not in (roi[0].detail or "")
+
+
+def test_code_level_exclusion_says_config_cannot_repair_it():
+    ctrl = Controller()
+    ctrl.authorization_map = AuthorizationMap(
+        mode="guaranteed", verdict="complete", complete=True,
+        entries=[AuthorizationEntry(
+            path="mmstudio-mda", classification="excluded",
+            detail="GUI-owned effects cannot be enumerated",
+        )],
+    )
+    with pytest.raises(RigAuthorizationError) as caught:
+        authorize_path(ctrl, "mmstudio-mda")
+    message = str(caught.value)
+    assert "changing the rig's safety config cannot permit it" in message
+    assert "GUI-owned effects cannot be enumerated" in message
+
+
+def test_missing_camera_roi_entry_names_absent_camera():
+    core = Core()
+    core.camera = ""
+    ctrl = Controller(core)
+    ctrl.authorization_map = AuthorizationMap(
+        mode="guaranteed", verdict="complete", complete=True,
+    )
+    with pytest.raises(RigAuthorizationError) as caught:
+        authorize_path(ctrl, "camera-roi")
+    message = str(caught.value)
+    assert "Micro-Manager has no camera configured" in message
+    assert "completeness error" not in message
 
 
 @pytest.mark.parametrize(

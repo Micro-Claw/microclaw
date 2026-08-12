@@ -230,7 +230,7 @@ class RangePolicy:
 
 AuthorizationMode = Literal["guaranteed", "degraded_trusted_plugins"]
 BUILTIN_TYPED_CAPABILITIES = frozenset(
-    {"stage-position", "exposure", "illumination", "acquisition-dose"}
+    {"stage-position", "exposure", "camera-roi", "illumination", "acquisition-dose"}
 )
 
 
@@ -882,6 +882,34 @@ class SafetyGuard:
         if limit is not None and ms > limit:
             raise SafetyViolation(
                 f"Exposure {ms:.0f} ms exceeds the maximum allowed ({limit:.0f} ms)."
+            )
+
+    def check_roi(
+        self,
+        x: int,
+        y: int,
+        width: int,
+        height: int,
+    ) -> None:
+        """Reject geometry that is invalid independently of the camera adapter."""
+        values = {
+            "x": x,
+            "y": y,
+            "width": width,
+            "height": height,
+        }
+        for name, value in values.items():
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise SafetyViolation(
+                    f"Camera ROI {name} must be an integer (not a boolean); got {value!r}."
+                )
+        if x < 0 or y < 0:
+            raise SafetyViolation(
+                f"Camera ROI x and y must be nonnegative; got ({x}, {y})."
+            )
+        if width <= 0 or height <= 0:
+            raise SafetyViolation(
+                f"Camera ROI width and height must be positive; got {width}x{height}."
             )
 
     def check_acquisition(

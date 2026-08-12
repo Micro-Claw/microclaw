@@ -1782,6 +1782,11 @@ def _with_illuminated_field(result: dict) -> dict:
     return result
 
 
+# The guard and the authorization map are microclaw policy, not hardware effect,
+# so neither is emitted: a standalone script carries the write the rig actually
+# performed. Geometry the adapter would reject still fails there, on the adapter.
+@emits(lambda p:
+       f"core.set_roi({p['x']!r}, {p['y']!r}, {p['width']!r}, {p['height']!r})")
 def set_roi(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -1792,6 +1797,7 @@ def set_roi(
 ) -> dict:
     from microclaw.authorization import authorize_path
     authorize_path(ctrl, "camera-roi")
+    guard.check_roi(x, y, width, height)
     ctrl.core.set_roi(x, y, width, height)
     _wait(ctrl, ctrl.core.get_camera_device())
     live_restarted = _bounce_live_if_on(ctrl)
@@ -1801,6 +1807,7 @@ def set_roi(
     return _with_illuminated_field(result)
 
 
+@emits(lambda p: "core.clear_roi()")
 def clear_roi(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     from microclaw.authorization import authorize_path
     authorize_path(ctrl, "camera-roi")
