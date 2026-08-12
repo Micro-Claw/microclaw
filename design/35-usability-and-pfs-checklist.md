@@ -365,11 +365,54 @@ and the only branches on `origin` besides `main` are
   second merges `main` first**. Eight blocks remain after them: 43c, 43e, 43f,
   43g, 43h, 43i, 43j, 43k.
 
-### State at the 2026-08-12 assignment of block 45 — read this before assigning anything
+### State at the 2026-08-12 close of block 45 — read this before assigning anything
 
 **This is the live note. It supersedes every other State-at note in this
 section**, all of which are kept only for their round history. Position is not
 recency — read the heading, not the order.
+
+Verify against the repository rather than against any hash here. What should
+hold: working tree clean, `git log --oneline origin/main..main` empty, and the
+only branches on `origin` besides `main` are `design34/focus-system-authorization`
+(6a), `florian/setup-claude-workflow` and `port-to-jpype-acqj` — **no block 45
+branch open.** One worktree besides this one: `../microclaw-6a`, idle.
+
+- **45 is MERGED (`c3fc591`) and fully closed**: M5 gate Steps 0/1/3 PASS, Step 2
+  PASS on retry, ledger row closed, coordination notes in `design/prompts.md`,
+  design/32 §4 and design/38 §H4/§H6 reconciled, branch deleted locally and on
+  `origin`, worktree removed. Suite **1825 passed / 99 skipped / 3 warnings**,
+  1924 collected on macOS.
+- **Step 4's registry migration is PARTIAL and operator-owned: 9 unresolvable →
+  4.** The four are `filament_position_filter_v2` and `mosaic_cell_counter_v2`
+  (pin-only, re-save from their own path) and `mosaic_stitcher_v2` and
+  `mosaic_stitcher_rot_v2` (also `EmitArtifact`, re-save from the corrected
+  fixtures). The operator ruled this does not block the block and will finish it
+  in place. **This is not an open gate.**
+- **Every gate step ran on M5, not the demo machine**, so the block's
+  "demo sufficient for the mechanism" claim is *unexercised* — do not cite it as
+  measured.
+- **Three of block 45's premises were wrong on arrival and one more was found by
+  its gate.** All four corrections are in `design/prompts.md`; the load-bearing
+  one is that the "reversed `EmitArtifact`" never existed. Do not re-derive these
+  from design/38's older prose.
+- **Track C is next, and its analysis is ilastik.** Block 9 still cannot branch
+  until the operator supplies the intake — a trained `.ilp`, a known input and
+  its known result, what the target means, and the desired initial
+  observation-only action. That is a conversation, not code, and it is the only
+  thing gating Track C. **A negative result from Run B is a valid outcome**; the
+  open question is whether ilastik buys anything over the classical floor, which
+  F5's AUC already tied.
+- **Track B stays parked**: 6a has been pushed and awaiting the Nikon since
+  2026-08-05.
+- **Re-count the open register before quoting it**, and re-count the rig's hook
+  registry too — design/38's "12 saved hooks" was stale at 21 and nobody noticed
+  because "9 unresolvable" still happened to hold.
+
+### State at the 2026-08-12 assignment of block 45 — SUPERSEDED, kept for the round history
+
+> **Retired. Do not act on this note** — block 45 was assigned, implemented,
+> gated, merged and reconciled after it was written. Kept for its record of the
+> three premises corrected at assignment.
 
 Verify against the repository rather than against any hash here. What should
 hold: working tree clean, `git log --oneline origin/main..main` empty, and on
