@@ -1184,12 +1184,6 @@ def export_session_script(
         ):
             params["_export_safety_limits"] = safety_limits
             params["_export_safety_limits_error"] = safety_limits_error
-    # Only a channel switch that actually replayed writes needs the read-back
-    # check; a map-less set_config delegation verifies nothing of its own.
-    channel_writes = any(
-        name == "set_channel" and params.result.get("effects")
-        for name, params in included
-    )
     # Every one of these is reached only by the adaptive block: hashlib/io/json
     # by the hook artifact and log writers, queue by the candidate stream,
     # threading by SurveyProgress, asdict and
@@ -1207,6 +1201,67 @@ def export_session_script(
         "such as channel, ROI, and stage changes may be required by kept "
         "acquisitions. Dependencies were not inferred; review every SKIPPED step."
     )
+    body_lines: list[str] = []
+    emitted = 0
+    emitted_ids: list[str] = []
+
+    def refuse(tool: str, reason: str) -> None:
+        """One shape for every refusal: a comment, then a step that cannot run."""
+        body_lines.append(f"# NOT EMITTED: {tool} — {reason}")
+        body_lines.append(f"raise RuntimeError({('NOT EMITTED: ' + tool + ' — ' + reason)!r})")
+
+    for name, params in recorded:
+        if name == "export_session_script":
+            continue
+        fn = TOOL_REGISTRY.get(name)
+        renderer = getattr(fn, "_microclaw_emitter", None)
+        body_lines.append("")
+        body_lines.append(f"# RECORDED TOOL: {name}")
+        if selected_ids is not None and params["_tool_use_id"] not in selected_ids:
+            body_lines.append(
+                f"# SKIPPED: {name} — excluded by tool_use id selection "
+                f"({params['_tool_use_id']})"
+            )
+            continue
+        if fn is not None and getattr(fn, "_microclaw_emits_nothing", False):
+            body_lines.append("# No hardware-routine effect.")
+            continue
+        if renderer is None:
+            refuse(name, getattr(
+                fn, "_microclaw_refusal_reason",
+                "no standalone emitter has been implemented for this tool",
+            ))
+            continue
+        # Checked after the tool-level refusals so those keep their own wording,
+        # and before the renderer so a call that did not succeed can never be
+        # rendered as one that did. A call that completed *nothing* is skipped
+        # and the script carries on: doing nothing is the exact reproduction of
+        # a step that did nothing, and halting there would strand every later
+        # step that really ran.
+        outcome = _recorded_outcome(params.result)
+        if outcome is not None:
+            completed, reason = outcome
+            if completed == "partial":
+                refuse(name, reason)
+            else:
+                body_lines.append(f"# SKIPPED: {name} — {reason}")
+                body_lines.append(
+                    "# The session completed nothing here, so neither does this script."
+                )
+            continue
+        try:
+            rendered = renderer(params)
+        except CannotEmit as exc:
+            refuse(name, str(exc))
+            continue
+        body_lines.extend(rendered.splitlines())
+        emitted += 1
+        emitted_ids.append(params["_tool_use_id"])
+    body_text = "\n".join(body_lines)
+    # Inline helpers based on the program the emitters actually produced. This
+    # keeps nested/composite emitters from having to duplicate a tool-name or
+    # recorded-result predicate here when they start using a shared helper.
+    channel_writes = "_verify_property(" in body_text
     lines = [
         "from __future__ import annotations",
         *([f"# WARNING: {selection_warning}"] if selected_ids is not None else []),
@@ -1229,62 +1284,8 @@ def export_session_script(
         "core = Core()",
         "mm = SimpleNamespace(core=core)",
         *(["logger = logging.getLogger(__name__)"] if adaptive_used else []),
+        *body_lines,
     ]
-    emitted = 0
-    emitted_ids: list[str] = []
-
-    def refuse(tool: str, reason: str) -> None:
-        """One shape for every refusal: a comment, then a step that cannot run."""
-        lines.append(f"# NOT EMITTED: {tool} — {reason}")
-        lines.append(f"raise RuntimeError({('NOT EMITTED: ' + tool + ' — ' + reason)!r})")
-
-    for name, params in recorded:
-        if name == "export_session_script":
-            continue
-        fn = TOOL_REGISTRY.get(name)
-        renderer = getattr(fn, "_microclaw_emitter", None)
-        lines.append("")
-        lines.append(f"# RECORDED TOOL: {name}")
-        if selected_ids is not None and params["_tool_use_id"] not in selected_ids:
-            lines.append(
-                f"# SKIPPED: {name} — excluded by tool_use id selection "
-                f"({params['_tool_use_id']})"
-            )
-            continue
-        if fn is not None and getattr(fn, "_microclaw_emits_nothing", False):
-            lines.append("# No hardware-routine effect.")
-            continue
-        if renderer is None:
-            refuse(name, getattr(
-                fn, "_microclaw_refusal_reason",
-                "no standalone emitter has been implemented for this tool",
-            ))
-            continue
-        # Checked after the tool-level refusals so those keep their own wording,
-        # and before the renderer so a call that did not succeed can never be
-        # rendered as one that did. A call that completed *nothing* is skipped
-        # and the script carries on: doing nothing is the exact reproduction of
-        # a step that did nothing, and halting there would strand every later
-        # step that really ran.
-        outcome = _recorded_outcome(params.result)
-        if outcome is not None:
-            completed, reason = outcome
-            if completed == "partial":
-                refuse(name, reason)
-            else:
-                lines.append(f"# SKIPPED: {name} — {reason}")
-                lines.append(
-                    "# The session completed nothing here, so neither does this script."
-                )
-            continue
-        try:
-            rendered = renderer(params)
-        except CannotEmit as exc:
-            refuse(name, str(exc))
-            continue
-        lines.extend(rendered.splitlines())
-        emitted += 1
-        emitted_ids.append(params["_tool_use_id"])
     if any("_HERE" in line for line in lines):
         lines.insert(lines.index("core = Core()"),
                      "_HERE = Path(__file__).resolve().parent")

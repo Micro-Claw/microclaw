@@ -1286,6 +1286,50 @@ def test_acquire_on_hit_emits_fresh_hit_program_with_per_hit_z(tmp_path, monkeyp
     compile(source, str(tmp_path / "routine.py"), "exec")
 
 
+def test_acquire_on_hit_effect_triples_inline_channel_verifier(tmp_path, monkeypatch):
+    from microclaw.hook_manager import save_hook
+    import microclaw.hook_manager as manager
+
+    hooks_dir = tmp_path / "hooks-effects"
+    monkeypatch.setattr(manager, "HOOKS_DIR", hooks_dir)
+    monkeypatch.setattr(manager, "MANIFEST", hooks_dir / "manifest.json")
+    save_hook("hit", (
+        "from microclaw.hook_decisions import AcquireAt, HookResult\n"
+        "class Hit:\n"
+        "    def analyze_frame(self, image, metadata):\n"
+        "        return HookResult({}, (AcquireAt('p0'),))\n"
+    ), "hit", source="claude_generated")
+    params = {
+        "protocol": "timelapse",
+        "protocol_params": {"n_frames": 1, "channel": "Rhodamine"},
+        "positions": [{"name": "p0", "x_um": 1, "y_um": 2}],
+        "save_dir": "session", "hook_strategy": "hit",
+        "acquire_on_hit": {
+            "channel": "FITC", "protocol": "timelapse", "max_hits": 2,
+            "protocol_params": {"n_frames": 3, "interval_s": 0},
+        },
+    }
+    result_record = {"channel_effects": {
+        "search": {"channel_source": "config-group", "effects": [
+            ["Dichroic", "Label", "Q585LP"],
+            ["Emission", "Label", "Chroma-HQ620"],
+        ]},
+        "acquire": {"channel_source": "config-group", "effects": [
+            ["Dichroic", "Label", "Q505LP"],
+            ["Emission", "Label", "Chroma-HQ535"],
+            ["Excitation", "Label", "Chroma-HQ480"],
+        ]},
+    }}
+    _, result, source = export(
+        tmp_path, completed_call("run_adaptive_survey", params, result_record)
+    )
+    assert result["emitted_calls"] == 1
+    assert "def _verify_property(" in source
+    assert "_verify_property(core, 'Dichroic', 'Label', 'Q585LP')" in source
+    assert "_verify_property(core, 'Dichroic', 'Label', 'Q505LP')" in source
+    assert not _undefined_emitted_names(source)
+
+
 def test_acquire_on_hit_refuses_only_when_executed_phase_lacks_effects(
     tmp_path, monkeypatch
 ):
