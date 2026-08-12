@@ -386,6 +386,36 @@ def test_acquire_at_dispatches_only_named_planned_tile(tmp_path):
     assert adapter._log[-1]["decision"] == "accepted"
 
 
+def test_deferred_acquire_at_records_current_z_deduplicates_and_caps(tmp_path):
+    actions = iter((AcquireAt("p0"), AcquireAt("p0"), AcquireAt("p1")))
+
+    class Hook:
+        def analyze_frame(self, _image, _metadata):
+            return HookResult({}, (next(actions),))
+
+    hits = []
+    adapter = UntrustedHookAdapter(Hook(), str(tmp_path / "hook.json"))
+    candidates, progress = queue.Queue(), SurveyProgress(3)
+    adapter.configure_adaptive(
+        events=_events(), candidates=candidates, progress=progress, guard=_Guard(),
+        max_events=3, acquire_hits=hits, max_hits=1, read_z=lambda: 12.5,
+    )
+    for label in ("p0", "p0", "p1"):
+        adapter.image_process_fn(np.zeros((2, 2)), {"PositionName": label}, object())
+
+    assert candidates.empty(), "deferred hits never enter the search event source"
+    assert [{k: v for k, v in hits[0].items() if k != "_key"}] == [{
+        "name": "p0", "x_um": 0.0, "y_um": 1.0, "z_um": 12.5,
+    }]
+    reasons = [record["reason"] for record in adapter._log
+               if record.get("event") == "hook_action"]
+    assert reasons == [
+        "planned tile recorded for acquire phase",
+        "planned tile is already recorded for acquire phase",
+        "acquire phase max_hits exhausted",
+    ]
+
+
 def test_stop_survey_ends_cleanly_and_is_audited(tmp_path):
     adapter, candidates, progress = _adapter(StopSurvey(), tmp_path)
     returned = adapter.image_process_fn(

@@ -277,7 +277,8 @@ class UntrustedHookAdapter:
         return hasattr(self.hook, "analyze_frame")
 
     def configure_adaptive(self, *, events, candidates, progress, guard,
-                           max_events: int) -> None:
+                           max_events: int, acquire_hits=None, max_hits=None,
+                           read_z=None) -> None:
         if self._autofocus_context is not None:
             # Make the refocus axis DENSE before the plan is dispatched. NDTiff
             # keys each frame by its exact axis set, so a second look carrying
@@ -299,6 +300,10 @@ class UntrustedHookAdapter:
             "events": list(events), "candidates": candidates, "progress": progress,
             "guard": guard, "max_events": max_events, "emitted": 1, "cursor": 1,
         }
+        if acquire_hits is not None:
+            self._context.update(
+                acquire_hits=acquire_hits, max_hits=max_hits, read_z=read_z,
+            )
 
     def configure_autofocus(self, *, ctrl, guard, max_exposures: int,
                             z_range_um: float, z_step_um: float, method: str,
@@ -621,7 +626,10 @@ class UntrustedHookAdapter:
         if isinstance(action, ContinueSurvey) and ctx["cursor"] >= len(events):
             self._refuse(metadata, action, "planned survey cursor is already at the end")
             return
-        if ctx["emitted"] >= ctx["max_events"]:
+        deferred_acquire = (
+            isinstance(action, AcquireAt) and "acquire_hits" in ctx
+        )
+        if not deferred_acquire and ctx["emitted"] >= ctx["max_events"]:
             self._refuse(
                 metadata, action,
                 "outside committed reservation: all planned frame slots are already dispatched",
@@ -662,6 +670,31 @@ class UntrustedHookAdapter:
                 ctx["guard"].check_z(event["z"])
         except Exception as exc:
             self._refuse(metadata, action, f"SafetyGuard refused planned event: {exc}")
+            return
+        if deferred_acquire:
+            label = (event.get("axes") or {}).get("position")
+            key = (label, x, y)
+            if any(hit["_key"] == key for hit in ctx["acquire_hits"]):
+                self._refuse(
+                    metadata, action,
+                    "planned tile is already recorded for acquire phase",
+                )
+                return
+            if len(ctx["acquire_hits"]) >= ctx["max_hits"]:
+                self._refuse(metadata, action, "acquire phase max_hits exhausted")
+                return
+            try:
+                z = float(ctx["read_z"]())
+                ctx["guard"].check_z(z)
+            except Exception as exc:
+                self._refuse(metadata, action,
+                             f"SafetyGuard refused current focus position: {exc}")
+                return
+            ctx["acquire_hits"].append({
+                "name": str(label), "x_um": x, "y_um": y, "z_um": z,
+                "_key": key,
+            })
+            self._accept(metadata, action, "planned tile recorded for acquire phase")
             return
         ctx["candidates"].put(event)
         ctx["emitted"] += 1

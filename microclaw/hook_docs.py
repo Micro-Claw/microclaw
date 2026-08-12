@@ -144,6 +144,12 @@ that would change behaviour but are unavailable remain refused. The adaptive
 runner guard-checks and reservation-checks every proposal and writes every
 accept/refuse decision to the log.
 
+AcquireAt(position) normally requests an immediate guarded revisit of that planned
+tile. When run_adaptive_survey has acquire_on_hit, it instead records the planned
+tile and the focus device's current Z once for a deferred acquire phase, bounded by
+max_hits. Use AcquireAt beside RequestAutofocus when the later acquisition should
+use the autofocus-converged plane.
+
 Optional analyzer, analyzer_version, parameters, and artifact_sha256 fields retain
 the `microclaw.analysis-observation/v1` envelope used by HookBase.log_analysis.
 Saved hooks default to status `unverified` and may claim only `unverified` or

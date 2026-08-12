@@ -9,6 +9,7 @@ import math
 import queue
 import os
 import tempfile
+import textwrap
 import threading
 import time
 import weakref
@@ -922,6 +923,30 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
             raise CannotEmit("the record contains an incomplete adaptive survey seed position")
         protocol = params.get("protocol")
         pp = dict(params.get("protocol_params") or {})
+        acquire_on_hit = params.get("acquire_on_hit")
+        if acquire_on_hit is not None:
+            if not saved:
+                raise CannotEmit(
+                    "acquire_on_hit requires a saved/generated hook with typed AcquireAt actions"
+                )
+            effects = params.result.get("channel_effects") or {}
+            search_effect = effects.get("search")
+            acquire_effect = effects.get("acquire")
+            if not search_effect:
+                raise CannotEmit(
+                    "the executed search phase has no recorded executable channel effects"
+                )
+            if not acquire_effect and params.result.get("acquire_phase_ran"):
+                raise CannotEmit(
+                    "the executed acquire phase has no recorded executable channel effects"
+                )
+            if not acquire_effect:
+                raise CannotEmit(
+                    "the unexecuted acquire phase has no recorded intended channel effects"
+                )
+            common.append(_emit_recorded_channel_effects(
+                search_effect, pp.get("channel"), label="search channel"
+            ))
         if protocol == "timelapse":
             shape = {"num_time_points": pp["n_frames"],
                      "time_interval_s": pp.get("interval_s", 0)}
@@ -942,19 +967,30 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
             ])
         if pp.get("exposure_ms") is not None:
             common.append(f"guard.check_exposure({pp['exposure_ms']!r})")
-        if pp.get("channel"):
+        if pp.get("channel") and acquire_on_hit is None:
             shape["channel_group"] = CHANNEL_CONFIG_GROUP
             shape["channels"] = [pp["channel"]]
             if pp.get("exposure_ms") is not None:
                 shape["channel_exposures_ms"] = [pp["exposure_ms"]]
         elif pp.get("exposure_ms") is not None:
             common.append(f"core.set_exposure({pp['exposure_ms']!r})")
+        adaptive_configuration = (
+            f"hook.configure_adaptive(events=events, candidates=candidates, "
+            f"progress=progress, guard=guard, max_events=len(events){_plus_reexposures}, "
+            f"acquire_hits=hits, max_hits={acquire_on_hit['max_hits']!r}, "
+            "read_z=core.get_position)"
+            if acquire_on_hit is not None and saved else
+            f"hook.configure_adaptive(events=events, candidates=candidates, "
+            f"progress=progress, guard=guard, max_events=len(events){_plus_reexposures})"
+        )
+        if acquire_on_hit is not None:
+            common.append("hits = []")
         common.extend([
             f"events = multi_d_acquisition_events(**{{k: v for k, v in {shape!r}.items() if v is not None}})",
             "candidates = queue.Queue()",
             "progress = SurveyProgress(len(events))",
             *( (["# Standalone scripts cannot query focus-lock state; disengage the lock before running.", f"hook.configure_autofocus(ctrl=mm, guard=guard, focus_lock_check=None, **{autofocus_budget!r}, sweep_exposures={autofocus_sweep_exposures!r})"] if autofocus_budget is not None else []) if saved else [] ),
-            *( [f"hook.configure_adaptive(events=events, candidates=candidates, progress=progress, guard=guard, max_events=len(events){_plus_reexposures})"] if saved else ["hook.survey_events = events", "hook.candidates = candidates", "hook.progress = progress"] ),
+            *( [adaptive_configuration] if saved else ["hook.survey_events = events", "hook.candidates = candidates", "hook.progress = progress"] ),
             f"event_source = _survey_event_stream(events, candidates, progress, {params.get('max_idle_s', 60.0)!r}, hook, adaptive=True, max_events=len(events){_plus_reexposures})",
             "_hook_callbacks = {name: callback for name, callback in {"
             "'image_process_fn': getattr(hook, 'image_process_fn', None), "
@@ -963,6 +999,46 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
             f"with Acquisition(directory=str(_HERE), name={params.get('name', 'survey')!r}, show_display=True, **_hook_callbacks) as acq:",
             "    acq.acquire(event_source(acq))",
         ])
+        if acquire_on_hit is not None:
+            ap = dict(acquire_on_hit["protocol_params"])
+            acquire_shape_lines = []
+            if acquire_on_hit["protocol"] == "timelapse":
+                acquire_shape_lines = [
+                    f"    _shape = {{'num_time_points': {ap['n_frames']!r}, "
+                    f"'time_interval_s': {ap.get('interval_s', 0)!r}}}",
+                    "    guard.check_z(hit['z_um'])",
+                ]
+            elif acquire_on_hit["protocol"] == "zstack":
+                acquire_shape_lines = [
+                    f"    _z_start = hit['z_um'] + {ap['z_offset_start_um']!r}",
+                    f"    _z_end = hit['z_um'] + {ap['z_offset_end_um']!r}",
+                    "    guard.check_z(_z_start)", "    guard.check_z(_z_end)",
+                    f"    _shape = {{'z_start': _z_start, 'z_end': _z_end, "
+                    f"'z_step': {ap['z_step_um']!r}}}",
+                ]
+            else:
+                raise CannotEmit("unknown acquire_on_hit protocol")
+            common.extend([
+                f"if len(hits) > {acquire_on_hit['max_hits']!r}: raise SafetyViolation('acquire hit cap exceeded')",
+                *( [f"guard.check_exposure({ap['exposure_ms']!r})"]
+                   if ap.get("exposure_ms") is not None else [] ),
+                "if hits:\n" + textwrap.indent(_emit_recorded_channel_effects(
+                    acquire_effect, acquire_on_hit["channel"], label="acquire channel"
+                ), "    "),
+                "acquire_events = []",
+                "for hit in hits:",
+                "    guard.check_xy(hit['x_um'], hit['y_um'])",
+                *acquire_shape_lines,
+                "    _events = multi_d_acquisition_events(xy_positions=[(hit['x_um'], hit['y_um'])], position_labels=[hit['name']], **_shape)",
+                *( ["    for _event in _events: _event['z'] = hit['z_um']"]
+                   if acquire_on_hit["protocol"] == "timelapse" else [] ),
+                "    acquire_events.extend(_events)",
+                *( [f"core.set_exposure({ap['exposure_ms']!r})"]
+                   if ap.get("exposure_ms") is not None else [] ),
+                "if acquire_events:",
+                f"    with Acquisition(directory=str(_HERE), name={(params.get('name', 'survey') + '_acquire')!r}, show_display=True) as acq:",
+                "        acq.acquire(acquire_events)",
+            ])
         return "\n\n".join(common)
     exposure_ms = params.get("exposure_ms")
     if exposure_ms is not None:
@@ -1108,12 +1184,6 @@ def export_session_script(
         ):
             params["_export_safety_limits"] = safety_limits
             params["_export_safety_limits_error"] = safety_limits_error
-    # Only a channel switch that actually replayed writes needs the read-back
-    # check; a map-less set_config delegation verifies nothing of its own.
-    channel_writes = any(
-        name == "set_channel" and params.result.get("effects")
-        for name, params in included
-    )
     # Every one of these is reached only by the adaptive block: hashlib/io/json
     # by the hook artifact and log writers, queue by the candidate stream,
     # threading by SurveyProgress, asdict and
@@ -1131,6 +1201,67 @@ def export_session_script(
         "such as channel, ROI, and stage changes may be required by kept "
         "acquisitions. Dependencies were not inferred; review every SKIPPED step."
     )
+    body_lines: list[str] = []
+    emitted = 0
+    emitted_ids: list[str] = []
+
+    def refuse(tool: str, reason: str) -> None:
+        """One shape for every refusal: a comment, then a step that cannot run."""
+        body_lines.append(f"# NOT EMITTED: {tool} — {reason}")
+        body_lines.append(f"raise RuntimeError({('NOT EMITTED: ' + tool + ' — ' + reason)!r})")
+
+    for name, params in recorded:
+        if name == "export_session_script":
+            continue
+        fn = TOOL_REGISTRY.get(name)
+        renderer = getattr(fn, "_microclaw_emitter", None)
+        body_lines.append("")
+        body_lines.append(f"# RECORDED TOOL: {name}")
+        if selected_ids is not None and params["_tool_use_id"] not in selected_ids:
+            body_lines.append(
+                f"# SKIPPED: {name} — excluded by tool_use id selection "
+                f"({params['_tool_use_id']})"
+            )
+            continue
+        if fn is not None and getattr(fn, "_microclaw_emits_nothing", False):
+            body_lines.append("# No hardware-routine effect.")
+            continue
+        if renderer is None:
+            refuse(name, getattr(
+                fn, "_microclaw_refusal_reason",
+                "no standalone emitter has been implemented for this tool",
+            ))
+            continue
+        # Checked after the tool-level refusals so those keep their own wording,
+        # and before the renderer so a call that did not succeed can never be
+        # rendered as one that did. A call that completed *nothing* is skipped
+        # and the script carries on: doing nothing is the exact reproduction of
+        # a step that did nothing, and halting there would strand every later
+        # step that really ran.
+        outcome = _recorded_outcome(params.result)
+        if outcome is not None:
+            completed, reason = outcome
+            if completed == "partial":
+                refuse(name, reason)
+            else:
+                body_lines.append(f"# SKIPPED: {name} — {reason}")
+                body_lines.append(
+                    "# The session completed nothing here, so neither does this script."
+                )
+            continue
+        try:
+            rendered = renderer(params)
+        except CannotEmit as exc:
+            refuse(name, str(exc))
+            continue
+        body_lines.extend(rendered.splitlines())
+        emitted += 1
+        emitted_ids.append(params["_tool_use_id"])
+    body_text = "\n".join(body_lines)
+    # Inline helpers based on the program the emitters actually produced. This
+    # keeps nested/composite emitters from having to duplicate a tool-name or
+    # recorded-result predicate here when they start using a shared helper.
+    channel_writes = "_verify_property(" in body_text
     lines = [
         "from __future__ import annotations",
         *([f"# WARNING: {selection_warning}"] if selected_ids is not None else []),
@@ -1153,62 +1284,8 @@ def export_session_script(
         "core = Core()",
         "mm = SimpleNamespace(core=core)",
         *(["logger = logging.getLogger(__name__)"] if adaptive_used else []),
+        *body_lines,
     ]
-    emitted = 0
-    emitted_ids: list[str] = []
-
-    def refuse(tool: str, reason: str) -> None:
-        """One shape for every refusal: a comment, then a step that cannot run."""
-        lines.append(f"# NOT EMITTED: {tool} — {reason}")
-        lines.append(f"raise RuntimeError({('NOT EMITTED: ' + tool + ' — ' + reason)!r})")
-
-    for name, params in recorded:
-        if name == "export_session_script":
-            continue
-        fn = TOOL_REGISTRY.get(name)
-        renderer = getattr(fn, "_microclaw_emitter", None)
-        lines.append("")
-        lines.append(f"# RECORDED TOOL: {name}")
-        if selected_ids is not None and params["_tool_use_id"] not in selected_ids:
-            lines.append(
-                f"# SKIPPED: {name} — excluded by tool_use id selection "
-                f"({params['_tool_use_id']})"
-            )
-            continue
-        if fn is not None and getattr(fn, "_microclaw_emits_nothing", False):
-            lines.append("# No hardware-routine effect.")
-            continue
-        if renderer is None:
-            refuse(name, getattr(
-                fn, "_microclaw_refusal_reason",
-                "no standalone emitter has been implemented for this tool",
-            ))
-            continue
-        # Checked after the tool-level refusals so those keep their own wording,
-        # and before the renderer so a call that did not succeed can never be
-        # rendered as one that did. A call that completed *nothing* is skipped
-        # and the script carries on: doing nothing is the exact reproduction of
-        # a step that did nothing, and halting there would strand every later
-        # step that really ran.
-        outcome = _recorded_outcome(params.result)
-        if outcome is not None:
-            completed, reason = outcome
-            if completed == "partial":
-                refuse(name, reason)
-            else:
-                lines.append(f"# SKIPPED: {name} — {reason}")
-                lines.append(
-                    "# The session completed nothing here, so neither does this script."
-                )
-            continue
-        try:
-            rendered = renderer(params)
-        except CannotEmit as exc:
-            refuse(name, str(exc))
-            continue
-        lines.extend(rendered.splitlines())
-        emitted += 1
-        emitted_ids.append(params["_tool_use_id"])
     if any("_HERE" in line for line in lines):
         lines.insert(lines.index("core = Core()"),
                      "_HERE = Path(__file__).resolve().parent")
@@ -1941,10 +2018,16 @@ def _emit_set_channel(params: RecordedParams) -> str:
     `core.set_config('Channel', ...)` would fail outright on the rig the plan
     came from. The recorded effect list is the one thing true of both sources.
     """
-    result = params.result
+    return _emit_recorded_channel_effects(
+        params.result, params.get("preset"), label="channel"
+    )
+
+
+def _emit_recorded_channel_effects(result: dict, preset: str, *, label: str) -> str:
+    """Render one executed channel effect record for a standalone script."""
     effects = result.get("effects")
     if effects:
-        lines = [f"# channel {params.get('preset')!r} ({result.get('channel_source')})"]
+        lines = [f"# {label} {preset!r} ({result.get('channel_source')})"]
         for effect in effects:
             try:
                 device, prop, value = (str(item) for item in effect)
@@ -1963,8 +2046,8 @@ def _emit_set_channel(params: RecordedParams) -> str:
     group = result.get("config_group")
     if group:
         return (
-            f"core.set_config({group!r}, {params.get('preset')!r})\n"
-            f"core.wait_for_config({group!r}, {params.get('preset')!r})"
+            f"core.set_config({group!r}, {preset!r})\n"
+            f"core.wait_for_config({group!r}, {preset!r})"
         )
     raise CannotEmit(
         "the recorded result has no executed channel effects, so the writes that "
@@ -1972,8 +2055,7 @@ def _emit_set_channel(params: RecordedParams) -> str:
     )
 
 
-@emits(_emit_set_channel)
-def set_channel(
+def _set_channel_for_composite(
     ctrl: MicroscopeController, guard: SafetyGuard, preset: str, *, cancel=None
 ) -> dict:
     from microclaw.authorization import CHANNEL_CONFIG_GROUP, execute_channel_plan
@@ -1990,6 +2072,37 @@ def set_channel(
         "status": f"Channel set to '{preset}'.",
         "config_group": CHANNEL_CONFIG_GROUP,
     }
+
+
+def _channel_effects_for_later_phase(
+    ctrl: MicroscopeController, guard: SafetyGuard, preset: str
+) -> dict:
+    """Capture the intended export route without executing the later phase."""
+    from microclaw.authorization import (
+        CHANNEL_CONFIG_GROUP, _authorize_channel_effect, _channel_source,
+        authorize_channel,
+    )
+
+    guard.check_channel(preset)
+    if not _has_channel_authorization_map(ctrl):
+        return {"config_group": CHANNEL_CONFIG_GROUP, "planned": True}
+    authorize_channel(ctrl, preset)
+    source = _channel_source(ctrl, guard.is_illumination_enable)
+    effects = [
+        (str(device), str(prop), "" if value is None else str(value))
+        for device, prop, value in source.expand(ctrl.core, preset)
+    ]
+    for effect in effects:
+        _authorize_channel_effect(ctrl, guard, *effect, CONFIRM_FN)
+    return {"effects": [list(effect) for effect in effects],
+            "channel_source": source.describe(), "planned": True}
+
+
+@emits(_emit_set_channel)
+def set_channel(
+    ctrl: MicroscopeController, guard: SafetyGuard, preset: str, *, cancel=None
+) -> dict:
+    return _set_channel_for_composite(ctrl, guard, preset, cancel=cancel)
 
 
 @emits_nothing
@@ -5027,6 +5140,11 @@ def _acquire_survey_with_detector(
     illumination_envelope: dict | None = None,
     artifact_limits: dict | None = None,
     autofocus_budget: dict | None = None,
+    acquire_plan: AcquisitionPlan | None = None,
+    acquire_hits: list[dict] | None = None,
+    acquire_max_hits: int | None = None,
+    search_phase_channel: str | None = None,
+    acquire_phase_channel: str | None = None,
     **shape_kwargs: Any,
 ) -> dict:
     """One survey acquisition whose event stream a detector hook can EXTEND.
@@ -5152,6 +5270,8 @@ def _acquire_survey_with_detector(
             hook.configure_adaptive(
                 events=survey_events, candidates=candidates, progress=progress,
                 guard=guard, max_events=len(survey_events) + autofocus_reexposures,
+                acquire_hits=acquire_hits, max_hits=acquire_max_hits,
+                read_z=ctrl.core.get_position if acquire_hits is not None else None,
             )
     else:
         # Reviewed built-ins retain the legacy direct control contract.
@@ -5176,14 +5296,40 @@ def _acquire_survey_with_detector(
         )
         if adaptive else None
     )
-    dataset_path = _acquire_with_hooks(
-        guard, save_dir, name, events, hook, reservation=reservation
-    )
+    acquire_reservation = None
+    search_channel_effects = None
+    planned_acquire_effects = None
+    try:
+        if acquire_plan is not None:
+            acquire_reservation = _authorize_acquisition(ctrl, guard, acquire_plan)
+        if acquire_phase_channel is not None:
+            planned_acquire_effects = _channel_effects_for_later_phase(
+                ctrl, guard, acquire_phase_channel
+            )
+        if search_phase_channel is not None:
+            search_channel_effects = _set_channel_for_composite(
+                ctrl, guard, search_phase_channel
+            )
+        dataset_path = _acquire_with_hooks(
+            guard, save_dir, name, events, hook, reservation=reservation
+        )
+    except Exception:
+        if acquire_reservation is not None:
+            acquire_reservation.close()
+        if reservation is not None:
+            reservation.close()
+        raise
     return _adaptive_result(
         dataset_path, hook.log_path,
         status=f"Survey acquisition complete across {len(positions)} position(s).",
         positions=len(positions),
         **(_reservation_report(reservation) if reservation is not None else {}),
+        **({"_acquire_reservation": acquire_reservation}
+           if acquire_reservation is not None else {}),
+        **({"_search_channel_effects": search_channel_effects}
+           if search_channel_effects is not None else {}),
+        **({"_planned_acquire_effects": planned_acquire_effects}
+           if planned_acquire_effects is not None else {}),
     )
 
 
@@ -5206,6 +5352,7 @@ def run_adaptive_survey(
     illumination_envelope: dict | None = None,
     artifact_limits: dict | None = None,
     autofocus_budget: dict | None = None,
+    acquire_on_hit: dict | None = None,
 ) -> dict:
     """Acquire positions one at a time; the hook decides whether the next
     position is acquired at all.
@@ -5246,6 +5393,45 @@ def run_adaptive_survey(
                 "display-only. Use protocol='timelapse' with protocol_params="
                 "{'n_frames': 1, 'interval_s': 0} for one frame per tile."}
 
+    acquire_params = None
+    acquire_protocol = None
+    acquire_channel = None
+    max_hits = None
+    if acquire_on_hit is not None:
+        if not isinstance(acquire_on_hit, dict):
+            return {"error": "acquire_on_hit must be an object."}
+        missing = [key for key in ("channel", "protocol", "protocol_params", "max_hits")
+                   if key not in acquire_on_hit]
+        if missing:
+            return {"error": f"acquire_on_hit is missing {missing}."}
+        acquire_channel = acquire_on_hit["channel"]
+        acquire_protocol = acquire_on_hit["protocol"]
+        acquire_params = dict(acquire_on_hit["protocol_params"])
+        if "z_start_um" in acquire_params or "z_end_um" in acquire_params:
+            return {"error": "acquire_on_hit.protocol_params refuses absolute "
+                    "z_start_um/z_end_um; use z_offset_start_um/z_offset_end_um."}
+        max_hits = acquire_on_hit["max_hits"]
+        if isinstance(max_hits, bool) or not isinstance(max_hits, int) or max_hits <= 0:
+            return {"error": "acquire_on_hit.max_hits must be a positive integer."}
+        if acquire_protocol == "zstack":
+            try:
+                acquire_shape_for_plan = {
+                    "z_start_um": acquire_params["z_offset_start_um"],
+                    "z_end_um": acquire_params["z_offset_end_um"],
+                    "z_step_um": acquire_params["z_step_um"],
+                }
+            except KeyError as exc:
+                return {"error": f"acquire_on_hit.protocol_params for 'zstack' "
+                        f"is missing {exc}."}
+            acquire_shape_for_plan.update(
+                {k: v for k, v in acquire_params.items()
+                 if k not in {"z_offset_start_um", "z_offset_end_um", "z_step_um"}}
+            )
+        elif acquire_protocol == "timelapse":
+            acquire_shape_for_plan = acquire_params
+        else:
+            return {"error": f"Unknown acquire_on_hit protocol {acquire_protocol!r}."}
+
     params = protocol_params or {}
     try:
         shape = _protocol_shape_kwargs(protocol, params)
@@ -5268,6 +5454,8 @@ def run_adaptive_survey(
                      "x_um": all_positions[n]["x_um"],
                      "y_um": all_positions[n]["y_um"]} for n in position_names]
     else:
+        if any(p.get("name") is None for p in positions):
+            return {"error": "Adaptive survey positions must have a non-null name."}
         resolved = [{"name": p["name"], "x_um": p["x_um"], "y_um": p["y_um"]}
                     for p in positions]
 
@@ -5277,16 +5465,99 @@ def run_adaptive_survey(
     except ValueError as e:
         return {"error": str(e)}
 
+    if acquire_on_hit is not None:
+        from microclaw.hook_decisions import UntrustedHookAdapter
+        if not isinstance(hook, UntrustedHookAdapter):
+            return {
+                "error": f"acquire_on_hit requires a saved/generated hook that returns "
+                         f"typed AcquireAt actions; registry built-in {hook_strategy!r} "
+                         "uses the direct candidates queue contract. Use a saved hook "
+                         "with analyze_frame(...)->HookResult, or omit acquire_on_hit."
+            }
+
     progress = SurveyProgress(len(resolved))
     candidates: queue.Queue = queue.Queue()
+    hits: list[dict] = []
+    channel_effects = None
+    acquire_plan = None
+    if acquire_on_hit is not None:
+        search_channel = params.get("channel")
+        if not search_channel:
+            return {"error": "protocol_params.channel is required with acquire_on_hit."}
+        try:
+            acquire_plan = _plan_protocol_repetitions(
+                ctrl, acquire_protocol, acquire_shape_for_plan, max_hits
+            )
+        except (SafetyViolation, ValueError, KeyError) as exc:
+            return {"error": str(exc)}
+        channel_effects = {}
     result = _acquire_survey_with_detector(
         ctrl, guard, resolved, save_dir, name,
         hook=hook, progress=progress, candidates=candidates,
         max_idle_s=max_idle_s,
-        channel=params.get("channel"), exposure_ms=params.get("exposure_ms"),
+        channel=None if acquire_on_hit is not None else params.get("channel"),
+        exposure_ms=params.get("exposure_ms"),
         adaptive=True, illumination_envelope=illumination_envelope,
-        artifact_limits=artifact_limits, autofocus_budget=autofocus_budget, **shape,
+        artifact_limits=artifact_limits, autofocus_budget=autofocus_budget,
+        acquire_plan=acquire_plan,
+        acquire_hits=hits if acquire_on_hit is not None else None,
+        acquire_max_hits=max_hits,
+        search_phase_channel=params.get("channel") if acquire_on_hit is not None else None,
+        acquire_phase_channel=acquire_channel,
+        **shape,
     )
+    acquire_reservation = result.pop("_acquire_reservation", None)
+    search_effects = result.pop("_search_channel_effects", None)
+    planned_acquire_effects = result.pop("_planned_acquire_effects", None)
+    if acquire_on_hit is not None:
+        channel_effects["search"] = search_effects
+        channel_effects["acquire"] = planned_acquire_effects
+    hits_acquired = 0
+    acquire_phase_ran = False
+    if acquire_on_hit is not None:
+        try:
+            if hits:
+                channel_effects["acquire"] = _set_channel_for_composite(
+                    ctrl, guard, acquire_channel
+                )
+                if acquire_params.get("exposure_ms") is not None:
+                    guard.check_exposure(acquire_params["exposure_ms"])
+                    ctrl.core.set_exposure(acquire_params["exposure_ms"])
+                acquire_phase_ran = True
+                acquire_events = []
+                for hit in hits:
+                    guard.check_xy(hit["x_um"], hit["y_um"])
+                    if acquire_protocol == "timelapse":
+                        guard.check_z(hit["z_um"])
+                        hit_shape = _protocol_shape_kwargs(acquire_protocol, acquire_params)
+                    else:
+                        z_start = hit["z_um"] + acquire_params["z_offset_start_um"]
+                        z_end = hit["z_um"] + acquire_params["z_offset_end_um"]
+                        guard.check_z(z_start)
+                        guard.check_z(z_end)
+                        hit_shape = {"z_start": z_start, "z_end": z_end,
+                                     "z_step": acquire_params["z_step_um"]}
+                    events_for_hit = _build_acquisition_events(
+                        channel=None, exposure_ms=acquire_params.get("exposure_ms"),
+                        position_labels=[hit["name"]],
+                        xy_positions=[(hit["x_um"], hit["y_um"])], **hit_shape,
+                    )
+                    if acquire_protocol == "timelapse":
+                        for event in events_for_hit:
+                            event["z"] = hit["z_um"]
+                    acquire_events.extend(events_for_hit)
+                acquire_path = _acquire_with_hooks(
+                    guard, save_dir, f"{name}_acquire", acquire_events,
+                    reservation=acquire_reservation,
+                )
+                hits_acquired = len(hits)
+                result["acquire_dataset_path"] = acquire_path
+            elif acquire_reservation is not None:
+                acquire_reservation.close()
+        except Exception:
+            if acquire_reservation is not None:
+                acquire_reservation.close()
+            raise
     # The batched status ("complete across 9 position(s)") is exactly the
     # sentence that made 5 ghost exposures read as a clean early stop
     # (20260716_140329). Say what actually ran, from the counter the hook
@@ -5337,6 +5608,21 @@ def run_adaptive_survey(
         {"position": p["name"], "x_um": round(p["x_um"], 3),
          "y_um": round(p["y_um"], 3)} for p in resolved
     ]
+    if acquire_on_hit is not None:
+        acquire_frames_reserved = acquire_reservation.plan.frames
+        acquire_frames_accounted = acquire_reservation.completed_frames
+        result["hits_recorded"] = len(hits)
+        result["hits_acquired"] = hits_acquired
+        result["max_hits_reached"] = len(hits) >= max_hits
+        result["acquire_phase_ran"] = acquire_phase_ran
+        result["channel_effects"] = channel_effects
+        result["acquire_frames_reserved"] = acquire_frames_reserved
+        result["acquire_frames_accounted"] = acquire_frames_accounted
+        result["acquire_frames_unused"] = (
+            acquire_frames_reserved - acquire_frames_accounted
+        )
+        result["hits"] = [{k: v for k, v in hit.items() if k != "_key"}
+                          for hit in hits]
     return result
 
 

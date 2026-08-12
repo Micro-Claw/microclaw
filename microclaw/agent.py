@@ -172,6 +172,7 @@ User knowledge base:
   list_device_properties or get_system_state, as the microscope configuration may differ.
 
 Hook-based adaptive acquisition:
+- For conditional two-channel work (search in one channel, acquire only detected tiles in another), use run_adaptive_survey with acquire_on_hit; do not manually loop over coordinates from a hook log.
 - A hook can attach directly to either a Z-stack (run_zstack) or a timelapse (run_timelapse); pick the acquisition the user wants and pass hook_strategy. focus_feedback corrects Z drift per frame and is intended for timelapses.
 - Pre-coded hooks: autofocus_per_position, focus_feedback, intensity_adaptive, position_filter, snr_observer, mm_plugin_analyzer, autofocus_mm_plugin. `snr_observer` is observation-only: use it to measure every plane or frame while keeping the acquisition fixed, then call read_hook_log; it never applies a threshold or changes acquisition.
 - Saved hooks: call list_hooks() to see pre-coded and previously saved hooks. The result shows each saved hook's source ('claude_generated' or 'user_provided'), whether it is resolvable, and the exact re-review remedy for an unusable hook.

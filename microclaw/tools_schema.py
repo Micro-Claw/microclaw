@@ -1306,7 +1306,11 @@ TOOLS: list[dict[str, Any]] = [
             "counts). stopped_early describes control decisions, not what was "
             "found. When log_path is present, call read_hook_log(log_path) "
             "before making any claim about the per-tile measurements; otherwise "
-            "no per-tile log was written."
+            "no per-tile log was written. For 'search in one channel, acquire "
+            "only detected tiles in another', pass acquire_on_hit: AcquireAt "
+            "then records a tile and its current Z for one deferred second phase. "
+            "Both the complete search dose and worst-case max_hits × frames-per-hit "
+            "acquire dose are reserved before the first exposure."
         ),
         "input_schema": {
             "type": "object",
@@ -1396,6 +1400,28 @@ TOOLS: list[dict[str, Any]] = [
                 "illumination_envelope": _HOOK_ILLUMINATION_ENVELOPE_SCHEMA,
                 "artifact_limits": _HOOK_ARTIFACT_LIMITS_SCHEMA,
                 "autofocus_budget": _ADAPTIVE_AUTOFOCUS_BUDGET_SCHEMA,
+                "acquire_on_hit": {
+                    "type": "object",
+                    "description": (
+                        "Deferred second channel acquisition. channel is applied once "
+                        "after search; protocol is timelapse or zstack; protocol_params "
+                        "contains n_frames/interval_s/exposure_ms or relative "
+                        "z_offset_start_um/z_offset_end_um/z_step_um/exposure_ms; "
+                        "max_hits deduplicates and bounds accepted AcquireAt actions. "
+                        "Requires a saved or generated hook returning typed AcquireAt "
+                        "actions; registry built-ins use the direct queue contract and "
+                        "are refused. The operator is asked to authorize BOTH channels "
+                        "before the first search frame, so they may approve enabling an "
+                        "acquire channel that a zero-hit run never switches to."
+                    ),
+                    "properties": {
+                        "channel": {"type": "string"},
+                        "protocol": {"type": "string", "enum": ["timelapse", "zstack"]},
+                        "protocol_params": {"type": "object"},
+                        "max_hits": {"type": "integer", "minimum": 1},
+                    },
+                    "required": ["channel", "protocol", "protocol_params", "max_hits"],
+                },
             },
             "required": ["protocol", "save_dir", "hook_strategy"],
         },
