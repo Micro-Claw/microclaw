@@ -70,7 +70,7 @@ Expected:
 - the second `get_roi` reports the requested quarter-size rectangle (or the
   camera's documented hardware-aligned rectangle, which must still be a real
   smaller crop visible in Micro-Manager);
-- the transcript visibly names all three tool calls.
+- the transcript visibly names all four tool calls.
 
 If the agent uses `set_device_property`, Java/Python directly, or any tool other
 than the named sequence, record **NOT TESTED**. Seeing a crop in the GUI after a
