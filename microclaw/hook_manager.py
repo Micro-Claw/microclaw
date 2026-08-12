@@ -141,6 +141,21 @@ def _hook_contract_analysis(code: str) -> tuple[list[str], bool]:
     action_types = {
         cls.__name__: cls for cls in hook_decisions._ACTION_TYPES.values()
     }
+    # Scoped deliberately to the decision vocabulary, never to general
+    # undefined-name analysis: these names come from one module, so a call to
+    # one the source cannot resolve is a certain runtime NameError rather than a
+    # guess. M5's block 45 gate produced the case -- a generated hook calling
+    # HookResult and StopSurvey with no import line saved clean, described clean,
+    # and died inside the image processor after the stage had moved.
+    #
+    # Bindings are collected from module-level statements plus imports at any
+    # depth, which is what a hook actually does (a method-level
+    # `from microclaw.hook_decisions import ...` resolves fine). Two shapes
+    # therefore refuse that a full scope analysis would allow: rebinding one of
+    # these names *inside* a function, and a module-level assignment nested in an
+    # `if` with no import anywhere. Both are left refusing on purpose -- a hook
+    # that shadows the decision vocabulary is not returning a real HookResult
+    # either way, and tracking scopes to permit it would cost more than it buys.
     decision_names = set(action_types) | {"HookResult"}
     module_bindings: set[str] = set()
     for node in tree.body:
