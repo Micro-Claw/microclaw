@@ -16,11 +16,19 @@ dose bounds, decision records, result fields, per-hit Z in submitted events, the
 
 Identical demo frames **cannot** prove that 561 evidence selected a biological
 hit, that 488 differs optically from 561, that an enable line emitted light, or
-that the acquired burst contains the intended structure. Demo also cannot reach
-the **authorization-map route**: demo's channel source is the Micro-Manager
-`Channel` config group, and `_channel_source` gives that group priority whenever
-it offers a preset, so the EMU-map path exists only on M5. Do not book demo time
-as evidence for any of those.
+that the acquired burst contains the intended structure. Do not book demo time as
+evidence for any of those.
+
+**Corrected after demo round 1 — the routes are not split the way this page
+first claimed.** The demo rig has *both* a `Channel` config group and a property
+authorization map, so its `channel_source` reads `config-group` while
+`set_channel` still executes through `execute_channel_plan` and produces effect
+**triples**: the execution route branches on `_has_channel_authorization_map`,
+not on channel source. So **demo does exercise the effects-triple route**, and
+round 1 found a blocking exporter defect there that the original M5-first
+ordering would have found on the rig. What remains M5-only is the **EMU
+laser-map channel source** — a rig with no `Channel` group at all — plus
+camera-triggered dose and the optical claims.
 
 ---
 
@@ -29,14 +37,14 @@ as evidence for any of those.
 In PowerShell, from the checkout:
 
 ```powershell
-git merge-base --is-ancestor db8baf5 HEAD
+git merge-base --is-ancestor 9e77560 HEAD
 Write-Host "implementation ancestor exit code (expected 0):" $LASTEXITCODE
 python -m pytest -q -p no:cacheprovider > block43n-pytest.txt 2>&1
 Write-Host "pytest exit code (expected 0):" $LASTEXITCODE
 Get-Content block43n-pytest.txt
 ```
 
-Expected macOS baseline for this branch: **1909 collected, 1810 passed, 99
+Expected macOS baseline for this branch: **1910 collected, 1811 passed, 99
 skipped, 3 warnings**. The warnings are one `StarletteDeprecationWarning` and two
 empty-image `phase_cross_correlation` warnings. On Windows, record the exact
 counts.
@@ -88,7 +96,14 @@ object carrying the acquire channel, `protocol="timelapse"`, `n_frames=3`, and
 `max_hits=2`. It must not propose a manual loop over a prior hook log, and must
 not propose two separate acquisitions.
 
-Stop if the feature is not reached or either phase/exposure bound is absent.
+**`exposure_ms` is optional and its absence is not a failure** — an earlier
+version of this step said to stop without it, which was wrong and cost round 1 a
+false alarm. Both phases fall back to the rig's current exposure, and the
+reservations are computed from that fallback. What must hold is that whatever
+exposure is in force appears in the reservation arithmetic (checked in A2/A3),
+not that the agent named it here.
+
+Stop if the feature is not reached, or if either channel or `max_hits` is absent.
 **Reach has failed first-round on three separate blocks; it is the most likely
 thing on this page to be wrong.**
 
@@ -162,6 +177,13 @@ acquire switch only when the new hit set is non-empty, and per-hit restored Z. A
 script that replays the recorded session's coordinates fails even if it exits
 zero.
 
+**The script must be run, not merely inspected.** Round 1's export parsed,
+compiled, and was written — and then died at line 1917 on
+`NameError: _verify_property is not defined`, because a helper its own emitted
+lines call was not inlined. Every static check the exporter performs passed. Only
+running it found this. Treat "the script was produced and looks right" as no
+evidence at all.
+
 On demo the selected hit set may legitimately be identical to A2's, because the
 frames are identical — so score the *structural* claim (fresh selection at run
 time, no literal recorded coordinates in the file), not set inequality.
@@ -181,9 +203,13 @@ export containing `core.set_config` plus `core.wait_for_config` for both recorde
 phase presets. Run that script with Microclaw closed as in A4. A script that
 contains preset lines but produces no search and acquire frames does not pass.
 
-Record whether the deployed demo safety config carries a property authorization
-map. If it does, this step also exercises the effects-triple export route and the
-report should say so; if it does not, the effects route is M5-only.
+**Answered in round 1: the deployed demo config does carry a property
+authorization map**, so this step exercises the effects-triple export route as
+well as the preset route, and the export must contain `_verify_property` calls
+*and* the `def _verify_property` that defines them. Re-confirm rather than
+re-investigate; if a later demo build reports `channel_source: "config-group"`
+with no `effects` in `channel_effects`, say so, because that changes which route
+this step covers.
 
 ---
 
@@ -195,10 +221,15 @@ supply the **optical and dose-reality** evidence.
 
 ## B1 — reach and route on the EMU rig
 
-Give the A1 request on M5. Confirm the feature is reached, and confirm the run
-takes the authorization-map route: the audit shows expanded device/property
-effect triples rather than a `Channel` config-group transition. M5 has no
-`Channel` group, so a run that reaches the config-group path here is a defect.
+Give the A1 request on M5. Confirm the feature is reached, and confirm the
+channel **source** is the EMU laser map rather than a `Channel` config group —
+this is the part demo cannot reach, since demo has a `Channel` group and M5 does
+not. M5 has no `Channel` group, so a run whose `channel_source` reports
+`config-group` here is a defect.
+
+The effect-triple *execution* route is already covered by A2/A5; what is new here
+is that the triples are derived from the EMU map. Report `channel_source` for
+both phases verbatim.
 
 ## B2 — positive hit run with optical evidence
 
