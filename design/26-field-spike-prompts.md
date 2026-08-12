@@ -96,9 +96,19 @@ sound.
 > processing. Reproduce the example on a copied input and measure process/environment
 > startup separately from marginal per-image and batch latency. Then summarize the exact
 > input/output/provenance contract and recommend per-image, worker, or two-pass batch
-> execution from those measurements. Fixture-test an observation-only HookBase adapter
-> using `self.log_analysis`. Mark unresolved semantics `unverified`. Show the complete
+> execution from those measurements. Fixture-test an observation-only saved-hook adapter:
+> a plain class exposing `analyze_frame(self, image, metadata)` that returns a
+> `HookResult`, which must **not** inherit `HookBase` and must **not** take `log_path`.
+> Mark unresolved semantics `unverified`. Show the complete
 > source and lint findings; do not save until I explicitly approve.
+
+That adapter contract is **enforced in code, not merely preferred.** `log_analysis`
+exists only on `HookBase` (`microclaw/hooks.py:171`), the trusted parent owns the audit
+record, and since block 45 `generate_and_save_hook` refuses a `HookBase`/`log_path` hook
+*before writing it*. A saved adapter's observations reach the same
+`microclaw.analysis-observation/v1` envelope through the parent
+(`microclaw/hook_decisions.py:750`). This prompt asked for the refused shape until
+2026-08-12; `design/26-implementation.md` §Decision has been right since block 7.
 
 Review the proposed boundary before approving it. Require the exact interpreter or
 executable path, environment identity, installed version, invocation/arguments, working

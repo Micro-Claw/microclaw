@@ -365,11 +365,56 @@ and the only branches on `origin` besides `main` are
   second merges `main` first**. Eight blocks remain after them: 43c, 43e, 43f,
   43g, 43h, 43i, 43j, 43k.
 
-### State at the 2026-08-12 close of block 45 — read this before assigning anything
+### State at the 2026-08-12 block 9 intake — read this before assigning anything
 
 **This is the live note. It supersedes every other State-at note in this
 section**, all of which are kept only for their round history. Position is not
 recency — read the heading, not the order.
+
+Verify against the repository rather than against any hash here. What held at
+this note's writing, and was checked rather than assumed: working tree clean,
+`git log --oneline origin/main..main` empty, `main` at `1eda20b`, and on `origin`
+besides `main` only `design34/focus-system-authorization` (6a),
+`florian/setup-claude-workflow` and `port-to-jpype-acqj`. One worktree besides
+this one: `../microclaw-6a`, idle at `4994f3e`.
+
+- **Track C was picked up and block 9 still cannot branch.** The intake
+  conversation was held: the target is **puncta counting** and the initial
+  observation-only action is **log scores only**, but **no trained `.ilp`
+  exists**, and a known input with its known result cannot be supplied before one
+  does. Both answers and the gate are written into block 9's section. The
+  checklist's "do not create the branch" item stands unticked and is correct.
+- **The `.ilp` is unautomatable by construction**, so this gate cannot be worked
+  around from this end: F5 measured headless ilastik creating a project and then
+  dying at the export slot rather than training it. What unparks Track C is a
+  person drawing annotations, and nothing else.
+- **A recommendation was recorded, not a precondition**: measure the classical
+  floor on a real adjudicated puncta survey before spending the drawing time,
+  because puncta counting is close to what `ClassicalDescriptor` already
+  separates photometrically and F5's own trigger for reaching for ilastik is that
+  measured failure. **A negative Run B is still a valid outcome** — do not treat
+  "ilastik wins" as the success condition.
+- **Block 9's named prompt was stale and is corrected, not annotated.**
+  `design/26-field-spike-prompts.md` Run B asked for a `HookBase` adapter using
+  `self.log_analysis` — the shape block 45's `generate_and_save_hook` refuses
+  before writing, while this block's deliverable is a saved adapter.
+  `design/26-ml-roi-detection.md:178` carried the same rot. `microclaw/agent.py:191`
+  and `design/26-implementation.md` §Decision were already right.
+- **The open register is 52 items**, counted at this note. **Do not filter it with
+  a bare `grep -v CLOSED`** — that matches "UV activation **closed**-loop test"
+  and silently reports 51. Filter on the leading marker, not the substring.
+- **Track B stays parked**: 6a has been pushed and awaiting the Nikon since
+  2026-08-05.
+- **With Track C parked on a human artifact, the standing alternative is the
+  register**, which is where the next assignable block comes from. That choice is
+  the coordinator's next decision and is not made in this note.
+
+### State at the 2026-08-12 close of block 45 — SUPERSEDED, kept for the round history
+
+> **Retired. Do not act on this note** — block 45 is closed and Track C's intake
+> was held after it was written. Its repository-state claims were true at the
+> close of 45 and still verified at the intake. The live note is the block 9
+> intake note above.
 
 Verify against the repository rather than against any hash here. What should
 hold: working tree clean, `git log --oneline origin/main..main` empty, and the
@@ -7457,9 +7502,46 @@ the old file's §11, §12, §13 for the full item lists before starting each.
 Branch: `design26/generated-adapter-run-b`
 
 **The analysis is ilastik — operator decision, 2026-08-12.** That settles the
-"which workflow" half that kept this block deferred; what is still owed from the
-operator is the rest of the intake: a trained `.ilp`, a known input and its known
-result, what the target means, and the desired initial observation-only action.
+"which workflow" half that kept this block deferred.
+
+**Intake conversation held 2026-08-12. Two of the four items are answered; the
+block is still not branchable.**
+
+| intake item | answer |
+|---|---|
+| what the target means | **cell / puncta counting** (operator, 2026-08-12) |
+| initial observation-only action | **log scores only** — pooled vector and score per tile into the hook log, no actions proposed, ranking offline afterwards |
+| a trained `.ilp` | **does not exist.** Nobody has drawn one |
+| a known input and its known result | owed, and cannot be supplied before the `.ilp` |
+
+**The `.ilp` is the whole gate, and it is not a formality.** F5 measured that
+headless ilastik will create a project and then die at the export slot rather
+than train it — the twenty minutes of drawing is unautomatable by construction.
+Until a real one exists there is nothing for an adapter to pin or hash.
+
+**Read the target choice against F5's own trigger before spending the drawing
+time.** F5 says the moment to reach for ilastik is *measured*: when the classical
+floor has been scored against an adjudicated survey and the ranking is not worth
+acting on. Puncta counting is close to what `ClassicalDescriptor` already does
+photometrically, so the likely Run B verdict is "ilastik buys nothing" — which
+**is a valid outcome and this block's success condition permits it**, but it is
+cheaper to buy by measuring the floor first. Recommended sequencing, coordinator
+2026-08-12: score the classical floor on a real adjudicated puncta survey; if it
+ranks well, Run B's verdict is written without rig time; if it fails, the tiles
+it failed on are exactly the ones worth drawing on, and the `.ilp` gets trained
+on the failure cases rather than on arbitrary fields. **Operator's call, not the
+coordinator's** — this is a recommendation, not a precondition added to the block.
+
+**Correction at intake, 2026-08-12 — this block's named prompt was stale.**
+`design/26-field-spike-prompts.md` Run B asked the implementer to "fixture-test an
+observation-only **HookBase** adapter using `self.log_analysis`". That is the
+shape block 45's `generate_and_save_hook` **refuses before writing**, and this
+block's entire deliverable is a *saved* adapter — so following the named design
+section produced a hook the shipped code rejects. Corrected in place, not
+annotated. The live `SYSTEM_PROMPT` (`microclaw/agent.py:191`) was already right,
+as was `design/26-implementation.md` §Decision since block 7; the prompt file and
+`design/26-ml-roi-detection.md:178` were the two that had rotted. Do not
+re-derive the adapter contract from either document's older prose.
 
 **Read `design/26-ml-roi-detection.md` §F before starting — the seam is already
 measured and four of this doc's claims were corrected by that run** (ilastik
