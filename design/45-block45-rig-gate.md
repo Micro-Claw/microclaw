@@ -1,6 +1,6 @@
 # Block 45 rig gate — saved-hook repair
 
-Implementation ancestor: `620a094`
+Implementation ancestor: `6d2da0b`
 
 Run Steps 0–3 on the **demo machine**. Do not book M5 for the mechanism gate.
 Step 4 is only the registry migration on M5. Use PowerShell from the checkout.
@@ -10,7 +10,7 @@ Step 4 is only the registry migration on M5. Use PowerShell from the checkout.
 Paste:
 
 ```powershell
-git merge-base --is-ancestor 620a094 HEAD
+git merge-base --is-ancestor 6d2da0b HEAD
 Write-Host "implementation ancestor exit code (expected 0):" $LASTEXITCODE
 python -m pytest -q > block45-pytest.txt 2>&1
 Write-Host "pytest exit code (expected 0):" $LASTEXITCODE
@@ -108,7 +108,7 @@ must contain no `from microclaw` or `import microclaw`.
 Check out this branch on M5 and paste:
 
 ```powershell
-git merge-base --is-ancestor 620a094 HEAD
+git merge-base --is-ancestor 6d2da0b HEAD
 Write-Host "implementation ancestor exit code (expected 0):" $LASTEXITCODE
 Get-ChildItem tests\fixtures\hooks\m5_migrated\*.py | Select-Object Name,Length
 ```
@@ -139,6 +139,14 @@ Only re-save names covered by this explicit mapping:
 | `mosaic_stitcher_rot` or `mosaic_stitcher_rot_v2` | `mosaic_stitcher_rot.py` |
 | `uv_activation` | `uv_activation.py` |
 | `uv_activation_wind_down` | `uv_activation_wind_down.py` |
+
+One caveat carried from the open register, so the result is not read as more
+than it is: `filament_position_filter` scores **bead** fields as filamentous
+(design/38 H6, 2026-08-05 — `filament_score` 0.045 and 0.107 against a 0.02
+threshold). Migrating it makes it *resolvable*, which is all this gate claims;
+it does not make its description true. Re-saving it is correct — a hook that
+refuses to load cannot be recalibrated — but its scales or its description are
+still owed work, tracked separately.
 
 For each unresolvable name in the table, say this verbatim, substituting both
 fields. If an unresolvable name has no row, **stop migration for that name**,
