@@ -939,6 +939,32 @@ the survey by asking, not by holding the queue.
    **This breaks every hook written to the old rule that generated hooks inherit
    `HookBase`.** All four hooks on M5 are affected.
 
+**Amended by block 45, merged 2026-08-12.** Refusing only at resolve time was
+half the contract: `generate_and_save_hook` accepted the same source, answered
+*"saved successfully"*, and the agent then explained how to attach a hook that
+could never run. The two source-property refusals — subclasses `HookBase`, takes
+`log_path` — are now computed once from source and applied at **both** ends,
+shared with `describe_saved_hook` rather than duplicated into a second validator.
+The registry consequence was measured at the same time: not "all four hooks on
+M5" but **9 of 21 unresolvable**, of which four needed only a re-save and five
+needed rewritten source (design/38 §H6).
+
+A third refusal joined them, found by block 45's own M5 gate rather than by a
+test. A generated hook that **calls a decision name it never imports** —
+`HookResult`, or any action type — passed every static check, described clean,
+and raised `NameError` inside the image processor *after the stage had moved*.
+`_hook_contract_analysis` already resolved those names against `_ACTION_TYPES` to
+validate their call signatures; it now also asks whether the source can resolve
+them, scoped to that closed vocabulary and never to general undefined-name
+analysis. This matters most for the path design/26 Block 10 depends on: an
+agent-generated adapter, where a forgotten import is the likeliest failure.
+
+*Two stale statements above, noted rather than silently rewritten, because they
+are Phase-1-era and belong to Block 7b's reconciliation:* the action union omits
+`DiscardFrame`, `EmitArtifact` and `SetIlluminationPower`, and "What Phase 1
+removed and did not replace" lists illumination control, artifact emission and
+frame discard as outstanding. Block 7b restored all three (merged `e688606`).
+
 **What Phase 1 removed and did not replace**, tracked as checklist Block 7b and
 explicitly *not* restored by Phase 2: illumination control (UV activation is a live
 requirement), live artifact emission, and frame discard — `analyze_frame` cannot
