@@ -225,11 +225,43 @@ evidence that the feature imaged anything real.
 
 ## A3 — zero-hit run
 
-Run the same request with a hook/threshold that records no hits. Pass requires a
-successful search result with `hits_recorded=0`, `hits_acquired=0`,
-`max_hits_reached=false`, and `acquire_phase_ran=false`; no acquire-channel
-switch, no acquire dataset, and zero acquire frames and dose. Search frames must
-still exist. A run with no frames at all cannot pass.
+**Already PASSED twice — rounds 1 and 2 — without being run deliberately.** Any
+survey whose hook finds nothing *is* this step, and both rounds' first survey
+(the `spot_detection_acquire` one, which found 0 spots) is exactly that. Check
+the evidence you already have before re-running anything.
+
+To run it deliberately, paste this — it is A2's message with one word changed:
+
+> Save this hook exactly as written, under the name `a3_never_hits`, then use it.
+>
+> ```python
+> from microclaw.hook_decisions import ContinueSurvey, HookResult
+>
+> class A3NeverHits:
+>     """Deterministic zero-hit hook: never requests an acquire."""
+>
+>     def __init__(self, **_kwargs):
+>         self.frame = -1
+>
+>     def analyze_frame(self, image, metadata):
+>         self.frame += 1
+>         return HookResult({"frame": self.frame, "hit": False},
+>                           (ContinueSurvey(),))
+> ```
+>
+> Then run an adaptive survey over the marked fields field_1, field_2 and
+> field_3, searching in Rhodamine with one frame per field, and acquire_on_hit
+> set to channel FITC, protocol timelapse, 3 frames, max_hits 2. Save the hook
+> log beside the data. When it finishes, show me the complete result JSON.
+
+Pass requires a successful search result with `hits_recorded=0`,
+`hits_acquired=0`, `max_hits_reached=false`, and `acquire_phase_ran=false`; no
+acquire-channel switch, no acquire dataset, and zero acquire frames and dose.
+Search frames must still exist. A run with no frames at all cannot pass.
+
+Expected exactly: `acquire_frames_reserved=6`, `acquire_frames_accounted=0`,
+`acquire_frames_unused=6`, and `frames_acquired=3` — the mirror of A2's
+`6 / 6 / 0`. Both rounds have already produced these numbers.
 
 **You will still be prompted to authorize the acquire channel on this run, and
 the audit will still carry its enable entry. That is expected and is not a
@@ -260,12 +292,23 @@ acquire switch only when the new hit set is non-empty, and per-hit restored Z. A
 script that replays the recorded session's coordinates fails even if it exits
 zero.
 
-**The script must be run, not merely inspected.** Round 1's export parsed,
-compiled, and was written — and then died at line 1917 on
+**The script must be run, and the run's output captured.** Round 1's export
+parsed, compiled, and was written — and then died at line 1917 on
 `NameError: _verify_property is not defined`, because a helper its own emitted
 lines call was not inlined. Every static check the exporter performs passed. Only
 running it found this. Treat "the script was produced and looks right" as no
 evidence at all.
+
+Round 2's `block43n-standalone.txt` came back **empty (0 bytes)**, so that round
+proved nothing here either. If the file is empty, the step did not run — redirect
+both streams exactly as the block above does, and paste the exit code. An empty
+capture is not a pass.
+
+Static checks that are still worth doing first, because they are free and they
+localise a failure before you spend a run on it: the script must contain **no**
+`import microclaw` or `from microclaw` line, and must itself define every helper
+it calls — `_verify_property`, `AcquireAt`, `ContinueSurvey`, `HookResult`,
+`UntrustedHookAdapter`. Round 2's script passes all of these.
 
 On demo the selected hit set may legitimately be identical to A2's, because the
 frames are identical — so score the *structural* claim (fresh selection at run
@@ -277,14 +320,41 @@ refusing to export it was a defect found in review and is pinned by a test.
 
 ## A5 — `Channel`-group preset route
 
-Demo is the `Channel`-group machine, so this is not a separate booking. Re-run
-A1's request with safe presets and `max_hits=1`, and retain the exported script.
+**BLOCKED on this machine as configured, and the block is this step's own
+mistake.** A5 was written to prove the `set_config` preset route, and asserted an
+export containing `core.set_config` plus `core.wait_for_config`. That route is
+not reachable here: `set_channel` branches on `_has_channel_authorization_map`,
+**not** on channel source, and the demo config carries a map. Rounds 1 and 2 both
+show `channel_source: "config-group"` alongside effect **triples**, and their
+exports contain `core.set_property` + `_verify_property`, never `set_config`.
 
-Pass requires actual search frames before actual acquire frames, one preset
-transition into the acquire channel, result hit counts matching datasets, and an
-export containing `core.set_config` plus `core.wait_for_config` for both recorded
-phase presets. Run that script with Microclaw closed as in A4. A script that
-contains preset lines but produces no search and acquire frames does not pass.
+So there is nothing to run here as written. Do not try to force it.
+
+What that route's coverage actually is today:
+
+- The **effects-triple** route is fully rig-proven by A2 and A4 on this machine.
+- The **map-less `set_config`** route is exercised only by unit tests — the
+  round-2 export tests supply `{"config_group": "Channel"}` for both phases. That
+  is exactly the gap that hid round 1's `_verify_property` defect, in mirror
+  image, so "unit-tested" should not be read as "safe."
+
+Two ways forward; **the choice is the operator's and neither blocks the block:**
+
+1. **Leave it unproven and say so in the report.** Legitimate: no rig this gate
+   can reach is map-less, and inventing one is not evidence about a real rig.
+2. **Prove it with a map-less safety config.** Only if you are comfortable
+   swapping configs and restoring afterwards. Copy the deployed safety config,
+   delete its `property_authorization` section, start Microclaw against the copy,
+   and paste the A2 message with `a2_deterministic` and `max_hits=1`. Then pass
+   requires search frames before acquire frames, one preset transition, hit
+   counts matching datasets, and an export containing `core.set_config` plus
+   `core.wait_for_config` for both phase presets — run with Microclaw closed as
+   in A4. **Restore the original config afterwards and say in the report that you
+   did.** A script that contains preset lines but produces no frames does not
+   pass.
+
+Either way, record which route this machine took, verbatim, from
+`channel_effects`.
 
 **Answered in round 1: the deployed demo config does carry a property
 authorization map**, so this step exercises the effects-triple export route as
