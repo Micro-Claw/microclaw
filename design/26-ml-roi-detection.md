@@ -175,7 +175,9 @@ when investigation leaves an ambiguity that changes scientific meaning, authoriz
 hardware action.
 
 Microclaw summarizes the derived contract back in plain language before writing code. It
-then selects the hook slot, writes a `HookBase` adapter, and tests the boundary without
+then selects the hook slot, writes a saved-hook adapter — a plain `analyze_frame` class,
+never a `HookBase` subclass; see `design/26-implementation.md`
+§Decision — and tests the boundary without
 hardware against the example. If no working example is available, a screenshot, tutorial
 dataset, or dry run on a copied image can substitute; until raw output is verified, the
 first hook is observation-only and cannot drive the stage or acquisition.
