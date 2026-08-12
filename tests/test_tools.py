@@ -3823,6 +3823,43 @@ class TestRoiRigKnowledge:
             "x": 1, "y": 2, "width": 3, "height": 4,
         }
 
+    def test_set_roi_is_guarded_by_current_camera_geometry(
+        self, mock_ctrl, unconstrained_guard
+    ):
+        mock_ctrl.core.get_roi.return_value = types.SimpleNamespace(
+            x=10, y=20, width=100, height=80
+        )
+        with pytest.raises(SafetyViolation, match="outside the camera-reported bounds"):
+            tools.set_roi(mock_ctrl, unconstrained_guard, 0, 0, 50, 50)
+        mock_ctrl.core.set_roi.assert_not_called()
+
+    def test_set_roi_accepts_a_positive_crop_inside_current_camera_geometry(
+        self, mock_ctrl, unconstrained_guard
+    ):
+        mock_ctrl.core.get_roi.return_value = types.SimpleNamespace(
+            x=0, y=0, width=512, height=256
+        )
+        mock_ctrl.core.get_camera_device.return_value = "Camera"
+        mock_ctrl.studio.live().is_live_mode_on.return_value = False
+        tools.set_roi(mock_ctrl, unconstrained_guard, 10, 20, 100, 80)
+        mock_ctrl.core.set_roi.assert_called_once_with(10, 20, 100, 80)
+
+    def test_clear_roi_also_uses_the_geometry_guard(self, mock_ctrl):
+        guard = MagicMock(spec=SafetyGuard)
+        mock_ctrl.core.get_roi.return_value = types.SimpleNamespace(
+            x=10, y=20, width=100, height=80
+        )
+        mock_ctrl.core.get_camera_device.return_value = "Camera"
+        mock_ctrl.core.get_image_width.return_value = 512
+        mock_ctrl.core.get_image_height.return_value = 256
+        mock_ctrl.studio.live().is_live_mode_on.return_value = False
+        tools.clear_roi(mock_ctrl, guard)
+        guard.check_roi.assert_called_once_with(
+            10, 20, 100, 80,
+            bounds_x=10, bounds_y=20, bounds_width=100, bounds_height=80,
+        )
+        mock_ctrl.core.clear_roi.assert_called_once_with()
+
 
 class TestListDeviceProperties:
     def _make_sv(self, items):

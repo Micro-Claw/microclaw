@@ -91,6 +91,19 @@ def test_recorded_stage_and_acquisition_emit_standalone_script(tmp_path):
     compile(source, str(tmp_path / "routine.py"), "exec")
 
 
+@pytest.mark.parametrize("name,params", [
+    ("set_roi", {"x": 0, "y": 0, "width": 128, "height": 64}),
+    ("clear_roi", {}),
+])
+def test_roi_writes_remain_loudly_unemitted_and_standalone(tmp_path, name, params):
+    _, result, source = export(tmp_path, [call(name, params)])
+    assert result["emitted_calls"] == 0
+    assert f"# NOT EMITTED: {name}" in source
+    assert "authorize_path" not in source
+    assert "import microclaw" not in source
+    compile(source, str(tmp_path / "routine.py"), "exec")
+
+
 def test_committed_example_is_an_actual_export():
     fixture = Path(__file__).parent / "fixtures" / "exported_stage_acquisition.py"
     source = fixture.read_text(encoding="utf-8")

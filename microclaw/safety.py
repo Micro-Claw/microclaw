@@ -230,7 +230,7 @@ class RangePolicy:
 
 AuthorizationMode = Literal["guaranteed", "degraded_trusted_plugins"]
 BUILTIN_TYPED_CAPABILITIES = frozenset(
-    {"stage-position", "exposure", "illumination", "acquisition-dose"}
+    {"stage-position", "exposure", "camera-roi", "illumination", "acquisition-dose"}
 )
 
 
@@ -882,6 +882,53 @@ class SafetyGuard:
         if limit is not None and ms > limit:
             raise SafetyViolation(
                 f"Exposure {ms:.0f} ms exceeds the maximum allowed ({limit:.0f} ms)."
+            )
+
+    def check_roi(
+        self,
+        x: int,
+        y: int,
+        width: int,
+        height: int,
+        *,
+        bounds_x: int,
+        bounds_y: int,
+        bounds_width: int,
+        bounds_height: int,
+    ) -> None:
+        """Require an integer, positive ROI contained by camera-reported bounds."""
+        values = {
+            "x": x,
+            "y": y,
+            "width": width,
+            "height": height,
+            "bounds_x": bounds_x,
+            "bounds_y": bounds_y,
+            "bounds_width": bounds_width,
+            "bounds_height": bounds_height,
+        }
+        for name, value in values.items():
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise SafetyViolation(
+                    f"Camera ROI {name} must be an integer (not a boolean); got {value!r}."
+                )
+        if bounds_width <= 0 or bounds_height <= 0:
+            raise SafetyViolation(
+                "Camera-reported ROI bounds must have positive width and height; "
+                f"got ({bounds_x}, {bounds_y}, {bounds_width}, {bounds_height})."
+            )
+        if width <= 0 or height <= 0:
+            raise SafetyViolation(
+                f"Camera ROI width and height must be positive; got {width}x{height}."
+            )
+        bounds_right = bounds_x + bounds_width
+        bounds_bottom = bounds_y + bounds_height
+        if x < bounds_x or y < bounds_y or x + width > bounds_right or y + height > bounds_bottom:
+            raise SafetyViolation(
+                f"Camera ROI ({x}, {y}, {width}, {height}) is outside the "
+                f"camera-reported bounds ({bounds_x}, {bounds_y}, "
+                f"{bounds_width}, {bounds_height}). Clear the ROI first to restore "
+                "the camera's full-frame bounds before expanding or repositioning it."
             )
 
     def check_acquisition(

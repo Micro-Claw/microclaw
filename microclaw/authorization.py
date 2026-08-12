@@ -785,6 +785,11 @@ def validate_live_rig(
             "Code registry is missing the built-in exposure capability; no "
             "safety-config declaration can repair this installation error."
         )
+    if "camera-roi" not in BUILTIN_TYPED_CAPABILITIES:
+        errors.append(
+            "Code registry is missing the built-in camera ROI capability; no "
+            "safety-config declaration can repair this installation error."
+        )
     if "illumination" not in BUILTIN_TYPED_CAPABILITIES:
         errors.append(
             "Code registry is missing the built-in illumination capability; no "
@@ -876,6 +881,16 @@ def validate_live_rig(
             classification="built_in_typed_capability",
             device=camera_device,
             capability="exposure",
+        ))
+        entries.append(AuthorizationEntry(
+            path="camera-roi",
+            classification="built_in_typed_capability",
+            device=camera_device,
+            capability="camera-roi",
+            detail=(
+                "integer positive geometry guarded against the camera's current "
+                "hardware ROI; clear_roi restores full-frame bounds"
+            ),
         ))
 
     illumination = parsed_config.constraints.illumination
@@ -1362,12 +1377,6 @@ def validate_live_rig(
         ))
     entries.extend([
         AuthorizationEntry(
-            path="camera-roi",
-            classification="excluded",
-            device=camera_device or None,
-            detail="no Phase-1 typed capability or reviewed property identity",
-        ),
-        AuthorizationEntry(
             path="mmstudio-mda",
             classification="excluded",
             detail=(
@@ -1773,9 +1782,18 @@ def authorize_path(ctrl: Any, path: str) -> None:
     if report is None:
         return
     entries = [entry for entry in report.entries if entry.path == path]
-    if not entries or any(entry.classification == "excluded" for entry in entries):
+    excluded = [entry for entry in entries if entry.classification == "excluded"]
+    if excluded:
+        detail = "; ".join(entry.detail for entry in excluded if entry.detail)
         raise RigAuthorizationError(
             f"The {path} write path was refused because it is excluded from the Phase-1 "
-            "authorization map. No safety-config declaration permits an excluded code "
-            "path; use a supported typed/categorical tool path instead."
+            "authorization map. This is a code-level exclusion; changing the rig's "
+            "safety config cannot permit it. Use a supported typed/categorical tool "
+            f"path instead.{(' Reason: ' + detail) if detail else ''}"
+        )
+    if not entries:
+        raise RigAuthorizationError(
+            f"The {path} write path was refused because the Phase-1 authorization map "
+            "has no entry for it. This is a code/installation completeness error; "
+            "changing the rig's safety config cannot add the missing typed path."
         )
