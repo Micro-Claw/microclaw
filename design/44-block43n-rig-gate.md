@@ -84,13 +84,27 @@ Any other failure still stops the gate.
 Piggybacking on the visit; it does not affect whether 43n passes. Skip it freely
 if time is short.
 
+Run **all four**, including the two `--accept` ones. The `--accept` runs are the
+point now: the first pair reproduces the old fault, the second pair is what
+demonstrates the fix.
+
 ```powershell
 python design\35-webserve-flake-probe.py --iterations 40 --load 0 > webserve-probe-idle.txt 2>&1
 Write-Host "idle exit code (expected 0):" $LASTEXITCODE
 python design\35-webserve-flake-probe.py --iterations 40 --load 8 > webserve-probe-load.txt 2>&1
 Write-Host "loaded exit code (expected 0):" $LASTEXITCODE
-Get-Content webserve-probe-idle.txt, webserve-probe-load.txt
+python design\35-webserve-flake-probe.py --iterations 40 --load 0 --accept > webserve-probe-idle-accept.txt 2>&1
+Write-Host "idle+accept exit code (expected 0):" $LASTEXITCODE
+python design\35-webserve-flake-probe.py --iterations 40 --load 8 --accept > webserve-probe-load-accept.txt 2>&1
+Write-Host "loaded+accept exit code (expected 0):" $LASTEXITCODE
+Select-String -Path webserve-probe-*.txt -Pattern "non-OK rounds"
 ```
+
+Expected: the two **without** `--accept` may show some `H2_STUCK_IN_CONNECT`
+rounds (M5 2026-08-12 showed 3/40 idle, 0/40 loaded; the demo showed 0/40 idle,
+1/40 loaded — load is not the trigger). The two **with** `--accept` must show
+**0/40 both times**. If an `--accept` run shows any non-OK round, the fix is
+wrong and that is a finding worth more than the rest of this step.
 
 Return both tables whole. **Every round reading `OK` is a real and useful result**
 — it means the trigger is something the probe does not model, and rules out both
@@ -386,49 +400,97 @@ this step covers.
 
 # Part B — M5, and only what demo cannot show
 
-Do not start Part B until Part A passes. Every mechanism limb is already closed
-by then; B re-runs the flow to exercise the **authorization-map route** and to
-supply the **optical and dose-reality** evidence.
+**Most of Part B already PASSED on M5, 2026-08-12 (`43n-m5`). Do not re-run
+those.** What remains is B3 and B2's optical limb, both spelled out below.
 
-## B1 — reach and route on the EMU rig
+Already passed, for reference:
 
-Give the A1 request on M5. Confirm the feature is reached, and confirm the
-channel **source** is the EMU laser map rather than a `Channel` config group —
-this is the part demo cannot reach, since demo has a `Channel` group and M5 does
-not. M5 has no `Channel` group, so a run whose `channel_source` reports
-`config-group` here is a defect.
+- **B1 PASS** — `channel_effects` reported `channel_source: "emu-laser-map"` for
+  both phases, so the run took the EMU route and not the config-group one. The
+  effects were real laser enables: search enabled `Laser 2` and disabled 1/3/4;
+  acquire enabled `Laser 3` and disabled the rest. Exactly one laser per phase.
+- **B2 mechanism PASS** — `hits_recorded=2`, `hits_acquired=2`,
+  `max_hits_reached=true`, `acquire_phase_ran=true`, `reserved=6 / accounted=6 /
+  unused=0`, `frames_acquired=5` (3 tiles + 2 autofocus re-exposures). The two
+  hits carried **different Z** — 52.077 and 51.578 — each its own
+  autofocus-converged plane, which no demo run could show.
+- **B4 PASS, decisively** — the standalone run selected a **different hit set**
+  than the live run (live: `field_2`, `field_3`; standalone: `field_1`,
+  `field_2`, with `field_3` refused as `max_hits exhausted`). The emitted program
+  re-ran the rule on the sample in front of it rather than replaying coordinates.
+  That is the whole thesis of block 43h, proven on a rig.
+- **Bonus, unplanned:** the first attempt died on an EMU serial timeout
+  (`Channel plan '561' stopped after 0/4 writes ... applied=[]`) *after* both
+  reservations were taken. The retry then reserved a clean 6, which proves the
+  error path released both reservations instead of leaking them. Hardware
+  transient, not a defect.
 
-The effect-triple *execution* route is already covered by A2/A5; what is new here
-is that the triples are derived from the EMU map. Report `channel_source` for
-both phases verbatim.
+## B3 — zero-hit run on M5  **(OUTSTANDING — please run)**
 
-## B2 — positive hit run with optical evidence
+The only mechanism step no rig has run. On M5 it is physical: it proves no light
+is emitted for a phase that never executes, on a camera-triggered rig.
 
-Fields where the operator can identify at least one real positive. All of A2's
-counting limbs must still hold, but this step is scored on what only M5 shows:
+Paste this as one message:
 
-- operator-visible search frames use 561 and the later burst uses 488, and the
-  two are optically distinguishable;
-- the saved 488 images visibly contain the intended structure;
-- acquire dose is real light on a camera-triggered rig, and the illuminated
-  milliseconds in the audit match the reservation.
+> Save this hook exactly as written, under the name `b3_never_hits`, then use it.
+>
+> ```python
+> from microclaw.hook_decisions import ContinueSurvey, HookResult
+>
+> class B3NeverHits:
+>     """Deterministic zero-hit hook: never requests an acquire."""
+>
+>     def __init__(self, **_kwargs):
+>         self.frame = -1
+>
+>     def analyze_frame(self, image, metadata):
+>         self.frame += 1
+>         return HookResult({"frame": self.frame, "hit": False},
+>                           (ContinueSurvey(),))
+> ```
+>
+> Then run an adaptive survey over the marked fields field_1, field_2 and
+> field_3, searching in 561 with one frame per field at 30 ms, and acquire_on_hit
+> set to channel 488, protocol timelapse, 3 frames, 30 ms, max_hits 2. Save the
+> hook log beside the data. When it finishes, show me the complete result JSON,
+> and tell me which laser enables appear in the audit and whether any 488
+> acquisition dataset was written.
 
-**An inert run — matching counts without a real positive — does not pass this
-step.** That is the entire reason M5 time is being spent.
+**PASS requires all of:**
 
-## B3 — zero-hit run on M5
+- `hits_recorded=0`, `hits_acquired=0`, `max_hits_reached=false`,
+  `acquire_phase_ran=false`;
+- `acquire_frames_reserved=6`, `acquire_frames_accounted=0`,
+  `acquire_frames_unused=6`;
+- **no 488 dataset directory written** — only the search dataset exists;
+- the audit shows the 488 (`Laser 3`) enable **authorized**, and **no 488
+  channel-plan write** — no `Laser 3: 1. Enable = '1'` applied as part of an
+  acquire phase switch;
+- search frames exist. A run with no frames at all cannot pass.
 
-A3's limbs, re-scored where camera-triggered lasers make them physical: no
-acquire-channel device write, and no light emitted for the acquire phase. The
-authorization prompt and audit entry are still expected, exactly as in A3.
+**Expected and NOT a failure:** you will be asked to authorize 488 before any 561
+frame, and the audit will carry a 488 enable entry. Authorization is a policy
+check with no device write behind it. Score on device writes and dose, not on the
+prompt. B2 already showed the same ordering.
 
-## B4 — standalone replay on M5
+## B2 optical limb  **(OUTSTANDING — please answer)**
 
-A4's procedure on the authorization-map route. The exported script must contain
-recorded 561 and 488 effect triples, and must select fresh hits. Unlike demo, a
-different hit set here is real evidence and should be reported as such.
+The B2 run's counts all passed, but the optical claims were never recorded, and
+they are the only reason M5 time is spent. Open the saved datasets — live search
+`search_561_1` and live acquire `search_561_acquire_1` — and answer these four,
+in words, from what you see:
 
----
+1. Do the 561 search frames and the 488 burst look like different channels?
+2. Do the two acquired fields (`field_2`, `field_3`) contain the filamentous
+   structure the hook was scoring for?
+3. Was the hook's choice of those two fields, over `field_1`, a choice you agree
+   with looking at the 561 frames?
+4. Is each 488 burst in focus — i.e. did the per-hit Z restoration land on the
+   plane autofocus converged to?
+
+A "no" or "not sure" on any of these is a real result and should be reported as
+such. **An inert run that matched every count without imaging anything real does
+not pass this step**, which is why this limb exists separately from B2's numbers.
 
 # Report
 
