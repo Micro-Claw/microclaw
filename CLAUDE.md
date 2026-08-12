@@ -84,9 +84,14 @@ replacement for it.
   `raise RuntimeError` in every exported script that recorded it. That is how
   43h's second gate died: `generate_and_save_hook` was undecorated, so a session
   that wrote the hook it then used killed its own script three lines before the
-  adaptive program it had correctly emitted. Fourteen tools are still undecorated
-  (measured over `TOOL_REGISTRY`, 2026-08-11) and are tracked in the checklist's
-  carried-forward register.
+  adaptive program it had correctly emitted. **Block 47's demo gate produced the
+  same failure a second time** — `set_roi`/`clear_roi` were undecorated, so
+  restoring ROI as a typed capability produced sessions whose exported script
+  died on line 17; both now emit their bare `core` call. **Twelve tools are still
+  undecorated** (measured over `TOOL_REGISTRY`, 2026-08-12) and are tracked in
+  the checklist's carried-forward register. **A new capability is not finished
+  until it can appear in an exported script** — that is the lesson both gates
+  taught.
 
 ## Engineering principles
 
