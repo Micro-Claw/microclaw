@@ -365,7 +365,59 @@ and the only branches on `origin` besides `main` are
   second merges `main` first**. Eight blocks remain after them: 43c, 43e, 43f,
   43g, 43h, 43i, 43j, 43k.
 
-### State at the 2026-08-11 assignment of block 43n — read this before assigning anything
+### State at the 2026-08-12 close of block 43n — read this before assigning anything
+
+**This is the live note. It supersedes every other State-at note in this
+section**, all of which are kept only for their round history. Position is not
+recency — read the heading, not the order.
+
+Verify against the repository rather than against any hash here. What should
+hold: `git log --oneline origin/main..main` empty, working tree clean, and the
+only branches on `origin` besides `main` are `design34/focus-system-authorization`
+(6a), `florian/setup-claude-workflow` and `port-to-jpype-acqj` — **no Track F
+branch open.** One worktree besides this one: `../microclaw-6a`, idle at `4994f3e`.
+
+- **43n is MERGED (`e03830d`) and fully closed**: gate PASS, ledger row closed,
+  coordination notes in `design/prompts.md`, design/44 reconciled, branch deleted
+  locally and on `origin`, worktree removed.
+- **Gate outcome: demo A1–A4 PASS, M5 B1–B4 PASS.** Two limbs deliberately not
+  proven, neither a defect: **A5** (the map-less `set_config` route) is
+  unreachable on the demo, which carries a property authorization map, so that
+  route stays unit-tested only; and **B2's structure claim** is untested by
+  operator ruling of 2026-08-12 — beads with a filament-scoring hook, detection
+  exercised in both channels regardless.
+- **Two register items closed by measurement**: the `test_bridge_check.py` socket
+  race (100 Windows iterations, 0 warnings) and the `test_webserve.py` poll-thread
+  flake (80 `--accept` rounds, 0 failures, against pre-fix runs failing in the
+  same session). The webserve probe **refuted the hypothesis a fix had already
+  been written for**; that fix was reverted unmade before the evidence arrived,
+  and reverting it was correct.
+- **Three items were added to the open register by this block** and none is
+  scheduled: the emitted script prints nothing at all, so a success and a failure
+  are indistinguishable in a terminal; adaptive+refocus datasets are dense
+  hypercubes with all-zero padding frames; `acquire_on_hit` datasets carry no
+  channel axis. **All three surfaced from an operator's difficulty, not from a
+  test.**
+- **Suite baseline: 1811 passed / 99 skipped / 3 warnings, 1910 collected** on
+  macOS at `e03830d`. Windows measured 1794 + 116 = 1910 on both the demo and M5.
+- **The process lesson of this block is the runbook.** Every gate step written as
+  a *criterion* was skipped; every step carrying a literal command block or a
+  verbatim prompt was run correctly first time. This cost four rounds across A2,
+  A3/A5, B3 and the probe's `--accept` flag. Ship the thing to paste, the exact
+  expected numbers, and what will look wrong but is normal — and verify it
+  yourself first.
+- **Track F is complete and 43n is closed, so the coordinator's next decision is
+  open again**: which of the open register's items get blocks, or whether Track B
+  (the Nikon rig, 6a still pushed and awaiting a rig since 2026-08-05) or Track C
+  reopens first. **That choice has not been made.**
+- **Re-count the open register before quoting it**; it is one `grep` long and
+  every previous note that carried a number forward was wrong.
+
+### State at the 2026-08-11 assignment of block 43n — SUPERSEDED, kept for the round history
+
+> **Retired. Do not act on this note** — 43n was assigned, implemented, gated and
+> merged after it was written. The live note is the 43n close above; find it by
+> its heading, not by position in this file.
 
 **This is the live note. It supersedes every other State-at note in this
 section**, all of which are kept only for their round history. Position is not
