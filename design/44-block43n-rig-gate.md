@@ -299,10 +299,28 @@ lines call was not inlined. Every static check the exporter performs passed. Onl
 running it found this. Treat "the script was produced and looks right" as no
 evidence at all.
 
-Round 2's `block43n-standalone.txt` came back **empty (0 bytes)**, so that round
-proved nothing here either. If the file is empty, the step did not run — redirect
-both streams exactly as the block above does, and paste the exit code. An empty
-capture is not a pass.
+**An empty capture is EXPECTED and is not a failure.** The emitted script
+contains no `print()` and no `logging.basicConfig`, so a completely successful
+run writes nothing to stdout or stderr. Round 2's `block43n-standalone.txt` was
+0 bytes and the run had in fact succeeded — the coordinator initially mis-scored
+that step from the empty file alone, which is the mistake this paragraph exists
+to stop you repeating.
+
+**Score this step on the datasets, not on the transcript.** A standalone run
+writes a fresh, suffixed set beside the live one — round 2 produced
+`search_561_2`, `search_a2_2`, `search_a2_acquire_2`, and second copies of both
+hook logs. Check:
+
+- the acquire dataset exists for the standalone run and its stack is the same
+  size as the live one (round 2: 3,176,982 bytes both, 6 frames);
+- the standalone hook log carries the full decision trace independently — round 2
+  reproduced accept / duplicate / accept / duplicate / max_hits-exhausted with a
+  timestamp minutes after the live run;
+- the hits were chosen during that run rather than replayed, which the script's
+  structure shows: `hits = []` built at run time, `for hit in hits:`, and no
+  literal recorded coordinates in the acquire loop.
+
+Paste the exit code, which is the one thing the transcript does tell you.
 
 Static checks that are still worth doing first, because they are free and they
 localise a failure before you spend a run on it: the script must contain **no**
