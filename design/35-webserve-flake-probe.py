@@ -73,7 +73,7 @@ def _burn(stop):
             x += 1
 
 
-def one_round(join_timeout, pre_listen_wall):
+def one_round(join_timeout, pre_listen_wall, accept=False):
     opened = []
     real_open = webserve.webbrowser.open
     webserve.webbrowser.open = opened.append
@@ -103,12 +103,30 @@ def one_round(join_timeout, pre_listen_wall):
         opened_early = list(opened)
         elapsed_at_listen = clock()
         sock.listen(1)
+        stop_accept = threading.Event()
+        acceptor = None
+        if accept:
+            # Model uvicorn, which accepts. A listener that never accepts fills
+            # its backlog and later connects hang for the full connect timeout.
+            def accept_loop():
+                sock.settimeout(0.1)
+                while not stop_accept.is_set():
+                    try:
+                        conn, _ = sock.accept()
+                    except Exception:
+                        continue
+                    conn.close()
+            acceptor = threading.Thread(target=accept_loop, daemon=True)
+            acceptor.start()
         t_listen = time.monotonic()
         thread.join(timeout=join_timeout)
         wall_after_listen = time.monotonic() - t_listen
         alive = thread.is_alive()
         elapsed_end = clock()
     finally:
+        stop_accept.set()
+        if acceptor is not None:
+            acceptor.join(timeout=2)      # join before close: design/35 bridge-check lesson
         sock.close()
         webserve.webbrowser.open = real_open
 
@@ -139,6 +157,8 @@ def main():
                     help="background busy threads emulating suite load")
     ap.add_argument("--join-timeout", type=float, default=20.0)
     ap.add_argument("--pre-listen-wall", type=float, default=0.3)
+    ap.add_argument("--accept", action="store_true",
+                    help="accept connections after listen(), as uvicorn does")
     args = ap.parse_args()
 
     stop = threading.Event()
@@ -147,14 +167,14 @@ def main():
     for b in burners:
         b.start()
 
-    print(f"iterations={args.iterations} load={args.load} "
+    print(f"iterations={args.iterations} load={args.load} accept={args.accept} "
           f"join_timeout={args.join_timeout} worker_deadline={WORKER_TIMEOUT}")
     print(f"{'#':>4} {'verdict':<22} {'e@listen':>9} {'e@end':>7} "
           f"{'wall_after':>11} {'alive':>6} {'opened':>7}")
     counts = {}
     try:
         for i in range(1, args.iterations + 1):
-            r = one_round(args.join_timeout, args.pre_listen_wall)
+            r = one_round(args.join_timeout, args.pre_listen_wall, args.accept)
             counts[r["verdict"]] = counts.get(r["verdict"], 0) + 1
             print(f"{i:>4} {r['verdict']:<22} {r['elapsed_at_listen']:>9} "
                   f"{r['elapsed_end']:>7} {r['wall_after_listen']:>11} "

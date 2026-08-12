@@ -1006,6 +1006,10 @@ def test_browser_opens_only_once_the_port_accepts(monkeypatch):
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
     port = sock.getsockname()[1]
+    # Defined before the try so the finally cannot raise NameError over the top
+    # of a real assertion failure earlier in the block.
+    stop_accept = threading.Event()
+    acceptor = None
     try:
         thread = webserve._open_when_ready(
             "127.0.0.1", port, f"http://127.0.0.1:{port}",
@@ -1015,13 +1019,35 @@ def test_browser_opens_only_once_the_port_accepts(monkeypatch):
         assert opened == []          # bound, but not accepting yet
 
         sock.listen(1)
-        # join, not a fixed poll budget: a refused connect costs a retransmit
-        # timeout on Windows, so one in-flight attempt can outlast a couple of
-        # seconds of sleeping. This deadlocked nothing — it just made the test
-        # a race against the scheduler, which it lost on a loaded rig.
+        # ACCEPT, as uvicorn does. A listener that never accepts is not a model
+        # of the server this polls for: its backlog fills after the first
+        # connection, and every later connect then blocks for the full
+        # create_connection timeout instead of completing. Measured on the demo
+        # machine 2026-08-12 with design/35-webserve-flake-probe.py: under load,
+        # 1 round in 40 spent 20.19 s of wall time to advance the worker's own
+        # clock by only 2.3 s of its 15 s budget — stuck in connect, nowhere
+        # near its deadline. Accepting removes the stall; the same probe run
+        # with --accept is clean.
+
+        def accept_loop():
+            sock.settimeout(0.1)
+            while not stop_accept.is_set():
+                try:
+                    conn, _ = sock.accept()
+                except Exception:
+                    continue
+                conn.close()
+
+        acceptor = threading.Thread(target=accept_loop, daemon=True)
+        acceptor.start()
+        # join, not a fixed poll budget: a poll thread cannot be observed by
+        # sleeping for an interval and hoping it was scheduled.
         thread.join(timeout=20)
         assert not thread.is_alive(), "the poll thread never noticed the listen()"
     finally:
+        stop_accept.set()
+        if acceptor is not None:
+            acceptor.join(timeout=2)   # join before close, as test_bridge_check does
         sock.close()
     assert opened == [f"http://127.0.0.1:{port}"]
 
