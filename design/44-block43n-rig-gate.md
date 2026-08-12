@@ -473,24 +473,53 @@ frame, and the audit will carry a 488 enable entry. Authorization is a policy
 check with no device write behind it. Score on device writes and dose, not on the
 prompt. B2 already showed the same ordering.
 
-## B2 optical limb  **(OUTSTANDING — please answer)**
+## B2 optical limb  **(mostly ANSWERED 2026-08-12; one claim still owed)**
 
-The B2 run's counts all passed, but the optical claims were never recorded, and
-they are the only reason M5 time is spent. Open the saved datasets — live search
-`search_561_1` and live acquire `search_561_acquire_1` — and answer these four,
-in words, from what you see:
+**First, get the frame mapping — the datasets do not carry a channel axis.**
+Because `acquire_on_hit` makes channel a *phase setting* rather than an event
+axis, the search and acquire frames land in **separate directories** and neither
+records which channel it was. There is no interleaved stack to decode. Read the
+axes straight out of the index:
 
-1. Do the 561 search frames and the 488 burst look like different channels?
-2. Do the two acquired fields (`field_2`, `field_3`) contain the filamentous
-   structure the hook was scoring for?
-3. Was the hook's choice of those two fields, over `field_1`, a choice you agree
-   with looking at the 561 frames?
-4. Is each 488 burst in focus — i.e. did the per-hit Z restoration land on the
-   plane autofocus converged to?
+```powershell
+python -c "import re;b=open(r'search_561_1\NDTiff.index','rb').read();print(*[m.group().decode() for m in re.finditer(rb'\{[^{}]*\}',b)],sep=chr(10))"
+python -c "import re;b=open(r'search_561_acquire_1\NDTiff.index','rb').read();print(*[m.group().decode() for m in re.finditer(rb'\{[^{}]*\}',b)],sep=chr(10))"
+```
 
-A "no" or "not sure" on any of these is a real result and should be reported as
-such. **An inert run that matched every count without imaging anything real does
-not pass this step**, which is why this limb exists separately from B2's numbers.
+**Beware the padding frame.** An adaptive run with refocus writes a dense
+hypercube: M5's search array is 3 positions x 2 refocus = 6 slots for 5 real
+frames, and `field_1 refocus=1` is all zeros. **Iterate the index, not the array
+shape** — a reader walking the array gets a black frame that was never acquired
+(design/28 F3, in a new place).
+
+**Do not score this limb by eye on a bead sample.** M5 2026-08-12 ran beads, and
+beads are broad-spectrum: 561 and 488 are not visually separable, so "do they
+look like different channels" is the wrong question. Measure instead:
+
+```powershell
+python -c "import tifffile,numpy as np,glob;a=tifffile.imread(glob.glob('search_561_1/*.tif')[0]);b=tifffile.imread(glob.glob('search_561_acquire_1/*.tif')[0]);print('search',a.shape);print('acquire',b.shape);[print('search',idx,round(float(np.percentile(a[idx],99.9)),1),int(a[idx].max())) for idx in np.ndindex(a.shape[:-2])];[print('acquire',idx,round(float(np.percentile(b[idx],99.9)),1),int(b[idx].max())) for idx in np.ndindex(b.shape[:-2])]"
+```
+
+**PASS on the measurable claims:**
+
+- **The acquire frames carry real signal, not background.** This is the one that
+  matters: on a camera-triggered rig, an enable that did not take effect gives a
+  dark burst. M5 measured p99.9 ~3,400 and max ~10,000 (uint16) in the 488 burst,
+  against an audit showing `Laser 2` for search and `Laser 3` for acquire. **The
+  enable line emitted light** — the claim demo hardware can never make.
+- **The hook's ranking is defensible from the search frames.** M5: field_2
+  p99.9=3,934, field_3 p99.9=917, field_1 p99.9=563 — it took the top two, in
+  order.
+- **The burst is stable and in focus.** M5's field_2 frames varied under 1%
+  (3,410.8 / 3,426.2 / 3,434.4), so the restored per-hit Z held across all three.
+
+**STILL OWED, and it needs a different sample.** Whether the burst contains *the
+structure the hook was scoring for* cannot be answered on beads: the M5 hook was
+`filament_acquire_on_hit` and there were no filaments present. Re-run B2 on a
+filament sample (microtubules or similar) when one is on the stage, and answer
+one question: **do the two acquired fields contain filaments, and does field_1 —
+the one the hook passed over — contain fewer?** Until then this claim is unproven
+and must be reported as unproven, not inferred from the intensity numbers above.
 
 # Report
 
