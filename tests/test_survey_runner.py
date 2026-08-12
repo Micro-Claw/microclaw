@@ -1256,6 +1256,8 @@ class TestRunAdaptiveSurvey:
                             lambda _c, _p, pp, repetitions: AcquisitionPlan(
                                 pp["n_frames"] * repetitions,
                                 pp["exposure_ms"], 1, 1))
+        monkeypatch.setattr(tools, "_channel_effects_for_later_phase",
+                            lambda *_a: {"config_group": "Channel", "planned": True})
 
         def acquire(_guard, _save, name, events, hook=None, reservation=None, **_kw):
             timeline.append(("acquire", name))
@@ -1321,6 +1323,7 @@ class TestRunAdaptiveSurvey:
     ):
         from microclaw import tools
         from microclaw.acquisition import AcquisitionPlan
+        from microclaw.hook_decisions import HookResult, UntrustedHookAdapter
 
         class Reservation:
             has_overrun = False
@@ -1330,6 +1333,12 @@ class TestRunAdaptiveSurvey:
             def close(self): pass
 
         channels = []
+        adapter = UntrustedHookAdapter(
+            type("NoHit", (), {"analyze_frame": lambda self, image, metadata:
+                                HookResult({})})(),
+            str(tmp_path / "hook.json"),
+        )
+        monkeypatch.setattr(tools, "_resolve_hook", lambda *_a, **_k: adapter)
         monkeypatch.setattr(tools, "_set_channel_for_composite",
                             lambda _c, _g, channel: channels.append(channel)
                             or {"config_group": "Channel"})
@@ -1337,10 +1346,12 @@ class TestRunAdaptiveSurvey:
                             lambda _c, _g, plan, **_k: Reservation(plan))
         monkeypatch.setattr(tools, "_plan_protocol_repetitions",
                             lambda *_a, **_k: AcquisitionPlan(4, 20, 1, 1))
+        monkeypatch.setattr(tools, "_channel_effects_for_later_phase",
+                            lambda *_a: {"config_group": "Channel", "planned": True})
         result = tools.run_adaptive_survey(
             mock_ctrl, unconstrained_guard, protocol="timelapse",
             protocol_params={"n_frames": 1, "channel": "561", "exposure_ms": 5},
-            positions=self._positions(1), save_dir=str(tmp_path), hook_strategy="probe",
+            positions=self._positions(1), save_dir=str(tmp_path), hook_strategy="saved",
             acquire_on_hit={
                 "channel": "488", "protocol": "timelapse", "max_hits": 2,
                 "protocol_params": {"n_frames": 2, "exposure_ms": 20},
@@ -1351,6 +1362,50 @@ class TestRunAdaptiveSurvey:
         assert result["acquire_phase_ran"] is False
         assert result["max_hits_reached"] is False
         assert result["acquire_frames_unused"] == 4
+
+    def test_acquire_on_hit_refuses_registry_builtin_by_name_before_hardware(
+        self, mock_ctrl, unconstrained_guard, captured, tmp_path
+    ):
+        from microclaw.tools import run_adaptive_survey
+
+        result = run_adaptive_survey(
+            mock_ctrl, unconstrained_guard, protocol="timelapse",
+            protocol_params={"n_frames": 1, "channel": "561"},
+            positions=self._positions(1), save_dir=str(tmp_path), hook_strategy="probe",
+            acquire_on_hit={"channel": "488", "protocol": "timelapse",
+                            "protocol_params": {"n_frames": 1}, "max_hits": 1},
+        )
+        assert "registry built-in 'probe'" in result["error"]
+        assert "typed AcquireAt actions" in result["error"]
+        assert not captured
+
+    def test_acquire_plan_failure_precedes_search_channel_write(
+        self, mock_ctrl, unconstrained_guard, monkeypatch, tmp_path
+    ):
+        from microclaw import tools
+        from microclaw.hook_decisions import HookResult, UntrustedHookAdapter
+
+        adapter = UntrustedHookAdapter(
+            type("Hit", (), {"analyze_frame": lambda self, image, metadata:
+                              HookResult({})})()
+        )
+        monkeypatch.setattr(tools, "_resolve_hook", lambda *_a, **_k: adapter)
+        monkeypatch.setattr(
+            tools, "_plan_protocol_repetitions",
+            lambda *_a, **_k: (_ for _ in ()).throw(SafetyViolation("bad acquire plan")),
+        )
+        writes = []
+        monkeypatch.setattr(tools, "_set_channel_for_composite",
+                            lambda *_a, **_k: writes.append(True))
+        result = tools.run_adaptive_survey(
+            mock_ctrl, unconstrained_guard, protocol="timelapse",
+            protocol_params={"n_frames": 1, "channel": "561"},
+            positions=self._positions(1), save_dir=str(tmp_path), hook_strategy="saved",
+            acquire_on_hit={"channel": "488", "protocol": "timelapse",
+                            "protocol_params": {"n_frames": 1}, "max_hits": 1},
+        )
+        assert result == {"error": "bad acquire plan"}
+        assert writes == []
 
 
 # ── completion counts re-exposures TAKEN, not authorized (M5 rounds 2 and 4) ──

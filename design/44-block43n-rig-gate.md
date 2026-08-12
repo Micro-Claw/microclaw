@@ -25,7 +25,7 @@ Write-Host "pytest exit code (expected 0):" $LASTEXITCODE
 Get-Content block43n-pytest.txt
 ```
 
-Expected macOS baseline for this branch: **1906 collected, 1807 passed, 99
+Expected macOS baseline for this branch: **1909 collected, 1810 passed, 99
 skipped, 3 warnings**. The warnings are one `StarletteDeprecationWarning` and two
 empty-image `phase_cross_correlation` warnings. On Windows, record the exact
 count; a separate known socket-race item may intermittently add one warning but

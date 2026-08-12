@@ -1280,25 +1280,79 @@ def test_acquire_on_hit_emits_fresh_hit_program_with_per_hit_z(tmp_path, monkeyp
     assert "read_z=core.get_position" in source
     assert "for hit in hits:" in source
     assert "_event['z'] = hit['z_um']" in source
+    assert "guard.check_exposure(20)" in source
     assert "'x_um': 1" not in source.split("acquire_events = []", 1)[1]
     assert not _undefined_emitted_names(source)
     compile(source, str(tmp_path / "routine.py"), "exec")
 
 
-def test_acquire_on_hit_refuses_emission_without_both_phase_effects(tmp_path):
+def test_acquire_on_hit_refuses_only_when_executed_phase_lacks_effects(
+    tmp_path, monkeypatch
+):
+    from microclaw.hook_manager import save_hook
+    import microclaw.hook_manager as manager
+
+    hooks_dir = tmp_path / "hooks"
+    monkeypatch.setattr(manager, "HOOKS_DIR", hooks_dir)
+    monkeypatch.setattr(manager, "MANIFEST", hooks_dir / "manifest.json")
+    save_hook("hit", (
+        "from microclaw.hook_decisions import AcquireAt, HookResult\n"
+        "class Hit:\n"
+        "    def analyze_frame(self, image, metadata):\n"
+        "        return HookResult({}, (AcquireAt('p0'),))\n"
+    ), "hit", source="claude_generated")
     params = {
         "protocol": "timelapse", "protocol_params": {"n_frames": 1, "channel": "561"},
         "positions": [{"name": "p0", "x_um": 1, "y_um": 2}],
-        "save_dir": "session", "hook_strategy": "snr_observer",
+        "save_dir": "session", "hook_strategy": "hit",
         "acquire_on_hit": {"channel": "488", "protocol": "timelapse",
                            "protocol_params": {"n_frames": 1}, "max_hits": 1},
     }
     _, result, source = export(tmp_path, completed_call(
         "run_adaptive_survey", params,
-        {"channel_effects": {"search": {"config_group": "Channel"}}},
+        {"acquire_phase_ran": True,
+         "channel_effects": {"search": {"config_group": "Channel"}}},
     ))
     assert result["emitted_calls"] == 0
-    assert "phase has no recorded executable channel effects" in source
+    assert "executed acquire phase has no recorded executable channel effects" in source
+
+
+def test_zero_hit_session_emits_the_next_runs_acquire_program(tmp_path, monkeypatch):
+    from microclaw.hook_manager import save_hook
+    import microclaw.hook_manager as manager
+
+    hooks_dir = tmp_path / "hooks-zero"
+    monkeypatch.setattr(manager, "HOOKS_DIR", hooks_dir)
+    monkeypatch.setattr(manager, "MANIFEST", hooks_dir / "manifest.json")
+    save_hook("no_hit", (
+        "from microclaw.hook_decisions import HookResult\n"
+        "class NoHit:\n"
+        "    def analyze_frame(self, image, metadata):\n"
+        "        return HookResult({})\n"
+    ), "no hit", source="claude_generated")
+    params = {
+        "protocol": "timelapse",
+        "protocol_params": {"n_frames": 1, "channel": "561", "exposure_ms": 5},
+        "positions": [{"name": "p0", "x_um": 1, "y_um": 2}],
+        "save_dir": "session", "hook_strategy": "no_hit",
+        "acquire_on_hit": {"channel": "488", "protocol": "timelapse",
+                           "protocol_params": {"n_frames": 2, "exposure_ms": 20},
+                           "max_hits": 1},
+    }
+    recorded = {"hits_recorded": 0, "hits_acquired": 0,
+                "acquire_phase_ran": False,
+                "channel_effects": {
+                    "search": {"config_group": "Channel"},
+                    "acquire": {"config_group": "Channel", "planned": True},
+                }}
+    _, result, source = export(
+        tmp_path, completed_call("run_adaptive_survey", params, recorded)
+    )
+    assert result["emitted_calls"] == 1
+    assert "hits = []" in source
+    assert "core.set_config('Channel', '488')" in source
+    assert "if acquire_events:" in source
+    compile(source, str(tmp_path / "routine.py"), "exec")
 
 
 def test_absent_acquire_on_hit_keeps_adaptive_program_byte_identical(tmp_path):
@@ -1313,6 +1367,12 @@ def test_absent_acquire_on_hit_keeps_adaptive_program_byte_identical(tmp_path):
     )
     assert absent == explicit_none
     assert "hits = []" not in absent
+    assert "hook.survey_events = events" in absent
+    assert "hook.candidates = candidates" in absent
+    assert "hook.progress = progress" in absent
+    assert "event_source = _survey_event_stream(events, candidates, progress, 60.0, hook, adaptive=True, max_events=len(events))" in absent
+    assert "with Acquisition(directory=str(_HERE), name='survey', show_display=True, **_hook_callbacks) as acq:" in absent
+    assert "    acq.acquire(event_source(acq))" in absent
 
 
 @pytest.mark.parametrize("guard_body", [

@@ -925,12 +925,24 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
         pp = dict(params.get("protocol_params") or {})
         acquire_on_hit = params.get("acquire_on_hit")
         if acquire_on_hit is not None:
+            if not saved:
+                raise CannotEmit(
+                    "acquire_on_hit requires a saved/generated hook with typed AcquireAt actions"
+                )
             effects = params.result.get("channel_effects") or {}
             search_effect = effects.get("search")
             acquire_effect = effects.get("acquire")
-            if not search_effect or not acquire_effect:
+            if not search_effect:
                 raise CannotEmit(
-                    "an acquire_on_hit phase has no recorded executable channel effects"
+                    "the executed search phase has no recorded executable channel effects"
+                )
+            if not acquire_effect and params.result.get("acquire_phase_ran"):
+                raise CannotEmit(
+                    "the executed acquire phase has no recorded executable channel effects"
+                )
+            if not acquire_effect:
+                raise CannotEmit(
+                    "the unexecuted acquire phase has no recorded intended channel effects"
                 )
             common.append(_emit_recorded_channel_effects(
                 search_effect, pp.get("channel"), label="search channel"
@@ -1008,6 +1020,8 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
                 raise CannotEmit("unknown acquire_on_hit protocol")
             common.extend([
                 f"if len(hits) > {acquire_on_hit['max_hits']!r}: raise SafetyViolation('acquire hit cap exceeded')",
+                *( [f"guard.check_exposure({ap['exposure_ms']!r})"]
+                   if ap.get("exposure_ms") is not None else [] ),
                 "if hits:\n" + textwrap.indent(_emit_recorded_channel_effects(
                     acquire_effect, acquire_on_hit["channel"], label="acquire channel"
                 ), "    "),
@@ -2057,6 +2071,30 @@ def _set_channel_for_composite(
         "status": f"Channel set to '{preset}'.",
         "config_group": CHANNEL_CONFIG_GROUP,
     }
+
+
+def _channel_effects_for_later_phase(
+    ctrl: MicroscopeController, guard: SafetyGuard, preset: str
+) -> dict:
+    """Capture the intended export route without executing the later phase."""
+    from microclaw.authorization import (
+        CHANNEL_CONFIG_GROUP, _authorize_channel_effect, _channel_source,
+        authorize_channel,
+    )
+
+    guard.check_channel(preset)
+    if not _has_channel_authorization_map(ctrl):
+        return {"config_group": CHANNEL_CONFIG_GROUP, "planned": True}
+    authorize_channel(ctrl, preset)
+    source = _channel_source(ctrl, guard.is_illumination_enable)
+    effects = [
+        (str(device), str(prop), "" if value is None else str(value))
+        for device, prop, value in source.expand(ctrl.core, preset)
+    ]
+    for effect in effects:
+        _authorize_channel_effect(ctrl, guard, *effect, CONFIRM_FN)
+    return {"effects": [list(effect) for effect in effects],
+            "channel_source": source.describe(), "planned": True}
 
 
 @emits(_emit_set_channel)
@@ -5104,6 +5142,8 @@ def _acquire_survey_with_detector(
     acquire_plan: AcquisitionPlan | None = None,
     acquire_hits: list[dict] | None = None,
     acquire_max_hits: int | None = None,
+    search_phase_channel: str | None = None,
+    acquire_phase_channel: str | None = None,
     **shape_kwargs: Any,
 ) -> dict:
     """One survey acquisition whose event stream a detector hook can EXTEND.
@@ -5255,17 +5295,28 @@ def _acquire_survey_with_detector(
         )
         if adaptive else None
     )
-    acquire_reservation = (
-        _authorize_acquisition(ctrl, guard, acquire_plan)
-        if acquire_plan is not None else None
-    )
+    acquire_reservation = None
+    search_channel_effects = None
+    planned_acquire_effects = None
     try:
+        if acquire_plan is not None:
+            acquire_reservation = _authorize_acquisition(ctrl, guard, acquire_plan)
+        if acquire_phase_channel is not None:
+            planned_acquire_effects = _channel_effects_for_later_phase(
+                ctrl, guard, acquire_phase_channel
+            )
+        if search_phase_channel is not None:
+            search_channel_effects = _set_channel_for_composite(
+                ctrl, guard, search_phase_channel
+            )
         dataset_path = _acquire_with_hooks(
             guard, save_dir, name, events, hook, reservation=reservation
         )
     except Exception:
         if acquire_reservation is not None:
             acquire_reservation.close()
+        if reservation is not None:
+            reservation.close()
         raise
     return _adaptive_result(
         dataset_path, hook.log_path,
@@ -5274,6 +5325,10 @@ def _acquire_survey_with_detector(
         **(_reservation_report(reservation) if reservation is not None else {}),
         **({"_acquire_reservation": acquire_reservation}
            if acquire_reservation is not None else {}),
+        **({"_search_channel_effects": search_channel_effects}
+           if search_channel_effects is not None else {}),
+        **({"_planned_acquire_effects": planned_acquire_effects}
+           if planned_acquire_effects is not None else {}),
     )
 
 
@@ -5398,6 +5453,8 @@ def run_adaptive_survey(
                      "x_um": all_positions[n]["x_um"],
                      "y_um": all_positions[n]["y_um"]} for n in position_names]
     else:
+        if any(p.get("name") is None for p in positions):
+            return {"error": "Adaptive survey positions must have a non-null name."}
         resolved = [{"name": p["name"], "x_um": p["x_um"], "y_um": p["y_um"]}
                     for p in positions]
 
@@ -5406,6 +5463,16 @@ def run_adaptive_survey(
         hook = _resolve_hook(ctrl, guard, hook_strategy, hook_params, log_path)
     except ValueError as e:
         return {"error": str(e)}
+
+    if acquire_on_hit is not None:
+        from microclaw.hook_decisions import UntrustedHookAdapter
+        if not isinstance(hook, UntrustedHookAdapter):
+            return {
+                "error": f"acquire_on_hit requires a saved/generated hook that returns "
+                         f"typed AcquireAt actions; registry built-in {hook_strategy!r} "
+                         "uses the direct candidates queue contract. Use a saved hook "
+                         "with analyze_frame(...)->HookResult, or omit acquire_on_hit."
+            }
 
     progress = SurveyProgress(len(resolved))
     candidates: queue.Queue = queue.Queue()
@@ -5417,13 +5484,12 @@ def run_adaptive_survey(
         if not search_channel:
             return {"error": "protocol_params.channel is required with acquire_on_hit."}
         try:
-            search_effects = _set_channel_for_composite(ctrl, guard, search_channel)
             acquire_plan = _plan_protocol_repetitions(
                 ctrl, acquire_protocol, acquire_shape_for_plan, max_hits
             )
         except (SafetyViolation, ValueError, KeyError) as exc:
             return {"error": str(exc)}
-        channel_effects = {"search": search_effects}
+        channel_effects = {}
     result = _acquire_survey_with_detector(
         ctrl, guard, resolved, save_dir, name,
         hook=hook, progress=progress, candidates=candidates,
@@ -5434,9 +5500,17 @@ def run_adaptive_survey(
         artifact_limits=artifact_limits, autofocus_budget=autofocus_budget,
         acquire_plan=acquire_plan,
         acquire_hits=hits if acquire_on_hit is not None else None,
-        acquire_max_hits=max_hits, **shape,
+        acquire_max_hits=max_hits,
+        search_phase_channel=params.get("channel") if acquire_on_hit is not None else None,
+        acquire_phase_channel=acquire_channel,
+        **shape,
     )
     acquire_reservation = result.pop("_acquire_reservation", None)
+    search_effects = result.pop("_search_channel_effects", None)
+    planned_acquire_effects = result.pop("_planned_acquire_effects", None)
+    if acquire_on_hit is not None:
+        channel_effects["search"] = search_effects
+        channel_effects["acquire"] = planned_acquire_effects
     hits_acquired = 0
     acquire_phase_ran = False
     if acquire_on_hit is not None:
