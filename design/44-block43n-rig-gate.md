@@ -73,6 +73,32 @@ in round 1 on the same machine. Report `$warned` and the iteration count.
 Stop if the ancestor check, suite exit code, collection total, or test totals do
 not match the applicable platform baseline.
 
+**One exception, added after round 1.** If the only failure is
+`test_webserve.py::test_browser_opens_only_once_the_port_accepts`, record it and
+**continue** — it is not this block's, it is not in any file this block touched,
+and it passed on Windows at 43j's pin. Run Step 0b below and carry on to Part A.
+Any other failure still stops the gate.
+
+## Step 0b — the webserve flake probe (NOT part of this block's verdict)
+
+Piggybacking on the visit; it does not affect whether 43n passes. Skip it freely
+if time is short.
+
+```powershell
+python design\35-webserve-flake-probe.py --iterations 40 --load 0 > webserve-probe-idle.txt 2>&1
+Write-Host "idle exit code (expected 0):" $LASTEXITCODE
+python design\35-webserve-flake-probe.py --iterations 40 --load 8 > webserve-probe-load.txt 2>&1
+Write-Host "loaded exit code (expected 0):" $LASTEXITCODE
+Get-Content webserve-probe-idle.txt, webserve-probe-load.txt
+```
+
+Return both tables whole. **Every round reading `OK` is a real and useful result**
+— it means the trigger is something the probe does not model, and rules out both
+current hypotheses rather than proving the test is fine. The column to read first
+is `e@listen`: it is 0.00 on macOS, meaning the worker makes no poll iterations
+before `listen()`. If it climbs on Windows, the two platforms take different
+paths through the same test and that is the finding.
+
 ---
 
 # Part A — demo pre-gate
