@@ -888,8 +888,8 @@ def validate_live_rig(
             device=camera_device,
             capability="camera-roi",
             detail=(
-                "integer positive geometry guarded against the camera's current "
-                "hardware ROI; clear_roi restores full-frame bounds"
+                "integer nonnegative origin and positive size guarded before the "
+                "camera adapter validates its own sensor geometry"
             ),
         ))
 
@@ -1792,6 +1792,11 @@ def authorize_path(ctrl: Any, path: str) -> None:
             f"path instead.{(' Reason: ' + detail) if detail else ''}"
         )
     if not entries:
+        if path == "camera-roi" and not str(ctrl.core.get_camera_device() or ""):
+            raise RigAuthorizationError(
+                "The camera-roi write path was refused because Micro-Manager has no "
+                "camera configured. Configure a camera before setting or clearing ROI."
+            )
         raise RigAuthorizationError(
             f"The {path} write path was refused because the Phase-1 authorization map "
             "has no entry for it. This is a code/installation completeness error; "

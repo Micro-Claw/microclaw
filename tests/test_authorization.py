@@ -292,14 +292,18 @@ def test_code_level_exclusion_says_config_cannot_repair_it():
     assert "GUI-owned effects cannot be enumerated" in message
 
 
-def test_missing_code_path_names_installation_error_not_config_remedy():
-    ctrl = Controller()
+def test_missing_camera_roi_entry_names_absent_camera():
+    core = Core()
+    core.camera = ""
+    ctrl = Controller(core)
     ctrl.authorization_map = AuthorizationMap(
         mode="guaranteed", verdict="complete", complete=True,
     )
     with pytest.raises(RigAuthorizationError) as caught:
         authorize_path(ctrl, "camera-roi")
-    assert "code/installation completeness error" in str(caught.value)
+    message = str(caught.value)
+    assert "Micro-Manager has no camera configured" in message
+    assert "completeness error" not in message
 
 
 @pytest.mark.parametrize(

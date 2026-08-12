@@ -1792,14 +1792,7 @@ def set_roi(
 ) -> dict:
     from microclaw.authorization import authorize_path
     authorize_path(ctrl, "camera-roi")
-    current = ctrl.core.get_roi()
-    guard.check_roi(
-        x, y, width, height,
-        bounds_x=int(current.x),
-        bounds_y=int(current.y),
-        bounds_width=int(current.width),
-        bounds_height=int(current.height),
-    )
+    guard.check_roi(x, y, width, height)
     ctrl.core.set_roi(x, y, width, height)
     _wait(ctrl, ctrl.core.get_camera_device())
     live_restarted = _bounce_live_if_on(ctrl)
@@ -1812,14 +1805,6 @@ def set_roi(
 def clear_roi(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     from microclaw.authorization import authorize_path
     authorize_path(ctrl, "camera-roi")
-    current = ctrl.core.get_roi()
-    guard.check_roi(
-        int(current.x), int(current.y), int(current.width), int(current.height),
-        bounds_x=int(current.x),
-        bounds_y=int(current.y),
-        bounds_width=int(current.width),
-        bounds_height=int(current.height),
-    )
     ctrl.core.clear_roi()
     _wait(ctrl, ctrl.core.get_camera_device())
     live_restarted = _bounce_live_if_on(ctrl)
