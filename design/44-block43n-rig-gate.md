@@ -18,7 +18,7 @@ required for them.
 In PowerShell, from the checkout:
 
 ```powershell
-git merge-base --is-ancestor 0f40238 HEAD
+git merge-base --is-ancestor db8baf5 HEAD
 Write-Host "implementation ancestor exit code (expected 0):" $LASTEXITCODE
 python -m pytest -q -p no:cacheprovider > block43n-pytest.txt 2>&1
 Write-Host "pytest exit code (expected 0):" $LASTEXITCODE
