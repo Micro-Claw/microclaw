@@ -151,12 +151,24 @@ repo's fixtures:
 | `uv_activation`, `uv_activation_wind_down` | loads |
 | `mosaic_stitcher` (legacy) | loads |
 | `mosaic_stitcher_rot` (legacy) | loads |
-| **`mosaic_stitcher` (migrated/v2)** | **REFUSES** — reversed `EmitArtifact` |
-| **`mosaic_stitcher_rot` (migrated/v2)** | **REFUSES** — reversed `EmitArtifact` |
+| **`mosaic_stitcher` (migrated/v2)** | **REFUSES** — `EmitArtifact` first positional argument is not provably a string |
+| **`mosaic_stitcher_rot` (migrated/v2)** | **REFUSES** — same |
 
-Those two carry the same defect session A's hook had: they would have run,
-exposed the sample, and failed on the final tile. Refusing them is the fix
-working. **They need re-saving with `EmitArtifact(filename=..., payload=...)`
+**Corrected 2026-08-12 (block 45), and the original wording was wrong in both
+halves.** It said these two carried a *reversed* `EmitArtifact` and "would have
+run, exposed the sample, and failed on the final tile." Neither is true. The
+sources say `EmitArtifact(self.filename, canvas)` — the documented
+`(filename, payload)` order, not reversed — and
+`test_stitcher_migrations_preserve_canvas_and_parent_writes` shows they write a
+correct `mosaic.tiff`, so nothing would have failed on the final tile. They
+refuse because `_hook_contract_analysis`'s `provably_string` gate deliberately
+rejects any two-positional `EmitArtifact` whose first argument is not statically
+a string, and `self.filename` is an attribute. **M5's own registry confirmed this
+on 2026-08-12**: `mosaic_stitcher_v2` and `mosaic_stitcher_rot_v2` refuse with
+the `provably_string` contract text and nothing resembling a swap.
+
+**They need re-saving in the keyword form,
+`EmitArtifact(filename=self.filename, payload=canvas)`,
 before they can be used again** — ask microclaw to do it, as it did for
 `plus_mosaic_stitcher` during the H1 round.
 
@@ -214,6 +226,33 @@ Also, for the record:
 > List my saved hooks and tell me which ones would refuse to run and why.
 
 Paste that output — it is the authoritative registry survey for your rig.
+
+### What the migration found — block 45, M5, 2026-08-12
+
+This survey's numbers were re-measured when block 45 migrated the registry, and
+**the "12 saved hooks" recorded here was already stale**: M5 carries **21**, of
+which **9** were unresolvable. Nine is the number that held; twelve was not.
+Treat a live `list_hooks` as authoritative and never carry a count forward.
+
+Recoverable by re-saving alone (pin-only refusal — the source was already
+contract-clean, the manifest hash simply predated byte-pinning):
+`filament_position_filter_v2`, `mosaic_cell_counter_v2`, `uv_activation`,
+`uv_activation_wind_down`.
+
+Needed rewritten source, not a re-save: `mosaic_cell_counter`, `mosaic_stitcher`
+and `mosaic_stitcher_rot` still used the pre-Block-7 contract (subclass
+`HookBase`, take `log_path`); `mosaic_stitcher_v2` and `mosaic_stitcher_rot_v2`
+needed the keyword `EmitArtifact` form. All five have corrected sources in
+`tests/fixtures/hooks/m5_migrated/`.
+
+Outcome: **9 unresolvable → 4**, the remainder being the four `_v2` entries,
+which the operator will finish in place. The round also established that a `_v2`
+name is a **separate registry entry**, not an alias for the un-suffixed one —
+re-saving one leaves the other refused, which is how four were missed.
+
+**There is no way to remove a saved hook.** A superseded entry can only be
+re-saved, never retired, so a registry accumulates duplicates that `list_hooks`
+must keep reporting. Recorded as an open finding by block 45; no tool was added.
 
 ## H7 — an emitting hook with no budget is refused during planning (zero dose)
 

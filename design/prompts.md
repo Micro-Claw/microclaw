@@ -6125,3 +6125,65 @@ not exhausting it. The cause was a test that calls `listen(1)` and never accepts
 Both machines showed the same signature, and load was not the trigger: M5 failed
 *more* when idle. With `--accept`, 80 rounds across two load levels, zero
 failures.
+
+## Block 45 — repair the saved-hook path (merged 2026-08-12, `c3fc591`)
+
+**Three of the block's own premises were wrong, and reading the code before
+assigning it was worth more than anything the block later did.** The item text
+said `describe_saved_hook` "already computes the full refusal set, so the save
+path can call it" — it cannot, because that function starts from the manifest and
+reads bytes off disk while the save path holds source not yet written; only the
+two source-property reasons are functions of code alone. It said the rewrite was
+"roughly a half-day" when `tests/fixtures/hooks/m5_migrated/` already held
+migrated versions of all four legacy hooks. And it said two hooks carried a
+"reversed `EmitArtifact`" that "would have failed mid-acquisition" — the argument
+order is the documented one, a runtime test shows they write a correct canvas,
+and they refuse because a deliberate `provably_string` gate rejects a
+two-positional call whose first argument is not statically a string. **M5's
+registry later confirmed the third correction verbatim.** A claim repeated across
+a design doc, a checklist item and an open-register entry is not thereby true;
+all three were copies of one 2026-08-05 sentence.
+
+**The runbook was again where the rounds were lost, and this time before the rig
+saw it.** Review round 1 returned four blocking findings and the two that
+mattered were both in the gate doc: Step 3's prompt ("acquire one frame at the
+current position") routed an agent to `run_timelapse`, which emits through
+`_emit_adaptive` and never produces the comment the step existed to check; and
+Step 4's mapping table expected nine unresolvable names while only six fixtures
+exist, so the operator would reach name seven and improvise. Both were caught by
+reading the runbook as a program to be executed rather than as prose. Step 3 then
+passed first time on the rig.
+
+**The coordinator's own table still cost the block a limb.** Step 4's fix wrote
+"`mosaic_stitcher` or `mosaic_stitcher_v2`" as though they were alternate names
+for one entry. M5 carries both, so re-saving one left the twin refused and the
+round closed at 9 → 4 instead of 9 → 0. The lesson is narrower than "be careful":
+**route by the refusal reasons the tool already returns, not by name similarity.**
+A pin-only refusal re-saves from the hook's own path — `resolve_refusal.remedy`
+supplies it — and only a source or contract reason justifies overwriting from a
+fixture.
+
+**The gate found the block's own thesis in a second instance, and no test could
+have.** Step 2's agent saved a hook calling `HookResult` and `StopSurvey` with no
+import line. Save returned "saved successfully", describe returned
+`would_refuse: false`, and the survey died with `NameError` inside the image
+processor *after the stage had moved*. The fix extended the `ast.Call` walk that
+already resolved those names to check their signatures — it knew the name was an
+action and never asked whether the source could resolve it. Scoped to that closed
+vocabulary, never to general undefined-name analysis. **Verified by probing the
+boundary rather than by reading the diff**: eleven shapes exercised, of which the
+method-level import is the one that would actually have bitten a generated hook,
+and the two that still refuse (a function-local rebinding, a module-level assign
+nested in a bare `if`) were left refusing on purpose with the reason written into
+the code.
+
+**A stale count was carried forward again.** design/38 recorded twelve saved
+hooks; M5 has twenty-one. "Nine unresolvable" happened to still hold, which is
+exactly what makes this kind of error survive. Re-count before quoting — the
+runbook wording that told the operator to treat the live `list_hooks` as
+authoritative is what kept the round on the real names.
+
+**Ungated by decision, with the reason recorded.** The decision-name refusal
+shipped without a further rig round: pure static analysis, no hardware surface,
+and the rig had already supplied the failing case. Step 4's remainder is
+operator-owned follow-up, not an open gate.
