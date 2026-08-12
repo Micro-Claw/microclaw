@@ -1792,11 +1792,19 @@ def authorize_path(ctrl: Any, path: str) -> None:
             f"path instead.{(' Reason: ' + detail) if detail else ''}"
         )
     if not entries:
-        if path == "camera-roi" and not str(ctrl.core.get_camera_device() or ""):
-            raise RigAuthorizationError(
-                "The camera-roi write path was refused because Micro-Manager has no "
-                "camera configured. Configure a camera before setting or clearing ROI."
-            )
+        # Refining the message must never replace the refusal with a bridge
+        # error: this is already the failure path, and an unreachable core here
+        # would otherwise surface as an unrelated exception.
+        if path == "camera-roi":
+            try:
+                has_camera = bool(str(ctrl.core.get_camera_device() or ""))
+            except Exception:
+                has_camera = True
+            if not has_camera:
+                raise RigAuthorizationError(
+                    "The camera-roi write path was refused because Micro-Manager has no "
+                    "camera configured. Configure a camera before setting or clearing ROI."
+                )
         raise RigAuthorizationError(
             f"The {path} write path was refused because the Phase-1 authorization map "
             "has no entry for it. This is a code/installation completeness error; "
