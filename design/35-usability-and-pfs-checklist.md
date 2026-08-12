@@ -365,7 +365,7 @@ and the only branches on `origin` besides `main` are
   second merges `main` first**. Eight blocks remain after them: 43c, 43e, 43f,
   43g, 43h, 43i, 43j, 43k.
 
-### State at the 2026-08-12 block 9 intake — read this before assigning anything
+### State at the 2026-08-12 close of blocks 46 and 47 — read this before assigning anything
 
 **This is the live note. It supersedes every other State-at note in this
 section**, all of which are kept only for their round history. Position is not
@@ -373,10 +373,21 @@ recency — read the heading, not the order.
 
 Verify against the repository rather than against any hash here. What held at
 this note's writing, and was checked rather than assumed: working tree clean,
-`git log --oneline origin/main..main` empty, `main` at `1eda20b`, and on `origin`
+`git log --oneline origin/main..main` empty, `main` at `ef18a02`, and on `origin`
 besides `main` only `design34/focus-system-authorization` (6a),
-`florian/setup-claude-workflow` and `port-to-jpype-acqj`. One worktree besides
-this one: `../microclaw-6a`, idle at `4994f3e`.
+`florian/setup-claude-workflow` and `port-to-jpype-acqj` — **no open block
+branch.** One worktree besides this one: `../microclaw-6a`, idle at `4994f3e`.
+
+**This note covers one session, which closed two blocks in opposite directions:
+47 merged, 46 dropped unmerged.** It opens with Track C's intake because that is
+what the session was picked up to do, and Track C is still where it was left.
+
+**Nothing is awaiting a rig and no block is in flight.** The next thing to do is
+a choice, not a continuation: Track C when the `.ilp` exists, Track B when the
+Nikon answers, or a new block from the open register. **Two carried items are
+owed but block nothing**: M5's four `_v2` hooks from block 45 Step 4 are still
+unresolvable and are operator-owned, and the open register stood at 52 items
+before blocks 46 and 47 closed two of them.
 
 - **Track C was picked up and block 9 still cannot branch.** The intake
   conversation was held: the target is **puncta counting** and the initial
