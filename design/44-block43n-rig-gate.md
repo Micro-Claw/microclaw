@@ -54,8 +54,15 @@ reached or either phase/exposure bound is absent.
 ### Step 2 — positive hit run
 
 Use a reviewed saved hook and fields where the operator can identify at least
-one real positive. Approve both acquisition reservations and both
-`illumination/enable` streams. Retain the complete audit and hook log.
+one real positive. Retain the complete audit and hook log.
+
+**Expect to be asked about 488 before any 561 frame is taken, and expect the
+order to look backwards.** Both reservations are taken, and the acquire
+channel's enable effects are authorized, *before* the search channel is written
+to hardware — so the `illumination/enable` prompts for 488 arrive first, then the
+561 switch, then the search frames. Authorizing 488 is not switching to 488: the
+authorization is a policy check and a confirmation with no device write behind
+it. Approve both reservations and both enable streams.
 
 Pass requires all positive limbs:
 
@@ -81,6 +88,15 @@ requires a successful search result with `hits_recorded=0`, `hits_acquired=0`,
 `max_hits_reached=false`, and `acquire_phase_ran=false`; there must be no 488
 switch, no acquire dataset, and zero acquire frames/dose. Search frames must
 still exist. A run with no frames at all cannot pass.
+
+**You will still be prompted to authorize 488 on this run, and the audit will
+still carry a 488 enable entry. That is expected and is not a failure of this
+step** — authorization happens up front for a phase that may never execute, as in
+Step 2. What must be absent is the *switch*: no device write to the 488 channel,
+no acquire dataset, no acquire frames, no acquire dose. Score this step on the
+device writes and the frame/dose counts, not on the presence of the prompt. If
+you cannot tell an authorization from a switch in the audit, stop and report
+that — it is a finding about the audit, not a pass or a fail of this step.
 
 ### Step 4 — standalone replay with Microclaw closed
 

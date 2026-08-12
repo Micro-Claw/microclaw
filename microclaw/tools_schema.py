@@ -1407,7 +1407,12 @@ TOOLS: list[dict[str, Any]] = [
                         "after search; protocol is timelapse or zstack; protocol_params "
                         "contains n_frames/interval_s/exposure_ms or relative "
                         "z_offset_start_um/z_offset_end_um/z_step_um/exposure_ms; "
-                        "max_hits deduplicates and bounds accepted AcquireAt actions."
+                        "max_hits deduplicates and bounds accepted AcquireAt actions. "
+                        "Requires a saved or generated hook returning typed AcquireAt "
+                        "actions; registry built-ins use the direct queue contract and "
+                        "are refused. The operator is asked to authorize BOTH channels "
+                        "before the first search frame, so they may approve enabling an "
+                        "acquire channel that a zero-hit run never switches to."
                     ),
                     "properties": {
                         "channel": {"type": "string"},
