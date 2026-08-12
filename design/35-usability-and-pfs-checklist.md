@@ -7651,8 +7651,24 @@ refusal text quoted in that gate's evidence.
       gate.
 - [ ] **`set_roi` has no bounds check at all today** — it takes `guard` and never
       uses it (`tools.py:1785`). A typed capability without a guard call is the
-      same hole with a friendlier name. Whatever bounds are chosen, both
-      `set_roi` and `clear_roi` must go through the guard.
+      same hole with a friendlier name.
+
+      > **Corrected 2026-08-12, coordinator error.** This item originally read
+      > "both `set_roi` and `clear_roi` must go through the guard." That is wrong
+      > for `clear_roi`, which restores the full frame and has no geometry to
+      > validate — a guard call there can only refuse on degenerate
+      > camera-reported values, which would block the one operation that recovers
+      > from a bad ROI. Round 1 implemented it literally and correctly; the
+      > requirement was the defect. **`set_roi` goes through the guard;
+      > `clear_roi` does not.**
+- [ ] **Do not invent an envelope the hardware does not have.** If the camera's
+      full-frame extent is not portably knowable — round 1 established that
+      `getImageWidth`/`getImageHeight` describe the current image buffer, not the
+      sensor, which is a real finding worth keeping — then the guard validates
+      that the rectangle is integral and positive and lets the adapter refuse
+      geometry it cannot do. Bounding a requested ROI by the *current* ROI turns
+      `set_roi` into a shrink-only operation and refuses repositioning that
+      worked before `2599869`. Current ROI is state, not a limit.
 - [ ] **ROI is geometry, not dose.** It does not change illumination, and frames
       × exposure is unchanged by it, so this must not be routed through the
       acquisition dose policy. If the block finds a dose interaction (readout
