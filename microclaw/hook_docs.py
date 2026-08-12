@@ -72,15 +72,15 @@ events must pass the guard.
 
 Once the technical contract is complete, summarize it in plain language and call
 out only unresolved assumptions that affect scientific meaning or safety. Choose
-the hook method below, write a `HookBase` adapter, and test it without hardware
+the hook method below, write a plain saved-hook class, and test it without hardware
 against the example. If the output cannot yet be verified, make the first version
-observation-only: log raw output and do not drive acquisition. Show the full source
+observation-only: return raw output as measurements and do not drive acquisition. Show the full source
 and lint warnings, and save it only after explicit confirmation. Package setup
 belongs in the hook's documented local environment, not in a package-specific
 microclaw analysis tool.
 
 For that first observation-only version, normalize the verified part of the raw
-output to JSON values and call `self.log_analysis(...)`. Record the analyzer name
+output to JSON values in `HookResult.measurements`. Record the analyzer name
 and installed version, parameters affecting the result, and the sha256 of any
 model/project/config artifact. Use `status="unverified"` when axes, units, score
 semantics, or coordinates remain unresolved. Do not turn an unverified record into
@@ -262,9 +262,10 @@ Called after every image arrives from the camera, before it is saved.
     microclaw runner silently discards anything a hook puts there: it adds no
     event, and event_queue.put(None) does NOT end the acquisition early.
 
-To key a log entry to the image's place in the acquisition, call
-self.log(metadata, ...) on HookBase: it stamps position/x_um/y_um/z_um for you
-from the image metadata, so every entry is self-describing.
+For a saved `analyze_frame` hook, return measurements in `HookResult`; the
+trusted parent writes the log and stamps position/x_um/y_um/z_um from the image
+metadata, so every entry is self-describing. `HookBase.log` is only for trusted
+pre-coded registry hooks and must not be used as a saved-hook pattern.
 
 If you read the metadata yourself: a multi-position acquisition carries
 "PositionName", "XPosition_um_Intended" and "YPosition_um_Intended"; a Z-stack
@@ -428,7 +429,8 @@ runner that can never honor its decisions.
 
 ## Generated saved-hook pattern
 
-Saved hooks need not inherit HookBase. The trusted parent owns the log so hook
+Saved hooks must not inherit HookBase or take a `log_path` constructor argument.
+The trusted parent owns the log so hook
 source cannot forge or omit its action decision record.
 
 ```python

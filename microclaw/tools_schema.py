@@ -1614,7 +1614,8 @@ TOOLS: list[dict[str, Any]] = [
         "name": "list_hooks",
         "description": (
             "List all available hook strategies: pre-coded hooks and previously saved hooks "
-            "(with their descriptions and source). Call describe_hook with a strategy name "
+            "with resolvable status, every resolve refusal reason, and its remedy. Never "
+            "attach an entry whose resolvable field is false. Call describe_hook with a strategy name "
             "to discover constructor parameters and resolve-time compatibility before an "
             "acquisition."
         ),
@@ -1655,7 +1656,7 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Return the pycro-manager hook API reference: Acquisition hook kwargs, "
             "hook function signatures, return-value contracts, event dict structure, "
-            "event_queue usage, the HookBase pattern required by microclaw, and the "
+            "event_queue usage, the plain analyze_frame/HookResult saved-hook pattern, and the "
             "integration interview for adapting a user's Python package, executable, "
             "plugin, or other custom analysis. Call this before writing a new hook."
         ),
@@ -1796,7 +1797,8 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "generate_and_save_hook",
         "description": (
-            "Validate and save a hook script to disk. "
+            "Validate and save a hook script to disk. Refuses before writing if the source "
+            "would be refused at run time, returning every reason and the required fix. "
             "IMPORTANT: Call this ONLY after showing the full code to the user and receiving "
             "explicit confirmation. Runs an AST safety scan before saving. "
             "source must be 'claude_generated' or 'user_provided'."

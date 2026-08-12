@@ -153,13 +153,28 @@ def _emit_go_to_position(params: RecordedParams) -> str:
 
 def _emit_multiposition(params: RecordedParams) -> str:
     hook = params.get("hook_strategy")
+    omitted_hook_comment = ""
     if hook:
         from microclaw.hooks import PRECODED_HOOK_REGISTRY
+        if isinstance(hook, list):
+            raise CannotEmit(
+                "composed hooks: the fixed-plan exporter cannot inline their "
+                "adapters and observation logs"
+            )
         hook_cls = PRECODED_HOOK_REGISTRY.get(hook) if isinstance(hook, str) else None
+        if hook_cls is None:
+            raise CannotEmit(
+                f"saved or unknown hook ({hook!r}): the fixed-plan exporter cannot "
+                "inline its adapter and observation log"
+            )
         if not getattr(hook_cls, "_observation_only", False):
             raise CannotEmit(
                 f"hooked acquisition ({hook!r}): inlining HookBase would import microclaw safety and hook decisions"
             )
+        omitted_hook_comment = (
+            f"# OBSERVATION HOOK NOT ATTACHED: {hook!r}; this standalone script "
+            "reproduces imaging only and does not reproduce its measurements or hook log.\n"
+        )
     positions = params.get("positions")
     if positions is None:
         if params.get("_position_resolution_error"):
@@ -183,11 +198,11 @@ def _emit_multiposition(params: RecordedParams) -> str:
     protocol = params["protocol"]
     protocol_params = dict(params.get("protocol_params") or {})
     if hook:
-        if any(position.get("z_um") is None for position in positions):
-            raise CannotEmit(
-                "observation-only hooked acquisition has positions without recorded Z"
-            )
         if protocol == "timelapse":
+            if any(position.get("z_um") is None for position in positions):
+                raise CannotEmit(
+                    "observation-only hooked timelapse has positions without recorded Z"
+                )
             shape = {
                 "num_time_points": protocol_params["n_frames"],
                 "time_interval_s": protocol_params.get("interval_s", 0),
@@ -220,7 +235,7 @@ def _emit_multiposition(params: RecordedParams) -> str:
                 shape["channel_exposures_ms"] = [exposure]
         prefix = f"core.set_exposure({exposure!r})\n" if exposure is not None and not channel else ""
         return (
-            prefix
+            omitted_hook_comment + prefix
             + f"events = multi_d_acquisition_events(**{shape!r})\n"
             + "with Acquisition(directory=str(_HERE), "
             f"name={params.get('name', 'multipos')!r}) as acq:\n"
@@ -274,10 +289,6 @@ def _emit_multiposition(params: RecordedParams) -> str:
 
 
 def _emit_tile(params: RecordedParams) -> str:
-    if params.get("hook_strategy"):
-        raise CannotEmit(
-            "hooked tile acquisition: inlining HookBase would import microclaw safety and hook decisions"
-        )
     center_x = params.get("center_x_um", params.result.get("grid_center_x_um"))
     center_y = params.get("center_y_um", params.result.get("grid_center_y_um"))
     if center_x is None or center_y is None:
@@ -6397,7 +6408,10 @@ def generate_and_save_hook(
     open/os, so warnings must not hard-block). The human review of the full code
     is the actual gate.
     """
-    from microclaw.hook_manager import lint_hook_code, save_hook, validate_hook_contract
+    from microclaw.hook_manager import (
+        lint_hook_code, save_hook, saved_hook_source_refusal,
+        validate_hook_contract,
+    )
     warnings = lint_hook_code(code)
     if runner_contract not in {"fixed", "adaptive"}:
         return {"error": "runner_contract must be 'fixed' or 'adaptive'."}
@@ -6407,6 +6421,21 @@ def generate_and_save_hook(
         return {
             "error": "Hook failed static preflight; it was not saved.",
             "contract_errors": contract_errors,
+            "warnings": warnings,
+            "preflight": "static-only (source was not imported or executed)",
+        }
+    source_refusal = saved_hook_source_refusal(code)
+    if source_refusal["reasons"]:
+        return {
+            "error": "Hook would be refused at run time; it was not saved.",
+            "resolve_refusal": {
+                "would_refuse": True,
+                "reasons": source_refusal["reasons"],
+                "remedy": {
+                    "insufficient_for": source_refusal["insufficient_for"],
+                    "note": source_refusal["note"],
+                },
+            },
             "warnings": warnings,
             "preflight": "static-only (source was not imported or executed)",
         }

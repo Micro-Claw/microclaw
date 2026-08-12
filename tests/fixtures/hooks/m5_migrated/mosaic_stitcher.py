@@ -45,7 +45,7 @@ class MosaicStitcher:
         if len(self.tiles) >= self.n_tiles and not self.written:
             canvas = self._assemble()
             self.written = True
-            actions = (EmitArtifact(self.filename, canvas),)
+            actions = (EmitArtifact(filename=self.filename, payload=canvas),)
             entry["wrote_mosaic"] = True
             entry["mosaic_filename"] = self.filename
             entry["mosaic_shape"] = list(canvas.shape)
