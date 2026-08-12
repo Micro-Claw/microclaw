@@ -759,7 +759,16 @@ review rounds `e0645f1` and `47295f2`). Gated on the Micro-Manager demo core and
   would not bound the resulting position.
 - **Velocity** — needs its own semantics and a stopping policy, not a position bound.
 - **Voltage/DAC** — no measured conversion to a physical effect.
-- **Camera ROI** — a separate geometry capability, already tracked.
+- **Camera ROI** — **shipped as a typed geometry capability, block 47, merged
+  2026-08-12.** No longer deferred. `set_roi`/`clear_roi` are
+  `built_in_typed_capability` with `capability="camera-roi"`, emitted beside
+  `dedicated-exposure`. The guard validates only what is invalid independently
+  of the adapter — integer values, nonnegative origin, positive size — because
+  the camera's full-frame extent is not portably knowable
+  (`getImageWidth`/`getImageHeight` describe the current image buffer, not the
+  sensor). Sensor-specific geometry is the adapter's to refuse, and the demo gate
+  measured that it does accept a reposition outside the current crop, so
+  MMCore's `setROI` takes full-frame coordinates.
 - **MicroFPGA pulse duration** — `Laser Trigger."Duration0 (us)"` is now *refused* as
   an unclassified continuous actuator rather than silently admitted, but it is still
   not *declarable*. Bounding it safely requires expressing dose as level × duration,
@@ -909,7 +918,12 @@ or the appropriateness of M5's declared limits.
   Block 5 and deserves a separate error-reporting cleanup.
   **CLOSED** — fixed incidentally in `bb6290f`, verified and regression-tested
   under checklist v2 Block 3. See "Error taxonomy and offline validation" below.
-- **Camera ROI** is excluded (no typed ROI capability) — tracked for a later phase.
+- **Camera ROI** was excluded here for want of a typed capability, and **that is
+  no longer true**: block 47 shipped one, merged 2026-08-12. The exclusion had
+  been hard-coded rather than config-driven, so between `2599869` (2026-07-22)
+  and that merge **ROI was refused on every map-carrying rig**, and the refusal
+  told operators to change a safety config that could not have helped. Both are
+  fixed. This was a gap, not a capability decision — see the entry above.
 - **`degraded_trusted_plugins`** remains the sanctioned escape hatch: it suspends the
   completeness guarantee for sessions where the allowlist ceremony is not warranted.
 
