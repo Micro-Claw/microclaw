@@ -365,11 +365,48 @@ and the only branches on `origin` besides `main` are
   second merges `main` first**. Eight blocks remain after them: 43c, 43e, 43f,
   43g, 43h, 43i, 43j, 43k.
 
-### State at the 2026-08-12 close of block 43n — read this before assigning anything
+### State at the 2026-08-12 assignment of block 45 — read this before assigning anything
 
 **This is the live note. It supersedes every other State-at note in this
 section**, all of which are kept only for their round history. Position is not
 recency — read the heading, not the order.
+
+Verify against the repository rather than against any hash here. What should
+hold: working tree clean, `git log --oneline origin/main..main` empty, and on
+`origin` besides `main`: `design45/saved-hook-repair` (open, block 45),
+`design34/focus-system-authorization` (6a, parked on the Nikon),
+`florian/setup-claude-workflow` and `port-to-jpype-acqj`.
+
+- **Block 45 is assigned and its branch is open.** Nothing is merged from it yet.
+  Its gate is the demo machine for the mechanism; M5 is needed only to re-save
+  the migrated hooks. It is block 9's prerequisite, not a Track F leftover.
+- **Three of block 45's premises were corrected at assignment by reading the
+  code, not the prose that carried them forward.** They are written into the
+  block section: the save-time fold cannot be "call `describe_saved_hook`"
+  because that function starts from the manifest; the registry rewrite is not a
+  half-day from nothing because `tests/fixtures/hooks/m5_migrated/` already
+  carries migrated sources for all four legacy hooks; and **the
+  "reversed-`EmitArtifact`" defect is not reversed and would not have failed
+  mid-acquisition** — it is the deliberate `provably_string` gate refusing
+  `EmitArtifact(self.filename, canvas)`, and a runtime test shows those hooks
+  write a correct canvas. The design gate must correct design/38 and the open
+  register, not annotate them.
+- **Track C is still next after 45**, with ilastik as its analysis, and block 9
+  still cannot branch until the operator supplies the intake — a trained `.ilp`,
+  a known input and its known result, what the target means, and the desired
+  initial observation-only action. A negative result from Run B is a valid
+  outcome.
+- **Track B stays parked**: 6a has been pushed and awaiting the Nikon since
+  2026-08-05.
+- **The runbook lesson from 43n governs block 45's gate**: every step ships the
+  literal thing to paste and the exact expected output, and the coordinator runs
+  it before the operator does. Every 43n step written as a criterion was skipped.
+- **Re-count the open register before quoting it.**
+
+### State at the 2026-08-12 close of block 43n — SUPERSEDED, kept for the round history
+
+> **Retired. Do not act on this note** — its repository-state claims were true at
+> the close of 43n and block 45 has been assigned since. Kept for its gate record.
 
 Verify against the repository rather than against any hash here. What should
 hold: `git log --oneline origin/main..main` empty, working tree clean, and the
@@ -7274,23 +7311,63 @@ it is block 9's prerequisite.
       computes the full refusal set, so the save path can call it and refuse, or
       warn with the same reasons, before writing. **Fold into that; do not add a
       second validator.**
+
+      Note the shape the fold has to take: `describe_saved_hook` starts from the
+      manifest and reads bytes off disk, and the save path holds `code` that is
+      not written yet, so "call it" cannot mean save-then-describe. The two
+      source-property reasons it derives — `hookbase_subclass` and `log_path` in
+      the constructor (`hook_manager.py:483–486`) — are functions of the source
+      alone; lift exactly those into one helper over `code` and have both
+      `describe_saved_hook` and `generate_and_save_hook` call it. The pin reasons
+      above them are provenance and do not apply to bytes about to be written.
+      `validate_hook_contract` already runs at save time and catches the contract
+      errors; it is the two hard refusals in `_resolve_hook`
+      (`tools.py:4617–4629`) that no save-time check sees.
 - [ ] **Migrate M5's registry, which is 9 of 12 unresolvable** (design/38 H6,
       2026-08-05). All nine are legacy-newline-pinned with an on-disk hash the
       manifest no longer matches; beyond that, three (`mosaic_cell_counter`,
       `mosaic_stitcher`, `mosaic_stitcher_rot`) still use the pre-Block-7 contract
       and need rewriting rather than re-saving, and two (`mosaic_stitcher_v2`,
-      `mosaic_stitcher_rot_v2`) carry the reversed-`EmitArtifact` defect and would
-      have failed mid-acquisition. **The operator's working set is three hooks**,
-      and until this lands the rig's registry mostly looks broken to its own
-      agent. Rewriting is roughly a half-day.
+      `mosaic_stitcher_rot_v2`) refuse on `EmitArtifact`. **The operator's working
+      set is three hooks**, and until this lands the rig's registry mostly looks
+      broken to its own agent.
+
+      **Two premises corrected at assignment, 2026-08-12, by reading the retained
+      sources rather than the survey's prose.** (1) The rewrite is *not* a
+      half-day of authoring from nothing: `tests/fixtures/hooks/m5_legacy/` holds
+      the four legacy sources byte-pinned as evidence (`.gitattributes`
+      `binary`) and `tests/fixtures/hooks/m5_migrated/` already holds migrated
+      `analyze_frame` versions of all four plus both `uv_activation` hooks, with
+      `test_stitcher_migrations_preserve_canvas_and_parent_writes` proving the
+      migrated stitchers write the same canvas the legacy ones assembled. The
+      offline work is finishing that set and staging it where an operator can
+      copy it to the rig; only the re-save is rig work. (2) **The
+      "reversed-`EmitArtifact`" account is wrong in both halves.** The sources
+      say `EmitArtifact(self.filename, canvas)` — the documented
+      `(filename, payload)` order, not reversed — and the runtime test above
+      shows they write `mosaic.tiff` correctly, so "would have failed
+      mid-acquisition" is not what would have happened. They refuse because
+      `_hook_contract_analysis`'s `provably_string` gate rejects any two-positional
+      `EmitArtifact` whose first argument is not statically a string
+      (`hook_manager.py:195–203`, deliberate), and `self.filename` is an
+      attribute. The fix is the keyword form,
+      `EmitArtifact(filename=self.filename, payload=canvas)`. Design/38's table
+      and this file's open-register entry both need correcting in the design gate.
 - [ ] **An exported hooked acquisition must not silently drop the measurement.**
-      `_emit_multiposition` (`tools.py:150–157`) lets an
-      `_microclaw_observation_only` hook through and emits a plain
+      `_emit_multiposition` (`tools.py:154–162`; the attribute is
+      `_observation_only`, `hooks.py:491`, not `_microclaw_observation_only`)
+      lets an observation-only hook through and emits a plain
       `multi_d_acquisition_events` with no hook attached, so the operator gets a
       script that images what the session imaged and measures nothing, with no
       comment saying a measurement was there. Defensible for hardware
       reproduction; indefensible in silence. At minimum emit the comment; decide
       deliberately whether the hook should be attached.
+
+      Two adjacent asymmetries to rule on rather than leave implicit:
+      `_emit_tile` (`tools.py:276–280`) refuses *every* hook including the
+      observation-only case `_emit_multiposition` allows; and both refuse saved
+      hooks whose source `_emit_adaptive` already inlines verbatim. Decide and
+      say which behaviour is right; do not widen the block silently.
 - [ ] Reachability: `list_hooks` and the save path must make an unresolvable hook
       **and its remedy** visible without the operator reading source.
 
@@ -7312,6 +7389,12 @@ Post-merge design gate:
 - [ ] Update design/32 §4's hook-contract account and design/38 H6's registry
       survey to what the migration actually found. Record which of the nine were
       recoverable by re-saving and which needed rewriting.
+- [ ] **Correct, do not annotate, the reversed-`EmitArtifact` claim** in
+      design/38's H4 table and in this file's open-register entry ("Nine of M5's
+      twelve saved hooks refuse to resolve"). The arguments are in the documented
+      order and the hooks write a correct canvas; the refusal is the
+      `provably_string` gate. Say what the refusal actually is, so the next
+      reader does not go looking for a swap that is not there.
 
 ---
 
