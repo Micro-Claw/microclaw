@@ -141,6 +141,31 @@ def _hook_contract_analysis(code: str) -> tuple[list[str], bool]:
     action_types = {
         cls.__name__: cls for cls in hook_decisions._ACTION_TYPES.values()
     }
+    decision_names = set(action_types) | {"HookResult"}
+    module_bindings: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            module_bindings.add(node.name)
+        elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            module_bindings.update(
+                target.id for root in targets for target in ast.walk(root)
+                if isinstance(target, ast.Name) and isinstance(target.ctx, ast.Store)
+            )
+    imports_all_decisions = False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            module_bindings.update(alias.asname or alias.name.split(".")[0]
+                                   for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            if node.module == "microclaw.hook_decisions" and any(
+                alias.name == "*" for alias in node.names
+            ):
+                imports_all_decisions = True
+            module_bindings.update(
+                alias.asname or alias.name for alias in node.names
+                if alias.name != "*"
+            )
 
     def provably_string(node: ast.expr) -> bool:
         return (
@@ -151,8 +176,16 @@ def _hook_contract_analysis(code: str) -> tuple[list[str], bool]:
         )
 
     can_emit_artifacts = False
+    missing_decision_names: set[str] = set()
     for call in (node for node in ast.walk(tree) if isinstance(node, ast.Call)):
         name = call.func.id if isinstance(call.func, ast.Name) else None
+        if (name in decision_names and name not in module_bindings
+                and not imports_all_decisions and name not in missing_decision_names):
+            errors.append(
+                f"{name} is called but is not imported or defined. Add: "
+                f"from microclaw.hook_decisions import {name}"
+            )
+            missing_decision_names.add(name)
         if name == "EmitArtifact":
             can_emit_artifacts = True
         cls = action_types.get(name)

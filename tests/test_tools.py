@@ -3403,6 +3403,33 @@ class TestGenerateAndSaveHook:
         )
         assert "saved" in result["status"]
 
+    def test_refuses_rig_hook_with_missing_decision_imports_before_saving(
+        self, mock_ctrl, unconstrained_guard, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr("microclaw.hook_manager.HOOKS_DIR", tmp_path)
+        monkeypatch.setattr("microclaw.hook_manager.MANIFEST", tmp_path / "manifest.json")
+        code = (
+            "class block45_one_tile:\n"
+            "    def analyze_frame(self, image, metadata):\n"
+            "        return HookResult(measurements={'gate': 'block45'}, "
+            "actions=(StopSurvey(),))\n"
+        )
+
+        result = generate_and_save_hook(
+            mock_ctrl, unconstrained_guard, name="block45_one_tile", code=code,
+            description="rig reproduction", source="claude_generated",
+        )
+
+        assert result["error"] == "Hook failed static preflight; it was not saved."
+        assert result["contract_errors"] == [
+            "HookResult is called but is not imported or defined. Add: "
+            "from microclaw.hook_decisions import HookResult",
+            "StopSurvey is called but is not imported or defined. Add: "
+            "from microclaw.hook_decisions import StopSurvey",
+        ]
+        assert not (tmp_path / "block45_one_tile.py").exists()
+        assert not (tmp_path / "manifest.json").exists()
+
     @pytest.mark.parametrize("source_reason", ["hookbase", "log_path"])
     def test_refuses_source_the_runner_would_refuse_before_writing(
         self, source_reason, mock_ctrl, unconstrained_guard, tmp_path, monkeypatch

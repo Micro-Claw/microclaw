@@ -73,6 +73,7 @@ def test_static_contract_accepts_runner_callback_signature():
 
 def test_static_contract_rejects_reversed_emit_artifact_arguments():
     code = (
+        "from microclaw.hook_decisions import EmitArtifact, HookResult\n"
         "class Hook:\n"
         " def analyze_frame(self, image, metadata):\n"
         "  return HookResult({}, (EmitArtifact(image, self.filename),))\n"
@@ -96,6 +97,7 @@ def test_documented_emit_artifact_order_matches_runtime_signature():
 @pytest.mark.parametrize("filename_expr", ['"x.bin"', "f'{name}.bin'", "str(name)"])
 def test_provable_positional_filename_is_accepted(filename_expr):
     code = (
+        "from microclaw.hook_decisions import EmitArtifact, HookResult\n"
         "class Hook:\n"
         " def analyze_frame(self, image, metadata):\n"
         f"  return HookResult({{}}, (EmitArtifact({filename_expr}, image),))\n"
@@ -105,6 +107,7 @@ def test_provable_positional_filename_is_accepted(filename_expr):
 
 def test_keyword_emit_artifact_is_never_subject_to_positional_type_guessing():
     code = (
+        "from microclaw.hook_decisions import EmitArtifact, HookResult\n"
         "class Hook:\n"
         " def analyze_frame(self, image, metadata):\n"
         "  return HookResult({}, (EmitArtifact(filename=self.out_name, payload=image),))\n"
@@ -114,6 +117,7 @@ def test_keyword_emit_artifact_is_never_subject_to_positional_type_guessing():
 
 def test_other_typed_actions_are_checked_from_their_runtime_signatures():
     code = (
+        "from microclaw.hook_decisions import AcquireAt, HookResult\n"
         "class Hook:\n"
         " def analyze_frame(self, image, metadata):\n"
         "  return HookResult({}, (AcquireAt(),))\n"
@@ -121,6 +125,73 @@ def test_other_typed_actions_are_checked_from_their_runtime_signatures():
     errors = validate_hook_contract(code)
     assert any("AcquireAt is missing required arguments ['position']" in error
                for error in errors)
+
+
+_MISSING_DECISION_IMPORTS = (
+    "class block45_one_tile:\n"
+    "    def analyze_frame(self, image, metadata):\n"
+    "        return HookResult(measurements={'gate': 'block45'}, "
+    "actions=(StopSurvey(),))\n"
+)
+
+
+def test_static_contract_rejects_rig_hook_with_missing_decision_imports():
+    errors = validate_hook_contract(
+        _MISSING_DECISION_IMPORTS, required_callback="analyze_frame"
+    )
+
+    assert errors == [
+        "HookResult is called but is not imported or defined. Add: "
+        "from microclaw.hook_decisions import HookResult",
+        "StopSurvey is called but is not imported or defined. Add: "
+        "from microclaw.hook_decisions import StopSurvey",
+    ]
+
+
+@pytest.mark.parametrize("prefix, result_name, action_name", [
+    (
+        "from microclaw.hook_decisions import HookResult, StopSurvey\n",
+        "HookResult", "StopSurvey",
+    ),
+    (
+        "from microclaw.hook_decisions import HookResult as Result, "
+        "StopSurvey as Stop\n",
+        "Result", "Stop",
+    ),
+    (
+        "import microclaw.hook_decisions as hd\n",
+        "hd.HookResult", "hd.StopSurvey",
+    ),
+    (
+        "from microclaw.hook_decisions import *\n",
+        "HookResult", "StopSurvey",
+    ),
+])
+def test_static_contract_accepts_resolvable_decision_imports(
+    prefix, result_name, action_name
+):
+    code = (
+        prefix
+        + "class H:\n"
+        + "    def analyze_frame(self, image, metadata):\n"
+        + f"        return {result_name}({{}}, ({action_name}(),))\n"
+    )
+    assert validate_hook_contract(code, required_callback="analyze_frame") == []
+
+
+@pytest.mark.parametrize("binding", [
+    "class HookResult:\n    def __init__(self, *args): pass\n",
+    "def HookResult(*args): return args\n",
+    "HookResult = tuple\n",
+])
+def test_static_contract_accepts_self_defined_colliding_name(binding):
+    code = (
+        binding
+        + "class H:\n"
+        + "    def analyze_frame(self, image, metadata):\n"
+        + "        return HookResult({}, ())\n"
+    )
+    assert validate_hook_contract(code, required_callback="analyze_frame") == []
 
 
 def test_subprocess_blocked():
@@ -231,6 +302,24 @@ class TestHashPinnedLoad:
         save_hook("analysis", code, "analysis", source="claude_generated")
         cls = load_hook_class("analysis")
         assert hasattr(cls, "analyze_frame")
+
+    def test_missing_decision_imports_are_described_and_refused_before_import(self):
+        # Represents source pinned before the missing-import contract check.
+        save_hook(
+            "block45_one_tile", _MISSING_DECISION_IMPORTS, "rig reproduction",
+            source="claude_generated",
+        )
+
+        described = describe_saved_hook("block45_one_tile")
+        assert described["resolve_refusal"]["would_refuse"] is True
+        assert described["resolve_refusal"]["reasons"] == [
+            "current hook contract violation: HookResult is called but is not "
+            "imported or defined. Add: from microclaw.hook_decisions import HookResult",
+            "current hook contract violation: StopSurvey is called but is not "
+            "imported or defined. Add: from microclaw.hook_decisions import StopSurvey",
+        ]
+        with pytest.raises(ValueError, match="HookResult is called.*StopSurvey is called"):
+            load_hook_class("block45_one_tile")
 
     def test_stale_session_a_reversed_emit_is_refused_at_load(self):
         source = (Path(__file__).parent / "fixtures" / "hooks" /
