@@ -29,9 +29,16 @@ def test_tcp_listener_without_zmq_handshake_is_not_ready():
     try:
         ready, message = probe_bridge(port, 2)
     finally:
+        # Join BEFORE closing. The helper polls accept() on a 0.1 s timeout and
+        # exits within one poll of stop.set(), but closing the socket out from
+        # under a thread still parked in accept() raises OSError there -- on
+        # Windows, WinError 10038 -- which pytest surfaces as an unhandled thread
+        # exception warning. The test still passed, so the only symptom was a
+        # fourth warning appearing intermittently in rig-gate runs that state an
+        # expected warning count.
         stop.set()
-        listener.close()
         thread.join()
+        listener.close()
 
     assert time.monotonic() - started < 4
     assert ready is False
