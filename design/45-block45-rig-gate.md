@@ -124,21 +124,39 @@ Start Microclaw on M5 and say:
 > `resolvable` field is false with all refusal reasons and its source path. Do
 > not run any hook.
 
-The 2026-08-05 survey found **12 saved hooks total, 9 unresolvable**, all first
-reporting the legacy newline pin. Treat the new `list_hooks` output as
-authoritative if the registry has changed. Preserve it: its names and reasons
-determine the work below rather than an expected old count.
+**Measured on M5 2026-08-12: 21 saved hooks, 9 unresolvable.** The 2026-08-05
+survey's "12 total" was already stale — later blocks added hooks. Treat the live
+`list_hooks` output as authoritative and preserve it: its names and reasons
+determine the work below, never an expected count.
 
-Only re-save names covered by this explicit mapping:
+**Every unresolvable name is its own registry entry.** A `_v2` name is not an
+alias for the un-suffixed one; M5 carries both, and re-saving one leaves the
+other refused. The 2026-08-12 round lost four names to exactly that misreading.
+Route each name by **its own refusal reasons**:
+
+- **Pin-only** (`saved hook uses a legacy newline-normalized hash` and nothing
+  else): the source is already contract-clean. Re-save it from **its own path**,
+  which `resolve_refusal.remedy.path` gives you. Do **not** overwrite it from a
+  fixture — that would discard the operator's own migration for no reason.
+- **Any source or contract reason as well** (`subclasses HookBase`, takes
+  `log_path`, an `EmitArtifact` contract violation): the source must change, so
+  re-save from the migrated fixture below.
 
 | Existing M5 name | Migrated fixture |
 |---|---|
-| `filament_position_filter` or `filament_position_filter_v2` | `filament_position_filter.py` |
-| `mosaic_cell_counter` or `mosaic_cell_counter_v2` | `mosaic_cell_counter.py` |
-| `mosaic_stitcher` or `mosaic_stitcher_v2` | `mosaic_stitcher.py` |
-| `mosaic_stitcher_rot` or `mosaic_stitcher_rot_v2` | `mosaic_stitcher_rot.py` |
+| `filament_position_filter`, `filament_position_filter_v2` | `filament_position_filter.py` |
+| `mosaic_cell_counter`, `mosaic_cell_counter_v2` | `mosaic_cell_counter.py` |
+| `mosaic_stitcher`, `mosaic_stitcher_v2` | `mosaic_stitcher.py` |
+| `mosaic_stitcher_rot`, `mosaic_stitcher_rot_v2` | `mosaic_stitcher_rot.py` |
 | `uv_activation` | `uv_activation.py` |
 | `uv_activation_wind_down` | `uv_activation_wind_down.py` |
+
+**Outstanding after the 2026-08-12 round — four names, all `_v2`, to be finished
+in place:** `filament_position_filter_v2` and `mosaic_cell_counter_v2` are
+pin-only, so re-save each from its own path; `mosaic_stitcher_v2` and
+`mosaic_stitcher_rot_v2` also carry the `EmitArtifact` contract violation, so
+re-save those two from the corrected fixtures. Nothing is deleted. This is a
+re-save, not a gate round, and it does not block the block.
 
 One caveat carried from the open register, so the result is not read as more
 than it is: `filament_position_filter` scores **bead** fields as filamentous
@@ -148,10 +166,8 @@ it does not make its description true. Re-saving it is correct — a hook that
 refuses to load cannot be recalibrated — but its scales or its description are
 still owed work, tracked separately.
 
-For each unresolvable name in the table, say this verbatim, substituting both
-fields. If an unresolvable name has no row, **stop migration for that name**,
-record its name and every refusal reason, and return it as owed source work. Do
-not improvise a rewrite or map it by similarity on M5.
+Work one name at a time. For a **source/contract** name, say this verbatim,
+substituting both fields:
 
 > Read `tests\fixtures\hooks\m5_migrated\<matching-file>.py`. Show me the full
 > source, all lint warnings, and the saved hook name `<existing-rig-name>`. Ask
@@ -159,22 +175,35 @@ not improvise a rewrite or map it by similarity on M5.
 > confirm, save it as `user_provided` with the adaptive runner contract. Do not
 > run it.
 
-Expected for every covered name: the full source is visible before confirmation,
-then **saved successfully**, with no contract error. This is intentionally nine
-separate review-and-save operations only if all nine current names are covered:
-the legacy pin no longer proves the on-disk bytes the operator reviewed, so a
-bulk repin would weaken consent. `open`/`os` lint warnings may appear and are
-normal after review.
+For a **pin-only** name, say this verbatim instead:
+
+> Read `<the remedy path list_hooks gave for this hook>`. Show me the full
+> source and all lint warnings, and confirm it has no contract violations. Ask
+> me to confirm that exact source under the existing name `<existing-rig-name>`.
+> Only after I confirm, save it as `user_provided` with the adaptive runner
+> contract. Do not run it.
+
+If an unresolvable name has no row and is not pin-only, **stop for that name**,
+record it and every refusal reason, and return it as owed source work. Do not
+improvise a rewrite or map it by similarity on M5.
+
+Expected for every name: the full source is visible before confirmation, then
+**saved successfully**, with no contract error. This is deliberately one
+review-and-save per entry — the legacy pin no longer proves the on-disk bytes
+the operator reviewed, so a bulk repin would weaken consent. `open`/`os` lint
+warnings may appear and are normal after review.
 
 Finally say:
 
 > List my saved hooks again. Report the total and every entry whose
 > `resolvable` field is false. Do not run any hook.
 
-Expected after migration: every name covered by the table is resolvable. Any
-uncovered remainder stays refused and is reported as owed work, not a failure of
-this migration gate. If the registry still has the surveyed 12 names and all 9
-unresolvable names were covered, the result is **12 resolvable, 0
+Expected after migration: every name you re-saved is resolvable, and the
+unresolvable count has dropped by exactly that many. Any remainder is reported as
+owed work, not a failure of this migration gate. **The 2026-08-12 round measured
+21 total, 9 unresolvable before and 4 after**, all four being the `_v2` entries
+listed above. If a later round finishes those four the result is **21
+resolvable, 0
 unresolvable**. Covered `mosaic_stitcher_v2` and
 `mosaic_stitcher_rot_v2` use
 `EmitArtifact(filename=self.filename, payload=canvas)`.
