@@ -6027,3 +6027,101 @@ code, not against the report: every `file.py:line` in both rounds was re-read,
 and the citations held, including the two that looked most like a rig fact
 smuggled into package code. What review caught was never a false citation — it
 was the three things the document did not say.
+
+## Block 43n — `acquire_on_hit`, the two-channel search/acquire runner
+
+**Reading the code at assignment did not rescope this block — the first time in
+five — and that was itself the finding.** `git diff` over `microclaw/` between
+design/44's merge and the branch point was empty, so the design was written
+against exactly the tree the implementer branched from and every `file.py:line`
+in it was live. The step is still worth its cost: what it bought here was a
+*recorded tension* rather than a rescope. `set_channel`'s emitter renders the
+recorded effects of a **tool call**, and under `acquire_on_hit` both phase
+switches happen inside one call, so nothing records them where that emitter
+looks. That was written into the assignment note as the likeliest round-1 return.
+It was — and the same seam then failed a second time, one layer deeper, on the
+rig.
+
+**The seam had three layers and we found them one at a time.** Round 1 recorded
+the effects but wired deferral only for `UntrustedHookAdapter`, so a registry
+built-in silently ran a search-channel-only survey and reported `hits_recorded=0`
+— which design/44 defines as a *successful* zero-hit search. A wrong answer
+wearing a success's clothes. Round 2 fixed that and the zero-hit export.
+**Round 3's defect came from the rig**: the emitted script called
+`_verify_property` and never defined it, because `channel_writes` gated the
+helper's inlining on the *tool name* `set_channel`. **Both export tests had
+supplied the `config_group` branch, which emits no `_verify_property` at all**,
+so the free-name assertion was real and had nothing to find. The fix was
+structural — render the body, then inline helpers based on what the body
+contains — and it was verified by replaying the demo's *verbatim* recorded
+`channel_effects` on both commits: pre-fix reproduces the rig's `NameError`,
+post-fix defines the helper. **Both compile.** Every static check the exporter
+performs passed while the script was broken.
+
+**Reordering the runbook demo-first paid for itself immediately.** The page ran
+M5 as steps 1–4 and demo last, booking the scarce rig against a mechanism nothing
+had exercised. Inverted, the demo caught the `_verify_property` defect on its
+first outing — an authorization-map defect the old ordering would have found on
+M5. It also corrected a premise the page asserted: the demo has *both* a
+`Channel` group and an authorization map, because `set_channel` branches on
+`_has_channel_authorization_map`, not on channel source. Demo therefore covers
+the effects-triple route, and Part B shrank to the EMU laser-map *source*,
+camera-triggered dose, and the optics.
+
+**The block's two load-bearing results are both things only a rig could say.**
+On M5 the standalone run selected a **different hit set** than the live run
+(live `field_2`/`field_3`; standalone `field_1`/`field_2`, with `field_3` refused
+as `max_hits exhausted`). The emitted program re-ran the rule against the sample
+in front of it instead of replaying coordinates — block 43h's thesis
+demonstrated rather than argued, and invisible on a demo whose identical frames
+make a fresh choice indistinguishable from a replayed one. And the two hits
+carried **different Z** (52.077, 51.578), each its own autofocus-converged plane,
+which demo could not test because its stage never moved.
+
+**An unplanned hardware fault proved the error path.** The first M5 survey died
+on an EMU serial timeout after both reservations were taken (`applied=[]`); the
+retry reserved a clean 6, so round 2's cleanup released both rather than leaking
+them. That path had never run outside a unit test.
+
+**The process failure of this block was the runbook, three times over.** A2 was
+never run in demo round 1; A3 and A5 came back "I don't understand how to run
+these"; B3 and the probe's `--accept` flag were skipped on M5. Every skipped step
+was one written as a *criterion* — "use a hook that fires deterministically",
+"give the A1 request on M5" — and every step that carried a literal command block
+or a verbatim prompt was run correctly first time. The operator said it plainly:
+*"If there was something you wanted me to run that I didn't run, that means I
+didn't understand the runbook instructions."* Ship the thing to paste, the exact
+expected numbers, and what will look wrong but is normal. Verify it first: the A2
+hook was driven through the real `UntrustedHookAdapter` before being written
+down, and it worked on the first attempt.
+
+**Two gate steps were scored wrong by the coordinator before being scored right.**
+A4 was called NOT RUN from a 0-byte stdout capture while the operator had watched
+it collect data — the emitted script has no `print()` at all, so success and
+failure look identical in a terminal, and the evidence was the datasets. And A1's
+"stop if the exposure bound is absent" clause was simply wrong; exposure is
+optional and falls back to the rig's current value. **Both were the runbook
+asserting something the code did not say.**
+
+**An operator ruling closed B2's structure claim, and it is recorded as untested
+rather than inferred.** The M5 sample was beads with a filament-scoring hook, so
+whether the burst contains the structure the hook sought cannot be answered.
+Beads appear in both channels, so detection *was* exercised in two channels, and
+the operator ruled it non-blocking. The measurable half stands on its own: the
+488 burst is exposed (p99.9 ~3,400, max ~10,000 on uint16) against an audit
+showing `Laser 2` for search and `Laser 3` for acquire — on a camera-triggered
+rig a non-effective enable gives a dark burst, **so the enable line emitted
+light**, which is the one claim demo hardware can never make.
+
+**Two register items were closed by measurement, not by guessing.** The
+`test_bridge_check.py` socket race was fixed and then *proved* on Windows — 100
+iterations, 0 warnings. The `test_webserve.py` poll-thread flake was instrumented
+before being touched: a bare loop of the failing test would have been the wrong
+instrument, since the failure appeared inside a loaded full-suite run and running
+the test alone removes the trigger. The probe reported the one number that
+separated the hypotheses and **refuted the one the coordinator had already
+written a fix for** — the worker was stuck in connect at 2.3 s of a 15 s budget,
+not exhausting it. The cause was a test that calls `listen(1)` and never accepts.
+Both machines showed the same signature, and load was not the trigger: M5 failed
+*more* when idle. With `--accept`, 80 rounds across two load levels, zero
+failures.
