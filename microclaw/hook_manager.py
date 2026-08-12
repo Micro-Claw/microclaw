@@ -381,6 +381,51 @@ def _hookbase_aliases(tree: ast.Module) -> set[str]:
     return aliases
 
 
+_SOURCE_REFUSAL_NOTE = (
+    "Re-review alone will not make this hook usable. The reasons listed in "
+    "insufficient_for are properties of the source, not of its pin, so "
+    "re-saving the same source reproduces them. The source has to change "
+    "first: a saved hook must not inherit HookBase, must not take log_path, "
+    "and provides analyze_frame(image, metadata) returning a HookResult."
+)
+
+
+def saved_hook_source_refusal(code: str) -> dict[str, Any]:
+    """Return the resolve-time hard refusals that are properties of source."""
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return {"reasons": []}
+    classes = [node for node in tree.body if isinstance(node, ast.ClassDef)]
+    cls = next((
+        node for node in classes
+        if any(isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+               and item.name in {"analyze_frame", "image_process_fn"}
+               for item in node.body)
+    ), None)
+    if cls is None:
+        return {"reasons": []}
+    parameter_names = {
+        item["name"] for item in _ast_constructor_parameters(cls)
+    }
+    aliases = _hookbase_aliases(tree)
+    hookbase_subclass = any(
+        (isinstance(base, ast.Name) and base.id in aliases)
+        or (isinstance(base, ast.Attribute) and base.attr == "HookBase")
+        for base in cls.bases
+    )
+    reasons = []
+    if hookbase_subclass:
+        reasons.append("saved hook subclasses HookBase")
+    if "log_path" in parameter_names:
+        reasons.append("saved hook constructor takes log_path")
+    return {
+        "reasons": reasons,
+        **({"insufficient_for": reasons, "note": _SOURCE_REFUSAL_NOTE}
+           if reasons else {}),
+    }
+
+
 def describe_saved_hook(name: str) -> dict[str, Any]:
     """Describe saved hook source using AST only; never import or execute it.
 
@@ -461,12 +506,6 @@ def describe_saved_hook(name: str) -> dict[str, Any]:
     )
     parameters = _ast_constructor_parameters(cls)
     parameter_names = {item["name"] for item in parameters}
-    aliases = _hookbase_aliases(tree)
-    hookbase_subclass = any(
-        (isinstance(base, ast.Name) and base.id in aliases)
-        or (isinstance(base, ast.Attribute) and base.attr == "HookBase")
-        for base in cls.bases
-    )
     refusal_reasons = []
     if entry.get("sha256") is None:
         refusal_reasons.append("saved hook has no manifest sha256 pin")
@@ -480,10 +519,8 @@ def describe_saved_hook(name: str) -> dict[str, Any]:
     # about this file's provenance; the reasons below are properties of the
     # source itself, and re-saving the same bytes reproduces them exactly.
     unpinned_only = list(refusal_reasons)
-    if hookbase_subclass:
-        refusal_reasons.append("saved hook subclasses HookBase")
-    if "log_path" in parameter_names:
-        refusal_reasons.append("saved hook constructor takes log_path")
+    source_refusal = saved_hook_source_refusal(code)
+    refusal_reasons.extend(source_refusal["reasons"])
     contract_errors, can_emit_artifacts = _hook_contract_analysis(code)
     refusal_reasons.extend(
         f"current hook contract violation: {error}" for error in contract_errors
@@ -507,14 +544,7 @@ def describe_saved_hook(name: str) -> dict[str, Any]:
             # saw the agent call these two "just describing its structure, not
             # faults" and offer a re-review that could not have worked.
             remedy["insufficient_for"] = source_reasons
-            remedy["note"] = (
-                "Re-review alone will not make this hook usable. The reasons "
-                "listed in insufficient_for are properties of the source, not "
-                "of its pin, so re-saving the same file reproduces them. The "
-                "source has to change first: a saved hook must not inherit "
-                "HookBase, must not take log_path, and provides "
-                "analyze_frame(image, metadata) returning a HookResult."
-            )
+            remedy["note"] = _SOURCE_REFUSAL_NOTE
     return {
         "name": name,
         "kind": "saved",

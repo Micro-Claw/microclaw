@@ -72,15 +72,15 @@ events must pass the guard.
 
 Once the technical contract is complete, summarize it in plain language and call
 out only unresolved assumptions that affect scientific meaning or safety. Choose
-the hook method below, write a `HookBase` adapter, and test it without hardware
+the hook method below, write a plain saved-hook class, and test it without hardware
 against the example. If the output cannot yet be verified, make the first version
-observation-only: log raw output and do not drive acquisition. Show the full source
+observation-only: return raw output as measurements and do not drive acquisition. Show the full source
 and lint warnings, and save it only after explicit confirmation. Package setup
 belongs in the hook's documented local environment, not in a package-specific
 microclaw analysis tool.
 
 For that first observation-only version, normalize the verified part of the raw
-output to JSON values and call `self.log_analysis(...)`. Record the analyzer name
+output to JSON values in `HookResult.measurements`. Record the analyzer name
 and installed version, parameters affecting the result, and the sha256 of any
 model/project/config artifact. Use `status="unverified"` when axes, units, score
 semantics, or coordinates remain unresolved. Do not turn an unverified record into
@@ -428,7 +428,8 @@ runner that can never honor its decisions.
 
 ## Generated saved-hook pattern
 
-Saved hooks need not inherit HookBase. The trusted parent owns the log so hook
+Saved hooks must not inherit HookBase or take a `log_path` constructor argument.
+The trusted parent owns the log so hook
 source cannot forge or omit its action decision record.
 
 ```python

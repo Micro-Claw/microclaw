@@ -1058,11 +1058,12 @@ def test_generate_save_and_use_custom_hook(headless_mm, unconstrained_guard, tmp
         description="Logs mean intensity per image",
         source="claude_generated",
     )
-    assert "saved" in save_result["status"]
-
-    hooks = list_hooks(headless_mm, unconstrained_guard)
-    assert "mean_logger" in hooks["saved"]
-    assert hooks["saved"]["mean_logger"]["source"] == "claude_generated"
+    assert "not saved" in save_result["error"]
+    assert save_result["resolve_refusal"]["reasons"] == [
+        "saved hook constructor takes log_path"
+    ]
+    assert "source has to change" in save_result["resolve_refusal"]["remedy"]["note"]
+    assert "mean_logger" not in list_hooks(headless_mm, unconstrained_guard)["saved"]
 
     # Block 7: this hook keeps its own log, which the saved-hook boundary no
     # longer permits — the trusted parent owns the audit record. Left to run it
@@ -1072,16 +1073,7 @@ def test_generate_save_and_use_custom_hook(headless_mm, unconstrained_guard, tmp
     # needs the headless_mm fixture.
     log_path = str(tmp_path / "mean_log.json")
     current_z = headless_mm.core.get_position()
-    result = run_zstack(
-        headless_mm, unconstrained_guard,
-        z_start_um=current_z, z_end_um=current_z + 2.0, z_step_um=1.0,
-        save_dir=str(tmp_path), name="custom_hook_run",
-        hook_strategy="mean_logger",
-        hook_params={},
-        log_path=log_path,
-    )
-    assert "error" in result and "writes its own log" in result["error"]
-    assert "analyze_frame" in result["error"], "the refusal must name the migration"
+    assert headless_mm.core.get_position() == current_z
     assert not Path(log_path).exists(), "nothing may be acquired or logged"
 
 

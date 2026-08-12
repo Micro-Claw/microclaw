@@ -8,6 +8,7 @@ import tifffile
 
 from microclaw import tools
 from microclaw.hook_decisions import EmitArtifact, HookResult, UntrustedHookAdapter
+from microclaw.hook_manager import saved_hook_source_refusal, validate_hook_contract
 from microclaw.safety import (
     ForbiddenProperty, IlluminationConstraints, SafetyConstraints, SafetyGuard,
     SafetyViolation,
@@ -23,6 +24,32 @@ def _load(group, name):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def test_m5_fixture_registry_source_survey():
+    surveyed = {}
+    for group in ("m5_legacy", "m5_migrated"):
+        surveyed[group] = {}
+        for path in sorted((FIXTURES / group).glob("*.py")):
+            code = path.read_text(encoding="utf-8")
+            surveyed[group][path.stem] = (
+                saved_hook_source_refusal(code)["reasons"]
+                + validate_hook_contract(code)
+            )
+
+    assert set(surveyed["m5_legacy"]) == {
+        "filament_position_filter", "mosaic_cell_counter",
+        "mosaic_stitcher", "mosaic_stitcher_rot",
+    }
+    assert all(reasons for reasons in surveyed["m5_legacy"].values())
+    assert set(surveyed["m5_migrated"]) == {
+        "filament_position_filter", "mosaic_cell_counter",
+        "mosaic_stitcher", "mosaic_stitcher_rot",
+        "uv_activation", "uv_activation_wind_down",
+    }
+    assert surveyed["m5_migrated"] == {
+        name: [] for name in surveyed["m5_migrated"]
+    }
 
 
 def _guard(max_power=20, factor=2):

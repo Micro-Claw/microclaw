@@ -3403,6 +3403,32 @@ class TestGenerateAndSaveHook:
         )
         assert "saved" in result["status"]
 
+    @pytest.mark.parametrize("source_reason", ["hookbase", "log_path"])
+    def test_refuses_source_the_runner_would_refuse_before_writing(
+        self, source_reason, mock_ctrl, unconstrained_guard, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr("microclaw.hook_manager.HOOKS_DIR", tmp_path)
+        monkeypatch.setattr("microclaw.hook_manager.MANIFEST", tmp_path / "manifest.json")
+        base = "(HookBase)" if source_reason == "hookbase" else ""
+        import_line = "from microclaw.hooks import HookBase\n" if base else ""
+        init = "    def __init__(self, log_path=None): pass\n" if source_reason == "log_path" else ""
+        code = (
+            f"{import_line}class H{base}:\n{init}"
+            "    def analyze_frame(self, image, metadata): return None\n"
+        )
+        result = generate_and_save_hook(
+            mock_ctrl, unconstrained_guard, name="dead", code=code,
+            description="Cannot resolve", source="claude_generated",
+        )
+
+        assert result["error"] == "Hook would be refused at run time; it was not saved."
+        refusal = result["resolve_refusal"]
+        assert refusal["would_refuse"] is True
+        assert refusal["reasons"]
+        assert refusal["remedy"]["insufficient_for"] == refusal["reasons"]
+        assert "source has to change" in refusal["remedy"]["note"]
+        assert not (tmp_path / "dead.py").exists()
+
     def test_declines_when_lint_flags_and_user_says_no(self, mock_ctrl, unconstrained_guard, monkeypatch):
         monkeypatch.setattr("microclaw.tools.CONFIRM_FN", lambda summary, kind="action": False)
         code = "eval('os.system(\"rm -rf /\")')"
