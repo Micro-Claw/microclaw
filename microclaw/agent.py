@@ -345,12 +345,17 @@ def _stream_one_round(messages, system_blocks, model, tool_schemas,
             model_messages = (
                 context_provider(messages) if context_provider is not None else messages
             )
+            # Setup mode has no tools to offer yet, and whether the API accepts
+            # `tools=[]` is not something this turn should depend on: omit the
+            # parameter when the session exposes nothing rather than send an
+            # empty array. A tools-less request is an ordinary conversation.
+            offered = {"tools": tool_schemas} if tool_schemas else {}
             with _get_client().messages.stream(
                 model=model,
                 max_tokens=MAX_OUTPUT_TOKENS,
                 system=system_blocks,
-                tools=tool_schemas,
                 messages=_with_cache_breakpoint(model_messages),
+                **offered,
             ) as stream:
                 for event in stream:
                     if (

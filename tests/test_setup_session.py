@@ -57,8 +57,10 @@ def test_setup_turn_sends_no_normal_schemas_and_refuses_fabricated_call(monkeypa
         tool_registry=webserve.SETUP_TOOL_REGISTRY,
         setup_mode=True,
     ))
-    assert client.messages.stream.call_args.kwargs["tools"] == []
-    assert client.messages.stream.call_args.kwargs["tools"] is not TOOLS_CACHED
+    # A setup session offers nothing, so the request carries no `tools` at all
+    # rather than an empty array — the turn must not depend on whether the API
+    # accepts `tools: []`.
+    assert "tools" not in client.messages.stream.call_args.kwargs
     result = next(event for event in events if event["type"] == "tool_result")
     assert "setup mode" in result["content"]
 

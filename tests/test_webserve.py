@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 
 from microclaw import config, credentials, tools, webserve
 from microclaw.conversation import AuditLog, ConversationStore, load_history
+from microclaw.tools_schema import TOOLS_CACHED
 from microclaw.webserve import build_app, serve
 
 
@@ -80,6 +81,13 @@ def session():
         pending=None,
         audit_records=[],
         current_identity="loopback",
+        # A fake session stands in for a normal one, so it carries the same
+        # dispatch attributes. These are read directly rather than through a
+        # `getattr` default, because the only safe default — the full hardware
+        # registry — is the wrong answer for a setup session.
+        mode=webserve.SessionMode.NORMAL,
+        tool_schemas=TOOLS_CACHED,
+        tool_registry=tools.TOOL_REGISTRY,
     )
     # Bind the real confirmation and audit methods so the fake routes exercise
     # exactly the same decision-to-row path as a live Session.
@@ -680,6 +688,7 @@ def test_serve_wires_confirm_and_flushes_startup_banner(monkeypatch):
         confirm=lambda summary, kind="action": False,
         history_fn="unused.json", history=[], save=False,
         guard=_guard(), ctrl=types.SimpleNamespace(core=None),
+        mode=webserve.SessionMode.NORMAL,
     )
     monkeypatch.setattr(webserve, "build_session", lambda args: fake)
     monkeypatch.setattr(uvicorn, "run", lambda *a, **k: None)

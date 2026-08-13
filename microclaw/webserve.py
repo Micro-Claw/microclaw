@@ -501,7 +501,7 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
               behind_tls_proxy: bool = False, auth_state: RemoteAuth | None = None) -> FastAPI:
     app = FastAPI(title="Microclaw")
     page = load_page("serve.html")
-    if getattr(session, "mode", SessionMode.NORMAL) is SessionMode.SETUP:
+    if session.mode is SessionMode.SETUP:
         page = page.replace(
             'class="banner hidden" id="setup-banner"',
             'class="banner" id="setup-banner"',
@@ -685,10 +685,14 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
             try:
                 for event in run_agent_iter(
                     msg, session.ctrl, session.guard, session.history, session.model,
-                    tool_schemas=getattr(session, "tool_schemas", TOOLS_CACHED),
-                    tool_registry=getattr(session, "tool_registry", tools.TOOL_REGISTRY),
-                    setup_mode=(getattr(session, "mode", SessionMode.NORMAL)
-                                is SessionMode.SETUP),
+                    # Read these directly. A `getattr` default here would be the
+                    # full hardware registry, so a session class that ever failed
+                    # to set them would silently dispatch every normal tool in
+                    # setup mode. Both classes set all three in __init__; a
+                    # missing attribute is a bug that should raise, not fail open.
+                    tool_schemas=session.tool_schemas,
+                    tool_registry=session.tool_registry,
+                    setup_mode=session.mode is SessionMode.SETUP,
                     cancel=session.cancel,
                     context_provider=(session.store.model_messages
                                       if hasattr(session, "store") else None),
