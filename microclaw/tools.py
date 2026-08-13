@@ -1547,24 +1547,26 @@ def _acquisition_ledger(ctrl) -> AcquisitionLedger:
         return ledger
 
 
+def _format_duration(seconds: float) -> str:
+    """Render an estimated duration the way an operator reads a clock.
+
+    Every duration here is an estimate, so every rendering says "about" —
+    phrasing that switched on whether the number divided evenly read as though
+    a round 20 minutes were the more certain figure.
+    """
+    value, unit = (seconds, "second") if seconds < 60 else (seconds / 60, "minute")
+    return f"about {value:g} {unit}{'' if value == 1 else 's'}"
+
+
 def _authorize_acquisition(
     ctrl, guard: SafetyGuard, plan: AcquisitionPlan, *, confirm: bool = True
 ) -> Reservation:
     reservation = _acquisition_ledger(ctrl).reserve(guard, plan)
     c = guard.acquisition_confirmation_thresholds
-    def format_duration(seconds: float) -> str:
-        if seconds >= 60 and seconds % 60 == 0:
-            minutes = seconds / 60
-            return f"{minutes:g} minute{'s' if minutes != 1 else ''}"
-        if seconds >= 60:
-            minutes = seconds / 60
-            return f"about {minutes:g} minutes"
-        return f"{seconds:g} second{'s' if seconds != 1 else ''}"
-
     reasons = [
         reason for reason, value, threshold in (
             (f"{plan.frames} frames", plan.frames, c.confirm_above_frames),
-            (format_duration(plan.estimated_duration_s), plan.estimated_duration_s,
+            (_format_duration(plan.estimated_duration_s), plan.estimated_duration_s,
              c.confirm_above_duration_s),
             (f"{plan.illuminated_ms:g} ms illuminated time", plan.illuminated_ms,
              c.confirm_above_illuminated_ms),
