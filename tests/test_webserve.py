@@ -681,7 +681,7 @@ def test_serve_wires_confirm_and_flushes_startup_banner(monkeypatch):
         history_fn="unused.json", history=[], save=False,
         guard=_guard(), ctrl=types.SimpleNamespace(core=None),
     )
-    monkeypatch.setattr(webserve, "Session", lambda args: fake)
+    monkeypatch.setattr(webserve, "build_session", lambda args: fake)
     monkeypatch.setattr(uvicorn, "run", lambda *a, **k: None)
     printed = []
     monkeypatch.setattr("builtins.print", lambda *a, **k: printed.append((a, k)))
@@ -1073,13 +1073,38 @@ def test_serve_refuses_a_non_local_bind_without_allow_remote():
 def test_serve_without_a_safety_config_falls_back_to_the_per_user_default(tmp_path, monkeypatch):
     """No --safety-config is what a desktop shortcut passes (design/17 v3).
 
-    It means the reviewed per-user profile, not "no limits". Absent, serve must
-    refuse and point at first-launch setup rather than start unguarded.
+    It means the per-user profile, not another path and never "no limits". If
+    that exact path is absent, serve builds the restricted, guardless setup
+    session whose dispatcher makes every normal hardware tool unreachable.
     """
     missing = tmp_path / "safety_config.yaml"
     monkeypatch.setattr(config, "default_safety_config", lambda: missing)
-    with pytest.raises(SystemExit, match="microclaw serve"):
-        serve(_args(host="127.0.0.1", safety_config=None))
+
+    class Connected:
+        core = object()
+
+        def __init__(self, port, guard):
+            assert guard is None
+
+        def is_connected(self):
+            return True
+
+    monkeypatch.setattr(webserve, "MicroscopeController", Connected)
+    monkeypatch.setattr(webserve, "enumerate_rig", lambda core: {"stages": []})
+    monkeypatch.setattr(credentials, "load_api_key", lambda: (None, None))
+
+    session = webserve.build_session(_args(
+        host="127.0.0.1", safety_config=None,
+    ))
+    assert isinstance(session, webserve.SetupSession)
+    assert session.guard is None
+    assert session.tool_registry is webserve.SETUP_TOOL_REGISTRY
+    for name in tools.TOOL_REGISTRY:
+        refusal = json.loads(tools.execute_tool(
+            name, {}, session.ctrl, session.guard, session.tool_registry,
+            setup_mode=True,
+        ))
+        assert "setup mode" in refusal["error"]
 
 
 def test_serve_refuses_an_unreviewed_safety_config(tmp_path):
@@ -1304,7 +1329,7 @@ def _stub_serve_runtime(monkeypatch):
         ),
         ctrl=types.SimpleNamespace(core=object()),
     )
-    monkeypatch.setattr(webserve, "Session", lambda args: fake)
+    monkeypatch.setattr(webserve, "build_session", lambda args: fake)
     monkeypatch.setattr(webserve, "build_app", lambda *args, **kwargs: object())
     import uvicorn
     monkeypatch.setattr(uvicorn, "run", lambda *args, **kwargs: None)

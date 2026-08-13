@@ -260,6 +260,8 @@ def report_declared_illumination_on_exit(guard, core, *, flush=False):
     needs. Per-property read failures are already reported individually; this
     guards the enumeration itself.
     """
+    if guard is None:
+        return
     try:
         readings = guard.declared_illumination_state(core)
     except Exception as exc:                                    # noqa: BLE001

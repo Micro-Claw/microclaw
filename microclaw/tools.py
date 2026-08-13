@@ -1113,7 +1113,7 @@ def _write_text_output(path: str, text: str, *, overwrite: bool) -> None:
 @emits_nothing
 def write_text_file(
     ctrl: MicroscopeController,
-    guard: SafetyGuard,
+    guard: SafetyGuard | None,
     path: str,
     text: str,
 ) -> dict:
@@ -7367,6 +7367,9 @@ def execute_tool(
     tool_input: dict,
     ctrl: MicroscopeController,
     guard: SafetyGuard,
+    registry=TOOL_REGISTRY,
+    *,
+    setup_mode: bool = False,
     cancel=None,
     records=None,
 ) -> str | list:
@@ -7375,9 +7378,17 @@ def execute_tool(
     Returns a list of content blocks for image-returning tools, or a JSON string
     for all other tools. Never raises — errors are captured and returned.
     """
-    fn = TOOL_REGISTRY.get(name)
-    if fn is None:
+    if name not in registry:
+        if setup_mode:
+            return json.dumps({
+                "error": f"Tool '{name}' is unavailable in setup mode; hardware control is locked."
+            })
         return json.dumps({"error": f"Unknown tool '{name}'."})
+    fn = registry.get(name)
+    if fn is None:
+        # A registry whose advertised key has no callable is malformed. Keep
+        # this model-visible and non-throwing like every other dispatch error.
+        return json.dumps({"error": f"Tool '{name}' has no implementation."})
     try:
         if (
             name != "run_mda"
