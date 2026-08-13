@@ -21,9 +21,9 @@ Get-Content block48c-pytest.txt
 ```
 
 Expected: rename succeeds; ancestor and pytest exit codes are both **0**. The
-macOS implementation result is **1865 passed + 99 skipped = 1964 total**, with
+macOS implementation result is **1866 passed + 99 skipped = 1965 total**, with
 3 warnings. Record M5's passed and skipped numbers separately and require their
-sum to be exactly **1964**. M5 may skip more tests because node is not installed;
+sum to be exactly **1965**. M5 may skip more tests because node is not installed;
 a different split with the same total is not a regression.
 
 ## Step 1 — launch setup and inventory every live axis
