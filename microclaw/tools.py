@@ -1547,24 +1547,34 @@ def _acquisition_ledger(ctrl) -> AcquisitionLedger:
         return ledger
 
 
+def _format_duration(seconds: float) -> str:
+    """Render an estimated duration the way an operator reads a clock.
+
+    Every duration here is an estimate, so every rendering says "about" —
+    phrasing that switched on whether the number divided evenly read as though
+    a round 20 minutes were the more certain figure.
+    """
+    value, unit = (seconds, "second") if seconds < 60 else (seconds / 60, "minute")
+    return f"about {value:g} {unit}{'' if value == 1 else 's'}"
+
+
 def _authorize_acquisition(
     ctrl, guard: SafetyGuard, plan: AcquisitionPlan, *, confirm: bool = True
 ) -> Reservation:
     reservation = _acquisition_ledger(ctrl).reserve(guard, plan)
     c = guard.acquisition_confirmation_thresholds
-    exceeded = [
-        label for label, value, threshold in (
-            ("frames", plan.frames, c.confirm_above_frames),
-            ("duration", plan.estimated_duration_s, c.confirm_above_duration_s),
-            ("illuminated time", plan.illuminated_ms, c.confirm_above_illuminated_ms),
-        ) if threshold is not None and value > threshold
+    reasons = [
+        reason for reason, value, threshold in (
+            (f"{plan.frames} frames", plan.frames, c.confirm_above_frames),
+            (_format_duration(plan.estimated_duration_s), plan.estimated_duration_s,
+             c.confirm_above_duration_s),
+            (f"{plan.illuminated_ms:g} ms illuminated time", plan.illuminated_ms,
+             c.confirm_above_illuminated_ms),
+        ) if threshold is not None and value >= threshold
     ]
-    if confirm and exceeded and not CONFIRM_FN(
-        "ACQUISITION PLAN\n"
-        f"frames={plan.frames}, exposure_ms/frame={plan.exposure_ms_per_frame:g}, "
-        f"duration_s≈{plan.estimated_duration_s:g}, bytes≈{plan.estimated_bytes}, "
-        f"illuminated_ms={plan.illuminated_ms:g}\n"
-        f"Confirmation thresholds exceeded: {', '.join(exceeded)}.",
+    if confirm and reasons and not CONFIRM_FN(
+        "This acquisition will take " + " and ".join(reasons)
+        + ". It may use substantial disk space or time. Continue?",
         kind="acquisition",
         subject="threshold",
     ):
@@ -6580,11 +6590,10 @@ def list_mm_plugins(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
         "hint": (
             "Analyzer plugins run with hook_strategy='mm_plugin_analyzer' "
             "(allowed unless in plugins.blocked). Autofocus plugins run with "
-            "hook_strategy='autofocus_mm_plugin' and require BOTH "
-            "plugins.allow_hardware_motion: true AND property_authorization.mode: "
-            "degraded_trusted_plugins in safety_config.yaml, then a restart -- the "
-            "motion flag alone is refused at startup in guaranteed mode. "
-            "Always confirm the classpath with the user before enabling a plugin hook."
+            "hook_strategy='autofocus_mm_plugin'. Hardware-moving plugin hooks are "
+            "permitted by default, but microclaw guards only the resulting position, "
+            "not the plugin's motion itself. Always confirm the classpath with the "
+            "user before enabling a plugin hook."
         ),
     }
 

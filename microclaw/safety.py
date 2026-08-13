@@ -184,8 +184,9 @@ class PluginConstraints:
 
       blocked                 read-only analyzer plugins are allowed by default;
                               list only the fully-qualified classpaths to forbid.
-      allow_hardware_motion   a single global opt-in for plugins that move
-                              hardware (e.g. autofocus). Off by default.
+      allow_hardware_motion   hardware-moving hooks (e.g. autofocus) are
+                              permitted when the plugins section is absent;
+                              an explicit false disables them.
     """
 
     blocked: list[str] = field(default_factory=list)
@@ -384,8 +385,11 @@ class ParsedSafetyConfig:
     constraints: SafetyConstraints
     ranges: dict[ActuatorId, RangePolicy]
     property_authorization: PropertyAuthorization = field(
-        default_factory=lambda: PropertyAuthorization("guaranteed", frozenset())
+        default_factory=lambda: PropertyAuthorization(
+            "degraded_trusted_plugins", frozenset()
+        )
     )
+    declared_sections: frozenset[str] = frozenset()
 
     @classmethod
     def from_yaml(cls, path: str) -> ParsedSafetyConfig:
@@ -435,25 +439,26 @@ class ParsedSafetyConfig:
         if "schema_version" not in cfg:
             problem(
                 "schema_version",
-                "missing required schema version; add `schema_version: 2`, a property_authorization, and give every declared range both edges",
+                "missing required schema version; launch `microclaw serve` to re-author this config through in-app setup",
             )
-        elif type(cfg["schema_version"]) is not int or cfg["schema_version"] != 2:
+        elif type(cfg["schema_version"]) is not int or cfg["schema_version"] != 3:
             problem(
                 "schema_version",
-                f"unsupported schema version {cfg['schema_version']!r}; expected 2 (schema 1 configs must add property_authorization and migrate to property allowlist mode)",
+                f"unsupported schema version {cfg['schema_version']!r}; expected 3. "
+                "Rename the existing file (do not delete it: it is this rig's only "
+                "written record of reviewed bounds), then launch `microclaw serve` "
+                "to re-author the config through in-app setup",
             )
         if "reviewed" not in cfg:
             problem("reviewed", "missing required key")
-        if "property_authorization" not in cfg:
-            problem("property_authorization", "missing required property authorization map")
-        required_acquisition_keys = section_keys["acquisition"] - {
-            "max_session_illuminated_ms", "confirm_above_bytes",
+        required_acquisition_keys = {
+            "confirm_above_frames", "confirm_above_duration_s",
         }
         if "acquisition" not in cfg:
             fields = ", ".join(sorted(required_acquisition_keys))
             problem(
                 "acquisition",
-                "missing required acquisition budget section; add these fields: "
+                "missing required acquisition confirmation section; add these fields: "
                 + fields,
             )
 
@@ -539,6 +544,9 @@ class ParsedSafetyConfig:
         if "acquisition" in cfg:
             for key in required_acquisition_keys - acquisition_cfg.keys():
                 problem(f"acquisition.{key}", "missing required key")
+            for key in required_acquisition_keys & acquisition_cfg.keys():
+                if acquisition_cfg[key] is None:
+                    problem(f"acquisition.{key}", "must be a finite positive number")
         for key, value in acquisition_cfg.items():
             if isinstance(value, float) and value <= 0:
                 problem(f"acquisition.{key}", "must be greater than zero")
@@ -673,7 +681,11 @@ class ParsedSafetyConfig:
                 problem(f"{location}.full_scale", "is only valid with units: native")
         ranges = _stage_ranges(stage_cfg, named_cfg, problem)
 
-        mode = authorization_cfg.get("mode", "guaranteed")
+        mode = authorization_cfg.get(
+            "mode",
+            "guaranteed" if "property_authorization" in cfg
+            else "degraded_trusted_plugins",
+        )
         if mode not in ("guaranteed", "degraded_trusted_plugins"):
             problem(
                 "property_authorization.mode",
@@ -733,7 +745,9 @@ class ParsedSafetyConfig:
             workspace_dir=cfg.get("workspace_dir"),
             plugins=PluginConstraints(
                 blocked=plugins_cfg.get("blocked") or [],
-                allow_hardware_motion=bool(plugins_cfg.get("allow_hardware_motion", False)),
+                allow_hardware_motion=bool(plugins_cfg.get(
+                    "allow_hardware_motion", "plugins" not in cfg
+                )),
             ),
             illumination=IlluminationConstraints(
                 shutters=[
@@ -746,7 +760,7 @@ class ParsedSafetyConfig:
                 max_power_percent=ill_cfg.get("max_power_percent"),
                 max_power_step_factor=ill_cfg.get("max_power_step_factor"),
                 require_confirm_on_enable=bool(
-                    ill_cfg.get("require_confirm_on_enable", True)
+                    ill_cfg.get("require_confirm_on_enable", "illumination" in cfg)
                 ),
             ),
             named_stages=named_stages,
@@ -760,6 +774,7 @@ class ParsedSafetyConfig:
                 typed_policies,
                 frozenset(excluded_pairs),
             ),
+            declared_sections=frozenset(cfg),
         )
 
 
@@ -1320,12 +1335,7 @@ class SafetyGuard:
         self.check_plugin(classpath)  # blocklist still applies
         if not self._c.plugins.allow_hardware_motion:
             raise SafetyViolation(
-                f"Plugin '{classpath}' moves hardware; set plugins.allow_hardware_motion: "
-                "true in safety_config.yaml to permit hardware-motion plugin hooks. "
-                "That flag is necessary but not sufficient: an opaque motion plugin is "
-                "also refused at startup in guaranteed mode, so the file needs "
-                "property_authorization.mode: degraded_trusted_plugins as well, and "
-                "microclaw must be restarted. `microclaw check-config` reports both. "
-                "microclaw guards the *result* (see check_z) but does not re-drive the "
-                "axis the plugin controls."
+                f"Plugin '{classpath}' moves hardware, but this config explicitly sets "
+                "`plugins.allow_hardware_motion: false`. Hardware-motion plugin hooks "
+                "are disabled."
             )

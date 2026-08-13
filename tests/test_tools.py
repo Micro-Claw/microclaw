@@ -603,6 +603,24 @@ class TestSetDeviceProperty:
         mock_ctrl.core.set_property.assert_called_once_with("DCam", "Gain", "0")
         mock_ctrl.refresh_gui.assert_called_once_with()
 
+    def test_odd_stage_property_refused_even_for_in_bounds_numeric_value(
+        self, mock_ctrl, unconstrained_guard
+    ):
+        from microclaw.authorization import AuthorizationMap, RigAuthorizationError
+        mock_ctrl.authorization_map = AuthorizationMap(
+            "degraded_trusted_plugins", "degraded", None,
+            property_writes_unrestricted=True,
+            bounded_stage_devices=frozenset({"DStage"}),
+        )
+        with pytest.raises(RigAuthorizationError) as exc:
+            set_device_property(
+                mock_ctrl, unconstrained_guard,
+                device="DStage", property="Odd PositionZ Property", value="50",
+            )
+        message = str(exc.value)
+        assert "move_stage_xy" in message and "move_stage_z" in message
+        mock_ctrl.core.set_property.assert_not_called()
+
     def test_get_device_property(self, mock_ctrl, unconstrained_guard):
         mock_ctrl.core.get_property.return_value = "42"
         result = get_device_property(mock_ctrl, unconstrained_guard,
@@ -2328,6 +2346,22 @@ class TestFocusLock:
         mock_ctrl.core.set_property.assert_called_once_with(
             "PIZStage", "External sensor", "0")
         mock_ctrl.refresh_gui.assert_called_once_with()
+
+    def test_set_focus_lock_refuses_raw_write_on_bounded_stage(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        from microclaw.authorization import AuthorizationMap, RigAuthorizationError
+        from microclaw.tools import set_focus_lock
+        self._emu(monkeypatch)
+        mock_ctrl.authorization_map = AuthorizationMap(
+            "degraded_trusted_plugins", "degraded", None,
+            property_writes_unrestricted=True,
+            bounded_stage_devices=frozenset({"PIZStage"}),
+        )
+        with pytest.raises(RigAuthorizationError, match="move_stage_z"):
+            set_focus_lock(mock_ctrl, unconstrained_guard, enabled=True)
+        mock_ctrl.core.set_property.assert_not_called()
+        mock_ctrl.refresh_gui.assert_not_called()
 
     def test_autofocus_refuses_while_lock_engaged(self, mock_ctrl, unconstrained_guard, monkeypatch):
         # The sweep would be actively opposed by the piezo servo loop.
@@ -4099,6 +4133,30 @@ def test_emu_write_refuses_unverified_calibration(
     _design30_emu_power(monkeypatch)
     result = tools.set_emu_laser_power_percentage(mock_ctrl, unconstrained_guard, 2, 1)
     assert "unverified" in result["error"].lower()
+    mock_ctrl.core.set_property.assert_not_called()
+
+
+def test_emu_power_raw_write_refuses_when_device_is_bounded_stage(
+    mock_ctrl, unconstrained_guard, monkeypatch
+):
+    from microclaw.authorization import AuthorizationMap, RigAuthorizationError
+    _design30_emu_power(monkeypatch)
+    tools.verify_emu_laser_power_calibration(
+        mock_ctrl, unconstrained_guard, 2,
+        [{"percent": 1, "raw_value": 0}, {"percent": 10, "raw_value": 3}],
+    )
+    monkeypatch.setattr(tools, "get_device_property_info", lambda *args, **kwargs: {
+        "read_only": False, "type": "Integer", "lower_limit": 0, "upper_limit": 100,
+    })
+    mock_ctrl.authorization_map = AuthorizationMap(
+        "degraded_trusted_plugins", "degraded", None,
+        property_writes_unrestricted=True,
+        bounded_stage_devices=frozenset({"PWM"}),
+    )
+    with pytest.raises(RigAuthorizationError, match="move_stage"):
+        tools.set_emu_laser_power_percentage(
+            mock_ctrl, unconstrained_guard, 2, 1
+        )
     mock_ctrl.core.set_property.assert_not_called()
 
 

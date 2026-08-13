@@ -21,7 +21,7 @@ from microclaw.config import (
 from microclaw.safety import ParsedSafetyConfig, SafetyConfigError, SafetyConstraints
 
 REAL = """
-schema_version: 2
+schema_version: 3
 reviewed: true
 property_authorization: {mode: guaranteed, allowed_categorical: [], denied: []}
 stage: {x_min: -100.0, x_max: 100.0, y_min: -100.0, y_max: 100.0}
@@ -53,6 +53,46 @@ def test_reviewed_true_loads(tmp_path):
     assert c.constraints.stage.x_max == 100.0
 
 
+def test_minimal_schema_three_loads_and_enforces_stage_bounds(tmp_path):
+    p = _write(tmp_path, """schema_version: 3
+reviewed: true
+stage: {x_min: -10, x_max: 10, y_min: -20, y_max: 20}
+acquisition: {confirm_above_frames: 500, confirm_above_duration_s: 1200}
+""")
+    parsed = load_safety_config(p)
+    guard = __import__("microclaw.safety", fromlist=["SafetyGuard"]).SafetyGuard(
+        parsed.constraints
+    )
+    guard.check_xy(10, 20)
+    with pytest.raises(Exception, match="exceeds the maximum allowed"):
+        guard.check_xy(11, 20)
+
+
+def test_focus_only_minimal_document_parses_and_validates(tmp_path):
+    p = _write(tmp_path, """schema_version: 3
+reviewed: true
+stage: {z_min: 100, z_max: 7800}
+acquisition: {confirm_above_frames: 500, confirm_above_duration_s: 1200}
+""")
+    assert ParsedSafetyConfig.from_yaml(str(p)).constraints.stage.x_min is None
+    assert validate_safety_config(p).can_start_live_validation
+
+
+def test_schema_two_refuses_with_reauthoring_instructions(tmp_path):
+    p = _write(tmp_path, REAL.replace("schema_version: 3", "schema_version: 2"))
+    with pytest.raises(SafetyConfigError) as exc:
+        ParsedSafetyConfig.from_yaml(str(p))
+    message = str(exc.value)
+    assert "microclaw serve" in message
+    assert "Rename" in message
+
+
+def test_missing_confirm_above_frames_refuses(tmp_path):
+    text = REAL.replace("  confirm_above_frames: 500\n", "")
+    with pytest.raises(SafetyConfigError, match="confirm_above_frames"):
+        ParsedSafetyConfig.from_yaml(str(_write(tmp_path, text)))
+
+
 def test_old_authorization_key_is_refused_by_strict_schema(tmp_path):
     legacy = REAL.replace(
         "property_authorization: {mode: guaranteed, allowed_categorical: [], denied: []}",
@@ -64,8 +104,7 @@ def test_old_authorization_key_is_refused_by_strict_schema(tmp_path):
     assert [item.kind for item in result.diagnostics] == ["schema"]
     message = result.diagnostics[0].message
     assert "rig_profile: unknown top-level key" in message
-    assert "property_authorization: missing required property authorization map" in message
-    assert message.count("\n") == 2
+    assert message.count("\n") == 1
 
 
 def test_missing_acquisition_section_names_file_and_required_fields(tmp_path):
@@ -74,11 +113,7 @@ def test_missing_acquisition_section_names_file_and_required_fields(tmp_path):
         ParsedSafetyConfig.from_yaml(str(p))
     message = str(exc.value)
     assert str(p) in message
-    for key in (
-        "max_frames", "max_duration_s", "max_bytes", "max_illuminated_ms",
-        "confirm_above_frames", "confirm_above_duration_s",
-        "confirm_above_illuminated_ms",
-    ):
+    for key in ("confirm_above_frames", "confirm_above_duration_s"):
         assert key in message
 
 
@@ -87,7 +122,7 @@ def test_partial_acquisition_section_aggregates_every_missing_key(tmp_path):
     with pytest.raises(SafetyConfigError) as exc:
         ParsedSafetyConfig.from_yaml(str(_write(tmp_path, text)))
     message = str(exc.value)
-    assert message.count("missing required key") == 6
+    assert message.count("missing required key") == 2
 
 
 def test_deprecated_optional_acquisition_keys_still_load(tmp_path):
@@ -208,11 +243,11 @@ def test_none_means_the_per_user_default(tmp_path, monkeypatch):
 
 # ---- the messages a novice reads in a console about to close ----
 
-def test_exit_on_missing_file_names_init(tmp_path, monkeypatch, capsys):
+def test_exit_on_missing_file_names_in_app_setup(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(config, "default_safety_config", lambda: tmp_path / "nope.yaml")
     with pytest.raises(SystemExit) as e:
         load_safety_config_or_exit(None)
-    assert "microclaw init" in str(e.value)
+    assert "microclaw serve" in str(e.value)
 
 
 def test_exit_on_unreviewed_says_what_to_change(tmp_path):
@@ -220,7 +255,7 @@ def test_exit_on_unreviewed_says_what_to_change(tmp_path):
     with pytest.raises(SystemExit) as e:
         load_safety_config_or_exit(p)
     msg = str(e.value)
-    assert "reviewed: true" in msg and str(p) in msg
+    assert "microclaw serve" in msg and "Rename" in msg and str(p) in msg
 
 
 def test_exit_on_malformed_yaml(tmp_path):
@@ -279,27 +314,15 @@ def test_offline_validator_reports_review_and_all_schema_problems_together(tmp_p
     assert "stage.x_mim" in message and "stagee" in message
 
 
-def test_offline_clean_nulls_are_reported_as_live_startup_blockers(tmp_path):
+def test_required_confirmation_thresholds_cannot_be_null(tmp_path):
     text = REAL.replace("max_exposure_ms: 500.0", "max_exposure_ms: null")
-    for line in (
-        "max_frames: 10000", "max_duration_s: 3600", "max_bytes: 50000000000",
-        "max_illuminated_ms: 600000", "max_session_illuminated_ms: 1800000",
-        "confirm_above_frames: 500", "confirm_above_duration_s: 300",
-        "confirm_above_bytes: 5000000000", "confirm_above_illuminated_ms: 60000",
-    ):
+    for line in ("confirm_above_frames: 500", "confirm_above_duration_s: 300"):
         text = text.replace(line, line.split(":", 1)[0] + ": null")
     p = _write(tmp_path, text)
-    assert ParsedSafetyConfig.from_yaml(str(p))  # strict schema accepts this split
     result = validate_safety_config(p)
-    blockers = [item for item in result.diagnostics if item.blocking]
-    assert len(blockers) == 8
-    assert any("camera.max_exposure_ms" in item.message for item in blockers)
-    for field in (
-        "max_frames", "max_duration_s", "max_bytes", "max_illuminated_ms",
-        "confirm_above_frames", "confirm_above_duration_s",
-        "confirm_above_illuminated_ms",
-    ):
-        assert any(f"acquisition.{field}" in item.message for item in blockers)
+    assert result.parsed is None
+    assert "confirm_above_frames" in result.diagnostics[0].message
+    assert "confirm_above_duration_s" in result.diagnostics[0].message
 
 
 class TestHardwareMotionPluginNeedsBothSettings:
@@ -313,16 +336,9 @@ class TestHardwareMotionPluginNeedsBothSettings:
 
     MOTION = "plugins: {blocked: [], allow_hardware_motion: true}\n"
 
-    def test_guaranteed_plus_motion_blocks_offline(self, tmp_path):
+    def test_guaranteed_plus_motion_is_an_explicit_optional_policy(self, tmp_path):
         result = validate_safety_config(_write(tmp_path, REAL + self.MOTION))
-        assert result.can_start_live_validation is False
-        blocker = next(
-            item for item in result.diagnostics
-            if item.blocking and "allow_hardware_motion" in item.message
-        )
-        # The remedy, not just the rule: both settings, and what it costs.
-        assert "degraded_trusted_plugins" in blocker.message
-        assert "DEGRADED" in blocker.message
+        assert result.can_start_live_validation is True
 
     def test_degraded_plus_motion_is_allowed(self, tmp_path):
         text = REAL.replace("mode: guaranteed", "mode: degraded_trusted_plugins")
@@ -336,13 +352,13 @@ class TestHardwareMotionPluginNeedsBothSettings:
         assert result.can_start_live_validation is True
 
 
-def test_degraded_null_caps_are_nonblocking_but_never_silent(tmp_path):
+def test_optional_null_caps_are_unrestricted_and_silent(tmp_path):
     text = REAL.replace("mode: guaranteed", "mode: degraded_trusted_plugins")
+    text = text.replace("confirm_above_frames: 500", "confirm_above_frames: 501")
     text = text.replace("max_exposure_ms: 500.0", "max_exposure_ms: null")
     fields = (
         "max_frames", "max_duration_s", "max_bytes", "max_illuminated_ms",
-        "max_session_illuminated_ms", "confirm_above_frames",
-        "confirm_above_duration_s", "confirm_above_bytes",
+        "max_session_illuminated_ms", "confirm_above_bytes",
         "confirm_above_illuminated_ms",
     )
     for field in fields:
@@ -350,27 +366,12 @@ def test_degraded_null_caps_are_nonblocking_but_never_silent(tmp_path):
             "max_frames": "10000", "max_duration_s": "3600",
             "max_bytes": "50000000000", "max_illuminated_ms": "600000",
             "max_session_illuminated_ms": "1800000",
-            "confirm_above_frames": "500", "confirm_above_duration_s": "300",
             "confirm_above_bytes": "5000000000",
             "confirm_above_illuminated_ms": "60000",
         }[field], f"{field}: null")
     result = validate_safety_config(_write(tmp_path, text))
     assert result.can_start_live_validation
-    assert [item.kind for item in result.diagnostics] == [
-        "degraded_mode", "live_check",
-    ]
-    warning, live_check = result.diagnostics
-    assert not warning.blocking
-    assert "runtime checks do not enforce" in warning.message
-    assert "camera.max_exposure_ms" in warning.message
-    required_fields = set(fields) - {
-        "max_session_illuminated_ms", "confirm_above_bytes",
-    }
-    assert all(f"acquisition.{field}" in warning.message for field in required_fields)
-    assert "acquisition.max_session_illuminated_ms" not in warning.message
-    assert "acquisition.confirm_above_bytes" not in warning.message
-    assert "completeness claim" in live_check.message
-    assert "explicitly suspended" in live_check.message
+    assert [item.kind for item in result.diagnostics] == ["live_check"]
 
 
 def test_check_config_cli_is_thin_offline_presenter(tmp_path, monkeypatch, capsys):
@@ -391,7 +392,7 @@ def test_offline_validator_warns_for_packaged_example_limit_values(tmp_path):
     result = validate_safety_config(_write(tmp_path, REAL))
     warning = next(item for item in result.diagnostics if item.kind == "example_limits")
     assert warning.blocking is False
-    assert "acquisition.max_frames" in warning.message
+    assert "acquisition.confirm_above_frames" in warning.message
     assert result.can_start_live_validation
 
 

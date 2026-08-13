@@ -17,7 +17,7 @@ from microclaw.safety import (
 def _yaml(tmp_path, body):
     path = tmp_path / "safety.yaml"
     path.write_text(
-        "schema_version: 2\nreviewed: true\n"
+        "schema_version: 3\nreviewed: true\n"
         "property_authorization:\n  mode: guaranteed\n  allowed_categorical: []\n"
         "  denied: []\n" + body +
         "acquisition:\n  max_frames: 1\n  max_duration_s: 1\n  max_bytes: 1\n"
@@ -83,7 +83,7 @@ def test_camera_gain_bounded_numeric_does_not_enter_stage_or_dose_guards():
 def test_bounded_numeric_illumination_alias_is_offline_parse_refusal(tmp_path, section):
     path = tmp_path / "safety.yaml"
     path.write_text(
-        "schema_version: 2\nreviewed: true\n"
+        "schema_version: 3\nreviewed: true\n"
         "property_authorization:\n  mode: guaranteed\n  allowed_categorical: []\n  denied: []\n"
         "  allowed_numeric:\n    - {device: Camera, property: Gain, kind: bounded-numeric, units: dB, minimum: 0, maximum: 10}\n"
         "illumination:\n" + section +
@@ -148,7 +148,9 @@ def _direct(core, *, categorical=(), excluded=(), forbidden=(), typed=None,
         acquisition=acquisition, allowed_channels=[], allowed_properties=[],
         forbidden_properties=list(forbidden), illumination=illumination or IlluminationConstraints())
     parsed = ParsedSafetyConfig(constraints, ranges or {},
-        PropertyAuthorization("guaranteed", frozenset(categorical), typed or {}, frozenset(excluded)))
+        PropertyAuthorization("guaranteed", frozenset(categorical), typed or {}, frozenset(excluded)),
+        frozenset({"property_authorization", "illumination", "camera", "channels",
+                   "acquisition", "stage"}))
     return SimpleNamespace(core=core), parsed
 
 

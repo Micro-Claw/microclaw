@@ -30,6 +30,10 @@ _ACQUISITION_POLICY_FIELDS = (
     ("confirm_above_illuminated_ms", "per-plan illuminated-time confirmation threshold"),
 )
 
+_REQUIRED_ACQUISITION_POLICY_FIELDS = {
+    "confirm_above_frames", "confirm_above_duration_s",
+}
+
 
 def _acquisition_tool_names() -> list[str]:
     """Read the public tool registry; function metadata is the coverage source."""
@@ -210,10 +214,14 @@ class AuthorizationMap:
     # Which source produced this session's channels. Only the runtime refusal
     # messages read it; the executor re-derives the source fresh at apply time.
     channel_source: str = "config-group"
+    property_writes_unrestricted: bool = False
+    channels_unrestricted: bool = False
+    bounded_stage_devices: frozenset[str] = frozenset()
 
     def to_dict(self) -> dict:
         out = asdict(self)
         out["authorized_presets"] = sorted(self.authorized_presets)
+        out["bounded_stage_devices"] = sorted(self.bounded_stage_devices)
         return out
 
 
@@ -833,20 +841,17 @@ def validate_live_rig(
     for identity, live_device in reachable_axes:
         policy = parsed_config.ranges.get(identity)
         if policy is None:
-            if guaranteed:
-                location = (
-                    f"an item for device {live_device!r} under top-level `named_stages`"
-                    if identity.source == "named"
-                    else f"both `stage.{identity.axis}_min` and `stage.{identity.axis}_max`"
-                )
-                errors.append(
-                    f"Reachable {identity.axis or 'z'} stage actuator {live_device!r} "
-                    f"has no declared range policy. The declaration that permits it is {location}."
-                )
+            location = (
+                f"an item for device {live_device!r} under top-level `named_stages`"
+                if identity.source == "named"
+                else f"both `stage.{identity.axis}_min` and `stage.{identity.axis}_max`"
+            )
+            errors.append(
+                f"Reachable {identity.axis or 'z'} stage actuator {live_device!r} "
+                f"has no declared range policy. The declaration that permits it is {location}."
+            )
             continue
-        if guaranteed and (
-            policy.minimum.bound is None or policy.maximum.bound is None
-        ):
+        if policy.minimum.bound is None or policy.maximum.bound is None:
             location = (
                 f"the `min_um` and `max_um` keys for device {live_device!r} "
                 "under top-level `named_stages`"
@@ -858,7 +863,7 @@ def validate_live_rig(
             )
             errors.append(
                 f"Reachable stage actuator {live_device!r} axis "
-                f"{identity.axis or 'z'} has an open range edge in guaranteed mode. "
+                f"{identity.axis or 'z'} has an open range edge. "
                 f"Set finite reviewed bounds in {location}."
             )
         entries.append(AuthorizationEntry(
@@ -870,12 +875,6 @@ def validate_live_rig(
         ))
 
     if camera_device:
-        if guaranteed and parsed_config.constraints.camera.max_exposure_ms is None:
-            errors.append(
-                f"Reachable camera {camera_device!r} has no finite exposure maximum. "
-                "Set `camera.max_exposure_ms` in the top-level `camera` section to "
-                "this rig's reviewed finite positive limit."
-            )
         entries.append(AuthorizationEntry(
             path="dedicated-exposure",
             classification="built_in_typed_capability",
@@ -931,7 +930,7 @@ def validate_live_rig(
             "Establish and declare on_value/off_value too if this hardware does not "
             "use the schema defaults; no values were inferred from the semantic map."
         )
-    if guaranteed:
+    if "illumination" in parsed_config.declared_sections and guaranteed:
         errors.extend(emu_warnings)
     else:
         for warning in emu_warnings:
@@ -1113,13 +1112,13 @@ def validate_live_rig(
             property=prop,
             capability="illumination",
         ))
-    if guaranteed and illumination_power_pairs:
+    if illumination_power_pairs:
         maximum = illumination.max_power_percent
         step_factor = illumination.max_power_step_factor
         if maximum is None:
             errors.append(
                 "Reachable illumination power requires a finite "
-                "illumination.max_power_percent in guaranteed mode."
+                "illumination.max_power_percent."
             )
         elif not math.isfinite(maximum) or not 0 <= maximum <= 100:
             errors.append(
@@ -1129,7 +1128,7 @@ def validate_live_rig(
         if step_factor is None:
             errors.append(
                 "Reachable illumination power requires a finite "
-                "illumination.max_power_step_factor in guaranteed mode."
+                "illumination.max_power_step_factor."
             )
         elif not math.isfinite(step_factor) or step_factor < 1:
             errors.append(
@@ -1338,8 +1337,9 @@ def validate_live_rig(
             and math.isfinite(value)
             and value > 0
         )
-        acquisition_policy_complete = acquisition_policy_complete and valid
-        if guaranteed and not valid:
+        if field_name in _REQUIRED_ACQUISITION_POLICY_FIELDS:
+            acquisition_policy_complete = acquisition_policy_complete and valid
+        if field_name in _REQUIRED_ACQUISITION_POLICY_FIELDS and not valid:
             errors.append(
                 f"Acquisition authorization requires finite positive "
                 f"acquisition.{field_name}; got {value!r}. Set that key in the "
@@ -1348,7 +1348,7 @@ def validate_live_rig(
         entries.append(AuthorizationEntry(
             path=f"acquisition-policy:{field_name}",
             classification=(
-                "built_in_typed_capability" if valid else "trusted_degraded"
+                "built_in_typed_capability" if valid else "unrestricted"
             ),
             device=camera_device or None,
             capability="acquisition-dose",
@@ -1389,25 +1389,17 @@ def validate_live_rig(
     if parsed_config.constraints.plugins.allow_hardware_motion:
         entries.append(AuthorizationEntry(
             path="opaque-hardware-motion-plugin",
-            classification="excluded" if guaranteed else "trusted_degraded",
+            classification="trusted_degraded",
             detail="effects cannot be enumerated or intercepted",
         ))
-        if guaranteed:
-            errors.append(
-                "plugins.allow_hardware_motion is true, but opaque hardware-motion "
-                "plugins are forbidden in guaranteed mode: guaranteed mode promises "
-                "that every hardware effect is either typed and guarded or "
-                "explicitly excluded, and a plugin is arbitrary Java whose effects "
-                "microclaw can neither enumerate nor intercept — it can only check "
-                "where the axis ended up afterwards. Setting that flag is therefore "
-                "necessary but NOT sufficient. To run one, also set "
-                "property_authorization.mode: degraded_trusted_plugins in "
-                "safety_config.yaml (`microclaw check-config` prints the path and "
-                "will now catch this pair offline) — every limit in the file stays "
-                "enforced, but the authorization map's "
-                "completeness claim is suspended and startup will say so. To stay "
-                "in guaranteed mode, set plugins.allow_hardware_motion back to false."
-            )
+        demotions.append(ConfigDiagnostic(
+            "plugin_motion",
+            "Hardware-motion plugin hooks are permitted. Their effects are arbitrary "
+            "Java that microclaw can neither enumerate nor intercept; microclaw checks "
+            "only where the axis ended up afterwards. Declare a `plugins` section with "
+            "`allow_hardware_motion: false` to turn them off.",
+            False,
+        ))
 
     if loaded_devices_error is not None and guaranteed:
         errors.append(loaded_devices_error)
@@ -1442,10 +1434,18 @@ def validate_live_rig(
         )
 
     if demotions:
-        print("\n!! AUTHORIZATION CLAIMS DEMOTED — STARTUP CONTINUES WITH LESS AUTHORITY !!", file=sys.stderr)
+        print(
+            "\n!! AUTHORIZATION CLAIMS DEMOTED / WARNINGS — STARTUP CONTINUES !!",
+            file=sys.stderr,
+        )
         for diagnostic in demotions:
-            print(f"- {diagnostic.message}", file=sys.stderr)
-        print("!! END DEMOTED AUTHORIZATION CLAIMS !!\n", file=sys.stderr)
+            label = (
+                "HARDWARE-MOTION PLUGIN WARNING"
+                if diagnostic.kind == "plugin_motion"
+                else "AUTHORIZATION CLAIM DEMOTED"
+            )
+            print(f"{label}: {diagnostic.message}", file=sys.stderr)
+        print("!! END AUTHORIZATION WARNINGS !!\n", file=sys.stderr)
 
     # A raw write passes two gates: this map and SafetyGuard.check_property's
     # categorical allowlist (built from the declared pairs at config-parse
@@ -1473,6 +1473,15 @@ def validate_live_rig(
         channel_expansion_hashes=channel_expansion_hashes,
         diagnostics=tuple(demotions),
         channel_source=source.kind,
+        property_writes_unrestricted=(
+            "property_authorization" not in parsed_config.declared_sections
+            and "illumination" not in parsed_config.declared_sections
+        ),
+        channels_unrestricted="channels" not in parsed_config.declared_sections,
+        bounded_stage_devices=frozenset(
+            live_device for identity, live_device in reachable_axes
+            if parsed_config.ranges.get(identity) is not None
+        ),
     )
     ctrl.authorization_map = report
     return report
@@ -1483,6 +1492,15 @@ def authorize_property_write(ctrl: Any, device: str, prop: str) -> None:
     report = getattr(ctrl, "authorization_map", None)
     if report is None:
         # Invariant: startup attaches this before exposing production mutation paths.
+        return
+    if report.property_writes_unrestricted and device in report.bounded_stage_devices:
+        raise RigAuthorizationError(
+            f"Property write {device}.{prop} was refused because {device!r} carries "
+            "declared stage bounds. Raw property writes cannot route around those "
+            "bounds; use move_stage_xy for XY motion, move_stage_z for the focus "
+            "drive, or move_named_stage for a named stage."
+        )
+    if report.property_writes_unrestricted:
         return
     matches = [
         entry for entry in report.entries
@@ -1517,6 +1535,8 @@ def authorize_property_write(ctrl: Any, device: str, prop: str) -> None:
 
 def authorize_channel(ctrl: Any, preset: str) -> None:
     report = getattr(ctrl, "authorization_map", None)
+    if report is not None and report.channels_unrestricted:
+        return
     if report is not None and preset not in report.authorized_presets:
         reasons = report.excluded_presets.get(preset, ["preset was not authorized at startup"])
         # On a rig whose channels are not Micro-Manager presets, the remedy is

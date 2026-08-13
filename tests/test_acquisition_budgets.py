@@ -97,7 +97,7 @@ def test_partial_completion_commits_actual_and_releases_the_rest():
         ("confirm_above_illuminated_ms", AcquisitionPlan(1, 2, 1, 1)),
     ],
 )
-def test_each_confirmation_threshold_fires_above_and_not_below(
+def test_each_confirmation_threshold_fires_at_boundary_and_not_below(
     monkeypatch, field, plan
 ):
     from microclaw import tools
@@ -117,9 +117,51 @@ def test_each_confirmation_threshold_fires_above_and_not_below(
     assert calls[0][2] == "threshold"
 
     calls.clear()
-    at_threshold = AcquisitionPlan(1, 1, 1, 1)
-    tools._authorize_acquisition(ctrl, _guard(**{field: 1}), at_threshold).close()
+    below = {
+        "confirm_above_frames": AcquisitionPlan(0, 1, 1, 1),
+        "confirm_above_duration_s": AcquisitionPlan(1, 1, 0, 1),
+        "confirm_above_illuminated_ms": AcquisitionPlan(1, 0, 1, 1),
+    }[field]
+    tools._authorize_acquisition(ctrl, _guard(**{field: 1}), below).close()
     assert calls == []
+
+
+@pytest.mark.parametrize(("value", "asks"), [(499, False), (500, True), (501, True)])
+def test_frame_confirmation_boundary(monkeypatch, value, asks):
+    from microclaw import tools
+    calls = []
+    monkeypatch.setattr(tools, "CONFIRM_FN", lambda *a, **k: calls.append(a[0]) or True)
+    tools._authorize_acquisition(
+        MagicMock(), _guard(confirm_above_frames=500),
+        AcquisitionPlan(value, 1, 1, value),
+    ).close()
+    assert bool(calls) is asks
+
+
+@pytest.mark.parametrize(("value", "asks"), [(1199, False), (1200, True), (1201, True)])
+def test_duration_confirmation_boundary(monkeypatch, value, asks):
+    from microclaw import tools
+    calls = []
+    monkeypatch.setattr(tools, "CONFIRM_FN", lambda *a, **k: calls.append(a[0]) or True)
+    tools._authorize_acquisition(
+        MagicMock(), _guard(confirm_above_duration_s=1200),
+        AcquisitionPlan(1, 1, value, 1),
+    ).close()
+    assert bool(calls) is asks
+
+
+def test_one_confirmation_names_both_reasons(monkeypatch):
+    from microclaw import tools
+    calls = []
+    monkeypatch.setattr(tools, "CONFIRM_FN", lambda *a, **k: calls.append(a[0]) or True)
+    tools._authorize_acquisition(
+        MagicMock(),
+        _guard(confirm_above_frames=500, confirm_above_duration_s=1200),
+        AcquisitionPlan(500, 1, 1200, 500),
+    ).close()
+    assert len(calls) == 1
+    assert "500 frames" in calls[0]
+    assert "20 minutes" in calls[0]
 
 
 def test_deprecated_confirm_above_bytes_does_not_gate_a_plan(monkeypatch):

@@ -97,5 +97,6 @@ def test_init_from_example_is_explicit_and_no_edit_still_applies(tmp_path, monke
     cli.init(_args(target, from_example=True))
 
     loaded = yaml.safe_load(target.read_text(encoding="utf-8"))
-    assert loaded["reviewed"] is False
-    assert loaded["stage"]["x_min"] == -5000.0
+    assert loaded["schema_version"] == 3
+    assert loaded["reviewed"] is True
+    assert loaded["stage"]["x_min"] == -12345.0

@@ -436,6 +436,7 @@ def check_config(args):
             "example_limits": "EXAMPLE-LIMIT REVIEW",
             "guaranteed_mode": "GUARANTEED-MODE REQUIREMENT",
             "degraded_mode": "DEGRADED-MODE WARNING",
+            "plugin_motion": "HARDWARE-MOTION PLUGIN WARNING",
             "live_check": "LIVE CHECK REQUIRED",
         }[item.kind]
         print(f"{label}: {item.message}")

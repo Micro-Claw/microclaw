@@ -417,6 +417,7 @@ def _current_demo_source():
     """Translate immutable historical gate evidence into the current schema."""
     source = Path("design/33-block5-demo-safety-config.yaml").read_text(encoding="utf-8")
     return (source
+            .replace("schema_version: 2", "schema_version: 3")
             .replace("rig_profile:", "property_authorization:")
             .replace("categorical_properties", "allowed_categorical")
             .replace("typed_actuators", "allowed_numeric")
