@@ -148,7 +148,9 @@ def _direct(core, *, categorical=(), excluded=(), forbidden=(), typed=None,
         acquisition=acquisition, allowed_channels=[], allowed_properties=[],
         forbidden_properties=list(forbidden), illumination=illumination or IlluminationConstraints())
     parsed = ParsedSafetyConfig(constraints, ranges or {},
-        PropertyAuthorization("guaranteed", frozenset(categorical), typed or {}, frozenset(excluded)))
+        PropertyAuthorization("guaranteed", frozenset(categorical), typed or {}, frozenset(excluded)),
+        frozenset({"property_authorization", "illumination", "camera", "channels",
+                   "acquisition", "stage"}))
     return SimpleNamespace(core=core), parsed
 
 
