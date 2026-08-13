@@ -14,7 +14,7 @@ from microclaw.knowledge_manager import (
     rig_profile_gaps,
 )
 from microclaw.safety import SafetyGuard
-from microclaw.tools import execute_tool
+from microclaw.tools import TOOL_REGISTRY, execute_tool
 from microclaw.tools_schema import TOOLS_CACHED
 
 # Latest available Opus at time of writing (verified against the Claude API
@@ -269,7 +269,7 @@ def _unwind_cancel(messages: list[dict], on_message=None, result=CANCEL_RESULT) 
                 on_message(message)
 
 
-def _system_blocks() -> list[dict[str, Any]]:
+def _system_blocks(*, setup_mode: bool = False) -> list[dict[str, Any]]:
     blocks: list[dict[str, Any]] = [
         {
             "type": "text",
@@ -283,6 +283,15 @@ def _system_blocks() -> list[dict[str, Any]]:
         blocks.append(
             {"type": "text", "text": kb_text, "cache_control": {"type": "ephemeral"}}
         )
+    if setup_mode:
+        blocks.append({
+            "type": "text",
+            "text": (
+                "Microclaw is in setup mode. Hardware control and acquisition "
+                "are locked until security bounds are recorded and Microclaw is restarted."
+            ),
+        })
+        return blocks
     gaps = rig_profile_gaps(knowledge)
     if gaps:
         blocks.append({
@@ -318,7 +327,8 @@ Never block a task on this. If the operator asks for work, do the work first and
 ask afterwards, in the same reply. Never re-ask a stored topic."""
 
 
-def _stream_one_round(messages, system_blocks, model, context_provider=None):
+def _stream_one_round(messages, system_blocks, model, tool_schemas,
+                      context_provider=None):
     """One model call, streamed.
 
     Yields `text_delta` events as the prose arrives; returns the final Message —
@@ -335,12 +345,17 @@ def _stream_one_round(messages, system_blocks, model, context_provider=None):
             model_messages = (
                 context_provider(messages) if context_provider is not None else messages
             )
+            # Setup mode has no tools to offer yet, and whether the API accepts
+            # `tools=[]` is not something this turn should depend on: omit the
+            # parameter when the session exposes nothing rather than send an
+            # empty array. A tools-less request is an ordinary conversation.
+            offered = {"tools": tool_schemas} if tool_schemas else {}
             with _get_client().messages.stream(
                 model=model,
                 max_tokens=MAX_OUTPUT_TOKENS,
                 system=system_blocks,
-                tools=TOOLS_CACHED,
                 messages=_with_cache_breakpoint(model_messages),
+                **offered,
             ) as stream:
                 for event in stream:
                     if (
@@ -385,6 +400,9 @@ def run_agent_iter(
     context_provider: Callable[[list[dict]], list[dict]] | None = None,
     on_message: Callable[[dict], None] | None = None,
     confirmation_records: list[dict] | None = None,
+    tool_schemas=TOOLS_CACHED,
+    tool_registry=TOOL_REGISTRY,
+    setup_mode: bool = False,
 ) -> Iterator[dict]:
     """Run one user turn, yielding an event per thing that happens.
 
@@ -416,7 +434,7 @@ def run_agent_iter(
             on_message(message)
 
     append({"role": "user", "content": user_message})
-    system_blocks = _system_blocks()
+    system_blocks = _system_blocks(setup_mode=setup_mode)
 
     for iteration in range(max_iterations):
         if _cancelled(cancel):
@@ -427,7 +445,7 @@ def run_agent_iter(
 
         try:
             response = yield from _stream_one_round(
-                messages, system_blocks, model, context_provider
+                messages, system_blocks, model, tool_schemas, context_provider
             )
         except Exception as e:
             # A failed API call must not strand its attempted prompt in the
@@ -498,7 +516,8 @@ def run_agent_iter(
                     len(confirmation_records) if confirmation_records is not None else 0
                 )
                 result_json = execute_tool(
-                    block.name, block.input, ctrl, guard,
+                    block.name, block.input, ctrl, guard, tool_registry,
+                    setup_mode=setup_mode,
                     cancel=cancel, records=messages,
                 )
                 if confirmation_records is not None:
@@ -577,6 +596,7 @@ def run_agent(
     reply = ""
     for event in run_agent_iter(
         user_message, ctrl, guard, messages, model, max_iterations,
+        tool_schemas=TOOLS_CACHED, tool_registry=TOOL_REGISTRY,
         context_provider=context_provider, on_message=on_message,
     ):
         if event["type"] == "done":

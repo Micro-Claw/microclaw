@@ -33,6 +33,7 @@ import threading
 import time
 import uuid
 import webbrowser
+from enum import Enum
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
@@ -46,7 +47,7 @@ from fastapi.responses import (
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
-from microclaw import credentials, tools
+from microclaw import config, credentials, tools
 from microclaw.authorization import RigAuthorizationError, validate_live_rig
 from microclaw.conversation import AuditLog, ConversationStore, prune_transcripts
 from microclaw.agent import (
@@ -59,7 +60,29 @@ from microclaw.agent import (
 from microclaw.assets import icon_bytes, load_page
 from microclaw.config import load_safety_config_or_exit
 from microclaw.controller import MicroscopeController
+from microclaw.rig_inventory import enumerate_rig
 from microclaw.safety import SafetyGuard, SafetyViolation
+from microclaw.tools_schema import TOOLS_CACHED
+
+
+class SessionMode(Enum):
+    SETUP = "setup"
+    NORMAL = "normal"
+
+
+SETUP_TOOL_NAMES = frozenset({
+    "list_stage_axes", "read_stage_positions", "record_proposed_stage_bound",
+    "set_proposed_acquisition_prompts", "review_security_config",
+    "write_security_config",
+})
+SETUP_TOOL_REGISTRY = {}
+SETUP_TOOL_SCHEMAS = []
+SETUP_FIRST_MESSAGE = (
+    "Security bounds are not set. Before Microclaw can control hardware, we need to "
+    "record safe travel bounds for every stage and choose large-acquisition warning "
+    "thresholds. I can guide you through it; acquisition and hardware-write tools "
+    "stay unavailable until setup is complete and Microclaw is restarted."
+)
 
 # Loopback names. Anything else needs --allow-remote.
 LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
@@ -294,6 +317,12 @@ class Session:
             sys.exit(str(exc))
         self.ctrl = ctrl
         self.guard = guard
+        self.mode = SessionMode.NORMAL
+        self.tool_schemas = TOOLS_CACHED
+        self.tool_registry = tools.TOOL_REGISTRY
+        self._initialize(args)
+
+    def _initialize(self, args):
         self.model = args.model
         self.history: list[dict] = []
         self.history_fn = (
@@ -330,6 +359,7 @@ class Session:
             print(f"Anthropic API key: {credentials.mask(key)} (from {source})")
         else:
             print("No Anthropic API key found — set one from the browser.")
+
 
     def _audit_confirmation(
         self, *, summary: str, kind: str, subject: str | None,
@@ -437,10 +467,45 @@ class Session:
             emit({"type": "confirm_resolved", "id": p.id})
 
 
+class SetupSession(Session):
+    """A connected session whose dispatcher exposes no normal capabilities."""
+
+    def __init__(self, args):
+        print("Connecting to Micro-Manager in setup mode...")
+        ctrl = MicroscopeController(port=args.port, guard=None)
+        if not ctrl.is_connected():
+            sys.exit(
+                "Could not connect to Micro-Manager. "
+                "Is the ZMQ server enabled in Tools → Options?"
+            )
+        self.ctrl = ctrl
+        self.guard = None
+        self.parsed_safety = None
+        self.mode = SessionMode.SETUP
+        self.tool_schemas = SETUP_TOOL_SCHEMAS
+        self.tool_registry = SETUP_TOOL_REGISTRY
+        self.inventory = enumerate_rig(ctrl.core)
+        self._initialize(args)
+        message = {"role": "assistant", "content": SETUP_FIRST_MESSAGE}
+        self.history.append(message)
+        self.store.append(message)
+
+
+def build_session(args):
+    """Build setup only for an absent config; invalid existing files still refuse."""
+    path = Path(args.safety_config) if args.safety_config else config.default_safety_config()
+    return SetupSession(args) if not path.exists() else Session(args)
+
+
 def build_app(session, *, remote: bool = False, api_token: str | None = None,
               behind_tls_proxy: bool = False, auth_state: RemoteAuth | None = None) -> FastAPI:
     app = FastAPI(title="Microclaw")
     page = load_page("serve.html")
+    if session.mode is SessionMode.SETUP:
+        page = page.replace(
+            'class="banner hidden" id="setup-banner"',
+            'class="banner" id="setup-banner"',
+        )
     icon = icon_bytes()
     if remote:
         if not api_token:
@@ -620,6 +685,14 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
             try:
                 for event in run_agent_iter(
                     msg, session.ctrl, session.guard, session.history, session.model,
+                    # Read these directly. A `getattr` default here would be the
+                    # full hardware registry, so a session class that ever failed
+                    # to set them would silently dispatch every normal tool in
+                    # setup mode. Both classes set all three in __init__; a
+                    # missing attribute is a bug that should raise, not fail open.
+                    tool_schemas=session.tool_schemas,
+                    tool_registry=session.tool_registry,
+                    setup_mode=session.mode is SessionMode.SETUP,
                     cancel=session.cancel,
                     context_provider=(session.store.model_messages
                                       if hasattr(session, "store") else None),
@@ -815,6 +888,8 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
         try:
             # A configured workspace still applies — this endpoint may not be a
             # way around it — but it is no longer what authorises the download.
+            if session.guard is None:
+                raise HTTPException(403, "Artifacts are unavailable in setup mode.")
             resolved = session.guard.resolve_in_workspace(path)
         except SafetyViolation as e:
             raise HTTPException(403, str(e))
@@ -946,7 +1021,7 @@ def serve(args):
 
     from microclaw import tools
 
-    session = Session(args)
+    session = build_session(args)
     if token:
         _add_audit_secret(session, token)
     if pairing_code:
