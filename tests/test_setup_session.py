@@ -37,6 +37,10 @@ def test_setup_dispatcher_rejects_the_whole_normal_registry():
         assert "setup mode" in result["error"]
 
 
+def test_setup_tools_never_enter_exportable_registry():
+    assert webserve.SETUP_TOOL_NAMES.isdisjoint(tools.TOOL_REGISTRY)
+
+
 def test_fabricated_hardware_call_is_rejected_before_function_lookup():
     registry = MagicMock()
     registry.__contains__.return_value = False
@@ -235,3 +239,7 @@ def test_setup_first_message_and_banner_are_exact(monkeypatch, tmp_path):
     page = TestClient(webserve.build_app(session)).get("/").text
     assert 'class="banner" id="setup-banner"' in page
     assert "Setup mode — hardware control locked" in page
+    assert 'id="setup-checklist"' in page
+    status = TestClient(webserve.build_app(session)).get("/api/setup-status").json()
+    assert status["thresholds"]["proposed_confirm_above_frames"] == 500
+    assert status["thresholds"]["proposed_confirm_above_duration_s"] == 1200
