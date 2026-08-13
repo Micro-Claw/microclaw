@@ -183,3 +183,62 @@ def test_a_hostile_artifact_path_cannot_break_out_of_an_attribute():
     tag = html[: html.index(">") + 1]
     assert '" onclick="' not in tag          # never escapes into an attribute
     assert 'title="a&quot; onclick=&quot;alert(1)"' in tag
+
+
+def md(text):
+    """Load transcript.js in node and call Transcript.md(text)."""
+    path = resources.files("microclaw").joinpath("transcript.js")
+    script = (
+        "global.window = {};\n"
+        f"require({json.dumps(str(path))});\n"
+        f"process.stdout.write(window.Transcript.md({json.dumps(text)}));\n"
+    )
+    out = subprocess.run(
+        ["node", "-e", script], capture_output=True, text=True, check=True
+    )
+    return out.stdout
+
+
+def test_a_fenced_block_renders_as_a_block_with_no_stray_backticks():
+    """M5 gate, 2026-08-13. The model quotes tool results back inside ``` fences
+    constantly, and every one of them arrived as a run-on line with backticks
+    left on the page: the inline-code rule matched from the third backtick of
+    the opening fence to the first of the closing one."""
+    html = md('Result:\n\n```\n{"error": "refused"}\n```\n\nThat was deliberate.')
+    assert html == (
+        "<p>Result:</p>"
+        '<pre class="code">{&quot;error&quot;: &quot;refused&quot;}</pre>'
+        "<p>That was deliberate.</p>"
+    ).replace("&quot;", '"')
+    assert "`" not in html
+
+
+def test_a_language_tag_is_not_rendered_as_content():
+    assert md('```json\n{"a": 1}\n```') == '<pre class="code">{"a": 1}</pre>'
+
+
+def test_a_fence_still_streaming_renders_as_a_block():
+    """`serve` renders every text delta, so a half-written fence is on screen
+    for as long as the model takes to close it."""
+    assert md("here:\n\n```\n{partial") == '<p>here:</p><pre class="code">{partial</pre>'
+
+
+def test_inline_code_and_bold_still_work():
+    assert md("use `move_stage_xy` and **stop**") == (
+        "<p>use <code>move_stage_xy</code> and <strong>stop</strong></p>"
+    )
+
+
+def test_prose_that_looks_like_the_placeholder_is_left_alone():
+    """The held-block placeholder has to be something a transcript cannot
+    contain: a printable marker would eventually appear in ordinary prose and
+    be swapped for an unrelated code block."""
+    assert md("about 3 minutes, roughly 0 frames lost") == (
+        "<p>about 3 minutes, roughly 0 frames lost</p>"
+    )
+
+
+def test_markup_inside_a_fence_is_escaped():
+    assert md("```\n<img src=x onerror=alert(1)>\n```") == (
+        '<pre class="code">&lt;img src=x onerror=alert(1)&gt;</pre>'
+    )

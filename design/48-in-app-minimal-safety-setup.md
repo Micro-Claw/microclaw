@@ -441,11 +441,47 @@ and proceeds on approval. Then the rig interview starts on its own.
 | Block | Branch | Start commit | Implementer | Rig gate | Merged |
 |---|---|---|---|---|---|
 | coordination | `design48/checklist` | `f7beac1` | coordinator | n/a | — |
-| 48a | `design48/block-48a` | `9176dfd` | 2 review rounds, pushed `04edd84` | awaiting M5 | — |
+| 48a | `design48/block-48a` | `9176dfd` | 2 review rounds, tip `24545da` | M5 PASS 2026-08-13 | — |
 | 48b | — | — | — | — | — |
 | 48c | — | — | — | — | — |
 | 48d | — | — | — | — | — |
 | 48e | — | — | — | — | — |
+
+## What the 48a M5 gate measured (2026-08-13)
+
+Evidence: `~/Documents/Documents - Beyonce/Projects/Micro-Claw/48a-m5`.
+
+- pytest on M5: **1828 passed, 116 skipped**. macOS on the same commit was 1845
+  / 99, and 1828 + 116 = 1845 + 99 = 1944 — the same collection, 17 tests
+  skipped on Windows. Nothing was lost.
+- The minimal document M5 authored declares XY, Z, and **three** named stages
+  (SmarAct 1D, Thorlabs ELL17/ELL20, Thorlabs ELL20), with no `camera`,
+  `channels`, `illumination`, `plugins`, or `property_authorization` section.
+- Out-of-bounds XY refused at x=5001 against x_max=5000; no motion.
+- The raw-write route was refused for `PIZStage.Position` at an **in-range**
+  value — the protection is about the route, and it held.
+- The confirmation fired at exactly 500 frames, was approved once, and 500
+  frames were written to `D:\SSD\48a-test\block48a-500-frames_1`.
+- With no `illumination` section, the EMU laser enable went through with no
+  Microclaw refusal and no enable confirmation, which is the intended schema-3
+  behaviour. (The first write returned M5's known serial timeout; the retry
+  succeeded.)
+
+Two defects the gate exposed, both fixed on the branch:
+
+1. **The bounds refusal named `move_stage` and `set_focus`, neither of which is
+   a tool.** The model had to guess its way to `move_stage_xy`. The tests
+   asserted the same wrong names by substring, so they passed; they now check
+   every tool name the message prints against `TOOL_REGISTRY`. **A refusal that
+   names the guarded route must name a route that exists** — worth a check in
+   any future block that writes one.
+2. **Fenced code blocks did not render in the web UI** (fixed on
+   `fix/transcript-code-blocks`, separate from this block). `md()` in
+   `transcript.js` supported only inline `` `code` ``, and on a ``` fence the
+   inline rule matched from the third backtick to the first of the closing
+   fence — so every verbatim tool result the model quoted back collapsed onto
+   one line with stray backticks beside it. This is pre-existing, not schema-3
+   fallout, but it is squarely a design/48 usability defect.
 
 ## Carried forward, not this track's work
 
