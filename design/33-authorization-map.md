@@ -2,6 +2,23 @@
 
 Date: 2026-07-21
 
+> **Amended 2026-08-13 by design/48 block 48a.** The completeness claim below —
+> that *every* reachable actuator is typed or explicitly excluded before any tool
+> is exposed — is no longer what a default installation promises. Schema 3 makes
+> `property_authorization`, `illumination`, `camera`, `channels` and `plugins`
+> optional, and an omitted section means no Microclaw restriction; a config with
+> none of them runs in `degraded_trusted_plugins` mode with the completeness
+> claim suspended, and hardware-motion plugins permitted with a startup warning.
+> What is still mandatory, and what live validation still enforces on every
+> start, is **reviewed finite bounds for every reachable stage axis** plus the
+> two acquisition confirmation thresholds. Guaranteed mode remains available and
+> works exactly as described here for an operator who declares those sections.
+>
+> One rule survived unchanged and is worth restating: **stage bounds hold
+> regardless of the write path.** A raw property write to a device that carries
+> declared bounds is refused even when property writes are otherwise
+> unrestricted (M5, 2026-08-13).
+
 Promoted out of `design/32` Finding 1. That finding's immediately-actionable core
 — a strict, versioned safety-config schema that fails startup with all validation
 errors (structure, semantics, finite numeric bounds) — stays in design/32. This

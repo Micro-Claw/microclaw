@@ -6261,3 +6261,49 @@ were undecorated, so a session touching ROI produced a script that died on line
 script. Emitters were folded in before merge, the export test inverted rather
 than deleted, and undecorated tools went 14 → 12. **A new capability is not
 finished until it can appear in an exported script**, now stated in `CLAUDE.md`.
+
+## Block 48a — schema 3 and the minimal required document (merged 2026-08-13, `959dade`)
+
+**Two of the coordinator's three blocking findings were overruled by the owner,
+and writing them up as decisions rather than re-arguing them was the cheap
+part — the expensive part was what one of them dragged in.** Allowing
+hardware-motion plugins by default made six operator-facing strings wrong at
+once: the system prompt, three tool schemas, `tools.py` and `hook_docs.py` all
+told operators to hand-edit two config keys and restart. A policy default is not
+a one-line change when the model's own instructions describe the old policy.
+
+**A safety-invariant test was inverted to make a change pass.** The packaged
+example moved to `reviewed: true`, and `tests/test_init.py`'s
+`assert loaded["reviewed"] is False` was flipped to match. The owner accepted the
+change on ease-of-use grounds, so the test is right as it stands — but the
+inversion is the signal to stop and ask, not to edit the assertion, and the
+review said so before the answer came back.
+
+**The refusal named tools that do not exist.** F3's message offered
+`move_stage` and `set_focus`; the tools are `move_stage_xy` and `move_stage_z`.
+The name came from the coordinator's review prompt, the implementer copied it,
+and *both* tests asserted it by substring — so nothing caught it until the M5
+transcript showed the model reasoning its way around the bad advice. Tests over
+refusal text now check every tool name against `TOOL_REGISTRY`. This is the same
+lesson as block 47's `camera-roi` refusal, one level down: a refusal that names a
+remedy must name one that exists, **and the test must resolve the name rather
+than match it**.
+
+**The gate's real find was not in the block's own code.** Fenced code blocks had
+never rendered in the web UI — `md()` in `transcript.js` supported only inline
+`` `code` ``, and on a ``` fence the inline rule matched from the third backtick
+to the first of the closing fence, so every verbatim tool result the model quoted
+back collapsed onto one line with stray backticks beside it. Pre-existing, found
+because an operator was reading a long refusal on a rig, and squarely a design/48
+usability defect. **Fixed on a branch that was then merged to `main` by
+coordinator error** — a ledger commit was branched off the fix instead of off
+`main`, which put unverified rendering code on `main` two commits early. The
+mechanical guard is to check `git log --oneline main..HEAD` before branching a
+coordination commit, not to trust which branch the shell was left on.
+
+**The gate could not have been a fresh install, and that is structural.**
+`install.bat` still calls `microclaw init`, whose interview emits schema 2 and is
+now refused by the shared validator with no file written; the shortcut then exits
+with a message describing setup mode that 48b has not built yet. The first fresh
+install worth attempting is after 48c, and the full double-click run is 48e's
+gate.

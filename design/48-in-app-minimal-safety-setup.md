@@ -325,8 +325,12 @@ serve`, prove (i) an out-of-bounds XY move refuses, (ii) a 500-frame timelapse
 asks once and runs on approval, (iii) a laser the old config typed still fires
 with no `illumination` section present.
 
-Step-10 design gate: reconcile design/14 §6 and design/17 v2's "every actuator is
-typed or excluded" claim, which schema 3 intentionally drops.
+Step-10 design gate: reconcile the "every actuator is typed or excluded" claim,
+which schema 3 intentionally drops. **Done 2026-08-13**: the claim lives in
+`design/33-authorization-map.md`, not in design/14 or 17 as the checklist
+guessed, and now carries an amendment note at the top. Also retired the
+`guaranteed_mode` / `degraded_mode` diagnostic kinds, which no longer have a
+producer, and `check-config`'s help text that advertised them.
 
 ### 48b — Session split and the setup dispatcher
 
@@ -441,7 +445,7 @@ and proceeds on approval. Then the rig interview starts on its own.
 | Block | Branch | Start commit | Implementer | Rig gate | Merged |
 |---|---|---|---|---|---|
 | coordination | `design48/checklist` | `f7beac1` | coordinator | n/a | — |
-| 48a | `design48/block-48a` | `9176dfd` | 2 review rounds, tip `24545da` | M5 PASS 2026-08-13 | — |
+| 48a | ~~`design48/block-48a`~~ | `9176dfd` | 2 review rounds | M5 PASS 2026-08-13 | `959dade` |
 | 48b | — | — | — | — | — |
 | 48c | — | — | — | — | — |
 | 48d | — | — | — | — | — |
