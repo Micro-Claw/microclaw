@@ -441,7 +441,7 @@ and proceeds on approval. Then the rig interview starts on its own.
 | Block | Branch | Start commit | Implementer | Rig gate | Merged |
 |---|---|---|---|---|---|
 | coordination | `design48/checklist` | `f7beac1` | coordinator | n/a | — |
-| 48a | — | — | — | — | — |
+| 48a | `design48/block-48a` | `9176dfd` | assigned 2026-08-13 | — | — |
 | 48b | — | — | — | — | — |
 | 48c | — | — | — | — | — |
 | 48d | — | — | — | — | — |
