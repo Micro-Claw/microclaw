@@ -62,7 +62,7 @@ from microclaw.config import load_safety_config_or_exit
 from microclaw.controller import MicroscopeController
 from microclaw.rig_inventory import enumerate_rig
 from microclaw.setup_tools import (
-    SETUP_TOOL_REGISTRY, SETUP_TOOL_SCHEMAS, SetupDraft,
+    SETUP_TOOL_REGISTRY, SETUP_TOOL_SCHEMAS, SetupDraft, SetupWriteCapability,
 )
 from microclaw.safety import SafetyGuard, SafetyViolation
 from microclaw.tools_schema import TOOLS_CACHED
@@ -483,11 +483,19 @@ class SetupSession(Session):
         self.guard = None
         self.parsed_safety = None
         self.mode = SessionMode.SETUP
-        self.tool_schemas = SETUP_TOOL_SCHEMAS
+        may_write = getattr(args, "setup_write_security_config", False)
+        self.tool_schemas = (
+            SETUP_TOOL_SCHEMAS if may_write else
+            [schema for schema in SETUP_TOOL_SCHEMAS
+             if schema["name"] != "write_security_config"]
+        )
         self.tool_registry = SETUP_TOOL_REGISTRY
         self.inventory = enumerate_rig(ctrl.core)
         self.setup_draft = SetupDraft(self.inventory)
         ctrl._microclaw_setup_draft = self.setup_draft
+        ctrl._microclaw_setup_write_capability = SetupWriteCapability(
+            enabled=may_write,
+        )
         self._initialize(args)
         message = {"role": "assistant", "content": SETUP_FIRST_MESSAGE}
         self.history.append(message)

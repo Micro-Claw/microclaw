@@ -1,6 +1,8 @@
 import json
 import types
 from unittest.mock import MagicMock
+import yaml
+import pytest
 from fastapi.testclient import TestClient
 
 from microclaw import agent, setup_tools, tools, webserve
@@ -62,7 +64,7 @@ def test_setup_turn_sends_only_setup_schemas_and_refuses_fabricated_call(monkeyp
         setup_mode=True,
     ))
     offered = {schema["name"] for schema in client.messages.stream.call_args.kwargs["tools"]}
-    assert offered == webserve.SETUP_TOOL_NAMES - {"write_security_config"}
+    assert offered == webserve.SETUP_TOOL_NAMES
     system = "\n".join(block["text"] for block in client.messages.stream.call_args.kwargs["system"])
     assert RIG_INTERVIEW_PROMPT.splitlines()[0] not in system
     result = next(event for event in events if event["type"] == "tool_result")
@@ -174,12 +176,167 @@ def test_complete_requires_all_bounds_and_both_thresholds():
     assert setup_tools.review_security_config(ctrl, None)["complete"]
 
 
-def test_write_security_config_remains_refused():
+def test_write_security_config_without_capability_is_refused():
+    ctrl = _setup_ctrl(_inventory(focus="Z"))
+    ctrl._microclaw_setup_write_capability = setup_tools.SetupWriteCapability()
     result = json.loads(tools.execute_tool(
-        "write_security_config", {}, object(), None,
+        "write_security_config", {}, ctrl, None,
         webserve.SETUP_TOOL_REGISTRY, setup_mode=True,
     ))
-    assert "setup mode" in result["error"]
+    assert "not enabled" in result["error"]
+
+
+def _complete_draft(ctrl, bounds):
+    for axis_id, (low, high) in bounds.items():
+        setup_tools.record_proposed_stage_bound(
+            ctrl, None, axis_id=axis_id, endpoint="low", position_um=low,
+        )
+        setup_tools.record_proposed_stage_bound(
+            ctrl, None, axis_id=axis_id, endpoint="high", position_um=high,
+        )
+    setup_tools.set_proposed_acquisition_prompts(
+        ctrl, None, confirm_above_frames=500, confirm_above_duration_s=1200,
+    )
+
+
+def test_writer_round_trips_m5_shape_confirms_exact_text_and_refuses_replay(
+    monkeypatch, tmp_path,
+):
+    inventory = _inventory(
+        xy="SmarAct 2D", focus="PIZStage",
+        named=("SmarAct 1D", "Thorlabs ELL17/ELL20", "Thorlabs ELL20"),
+    )
+    ctrl = _setup_ctrl(inventory)
+    ctrl._microclaw_setup_write_capability = setup_tools.SetupWriteCapability(True)
+    bounds = {
+        "SmarAct 2D.x": (-12000.5, 12000.25),
+        "SmarAct 2D.y": (-8000, 8000),
+        "PIZStage.z": (100, 7800),
+        "SmarAct 1D": (0, 200),
+        "Thorlabs ELL17/ELL20": (-10, 10),
+        "Thorlabs ELL20": (1, 19),
+    }
+    _complete_draft(ctrl, bounds)
+    target = tmp_path / "safety_config.yaml"
+    monkeypatch.setattr(setup_tools.paths, "default_safety_config", lambda: target)
+    prompts = []
+    monkeypatch.setattr(
+        setup_tools.tools, "CONFIRM_FN",
+        lambda prompt, **kwargs: prompts.append(prompt) or True,
+    )
+
+    result = setup_tools.write_security_config(ctrl, None)
+    assert result == {
+        "restart_required": True, "path": str(target),
+        "message": setup_tools.RESTART_MESSAGE, "reviewed": True,
+        "declared_stage_ranges": 6,
+    }
+    rendered = target.read_text(encoding="utf-8")
+    assert str(target) in prompts[0]
+    assert rendered in prompts[0]
+    loaded = yaml.safe_load(rendered)
+    parsed = setup_tools.ParsedSafetyConfig.from_yaml(str(target))
+    assert loaded["reviewed"] is True
+    assert loaded["stage"] == {
+        "x_min": -12000.5, "x_max": 12000.25,
+        "y_min": -8000.0, "y_max": 8000.0,
+        "z_min": 100.0, "z_max": 7800.0,
+    }
+    assert loaded["named_stages"] == [
+        {"device": "SmarAct 1D", "min_um": 0.0, "max_um": 200.0},
+        {"device": "Thorlabs ELL17/ELL20", "min_um": -10.0, "max_um": 10.0},
+        {"device": "Thorlabs ELL20", "min_um": 1.0, "max_um": 19.0},
+    ]
+    assert len(parsed.ranges) == 6
+    with pytest.raises(setup_tools.SetupRefusal, match="already written.*restarted"):
+        setup_tools.write_security_config(ctrl, None)
+
+
+def test_writer_decline_preserves_draft_and_writes_nothing(monkeypatch, tmp_path):
+    ctrl = _setup_ctrl(_inventory(focus="Z"))
+    ctrl._microclaw_setup_write_capability = setup_tools.SetupWriteCapability(True)
+    _complete_draft(ctrl, {"Z.z": (1, 2)})
+    target = tmp_path / "safety_config.yaml"
+    monkeypatch.setattr(setup_tools.paths, "default_safety_config", lambda: target)
+    monkeypatch.setattr(setup_tools.tools, "CONFIRM_FN", lambda *a, **k: False)
+    before = dict(ctrl._microclaw_setup_draft.bounds)
+    with pytest.raises(setup_tools.SetupRefusal, match="operator declined"):
+        setup_tools.write_security_config(ctrl, None)
+    assert not target.exists()
+    assert ctrl._microclaw_setup_draft.bounds == before
+    assert ctrl._microclaw_setup_write_capability.consumed is False
+
+
+def test_writer_refuses_existing_target_without_touching_it(monkeypatch, tmp_path):
+    ctrl = _setup_ctrl(_inventory(focus="Z"))
+    ctrl._microclaw_setup_write_capability = setup_tools.SetupWriteCapability(True)
+    _complete_draft(ctrl, {"Z.z": (1, 2)})
+    target = tmp_path / "safety_config.yaml"
+    target.write_text("keep me", encoding="utf-8")
+    monkeypatch.setattr(setup_tools.paths, "default_safety_config", lambda: target)
+    confirm = MagicMock()
+    monkeypatch.setattr(setup_tools.tools, "CONFIRM_FN", confirm)
+    with pytest.raises(setup_tools.SetupRefusal, match=str(target)):
+        setup_tools.write_security_config(ctrl, None)
+    assert target.read_text(encoding="utf-8") == "keep me"
+    confirm.assert_not_called()
+
+
+@pytest.mark.parametrize("missing", ["axis", "threshold"])
+def test_writer_reuses_draft_completeness_refusal(monkeypatch, tmp_path, missing):
+    ctrl = _setup_ctrl(_inventory(focus="Z"))
+    ctrl._microclaw_setup_write_capability = setup_tools.SetupWriteCapability(True)
+    if missing == "axis":
+        setup_tools.set_proposed_acquisition_prompts(
+            ctrl, None, confirm_above_frames=500, confirm_above_duration_s=1200,
+        )
+    else:
+        setup_tools.record_proposed_stage_bound(
+            ctrl, None, axis_id="Z.z", endpoint="low", position_um=1,
+        )
+        setup_tools.record_proposed_stage_bound(
+            ctrl, None, axis_id="Z.z", endpoint="high", position_um=2,
+        )
+    target = tmp_path / "safety_config.yaml"
+    monkeypatch.setattr(setup_tools.paths, "default_safety_config", lambda: target)
+    with pytest.raises(setup_tools.SetupRefusal, match="draft is incomplete"):
+        setup_tools.write_security_config(ctrl, None)
+    assert not target.exists()
+
+
+def test_named_xy_stage_refuses_and_names_device(monkeypatch, tmp_path):
+    inventory = _inventory(focus="Z")
+    inventory["facts"]["devices"].append(
+        {"label": "Second XY", "device_type": "XYStageDevice"}
+    )
+    ctrl = _setup_ctrl(inventory)
+    ctrl._microclaw_setup_write_capability = setup_tools.SetupWriteCapability(True)
+    _complete_draft(ctrl, {"Z.z": (1, 2), "Second XY.x": (3, 4), "Second XY.y": (5, 6)})
+    target = tmp_path / "safety_config.yaml"
+    monkeypatch.setattr(setup_tools.paths, "default_safety_config", lambda: target)
+    with pytest.raises(setup_tools.SetupRefusal, match="Second XY") as refusal:
+        setup_tools.write_security_config(ctrl, None)
+    assert "cannot express per-axis bounds" in str(refusal.value)
+    assert not target.exists()
+
+
+def test_real_loader_rejection_removes_temporary_and_target(monkeypatch, tmp_path):
+    ctrl = _setup_ctrl(_inventory(focus="Z"))
+    ctrl._microclaw_setup_write_capability = setup_tools.SetupWriteCapability(True)
+    _complete_draft(ctrl, {"Z.z": (1, 2)})
+    target = tmp_path / "safety_config.yaml"
+    monkeypatch.setattr(setup_tools.paths, "default_safety_config", lambda: target)
+    monkeypatch.setattr(
+        setup_tools.ParsedSafetyConfig, "from_yaml",
+        MagicMock(side_effect=setup_tools.SafetyConfigError("malformed")),
+    )
+    confirm = MagicMock()
+    monkeypatch.setattr(setup_tools.tools, "CONFIRM_FN", confirm)
+    with pytest.raises(setup_tools.SetupRefusal, match="real security-config loader"):
+        setup_tools.write_security_config(ctrl, None)
+    assert not target.exists()
+    assert not list(tmp_path.glob(".safety_config.yaml.*.tmp"))
+    confirm.assert_not_called()
 
 
 def test_setup_system_blocks_omit_rig_interview_and_normal_blocks_include_it(
@@ -249,6 +406,9 @@ def test_setup_first_message_and_banner_are_exact(monkeypatch, tmp_path):
     )
     session = webserve.build_session(args)
     assert session.mode is webserve.SessionMode.SETUP
+    assert "write_security_config" not in {
+        schema["name"] for schema in session.tool_schemas
+    }
     assert session.history == [{
         "role": "assistant", "content": webserve.SETUP_FIRST_MESSAGE,
     }]
@@ -259,3 +419,27 @@ def test_setup_first_message_and_banner_are_exact(monkeypatch, tmp_path):
     status = TestClient(webserve.build_app(session)).get("/api/setup-status").json()
     assert status["thresholds"]["proposed_confirm_above_frames"] == 500
     assert status["thresholds"]["proposed_confirm_above_duration_s"] == 1200
+
+
+def test_setup_session_offers_writer_only_with_explicit_capability(monkeypatch, tmp_path):
+    class Controller:
+        core = object()
+
+        def __init__(self, port, guard):
+            pass
+
+        def is_connected(self):
+            return True
+
+    monkeypatch.setattr(webserve, "MicroscopeController", Controller)
+    monkeypatch.setattr(webserve, "enumerate_rig", lambda core: {"stages": []})
+    monkeypatch.setattr(webserve.credentials, "load_api_key", lambda: (None, None))
+    args = types.SimpleNamespace(
+        safety_config=None, port=1, model=None, save_history=False,
+        host="127.0.0.1", history_retention_days=None,
+        setup_write_security_config=True,
+    )
+    monkeypatch.setattr(webserve.config, "default_safety_config", lambda: tmp_path / "missing.yaml")
+    session = webserve.build_session(args)
+    assert {schema["name"] for schema in session.tool_schemas} == webserve.SETUP_TOOL_NAMES
+    assert session.ctrl._microclaw_setup_write_capability.enabled is True

@@ -88,6 +88,23 @@ def test_timeout_flags_are_visible_in_cli_help(monkeypatch, capsys, command, fla
     assert default in output
 
 
+@pytest.mark.parametrize("argv,reason", [
+    (["microclaw", "--setup-write-security-config", "init"], "only with serve"),
+    (["microclaw", "--setup-write-security-config", "--safety-config", "elsewhere.yaml", "serve"],
+     "per-user default"),
+    (["microclaw", "--setup-write-security-config", "serve", "--host", "0.0.0.0"],
+     "loopback"),
+])
+def test_setup_writer_flag_is_confined_to_default_loopback_serve(
+    monkeypatch, capsys, argv, reason,
+):
+    monkeypatch.setattr(cli.sys, "argv", argv)
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 2
+    assert reason in capsys.readouterr().err
+
+
 def test_init_from_example_is_explicit_and_no_edit_still_applies(tmp_path, monkeypatch):
     target = tmp_path / "safety.yaml"
     monkeypatch.setattr(cli, "_open_in_editor", lambda _: (_ for _ in ()).throw(
