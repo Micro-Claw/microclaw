@@ -1,6 +1,6 @@
 # Block 48a rig gate — schema 3 minimal security bounds
 
-Implementation ancestor: `6afee04`
+Implementation ancestor: `444784d`
 
 Run every step on **M5** from this branch in PowerShell. Preserve
 `block48a-pytest.txt`, the authored
@@ -14,7 +14,7 @@ Rename it; never delete it. Close Microclaw, then paste:
 ```powershell
 Rename-Item "$env:APPDATA\microclaw\safety_config.yaml" "safety_config.schema2.bak.yaml"
 Test-Path "$env:APPDATA\microclaw\safety_config.schema2.bak.yaml"
-git merge-base --is-ancestor 6afee04 HEAD
+git merge-base --is-ancestor 444784d HEAD
 Write-Host "implementation ancestor exit code (expected 0):" $LASTEXITCODE
 python -m pytest -q > block48a-pytest.txt 2>&1
 Write-Host "pytest exit code (expected 0):" $LASTEXITCODE
@@ -22,7 +22,7 @@ Get-Content block48a-pytest.txt
 ```
 
 Expected: `Test-Path` prints `True`, the ancestor exit code is **0**, and pytest
-exits **0**. This implementation's macOS result is **1839
+exits **0**. This implementation's macOS result is **1840
 passed, 99 skipped, 3 warnings**. Record M5's exact passed and skipped numbers;
 a higher skipped count than M5's previous full run is **NOT TESTED**.
 
