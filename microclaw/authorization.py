@@ -1497,7 +1497,8 @@ def authorize_property_write(ctrl: Any, device: str, prop: str) -> None:
         raise RigAuthorizationError(
             f"Property write {device}.{prop} was refused because {device!r} carries "
             "declared stage bounds. Raw property writes cannot route around those "
-            "bounds; use `move_stage` for XY motion or `set_focus` for Z motion."
+            "bounds; use move_stage_xy for XY motion, move_stage_z for the focus "
+            "drive, or move_named_stage for a named stage."
         )
     if report.property_writes_unrestricted:
         return

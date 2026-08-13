@@ -618,7 +618,7 @@ class TestSetDeviceProperty:
                 device="DStage", property="Odd PositionZ Property", value="50",
             )
         message = str(exc.value)
-        assert "move_stage" in message and "set_focus" in message
+        assert "move_stage_xy" in message and "move_stage_z" in message
         mock_ctrl.core.set_property.assert_not_called()
 
     def test_get_device_property(self, mock_ctrl, unconstrained_guard):
@@ -2358,7 +2358,7 @@ class TestFocusLock:
             property_writes_unrestricted=True,
             bounded_stage_devices=frozenset({"PIZStage"}),
         )
-        with pytest.raises(RigAuthorizationError, match="set_focus"):
+        with pytest.raises(RigAuthorizationError, match="move_stage_z"):
             set_focus_lock(mock_ctrl, unconstrained_guard, enabled=True)
         mock_ctrl.core.set_property.assert_not_called()
         mock_ctrl.refresh_gui.assert_not_called()

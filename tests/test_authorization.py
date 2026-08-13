@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -505,7 +506,17 @@ def test_minimal_document_raw_write_cannot_bypass_bounded_stage():
     with pytest.raises(RigAuthorizationError) as exc:
         authorize_property_write(ctrl, "Z", "Odd PositionZ Property")
     message = str(exc.value)
-    assert "move_stage" in message and "set_focus" in message
+    # Name the guarded route, and name it correctly. The M5 gate (2026-08-13)
+    # caught this refusal offering `move_stage` and `set_focus`, neither of
+    # which is a tool — the model had to guess its way to move_stage_xy. A
+    # substring assertion on the old names passed happily, so assert against
+    # the registry instead: every tool this message names must exist.
+    from microclaw.tools import TOOL_REGISTRY
+
+    named = [word for word in re.findall(r"[a-z_]{4,}", message) if word in TOOL_REGISTRY]
+    assert "move_stage_xy" in named and "move_stage_z" in named
+    for word in re.findall(r"\bmove_\w+|\bset_focus\w*", message):
+        assert word in TOOL_REGISTRY, f"refusal names a tool that does not exist: {word}"
     authorize_property_write(ctrl, "OldLaser", "Enable")
 
 
