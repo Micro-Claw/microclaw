@@ -434,8 +434,6 @@ def check_config(args):
             "schema": "SCHEMA ERROR",
             "review": "REVIEW REQUIRED",
             "example_limits": "EXAMPLE-LIMIT REVIEW",
-            "guaranteed_mode": "GUARANTEED-MODE REQUIREMENT",
-            "degraded_mode": "DEGRADED-MODE WARNING",
             "plugin_motion": "HARDWARE-MOTION PLUGIN WARNING",
             "live_check": "LIVE CHECK REQUIRED",
         }[item.kind]
@@ -756,8 +754,8 @@ def main():
         "check-config",
         help="Validate a safety config without connecting to Micro-Manager.",
         description=(
-            "Checks the strict document schema, review state, and offline-detectable "
-            "guaranteed-mode requirements. It never connects to the rig."
+            "Checks the document schema and review state. It never connects to the "
+            "rig, so it cannot check bounds against the stages this rig actually has."
         ),
     )
     cc.add_argument(

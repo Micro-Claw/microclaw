@@ -20,9 +20,11 @@ class UnreviewedSafetyConfig(Exception):
 class ConfigDiagnostic:
     """One machine-readable result from an offline config check."""
 
+    # `guaranteed_mode` and `degraded_mode` went with schema 2's completeness
+    # requirements: nothing emits them now, and a kind with no producer is a
+    # label waiting to be reused for something it does not describe.
     kind: Literal[
-        "schema", "review", "example_limits", "guaranteed_mode",
-        "degraded_mode", "plugin_motion", "live_check",
+        "schema", "review", "example_limits", "plugin_motion", "live_check",
     ]
     message: str
     blocking: bool
