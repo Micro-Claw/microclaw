@@ -1078,7 +1078,7 @@ def test_serve_without_a_safety_config_falls_back_to_the_per_user_default(tmp_pa
     """
     missing = tmp_path / "safety_config.yaml"
     monkeypatch.setattr(config, "default_safety_config", lambda: missing)
-    with pytest.raises(SystemExit, match="microclaw init"):
+    with pytest.raises(SystemExit, match="microclaw serve"):
         serve(_args(host="127.0.0.1", safety_config=None))
 
 
@@ -1086,7 +1086,7 @@ def test_serve_refuses_an_unreviewed_safety_config(tmp_path):
     """The gate a double-click cannot get past without a human editing a line."""
     cfg = tmp_path / "safety_config.yaml"
     cfg.write_text(
-        "schema_version: 2\nreviewed: false\n"
+        "schema_version: 3\nreviewed: false\n"
         "property_authorization: {mode: guaranteed, allowed_categorical: [], denied: []}\n"
         "stage: {x_min: -1.0, x_max: 1.0}\n"
         "acquisition: {max_frames: 10000, max_duration_s: 3600, max_bytes: 50000000000, "

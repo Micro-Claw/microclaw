@@ -43,7 +43,7 @@ def _parse(path):
     if document is None:
         document = {}
     if isinstance(document, dict):
-        document.setdefault("schema_version", 2)
+        document.setdefault("schema_version", 3)
         document.setdefault("reviewed", True)
         legacy_allowed = document.pop("allowed_properties", None)
         if "forbidden_properties" in document and legacy_allowed is None:
@@ -160,16 +160,16 @@ class TestFromYaml:
     def test_schema_version_is_mandatory_and_old_versions_are_clear(self, tmp_path):
         cfg = tmp_path / "safety.yaml"
         cfg.write_text("reviewed: true\n", encoding="utf-8")
-        with pytest.raises(SafetyConfigError, match="add `schema_version: 2`"):
+        with pytest.raises(SafetyConfigError, match="microclaw serve"):
             ParsedSafetyConfig.from_yaml(str(cfg))
-        cfg.write_text("schema_version: 1\nreviewed: true\n", encoding="utf-8")
-        with pytest.raises(SafetyConfigError, match="schema 1 configs must add property_authorization"):
+        cfg.write_text("schema_version: 2\nreviewed: true\n", encoding="utf-8")
+        with pytest.raises(SafetyConfigError, match="Rename.*microclaw serve"):
             ParsedSafetyConfig.from_yaml(str(cfg))
 
     def test_new_property_authorization_shape_parses_and_enforces_guaranteed_mode(self, tmp_path):
         cfg = tmp_path / "safety.yaml"
         cfg.write_text(
-            "schema_version: 2\nreviewed: true\n"
+            "schema_version: 3\nreviewed: true\n"
             "property_authorization:\n"
             "  mode: guaranteed\n"
             "  allowed_categorical: []\n"
@@ -185,7 +185,7 @@ class TestFromYaml:
         ] == TypedActuatorPolicy("bounded-numeric", "dB", 0.0, 10.0)
 
         cfg.write_text(
-            "schema_version: 2\nreviewed: true\n"
+            "schema_version: 3\nreviewed: true\n"
             "property_authorization: {mode: guaranteed, denied: []}\n"
             + self._ACQUISITION
         , encoding="utf-8")
@@ -205,27 +205,26 @@ class TestFromYaml:
         example = files("microclaw").joinpath("safety_config.example.yaml")
         parsed = ParsedSafetyConfig.from_yaml(str(example))
         assert parsed.constraints.analysis.min_snr is None
-        assert parsed.constraints.allowed_properties == []
+        assert parsed.constraints.allowed_properties is None
         assert parsed.constraints.forbidden_properties == []
-        assert parsed.property_authorization.denied == frozenset(
-            {("Core", "Initialize")}
-        )
+        assert parsed.property_authorization.denied == frozenset()
         assert set(parsed.ranges) == {
             ActuatorId("core_xy", None, "stage-position", "x"),
             ActuatorId("core_xy", None, "stage-position", "y"),
             ActuatorId("core_focus", None, "stage-position", "z"),
+            ActuatorId("named", "FictionalPiezoZ", "stage-position", None),
         }
 
     def test_analysis_section_without_min_snr_is_accepted(self, tmp_path):
         cfg = tmp_path / "safety.yaml"
-        cfg.write_text("schema_version: 2\nreviewed: true\n" + self._PROFILE + "analysis:\n", encoding="utf-8")
+        cfg.write_text("schema_version: 3\nreviewed: true\n" + self._PROFILE + "analysis:\n", encoding="utf-8")
         parsed = ParsedSafetyConfig.from_yaml(str(cfg))
         assert parsed.constraints.analysis.min_snr is None
 
     def test_ordered_edges_have_structured_core_identities(self, tmp_path):
         cfg = tmp_path / "safety.yaml"
         cfg.write_text(
-            "schema_version: 2\nreviewed: true\n"
+            "schema_version: 3\nreviewed: true\n"
             "property_authorization:\n"
             "  mode: guaranteed\n"
             "  allowed_categorical: []\n"
@@ -250,7 +249,7 @@ class TestFromYaml:
     def test_unbounded_reasons_survive_for_core_and_named_ranges(self, tmp_path):
         cfg = tmp_path / "safety.yaml"
         cfg.write_text(
-            "schema_version: 2\nreviewed: true\n"
+            "schema_version: 3\nreviewed: true\n"
             "property_authorization:\n"
             "  mode: guaranteed\n"
             "  allowed_categorical: []\n"
@@ -277,7 +276,7 @@ class TestFromYaml:
     def test_guaranteed_mode_requires_allowed_categorical(self, tmp_path):
         cfg = tmp_path / "safety.yaml"
         cfg.write_text(
-            "schema_version: 2\nreviewed: true\n"
+            "schema_version: 3\nreviewed: true\n"
             "forbidden_properties: [{device: Core, property: Initialize}]\n"
             "property_authorization: {mode: guaranteed, denied: []}\n"
         , encoding="utf-8")
@@ -287,7 +286,7 @@ class TestFromYaml:
     def test_degraded_trusted_plugin_mode_is_explicit_and_allows_denylist(self, tmp_path):
         cfg = tmp_path / "safety.yaml"
         cfg.write_text(
-            "schema_version: 2\nreviewed: true\n"
+            "schema_version: 3\nreviewed: true\n"
             "forbidden_properties: [{device: Core, property: Initialize}]\n"
             "property_authorization:\n"
             "  mode: degraded_trusted_plugins\n"
@@ -302,13 +301,13 @@ class TestFromYaml:
     def test_mode_defaults_to_guaranteed_and_rejects_unknown_value(self, tmp_path):
         cfg = tmp_path / "safety.yaml"
         cfg.write_text(
-            "schema_version: 2\nreviewed: true\n"
+            "schema_version: 3\nreviewed: true\n"
             "property_authorization: {allowed_categorical: [], denied: []}\n"
             + self._ACQUISITION
         , encoding="utf-8")
         assert ParsedSafetyConfig.from_yaml(str(cfg)).property_authorization.mode == "guaranteed"
         cfg.write_text(
-            "schema_version: 2\nreviewed: true\n"
+            "schema_version: 3\nreviewed: true\n"
             "property_authorization: {mode: trusted, allowed_categorical: [], denied: []}\n"
             + self._ACQUISITION
         , encoding="utf-8")
@@ -318,7 +317,7 @@ class TestFromYaml:
     def test_categorical_authorization_cannot_also_be_excluded(self, tmp_path):
         cfg = tmp_path / "safety.yaml"
         cfg.write_text(
-            "schema_version: 2\nreviewed: true\n"
+            "schema_version: 3\nreviewed: true\n"
             "property_authorization:\n"
             "  mode: guaranteed\n"
             "  allowed_categorical:\n"
@@ -335,7 +334,7 @@ class TestFromYaml:
     def test_missing_counterpart_and_other_errors_are_aggregated(self, tmp_path):
         cfg = tmp_path / "safety.yaml"
         cfg.write_text(
-            "schema_version: 2\nreviewed: true\n"
+            "schema_version: 3\nreviewed: true\n"
             "stage: {x_min: 0, typo: 2}\n"
             "camera: {max_exposure_ms: -1}\n"
         , encoding="utf-8")
@@ -350,7 +349,7 @@ class TestFromYaml:
     def test_rejects_duplicate_device_property_pairs(self, tmp_path):
         cfg = tmp_path / "safety.yaml"
         cfg.write_text(
-            "schema_version: 2\nreviewed: true\n"
+            "schema_version: 3\nreviewed: true\n"
             "forbidden_properties:\n"
             "  - {device: Core, property: Initialize}\n"
             "  - {device: Core, property: Initialize}\n"
@@ -370,7 +369,7 @@ class TestFromYaml:
     def test_rejects_malformed_or_unreasoned_unbounded_edge(self, tmp_path, edge):
         cfg = tmp_path / "safety.yaml"
         cfg.write_text(
-            "schema_version: 2\nreviewed: true\n"
+            "schema_version: 3\nreviewed: true\n"
             f"stage:\n  x_min: 0\n  x_max: {edge}\n"
         , encoding="utf-8")
         with pytest.raises(SafetyConfigError):
@@ -434,7 +433,23 @@ class TestFromYaml:
         cfg.write_text("stage:\n  z_min: 0.0\n", encoding="utf-8")
         constraints = _parse(str(cfg))
         assert constraints.plugins.blocked == []
-        assert constraints.plugins.allow_hardware_motion is False
+        assert constraints.plugins.allow_hardware_motion is True
+
+    def test_omitted_optional_sections_restrict_nothing_at_guard(self, tmp_path):
+        cfg = tmp_path / "safety.yaml"
+        cfg.write_text(
+            "schema_version: 3\nreviewed: true\n"
+            "stage: {z_min: 0, z_max: 100}\n"
+            "acquisition: {confirm_above_frames: 500, "
+            "confirm_above_duration_s: 1200}\n",
+            encoding="utf-8",
+        )
+        parsed = ParsedSafetyConfig.from_yaml(str(cfg))
+        guard = SafetyGuard(parsed.constraints)
+        guard.check_exposure(1_000_000)
+        guard.check_channel("Any channel")
+        guard.check_plugin_motion("any.plugin")
+        guard.check_device_property(_core(), "OldLaser", "Enable", "On")
 
     @pytest.mark.parametrize("document", ["[]\n", "a scalar\n"])
     def test_rejects_non_mapping_root_with_filename(self, tmp_path, document):
@@ -1128,7 +1143,7 @@ class TestIlluminationGate:
         cfg.write_text("stage:\n  z_min: 0.0\n", encoding="utf-8")
         c = _parse(str(cfg))
         assert c.illumination.shutters == []
-        assert c.illumination.require_confirm_on_enable is True
+        assert c.illumination.require_confirm_on_enable is False
 
 
 class TestNamedStageLimits:

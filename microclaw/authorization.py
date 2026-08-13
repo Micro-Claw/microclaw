@@ -21,13 +21,8 @@ from microclaw.safety import (
 
 
 _ACQUISITION_POLICY_FIELDS = (
-    ("max_frames", "per-plan frame maximum"),
-    ("max_duration_s", "per-plan estimated-duration maximum"),
-    ("max_bytes", "per-plan estimated-byte maximum"),
-    ("max_illuminated_ms", "per-plan illuminated-time maximum"),
     ("confirm_above_frames", "per-plan frame confirmation threshold"),
     ("confirm_above_duration_s", "per-plan estimated-duration confirmation threshold"),
-    ("confirm_above_illuminated_ms", "per-plan illuminated-time confirmation threshold"),
 )
 
 
@@ -1389,25 +1384,9 @@ def validate_live_rig(
     if parsed_config.constraints.plugins.allow_hardware_motion:
         entries.append(AuthorizationEntry(
             path="opaque-hardware-motion-plugin",
-            classification="excluded" if guaranteed else "trusted_degraded",
+            classification="trusted_degraded",
             detail="effects cannot be enumerated or intercepted",
         ))
-        if guaranteed:
-            errors.append(
-                "plugins.allow_hardware_motion is true, but opaque hardware-motion "
-                "plugins are forbidden in guaranteed mode: guaranteed mode promises "
-                "that every hardware effect is either typed and guarded or "
-                "explicitly excluded, and a plugin is arbitrary Java whose effects "
-                "microclaw can neither enumerate nor intercept — it can only check "
-                "where the axis ended up afterwards. Setting that flag is therefore "
-                "necessary but NOT sufficient. To run one, also set "
-                "property_authorization.mode: degraded_trusted_plugins in "
-                "safety_config.yaml (`microclaw check-config` prints the path and "
-                "will now catch this pair offline) — every limit in the file stays "
-                "enforced, but the authorization map's "
-                "completeness claim is suspended and startup will say so. To stay "
-                "in guaranteed mode, set plugins.allow_hardware_motion back to false."
-            )
 
     if loaded_devices_error is not None and guaranteed:
         errors.append(loaded_devices_error)

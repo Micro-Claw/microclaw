@@ -1552,19 +1552,18 @@ def _authorize_acquisition(
 ) -> Reservation:
     reservation = _acquisition_ledger(ctrl).reserve(guard, plan)
     c = guard.acquisition_confirmation_thresholds
-    exceeded = [
-        label for label, value, threshold in (
-            ("frames", plan.frames, c.confirm_above_frames),
-            ("duration", plan.estimated_duration_s, c.confirm_above_duration_s),
-            ("illuminated time", plan.illuminated_ms, c.confirm_above_illuminated_ms),
-        ) if threshold is not None and value > threshold
+    reasons = [
+        reason for reason, value, threshold in (
+            (f"{plan.frames} frames", plan.frames, c.confirm_above_frames),
+            (f"about {plan.estimated_duration_s:g} seconds", plan.estimated_duration_s,
+             c.confirm_above_duration_s),
+            (f"{plan.illuminated_ms:g} ms illuminated time", plan.illuminated_ms,
+             c.confirm_above_illuminated_ms),
+        ) if threshold is not None and value >= threshold
     ]
-    if confirm and exceeded and not CONFIRM_FN(
-        "ACQUISITION PLAN\n"
-        f"frames={plan.frames}, exposure_ms/frame={plan.exposure_ms_per_frame:g}, "
-        f"duration_s≈{plan.estimated_duration_s:g}, bytes≈{plan.estimated_bytes}, "
-        f"illuminated_ms={plan.illuminated_ms:g}\n"
-        f"Confirmation thresholds exceeded: {', '.join(exceeded)}.",
+    if confirm and reasons and not CONFIRM_FN(
+        "This acquisition will take " + " and ".join(reasons)
+        + ". It may use substantial disk space or time. Continue?",
         kind="acquisition",
         subject="threshold",
     ):
