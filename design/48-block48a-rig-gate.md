@@ -88,17 +88,17 @@ workspace, or `max_*` key. Any literal `M5_*` token is a gate failure.
 Start Micro-Manager with M5 and its ZMQ bridge, then paste:
 
 ```powershell
-python -m microclaw serve > block48a-serve.txt 2>&1
+python -m microclaw serve
 ```
 
-The console stays blank because everything is being written to the file. Open
-`http://127.0.0.1:8000` in the browser and carry on; this window is released
-again at Step 6.
+Leave the output in the window. When the browser is open and Step 6 is done,
+select everything the console printed and paste it into `block48a-serve.txt`.
+Do **not** redirect this command to a file: `serve` is long-running, a redirect
+takes the window blank, and `Start-Transcript` does not reliably capture a
+native process's stderr — which is where this warning goes.
 
-The startup warning goes to **stderr**, which is why it is redirected to a file
-rather than captured with `Start-Transcript` — that cmdlet does not reliably
-capture a native process's stderr. Expected in `block48a-serve.txt`, before any
-tool call: one warning containing all of these literal phrases:
+Expected before any tool call: one warning containing all of these literal
+phrases:
 
 - `Hardware-motion plugin hooks are permitted`
 - `arbitrary Java`
@@ -116,11 +116,11 @@ Before writing the prompt, compute `stage.x_max + 1` yourself. Replace
 `PASTE_LITERAL_X_MAX_PLUS_ONE` below with that literal numeric result; do not
 leave an expression or placeholder in the prompt. Say this verbatim:
 
-> Use `move_stage` exactly once with x_um=PASTE_LITERAL_X_MAX_PLUS_ONE and
+> Use `move_stage_xy` exactly once with x_um=PASTE_LITERAL_X_MAX_PLUS_ONE and
 > y_um=0. This refusal is deliberate. Report the complete result verbatim;
 > do not clamp, retry, or use a raw property write.
 
-Expected: exactly **1** `move_stage` call and **0** stage moves. The refusal
+Expected: exactly **1** `move_stage_xy` call and **0** stage moves. The refusal
 names X, the requested number, and the configured maximum. Correction, retry,
 or another call path is **NOT TESTED**.
 
@@ -133,10 +133,12 @@ position property. Choose a literal numeric target strictly inside the authored
 > Use `set_device_property` exactly once on device PASTE_LITERAL_Z_DEVICE,
 > property PASTE_LITERAL_Z_PROPERTY, with value PASTE_LITERAL_IN_RANGE_Z. This
 > is deliberately a numeric value inside the configured Z bounds. Report the
-> complete refusal verbatim. Do not use `set_focus`, retry, or correct the call.
+> complete refusal verbatim. Do not use `move_stage_z`, retry, or correct the
+> call.
 
 Expected: exactly **1** raw-property attempt, exactly **1** refusal, and **0**
-stage motion. The refusal names `move_stage` or `set_focus` as the guarded route.
+stage motion. The refusal names `move_stage_xy` and `move_stage_z` as the
+guarded route, and every tool name it prints must be a tool that exists.
 A successful write, a second attempt, or any physical Z motion is a gate failure.
 
 ## Step 5 — exactly 500 frames asks once and runs after approval
@@ -175,11 +177,8 @@ refusal or enable confirmation. Immediately turn the laser off through
 Micro-Manager's normal manual control after recording the result. Wrong routing
 or a different source is **NOT TESTED**.
 
-Close Microclaw (Ctrl+C in the PowerShell window), then paste:
-
-```powershell
-Get-Content block48a-serve.txt
-```
+Close Microclaw (Ctrl+C in the PowerShell window). Copy everything the console
+printed into `block48a-serve.txt` now, before the window is closed.
 
 ## Return evidence
 
