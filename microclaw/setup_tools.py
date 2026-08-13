@@ -243,10 +243,20 @@ def _schema_3_document(draft: SetupDraft) -> dict:
                 "max_um": endpoints["high"],
             })
 
+    # The operator reads this document in the confirmation dialog before it is
+    # written, so order the axes the way the design's example does rather than
+    # the way the draft happens to sort (by device id, which puts a PIZStage z
+    # above a SmarAct 2D x). `sort_keys=False` at dump time preserves this.
+    ordered_stage = {
+        key: stage[key]
+        for key in ("x_min", "x_max", "y_min", "y_max", "z_min", "z_max")
+        if key in stage
+    }
+
     document = {
         "schema_version": 3,
         "reviewed": True,
-        "stage": stage,
+        "stage": ordered_stage,
         "named_stages": named_stages,
         "acquisition": {
             "confirm_above_frames": draft.confirm_above_frames,

@@ -242,6 +242,12 @@ def test_writer_round_trips_m5_shape_confirms_exact_text_and_refuses_replay(
         "y_min": -8000.0, "y_max": 8000.0,
         "z_min": 100.0, "z_max": 7800.0,
     }
+    # The operator reads this document before approving it, so the axes are
+    # ordered x, y, z rather than by device label — a draft sorted by id puts
+    # `PIZStage.z` above `SmarAct 2D.x`.
+    assert list(loaded["stage"]) == [
+        "x_min", "x_max", "y_min", "y_max", "z_min", "z_max",
+    ]
     assert loaded["named_stages"] == [
         {"device": "SmarAct 1D", "min_um": 0.0, "max_um": 200.0},
         {"device": "Thorlabs ELL17/ELL20", "min_um": -10.0, "max_um": 10.0},
