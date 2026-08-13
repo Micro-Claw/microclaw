@@ -22,7 +22,7 @@ class ConfigDiagnostic:
 
     kind: Literal[
         "schema", "review", "example_limits", "guaranteed_mode",
-        "degraded_mode", "live_check",
+        "degraded_mode", "plugin_motion", "live_check",
     ]
     message: str
     blocking: bool
@@ -138,9 +138,10 @@ def load_safety_config(path: str | Path | None = None) -> ParsedSafetyConfig:
 
     `path` of None means the per-user default (normally generated through
     in-app setup through `microclaw serve`). That
-    is what a double-clicked desktop shortcut loads, sight unseen — so the
-    `reviewed: true` line is the only thing between a novice and a stage driven
-    under the example's fictional bounds (design/14 §6, design/17 v2).
+    is what a double-clicked desktop shortcut loads, sight unseen. Schema 3 is
+    protected by reviewed stage bounds authored through in-app setup; offline
+    validation also emits a non-blocking warning naming any limit that still
+    equals the packaged fictional example.
 
     The gate applies to an explicit --safety-config path too. "The file I typed"
     and "the file the icon loaded" being governed by different rules is the kind

@@ -1552,10 +1552,19 @@ def _authorize_acquisition(
 ) -> Reservation:
     reservation = _acquisition_ledger(ctrl).reserve(guard, plan)
     c = guard.acquisition_confirmation_thresholds
+    def format_duration(seconds: float) -> str:
+        if seconds >= 60 and seconds % 60 == 0:
+            minutes = seconds / 60
+            return f"{minutes:g} minute{'s' if minutes != 1 else ''}"
+        if seconds >= 60:
+            minutes = seconds / 60
+            return f"about {minutes:g} minutes"
+        return f"{seconds:g} second{'s' if seconds != 1 else ''}"
+
     reasons = [
         reason for reason, value, threshold in (
             (f"{plan.frames} frames", plan.frames, c.confirm_above_frames),
-            (f"about {plan.estimated_duration_s:g} seconds", plan.estimated_duration_s,
+            (format_duration(plan.estimated_duration_s), plan.estimated_duration_s,
              c.confirm_above_duration_s),
             (f"{plan.illuminated_ms:g} ms illuminated time", plan.illuminated_ms,
              c.confirm_above_illuminated_ms),
@@ -6579,11 +6588,10 @@ def list_mm_plugins(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
         "hint": (
             "Analyzer plugins run with hook_strategy='mm_plugin_analyzer' "
             "(allowed unless in plugins.blocked). Autofocus plugins run with "
-            "hook_strategy='autofocus_mm_plugin' and require BOTH "
-            "plugins.allow_hardware_motion: true AND property_authorization.mode: "
-            "degraded_trusted_plugins in safety_config.yaml, then a restart -- the "
-            "motion flag alone is refused at startup in guaranteed mode. "
-            "Always confirm the classpath with the user before enabling a plugin hook."
+            "hook_strategy='autofocus_mm_plugin'. Hardware-moving plugin hooks are "
+            "permitted by default, but microclaw guards only the resulting position, "
+            "not the plugin's motion itself. Always confirm the classpath with the "
+            "user before enabling a plugin hook."
         ),
     }
 

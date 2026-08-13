@@ -216,10 +216,12 @@ class AuthorizationMap:
     channel_source: str = "config-group"
     property_writes_unrestricted: bool = False
     channels_unrestricted: bool = False
+    bounded_stage_devices: frozenset[str] = frozenset()
 
     def to_dict(self) -> dict:
         out = asdict(self)
         out["authorized_presets"] = sorted(self.authorized_presets)
+        out["bounded_stage_devices"] = sorted(self.bounded_stage_devices)
         return out
 
 
@@ -1116,7 +1118,7 @@ def validate_live_rig(
         if maximum is None:
             errors.append(
                 "Reachable illumination power requires a finite "
-                "illumination.max_power_percent in guaranteed mode."
+                "illumination.max_power_percent."
             )
         elif not math.isfinite(maximum) or not 0 <= maximum <= 100:
             errors.append(
@@ -1126,7 +1128,7 @@ def validate_live_rig(
         if step_factor is None:
             errors.append(
                 "Reachable illumination power requires a finite "
-                "illumination.max_power_step_factor in guaranteed mode."
+                "illumination.max_power_step_factor."
             )
         elif not math.isfinite(step_factor) or step_factor < 1:
             errors.append(
@@ -1390,6 +1392,14 @@ def validate_live_rig(
             classification="trusted_degraded",
             detail="effects cannot be enumerated or intercepted",
         ))
+        demotions.append(ConfigDiagnostic(
+            "plugin_motion",
+            "Hardware-motion plugin hooks are permitted. Their effects are arbitrary "
+            "Java that microclaw can neither enumerate nor intercept; microclaw checks "
+            "only where the axis ended up afterwards. Declare a `plugins` section with "
+            "`allow_hardware_motion: false` to turn them off.",
+            False,
+        ))
 
     if loaded_devices_error is not None and guaranteed:
         errors.append(loaded_devices_error)
@@ -1424,10 +1434,18 @@ def validate_live_rig(
         )
 
     if demotions:
-        print("\n!! AUTHORIZATION CLAIMS DEMOTED — STARTUP CONTINUES WITH LESS AUTHORITY !!", file=sys.stderr)
+        print(
+            "\n!! AUTHORIZATION CLAIMS DEMOTED / WARNINGS — STARTUP CONTINUES !!",
+            file=sys.stderr,
+        )
         for diagnostic in demotions:
-            print(f"- {diagnostic.message}", file=sys.stderr)
-        print("!! END DEMOTED AUTHORIZATION CLAIMS !!\n", file=sys.stderr)
+            label = (
+                "HARDWARE-MOTION PLUGIN WARNING"
+                if diagnostic.kind == "plugin_motion"
+                else "AUTHORIZATION CLAIM DEMOTED"
+            )
+            print(f"{label}: {diagnostic.message}", file=sys.stderr)
+        print("!! END AUTHORIZATION WARNINGS !!\n", file=sys.stderr)
 
     # A raw write passes two gates: this map and SafetyGuard.check_property's
     # categorical allowlist (built from the declared pairs at config-parse
@@ -1460,6 +1478,10 @@ def validate_live_rig(
             and "illumination" not in parsed_config.declared_sections
         ),
         channels_unrestricted="channels" not in parsed_config.declared_sections,
+        bounded_stage_devices=frozenset(
+            live_device for identity, live_device in reachable_axes
+            if parsed_config.ranges.get(identity) is not None
+        ),
     )
     ctrl.authorization_map = report
     return report
@@ -1471,6 +1493,12 @@ def authorize_property_write(ctrl: Any, device: str, prop: str) -> None:
     if report is None:
         # Invariant: startup attaches this before exposing production mutation paths.
         return
+    if report.property_writes_unrestricted and device in report.bounded_stage_devices:
+        raise RigAuthorizationError(
+            f"Property write {device}.{prop} was refused because {device!r} carries "
+            "declared stage bounds. Raw property writes cannot route around those "
+            "bounds; use `move_stage` for XY motion or `set_focus` for Z motion."
+        )
     if report.property_writes_unrestricted:
         return
     matches = [

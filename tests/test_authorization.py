@@ -466,9 +466,16 @@ def test_excluded_preset_effect_fails_and_is_not_runtime_authorized():
         )
 
 
-def test_opaque_motion_plugin_is_unrestricted_when_enabled():
+def test_opaque_motion_plugin_warns_when_enabled(capsys):
     report = validate_live_rig(Controller(), parsed(plugin_motion=True))
     assert any(entry.classification == "trusted_degraded" for entry in report.entries)
+    warning = next(item for item in report.diagnostics if item.kind == "plugin_motion")
+    assert not warning.blocking
+    assert "arbitrary Java" in warning.message
+    assert "neither enumerate nor intercept" in warning.message
+    assert "only where the axis ended up" in warning.message
+    assert "allow_hardware_motion: false" in warning.message
+    assert warning.message in capsys.readouterr().err
 
 
 def test_minimal_document_authorization_leaves_properties_and_channels_unrestricted():
@@ -483,6 +490,23 @@ def test_minimal_document_authorization_leaves_properties_and_channels_unrestric
     validate_live_rig(ctrl, minimal)
     authorize_property_write(ctrl, "OldLaser", "Enable")
     authorize_channel(ctrl, "Any channel")
+
+
+def test_minimal_document_raw_write_cannot_bypass_bounded_stage():
+    minimal = parsed(mode="degraded_trusted_plugins")
+    minimal = ParsedSafetyConfig(
+        minimal.constraints,
+        minimal.ranges,
+        minimal.property_authorization,
+        frozenset({"schema_version", "reviewed", "stage", "acquisition"}),
+    )
+    ctrl = Controller()
+    validate_live_rig(ctrl, minimal)
+    with pytest.raises(RigAuthorizationError) as exc:
+        authorize_property_write(ctrl, "Z", "Odd PositionZ Property")
+    message = str(exc.value)
+    assert "move_stage" in message and "set_focus" in message
+    authorize_property_write(ctrl, "OldLaser", "Enable")
 
 
 def test_motion_plugin_no_longer_requires_a_second_setting():

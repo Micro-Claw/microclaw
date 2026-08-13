@@ -184,8 +184,9 @@ class PluginConstraints:
 
       blocked                 read-only analyzer plugins are allowed by default;
                               list only the fully-qualified classpaths to forbid.
-      allow_hardware_motion   a single global opt-in for plugins that move
-                              hardware (e.g. autofocus). Off by default.
+      allow_hardware_motion   hardware-moving hooks (e.g. autofocus) are
+                              permitted when the plugins section is absent;
+                              an explicit false disables them.
     """
 
     blocked: list[str] = field(default_factory=list)
@@ -1334,12 +1335,7 @@ class SafetyGuard:
         self.check_plugin(classpath)  # blocklist still applies
         if not self._c.plugins.allow_hardware_motion:
             raise SafetyViolation(
-                f"Plugin '{classpath}' moves hardware; set plugins.allow_hardware_motion: "
-                "true in safety_config.yaml to permit hardware-motion plugin hooks. "
-                "That flag is necessary but not sufficient: an opaque motion plugin is "
-                "also refused at startup in guaranteed mode, so the file needs "
-                "property_authorization.mode: degraded_trusted_plugins as well, and "
-                "microclaw must be restarted. `microclaw check-config` reports both. "
-                "microclaw guards the *result* (see check_z) but does not re-drive the "
-                "axis the plugin controls."
+                f"Plugin '{classpath}' moves hardware, but this config explicitly sets "
+                "`plugins.allow_hardware_motion: false`. Hardware-motion plugin hooks "
+                "are disabled."
             )

@@ -1199,6 +1199,17 @@ class TestPluginGates:
         with pytest.raises(SafetyViolation, match="allow_hardware_motion"):
             guard.check_plugin_motion("autofocus:<active>")
 
+    def test_explicit_motion_disable_message_names_only_the_setting(self):
+        guard = SafetyGuard(SafetyConstraints(
+            plugins=PluginConstraints(allow_hardware_motion=False)
+        ))
+        with pytest.raises(SafetyViolation) as exc:
+            guard.check_plugin_motion("autofocus:<active>")
+        message = str(exc.value)
+        assert "allow_hardware_motion: false" in message
+        assert "guaranteed" not in message
+        assert "degraded_trusted_plugins" not in message
+
     def test_motion_allowed_when_flag_set(self):
         guard = SafetyGuard(
             SafetyConstraints(plugins=PluginConstraints(allow_hardware_motion=True))

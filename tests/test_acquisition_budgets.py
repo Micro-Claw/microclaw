@@ -161,7 +161,7 @@ def test_one_confirmation_names_both_reasons(monkeypatch):
     ).close()
     assert len(calls) == 1
     assert "500 frames" in calls[0]
-    assert "about 1200 seconds" in calls[0]
+    assert "20 minutes" in calls[0]
 
 
 def test_deprecated_confirm_above_bytes_does_not_gate_a_plan(monkeypatch):

@@ -518,7 +518,7 @@ image never crosses the bridge, and the plugin must NOT move hardware here.
   in safety_config.yaml plugins.blocked. Fails open: if the plugin call raises,
   the image is kept and the error is logged (data is never lost to a plugin bug).
 
-### autofocus_mm_plugin  (hardware motion — off by default)
+### autofocus_mm_plugin  (hardware motion — explicit confirmation required)
 
 Drop-in alternative to autofocus_per_position: runs the lab's validated MM
 autofocus plugin (via the autofocus manager) in the post_hardware slot before
@@ -527,13 +527,11 @@ each capture. The PLUGIN owns the Z motion.
   hook_params:
     plugin_name    optional MM autofocus plugin name; omit to use the active one
 
-  Safety gate: SafetyGuard.check_plugin_motion — requires
-  plugins.allow_hardware_motion: true in safety_config.yaml (blocklist also
-  applies). That flag is necessary but NOT sufficient: an opaque motion plugin
-  cannot be enumerated or intercepted, so guaranteed mode refuses it at startup
-  and the file must ALSO carry property_authorization.mode:
-  degraded_trusted_plugins. Both are human edits followed by a restart;
-  `microclaw check-config` reports the pair without connecting to the rig. PASSIVE guard on the result: after the plugin focuses, microclaw
+  Safety gate: hardware-moving plugin hooks are permitted by default and require
+  explicit user confirmation before enabling (the blocklist still applies).
+  An explicit plugins.allow_hardware_motion: false disables them. The plugin's
+  arbitrary Java motion cannot be enumerated or intercepted. PASSIVE guard on
+  the result: after the plugin focuses, microclaw
   reads the new Z and calls check_z; if it is out of bounds the hook logs
   autofocus="unsafe_abort" and RAISES SafetyViolation — the whole acquisition
   aborts loudly, naming the Z and the limit ("skip this capture" does not
