@@ -446,7 +446,7 @@ and proceeds on approval. Then the rig interview starts on its own.
 |---|---|---|---|---|---|
 | coordination | `design48/checklist` | `f7beac1` | coordinator | n/a | — |
 | 48a | ~~`design48/block-48a`~~ | `9176dfd` | 2 review rounds | M5 PASS 2026-08-13 | `959dade` |
-| 48b | `design48/block-48b` | `f6e7300` | assigned 2026-08-13 | — | — |
+| 48b | `design48/block-48b` | `f6e7300` | 1 round + clarification, tip `9b7597c` | awaiting M5 | — |
 | 48c | — | — | — | — | — |
 | 48d | — | — | — | — | — |
 | 48e | — | — | — | — | — |
