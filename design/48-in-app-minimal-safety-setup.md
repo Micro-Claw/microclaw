@@ -353,12 +353,21 @@ Design: "Start the app in a restricted setup state", paragraph beginning
 
 Evidence: a test that enumerates `TOOL_REGISTRY` and asserts every hardware tool
 is unreachable in setup mode, including a **fabricated** `tool_use` naming
-`move_stage`; a test that the setup turn never sends `TOOLS_CACHED`; a test that
-exit reporting works with a guardless session.
+`move_stage_xy`; a test that the setup turn never sends `TOOLS_CACHED`; a test
+that exit reporting works with a guardless session.
 
 Rig gate 48b (M5): move the config aside, launch, ask the agent in plain English
 to move the stage and snap an image. Nothing moves, nothing exposes, and the
 refusal names setup mode.
+
+**Landed 2026-08-13 (`e17fe60`), M5 PASS.** Two coordinator corrections before
+merge: the session's dispatch attributes are read directly rather than through
+`getattr` defaults that fell back to the full hardware registry, and a session
+offering no tools omits the `tools` parameter instead of sending `[]` (whether
+the API accepts an empty array is undocumented and untested here). The setup
+tool *names* are wired and the registry is empty — 48c fills it. This entry
+originally said the fabricated call should name `move_stage`, which is not a
+tool; corrected above, and the implementation and runbook use `move_stage_xy`.
 
 ### 48c — Setup tools, first message, and setup UI
 
@@ -446,7 +455,8 @@ and proceeds on approval. Then the rig interview starts on its own.
 |---|---|---|---|---|---|
 | coordination | `design48/checklist` | `f7beac1` | coordinator | n/a | — |
 | 48a | ~~`design48/block-48a`~~ | `9176dfd` | 2 review rounds | M5 PASS 2026-08-13 | `959dade` |
-| 48b | `design48/block-48b` | `f6e7300` | 1 round + clarification, tip `9b7597c` | awaiting M5 | — |
+| 48b | ~~`design48/block-48b`~~ | `f6e7300` | 1 round + clarification | M5 PASS 2026-08-13 | `e17fe60` |
+| 48c | `design48/block-48c` | `e17fe60` | assigned 2026-08-13 | — | — |
 | 48c | — | — | — | — | — |
 | 48d | — | — | — | — | — |
 | 48e | — | — | — | — | — |
