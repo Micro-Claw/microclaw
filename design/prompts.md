@@ -6352,3 +6352,49 @@ node-gated `transcript.js` tests: **node is not installed on M5**, so the fenced
 code-block renderer's tests do not run there. The gate's "totals must reach 1957"
 rule caught this correctly where a bare skip-count comparison would have read as
 a regression.
+
+## Block 48c — setup tools, endpoint draft, and checklist (merged 2026-08-13, `e54e610`)
+
+**The runbook guessed the rig's axis labels and the escape hatch saved it.** It
+expected core XY to appear as `XY.x` / `XY.y`; on M5 the core XY stage is
+labelled `SmarAct 2D`, so the live sweep returned `SmarAct 2D.x` / `SmarAct 2D.y`.
+The step said "if the live sweep differs, use every axis it actually reports and
+record the discrepancy — completeness is defined by the live result, not the
+expected list", and that one sentence is the difference between a gate that
+adapts and a gate that fails on a naming guess. **Write rig expectations as
+"what the sweep reports", with the expected list as a cross-check.**
+
+**The model batched the reads, and the runbook's per-endpoint script was the
+thing that was wrong.** The gate expected twelve `read_stage_positions` calls,
+one per endpoint; the session made four — drive both XY axes to one corner, read
+once, record both, repeat at the far corner. That is better than the script, and
+the counts only disagreed because the script assumed a less capable operator
+loop. Worth noting honestly: three axes' bounds (`PIZStage.z` 0/100, the two
+Thorlabs stages 0/60000 and 0/20000) are round operator-supplied device ranges
+rather than driven-to positions, so the drive-read-approve flow was genuinely
+exercised on the SmarAct stages and the rest came from operator knowledge. Both
+are legitimate — the operator chooses the safe limit — but only one of them
+tested the capture path.
+
+**A subprocess probe is not evidence about the live session, and the fix was to
+add the operator-visible half.** The runner's writer-refusal step ran
+`execute_tool('write_security_config', ...)` in a separate Python process, which
+proves the dispatcher rejects the name — exactly what the unit test already
+asserts — and nothing about what an operator would see. The added step asked the
+model in the browser to write the config: it produced zero tool cards, named its
+five available tools, reported no path, and said plainly it had no means to
+write. That is the claim the block actually makes.
+
+**A rewritten test can silently strand the code it used to cover.** 48b's
+"setup sends no tools" test was correctly rewritten once setup had five tools —
+which left the `tools: []`-omission branch with no test at all. It got its own,
+carrying the reason: whether the Messages API accepts an empty array is
+undocumented and was never verified here. **When a test changes because the
+world changed, check what else it was the only cover for.**
+
+**PowerShell variables do not survive the window.** The runbook defined
+`$Config` in Step 0 and then told the operator to open a *separate* PowerShell
+and run `Test-Path $Config`, where the variable is undefined and `Test-Path
+$null` raises rather than printing `False` — an error the operator would
+reasonably have reported as a finding. Steps that may run in a new window use
+literal paths.
