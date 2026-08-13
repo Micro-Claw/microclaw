@@ -3,7 +3,7 @@ import types
 from unittest.mock import MagicMock
 from fastapi.testclient import TestClient
 
-from microclaw import agent, tools, webserve
+from microclaw import agent, setup_tools, tools, webserve
 from microclaw.__main__ import report_declared_illumination_on_exit
 from microclaw.agent import RIG_INTERVIEW_PROMPT, run_agent_iter
 from microclaw.tools_schema import TOOLS_CACHED
@@ -37,6 +37,10 @@ def test_setup_dispatcher_rejects_the_whole_normal_registry():
         assert "setup mode" in result["error"]
 
 
+def test_setup_tools_never_enter_exportable_registry():
+    assert webserve.SETUP_TOOL_NAMES.isdisjoint(tools.TOOL_REGISTRY)
+
+
 def test_fabricated_hardware_call_is_rejected_before_function_lookup():
     registry = MagicMock()
     registry.__contains__.return_value = False
@@ -47,7 +51,7 @@ def test_fabricated_hardware_call_is_rejected_before_function_lookup():
     registry.get.assert_not_called()
 
 
-def test_setup_turn_sends_no_normal_schemas_and_refuses_fabricated_call(monkeypatch):
+def test_setup_turn_sends_only_setup_schemas_and_refuses_fabricated_call(monkeypatch):
     client = MagicMock()
     client.messages.stream.return_value = _Stream()
     monkeypatch.setattr(agent, "_client", client)
@@ -57,12 +61,125 @@ def test_setup_turn_sends_no_normal_schemas_and_refuses_fabricated_call(monkeypa
         tool_registry=webserve.SETUP_TOOL_REGISTRY,
         setup_mode=True,
     ))
-    # A setup session offers nothing, so the request carries no `tools` at all
-    # rather than an empty array — the turn must not depend on whether the API
-    # accepts `tools: []`.
-    assert "tools" not in client.messages.stream.call_args.kwargs
+    offered = {schema["name"] for schema in client.messages.stream.call_args.kwargs["tools"]}
+    assert offered == webserve.SETUP_TOOL_NAMES - {"write_security_config"}
+    system = "\n".join(block["text"] for block in client.messages.stream.call_args.kwargs["system"])
+    assert RIG_INTERVIEW_PROMPT.splitlines()[0] not in system
     result = next(event for event in events if event["type"] == "tool_result")
     assert "setup mode" in result["content"]
+
+
+def test_a_session_offering_nothing_sends_no_tools_key_at_all(monkeypatch):
+    """Whether the Messages API accepts `tools: []` is undocumented and has
+    never been tested here, so a session with no tools omits the parameter
+    instead of sending an empty array. Setup mode had exactly this shape between
+    48b and 48c; the guard stays because the cost of being wrong is a failed
+    first turn in front of a novice."""
+    client = MagicMock()
+    client.messages.stream.return_value = _Stream()
+    monkeypatch.setattr(agent, "_client", client)
+    list(run_agent_iter(
+        "hello", object(), None, [], max_iterations=1,
+        tool_schemas=[], tool_registry={}, setup_mode=True,
+    ))
+    assert "tools" not in client.messages.stream.call_args.kwargs
+
+
+def _inventory(*, xy="", focus="", named=()):
+    devices = []
+    if xy:
+        devices.append({"label": xy, "device_type": "XYStageDevice"})
+    if focus:
+        devices.append({"label": focus, "device_type": "StageDevice"})
+    devices.extend({"label": label, "device_type": "StageDevice"} for label in named)
+    return {"facts": {"core_device_assignments": {"xy_stage": xy, "focus": focus},
+                      "devices": devices}}
+
+
+def _setup_ctrl(inventory):
+    ctrl = MagicMock()
+    ctrl._microclaw_setup_draft = setup_tools.SetupDraft(inventory)
+    return ctrl
+
+
+def test_stage_axis_shapes_cover_xy_focus_named_and_multiple_stages():
+    assert [a["id"] for a in setup_tools.stage_axes(_inventory(xy="XY"))] == ["XY.x", "XY.y"]
+    assert [a["id"] for a in setup_tools.stage_axes(_inventory(focus="Z"))] == ["Z.z"]
+    axes = setup_tools.stage_axes(_inventory(xy="XY", focus="Z", named=("Piezo", "Filter Z")))
+    assert [a["id"] for a in axes] == ["Filter Z", "Piezo", "XY.x", "XY.y", "Z.z"]
+
+
+def test_list_axes_refreshes_inventory_only_when_explicit(monkeypatch):
+    ctrl = _setup_ctrl(_inventory(focus="Z"))
+    enumerate_rig = MagicMock(return_value=_inventory(focus="Z", named=("Piezo",)))
+    monkeypatch.setattr(setup_tools, "enumerate_rig", enumerate_rig)
+    assert [a["id"] for a in setup_tools.list_stage_axes(ctrl, None)["axes"]] == ["Z.z"]
+    enumerate_rig.assert_not_called()
+    refreshed = setup_tools.list_stage_axes(ctrl, None, refresh_inventory=True)
+    enumerate_rig.assert_called_once_with(ctrl.core)
+    assert [a["id"] for a in refreshed["axes"]] == ["Piezo", "Z.z"]
+
+
+def test_read_positions_uses_each_core_route_without_writes():
+    ctrl = _setup_ctrl(_inventory(xy="XY", focus="Z", named=("Piezo",)))
+    ctrl.core.get_x_position.return_value = 1
+    ctrl.core.get_y_position.return_value = 2
+    ctrl.core.get_position.side_effect = lambda *args: 3 if not args else 4
+    result = setup_tools.read_stage_positions(ctrl, None)
+    assert {p["id"]: p["position_um"] for p in result["positions"]} == {
+        "Piezo": 4, "XY.x": 1, "XY.y": 2, "Z.z": 3,
+    }
+    assert "safe limit" in result["operator_instruction"]
+    assert "hardware limits" in result["operator_instruction"]
+    assert not any(call[0].startswith("set_") for call in ctrl.core.method_calls)
+
+
+def test_record_and_threshold_tools_are_in_memory_only(monkeypatch, tmp_path):
+    ctrl = _setup_ctrl(_inventory(focus="Z"))
+    before = set(tmp_path.iterdir())
+    result = setup_tools.record_proposed_stage_bound(
+        ctrl, None, axis_id="Z.z", endpoint="low", position_um=2.5,
+    )
+    setup_tools.set_proposed_acquisition_prompts(
+        ctrl, None, confirm_above_frames=600, confirm_above_duration_s=1500,
+    )
+    assert result["recorded_in_memory"] is True
+    assert set(tmp_path.iterdir()) == before
+    ctrl.core.assert_not_called()
+    assert ctrl.core.method_calls == []
+
+
+def test_review_reports_missing_axis_and_defaults_are_only_proposals():
+    ctrl = _setup_ctrl(_inventory(xy="XY"))
+    draft = ctrl._microclaw_setup_draft
+    draft.bounds["XY.x"] = {"low": -1, "high": 1}
+    review = setup_tools.review_security_config(ctrl, None)
+    assert review["complete"] is False
+    assert review["missing_axes"] == [{"axis": "XY.y", "endpoints": ["low", "high"]}]
+    assert "XY.y" in review["summary"]
+    assert review["thresholds"]["confirm_above_frames"] is None
+    assert review["thresholds"]["confirm_above_duration_s"] is None
+    assert review["thresholds"]["proposed_confirm_above_frames"] == 500
+    assert review["thresholds"]["proposed_confirm_above_duration_s"] == 1200
+
+
+def test_complete_requires_all_bounds_and_both_thresholds():
+    ctrl = _setup_ctrl(_inventory(focus="Z"))
+    setup_tools.record_proposed_stage_bound(ctrl, None, axis_id="Z.z", endpoint="low", position_um=0)
+    setup_tools.record_proposed_stage_bound(ctrl, None, axis_id="Z.z", endpoint="high", position_um=10)
+    assert not setup_tools.review_security_config(ctrl, None)["complete"]
+    setup_tools.set_proposed_acquisition_prompts(
+        ctrl, None, confirm_above_frames=500, confirm_above_duration_s=1200,
+    )
+    assert setup_tools.review_security_config(ctrl, None)["complete"]
+
+
+def test_write_security_config_remains_refused():
+    result = json.loads(tools.execute_tool(
+        "write_security_config", {}, object(), None,
+        webserve.SETUP_TOOL_REGISTRY, setup_mode=True,
+    ))
+    assert "setup mode" in result["error"]
 
 
 def test_setup_system_blocks_omit_rig_interview_and_normal_blocks_include_it(
@@ -138,3 +255,7 @@ def test_setup_first_message_and_banner_are_exact(monkeypatch, tmp_path):
     page = TestClient(webserve.build_app(session)).get("/").text
     assert 'class="banner" id="setup-banner"' in page
     assert "Setup mode — hardware control locked" in page
+    assert 'id="setup-checklist"' in page
+    status = TestClient(webserve.build_app(session)).get("/api/setup-status").json()
+    assert status["thresholds"]["proposed_confirm_above_frames"] == 500
+    assert status["thresholds"]["proposed_confirm_above_duration_s"] == 1200
