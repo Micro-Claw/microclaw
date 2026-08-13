@@ -69,6 +69,22 @@ def test_setup_turn_sends_only_setup_schemas_and_refuses_fabricated_call(monkeyp
     assert "setup mode" in result["content"]
 
 
+def test_a_session_offering_nothing_sends_no_tools_key_at_all(monkeypatch):
+    """Whether the Messages API accepts `tools: []` is undocumented and has
+    never been tested here, so a session with no tools omits the parameter
+    instead of sending an empty array. Setup mode had exactly this shape between
+    48b and 48c; the guard stays because the cost of being wrong is a failed
+    first turn in front of a novice."""
+    client = MagicMock()
+    client.messages.stream.return_value = _Stream()
+    monkeypatch.setattr(agent, "_client", client)
+    list(run_agent_iter(
+        "hello", object(), None, [], max_iterations=1,
+        tool_schemas=[], tool_registry={}, setup_mode=True,
+    ))
+    assert "tools" not in client.messages.stream.call_args.kwargs
+
+
 def _inventory(*, xy="", focus="", named=()):
     devices = []
     if xy:
