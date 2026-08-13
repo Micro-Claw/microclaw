@@ -1010,6 +1010,16 @@ def _open_when_ready(
 
 def serve(args):
     """Entry point for the `serve` subcommand."""
+    if getattr(args, "setup_write_security_config", False):
+        if args.host not in LOCAL_HOSTS:
+            sys.exit(
+                "--setup-write-security-config is available only on a loopback bind."
+            )
+        if args.safety_config is not None:
+            sys.exit(
+                "--setup-write-security-config targets only the per-user default; "
+                "do not pass --safety-config."
+            )
     if args.host not in LOCAL_HOSTS and not args.allow_remote:
         sys.exit(
             f"Refusing to bind {args.host}: this endpoint moves real hardware. "

@@ -1079,6 +1079,22 @@ def test_serve_refuses_a_non_local_bind_without_allow_remote():
         serve(_args())
 
 
+def test_setup_writer_capability_refuses_remote_even_when_remote_serve_is_allowed():
+    with pytest.raises(SystemExit, match="only on a loopback bind"):
+        serve(_args(
+            setup_write_security_config=True, allow_remote=True,
+            behind_tls_proxy=True,
+        ))
+
+
+def test_setup_writer_capability_refuses_explicit_safety_path_on_loopback():
+    with pytest.raises(SystemExit, match="per-user default"):
+        serve(_args(
+            host="127.0.0.1", setup_write_security_config=True,
+            safety_config="redirect.yaml",
+        ))
+
+
 def test_serve_without_a_safety_config_falls_back_to_the_per_user_default(tmp_path, monkeypatch):
     """No --safety-config is what a desktop shortcut passes (design/17 v3).
 

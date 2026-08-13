@@ -20,8 +20,8 @@ Get-Content block48d-pytest.txt
 ```
 
 Expected: rename succeeds and both exit codes are **0**. The macOS implementation
-result is **1878 passed + 99 skipped = 1977 total**. Record M5 passed and skipped
-separately and require their sum to equal **1977**. M5 may skip more because node
+result is **1880 passed + 99 skipped = 1979 total**. Record M5 passed and skipped
+separately and require their sum to equal **1979**. M5 may skip more because node
 is not installed; a different split with the same total is expected.
 
 ## Step 1 — prove the flag controls the capability
