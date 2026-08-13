@@ -61,6 +61,9 @@ from microclaw.assets import icon_bytes, load_page
 from microclaw.config import load_safety_config_or_exit
 from microclaw.controller import MicroscopeController
 from microclaw.rig_inventory import enumerate_rig
+from microclaw.setup_tools import (
+    SETUP_TOOL_REGISTRY, SETUP_TOOL_SCHEMAS, SetupDraft,
+)
 from microclaw.safety import SafetyGuard, SafetyViolation
 from microclaw.tools_schema import TOOLS_CACHED
 
@@ -75,8 +78,6 @@ SETUP_TOOL_NAMES = frozenset({
     "set_proposed_acquisition_prompts", "review_security_config",
     "write_security_config",
 })
-SETUP_TOOL_REGISTRY = {}
-SETUP_TOOL_SCHEMAS = []
 SETUP_FIRST_MESSAGE = (
     "Security bounds are not set. Before Microclaw can control hardware, we need to "
     "record safe travel bounds for every stage and choose large-acquisition warning "
@@ -485,6 +486,8 @@ class SetupSession(Session):
         self.tool_schemas = SETUP_TOOL_SCHEMAS
         self.tool_registry = SETUP_TOOL_REGISTRY
         self.inventory = enumerate_rig(ctrl.core)
+        self.setup_draft = SetupDraft(self.inventory)
+        ctrl._microclaw_setup_draft = self.setup_draft
         self._initialize(args)
         message = {"role": "assistant", "content": SETUP_FIRST_MESSAGE}
         self.history.append(message)
@@ -638,6 +641,12 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
             "next_cursor": str(end) if end < len(records) else None,
             "total": len(records),
         })
+
+    @app.get("/api/setup-status")
+    async def get_setup_status():
+        if session.mode is not SessionMode.SETUP:
+            raise HTTPException(404, "Not found.")
+        return JSONResponse(session.setup_draft.status())
 
     @app.post("/api/prompt")
     async def post_prompt(p: Prompt, request: Request):

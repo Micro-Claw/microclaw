@@ -127,6 +127,7 @@
   <div class="banner hidden" id="setup-banner">
     <h2>Setup mode — hardware control locked</h2>
     <p>Record and review stage travel bounds before restarting Microclaw.</p>
+    <div id="setup-checklist">Loading discovered stage axes…</div>
   </div>
   <div class="banner hidden" id="pair-banner">
     <h2>Pair this browser</h2>
@@ -315,6 +316,28 @@
     } while (cursor != null);
     history = messages;
     paint(history, false);
+    if (!$('setup-banner').classList.contains('hidden')) await refreshSetup();
+  }
+
+  async function refreshSetup() {
+    const res = await apiFetch('/api/setup-status');
+    if (!res.ok) return;
+    const status = await res.json();
+    const mark = (done) => done ? '✓' : '○';
+    const esc = (value) => String(value).replace(/[&<>"']/g, (ch) =>
+      ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[ch]));
+    const axes = status.axes.map((axis) => {
+      const low = axis.low == null ? 'safe low missing' : 'safe low ' + axis.low + ' µm';
+      const high = axis.high == null ? 'safe high missing' : 'safe high ' + axis.high + ' µm';
+      return '<li>' + mark(axis.low != null && axis.high != null) + ' ' +
+        esc(axis.id) + ': ' + low + ', ' + high + '</li>';
+    }).join('');
+    const t = status.thresholds;
+    const frames = t.confirm_above_frames == null ? 'missing (proposal: 500 frames)' : t.confirm_above_frames + ' frames';
+    const duration = t.confirm_above_duration_s == null ? 'missing (proposal: 1200 s)' : t.confirm_above_duration_s + ' s';
+    $('setup-checklist').innerHTML = '<ul>' + axes +
+      '<li>' + mark(t.confirm_above_frames != null) + ' frame warning: ' + frames + '</li>' +
+      '<li>' + mark(t.confirm_above_duration_s != null) + ' duration warning: ' + duration + '</li></ul>';
   }
 
   // Read the server's error detail, whatever shape it came back in.
