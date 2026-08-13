@@ -396,6 +396,16 @@ Rig gate 48c (M5): complete the whole endpoint conversation for XY, Z and the
 piezo. Every axis the live inventory reports appears in the checklist, and the
 proposed ranges match what the operator drove to.
 
+**Landed 2026-08-13 (`e54e610`), M5 PASS.** The live sweep found six axes —
+core XY on **`SmarAct 2D`** (not the `XY` label the gate guessed), core Z on
+`PIZStage`, and three named stages — and all twelve endpoints were captured, with
+review reporting complete and `written_to_disk: false`. Asking the model in the
+browser to write the config produced no tool call, no file, and no claimed path.
+The draft the writer inherits therefore has this shape: axis ids carry device
+identity (`SmarAct 2D.x`, `PIZStage.z`, or the bare named-stage label) and a
+`role` of `core_xy` / `core_focus` / `named_stage` / `named_xy_stage`, which is
+what 48d must map onto `stage.{x,y,z}_{min,max}` and `named_stages[]`.
+
 ### 48d — The single-use writer
 
 Design: "Permit one narrowly scoped write".
@@ -456,7 +466,8 @@ and proceeds on approval. Then the rig interview starts on its own.
 | coordination | `design48/checklist` | `f7beac1` | coordinator | n/a | — |
 | 48a | ~~`design48/block-48a`~~ | `9176dfd` | 2 review rounds | M5 PASS 2026-08-13 | `959dade` |
 | 48b | ~~`design48/block-48b`~~ | `f6e7300` | 1 round + clarification | M5 PASS 2026-08-13 | `e17fe60` |
-| 48c | `design48/block-48c` | `e17fe60` | 1 round, tip pushed | awaiting M5 | — |
+| 48c | ~~`design48/block-48c`~~ | `e17fe60` | 1 round | M5 PASS 2026-08-13 | `e54e610` |
+| 48d | `design48/block-48d` | `e54e610` | assigned 2026-08-13 | — | — |
 | 48c | — | — | — | — | — |
 | 48d | — | — | — | — | — |
 | 48e | — | — | — | — | — |
