@@ -19,16 +19,43 @@
   // an HTML attribute needs them escaped too or it breaks out of the attribute.
   const escAttr = (s) => esc(s).replace(/"/g, "&quot;");
 
-  // tiny inline markdown: **bold**, `code`, paragraphs
+  // tiny inline markdown: fenced blocks, **bold**, `code`, paragraphs
   function md(text) {
-    return esc(text)
+    // Fenced blocks are held aside FIRST. The inline-code rule below needs at
+    // least one non-backtick between its delimiters, so on a ``` fence it
+    // matches from the third backtick to the first of the closing fence: the
+    // block's newlines collapse into one <code> span and two backticks are left
+    // sitting on the page. That is what the M5 gate saw on 2026-08-13 — every
+    // verbatim tool result the model quoted came out as a run-on line wearing
+    // stray backticks.
+    // The placeholder is NUL-delimited. A transcript carries whatever a model
+    // wrote or a dropped history file contains, so a printable marker such as
+    // " 0 " or "[[0]]" would eventually appear in ordinary prose and be
+    // swapped for somebody else's code block.
+    const blocks = [];
+    const hold = (_, code) => {
+      blocks.push(String(code).replace(/\n+$/, ""));
+      return "\u0000" + (blocks.length - 1) + "\u0000";
+    };
+    const held = String(text)
+      .replace(/```[^\n]*\n?([\s\S]*?)```/g, hold)
+      // A fence the model is still streaming has no closing delimiter yet.
+      // `serve` renders every text delta, so without this the block flickers as
+      // literal backticks until the turn ends.
+      .replace(/```[^\n]*\n?([\s\S]*)$/, hold);
+    return esc(held)
       .split(/\n{2,}/)
       .map(p => "<p>" + p
         .replace(/\n/g, "<br>")
         .replace(/`([^`]+)`/g, (_, c) => "<code>" + c + "</code>")
         .replace(/\*\*([^*]+)\*\*/g, (_, b) => "<strong>" + b + "</strong>")
         + "</p>")
-      .join("");
+      .join("")
+      // Close the paragraph around each block: a <pre> nested in a <p> is
+      // invalid and the browser closes the <p> itself, in the wrong place.
+      .replace(/\u0000(\d+)\u0000/g, (_, i) =>
+        '</p><pre class="code">' + esc(blocks[i]) + "</pre><p>")
+      .replace(/<p><\/p>/g, "");
   }
 
   function fmtJSON(val) {
