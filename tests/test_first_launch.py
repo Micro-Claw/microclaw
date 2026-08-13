@@ -22,6 +22,13 @@ from microclaw.rig_inventory import _camera_geometry
 REAL_DEMO_INVENTORY = Path(__file__).parent / "fixtures" / "block4_demo_inventory_20260801.json"
 
 
+def _schema_three_interview(*args, **kwargs):
+    """Exercise the retired interview's data decisions through the live schema."""
+    config, notes = interview(*args, **kwargs)
+    config["schema_version"] = 3
+    return config, notes
+
+
 def _inventory():
     def prop(
         name, *, current="OBSERVED", allowed=None, technical=False,
@@ -164,10 +171,11 @@ def test_interview_copies_only_identifiers_and_explicit_answers(tmp_path):
         for note in notes
     )
     assert any("ambiguous XY" in line for line in output)
+    config["schema_version"] = 3
     result = write_profile(config, notes, tmp_path / "profile.yaml")
     assert result.parsed is not None
     assert [(x.kind, x.blocking) for x in result.diagnostics] == [
-        ("review", True), ("example_limits", False), ("live_check", False),
+        ("review", True), ("live_check", False),
     ]
 
 
@@ -175,6 +183,7 @@ def test_empty_guaranteed_categorical_key_is_emitted(tmp_path):
     answers = _answers()
     config, notes = interview(_inventory(), ask=lambda _: next(answers), say=lambda _: None)
     path = tmp_path / "profile.yaml"
+    config["schema_version"] = 3
     write_profile(config, notes, path)
     loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
     assert loaded["property_authorization"]["mode"] == "guaranteed"
@@ -268,6 +277,7 @@ def test_observational_failures_become_header_review_notes(tmp_path):
     config, notes = interview(inventory, ask=lambda _: next(answers), say=lambda _: None)
     assert len([note for note in notes if note.startswith("ENUMERATION REVIEW NOTE:")]) == 4
     path = tmp_path / "profile.yaml"
+    config["schema_version"] = 3
     write_profile(config, notes, path)
     text = path.read_text(encoding="utf-8")
     for coordinate in (
@@ -1395,7 +1405,9 @@ def test_live_contact_warning_and_exact_acknowledgement_precede_core(monkeypatch
     answers = _answers()
     monkeypatch.setattr(
         "microclaw.first_launch.interview",
-        lambda inv, **kwargs: interview(inv, ask=lambda _: next(answers), say=lambda _: None),
+        lambda inv, **kwargs: _schema_three_interview(
+            inv, ask=lambda _: next(answers), say=lambda _: None
+        ),
     )
     cli.first_launch_setup(_args(tmp_path))
     assert constructed == [4827]
@@ -1429,7 +1441,9 @@ def test_corrected_second_contact_acknowledgement_connects_and_records_both_atte
     answers = _answers()
     monkeypatch.setattr(
         "microclaw.first_launch.interview",
-        lambda inv, **kwargs: interview(inv, ask=lambda _: next(answers), say=lambda _: None),
+        lambda inv, **kwargs: _schema_three_interview(
+            inv, ask=lambda _: next(answers), say=lambda _: None
+        ),
     )
     def write_outputs(inv, out):
         out = Path(out)
@@ -1543,7 +1557,9 @@ def test_existing_inventory_shows_honesty_text_without_contact_ack(monkeypatch, 
     answers = _answers()
     monkeypatch.setattr(
         "microclaw.first_launch.interview",
-        lambda inv, **kwargs: interview(inv, ask=lambda _: next(answers), say=lambda _: None),
+        lambda inv, **kwargs: _schema_three_interview(
+            inv, ask=lambda _: next(answers), say=lambda _: None
+        ),
     )
     cli.first_launch_setup(_args(tmp_path, inventory=inventory_path))
     output = capsys.readouterr().out

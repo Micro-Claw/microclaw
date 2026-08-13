@@ -165,6 +165,8 @@ def parsed(
         constraints,
         ranges,
         PropertyAuthorization(mode, frozenset(categorical), denied=frozenset(excluded)),
+        frozenset({"stage", "camera", "acquisition", "channels", "plugins",
+                   "illumination", "property_authorization"}),
     )
 
 
@@ -200,9 +202,7 @@ def test_complete_map_covers_dedicated_autofocus_and_acquisition_paths():
 
 @pytest.mark.parametrize(
     "missing",
-    [name for name, _detail in __import__(
-        "microclaw.authorization", fromlist=["_ACQUISITION_POLICY_FIELDS"]
-    )._ACQUISITION_POLICY_FIELDS],
+    ["confirm_above_frames", "confirm_above_duration_s"],
 )
 def test_missing_or_partial_direct_dose_policy_fails_closed(missing):
     values = {
@@ -223,19 +223,21 @@ def test_missing_or_partial_direct_dose_policy_fails_closed(missing):
         )
 
 
-def test_incomplete_dose_policy_suspends_claim_in_degraded_mode():
+def test_optional_dose_caps_are_unrestricted():
     report = validate_live_rig(
         Controller(),
         parsed(
             mode="degraded_trusted_plugins",
-            acquisition=AcquisitionConstraints(max_frames=100),
+            acquisition=AcquisitionConstraints(
+                confirm_above_frames=500, confirm_above_duration_s=300
+            ),
         ),
     )
     assert report.complete is None
     assert "suspended" in report.verdict
     assert any(
         entry.path == "acquisition-policy:max_duration_s"
-        and entry.classification == "trusted_degraded"
+        and entry.classification == "unrestricted"
         for entry in report.entries
     )
     tool_entries = [
@@ -243,9 +245,9 @@ def test_incomplete_dose_policy_suspends_claim_in_degraded_mode():
         if entry.path.startswith("acquisition-tool:")
     ]
     assert len(tool_entries) == 6
-    assert {entry.classification for entry in tool_entries} == {"trusted_degraded"}
-    assert all("complete typed dose policy is unavailable" in entry.detail
-               for entry in tool_entries)
+    assert {entry.classification for entry in tool_entries} == {
+        "built_in_typed_capability"
+    }
 
 
 def test_acquisition_report_names_all_policies_and_honest_session_scope():
@@ -321,15 +323,15 @@ def test_reachable_core_axes_without_ranges_fail_closed(ranges):
         validate_live_rig(Controller(), parsed(ranges=ranges))
 
 
-def test_open_reachable_edge_fails_only_in_guaranteed_mode():
+def test_open_reachable_edge_always_fails():
     ranges = parsed().ranges.copy()
     ranges[ActuatorId("core_focus", None, "stage-position", "z")] = policy(0, None)
     with pytest.raises(RigAuthorizationError, match="open range edge"):
         validate_live_rig(Controller(), parsed(ranges=ranges))
-    report = validate_live_rig(
-        Controller(), parsed(ranges=ranges, mode="degraded_trusted_plugins")
-    )
-    assert report.complete is None and "suspended" in report.verdict
+    with pytest.raises(RigAuthorizationError, match="open range edge"):
+        validate_live_rig(
+            Controller(), parsed(ranges=ranges, mode="degraded_trusted_plugins")
+        )
 
 
 def test_live_core_and_named_identity_conflict_is_rejected():
@@ -464,27 +466,18 @@ def test_excluded_preset_effect_fails_and_is_not_runtime_authorized():
         )
 
 
-def test_opaque_motion_plugin_requires_degraded_mode():
-    with pytest.raises(RigAuthorizationError, match="opaque hardware-motion"):
-        validate_live_rig(Controller(), parsed(plugin_motion=True))
-    report = validate_live_rig(
-        Controller(), parsed(plugin_motion=True, mode="degraded_trusted_plugins")
-    )
-    assert report.complete is None
+def test_opaque_motion_plugin_is_unrestricted_when_enabled():
+    report = validate_live_rig(Controller(), parsed(plugin_motion=True))
     assert any(entry.classification == "trusted_degraded" for entry in report.entries)
 
 
-def test_the_motion_refusal_names_the_second_setting_the_operator_needs():
+def test_motion_plugin_no_longer_requires_a_second_setting():
     # The M5 session (2026-08-04): the operator set allow_hardware_motion, was
     # refused at startup with a rule and no remedy, and had no way to learn from
     # the message that a second line was required. A refusal that does not say
     # what to do next costs a restart per guess, with the rig connected.
-    with pytest.raises(RigAuthorizationError) as excinfo:
-        validate_live_rig(Controller(), parsed(plugin_motion=True))
-    message = str(excinfo.value)
-    assert "degraded_trusted_plugins" in message
-    assert "allow_hardware_motion" in message
-    assert "not sufficient" in message.lower()
+    report = validate_live_rig(Controller(), parsed(plugin_motion=True))
+    assert any(entry.path == "opaque-hardware-motion-plugin" for entry in report.entries)
 
 
 def illumination_policy(*, maximum=30.0, step=3.0):
@@ -976,19 +969,19 @@ def test_cli_and_web_fail_before_exposure_on_partial_direct_dose_policy(monkeypa
     from microclaw import webserve
     from microclaw import credentials
 
-    incomplete = parsed(acquisition=AcquisitionConstraints(max_frames=100))
+    incomplete = parsed(acquisition=AcquisitionConstraints(confirm_above_frames=500))
     prompted = []
     monkeypatch.setattr(cli, "load_safety_config_or_exit", lambda path: incomplete)
     monkeypatch.setattr(cli, "MicroscopeController", lambda port, guard: Controller())
     monkeypatch.setattr(credentials, "load_api_key", lambda: ("k", "env"))
     monkeypatch.setattr("builtins.input", lambda prompt: prompted.append(prompt))
-    with pytest.raises(SystemExit, match="acquisition.max_duration_s"):
+    with pytest.raises(SystemExit, match="acquisition.confirm_above_duration_s"):
         cli.run_session(SimpleNamespace(safety_config=None, port=1, save_history=False))
     assert prompted == []
 
     monkeypatch.setattr(webserve, "load_safety_config_or_exit", lambda path: incomplete)
     monkeypatch.setattr(webserve, "MicroscopeController", lambda port, guard: Controller())
-    with pytest.raises(SystemExit, match="acquisition.max_duration_s"):
+    with pytest.raises(SystemExit, match="acquisition.confirm_above_duration_s"):
         webserve.Session(SimpleNamespace(
             safety_config=None, port=1, model=None, save_history=False,
             host="127.0.0.1",

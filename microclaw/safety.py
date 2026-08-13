@@ -388,6 +388,7 @@ class ParsedSafetyConfig:
             "degraded_trusted_plugins", frozenset()
         )
     )
+    declared_sections: frozenset[str] = frozenset()
 
     @classmethod
     def from_yaml(cls, path: str) -> ParsedSafetyConfig:
@@ -772,6 +773,7 @@ class ParsedSafetyConfig:
                 typed_policies,
                 frozenset(excluded_pairs),
             ),
+            declared_sections=frozenset(cfg),
         )
 
 

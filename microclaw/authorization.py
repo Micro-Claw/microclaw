@@ -21,9 +21,18 @@ from microclaw.safety import (
 
 
 _ACQUISITION_POLICY_FIELDS = (
+    ("max_frames", "per-plan frame maximum"),
+    ("max_duration_s", "per-plan estimated-duration maximum"),
+    ("max_bytes", "per-plan estimated-byte maximum"),
+    ("max_illuminated_ms", "per-plan illuminated-time maximum"),
     ("confirm_above_frames", "per-plan frame confirmation threshold"),
     ("confirm_above_duration_s", "per-plan estimated-duration confirmation threshold"),
+    ("confirm_above_illuminated_ms", "per-plan illuminated-time confirmation threshold"),
 )
+
+_REQUIRED_ACQUISITION_POLICY_FIELDS = {
+    "confirm_above_frames", "confirm_above_duration_s",
+}
 
 
 def _acquisition_tool_names() -> list[str]:
@@ -828,20 +837,17 @@ def validate_live_rig(
     for identity, live_device in reachable_axes:
         policy = parsed_config.ranges.get(identity)
         if policy is None:
-            if guaranteed:
-                location = (
-                    f"an item for device {live_device!r} under top-level `named_stages`"
-                    if identity.source == "named"
-                    else f"both `stage.{identity.axis}_min` and `stage.{identity.axis}_max`"
-                )
-                errors.append(
-                    f"Reachable {identity.axis or 'z'} stage actuator {live_device!r} "
-                    f"has no declared range policy. The declaration that permits it is {location}."
-                )
+            location = (
+                f"an item for device {live_device!r} under top-level `named_stages`"
+                if identity.source == "named"
+                else f"both `stage.{identity.axis}_min` and `stage.{identity.axis}_max`"
+            )
+            errors.append(
+                f"Reachable {identity.axis or 'z'} stage actuator {live_device!r} "
+                f"has no declared range policy. The declaration that permits it is {location}."
+            )
             continue
-        if guaranteed and (
-            policy.minimum.bound is None or policy.maximum.bound is None
-        ):
+        if policy.minimum.bound is None or policy.maximum.bound is None:
             location = (
                 f"the `min_um` and `max_um` keys for device {live_device!r} "
                 "under top-level `named_stages`"
@@ -853,7 +859,7 @@ def validate_live_rig(
             )
             errors.append(
                 f"Reachable stage actuator {live_device!r} axis "
-                f"{identity.axis or 'z'} has an open range edge in guaranteed mode. "
+                f"{identity.axis or 'z'} has an open range edge. "
                 f"Set finite reviewed bounds in {location}."
             )
         entries.append(AuthorizationEntry(
@@ -865,12 +871,6 @@ def validate_live_rig(
         ))
 
     if camera_device:
-        if guaranteed and parsed_config.constraints.camera.max_exposure_ms is None:
-            errors.append(
-                f"Reachable camera {camera_device!r} has no finite exposure maximum. "
-                "Set `camera.max_exposure_ms` in the top-level `camera` section to "
-                "this rig's reviewed finite positive limit."
-            )
         entries.append(AuthorizationEntry(
             path="dedicated-exposure",
             classification="built_in_typed_capability",
@@ -926,7 +926,7 @@ def validate_live_rig(
             "Establish and declare on_value/off_value too if this hardware does not "
             "use the schema defaults; no values were inferred from the semantic map."
         )
-    if guaranteed:
+    if "illumination" in parsed_config.declared_sections and guaranteed:
         errors.extend(emu_warnings)
     else:
         for warning in emu_warnings:
@@ -1108,7 +1108,7 @@ def validate_live_rig(
             property=prop,
             capability="illumination",
         ))
-    if guaranteed and illumination_power_pairs:
+    if illumination_power_pairs:
         maximum = illumination.max_power_percent
         step_factor = illumination.max_power_step_factor
         if maximum is None:
@@ -1333,8 +1333,9 @@ def validate_live_rig(
             and math.isfinite(value)
             and value > 0
         )
-        acquisition_policy_complete = acquisition_policy_complete and valid
-        if guaranteed and not valid:
+        if field_name in _REQUIRED_ACQUISITION_POLICY_FIELDS:
+            acquisition_policy_complete = acquisition_policy_complete and valid
+        if field_name in _REQUIRED_ACQUISITION_POLICY_FIELDS and not valid:
             errors.append(
                 f"Acquisition authorization requires finite positive "
                 f"acquisition.{field_name}; got {value!r}. Set that key in the "
@@ -1343,7 +1344,7 @@ def validate_live_rig(
         entries.append(AuthorizationEntry(
             path=f"acquisition-policy:{field_name}",
             classification=(
-                "built_in_typed_capability" if valid else "trusted_degraded"
+                "built_in_typed_capability" if valid else "unrestricted"
             ),
             device=camera_device or None,
             capability="acquisition-dose",
