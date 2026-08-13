@@ -6307,3 +6307,48 @@ now refused by the shared validator with no file written; the shortcut then exit
 with a message describing setup mode that 48b has not built yet. The first fresh
 install worth attempting is after 48c, and the full double-click run is 48e's
 gate.
+
+## Block 48b — session split and the setup dispatcher (merged 2026-08-13, `e17fe60`)
+
+**The runner stopped on a test rather than inverting it, and the answer was
+narrower than "yes, rewrite it".** `test_serve_without_a_safety_config_falls_back_to_the_per_user_default`
+looked like the old invariant blocking the new behaviour; it was actually named
+for **path resolution** — no `--safety-config` means the per-user profile, not
+some other path — and used `SystemExit` only as the observable proving which path
+was consulted. The rewrite kept the claim, replaced the outcome, and had to prove
+the returned session was the *restricted* one, because "did not raise SystemExit"
+would also pass for a normal unguarded session. Its docstring was rewritten too:
+a stale rationale left in prose is how a dead invariant gets re-asserted later by
+someone reading the comment instead of the code. The other refusal test
+(`unreviewed` config) was left alone — **missing config → setup mode; present but
+invalid → still refuses**, with setup-over-invalid deferred to 48d/48e where a
+writer exists to refuse with.
+
+**The security boundary shipped with fail-open defaults.** The turn read
+`getattr(session, "tool_registry", tools.TOOL_REGISTRY)` — so any session class
+that ever failed to set the attribute would silently dispatch the full hardware
+registry in setup mode. Both classes always set it, so the default bought nothing
+and hid a future bug. Read the attributes directly and let a missing one raise;
+the two test fakes now carry them, which also makes them truer stand-ins. **On a
+security boundary, the convenient default is the wrong answer by construction.**
+
+**An unanswerable API question was designed out rather than guessed.** Setup mode
+had no tools, so the turn sent `tools=[]`; whether the Messages API accepts an
+empty array is not documented either way and no key was available to test it. The
+fix was to omit the parameter when the session offers nothing, so the first setup
+turn — the one a novice sees — cannot fail on a question nobody had answered.
+
+**The gate returned less than it asked for, and it did not matter.** Step 4's
+`build_session` probe line (`normal True True 80 80 True`) and the `Test-Path`
+results were not in the returned evidence. The substance survived anyway: the
+normal session started, `get_system_state` dispatched against the live rig, and
+the restored config is proven by that startup more strongly than by `Test-Path`.
+Worth stating rather than glossing — and worth noting the model *reporting* four
+tools available is self-report, which is what the probe existed to replace.
+
+**Windows skips are now 23, up from 17 at 48a.** 1835 passed + 122 skipped on M5
+= 1858 + 99 on macOS = 1957 collected, so nothing was lost. The extra six are the
+node-gated `transcript.js` tests: **node is not installed on M5**, so the fenced-
+code-block renderer's tests do not run there. The gate's "totals must reach 1957"
+rule caught this correctly where a bare skip-count comparison would have read as
+a regression.
