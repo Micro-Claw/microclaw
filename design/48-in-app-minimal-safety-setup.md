@@ -269,3 +269,191 @@ click `install.bat`, open Micro-Manager, complete the conversation in the web
 app, approve the exact minimal YAML, restart from the normal shortcut, and prove
 that an out-of-bounds move is refused while a 500-frame or 20-minute acquisition
 asks once and proceeds when approved.
+
+---
+
+# Implementation checklist — design/48
+
+This checklist is **separate from `design/35-usability-and-pfs-checklist.md`** and
+does not fold into it. Blocks run under the ten-step block workflow in
+`CLAUDE.md` §"The block workflow", which is authoritative; where this file
+disagrees with those steps, `CLAUDE.md` wins.
+
+Blocks are the design's five slices, in order. Each is a branch, an implementer
+in its own worktree, a rig-gate runbook committed **on that branch**, and a
+step-10 design gate before the next block is assigned.
+
+## Decision taken before block 48a (2026-08-13)
+
+**Schema 3 is the sole live format. There is no schema-2 compatibility and no
+migration command.** M5, M2 and the Nikon each hold a reviewed schema-2
+`safety_config.yaml`; each will author a schema-3 file once, which is also the
+cheapest way to exercise the new setup flow on three different rigs. Per
+`CLAUDE.md`'s no-legacy-anchoring rule the old parser is replaced, not kept
+beside the new one. Every gate runbook from 48a onward must open by telling the
+operator to **rename** the existing file, never delete it — it is the only
+written record of that rig's reviewed bounds until the new one exists.
+
+## Blocks
+
+### 48a — Schema 3 and the minimal required document
+
+Design: "Make the required schema minimal", "Conflicts resolved…" bullets 3–5.
+
+- `ParsedSafetyConfig.from_yaml` accepts `schema_version: 3` only; a schema-2
+  file refuses with a message that names in-app setup, not `microclaw init`.
+- Required: `reviewed: true`, stage bounds for every axis the document declares,
+  `acquisition.confirm_above_frames`, `acquisition.confirm_above_duration_s`.
+- Every other section optional, and **absent means unrestricted** — an omitted
+  section must not inherit a schema-2 default. This is the defect most likely to
+  hide here.
+- `_authorize_acquisition`: confirmation triggers at `>=`, not `>`, so a plan at
+  exactly 500 frames asks. `max_frames`/`max_duration_s` become opt-in caps and
+  no longer participate in the required path.
+- `config.validate_safety_config`: the guaranteed-mode required-field block goes
+  with schema 2; keep the example-limits warning and the live-check note.
+- Rewrite `safety_config.example.yaml` to the minimal schema-3 document.
+
+Evidence: `tests/test_safety.py`, `test_config_gate.py`,
+`test_acquisition_budgets.py`, `test_schema_parity.py`. Named cases — schema-2
+refusal text; minimal document starts and enforces stage bounds; omitted
+`illumination`/`camera`/`channels` restrict nothing; 499/500/501-frame
+confirmation boundary; a focus-only document with no XY keys.
+
+Rig gate 48a (M5): hand-author the minimal schema-3 file, start `microclaw
+serve`, prove (i) an out-of-bounds XY move refuses, (ii) a 500-frame timelapse
+asks once and runs on approval, (iii) a laser the old config typed still fires
+with no `illumination` section present.
+
+Step-10 design gate: reconcile design/14 §6 and design/17 v2's "every actuator is
+typed or excluded" claim, which schema 3 intentionally drops.
+
+### 48b — Session split and the setup dispatcher
+
+Design: "Start the app in a restricted setup state", paragraph beginning
+"Splitting `Session` is not sufficient".
+
+- `SessionMode`, `SetupSession`, `build_session`; `serve` stops exiting when the
+  config is missing. The non-web CLI keeps refusing and points at `serve`.
+- **Session-scoped tools, both halves**: `run_agent_iter` takes the schema list
+  instead of reaching for module-global `TOOLS_CACHED`, and `execute_tool` takes
+  the registry instead of reaching for `tools.TOOL_REGISTRY`.
+- The setup dispatcher rejects any name outside the setup set **before** registry
+  lookup. Filtering the schemas sent to the model is not the boundary.
+- `MicroscopeController(port, guard=None)` is acceptable only under that
+  dispatcher. `report_declared_illumination_on_exit` must tolerate `guard=None`.
+- Setup tools do **not** enter `TOOL_REGISTRY`; nothing in this block is
+  exportable. If any setup tool does land in `TOOL_REGISTRY`, it must carry
+  `@emits_nothing` — an undecorated tool plants a `RuntimeError` in every
+  exported script that records it (`CLAUDE.md`, two gates lost to this).
+
+Evidence: a test that enumerates `TOOL_REGISTRY` and asserts every hardware tool
+is unreachable in setup mode, including a **fabricated** `tool_use` naming
+`move_stage`; a test that the setup turn never sends `TOOLS_CACHED`; a test that
+exit reporting works with a guardless session.
+
+Rig gate 48b (M5): move the config aside, launch, ask the agent in plain English
+to move the stage and snap an image. Nothing moves, nothing exposes, and the
+refusal names setup mode.
+
+### 48c — Setup tools, first message, and setup UI
+
+Design: "Start the app in a restricted setup state" (tool list, endpoint
+capture), "Run the rig-knowledge interview after restart" (first half).
+
+- `list_stage_axes`, `read_stage_positions`, `record_proposed_stage_bound`,
+  `set_proposed_acquisition_prompts`, `review_security_config` — built over
+  `rig_inventory.enumerate_rig`, which already does the read-only sweep. Fold
+  into it; do not write a second enumerator.
+- Reuse `first_launch`'s finite-bound validation and proposal/echo language
+  without reusing its functions unchanged (design sketch says why).
+- Operator drives each axis in Micro-Manager; microclaw reads positions, echoes
+  the proposed range, and asks for approval. "Hardware limit" and "safe limit"
+  are named distinctly. No `unbounded` escape.
+- `record_*` mutates an in-memory draft only — no hardware write, no disk.
+- Setup mode must **not** inject `RIG_INTERVIEW_PROMPT`.
+- serve.html: persistent "Setup mode — hardware control locked" banner plus a
+  checklist of discovered axes, captured endpoints, and thresholds.
+
+Evidence: XY, focus-only, named-stage, several-stages, and inventory-changed
+cases; a test that no `record_*` call touches disk or the core; a test that the
+setup system blocks omit the rig interview.
+
+Rig gate 48c (M5): complete the whole endpoint conversation for XY, Z and the
+piezo. Every axis the live inventory reports appears in the checklist, and the
+proposed ranges match what the operator drove to.
+
+### 48d — The single-use writer
+
+Design: "Permit one narrowly scoped write".
+
+- Top-level `--setup-write-security-config`, valid only with `serve`, only on a
+  loopback bind, only for `paths.default_safety_config()`. Never accepts YAML or
+  a path from the model.
+- Browser confirmation shows the exact destination and the rendered YAML before
+  the write. Approval is single-use and audited.
+- Same-directory temp file + atomic replace; refuses to overwrite an existing
+  file; capability consumed afterwards; returns `restart_required`.
+- Restart message: "Security bounds are saved. Restart Microclaw; it will next
+  learn the essential details of your microscope before helping with your
+  workflows."
+- Keep `paths.default_safety_config()` on `safety_config.yaml`. Rename only
+  user-facing language: "safety profile" → "security bounds".
+
+Evidence: path confinement, remote-bind refusal, replay after consume, malformed
+draft, operator denial, existing-file refusal, restart_required, audit record.
+
+Rig gate 48d (M5): approve the write, confirm the file at
+`%APPDATA%\microclaw\safety_config.yaml` matches the YAML shown, restart from the
+ordinary desktop shortcut, and confirm the normal session loads it and offers no
+write capability.
+
+### 48e — Installer, shortcut, docs, and the interview after restart
+
+Design: "Simplify installation", "Run the rig-knowledge interview after restart".
+
+- `install.bat`: install, shortcut, bridge enable, then
+  `"%MC_EXE%" --setup-write-security-config serve`. Remove the `init --yes` call
+  and the `check-config`/editor review steps it prints.
+- Upgrade preserves a valid config and does not start setup. An invalid config
+  launches setup mode that **refuses to overwrite it**, shows its path, and asks
+  the user to move or repair it.
+- Desktop shortcut stays plain `microclaw serve`. The installer prints the
+  one-time setup command for a user who closes the setup server early.
+- Retire the terminal security interview: `first_launch.interview`, `init`,
+  `first-launch-setup`. Delete rather than deprecate — keep only what 48c reuses.
+- README, packaged example, `tests/test_installer.py`, `test_first_launch.py`,
+  `test_init.py`.
+- Rig interview: unchanged in `_system_blocks()`, absent in setup mode, present
+  in the first normal session, and stored topics are not asked again.
+
+Evidence: installer tests over the batch text; a test that setup-mode system
+blocks omit the interview while normal ones include it.
+
+Rig gate 48e — **the acceptance test**, on a clean Windows user profile:
+double-click `install.bat`, open Micro-Manager, complete the conversation in the
+browser, approve the exact minimal YAML, restart from the shortcut, and prove an
+out-of-bounds move refuses while a 500-frame or 20-minute acquisition asks once
+and proceeds on approval. Then the rig interview starts on its own.
+
+## Run ledger
+
+| Block | Branch | Start commit | Implementer | Rig gate | Merged |
+|---|---|---|---|---|---|
+| coordination | `design48/checklist` | `f7beac1` | coordinator | n/a | — |
+| 48a | — | — | — | — | — |
+| 48b | — | — | — | — | — |
+| 48c | — | — | — | — | — |
+| 48d | — | — | — | — | — |
+| 48e | — | — | — | — | — |
+
+## Carried forward, not this track's work
+
+- Twelve tools in `TOOL_REGISTRY` remain undecorated for export (measured
+  2026-08-12). Tracked in design/35's carried-forward register; 48b only has to
+  avoid adding a thirteenth.
+- The three rigs' existing schema-2 files. Each gate runbook renames rather than
+  deletes; no automated migration is planned.
+- `first_launch.py`'s device-classification interview encodes real rig knowledge.
+  48e deletes the security interview, not the understanding — anything worth
+  keeping moves into a design note before the delete lands.
