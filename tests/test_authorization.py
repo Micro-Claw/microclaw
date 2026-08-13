@@ -471,6 +471,20 @@ def test_opaque_motion_plugin_is_unrestricted_when_enabled():
     assert any(entry.classification == "trusted_degraded" for entry in report.entries)
 
 
+def test_minimal_document_authorization_leaves_properties_and_channels_unrestricted():
+    minimal = parsed(mode="degraded_trusted_plugins")
+    minimal = ParsedSafetyConfig(
+        minimal.constraints,
+        minimal.ranges,
+        minimal.property_authorization,
+        frozenset({"schema_version", "reviewed", "stage", "acquisition"}),
+    )
+    ctrl = Controller()
+    validate_live_rig(ctrl, minimal)
+    authorize_property_write(ctrl, "OldLaser", "Enable")
+    authorize_channel(ctrl, "Any channel")
+
+
 def test_motion_plugin_no_longer_requires_a_second_setting():
     # The M5 session (2026-08-04): the operator set allow_hardware_motion, was
     # refused at startup with a rule and no remedy, and had no way to learn from

@@ -214,6 +214,8 @@ class AuthorizationMap:
     # Which source produced this session's channels. Only the runtime refusal
     # messages read it; the executor re-derives the source fresh at apply time.
     channel_source: str = "config-group"
+    property_writes_unrestricted: bool = False
+    channels_unrestricted: bool = False
 
     def to_dict(self) -> dict:
         out = asdict(self)
@@ -1453,6 +1455,11 @@ def validate_live_rig(
         channel_expansion_hashes=channel_expansion_hashes,
         diagnostics=tuple(demotions),
         channel_source=source.kind,
+        property_writes_unrestricted=(
+            "property_authorization" not in parsed_config.declared_sections
+            and "illumination" not in parsed_config.declared_sections
+        ),
+        channels_unrestricted="channels" not in parsed_config.declared_sections,
     )
     ctrl.authorization_map = report
     return report
@@ -1463,6 +1470,8 @@ def authorize_property_write(ctrl: Any, device: str, prop: str) -> None:
     report = getattr(ctrl, "authorization_map", None)
     if report is None:
         # Invariant: startup attaches this before exposing production mutation paths.
+        return
+    if report.property_writes_unrestricted:
         return
     matches = [
         entry for entry in report.entries
@@ -1497,6 +1506,8 @@ def authorize_property_write(ctrl: Any, device: str, prop: str) -> None:
 
 def authorize_channel(ctrl: Any, preset: str) -> None:
     report = getattr(ctrl, "authorization_map", None)
+    if report is not None and report.channels_unrestricted:
+        return
     if report is not None and preset not in report.authorized_presets:
         reasons = report.excluded_presets.get(preset, ["preset was not authorized at startup"])
         # On a rig whose channels are not Micro-Manager presets, the remedy is
