@@ -345,6 +345,24 @@ refusal text; minimal document starts and enforces stage bounds; omitted
 `illumination`/`camera`/`channels` restrict nothing; 499/500/501-frame
 confirmation boundary; a focus-only document with no XY keys.
 
+> **"Omitted sections restrict nothing" had two exceptions until 2026-08-14, and
+> now has none.** Both were in the config-preset path, which judged every effect
+> against an authorization map a minimal document leaves almost empty: a
+> `Core.Shutter` retarget refused for want of an `illumination.shutters`
+> declaration, and any unclassified effect refused outright — while the identical
+> raw writes were permitted. Measured on the demo machine and on M5; fixed by
+> block 51a (`design/51-omitted-illumination-still-restricts.md`), gated on both.
+> The claim in this document was correct as an intent and wrong as a description
+> of the code for as long as a preset route existed to test it, which on M5 was
+> only from block 50a onward.
+>
+> **The consequence is now concrete and was accepted deliberately.** M5's
+> `System/Camera` preset arms four lasers for TTL, and under this contract it
+> applies through one unconfirmed tool call. Put to the operator against the
+> alternative of declaring `illumination.shutters`, the ruling of 2026-08-14 was
+> to keep the minimal document. This document's position is unamended; only its
+> accuracy about the code has changed.
+
 Rig gate 48a (M5): hand-author the minimal schema-3 file, start `microclaw
 serve`, prove (i) an out-of-bounds XY move refuses, (ii) a 500-frame timelapse
 asks once and runs on approval, (iii) a laser the old config typed still fires

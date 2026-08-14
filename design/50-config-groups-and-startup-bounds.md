@@ -331,7 +331,7 @@ stage bounds as their own finding — do not fix them silently inside this block
 | Block | Branch | Start commit | Implementer | Rig gate | Merged | Design reconciled |
 |---|---|---|---|---|---|---|
 | coordination | `design50/open` | `32e74d0` | coordinator | n/a | — | n/a |
-| 50a | `design50/block-50a` | `32e74d0` | | required — demo, then M5 | | |
+| 50a | `design50/block-50a` | `32e74d0` | codex, 1 review round + 2 coordinator fixes | **demo + M5 PASS 2026-08-14** | `4052db5` | |
 | 50b | `design50/block-50b` | `32e74d0` | codex, 1 review round + coordinator fixes | **M5 PASS 2026-08-14**, rounds 1 + 2 | `d809173` | |
 
 50a and 50b are independent — different files, different gates — and may run
@@ -449,3 +449,35 @@ authoritative; this checklist tracks state only.
 - [ ] Merge to `main`, push `main`, delete the branch locally and on `origin`.
 - [ ] Coordination notes in `design/prompts.md`; close the ledger row.
 - [ ] Run the step-10 design gate named under 50b.
+
+
+## What the 50a gates measured (2026-08-14)
+
+Evidence: `50a-demo`, `50a-m5`, `50a-51a-demo`, `50a-51a-m5` in the archive.
+
+- **Demo: A1/A2/A3/A5 PASS on the first run.** Six groups enumerated and matched
+  against the Configuration Settings panel; `Objective/20X` read from its stored
+  definition as `[{Objective, State, 3}]` with no live property reads; applied
+  with one verified write, **operator-confirmed in the GUI**; the exported script
+  defines `_verify_property`, imports nothing from `microclaw`, and runs silently
+  to exit 0. **A4 was blocked by a defect that was not this block's** — design/51
+  — and passed on the combined re-run.
+- **M5: the listing, the stored definition, and a routine preset.** `System` with
+  `Camera`/`Fast Mode`/`Normal Mode`/`Slow Mode` and `active_preset` tracking
+  correctly; `set_config_preset('System','Camera')` applied **11 writes**.
+  `Normal Mode` failed on a different mechanism entirely, filed as design/53.
+- **The exclusive-shape fix is confirmed on both rigs**: a membership query
+  returns `group`/`preset`/`settings` and no listing.
+- **The naming-error fix is confirmed on M5**, twice — including once by accident,
+  when a literal `PASTE_PRESET` was pasted from the runbook. Before it, a preset
+  typo collected "device busy, stage at limit, device not found".
+
+**Deferred, not dropped:** `Beads_EM25`'s membership-vs-guess comparison. It is on
+**M2**, not M5 (operator correction, 2026-08-14), and M2 was unreachable. The
+prompt and the recorded 2026-08-12 guess are in `design/50-block50a-rig-gate.md`.
+
+**Not rig-tested:** the illumination-decline limb. M5 declares no `illumination`
+section so no confirmation can fire there, and the demo's presets carry no
+declared illumination effect. Covered off-rig by
+`test_non_channel_illumination_decline_applies_nothing`. Recorded as untested
+rather than inferred.
