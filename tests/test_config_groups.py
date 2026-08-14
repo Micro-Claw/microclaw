@@ -154,6 +154,33 @@ def test_non_channel_preset_rolls_back_in_reverse_on_write_failure():
     assert core.values[("Cam", "Gain")] == "1"
 
 
+def test_illumination_preset_is_gated_on_a_session_with_no_authorization_map(
+    monkeypatch,
+):
+    # Review round 1: set_config_preset had a map-less delegation branch copied
+    # from set_channel, which called core.set_config directly. Measured on this
+    # exact fixture, it applied a laser enable with ZERO confirmations and
+    # returned success. The branch is gone; the executor is the only route and
+    # gates identically with no map attached. Written failing-first against the
+    # original implementation, where the confirmation list came back empty.
+    core = ConfigCore()
+    core.effects[("Danger", "AllOn")] = [("Laser", "Enable", "1")]
+    core.values[("Laser", "Enable")] = "0"
+    ctrl = config_controller(core, {("Laser", "Enable"): "built_in_typed_capability"})
+    ctrl.authorization_map = None          # the session this branch existed for
+    guard = categorical_guard(shutters=[("Laser", "Enable", "1", "0")])
+    confirmations = []
+    monkeypatch.setattr(
+        "microclaw.tools.CONFIRM_FN",
+        lambda text, kind, **kw: confirmations.append(kind) or False,
+    )
+    with pytest.raises(SafetyViolation, match="declined"):
+        set_config_preset(ctrl, guard, "Danger", "AllOn")
+    assert confirmations == ["illumination"]
+    assert core.calls == []
+    assert core.values[("Laser", "Enable")] == "0"
+
+
 def test_non_channel_illumination_decline_applies_nothing(monkeypatch):
     core = ConfigCore()
     core.effects[("Camera", "Fast")] = [("Laser", "Enable", "1")]

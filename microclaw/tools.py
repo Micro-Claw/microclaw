@@ -2160,6 +2160,19 @@ def set_config_preset(
     Other groups are authorized from their freshly expanded effects: every
     device/property/value must pass its exact typed, illumination, or categorical
     gate before any write begins.
+
+    **There is deliberately no map-less delegation branch here**, unlike
+    ``set_channel``. The first implementation had one, and review measured it
+    applying a laser-enabling preset with zero confirmations while reporting
+    success. It cannot be repaired in place: ``set_channel`` gates its own
+    map-less path with ``guard.check_channel``, which consults
+    ``channels.allowed`` — the wrong question to ask about a camera preset, which
+    it would refuse for not being a channel. No name-level gate exists for an
+    arbitrary group, because per-effect authorization *is* the authorization
+    here. The executor is therefore the only route, and it needs no map:
+    ``authorize_channel`` returns early for a non-``Channel`` group, and
+    ``_authorize_channel_effect`` falls through to the guard's own checks when
+    no map is attached.
     """
     from microclaw.authorization import execute_channel_plan
 
@@ -2167,14 +2180,6 @@ def set_config_preset(
         raise ValueError("group must be a non-empty config-group name")
     if not preset:
         raise ValueError("preset must be a non-empty preset name")
-    if not _has_channel_authorization_map(ctrl):
-        ctrl.core.set_config(group, preset)
-        ctrl.core.wait_for_config(group, preset)
-        ctrl.refresh_gui()
-        return {
-            "status": f"Config preset {group}.{preset} applied.",
-            "config_group": group,
-        }
     return execute_channel_plan(
         ctrl, guard, preset, group=group,
         confirm_fn=CONFIRM_FN, cancel=cancel,
@@ -2197,6 +2202,8 @@ def list_config_groups(
 
     if (group is None) != (preset is None):
         raise ValueError("group and preset must be supplied together")
+    # Two bridge round trips per group, and pyjavaz serializes them, which is
+    # why preset *settings* are opt-in rather than walked for every group here.
     groups = []
     for name in _strings(ctrl.core.get_available_config_groups()):
         item: dict[str, Any] = {"name": name}

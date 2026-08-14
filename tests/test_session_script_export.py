@@ -741,14 +741,13 @@ def test_set_config_preset_emits_recorded_effects_branch(tmp_path):
     compile(source, "routine.py", "exec")
 
 
-def test_set_config_preset_emits_map_less_set_config_branch(tmp_path):
-    _, _, source = export(tmp_path, completed_call(
-        "set_config_preset", {"group": "Camera", "preset": "Fast"},
-        {"status": "Config preset Camera.Fast applied.", "config_group": "Camera"}))
-    assert "core.set_config('Camera', 'Fast')" in source
-    assert "core.wait_for_config('Camera', 'Fast')" in source
-    assert "_verify_property" not in source
-    compile(source, "routine.py", "exec")
+# The emitter's map-less `set_config` branch is NOT tested through
+# set_config_preset: review round 1 removed that tool's map-less route as
+# ungated, so a result carrying `config_group` and no `effects` is a shape it can
+# no longer produce, and a test asserting otherwise would document a route that
+# does not exist. That emitter branch stays covered by
+# test_map_less_channel_delegation_emits_the_set_config_that_ran, through
+# set_channel, which does still have one.
 
 
 def test_set_channel_without_a_recorded_result_refuses_rather_than_guessing(tmp_path):
