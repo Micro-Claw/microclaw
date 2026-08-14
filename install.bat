@@ -94,6 +94,10 @@ echo   You need an Anthropic API key from console.anthropic.com. The browser pag
 echo   will ask for the key and can store it securely on this machine.
 echo.
 echo   Starting restricted browser setup...
+echo.
+echo   This window becomes the setup server and keeps running while you use the
+echo   browser. When the browser says your security bounds are saved, press
+echo   Ctrl+C here to stop it, then start Microclaw from the desktop icon.
 echo   If you close it early, rerun this one-time setup command:
 echo     "%MC_EXE%" --setup-write-security-config serve
 rem MC_SETUP_ARGS is empty when an existing config must be protected, which is

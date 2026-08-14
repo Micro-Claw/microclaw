@@ -161,3 +161,12 @@ def test_batch_files_are_forced_to_crlf():
 @pytest.mark.skipif(sys.platform != "win32", reason="only meaningful in a Windows checkout")
 def test_working_tree_copy_is_crlf():
     assert b"\r\n" in BAT.read_bytes()
+
+
+def test_installer_says_how_to_stop_the_setup_server(bat):
+    """It launches serve in the foreground, so the window keeps running after
+    the browser is done with it (48e acceptance run, 2026-08-14)."""
+    launch = bat.index("Starting restricted browser setup")
+    guidance = bat[launch - 400:launch + 400].lower()
+    assert "ctrl+c" in guidance
+    assert "desktop icon" in guidance

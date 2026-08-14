@@ -242,3 +242,40 @@ def test_markup_inside_a_fence_is_escaped():
     assert md("```\n<img src=x onerror=alert(1)>\n```") == (
         '<pre class="code">&lt;img src=x onerror=alert(1)&gt;</pre>'
     )
+
+
+def rendered_turns(history):
+    """Call Transcript.render under the same DOM stand-in as tool_card_body and
+    return (counts, concatenated innerHTML)."""
+    path = resources.files("microclaw").joinpath("transcript.js")
+    script = (
+        "global.window = {};\n"
+        "const mk = () => ({className: '', innerHTML: '', children: [],"
+        " appendChild(c) { this.children.push(c); }, querySelectorAll: () => []});\n"
+        "global.document = {createElement: mk, querySelectorAll: () => []};\n"
+        f"require({json.dumps(str(path))});\n"
+        "const tx = mk();\n"
+        f"const counts = window.Transcript.render({json.dumps(history)}, tx, {{}});\n"
+        "process.stdout.write(JSON.stringify"
+        "({counts, html: tx.children.map(c => c.innerHTML).join('')}));\n"
+    )
+    out = subprocess.run(
+        ["node", "-e", script], capture_output=True, text=True, check=True
+    )
+    return json.loads(out.stdout)
+
+
+def test_an_assistant_turn_that_is_a_plain_string_renders():
+    """microclaw seeds setup mode's opening message as a plain string, the same
+    shape a user turn may take. Rendering only arrays dropped it silently: on a
+    clean-profile install the page showed banners and no message at all, so the
+    operator had to type something to discover what setup wanted of them (block
+    48e acceptance run, 2026-08-14)."""
+    result = rendered_turns([{"role": "assistant", "content": "Security bounds are not set."}])
+    assert result["counts"]["asstTurns"] == 1
+    assert "Security bounds are not set." in result["html"]
+
+
+def test_an_empty_assistant_string_is_not_a_turn():
+    result = rendered_turns([{"role": "assistant", "content": "   "}])
+    assert result["counts"]["asstTurns"] == 0

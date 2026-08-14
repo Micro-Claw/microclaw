@@ -568,3 +568,20 @@ def test_setup_refusal_hint_does_not_send_the_model_to_the_schema():
     # is send the model back to the schema to fix a call that was well-formed.
     assert "re-read the tool schema" not in hint.lower()
     assert hint != hint_for_error(ValueError("some ordinary argument mistake"))
+
+
+def test_restart_message_says_how_to_end_the_setup_server():
+    """The installer starts setup as a foreground server. Without this the
+    operator saved their bounds, closed the browser, and was left with a running
+    window and nothing anywhere saying how to stop it (48e acceptance run)."""
+    message = setup_tools.RESTART_MESSAGE.lower()
+    assert "ctrl+c" in message
+    assert "desktop icon" in message
+
+
+def test_the_seeded_first_message_is_a_shape_the_transcript_renders():
+    """It is delivered to the browser through /api/history and rendered client
+    side, so a shape the renderer skips is a blank page on first launch."""
+    from microclaw.webserve import SETUP_FIRST_MESSAGE
+
+    assert isinstance(SETUP_FIRST_MESSAGE, str) and SETUP_FIRST_MESSAGE.strip()
