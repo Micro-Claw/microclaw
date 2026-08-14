@@ -160,7 +160,7 @@ is pair-specific for typed capabilities, and record the regression in
 | Block | Branch | Start commit | Implementer | Rig gate | Merged |
 |---|---|---|---|---|---|
 | coordination | `design49/open` | `23c4d29` | coordinator | n/a | — |
-| 49a | `design49/block-49a` | — | — | — | — |
+| 49a | `design49/block-49a` | `339c4f3` | assigned 2026-08-14 | — | — |
 
 ## Coordinator checklist
 
