@@ -332,7 +332,7 @@ stage bounds as their own finding — do not fix them silently inside this block
 |---|---|---|---|---|---|---|
 | coordination | `design50/open` | `32e74d0` | coordinator | n/a | — | n/a |
 | 50a | `design50/block-50a` | `32e74d0` | | required — demo, then M5 | | |
-| 50b | `design50/block-50b` | `32e74d0` | | required — M5 (it is the reproducer) | | |
+| 50b | `design50/block-50b` | `32e74d0` | codex, 1 review round + coordinator fixes | **PUSHED, awaiting M5** — runbook `f9d7818` pins `8e72c6f` | | |
 
 50a and 50b are independent — different files, different gates — and may run
 concurrently in separate worktrees. One worktree per agent; never
