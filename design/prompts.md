@@ -6543,3 +6543,53 @@ markers from 48b–48e's installer, shortcut, and credentials work, plus a
 symlink-permission runtime skip. Attributable, not alarming; it is recorded here
 because the next block to compare skip counts against 48a will otherwise
 rediscover it.
+
+## Blocks 50a, 50b, 51a (2026-08-14) — coordination notes
+
+Written after the fact. What was learned, not what was asked.
+
+**A gate found a defect the block did not cause, three times.** 50a's demo gate
+hit a `Core.Shutter` refusal, its M5 gate hit an unclassified-effect refusal, and
+the combined re-run hit a read-back failure. None was the block's; all three were
+pre-existing and unreachable until 50a gave M5 a preset route at all. The
+coordinator verified each against the block's own diff before accepting the
+operator's "this isn't your change" — twice that confirmed it, and the third time
+the verification is what identified the real cause. **Reaching new code paths is
+how a feature block earns its rig time**, and the findings should be filed as
+their own designs rather than folded into the block that surfaced them.
+
+**Two blocks can block each other.** 50a's gate needed 51a's fix; 51a's M5 leg
+needed 50a's tool, M5 having no `Channel` group. Neither ordering works. The
+resolution was a throwaway `gate/50a-51a-integration` branch carrying both, with
+one combined runbook whose every step is labelled with its block — so the
+evidence still files per block and each still merges from its own branch. **The
+rollback boundary is the branch, not the gate**; combining a *gate* is not
+combining the blocks.
+
+**A placeholder in a runbook will be pasted verbatim.** M5's A3 step ran with the
+literal string `PASTE_PRESET` because that step's other prompts were literal and
+nothing marked this one. It produced good incidental evidence, but only by luck.
+Every prompt a runbook offers must be pasteable as written, or obviously not.
+
+**A gate step that edits the config must say what happens if it is not undone.**
+A3 added `camera.max_exposure_ms: 50` and the restore was a trailing sentence;
+the archived config still carried it. On that rig, ordinary 100 ms work would
+then refuse and look like a Microclaw defect. The restore is now its own callout
+naming that consequence.
+
+**Ask the operator the question the evidence raises, not the one the runbook
+planned.** 50b's runbook told the operator to find M5's "true Y travel" — wrong
+in kind, since the bound is a collision envelope the operator judges, not a
+hardware limit. Rewritten to ask *which of two diagnoses* applied, the answer
+came back as a specific rig mechanism (the stage re-zeros on power cycle) that no
+amount of measuring the travel would have produced.
+
+**An empty sweep is a result worth writing down.** After design/49, the
+`Core.Shutter` branch and the map-membership branch, 51a swept for a fourth
+instance of "an omitted section produces a refusal" and found none. Recorded, so
+the next person does not re-derive the absence.
+
+**Mutation-test a refactor before believing its green suite.** The coordinator's
+own fold in 50b and both of 51a's new conditions were checked by stubbing them to
+the wrong answer; each killed tests that named the boundary. A refactor whose
+suite stays green under mutation was never covered.
