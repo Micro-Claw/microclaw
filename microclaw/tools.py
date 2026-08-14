@@ -1847,7 +1847,14 @@ def clear_roi(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
 def get_xy_position(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     x = ctrl.core.get_x_position()
     y = ctrl.core.get_y_position()
-    return {"x_um": round(x, 3), "y_um": round(y, 3)}
+    result = {"x_um": round(x, 3), "y_um": round(y, 3)}
+    try:
+        guard.check_xy(x, y)
+    except SafetyViolation as exc:
+        result["out_of_bounds"] = [str(exc)]
+    except Exception:
+        pass
+    return result
 
 
 @emits(lambda p: (
@@ -1899,7 +1906,14 @@ def move_stage_xy(
 @emits_nothing
 def get_z_position(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     z = ctrl.core.get_position()
-    return {"z_um": round(z, 3)}
+    result = {"z_um": round(z, 3)}
+    try:
+        guard.check_z(z)
+    except SafetyViolation as exc:
+        result["out_of_bounds"] = [str(exc)]
+    except Exception:
+        pass
+    return result
 
 
 @emits(lambda p: (
@@ -2409,15 +2423,47 @@ def _laser_state(ctrl: MicroscopeController) -> Any:
 @emits_nothing
 def get_system_state(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     state: dict[str, Any] = {}
+    out_of_bounds = []
     try:
-        state["x_um"] = round(ctrl.core.get_x_position(), 3)
-        state["y_um"] = round(ctrl.core.get_y_position(), 3)
+        x = ctrl.core.get_x_position()
+        y = ctrl.core.get_y_position()
+        state["x_um"] = round(x, 3)
+        state["y_um"] = round(y, 3)
+        try:
+            guard.check_xy(x, y)
+        except SafetyViolation as exc:
+            out_of_bounds.append(str(exc))
+        except Exception:
+            pass
     except Exception:
         state["xy_stage"] = "unavailable"
     try:
-        state["z_um"] = round(ctrl.core.get_position(), 3)
+        z = ctrl.core.get_position()
+        state["z_um"] = round(z, 3)
+        try:
+            guard.check_z(z)
+        except SafetyViolation as exc:
+            out_of_bounds.append(str(exc))
+        except Exception:
+            pass
     except Exception:
         state["z_stage"] = "unavailable"
+    if guard._c.named_stages:
+        state["named_stages"] = {}
+        for limits in guard._c.named_stages:
+            try:
+                position = float(ctrl.core.get_position(limits.device))
+                state["named_stages"][limits.device] = round(position, 4)
+                try:
+                    guard.check_named_stage(limits.device, position)
+                except SafetyViolation as exc:
+                    out_of_bounds.append(str(exc))
+                except Exception:
+                    pass
+            except Exception:
+                state["named_stages"][limits.device] = "unavailable"
+    if out_of_bounds:
+        state["out_of_bounds"] = out_of_bounds
     try:
         state["exposure_ms"] = ctrl.core.get_exposure()
     except Exception:
@@ -6141,16 +6187,16 @@ def validate_positions(
                 raise ValueError("x_um and y_um are required")
             try:
                 guard.check_xy(float(position["x_um"]), float(position["y_um"]))
-            except SafetyViolation:
+            except SafetyViolation as exc:
                 rejected.append({"name": name,
-                                 "reason": "Rejected by the current XY safety guard."})
+                                 "reason": str(exc)})
                 continue
             if position.get("z_um") is not None:
                 try:
                     guard.check_z(float(position["z_um"]))
-                except SafetyViolation:
+                except SafetyViolation as exc:
                     rejected.append({"name": name,
-                                     "reason": "Rejected by the current Z safety guard."})
+                                     "reason": str(exc)})
                     continue
             accepted.append({"name": name, "x_um": position["x_um"],
                              "y_um": position["y_um"],
