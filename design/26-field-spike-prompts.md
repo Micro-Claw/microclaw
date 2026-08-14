@@ -29,7 +29,7 @@ the survey/revisit paths.
 > and `hook_params={"calibration_path":"<replicated-control calibration artifact>"}`
 > (or an explicitly provisional `min_snr` when no calibration exists). Save the dataset under `<workspace/run-a>` and
 > the hook log beside it. Inspect the current hardware state and validate the proposed
-> footprint with `validate_positions` (do not expose configured guard limits), plus exposure,
+> footprint with `validate_positions` (report rejections as the guard words them; never clip), plus exposure,
 > channel, focus, grid footprint, and estimated duration. State the exact exposure
 > count and ask for confirmation. This hook is observation-only: it must not filter,
 > stop, enqueue events, choose a threshold, or alter the grid.

@@ -170,6 +170,23 @@ fixes in the same area. They go in this block rather than a follow-up.
   nothing either time — it had to reason back to the Y limit from the earlier
   move error. The `SafetyViolation` text already names the axis, the value and
   the limit. Report it.
+
+  **This reverses a deliberate prior decision, which this document missed when
+  it was written and the 50b review caught.** `design/26-implementation.md:366`
+  said the result "never exposes guard limits or clips", and the test carrying
+  it is named `test_validate_positions_does_not_move_or_expose`. The two halves
+  were coupled on the theory that an agent which cannot see the limits cannot
+  clip candidate coordinates to fit them. That theory does not hold: every move
+  refusal already names the limit it hit, `get_system_state` now does too, and
+  the envelope was never actually withheld. The barrier was paper-thin and the
+  cost was a real session.
+
+  **"Never clip" survives unchanged** — it is the invariant that protects the
+  science, it is enforced by `clipped == 0` and by the agent prompt, and nothing
+  here touches it. What replaces "never expose" is narrower: *name the limit the
+  rejected position hit, never dump the whole limits table.* `assert "limits"
+  not in result` stays. Both design/26 documents are corrected on this branch,
+  not annotated.
 - **`get_xy_position` / `get_z_position`** return raw coordinates with the same
   blind spot as `get_system_state`, and an agent that orients with those instead
   gets no report at all. Same treatment, same field name.
