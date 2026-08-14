@@ -254,8 +254,14 @@ presets, where this is the only config-group write path that exists.
   either way**; a guess that turns out right is still a guess, and a guess that
   turns out wrong is the block's headline result.
 - M5: a preset containing a laser enable requests confirmation, and declining it
-  leaves the rig unchanged. If M5 has no such preset, say so and mark the limb
-  not run — do not author one on the rig to pass a gate.
+  leaves the rig unchanged. **M5 is where this limb is naturally reachable** — it
+  has no `Channel` group at all, only `System`, whose presets arm four lasers for
+  TTL and set camera `Exposure` (design/35 §41c, and the 49a runbook). Note the
+  qualification: arming for TTL may write *trigger-mode* properties rather than a
+  declared illumination enable, in which case no prompt is owed and the gate
+  records the effect classification instead of failing. A preset writing a
+  declared enable with no prompt is the failure. Do not author a preset on the
+  rig to create the limb.
 
 Step-10 design gate: reconcile `design/33-authorization-map.md` to the fact that
 per-effect authorization now serves a second, allowlist-free entry point, and
