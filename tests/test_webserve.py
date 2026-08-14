@@ -1159,8 +1159,9 @@ def test_serve_opens_restricted_setup_for_an_unreviewed_config(tmp_path, monkeyp
     monkeypatch.setattr(webserve, "MicroscopeController", Connected)
     monkeypatch.setattr(webserve, "enumerate_rig", lambda core: {"stages": []})
     monkeypatch.setattr(credentials, "load_api_key", lambda: (None, None))
+    monkeypatch.setattr(config, "default_safety_config", lambda: cfg)
     session = webserve.build_session(_args(
-        host="127.0.0.1", safety_config=str(cfg),
+        host="127.0.0.1", safety_config=None,
         setup_write_security_config=True,
     ))
     assert isinstance(session, webserve.SetupSession)
