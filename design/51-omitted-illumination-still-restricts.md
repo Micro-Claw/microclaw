@@ -1,4 +1,12 @@
-# An omitted `illumination` section still restricts one thing
+# The preset route never learned schema 3's contract
+
+> Retitled and rescoped 2026-08-14, before implementation. This began as "an
+> omitted `illumination` section still restricts one thing" — the `Core.Shutter`
+> refusal below. The M5 leg of block 50a's gate then produced a second refusal on
+> a different branch of the same function, from the same cause, and the sweep
+> this document had asked the implementer to perform turned out to be the whole
+> finding rather than a footnote. The original framing is kept in "Problem" as
+> the first instance; the decision is now general.
 
 ## Problem
 
@@ -56,31 +64,88 @@ directly and unconfirmed, while refusing to let a preset *select* it as the
 AutoShutter target — strictly less than opening it.
 
 This is design/49's shape exactly: a rule written for a case that does not apply
-here catches a typed path, while the raw path it cannot police stays open. It is
-worth stating as a pattern, because that is now twice: **a schema-3 document
-that declares nothing must not leave one branch behaving as though everything
-were declared.**
+here catches a typed path, while the raw path it cannot police stays open.
+
+### The second instance, and the real cause
+
+M5, block 50a's gate, 2026-08-14. Evidence:
+`~/Documents/Documents - Beyonce/Projects/Micro-Claw/50a-m5`, history lines 2 and
+16 — twice, on two different presets:
+
+```
+set_config_preset(group="System", preset="Camera")
+→ RigAuthorizationError: Channel effect HamamatsuHam_DCAM.DEFECT CORRECT MODE
+  was refused because it is unclassified or excluded.
+```
+
+Different branch, same cause, and this one names it. `authorize_property_write`
+(`authorization.py:1546`) contains:
+
+```python
+if report.property_writes_unrestricted:
+    return
+```
+
+**`_authorize_channel_effect` has no such early return.** It goes straight to the
+map-membership test and refuses anything not classified there. So:
+
+| route | schema 3, nothing declared |
+| --- | --- |
+| `set_device_property('HamamatsuHam_DCAM', 'DEFECT CORRECT MODE', …)` | **allowed** |
+| the identical write inside a `System` preset | **refused** |
+
+The shutter is not a special case. **The raw route was taught schema 3's
+contract and the preset route never was**, so every effect in every preset is
+judged against a map that a minimal document deliberately leaves almost empty.
+`Core.Shutter` is simply the branch that fails first when a preset happens to
+carry one.
+
+That makes this a structural gap rather than two bugs, and it is why the fix
+below is stated once for the whole function instead of per branch. **A
+schema-3 document that declares nothing must not leave any branch behaving as
+though everything were declared.**
 
 ### Blast radius
 
-Every channel switch on a rig whose `Channel` presets carry a `Core.Shutter`
-setting — the Micro-Manager demo configuration among them. On such a rig
-`set_channel` is unusable, and so is every acquisition that drives a channel
-axis, since `_check_acquisition_channel` routes through the same expansion. It
-also blocks block 50a's gate step A4.
+**Every config preset on every rig running a minimal schema-3 document**, which
+is currently both machines we can test on. Any preset containing one property the
+map does not classify refuses outright, and a minimal document classifies almost
+nothing by design. Measured: `set_channel` unusable on the demo machine,
+`set_config_preset` unusable on M5 for `Camera` and `Normal Mode` — the two
+presets the operator says are in routine use.
+
+Every acquisition that drives a channel axis is included, since
+`_check_acquisition_channel` routes through the same expansion. Block 50a's gate
+steps A4 and B1/B2 are blocked by it.
 
 ## Decision
 
-**Refuse the retarget only when the session declared illumination at all.**
+**Give `_authorize_channel_effect` the same schema-3 early-outs its sibling
+already has.** The two functions gate the same writes arriving by different
+routes and must agree; every instance above is a place they disagree.
 
-1. Add `illumination_unrestricted` to `AuthorizationMap`, set in
+1. **Honour `property_writes_unrestricted` for preset effects**, exactly as
+   `authorize_property_write` does at `:1546`. When it is true, skip the
+   map-membership refusal — the map is nearly empty by design and cannot be the
+   authority. **The guard checks stay**: illumination, typed actuators, and the
+   stage/exposure limbs all still run, precisely as they still run for a raw
+   write after that same early return. This is not "skip authorization"; it is
+   "stop consulting a map the operator declined to author."
+2. **Add `illumination_unrestricted` to `AuthorizationMap`**, set in
    `validate_live_rig` as `"illumination" not in parsed_config.declared_sections`
-   — the exact idiom `channels_unrestricted` already uses one line above
-   (`authorization.py:1501`). No new concept, no new configuration.
-2. In `_authorize_channel_effect`'s `Core.Shutter` branch, admit the retarget
-   when that flag is true. When it is false, the branch is **unchanged**: the
-   target must be a declared shutter and the operator must confirm, which is
-   block 2's undeclared-light-source protection and stays exactly as measured.
+   — the idiom `channels_unrestricted` already uses one line above
+   (`authorization.py:1501`). The `Core.Shutter` branch consults the declaration
+   directly rather than the map, so item 1 does not reach it; it needs its own
+   condition.
+3. In the `Core.Shutter` branch, admit the retarget when that flag is true. When
+   it is false the branch is **unchanged**: the target must be a declared shutter
+   and the operator must confirm, which is block 2's undeclared-light-source
+   protection and stays exactly as measured.
+
+Items 1 and 3 are the same decision applied to the two ways this function can
+refuse. Neither weakens a rig that declares things: with any `illumination` or
+`property_authorization` section present, both flags are false and every path is
+byte-for-byte what it is today.
 
 ### No confirmation prompt when illumination is undeclared
 
@@ -92,11 +157,20 @@ The two routes must agree; that is the whole finding.
 
 ### Rejected
 
-- **Declare `illumination` on both rigs and move on.** It fixes two machines and
-  leaves the contract broken for every other minimal document, including every
-  one the in-app setup will generate. The operator's config is not the defect.
-- **Drop the `Core.Shutter` branch entirely.** It is correct and load-bearing
-  whenever illumination *is* declared; block 2's gate measured it.
+- **Declare `illumination` and `property_authorization` on both rigs and move
+  on.** It fixes two machines and leaves the contract broken for every other
+  minimal document, including every one the in-app setup will generate. The
+  operator's config is not the defect — and design/48 built the minimal document
+  deliberately, so telling operators to un-minimise it reverses that decision by
+  the back door.
+- **Drop the `Core.Shutter` branch, or the map-membership check, entirely.**
+  Both are correct and load-bearing whenever the matching section *is* declared;
+  block 2's and block 14's gates measured them.
+- **Make `_authorize_channel_effect` call `authorize_property_write`.** Tempting,
+  since the goal is for them to agree, but they are not the same check: the
+  effect path also handles `Core.Shutter`, carries the confirm function, and
+  refuses on classifications the raw path admits. Sharing the two early-outs is
+  the fold; collapsing the functions is not.
 - **Infer the shutter set from the rig instead of the declaration.** Guessing
   which devices are light sources is what the declaration exists to prevent.
 - **Special-case the demo configuration's device name.** A rig fact in
@@ -104,54 +178,80 @@ The two routes must agree; that is the whole finding.
 
 ### Scope
 
-The `Core.Shutter` branch only. The implementer sweeps
-`_authorize_channel_effect` and `authorize_property_write` for any other place an
-**omitted** section produces a refusal rather than an absence of restriction, and
-reports what it finds either way — that sweep is the deliverable even if it is
-empty, because this is the second instance of the pattern and nobody has yet
-looked for a third.
+`_authorize_channel_effect`, whole. The sweep this document originally deferred
+to the implementer has already returned one hit — the map-membership branch —
+which is why the decision is now general. The implementer still sweeps, but for
+the remaining question: **is there anywhere else, in any code path, where an
+omitted section produces a refusal rather than an absence of restriction?**
+Report it either way; an empty result is a real answer and worth having in
+writing after three instances.
 
 ## Evidence
 
 Write the failing case first and confirm the current code fails it.
 
-- A schema-3 document with no `illumination` section admits a `Core.Shutter`
-  retarget, applies the preset's other effects, and asks for no confirmation.
-- A document that **does** declare `illumination.shutters` is unchanged in both
-  directions: an undeclared target still refuses with today's message, and a
-  declared one still requires the operator's `y` and still refuses on a decline.
-- The refusal message, where it still fires, is unchanged.
-- Replay the demo's exact `safety_config.yaml` (in the 50a-demo evidence folder)
-  rather than a synthetic fixture, per the standing habit that caught real
-  defects before.
+- A minimal schema-3 document applies a preset containing a property the map does
+  not classify — M5's `HamamatsuHam_DCAM.DEFECT CORRECT MODE` is the measured
+  case — instead of refusing it.
+- The same document admits a `Core.Shutter` retarget, applies the preset's other
+  effects, and asks for no confirmation.
+- **The guard still bites under `property_writes_unrestricted`**: a preset effect
+  that would drive the stage out of bounds, or exceed `camera.max_exposure_ms`,
+  still refuses. Item 1 removes the *map* consultation, not the guard, and a test
+  that does not prove this has not tested the decision.
+- A document that **does** declare `property_authorization` or `illumination` is
+  unchanged on every path: an unclassified effect still refuses with today's
+  message, an undeclared shutter target still refuses, and a declared one still
+  requires the operator's `y` and still refuses on a decline with nothing
+  applied. **This is the half a fix like this breaks — if you write one test,
+  write this one.**
+- The refusal messages, where they still fire, are unchanged.
+- Replay both real configs — `50a-demo/safety_config.yaml` and
+  `50b-m5-round2/safety_config.yaml` in the evidence archive — rather than
+  synthetic fixtures, per the standing habit that caught real defects before.
 - The sweep result, stated either way.
 
 ## Blocks
 
-### 51a — an omitted section restricts nothing, including this one
+### 51a — the preset route honours the same contract as the raw route
 
-Design: "Decision" items 1–2, "No confirmation prompt", "Rejected", "Scope",
+Design: "Decision" items 1–3, "No confirmation prompt", "Rejected", "Scope",
 "Evidence" above.
 
-**Rig gate 51a (demo).** The demo machine is the reproducer and its `Channel`
-presets carry the `Core.Shutter` setting; M5 cannot show this, having no
-`Channel` group.
+**Rig gate 51a — both machines**, because each shows a different branch and
+neither shows both.
 
-- With the config exactly as it is in `50a-demo/safety_config.yaml`, unchanged:
-  `set_channel` completes, the emission path moves in Micro-Manager, and no
-  confirmation is requested.
+*Demo* (the `Core.Shutter` branch; M5 has no `Channel` group and cannot show it):
+
+- With `50a-demo/safety_config.yaml` exactly as it is: `set_channel` completes,
+  the emission path moves in Micro-Manager, and no confirmation is requested.
 - `list_config_groups(group="Channel", preset="Cy5")` shows the `Core.Shutter`
-  setting in the preset, which is what makes this rig the reproducer — record it.
+  setting in the preset — the thing that makes this rig the reproducer. Record it.
 - Then **add an `illumination.shutters` declaration** naming a different device,
-  restart, and confirm the retarget refuses again with today's message. The
-  protection must be intact when the section exists; an absent-when-undeclared
-  fix that also disarms the declared case is the failure this limb looks for.
+  restart, and confirm the retarget refuses again with today's message. An
+  absent-when-undeclared fix that also disarms the declared case is the failure
+  this limb exists to catch.
 - Re-run block 50a's step A4, which this defect blocked.
 
+*M5* (the map-membership branch):
+
+- `set_config_preset(group="System", preset="Camera")` and `"Normal Mode"` both
+  apply — the two presets in routine use, both refused on 2026-08-14 — and the
+  camera properties move in the Property Browser, `DEFECT CORRECT MODE` included.
+- **The guard still bites**: with `camera.max_exposure_ms` temporarily declared
+  below a preset's exposure, that preset still refuses. Removing the map
+  consultation must not remove the guard, and this is the limb that proves it on
+  hardware rather than in a fixture.
+- Re-run block 50a's steps B1 and B2, both blocked by this defect. Note that B2
+  cannot produce an illumination confirmation while M5 declares no `illumination`
+  section — that is the intended schema-3 behaviour design/48 measured, not a
+  failure, and B2's hedge already covers recording it.
+
 Step-10 design gate: record in `design/48-in-app-minimal-safety-setup.md` that
-"omitted sections restrict nothing" had one exception and no longer does, and
-note in `design/49` that this is the second instance of the same pattern, with
-the sweep's result.
+"omitted sections restrict nothing" had exceptions and no longer does; note in
+`design/49` that this is the same pattern's second and third instances, with the
+sweep's result; and correct this document's own first framing, which called a
+structural gap a single branch.
 
 ## Run ledger
 
