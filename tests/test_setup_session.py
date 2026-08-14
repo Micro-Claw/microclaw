@@ -1,4 +1,5 @@
 import json
+import re
 import types
 from unittest.mock import MagicMock
 import yaml
@@ -165,6 +166,34 @@ def test_review_reports_missing_axis_and_defaults_are_only_proposals():
     assert review["thresholds"]["proposed_confirm_above_duration_s"] == 1200
 
 
+def test_review_shows_the_destination_and_the_exact_bytes_once_complete(
+    monkeypatch, tmp_path,
+):
+    """M5 gate, 2026-08-13: asked to show the path and YAML before writing, the
+    model correctly answered that no tool available to it reported either — the
+    confirmation dialog showed them, but only after the write was under way.
+    Review is where the operator reads the draft, so it carries both."""
+    target = tmp_path / "safety_config.yaml"
+    monkeypatch.setattr(setup_tools.paths, "default_safety_config", lambda: target)
+    ctrl = _setup_ctrl(_inventory(focus="Z"))
+    setup_tools.record_proposed_stage_bound(
+        ctrl, None, axis_id="Z.z", endpoint="low", position_um=0)
+    incomplete = setup_tools.review_security_config(ctrl, None)
+    assert incomplete["destination"] == str(target)
+    assert "rendered_yaml" not in incomplete      # nothing to render yet
+
+    setup_tools.record_proposed_stage_bound(
+        ctrl, None, axis_id="Z.z", endpoint="high", position_um=10)
+    setup_tools.set_proposed_acquisition_prompts(
+        ctrl, None, confirm_above_frames=500, confirm_above_duration_s=1200)
+    review = setup_tools.review_security_config(ctrl, None)
+    monkeypatch.setattr(setup_tools.tools, "CONFIRM_FN", lambda *a, **k: True)
+    setup_tools.write_security_config(ctrl, None)
+    # What review promised is byte-identical to what the writer published.
+    assert review["rendered_yaml"] == target.read_text(encoding="utf-8")
+    assert review["written_to_disk"] is False
+
+
 def test_complete_requires_all_bounds_and_both_thresholds():
     ctrl = _setup_ctrl(_inventory(focus="Z"))
     setup_tools.record_proposed_stage_bound(ctrl, None, axis_id="Z.z", endpoint="low", position_um=0)
@@ -282,7 +311,10 @@ def test_writer_refuses_existing_target_without_touching_it(monkeypatch, tmp_pat
     monkeypatch.setattr(setup_tools.paths, "default_safety_config", lambda: target)
     confirm = MagicMock()
     monkeypatch.setattr(setup_tools.tools, "CONFIRM_FN", confirm)
-    with pytest.raises(setup_tools.SetupRefusal, match=str(target)):
+    # `match` is a regex, and a Windows path is not one: `C:\Users\...` carries
+    # `\U`, which fails to compile. This test passed on macOS and failed on M5
+    # (block 48d gate, 2026-08-13) — the rig is where every gate runs pytest.
+    with pytest.raises(setup_tools.SetupRefusal, match=re.escape(str(target))):
         setup_tools.write_security_config(ctrl, None)
     assert target.read_text(encoding="utf-8") == "keep me"
     confirm.assert_not_called()

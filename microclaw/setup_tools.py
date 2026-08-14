@@ -204,7 +204,24 @@ def review_security_config(ctrl, guard):
         axes = ", ".join(item["axis"] for item in status["missing_axes"]) or "none"
         thresholds = ", ".join(status["missing_thresholds"]) or "none"
         summary = f"Draft incomplete. Missing stage endpoints by axis: {axes}. Missing thresholds: {thresholds}."
-    return {**status, "summary": summary, "written_to_disk": False}
+
+    # Review is where the operator reads the draft, so it shows the destination
+    # and — once the draft is complete — the exact bytes the writer would
+    # publish. Without this the model can describe the draft's contents but
+    # cannot show what will be written until after the write returns it, which
+    # is what the M5 gate found (2026-08-13): asked to display the path and YAML
+    # first, it correctly answered that nothing available to it reported them.
+    preview = {"destination": str(paths.default_safety_config().resolve())}
+    if status["complete"]:
+        try:
+            preview["rendered_yaml"] = yaml.safe_dump(
+                _schema_3_document(_state(ctrl)), sort_keys=False
+            )
+        except SetupRefusal as exc:
+            # A complete draft the writer would still refuse — a second XY
+            # stage, today. Say so here rather than at the write.
+            preview["cannot_render"] = str(exc)
+    return {**status, "summary": summary, "written_to_disk": False, **preview}
 
 
 def _schema_3_document(draft: SetupDraft) -> dict:
@@ -340,6 +357,6 @@ SETUP_TOOL_SCHEMAS = [
     {"name": "read_stage_positions", "description": "Read current positions for every discovered stage axis without moving hardware.", "input_schema": {"type": "object", "properties": {}, "additionalProperties": False}},
     {"name": "record_proposed_stage_bound", "description": "After operator approval, record one finite operator-chosen safe endpoint in the in-memory draft. This is not a hardware limit and does not move hardware.", "input_schema": {"type": "object", "properties": {"axis_id": {"type": "string"}, "endpoint": {"type": "string", "enum": ["low", "high"]}, "position_um": {"type": "number"}}, "required": ["axis_id", "endpoint", "position_um"], "additionalProperties": False}},
     {"name": "set_proposed_acquisition_prompts", "description": "Record operator-approved large-acquisition warning thresholds in memory. Propose 500 frames and 1200 seconds, but let the operator change them.", "input_schema": {"type": "object", "properties": {"confirm_above_frames": {"type": "integer", "minimum": 1}, "confirm_above_duration_s": {"type": "number", "exclusiveMinimum": 0}}, "required": ["confirm_above_frames", "confirm_above_duration_s"], "additionalProperties": False}},
-    {"name": "review_security_config", "description": "Render the in-memory draft, completeness, and missing endpoints for operator review. Writes nothing.", "input_schema": {"type": "object", "properties": {}, "additionalProperties": False}},
+    {"name": "review_security_config", "description": "Render the in-memory draft for operator review: completeness, missing endpoints, the destination path, and — once complete — the exact YAML the writer would publish. Writes nothing.", "input_schema": {"type": "object", "properties": {}, "additionalProperties": False}},
     {"name": "write_security_config", "description": "After showing the exact reviewed YAML and destination for operator confirmation, write the complete security bounds once and require a restart.", "input_schema": {"type": "object", "properties": {}, "additionalProperties": False}},
 ]

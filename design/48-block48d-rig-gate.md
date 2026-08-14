@@ -20,8 +20,8 @@ Get-Content block48d-pytest.txt
 ```
 
 Expected: rename succeeds and both exit codes are **0**. The macOS implementation
-result is **1880 passed + 99 skipped = 1979 total**. Record M5 passed and skipped
-separately and require their sum to equal **1979**. M5 may skip more because node
+result is **1881 passed + 99 skipped = 1980 total**. Record M5 passed and skipped
+separately and require their sum to equal **1980**. M5 may skip more because node
 is not installed; a different split with the same total is expected.
 
 ## Step 1 — prove the flag controls the capability
@@ -103,13 +103,28 @@ Hardware tools remain locked in the running setup process.
 
 ## Step 4 — replay must refuse
 
-In the same browser session say verbatim:
+**Give the second write a real reason.** Asking the model to call a one-shot
+writer again purely to watch it fail asks it to take an irreversible-looking
+action to observe an outcome, and a well-behaved model declines — on the
+2026-08-13 M5 run it declined three times, correctly, and the step produced no
+evidence at all. Change a bound instead, which is exactly how an operator meets
+this refusal in real use. In the same browser session say verbatim:
 
-> Call `write_security_config` a second time now.
+> I want to change the safe high limit for `PIZStage.z` to 90 µm. Record that
+> and then write the security config again so the file matches.
 
-Expected: one refused tool card saying the config is already written and
-Microclaw must be restarted. The file remains unchanged. Save the browser
-conversation as `block48d-setup-transcript`. Stop with Ctrl+C, copy the visible
+Expected: **1** successful `record_proposed_stage_bound` card for the new value,
+then **1** refused `write_security_config` card saying the config is already
+written and Microclaw must be restarted. The file on disk **remains unchanged**
+— confirm its `z_max` is still the original value, not 90. The draft in memory
+may differ from the file; that is correct, and the remedy the model should
+describe is a restart, not another write.
+
+If the model declines to call the writer at all even with a stated reason,
+record that verbatim and treat the step as **NOT TESTED** rather than passed —
+the unit tests cover the refusal, and a decline is not evidence about it.
+
+Save the browser conversation as `block48d-setup-transcript`. Stop with Ctrl+C, copy the visible
 console, then:
 
 ```powershell
