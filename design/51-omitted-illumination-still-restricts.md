@@ -258,9 +258,28 @@ structural gap a single branch.
 | Block | Branch | Start commit | Implementer | Rig gate | Merged | Design reconciled |
 |---|---|---|---|---|---|---|
 | coordination | `design51/open` | `559edd5` | coordinator | n/a | — | n/a |
-| 51a | `design51/block-51a` | `559edd5` | | required — demo (the reproducer) | | |
+| 51a | `design51/block-51a` | `559edd5` | codex, 1 review round + coordinator pin | **PUSHED, awaiting demo + M5** — runbook pins `30cb55e` | | |
 
-Suite baseline at `559edd5` (macOS): **1788 passed / 99 skipped / 3 warnings**.
+Suite baseline at `559edd5` (macOS): **1788 passed / 99 skipped / 3 warnings**;
+at the pinned implementation, **1794 / 99 / 3**.
+
+### The one config where the two flags diverge
+
+`property_writes_unrestricted` requires **both** sections absent, so it implies
+`illumination_unrestricted` but not the reverse. A document declaring
+`property_authorization` and omitting `illumination` therefore applies the map
+check to raw writes and preset effects while still admitting a `Core.Shutter`
+retarget unconfirmed — the preset route more permissive than the raw route,
+which is this block's own defect pointing the other way.
+
+Measured reachable during review; neither rig runs that shape and no gate covers
+it. **Kept deliberately**, because omitting `illumination` means the rig declares
+no light sources — a brightfield rig, say — and on such a rig a retarget is not
+an illumination action Microclaw can reason about. design/48's contract governs.
+Re-keying the branch on `property_writes_unrestricted` would align the flags at
+the cost of reintroducing the original defect for exactly that config. Pinned by
+`test_declared_property_authorization_without_illumination_still_admits_retarget`
+so it is not rediscovered and "fixed" the wrong way.
 
 ## Coordinator checklist
 
