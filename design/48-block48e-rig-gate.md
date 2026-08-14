@@ -16,9 +16,9 @@ python -m pytest -q
 Write-Host "pytest exit code (expected 0):" $LASTEXITCODE
 ```
 
-The macOS result at the pin is **1771 passed + 99 skipped = 1870 total**, with
+The macOS result at the pin is **1776 passed + 99 skipped = 1875 total**, with
 3 warnings. M5 skips more tests because Node is not installed. Record passed and
-skipped separately and require **passed + skipped = 1870**; any failure or other
+skipped separately and require **passed + skipped = 1875**; any failure or other
 total is not this gate.
 
 ## 2. Make and verify recoverable clean-profile backups
@@ -91,6 +91,20 @@ locked” banner and exactly **1** “No Anthropic API key” banner are visible
 together; the axis checklist is already populated; the seeded first assistant
 message is readable; the composer is disabled; and **0 turns** can be sent.
 
+Three of these regressed on the 2026-08-14 run and are the reason for this
+re-run, so check them deliberately rather than in passing:
+
+- **the seeded message must be on screen without sending anything.** It
+  previously did not render at all — the page showed banners and an empty
+  transcript, and the operator had to type to discover what setup wanted. If the
+  transcript is empty here, that is a gate failure; do not type a greeting to
+  work around it.
+- **the key box must be visible without scrolling** — it should be scrolled into
+  view and focused when the page loads. Note whether you had to scroll.
+- **the console must say how to stop the setup server**: Ctrl+C in that window,
+  then start from the desktop icon. Confirm that text is on screen before you
+  move to the browser.
+
 The sweep's result is the requirement: every live stage axis must appear. As a
 cross-check only, M5 previously reported six axes: core XY on `SmarAct 2D`,
 `PIZStage.z`, `SmarAct 1D`, `Thorlabs ELL17/ELL20`, and `Thorlabs ELL20`.
@@ -153,6 +167,10 @@ Get-Clipboard | Set-Content block48e-normal-serve.txt
 ```
 
 ## 6. Compare configs and deliberately restore the working profile
+
+When the write completes, confirm the browser's restart message tells you to
+close the tab, press **Ctrl+C** in the setup window, and start from the desktop
+icon — then do exactly that, and confirm the setup window actually exits.
 
 This gate recreated M5's config; it did not declare the new values superior to
 the reviewed backup. Compare them and deliberately choose which active file to
