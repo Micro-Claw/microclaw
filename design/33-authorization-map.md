@@ -18,6 +18,18 @@ Date: 2026-07-21
 > regardless of the write path.** A raw property write to a device that carries
 > declared bounds is refused even when property writes are otherwise
 > unrestricted (M5, 2026-08-13).
+>
+> **Amended by design/49 (M5, 2026-08-14): that refusal is keyed to the exact
+> device/property pair, not the device.** A bounded stage device may carry a
+> non-motion property that is itself a typed capability — M5's hardware focus
+> lock is `PIZStage.External sensor`, on the same device as the focus drive —
+> and the device-wide form of the rule made `set_focus_lock` unusable, which in
+> turn made autofocus impossible without manual GUI intervention. A pair holding
+> a `built_in_typed_capability` entry **on a raw-write path** is admitted; every
+> other property on the device is refused exactly as before. The path
+> qualification is load-bearing, not decoration: preset entries carry the same
+> classification, so a pair test that ignored `entry.path` would let a channel
+> preset touching the focus device's `Position` reopen the raw route.
 
 Promoted out of `design/32` Finding 1. That finding's immediately-actionable core
 — a strict, versioned safety-config schema that fails startup with all validation

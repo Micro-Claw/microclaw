@@ -509,7 +509,12 @@ Evidence: `~/Documents/Documents - Beyonce/Projects/Micro-Claw/48a-m5`.
   `channels`, `illumination`, `plugins`, or `property_authorization` section.
 - Out-of-bounds XY refused at x=5001 against x_max=5000; no motion.
 - The raw-write route was refused for `PIZStage.Position` at an **in-range**
-  value — the protection is about the route, and it held.
+  value — the protection is about the route, and it held. (Re-measured
+  unchanged at 49a, M5 2026-08-14. What this gate did *not* ask is whether the
+  same device carried a non-motion property that had to keep working:
+  `PIZStage.External sensor` is M5's focus lock, and the device-wide refusal
+  killed it silently. See design/49 — **a gate that proves a refusal should also
+  name what must still be permitted on the same device.**)
 - The confirmation fired at exactly 500 frames, was approved once, and 500
   frames were written to `D:\SSD\48a-test\block48a-500-frames_1`.
 - With no `illumination` section, the EMU laser enable went through with no

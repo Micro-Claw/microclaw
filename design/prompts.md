@@ -6493,3 +6493,53 @@ evidence; the gap was worth the five minutes.**
 result.** M5's 21-minute plan asked "about 21.0008 minutes" — `%g`'s six
 significant figures on a number the same sentence calls approximate, in the one
 line an operator reads before committing twenty minutes of rig time.
+
+## design/49 — the focus lock is a typed capability (block 49a)
+
+One block, one implementation round by codex, one coordinator fix, one M5 gate,
+PASS first time. Opened and closed 2026-08-14.
+
+**The block existed because a rig session failed, not because a test did.** The
+TIRF run of 2026-08-14 (`tirf test with amr/first_test`) shows the agent asking
+the operator to toggle the focus lock by hand, twice, mid-session — design/48's
+device-wide bounded-stage refusal had made `set_focus_lock` unusable on any rig
+whose lock lives on the Z-stage device. The full suite was green throughout, on
+both sides of the regression. The evidence archive is worth reading after a rig
+day even when nothing was reported as broken.
+
+**A design doc was written before the runner prompt, at the user's call, and it
+was the right call.** The first prompt went straight from diagnosis to
+implementation; the user asked whether the fix added a `safety_config.yaml` key,
+which forced the question of what an `AuthorizationEntry` actually is. It is
+synthesized at startup, so the answer was "no key" — and, better, the change
+*retires* a hand declaration, because auto-classification is StateDevice-only
+and a piezo stage is not one. That reframing ("the focus lock is a typed
+capability, like the stage and the ROI, and was simply never given an entry")
+came out of the doc and is what made the fix one line at each of two sites.
+
+**The coordinator's review caught a hole the green suite did not.** The
+implementation's typed-pair exemption ignored `entry.path`, ten lines above an
+existing filter whose comment says exactly why preset entries must not authorize
+raw writes. Because a schema-3 document leaves `channels` absent, *every*
+config-group preset is enumerated, and a preset touching the focus device's
+`Position` is classified `built_in_typed_capability` — so the fix for the focus
+lock had quietly reopened the raw route to `PIZStage.Position`, which is
+precisely what 48a's gate had measured closed. Reproduced against the branch,
+confirmed refused on `main`, fixed by hoisting the path set to one
+`_RAW_WRITE_PATHS` constant both decisions read. **Read the diff, not the
+summary** earned its place again; the runner's own report was accurate in every
+particular and still would have shipped this.
+
+**The M5 gate carried physical corroboration nobody asked for.** QPD x read
+18646 unlocked and 32926 locked, matching the engaged values in the earlier TIRF
+session — evidence the toggle reached the hardware, not merely that a property
+write returned. Worth designing in: a gate limb that can read a *sensor* rather
+than a property should.
+
+**One number to keep in view.** M5 ran 1756 passed / 124 skipped against macOS's
+1781 / 99 — same 1880 collection, so nothing was lost, but the Windows-only skip
+set has grown 17 → 25 since 48a. Three of those are explicit new POSIX-only
+markers from 48b–48e's installer, shortcut, and credentials work, plus a
+symlink-permission runtime skip. Attributable, not alarming; it is recorded here
+because the next block to compare skip counts against 48a will otherwise
+rediscover it.
