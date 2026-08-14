@@ -251,6 +251,33 @@ power, or reaches an otherwise excluded device must satisfy the corresponding
 illumination or device policy; membership in `allowed_channels` alone is not a
 blanket safety declaration.
 
+### Amendment, 2026-08-14 (block 51a): the map is not the authority when nothing is declared
+
+Everything above assumes a document that declares things. Under schema 3 a
+minimal document declares almost nothing, and `_authorize_channel_effect` went on
+judging every preset effect against a map that is empty by design — refusing
+`HamamatsuHam_DCAM.DEFECT CORRECT MODE` on M5 while the identical raw write was
+permitted, because `authorize_property_write` returns early on
+`property_writes_unrestricted` and the effect path had no such early return.
+
+The preset path now honours the same two omission flags the raw path does. **This
+narrows nothing above**: with any `property_authorization` or `illumination`
+section present, every rule in this section applies exactly as written, and both
+directions are gated by
+`test_declared_preset_restrictions_and_shutter_confirmation_are_unchanged`. What
+changed is that "the map says no" is no longer an answer on a rig that never
+authored a map. See `design/51-omitted-illumination-still-restricts.md`.
+
+### Amendment, 2026-08-14 (design/53, not yet implemented): verification is plan-level
+
+The freshly-expanded runtime authorization below is unchanged. Its *read-back
+verification* is not: verifying each write the moment it lands checks a preset's
+values against a half-applied preset, which fails whenever one value is only
+valid after another. M5's `System/Normal Mode` writes `Exposure` at index 1 and
+`ScanMode` at index 5, and the exposure is representable only in the later mode.
+Verification belongs after the last write. Filed as
+`design/53-a-preset-is-verified-as-a-set.md`; this note stands until 53a lands.
+
 ### Preset mutability is a time-of-check/time-of-use gap
 
 Startup expansion is an early-failure check, not sufficient runtime
