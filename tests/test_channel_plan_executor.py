@@ -13,8 +13,8 @@ from microclaw.authorization import (
 from microclaw.tools import set_device_property
 from microclaw.safety import (
     CameraConstraints, ForbiddenProperty, IlluminationConstraints,
-    IlluminationProperty, SafetyConstraints, SafetyGuard, SafetyViolation, TypedActuatorId,
-    TypedActuatorPolicy,
+    IlluminationProperty, ParsedSafetyConfig, SafetyConstraints, SafetyGuard,
+    SafetyViolation, TypedActuatorId, TypedActuatorPolicy,
 )
 
 
@@ -33,6 +33,20 @@ DEMO_CHANNEL_SHAPES = {
                           ("LED", "Label", "385nm"),
                           ("Core", "Shutter", "LED Shutter")],
 }
+
+FIXTURES = Path(__file__).parent / "fixtures"
+DEMO_SAFETY_CONFIG = FIXTURES / "50a-demo-safety_config.yaml"
+M5_SAFETY_CONFIG = FIXTURES / "50b-m5-round2-safety_config.yaml"
+
+
+def replayed_guard_and_omissions(path):
+    parsed = ParsedSafetyConfig.from_yaml(str(path))
+    return (
+        SafetyGuard(parsed.constraints),
+        "property_authorization" not in parsed.declared_sections
+        and "illumination" not in parsed.declared_sections,
+        "illumination" not in parsed.declared_sections,
+    )
 
 
 class Core:
@@ -309,6 +323,105 @@ def test_illumination_and_shutter_retarget_each_confirm():
     execute_channel_plan(ctrl, guard, "P",
                          confirm_fn=lambda text, kind, **kw: confirmations.append((text, kind)) or True)
     assert len(confirmations) == 2 and {kind for _, kind in confirmations} == {"illumination"}
+
+
+def test_omitted_property_authorization_admits_unclassified_preset_effect():
+    effects = [("HamamatsuHam_DCAM", "DEFECT CORRECT MODE", "ON")]
+    core = Core(effects)
+    ctrl = controller(core, {})
+    guard, property_unrestricted, _ = replayed_guard_and_omissions(M5_SAFETY_CONFIG)
+    ctrl.authorization_map.property_writes_unrestricted = property_unrestricted
+
+    result = execute_channel_plan(ctrl, guard, "P")
+
+    assert result["writes"] == 1
+    assert core.values[("HamamatsuHam_DCAM", "DEFECT CORRECT MODE")] == "ON"
+
+
+def test_omitted_illumination_admits_shutter_retarget_without_confirmation():
+    effects = [
+        ("Core", "Shutter", "Unclassified Shutter"),
+        ("Wheel", "Label", "DAPI"),
+    ]
+    core = Core(effects)
+    ctrl = controller(core, {("Wheel", "Label"): "reviewed_categorical_property"})
+    guard, property_unrestricted, illumination_unrestricted = replayed_guard_and_omissions(
+        DEMO_SAFETY_CONFIG
+    )
+    ctrl.authorization_map.property_writes_unrestricted = property_unrestricted
+    ctrl.authorization_map.illumination_unrestricted = illumination_unrestricted
+    confirmations = []
+
+    result = execute_channel_plan(
+        ctrl,
+        guard,
+        "P",
+        confirm_fn=lambda *args, **kwargs: confirmations.append((args, kwargs)) or False,
+    )
+
+    assert result["writes"] == 2
+    assert core.values[("Core", "Shutter")] == "Unclassified Shutter"
+    assert core.values[("Wheel", "Label")] == "DAPI"
+    assert confirmations == []
+
+
+def test_unrestricted_preset_effect_still_obeys_exposure_guard():
+    effects = [("Camera", "Exposure", "101")]
+    core = Core(effects)
+    core.types[("Camera", "Exposure")] = "Float"
+    ctrl = controller(core, {})
+    ctrl.authorization_map.property_writes_unrestricted = True
+
+    with pytest.raises(
+        SafetyViolation,
+        match=r"Exposure 101 ms exceeds the maximum allowed \(100 ms\)",
+    ):
+        execute_channel_plan(ctrl, make_guard(exposure=100), "P")
+    assert core.calls == []
+
+
+def test_declared_preset_restrictions_and_shutter_confirmation_are_unchanged():
+    unclassified = Core([("Camera", "DEFECT CORRECT MODE", "ON")])
+    ctrl = controller(unclassified, {})
+    with pytest.raises(RigAuthorizationError) as caught:
+        execute_channel_plan(ctrl, make_guard(), "P")
+    assert str(caught.value) == (
+        "Channel effect Camera.DEFECT CORRECT MODE was refused because it is "
+        "unclassified or excluded. A discrete non-illumination effect goes under "
+        "top-level `property_authorization.allowed_categorical`; a bounded continuous "
+        "actuator goes under `property_authorization.allowed_numeric`; illumination "
+        "goes under `illumination.shutters` or `illumination.power_properties`. If the "
+        "property is explicitly excluded or its actuator kind is not established, no "
+        "legal declaration can permit it yet."
+    )
+
+    undeclared = Core([("Core", "Shutter", "Other Shutter")])
+    ctrl = controller(undeclared, {("Core", "Shutter"): "built_in_typed_capability"})
+    with pytest.raises(RigAuthorizationError, match="Declare the target device's exact"):
+        execute_channel_plan(ctrl, make_guard(), "P")
+    assert undeclared.calls == []
+
+    declared = Core([
+        ("Core", "Shutter", "LED Shutter"),
+        ("Wheel", "Label", "DAPI"),
+    ])
+    ctrl = controller(declared, {
+        ("Core", "Shutter"): "built_in_typed_capability",
+        ("Wheel", "Label"): "reviewed_categorical_property",
+    })
+    confirmations = []
+    with pytest.raises(RigAuthorizationError, match="operator declined it"):
+        execute_channel_plan(
+            ctrl,
+            make_guard(
+                categorical=[("Wheel", "Label")],
+                shutters=[("LED Shutter", "State", "1", "0")],
+            ),
+            "P",
+            confirm_fn=lambda *args, **kwargs: confirmations.append((args, kwargs)) or False,
+        )
+    assert len(confirmations) == 1
+    assert declared.calls == []
 
 
 def test_illumination_power_routes_through_cap_and_ratchet():

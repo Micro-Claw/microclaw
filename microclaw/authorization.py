@@ -219,6 +219,7 @@ class AuthorizationMap:
     channel_source: str = "config-group"
     property_writes_unrestricted: bool = False
     channels_unrestricted: bool = False
+    illumination_unrestricted: bool = False
     bounded_stage_devices: frozenset[str] = frozenset()
 
     def to_dict(self) -> dict:
@@ -1497,6 +1498,7 @@ def validate_live_rig(
             and "illumination" not in parsed_config.declared_sections
         ),
         channels_unrestricted="channels" not in parsed_config.declared_sections,
+        illumination_unrestricted="illumination" not in parsed_config.declared_sections,
         bounded_stage_devices=frozenset(
             live_device for identity, live_device in reachable_axes
             if parsed_config.ranges.get(identity) is not None
@@ -1639,6 +1641,7 @@ def _authorize_channel_effect(
 ) -> None:
     """Route one captured effect through the same exact-pair policies as raw writes."""
     core = ctrl.core
+    report = getattr(ctrl, "authorization_map", None)
     if device == "Core":
         if prop != "Shutter":
             raise RigAuthorizationError(
@@ -1646,6 +1649,8 @@ def _authorize_channel_effect(
                 "has a legal channel-effect declaration; no safety-config declaration "
                 f"can permit Core.{prop}. Remove that effect from the Micro-Manager preset."
             )
+        if report is not None and report.illumination_unrestricted:
+            return
         if not guard.is_illumination_shutter_device(value):
             raise RigAuthorizationError(
                 f"Core.Shutter retarget to {value!r} was refused. Declare the target "
@@ -1666,12 +1671,11 @@ def _authorize_channel_effect(
         return
 
     pair = (device, prop)
-    report = getattr(ctrl, "authorization_map", None)
     matches = [] if report is None else [
         entry for entry in report.entries
         if entry.device == device and entry.property == prop
     ]
-    if report is not None and (
+    if report is not None and not report.property_writes_unrestricted and (
         not matches or any(entry.classification == "excluded" for entry in matches)
     ):
         raise RigAuthorizationError(
