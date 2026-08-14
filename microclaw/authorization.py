@@ -1506,6 +1506,17 @@ def validate_live_rig(
     return report
 
 
+# Entry paths that authorize a *raw* write. Preset entries authorize only the
+# captured channel-plan route: a raw write must have its own reachable map entry
+# so the map and guard remain independent gates. Both decisions below read this
+# one set — a preset that expands to a bounded stage device's position property
+# is classified `built_in_typed_capability`, so a typed-pair test that ignored
+# the path would hand the raw route exactly the bypass this set exists to close.
+_RAW_WRITE_PATHS = frozenset({
+    "generic-property", "dedicated-illumination", "all-property-paths",
+})
+
+
 def authorize_property_write(ctrl: Any, device: str, prop: str) -> None:
     """Enforce the attached reviewed/excluded decision on any raw write path."""
     report = getattr(ctrl, "authorization_map", None)
@@ -1516,6 +1527,7 @@ def authorize_property_write(ctrl: Any, device: str, prop: str) -> None:
         entry.device == device
         and entry.property == prop
         and entry.classification == "built_in_typed_capability"
+        and entry.path in _RAW_WRITE_PATHS
         for entry in report.entries
     )
     if (
@@ -1534,12 +1546,7 @@ def authorize_property_write(ctrl: Any, device: str, prop: str) -> None:
     matches = [
         entry for entry in report.entries
         if entry.device == device and entry.property == prop
-        # Preset entries authorize only the captured channel-plan route. A raw
-        # write must have its own reachable map entry so the map and guard
-        # remain independent gates.
-        and entry.path in {
-            "generic-property", "dedicated-illumination", "all-property-paths"
-        }
+        and entry.path in _RAW_WRITE_PATHS
     ]
     admitted = {
         "reviewed_categorical_property", "built_in_typed_capability",
