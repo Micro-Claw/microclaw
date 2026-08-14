@@ -155,11 +155,18 @@ verification is a plan-level check, not a per-write one, and why.
 
 | Block | Branch | Start commit | Implementer | Rig gate | Merged | Design reconciled |
 |---|---|---|---|---|---|---|
-| coordination | `design53/open` | `b2b0417` | coordinator | n/a | — | n/a |
-| 53a | `design53/block-53a` | TBD — **after 50a and 51a merge** | | required — M5 | | |
+| coordination | ~~`design53/open`~~ | `b2b0417` | coordinator | n/a | merged `ccc4b34` | n/a |
+| 53a | `design53/block-53a` | `ccc4b34` | | required — M5 | | |
 
-**Sequencing.** 53a touches `execute_channel_plan`, which both 50a and 51a modify.
-It starts after both merge, from an updated `main`, so three blocks do not
-contend for one function. Neither of those blocks is blocked by this one: 51a's
+**Sequencing — satisfied 2026-08-14.** 53a touches `execute_channel_plan`, which
+both 50a and 51a modify, so it waited for both. Both are now merged and `main` is
+at `ccc4b34` (1808 passed / 99 skipped / 3 warnings on macOS), which is 53a's
+start commit. Nothing further blocks it.
+
+**To resume cold**, the block workflow in `CLAUDE.md` is authoritative and this
+document is the whole specification: branch `design53/block-53a` from `ccc4b34`,
+write the runner prompt to the scratchpad, and stop to offer it rather than
+spawning. No scratchpad state from the authoring session is needed — the runner
+prompt was never written, and nothing here depends on one. Neither of those blocks is blocked by this one: 51a's
 gate limb A1 is satisfied by `Camera` applying its 11 writes, which is what that
 block claims, and `Normal Mode`'s failure is this defect and is filed here.
