@@ -30,6 +30,17 @@ _JAVA_HINTS = (
         "Device not found",
         "No such device label. Call list_devices() for the loaded labels.",
     ),
+    (
+        # Micro-Manager: 'Configuration group "X" or its preset "y" does not
+        # exist'. Demo gate, 2026-08-14: a preset asked for as "20x" instead of
+        # "20X" collected the blanket hardware hint, pointing the model at a
+        # busy device and a stage at its limit for what was a casing typo.
+        # Preset and group names are exact and case-sensitive.
+        "or its preset",
+        "No such config group or preset. Names are exact and case-sensitive — "
+        "call list_config_groups() for the real ones rather than adjusting the "
+        "hardware.",
+    ),
 )
 
 
@@ -143,6 +154,17 @@ def hint_for_error(exc: Exception) -> str:
             "An output directory already exists. Offline analysis refuses to "
             "write into one, so a previous analysis is never silently "
             "overwritten or mixed with a new one. Choose a new output_dir." + where
+        )
+    # Micro-Manager's unknown-group/preset error. Kept beside the message
+    # rewrite in _JAVA_HINTS deliberately: that table only replaces the error
+    # text, so without this branch the tool returns an actionable message and a
+    # hint contradicting it with a hardware guess. Demo gate, 2026-08-14.
+    if "or its preset" in text and "does not exist" in text:
+        return (
+            "This is a naming error, not a hardware fault. Config group and "
+            "preset names are exact and case-sensitive; list_config_groups() "
+            "returns the real ones. Nothing on the rig needs diagnosing, and "
+            "the same call will fail identically."
         )
     if isinstance(exc, (TypeError, ValueError)):
         return (

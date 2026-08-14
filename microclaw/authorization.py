@@ -290,8 +290,10 @@ def _config_settings(config: Any) -> list[Any]:
         return []
 
 
-def _expand_preset(core: Any, preset: str) -> list[tuple[str, str, str | None]]:
-    config = core.get_config_data(CHANNEL_CONFIG_GROUP, preset)
+def _expand_preset(
+    core: Any, preset: str, group: str = CHANNEL_CONFIG_GROUP
+) -> list[tuple[str, str, str | None]]:
+    config = core.get_config_data(group, preset)
     effects = []
     for setting in _config_settings(config):
         device = _setting_value(
@@ -305,7 +307,7 @@ def _expand_preset(core: Any, preset: str) -> list[tuple[str, str, str | None]]:
         )
         if not device or not prop:
             raise RigAuthorizationError(
-                f"Channel preset {preset!r} contains an unreadable setting, so its "
+                f"Config preset {group}.{preset} contains an unreadable setting, so its "
                 "effects cannot be authorized. No safety-config declaration can permit "
                 "an effect whose device/property identity is unknown; repair or recreate "
                 "the preset in Micro-Manager, then restart validation."
@@ -1569,7 +1571,13 @@ def authorize_property_write(ctrl: Any, device: str, prop: str) -> None:
         )
 
 
-def authorize_channel(ctrl: Any, preset: str) -> None:
+def authorize_channel(
+    ctrl: Any, preset: str, group: str = CHANNEL_CONFIG_GROUP
+) -> None:
+    # Only Channel presets have a startup name allowlist. Other config groups
+    # are authorized solely by the freshly expanded per-effect checks below.
+    if group != CHANNEL_CONFIG_GROUP:
+        return
     report = getattr(ctrl, "authorization_map", None)
     if report is not None and report.channels_unrestricted:
         return
@@ -1712,27 +1720,30 @@ def _authorize_channel_effect(
 
 
 def execute_channel_plan(
-    ctrl: Any, guard: Any, preset: str, *, confirm_fn: Any = None, cancel: Any = None
+    ctrl: Any, guard: Any, preset: str, *, group: str = CHANNEL_CONFIG_GROUP,
+    confirm_fn: Any = None, cancel: Any = None
 ) -> dict:
-    """Capture, authorize, and replay exactly one immutable Channel expansion.
+    """Capture, authorize, and replay exactly one immutable config expansion.
 
     Cancellation is polled only between writes. The pyjavaz bridge holds one lock
     across each round trip, so an in-flight set/wait/read cannot be interrupted.
     """
-    authorize_channel(ctrl, preset)
+    authorize_channel(ctrl, preset, group)
     # Re-derived live, exactly like the preset re-read it replaces: an EMU
     # config file is as editable mid-session as a Micro-Manager preset, and the
     # startup hash stays a drift diagnostic rather than an authorization token.
-    source = _channel_source(ctrl, guard.is_illumination_enable)
-    effects = tuple(
-        (device, prop, "" if value is None else str(value))
-        for device, prop, value in source.expand(ctrl.core, preset)
-    )
+    source = (_channel_source(ctrl, guard.is_illumination_enable)
+              if group == CHANNEL_CONFIG_GROUP else None)
+    expanded = (source.expand(ctrl.core, preset) if source is not None
+                else _expand_preset(ctrl.core, preset, group))
+    effects = tuple((device, prop, "" if value is None else str(value))
+                    for device, prop, value in expanded)
     for effect in effects:
         _authorize_channel_effect(ctrl, guard, *effect, confirm_fn)
 
     report = getattr(ctrl, "authorization_map", None)
-    startup_hash = None if report is None else report.channel_expansion_hashes.get(preset)
+    startup_hash = (None if report is None or group != CHANNEL_CONFIG_GROUP
+                    else report.channel_expansion_hashes.get(preset))
     fresh_hash = _expansion_hash(effects)
     drifted = startup_hash is not None and startup_hash != fresh_hash
     originals = [str(ctrl.core.get_property(device, prop)) for device, prop, _ in effects]
@@ -1816,18 +1827,21 @@ def execute_channel_plan(
 
     ctrl.refresh_gui()
     result = {
-        "status": f"Channel set to '{preset}'.",
+        "status": (f"Channel set to '{preset}'." if group == CHANNEL_CONFIG_GROUP
+                   else f"Config preset {group}.{preset} applied."),
         "writes": len(effects),
         # The exact writes that ran, in order. The script exporter renders these
         # rather than reconstructing a plan, so an emitted script cannot differ
         # from what the rig did (block 41b's discipline).
         "effects": [list(effect) for effect in effects],
-        "channel_source": source.kind,
+        "channel_source": (source.kind if source is not None else CHANNEL_SOURCE_CONFIG_GROUP),
         "expansion_drift": drifted,
         "startup_expansion_sha256": startup_hash,
         "applied_expansion_sha256": fresh_hash,
     }
-    if source.kind == CHANNEL_SOURCE_EMU_LASER_MAP:
+    if group != CHANNEL_CONFIG_GROUP:
+        result["config_group"] = group
+    if source is not None and source.kind == CHANNEL_SOURCE_EMU_LASER_MAP:
         result["scope"] = EMU_CHANNEL_SCOPE
     return result
 

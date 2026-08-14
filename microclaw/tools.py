@@ -2091,6 +2091,13 @@ def _emit_set_channel(params: RecordedParams) -> str:
     )
 
 
+def _emit_set_config_preset(params: RecordedParams) -> str:
+    return _emit_recorded_channel_effects(
+        params.result, params.get("preset"),
+        label=f"config preset {params.get('group')!r}",
+    )
+
+
 def _emit_recorded_channel_effects(result: dict, preset: str, *, label: str) -> str:
     """Render one executed channel effect record for a standalone script."""
     effects = result.get("effects")
@@ -2171,6 +2178,95 @@ def set_channel(
     ctrl: MicroscopeController, guard: SafetyGuard, preset: str, *, cancel=None
 ) -> dict:
     return _set_channel_for_composite(ctrl, guard, preset, cancel=cancel)
+
+
+@emits(_emit_set_config_preset)
+def set_config_preset(
+    ctrl: MicroscopeController, guard: SafetyGuard, group: str, preset: str,
+    *, cancel=None,
+) -> dict:
+    """Apply one Micro-Manager config preset through the channel-plan executor.
+
+    Only the ``Channel`` group has the startup ``authorized_presets`` allowlist.
+    Other groups are authorized from their freshly expanded effects: every
+    device/property/value must pass its exact typed, illumination, or categorical
+    gate before any write begins.
+
+    **There is deliberately no map-less delegation branch here**, unlike
+    ``set_channel``. The first implementation had one, and review measured it
+    applying a laser-enabling preset with zero confirmations while reporting
+    success. It cannot be repaired in place: ``set_channel`` gates its own
+    map-less path with ``guard.check_channel``, which consults
+    ``channels.allowed`` — the wrong question to ask about a camera preset, which
+    it would refuse for not being a channel. No name-level gate exists for an
+    arbitrary group, because per-effect authorization *is* the authorization
+    here. The executor is therefore the only route, and it needs no map:
+    ``authorize_channel`` returns early for a non-``Channel`` group, and
+    ``_authorize_channel_effect`` falls through to the guard's own checks when
+    no map is attached.
+    """
+    from microclaw.authorization import execute_channel_plan
+
+    if not group:
+        raise ValueError("group must be a non-empty config-group name")
+    if not preset:
+        raise ValueError("preset must be a non-empty preset name")
+    return execute_channel_plan(
+        ctrl, guard, preset, group=group,
+        confirm_fn=CONFIRM_FN, cancel=cancel,
+    )
+
+
+@emits_nothing
+def list_config_groups(
+    ctrl: MicroscopeController, guard: SafetyGuard,
+    group: str | None = None, preset: str | None = None,
+) -> dict:
+    """List config groups compactly, or expand one requested preset.
+
+    Preset settings are omitted from the all-groups listing because real rigs can
+    carry many large groups. Supplying both ``group`` and ``preset`` returns that
+    preset's exact membership instead, so a caller never has to infer membership
+    from live property values.
+
+    The two shapes are exclusive on purpose. The first implementation returned
+    the whole listing *and* the expansion, which the demo gate showed re-walking
+    every group over a serialized bridge to answer a question about one preset —
+    thirteen round trips on that rig to deliver one three-field answer the caller
+    already had the listing for.
+    """
+    from microclaw.authorization import _expand_preset, _strings
+
+    if (group is None) != (preset is None):
+        raise ValueError("group and preset must be supplied together")
+    if group is not None and preset is not None:
+        return {
+            "group": group,
+            "preset": preset,
+            "settings": [
+                {"device": device, "property": prop, "value": value}
+                for device, prop, value in _expand_preset(ctrl.core, preset, group)
+            ],
+        }
+    # Two bridge round trips per group, and pyjavaz serializes them, which is
+    # why preset *settings* are opt-in rather than walked for every group here.
+    groups = []
+    for name in _strings(ctrl.core.get_available_config_groups()):
+        item: dict[str, Any] = {"name": name}
+        try:
+            item["presets"] = _strings(ctrl.core.get_available_configs(name))
+        except Exception as exc:
+            item["presets"] = []
+            item["error"] = str(exc)
+        try:
+            active = str(ctrl.core.get_current_config(name) or "")
+            item["active_preset"] = active or None
+        except Exception as exc:
+            item["active_preset"] = None
+            detail = f"active preset read failed: {exc}"
+            item["error"] = f"{item['error']}; {detail}" if "error" in item else detail
+        groups.append(item)
+    return {"groups": groups}
 
 
 @emits_nothing
@@ -7373,6 +7469,8 @@ TOOL_REGISTRY = {
     "move_named_stage": move_named_stage,
     "set_channel": set_channel,
     "get_available_channels": get_available_channels,
+    "list_config_groups": list_config_groups,
+    "set_config_preset": set_config_preset,
     "set_device_property": set_device_property,
     "get_device_property": get_device_property,
     "list_devices": list_devices,

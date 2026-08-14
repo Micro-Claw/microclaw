@@ -394,6 +394,40 @@ TOOLS: list[dict[str, Any]] = [
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
     {
+        "name": "list_config_groups",
+        "description": (
+            "With no arguments, lists every Micro-Manager config group, its preset "
+            "names, and its currently active preset (null when live state matches "
+            "none). With both group and preset, returns that one preset's exact "
+            "device/property/value settings instead of the listing. Group and "
+            "preset names are case-sensitive."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "group": {"type": "string", "description": "Exact config-group name."},
+                "preset": {"type": "string", "description": "Exact preset name in that group."},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "set_config_preset",
+        "description": (
+            "Apply a Micro-Manager config preset with per-effect authorization, "
+            "read-back verification, and reverse rollback on failure. Use "
+            "list_config_groups first; never infer preset membership or names."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "group": {"type": "string", "description": "Exact config-group name."},
+                "preset": {"type": "string", "description": "Exact preset name."},
+            },
+            "required": ["group", "preset"],
+        },
+    },
+    {
         "name": "set_device_property",
         "description": (
             "Set a Micro-Manager device property. Use list_devices to find device names "
