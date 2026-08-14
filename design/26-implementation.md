@@ -363,7 +363,20 @@ threshold source in every observation.
 
 Ranking and replay must use `rank_hook_log`, not conversational arithmetic. Candidate
 coordinates must pass the non-moving `validate_positions` tool before they are saved;
-the result reports accepted/rejected records and never exposes guard limits or clips.
+the result reports accepted/rejected records and never clips.
+
+**Corrected by block 50b, 2026-08-14: it does now name the limit a rejected
+position hit.** This paragraph previously also said the result "never exposes
+guard limits". That half is reversed — the two halves were coupled on the theory
+that withholding limits stops the agent clipping to them, and it does not:
+every move refusal already names the limit it hit, so the envelope was never
+withheld in the first place. What it cost was a real session (design/50
+Problem 2, M5 2026-08-12), where the agent called `validate_positions` twice
+while diagnosing a block and got `"Rejected by the current XY safety guard."`
+both times. **"Never clip" is the invariant that survives and is unchanged**,
+enforced by `clipped == 0` and by the agent prompt. The bound that replaces
+"never expose" is narrower and is asserted in the same test: name the limit the
+position actually hit, never dump the whole limits table.
 Acquisitions return UTC start/completion timestamps, wall duration, and planned/acquired
 counts. `inspect_artifacts` supplies recursive SHA-256 evidence, and
 `compare_revisit_frames` supplies quality-gated pixel registration with micrometre
