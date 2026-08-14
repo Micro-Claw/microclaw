@@ -365,6 +365,41 @@ def test_omitted_illumination_admits_shutter_retarget_without_confirmation():
     assert confirmations == []
 
 
+def test_declared_property_authorization_without_illumination_still_admits_retarget():
+    """Pin the one config where the two flags diverge, and say why it is correct.
+
+    `property_writes_unrestricted` requires BOTH sections absent, so it implies
+    `illumination_unrestricted` but not the reverse. The gap is a document that
+    declares `property_authorization` and omits `illumination`: the map check
+    applies to raw writes and preset effects, while a Core.Shutter retarget is
+    still admitted unconfirmed. Neither rig runs that shape and no gate covers
+    it, so it is pinned here rather than left to be rediscovered.
+
+    It is deliberate, not an oversight. Omitting `illumination` means the rig
+    declares no light sources -- a brightfield rig, say -- and on such a rig a
+    shutter retarget is not an illumination action Microclaw can reason about.
+    design/48's contract governs: an omitted section restricts nothing. Keying
+    this branch on `property_writes_unrestricted` instead would make the two
+    flags agree at the cost of reintroducing block 51a's original defect for
+    exactly this config. Do not "fix" that without re-reading design/51.
+    """
+    effects = [("Core", "Shutter", "Undeclared Shutter")]
+    core = Core(effects)
+    ctrl = controller(core, {})
+    ctrl.authorization_map.property_writes_unrestricted = False   # prop_auth declared
+    ctrl.authorization_map.illumination_unrestricted = True       # illumination omitted
+    confirmations = []
+
+    result = execute_channel_plan(
+        ctrl, make_guard(), "P",
+        confirm_fn=lambda *a, **k: confirmations.append(k) or False,
+    )
+
+    assert result["writes"] == 1
+    assert core.values[("Core", "Shutter")] == "Undeclared Shutter"
+    assert confirmations == []
+
+
 def test_unrestricted_preset_effect_still_obeys_exposure_guard():
     effects = [("Camera", "Exposure", "101")]
     core = Core(effects)
