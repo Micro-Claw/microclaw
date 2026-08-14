@@ -61,8 +61,19 @@ the same kind of thing and was simply never given one.
    is in the same dict. No second EMU read and no new module.
 2. In `authorize_property_write`, before the bounded-stage refusal, admit an
    exact `(device, property)` pair that already holds a `built_in_typed_capability`
-   entry. Every other property on a bounded stage device still refuses with the
-   existing message.
+   entry **on a raw-write path**. Every other property on a bounded stage device
+   still refuses with the existing message.
+
+   **The path qualification was missing from this document as first written, and
+   the implementation faithfully reproduced the omission** (caught in review, not
+   by the suite). Preset entries carry the same `built_in_typed_capability`
+   classification, and a schema-3 document leaves `channels` absent — so *every*
+   config-group preset is enumerated, and a preset touching the focus device's
+   `Position` is classified by `_known_continuous_raw_pair`. A pair test that
+   ignored `entry.path` therefore reopened the raw route to `PIZStage.Position`,
+   the exact protection 48a's gate measured closed. Both decisions in that
+   function now read one `_RAW_WRITE_PATHS` set, so the invariant is stated once
+   rather than twice.
 
 ### This adds no configuration
 
@@ -157,31 +168,55 @@ is pair-specific for typed capabilities, and record the regression in
 
 ## Run ledger
 
-| Block | Branch | Start commit | Implementer | Rig gate | Merged |
-|---|---|---|---|---|---|
-| coordination | `design49/open` | `23c4d29` | coordinator | n/a | — |
-| 49a | `design49/block-49a` | `339c4f3` | codex, 1 round + coordinator fix | pushed 2026-08-14, awaiting M5 | — |
+| Block | Branch | Start commit | Implementer | Rig gate | Merged | Design reconciled |
+|---|---|---|---|---|---|---|
+| coordination | ~~`design49/open`~~ | `23c4d29` | coordinator | n/a | — | n/a |
+| 49a | ~~`design49/block-49a`~~ | `339c4f3` | codex, 1 round + coordinator fix | **M5 PASS 2026-08-14** | `036af32` | design/33 §amendment, design/48 §48a-gate, 2026-08-14 |
+
+### What the 49a M5 gate measured (2026-08-14)
+
+Evidence: `~/Documents/Documents - Beyonce/Projects/Micro-Claw/49a-m5`.
+
+- pytest on M5: **1756 passed, 124 skipped**. macOS on the same commit was 1781
+  / 99, and 1756 + 124 = 1781 + 99 = **1880** — the same collection, 25 tests
+  skipped on Windows. Nothing was lost. The Windows-only skip set has grown from
+  48a's 17; the three new explicit POSIX-only markers are in `test_credentials`,
+  `test_shortcut`, and `test_config_gate`, all from 48b–48e's installer work,
+  and none of this block's tests carry a platform marker.
+- **Both toggle limbs passed.** `set_focus_lock` off and on, twice each across
+  steps 2 and 3, no refusal, `property` exactly `PIZStage.External sensor`.
+- **Autofocus ran end to end with no GUI intervention** — the limb the block
+  existed for. The agent called `set_focus_lock(false)` → `run_autofocus` →
+  `set_focus_lock(true)` on its own. `converged: true`, `peak_interior: true` in
+  **both** coarse and fine passes, contrast 19.0 and 54.1, entry Z 30.543 →
+  final 30.043.
+- **The lock physically engaged**, not merely reported: QPD x read `18646`
+  disengaged and `32926` engaged, matching the engaged range seen in the
+  2026-08-14 TIRF session (`32878`–`32964`).
+- **The bounded-stage refusal is unchanged.** `set_device_property` on
+  `PIZStage.Position` at an in-range `50` refused, naming all three real
+  routing tools, with no motion.
 
 ## Coordinator checklist
 
 Run the ten steps in CLAUDE.md §"The block workflow". That section is
 authoritative; this checklist tracks state only.
 
-- [ ] Start from updated `main`; create `design49/block-49a`; record the start
+- [x] Start from updated `main`; create `design49/block-49a`; record the start
       commit in the run ledger and commit it before assigning the block.
-- [ ] Write the runner prompt to the scratchpad, then stop and offer to start the
+- [x] Write the runner prompt to the scratchpad, then stop and offer to start the
       agent. Do not spawn it.
-- [ ] Implementation lands in its own worktree; implementer commits and reports,
+- [x] Implementation lands in its own worktree; implementer commits and reports,
       never merges.
-- [ ] Review the diff, not the summary. Re-run the full suite yourself. Loop
+- [x] Review the diff, not the summary. Re-run the full suite yourself. Loop
       until correct.
-- [ ] Commit the 49a rig-gate runbook **on the block branch**, pinned with
+- [x] Commit the 49a rig-gate runbook **on the block branch**, pinned with
       `git merge-base --is-ancestor <commit> HEAD`. Push to `origin`. No PR.
-- [ ] User runs the M5 gate. Never simulate rig evidence.
-- [ ] Fix, sized to the finding; push to the same branch; user re-tests until
+- [x] User runs the M5 gate. Never simulate rig evidence.
+- [x] Fix, sized to the finding; push to the same branch; user re-tests until
       the gate passes.
-- [ ] Merge to `main`, push `main`, delete the branch locally and on `origin`.
+- [x] Merge to `main`, push `main`, delete the branch locally and on `origin`.
       `git log --oneline origin/main..main` must be empty.
-- [ ] Coordination notes in `design/prompts.md`; close the ledger row **including
+- [x] Coordination notes in `design/prompts.md`; close the ledger row **including
       its design-reconciliation cell**.
-- [ ] Run the step-10 design gate named under 49a.
+- [x] Run the step-10 design gate named under 49a.
