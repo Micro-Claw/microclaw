@@ -467,7 +467,8 @@ and proceeds on approval. Then the rig interview starts on its own.
 | 48a | ~~`design48/block-48a`~~ | `9176dfd` | 2 review rounds | M5 PASS 2026-08-13 | `959dade` |
 | 48b | ~~`design48/block-48b`~~ | `f6e7300` | 1 round + clarification | M5 PASS 2026-08-13 | `e17fe60` |
 | 48c | ~~`design48/block-48c`~~ | `e17fe60` | 1 round | M5 PASS 2026-08-13 | `e54e610` |
-| 48d | `design48/block-48d` | `e54e610` | 1 round, tip pushed | awaiting M5 | — |
+| 48d | ~~`design48/block-48d`~~ | `e54e610` | 1 round + re-run | M5 PASS 2026-08-14 | `cadbf33` |
+| 48e | `design48/block-48e` | `cadbf33` | assigned 2026-08-14 | — | — |
 | 48c | — | — | — | — | — |
 | 48d | — | — | — | — | — |
 | 48e | — | — | — | — | — |
@@ -513,6 +514,13 @@ Two defects the gate exposed, both fixed on the branch:
 - Twelve tools in `TOOL_REGISTRY` remain undecorated for export (measured
   2026-08-12). Tracked in design/35's carried-forward register; 48b only has to
   avoid adding a thirteenth.
+- **Schema 3 cannot express per-axis bounds for a second XY stage.**
+  `named_stages` keys on device label and `SafetyGuard.check_named_stage` takes
+  the first matching entry, so a non-core `XYStageDevice` — which the setup sweep
+  reports as two axes under one label — would collide. 48d's writer refuses and
+  names the device rather than writing a stage that looks bounded and is not. No
+  rig in use has one (M5's `SmarAct 2D` is its *core* XY), so this is a schema
+  decision to make deliberately, not a defect to patch under a block.
 - The three rigs' existing schema-2 files. Each gate runbook renames rather than
   deletes; no automated migration is planned.
 - `first_launch.py`'s device-classification interview encodes real rig knowledge.
