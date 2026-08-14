@@ -42,13 +42,19 @@ call :finish         || goto :fail
 echo.
 echo   Installation complete. There is now a Microclaw icon on your desktop.
 echo.
+rem Setup is launched with write authority only when there is nothing to protect.
+rem An existing file that setup must not overwrite gets a genuinely read-only
+rem session instead: the writer is never offered, so the refusal arrives before
+rem the operator spends a conversation capturing endpoints that cannot be saved.
+set "MC_SETUP_ARGS=--setup-write-security-config"
 if exist "%APPDATA%\microclaw\safety_config.yaml" (
     "%MC_EXE%" check-config >nul 2>&1
     if errorlevel 1 (
         echo   Existing security bounds are invalid or unreviewed and were preserved:
         echo     %APPDATA%\microclaw\safety_config.yaml
-        echo   Setup will open read-only, but it cannot overwrite that file. Move it
+        echo   Setup will open read-only, and it cannot overwrite that file. Move it
         echo   aside or repair it deliberately, then rerun the one-time command below.
+        set "MC_SETUP_ARGS="
         goto :bridge_instructions
     )
     echo   Existing reviewed security bounds preserved. Setup is not repeated during an upgrade.
@@ -90,7 +96,9 @@ echo.
 echo   Starting restricted browser setup...
 echo   If you close it early, rerun this one-time setup command:
 echo     "%MC_EXE%" --setup-write-security-config serve
-"%MC_EXE%" --setup-write-security-config serve
+rem MC_SETUP_ARGS is empty when an existing config must be protected, which is
+rem what makes the read-only promise printed above true.
+"%MC_EXE%" %MC_SETUP_ARGS% serve
 if not errorlevel 1 goto :installed_done
 echo.
 echo   Browser setup did not finish, but Microclaw is installed. Resolve

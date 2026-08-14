@@ -62,14 +62,26 @@ def test_installer_checks_bridge_before_running_setup(bat):
     retired = "%MC_EXE%\" " + "first-launch" + "-setup"
     assert retired not in finish
     check = '"%MC_EXE%" check-bridge'
-    setup = '"%MC_EXE%" --setup-write-security-config serve'
+    setup = '"%MC_EXE%" %MC_SETUP_ARGS% serve'
     assert bat.count(check) == 1
-    launches = re.findall(
-        r'^"%MC_EXE%" --setup-write-security-config serve$', bat, re.M,
-    )
+    launches = re.findall(r'^"%MC_EXE%" %MC_SETUP_ARGS% serve$', bat, re.M)
     assert len(launches) == 1
     assert bat.index(check) < bat.index(setup, bat.index("Starting restricted browser setup"))
     assert "if not errorlevel 1 goto :bridge_ready" in bat
+
+
+def test_write_authority_is_withheld_when_a_config_must_be_protected(bat):
+    """The single launch carries write authority only when there is nothing to
+    overwrite. Pinning the literal flagged command instead would pass just as
+    well for an installer that promises a read-only session and then hands the
+    writer to it anyway — which is what this branch used to do."""
+    assert 'set "MC_SETUP_ARGS=--setup-write-security-config"' in bat
+    # The clearing assignment lives in the invalid-config branch, between the
+    # message naming the preserved file and the jump to the bridge steps.
+    invalid = bat[bat.index("Existing security bounds are invalid"):]
+    invalid = invalid[:invalid.index("goto :bridge_instructions")]
+    assert 'set "MC_SETUP_ARGS="' in invalid
+    assert "read-only" in invalid
 
 
 def test_installer_prints_setup_fallback_after_micro_manager_instruction(bat):

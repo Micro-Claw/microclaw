@@ -16,9 +16,9 @@ python -m pytest -q
 Write-Host "pytest exit code (expected 0):" $LASTEXITCODE
 ```
 
-The macOS result at the pin is **1770 passed + 99 skipped = 1869 total**, with
+The macOS result at the pin is **1771 passed + 99 skipped = 1870 total**, with
 3 warnings. M5 skips more tests because Node is not installed. Record passed and
-skipped separately and require **passed + skipped = 1869**; any failure or other
+skipped separately and require **passed + skipped = 1870**; any failure or other
 total is not this gate.
 
 ## 2. Make and verify recoverable clean-profile backups
@@ -40,8 +40,20 @@ Test-Path $ShortcutBackup
 ```
 
 Expect three `False` values. If any is `True`, stop and choose explicit unused
-names throughout this runbook. Preserve the current credential before moving
-the installed environment:
+names throughout this runbook.
+
+> **Before deleting the stored API key, put a copy somewhere you can retrieve
+> after this window closes** — your password manager, or wherever you keep
+> credentials. The `$KeyBackup` variable below lives only in this PowerShell
+> process: if the window closes, crashes, or is rebooted between here and
+> section 6, the key is gone from the credential store with no copy anywhere,
+> and an Anthropic API key cannot be read back from the console once created —
+> you would have to issue a new one and update anything else that uses it.
+> `$KeyBackup` is a convenience for restoring in this window, not the backup of
+> record. Confirm you can retrieve the key independently before running the next
+> block.
+
+Preserve the current credential before moving the installed environment:
 
 ```powershell
 $Python = "$env:LOCALAPPDATA\microclaw\env\Scripts\python.exe"
@@ -166,7 +178,10 @@ if (Test-Path "$Desktop\Microclaw.lnk") { Move-Item "$Desktop\Microclaw.lnk" "$D
 if (Test-Path "$Desktop\Microclaw.lnk.block48e-backup") { Move-Item "$Desktop\Microclaw.lnk.block48e-backup" "$Desktop\Microclaw.lnk" }
 ```
 
-Restore the Credential Manager key only if one existed before the gate:
+Restore the Credential Manager key. If `$KeyBackup` is empty because this
+window was closed at some point, use the copy you set aside in section 2 —
+paste it into the browser's key banner on the next launch instead, which stores
+it the same way:
 
 ```powershell
 if ($KeyBackup) {
