@@ -297,16 +297,32 @@ Y = 11968.9 µm against a 5000 µm `y_max` — so the gate is cheap and exact.
   agent says so to the operator before doing anything else.
 - `validate_positions` on the current position names the Y limit, not
   "the current XY safety guard".
-- Then raise `y_max` to the true travel, restart, and confirm the report is
-  **absent** — the same session that produced the finding should end with the
-  rig usable, and an absent-when-correct check is the half that catches a field
-  that is always on.
+- Then correct `y_max`, restart, and confirm the report is **absent** — the same
+  session that produced the finding should end with the rig usable, and an
+  absent-when-correct check is the half that catches a field that is always on.
 - Nothing moved: stage coordinates identical before and after, from
   `get_system_state`, not from narration.
 
-Step-10 design gate: record the measured `y_max` and where the real limit came
-from, so the next session on M5 does not rediscover this. Tick the register row
-this block closes.
+**`stage.y_max` is a collision envelope, not the stage's travel limit** — the
+operator ruling of 2026-08-14, correcting this document and the runbook, both of
+which had told the operator to source the number from the hardware. M5's stage
+can drive much further than is safe, far enough to hit the objective. The bound
+is the range the operator is willing to let software move within, it must be
+*narrower* than hardware travel, and no device property, controller readout or
+specification can supply it. It is a judgment made at the rig.
+
+That reframes the finding itself. The stage was at Y = 11968.9 on 2026-08-12
+**and imaging beads successfully**, so `y_max: 5000` was not protecting anything
+at that position. Either the envelope is authored too narrow, or it was authored
+against a **different origin** — a re-home, or a value carried from another
+rig — in which case every stage bound in that file is suspect rather than just
+this one. The gate asks which, and that answer is worth more than the corrected
+number.
+
+Step-10 design gate: record the corrected `y_max`, **which of the two diagnoses
+above it was, and what the operator based it on**, so the next session on M5 does
+not rediscover this. If the answer is "different origin", raise the remaining
+stage bounds as their own finding — do not fix them silently inside this block.
 
 ---
 
