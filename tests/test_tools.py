@@ -3099,7 +3099,15 @@ class TestRunAOfflineTools:
         assert verification["coordinate_matches"] == [False]
         assert verification["matches_ranking_prefix"] is False
 
-    def test_validate_positions_does_not_move_or_expose(self, mock_ctrl):
+    def test_validate_positions_names_the_limit_hit_but_never_clips(self, mock_ctrl):
+        # Renamed from ..._does_not_move_or_expose by block 50b. design/26
+        # coupled "never expose guard limits" to "never clip" on the theory that
+        # an agent which cannot see the limits cannot clip to them; it does not
+        # hold, since every move refusal already names the limit it hit, and the
+        # silence cost the M5 session of 2026-08-12 (design/50 Problem 2).
+        # What survives is narrower and is both halves of this test: name the
+        # limit the rejected position hit, never dump the limits table, never
+        # clip.
         guard = SafetyGuard(SafetyConstraints(
             stage=StageConstraints(x_min=0, x_max=10, y_min=0, y_max=10,
                                    z_min=0, z_max=5)))
@@ -3112,9 +3120,15 @@ class TestRunAOfflineTools:
         assert result["rejected"][0]["reason"] == (
             "X=20.0 µm exceeds the maximum allowed (10.0 µm)."
         )
-        assert "10" in json.dumps(result)
+        # The limit that was hit is disclosed; the envelope is not. This
+        # position never hit Y or Z, so neither axis may be named anywhere in
+        # the payload -- that, and not the absence of the digits, is what
+        # "never dump the limits table" means.
+        assert "Y=" not in json.dumps(result)
+        assert "Z=" not in json.dumps(result)
         assert result["clipped"] == 0
         assert "limits" not in result
+        assert [p["x_um"] for p in result["accepted"]] == [2]   # unclipped
         mock_ctrl.set_xy.assert_not_called()
         mock_ctrl.studio.live().snap.assert_not_called()
 

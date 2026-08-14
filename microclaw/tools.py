@@ -1843,17 +1843,37 @@ def clear_roi(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
 
 # --- XY Stage ---
 
+def _bounds_violation(check: Callable[..., None], *args: Any) -> str | None:
+    """Return the guard's own refusal for a coordinate already read, else None.
+
+    A report, never a gate. Every caller has already read the position and is
+    describing it, so this must not turn a read into an error: `get_system_state`
+    is what a session calls to orient itself, and the one thing it may never do
+    is fail. A guard defect is therefore dropped rather than raised.
+
+    `SafetyViolation` is the answer being asked for, and that deliberately
+    includes the one `_finite_number` raises for a non-finite *configured*
+    limit — a broken `stage.y_max` is worth surfacing as a bounds problem rather
+    than being silently swallowed, which is the failure mode this whole block
+    exists to remove.
+    """
+    try:
+        check(*args)
+    except SafetyViolation as exc:
+        return str(exc)
+    except Exception:
+        return None
+    return None
+
+
 @emits_nothing
 def get_xy_position(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     x = ctrl.core.get_x_position()
     y = ctrl.core.get_y_position()
     result = {"x_um": round(x, 3), "y_um": round(y, 3)}
-    try:
-        guard.check_xy(x, y)
-    except SafetyViolation as exc:
-        result["out_of_bounds"] = [str(exc)]
-    except Exception:
-        pass
+    violation = _bounds_violation(guard.check_xy, x, y)
+    if violation:
+        result["out_of_bounds"] = [violation]
     return result
 
 
@@ -1907,12 +1927,9 @@ def move_stage_xy(
 def get_z_position(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     z = ctrl.core.get_position()
     result = {"z_um": round(z, 3)}
-    try:
-        guard.check_z(z)
-    except SafetyViolation as exc:
-        result["out_of_bounds"] = [str(exc)]
-    except Exception:
-        pass
+    violation = _bounds_violation(guard.check_z, z)
+    if violation:
+        result["out_of_bounds"] = [violation]
     return result
 
 
@@ -2423,43 +2440,47 @@ def _laser_state(ctrl: MicroscopeController) -> Any:
 @emits_nothing
 def get_system_state(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     state: dict[str, Any] = {}
+    # Reported on every call, deliberately. There is no "first call" to hang a
+    # one-shot warning on: Microclaw opens mid-session and more than once, so
+    # any "already warned" state is something a second launch would trip over.
+    # Absent entirely when every axis is inside its envelope -- an always-present
+    # field reads as a warning.
     out_of_bounds = []
     try:
         x = ctrl.core.get_x_position()
         y = ctrl.core.get_y_position()
         state["x_um"] = round(x, 3)
         state["y_um"] = round(y, 3)
-        try:
-            guard.check_xy(x, y)
-        except SafetyViolation as exc:
-            out_of_bounds.append(str(exc))
-        except Exception:
-            pass
+        violation = _bounds_violation(guard.check_xy, x, y)
+        if violation:
+            out_of_bounds.append(violation)
     except Exception:
         state["xy_stage"] = "unavailable"
     try:
         z = ctrl.core.get_position()
         state["z_um"] = round(z, 3)
-        try:
-            guard.check_z(z)
-        except SafetyViolation as exc:
-            out_of_bounds.append(str(exc))
-        except Exception:
-            pass
+        violation = _bounds_violation(guard.check_z, z)
+        if violation:
+            out_of_bounds.append(violation)
     except Exception:
         state["z_stage"] = "unavailable"
+    # One bridge round trip per declared named stage, on the tool a session calls
+    # to orient itself -- and pyjavaz serializes every call, so these are paid in
+    # sequence. That cost is accepted because a named stage nobody reads is a
+    # named stage whose limit nobody can check. Read only what `named_stages`
+    # declares; do NOT enumerate the rig's devices, and do not add further reads
+    # here without weighing the same trade.
     if guard._c.named_stages:
         state["named_stages"] = {}
         for limits in guard._c.named_stages:
             try:
                 position = float(ctrl.core.get_position(limits.device))
                 state["named_stages"][limits.device] = round(position, 4)
-                try:
-                    guard.check_named_stage(limits.device, position)
-                except SafetyViolation as exc:
-                    out_of_bounds.append(str(exc))
-                except Exception:
-                    pass
+                violation = _bounds_violation(
+                    guard.check_named_stage, limits.device, position
+                )
+                if violation:
+                    out_of_bounds.append(violation)
             except Exception:
                 state["named_stages"][limits.device] = "unavailable"
     if out_of_bounds:
