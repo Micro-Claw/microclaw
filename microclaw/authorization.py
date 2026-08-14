@@ -57,11 +57,12 @@ class RigAuthorizationError(RuntimeError):
 
 def _live_emu_lasers(
     ctrl: Any, loaded_devices: list[str]
-) -> tuple[dict[int, dict], list[str]]:
+) -> tuple[dict[int, dict], dict | None, list[str]]:
     """Read the semantic EMU laser map from the running MM installation.
 
-    Returns slot -> laser record (with the configured design/39 names) plus any
-    problem strings.  An empty map with no problems is an ordinary non-EMU rig.
+    Returns slot -> laser record (with the configured design/39 names), the
+    allocated focus-lock record, and any problem strings. An empty laser map
+    and no focus lock or problems is an ordinary non-EMU rig.
 
     This is read-only discovery: asking ImageJ for its application directory
     and reading EMU's config file do not write hardware.  In particular, do not
@@ -79,19 +80,19 @@ def _live_emu_lasers(
     if not callable(getattr(ctrl, "get_mm_app_dir", None)):
         # Read-only/offline controller implementations have no live JVM whose
         # installation can be authorized.
-        return {}, []
+        return {}, None, []
     try:
         # Startup validation is read-only, including with respect to the
         # per-user locator cache. Normal tool callers retain write-through.
         resolution = resolve_mm_app_dir(ctrl, cache_live=False)
     except Exception as exc:
-        return {}, [
+        return {}, None, [
             "Could not locate the live Micro-Manager installation for EMU semantic "
             f"laser-enable discovery: {_clean_exception_message(exc)}"
         ]
     mm_app_dir = resolution.path
     if mm_app_dir is None:
-        return {}, [
+        return {}, None, [
             "Could not establish the live Micro-Manager installation for EMU "
             f"semantic laser-enable discovery (live probe: {resolution.live_probe}; "
             "no validated fallback). Verify the running ImageJ/Micro-Manager "
@@ -104,8 +105,8 @@ def _live_emu_lasers(
         # actual config says this rig uses EMU; a validated live path without
         # one is therefore an ordinary non-EMU rig.
         if resolution.source == "live" and not _has_emu_config(mm_app_dir):
-            return {}, []
-        return {}, [
+            return {}, None, []
+        return {}, None, [
             f"Could not establish EMU semantics for the live installation: "
             f"{mm_app_dir} was located via {resolution.source!r} "
             f"(live probe: {resolution.live_probe}) but has no readable "
@@ -125,13 +126,15 @@ def _live_emu_lasers(
         config = read_emu_config(mm_app_dir, loaded_devices)
         # The parameters block carries the configured slot names (design/39).
         # Without it a slot has no name, and a name is what a channel is.
-        lasers = build_emu_map(config["properties"], config["parameters"])["lasers"]
+        emu_map = build_emu_map(config["properties"], config["parameters"])
+        lasers = emu_map["lasers"]
+        focus_lock = emu_map["focus_lock"]
     except Exception as exc:
-        return {}, [
+        return {}, None, [
             f"Could not resolve EMU semantic laser enables from {config_path}: "
             f"{_clean_exception_message(exc)}"
         ]
-    return lasers, problems
+    return lasers, focus_lock, problems
 
 
 def _emu_enable_pairs(
@@ -491,7 +494,7 @@ def _channel_source(
             loaded = _strings(core.get_loaded_devices())
         except Exception:
             loaded = []
-        lasers, problems = _live_emu_lasers(ctrl, loaded)
+        lasers, _focus_lock, problems = _live_emu_lasers(ctrl, loaded)
     if not lasers:
         # No config group and no EMU map: exactly the pre-block behaviour, with
         # no EMU-flavoured advice invented for a rig that has no EMU.
@@ -913,7 +916,23 @@ def validate_live_rig(
         loaded_devices = []
         loaded_devices_error = f"Could not enumerate connected devices: {exc}"
 
-    emu_lasers, emu_discovery_problems = _live_emu_lasers(ctrl, loaded_devices)
+    emu_lasers, emu_focus_lock, emu_discovery_problems = _live_emu_lasers(
+        ctrl, loaded_devices
+    )
+    if (
+        emu_focus_lock is not None
+        and isinstance(emu_focus_lock.get("device"), str)
+        and emu_focus_lock["device"]
+        and isinstance(emu_focus_lock.get("property"), str)
+        and emu_focus_lock["property"]
+    ):
+        entries.append(AuthorizationEntry(
+            path="generic-property",
+            classification="built_in_typed_capability",
+            device=emu_focus_lock["device"],
+            property=emu_focus_lock["property"],
+            capability="focus-lock",
+        ))
     emu_enables, emu_resolution_problems = _emu_enable_pairs(emu_lasers)
     emu_warnings = [*emu_discovery_problems, *emu_resolution_problems]
     for slot, device, prop in emu_enables:
@@ -1487,13 +1506,35 @@ def validate_live_rig(
     return report
 
 
+# Entry paths that authorize a *raw* write. Preset entries authorize only the
+# captured channel-plan route: a raw write must have its own reachable map entry
+# so the map and guard remain independent gates. Both decisions below read this
+# one set — a preset that expands to a bounded stage device's position property
+# is classified `built_in_typed_capability`, so a typed-pair test that ignored
+# the path would hand the raw route exactly the bypass this set exists to close.
+_RAW_WRITE_PATHS = frozenset({
+    "generic-property", "dedicated-illumination", "all-property-paths",
+})
+
+
 def authorize_property_write(ctrl: Any, device: str, prop: str) -> None:
     """Enforce the attached reviewed/excluded decision on any raw write path."""
     report = getattr(ctrl, "authorization_map", None)
     if report is None:
         # Invariant: startup attaches this before exposing production mutation paths.
         return
-    if report.property_writes_unrestricted and device in report.bounded_stage_devices:
+    typed_pair = any(
+        entry.device == device
+        and entry.property == prop
+        and entry.classification == "built_in_typed_capability"
+        and entry.path in _RAW_WRITE_PATHS
+        for entry in report.entries
+    )
+    if (
+        report.property_writes_unrestricted
+        and device in report.bounded_stage_devices
+        and not typed_pair
+    ):
         raise RigAuthorizationError(
             f"Property write {device}.{prop} was refused because {device!r} carries "
             "declared stage bounds. Raw property writes cannot route around those "
@@ -1505,12 +1546,7 @@ def authorize_property_write(ctrl: Any, device: str, prop: str) -> None:
     matches = [
         entry for entry in report.entries
         if entry.device == device and entry.property == prop
-        # Preset entries authorize only the captured channel-plan route. A raw
-        # write must have its own reachable map entry so the map and guard
-        # remain independent gates.
-        and entry.path in {
-            "generic-property", "dedicated-illumination", "all-property-paths"
-        }
+        and entry.path in _RAW_WRITE_PATHS
     ]
     admitted = {
         "reviewed_categorical_property", "built_in_typed_capability",
