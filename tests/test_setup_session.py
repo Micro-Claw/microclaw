@@ -481,3 +481,21 @@ def test_setup_session_offers_writer_only_with_explicit_capability(monkeypatch, 
     session = webserve.build_session(args)
     assert {schema["name"] for schema in session.tool_schemas} == webserve.SETUP_TOOL_NAMES
     assert session.ctrl._microclaw_setup_write_capability.enabled is True
+
+
+def test_setup_refusal_hint_does_not_send_the_model_to_the_schema():
+    """M5 gate, 2026-08-14. The replay refusal came back with the ValueError
+    hint — "a tool was called with a missing, extra, or wrong-typed parameter.
+    Re-read the tool schema" — because SetupRefusal subclasses ValueError. The
+    one remedy that cannot work is a different set of arguments."""
+    from microclaw.errors import hint_for_error
+
+    hint = hint_for_error(setup_tools.SetupRefusal(
+        "SETUP REFUSAL: The security config is already written and Microclaw "
+        "must be restarted."
+    ))
+    assert "restart" in hint.lower()
+    # It may mention parameters in order to rule them out; what it must not do
+    # is send the model back to the schema to fix a call that was well-formed.
+    assert "re-read the tool schema" not in hint.lower()
+    assert hint != hint_for_error(ValueError("some ordinary argument mistake"))

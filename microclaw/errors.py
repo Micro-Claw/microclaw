@@ -85,6 +85,21 @@ def hint_for_error(exc: Exception) -> str:
             "rig's state is not in question. This is a device or link failure — "
             "diagnose the device named in the message before retrying the plan."
         )
+    if error_type == "SetupRefusal":
+        # A setup refusal is a decision about session state — the capability was
+        # never granted, is already spent, the draft is incomplete, or the
+        # operator declined. It subclasses ValueError, so without this branch it
+        # collected the argument-error hint below and told the model to re-read
+        # the tool schema and fix its parameters. The M5 gate saw exactly that on
+        # the replay refusal (2026-08-14): the remedy it named was the one thing
+        # that could not possibly help.
+        return (
+            "This is a setup-state decision, not an argument error and not a "
+            "hardware fault: no change to the call's parameters would alter it. "
+            "The refusal names what has to happen next — usually restarting "
+            "Microclaw, or completing the draft — and it is never a different "
+            "set of arguments."
+        )
     if error_type == "RigAuthorizationError":
         return (
             "This is an authorization decision, not a hardware fault. The write "
