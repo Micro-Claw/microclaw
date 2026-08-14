@@ -227,7 +227,23 @@
         continue;
       }
 
-      // assistant message
+      // assistant message. A plain string is as valid a shape here as it is for
+      // a user turn — microclaw seeds setup mode's opening message that way, and
+      // rendering only arrays silently dropped it: the page a novice met on a
+      // fresh install was empty apart from banners, so they had to type
+      // something to find out what setup wanted (block 48e's clean-profile
+      // acceptance run, 2026-08-14).
+      if (m.role === "assistant" && typeof content === "string") {
+        if (content.trim() === "") continue;
+        asstTurns++;
+        if (lastRole !== "assistant") tx.appendChild(roleTag("asst", "Microclaw"));
+        lastRole = "assistant";
+        const only = document.createElement("div");
+        only.className = "turn";
+        only.innerHTML = '<div class="bubble asst">' + md(content) + "</div>";
+        tx.appendChild(only);
+        continue;
+      }
       if (m.role === "assistant" && Array.isArray(content)) {
         const blocks = content.filter(b => b.type === "text" || b.type === "tool_use");
         if (!blocks.length) continue;

@@ -642,8 +642,7 @@ def test_a_script_opens_in_the_text_editor_and_never_reaches_imagej(
 
     ImageJ read its first bytes as an image header ("not a TIFF file:
     header=b'from'") and the ZMQ bridge was left wedged badly enough to need a
-    Micro-Manager restart, mid rig gate. A script is text; it opens the way
-    `microclaw init` opens safety_config.yaml.
+    Micro-Manager restart, mid rig gate. A script is text and belongs in an editor.
     """
     script = tmp_path / "session.py"
     script.write_text("from pycromanager import Core\n", encoding="utf-8")

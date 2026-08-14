@@ -12,7 +12,7 @@ from typing import Any
 import yaml
 
 from microclaw import paths, tools
-from microclaw.first_launch import SetupRefusal
+from microclaw.errors import SetupRefusal
 from microclaw.rig_inventory import enumerate_rig
 from microclaw.safety import ParsedSafetyConfig, SafetyConfigError
 
@@ -21,7 +21,14 @@ PROPOSED_CONFIRM_FRAMES = 500
 PROPOSED_CONFIRM_DURATION_S = 1200
 RESTART_MESSAGE = (
     "Security bounds are saved. Restart Microclaw; it will next learn the essential "
-    "details of your microscope before helping with your workflows."
+    "details of your microscope before helping with your workflows. "
+    # The design says Microclaw "tells the user to close it and restart from the
+    # desktop shortcut", and until this sentence it did not: setup is a one-time
+    # server the installer started, so after the browser was closed that window
+    # sat running with nothing anywhere saying how to end it (block 48e's
+    # clean-profile acceptance run, 2026-08-14).
+    "To finish: close this browser tab, then press Ctrl+C in the setup window the "
+    "installer opened, and start Microclaw again from the desktop icon."
 )
 
 

@@ -1553,9 +1553,18 @@ def _format_duration(seconds: float) -> str:
     Every duration here is an estimate, so every rendering says "about" —
     phrasing that switched on whether the number divided evenly read as though
     a round 20 minutes were the more certain figure.
+
+    Precision is trimmed for the same reason. `%g` carries six significant
+    figures, so M5's 21-minute plan asked "about 21.0008 minutes" (block 48e
+    acceptance run, 2026-08-14): six digits of precision on a number introduced
+    as approximate, in the one sentence an operator reads before committing
+    twenty minutes of rig time.
     """
     value, unit = (seconds, "second") if seconds < 60 else (seconds / 60, "minute")
-    return f"about {value:g} {unit}{'' if value == 1 else 's'}"
+    value = round(value, 1)
+    if value == int(value):
+        value = int(value)
+    return f"about {value} {unit}{'' if value == 1 else 's'}"
 
 
 def _authorize_acquisition(
@@ -5865,7 +5874,7 @@ def open_artifact(
         # ImageJ reads the first bytes as an image header, fails, and can leave
         # the bridge wedged: on M5 2026-08-11 an exported .py produced
         # "not a TIFF file: header=b'from'" and cost a Micro-Manager restart
-        # mid-gate. Text opens the way `microclaw init` opens safety_config.yaml.
+        # mid-gate. Text opens in the platform's normal text editor.
         via = open_in_editor(resolved)
         return {
             "path": str(resolved), "opened": True, "via": via, "windows": [],

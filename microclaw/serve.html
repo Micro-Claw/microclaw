@@ -570,6 +570,12 @@
       ? "Replace the Anthropic API key" : "No Anthropic API key";
     $("key-cancel").classList.toggle("hidden", !replacing);
     $("key-banner").classList.remove("hidden");
+    // Bring it into view before focusing. In setup mode this banner sits below
+    // the setup banner and its axis checklist, which on a first install pushed
+    // it off screen: the operator saw "hardware control locked", no obvious way
+    // to proceed, and had to scroll to discover the key box (block 48e's
+    // clean-profile acceptance run, 2026-08-14).
+    $("key-banner").scrollIntoView({ block: "nearest" });
     $("key-input").focus();
   }
 

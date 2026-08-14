@@ -59,18 +59,34 @@ def test_installer_checks_bridge_before_running_setup(bat):
     """Core setup is reachable only after the bounded readiness command succeeds."""
     finish = re.search(r"^:finish$(.*?)(?=^:\w+)", bat, re.M | re.S).group(1)
     assert '%MC_EXE%" init' not in finish
-    assert '%MC_EXE%" first-launch-setup' not in finish
+    retired = "%MC_EXE%\" " + "first-launch" + "-setup"
+    assert retired not in finish
     check = '"%MC_EXE%" check-bridge'
-    setup = '"%MC_EXE%" init --yes'
+    setup = '"%MC_EXE%" %MC_SETUP_ARGS% serve'
     assert bat.count(check) == 1
-    assert bat.count(setup) == 1
-    assert bat.index(check) < bat.index(setup)
+    launches = re.findall(r'^"%MC_EXE%" %MC_SETUP_ARGS% serve$', bat, re.M)
+    assert len(launches) == 1
+    assert bat.index(check) < bat.index(setup, bat.index("Starting restricted browser setup"))
     assert "if not errorlevel 1 goto :bridge_ready" in bat
+
+
+def test_write_authority_is_withheld_when_a_config_must_be_protected(bat):
+    """The single launch carries write authority only when there is nothing to
+    overwrite. Pinning the literal flagged command instead would pass just as
+    well for an installer that promises a read-only session and then hands the
+    writer to it anyway — which is what this branch used to do."""
+    assert 'set "MC_SETUP_ARGS=--setup-write-security-config"' in bat
+    # The clearing assignment lives in the invalid-config branch, between the
+    # message naming the preserved file and the jump to the bridge steps.
+    invalid = bat[bat.index("Existing security bounds are invalid"):]
+    invalid = invalid[:invalid.index("goto :bridge_instructions")]
+    assert 'set "MC_SETUP_ARGS="' in invalid
+    assert "read-only" in invalid
 
 
 def test_installer_prints_setup_fallback_after_micro_manager_instruction(bat):
     instruction = 'Run pycro-manager server on port 4827'
-    setup_command = 'echo     "%MC_EXE%" init'
+    setup_command = 'echo     "%MC_EXE%" --setup-write-security-config serve'
     assert instruction in bat
     assert setup_command in bat
     assert bat.index(instruction) < bat.index(setup_command)
@@ -85,12 +101,37 @@ def test_installer_retries_bridge_three_times_and_keeps_install_successful(bat):
     assert "Installation complete" in bat
 
 
-def test_upgrade_preserves_existing_profile_and_skips_first_launch(bat):
+def test_upgrade_preserves_existing_profile_and_skips_setup(bat):
     assert 'if exist "%APPDATA%\\microclaw\\safety_config.yaml" (' in bat
     assert '"%MC_EXE%" check-config >nul 2>&1' in bat
-    assert "Existing safety profile preserved, but it is not ready for launch" in bat
-    assert "Existing reviewed safety profile preserved" in bat
+    assert "Existing security bounds are invalid or unreviewed and were preserved" in bat
+    assert "%APPDATA%\\microclaw\\safety_config.yaml" in bat
+    assert "cannot overwrite that file" in bat
+    assert "Existing reviewed security bounds preserved" in bat
     assert "goto :installed_done" in bat
+
+
+def test_setup_authority_is_one_time_and_never_in_the_shortcut(bat):
+    assert '"%MC_EXE%" --setup-write-security-config serve' in bat
+    shortcut_call = re.search(r"^:finish$(.*?)(?=^:\w+)", bat, re.M | re.S).group(1)
+    assert "--setup-write-security-config" not in shortcut_call
+    shortcut = (ROOT / "microclaw" / "shortcut.py").read_text(encoding="utf-8")
+    assert '"serve"' in shortcut
+    assert "--setup-write-security-config" not in shortcut
+
+
+def test_installer_prepares_the_user_for_the_browser_key_gate(bat):
+    key_notice = bat.index("console.anthropic.com")
+    launch = bat.index('"%MC_EXE%" --setup-write-security-config serve', key_notice)
+    assert key_notice < launch
+    assert "browser page" in bat
+    assert "will ask for the key" in bat
+
+
+def test_retired_terminal_setup_is_absent(bat):
+    assert "init --yes" not in bat
+    assert "first-launch" + "-setup" not in bat
+    assert "review_steps" not in bat
 
 
 def test_installer_never_asks_for_admin(bat):
@@ -120,3 +161,12 @@ def test_batch_files_are_forced_to_crlf():
 @pytest.mark.skipif(sys.platform != "win32", reason="only meaningful in a Windows checkout")
 def test_working_tree_copy_is_crlf():
     assert b"\r\n" in BAT.read_bytes()
+
+
+def test_installer_says_how_to_stop_the_setup_server(bat):
+    """It launches serve in the foreground, so the window keeps running after
+    the browser is done with it (48e acceptance run, 2026-08-14)."""
+    launch = bat.index("Starting restricted browser setup")
+    guidance = bat[launch - 400:launch + 400].lower()
+    assert "ctrl+c" in guidance
+    assert "desktop icon" in guidance

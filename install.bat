@@ -42,20 +42,30 @@ call :finish         || goto :fail
 echo.
 echo   Installation complete. There is now a Microclaw icon on your desktop.
 echo.
+rem Setup is launched with write authority only when there is nothing to protect.
+rem An existing file that setup must not overwrite gets a genuinely read-only
+rem session instead: the writer is never offered, so the refusal arrives before
+rem the operator spends a conversation capturing endpoints that cannot be saved.
+set "MC_SETUP_ARGS=--setup-write-security-config"
 if exist "%APPDATA%\microclaw\safety_config.yaml" (
     "%MC_EXE%" check-config >nul 2>&1
     if errorlevel 1 (
-        echo   Existing safety profile preserved, but it is not ready for launch.
-        goto :review_steps
+        echo   Existing security bounds are invalid or unreviewed and were preserved:
+        echo     %APPDATA%\microclaw\safety_config.yaml
+        echo   Setup will open read-only, and it cannot overwrite that file. Move it
+        echo   aside or repair it deliberately, then rerun the one-time command below.
+        set "MC_SETUP_ARGS="
+        goto :bridge_instructions
     )
-    echo   Existing reviewed safety profile preserved. Setup is not repeated during an upgrade.
+    echo   Existing reviewed security bounds preserved. Setup is not repeated during an upgrade.
     goto :installed_done
 )
+:bridge_instructions
 echo   Now open Micro-Manager and tick:
 echo   Tools ^> Options ^> Run pycro-manager server on port 4827
 echo.
 echo   Leave Micro-Manager open. This installer will verify the bridge and then
-echo   continue into first-launch setup in this same terminal.
+echo   continue into restricted browser setup in this same terminal.
 echo.
 set "MC_BRIDGE_ATTEMPTS=0"
 
@@ -71,28 +81,33 @@ echo   on port 4827. Check that Micro-Manager is open and the option is ticked.
 if %MC_BRIDGE_ATTEMPTS% LSS 3 goto :check_bridge
 
 echo.
-echo   Microclaw is installed, but first-launch setup was not started after
+echo   Microclaw is installed, but browser setup was not started after
 echo   three readiness checks. When Micro-Manager and its ZMQ bridge are ready,
 echo   run:
-echo     "%MC_EXE%" init
-goto :review_steps
+echo     "%MC_EXE%" --setup-write-security-config serve
+goto :installed_done
 
 :bridge_ready
 echo.
-echo   The Micro-Manager bridge answered. Starting first-launch setup...
-"%MC_EXE%" init --yes
-if not errorlevel 1 goto :review_steps
+echo   The Micro-Manager bridge answered.
+echo   You need an Anthropic API key from console.anthropic.com. The browser page
+echo   will ask for the key and can store it securely on this machine.
 echo.
-echo   First-launch setup did not finish, but Microclaw is installed. Resolve
+echo   Starting restricted browser setup...
+echo.
+echo   This window becomes the setup server and keeps running while you use the
+echo   browser. When the browser says your security bounds are saved, press
+echo   Ctrl+C here to stop it, then start Microclaw from the desktop icon.
+echo   If you close it early, rerun this one-time setup command:
+echo     "%MC_EXE%" --setup-write-security-config serve
+rem MC_SETUP_ARGS is empty when an existing config must be protected, which is
+rem what makes the read-only promise printed above true.
+"%MC_EXE%" %MC_SETUP_ARGS% serve
+if not errorlevel 1 goto :installed_done
+echo.
+echo   Browser setup did not finish, but Microclaw is installed. Resolve
 echo   the message above and retry with:
-echo     "%MC_EXE%" init
-
-:review_steps
-echo.
-echo   After setup writes the unreviewed rig-specific profile, review every
-echo   declaration and limit, change `reviewed: false` to `reviewed: true`, run:
-echo     "%MC_EXE%" check-config
-echo   Then restart Microclaw from the desktop icon.
+echo     "%MC_EXE%" --setup-write-security-config serve
 echo.
 :installed_done
 pause

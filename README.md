@@ -37,7 +37,7 @@ User (natural language) → Agent → Tools → Safety Guard → Microscope Cont
 
 You do not need Python; the installer brings its own. Have your microscope in
 front of you: after installing the files, `install.bat` walks you through opening
-Micro-Manager and the restricted first-launch setup in the same terminal.
+Micro-Manager before restricted setup opens in the browser.
 
 **1. Install Micro-Manager.**
 Install [Micro-Manager 2.0](https://micro-manager.org/Download_Micro-Manager_Latest_Release)
@@ -55,46 +55,36 @@ nothing else on your machine is touched — and puts a **Microclaw** icon on you
 desktop. It takes a few minutes. Then it asks you to open Micro-Manager and tick
 **Tools → Options → Run pycro-manager server on port 4827**. After you confirm,
 the installer checks that the bridge really answers. It gives you three attempts;
-when the bridge is ready, first-launch setup continues in the same terminal.
+when the bridge is ready, restricted setup opens in your browser.
 
 > Windows may show a blue **"Windows protected your PC"** banner, because the file
 > came from the internet. Click **More info → Run anyway**.
 
 > If the bridge is still unavailable after three checks, installation remains
-> complete and the installer prints the manual setup command. Until setup has
-> run, the desktop icon opens a console that says `No safety config` and tells
-> you to run `microclaw init`.
+> complete and the installer prints the manual setup command. Until setup is
+> complete, the ordinary desktop icon opens restricted read-only setup without
+> permission to write the security-bounds file.
 
-**4. Generate and review your safety profile.**
-The installer starts setup automatically after its bridge check. Type the exact
-hardware-contact acknowledgement when asked — it must match exactly, and you get
-three attempts, so a typo costs nothing. Setup then connects **read-only**,
-enumerates your devices, disconnects, and writes an unreviewed profile to
-`%APPDATA%\microclaw\safety_config.yaml`. It asks you to confirm the hazardous
-limits — stage travel, exposure, acquisition budgets — and it never invents one.
-It starts no agent and exposes no tools that move anything.
+**4. Record your security bounds in the browser.**
+The installer explains where to obtain an Anthropic API key, then opens restricted
+setup. Hardware control and acquisition stay locked. Move each stage axis to its
+safe endpoints in Micro-Manager; Microclaw reads those positions, asks you to
+approve the exact ranges and acquisition-warning thresholds, and shows the exact
+schema-3 YAML before one confirmed write to
+`%APPDATA%\microclaw\safety_config.yaml`.
 
 If you need to run setup by hand, keep Micro-Manager open with its ZMQ server
 enabled and use this full path in PowerShell or Command Prompt:
 
 ```
-"%LOCALAPPDATA%\microclaw\env\Scripts\microclaw.exe" init
+"%LOCALAPPDATA%\microclaw\env\Scripts\microclaw.exe" --setup-write-security-config serve
 ```
 
 The quotes matter, and the full path is needed because the installer does not put
-`microclaw` on your `PATH`. The manual command offers to run setup; answer **y**.
-
-Then **open that file and read it**. Every limit in it is a claim about your
-microscope that only you can check. When you are satisfied, change
-`reviewed: false` to `reviewed: true` at the top. Confirm it is valid:
-
-```
-"%LOCALAPPDATA%\microclaw\env\Scripts\microclaw.exe" check-config
-```
-
-It reports every problem at once, needs no microscope connection, and exits `0`
-when the file is ready. A note that some limits still match the packaged example
-is a prompt to double-check those values, not a refusal.
+`microclaw` on your `PATH`. This flag grants only the single confirmed default-file
+write and never appears in the desktop shortcut. If a config already exists but is
+invalid or unreviewed, setup names it and refuses to overwrite it; move it aside or
+repair it deliberately before retrying.
 
 **5. Double-click the Microclaw icon.**
 A console window opens — that is the server; closing it stops Microclaw — and a
@@ -102,7 +92,7 @@ browser window follows. It will ask for an Anthropic API key the first time.
 
 To upgrade, download the ZIP again and double-click `install.bat` again. It is
 safe to re-run: it upgrades in place, and leaves your safety limits and API key
-alone. When it finds the existing safety profile it skips first-launch setup; you
+alone. When it finds valid reviewed security bounds it skips setup; you
 do **not** repeat step 4 on an upgrade. **Close Microclaw first** —
 while its console window is open, Windows holds the installed files locked and
 the upgrade will fail.
@@ -145,44 +135,22 @@ without starting anything:
 microclaw check-bridge          # exits 0 only when the bridge answers a real request
 ```
 
-The short path is then one command:
+Start the same restricted in-app setup used by the installer:
 
 ```bash
-microclaw first-launch-setup --out safety_config.yaml   # read-only; disconnects before the interview
-# Open safety_config.yaml in your editor. Review every limit, then set `reviewed: true`.
-microclaw check-config safety_config.yaml               # offline; exits 0 when it is ready
-microclaw --safety-config safety_config.yaml serve      # top-level flags go BEFORE the subcommand
+microclaw --setup-write-security-config serve
 ```
 
-To keep the raw enumeration as evidence — useful when you want to diff what the
-rig reported against what you declared — split it in two. With `--inventory`,
-setup consumes the saved file and does not connect at all:
+To keep raw enumeration evidence separately, run the read-only inventory command:
 
 ```bash
 microclaw inspect-rig --out rig-inventory
-microclaw first-launch-setup --inventory rig-inventory/inventory.json --out safety_config.yaml
 ```
 
 ### Make it the default, and get the desktop icon
 
-The commands above pass `--safety-config` every time. Once the profile is
-reviewed and you want the same zero-argument launch the Windows installer
-produces, move it to the per-user path — the file every command loads when you
-pass no `--safety-config`:
-
-```powershell
-# Windows (PowerShell)
-New-Item -ItemType Directory -Force "$env:APPDATA\microclaw" | Out-Null
-Move-Item safety_config.yaml "$env:APPDATA\microclaw\safety_config.yaml"
-```
-
-```bash
-# macOS / Linux
-mkdir -p ~/.config/microclaw
-mv safety_config.yaml ~/.config/microclaw/safety_config.yaml
-```
-
-Confirm it landed where Microclaw looks, then launch with no flags:
+Setup writes the per-user default after showing the destination and exact YAML.
+Close that one-time server and launch normally:
 
 ```bash
 microclaw check-config      # no path argument: validates the per-user profile
@@ -206,17 +174,6 @@ delete or rebuild that venv — re-run `install-shortcut` after moving the
 environment. `--dry-run` prints the target without writing anything. On macOS and
 Linux the command exits cleanly and tells you desktop shortcuts are Windows only;
 use `microclaw serve` from a terminal there.
-
-### Two shortcuts worth knowing
-
-`microclaw init` runs the same setup and writes straight to that per-user path,
-so it skips the move entirely. Use the explicit `--out` path above when you
-juggle several rigs and want the profile beside the checkout; use `init` when
-this machine drives one microscope.
-
-`microclaw init --from-example` copies the packaged fictional example for
-deliberate hand-authoring. Its limits match no real microscope, so `check-config`
-flags any you leave untouched.
 
 You will also need an `ANTHROPIC_API_KEY`: set it in the environment, or let the
 browser GUI collect and store it (see [Browser GUI](#browser-gui)). A key stored
@@ -316,9 +273,10 @@ Puts a **Microclaw** icon on the desktop that launches the browser GUI — no
 terminal, no flags. The console window it opens *is* the server: it shows the
 connection status and any startup error, and closing it stops Microclaw.
 
-The shortcut runs `serve` and nothing else. It is always loopback-only, and it
-loads the reviewed safety profile at the per-user path — which must say
-`reviewed: true`, or it refuses to start and tells you so.
+The shortcut runs `serve` and nothing else. It is always loopback-only. Valid
+reviewed security bounds open a normal session; missing, invalid, or unreviewed
+bounds open restricted setup without write authority and name the file that must
+be moved or repaired.
 
 | Flag | Purpose |
 |---|---|
@@ -350,30 +308,29 @@ that is the case.
 
 ## Safety configuration
 
-Start with `microclaw inspect-rig` and `microclaw first-launch-setup`, or run
-`microclaw init` and accept its setup offer. Restricted setup writes an unreviewed
-rig-specific draft. Human-review every declaration and limit, set `reviewed: true`,
-run `microclaw check-config PATH` for offline validation, then restart Microclaw.
-These limits are enforced before every tool call and cannot be overridden by the
-AI. `microclaw init --from-example` is only for deliberate hand-authoring from the
-packaged fictional reference.
+Run `microclaw --setup-write-security-config serve`. Restricted setup discovers
+the live stage axes, captures operator-chosen safe endpoints, and records the two
+large-acquisition warning thresholds. It shows the exact schema-3 YAML and target
+before one confirmed write, then requires a normal restart. `microclaw check-config
+PATH` remains available for offline validation of a hand-authored schema-3 file.
+Security bounds are enforced before every normal hardware tool call and cannot be
+overridden by the AI.
 
-Safety files use `schema_version: 2`. Stage and named-stage ranges declare the
-actuators the profile covers. Every declared axis needs two finite bounds in
-guaranteed mode; an explicit `{unbounded: true, reason: "..."}` is retained for
-audit or degraded operation but does not provide guaranteed containment.
-
-The file starts with a gate. Nothing runs until a human has read the limits and flipped it:
+The packaged file is a fictional hand-authoring example. Setup generates only the
+axes actually found on the rig:
 
 ```yaml
-# Microclaw REFUSES TO START until you have gone through this file, set each
-# limit for THIS instrument, and changed the line below to `reviewed: true`.
-schema_version: 2
-reviewed: false
-property_authorization:
-  mode: guaranteed
-  allowed_categorical: []
-  denied: []
+# Every number here is fictional. Prefer in-app setup for a real rig.
+schema_version: 3
+reviewed: true
+stage:
+  x_min: -12345.0
+  x_max: 12345.0
+  y_min: -6789.0
+  y_max: 6789.0
+acquisition:
+  confirm_above_frames: 500
+  confirm_above_duration_s: 1200
 ```
 
 `allowed_categorical` is the reviewed list of discrete (non-continuous)

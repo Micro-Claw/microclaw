@@ -10,6 +10,10 @@ Error sources:
 - ConnectionError: MM not running or ZMQ server disabled
 """
 
+
+class SetupRefusal(ValueError):
+    """Restricted in-app setup cannot safely continue."""
+
 # Known Java exception fragments → one-line actionable messages. A 16-line JVM
 # stack trace teaches the model nothing and costs ~200 tokens per occurrence
 # (design/14 §7). The "sequence acquisition" needle was verified to survive
