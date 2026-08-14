@@ -147,6 +147,24 @@ refuse. Neither weakens a rig that declares things: with any `illumination` or
 `property_authorization` section present, both flags are false and every path is
 byte-for-byte what it is today.
 
+### Operator ruling, 2026-08-14: M5 keeps the minimal document
+
+The combined 50a/51a gate made the consequence concrete rather than theoretical.
+`System/Camera` on M5 expands to eleven writes, four of which are
+`iChrome-MLE-TCP.Laser 1–4: 4. Use TTL = 1` — arming four lasers for TTL on a rig
+whose camera triggers them. Under this block it applies through one tool call
+with **no confirmation**, because M5 declares no `illumination` section.
+
+Put to the operator with the alternative — declare M5's lasers under
+`illumination.shutters`, which would restore a confirmation on every such path —
+**the ruling was to keep the minimal document as it is.** So this is not a
+tolerated side effect of the fix; it is the intended behaviour of the schema-3
+contract on this rig, chosen with the dose pathway stated. design/48's position
+stands unamended.
+
+Recorded here because it is the one place a reader might otherwise conclude the
+block weakened a protection nobody had considered.
+
 ### No confirmation prompt when illumination is undeclared
 
 Deliberate, and not a judgment call: design/48's M5 gate blessed a **laser
