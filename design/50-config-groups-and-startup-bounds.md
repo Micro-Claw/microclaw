@@ -332,11 +332,62 @@ stage bounds as their own finding — do not fix them silently inside this block
 |---|---|---|---|---|---|---|
 | coordination | `design50/open` | `32e74d0` | coordinator | n/a | — | n/a |
 | 50a | `design50/block-50a` | `32e74d0` | | required — demo, then M5 | | |
-| 50b | `design50/block-50b` | `32e74d0` | codex, 1 review round + coordinator fixes | **PUSHED, awaiting M5** — runbook `f9d7818` pins `8e72c6f` | | |
+| 50b | `design50/block-50b` | `32e74d0` | codex, 1 review round + coordinator fixes | **M5 PASS 2026-08-14**, rounds 1 + 2 | `d809173` | |
 
 50a and 50b are independent — different files, different gates — and may run
 concurrently in separate worktrees. One worktree per agent; never
 `pip install -e .` while another tree is live.
+
+### What the 50b M5 gate measured (2026-08-14)
+
+Evidence: `~/Documents/Documents - Beyonce/Projects/Micro-Claw/50b-m5` and
+`50b-m5-round2`.
+
+- pytest on M5: **1763 passed / 124 skipped**. macOS at the same commit was
+  1788 / 99, and 1763 + 124 = 1788 + 99 = **1887** — same collection, 25 more
+  Windows skips, matching 49a's measurement exactly. Nothing lost.
+- **Round 2 reproduced the original dead-end and inverted its cost.**
+  `move_stage_xy` refused with `Y=12479.0 µm exceeds the maximum allowed
+  (5644.3 µm)` — the same refusal that ended the 2026-08-12 session — but the
+  agent already held that fact from its **first** call, stated it before
+  attempting the move, and correctly attributed the refusal to the standing Y
+  position rather than the requested X delta. Nothing was enabled and nothing
+  acquired first. That inversion is the entire block.
+- **Round 1 found two standing named-stage violations nobody was looking for**:
+  `Thorlabs ELL17/ELL20` at 20819.0 against a 20000.0 max, and `Thorlabs ELL20`
+  at −55.0 against a 0.0 min. The runbook had put named stages under "not in
+  this gate, deliberately", assuming they were in bounds. They were not, so the
+  limb thought untestable was tested for free, with value and limit named.
+- **Three violations of two kinds coexist in one list** (round 2: Y plus both
+  named stages), which no off-rig test had exercised.
+- **The agent stated it out loud, both rounds** — the half the `agent.py` line
+  exists for. It also flagged, unprompted, that **laser 640 (slot 3) was enabled
+  at 1.00%** and reasoned correctly about camera-triggered dose on this rig.
+  That is a live rig finding, not a block result.
+- **Absent-when-correct is bracketed across the two rounds** on one axis: in
+  round 1 XY was inside the envelope and Y contributed nothing to the list while
+  named stages did; in round 2 only the config changed and Y appeared. A mixed
+  present/absent state on one rig beats an all-clear.
+
+**NOT TESTED on the rig: `validate_positions`'s guard message.** Round 1 called
+it and got zero rejections (XY was in bounds that run); round 2 did not call it.
+The tool makes no hardware call at all — it is guard arithmetic over supplied
+coordinates — so its rig behaviour is identical to its unit-tested behaviour by
+construction, and it is covered off-rig by
+`test_validate_positions_names_the_limit_hit_but_never_clips` and
+`test_validate_positions_reports_z_guard_message`. Recorded as untested rather
+than inferred.
+
+**The origin mechanism, answered by the operator 2026-08-14 — a rig fact, and it
+stays out of `microclaw/`.** M5's stage sets its origin on power cycle. Power
+cycling it at an extreme position and then driving back to a normal one makes
+that normal position read as a very high number, which is what happened between
+the envelope being authored and the 2026-08-12 session. The envelope was never
+wrong; the coordinate frame moved under it. **The remedy on this rig is to power
+cycle the stage in a neutral position, and Microclaw must not say so** —
+operator instruction, and the correct general behaviour anyway: the report names
+the axis, the value and the limit, and suggests nothing. Confirmed in both
+rounds, where the agent proposed no remedy of its own.
 
 Suite baseline measured by the coordinator at `32e74d0` (macOS):
 **1781 passed, 99 skipped, 3 warnings in 44.4 s.** The 3 are the pre-existing
