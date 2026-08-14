@@ -494,7 +494,6 @@ and proceeds on approval. Then the rig interview starts on its own.
 | 48c | ~~`design48/block-48c`~~ | `e17fe60` | 1 round | M5 PASS 2026-08-13 | `e54e610` |
 | 48d | ~~`design48/block-48d`~~ | `e54e610` | 1 round + re-run | M5 PASS 2026-08-14 | `cadbf33` |
 | 48e | ~~`design48/block-48e`~~ | `cadbf33` | 1 round + 2 re-runs | **ACCEPTED** 2026-08-14 | `20e8d17` |
-| 48c | — | — | — | — | — |
 | 48d | — | — | — | — | — |
 | 48e | — | — | — | — | — |
 
