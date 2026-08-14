@@ -12,7 +12,8 @@ from microclaw import tools
 from microclaw.autofocus import AutofocusResult, SweepResult
 from microclaw.safety import (
     AnalysisConstraints, IlluminationConstraints, IlluminationProperty,
-    SafetyConstraints, SafetyGuard, SafetyViolation, StageConstraints,
+    NamedStageLimits, SafetyConstraints, SafetyGuard, SafetyViolation,
+    StageConstraints,
 )
 from microclaw.tools import (
     clear_position_list,
@@ -233,6 +234,15 @@ class TestMoveStageZ:
         result = get_z_position(mock_ctrl, unconstrained_guard)
         assert result["z_um"] == 50.0
 
+    def test_get_z_position_reports_bounds_without_moving(self, mock_ctrl):
+        guard = SafetyGuard(SafetyConstraints(
+            stage=StageConstraints(z_max=40.0)))
+        result = get_z_position(mock_ctrl, guard)
+        assert result["out_of_bounds"] == [
+            "Z=50.0 µm exceeds the maximum allowed (40.0 µm)."
+        ]
+        mock_ctrl.core.set_position.assert_not_called()
+
 
 class TestMoveStageXY:
     def test_in_range(self, mock_ctrl, default_guard):
@@ -262,6 +272,16 @@ class TestMoveStageXY:
         result = get_xy_position(mock_ctrl, unconstrained_guard)
         assert result["x_um"] == 0.0
         assert result["y_um"] == 0.0
+
+    def test_get_xy_position_reports_bounds_without_moving(self, mock_ctrl):
+        mock_ctrl.core.get_y_position.return_value = 12.5
+        guard = SafetyGuard(SafetyConstraints(
+            stage=StageConstraints(y_max=10.0)))
+        result = get_xy_position(mock_ctrl, guard)
+        assert result["out_of_bounds"] == [
+            "Y=12.5 µm exceeds the maximum allowed (10.0 µm)."
+        ]
+        mock_ctrl.core.set_xy_position.assert_not_called()
 
     def test_settling_error_surfaced(self, mock_ctrl, unconstrained_guard):
         # amr_test carried a 1.1 µm unrequested X excursion nothing surfaced.
@@ -721,6 +741,55 @@ class TestGetSystemState:
         mock_ctrl.core.get_x_position.side_effect = Exception("Device not found")
         result = get_system_state(mock_ctrl, unconstrained_guard)
         assert result.get("xy_stage") == "unavailable"
+        mock_ctrl.core.set_xy_position.assert_not_called()
+        mock_ctrl.core.set_position.assert_not_called()
+
+    def test_reports_xy_out_of_bounds_with_value_and_limit_without_moving(
+        self, mock_ctrl
+    ):
+        mock_ctrl.core.get_y_position.return_value = 12.5
+        guard = SafetyGuard(SafetyConstraints(
+            stage=StageConstraints(y_max=10.0)))
+        result = get_system_state(mock_ctrl, guard)
+        assert result["out_of_bounds"] == [
+            "Y=12.5 µm exceeds the maximum allowed (10.0 µm)."
+        ]
+        mock_ctrl.core.set_xy_position.assert_not_called()
+        mock_ctrl.core.set_position.assert_not_called()
+
+    def test_in_bounds_and_unset_limit_omit_out_of_bounds(self, mock_ctrl):
+        mock_ctrl.core.get_y_position.return_value = 12.5
+        in_bounds = SafetyGuard(SafetyConstraints(
+            stage=StageConstraints(y_max=20.0)))
+        unset = SafetyGuard(SafetyConstraints(
+            stage=StageConstraints(y_max=None)))
+        assert "out_of_bounds" not in get_system_state(mock_ctrl, in_bounds)
+        assert "out_of_bounds" not in get_system_state(mock_ctrl, unset)
+
+    def test_reports_z_out_of_bounds_independently(self, mock_ctrl):
+        guard = SafetyGuard(SafetyConstraints(
+            stage=StageConstraints(z_max=40.0)))
+        result = get_system_state(mock_ctrl, guard)
+        assert result["out_of_bounds"] == [
+            "Z=50.0 µm exceeds the maximum allowed (40.0 µm)."
+        ]
+        mock_ctrl.core.set_position.assert_not_called()
+
+    def test_reads_only_declared_named_stages_and_reports_bounds(self, mock_ctrl):
+        guard = SafetyGuard(SafetyConstraints(named_stages=[
+            NamedStageLimits("TIRF Stage", -10.0, 10.0),
+        ]))
+        mock_ctrl.core.get_position.side_effect = lambda *args: (
+            12.5 if args == ("TIRF Stage",) else 50.0
+        )
+        result = get_system_state(mock_ctrl, guard)
+        assert result["named_stages"] == {"TIRF Stage": 12.5}
+        assert result["out_of_bounds"] == [
+            "TIRF Stage=12.50 µm exceeds the maximum allowed (10.00 µm)."
+        ]
+        assert mock_ctrl.core.get_loaded_devices.call_count == 0
+        mock_ctrl.core.set_position.assert_not_called()
+        mock_ctrl.core.set_xy_position.assert_not_called()
 
     def test_reports_shutter_and_lasers(self, mock_ctrl, unconstrained_guard):
         # design/20 S4: the agent signed off "no lasers were involved" from a
@@ -3030,7 +3099,15 @@ class TestRunAOfflineTools:
         assert verification["coordinate_matches"] == [False]
         assert verification["matches_ranking_prefix"] is False
 
-    def test_validate_positions_does_not_move_or_expose(self, mock_ctrl):
+    def test_validate_positions_names_the_limit_hit_but_never_clips(self, mock_ctrl):
+        # Renamed from ..._does_not_move_or_expose by block 50b. design/26
+        # coupled "never expose guard limits" to "never clip" on the theory that
+        # an agent which cannot see the limits cannot clip to them; it does not
+        # hold, since every move refusal already names the limit it hit, and the
+        # silence cost the M5 session of 2026-08-12 (design/50 Problem 2).
+        # What survives is narrower and is both halves of this test: name the
+        # limit the rejected position hit, never dump the limits table, never
+        # clip.
         guard = SafetyGuard(SafetyConstraints(
             stage=StageConstraints(x_min=0, x_max=10, y_min=0, y_max=10,
                                    z_min=0, z_max=5)))
@@ -3041,13 +3118,32 @@ class TestRunAOfflineTools:
         assert [p["name"] for p in result["accepted"]] == ["ok"]
         assert [p["name"] for p in result["rejected"]] == ["bad"]
         assert result["rejected"][0]["reason"] == (
-            "Rejected by the current XY safety guard."
+            "X=20.0 µm exceeds the maximum allowed (10.0 µm)."
         )
-        assert "10" not in json.dumps(result)
+        # The limit that was hit is disclosed; the envelope is not. This
+        # position never hit Y or Z, so neither axis may be named anywhere in
+        # the payload -- that, and not the absence of the digits, is what
+        # "never dump the limits table" means.
+        assert "Y=" not in json.dumps(result)
+        assert "Z=" not in json.dumps(result)
         assert result["clipped"] == 0
         assert "limits" not in result
+        assert [p["x_um"] for p in result["accepted"]] == [2]   # unclipped
         mock_ctrl.set_xy.assert_not_called()
         mock_ctrl.studio.live().snap.assert_not_called()
+
+    def test_validate_positions_reports_z_guard_message(self, mock_ctrl):
+        guard = SafetyGuard(SafetyConstraints(
+            stage=StageConstraints(z_max=5)))
+        result = tools.validate_positions(mock_ctrl, guard, [
+            {"name": "bad-z", "x_um": 2, "y_um": 3, "z_um": 8},
+        ])
+        assert result["rejected"] == [{
+            "name": "bad-z",
+            "reason": "Z=8.0 µm exceeds the maximum allowed (5.0 µm).",
+        }]
+        mock_ctrl.core.set_position.assert_not_called()
+        mock_ctrl.core.set_xy_position.assert_not_called()
 
     def test_inspect_artifacts_hashes_recursively(self, mock_ctrl, unconstrained_guard,
                                                   tmp_path):
