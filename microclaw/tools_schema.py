@@ -396,10 +396,11 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "list_config_groups",
         "description": (
-            "List every Micro-Manager config group, its preset names, and its "
-            "currently active preset (null when live state matches none). Preset "
-            "settings are omitted by default; pass both group and preset to return "
-            "that preset's exact device/property/value settings in one call."
+            "With no arguments, lists every Micro-Manager config group, its preset "
+            "names, and its currently active preset (null when live state matches "
+            "none). With both group and preset, returns that one preset's exact "
+            "device/property/value settings instead of the listing. Group and "
+            "preset names are case-sensitive."
         ),
         "input_schema": {
             "type": "object",

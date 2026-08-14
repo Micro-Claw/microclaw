@@ -130,6 +130,44 @@ def test_list_config_groups_describes_one_preset_in_one_call():
     ]
 
 
+def test_unknown_preset_name_is_not_reported_as_a_hardware_fault():
+    # Demo gate, 2026-08-14, verbatim: asking for "20x" when the preset is "20X"
+    # produced this Java error, and both the message and the hint pointed at the
+    # hardware -- "device busy, stage at limit, device not found" -- for a
+    # casing typo. errors.py's own rule is that a hint naming the wrong
+    # subsystem is worse than none. Message and hint are asserted together
+    # because fixing only the message leaves the two contradicting each other.
+    from microclaw.errors import hint_for_error, humanize_java_error
+
+    exc = Exception(
+        'java.lang.Exception: Configuration group "Objective" or its preset '
+        '"20x" does not exist'
+    )
+    message, hint = humanize_java_error(exc), hint_for_error(exc)
+    assert "case-sensitive" in message and "list_config_groups" in message
+    assert "naming error" in hint and "case-sensitive" in hint
+    for text in (message, hint):
+        assert "stage at limit" not in text
+        assert "device busy" not in text
+
+
+def test_describing_one_preset_does_not_also_re_walk_every_group():
+    # Demo gate, 2026-08-14: asking for one preset's membership returned the
+    # whole listing too, re-walking every group over a serialized bridge -- 13
+    # round trips on that rig to answer a three-field question. The two shapes
+    # are exclusive; this asserts the round trips are not taken, not merely that
+    # the key is absent.
+    core = ConfigCore()
+    walked = []
+    core.get_available_config_groups = lambda: walked.append("enumerated") or []
+    result = list_config_groups(
+        SimpleNamespace(core=core), categorical_guard(), group="Camera", preset="Fast"
+    )
+    assert walked == []
+    assert "groups" not in result
+    assert result["group"] == "Camera" and result["preset"] == "Fast"
+
+
 def test_non_channel_preset_applies_and_verifies_every_effect():
     core = ConfigCore()
     pairs = (("Cam", "Mode"), ("Cam", "Gain"))

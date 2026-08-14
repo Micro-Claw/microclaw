@@ -2226,13 +2226,28 @@ def list_config_groups(
 
     Preset settings are omitted from the all-groups listing because real rigs can
     carry many large groups. Supplying both ``group`` and ``preset`` returns that
-    preset's exact membership in this same call, so callers never need to infer
-    membership from live property values.
+    preset's exact membership instead, so a caller never has to infer membership
+    from live property values.
+
+    The two shapes are exclusive on purpose. The first implementation returned
+    the whole listing *and* the expansion, which the demo gate showed re-walking
+    every group over a serialized bridge to answer a question about one preset —
+    thirteen round trips on that rig to deliver one three-field answer the caller
+    already had the listing for.
     """
     from microclaw.authorization import _expand_preset, _strings
 
     if (group is None) != (preset is None):
         raise ValueError("group and preset must be supplied together")
+    if group is not None and preset is not None:
+        return {
+            "group": group,
+            "preset": preset,
+            "settings": [
+                {"device": device, "property": prop, "value": value}
+                for device, prop, value in _expand_preset(ctrl.core, preset, group)
+            ],
+        }
     # Two bridge round trips per group, and pyjavaz serializes them, which is
     # why preset *settings* are opt-in rather than walked for every group here.
     groups = []
@@ -2251,17 +2266,7 @@ def list_config_groups(
             detail = f"active preset read failed: {exc}"
             item["error"] = f"{item['error']}; {detail}" if "error" in item else detail
         groups.append(item)
-    result: dict[str, Any] = {"groups": groups}
-    if group is not None and preset is not None:
-        result.update({
-            "group": group,
-            "preset": preset,
-            "settings": [
-                {"device": device, "property": prop, "value": value}
-                for device, prop, value in _expand_preset(ctrl.core, preset, group)
-            ],
-        })
-    return result
+    return {"groups": groups}
 
 
 @emits_nothing
