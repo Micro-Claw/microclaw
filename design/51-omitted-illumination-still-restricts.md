@@ -276,7 +276,7 @@ structural gap a single branch.
 | Block | Branch | Start commit | Implementer | Rig gate | Merged | Design reconciled |
 |---|---|---|---|---|---|---|
 | coordination | `design51/open` | `559edd5` | coordinator | n/a | — | n/a |
-| 51a | `design51/block-51a` | `559edd5` | codex, 1 review round + coordinator pin | **PUSHED, awaiting demo + M5** — runbook pins `30cb55e` | | |
+| 51a | `design51/block-51a` | `559edd5` | codex, 1 review round + coordinator pin | **demo + M5 PASS 2026-08-14** | `c402a28` | |
 
 Suite baseline at `559edd5` (macOS): **1788 passed / 99 skipped / 3 warnings**;
 at the pinned implementation, **1794 / 99 / 3**.
@@ -321,3 +321,37 @@ authoritative; this checklist tracks state only.
 - [ ] Merge to `main`, push `main`, delete the branch locally and on `origin`.
 - [ ] Coordination notes in `design/prompts.md`; close the ledger row.
 - [ ] Run the step-10 design gate named under 51a, and re-run block 50a's A4.
+
+
+## What the 51a gates measured (2026-08-14)
+
+Evidence: `50a-51a-m5` and `50a-51a-demo`. Both rigs were needed — each reaches
+one branch of the defect and neither reaches both — so the gate ran from a
+throwaway `gate/50a-51a-integration` branch carrying 50a and 51a together.
+**Neither block merged from it.** The dependency was mutual: 50a's gate was
+blocked by this defect, while this block's M5 leg needed 50a's
+`set_config_preset`, M5 having no `Channel` group.
+
+- **M5, the map-membership branch: PASS.** `set_config_preset('System','Camera')`
+  applied **11 writes** including `HamamatsuHam_DCAM.DEFECT CORRECT MODE`, the
+  exact effect that refused on 2026-08-14.
+- **M5, the guard still bites: PASS — the limb this fix could have broken.** With
+  `camera.max_exposure_ms: 50` declared, `Normal Mode` refused with
+  `Exposure 100 ms exceeds the maximum allowed (50 ms)` and **0 writes**, raised
+  in the pre-authorization pass. Removing the map consultation did not remove the
+  guard.
+- **M5, the raw route unchanged: PASS**, operator-confirmed in the Device
+  Property Browser across an OFF→ON→OFF sequence.
+- **Demo, the `Core.Shutter` branch: PASS in both directions.** With no
+  `illumination` section `set_channel('Cy5')` applied 4 writes including the
+  retarget, unconfirmed and with no expansion drift; with an
+  `illumination.shutters` entry declared for a different device the identical call
+  refused with today's unchanged message. The config was restored afterwards and
+  verified by a third session succeeding again.
+- **The export survives it**: the emitted script carries the retarget, defines
+  `_verify_property`, and imports nothing from `microclaw`.
+
+**The sweep came back empty.** After three instances of the pattern — design/49,
+the `Core.Shutter` branch, the map-membership branch — no fourth place was found
+where an omitted section produces a refusal rather than an absence of restriction.
+Recorded because an empty sweep is a result.
