@@ -299,6 +299,12 @@ this block closes.
 concurrently in separate worktrees. One worktree per agent; never
 `pip install -e .` while another tree is live.
 
+Suite baseline measured by the coordinator at `32e74d0` (macOS):
+**1781 passed, 99 skipped, 3 warnings in 44.4 s.** The 3 are the pre-existing
+`StarletteDeprecationWarning` and two `phase_cross_correlation` empty-image
+`UserWarning`s from the featureless-field calibration tests — expected, not a
+regression.
+
 ---
 
 ## Coordinator checklist
