@@ -489,8 +489,15 @@ def test_minimal_document_authorization_leaves_properties_and_channels_unrestric
     )
     ctrl = Controller()
     validate_live_rig(ctrl, minimal)
+    assert ctrl.authorization_map.illumination_unrestricted is True
     authorize_property_write(ctrl, "OldLaser", "Enable")
     authorize_channel(ctrl, "Any channel")
+
+
+def test_declared_illumination_is_not_unrestricted():
+    ctrl = Controller()
+    validate_live_rig(ctrl, parsed())
+    assert ctrl.authorization_map.illumination_unrestricted is False
 
 
 def test_minimal_document_raw_write_cannot_bypass_bounded_stage():
