@@ -6444,3 +6444,52 @@ per-axis bounds for a *second* XY stage: `named_stages` keys on device label and
 collide silently. The writer refuses and names the device. M5 has no such device
 (its `SmarAct 2D` is the core XY), so nothing is blocked today — carried forward
 rather than patched under a block.
+
+## Block 48e — installer, docs, and the interview after restart (merged 2026-08-14, `20e8d17`)
+
+**The last block closed the circle, and the acceptance run found three defects
+that only a clean profile could find.** All three were invisible to the suite and
+to four previous rig gates, because they live in the ten minutes between
+double-clicking `install.bat` and having a working microscope — a path nobody had
+walked end to end.
+
+**The seeded first message never rendered.** `Transcript.render` handled
+assistant content only as an array of blocks; setup seeds a plain string, the
+same shape a user turn may take. On a fresh install the page showed two banners
+and an empty transcript, so the operator typed "hi" to find out what setup
+wanted. Every test asserted the message reached `session.history`; none asserted
+it reached the screen. **A message delivered through `/api/history` and rendered
+client-side is not tested by asserting the server put it there.**
+
+**The key box opened below the fold.** In setup mode it sits under the setup
+banner and its six-axis checklist, so `focus()` alone left it off screen:
+"hardware control locked" and no visible way to proceed. It now scrolls into view
+first.
+
+**Nothing said how to end the setup server.** The installer runs `serve` in the
+foreground; after the bounds were saved and the browser closed, the window sat
+running with no instruction anywhere. The design had said Microclaw "tells the
+user to close it and restart from the desktop shortcut" — it did not, and no test
+could have noticed, because the missing thing was a sentence.
+
+**A fourth defect was caught in review, not on the rig**, and is the more
+interesting one: the installer's invalid-config branch printed "Setup will open
+read-only" and then launched with `--setup-write-security-config` anyway. 48d's
+create-new check would have refused the write — but only after the operator spent
+a full endpoint conversation capturing bounds that could never be saved. The
+installer test pinned the literal flagged command, so it **would have passed for
+exactly the behaviour being fixed**; it now pins the property.
+
+**Two acceptance criteria were nearly signed off unproven.** The design's
+sentence is "an out-of-bounds move is refused while a 500-frame or 20-minute
+acquisition asks once and proceeds when approved." Round 1 tested the 21-minute
+ask and the operator *declined* it; no out-of-bounds move was tried against the
+setup-written config at all. Both passed on a five-minute third run —
+`move_stage_xy(1372.1)` refused against the `x_max: 1371.1` that setup itself
+published, and 500 frames asked once and ran. **"Very likely to pass" is not
+evidence; the gap was worth the five minutes.**
+
+**One polish item came from reading the confirmation text rather than the
+result.** M5's 21-minute plan asked "about 21.0008 minutes" — `%g`'s six
+significant figures on a number the same sentence calls approximate, in the one
+line an operator reads before committing twenty minutes of rig time.

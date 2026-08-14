@@ -294,6 +294,31 @@ beside the new one. Every gate runbook from 48a onward must open by telling the
 operator to **rename** the existing file, never delete it — it is the only
 written record of that rig's reviewed bounds until the new one exists.
 
+## Status: closed 2026-08-14
+
+All five blocks are merged and gated. The design's acceptance sentence — *"double
+click `install.bat`, open Micro-Manager, complete the conversation in the web app,
+approve the exact minimal YAML, restart from the normal shortcut, and prove that
+an out-of-bounds move is refused while a 500-frame or 20-minute acquisition asks
+once and proceeds when approved"* — was run end to end on a clean Windows profile
+against M5 on 2026-08-14 and passed:
+
+- a keyless first launch showed the setup and "No Anthropic API key" banners
+  together with the seeded message readable and the composer disabled;
+- the live sweep found six axes (core XY on `SmarAct 2D`, `PIZStage.z`, and three
+  named stages), all twelve endpoints were captured from operator-approved
+  positions, and the exact reviewed YAML was shown before one confirmed write;
+- restarting from the ordinary shortcut gave a guarded session in which
+  `move_stage_xy(1372.1)` was refused against the `x_max: 1371.1` that setup
+  itself had published, and a 500-frame acquisition asked once and ran on
+  approval.
+
+What is deliberately **not** claimed: the "every actuator is typed or excluded"
+completeness guarantee (dropped with schema 2 — see design/33's amendment), and
+per-axis bounds for a second XY stage (see the carried-forward register).
+
+Coordination notes for every block are in `design/prompts.md`.
+
 ## Blocks
 
 ### 48a — Schema 3 and the minimal required document
@@ -468,7 +493,7 @@ and proceeds on approval. Then the rig interview starts on its own.
 | 48b | ~~`design48/block-48b`~~ | `f6e7300` | 1 round + clarification | M5 PASS 2026-08-13 | `e17fe60` |
 | 48c | ~~`design48/block-48c`~~ | `e17fe60` | 1 round | M5 PASS 2026-08-13 | `e54e610` |
 | 48d | ~~`design48/block-48d`~~ | `e54e610` | 1 round + re-run | M5 PASS 2026-08-14 | `cadbf33` |
-| 48e | `design48/block-48e` | `cadbf33` | 1 round, tip pushed | awaiting clean-profile gate | — |
+| 48e | ~~`design48/block-48e`~~ | `cadbf33` | 1 round + 2 re-runs | **ACCEPTED** 2026-08-14 | `20e8d17` |
 | 48c | — | — | — | — | — |
 | 48d | — | — | — | — | — |
 | 48e | — | — | — | — | — |
