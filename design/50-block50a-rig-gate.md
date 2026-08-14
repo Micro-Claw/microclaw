@@ -1,6 +1,6 @@
 # Block 50a rig gate — config groups are listable and selectable
 
-Implementation ancestor: `34835ce`
+Implementation ancestor: `49da41f`
 
 Three machines, in this order, and **only the first two are needed to close this
 gate**: the demo machine, then M5. M2 carries one deferred limb, recorded at the
@@ -28,7 +28,7 @@ through the authorized executor, and still refuses an effect it cannot classify.
 Close Microclaw, then paste:
 
 ```powershell
-git merge-base --is-ancestor 34835ce HEAD
+git merge-base --is-ancestor 49da41f HEAD
 Write-Host "implementation ancestor exit code (expected 0):" $LASTEXITCODE
 python -m pytest -q > block50a-pytest.txt 2>&1
 Write-Host "pytest exit code (expected 0):" $LASTEXITCODE
@@ -36,7 +36,7 @@ Get-Content block50a-pytest.txt -Tail 3
 ```
 
 Expected: ancestor exit **0**, pytest exit **0**. macOS at this implementation is
-**1800 passed / 99 skipped / 3 warnings** (this branch carries block 50b, already
+**1802 passed / 99 skipped / 3 warnings** (this branch carries block 50b, already
 merged to `main`). Record this machine's exact passed and skipped numbers.
 Windows skips roughly 25 more than macOS; a higher count than this machine's own
 previous full run is **NOT TESTED**, not a pass.
