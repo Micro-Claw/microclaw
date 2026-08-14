@@ -6398,3 +6398,49 @@ and run `Test-Path $Config`, where the variable is undefined and `Test-Path
 $null` raises rather than printing `False` — an error the operator would
 reasonably have reported as a finding. Steps that may run in a new window use
 literal paths.
+
+## Block 48d — the single-use writer (merged 2026-08-14, `cadbf33`)
+
+**The suite was green on macOS and red on the rig, and the rig is the platform
+that matters.** `pytest.raises(match=str(target))` takes a **regex**, and a
+Windows path carries `\U` — `C:\Users\...` fails to compile. Every gate runs
+pytest on M5, so a macOS-only-green suite cannot do its job. One occurrence, now
+`re.escape`d; the sweep found no others. **Any `match=` built from a path is a
+Windows failure waiting for its first rig run.**
+
+**Asked to show what it was about to write, the model correctly said it
+couldn't.** The design put the exact destination and rendered YAML in the
+confirmation dialog, which is right — but nothing available *before* the call
+reported either, so the model could describe the draft's contents and not the
+document. `review_security_config` now returns the destination always and the
+exact bytes once the draft is complete, with a test asserting the preview is
+byte-identical to what lands on disk. The round-2 rig run shows the payoff: the
+second review displayed `z_max: 90.0` from the changed draft while the file on
+disk still held `100`, making the draft-versus-file distinction visible instead
+of a thing the operator has to reason about.
+
+**A gate step that asks the model to do something it should refuse is a broken
+step, not a finding.** Step 4 said "call `write_security_config` a second time
+now" to watch the replay refusal; the model declined three times, reasoning that
+calling a one-shot writer purely to observe an outcome risks an irreversible
+action for no benefit. That reasoning is correct and the step produced no
+evidence at all. Rewritten to change a bound first — a legitimate motive, and
+how an operator actually meets that refusal — the same model called the tool
+immediately and the refusal was observed. The step now also says a decline is
+**NOT TESTED**, never a pass.
+
+**The refusal that finally arrived named the wrong remedy.** `SetupRefusal`
+subclasses `ValueError`, so `hint_for_error` attached "a tool was called with a
+missing, extra, or wrong-typed parameter. Re-read the tool schema" to a refusal
+whose actual remedy was *restart Microclaw* — the one thing a different argument
+could never fix. This is the third time in this checklist that a refusal
+misdirected (47's `camera-roi`, 48a's `move_stage`): **when an exception type is
+reused for a decision rather than a fault, check what the hint machinery makes
+of it.**
+
+**Open design question, deliberately not settled here.** Schema 3 cannot express
+per-axis bounds for a *second* XY stage: `named_stages` keys on device label and
+`SafetyGuard.check_named_stage` takes the first match, so two entries would
+collide silently. The writer refuses and names the device. M5 has no such device
+(its `SmarAct 2D` is the core XY), so nothing is blocked today — carried forward
+rather than patched under a block.
