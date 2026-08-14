@@ -2060,6 +2060,13 @@ def _emit_set_channel(params: RecordedParams) -> str:
     )
 
 
+def _emit_set_config_preset(params: RecordedParams) -> str:
+    return _emit_recorded_channel_effects(
+        params.result, params.get("preset"),
+        label=f"config preset {params.get('group')!r}",
+    )
+
+
 def _emit_recorded_channel_effects(result: dict, preset: str, *, label: str) -> str:
     """Render one executed channel effect record for a standalone script."""
     effects = result.get("effects")
@@ -2140,6 +2147,83 @@ def set_channel(
     ctrl: MicroscopeController, guard: SafetyGuard, preset: str, *, cancel=None
 ) -> dict:
     return _set_channel_for_composite(ctrl, guard, preset, cancel=cancel)
+
+
+@emits(_emit_set_config_preset)
+def set_config_preset(
+    ctrl: MicroscopeController, guard: SafetyGuard, group: str, preset: str,
+    *, cancel=None,
+) -> dict:
+    """Apply one Micro-Manager config preset through the channel-plan executor.
+
+    Only the ``Channel`` group has the startup ``authorized_presets`` allowlist.
+    Other groups are authorized from their freshly expanded effects: every
+    device/property/value must pass its exact typed, illumination, or categorical
+    gate before any write begins.
+    """
+    from microclaw.authorization import execute_channel_plan
+
+    if not group:
+        raise ValueError("group must be a non-empty config-group name")
+    if not preset:
+        raise ValueError("preset must be a non-empty preset name")
+    if not _has_channel_authorization_map(ctrl):
+        ctrl.core.set_config(group, preset)
+        ctrl.core.wait_for_config(group, preset)
+        ctrl.refresh_gui()
+        return {
+            "status": f"Config preset {group}.{preset} applied.",
+            "config_group": group,
+        }
+    return execute_channel_plan(
+        ctrl, guard, preset, group=group,
+        confirm_fn=CONFIRM_FN, cancel=cancel,
+    )
+
+
+@emits_nothing
+def list_config_groups(
+    ctrl: MicroscopeController, guard: SafetyGuard,
+    group: str | None = None, preset: str | None = None,
+) -> dict:
+    """List config groups compactly, or expand one requested preset.
+
+    Preset settings are omitted from the all-groups listing because real rigs can
+    carry many large groups. Supplying both ``group`` and ``preset`` returns that
+    preset's exact membership in this same call, so callers never need to infer
+    membership from live property values.
+    """
+    from microclaw.authorization import _expand_preset, _strings
+
+    if (group is None) != (preset is None):
+        raise ValueError("group and preset must be supplied together")
+    groups = []
+    for name in _strings(ctrl.core.get_available_config_groups()):
+        item: dict[str, Any] = {"name": name}
+        try:
+            item["presets"] = _strings(ctrl.core.get_available_configs(name))
+        except Exception as exc:
+            item["presets"] = []
+            item["error"] = str(exc)
+        try:
+            active = str(ctrl.core.get_current_config(name) or "")
+            item["active_preset"] = active or None
+        except Exception as exc:
+            item["active_preset"] = None
+            detail = f"active preset read failed: {exc}"
+            item["error"] = f"{item['error']}; {detail}" if "error" in item else detail
+        groups.append(item)
+    result: dict[str, Any] = {"groups": groups}
+    if group is not None and preset is not None:
+        result.update({
+            "group": group,
+            "preset": preset,
+            "settings": [
+                {"device": device, "property": prop, "value": value}
+                for device, prop, value in _expand_preset(ctrl.core, preset, group)
+            ],
+        })
+    return result
 
 
 @emits_nothing
@@ -7306,6 +7390,8 @@ TOOL_REGISTRY = {
     "move_named_stage": move_named_stage,
     "set_channel": set_channel,
     "get_available_channels": get_available_channels,
+    "list_config_groups": list_config_groups,
+    "set_config_preset": set_config_preset,
     "set_device_property": set_device_property,
     "get_device_property": get_device_property,
     "list_devices": list_devices,
