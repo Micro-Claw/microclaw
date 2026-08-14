@@ -16,9 +16,9 @@ python -m pytest -q
 Write-Host "pytest exit code (expected 0):" $LASTEXITCODE
 ```
 
-The macOS result at the pin is **1776 passed + 99 skipped = 1875 total**, with
+The macOS result at the pin is **1777 passed + 99 skipped = 1876 total**, with
 3 warnings. M5 skips more tests because Node is not installed. Record passed and
-skipped separately and require **passed + skipped = 1875**; any failure or other
+skipped separately and require **passed + skipped = 1876**; any failure or other
 total is not this gate.
 
 ## 2. Make and verify recoverable clean-profile backups

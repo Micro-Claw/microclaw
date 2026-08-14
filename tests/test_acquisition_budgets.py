@@ -386,3 +386,14 @@ def test_planner_reachable_public_tools_cannot_bypass_map_registration():
         "run_tile_acquisition", "run_multiposition_with_autofocus",
         "run_zstack", "run_timelapse", "run_adaptive_survey",
     }
+
+
+def test_an_estimate_is_not_reported_to_six_significant_figures():
+    """M5's 21-minute plan asked "about 21.0008 minutes" (48e acceptance run,
+    2026-08-14) — %g precision on a number the same sentence calls approximate."""
+    from microclaw.tools import _format_duration
+
+    assert _format_duration(1260.05) == "about 21 minutes"
+    assert _format_duration(60) == "about 1 minute"
+    assert _format_duration(90) == "about 1.5 minutes"
+    assert _format_duration(45) == "about 45 seconds"
