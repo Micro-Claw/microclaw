@@ -100,7 +100,7 @@ def init(args):
         command = f"microclaw first-launch-setup --out \"{dest}\""
         if args.force:
             command += " --force"
-        print("Microclaw now creates rig-specific safety profiles through restricted setup:")
+        print("Microclaw now creates rig-specific security bounds through restricted setup:")
         print(f"  {command}")
         print("Setup inspects the rig read-only, writes an unreviewed draft, and disconnects.")
         print("Human-review every declaration and limit, set `reviewed: true`, then restart Microclaw.")
@@ -633,7 +633,7 @@ def first_launch_setup(args):
             transcript.say(f"Review: {review_path}")
         config, notes = interview(inventory, ask=transcript.ask, say=transcript.say)
         write_profile(config, notes, target)
-        transcript.say(f"Wrote unreviewed safety profile: {target}")
+        transcript.say(f"Wrote unreviewed security bounds: {target}")
         transcript.say(
             "Disconnected. Manually review every declaration and limit, keep unsupported "
             "items excluded, then set `reviewed: true` and perform a normal restart. "
@@ -670,6 +670,10 @@ def main():
         ),
     )
     parser.add_argument("--port", type=int, default=4827)
+    parser.add_argument(
+        "--setup-write-security-config", action="store_true",
+        help="Permit one confirmed write of setup security bounds (serve on loopback only).",
+    )
     parser.add_argument(
         "--model",
         default=None,
@@ -720,7 +724,7 @@ def main():
         description=(
             "Writes a desktop shortcut that runs `microclaw serve` under this "
             "environment, with the Microclaw icon. It passes no other flags: the "
-            "GUI it opens is loopback-only, under the reviewed safety profile at "
+            "GUI it opens is loopback-only, under the reviewed security bounds at "
             "the per-user path."
         ),
     )
@@ -785,7 +789,7 @@ def main():
     ir.add_argument("--out", required=True, help="Directory for inventory.json and review.md.")
     fl = sub.add_parser(
         "first-launch-setup",
-        help="Enumerate and interview for an unreviewed rig safety profile.",
+        help="Enumerate and interview for unreviewed rig security bounds.",
         description=(
             "Restricted setup: Core-only read enumeration, explicit operator decisions, "
             "an unreviewed profile, disconnect, manual review, and normal restart. It "
@@ -832,6 +836,17 @@ def main():
     )
 
     args = parser.parse_args()
+
+    if args.setup_write_security_config and args.command != "serve":
+        parser.error("--setup-write-security-config is valid only with serve")
+    if args.setup_write_security_config and args.safety_config is not None:
+        parser.error(
+            "--setup-write-security-config targets only the per-user default; "
+            "do not pass --safety-config"
+        )
+    if (args.setup_write_security_config and args.command == "serve"
+            and args.host not in {"127.0.0.1", "localhost", "::1"}):
+        parser.error("--setup-write-security-config is available only on a loopback bind")
 
     # Before anything that can sys.exit(): a shortcut-spawned console closes the
     # instant the process does, so a refusal ("safety config unreviewed", "could
