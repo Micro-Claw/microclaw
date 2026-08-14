@@ -913,6 +913,41 @@ def test_valid_emu_config_with_no_laser_enables_is_accepted(tmp_path):
     assert validate_live_rig(ctrl, parsed()).complete is True
 
 
+def test_emu_focus_lock_is_a_built_in_typed_capability(tmp_path):
+    ctrl = emu_controller(tmp_path, {
+        "Z stage focus locking": "PIZStage-External sensor",
+    })
+    ctrl.core.focus = "PIZStage"
+    report = validate_live_rig(ctrl, parsed())
+    focus_locks = [
+        entry for entry in report.entries if entry.capability == "focus-lock"
+    ]
+    assert focus_locks == [AuthorizationEntry(
+        path="generic-property",
+        classification="built_in_typed_capability",
+        device="PIZStage",
+        property="External sensor",
+        capability="focus-lock",
+    )]
+
+
+@pytest.mark.parametrize(
+    "ctrl_factory",
+    [
+        lambda tmp_path: Controller(),
+        lambda tmp_path: emu_controller(
+            tmp_path, {"Filter wheel position": "Wheel-State"}
+        ),
+    ],
+    ids=["no-emu-config", "no-allocated-focus-lock"],
+)
+def test_startup_invents_no_focus_lock_capability_without_allocation(
+    tmp_path, ctrl_factory
+):
+    report = validate_live_rig(ctrl_factory(tmp_path), parsed())
+    assert not any(entry.capability == "focus-lock" for entry in report.entries)
+
+
 @pytest.mark.parametrize(
     ("maximum", "step", "message"),
     [

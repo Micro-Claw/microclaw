@@ -2333,6 +2333,9 @@ class TestFocusLock:
     def test_set_focus_lock_writes_on_value(self, mock_ctrl, unconstrained_guard, monkeypatch):
         from microclaw.tools import set_focus_lock
         self._emu(monkeypatch)
+        # Gate 2 remains independent: the guard shape produced by a minimal
+        # schema-3 profile admits this ordinary property without learning about
+        # authorization-map typed entries.
         result = set_focus_lock(mock_ctrl, unconstrained_guard, enabled=True)
         mock_ctrl.core.set_property.assert_called_once_with(
             "PIZStage", "External sensor", "1")
@@ -2347,21 +2350,37 @@ class TestFocusLock:
             "PIZStage", "External sensor", "0")
         mock_ctrl.refresh_gui.assert_called_once_with()
 
-    def test_set_focus_lock_refuses_raw_write_on_bounded_stage(
+    def test_set_focus_lock_admits_typed_pair_but_refuses_raw_write_on_bounded_stage(
         self, mock_ctrl, unconstrained_guard, monkeypatch
     ):
-        from microclaw.authorization import AuthorizationMap, RigAuthorizationError
+        from microclaw.authorization import (
+            AuthorizationEntry,
+            AuthorizationMap,
+            RigAuthorizationError,
+            authorize_property_write,
+        )
         from microclaw.tools import set_focus_lock
         self._emu(monkeypatch)
         mock_ctrl.authorization_map = AuthorizationMap(
             "degraded_trusted_plugins", "degraded", None,
+            entries=[AuthorizationEntry(
+                path="generic-property",
+                classification="built_in_typed_capability",
+                device="PIZStage",
+                property="External sensor",
+                capability="focus-lock",
+            )],
             property_writes_unrestricted=True,
             bounded_stage_devices=frozenset({"PIZStage"}),
         )
+        result = set_focus_lock(mock_ctrl, unconstrained_guard, enabled=True)
+        mock_ctrl.core.set_property.assert_called_once_with(
+            "PIZStage", "External sensor", "1"
+        )
+        mock_ctrl.refresh_gui.assert_called_once_with()
+        assert result["engaged"] is True
         with pytest.raises(RigAuthorizationError, match="move_stage_z"):
-            set_focus_lock(mock_ctrl, unconstrained_guard, enabled=True)
-        mock_ctrl.core.set_property.assert_not_called()
-        mock_ctrl.refresh_gui.assert_not_called()
+            authorize_property_write(mock_ctrl, "PIZStage", "Position")
 
     def test_autofocus_refuses_while_lock_engaged(self, mock_ctrl, unconstrained_guard, monkeypatch):
         # The sweep would be actively opposed by the piezo servo loop.
