@@ -77,7 +77,7 @@ def user_data_dir() -> Path:
 
 
 def default_safety_config() -> Path:
-    """The safety config a zero-argument launch loads. See `microclaw init`."""
+    """The security bounds a zero-argument launch loads."""
     return user_config_dir() / "safety_config.yaml"
 
 

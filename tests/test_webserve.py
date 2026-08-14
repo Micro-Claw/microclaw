@@ -1132,8 +1132,8 @@ def test_serve_without_a_safety_config_falls_back_to_the_per_user_default(tmp_pa
         assert "setup mode" in refusal["error"]
 
 
-def test_serve_refuses_an_unreviewed_safety_config(tmp_path):
-    """The gate a double-click cannot get past without a human editing a line."""
+def test_serve_opens_restricted_setup_for_an_unreviewed_config(tmp_path, monkeypatch, capsys):
+    """An unreviewed file is never policy and setup never replaces it."""
     cfg = tmp_path / "safety_config.yaml"
     cfg.write_text(
         "schema_version: 3\nreviewed: false\n"
@@ -1145,8 +1145,36 @@ def test_serve_refuses_an_unreviewed_safety_config(tmp_path):
         "confirm_above_bytes: 5000000000, confirm_above_illuminated_ms: 60000}\n",
         encoding="utf-8",
     )
-    with pytest.raises(SystemExit, match="has not been reviewed"):
-        serve(_args(host="127.0.0.1", safety_config=str(cfg)))
+    original = cfg.read_bytes()
+
+    class Connected:
+        core = object()
+
+        def __init__(self, port, guard):
+            assert guard is None
+
+        def is_connected(self):
+            return True
+
+    monkeypatch.setattr(webserve, "MicroscopeController", Connected)
+    monkeypatch.setattr(webserve, "enumerate_rig", lambda core: {"stages": []})
+    monkeypatch.setattr(credentials, "load_api_key", lambda: (None, None))
+    session = webserve.build_session(_args(
+        host="127.0.0.1", safety_config=str(cfg),
+        setup_write_security_config=True,
+    ))
+    assert isinstance(session, webserve.SetupSession)
+    assert session.guard is None
+    assert session.tool_registry is webserve.SETUP_TOOL_REGISTRY
+    assert cfg.read_bytes() == original
+    assert str(cfg) in session.history[0]["content"]
+    assert str(cfg) in capsys.readouterr().out
+    for name in tools.TOOL_REGISTRY:
+        refusal = json.loads(tools.execute_tool(
+            name, {}, session.ctrl, session.guard, session.tool_registry,
+            setup_mode=True,
+        ))
+        assert "setup mode" in refusal["error"]
 
 
 # ---- remote authentication (design/32 Finding 3) ----

@@ -388,6 +388,13 @@ def test_setup_system_blocks_omit_rig_interview_and_normal_blocks_include_it(
     assert RIG_INTERVIEW_PROMPT.splitlines()[0] in normal
 
 
+def test_stored_rig_topics_are_not_asked_again(monkeypatch):
+    monkeypatch.setattr(agent, "load_knowledge", lambda: {"rig": {"stage_layout": "stored"}})
+    monkeypatch.setattr(agent, "rig_profile_gaps", lambda knowledge: [])
+    normal = "\n".join(block["text"] for block in agent._system_blocks())
+    assert RIG_INTERVIEW_PROMPT.splitlines()[0] not in normal
+
+
 def test_exit_report_is_a_noop_without_a_guard():
     core = MagicMock()
     report_declared_illumination_on_exit(None, core)
@@ -459,6 +466,48 @@ def test_setup_first_message_and_banner_are_exact(monkeypatch, tmp_path):
     assert status["thresholds"]["proposed_confirm_above_duration_s"] == 1200
 
 
+def test_keyless_setup_constructs_and_only_browser_gate_blocks_turns(monkeypatch, tmp_path):
+    class Controller:
+        core = object()
+
+        def __init__(self, port, guard):
+            assert guard is None
+
+        def is_connected(self):
+            return True
+
+    key = {"value": None}
+    monkeypatch.setattr(webserve, "MicroscopeController", Controller)
+    monkeypatch.setattr(webserve, "enumerate_rig", lambda core: {"stages": []})
+    monkeypatch.setattr(
+        webserve.credentials, "load_api_key",
+        lambda: (key["value"], "env" if key["value"] else None),
+    )
+    monkeypatch.setattr(
+        webserve, "set_api_key", lambda value: key.__setitem__("value", value),
+    )
+    args = types.SimpleNamespace(
+        safety_config=None, port=1, model=None, save_history=False,
+        host="127.0.0.1", history_retention_days=None,
+        setup_write_security_config=True,
+    )
+    monkeypatch.setattr(webserve.config, "default_safety_config", lambda: tmp_path / "missing.yaml")
+    session = webserve.build_session(args)
+    assert isinstance(session, webserve.SetupSession)
+    assert session.editable is True
+    assert session.history == [{
+        "role": "assistant", "content": webserve.SETUP_FIRST_MESSAGE,
+    }]
+    client = TestClient(webserve.build_app(session))
+    assert client.get("/api/key").json()["has_key"] is False
+    refused = client.post("/api/prompt", json={"message": "begin setup"})
+    assert refused.status_code == 400
+    assert "No Anthropic API key" in refused.json()["detail"]
+    saved = client.post("/api/key", json={"key": "sk-ant-test", "persist": False})
+    assert saved.status_code == 200
+    assert saved.json()["has_key"] is True
+
+
 def test_setup_session_offers_writer_only_with_explicit_capability(monkeypatch, tmp_path):
     class Controller:
         core = object()
@@ -481,6 +530,26 @@ def test_setup_session_offers_writer_only_with_explicit_capability(monkeypatch, 
     session = webserve.build_session(args)
     assert {schema["name"] for schema in session.tool_schemas} == webserve.SETUP_TOOL_NAMES
     assert session.ctrl._microclaw_setup_write_capability.enabled is True
+
+
+def test_valid_upgrade_builds_normal_session_without_write_authority(monkeypatch, tmp_path):
+    path = tmp_path / "safety_config.yaml"
+    path.write_text("valid", encoding="utf-8")
+    validation = types.SimpleNamespace(can_start_live_validation=True)
+    monkeypatch.setattr(webserve.config, "validate_safety_config", lambda p: validation)
+    seen = []
+
+    class Normal:
+        def __init__(self, args):
+            seen.append(args.setup_write_security_config)
+
+    monkeypatch.setattr(webserve, "Session", Normal)
+    args = types.SimpleNamespace(
+        safety_config=str(path), setup_write_security_config=False,
+    )
+    session = webserve.build_session(args)
+    assert isinstance(session, Normal)
+    assert seen == [False]
 
 
 def test_setup_refusal_hint_does_not_send_the_model_to_the_schema():

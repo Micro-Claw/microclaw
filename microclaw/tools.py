@@ -5865,7 +5865,7 @@ def open_artifact(
         # ImageJ reads the first bytes as an image header, fails, and can leave
         # the bridge wedged: on M5 2026-08-11 an exported .py produced
         # "not a TIFF file: header=b'from'" and cost a Micro-Manager restart
-        # mid-gate. Text opens the way `microclaw init` opens safety_config.yaml.
+        # mid-gate. Text opens in the platform's normal text editor.
         via = open_in_editor(resolved)
         return {
             "path": str(resolved), "opened": True, "via": via, "windows": [],

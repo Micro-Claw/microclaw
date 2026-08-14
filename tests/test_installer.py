@@ -59,18 +59,22 @@ def test_installer_checks_bridge_before_running_setup(bat):
     """Core setup is reachable only after the bounded readiness command succeeds."""
     finish = re.search(r"^:finish$(.*?)(?=^:\w+)", bat, re.M | re.S).group(1)
     assert '%MC_EXE%" init' not in finish
-    assert '%MC_EXE%" first-launch-setup' not in finish
+    retired = "%MC_EXE%\" " + "first-launch" + "-setup"
+    assert retired not in finish
     check = '"%MC_EXE%" check-bridge'
-    setup = '"%MC_EXE%" init --yes'
+    setup = '"%MC_EXE%" --setup-write-security-config serve'
     assert bat.count(check) == 1
-    assert bat.count(setup) == 1
-    assert bat.index(check) < bat.index(setup)
+    launches = re.findall(
+        r'^"%MC_EXE%" --setup-write-security-config serve$', bat, re.M,
+    )
+    assert len(launches) == 1
+    assert bat.index(check) < bat.index(setup, bat.index("Starting restricted browser setup"))
     assert "if not errorlevel 1 goto :bridge_ready" in bat
 
 
 def test_installer_prints_setup_fallback_after_micro_manager_instruction(bat):
     instruction = 'Run pycro-manager server on port 4827'
-    setup_command = 'echo     "%MC_EXE%" init'
+    setup_command = 'echo     "%MC_EXE%" --setup-write-security-config serve'
     assert instruction in bat
     assert setup_command in bat
     assert bat.index(instruction) < bat.index(setup_command)
@@ -85,12 +89,37 @@ def test_installer_retries_bridge_three_times_and_keeps_install_successful(bat):
     assert "Installation complete" in bat
 
 
-def test_upgrade_preserves_existing_profile_and_skips_first_launch(bat):
+def test_upgrade_preserves_existing_profile_and_skips_setup(bat):
     assert 'if exist "%APPDATA%\\microclaw\\safety_config.yaml" (' in bat
     assert '"%MC_EXE%" check-config >nul 2>&1' in bat
-    assert "Existing safety profile preserved, but it is not ready for launch" in bat
-    assert "Existing reviewed safety profile preserved" in bat
+    assert "Existing security bounds are invalid or unreviewed and were preserved" in bat
+    assert "%APPDATA%\\microclaw\\safety_config.yaml" in bat
+    assert "cannot overwrite that file" in bat
+    assert "Existing reviewed security bounds preserved" in bat
     assert "goto :installed_done" in bat
+
+
+def test_setup_authority_is_one_time_and_never_in_the_shortcut(bat):
+    assert '"%MC_EXE%" --setup-write-security-config serve' in bat
+    shortcut_call = re.search(r"^:finish$(.*?)(?=^:\w+)", bat, re.M | re.S).group(1)
+    assert "--setup-write-security-config" not in shortcut_call
+    shortcut = (ROOT / "microclaw" / "shortcut.py").read_text(encoding="utf-8")
+    assert '"serve"' in shortcut
+    assert "--setup-write-security-config" not in shortcut
+
+
+def test_installer_prepares_the_user_for_the_browser_key_gate(bat):
+    key_notice = bat.index("console.anthropic.com")
+    launch = bat.index('"%MC_EXE%" --setup-write-security-config serve', key_notice)
+    assert key_notice < launch
+    assert "browser page" in bat
+    assert "will ask for the key" in bat
+
+
+def test_retired_terminal_setup_is_absent(bat):
+    assert "init --yes" not in bat
+    assert "first-launch" + "-setup" not in bat
+    assert "review_steps" not in bat
 
 
 def test_installer_never_asks_for_admin(bat):

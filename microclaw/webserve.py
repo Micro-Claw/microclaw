@@ -471,7 +471,7 @@ class Session:
 class SetupSession(Session):
     """A connected session whose dispatcher exposes no normal capabilities."""
 
-    def __init__(self, args):
+    def __init__(self, args, *, blocked_path: Path | None = None):
         print("Connecting to Micro-Manager in setup mode...")
         ctrl = MicroscopeController(port=args.port, guard=None)
         if not ctrl.is_connected():
@@ -497,15 +497,32 @@ class SetupSession(Session):
             enabled=may_write,
         )
         self._initialize(args)
-        message = {"role": "assistant", "content": SETUP_FIRST_MESSAGE}
+        content = SETUP_FIRST_MESSAGE
+        if blocked_path is not None:
+            content += (
+                f"\n\nAn existing security config at {blocked_path} is invalid or "
+                "unreviewed. Setup cannot overwrite or delete it. Move it aside or "
+                "repair it deliberately, then restart this one-time setup command."
+            )
+        message = {"role": "assistant", "content": content}
         self.history.append(message)
         self.store.append(message)
 
 
 def build_session(args):
-    """Build setup only for an absent config; invalid existing files still refuse."""
+    """Use a valid reviewed config, otherwise open restricted setup."""
     path = Path(args.safety_config) if args.safety_config else config.default_safety_config()
-    return SetupSession(args) if not path.exists() else Session(args)
+    result = config.validate_safety_config(path)
+    if result.can_start_live_validation:
+        return Session(args)
+    blocked_path = path if path.exists() else None
+    if blocked_path is not None:
+        print(
+            f"Existing security bounds at {blocked_path} are not valid and reviewed. "
+            "Restricted setup will open, but it will not overwrite or delete that "
+            "file. Move it aside or repair it deliberately, then restart setup."
+        )
+    return SetupSession(args, blocked_path=blocked_path)
 
 
 def build_app(session, *, remote: bool = False, api_token: str | None = None,

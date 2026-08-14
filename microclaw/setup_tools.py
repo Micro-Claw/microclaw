@@ -12,7 +12,7 @@ from typing import Any
 import yaml
 
 from microclaw import paths, tools
-from microclaw.first_launch import SetupRefusal
+from microclaw.errors import SetupRefusal
 from microclaw.rig_inventory import enumerate_rig
 from microclaw.safety import ParsedSafetyConfig, SafetyConfigError
 
