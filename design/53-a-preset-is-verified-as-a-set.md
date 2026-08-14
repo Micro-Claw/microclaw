@@ -156,12 +156,15 @@ verification is a plan-level check, not a per-write one, and why.
 | Block | Branch | Start commit | Implementer | Rig gate | Merged | Design reconciled |
 |---|---|---|---|---|---|---|
 | coordination | ~~`design53/open`~~ | `b2b0417` | coordinator | n/a | merged `ccc4b34` | n/a |
-| 53a | `design53/block-53a` | `ccc4b34` | | required — M5 | | |
+| 53a | `design53/block-53a` | `3f5601e` | | required — M5 | | |
 
 **Sequencing — satisfied 2026-08-14.** 53a touches `execute_channel_plan`, which
-both 50a and 51a modify, so it waited for both. Both are now merged and `main` is
-at `ccc4b34` (1808 passed / 99 skipped / 3 warnings on macOS), which is 53a's
-start commit. Nothing further blocks it.
+both 50a and 51a modify, so it waited for both. Both are now merged. 53a's start commit is **`3f5601e`** — deliberately the
+commit that carries *this document*, not the merge before it. Both the 50b and
+51a runners reported their design file absent from the start commit they were
+given and worked from the prompt instead; branching from a tip that already
+contains the spec removes that papercut. Code state at `3f5601e` is identical to
+`ccc4b34`: **1808 passed / 99 skipped / 3 warnings** on macOS.
 
 **To resume cold**, the block workflow in `CLAUDE.md` is authoritative and this
 document is the whole specification: branch `design53/block-53a` from `ccc4b34`,
