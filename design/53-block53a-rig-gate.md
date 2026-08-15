@@ -1,6 +1,6 @@
 # Block 53a rig gate — verify presets as sets
 
-Implementation ancestor: `f82469a`
+Implementation ancestor: `23e62b6` (the round-2 message shape; `f82469a` is its parent)
 
 Run every step on **M5** from this branch. Use PowerShell from the checkout and
 save `block53a-pytest.txt` plus the complete Microclaw transcript. Do not create
@@ -13,7 +13,7 @@ from Micro-Manager's own Configuration Settings panel is required in Steps 0b an
 Paste this literal PowerShell block:
 
 ```powershell
-git merge-base --is-ancestor f82469a HEAD
+git merge-base --is-ancestor 23e62b6 HEAD
 Write-Host "implementation ancestor exit code (expected 0):" $LASTEXITCODE
 python -m pytest -q > block53a-pytest.txt 2>&1
 Write-Host "pytest exit code (expected 0):" $LASTEXITCODE
