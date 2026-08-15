@@ -181,7 +181,55 @@ verification is a plan-level check, not a per-write one, and why.
 |---|---|---|---|---|---|---|
 | coordination | ~~`design53/open`~~ | `b2b0417` | coordinator | n/a | merged `ccc4b34` | n/a |
 | coordination | ~~`design53/checklist`~~ | `009f0df` | coordinator | n/a | merged `c10256e` | n/a |
-| 53a | `design53/block-53a` | `c10256e` | runner (2 rounds) + coordinator runbook fixes | **pushed 2026-08-15, awaiting M5** | | |
+| 53a | `design53/block-53a` | `c10256e` | runner (2 rounds) + coordinator runbook fixes | **M5 PASS 2026-08-15** | | |
+
+**M5 gate, 2026-08-15 — PASS.** Evidence:
+`~/Documents/Documents - Beyonce/Projects/Micro-Claw/53a-m5`. Scored by the
+coordinator from the artifacts, not from a summary.
+
+- **Step 0 PASS, and it proves the pin.** M5 ran **1787 passed / 124 skipped / 3
+  warnings = 1911 collected**. 124 is M5's established Windows skip count (blocks
+  49a and 50a). 1911 is the branch's collection; `main` at `c10256e` collects
+  1907. **The rig ran the branch's four new tests, not `main`.**
+- **Step 0b: the precondition held** — `ScanMode` **2**, `Exposure` **100.014**
+  before Step 1. Without it the rest of the gate would have been no-ops.
+- **Step 1 PASS. `System/Normal Mode` applies through Microclaw for the first
+  time**: 11 writes, no rollback, no partial application, and read-back
+  `ScanMode` **3** / `Exposure` **100.0030** — the exact call that failed at
+  1/11 writes on 2026-08-14.
+- **The block's one unmeasured premise is now measured TRUE.** Exposure was
+  written as `100.0030` while the camera was still in ScanMode 2 (where it snaps
+  to `100.0140`), and after `ScanMode` 3 landed four writes later the property
+  read `100.0030`. The driver does re-derive it, so `ModeDependentCore`'s model
+  is the hardware's behaviour and Step 1's PREMISE FAILURE branch was not taken.
+- **Step 2 emission PASS, verified against the emitted file itself**: 11
+  `core.set_property`, 11 `core.wait_for_device`, 11 `_verify_property`, last
+  write at line 72 before the first verification at line 74, `_verify_property`
+  defined at line 33, **no `microclaw` import and no `# NOT EMITTED`** — the two
+  `get_device_property` calls emitted as no-effect comments. The file landed at
+  `C:\Users\ries\AppData\Local\microclaw\`, **not in the checkout**, which is the
+  workspace-resolution finding the runbook was corrected for.
+- **Step 2 execution: PASS on the strongest available evidence, console line not
+  captured.** `block53a-standalone.txt` is 0 bytes with `2>&1` in force, so the
+  run produced no stderr and therefore no traceback and no verification failure;
+  a successful script prints nothing (43n established that shape). The printed
+  exit code and the two ordering counts were not saved. Not re-run — the same
+  claim is proven by the artifact plus the empty stderr.
+- **Step 3 PASS, both directions, repeatedly.** Four `set_config_preset` calls —
+  Camera, Normal Mode, Camera, Normal Mode — each applying **11 writes** with no
+  refusal, ending at `ScanMode` 3 / `Exposure` 100.0030. **Both presets are
+  interdependent in the same shape** (value at index 1, mode at index 5), so the
+  old code broke this switch in both directions and only looked one-sided
+  because the 2026-08-14 session started in `Camera`. The symmetric trap the limb
+  was written for is closed.
+- **Step 4 NOT RUN, as designed** — M5 has no naturally unsatisfiable preset and
+  the runbook forbids authoring one. Off-rig coverage is
+  `test_verify_pass_reports_every_ignored_pair_and_rolls_back_in_reverse`.
+- **Carried, not blocking:** `ChannelPlanError`'s docstring still says "no write
+  was verified as applied", which was the same thing as "no write reached the
+  device" only while verification was per write. It is inlined verbatim into
+  every exported script. Not touched after the gate on purpose — the merged code
+  is the gated code.
 
 **53a round history.** Implementation `f82469a`, runbook `a7cad30`, round-2 fix
 `23e62b6`, coordinator runbook fixes `eb49b81` and `c64d0de`; runbook pinned
@@ -272,11 +320,11 @@ working tree clean, `git log --oneline origin/main..main` empty, `main` at
 `port-to-jpype-acqj` — **no open block branch**. One worktree, this one. Suite
 at `009f0df`, macOS: **1808 passed / 99 skipped / 3 warnings**.
 
-- **53a is implemented, reviewed through two returned rounds, and pushed — it is
-  awaiting M5.** Branch `design53/block-53a` is on `origin`, worktree
-  `../microclaw-53a`. The next action is the user's: run
-  `design/53-block53a-rig-gate.md` on M5. Nothing else may be assigned against
-  `microclaw/authorization.py` until it merges.
+- **53a passed its M5 gate on 2026-08-15 and is ready to merge.** Branch
+  `design53/block-53a` is on `origin`, worktree `../microclaw-53a`. What remains
+  is steps 9 and 10: merge and push `main`, delete the branch both places, write
+  `design/prompts.md` notes, and run the design gate into
+  `design/33-authorization-map.md`.
 - **53a branches from `c10256e`**, the merge of `design53/checklist`, so the
   runner's tree carries this document *and* this checklist. The ledger's earlier
   `3f5601e` is superseded, not wrong — the doc grew. The row recording that start
@@ -354,9 +402,9 @@ Files: `microclaw/authorization.py` (`execute_channel_plan`, `_verify_property`)
       and the implementation pinned by `git merge-base --is-ancestor <commit>
       HEAD`.
 - [x] Branch pushed to `origin` (`GIT_SSH_COMMAND="ssh -i ~/.ssh/yonce"`). No PR.
-- [ ] **Rig gate 53a on M5**, the three limbs in the block section above, run by
+- [x] **Rig gate 53a on M5**, the three limbs in the block section above, run by
       the user. Never simulated.
-- [ ] Findings fixed on the same branch, sized to the finding, and re-gated until
+- [x] Findings fixed on the same branch, sized to the finding, and re-gated until
       the limbs pass.
 - [ ] Merged to `main`, `main` pushed, branch deleted locally and on `origin`;
       `git log --oneline origin/main..main` empty.
