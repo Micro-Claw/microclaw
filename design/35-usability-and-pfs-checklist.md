@@ -8067,6 +8067,21 @@ schedule them or record a reason at block 12.
 This is an inventory, not permission to close with unresolved blank work. Block
 12 assigns every row one of the explicit dispositions above.
 
+- **An exported script writes its dataset beside the script, and says nothing
+  about where.** Found 2026-08-15 on M2 during block 52a's gate; **pre-existing
+  and not that block's**, since `directory=str(_HERE)` is how every emitted
+  script has always resolved its output. The operator reasonably concluded the
+  standalone had overwritten the session's data. It had not — microclaw wrote
+  `F:\DataSSD\...\52a_m2_sweep_1` and the script wrote
+  `AppData\Local\microclaw\52a_m2_sweep_1`, both 18 frames, both intact — but
+  nothing in the run told them so, because the script prints its approval
+  envelope and then nothing. 52a fixes only the silence, by printing the dataset
+  path. **Where an emitted script should write is the open question**: beside the
+  script is surprising when the session's own `save_dir` was a data drive, and
+  the exported plan already records that path. Note the asymmetry that made this
+  visible: the emitted hook log goes through `_next_available_log_path` and is
+  protected from collision, while the dataset name is not.
+
 - **`run_tile_acquisition` cannot run an artifact-emitting saved hook, and its
   refusal names a remedy the caller cannot reach.** Found 2026-08-15 while
   scoping `design/52`; **pre-existing, not that design's, and deliberately kept
