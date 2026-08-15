@@ -180,8 +180,8 @@ verification is a plan-level check, not a per-write one, and why.
 | Block | Branch | Start commit | Implementer | Rig gate | Merged | Design reconciled |
 |---|---|---|---|---|---|---|
 | coordination | ~~`design53/open`~~ | `b2b0417` | coordinator | n/a | merged `ccc4b34` | n/a |
-| coordination | `design53/checklist` | `009f0df` | coordinator | n/a | | n/a |
-| 53a | `design53/block-53a` | see the checklist's live note | | required — M5 | | |
+| coordination | ~~`design53/checklist`~~ | `009f0df` | coordinator | n/a | merged `c10256e` | n/a |
+| 53a | `design53/block-53a` | `c10256e` | | required — M5 | | |
 
 **Sequencing — satisfied 2026-08-14.** 53a touches `execute_channel_plan`, which
 both 50a and 51a modify, so it waited for both. Both are now merged. 53a starts
@@ -235,9 +235,10 @@ at `009f0df`, macOS: **1808 passed / 99 skipped / 3 warnings**.
 - **53a is unassigned. Nothing is awaiting a rig and no implementation branch
   exists yet.** The next action is step 2: the runner prompt, written to the
   scratchpad and offered, not spawned.
-- **53a branches from the merge of `design53/checklist`**, so the runner's start
-  commit carries this document *and* this checklist. The ledger's earlier
-  `3f5601e` is superseded, not wrong — the doc grew.
+- **53a branches from `c10256e`**, the merge of `design53/checklist`, so the
+  runner's tree carries this document *and* this checklist. The ledger's earlier
+  `3f5601e` is superseded, not wrong — the doc grew. The row recording that start
+  commit necessarily lands after it; do not chase the tip.
 - **Sequencing is satisfied.** 50a and 51a both touch `execute_channel_plan` and
   are both merged and closed. Nothing else is in flight against
   `microclaw/authorization.py`.
