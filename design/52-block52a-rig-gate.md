@@ -4,6 +4,24 @@ Run this on **M2**, on branch `design52/block-52a`. Every command below is
 literal. Where a step says "expect", that is the value to compare against, not a
 criterion to interpret.
 
+## Re-run scope, 2026-08-15 — read this before repeating the whole thing
+
+**The full gate passed on M2 at commit `25dfb5e`.** Scoring its artifacts then
+found one defect — named-stage restoration ran after `acquire()` *submitted* the
+events rather than after the acquisition finished — and fixing it changed the
+acquisition lifecycle. The merged code must be the gated code, so a focused
+re-run is owed, **not the whole document**:
+
+- **Step 0** — cheap, and it proves the rig is on the fixed branch. Run it.
+- **Step 3** — the sweep, once, exactly as before.
+- **Step 7** — now with **`restore: "entry"`**, which is required rather than
+  optional this time. That is the path the fix changed, and the path that would
+  have driven the stage back mid-sweep before it.
+
+Steps 1, 2, 4, 5 and 6 passed at `25dfb5e` and are unaffected by the change; skip
+them unless Step 3 behaves differently from last time. Their evidence is in
+`~/Documents/Documents - Beyonce/Projects/Micro-Claw/52a-m2-round3`.
+
 ## What this gate proves, and what it does not
 
 It proves: one approval before the run, one dataset, one action set per event
@@ -35,7 +53,7 @@ if ($LASTEXITCODE -eq 0) { "INSTALL OK" } else { "INSTALL FAILED - stop here" }
 Pin the implementation by ancestry, never by tip hash:
 
 ```powershell
-git merge-base --is-ancestor 5e28cd1 HEAD
+git merge-base --is-ancestor 85b0cd3 HEAD
 if ($LASTEXITCODE -eq 0) { "PIN OK - gate covers the reviewed implementation" } else { "PIN FAILED - wrong branch or commit; stop" }
 ```
 
@@ -46,15 +64,15 @@ python -m pytest -q 2>&1 | Out-File -Encoding utf8 $HOME\Documents\52a-m2-suite.
 Get-Content $HOME\Documents\52a-m2-suite.txt -Tail 3
 ```
 
-Expect **1824 passed / 124 skipped / 3 warnings**. **Collection is 1948** — that
+Expect **1825 passed / 124 skipped / 3 warnings**. **Collection is 1949** — that
 is the number that proves the branch, and `passed + skipped` must equal it.
-macOS runs the same tree as 1849/99: Windows skips 25 tests that pass elsewhere,
+macOS runs the same tree as 1850/99: Windows skips 25 tests that pass elsewhere,
 so a *lower* passed count with a correspondingly higher skip count is the
 expected result, not a failure. `main` collects 1911, so a run reporting 1911
 means the rig is on the wrong branch and every later step is worthless.
 
-(Earlier attempts ran 1935 and 1946 collected. If you see either now, the branch
-is stale — pull. Both of those attempts passed Step 0 and failed later.)
+(Earlier attempts ran 1935, 1946 and 1948 collected. If you see any of those now,
+the branch is stale — pull.)
 
 > Corrected 2026-08-15 after the first run. This step originally said "expect
 > 1836 passed **plus** this rig's skip count", which reads as 1836+124 and made
@@ -259,9 +277,29 @@ name both the entry position and the last written one. **Nothing should have
 been written on exit** — that is design/38 F9, and the entry/last pair is how you
 check it without trusting the narration.
 
-If you have time, repeat Step 3 once with `restore: "entry"` and confirm the axis
-returns to P through the same guard/move/read-back path, and that the report says
-`restored: true`.
+**`last_known_um` must be the LAST ACHIEVED POSITION, near your `<max>`, not the
+entry value.** On 2026-08-15 it read `650.1` — the entry — when the final move
+had achieved `1149.4`, and that single wrong number is what exposed the
+restore-timing defect. If it equals `entry_um` again, the fix has regressed;
+capture the whole report and stop.
+
+**Then repeat Step 3 with `restore: "entry"`. This limb is required, not
+optional** — it is the path the fix changed, and the one that would previously
+have driven the stage back *during* the sweep. Expect:
+
+- the 18 planned moves to complete first, then **one** further write returning
+  the axis to P, through the same guard/move/read-back path;
+- `named_stage_restoration` reading `policy: "entry"`, `restored: true`;
+- `get_stage_position` afterwards to report P, not `<max>`;
+- the hook log's last record to be the restoration, with `restoration: true`,
+  **after** all 18 planned records — not before them, and not interleaved.
+
+The ordering is the whole point of this limb. A restoration write that appears
+anywhere except last is the defect returning.
+
+Budget note: `restore: "entry"` reserves one write, so ask for **19** writes
+rather than 18, or the plan is refused during validation for consuming the
+reservation. That refusal is correct behaviour if you see it.
 
 ## What to send back
 
