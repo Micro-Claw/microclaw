@@ -10,8 +10,8 @@ from microclaw import tools
 from microclaw.hook_decisions import EmitArtifact, HookResult, UntrustedHookAdapter
 from microclaw.hook_manager import saved_hook_source_refusal, validate_hook_contract
 from microclaw.safety import (
-    ForbiddenProperty, IlluminationConstraints, SafetyConstraints, SafetyGuard,
-    SafetyViolation,
+    ForbiddenProperty, IlluminationConstraints, NamedStageLimits,
+    SafetyConstraints, SafetyGuard, SafetyViolation,
 )
 
 
@@ -95,6 +95,93 @@ def test_declined_envelope_stops_before_reservation(monkeypatch, tmp_path):
                                    "max_power_percent": 10, "max_writes": 2},
         )
     reserve.assert_not_called()
+
+
+def test_illumination_only_confirmation_contract_is_unchanged(monkeypatch, tmp_path):
+    ctrl = MagicMock()
+    ctrl.core.get_property.return_value = "1"
+    hook = UntrustedHookAdapter(object())
+    seen = []
+    monkeypatch.setattr(
+        tools, "CONFIRM_FN",
+        lambda text, kind: seen.append((text, kind)) or False,
+    )
+    with pytest.raises(
+        SafetyViolation,
+        match=r"User declined hook illumination envelope for Laser\.Power; acquisition was not started",
+    ):
+        tools._configure_hook_capabilities(
+            hook, ctrl, _guard(), str(tmp_path), "run",
+            {"device": "Laser", "property": "Power",
+             "max_power_percent": 10, "max_writes": 2}, None,
+        )
+    assert seen == [(
+        "AUTHORIZE UNATTENDED HOOK ILLUMINATION: Laser.Power\n"
+        "Ceiling: 10% (2 accepted writes maximum).\n"
+        "Generated hook code will drive this power unattended, per frame, "
+        "for the duration of the run. It cannot enable a shutter or turn light on.",
+        "illumination",
+    )]
+
+
+def test_declined_named_stage_confirmation_means_no_acquisition_or_write(
+    monkeypatch, tmp_path
+):
+    ctrl = MagicMock()
+    ctrl.core.get_position.return_value = 15
+    hook = UntrustedHookAdapter(object())
+    acquire = MagicMock()
+    monkeypatch.setattr(tools, "_resolve_hook", lambda *args: hook)
+    monkeypatch.setattr(tools, "_build_acquisition_events", lambda **kwargs: [{"axes": {}}])
+    monkeypatch.setattr(tools, "CONFIRM_FN", lambda *args, **kwargs: False)
+    monkeypatch.setattr(tools, "_acquire_with_hooks", acquire)
+    guard = SafetyGuard(SafetyConstraints(
+        named_stages=[NamedStageLimits("fixture-stage", 10, 20)]
+    ))
+    with pytest.raises(SafetyViolation, match="declined.*not started"):
+        tools.run_timelapse(
+            ctrl, guard, 1, 0, str(tmp_path), hook_strategy="saved",
+            named_stage_envelope={
+                "device": "fixture-stage", "min_um": 10, "max_um": 20,
+                "max_writes": 1, "restore": "leave",
+            },
+            hook_action_plan=[{
+                "hook_event_index": 0,
+                "actions": [{"kind": "MoveNamedStage", "position_um": 15}],
+            }],
+        )
+    acquire.assert_not_called()
+    ctrl.core.set_position.assert_not_called()
+
+
+def test_fixed_named_stage_plan_over_budget_refuses_during_validation(
+    monkeypatch, tmp_path
+):
+    ctrl = MagicMock()
+    ctrl.core.get_position.return_value = 15
+    confirm = MagicMock(return_value=True)
+    monkeypatch.setattr(tools, "CONFIRM_FN", confirm)
+    guard = SafetyGuard(SafetyConstraints(
+        named_stages=[NamedStageLimits("fixture-stage", 10, 20)]
+    ))
+    with pytest.raises(ValueError, match="reserved for restoration"):
+        tools._configure_hook_capabilities(
+            UntrustedHookAdapter(object()), ctrl, guard, str(tmp_path), "run",
+            None, None,
+            {"device": "fixture-stage", "min_um": 10, "max_um": 20,
+             "max_writes": 2, "restore": "entry"},
+            [
+                {"hook_event_index": 0, "actions": [
+                    {"kind": "MoveNamedStage", "position_um": 11}
+                ]},
+                {"hook_event_index": 1, "actions": [
+                    {"kind": "MoveNamedStage", "position_um": 12}
+                ]},
+            ],
+            [{"axes": {}}, {"axes": {}}],
+        )
+    confirm.assert_not_called()
+    ctrl.core.set_position.assert_not_called()
 
 
 def test_config_ceiling_refuses_wrongly_wide_envelope(tmp_path):

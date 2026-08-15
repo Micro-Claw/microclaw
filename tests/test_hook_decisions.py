@@ -46,7 +46,10 @@ def test_named_stage_plan_dispatch_records_overshoot_and_keeps_index_out_of_axes
         max_um=21294, max_writes=1, initial_value=21000, restore="leave",
         action_plan={0: (MoveNamedStage(21294),)},
     )
-    event = {"axes": {"time": 0}, "hook_event_index": 0}
+    event = {
+        "axes": {"time": 0, "position": "p7"}, "x": 1.25, "y": -2.5,
+        "hook_event_index": 0,
+    }
     returned = adapter.pre_hardware_hook_fn(event)
     guard.check_named_stage.assert_called_once_with("fixture-stage", 21294.0)
     core.set_position.assert_called_once_with("fixture-stage", 21294.0)
@@ -54,6 +57,23 @@ def test_named_stage_plan_dispatch_records_overshoot_and_keeps_index_out_of_axes
     assert returned["named_stage_achieved_um"] == 21299
     assert "hook_event_index" not in returned["axes"]
     assert adapter._log[-1]["achieved_um"] == 21299
+    assert {key: adapter._log[-1][key] for key in ("position", "x_um", "y_um")} == {
+        "position": "p7", "x_um": 1.25, "y_um": -2.5,
+    }
+
+
+@pytest.mark.parametrize("target", [10, 20])
+def test_named_stage_envelope_boundaries_are_inclusive(target):
+    core, guard = MagicMock(), MagicMock()
+    core.get_position.return_value = target
+    adapter = UntrustedHookAdapter(object())
+    adapter.configure_named_stage(
+        core=core, guard=guard, device="fixture-stage", min_um=10, max_um=20,
+        max_writes=1, initial_value=15, restore="leave",
+        action_plan={0: (MoveNamedStage(target),)},
+    )
+    adapter.pre_hardware_hook_fn({"axes": {}, "hook_event_index": 0})
+    core.set_position.assert_called_once_with("fixture-stage", float(target))
 
 
 @pytest.mark.parametrize("target", [9.999999999, 20.000000001])
@@ -77,6 +97,47 @@ def test_analysis_returned_named_stage_action_is_refused_without_write():
     adapter = UntrustedHookAdapter(Hook())
     adapter.image_process_fn(np.zeros((1, 1)), {}, object())
     assert "hook_action_plan" in adapter._log[-1]["reason"]
+
+
+def test_analysis_move_cannot_replace_next_frames_preinstalled_move():
+    class Hook:
+        def analyze_frame(self, image, metadata):
+            return HookResult({}, (MoveNamedStage(99),))
+
+    core, guard = MagicMock(), MagicMock()
+    core.get_position.side_effect = [10, 20]
+    adapter = UntrustedHookAdapter(Hook())
+    adapter.configure_named_stage(
+        core=core, guard=guard, device="fixture-stage", min_um=0, max_um=100,
+        max_writes=2, initial_value=5, restore="leave",
+        action_plan={0: (MoveNamedStage(10),), 1: (MoveNamedStage(20),)},
+    )
+    adapter.pre_hardware_hook_fn({"axes": {"time": 0}, "hook_event_index": 0})
+    adapter.image_process_fn(np.zeros((1, 1)), {"Axes": {"time": 0}}, object())
+    adapter.pre_hardware_hook_fn({"axes": {"time": 1}, "hook_event_index": 1})
+    assert [call.args[1] for call in core.set_position.call_args_list] == [10.0, 20.0]
+    assert any("hook_action_plan" in record.get("reason", "") for record in adapter._log)
+
+
+@pytest.mark.parametrize("bad_event", [
+    {"axes": {}, "hook_event_index": 1},
+    {"axes": {}, "hook_event_index": 0},
+])
+def test_missing_or_consumed_plan_index_aborts_before_move_or_exposure(bad_event):
+    core, guard = MagicMock(), MagicMock()
+    adapter = UntrustedHookAdapter(object())
+    adapter.configure_named_stage(
+        core=core, guard=guard, device="fixture-stage", min_um=0, max_um=100,
+        max_writes=1, initial_value=5, restore="leave", action_plan={0: ()},
+    )
+    exposures = []
+    if bad_event["hook_event_index"] == 0:
+        adapter.pre_hardware_hook_fn({"axes": {}, "hook_event_index": 0})
+    with pytest.raises(RuntimeError, match="missing or duplicated"):
+        adapter.pre_hardware_hook_fn(bad_event)
+        exposures.append("exposed")
+    core.set_position.assert_not_called()
+    assert exposures == []
 
 
 def test_named_stage_entry_restoration_uses_same_guard_move_wait_readback():
@@ -107,6 +168,47 @@ def test_named_stage_failed_restoration_is_loud_and_not_success():
         adapter.restore_named_stage()
     assert adapter._log[-1]["decision"] == "failed"
     assert adapter._log[-1]["restoration"] is True
+
+
+def test_preexposure_failure_reports_partial_path_frames_and_last_state(
+    monkeypatch, tmp_path
+):
+    from microclaw import tools
+
+    core, stage_guard = MagicMock(), MagicMock()
+    adapter = UntrustedHookAdapter(object(), str(tmp_path / "hook.json"))
+    adapter.configure_named_stage(
+        core=core, guard=stage_guard, device="fixture-stage",
+        min_um=10, max_um=20, max_writes=1, initial_value=15,
+        restore="leave", action_plan={0: (MoveNamedStage(21),)},
+    )
+
+    class FakeAcquisition:
+        def __init__(self, **kwargs):
+            self.pre_hardware = kwargs["pre_hardware_hook_fn"]
+            self._dataset_disk_location = str(tmp_path / "data_1")
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def acquire(self, events):
+            self.pre_hardware(events[0])
+
+    monkeypatch.setattr(tools, "Acquisition", FakeAcquisition)
+    guard = MagicMock()
+    guard.resolve_in_workspace.side_effect = lambda path: path
+    reservation = MagicMock(completed_frames=2)
+    with pytest.raises(tools._HookedAcquisitionFailure) as caught:
+        tools._acquire_with_hooks(
+            guard, str(tmp_path), "data",
+            [{"axes": {"time": 0}, "hook_event_index": 0}], adapter,
+            reservation=reservation,
+        )
+    result = tools._hooked_failure_result(caught.value, str(tmp_path / "hook.json"))
+    assert result["dataset_path"] == str(tmp_path / "data_1")
+    assert result["frames_exposed"] == 2
+    assert result["last_hardware_state"] == {
+        "device": "fixture-stage", "position_um": 15,
+    }
+    core.set_position.assert_not_called()
 
 
 def _events(n=3):

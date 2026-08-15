@@ -376,19 +376,19 @@ class UntrustedHookAdapter:
         ctx = self._named_stage_context
         index = event.get("hook_event_index")
         if ctx is None:
-            self._refuse(event, action, "no named-stage envelope was authorized for this run")
+            self._refuse_event(event, action, "no named-stage envelope was authorized for this run")
             raise RuntimeError("named-stage action refused: no authorized envelope")
         target = float(action.position_um)
         if target < ctx["min_um"] or target > ctx["max_um"]:
-            self._refuse(event, action, "proposal is outside the authorized named-stage interval")
+            self._refuse_event(event, action, "proposal is outside the authorized named-stage interval")
             raise RuntimeError("named-stage action refused: outside authorized interval")
         if ctx["remaining"] <= 0:
-            self._refuse(event, action, "authorized named-stage write budget exhausted")
+            self._refuse_event(event, action, "authorized named-stage write budget exhausted")
             raise RuntimeError("named-stage action refused: write budget exhausted")
         try:
             ctx["guard"].check_named_stage(ctx["device"], target)
         except Exception as exc:
-            self._refuse(event, action, f"SafetyGuard refused named-stage motion: {exc}")
+            self._refuse_event(event, action, f"SafetyGuard refused named-stage motion: {exc}")
             raise RuntimeError(f"named-stage action refused: {exc}") from exc
         # The budget counts attempted dispatches, including writes that raise.
         ctx["remaining"] -= 1
@@ -399,7 +399,7 @@ class UntrustedHookAdapter:
             if not math.isfinite(achieved):
                 raise ValueError(f"non-finite achieved position {achieved!r}")
         except Exception as exc:
-            self._record(
+            self._record_event(
                 event, event="named_stage_write_failure",
                 hook_event_index=index, action=self._action_record(action),
                 decision="failed", reason=f"parent stage move failed: {exc}",
@@ -411,7 +411,7 @@ class UntrustedHookAdapter:
         event["named_stage_requested_um"] = target
         event["named_stage_achieved_um"] = achieved
         event["named_stage_error_um"] = achieved - target
-        self._accept(
+        self._accept_event(
             event, action, "named-stage move passed envelope and SafetyGuard",
             hook_event_index=index, device=ctx["device"], requested_um=target,
             achieved_um=achieved, error_um=achieved - target,
@@ -435,7 +435,7 @@ class UntrustedHookAdapter:
             else:
                 # Empty lists are explicit; every nonempty fixed-plan entry must
                 # contain an action this coordinator owns.
-                self._refuse(event, action, "unsupported hardware action in fixed hook_action_plan")
+                self._refuse_event(event, action, "unsupported hardware action in fixed hook_action_plan")
                 raise RuntimeError(f"unsupported planned hook action {action.kind}")
         return event
 
@@ -484,6 +484,25 @@ class UntrustedHookAdapter:
         from microclaw.hooks import HookBase
         self._log.append({**HookBase.where(metadata), **fields})
         self._write_log()
+
+    def _record_event(self, hardware_event: dict, **fields: Any) -> None:
+        """Record a pre-hardware decision using event-shaped frame identity."""
+        from microclaw.hooks import HookBase
+        self._log.append({**HookBase.where_event(hardware_event), **fields})
+        self._write_log()
+
+    def _refuse_event(self, event: dict, action: HookAction, reason: str) -> None:
+        self._record_event(
+            event, event="hook_action", action=self._action_record(action),
+            decision="refused", reason=reason,
+        )
+
+    def _accept_event(self, event: dict, action: HookAction, reason: str,
+                      **fields: Any) -> None:
+        self._record_event(
+            event, event="hook_action", action=self._action_record(action),
+            decision="accepted", reason=reason, **fields,
+        )
 
     def note_stalled(self, max_idle_s: float) -> None:
         self._record({}, event="stalled", max_idle_s=max_idle_s)

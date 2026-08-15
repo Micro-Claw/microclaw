@@ -1079,7 +1079,7 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
             f"hook_action_plan = {hook_action_plan!r}",
             "for _index, _event in enumerate(events): _event['hook_event_index'] = _index",
             "print('ALLOW HOOK HARDWARE CONTROL FOR THIS RUN')",
-            "print(f\"Named stage: {_NAMED_STAGE_ENVELOPE['device']}; approved interval {_NAMED_STAGE_ENVELOPE['min_um']}–{_NAMED_STAGE_ENVELOPE['max_um']} µm; maximum writes {_NAMED_STAGE_ENVELOPE['max_writes']}; restore {_NAMED_STAGE_ENVELOPE['restore']!r}\")",
+            "print(f\"Named stage: {_NAMED_STAGE_ENVELOPE['device']}; approved interval {_NAMED_STAGE_ENVELOPE['min_um']}-{_NAMED_STAGE_ENVELOPE['max_um']} um; maximum writes {_NAMED_STAGE_ENVELOPE['max_writes']}; restore {_NAMED_STAGE_ENVELOPE['restore']!r}\")",
             "if input('Type YES to continue: ').strip() != 'YES': raise SafetyViolation('Hook hardware envelope declined before acquisition')",
             f"hook.configure_named_stage(core=core, guard=guard, device={named_stage_envelope['device']!r}, min_um={float(named_stage_envelope['min_um'])!r}, max_um={float(named_stage_envelope['max_um'])!r}, max_writes={named_stage_envelope['max_writes']!r}, initial_value=float(core.get_position({named_stage_envelope['device']!r})), restore={named_stage_envelope['restore']!r}, action_plan={{entry['hook_event_index']: tuple(parse_action(action) for action in entry['actions']) for entry in hook_action_plan}})"]
            if named_stage_envelope is not None else [] ),
@@ -2764,7 +2764,7 @@ def _acquire_with_hooks(
             }
             raise _HookedAcquisitionFailure(
                 exc, dataset_path,
-                frames_exposed=getattr(reservation, "completed_frames", 0),
+                frames_exposed=reservation.completed_frames,
                 last_hardware_state=last_state,
             ) from exc
         raise
@@ -5064,8 +5064,33 @@ def _configure_hook_capabilities(hook: Any, ctrl: MicroscopeController,
         illumination_config = (device, prop, float(ceiling), writes, initial)
         summaries.append(
             f"Illumination: {device}.{prop}; ceiling {float(ceiling):g}%; "
-            f"{writes} accepted increasing writes maximum."
+            f"{writes} accepted increasing writes maximum. Generated hook code "
+            "cannot enable a shutter or turn light on."
         )
+
+    # Preserve the block-7b illumination-only contract byte-for-byte. The
+    # combined dialog below is used only when named-stage authority is present.
+    if named_stage_envelope is None:
+        if hook_action_plan is not None:
+            raise ValueError("hook_action_plan requires named_stage_envelope.")
+        if illumination_config is not None:
+            device, prop, ceiling, writes, initial = illumination_config
+            summary = (
+                f"AUTHORIZE UNATTENDED HOOK ILLUMINATION: {device}.{prop}\n"
+                f"Ceiling: {float(ceiling):g}% ({writes} accepted writes maximum).\n"
+                "Generated hook code will drive this power unattended, per frame, "
+                "for the duration of the run. It cannot enable a shutter or turn light on."
+            )
+            if not CONFIRM_FN(summary, kind="illumination"):
+                raise SafetyViolation(
+                    f"User declined hook illumination envelope for {device}.{prop}; "
+                    "acquisition was not started."
+                )
+            hook.configure_illumination(
+                core=ctrl.core, guard=guard, device=device, property=prop,
+                max_power_percent=ceiling, max_writes=writes, initial_value=initial,
+            )
+        return
 
     named_config = None
     if named_stage_envelope is not None:
@@ -5127,9 +5152,6 @@ def _configure_hook_capabilities(hook: Any, ctrl: MicroscopeController,
             f"Named stage: {device}; approved interval {float(low):g}–{float(high):g} µm; "
             f"{writes} attempted writes maximum; restore {restore!r}."
         )
-    elif hook_action_plan is not None:
-        raise ValueError("hook_action_plan requires named_stage_envelope.")
-
     if summaries and not CONFIRM_FN(
         "ALLOW HOOK HARDWARE CONTROL FOR THIS RUN\n" + "\n".join(summaries) +
         f"\nAcquisition: {len(events or [])} frames, {Path(save_dir) / name}",
