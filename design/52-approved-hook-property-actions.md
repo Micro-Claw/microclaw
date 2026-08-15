@@ -1032,7 +1032,7 @@ measured, and close the `design/35` register row.
 |---|---|---|---|---|---|---|
 | coordination | `design52/reconcile-decision` | `bdffb14` | coordinator | n/a | merged `d97d256` | n/a |
 | coordination | ~~`design52/checklist`~~ | `d97d256` | coordinator | n/a | merged `f872a0c` | n/a |
-| 52a | `design52/block-52a` | `f872a0c` | **not yet assigned** | | | |
+| 52a | `design52/block-52a` | `413caec` | **not yet assigned** | | | |
 | 52b | `design52/block-52b` | | | | | |
 | 52c | `design52/block-52c` | | | | | |
 
@@ -1065,9 +1065,10 @@ branch.** One worktree, this one. Suite at `d97d256`, macOS: **1812 passed / 99
 skipped / 3 warnings**, coordinator-measured rather than carried over.
 
 - **design/52 is scheduled and no longer parked.** Three blocks. **52a's branch
-  `design52/block-52a` exists at `f872a0c` and is pushed, with a worktree at
+  `design52/block-52a` exists at `413caec` and is pushed, with a worktree at
   `../microclaw-52a`; no implementer has been assigned to it yet.** 52b and 52c
-  are not started.
+  are not started. The branch was fast-forwarded from `f872a0c` when the gate rig
+  changed, so its start commit carries the M2 gate wording.
 - **52a branches from the merge that carries this checklist**, so the runner's
   tree holds the spec it is being held to. Both the 50b and 51a runners reported
   their design file absent from the start commit they were given; this removes
