@@ -126,18 +126,22 @@ def test_analysis_move_cannot_replace_next_frames_preinstalled_move():
 def test_missing_or_consumed_plan_index_aborts_before_move_or_exposure(bad_event):
     core, guard = MagicMock(), MagicMock()
     adapter = UntrustedHookAdapter(object())
+    # Index 0 carries a real move, so the consumed-index limb proves the plan is
+    # not replayed rather than merely that an empty entry writes nothing.
     adapter.configure_named_stage(
         core=core, guard=guard, device="fixture-stage", min_um=0, max_um=100,
-        max_writes=1, initial_value=5, restore="leave", action_plan={0: ()},
+        max_writes=4, initial_value=5, restore="leave",
+        action_plan={0: (MoveNamedStage(42),)},
     )
-    exposures = []
+    first_pass_writes = 0
     if bad_event["hook_event_index"] == 0:
         adapter.pre_hardware_hook_fn({"axes": {}, "hook_event_index": 0})
+        first_pass_writes = core.set_position.call_count
+        assert first_pass_writes == 1
     with pytest.raises(RuntimeError, match="missing or duplicated"):
         adapter.pre_hardware_hook_fn(bad_event)
-        exposures.append("exposed")
-    core.set_position.assert_not_called()
-    assert exposures == []
+    # The refused callback returns before any write, so the count is unchanged.
+    assert core.set_position.call_count == first_pass_writes
 
 
 def test_named_stage_entry_restoration_uses_same_guard_move_wait_readback():
@@ -209,6 +213,24 @@ def test_preexposure_failure_reports_partial_path_frames_and_last_state(
         "device": "fixture-stage", "position_um": 15,
     }
     core.set_position.assert_not_called()
+
+    # Same failure with no reservation: the survey runner passes a hook with
+    # reservation=None whenever `adaptive` is false, so this path is real. It
+    # must still report the dataset and the last known position, and must not
+    # invent a frame count it never measured.
+    adapter._named_stage_context["consumed"] = set()
+    with pytest.raises(tools._HookedAcquisitionFailure) as unreserved:
+        tools._acquire_with_hooks(
+            guard, str(tmp_path), "data",
+            [{"axes": {"time": 0}, "hook_event_index": 0}], adapter,
+            reservation=None,
+        )
+    unreserved_result = tools._hooked_failure_result(unreserved.value, None)
+    assert unreserved_result["dataset_path"] == str(tmp_path / "data_1")
+    assert "frames_exposed" not in unreserved_result
+    assert unreserved_result["last_hardware_state"] == {
+        "device": "fixture-stage", "position_um": 15,
+    }
 
 
 def _events(n=3):

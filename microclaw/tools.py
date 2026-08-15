@@ -1519,7 +1519,8 @@ class _HookArtifactBudgetError(ValueError):
 class _HookedAcquisitionFailure(RuntimeError):
     """A hook failed after pycro-manager resolved the dataset directory."""
 
-    def __init__(self, error: Exception, dataset_path: str, *, frames_exposed: int = 0,
+    def __init__(self, error: Exception, dataset_path: str,
+                 *, frames_exposed: int | None = None,
                  last_hardware_state: dict[str, Any] | None = None) -> None:
         super().__init__(str(error))
         self.dataset_path = dataset_path
@@ -1544,7 +1545,6 @@ def _hooked_failure_result(exc: _HookedAcquisitionFailure, log_path: str | None)
         "error": str(exc),
         "dataset_path": exc.dataset_path,
         "artifact": {"kind": "dataset", "path": exc.dataset_path},
-        "frames_exposed": exc.frames_exposed,
         "hint": (
             "The hook raised mid-acquisition. The stage has already moved and "
             "the frames acquired before the failure are saved at dataset_path — "
@@ -1554,6 +1554,8 @@ def _hooked_failure_result(exc: _HookedAcquisitionFailure, log_path: str | None)
     }
     if log_path:
         result["log_path"] = log_path
+    if exc.frames_exposed is not None:
+        result["frames_exposed"] = exc.frames_exposed
     if exc.last_hardware_state is not None:
         result["last_hardware_state"] = exc.last_hardware_state
     return result
@@ -2764,7 +2766,14 @@ def _acquire_with_hooks(
             }
             raise _HookedAcquisitionFailure(
                 exc, dataset_path,
-                frames_exposed=reservation.completed_frames,
+                # A hooked run with no reservation is real, not hypothetical:
+                # the survey runner passes a hook with reservation=None
+                # whenever `adaptive` is false. So this is optional, not
+                # defensive. Reporting 0 there would state a count nothing
+                # measured; None says the frame count is unknown, which is the
+                # true claim, and _hooked_failure_result omits it.
+                frames_exposed=(None if reservation is None
+                                else reservation.completed_frames),
                 last_hardware_state=last_state,
             ) from exc
         raise
@@ -5149,7 +5158,12 @@ def _configure_hook_capabilities(hook: Any, ctrl: MicroscopeController,
             guard.check_named_stage(device, target)
         named_config = (device, float(low), float(high), writes, initial, restore, parsed_plan)
         summaries.append(
-            f"Named stage: {device}; approved interval {float(low):g}–{float(high):g} µm; "
+            # ASCII on purpose: every CONFIRM_FN implementation print()s this
+            # summary to the rig's console, and an en dash is absent from some
+            # Windows console code pages -- an encode error there would take
+            # down the confirmation itself, refusing a run for a typographic
+            # reason. The emitted standalone script is ASCII for the same reason.
+            f"Named stage: {device}; approved interval {float(low):g}-{float(high):g} um; "
             f"{writes} attempted writes maximum; restore {restore!r}."
         )
     if summaries and not CONFIRM_FN(
