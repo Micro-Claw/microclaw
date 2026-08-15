@@ -46,10 +46,18 @@ python -m pytest -q 2>&1 | Out-File -Encoding utf8 $HOME\Documents\52a-m2-suite.
 Get-Content $HOME\Documents\52a-m2-suite.txt -Tail 3
 ```
 
-Expect **1836 passed**, plus this rig's Windows skip count (M5 shows 124; M2's
-own number is whatever it has been), 3 warnings. Collection is **1935**.
+Expect **1811 passed / 124 skipped / 3 warnings**, measured on M2 2026-08-15.
+**Collection is 1935** — that is the number that proves the branch, and
+`passed + skipped` must equal it. macOS runs the same tree as 1836/99: Windows
+skips 25 tests that pass elsewhere, so a *lower* passed count with a
+correspondingly higher skip count is the expected result, not a failure.
 `main` collects 1911, so a run reporting 1911 means the rig is on the wrong
 branch and every later step is worthless.
+
+> Corrected 2026-08-15 after the first run. This step originally said "expect
+> 1836 passed **plus** this rig's skip count", which reads as 1836+124 and made
+> a passing suite look like a failure. Skips come out of the total, not on top
+> of it.
 
 ## Step 1 — read the axis and fix the envelope
 
@@ -96,11 +104,18 @@ Expect `tirf_sweep_metric` present with a sha256.
 
 Verbatim, substituting your numbers:
 
-> Run an 18-frame timelapse with no channel at <exposure> ms, saving to
-> `D:\SSD\52a_m2_sweep`. Use the `tirf_sweep_metric` hook. Move `TIRF Stage`
-> across <min> to <max> um, one position per frame, using a declarative hook
-> action plan. Approve a named-stage envelope over exactly that interval with 18
-> writes and `restore: "leave"`.
+> Run an 18-frame timelapse with no channel at <exposure> ms and a 1 second
+> interval, saving to `F:\DataSSD\52a_m2_sweep`. Use the `tirf_sweep_metric`
+> hook. Move `TIRF Stage` across <min> to <max> um, one position per frame, using
+> a declarative hook action plan. Approve a named-stage envelope over exactly
+> that interval with 18 writes and `restore: "leave"`.
+
+**The nonzero interval is load-bearing, not politeness.** At `interval_s=0` the
+acquisition engine hardware-sequences the time axis and runs the whole burst with
+no software in the loop, so there is no per-frame callback to move the stage in —
+that is what failed on 2026-08-15. A nonzero time interval defeats time-axis
+sequencing. If the run refuses with a message about a sequenced batch, raise the
+interval rather than lowering it.
 
 Expect **exactly one** confirmation before the acquisition starts, reading
 `ALLOW HOOK HARDWARE CONTROL FOR THIS RUN` and naming the device, the interval,
