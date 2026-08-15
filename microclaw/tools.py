@@ -1097,6 +1097,7 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
         "    acq.acquire(events)",
         *( ["hook._named_stage_restoration = hook.restore_named_stage()"]
            if named_stage_envelope is not None else [] ),
+        f"print('Dataset:', getattr(acq, '_dataset_disk_location', str(_HERE / {params.get('name', default_name)!r})))",
     ])
     return "\n\n".join(common)
 
@@ -2771,9 +2772,12 @@ def _acquire_with_hooks(
             if callable(events):
                 events = events(acq)
             acq.acquire(events)
-            if hook is not None and hasattr(hook, "restore_named_stage"):
-                restoration_attempted = True
-                hook._named_stage_restoration = hook.restore_named_stage()
+        # Acquisition.acquire() only submits work. __exit__ marks the stream
+        # finished and awaits completion, so named-stage restoration is safe
+        # only after the context has exited and all callbacks have run.
+        if hook is not None and hasattr(hook, "restore_named_stage"):
+            restoration_attempted = True
+            hook._named_stage_restoration = hook.restore_named_stage()
     except Exception as exc:
         if (not restoration_attempted and hook is not None and
                 hasattr(hook, "restore_named_stage")):

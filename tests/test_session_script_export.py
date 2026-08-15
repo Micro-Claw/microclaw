@@ -1603,6 +1603,7 @@ def test_saved_fixed_run_exports_named_stage_envelope_and_indexed_plan(
     assert "_event['hook_event_index']" not in source
     assert "_axes_plan" in source
     assert "pre_hardware_hook_fn" in source
+    assert "print('Dataset:', getattr(acq, '_dataset_disk_location'" in source
     assert "# NOT EMITTED" not in source
     assert "import microclaw" not in source
     assert not _undefined_emitted_names(source)

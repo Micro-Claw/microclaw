@@ -212,10 +212,19 @@ def test_fixed_plan_duplicate_generated_axes_refuses_during_validation(
     ctrl.core.set_position.assert_not_called()
 
 
-def test_fixed_plan_survives_engine_closed_key_round_trip(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    ("restore", "positions", "expected_calls"),
+    [
+        ("leave", [15, 11, 12], [11.0, 12.0]),
+        ("entry", [15, 11, 12, 15], [11.0, 12.0, 15.0]),
+    ],
+)
+def test_fixed_plan_survives_queued_engine_closed_key_round_trip(
+    monkeypatch, tmp_path, restore, positions, expected_calls
+):
     """Exercise the same closed event-key boundary as AcqEng before callbacks."""
     ctrl = MagicMock()
-    ctrl.core.get_position.side_effect = [15, 11, 12]
+    ctrl.core.get_position.side_effect = positions
     hook = UntrustedHookAdapter(object())
     monkeypatch.setattr(tools, "_resolve_hook", lambda *args: hook)
     monkeypatch.setattr(tools, "CONFIRM_FN", lambda *args, **kwargs: True)
@@ -234,15 +243,18 @@ def test_fixed_plan_survives_engine_closed_key_round_trip(monkeypatch, tmp_path)
         def __init__(self, **kwargs):
             self.callbacks = kwargs
             self._dataset_disk_location = str(tmp_path / "dataset")
+            self.queued_events = None
 
         def __enter__(self): return self
-        def __exit__(self, *_exc): return False
-
-        def acquire(self, events):
-            for event in events:
+        def __exit__(self, *_exc):
+            for event in self.queued_events:
                 round_tripped = {key: value for key, value in event.items()
                                  if key in self._keys}
                 self.callbacks["pre_hardware_hook_fn"](round_tripped)
+            return False
+
+        def acquire(self, events):
+            self.queued_events = events
 
     monkeypatch.setattr(tools, "Acquisition", KeyStrippingAcquisition)
     guard = SafetyGuard(SafetyConstraints(
@@ -254,7 +266,7 @@ def test_fixed_plan_survives_engine_closed_key_round_trip(monkeypatch, tmp_path)
         ctrl, guard, 2, 1, str(tmp_path), hook_strategy="saved",
         named_stage_envelope={
             "device": "fixture-stage", "min_um": 10, "max_um": 20,
-            "max_writes": 2, "restore": "leave",
+            "max_writes": 2 if restore == "leave" else 3, "restore": restore,
         },
         hook_action_plan=[
             {"hook_event_index": 0, "actions": [
@@ -268,8 +280,14 @@ def test_fixed_plan_survives_engine_closed_key_round_trip(monkeypatch, tmp_path)
 
     assert "error" not in result
     assert [call.args for call in ctrl.core.set_position.call_args_list] == [
-        ("fixture-stage", 11.0), ("fixture-stage", 12.0),
+        *(('fixture-stage', position) for position in expected_calls),
     ]
+    assert result["named_stage_restoration"] == {
+        "policy": restore,
+        "entry_um": 15.0,
+        "last_known_um": 12.0 if restore == "leave" else 15.0,
+        "restored": restore == "entry",
+    }
 
 
 def test_config_ceiling_refuses_wrongly_wide_envelope(tmp_path):
