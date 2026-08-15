@@ -1067,8 +1067,10 @@ skipped / 3 warnings**, coordinator-measured rather than carried over.
 - **design/52 is scheduled and no longer parked.** Three blocks. **52a's branch
   `design52/block-52a` exists at `413caec` and is pushed, with a worktree at
   `../microclaw-52a`; no implementer has been assigned to it yet.** 52b and 52c
-  are not started. The branch was fast-forwarded from `f872a0c` when the gate rig
-  changed, so its start commit carries the M2 gate wording.
+  are not started. `413caec` is the **substantive** start — the commit that
+  carries the M2 gate wording. The branch is kept fast-forwarded to `main` while
+  it holds no work of its own, so doc-only commits after that point move the tip;
+  that is expected and the ledger does not chase it.
 - **52a branches from the merge that carries this checklist**, so the runner's
   tree holds the spec it is being held to. Both the 50b and 51a runners reported
   their design file absent from the start commit they were given; this removes
