@@ -1081,7 +1081,7 @@ measured, and close the `design/35` register row.
 |---|---|---|---|---|---|---|
 | coordination | `design52/reconcile-decision` | `bdffb14` | coordinator | n/a | merged `d97d256` | n/a |
 | coordination | ~~`design52/checklist`~~ | `d97d256` | coordinator | n/a | merged `f872a0c` | n/a |
-| 52a | `design52/block-52a` | `413caec` | codex, assigned 2026-08-15 | | | |
+| 52a | `design52/block-52a` | `413caec` | codex, 2 rounds + coordinator fixes | **awaiting M2** | | |
 | 52b | `design52/block-52b` | | | | | |
 | 52c | `design52/block-52c` | | | | | |
 
@@ -1118,6 +1118,21 @@ skipped / 3 warnings**, coordinator-measured rather than carried over.
   `../microclaw-52a`, and it is ASSIGNED — codex is implementing it, 2026-08-15.**
   52b and 52c are not started. `413caec` is the **substantive** start: the commit
   that carries the M2 gate wording.
+- **52a is implemented and pushed, awaiting the M2 gate.** Five commits, tip
+  `17d2735`, runbook `design/52-block52a-rig-gate.md` on the branch, pinned by
+  `git merge-base --is-ancestor d0c4469 HEAD`. Suite on the branch, macOS:
+  **1836 passed / 99 skipped / 3 warnings**, 1935 collected, coordinator-run at
+  each round. Two rounds returned to the runner; the round-1 defect was that
+  every named-stage audit record went through `where()` instead of
+  `where_event()` and carried no frame identity.
+- **Two coordinator fixes sit on top of the runner's work.** A hooked run with
+  `reservation=None` — which `run_adaptive_survey` produces whenever `adaptive`
+  is false — crashed its own failure path with `AttributeError` after I asked for
+  a defensive `getattr` to be removed; it now reports `None` rather than a frame
+  count nothing measured. And **`move_named_stage` now emits**, because it was
+  still undecorated and sits on this gate's own export path — the third time that
+  shape would have killed a gate. **Undecorated tools 12 → 11**; `CLAUDE.md`'s
+  count is corrected at the step-10 design gate.
 - **Do not fast-forward `design52/block-52a` any more.** It was kept level with
   `main` while it held no work of its own; a runner is now committing there, so
   coordinator doc commits stay on `main` and reach the block only at its merge.
@@ -1307,7 +1322,11 @@ skipped / 3 warnings**, coordinator-measured rather than carried over.
 - [ ] Merged to `main`, `main` pushed, branch deleted locally and on `origin`;
       `git log --oneline origin/main..main` empty.
 - [ ] Ledger row closed and coordination notes added to `design/prompts.md`.
-- [ ] **Step-10 design gate** merged before 52b is assigned.
+- [ ] **Step-10 design gate** merged before 52b is assigned. It owes three
+      corrections: `CLAUDE.md`'s "Twelve tools are still undecorated" becomes
+      eleven and names `move_named_stage`; this document's §Timing prose is
+      reconciled to what M2 measured; and the `design/35` register row is ticked
+      down to what 52b and 52c still owe.
 
 ### 52b — the general bounded property
 
