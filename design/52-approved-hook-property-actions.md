@@ -933,9 +933,43 @@ coordinator), `microclaw/tools.py` (`_configure_hook_capabilities:4905`,
 `_acquire_with_hooks:2636`), `microclaw/hook_docs.py`,
 `tests/test_hook_decisions.py`, `tests/test_session_script_export.py`.
 
-**Rig gate 52a (M5).** §"TIRF acceptance gate" limb 1 in full, on the rig that
-carries `Thorlabs ELL17/ELL20`. All seven pass criteria, including the
+**Rig gate 52a — any rig with a named single-axis stage; M2 is the one booked.**
+§"TIRF acceptance gate" limb 1 in full: all seven pass criteria, including the
 out-of-bounds second run and the exported script.
+
+**The gate needs a labelled single-axis stage with declared bounds. It does not
+need that stage to be `Thorlabs ELL17/ELL20`, and it does not need the rig to be
+in TIRF alignment.** What limb 1 measures is one approval, one dataset, one
+action set per event index, requested and achieved position on every frame, a
+bounds refusal, and an export — motion, indexing and export, none of which is
+optical. M5's ELL numbers (`19639–21294 µm`, request 21294 → achieve 21299) stay
+in this document as **recorded history and off-rig fixture values**; they are not
+instructions to any other rig, and a runbook that copies them is wrong.
+
+Preconditions, all operator-owned and none of them code:
+
+1. The TIRF axis is a Micro-Manager **stage** addressable by label — the
+   dispatch is `core.set_position(device, um)` / `get_position(device)`. A
+   generic device carrying a position *property* is not this block; it is 52b,
+   and it will meet design/49's refusal.
+2. That label has a `named_stages` entry with real `min_um`/`max_um` in the
+   rig's **reviewed schema-3 config**. `check_named_stage` fails closed, so
+   without the entry nothing moves. The declaration is also what makes the
+   device a bounded stage device (`authorization.py:1504`), which is what 52b's
+   refusal limb later needs — one entry serves both.
+3. The interval is **measured on the day**, not inherited: read the current
+   position and the driver's own limits, and pick a conservative sub-range.
+4. The label must not shadow core XY or `Core.Focus`, or startup refuses with a
+   core/named-actuator declaration conflict.
+
+**M2 has never been run in TIRF mode, and the gate is still valid there** — say
+so in the runbook rather than letting a reader infer an optical claim. The hook
+must compute and log its metric and select an extremum; whether that extremum is
+an optically meaningful TIRF angle is not what this block proves. Two M2 facts
+the runbook carries: its camera triggers the lasers, so every frame of the sweep
+is a dose, and `named_stages` was deliberately empty in its last recorded profile
+(`design/29-block9-m2-safety-config.yaml:123`), which is precisely the entry
+precondition 2 asks for.
 
 Step-10 design gate: correct `hook_docs.py`'s categorical claim that a saved hook
 cannot reach a named stage, and tick the `design/35` register row down to what
@@ -952,14 +986,20 @@ Files: `microclaw/safety.py` (`check_device_property:1002`, `check_property:974`
 `microclaw/hook_decisions.py`, `microclaw/tools.py`,
 `tests/test_hook_decisions.py`, `tests/test_safety_*.py`.
 
-**Rig gate 52b (M5).** A property the operator names on the day — a categorical
-one (an EMU-named filter or two-state device) and, if one exists in the reviewed
-config, a bounded numeric one. The runbook records which pair was used; do not
-write the pair into `microclaw/`. Two limbs are mandatory regardless of the pair
-chosen: a `SetDeviceProperty` aimed at `Thorlabs ELL17/ELL20`'s position property
-**refuses** at `authorize_property_write` with design/49's message naming
-`move_named_stage` — that is a pass — and an interdependent pair applied in one
-frame verifies as a set, not per write.
+**Rig gate 52b — same rig as 52a.** A property the operator names on the day: a
+categorical one, and a bounded numeric one if the reviewed config has one. The
+runbook records which pair was used; the pair never enters `microclaw/`. Two
+limbs are mandatory whichever pair is chosen — a `SetDeviceProperty` aimed at
+**the named stage 52a declared** refuses at `authorize_property_write` with
+design/49's message naming `move_named_stage` (a pass, not a gap), and an
+interdependent pair applied in one frame verifies as a set rather than per write.
+
+> Picking the categorical pair on M2 has a known trap. Its only StateDevices are
+> `Thorlabs ELL9` and `ELL9-1`, and block 3b auto-classifies a StateDevice's own
+> `Label`/`State` **only into a vacuum** — declaring one of them in
+> `categorical_properties` takes auto-classification away from the other
+> (`design/29-block9-m2-safety-config.yaml:24`). Choose the pair with that in
+> front of you.
 
 Step-10 design gate: record in `design/33-authorization-map.md` that an approved
 hook envelope replaces the safety-config allow/deny decision and **not** the
@@ -976,9 +1016,12 @@ Files: `microclaw/hook_decisions.py` (`image_process_fn:703`, `_dispatch`),
 `_emit_adaptive`), `tests/test_adaptive_survey.py`,
 `tests/test_session_script_export.py`.
 
-**Rig gate 52c (M5).** §"TIRF acceptance gate" limb 2 in full — coarse pass then
-hook-chosen refinement, one envelope, one dataset — including the export limb,
-where a script reproducing this run's exact target list is a **fail**.
+**Rig gate 52c — same rig and same declared stage as 52a.** §"TIRF acceptance
+gate" limb 2 in full — coarse pass then hook-chosen refinement, one envelope, one
+dataset — including the export limb, where a script reproducing this run's exact
+target list is a **fail**. The refinement targets must be chosen by the hook and
+absent from the seed plan; that is a property of the decision loop, not of the
+optics, so it holds on a rig that has never been aligned for TIRF.
 
 Step-10 design gate: replace this document's §Timing prose with what the rig
 measured, and close the `design/35` register row.
@@ -1034,6 +1077,16 @@ skipped / 3 warnings**, coordinator-measured rather than carried over.
   target"). Operator decision, 2026-08-15, before assignment. The stubs and the
   `hook_action_plan` example in this document were corrected to match; anything
   elsewhere showing a `device` on an action is stale.
+- **The gate rig is M2, not M5** — operator decision 2026-08-15, on access. All
+  three blocks gate on the same rig and the same declared named stage. The design
+  above was written from an M5 session and still names `Thorlabs ELL17/ELL20`
+  throughout; **those are recorded history and off-rig fixture values, not
+  instructions to the gate rig.** M2's TIRF axis is a SmarAct 1D and the rig has
+  never been run in TIRF mode; §Blocks explains why the gate is still valid and
+  what it therefore may not claim.
+- **Nothing about the rig change touches `microclaw/`.** If any block's diff
+  needs to know which stage it is driving, that is the defect — the envelope
+  names the device and the config bounds it.
 - **The illumination export refusal stays** (`tools.py:836`). §Export says why,
   and it is a decision, not an oversight. Do not widen a block to fix it, and do
   not narrow the new envelopes to match it.
