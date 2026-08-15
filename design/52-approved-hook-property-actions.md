@@ -1081,7 +1081,7 @@ measured, and close the `design/35` register row.
 |---|---|---|---|---|---|---|
 | coordination | `design52/reconcile-decision` | `bdffb14` | coordinator | n/a | merged `d97d256` | n/a |
 | coordination | ~~`design52/checklist`~~ | `d97d256` | coordinator | n/a | merged `f872a0c` | n/a |
-| 52a | `design52/block-52a` | `413caec` | codex, 3 rounds + coordinator fixes | M2 round 1 **FAIL** (sequencing); round 2 pending | | |
+| 52a | `design52/block-52a` | `413caec` | codex, 3 rounds + coordinator fixes | M2 **FAIL** x2 — r1 sequencing, r2 stripped event key | | |
 | 52b | `design52/block-52b` | | | | | |
 | 52c | `design52/block-52c` | | | | | |
 
@@ -1134,6 +1134,31 @@ skipped / 3 warnings**, coordinator-measured rather than carried over.
   `CompositeHook` for every precoded hook, and `hook_docs.py` documented none of
   it. Fixed at the boundary, with a multi-event batch refused before its first
   exposure.
+- **The second M2 gate failed on 2026-08-15 too, and reproduced this design's
+  motivating defect exactly.** Both planned runs died at the first pre-hardware
+  callback with `planned hook event is missing a valid hook_event_index`, wrote
+  zero frames, and the agent then fell back to **18 separate one-frame
+  acquisitions** with parent-side `move_named_stage` between them and offline
+  analysis — the §Finding failure verbatim, dose delivered for nothing.
+- **§Timing's contract is unsatisfiable as written, and the rig proved it.** The
+  acquisition engine serialises events through a **closed key set**
+  (`acq_eng_py/main/acquisition_event.py`, `event_to_json:82` /
+  `event_from_json:138`), so an injected `hook_event_index` is silently dropped.
+  The only per-event identifier the engine must preserve is `axes` — which is
+  exactly where the design forbids a unique-per-event value, for the measured
+  NDTiff reason. Round 4 keys the plan on the event's **axes signature** instead,
+  injecting nothing; `hook_action_plan`'s caller-facing index is unchanged.
+- **Three rounds of tests stayed green over a mechanism that never worked**,
+  because every test hand-built an event with the key already on it. Round 4 owes
+  a fake that mimics the engine's closed key set, and an end-to-end test through
+  it.
+- **Two things the failed run measured that are worth keeping.** At
+  `interval_s=1` no sequenced-batch refusal appeared, so a 1 s interval does
+  defeat time-axis sequencing on M2 and round 3's guard is correctly quiet. And
+  18 parent-side moves recorded achieved-vs-requested error from **-0.98 to
+  +0.73 um, mean absolute 0.414 um** — the SmarAct does *not* hit its target
+  exactly, so §"The envelope bounds the request, not the achievement" applies
+  here as it did on M5, at sub-micron scale rather than 5 um.
 - **The schema cost three of four rig attempts.** `hook_action_plan` was typed as
   loose objects, so the agent guessed `{"type": …}` and `{"kind": …, "params":
   {…}}` before finding the right shape. Now a discriminated schema with a `kind`
