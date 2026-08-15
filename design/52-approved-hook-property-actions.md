@@ -946,6 +946,28 @@ optical. M5's ELL numbers (`19639–21294 µm`, request 21294 → achieve 21299)
 in this document as **recorded history and off-rig fixture values**; they are not
 instructions to any other rig, and a runbook that copies them is wrong.
 
+**M2 precheck, 2026-08-15 — the preconditions below are already satisfied.**
+Evidence: `~/Documents/Documents - Beyonce/Projects/Micro-Claw/52a-m2-precheck`
+(`inventory.json`, `52a-m2-authmap.txt`, the live `safety_config.yaml`).
+
+- `TIRF Stage` is a **`StageDevice`**, adapter `SmarAct 1D`, on COM6. `SmarActZ`
+  is a second `SmarAct 1D` on COM11 — **the adapter name does not identify the
+  axis, the label does.**
+- It is already declared: `named_stages: {device: TIRF Stage, min_um: -10497.8,
+  max_um: 6256.8}` in a schema-3 `reviewed: true` config. The run interval is a
+  sub-range of that, chosen on the day.
+- It shadows nothing: core focus is `PIZStage`, core XY is `SmarActXY`.
+- It is in `bounded_stage_devices`, entry `stage-position` /
+  `built_in_typed_capability` on path `dedicated-stage`.
+- **The rig has one config group, `Camera`. There is no `Channel` group**, so the
+  sweep runs `run_timelapse(channel=None, exposure_ms=…)` — the SMLM path. A
+  runbook that passes a channel is refused by `_check_acquisition_channel`.
+- Two things this config does **not** bound, so no gate limb may claim them: it
+  has no `camera` section (no `max_exposure_ms`) and no `illumination` section
+  (`illumination_unrestricted: true`), and the map runs in degraded
+  trusted-plugin mode with completeness suspended and the three Luxx enables
+  undeclared.
+
 Preconditions, all operator-owned and none of them code:
 
 1. The TIRF axis is a Micro-Manager **stage** addressable by label — the
@@ -989,10 +1011,35 @@ Files: `microclaw/safety.py` (`check_device_property:1002`, `check_property:974`
 **Rig gate 52b — same rig as 52a.** A property the operator names on the day: a
 categorical one, and a bounded numeric one if the reviewed config has one. The
 runbook records which pair was used; the pair never enters `microclaw/`. Two
-limbs are mandatory whichever pair is chosen — a `SetDeviceProperty` aimed at
-**the named stage 52a declared** refuses at `authorize_property_write` with
-design/49's message naming `move_named_stage` (a pass, not a gap), and an
-interdependent pair applied in one frame verifies as a set rather than per write.
+limbs are mandatory whichever pair is chosen — a `SetDeviceProperty` aimed at a
+**bounded stage device** refuses at `authorize_property_write` with design/49's
+message naming `move_named_stage` (a pass, not a gap), and an interdependent pair
+applied in one frame verifies as a set rather than per write.
+
+> **The refusal limb cannot target `TIRF Stage`'s position, and the M2 precheck
+> is why.** That device exposes **no position property at all** — its properties
+> are `Controller`, `Description`, `Frequency`, `ID`, `Name`, `Port`,
+> `Z channel`, `Z direction`. Position exists only through the MMCore stage API,
+> which is exactly why 52a dispatches through `set_position` and not a property.
+> Aiming `SetDeviceProperty` at a property that does not exist would fail in
+> MMCore rather than in the authorization map, and pass **vacuously** — the trap
+> this checklist flags elsewhere.
+>
+> Use a real property on a bounded stage device instead. On M2, both work and
+> `bounded_stage_devices` is `{PIZStage, SmarActXY, SmarActZ, TIRF Stage}`:
+>
+> - **`TIRF Stage.Frequency`** (Integer, driver range 1–18500, currently 5000) —
+>   preferred, because it keeps the limb on the very stage 52a declared. Its only
+>   typed entry is `stage-position` on `dedicated-stage`, which is **not** in
+>   `_RAW_WRITE_PATHS`, so the raw route refuses.
+> - **`PIZStage.Position`** (Float, driver range 0–500, currently 98.9786) — the
+>   corroborating case, and the closer analogue of the M5 original.
+>
+> **Do not turn this limb into an approved write.** It proves a refusal, so
+> nothing reaches hardware — which is fortunate: `SmarAct*/Frequency` writes are
+> recorded as blocking Micro-Manager's event thread for 5.0–7.5 s
+> (`design/29-offline-dataset-analysis.md:303`), and `PIZStage` is the focus
+> drive.
 
 > Picking the categorical pair on M2 has a known trap. Its only StateDevices are
 > `Thorlabs ELL9` and `ELL9-1`, and block 3b auto-classifies a StateDevice's own
@@ -1089,6 +1136,18 @@ skipped / 3 warnings**, coordinator-measured rather than carried over.
   instructions to the gate rig.** M2's TIRF axis is a SmarAct 1D and the rig has
   never been run in TIRF mode; §Blocks explains why the gate is still valid and
   what it therefore may not claim.
+- **The M2 precheck is done and 52a's preconditions are met** (§Blocks). The one
+  finding that changed a gate: `TIRF Stage` has no position property, so 52b's
+  refusal limb retargets to `TIRF Stage.Frequency` / `PIZStage.Position`.
+- **Two runbook facts learned from capturing the precheck**, both PowerShell, not
+  Microclaw: `> file 2>&1` writes **UTF-16LE**, so prefer
+  `2>&1 | Out-File -Encoding utf8 <path>`; and a `NativeCommandError` record
+  naming the tool's own startup banner is **not a failure** — both precheck
+  commands succeeded and wrote their artifacts while printing one.
+- **`inspect-rig` records no stage travel limits**, so a sweep interval cannot be
+  planned from `inventory.json` alone. The declared `named_stages` bounds are the
+  policy envelope; where the axis currently sits needs a live `get_position`
+  read in the runbook.
 - **Nothing about the rig change touches `microclaw/`.** If any block's diff
   needs to know which stage it is driving, that is the defect — the envelope
   names the device and the config bounds it.
