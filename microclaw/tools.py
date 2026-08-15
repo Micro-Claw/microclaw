@@ -1097,7 +1097,13 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
         "    acq.acquire(events)",
         *( ["hook._named_stage_restoration = hook.restore_named_stage()"]
            if named_stage_envelope is not None else [] ),
-        f"print('Dataset:', getattr(acq, '_dataset_disk_location', str(_HERE / {params.get('name', default_name)!r})))",
+        # Print what the acquisition reports, or say it is unknown. The obvious
+        # fallback -- _HERE / name -- is a path that usually does NOT exist,
+        # because pycro-manager resolves collisions by appending _1, _2. Sending
+        # an operator to a plausible wrong directory is worse than telling them
+        # the location could not be read.
+        "print('Dataset:', getattr(acq, '_dataset_disk_location', None) or "
+        "'<location not reported by this acquisition>')",
     ])
     return "\n\n".join(common)
 
