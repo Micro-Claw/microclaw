@@ -1753,11 +1753,11 @@ def execute_channel_plan(
     originals = [str(ctrl.core.get_property(device, prop)) for device, prop, _ in effects]
     attempted: list[tuple[str, str, str]] = []
     applied: list[tuple[str, str, str]] = []
-    # How many writes the device accepted without raising. `applied` is the
-    # subset that also verified, so these differ by at most one: the write whose
-    # wait or read-back failed. A set that *raised* never reached the device; a
-    # set that returned did, whatever the read-back then said. Rollback
-    # bookkeeping needs that distinction, not just `applied`.
+    # How many writes the device accepted without raising. `applied` retains the
+    # existing completed-write accounting if a later set/wait raises; after the
+    # verify pass it excludes every mismatch. A set that *raised* never reached
+    # the device; a set that returned did, whatever the eventual read-back says.
+    # Rollback bookkeeping needs that distinction, not just `applied`.
     accepted = 0
     try:
         for device, prop, value in effects:
@@ -1767,12 +1767,21 @@ def execute_channel_plan(
             ctrl.core.set_property(device, prop, value)
             accepted += 1
             _wait_for_plan_device(ctrl.core, device)
-            _verify_property(ctrl.core, device, prop, value)
             applied.append((device, prop, value))
+        verification_failures = []
+        for device, prop, value in effects:
+            try:
+                _verify_property(ctrl.core, device, prop, value)
+            except Exception as verification_exc:
+                applied.remove((device, prop, value))
+                verification_failures.append(_clean_exception_message(verification_exc))
+        if verification_failures:
+            raise ChannelPlanError("; ".join(verification_failures))
     except Exception as exc:
         rolled_back: list[str] = []
         rollback_failures: list[str] = []
         unrestored: list[str] = []
+        restored: list[int] = []
         for index in range(len(attempted) - 1, -1, -1):
             device, prop, _ = attempted[index]
             # Did this write reach the device at all? A set that returned did,
@@ -1784,6 +1793,14 @@ def execute_channel_plan(
             try:
                 ctrl.core.set_property(device, prop, originals[index])
                 _wait_for_plan_device(ctrl.core, device)
+                restored.append(index)
+            except Exception as rollback_exc:
+                detail = f"{device}.{prop}: {_clean_exception_message(rollback_exc)}"
+                (rollback_failures if landed else unrestored).append(detail)
+        for index in restored:
+            device, prop, _ = attempted[index]
+            landed = index < accepted
+            try:
                 _verify_property(ctrl.core, device, prop, originals[index])
                 rolled_back.append(f"{device}.{prop}")
             except Exception as rollback_exc:

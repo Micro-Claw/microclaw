@@ -668,6 +668,32 @@ def test_emitted_channel_switch_waits_and_verifies_like_the_executor(tmp_path):
         run_emitted(source, lying, tmp_path)
 
 
+def test_emitted_interdependent_preset_writes_every_effect_before_verifying(tmp_path):
+    result = {
+        "status": "Config preset System.Normal Mode applied.",
+        "writes": 2,
+        "effects": [
+            ["Camera", "Exposure", "100.0030"],
+            ["Camera", "ScanMode", "3"],
+        ],
+        "channel_source": "config-group",
+    }
+    _, _, source = export(tmp_path, completed_call(
+        "set_config_preset",
+        {"group": "System", "preset": "Normal Mode"},
+        result,
+    ))
+
+    exposure_set = source.index("core.set_property('Camera', 'Exposure', '100.0030')")
+    mode_set = source.index("core.set_property('Camera', 'ScanMode', '3')")
+    exposure_verify = source.index(
+        "_verify_property(core, 'Camera', 'Exposure', '100.0030')"
+    )
+    mode_verify = source.index("_verify_property(core, 'Camera', 'ScanMode', '3')")
+    assert exposure_set < mode_set < exposure_verify < mode_verify
+    compile(source, "routine.py", "exec")
+
+
 def test_emitted_float_read_back_accepts_driver_reformatting(tmp_path):
     """Coordinator review, 2026-08-06. The first emitter compared read-back as
 

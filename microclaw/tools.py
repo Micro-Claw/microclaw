@@ -2103,6 +2103,7 @@ def _emit_recorded_channel_effects(result: dict, preset: str, *, label: str) -> 
     effects = result.get("effects")
     if effects:
         lines = [f"# {label} {preset!r} ({result.get('channel_source')})"]
+        verified = []
         for effect in effects:
             try:
                 device, prop, value = (str(item) for item in effect)
@@ -2114,6 +2115,8 @@ def _emit_recorded_channel_effects(result: dict, preset: str, *, label: str) -> 
             lines.append(f"core.set_property({device!r}, {prop!r}, {value!r})")
             if device != "Core":     # MM's pseudo-device never becomes busy
                 lines.append(f"core.wait_for_device({device!r})")
+            verified.append((device, prop, value))
+        for device, prop, value in verified:
             # The executor's own check, inlined by _channel_verification_source.
             # Never hand-write the comparison here; see that function for why.
             lines.append(f"_verify_property(core, {device!r}, {prop!r}, {value!r})")
