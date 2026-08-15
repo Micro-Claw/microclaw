@@ -2631,25 +2631,24 @@ class TestExportDatasetAllAxes:
         assert result["axes"] == ["z", "channel"]
         assert result["artifact"] == {"kind": "tiff", "path": str(tmp_path / "o.tif")}
 
-    def test_indexed_hook_events_export_only_the_acquired_frame_count(
+    def test_axes_keyed_hook_events_export_only_the_acquired_frame_count(
         self, mock_ctrl, unconstrained_guard, monkeypatch, tmp_path
     ):
         from microclaw import tools
         from microclaw.hook_decisions import UntrustedHookAdapter
 
-        events = [
-            {"axes": {"time": index}, "hook_event_index": index}
-            for index in range(3)
-        ]
+        events = [{"axes": {"time": index}} for index in range(3)]
         adapter = UntrustedHookAdapter(object())
         adapter.configure_named_stage(
             core=MagicMock(), guard=MagicMock(), device="fixture-stage",
             min_um=0, max_um=1, max_writes=1, initial_value=0,
-            restore="leave", action_plan={index: () for index in range(3)},
+            restore="leave", action_plan={
+                (("time", index),): (index, ()) for index in range(3)
+            },
         )
         for event in events:
             adapter.pre_hardware_hook_fn(event)
-            assert "hook_event_index" not in event["axes"]
+            assert set(event["axes"]) == {"time"}
 
         class FakeDataset:
             axes = {"time": [event["axes"]["time"] for event in events]}

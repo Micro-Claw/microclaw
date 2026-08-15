@@ -1077,11 +1077,16 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
         f"events = multi_d_acquisition_events(**{shape!r})",
         *( [f"_NAMED_STAGE_ENVELOPE = {named_stage_envelope!r}",
             f"hook_action_plan = {hook_action_plan!r}",
-            "for _index, _event in enumerate(events): _event['hook_event_index'] = _index",
+            "_axes_plan = {}",
+            "for _entry in hook_action_plan:",
+            "    _index = _entry['hook_event_index']",
+            "    _signature = hook.axes_signature(events[_index])",
+            "    if _signature in _axes_plan: raise ValueError(f'generated events have duplicate axes signature {dict(_signature)!r}')",
+            "    _axes_plan[_signature] = (_index, tuple(parse_action(action) for action in _entry['actions']))",
             "print('ALLOW HOOK HARDWARE CONTROL FOR THIS RUN')",
             "print(f\"Named stage: {_NAMED_STAGE_ENVELOPE['device']}; approved interval {_NAMED_STAGE_ENVELOPE['min_um']}-{_NAMED_STAGE_ENVELOPE['max_um']} um; maximum writes {_NAMED_STAGE_ENVELOPE['max_writes']}; restore {_NAMED_STAGE_ENVELOPE['restore']!r}\")",
             "if input('Type YES to continue: ').strip() != 'YES': raise SafetyViolation('Hook hardware envelope declined before acquisition')",
-            f"hook.configure_named_stage(core=core, guard=guard, device={named_stage_envelope['device']!r}, min_um={float(named_stage_envelope['min_um'])!r}, max_um={float(named_stage_envelope['max_um'])!r}, max_writes={named_stage_envelope['max_writes']!r}, initial_value=float(core.get_position({named_stage_envelope['device']!r})), restore={named_stage_envelope['restore']!r}, action_plan={{entry['hook_event_index']: tuple(parse_action(action) for action in entry['actions']) for entry in hook_action_plan}})"]
+            f"hook.configure_named_stage(core=core, guard=guard, device={named_stage_envelope['device']!r}, min_um={float(named_stage_envelope['min_um'])!r}, max_um={float(named_stage_envelope['max_um'])!r}, max_writes={named_stage_envelope['max_writes']!r}, initial_value=float(core.get_position({named_stage_envelope['device']!r})), restore={named_stage_envelope['restore']!r}, action_plan=_axes_plan)"]
            if named_stage_envelope is not None else [] ),
         "_hook_callbacks = {name: callback for name, callback in {"
         "'image_process_fn': getattr(hook, 'image_process_fn', None), "
@@ -2864,8 +2869,6 @@ def run_zstack(
         except ValueError as exc:
             return {"error": str(exc)}
         try:
-            for index, event in enumerate(events):
-                event["hook_event_index"] = index
             _configure_hook_capabilities(
                 hook, ctrl, guard, save_dir, name, illumination_envelope,
                 artifact_limits, named_stage_envelope, hook_action_plan, events,
@@ -3023,8 +3026,6 @@ def run_timelapse(
         except ValueError as exc:
             return {"error": str(exc)}
         try:
-            for index, event in enumerate(events):
-                event["hook_event_index"] = index
             _configure_hook_capabilities(
                 hook, ctrl, guard, save_dir, name, illumination_envelope,
                 artifact_limits, named_stage_envelope, hook_action_plan, events,
@@ -5159,6 +5160,18 @@ def _configure_hook_capabilities(hook: Any, ctrl: MicroscopeController,
         expected = set(range(len(events)))
         if set(parsed_plan) != expected:
             raise ValueError(f"hook_action_plan indices must be exactly 0..{len(events) - 1}.")
+        axes_plan = {}
+        for index, event in enumerate(events):
+            try:
+                signature = hook.axes_signature(event)
+                duplicate = signature in axes_plan
+            except (TypeError, RuntimeError) as exc:
+                raise ValueError(f"generated event {index} has invalid axes: {exc}") from exc
+            if duplicate:
+                raise ValueError(
+                    f"generated events have duplicate axes signature {dict(signature)!r}."
+                )
+            axes_plan[signature] = (index, parsed_plan[index])
         reserved = 0 if restore == "leave" else 1
         planned_writes = sum(len(actions) for actions in parsed_plan.values())
         if planned_writes + reserved > writes:
@@ -5201,7 +5214,7 @@ def _configure_hook_capabilities(hook: Any, ctrl: MicroscopeController,
         hook.configure_named_stage(
             core=ctrl.core, guard=guard, device=device, min_um=low, max_um=high,
             max_writes=writes, initial_value=initial, restore=restore,
-            action_plan=parsed_plan,
+            action_plan=axes_plan,
         )
 
 

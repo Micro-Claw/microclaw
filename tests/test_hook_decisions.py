@@ -21,6 +21,13 @@ from microclaw.safety import (
 from microclaw.tools import SurveyProgress
 
 
+def _axes_plan(*entries):
+    return {
+        tuple(sorted(axes.items())): (index, actions)
+        for index, (axes, actions) in enumerate(entries)
+    }
+
+
 @pytest.mark.parametrize("value", [True, float("nan"), float("inf"), -float("inf")])
 def test_move_named_stage_refuses_non_finite_and_boolean_positions(value):
     from microclaw.hook_decisions import parse_action
@@ -44,11 +51,11 @@ def test_named_stage_plan_dispatch_records_overshoot_and_keeps_index_out_of_axes
     adapter.configure_named_stage(
         core=core, guard=guard, device="fixture-stage", min_um=20000,
         max_um=21294, max_writes=1, initial_value=21000, restore="leave",
-        action_plan={0: (MoveNamedStage(21294),)},
+        action_plan=_axes_plan(({"time": 0, "position": "p7"},
+                                (MoveNamedStage(21294),))),
     )
     event = {
         "axes": {"time": 0, "position": "p7"}, "x": 1.25, "y": -2.5,
-        "hook_event_index": 0,
     }
     returned = adapter.pre_hardware_hook_fn(event)
     guard.check_named_stage.assert_called_once_with("fixture-stage", 21294.0)
@@ -70,9 +77,9 @@ def test_named_stage_plan_accepts_one_event_in_either_callback_shape(as_batch):
     adapter.configure_named_stage(
         core=core, guard=guard, device="fixture-stage", min_um=0, max_um=20,
         max_writes=1, initial_value=5, restore="leave",
-        action_plan={0: (MoveNamedStage(12),)},
+        action_plan=_axes_plan(({"time": 0}, (MoveNamedStage(12),))),
     )
-    event = {"axes": {"time": 0}, "hook_event_index": 0}
+    event = {"axes": {"time": 0}}
     supplied = [event] if as_batch else event
     returned = adapter.pre_hardware_hook_fn(supplied)
     assert returned is supplied
@@ -93,8 +100,8 @@ def test_named_stage_plan_refuses_sequenced_batch_before_any_write(actions):
         action_plan={0: actions[0], 1: actions[1]},
     )
     events = [
-        {"axes": {"time": 0}, "hook_event_index": 0},
-        {"axes": {"time": 1}, "hook_event_index": 1},
+        {"axes": {"time": 0}},
+        {"axes": {"time": 1}},
     ]
     with pytest.raises(RuntimeError, match="nonzero interval_s"):
         adapter.pre_hardware_hook_fn(events)
@@ -111,9 +118,9 @@ def test_named_stage_envelope_boundaries_are_inclusive(target):
     adapter.configure_named_stage(
         core=core, guard=guard, device="fixture-stage", min_um=10, max_um=20,
         max_writes=1, initial_value=15, restore="leave",
-        action_plan={0: (MoveNamedStage(target),)},
+        action_plan=_axes_plan(({}, (MoveNamedStage(target),))),
     )
-    adapter.pre_hardware_hook_fn({"axes": {}, "hook_event_index": 0})
+    adapter.pre_hardware_hook_fn({"axes": {}})
     core.set_position.assert_called_once_with("fixture-stage", float(target))
 
 
@@ -124,10 +131,10 @@ def test_named_stage_envelope_outside_boundary_refuses_without_write(target):
     adapter.configure_named_stage(
         core=core, guard=guard, device="fixture-stage", min_um=10, max_um=20,
         max_writes=1, initial_value=15, restore="leave",
-        action_plan={0: (MoveNamedStage(target),)},
+        action_plan=_axes_plan(({}, (MoveNamedStage(target),))),
     )
     with pytest.raises(RuntimeError, match="outside authorized interval"):
-        adapter.pre_hardware_hook_fn({"axes": {}, "hook_event_index": 0})
+        adapter.pre_hardware_hook_fn({"axes": {}})
     core.set_position.assert_not_called()
 
 
@@ -151,21 +158,26 @@ def test_analysis_move_cannot_replace_next_frames_preinstalled_move():
     adapter.configure_named_stage(
         core=core, guard=guard, device="fixture-stage", min_um=0, max_um=100,
         max_writes=2, initial_value=5, restore="leave",
-        action_plan={0: (MoveNamedStage(10),), 1: (MoveNamedStage(20),)},
+        action_plan=_axes_plan(
+            ({"time": 0}, (MoveNamedStage(10),)),
+            ({"time": 1}, (MoveNamedStage(20),)),
+        ),
     )
-    adapter.pre_hardware_hook_fn({"axes": {"time": 0}, "hook_event_index": 0})
+    adapter.pre_hardware_hook_fn({"axes": {"time": 0}})
     adapter.image_process_fn(np.zeros((1, 1)), {"Axes": {"time": 0}}, object())
-    adapter.pre_hardware_hook_fn({"axes": {"time": 1}, "hook_event_index": 1})
+    adapter.pre_hardware_hook_fn({"axes": {"time": 1}})
     assert [call.args[1] for call in core.set_position.call_args_list] == [10.0, 20.0]
     assert any("hook_action_plan" in record.get("reason", "") for record in adapter._log)
 
 
 @pytest.mark.parametrize("as_batch", [False, True])
-@pytest.mark.parametrize("bad_event", [
-    {"axes": {}, "hook_event_index": 1},
-    {"axes": {}, "hook_event_index": 0},
+@pytest.mark.parametrize("bad_event, consume_first", [
+    ({"axes": {"time": 1}}, False),
+    ({"axes": {"time": 0}}, True),
 ])
-def test_missing_or_consumed_plan_index_aborts_before_move_or_exposure(bad_event, as_batch):
+def test_missing_or_consumed_plan_axes_aborts_before_move_or_exposure(
+    bad_event, consume_first, as_batch
+):
     core, guard = MagicMock(), MagicMock()
     adapter = UntrustedHookAdapter(object())
     # Index 0 carries a real move, so the consumed-index limb proves the plan is
@@ -173,14 +185,14 @@ def test_missing_or_consumed_plan_index_aborts_before_move_or_exposure(bad_event
     adapter.configure_named_stage(
         core=core, guard=guard, device="fixture-stage", min_um=0, max_um=100,
         max_writes=4, initial_value=5, restore="leave",
-        action_plan={0: (MoveNamedStage(42),)},
+        action_plan=_axes_plan(({"time": 0}, (MoveNamedStage(42),))),
     )
     first_pass_writes = 0
-    if bad_event["hook_event_index"] == 0:
-        adapter.pre_hardware_hook_fn({"axes": {}, "hook_event_index": 0})
+    if consume_first:
+        adapter.pre_hardware_hook_fn({"axes": {"time": 0}})
         first_pass_writes = core.set_position.call_count
         assert first_pass_writes == 1
-    with pytest.raises(RuntimeError, match="missing or duplicated"):
+    with pytest.raises(RuntimeError, match=r"unconsumed axes.*time"):
         adapter.pre_hardware_hook_fn([bad_event] if as_batch else bad_event)
     # The refused callback returns before any write, so the count is unchanged.
     assert core.set_position.call_count == first_pass_writes

@@ -178,10 +178,98 @@ def test_fixed_named_stage_plan_over_budget_refuses_during_validation(
                     {"kind": "MoveNamedStage", "position_um": 12}
                 ]},
             ],
-            [{"axes": {}}, {"axes": {}}],
+            [{"axes": {"time": 0}}, {"axes": {"time": 1}}],
         )
     confirm.assert_not_called()
     ctrl.core.set_position.assert_not_called()
+
+
+def test_fixed_plan_duplicate_generated_axes_refuses_during_validation(
+    monkeypatch, tmp_path
+):
+    ctrl = MagicMock()
+    ctrl.core.get_position.return_value = 15
+    confirm = MagicMock(return_value=True)
+    monkeypatch.setattr(tools, "CONFIRM_FN", confirm)
+    guard = SafetyGuard(SafetyConstraints(
+        named_stages=[NamedStageLimits("fixture-stage", 10, 20)]
+    ))
+
+    with pytest.raises(ValueError, match=r"duplicate axes signature \{\}"):
+        tools._configure_hook_capabilities(
+            UntrustedHookAdapter(object()), ctrl, guard, str(tmp_path), "run",
+            None, None,
+            {"device": "fixture-stage", "min_um": 10, "max_um": 20,
+             "max_writes": 2, "restore": "leave"},
+            [
+                {"hook_event_index": 0, "actions": []},
+                {"hook_event_index": 1, "actions": []},
+            ],
+            [{"axes": {}}, {"axes": {}}],
+        )
+
+    confirm.assert_not_called()
+    ctrl.core.set_position.assert_not_called()
+
+
+def test_fixed_plan_survives_engine_closed_key_round_trip(monkeypatch, tmp_path):
+    """Exercise the same closed event-key boundary as AcqEng before callbacks."""
+    ctrl = MagicMock()
+    ctrl.core.get_position.side_effect = [15, 11, 12]
+    hook = UntrustedHookAdapter(object())
+    monkeypatch.setattr(tools, "_resolve_hook", lambda *args: hook)
+    monkeypatch.setattr(tools, "CONFIRM_FN", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        tools, "_build_acquisition_events",
+        lambda **kwargs: [{"axes": {"time": 0}}, {"axes": {"time": 1}}],
+    )
+
+    class KeyStrippingAcquisition:
+        _keys = {
+            "special", "min_start_time", "config_group", "exposure",
+            "slm_pattern", "timeout_ms", "axes", "stage_positions", "z",
+            "x", "y", "camera", "tags", "properties",
+        }
+
+        def __init__(self, **kwargs):
+            self.callbacks = kwargs
+            self._dataset_disk_location = str(tmp_path / "dataset")
+
+        def __enter__(self): return self
+        def __exit__(self, *_exc): return False
+
+        def acquire(self, events):
+            for event in events:
+                round_tripped = {key: value for key, value in event.items()
+                                 if key in self._keys}
+                self.callbacks["pre_hardware_hook_fn"](round_tripped)
+
+    monkeypatch.setattr(tools, "Acquisition", KeyStrippingAcquisition)
+    guard = SafetyGuard(SafetyConstraints(
+        named_stages=[NamedStageLimits("fixture-stage", 10, 20)],
+    ))
+    monkeypatch.setattr(guard, "resolve_in_workspace", lambda path: path)
+
+    result = tools.run_timelapse(
+        ctrl, guard, 2, 1, str(tmp_path), hook_strategy="saved",
+        named_stage_envelope={
+            "device": "fixture-stage", "min_um": 10, "max_um": 20,
+            "max_writes": 2, "restore": "leave",
+        },
+        hook_action_plan=[
+            {"hook_event_index": 0, "actions": [
+                {"kind": "MoveNamedStage", "position_um": 11},
+            ]},
+            {"hook_event_index": 1, "actions": [
+                {"kind": "MoveNamedStage", "position_um": 12},
+            ]},
+        ],
+    )
+
+    assert "error" not in result
+    assert [call.args for call in ctrl.core.set_position.call_args_list] == [
+        ("fixture-stage", 11.0), ("fixture-stage", 12.0),
+    ]
 
 
 def test_config_ceiling_refuses_wrongly_wide_envelope(tmp_path):

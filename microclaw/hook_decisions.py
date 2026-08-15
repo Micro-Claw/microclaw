@@ -371,7 +371,7 @@ class UntrustedHookAdapter:
     def configure_named_stage(self, *, core, guard, device: str, min_um: float,
                               max_um: float, max_writes: int, initial_value: float,
                               restore: str | dict[str, float],
-                              action_plan: dict[int, tuple[HookAction, ...]]) -> None:
+                              action_plan: dict[tuple, tuple[int, tuple[HookAction, ...]]]) -> None:
         self._named_stage_context = {
             "core": core, "guard": guard, "device": device,
             "min_um": min_um, "max_um": max_um, "remaining": max_writes,
@@ -379,10 +379,19 @@ class UntrustedHookAdapter:
             "restore": restore, "plan": dict(action_plan), "consumed": set(),
         }
 
+    @staticmethod
+    def axes_signature(event: dict) -> tuple:
+        """Return the engine-preserved identity of an acquisition event."""
+        axes = event.get("axes", {})
+        if not isinstance(axes, dict):
+            raise RuntimeError(f"planned hook event has invalid axes {axes!r}")
+        return tuple(sorted(axes.items()))
+
     def _apply_named_stage(self, action: MoveNamedStage, event: dict,
-                           *, restoration: bool = False) -> None:
+                           *, restoration: bool = False,
+                           hook_event_index: int | None = None) -> None:
         ctx = self._named_stage_context
-        index = event.get("hook_event_index")
+        index = hook_event_index
         if ctx is None:
             self._refuse_event(event, action, "no named-stage envelope was authorized for this run")
             raise RuntimeError("named-stage action refused: no authorized envelope")
@@ -427,7 +436,7 @@ class UntrustedHookAdapter:
         )
 
     def pre_hardware_hook_fn(self, event: dict | list[dict]) -> dict | list[dict]:
-        """Consume the immutable planned action set for this exact event index."""
+        """Consume the immutable planned action set for this event's axes."""
         ctx = self._named_stage_context
         if ctx is None:
             return event
@@ -444,19 +453,20 @@ class UntrustedHookAdapter:
             record_event = event[0] if event and isinstance(event[0], dict) else {}
             self._record_event(
                 record_event, event="hook_action", decision="refused", reason=reason,
-                hook_event_indices=[item.get("hook_event_index") for item in event
-                                    if isinstance(item, dict)],
+                hook_event_axes=[item.get("axes") for item in event
+                                 if isinstance(item, dict)],
             )
             raise RuntimeError(reason)
-        index = event.get("hook_event_index")
-        if isinstance(index, bool) or not isinstance(index, int):
-            raise RuntimeError("planned hook event is missing a valid hook_event_index")
-        if index in ctx["consumed"] or index not in ctx["plan"]:
-            raise RuntimeError(f"planned hook actions are missing or duplicated for index {index}")
-        ctx["consumed"].add(index)
-        for action in ctx["plan"][index]:
+        signature = self.axes_signature(event)
+        if signature not in ctx["plan"] or signature in ctx["consumed"]:
+            raise RuntimeError(
+                f"planned hook actions could not resolve unconsumed axes {dict(signature)!r}"
+            )
+        ctx["consumed"].add(signature)
+        index, actions = ctx["plan"][signature]
+        for action in actions:
             if isinstance(action, MoveNamedStage):
-                self._apply_named_stage(action, event)
+                self._apply_named_stage(action, event, hook_event_index=index)
             else:
                 # Empty lists are explicit; every nonempty fixed-plan entry must
                 # contain an action this coordinator owns.
@@ -473,7 +483,7 @@ class UntrustedHookAdapter:
             return {"policy": "leave", "entry_um": ctx["initial_value"],
                     "last_known_um": ctx["last_known"], "restored": False}
         target = ctx["initial_value"] if restore == "entry" else float(restore["value"])
-        event = {"hook_event_index": None}
+        event = {"axes": {}}
         self._apply_named_stage(MoveNamedStage(target), event, restoration=True)
         return {"policy": restore, "entry_um": ctx["initial_value"],
                 "last_known_um": ctx["last_known"], "restored": True}
