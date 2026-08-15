@@ -1393,3 +1393,30 @@ def test_a_refused_refocus_still_lets_the_survey_advance(tmp_path):
     kinds = [(r["action"]["kind"], r["decision"]) for r in adapter._log
              if r.get("event") == "hook_action"]
     assert kinds == [("RequestAutofocus", "refused"), ("ContinueSurvey", "accepted")]
+
+
+def test_composite_batch_threads_child_results_and_keeps_the_none_guard():
+    """A sequenced batch must behave exactly as the same events would one by one.
+
+    Both halves regressed together when the list branch discarded what the
+    recursive call returned: a child's replacement event was dropped, and the
+    None guard -- which exists because None becomes an empty event that STILL
+    FIRES THE CAMERA -- stopped firing for batches only.
+    """
+    class Replacer:
+        def post_hardware_hook_fn(self, event):
+            return {**event, "z": 42.0}
+
+    composite = CompositeHook([("replacer", Replacer())], None)
+    batch = [{"axes": {"time": 0}}, {"axes": {"time": 1}}]
+    returned = composite.post_hardware_hook_fn(batch)
+    assert returned is batch
+    assert [item["z"] for item in returned] == [42.0, 42.0]
+
+    class Nuller:
+        def post_hardware_hook_fn(self, event):
+            return None
+
+    nulling = CompositeHook([("nuller", Nuller())], None)
+    with pytest.raises(RuntimeError, match="returned None"):
+        nulling.post_hardware_hook_fn([{"axes": {"time": 0}}])

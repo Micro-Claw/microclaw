@@ -993,8 +993,13 @@ class CompositeHook:
 
     def post_hardware_hook_fn(self, event: dict | list[dict]) -> dict | list[dict]:
         if isinstance(event, list):
-            for item in event:
-                self.post_hardware_hook_fn(item)
+            # Thread each item's RESULT back, exactly as the dict path threads
+            # `current`, but in place so the very list we were handed is the one
+            # returned. Discarding the result would drop a child's replacement
+            # event in sequenced batches only, and would also skip the None check
+            # below -- so a hook bug that raises loudly on one event would pass
+            # silently on a burst of them.
+            event[:] = [self.post_hardware_hook_fn(item) for item in event]
             return event
         current = event
         for index, (_name, hook) in enumerate(self.named_hooks):

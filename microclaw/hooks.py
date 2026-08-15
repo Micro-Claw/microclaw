@@ -272,8 +272,10 @@ class AutofocusHook(HookBase):
     def post_hardware_hook_fn(self, event: dict | list[dict]) -> dict | list[dict]:
         """Called after hardware moves to event position, before image capture."""
         if isinstance(event, list):
-            for item in event:
-                self.post_hardware_hook_fn(item)
+            # Each item's result is threaded back in place: this callback may
+            # return a modified event, and dropping it would lose that
+            # modification in sequenced batches only.
+            event[:] = [self.post_hardware_hook_fn(item) for item in event]
             return event
         current_z = self.ctrl.core.get_position()
         z_start = current_z - self.z_range_um / 2
@@ -585,8 +587,7 @@ class MMAutofocusPluginHook(HookBase):
 
     def post_hardware_hook_fn(self, event: dict | list[dict]):
         if isinstance(event, list):
-            for item in event:
-                self.post_hardware_hook_fn(item)
+            event[:] = [self.post_hardware_hook_fn(item) for item in event]
             return event
         try:
             new_z = float(self._af.full_focus())     # plugin owns the motion
