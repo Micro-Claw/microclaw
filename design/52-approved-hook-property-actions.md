@@ -1081,7 +1081,7 @@ measured, and close the `design/35` register row.
 |---|---|---|---|---|---|---|
 | coordination | `design52/reconcile-decision` | `bdffb14` | coordinator | n/a | merged `d97d256` | n/a |
 | coordination | ~~`design52/checklist`~~ | `d97d256` | coordinator | n/a | merged `f872a0c` | n/a |
-| 52a | `design52/block-52a` | `413caec` | codex, 2 rounds + coordinator fixes | **awaiting M2** | | |
+| 52a | `design52/block-52a` | `413caec` | codex, 3 rounds + coordinator fixes | M2 round 1 **FAIL** (sequencing); round 2 pending | | |
 | 52b | `design52/block-52b` | | | | | |
 | 52c | `design52/block-52c` | | | | | |
 
@@ -1118,13 +1118,28 @@ skipped / 3 warnings**, coordinator-measured rather than carried over.
   `../microclaw-52a`, and it is ASSIGNED — codex is implementing it, 2026-08-15.**
   52b and 52c are not started. `413caec` is the **substantive** start: the commit
   that carries the M2 gate wording.
-- **52a is implemented and pushed, awaiting the M2 gate.** Five commits, tip
-  `17d2735`, runbook `design/52-block52a-rig-gate.md` on the branch, pinned by
-  `git merge-base --is-ancestor d0c4469 HEAD`. Suite on the branch, macOS:
-  **1836 passed / 99 skipped / 3 warnings**, 1935 collected, coordinator-run at
-  each round. Two rounds returned to the runner; the round-1 defect was that
-  every named-stage audit record went through `where()` instead of
-  `where_event()` and carried no frame identity.
+- **52a failed its first M2 gate on 2026-08-15 and is fixed and pushed for a
+  second run.** Tip `51be906`, runbook pinned by
+  `git merge-base --is-ancestor 514c523 HEAD`. Suite on the branch, macOS:
+  **1847 passed / 99 skipped / 3 warnings**, 1946 collected; the rig should see
+  1822/124/1946. Three rounds returned to the runner.
+- **The gate found a defect no off-rig test could have.** `pre_hardware_hook_fn`
+  assumed one event per callback, but pycro-manager hands a **list** when the
+  engine hardware-sequences — an 18-frame timelapse at `interval_s=0` is exactly
+  that shape. **Zero frames were written and the stage never moved**, and the
+  crash was the good outcome: had `.get` succeeded we would have applied one
+  action set and burst all 18 frames at a single position while labelling each
+  with its own intended target, which is the mislabelling §"Failure semantics"
+  exists to abort on. The same assumption was latent in `hooks.py` and
+  `CompositeHook` for every precoded hook, and `hook_docs.py` documented none of
+  it. Fixed at the boundary, with a multi-event batch refused before its first
+  exposure.
+- **The schema cost three of four rig attempts.** `hook_action_plan` was typed as
+  loose objects, so the agent guessed `{"type": …}` and `{"kind": …, "params":
+  {…}}` before finding the right shape. Now a discriminated schema with a `kind`
+  enum, `additionalProperties: false`, and refusals that name the accepted shape.
+  The round-1 defect had been that every named-stage audit record went through
+  `where()` instead of `where_event()` and carried no frame identity.
 - **Two coordinator fixes sit on top of the runner's work.** A hooked run with
   `reservation=None` — which `run_adaptive_survey` produces whenever `adaptive`
   is false — crashed its own failure path with `AttributeError` after I asked for
