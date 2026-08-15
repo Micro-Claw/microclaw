@@ -1008,15 +1008,19 @@ rollback-failure, and cancellation used deterministic fakes.
   the sole admitted `Core.*` effect: its target must be a declared illumination
   shutter and each captured write requires illumination-class human confirmation.
   Every other `Core.*` effect is excluded.
-- **Ordered, verified apply.** Effects retain expansion order. Each real-device
-  write is followed by `wait_for_device` and read-back; `Core` is a pseudo-device,
-  so it has no device wait. Read-back is exact for non-floats and numeric for Float
-  properties, accepting equivalent driver formatting rather than requiring equal
-  strings.
+- **Ordered apply, then one verification pass.** Effects retain expansion order.
+  Each real-device write is followed by `wait_for_device`; `Core` is a
+  pseudo-device, so it has no device wait. **Read-back verification is a
+  plan-level check, not a per-write one** (block 53a, merged 2026-08-15): every
+  write lands, and only then is the whole effect list read back, in the same
+  order. Read-back is exact for non-floats and numeric for Float properties,
+  accepting equivalent driver formatting rather than requiring equal strings.
+  See [Why verification is plan-level](#why-read-back-verification-is-plan-level).
 - **Fail-fast rollback with an honest error boundary.** Forward execution stops at
-  the first failed set, wait, or verification and rolls back every attempted write,
-  including the ambiguous write that raised, in reverse order with the same
-  wait-and-verify discipline. `ChannelPlanPartialApplicationError` means execution
+  the first failed set or wait — a device refusing a write is knowable at that
+  write — and rolls back every attempted write, including the ambiguous write that
+  raised, in reverse order, restoring all of them before verifying any of them
+  (53a: the reverse loop carried the same defect mirrored). `ChannelPlanPartialApplicationError` means execution
   was partial but all attempted rollback steps verified;
   `ChannelPlanSafeStateError` says `SAFE STATE NOT VERIFIED` and names rollback
   failures instead of claiming recovery.
@@ -1027,6 +1031,71 @@ rollback-failure, and cancellation used deterministic fakes.
   its one-line reversal are already recorded in
   [the TOCTOU section above](#preset-mutability-is-a-time-of-checktime-of-use-gap);
   Phase 4 does not implement that reversal.
+
+### Why read-back verification is plan-level
+
+Block 53a, merged 2026-08-15 after an M5 gate. **A preset's values are
+simultaneously true, not sequentially true**, so a read-back taken mid-plan is
+taken against a device state the preset does not describe yet.
+
+M5's `System/Normal Mode` sets `HamamatsuHam_DCAM.Exposure = 100.0030` at index 1
+and `ScanMode = 3` at index 5. On a Hamamatsu sCMOS the exposure grid is a
+function of line time, which the scan mode changes, so that exposure is
+unrepresentable until index 5 lands — in ScanMode 2 the device snaps it to
+`100.0140`. Verifying at index 1 therefore failed a write that was correct, and
+the plan rolled back a preset in routine daily use. Measured 2026-08-14; the
+call could not be made through Microclaw at all until this changed.
+
+Three things this is **not**, each measured or reasoned rather than assumed:
+
+- **Not float tolerance.** With the camera already in ScanMode 3, writing
+  `100.0030` reads back exactly. A tolerance wide enough to pass the mid-plan
+  read would be wide enough to miss a write the device ignored, which is the
+  whole reason the check exists (Phase 4: MM's `set_config` continues past a
+  setting a device ignored).
+- **Not a reordering problem to solve here.** Microclaw cannot know which
+  properties are modes without rig-specific knowledge, which does not belong in
+  `microclaw/`. MM stores the preset author's order and we apply it faithfully.
+- **Not 50a's or 51a's.** `_verify_property` dates to the original executor
+  (`3fc7dcd`). M5 simply had no reachable preset route until 50a added
+  `set_config_preset`, and the demo's presets carry no interdependent pair.
+
+**What the M5 gate then measured, 2026-08-15.** The premise the fix rests on was
+open until the rig answered it: representability in the right mode does not by
+itself prove that a *mode change* re-derives a value the driver has already
+snapped. It does. Exposure was written as `100.0030` while the camera was still
+in ScanMode 2, and read `100.0030` once ScanMode 3 landed four writes later. The
+preset applied with 11 writes and verified.
+
+**The trap is symmetric, and both M5 presets carry it.** `System/Camera` also
+puts its exposure at index 1 and its mode at index 5, so the old per-write check
+broke the switch in *both* directions; it looked one-sided only because the
+failing session started in `Camera`. Four alternating switches now pass.
+
+**The two error shapes are now distinct, and must stay distinct.** A write that
+raised keeps `Channel plan 'X' stopped after N/M writes ... applied=[...]` — the
+2026-08-06 serial-timeout shape recorded below, where `applied=[]` means nothing
+reached the device. A verification mismatch reads `applied all N writes, then
+read-back verification failed for K of them ... mismatched=[...]`, because in
+that path **every write did reach the device**. Reusing one sentence for both
+states was caught in review, not on the rig: it would have told an operator that
+a plan which wrote eleven properties had written none.
+
+**Cost, accepted.** All writes land before a mismatch is discovered. A partially
+applied preset is not a safer state than a fully applied one, only a less
+coherent one, and every effect is authorized and confirmed before the first
+write either way.
+
+**The exported script mirrors this.** `_emit_recorded_channel_effects` writes
+every effect before verifying any of them, for the same reason; otherwise a
+standalone script of the M5 session would reproduce on the rig exactly the defect
+the executor no longer has. Verified from the emitted file on M5: 11 writes, 11
+waits, 11 verifications, last write before first verification.
+
+**Carried nit.** `ChannelPlanError`'s docstring still says "no write was verified
+as applied", which meant the same as "no write reached the device" only while
+verification was per write. That docstring is inlined verbatim into every
+exported script.
 
 ### Measured basis
 

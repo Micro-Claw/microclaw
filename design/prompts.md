@@ -6593,3 +6593,61 @@ the next person does not re-derive the absence.
 own fold in 50b and both of 51a's new conditions were checked by stubbing them to
 the wrong answer; each killed tests that named the boundary. A refactor whose
 suite stays green under mutation was never covered.
+
+## Block 53a — verify the plan, not each write (merged 2026-08-15)
+
+**A gate's precondition is part of the gate.** The runbook came back complete and
+still could not have failed: every step assumed M5 was in `Camera`, and if the
+rig already sat in `Normal Mode` the writes are no-ops, the exposure is never
+written under the wrong scan mode, and the trap never springs. A new Step 0b
+applies `System/Camera` from MM's own panel and records `ScanMode` 2 before
+anything else runs. This is block 46's lesson reaching a runbook *before* rig
+time instead of after — and the operator's returned Step 0b values turned out to
+be evidence in their own right, since `Exposure` read `100.014` there and
+`100.0030` after Step 1.
+
+**Name the failure the gate must not be allowed to misread.** The block rested on
+an unmeasured premise — that a mode change re-derives an exposure the driver has
+already snapped — and a red Step 1 would have looked identical whether the code
+was wrong or the premise was. The runbook labelled that specific string
+(`got '100.0140'`) **PREMISE FAILURE, not a code failure**, with instructions to
+stop rather than retry. The rig then answered the question the other way, so the
+branch was never used; writing it cost one paragraph and would have saved a round.
+
+**A message is part of the contract, and review is where message defects die.**
+The implementation was mechanically right in round 1 and still wrong: the
+verification path reused `stopped after N/M writes ... applied=[]`, which is the
+2026-08-06 M5 serial-timeout signature for *no write reached the device*. The
+same sentence would have told an operator that a plan which wrote eleven
+properties had written none. Found by running the failure path and reading the
+string, not by reading the diff — the diff looked fine.
+
+**A list whose meaning changes needs a new name, not a fix-up.** The `0/2` came
+from `applied.remove()` quietly repurposing `applied` from *landed* to *landed
+and verified*. Round 2 kept `applied` meaning landed and added `mismatched`.
+
+**Assert the clause, not the substring.** The new test asserted that both pair
+names appeared in the message; both also appear in `attempted=[...]`, so it would
+have passed on a build reporting one mismatch out of two.
+
+**The mirrored defect is worth looking for whenever you fix an ordering one.**
+The reverse rollback loop verified per restore and had the identical bug —
+invisible on M5, whose preset order happens to make reverse-order rollback safe,
+and live for any preset authored mode-then-value. Added to the design as
+Decision 5 by the coordinator before assignment.
+
+**Two coordinator additions, both outside the design as authored, both earned
+their place.** Decision 5 above, and the exporter: `_emit_recorded_channel_effects`
+interleaved the verification per write, so a standalone script exported from the
+very session that found the bug would have reproduced it on the same rig. The
+authoring session's Evidence list had no exporter row.
+
+**`export_session_script` does not write where the operator is standing.** It
+resolves through `resolve_in_workspace`; on M5 the file landed in
+`C:\Users\ries\AppData\Local\microclaw\` while the PowerShell block ran from the
+checkout. Runbooks must take the absolute path out of the tool's own result.
+
+**Collection totals prove which tree the rig ran.** M5 reported 1787 passed / 124
+skipped = 1911 collected; the branch collects 1911 and `main` 1907. That is a
+pin check the operator does not have to perform, available in every gate that
+returns a suite tail.
