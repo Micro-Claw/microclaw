@@ -181,7 +181,47 @@ verification is a plan-level check, not a per-write one, and why.
 |---|---|---|---|---|---|---|
 | coordination | ~~`design53/open`~~ | `b2b0417` | coordinator | n/a | merged `ccc4b34` | n/a |
 | coordination | ~~`design53/checklist`~~ | `009f0df` | coordinator | n/a | merged `c10256e` | n/a |
-| 53a | `design53/block-53a` | `c10256e` | | required — M5 | | |
+| 53a | `design53/block-53a` | `c10256e` | runner (2 rounds) + coordinator runbook fixes | **pushed 2026-08-15, awaiting M5** | | |
+
+**53a round history.** Implementation `f82469a`, runbook `a7cad30`, round-2 fix
+`23e62b6`, coordinator runbook fixes `eb49b81` and `c64d0de`; runbook pinned
+`23e62b6` by ancestry. Suite 1812 / 99 / 3 on macOS, coordinator-re-run in the
+worktree at both rounds rather than accepted from the report.
+
+**Round 1 returned five findings, one blocking.** The mechanism was right first
+time — writes all land, mismatches aggregate, the rollback restores in reverse
+and verifies afterwards — but the failure it reported was wrong. The verify path
+reused the old sentence and printed `Channel plan 'P' stopped after 0/2 writes
+... applied=[]` for a plan whose every write reached the device, because
+`applied.remove()` was repurposing `applied` from *landed* to *landed and
+verified*. **That string is the 2026-08-06 M5 serial-timeout signature for the
+opposite state** — quoted in `design/33-authorization-map.md:1311` and pinned by
+`test_first_write_rejected_twice_does_not_claim_an_unverified_safe_state` — so
+the same sentence would have meant both "nothing reached the device" and "all
+eleven writes landed". Round 2 split the message: the verify path now reads
+`applied all N writes, then read-back verification failed for K of them` with a
+`mismatched=[...]` list, and the set/wait-exception path is untouched. The new
+test asserted only that both pair names appear in the message, which
+`attempted=[...]` satisfies on its own; it now asserts the clauses and the shape.
+
+**The fake encodes the block's one unmeasured premise, and the runbook now says
+so.** `ModeDependentCore` has the `ScanMode` write re-derive `Exposure` to the
+mode's exact value. What M5 actually measured is that `100.0030` sticks when
+written *while already in* mode 3 — not that a mode change re-derives a value the
+driver already snapped to `100.0140`. If it does not, Step 1 fails with correct
+code, and plan-level read-back is unsatisfiable for that preset while MM's own
+`set_config`, which never verifies, applies it daily. Step 1 labels that outcome
+**PREMISE FAILURE, not a code failure** so a red gate is not misread.
+
+**Two coordinator runbook fixes, no code change.** Step 0b is new: every step was
+vacuous if M5 already sat in `Normal Mode`, since the writes become no-ops and
+`Exposure` is never written under the wrong mode — block 46's lesson that a gate
+which cannot fail is worth zero, applied before booking rig time. Step 2's
+standalone run needed the same precondition, because after Step 1 the rig already
+holds what the script writes. And `export_session_script` resolves through
+`resolve_in_workspace`, so the emitted file is not necessarily in the checkout
+the operator runs PowerShell from; the block now uses the absolute path the tool
+reports.
 
 **Sequencing — satisfied 2026-08-14.** 53a touches `execute_channel_plan`, which
 both 50a and 51a modify, so it waited for both. Both are now merged. 53a starts
@@ -232,9 +272,11 @@ working tree clean, `git log --oneline origin/main..main` empty, `main` at
 `port-to-jpype-acqj` — **no open block branch**. One worktree, this one. Suite
 at `009f0df`, macOS: **1808 passed / 99 skipped / 3 warnings**.
 
-- **53a is unassigned. Nothing is awaiting a rig and no implementation branch
-  exists yet.** The next action is step 2: the runner prompt, written to the
-  scratchpad and offered, not spawned.
+- **53a is implemented, reviewed through two returned rounds, and pushed — it is
+  awaiting M5.** Branch `design53/block-53a` is on `origin`, worktree
+  `../microclaw-53a`. The next action is the user's: run
+  `design/53-block53a-rig-gate.md` on M5. Nothing else may be assigned against
+  `microclaw/authorization.py` until it merges.
 - **53a branches from `c10256e`**, the merge of `design53/checklist`, so the
   runner's tree carries this document *and* this checklist. The ledger's earlier
   `3f5601e` is superseded, not wrong — the doc grew. The row recording that start
@@ -264,54 +306,54 @@ Files: `microclaw/authorization.py` (`execute_channel_plan`, `_verify_property`)
 
 **Implementation**
 
-- [ ] `_verify_property` moves out of the write loop into a single pass after the
+- [x] `_verify_property` moves out of the write loop into a single pass after the
       last write, over the same effect list in the same order.
-- [ ] The write loop is otherwise untouched: cancellation polling between writes,
+- [x] The write loop is otherwise untouched: cancellation polling between writes,
       `set_property`, `accepted` bookkeeping, `_wait_for_plan_device`, and the
       exception handling all behave exactly as they do today.
-- [ ] The verify pass names **every** mismatched pair in the error, not the first.
-- [ ] The rollback restores in reverse and then verifies the restored values in
+- [x] The verify pass names **every** mismatched pair in the error, not the first.
+- [x] The rollback restores in reverse and then verifies the restored values in
       one pass (Decision 5), classifying a mismatch by `landed` exactly as a
       failed restore is classified today.
-- [ ] `ChannelPlanSafeStateError`, `ChannelPlanPartialApplicationError` and the
+- [x] `ChannelPlanSafeStateError`, `ChannelPlanPartialApplicationError` and the
       `accepted == 0` "NO WRITE REACHED THE DEVICE" limb still select on the same
       conditions. The 2026-08-06 M5 finding is a regression test, not a memory.
-- [ ] `_emit_recorded_channel_effects` emits every `set_property` /
+- [x] `_emit_recorded_channel_effects` emits every `set_property` /
       `wait_for_device` first and the `_verify_property` calls after, mirroring
       the executor. It still emits the literal `_verify_property(` call, because
       `tools.py:1275` inlines the helper by looking for it.
-- [ ] No new function, wrapper or flag: this is a move, not a layer. If the diff
+- [x] No new function, wrapper or flag: this is a move, not a layer. If the diff
       grows a helper, say why in the report.
 
 **Evidence — written before the fix, failing first**
 
-- [ ] A preset whose value is representable only after a later write in the same
+- [x] A preset whose value is representable only after a later write in the same
       preset applies cleanly and verifies (the M5 `Normal Mode` shape, with a fake
       whose representable set for one property depends on another).
-- [ ] The same shape authored **mode-then-value** applies, and its rollback
+- [x] The same shape authored **mode-then-value** applies, and its rollback
       restores both without reporting an unverified safe state.
-- [ ] A write the device genuinely ignores fails in any order, rolls back in
+- [x] A write the device genuinely ignores fails in any order, rolls back in
       reverse, and names the pair.
-- [ ] An exception from `set_property` still stops at that write, with `applied`,
+- [x] An exception from `set_property` still stops at that write, with `applied`,
       `attempted` and `rolled_back` accounted exactly as today.
-- [ ] Multiple mismatches are all named.
-- [ ] `set_channel` on a single-effect preset is unchanged.
-- [ ] The exported script for an interdependent preset writes then verifies, and
+- [x] Multiple mismatches are all named.
+- [x] `set_channel` on a single-effect preset is unchanged.
+- [x] The exported script for an interdependent preset writes then verifies, and
       still compiles and defines every name it uses.
-- [ ] Full suite green at or above the 1808/99/3 baseline, re-run by the
+- [x] Full suite green at or above the 1808/99/3 baseline, re-run by the
       coordinator rather than accepted from the report.
 
 **Process**
 
-- [ ] Runner prompt written to the scratchpad; the user is asked before any agent
+- [x] Runner prompt written to the scratchpad; the user is asked before any agent
       starts. Not committed.
-- [ ] Implementation reviewed from the diff, through as many returned rounds as
+- [x] Implementation reviewed from the diff, through as many returned rounds as
       it takes.
-- [ ] Runbook `design/53-block53a-rig-gate.md` written **on the block's branch**,
+- [x] Runbook `design/53-block53a-rig-gate.md` written **on the block's branch**,
       with literal PowerShell-safe commands and expected values — not criteria —
       and the implementation pinned by `git merge-base --is-ancestor <commit>
       HEAD`.
-- [ ] Branch pushed to `origin` (`GIT_SSH_COMMAND="ssh -i ~/.ssh/yonce"`). No PR.
+- [x] Branch pushed to `origin` (`GIT_SSH_COMMAND="ssh -i ~/.ssh/yonce"`). No PR.
 - [ ] **Rig gate 53a on M5**, the three limbs in the block section above, run by
       the user. Never simulated.
 - [ ] Findings fixed on the same branch, sized to the finding, and re-gated until
