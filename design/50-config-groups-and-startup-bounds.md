@@ -331,8 +331,8 @@ stage bounds as their own finding — do not fix them silently inside this block
 | Block | Branch | Start commit | Implementer | Rig gate | Merged | Design reconciled |
 |---|---|---|---|---|---|---|
 | coordination | `design50/open` | `32e74d0` | coordinator | n/a | — | n/a |
-| 50a | `design50/block-50a` | `32e74d0` | codex, 1 review round + 2 coordinator fixes | **demo + M5 PASS 2026-08-14** | `4052db5` | |
-| 50b | `design50/block-50b` | `32e74d0` | codex, 1 review round + coordinator fixes | **M5 PASS 2026-08-14**, rounds 1 + 2 | `d809173` | |
+| 50a | `design50/block-50a` | `32e74d0` | codex, 1 review round + 2 coordinator fixes | **demo + M5 PASS 2026-08-14** | `4052db5` | `4144f42` |
+| 50b | `design50/block-50b` | `32e74d0` | codex, 1 review round + coordinator fixes | **M5 PASS 2026-08-14**, rounds 1 + 2 | `d809173` | `4144f42` |
 
 50a and 50b are independent — different files, different gates — and may run
 concurrently in separate worktrees. One worktree per agent; never
@@ -397,7 +397,20 @@ regression.
 
 ---
 
-## Coordinator checklist
+## Coordinator checklist — NOT MAINTAINED, kept as the process it followed
+
+**Every box below is unticked and every one of them was done.** State for these
+blocks lives in the run ledger above and in the "what the gates measured"
+sections, which are the record; this list is a restatement of `CLAUDE.md`
+§"The block workflow" that nobody returned to as the block ran. Do **not** read
+the empty boxes as work outstanding — verified 2026-08-15 against the repository:
+the branches are merged and deleted on `origin`, the gates are recorded with
+their evidence folders, `design/prompts.md` carries the coordination notes, and
+the step-10 design gate is `4144f42`.
+
+If you are running a new block, tick as you go or drop the list and keep the
+ledger. `design/53`'s checklist is the worked example of the former.
+
 
 Run the ten steps in CLAUDE.md §"The block workflow". That section is
 authoritative; this checklist tracks state only.

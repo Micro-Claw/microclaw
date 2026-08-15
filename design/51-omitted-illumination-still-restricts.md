@@ -276,7 +276,7 @@ structural gap a single branch.
 | Block | Branch | Start commit | Implementer | Rig gate | Merged | Design reconciled |
 |---|---|---|---|---|---|---|
 | coordination | `design51/open` | `559edd5` | coordinator | n/a | — | n/a |
-| 51a | `design51/block-51a` | `559edd5` | codex, 1 review round + coordinator pin | **demo + M5 PASS 2026-08-14** | `c402a28` | |
+| 51a | `design51/block-51a` | `559edd5` | codex, 1 review round + coordinator pin | **demo + M5 PASS 2026-08-14** | `c402a28` | `4144f42`; 53a completed the read-back half `7f6c52e` |
 
 Suite baseline at `559edd5` (macOS): **1788 passed / 99 skipped / 3 warnings**;
 at the pinned implementation, **1794 / 99 / 3**.
@@ -299,7 +299,20 @@ the cost of reintroducing the original defect for exactly that config. Pinned by
 `test_declared_property_authorization_without_illumination_still_admits_retarget`
 so it is not rediscovered and "fixed" the wrong way.
 
-## Coordinator checklist
+## Coordinator checklist — NOT MAINTAINED, kept as the process it followed
+
+**Every box below is unticked and every one of them was done.** State for these
+blocks lives in the run ledger above and in the "what the gates measured"
+sections, which are the record; this list is a restatement of `CLAUDE.md`
+§"The block workflow" that nobody returned to as the block ran. Do **not** read
+the empty boxes as work outstanding — verified 2026-08-15 against the repository:
+the branches are merged and deleted on `origin`, the gates are recorded with
+their evidence folders, `design/prompts.md` carries the coordination notes, and
+the step-10 design gate is `4144f42`.
+
+If you are running a new block, tick as you go or drop the list and keep the
+ledger. `design/53`'s checklist is the worked example of the former.
+
 
 Run the ten steps in CLAUDE.md §"The block workflow". That section is
 authoritative; this checklist tracks state only.
@@ -321,6 +334,8 @@ authoritative; this checklist tracks state only.
 - [ ] Merge to `main`, push `main`, delete the branch locally and on `origin`.
 - [ ] Coordination notes in `design/prompts.md`; close the ledger row.
 - [ ] Run the step-10 design gate named under 51a, and re-run block 50a's A4.
+      *(Both done: gate `4144f42`; A4 passed on the combined re-run, recorded
+      in `design/50` §"What the 50a gates measured".)*
 
 
 ## What the 51a gates measured (2026-08-14)
