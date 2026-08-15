@@ -4,7 +4,9 @@ Implementation ancestor: `f82469a`
 
 Run every step on **M5** from this branch. Use PowerShell from the checkout and
 save `block53a-pytest.txt` plus the complete Microclaw transcript. Do not create
-or edit any Micro-Manager preset during this gate.
+or edit any Micro-Manager preset during this gate. *Applying* an existing preset
+from Micro-Manager's own Configuration Settings panel is required in Steps 0b and
+2 and is not editing.
 
 ## Step 0 — pin the implementation and run the suite
 
@@ -23,10 +25,29 @@ warning, and collected totals. Windows skip counts may differ from macOS; a
 higher skip count than M5's previous full-suite run is **NOT TESTED** until
 explained.
 
+## Step 0b — put the camera in the wrong mode first, or the gate cannot fail
+
+**Coordinator addition.** Every later step is vacuous if M5 already sits in
+`Normal Mode`: the plan's writes become no-ops, `Exposure` is never written under
+the wrong scan mode, and the ordering trap this block exists for is never sprung.
+A green Step 1 from that start proves nothing (block 46's lesson: a gate that
+cannot fail is worth zero).
+
+In **Micro-Manager's own Configuration Settings panel** — not Microclaw, and
+without creating or editing any preset — double-click `System` → `Camera`. Then
+read these in the Property Browser and write both numbers down:
+
+- `HamamatsuHam_DCAM.ScanMode` — expected **2**
+- `HamamatsuHam_DCAM.Exposure` — record whatever `Camera` sets
+
+If `ScanMode` does not read **2** here, stop and report that instead: the
+reproducer's precondition is absent and Steps 1–3 cannot mean what they claim.
+
 ## Step 1 — Normal Mode lands as one verified preset
 
 Start the normal Microclaw agent session against M5's reviewed safety config.
-Keep Micro-Manager's Property Browser visible. Type this verbatim:
+Keep Micro-Manager's Property Browser visible. Confirm Step 0b's `ScanMode` **2**
+is still showing before you type anything. Type this verbatim:
 
 > Call `set_config_preset(group="System", preset="Normal Mode")` exactly once.
 > Report the complete result, including the write count. Do not substitute
@@ -56,20 +77,34 @@ In the Step-1 session, type this verbatim:
 > `block53a-normal-mode.py`. Report the complete result verbatim. Do not edit the
 > emitted file.
 
-Close Microclaw entirely, leaving Micro-Manager and its bridge running. Paste
-this literal PowerShell block:
+Close Microclaw entirely, leaving Micro-Manager and its bridge running.
+
+**Coordinator addition — two things before the PowerShell.**
+
+1. `export_session_script` resolves its `output_path` through
+   `guard.resolve_in_workspace`, so the file lands in the configured workspace
+   root (or Microclaw's working directory), **not necessarily in this checkout**.
+   Take the absolute path out of the tool's reported result and put it in
+   `$Script` below; do not assume the relative name resolves here.
+2. **Put the camera back in the wrong mode first.** After Step 1 the rig already
+   holds `ScanMode` 3 and `Exposure` 100.0030, so a standalone script that
+   rewrites those values verifies trivially and proves nothing. In
+   Micro-Manager's own Configuration Settings panel, double-click `System` →
+   `Camera` again, and confirm the Property Browser reads `ScanMode` **2** before
+   you run the script.
 
 ```powershell
-$SetLines = Select-String -Path block53a-normal-mode.py -Pattern "^core.set_property\("
-$VerifyLines = Select-String -Path block53a-normal-mode.py -Pattern "^_verify_property\("
+$Script = "<absolute path reported by export_session_script>"
+$SetLines = Select-String -Path $Script -Pattern "^core.set_property\("
+$VerifyLines = Select-String -Path $Script -Pattern "^_verify_property\("
 $SetLines
 $VerifyLines
 $LastSet = ($SetLines | Measure-Object -Property LineNumber -Maximum).Maximum
 $FirstVerify = ($VerifyLines | Measure-Object -Property LineNumber -Minimum).Minimum
-Write-Host "set-property count (expected 11):" $SetLines.Count
-Write-Host "verify count (expected 11):" $VerifyLines.Count
+Write-Host "set-property count (expected 11):" @($SetLines).Count
+Write-Host "verify count (expected 11):" @($VerifyLines).Count
 Write-Host "last set line must be less than first verify line:" $LastSet $FirstVerify
-python .\block53a-normal-mode.py > block53a-standalone.txt 2>&1
+python $Script > block53a-standalone.txt 2>&1
 Write-Host "standalone exit code (expected 0):" $LASTEXITCODE
 Get-Content block53a-standalone.txt
 ```
@@ -114,8 +149,10 @@ this verbatim, replacing only the two bracketed names with that existing preset:
 > or edit a preset. Then report the affected properties' current values with the
 > normal read-only property tool.
 
-Expected when such a natural preset exists: the call refuses with read-back
-verification failures naming **every** mismatched pair; rollback writes are in
+Expected when such a natural preset exists: the refusal reads
+`applied all N writes, then read-back verification failed for K of them` — not
+`stopped after`, which now means only that a write itself raised — and names
+**every** mismatched pair in its `mismatched=[...]` list; rollback writes are in
 reverse plan order; the read-only values match the values held before the call;
 and no `SAFE STATE NOT VERIFIED` appears when every restore succeeded.
 
@@ -131,8 +168,10 @@ live test.
 
 ## Return evidence
 
-Return `block53a-pytest.txt`, both Step-0 exit codes and totals, the complete
-agent transcript for Steps 1–4, `block53a-normal-mode.py`,
+Return `block53a-pytest.txt`, both Step-0 exit codes and totals, **Step 0b's two
+recorded Property Browser values and confirmation that `ScanMode` read 2 before
+Step 1 and again before the standalone run**, the complete
+agent transcript for Steps 1–4, the emitted script,
 `block53a-standalone.txt`, the ordering counts and line numbers, the Property
 Browser values after Steps 1–3, and either the complete natural-refusal evidence
 or the exact Limb-3-not-run statement above. State that the machine was M5 and
