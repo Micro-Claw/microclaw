@@ -35,7 +35,7 @@ if ($LASTEXITCODE -eq 0) { "INSTALL OK" } else { "INSTALL FAILED - stop here" }
 Pin the implementation by ancestry, never by tip hash:
 
 ```powershell
-git merge-base --is-ancestor d0c4469 HEAD
+git merge-base --is-ancestor 514c523 HEAD
 if ($LASTEXITCODE -eq 0) { "PIN OK - gate covers the reviewed implementation" } else { "PIN FAILED - wrong branch or commit; stop" }
 ```
 
@@ -46,13 +46,15 @@ python -m pytest -q 2>&1 | Out-File -Encoding utf8 $HOME\Documents\52a-m2-suite.
 Get-Content $HOME\Documents\52a-m2-suite.txt -Tail 3
 ```
 
-Expect **1811 passed / 124 skipped / 3 warnings**, measured on M2 2026-08-15.
-**Collection is 1935** — that is the number that proves the branch, and
-`passed + skipped` must equal it. macOS runs the same tree as 1836/99: Windows
-skips 25 tests that pass elsewhere, so a *lower* passed count with a
-correspondingly higher skip count is the expected result, not a failure.
-`main` collects 1911, so a run reporting 1911 means the rig is on the wrong
-branch and every later step is worthless.
+Expect **1822 passed / 124 skipped / 3 warnings**. **Collection is 1946** — that
+is the number that proves the branch, and `passed + skipped` must equal it.
+macOS runs the same tree as 1847/99: Windows skips 25 tests that pass elsewhere,
+so a *lower* passed count with a correspondingly higher skip count is the
+expected result, not a failure. `main` collects 1911, so a run reporting 1911
+means the rig is on the wrong branch and every later step is worthless.
+
+(The 2026-08-15 first attempt ran 1811/124/1935, which was a PASS on the
+pre-sequencing-fix tree. If you see 1935 now, the branch is stale — pull.)
 
 > Corrected 2026-08-15 after the first run. This step originally said "expect
 > 1836 passed **plus** this rig's skip count", which reads as 1836+124 and made
@@ -109,6 +111,12 @@ Verbatim, substituting your numbers:
 > hook. Move `TIRF Stage` across <min> to <max> um, one position per frame, using
 > a declarative hook action plan. Approve a named-stage envelope over exactly
 > that interval with 18 writes and `restore: "leave"`.
+
+**Watch for exactly one confirmation and then 18 frames.** If the run refuses
+with a message about a hardware-sequenced burst, that is the new guard working:
+raise `interval_s` and re-run, and record the interval that first produced
+single-event callbacks — nothing has measured M2's sequencing threshold, and that
+number is the most useful thing this attempt can produce beyond a pass.
 
 **The nonzero interval is load-bearing, not politeness.** At `interval_s=0` the
 acquisition engine hardware-sequences the time axis and runs the whole burst with
