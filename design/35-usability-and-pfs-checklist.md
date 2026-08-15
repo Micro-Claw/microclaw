@@ -371,6 +371,15 @@ and the only branches on `origin` besides `main` are
 section**, all of which are kept only for their round history. Position is not
 recency — read the heading, not the order.
 
+**Read this first, added 2026-08-15: work has continued outside this file.**
+Blocks 48a–e, 49a, 50a, 50b, 51a and 53a were run after this note was written,
+each with its own design document, checklist and run ledger — `design/48`,
+`design/49`, `design/50`, `design/51`, `design/53`. They are all closed. This
+note remains accurate about *this file's* tracks (B parked on the Nikon, C parked
+on an `.ilp`), but it is not a picture of the repository. **`design/53` is the
+most recently closed block and its checklist is the current template for a
+single-block design doc.**
+
 Verify against the repository rather than against any hash here. What held at
 this note's writing, and was checked rather than assumed: working tree clean,
 `git log --oneline origin/main..main` empty, `main` at `ef18a02`, and on `origin`
