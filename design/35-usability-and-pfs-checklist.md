@@ -8067,6 +8067,45 @@ schedule them or record a reason at block 12.
 This is an inventory, not permission to close with unresolved blank work. Block
 12 assigns every row one of the explicit dispositions above.
 
+- **`run_tile_acquisition` cannot run an artifact-emitting saved hook, and its
+  refusal names a remedy the caller cannot reach.** Found 2026-08-15 while
+  scoping `design/52`; **pre-existing, not that design's, and deliberately kept
+  out of it.** `_configure_hook_capabilities` refuses a hook whose
+  `can_emit_artifacts` is true when no `artifact_limits` was configured, telling
+  the caller to pass one — but `run_tile_acquisition` (`tools.py:4567`) accepts
+  neither `artifact_limits` nor `illumination_envelope`, and forwards only
+  `hook_strategy`, `hook_params` and `log_path` into
+  `run_multiposition_acquisition` (`tools.py:4623`), which does accept both
+  (`tools.py:4369`). So the grid route is the one place a registered
+  artifact-emitting hook is unusable, and the error tells the operator to do
+  something the tool has no argument for. Same shape as this register's other
+  unreachable-remedy rows. The fix is plausibly two forwarded keyword arguments,
+  but it is unmeasured on a rig and nothing currently depends on it — **do not
+  assume tile illumination or artifact behavior exists when writing tests; an
+  assertion about it passes vacuously.**
+- **A saved hook cannot request a bounded named-stage or property write, so a
+  single-stack TIRF angle sweep is not expressible.** M5, 2026-08-14, `tirf test
+  with amr/second_test_with_script`. `hook_decisions.py`'s closed action union
+  covers core X/Y/Z, exposure and illumination power and nothing else, so an
+  approved hook cannot move `Thorlabs ELL17/ELL20` even where the parent-side
+  `move_named_stage` admits the exact target. The agent proposed and withdrew the
+  same hook three times, the operator answered choices the tool gap created, and
+  the sweep was taken as individual snaps — the sample got the exposures anyway.
+  **Its export then emitted the trace**, the improvised targets including two
+  fill-in points chosen after seeing results, and the agent fell back to
+  hand-writing a script through `write_text_file`. **Written up as `design/52`,
+  reviewed and reconciled 2026-08-15; parked, not scheduled, no block.** The
+  reconciled decision folds onto `configure_illumination` /
+  `_configure_hook_capabilities` rather than building a second envelope
+  mechanism, leaves `authorize_property_write` standing (design/49), and verifies
+  a frame's action set as a set (design/53). It also requires an event-indexed
+  pre-hardware handoff and extension of the standalone adaptive runner; the live
+  illumination envelope is precedent for validation, not for export (the current
+  emitter refuses it). One question is open in the doc and
+  should be settled before it is assigned: whether the new actions carry a device
+  name at all, or carry only a value like `SetIlluminationPower` does — `device`
+  and `property` are both in `FORBIDDEN_SAVED_HOOK_PARAMS`, so a hook cannot be
+  told its target, and the doc recommends the value-only shape.
 - **The GUI stops tracking after an *exposure* write, and six other write paths
   never refresh either.** Operator-observed on M5, 2026-08-11, in a TIRF session
   on 43i's branch: Microclaw read 20 ms while Micro-Manager's Exposure [ms] box
