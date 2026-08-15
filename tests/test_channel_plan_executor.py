@@ -117,6 +117,127 @@ def categorical_plan(effects, values=None):
     return core, controller(core, {pair: "reviewed_categorical_property" for pair in pairs}), make_guard(categorical=pairs)
 
 
+class ModeDependentCore(Core):
+    """Model the optimistic premise that a mode change re-derives exposure."""
+
+    def set_property(self, d, p, v):
+        super().set_property(d, p, v)
+        if p == "Exposure":
+            exact = {"2": "50.0000", "3": "100.0030"}[self.values[(d, "ScanMode")]]
+            if str(v) != exact:
+                self.values[(d, p)] = "100.0140"
+        elif p == "ScanMode":
+            self.values[(d, "Exposure")] = {
+                "2": "50.0000", "3": "100.0030"
+            }[self.values[(d, p)]]
+
+
+def test_mode_dependent_value_verifies_after_the_whole_preset_lands():
+    effects = [
+        ("Camera", "Exposure", "100.0030"),
+        ("Camera", "ScanMode", "3"),
+    ]
+    core = ModeDependentCore(effects, {
+        ("Camera", "Exposure"): "50.0000",
+        ("Camera", "ScanMode"): "2",
+    })
+    core.types[("Camera", "Exposure")] = "Float"
+    ctrl = controller(core, {
+        ("Camera", "Exposure"): "built_in_typed_capability",
+        ("Camera", "ScanMode"): "reviewed_categorical_property",
+    })
+
+    result = execute_channel_plan(
+        ctrl, make_guard(categorical=[("Camera", "ScanMode")], exposure=200), "P"
+    )
+
+    assert result["writes"] == 2
+    assert core.values[("Camera", "Exposure")] == "100.0030"
+    assert core.values[("Camera", "ScanMode")] == "3"
+
+
+def test_mode_then_value_rollback_verifies_only_after_all_restores_land():
+    effects = [
+        ("Camera", "ScanMode", "3"),
+        ("Camera", "Exposure", "100.0030"),
+        ("Wheel", "Label", "ignored"),
+    ]
+    originals = {
+        ("Camera", "ScanMode"): "2",
+        ("Camera", "Exposure"): "50.0000",
+        ("Wheel", "Label"): "old",
+    }
+    core = ModeDependentCore(effects, originals)
+    core.types[("Camera", "Exposure")] = "Float"
+    raw_set = core.set_property
+
+    def ignore_wheel(d, p, v):
+        raw_set(d, p, v)
+        if (d, p, str(v)) == ("Wheel", "Label", "ignored"):
+            core.values[(d, p)] = "old"
+
+    core.set_property = ignore_wheel
+    ctrl = controller(core, {
+        ("Camera", "ScanMode"): "reviewed_categorical_property",
+        ("Camera", "Exposure"): "built_in_typed_capability",
+        ("Wheel", "Label"): "reviewed_categorical_property",
+    })
+
+    with pytest.raises(ChannelPlanPartialApplicationError) as caught:
+        execute_channel_plan(
+            ctrl,
+            make_guard(
+                categorical=[("Camera", "ScanMode"), ("Wheel", "Label")],
+                exposure=200,
+            ),
+            "P",
+        )
+
+    assert "SAFE STATE NOT VERIFIED" not in str(caught.value)
+    assert core.values == originals
+
+
+def test_verify_pass_reports_every_ignored_pair_and_rolls_back_in_reverse():
+    effects = [("A", "Label", "new-a"), ("B", "Label", "new-b")]
+    originals = {("A", "Label"): "old-a", ("B", "Label"): "old-b"}
+    core, ctrl, guard = categorical_plan(effects, originals)
+
+    def ignore_new_values(d, p, v):
+        core.calls.append(("set", d, p, str(v)))
+        core.write_count += 1
+        if str(v).startswith("old-"):
+            core.values[(d, p)] = str(v)
+
+    core.set_property = ignore_new_values
+    with pytest.raises(ChannelPlanPartialApplicationError) as caught:
+        execute_channel_plan(ctrl, guard, "P")
+
+    message = str(caught.value)
+    assert message.startswith(
+        "Channel plan 'P' applied all 2 writes, then read-back verification "
+        "failed for 2 of them:"
+    )
+    assert "stopped after" not in message
+    assert (
+        "Read-back verification failed for A.Label: requested 'new-a', got 'old-a'."
+        in message
+    )
+    assert (
+        "Read-back verification failed for B.Label: requested 'new-b', got 'old-b'."
+        in message
+    )
+    assert "mismatched=['A.Label', 'B.Label']" in message
+    assert "applied=['A.Label', 'B.Label']" in message
+    assert "attempted=['A.Label', 'B.Label']" in message
+    assert "rolled_back=['B.Label', 'A.Label']" in message
+    restore_sets = [call for call in core.calls if call[0] == "set"][2:]
+    assert restore_sets == [
+        ("set", "B", "Label", "old-b"),
+        ("set", "A", "Label", "old-a"),
+    ]
+    assert core.values == originals
+
+
 def test_categorical_order_wait_and_exact_verification():
     core, ctrl, guard = categorical_plan(
         [("Wheel", "Label", "DAPI"), ("Path", "State", "1")])
