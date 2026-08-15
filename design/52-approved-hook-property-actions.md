@@ -866,7 +866,8 @@ envelope once.
 
 Pass requires:
 
-- exactly one confirmation before acquisition and none from the hook thread;
+- exactly one confirmation before acquisition and none from the hook thread, and
+  an illumination-only run's dialog is **unchanged** from what block 7b gated;
 - one NDTiff dataset containing 18 frames;
 - each frame's metadata/log names requested and achieved TIRF position;
 - all 18 writes pass `check_named_stage`, settle, and read back;
@@ -874,7 +875,8 @@ Pass requires:
   agent interleaving manual moves;
 - the requested restoration policy is verified;
 - a second run proposing one position just beyond the configured named-stage
-  bound refuses before that exposure and reports the partial dataset; and
+  bound **refuses during planning, before the acquisition starts and before any
+  hardware moves** — expect a refusal and no dataset, not a partial one; and
 - export produces a script that compiles and preserves the same approval and
   bounds checks.
 
@@ -1231,18 +1233,42 @@ skipped / 3 warnings**, coordinator-measured rather than carried over.
 - [ ] No envelope means the existing behaviour: the proposal is refused and
       nothing is written. A declined confirmation means no acquisition and no
       write.
-- [ ] Envelope interval, configured `named_stages` bounds and driver limits
-      intersect; each boundary is inclusive and one representable value outside
-      each is refused **without a core write**.
+- [ ] Envelope interval and configured `named_stages` bounds intersect; **both**
+      boundaries are inclusive and one value outside each is refused **without a
+      core write**.
+
+      > **Corrected 2026-08-15, coordinator error.** This row required an
+      > intersection with "driver limits" as well. There is no such source in
+      > this path and the block must not invent one: microclaw queries
+      > `get_property_lower_limit` — a **property** limit — and never MMCore's
+      > stage travel limits, `move_named_stage` deliberately consults only
+      > `check_named_stage`, and the gate rig's TIRF axis exposes no position
+      > property at all, so no property-limit route to its travel exists either.
+      > `inspect-rig` records no stage limits, so there is not even an offline
+      > source. §"Approval and bounds are different controls" still holds where
+      > Micro-Manager *does* report limits; for a named stage on this rig it does
+      > not. The 52a runner found this and preserved the live tool's sequence,
+      > which was right.
 - [ ] A dispatch calls `check_named_stage`, moves the labelled device, waits,
       reads back, records the achieved position, and never touches the core XY/Z
       setters.
 - [ ] **An achieved position outside the approved interval, from a requested one
       inside it, is recorded and reported and does not refuse.** Use the rig's
       numbers: request 21294 against a ceiling of 21294, achieve 21299.
-- [ ] Unapproved target and exhausted budget abort the run before the affected
-      exposure; a bridge failure returns the partial dataset path and the last
-      known state.
+- [ ] An unapproved target and a plan that would consume the restoration
+      reservation are **refused during validation, before the acquisition
+      starts** — so there is no partial dataset on that path. A bridge failure
+      mid-run still returns the partial dataset path, the frames exposed and the
+      last known state.
+
+      > **Corrected 2026-08-15**, from the round-1 implementation. Validating
+      > every planned target up front is better than the mid-run framing this row
+      > was written with, and it stands: nothing moves before the refusal.
+      > It follows that a fixed plan's write budget **cannot** be exhausted
+      > mid-run, since `planned_writes + reserved > max_writes` is refused during
+      > validation. Test that refusal; genuine mid-run exhaustion is 52c's
+      > adaptive path, not this one. A test written for the unreachable case
+      > cannot fail, which block 46 established is worth zero.
 - [ ] Actions are attached by `hook_event_index`, not arrival order: delay frame
       N's image processing and prove event N+1 is not yielded or exposed with a
       missing or stale action set.
