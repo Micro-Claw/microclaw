@@ -1081,7 +1081,7 @@ measured, and close the `design/35` register row.
 |---|---|---|---|---|---|---|
 | coordination | `design52/reconcile-decision` | `bdffb14` | coordinator | n/a | merged `d97d256` | n/a |
 | coordination | ~~`design52/checklist`~~ | `d97d256` | coordinator | n/a | merged `f872a0c` | n/a |
-| 52a | `design52/block-52a` | `413caec` | codex, 4 rounds + coordinator fixes | M2 r3 **limbs PASS**, one blocking finding (restore timing) → round 5 | | |
+| 52a | `design52/block-52a` | `413caec` | codex, 5 rounds + coordinator fixes | M2 r3 **limbs PASS**; restore-timing fixed, focused re-run owed (Steps 0/3/7) | | |
 | 52b | `design52/block-52b` | | | | | |
 | 52c | `design52/block-52c` | | | | | |
 
@@ -1181,6 +1181,25 @@ skipped / 3 warnings**, coordinator-measured rather than carried over.
   back **mid-sweep**, mislabelling every frame after it. Round 5. The suite never
   caught it because every test fake ran callbacks synchronously inside
   `acquire()`, encoding the bug as the contract.
+- **Round 5 fixed the restore timing** (`4dc2a36`): restoration now runs after
+  the `with Acquisition(...)` block exits, so after `__exit__` has marked the
+  stream finished and awaited completion. The failure path and
+  `restoration_attempted` are unchanged, and the round-4 fake was converted to
+  queue events until `__exit__` — the fake that ran callbacks synchronously
+  inside `acquire()` was itself encoding the bug as the contract. Both new
+  parametrizations were coordinator-verified to fail on the pre-fix tree. The
+  runner's audit found no other premature post-`acquire()` read; dataset
+  collision resolution is deliberately read before submission because it is
+  established at construction.
+- **Coordinator fix on top** (`85b0cd3`): the new emitted `print('Dataset:', …)`
+  fell back to `_HERE / name`, a path that usually does not exist because
+  pycro-manager appends `_1` — the gate's own dataset was `52a_m2_sweep_1` while
+  `name` was `52a_m2_sweep`. It now says the location was not reported rather
+  than naming a plausible wrong directory.
+- **A focused re-gate is owed and the runbook scopes it**: Steps 0, 3 and 7 only,
+  with `restore: "entry"` now **required** — that is the path the fix changed and
+  the one that would previously have moved the stage mid-sweep. Steps 1, 2, 4, 5
+  and 6 passed at `25dfb5e` and are unaffected.
 - **Two runbook checks misreported that passing run** and are corrected on the
   branch: the export grep matched `raise RuntimeError` in inlined library source,
   and Step 4 demanded position/XY identity a single-position timelapse does not
