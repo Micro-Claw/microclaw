@@ -163,9 +163,17 @@ Expect, in the log:
 
 - **18** records with `"decision": "accepted"` and `"event": "hook_action"`;
 - each carrying `requested_um` **and** `achieved_um` and `error_um`;
-- each carrying frame identity — `position` and/or `x_um`/`y_um` — **not** a
-  bare `{"position": null}`. That blank is the round-1 defect and its absence is
-  what this step exists to confirm;
+- each carrying `hook_event_index` 0..17, which is this acquisition's frame
+  identity;
+
+  > Corrected after the 2026-08-15 run, which this row would have failed while
+  > passing. It used to demand `position` or `x_um`/`y_um` and to treat
+  > `{"position": null}` as the round-1 defect. **A single-position timelapse has
+  > no position or XY axis**, so `where_event` correctly yields
+  > `{"position": null}` and the frame is identified by `hook_event_index`
+  > instead. The `where()`-vs-`where_event()` fix is therefore *not*
+  > distinguishable on this acquisition shape — it is proven off-rig only, and a
+  > multiposition run would be needed to see it here.
 - `hook_event_index` present on the records and **absent** from every frame's
   axes;
 - 18 analysis observations from the hook, one per frame.
@@ -212,14 +220,19 @@ prints.
 
 ```powershell
 $script = "<path the tool reported>"
-Select-String -Path $script -Pattern "NOT EMITTED", "raise RuntimeError", "import microclaw" | ForEach-Object { $_.Line }
+Select-String -Path $script -Pattern "NOT EMITTED", "import microclaw" | ForEach-Object { $_.Line }
 "--- expect no lines above this one ---"
 Select-String -Path $script -Pattern "_NAMED_STAGE_ENVELOPE", "hook_action_plan", "hook_event_index", "configure_named_stage" | Measure-Object | ForEach-Object { "envelope/plan markers found: " + $_.Count }
 python -c "import ast,sys; ast.parse(open(sys.argv[1], encoding='utf-8').read()); print('SCRIPT PARSES')" $script
 ```
 
-Expect: no `NOT EMITTED`, no `raise RuntimeError`, no `import microclaw`, at
-least four envelope/plan markers, and `SCRIPT PARSES`.
+Expect: no `NOT EMITTED`, no `import microclaw`, at least four envelope/plan
+markers, and `SCRIPT PARSES`.
+
+> Corrected after the 2026-08-15 run: this grep used to include
+> `raise RuntimeError`, which matches a dozen lines of *inlined library source*
+> (the adapter's own refusals) and made a clean export look dirty. Only the
+> `# NOT EMITTED` sentinel and its paired raise indicate an unemittable call.
 
 **The `move_named_stage` calls you made in Step 1 must appear as
 `core.set_position('TIRF Stage', <resolved>)`.** They were undecorated until this
