@@ -63,6 +63,13 @@ class SetIlluminationPower:
 
 
 @dataclass(frozen=True)
+class MoveNamedStage:
+    """Propose a position for the single named-stage envelope on this run."""
+    position_um: float
+    kind: str = "MoveNamedStage"
+
+
+@dataclass(frozen=True)
 class EmitArtifact:
     """Propose an in-memory artifact with a parent-confined bare filename."""
     filename: str
@@ -78,7 +85,8 @@ class DiscardFrame:
 
 HookAction = (
     MoveStage | AcquireAt | SetExposure | ContinueSurvey | StopSurvey |
-    RequestAutofocus | SetIlluminationPower | EmitArtifact | DiscardFrame
+    RequestAutofocus | SetIlluminationPower | MoveNamedStage | EmitArtifact |
+    DiscardFrame
 )
 
 
@@ -120,7 +128,8 @@ class HookResult:
 _ACTION_TYPES = {
     cls.__dataclass_fields__["kind"].default: cls
     for cls in (MoveStage, AcquireAt, SetExposure, ContinueSurvey, StopSurvey,
-                RequestAutofocus, SetIlluminationPower, EmitArtifact, DiscardFrame)
+                RequestAutofocus, SetIlluminationPower, MoveNamedStage,
+                EmitArtifact, DiscardFrame)
 }
 
 
@@ -144,6 +153,14 @@ def parse_action(value: HookAction | dict[str, Any]) -> HookAction:
         action = cls(**payload)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"Malformed {kind} action: {exc}") from exc
+    if isinstance(action, MoveNamedStage) and (
+        isinstance(action.position_um, bool)
+        or not isinstance(action.position_um, (int, float))
+        or not math.isfinite(action.position_um)
+    ):
+        raise ValueError(
+            "Malformed MoveNamedStage action: position_um must be a finite number."
+        )
     # JSON validation rejects NaN/infinity and non-portable scalar objects.
     try:
         if not isinstance(action, EmitArtifact):
@@ -165,6 +182,8 @@ def parse_action(value: HookAction | dict[str, Any]) -> HookAction:
         numeric = (("exposure_ms", action.exposure_ms),)
     elif isinstance(action, SetIlluminationPower):
         numeric = (("value_percent", action.value_percent),)
+    elif isinstance(action, MoveNamedStage):
+        numeric = (("position_um", action.position_um),)
     for name, number in numeric:
         if number is None:
             continue
@@ -257,6 +276,7 @@ class UntrustedHookAdapter:
         self._log: list[dict[str, Any]] = []
         self._context: dict[str, Any] | None = None
         self._illumination_context: dict[str, Any] | None = None
+        self._named_stage_context: dict[str, Any] | None = None
         self._artifact_context: dict[str, Any] | None = None
         self._autofocus_context: dict[str, Any] | None = None
         self._action_counts: dict[str, int] = {}
@@ -339,6 +359,99 @@ class UntrustedHookAdapter:
             "ceiling": max_power_percent, "remaining": max_writes,
             "last_written": initial_value, "baseline_stale": False,
         }
+
+    def configure_named_stage(self, *, core, guard, device: str, min_um: float,
+                              max_um: float, max_writes: int, initial_value: float,
+                              restore: str | dict[str, float],
+                              action_plan: dict[int, tuple[HookAction, ...]]) -> None:
+        self._named_stage_context = {
+            "core": core, "guard": guard, "device": device,
+            "min_um": min_um, "max_um": max_um, "remaining": max_writes,
+            "initial_value": initial_value, "last_known": initial_value,
+            "restore": restore, "plan": dict(action_plan), "consumed": set(),
+        }
+
+    def _apply_named_stage(self, action: MoveNamedStage, event: dict,
+                           *, restoration: bool = False) -> None:
+        ctx = self._named_stage_context
+        index = event.get("hook_event_index")
+        if ctx is None:
+            self._refuse(event, action, "no named-stage envelope was authorized for this run")
+            raise RuntimeError("named-stage action refused: no authorized envelope")
+        target = float(action.position_um)
+        if target < ctx["min_um"] or target > ctx["max_um"]:
+            self._refuse(event, action, "proposal is outside the authorized named-stage interval")
+            raise RuntimeError("named-stage action refused: outside authorized interval")
+        if ctx["remaining"] <= 0:
+            self._refuse(event, action, "authorized named-stage write budget exhausted")
+            raise RuntimeError("named-stage action refused: write budget exhausted")
+        try:
+            ctx["guard"].check_named_stage(ctx["device"], target)
+        except Exception as exc:
+            self._refuse(event, action, f"SafetyGuard refused named-stage motion: {exc}")
+            raise RuntimeError(f"named-stage action refused: {exc}") from exc
+        # The budget counts attempted dispatches, including writes that raise.
+        ctx["remaining"] -= 1
+        try:
+            ctx["core"].set_position(ctx["device"], target)
+            ctx["core"].wait_for_device(ctx["device"])
+            achieved = float(ctx["core"].get_position(ctx["device"]))
+            if not math.isfinite(achieved):
+                raise ValueError(f"non-finite achieved position {achieved!r}")
+        except Exception as exc:
+            self._record(
+                event, event="named_stage_write_failure",
+                hook_event_index=index, action=self._action_record(action),
+                decision="failed", reason=f"parent stage move failed: {exc}",
+                last_known_um=ctx["last_known"], restoration=restoration,
+            )
+            raise RuntimeError(f"named-stage move failed: {exc}") from exc
+        ctx["last_known"] = achieved
+        event["named_stage_device"] = ctx["device"]
+        event["named_stage_requested_um"] = target
+        event["named_stage_achieved_um"] = achieved
+        event["named_stage_error_um"] = achieved - target
+        self._accept(
+            event, action, "named-stage move passed envelope and SafetyGuard",
+            hook_event_index=index, device=ctx["device"], requested_um=target,
+            achieved_um=achieved, error_um=achieved - target,
+            restoration=restoration,
+        )
+
+    def pre_hardware_hook_fn(self, event: dict) -> dict:
+        """Consume the immutable planned action set for this exact event index."""
+        ctx = self._named_stage_context
+        if ctx is None:
+            return event
+        index = event.get("hook_event_index")
+        if isinstance(index, bool) or not isinstance(index, int):
+            raise RuntimeError("planned hook event is missing a valid hook_event_index")
+        if index in ctx["consumed"] or index not in ctx["plan"]:
+            raise RuntimeError(f"planned hook actions are missing or duplicated for index {index}")
+        ctx["consumed"].add(index)
+        for action in ctx["plan"][index]:
+            if isinstance(action, MoveNamedStage):
+                self._apply_named_stage(action, event)
+            else:
+                # Empty lists are explicit; every nonempty fixed-plan entry must
+                # contain an action this coordinator owns.
+                self._refuse(event, action, "unsupported hardware action in fixed hook_action_plan")
+                raise RuntimeError(f"unsupported planned hook action {action.kind}")
+        return event
+
+    def restore_named_stage(self) -> dict[str, Any] | None:
+        ctx = self._named_stage_context
+        if ctx is None:
+            return None
+        restore = ctx["restore"]
+        if restore == "leave":
+            return {"policy": "leave", "entry_um": ctx["initial_value"],
+                    "last_known_um": ctx["last_known"], "restored": False}
+        target = ctx["initial_value"] if restore == "entry" else float(restore["value"])
+        event = {"hook_event_index": None}
+        self._apply_named_stage(MoveNamedStage(target), event, restoration=True)
+        return {"policy": restore, "entry_um": ctx["initial_value"],
+                "last_known_um": ctx["last_known"], "restored": True}
 
     def configure_artifacts(self, *, target_dir: str | Path,
                             max_artifact_bytes: int, max_count: int,
@@ -515,6 +628,12 @@ class UntrustedHookAdapter:
             if increasing:
                 ctx["remaining"] -= 1
             self._accept(metadata, action, "power write passed envelope and SafetyGuard")
+            return None
+        if isinstance(action, MoveNamedStage):
+            self._refuse(
+                metadata, action,
+                "fixed-plan hardware actions must come from hook_action_plan, not analyze_frame",
+            )
             return None
         ctx = self._context
         if ctx is None:

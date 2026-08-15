@@ -19,6 +19,32 @@ _HOOK_ILLUMINATION_ENVELOPE_SCHEMA = {
     "additionalProperties": False,
 }
 
+_HOOK_NAMED_STAGE_ENVELOPE_SCHEMA = {
+    "type": "object",
+    "description": "One labelled stage, inclusive interval, attempted-write budget, and explicit restoration policy for a saved fixed-run hook.",
+    "properties": {
+        "device": {"type": "string", "minLength": 1},
+        "min_um": {"type": "number"}, "max_um": {"type": "number"},
+        "max_writes": {"type": "integer", "minimum": 1},
+        "restore": {"oneOf": [
+            {"type": "string", "enum": ["leave", "entry"]},
+            {"type": "object", "properties": {"value": {"type": "number"}},
+             "required": ["value"], "additionalProperties": False},
+        ]},
+    },
+    "required": ["device", "min_um", "max_um", "max_writes", "restore"],
+    "additionalProperties": False,
+}
+
+_HOOK_ACTION_PLAN_SCHEMA = {
+    "type": "array",
+    "description": "Exactly one indexed action list for every generated fixed-run event; empty action lists are explicit.",
+    "items": {"type": "object", "properties": {
+        "hook_event_index": {"type": "integer", "minimum": 0},
+        "actions": {"type": "array", "items": {"type": "object"}},
+    }, "required": ["hook_event_index", "actions"], "additionalProperties": False},
+}
+
 _HOOK_ARTIFACT_LIMITS_SCHEMA = {
     "type": "object",
     "description": (
@@ -528,6 +554,8 @@ TOOLS: list[dict[str, Any]] = [
                 "hook_params": {"type": "object", "description": "Hook constructor parameters."},
                 "log_path": {"type": "string", "description": "Hook output log path."},
                 "illumination_envelope": _HOOK_ILLUMINATION_ENVELOPE_SCHEMA,
+                "named_stage_envelope": _HOOK_NAMED_STAGE_ENVELOPE_SCHEMA,
+                "hook_action_plan": _HOOK_ACTION_PLAN_SCHEMA,
                 "artifact_limits": _HOOK_ARTIFACT_LIMITS_SCHEMA,
             },
             "required": ["z_start_um", "z_end_um", "z_step_um", "save_dir"],
@@ -570,6 +598,8 @@ TOOLS: list[dict[str, Any]] = [
                 "hook_params": {"type": "object", "description": "Hook constructor parameters."},
                 "log_path": {"type": "string", "description": "Hook output log path."},
                 "illumination_envelope": _HOOK_ILLUMINATION_ENVELOPE_SCHEMA,
+                "named_stage_envelope": _HOOK_NAMED_STAGE_ENVELOPE_SCHEMA,
+                "hook_action_plan": _HOOK_ACTION_PLAN_SCHEMA,
                 "artifact_limits": _HOOK_ARTIFACT_LIMITS_SCHEMA,
             },
             "required": ["n_frames", "interval_s", "save_dir"],

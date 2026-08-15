@@ -18,6 +18,7 @@ MANIFEST = HOOKS_DIR / "manifest.json"
 FORBIDDEN_SAVED_HOOK_PARAMS = (
     "ctrl", "guard", "credentials", "candidates", "progress",
     "survey_events", "event_queue", "log_path", "illumination_envelope",
+    "named_stage_envelope", "hook_action_plan",
     "illumination_device", "illumination_property", "device", "property",
     "path", "out_path", "output_path", "save_dir", "artifact_dir",
 )

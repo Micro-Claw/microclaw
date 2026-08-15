@@ -64,7 +64,8 @@ gives the adapter a read-only, selection-limited `DatasetView`. That offline
 orchestrator and `DatasetView` are a design/26 proposal, not yet implemented; do not
 claim a generated adapter can run offline until they ship.
 Stateful streaming remains available when those boundaries do not fit.
-`analyze_frame` itself does not receive a batch.
+`analyze_frame` itself does not receive a batch. The trusted adapter's
+pre-hardware callback is not exposed to saved source.
 
 No network call may occur while images are acquired. A local subprocess is allowed
 only after its lint warning and full source are explicitly reviewed; derived XY/Z
@@ -94,6 +95,7 @@ kwargs, but Microclaw does not currently expose all of them through its runners.
 Currently wired by Microclaw's acquisition runner for reviewed built-ins:
 
   image_process_fn       callable(image, metadata, event_queue) -> tuple | None
+  pre_hardware_hook_fn   callable(event) -> dict   (trusted adapter only)
   post_hardware_hook_fn  callable(event) -> dict   (ALWAYS return the event)
 
 ``run_multiposition_acquisition`` accepts one hook name or an ordered list.
@@ -117,7 +119,6 @@ other capability. Only classes shipped in PRECODED_HOOK_REGISTRY are trusted bui
 
 Native pycro-manager callbacks not currently wired by Microclaw:
 
-  pre_hardware_hook_fn      callable(event) -> dict   (ALWAYS return the event)
   event_generation_hook_fn callable(event) -> list[dict] | None
   image_saved_fn            callable(axes, dataset[, event_queue]) -> None
 
@@ -130,8 +131,9 @@ only the methods actually implemented by the hook are passed to `Acquisition(...
 ### analyze_frame(image: np.ndarray, metadata: dict) -> HookResult | None
 
 The saved-hook contract. `HookResult` contains JSON-safe measurements and a list
-or tuple of typed action proposals: MoveStage, AcquireAt, SetExposure, ContinueSurvey,
-StopSurvey, RequestAutofocus, SetIlluminationPower, EmitArtifact, or DiscardFrame.
+or tuple of typed action proposals: MoveStage, MoveNamedStage, AcquireAt, SetExposure,
+ContinueSurvey, StopSurvey, RequestAutofocus, SetIlluminationPower, EmitArtifact,
+or DiscardFrame.
 Runner support for control-flow proposals is:
 
   runner                              ContinueSurvey        StopSurvey / AcquireAt
@@ -143,6 +145,17 @@ ContinueSurvey changes nothing and is recorded as an accepted noop. Proposals
 that would change behaviour but are unavailable remain refused. The adaptive
 runner guard-checks and reservation-checks every proposal and writes every
 accept/refuse decision to the log.
+
+Saved hooks cannot access hardware directly. For predetermined
+``run_timelapse`` and ``run_zstack`` acquisitions, every named-stage action
+comes from the acquisition call's ``hook_action_plan`` and is bounded by its
+``named_stage_envelope`` before the run. Each generated event has one explicit
+indexed action list, including empty lists. Events are dispatched before the
+first image is analyzed, so ``MoveNamedStage`` returned by ``analyze_frame`` is
+refused as unsupported; the hook scores frames and the plan moves hardware.
+The action carries only ``position_um``. The envelope names the device, interval,
+attempted-write budget, and explicit restoration policy, and the trusted parent
+checks, moves, waits, reads back, and audits requested and achieved positions.
 
 AcquireAt(position) normally requests an immediate guarded revisit of that planned
 tile. When run_adaptive_survey has acquire_on_hit, it instead records the planned

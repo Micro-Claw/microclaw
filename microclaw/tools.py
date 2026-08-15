@@ -681,18 +681,19 @@ def _adaptive_runner_source() -> str:
         hook_decisions.MoveStage, hook_decisions.AcquireAt,
         hook_decisions.SetExposure, hook_decisions.ContinueSurvey,
         hook_decisions.StopSurvey, hook_decisions.RequestAutofocus,
-        hook_decisions.SetIlluminationPower, hook_decisions.EmitArtifact,
+        hook_decisions.SetIlluminationPower, hook_decisions.MoveNamedStage,
+        hook_decisions.EmitArtifact,
         hook_decisions.DiscardFrame, hook_decisions.HookResult,
     )
     parts = [f"__version__ = {__version__!r}\n"]
     parts.extend(inspect.getsource(item) for item in decision_items)
     parts.extend([
         "HookAction = (MoveStage | AcquireAt | SetExposure | ContinueSurvey | "
-        "StopSurvey | RequestAutofocus | SetIlluminationPower | EmitArtifact | "
+        "StopSurvey | RequestAutofocus | SetIlluminationPower | MoveNamedStage | EmitArtifact | "
         "DiscardFrame)\n",
         "_ACTION_TYPES = {cls.__dataclass_fields__['kind'].default: cls for cls in "
         "(MoveStage, AcquireAt, SetExposure, ContinueSurvey, StopSurvey, "
-        "RequestAutofocus, SetIlluminationPower, EmitArtifact, DiscardFrame)}\n",
+        "RequestAutofocus, SetIlluminationPower, MoveNamedStage, EmitArtifact, DiscardFrame)}\n",
     ])
     parts.extend([
         inspect.getsource(hook_decisions.parse_action),
@@ -741,6 +742,12 @@ class _RecordedSafetyGuard:
         self._bounded(z, _LIMITS["z_um"][0], _LIMITS["z_um"][1], "Z")
     def check_exposure(self, exposure_ms):
         self._bounded(exposure_ms, 0.0, _LIMITS["exposure_ms"][1], "Exposure")
+    def check_named_stage(self, device, position_um):
+        envelope = globals().get("_NAMED_STAGE_ENVELOPE")
+        if envelope is None or device != envelope["device"]:
+            raise SafetyViolation(f"Named stage {{device!r}} has no recorded envelope")
+        self._bounded(position_um, envelope["min_um"], envelope["max_um"],
+                      f"Named stage {{device}}")
     @property
     def analysis_min_snr(self):
         return _LIMITS.get("analysis_min_snr")
@@ -844,6 +851,10 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
             "standalone adaptive runner"
         )
     hook_source, constructor, saved = _adaptive_hook_export(params)
+    named_stage_envelope = params.get("named_stage_envelope")
+    hook_action_plan = params.get("hook_action_plan")
+    if (named_stage_envelope is not None or hook_action_plan is not None) and not saved:
+        raise CannotEmit("named-stage envelopes and hook_action_plan apply only to saved hooks")
     autofocus_budget = params.get("autofocus_budget")
     autofocus_sweep_exposures = 0
     autofocus_reexposures = 0
@@ -1064,12 +1075,23 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
     # action and therefore intentionally emits no standalone script line.
     common.extend([
         f"events = multi_d_acquisition_events(**{shape!r})",
+        *( [f"_NAMED_STAGE_ENVELOPE = {named_stage_envelope!r}",
+            f"hook_action_plan = {hook_action_plan!r}",
+            "for _index, _event in enumerate(events): _event['hook_event_index'] = _index",
+            "print('ALLOW HOOK HARDWARE CONTROL FOR THIS RUN')",
+            "print(f\"Named stage: {_NAMED_STAGE_ENVELOPE['device']}; approved interval {_NAMED_STAGE_ENVELOPE['min_um']}–{_NAMED_STAGE_ENVELOPE['max_um']} µm; maximum writes {_NAMED_STAGE_ENVELOPE['max_writes']}; restore {_NAMED_STAGE_ENVELOPE['restore']!r}\")",
+            "if input('Type YES to continue: ').strip() != 'YES': raise SafetyViolation('Hook hardware envelope declined before acquisition')",
+            f"hook.configure_named_stage(core=core, guard=guard, device={named_stage_envelope['device']!r}, min_um={float(named_stage_envelope['min_um'])!r}, max_um={float(named_stage_envelope['max_um'])!r}, max_writes={named_stage_envelope['max_writes']!r}, initial_value=float(core.get_position({named_stage_envelope['device']!r})), restore={named_stage_envelope['restore']!r}, action_plan={{entry['hook_event_index']: tuple(parse_action(action) for action in entry['actions']) for entry in hook_action_plan}})"]
+           if named_stage_envelope is not None else [] ),
         "_hook_callbacks = {name: callback for name, callback in {"
         "'image_process_fn': getattr(hook, 'image_process_fn', None), "
+        "'pre_hardware_hook_fn': getattr(hook, 'pre_hardware_hook_fn', None), "
         "'post_hardware_hook_fn': getattr(hook, 'post_hardware_hook_fn', None)"
         "}.items() if callback is not None}",
         f"with Acquisition(directory=str(_HERE), name={params.get('name', default_name)!r}, show_display=True, **_hook_callbacks) as acq:",
         "    acq.acquire(events)",
+        *( ["hook._named_stage_restoration = hook.restore_named_stage()"]
+           if named_stage_envelope is not None else [] ),
     ])
     return "\n\n".join(common)
 
@@ -1497,9 +1519,12 @@ class _HookArtifactBudgetError(ValueError):
 class _HookedAcquisitionFailure(RuntimeError):
     """A hook failed after pycro-manager resolved the dataset directory."""
 
-    def __init__(self, error: Exception, dataset_path: str) -> None:
+    def __init__(self, error: Exception, dataset_path: str, *, frames_exposed: int = 0,
+                 last_hardware_state: dict[str, Any] | None = None) -> None:
         super().__init__(str(error))
         self.dataset_path = dataset_path
+        self.frames_exposed = frames_exposed
+        self.last_hardware_state = last_hardware_state
 
 
 def _hooked_failure_result(exc: _HookedAcquisitionFailure, log_path: str | None) -> dict:
@@ -1519,6 +1544,7 @@ def _hooked_failure_result(exc: _HookedAcquisitionFailure, log_path: str | None)
         "error": str(exc),
         "dataset_path": exc.dataset_path,
         "artifact": {"kind": "dataset", "path": exc.dataset_path},
+        "frames_exposed": exc.frames_exposed,
         "hint": (
             "The hook raised mid-acquisition. The stage has already moved and "
             "the frames acquired before the failure are saved at dataset_path — "
@@ -1528,6 +1554,8 @@ def _hooked_failure_result(exc: _HookedAcquisitionFailure, log_path: str | None)
     }
     if log_path:
         result["log_path"] = log_path
+    if exc.last_hardware_state is not None:
+        result["last_hardware_state"] = exc.last_hardware_state
     return result
 
 
@@ -2678,6 +2706,8 @@ def _acquire_with_hooks(
             hook.bind_reservation(reservation)
         if hasattr(hook, "post_hardware_hook_fn"):
             hook_fn_kwargs["post_hardware_hook_fn"] = hook.post_hardware_hook_fn
+        if hasattr(hook, "pre_hardware_hook_fn"):
+            hook_fn_kwargs["pre_hardware_hook_fn"] = hook.pre_hardware_hook_fn
         if hasattr(hook, "image_process_fn"):
             hook_fn_kwargs["image_process_fn"] = hook.image_process_fn
 
@@ -2696,6 +2726,7 @@ def _acquire_with_hooks(
         hook_fn_kwargs["image_saved_fn"] = account_saved_frame
 
     dataset_path = None
+    restoration_attempted = False
     try:
         with Acquisition(directory=save_dir, name=name, show_display=True, **hook_fn_kwargs) as acq:
             # Resolve collision suffixes before dispatching the first event: a
@@ -2715,9 +2746,27 @@ def _acquire_with_hooks(
             if callable(events):
                 events = events(acq)
             acq.acquire(events)
+            if hook is not None and hasattr(hook, "restore_named_stage"):
+                restoration_attempted = True
+                hook._named_stage_restoration = hook.restore_named_stage()
     except Exception as exc:
+        if (not restoration_attempted and hook is not None and
+                hasattr(hook, "restore_named_stage")):
+            try:
+                restoration_attempted = True
+                hook._named_stage_restoration = hook.restore_named_stage()
+            except Exception as restore_exc:
+                exc = RuntimeError(f"{exc}; named-stage restoration failed: {restore_exc}")
         if hook is not None and dataset_path is not None:
-            raise _HookedAcquisitionFailure(exc, dataset_path) from exc
+            stage_ctx = getattr(hook, "_named_stage_context", None)
+            last_state = None if stage_ctx is None else {
+                "device": stage_ctx["device"], "position_um": stage_ctx["last_known"]
+            }
+            raise _HookedAcquisitionFailure(
+                exc, dataset_path,
+                frames_exposed=getattr(reservation, "completed_frames", 0),
+                last_hardware_state=last_state,
+            ) from exc
         raise
     finally:
         if reservation is not None and close_reservation:
@@ -2753,6 +2802,8 @@ def run_zstack(
     hook_params: dict | None = None,
     log_path: str | None = None,
     illumination_envelope: dict | None = None,
+    named_stage_envelope: dict | None = None,
+    hook_action_plan: list[dict] | None = None,
     artifact_limits: dict | None = None,
     _reservation: Reservation | None = None,
 ) -> dict:
@@ -2786,8 +2837,12 @@ def run_zstack(
         except ValueError as exc:
             return {"error": str(exc)}
         try:
-            _configure_hook_capabilities(hook, ctrl, guard, save_dir, name,
-                                         illumination_envelope, artifact_limits)
+            for index, event in enumerate(events):
+                event["hook_event_index"] = index
+            _configure_hook_capabilities(
+                hook, ctrl, guard, save_dir, name, illumination_envelope,
+                artifact_limits, named_stage_envelope, hook_action_plan, events,
+            )
         except _HookArtifactBudgetError as exc:
             return {"error": str(exc)}
     plan = plan_events(ctrl, events, exposure_ms)
@@ -2816,6 +2871,9 @@ def run_zstack(
             duration_s=round(time.monotonic() - started, 6),
             **_reservation_report(reservation),
         ))
+        restoration = getattr(hook, "_named_stage_restoration", None)
+        if restoration is not None:
+            result["named_stage_restoration"] = restoration
     return result
 
 
@@ -2901,6 +2959,8 @@ def run_timelapse(
     hook_params: dict | None = None,
     log_path: str | None = None,
     illumination_envelope: dict | None = None,
+    named_stage_envelope: dict | None = None,
+    hook_action_plan: list[dict] | None = None,
     artifact_limits: dict | None = None,
     _reservation: Reservation | None = None,
 ) -> dict:
@@ -2936,8 +2996,12 @@ def run_timelapse(
         except ValueError as exc:
             return {"error": str(exc)}
         try:
-            _configure_hook_capabilities(hook, ctrl, guard, save_dir, name,
-                                         illumination_envelope, artifact_limits)
+            for index, event in enumerate(events):
+                event["hook_event_index"] = index
+            _configure_hook_capabilities(
+                hook, ctrl, guard, save_dir, name, illumination_envelope,
+                artifact_limits, named_stage_envelope, hook_action_plan, events,
+            )
         except _HookArtifactBudgetError as exc:
             return {"error": str(exc)}
     plan = plan_events(ctrl, events, exposure_ms)
@@ -2971,6 +3035,9 @@ def run_timelapse(
             duration_s=round(time.monotonic() - started, 6),
             **_reservation_report(reservation),
         ))
+        restoration = getattr(hook, "_named_stage_restoration", None)
+        if restoration is not None:
+            result["named_stage_restoration"] = restoration
     return result
 
 
@@ -4905,7 +4972,10 @@ def _plan_with_hook_dose(plan: AcquisitionPlan, hook: Any) -> AcquisitionPlan:
 def _configure_hook_capabilities(hook: Any, ctrl: MicroscopeController,
                                  guard: SafetyGuard, save_dir: str, name: str,
                                  illumination_envelope: dict | None,
-                                 artifact_limits: dict | None) -> None:
+                                 artifact_limits: dict | None,
+                                 named_stage_envelope: dict | None = None,
+                                 hook_action_plan: list[dict] | None = None,
+                                 events: list[dict] | None = None) -> None:
     """Validate and authorize independent parent-side hook capabilities."""
     from microclaw.hook_decisions import CompositeHook, UntrustedHookAdapter
     if isinstance(hook, CompositeHook):
@@ -4929,6 +4999,10 @@ def _configure_hook_capabilities(hook: Any, ctrl: MicroscopeController,
             raise ValueError(
                 "illumination_envelope is not supported for composed hooks."
             )
+        if named_stage_envelope is not None or hook_action_plan is not None:
+            raise ValueError(
+                "named_stage_envelope and hook_action_plan are not supported for composed hooks."
+            )
         if artifact_limits is not None:
             if not untrusted:
                 raise ValueError("Hook envelopes apply only to saved generated hooks.")
@@ -4944,7 +5018,8 @@ def _configure_hook_capabilities(hook: Any, ctrl: MicroscopeController,
             )
         return
     if not isinstance(hook, UntrustedHookAdapter):
-        if illumination_envelope or artifact_limits:
+        if (illumination_envelope or artifact_limits or
+                named_stage_envelope is not None or hook_action_plan is not None):
             raise ValueError("Hook envelopes apply only to saved generated hooks.")
         return
     if artifact_limits is not None:
@@ -4958,48 +5033,122 @@ def _configure_hook_capabilities(hook: Any, ctrl: MicroscopeController,
         hook.configure_artifacts(
             target_dir=Path(save_dir) / name / "artifacts", **limits,
         )
-    if illumination_envelope is None:
-        return
-    allowed = {"device", "property", "max_power_percent", "max_writes"}
-    if set(illumination_envelope) != allowed:
-        raise ValueError(f"illumination_envelope must contain exactly {sorted(allowed)}.")
-    device = illumination_envelope["device"]
-    prop = illumination_envelope["property"]
-    ceiling = illumination_envelope["max_power_percent"]
-    writes = illumination_envelope["max_writes"]
-    if not guard.is_illumination_power(device, prop):
-        raise ValueError(
-            "illumination envelope device/property is not declared in "
-            "illumination.power_properties."
+    summaries = []
+    illumination_config = None
+    if illumination_envelope is not None:
+        allowed = {"device", "property", "max_power_percent", "max_writes"}
+        if set(illumination_envelope) != allowed:
+            raise ValueError(f"illumination_envelope must contain exactly {sorted(allowed)}.")
+        device = illumination_envelope["device"]
+        prop = illumination_envelope["property"]
+        ceiling = illumination_envelope["max_power_percent"]
+        writes = illumination_envelope["max_writes"]
+        if not guard.is_illumination_power(device, prop):
+            raise ValueError(
+                "illumination envelope device/property is not declared in "
+                "illumination.power_properties."
+            )
+        if isinstance(ceiling, bool) or not isinstance(ceiling, (int, float)) or not math.isfinite(ceiling) or ceiling < 0:
+            raise ValueError("illumination envelope max_power_percent must be finite and non-negative.")
+        configured = guard.max_illumination_power_percent
+        if configured is not None and ceiling > configured:
+            raise ValueError(
+                f"illumination envelope ceiling {ceiling}% exceeds configured "
+                f"illumination.max_power_percent ({configured}%)."
+            )
+        if isinstance(writes, bool) or not isinstance(writes, int) or writes <= 0:
+            raise ValueError("illumination envelope max_writes must be a positive integer.")
+        initial = float(ctrl.core.get_property(device, prop))
+        if not math.isfinite(initial):
+            raise ValueError("initial illumination power must be finite.")
+        illumination_config = (device, prop, float(ceiling), writes, initial)
+        summaries.append(
+            f"Illumination: {device}.{prop}; ceiling {float(ceiling):g}%; "
+            f"{writes} accepted increasing writes maximum."
         )
-    if isinstance(ceiling, bool) or not isinstance(ceiling, (int, float)) or not math.isfinite(ceiling) or ceiling < 0:
-        raise ValueError("illumination envelope max_power_percent must be finite and non-negative.")
-    configured = guard.max_illumination_power_percent
-    if configured is not None and ceiling > configured:
-        raise ValueError(
-            f"illumination envelope ceiling {ceiling}% exceeds configured "
-            f"illumination.max_power_percent ({configured}%)."
+
+    named_config = None
+    if named_stage_envelope is not None:
+        allowed = {"device", "min_um", "max_um", "max_writes", "restore"}
+        if set(named_stage_envelope) != allowed:
+            raise ValueError(f"named_stage_envelope must contain exactly {sorted(allowed)}.")
+        device = named_stage_envelope["device"]
+        low, high = named_stage_envelope["min_um"], named_stage_envelope["max_um"]
+        writes, restore = named_stage_envelope["max_writes"], named_stage_envelope["restore"]
+        if not isinstance(device, str) or not device:
+            raise ValueError("named_stage_envelope device must be a non-empty string.")
+        if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v)
+               for v in (low, high)) or low > high:
+            raise ValueError("named_stage_envelope bounds must be finite numbers with min_um <= max_um.")
+        if isinstance(writes, bool) or not isinstance(writes, int) or writes <= 0:
+            raise ValueError("named_stage_envelope max_writes must be a positive integer.")
+        if not (restore in {"leave", "entry"} if isinstance(restore, str) else
+                isinstance(restore, dict) and set(restore) == {"value"}):
+            raise ValueError("named_stage_envelope restore must be 'leave', 'entry', or {'value': number}.")
+        initial = float(ctrl.core.get_position(device))
+        if not math.isfinite(initial):
+            raise ValueError("initial named-stage position must be finite.")
+        from microclaw.hook_decisions import MoveNamedStage, parse_action
+        if hook_action_plan is None or events is None or not isinstance(hook_action_plan, list):
+            raise ValueError("named_stage_envelope requires a hook_action_plan for the generated events.")
+        parsed_plan = {}
+        for entry in hook_action_plan:
+            if not isinstance(entry, dict) or set(entry) != {"hook_event_index", "actions"}:
+                raise ValueError("each hook_action_plan entry must contain exactly actions and hook_event_index.")
+            index = entry["hook_event_index"]
+            if isinstance(index, bool) or not isinstance(index, int) or index in parsed_plan:
+                raise ValueError("hook_action_plan indices must be unique integers.")
+            if not isinstance(entry["actions"], list):
+                raise ValueError("hook_action_plan actions must be a list (empty is explicit).")
+            actions = tuple(parse_action(action) for action in entry["actions"])
+            if any(not isinstance(action, MoveNamedStage) for action in actions):
+                raise ValueError("52a fixed hook_action_plan supports only MoveNamedStage actions.")
+            parsed_plan[index] = actions
+        expected = set(range(len(events)))
+        if set(parsed_plan) != expected:
+            raise ValueError(f"hook_action_plan indices must be exactly 0..{len(events) - 1}.")
+        reserved = 0 if restore == "leave" else 1
+        planned_writes = sum(len(actions) for actions in parsed_plan.values())
+        if planned_writes + reserved > writes:
+            raise ValueError("hook_action_plan would consume the write reserved for restoration.")
+        restore_target = initial if restore == "entry" else (
+            restore.get("value") if isinstance(restore, dict) else None
         )
-    if isinstance(writes, bool) or not isinstance(writes, int) or writes <= 0:
-        raise ValueError("illumination envelope max_writes must be a positive integer.")
-    initial = float(ctrl.core.get_property(device, prop))
-    if not math.isfinite(initial):
-        raise ValueError("initial illumination power must be finite.")
-    summary = (
-        f"AUTHORIZE UNATTENDED HOOK ILLUMINATION: {device}.{prop}\n"
-        f"Ceiling: {float(ceiling):g}% ({writes} accepted writes maximum).\n"
-        "Generated hook code will drive this power unattended, per frame, "
-        "for the duration of the run. It cannot enable a shutter or turn light on."
-    )
-    if not CONFIRM_FN(summary, kind="illumination"):
-        raise SafetyViolation(
-            f"User declined hook illumination envelope for {device}.{prop}; "
-            "acquisition was not started."
+        for target in [a.position_um for actions in parsed_plan.values() for a in actions] + (
+            [restore_target] if restore_target is not None else []
+        ):
+            if isinstance(target, bool) or not isinstance(target, (int, float)) or not math.isfinite(target):
+                raise ValueError("named-stage planned and restoration positions must be finite numbers.")
+            if target < low or target > high:
+                raise ValueError("named-stage planned or restoration position is outside the envelope.")
+            guard.check_named_stage(device, target)
+        named_config = (device, float(low), float(high), writes, initial, restore, parsed_plan)
+        summaries.append(
+            f"Named stage: {device}; approved interval {float(low):g}–{float(high):g} µm; "
+            f"{writes} attempted writes maximum; restore {restore!r}."
         )
-    hook.configure_illumination(
-        core=ctrl.core, guard=guard, device=device, property=prop,
-        max_power_percent=float(ceiling), max_writes=writes, initial_value=initial,
-    )
+    elif hook_action_plan is not None:
+        raise ValueError("hook_action_plan requires named_stage_envelope.")
+
+    if summaries and not CONFIRM_FN(
+        "ALLOW HOOK HARDWARE CONTROL FOR THIS RUN\n" + "\n".join(summaries) +
+        f"\nAcquisition: {len(events or [])} frames, {Path(save_dir) / name}",
+        kind="hook_hardware",
+    ):
+        raise SafetyViolation("User declined hook hardware envelope; acquisition was not started.")
+    if illumination_config is not None:
+        device, prop, ceiling, writes, initial = illumination_config
+        hook.configure_illumination(
+            core=ctrl.core, guard=guard, device=device, property=prop,
+            max_power_percent=ceiling, max_writes=writes, initial_value=initial,
+        )
+    if named_config is not None:
+        device, low, high, writes, initial, restore, parsed_plan = named_config
+        hook.configure_named_stage(
+            core=ctrl.core, guard=guard, device=device, min_um=low, max_um=high,
+            max_writes=writes, initial_value=initial, restore=restore,
+            action_plan=parsed_plan,
+        )
 
 
 def _adaptive_result(

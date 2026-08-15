@@ -8,7 +8,8 @@ import numpy as np
 import pytest
 
 from microclaw.hook_decisions import (
-    AcquireAt, ContinueSurvey, DiscardFrame, EmitArtifact, HookResult, MoveStage,
+    AcquireAt, ContinueSurvey, DiscardFrame, EmitArtifact, HookResult,
+    MoveNamedStage, MoveStage,
     RequestAutofocus, SetExposure, SetIlluminationPower, StopSurvey,
     CompositeHook, UntrustedHookAdapter,
 )
@@ -18,6 +19,94 @@ from microclaw.safety import (
     ForbiddenProperty, IlluminationConstraints, SafetyConstraints, SafetyGuard,
 )
 from microclaw.tools import SurveyProgress
+
+
+@pytest.mark.parametrize("value", [True, float("nan"), float("inf"), -float("inf")])
+def test_move_named_stage_refuses_non_finite_and_boolean_positions(value):
+    from microclaw.hook_decisions import parse_action
+    with pytest.raises(ValueError, match="finite number"):
+        parse_action({"kind": "MoveNamedStage", "position_um": value})
+
+
+def test_move_named_stage_parses_typed_and_exact_dict_forms():
+    from microclaw.hook_decisions import parse_action
+    assert parse_action(MoveNamedStage(12.5)) == MoveNamedStage(12.5)
+    assert parse_action({"kind": "MoveNamedStage", "position_um": 12.5}) == MoveNamedStage(12.5)
+    with pytest.raises(ValueError, match="unexpected fields"):
+        parse_action({"kind": "MoveNamedStage", "position_um": 12.5, "device": "stage"})
+
+
+def test_named_stage_plan_dispatch_records_overshoot_and_keeps_index_out_of_axes():
+    core = MagicMock()
+    core.get_position.return_value = 21299
+    guard = MagicMock()
+    adapter = UntrustedHookAdapter(object())
+    adapter.configure_named_stage(
+        core=core, guard=guard, device="fixture-stage", min_um=20000,
+        max_um=21294, max_writes=1, initial_value=21000, restore="leave",
+        action_plan={0: (MoveNamedStage(21294),)},
+    )
+    event = {"axes": {"time": 0}, "hook_event_index": 0}
+    returned = adapter.pre_hardware_hook_fn(event)
+    guard.check_named_stage.assert_called_once_with("fixture-stage", 21294.0)
+    core.set_position.assert_called_once_with("fixture-stage", 21294.0)
+    core.wait_for_device.assert_called_once_with("fixture-stage")
+    assert returned["named_stage_achieved_um"] == 21299
+    assert "hook_event_index" not in returned["axes"]
+    assert adapter._log[-1]["achieved_um"] == 21299
+
+
+@pytest.mark.parametrize("target", [9.999999999, 20.000000001])
+def test_named_stage_envelope_outside_boundary_refuses_without_write(target):
+    core, guard = MagicMock(), MagicMock()
+    adapter = UntrustedHookAdapter(object())
+    adapter.configure_named_stage(
+        core=core, guard=guard, device="fixture-stage", min_um=10, max_um=20,
+        max_writes=1, initial_value=15, restore="leave",
+        action_plan={0: (MoveNamedStage(target),)},
+    )
+    with pytest.raises(RuntimeError, match="outside authorized interval"):
+        adapter.pre_hardware_hook_fn({"axes": {}, "hook_event_index": 0})
+    core.set_position.assert_not_called()
+
+
+def test_analysis_returned_named_stage_action_is_refused_without_write():
+    class Hook:
+        def analyze_frame(self, image, metadata):
+            return HookResult({}, (MoveNamedStage(17),))
+    adapter = UntrustedHookAdapter(Hook())
+    adapter.image_process_fn(np.zeros((1, 1)), {}, object())
+    assert "hook_action_plan" in adapter._log[-1]["reason"]
+
+
+def test_named_stage_entry_restoration_uses_same_guard_move_wait_readback():
+    core, guard = MagicMock(), MagicMock()
+    core.get_position.side_effect = [12, 15]
+    adapter = UntrustedHookAdapter(object())
+    adapter.configure_named_stage(
+        core=core, guard=guard, device="fixture-stage", min_um=10, max_um=20,
+        max_writes=1, initial_value=12, restore="entry", action_plan={0: ()},
+    )
+    report = adapter.restore_named_stage()
+    guard.check_named_stage.assert_called_once_with("fixture-stage", 12.0)
+    core.set_position.assert_called_once_with("fixture-stage", 12.0)
+    core.wait_for_device.assert_called_once_with("fixture-stage")
+    assert report == {"policy": "entry", "entry_um": 12,
+                      "last_known_um": 12.0, "restored": True}
+
+
+def test_named_stage_failed_restoration_is_loud_and_not_success():
+    core, guard = MagicMock(), MagicMock()
+    core.set_position.side_effect = RuntimeError("bridge down")
+    adapter = UntrustedHookAdapter(object())
+    adapter.configure_named_stage(
+        core=core, guard=guard, device="fixture-stage", min_um=10, max_um=20,
+        max_writes=1, initial_value=12, restore="entry", action_plan={0: ()},
+    )
+    with pytest.raises(RuntimeError, match="bridge down"):
+        adapter.restore_named_stage()
+    assert adapter._log[-1]["decision"] == "failed"
+    assert adapter._log[-1]["restoration"] is True
 
 
 def _events(n=3):
