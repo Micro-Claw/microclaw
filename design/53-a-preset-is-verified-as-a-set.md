@@ -282,14 +282,18 @@ papercut. Code state is unchanged from `ccc4b34` through `009f0df`:
 **1808 passed / 99 skipped / 3 warnings** on macOS, coordinator-measured at
 `009f0df` on 2026-08-15 rather than carried over.
 
-**To resume cold**, the block workflow in `CLAUDE.md` is authoritative and this
-document is the whole specification, including the checklist below: branch
-`design53/block-53a` from the commit the checklist's live note names, write the
-runner prompt to the scratchpad, and stop to offer it rather than spawning. No
-scratchpad state from the authoring session is needed — the runner prompt was
-never written, and nothing here depends on one. Neither of those blocks is blocked by this one: 51a's
-gate limb A1 is satisfied by `Camera` applying its 11 writes, which is what that
-block claims, and `Normal Mode`'s failure is this defect and is filed here.
+**Nothing here is open. Superseded 2026-08-15 — do not act on the paragraph this
+replaces**, which told a cold session to branch `design53/block-53a` and write a
+runner prompt. That block is merged (`fc35e70`) and its branch is deleted. This
+document is now a closed record: read the checklist below for what was done and
+`design/33-authorization-map.md` §"Why read-back verification is plan-level" for
+where the decision lives. No scratchpad state from any session in this block is
+needed; the runner prompts were never committed, by design, and their outcomes
+are in `design/prompts.md`.
+
+Neither 50a nor 51a was blocked by this one: 51a's gate limb A1 is satisfied by
+`Camera` applying its 11 writes, which is what that block claims, and
+`Normal Mode`'s failure is this defect and was filed here.
 
 ## Checklist
 
@@ -311,9 +315,10 @@ rolls it back, so its rig gate is the point of the exercise, not a formality.
 - A row is ticked when the coordinator has verified it, not when an agent
   reports it. Re-run the suite; read the diff.
 
-### State at the 2026-08-15 opening of block 53a — the live note
+### State at the 2026-08-15 close of block 53a — the live note
 
-Checked against the repository rather than assumed, at this note's writing:
+Opened at 53a's assignment and updated through its close; the bullets below are
+current as of the merge. Checked against the repository rather than assumed:
 working tree clean, `git log --oneline origin/main..main` empty, `main` at
 `009f0df`, and on `origin` besides `main` only
 `design34/focus-system-authorization` (6a), `florian/setup-claude-workflow` and
