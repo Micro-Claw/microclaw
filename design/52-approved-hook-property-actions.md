@@ -1081,7 +1081,7 @@ measured, and close the `design/35` register row.
 |---|---|---|---|---|---|---|
 | coordination | `design52/reconcile-decision` | `bdffb14` | coordinator | n/a | merged `d97d256` | n/a |
 | coordination | ~~`design52/checklist`~~ | `d97d256` | coordinator | n/a | merged `f872a0c` | n/a |
-| 52a | `design52/block-52a` | `413caec` | codex, 4 rounds + coordinator fixes | M2 **FAIL** x2 — r1 sequencing, r2 stripped event key; r3 pending | | |
+| 52a | `design52/block-52a` | `413caec` | codex, 4 rounds + coordinator fixes | M2 r3 **limbs PASS**, one blocking finding (restore timing) → round 5 | | |
 | 52b | `design52/block-52b` | | | | | |
 | 52c | `design52/block-52c` | | | | | |
 
@@ -1163,6 +1163,30 @@ skipped / 3 warnings**, coordinator-measured rather than carried over.
   +0.73 um, mean absolute 0.414 um** — the SmarAct does *not* hit its target
   exactly, so §"The envelope bounds the request, not the achievement" applies
   here as it did on M5, at sub-micron scale rather than 5 um.
+- **The third M2 gate, 2026-08-15, passed every stated limb.** P=650.2, envelope
+  150.2–1150.2 um, **one** confirmation, **18 planned / 18 acquired in one
+  dataset**, hook log of 36 entries — 18 accepted moves carrying
+  `hook_event_index` 0..17 with requested/achieved/error (-0.865 to +0.729 um) —
+  plus 18 Tenengrad observations. The bounds limb refused during planning with
+  the guard's own sentence (`TIRF Stage=6300.00 um exceeds the maximum allowed
+  (6256.80 um)`) and wrote nothing. **Export reproduced the run**: the standalone
+  wrote its own 18-frame dataset over the same 18 s.
+- **Scoring the artifacts found what the pass concealed: restoration runs before
+  the acquisition finishes.** The report gave `last_known_um` 650.1, the *entry*
+  value, when the last move achieved 1149.4. `Acquisition.acquire()` only submits
+  and returns a future; completion is awaited in `__exit__`
+  (`acquisition_superclass.py:230`, `:368`), and the restoration block sits
+  inside the `with`. Harmless under `restore: "leave"` and a wrong number is how
+  it surfaced — but under `"entry"` or `{"value": …}` it would drive the stage
+  back **mid-sweep**, mislabelling every frame after it. Round 5. The suite never
+  caught it because every test fake ran callbacks synchronously inside
+  `acquire()`, encoding the bug as the contract.
+- **Two runbook checks misreported that passing run** and are corrected on the
+  branch: the export grep matched `raise RuntimeError` in inlined library source,
+  and Step 4 demanded position/XY identity a single-position timelapse does not
+  have. Consequently **the round-1 `where()`/`where_event()` fix is not
+  distinguishable on this acquisition shape** — both yield `position: null` here.
+  It is proven off-rig only; a multiposition run would be needed to see it.
 - **The schema cost three of four rig attempts.** `hook_action_plan` was typed as
   loose objects, so the agent guessed `{"type": …}` and `{"kind": …, "params":
   {…}}` before finding the right shape. Now a discriminated schema with a `kind`
