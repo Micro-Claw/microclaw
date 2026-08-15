@@ -1081,7 +1081,7 @@ measured, and close the `design/35` register row.
 |---|---|---|---|---|---|---|
 | coordination | `design52/reconcile-decision` | `bdffb14` | coordinator | n/a | merged `d97d256` | n/a |
 | coordination | ~~`design52/checklist`~~ | `d97d256` | coordinator | n/a | merged `f872a0c` | n/a |
-| 52a | `design52/block-52a` | `413caec` | codex, 3 rounds + coordinator fixes | M2 **FAIL** x2 — r1 sequencing, r2 stripped event key | | |
+| 52a | `design52/block-52a` | `413caec` | codex, 4 rounds + coordinator fixes | M2 **FAIL** x2 — r1 sequencing, r2 stripped event key; r3 pending | | |
 | 52b | `design52/block-52b` | | | | | |
 | 52c | `design52/block-52c` | | | | | |
 
@@ -1149,9 +1149,13 @@ skipped / 3 warnings**, coordinator-measured rather than carried over.
   NDTiff reason. Round 4 keys the plan on the event's **axes signature** instead,
   injecting nothing; `hook_action_plan`'s caller-facing index is unchanged.
 - **Three rounds of tests stayed green over a mechanism that never worked**,
-  because every test hand-built an event with the key already on it. Round 4 owes
-  a fake that mimics the engine's closed key set, and an end-to-end test through
-  it.
+  because every test hand-built an event with the key already on it. **Round 4
+  closed that**: `tests/test_hook_illumination_artifacts.py` now carries a fake
+  acquisition that round-trips events through the engine's exact written key set
+  and an end-to-end `run_timelapse` through it. Coordinator-verified against the
+  pre-fix tree, where it fails with the rig's own sentence — *"planned hook event
+  is missing a valid hook_event_index"*. The suite now reproduces the gate
+  failure off-rig.
 - **Two things the failed run measured that are worth keeping.** At
   `interval_s=1` no sequenced-batch refusal appeared, so a 1 s interval does
   defeat time-axis sequencing on M2 and round 3's guard is correctly quiet. And
