@@ -35,7 +35,7 @@ if ($LASTEXITCODE -eq 0) { "INSTALL OK" } else { "INSTALL FAILED - stop here" }
 Pin the implementation by ancestry, never by tip hash:
 
 ```powershell
-git merge-base --is-ancestor 514c523 HEAD
+git merge-base --is-ancestor 5e28cd1 HEAD
 if ($LASTEXITCODE -eq 0) { "PIN OK - gate covers the reviewed implementation" } else { "PIN FAILED - wrong branch or commit; stop" }
 ```
 
@@ -46,15 +46,15 @@ python -m pytest -q 2>&1 | Out-File -Encoding utf8 $HOME\Documents\52a-m2-suite.
 Get-Content $HOME\Documents\52a-m2-suite.txt -Tail 3
 ```
 
-Expect **1822 passed / 124 skipped / 3 warnings**. **Collection is 1946** — that
+Expect **1824 passed / 124 skipped / 3 warnings**. **Collection is 1948** — that
 is the number that proves the branch, and `passed + skipped` must equal it.
-macOS runs the same tree as 1847/99: Windows skips 25 tests that pass elsewhere,
+macOS runs the same tree as 1849/99: Windows skips 25 tests that pass elsewhere,
 so a *lower* passed count with a correspondingly higher skip count is the
 expected result, not a failure. `main` collects 1911, so a run reporting 1911
 means the rig is on the wrong branch and every later step is worthless.
 
-(The 2026-08-15 first attempt ran 1811/124/1935, which was a PASS on the
-pre-sequencing-fix tree. If you see 1935 now, the branch is stale — pull.)
+(Earlier attempts ran 1935 and 1946 collected. If you see either now, the branch
+is stale — pull. Both of those attempts passed Step 0 and failed later.)
 
 > Corrected 2026-08-15 after the first run. This step originally said "expect
 > 1836 passed **plus** this rig's skip count", which reads as 1836+124 and made
@@ -111,6 +111,15 @@ Verbatim, substituting your numbers:
 > hook. Move `TIRF Stage` across <min> to <max> um, one position per frame, using
 > a declarative hook action plan. Approve a named-stage envelope over exactly
 > that interval with 18 writes and `restore: "leave"`.
+
+> **Two earlier attempts on 2026-08-15 failed here and both are fixed.** The
+> first hit a hardware-sequenced batch; the second died because the acquisition
+> engine strips any key we add to an event, so the plan could not be matched to
+> its frame. Plan entries are now resolved by the event's own **axes**, which the
+> engine must preserve. If this step fails a third time, capture the error
+> verbatim and stop rather than working around it — a fallback to per-position
+> snaps is the very thing this block exists to remove, and it costs the sample
+> 18 exposures for no evidence.
 
 **Watch for exactly one confirmation and then 18 frames.** If the run refuses
 with a message about a hardware-sequenced burst, that is the new guard working:
