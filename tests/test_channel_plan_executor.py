@@ -118,7 +118,7 @@ def categorical_plan(effects, values=None):
 
 
 class ModeDependentCore(Core):
-    """Exposure is exact only in scan mode 3, as measured on M5."""
+    """Model the optimistic premise that a mode change re-derives exposure."""
 
     def set_property(self, d, p, v):
         super().set_property(d, p, v)
@@ -213,7 +213,23 @@ def test_verify_pass_reports_every_ignored_pair_and_rolls_back_in_reverse():
         execute_channel_plan(ctrl, guard, "P")
 
     message = str(caught.value)
-    assert "A.Label" in message and "B.Label" in message
+    assert message.startswith(
+        "Channel plan 'P' applied all 2 writes, then read-back verification "
+        "failed for 2 of them:"
+    )
+    assert "stopped after" not in message
+    assert (
+        "Read-back verification failed for A.Label: requested 'new-a', got 'old-a'."
+        in message
+    )
+    assert (
+        "Read-back verification failed for B.Label: requested 'new-b', got 'old-b'."
+        in message
+    )
+    assert "mismatched=['A.Label', 'B.Label']" in message
+    assert "applied=['A.Label', 'B.Label']" in message
+    assert "attempted=['A.Label', 'B.Label']" in message
+    assert "rolled_back=['B.Label', 'A.Label']" in message
     restore_sets = [call for call in core.calls if call[0] == "set"][2:]
     assert restore_sets == [
         ("set", "B", "Label", "old-b"),

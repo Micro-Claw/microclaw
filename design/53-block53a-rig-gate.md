@@ -40,9 +40,53 @@ Expected: `Config preset System.Normal Mode applied.`, **11 writes**, ScanMode
 Property Browser. There must be no read-back failure, rollback, partial
 application, or `SAFE STATE NOT VERIFIED`. Wrong routing is **NOT TESTED**.
 
-## Step 2 — switch repeatedly in both directions
+If the call instead fails naming `HamamatsuHam_DCAM.Exposure` with
+`got '100.0140'`, record **PREMISE FAILURE, not a code failure**. Capture the
+complete refusal and the Property Browser values of both ScanMode and Exposure
+after rollback, then stop the gate: do not retry and do not edit the preset. It
+means the driver does not re-derive exposure on a mode change, so plan-level
+read-back is unsatisfiable for presets of this shape and the design needs a
+different answer.
 
-In the same agent session, type this verbatim:
+## Step 2 — export and execute the Normal Mode switch standalone
+
+In the Step-1 session, type this verbatim:
+
+> Use `export_session_script` to write this session to
+> `block53a-normal-mode.py`. Report the complete result verbatim. Do not edit the
+> emitted file.
+
+Close Microclaw entirely, leaving Micro-Manager and its bridge running. Paste
+this literal PowerShell block:
+
+```powershell
+$SetLines = Select-String -Path block53a-normal-mode.py -Pattern "^core.set_property\("
+$VerifyLines = Select-String -Path block53a-normal-mode.py -Pattern "^_verify_property\("
+$SetLines
+$VerifyLines
+$LastSet = ($SetLines | Measure-Object -Property LineNumber -Maximum).Maximum
+$FirstVerify = ($VerifyLines | Measure-Object -Property LineNumber -Minimum).Minimum
+Write-Host "set-property count (expected 11):" $SetLines.Count
+Write-Host "verify count (expected 11):" $VerifyLines.Count
+Write-Host "last set line must be less than first verify line:" $LastSet $FirstVerify
+python .\block53a-normal-mode.py > block53a-standalone.txt 2>&1
+Write-Host "standalone exit code (expected 0):" $LASTEXITCODE
+Get-Content block53a-standalone.txt
+```
+
+Expected: both counts are **11**; every printed `core.set_property` line number
+is less than every printed `_verify_property` line number (`$LastSet` is less
+than `$FirstVerify`); standalone exit code is **0**; and
+`block53a-standalone.txt` contains no verification failure, `NameError`, or
+traceback. An empty standalone output file is expected because a successful
+script need not print. Confirm in the Property Browser that ScanMode is **3**
+and Exposure is **100.0030** after the standalone run. Preserve the emitted
+script and standalone output.
+
+## Step 3 — switch repeatedly in both directions
+
+Start a new normal Microclaw agent session against the same reviewed M5 safety
+config. Type this verbatim:
 
 > Using only `set_config_preset`, switch `System/Camera`, then
 > `System/Normal Mode`, then `System/Camera`, then `System/Normal Mode` — four
@@ -57,7 +101,7 @@ direction may report a verification failure, rollback, partial application, or
 `SAFE STATE NOT VERIFIED`. A run with only one direction, fewer than four
 calls, an automatic retry, or different routing is **NOT TESTED**.
 
-## Step 3 — naturally unsatisfiable preset, if one already exists
+## Step 4 — naturally unsatisfiable preset, if one already exists
 
 Do **not** author or modify a preset for this step. If M5 already has a preset
 known from ordinary use to contain a value the device genuinely ignores, type
@@ -88,6 +132,8 @@ live test.
 ## Return evidence
 
 Return `block53a-pytest.txt`, both Step-0 exit codes and totals, the complete
-agent transcript for Steps 1–3, the Property Browser values after Steps 1 and 2,
-and either the complete natural-refusal evidence or the exact Limb-3-not-run
-statement above. State that the machine was M5 and name the loaded configuration.
+agent transcript for Steps 1–4, `block53a-normal-mode.py`,
+`block53a-standalone.txt`, the ordering counts and line numbers, the Property
+Browser values after Steps 1–3, and either the complete natural-refusal evidence
+or the exact Limb-3-not-run statement above. State that the machine was M5 and
+name the loaded configuration.
