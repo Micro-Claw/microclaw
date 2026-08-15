@@ -8094,18 +8094,22 @@ This is an inventory, not permission to close with unresolved blank work. Block
   **Its export then emitted the trace**, the improvised targets including two
   fill-in points chosen after seeing results, and the agent fell back to
   hand-writing a script through `write_text_file`. **Written up as `design/52`,
-  reviewed and reconciled 2026-08-15; parked, not scheduled, no block.** The
+  reviewed and reconciled 2026-08-15, and now SCHEDULED there — three blocks
+  (52a, 52b, 52c) with their own run ledger and checklist at the bottom of that
+  document. It is no longer parked and this row is no longer the live record;
+  `design/52` is.** The
   reconciled decision folds onto `configure_illumination` /
   `_configure_hook_capabilities` rather than building a second envelope
   mechanism, leaves `authorize_property_write` standing (design/49), and verifies
   a frame's action set as a set (design/53). It also requires an event-indexed
   pre-hardware handoff and extension of the standalone adaptive runner; the live
   illumination envelope is precedent for validation, not for export (the current
-  emitter refuses it). One question is open in the doc and
-  should be settled before it is assigned: whether the new actions carry a device
-  name at all, or carry only a value like `SetIlluminationPower` does — `device`
+  emitter refuses it). **The doc's one open question was settled by operator
+  decision 2026-08-15, before assignment: the new actions carry only a value and
+  the envelope names the target**, following `SetIlluminationPower` — `device`
   and `property` are both in `FORBIDDEN_SAVED_HOOK_PARAMS`, so a hook cannot be
-  told its target, and the doc recommends the value-only shape.
+  told its target and the device-bearing shape would have reopened that boundary
+  for a string.
 - **The GUI stops tracking after an *exposure* write, and six other write paths
   never refresh either.** Operator-observed on M5, 2026-08-11, in a TIRF session
   on 43i's branch: Microclaw read 20 ms while Micro-Manager's Exposure [ms] box

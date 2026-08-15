@@ -24,8 +24,11 @@ block's branch nor folds itself into one.
 > that two designs landed on either side of it (`design/49`, `design/53`) whose
 > decisions this one has to respect. Both are reconciled below.
 >
-> **Still not scheduled or given a block; parked deliberately.** It now carries
-> an entry in `design/35`'s open register so it is findable from the checklist.
+> **Scheduled 2026-08-15. It is no longer parked.** Three blocks — 52a, 52b, 52c
+> — with their own run ledger and checklist at the bottom of this document, in
+> the shape `design/48`–`design/53` use. The document's one open question, how a
+> hook names its target, was settled first: **value-only actions**. `design/35`'s
+> open register row points here.
 
 ---
 
@@ -119,24 +122,22 @@ Add two proposal types to the saved-hook decision vocabulary:
 ```python
 @dataclass(frozen=True)
 class MoveNamedStage:
-    device: str
     position_um: float
     kind: str = "MoveNamedStage"
 
 
 @dataclass(frozen=True)
 class SetDeviceProperty:
-    device: str
-    property: str
     value: str
     kind: str = "SetDeviceProperty"
 ```
 
-**These stubs carry the device name, and that is the one thing in this document
-still undecided.** §"How the hook names its target" sets out why, and recommends
-the value-only shape — `MoveNamedStage(position_um)`, `SetProperty(value)` —
-matching `SetIlluminationPower`. Settle that before implementing; the rest of the
-decision holds either way.
+**The actions carry a value and no target. Settled 2026-08-15 by operator
+decision** — see §"How the hook names its target", which was this document's one
+open question and is now closed. The parent supplies `device` (and `property`)
+from the envelope, exactly as `SetIlluminationPower` does. The class names are
+unchanged; only their fields are. Anywhere below that shows a `device` on an
+action or a plan entry is superseded by this.
 
 These are proposals, never direct hardware handles. `UntrustedHookAdapter`
 parses them through the closed union and the trusted parent performs the write.
@@ -359,28 +360,24 @@ and then face a hidden confirmation from the hook thread. All confirmation must
 happen before `Acquisition(...)` starts. Runtime dispatch never blocks the
 pycro-manager callback waiting for UI input.
 
-### How the hook names its target — the one open question
+### How the hook names its target — settled, value-only
 
-The stubs above carry a device name **from the hook**. But `device` and
-`property` are both in `FORBIDDEN_SAVED_HOOK_PARAMS`, and this design says the
-envelope never reaches hook source, so the name would have to be hardcoded in the
-hook body. Illumination sidesteps this: `SetIlluminationPower` carries **only a
-percent** and the parent supplies the target from the envelope. That asymmetry
-needs a decision.
+**Decided 2026-08-15, before any block was assigned: the actions carry only a
+value.** `MoveNamedStage(position_um)` and `SetDeviceProperty(value)` are applied
+to the single target the envelope names, exactly as `SetIlluminationPower` is.
 
-1. **Follow the illumination precedent**: actions carry only a value, applied to
-   the single envelope-named target — `MoveNamedStage(position_um)`,
-   `SetProperty(value)`. Rules out a whole class of proposal (a hook aiming at a
-   device the envelope does not name) by construction rather than by check. Cost:
-   one target per run per kind; no hook coordinating two devices.
-2. **Keep the device on the action** and let the hook *read* the envelope's
-   target without authority over it. Cost: reopens the forbidden-params boundary
-   for a string, which is what that list exists to close.
+The alternative was to keep `device` (and `property`) on the action and check it
+against the envelope. It was rejected: `device` and `property` are both in
+`FORBIDDEN_SAVED_HOOK_PARAMS` (`hook_manager.py:18`) and the envelope never
+reaches hook source, so a hook could only hardcode the string — reopening for a
+target name the exact boundary that list exists to close, to buy a two-device
+workflow nobody has asked for. The value-only shape rules out a hook aiming at an
+undeclared device *by construction* rather than by check, needs no new refusal
+record, and is the shape already rig-gated through block 7b.
 
-**Recommendation: option 1**, on the reasoning that put this design onto the
-illumination seam at all — it is the shape already proven on a rig, needs no new
-refusal, and one target per run covers the motivating case. Take option 2 only if
-a concrete two-device workflow turns up first.
+The cost is stated and accepted: one target per run per kind, so no hook
+coordinating two devices in one acquisition. Take the device-bearing shape only
+if a concrete two-device workflow turns up, and treat it as a new design.
 
 ### Timing: use the pre-hardware callback for a per-frame target
 
@@ -558,20 +555,12 @@ dataclass instances:
 [
     {
         "hook_event_index": 0,
-        "actions": [{
-            "kind": "MoveNamedStage",
-            "device": "Thorlabs ELL17/ELL20",
-            "position_um": 21294,
-        }],
+        "actions": [{"kind": "MoveNamedStage", "position_um": 21294}],
     },
     ...,
     {
         "hook_event_index": 17,
-        "actions": [{
-            "kind": "MoveNamedStage",
-            "device": "Thorlabs ELL17/ELL20",
-            "position_um": 19639,
-        }],
+        "actions": [{"kind": "MoveNamedStage", "position_um": 19639}],
     },
 ]
 ```
@@ -580,9 +569,8 @@ dataclass instances:
 occurs at multiple positions, channels or Z planes, while the coordinator index
 is unique across the generated event list. Validation requires exactly the set
 `0..len(events)-1`, with no missing or duplicate entry, after event generation
-and before confirmation. The `device` fields above follow the provisional action
-stubs; if §"How the hook names its target" takes the recommended value-only
-shape, omit them from both the action schema and this plan together.
+and before confirmation. Plan entries carry no `device`: the envelope names the
+target once, per §"How the hook names its target".
 
 Adaptive feedback proposes the next target from `analyze_frame` through the
 indexed handoff above. Never silently apply a post-image proposal after the
@@ -916,3 +904,397 @@ request should lead directly to a bounded capability summary and one approval,
 then complete the single-stack sweep. The agent must no longer say that a saved
 hook cannot move a named stage or talk itself into separate snaps when the move
 is approved and in bounds.
+
+---
+
+## Blocks
+
+Three, run in order. The split is by **capability**, not by layer: each block
+ships one thing an operator can run *and* the export of that thing, because a
+capability is not finished until it can appear in an exported script
+(`CLAUDE.md`). A "mechanism now, export later" split was considered and rejected
+for that reason.
+
+Each block's first two rig limbs come from §"Evidence and gates" above; nothing
+here replaces that section, it only says which block owes which part of it.
+
+### 52a — the declarative named-stage sweep
+
+Design: §Decision (through the `MoveNamedStage` half of §"Runtime checks"),
+§"The envelope bounds the request, not the achievement", §"Approval and bounds
+are different controls", §Timing (the predetermined-plan half), §"Fixed-run
+scope", §"Failure semantics and audit", §Export (the fixed-plan half),
+§"Documentation and model behavior" (the predetermined-runs bullet).
+
+Files: `microclaw/hook_decisions.py` (`_ACTION_TYPES`, `parse_action`,
+`configure_illumination`'s sibling, `_dispatch`, the new pre-hardware
+coordinator), `microclaw/tools.py` (`_configure_hook_capabilities:4905`,
+`run_timelapse:2890`, `run_zstack:2742`, `_emit_adaptive:827`,
+`_acquire_with_hooks:2636`), `microclaw/hook_docs.py`,
+`tests/test_hook_decisions.py`, `tests/test_session_script_export.py`.
+
+**Rig gate 52a (M5).** §"TIRF acceptance gate" limb 1 in full, on the rig that
+carries `Thorlabs ELL17/ELL20`. All seven pass criteria, including the
+out-of-bounds second run and the exported script.
+
+Step-10 design gate: correct `hook_docs.py`'s categorical claim that a saved hook
+cannot reach a named stage, and tick the `design/35` register row down to what
+52b and 52c still owe.
+
+### 52b — the general bounded property
+
+Design: the `SetDeviceProperty` half of §"Runtime checks", §"Verify the frame's
+actions as a set, not per write", the authorization-map bullets of §"Approval and
+bounds are different controls", and the property limbs of §"Evidence and gates".
+
+Files: `microclaw/safety.py` (`check_device_property:1002`, `check_property:974`),
+`microclaw/authorization.py` (`authorize_property_write`, `_verify_property`),
+`microclaw/hook_decisions.py`, `microclaw/tools.py`,
+`tests/test_hook_decisions.py`, `tests/test_safety_*.py`.
+
+**Rig gate 52b (M5).** A property the operator names on the day — a categorical
+one (an EMU-named filter or two-state device) and, if one exists in the reviewed
+config, a bounded numeric one. The runbook records which pair was used; do not
+write the pair into `microclaw/`. Two limbs are mandatory regardless of the pair
+chosen: a `SetDeviceProperty` aimed at `Thorlabs ELL17/ELL20`'s position property
+**refuses** at `authorize_property_write` with design/49's message naming
+`move_named_stage` — that is a pass — and an interdependent pair applied in one
+frame verifies as a set, not per write.
+
+Step-10 design gate: record in `design/33-authorization-map.md` that an approved
+hook envelope replaces the safety-config allow/deny decision and **not** the
+authorization map, with the reason design/49 gave.
+
+### 52c — the adaptive refinement
+
+Design: §Timing points 2–4 (the adaptive half, the partition, `RequestAutofocus`,
+the malformed-partition rule, the watchdog), §Export's program-not-trace
+requirement, §"Documentation and model behavior" (the adaptive bullet).
+
+Files: `microclaw/hook_decisions.py` (`image_process_fn:703`, `_dispatch`),
+`microclaw/tools.py` (`_survey_event_stream:5215`, `run_adaptive_survey:5541`,
+`_emit_adaptive`), `tests/test_adaptive_survey.py`,
+`tests/test_session_script_export.py`.
+
+**Rig gate 52c (M5).** §"TIRF acceptance gate" limb 2 in full — coarse pass then
+hook-chosen refinement, one envelope, one dataset — including the export limb,
+where a script reproducing this run's exact target list is a **fail**.
+
+Step-10 design gate: replace this document's §Timing prose with what the rig
+measured, and close the `design/35` register row.
+
+## Run ledger
+
+| Block | Branch | Start commit | Implementer | Rig gate | Merged | Design reconciled |
+|---|---|---|---|---|---|---|
+| coordination | `design52/reconcile-decision` | `bdffb14` | coordinator | n/a | merged `d97d256` | n/a |
+| coordination | `design52/checklist` | `d97d256` | coordinator | n/a | | n/a |
+| 52a | `design52/block-52a` | | | | | |
+| 52b | `design52/block-52b` | | | | | |
+| 52c | `design52/block-52c` | | | | | |
+
+## Checklist
+
+### How to use this checklist
+
+**The process is `CLAUDE.md` §"The block workflow" and it is authoritative.**
+This section is *what* is owed, not *how* the block runs; if the two disagree
+about process, `CLAUDE.md` wins and this section gets corrected.
+
+- The coordinator alone edits this section and the ledger, on a branch, and
+  commits before assigning — a worktree sees committed history, not an editor
+  buffer.
+- The implementer works in its own git worktree, commits, and reports. It never
+  merges, and it never edits this section.
+- A row is ticked when the coordinator has verified it, not when an agent reports
+  it. Re-run the suite; read the diff.
+- **The blocks run in order, one at a time.** 52b and 52c both extend the same
+  `_dispatch` and the same acquisition signatures 52a creates; running them
+  concurrently in two worktrees would conflict on every file that matters.
+
+### State at 2026-08-15 — the live note
+
+Checked against the repository rather than assumed: working tree clean,
+`git log --oneline origin/main..main` empty, `main` at `d97d256`, and on `origin`
+besides `main` only `design34/focus-system-authorization` (6a),
+`florian/setup-claude-workflow` and `port-to-jpype-acqj` — **no open block
+branch.** One worktree, this one. Suite at `d97d256`, macOS: **1812 passed / 99
+skipped / 3 warnings**, coordinator-measured rather than carried over.
+
+- **design/52 is scheduled and no longer parked.** Three blocks, none assigned
+  yet. 52a is next.
+- **The open question is settled: value-only actions** (§"How the hook names its
+  target"). Operator decision, 2026-08-15, before assignment. The stubs and the
+  `hook_action_plan` example in this document were corrected to match; anything
+  elsewhere showing a `device` on an action is stale.
+- **The illumination export refusal stays** (`tools.py:836`). §Export says why,
+  and it is a decision, not an oversight. Do not widen a block to fix it, and do
+  not narrow the new envelopes to match it.
+- **Multiposition and tile are out of scope by decision**, not by omission —
+  §"Fixed-run scope". Their existing saved-hook `CannotEmit` is the "or refuse"
+  limb and is already satisfied. Do not write a tile illumination or artifact
+  assertion: those arguments do not exist and the assertion would pass vacuously.
+- **The tile artifact-budget dead end is not this design's** and is not fixed
+  here. It sits in `design/35`'s open register where it was filed.
+
+### 52a — the declarative named-stage sweep
+
+**Implementation**
+
+- [ ] `MoveNamedStage(position_um)` joins `_ACTION_TYPES`; `parse_action` accepts
+      the dataclass and the dict form and refuses unknown fields, booleans,
+      NaN/infinity and non-finite values. No `device` field — the envelope names
+      the target.
+- [ ] `named_stage_envelope` is validated in `_configure_hook_capabilities`
+      beside `illumination_envelope`, by exact key set
+      `{device, min_um, max_um, max_writes, restore}`. **Extend that function; do
+      not add a second validator, registry or guard pass.**
+- [ ] Envelopes apply to saved hooks only: composed and non-saved hooks refuse,
+      matching `illumination_envelope`'s existing behaviour.
+- [ ] One `CONFIRM_FN` summary before `Acquisition(...)`, folded with the
+      illumination and dose confirmations rather than added beside them. Declining
+      performs no acquisition and no write. Nothing confirms from the hook thread.
+- [ ] Dispatch is `move_named_stage`'s sequence (`tools.py:2023`) with the
+      envelope check prepended: envelope device, envelope interval,
+      `guard.check_named_stage`, `set_position`, `wait_for_device`, read back,
+      record requested/achieved/error. It **does not** call
+      `authorize_property_write`, because the live tool does not either.
+- [ ] The budget decrements on **every attempted dispatch**. This is a count of
+      writes, not illumination's increase-only ratchet — do not copy that branch.
+- [ ] A refused or failed motion **aborts before the next exposure** and returns
+      the dataset path, log path, frames exposed and last known hardware state.
+      Do not copy illumination's continue-on-failure behaviour.
+- [ ] `restore` is required, not defaulted by the parser. `"leave"` writes
+      nothing on exit and names entry and last value (design/38 F9);
+      `"entry"`/`{"value": ...}` go through the same guard/write/read-back path,
+      pass the envelope before approval, and **reserve a write** from
+      `max_writes` — a plan that would consume the reservation is refused before
+      acquisition. A failed restoration is reported loudly and never called
+      success.
+- [ ] `hook_event_index` is assigned monotonically before each event is yielded
+      and is a **plain event key**. It must never appear in `event["axes"]` — an
+      index unique per event makes the NDTiff Cartesian product the dataset
+      squared, which is the M5 2026-08-11 sparse-axis defect made worse.
+- [ ] `pre_hardware_hook_fn` is wired by the trusted adapter and consumes exactly
+      the action set bearing the current event's index, applies it, verifies, and
+      stamps requested and achieved state into that event. Missing, duplicate or
+      wrongly indexed aborts **before** exposure. It never guesses from callback
+      arrival order. Saved code still receives no queue, no callback, no `ctrl`,
+      no `core`, no `guard`, no setter.
+- [ ] `hook_action_plan` is a tool argument, never a `hook_params` value, using
+      the JSON dict forms `parse_action` accepts. Validation requires exactly the
+      index set `0..len(events)-1` — no missing, no duplicate — after event
+      generation and before confirmation. An empty action list is explicit.
+- [ ] A fixed-plan runner refuses a hardware action returned from `analyze_frame`
+      as unsupported and writes nothing; `ContinueSurvey` keeps its documented
+      no-op.
+- [ ] `run_timelapse` and `run_zstack` accept `named_stage_envelope` and
+      `hook_action_plan` and pass every argument through. **The hookless route is
+      untouched**: no `hook_strategy` still means `_emit_acquisition`.
+- [ ] `run_multiposition_acquisition` and `run_tile_acquisition` accept neither
+      argument, and their existing saved-hook `CannotEmit` stands unchanged.
+- [ ] `_emit_adaptive` carries both new arguments and installs the same
+      coordinator and action class, inlined with `inspect.getsource` and **never
+      re-written in the emitter**. Emitter fallbacks are the tool's own defaults,
+      not constants.
+- [ ] `hook_docs.py` / `get_hook_documentation` / `describe_hook` / the runner
+      schemas are updated together, with the predetermined-runs bullet from
+      §"Documentation and model behavior", and the categorical "a saved hook
+      cannot do that" advice removed.
+
+**Evidence — written before the fix, failing first**
+
+- [ ] No envelope means the existing behaviour: the proposal is refused and
+      nothing is written. A declined confirmation means no acquisition and no
+      write.
+- [ ] Envelope interval, configured `named_stages` bounds and driver limits
+      intersect; each boundary is inclusive and one representable value outside
+      each is refused **without a core write**.
+- [ ] A dispatch calls `check_named_stage`, moves the labelled device, waits,
+      reads back, records the achieved position, and never touches the core XY/Z
+      setters.
+- [ ] **An achieved position outside the approved interval, from a requested one
+      inside it, is recorded and reported and does not refuse.** Use the rig's
+      numbers: request 21294 against a ceiling of 21294, achieve 21299.
+- [ ] Unapproved target and exhausted budget abort the run before the affected
+      exposure; a bridge failure returns the partial dataset path and the last
+      known state.
+- [ ] Actions are attached by `hook_event_index`, not arrival order: delay frame
+      N's image processing and prove event N+1 is not yielded or exposed with a
+      missing or stale action set.
+- [ ] **A fixed-plan runner never takes a next-frame hardware action from
+      `analyze_frame`**: install frame 0 and 1 moves through `hook_action_plan`,
+      delay frame 0's analysis past frame 1's pre-hardware callback, prove both
+      planned moves land; then return a different `MoveNamedStage` from frame 0
+      and prove it is refused without changing frame 1.
+- [ ] `hook_event_index` is absent from `event["axes"]` on every yielded event,
+      and a dataset from an indexed run exports through `export_dataset_as_tiff`
+      with the frame count it acquired.
+- [ ] Entry-state restoration succeeds through the same checks; a failed
+      restoration is reported and never described as success.
+- [ ] Timelapse and Z-stack export the envelope and the indexed plan; the script
+      compiles, defines every name it uses, imports nothing from `microclaw`, and
+      contains no `# NOT EMITTED` and no `raise RuntimeError`. An export carrying
+      the envelope but dropping the plan is the silent no-op this row exists to
+      catch.
+- [ ] A hookless timelapse still emits through `_emit_acquisition`.
+- [ ] Full suite green at or above the baseline measured on the start commit,
+      re-run by the coordinator rather than accepted from the report.
+
+**Process**
+
+- [ ] Runner prompt written to the scratchpad; the user is asked before any agent
+      starts. Not committed.
+- [ ] Implementation reviewed from the diff, through as many returned rounds as
+      it takes.
+- [ ] Runbook `design/52-block52a-rig-gate.md` written **on the block's branch**,
+      with literal PowerShell-safe commands and expected values — not criteria —
+      and the implementation pinned by `git merge-base --is-ancestor <commit>
+      HEAD`.
+- [ ] Branch pushed to `origin` (`GIT_SSH_COMMAND="ssh -i ~/.ssh/yonce"`). No PR.
+- [ ] **Rig gate 52a on M5**, TIRF limb 1, run by the user. Never simulated.
+- [ ] Findings fixed on the same branch, sized to the finding, and re-gated.
+- [ ] Merged to `main`, `main` pushed, branch deleted locally and on `origin`;
+      `git log --oneline origin/main..main` empty.
+- [ ] Ledger row closed and coordination notes added to `design/prompts.md`.
+- [ ] **Step-10 design gate** merged before 52b is assigned.
+
+### 52b — the general bounded property
+
+**Implementation**
+
+- [ ] `SetDeviceProperty(value)` joins `_ACTION_TYPES` with the same parse
+      refusals as 52a's action. No `device`, no `property` — the envelope names
+      both.
+- [ ] `property_envelope` validates by exact key set in
+      `_configure_hook_capabilities`, with the categorical and numeric key sets
+      **mutually exclusive** so `set(envelope) != allowed` still decides validity
+      in one line. No wildcard device, property or value. `restore` required, as
+      in 52a.
+- [ ] `authorize_property_write` runs **unchanged**. The envelope is not a route
+      around the map: an excluded or unclassified pair refuses regardless of
+      approval, for design/49's reason.
+- [ ] The write reuses the public property tool's capability-aware bounds
+      checks — typed actuator range/unit, stage, exposure, illumination,
+      categorical domain. Do not reproduce them in the adapter.
+- [ ] `check_device_property` (`safety.py:1002`) is split so the bounds/type
+      validator stays mandatory while the approved envelope replaces the
+      allow/deny **policy** decision. Follow the distinction the function already
+      draws for typed and illumination pairs rather than inventing one, and state
+      in the report exactly which branch was cut. **The ordinary
+      `set_device_property` path is unchanged.**
+- [ ] A frame's actions are applied in order, waiting per write, stopping
+      immediately if a write **raises**; the whole set is then verified in **one
+      pass** with `_verify_property`'s semantics (`Float` numerically for MM's
+      `"10"` → `"10.0000"`, everything else exactly). Design/53's distinction is
+      the rule: *the device rejected this* is knowable per write, *this is not
+      consistent yet* only at the end.
+- [ ] `ctrl.refresh_gui()` after the write, as `set_device_property` does — the
+      EMU repaint behaviour, not a new general claim.
+- [ ] Micro-Manager-reported limits or allowed values narrower than the reviewed
+      config are intersected and shown before approval. An unbounded numeric
+      property may be approved only as an exact finite value set, and the dialog
+      says Microclaw has no independent range to verify.
+- [ ] `run_timelapse`, `run_zstack` and their emitter carry `property_envelope`;
+      multiposition and tile still accept nothing new.
+
+**Evidence — written before the fix, failing first**
+
+- [ ] Categorical, bounded numeric, exposure, illumination, and an approved pair
+      that the ordinary raw property path excludes.
+- [ ] **`SetDeviceProperty` on a bounded stage device's position property refuses
+      at `authorize_property_write`** with design/49's message naming
+      `move_named_stage`. This is a pass, not a gap.
+- [ ] An approved in-bounds write is not refused merely because the hook
+      provenance is `saved_untrusted` or because the action is hardware motion.
+- [ ] **Two interdependent actions in one frame both apply, then verify**: a fake
+      whose representable set for one property depends on another, ordered
+      mode-second so per-write verification would fail — **and the reverse order
+      too**, because design/53's amendment exists for the mirrored case.
+- [ ] A configured categorical set and a run-approved subset combine by
+      intersection; a historical categorical exclusion does not veto the exact
+      approved action.
+- [ ] Approval audit includes hook hash, exact envelope, write budget,
+      acquisition plan, decision and operator identity; one changed byte or
+      envelope field invalidates a session grant.
+- [ ] An exported session that dispatched a property action contains no
+      `# NOT EMITTED` and no `raise RuntimeError`, compiles, and reproduces the
+      envelope and its checks.
+- [ ] Full suite green at or above the 52a baseline, coordinator-re-run.
+
+**Process** — as 52a, with runbook `design/52-block52b-rig-gate.md`, rig gate 52b
+on M5, and the step-10 design gate merged before 52c is assigned.
+
+### 52c — the adaptive refinement
+
+**Implementation**
+
+- [ ] `run_adaptive_survey` accepts both envelopes and **rejects**
+      `hook_action_plan` — its events are chosen at runtime and there is no index
+      set to validate against.
+- [ ] `HookResult` is parsed completely, then partitioned **exactly once**:
+      `EmitArtifact`/`DiscardFrame` against frame N and dispatched immediately;
+      exactly one `ContinueSurvey` or `AcquireAt` selecting event N+1;
+      `RequestAutofocus` selecting event N again; the hardware actions forming one
+      ordered pre-exposure set attached to the selected event; `StopSurvey`
+      selecting nothing and incompatible with a next-frame hardware action.
+- [ ] Zero or more than one next-event selector beside a hardware action is
+      malformed. Current-frame actions are never deferred to N+1, and next-frame
+      hardware actions are never dispatched from `image_process_fn`.
+- [ ] **`RequestAutofocus` is detected while partitioning**, before any hardware
+      action is dispatched: it queues the refocused tile and refuses every paired
+      hardware action with the existing *"not dispatched until the refocused tile
+      is judged"* reason, regardless of their order in `HookResult.actions`.
+- [ ] **A malformed partition is an analysis defect, not a hardware failure**: it
+      records and refuses, calls `progress.done_early()` before
+      `progress.image_done()`, queues no event, and is neither an acquisition
+      abort nor a watchdog stall. Nothing was written, so no frame is mislabelled.
+- [ ] The handoff **is `candidates`** (`_survey_event_stream:5215`), with the
+      index and the next-frame action set attached to the candidate event and one
+      candidate per index enforced on the draining side. **No second queue.**
+- [ ] `max_idle_s` keeps its present meaning: on expiry the generator calls
+      `note_stalled` and returns. It never releases an event whose action set
+      never arrived.
+- [ ] Once the final authorized event is yielded the handoff closes; a later
+      proposal is refused and the run reported aborted, never applied as an
+      exit-side mutation.
+- [ ] `_emit_adaptive` and the inlined standalone runner carry the same
+      coordinator, indexing and partition rules, with `inspect.getsource` and
+      never a re-written copy.
+- [ ] The adaptive documentation bullet from §"Documentation and model behavior"
+      lands with the code.
+
+**Evidence — written before the fix, failing first**
+
+- [ ] A mixed result of `EmitArtifact`, `MoveNamedStage` and `ContinueSurvey`
+      writes the artifact against frame N, queues exactly one event N+1, and
+      performs the move only in N+1's pre-hardware callback.
+- [ ] Two next-event selectors beside a hardware action queue nothing and produce
+      a refusal record; `done_early()` precedes `image_done()`; the run is neither
+      aborted nor allowed to age into `note_stalled`.
+- [ ] Both `RequestAutofocus, MoveNamedStage` **and the reverse order** queue the
+      refocused tile and refuse the move; neither performs it. Pairing
+      `RequestAutofocus` with `ContinueSurvey` is malformed and queues neither
+      event.
+- [ ] A proposal for the frame after the last authorized one aborts rather than
+      exposing.
+- [ ] Let `max_idle_s` expire and prove the stream ends with `note_stalled`
+      rather than releasing the pending event.
+- [ ] **Export emits the program, not the trace**: the script contains the hook's
+      rule and the decision loop, and does not contain the run's target list.
+- [ ] Full suite green at or above the 52b baseline, coordinator-re-run.
+
+**Process** — as 52a, with runbook `design/52-block52c-rig-gate.md` and rig gate
+52c on M5 (TIRF limb 2, including the export limb).
+
+### Carried forward, owed by nothing here
+
+- **`run_tile_acquisition` cannot run an artifact-emitting saved hook**, and its
+  refusal names a remedy the caller cannot reach. Found while scoping this
+  design, pre-existing, filed in `design/35`'s open register. No block here
+  depends on it.
+- **Illumination export stays refused** (`tools.py:836`). §Export explains why it
+  is not an inconsistency.
+- **Twelve tools remain undecorated for script export** (`CLAUDE.md`, measured
+  2026-08-12). These blocks add no tools; if one appears, it is decorated in the
+  block that adds it.
