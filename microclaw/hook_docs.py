@@ -95,8 +95,15 @@ kwargs, but Microclaw does not currently expose all of them through its runners.
 Currently wired by Microclaw's acquisition runner for reviewed built-ins:
 
   image_process_fn       callable(image, metadata, event_queue) -> tuple | None
-  pre_hardware_hook_fn   callable(event) -> dict   (trusted adapter only)
-  post_hardware_hook_fn  callable(event) -> dict   (ALWAYS return the event)
+  pre_hardware_hook_fn   callable(event_or_events) -> same shape (trusted adapter only)
+  post_hardware_hook_fn  callable(event_or_events) -> same shape (ALWAYS return it)
+
+Pycro-manager supplies either one event dict or, when hardware sequencing is
+active, a list of event dicts. A callback must return the same shape it received;
+a one-element list is ordinary and must be handled. Per-frame planned hardware
+actions cannot run between exposures in a multi-event hardware-sequenced burst,
+so Microclaw refuses that burst before its first exposure and recommends a
+nonzero ``interval_s`` to disable time-axis sequencing.
 
 ``run_multiposition_acquisition`` accepts one hook name or an ordered list.
 Post-hardware callbacks run in declared order and each receives the event
@@ -287,12 +294,13 @@ carry its keys, so read every one with .get() and fall back to
 `metadata["Axes"]["position"]` for identity. (metadata["Axes"] holds e.g.
 {"position": "tile_r0_c1", "time": 0, "z": 3}.)
 
-### post_hardware_hook_fn(event: dict) -> dict
+### post_hardware_hook_fn(event_or_events: dict | list[dict]) -> same shape
 
 Called after the hardware has moved to the event's position (XY, Z, channel)
 but before the camera fires.
 
-  - Return the (optionally modified) event dict, ALWAYS. NEVER return None:
+  - Return the (optionally modified) event dict or event list in the same shape,
+    ALWAYS. NEVER return None:
     over the ZMQ bridge there is no way to cancel an event from a hook's
     return value — None becomes an empty event that STILL FIRES THE CAMERA,
     unlabeled, at the skipped event's OWN position (the hardware phase has
@@ -301,13 +309,14 @@ but before the camera fires.
   - Use this for autofocus: the stage is already at the nominal XY, so you can
     do a Z sweep here and update the focus device before the shutter opens.
 
-### pre_hardware_hook_fn(event: dict) -> dict
+### pre_hardware_hook_fn(event_or_events: dict | list[dict]) -> same shape
 
-Called before the hardware moves for this event. NOT currently wired by
-Microclaw's runner (see "Acquisition callback availability"); do not implement
-or promise it in a generated hook until that plumbing and its tests land.
+Called before hardware moves. Microclaw wires this only through its trusted
+adapter for a declarative ``hook_action_plan``; generated hook source does not
+implement or receive this callback.
 
-  - Return the (optionally modified) event dict, ALWAYS. NEVER return None:
+  - Return the (optionally modified) event dict or event list in the same shape,
+    ALWAYS. NEVER return None:
     as with post_hardware_hook_fn there is no cancel over the bridge — None
     becomes an empty event that still fires the camera, unlabeled, wherever
     the stage last was. See "Skipping and stopping" below.

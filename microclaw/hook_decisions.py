@@ -144,11 +144,19 @@ def parse_action(value: HookAction | dict[str, Any]) -> HookAction:
     kind = payload.get("kind")
     cls = _ACTION_TYPES.get(kind)
     if cls is None:
-        raise ValueError(f"Unknown hook action kind {kind!r}.")
+        accepted = ", ".join(sorted(_ACTION_TYPES))
+        raise ValueError(
+            "Unknown hook action. Actions require a 'kind' discriminator with one of: "
+            f"{accepted}. MoveNamedStage has exactly "
+            "{'kind': 'MoveNamedStage', 'position_um': <finite number>}."
+        )
     allowed = set(cls.__dataclass_fields__)
     extra = set(payload) - allowed
     if extra:
-        raise ValueError(f"Malformed {kind} action: unexpected fields {sorted(extra)}.")
+        raise ValueError(
+            f"Malformed {kind} action: unexpected fields {sorted(extra)}; "
+            f"expected exactly {sorted(allowed)}."
+        )
     try:
         action = cls(**payload)
     except (TypeError, ValueError) as exc:
@@ -418,11 +426,28 @@ class UntrustedHookAdapter:
             restoration=restoration,
         )
 
-    def pre_hardware_hook_fn(self, event: dict) -> dict:
+    def pre_hardware_hook_fn(self, event: dict | list[dict]) -> dict | list[dict]:
         """Consume the immutable planned action set for this exact event index."""
         ctx = self._named_stage_context
         if ctx is None:
             return event
+        if isinstance(event, list):
+            if len(event) == 1:
+                self.pre_hardware_hook_fn(event[0])
+                return event
+            reason = (
+                "a planned per-frame hardware action cannot be honoured inside a "
+                "hardware-sequenced burst because the burst runs with no software "
+                "callback between exposures; use a nonzero interval_s to disable "
+                "time-axis sequencing"
+            )
+            record_event = event[0] if event and isinstance(event[0], dict) else {}
+            self._record_event(
+                record_event, event="hook_action", decision="refused", reason=reason,
+                hook_event_indices=[item.get("hook_event_index") for item in event
+                                    if isinstance(item, dict)],
+            )
+            raise RuntimeError(reason)
         index = event.get("hook_event_index")
         if isinstance(index, bool) or not isinstance(index, int):
             raise RuntimeError("planned hook event is missing a valid hook_event_index")
@@ -966,7 +991,11 @@ class CompositeHook:
                 json.dumps(self._log, indent=2, allow_nan=False), encoding="utf-8"
             )
 
-    def post_hardware_hook_fn(self, event: dict) -> dict:
+    def post_hardware_hook_fn(self, event: dict | list[dict]) -> dict | list[dict]:
+        if isinstance(event, list):
+            for item in event:
+                self.post_hardware_hook_fn(item)
+            return event
         current = event
         for index, (_name, hook) in enumerate(self.named_hooks):
             callback = getattr(hook, "post_hardware_hook_fn", None)

@@ -62,6 +62,47 @@ def test_named_stage_plan_dispatch_records_overshoot_and_keeps_index_out_of_axes
     }
 
 
+@pytest.mark.parametrize("as_batch", [False, True])
+def test_named_stage_plan_accepts_one_event_in_either_callback_shape(as_batch):
+    core, guard = MagicMock(), MagicMock()
+    core.get_position.return_value = 12
+    adapter = UntrustedHookAdapter(object())
+    adapter.configure_named_stage(
+        core=core, guard=guard, device="fixture-stage", min_um=0, max_um=20,
+        max_writes=1, initial_value=5, restore="leave",
+        action_plan={0: (MoveNamedStage(12),)},
+    )
+    event = {"axes": {"time": 0}, "hook_event_index": 0}
+    supplied = [event] if as_batch else event
+    returned = adapter.pre_hardware_hook_fn(supplied)
+    assert returned is supplied
+    assert returned[0] is event if as_batch else returned is event
+    core.set_position.assert_called_once_with("fixture-stage", 12.0)
+
+
+@pytest.mark.parametrize("actions", [
+    ((MoveNamedStage(10),), (MoveNamedStage(20),)),
+    ((), ()),
+])
+def test_named_stage_plan_refuses_sequenced_batch_before_any_write(actions):
+    core, guard = MagicMock(), MagicMock()
+    adapter = UntrustedHookAdapter(object())
+    adapter.configure_named_stage(
+        core=core, guard=guard, device="fixture-stage", min_um=0, max_um=20,
+        max_writes=2, initial_value=5, restore="leave",
+        action_plan={0: actions[0], 1: actions[1]},
+    )
+    events = [
+        {"axes": {"time": 0}, "hook_event_index": 0},
+        {"axes": {"time": 1}, "hook_event_index": 1},
+    ]
+    with pytest.raises(RuntimeError, match="nonzero interval_s"):
+        adapter.pre_hardware_hook_fn(events)
+    core.set_position.assert_not_called()
+    assert adapter._log[-1]["decision"] == "refused"
+    assert "hardware-sequenced burst" in adapter._log[-1]["reason"]
+
+
 @pytest.mark.parametrize("target", [10, 20])
 def test_named_stage_envelope_boundaries_are_inclusive(target):
     core, guard = MagicMock(), MagicMock()
@@ -119,11 +160,12 @@ def test_analysis_move_cannot_replace_next_frames_preinstalled_move():
     assert any("hook_action_plan" in record.get("reason", "") for record in adapter._log)
 
 
+@pytest.mark.parametrize("as_batch", [False, True])
 @pytest.mark.parametrize("bad_event", [
     {"axes": {}, "hook_event_index": 1},
     {"axes": {}, "hook_event_index": 0},
 ])
-def test_missing_or_consumed_plan_index_aborts_before_move_or_exposure(bad_event):
+def test_missing_or_consumed_plan_index_aborts_before_move_or_exposure(bad_event, as_batch):
     core, guard = MagicMock(), MagicMock()
     adapter = UntrustedHookAdapter(object())
     # Index 0 carries a real move, so the consumed-index limb proves the plan is
@@ -139,7 +181,7 @@ def test_missing_or_consumed_plan_index_aborts_before_move_or_exposure(bad_event
         first_pass_writes = core.set_position.call_count
         assert first_pass_writes == 1
     with pytest.raises(RuntimeError, match="missing or duplicated"):
-        adapter.pre_hardware_hook_fn(bad_event)
+        adapter.pre_hardware_hook_fn([bad_event] if as_batch else bad_event)
     # The refused callback returns before any write, so the count is unchanged.
     assert core.set_position.call_count == first_pass_writes
 
@@ -320,6 +362,18 @@ def test_composite_post_hardware_chains_and_rejects_none():
 
     with pytest.raises(RuntimeError, match="must return the event"):
         CompositeHook([("broken", Broken())], None).post_hardware_hook_fn({})
+
+
+def test_composite_post_hardware_preserves_sequenced_list_shape():
+    class Add:
+        def post_hardware_hook_fn(self, event):
+            event["value"] = event.get("value", 0) + 1
+            return event
+
+    events = [{"value": 1}, {"value": 4}]
+    returned = CompositeHook([("add", Add())], None).post_hardware_hook_fn(events)
+    assert returned is events
+    assert [event["value"] for event in events] == [2, 5]
 
 
 class _Guard:
@@ -876,6 +930,20 @@ def test_shutter_enable_is_not_in_closed_union():
     with pytest.raises(ValueError, match="Unknown hook action"):
         from microclaw.hook_decisions import parse_action
         parse_action({"kind": "SetIlluminationShutter", "value": "On"})
+
+
+@pytest.mark.parametrize("payload, expected", [
+    ({"type": "MoveNamedStage", "position_um": 12}, "kind"),
+    ({"kind": "MoveNamedStage", "params": {"position_um": 12}}, "position_um"),
+])
+def test_move_named_stage_wrong_shapes_name_the_accepted_shape(payload, expected):
+    from microclaw.hook_decisions import parse_action
+    with pytest.raises(ValueError) as caught:
+        parse_action(payload)
+    message = str(caught.value)
+    assert "MoveNamedStage" in message
+    assert "kind" in message
+    assert expected in message
 
 
 def test_discard_records_observation_and_discards_pixels(tmp_path):

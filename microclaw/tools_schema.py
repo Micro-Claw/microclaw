@@ -38,10 +38,22 @@ _HOOK_NAMED_STAGE_ENVELOPE_SCHEMA = {
 
 _HOOK_ACTION_PLAN_SCHEMA = {
     "type": "array",
-    "description": "Exactly one indexed action list for every generated fixed-run event; empty action lists are explicit.",
+    "description": (
+        "Exactly one indexed action list for every generated fixed-run event; "
+        "empty action lists are explicit. Each action is a discriminated object, "
+        "for example {'kind': 'MoveNamedStage', 'position_um': 12.5}."
+    ),
     "items": {"type": "object", "properties": {
         "hook_event_index": {"type": "integer", "minimum": 0},
-        "actions": {"type": "array", "items": {"type": "object"}},
+        "actions": {"type": "array", "items": {
+            "type": "object",
+            "properties": {
+                "kind": {"type": "string", "enum": ["MoveNamedStage"]},
+                "position_um": {"type": "number"},
+            },
+            "required": ["kind", "position_um"],
+            "additionalProperties": False,
+        }},
     }, "required": ["hook_event_index", "actions"], "additionalProperties": False},
 }
 

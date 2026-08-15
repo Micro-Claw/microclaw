@@ -69,6 +69,16 @@ def test_adaptive_survey_declares_exposure_bounded_autofocus():
     assert "sweep snaps plus refocused-tile re-exposures" in budget["description"]
 
 
+def test_fixed_hook_action_plan_schema_teaches_the_discriminated_action_shape():
+    for tool_name in ("run_timelapse", "run_zstack"):
+        plan = _SCHEMA_BY_NAME[tool_name]["input_schema"]["properties"]["hook_action_plan"]
+        entry = plan["items"]
+        assert set(entry["required"]) == {"hook_event_index", "actions"}
+        action = entry["properties"]["actions"]["items"]
+        assert action["properties"]["kind"]["enum"] == ["MoveNamedStage"]
+        assert set(action["required"]) == {"kind", "position_um"}
+
+
 def test_run_autofocus_description_says_sweep_is_headless():
     description = _SCHEMA_BY_NAME["run_autofocus"]["description"]
     assert "sweep is headless" in description
