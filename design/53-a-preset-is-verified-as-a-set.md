@@ -181,7 +181,7 @@ verification is a plan-level check, not a per-write one, and why.
 |---|---|---|---|---|---|---|
 | coordination | ~~`design53/open`~~ | `b2b0417` | coordinator | n/a | merged `ccc4b34` | n/a |
 | coordination | ~~`design53/checklist`~~ | `009f0df` | coordinator | n/a | merged `c10256e` | n/a |
-| 53a | `design53/block-53a` | `c10256e` | runner (2 rounds) + coordinator runbook fixes | **M5 PASS 2026-08-15** | | |
+| 53a | ~~`design53/block-53a`~~ | `c10256e` | runner (2 rounds) + coordinator runbook fixes | **M5 PASS 2026-08-15** | merged `fc35e70` | design gate `design/33` §Why read-back verification is plan-level |
 
 **M5 gate, 2026-08-15 — PASS.** Evidence:
 `~/Documents/Documents - Beyonce/Projects/Micro-Claw/53a-m5`. Scored by the
@@ -320,11 +320,19 @@ working tree clean, `git log --oneline origin/main..main` empty, `main` at
 `port-to-jpype-acqj` — **no open block branch**. One worktree, this one. Suite
 at `009f0df`, macOS: **1808 passed / 99 skipped / 3 warnings**.
 
-- **53a passed its M5 gate on 2026-08-15 and is ready to merge.** Branch
-  `design53/block-53a` is on `origin`, worktree `../microclaw-53a`. What remains
-  is steps 9 and 10: merge and push `main`, delete the branch both places, write
-  `design/prompts.md` notes, and run the design gate into
-  `design/33-authorization-map.md`.
+- **53a is CLOSED, 2026-08-15.** Merged `fc35e70`, `main` pushed, branch deleted
+  locally and on `origin`, worktree removed, notes in `design/prompts.md`, design
+  gate merged into `design/33-authorization-map.md`. Suite on `main` after the
+  merge: **1812 passed / 99 skipped / 3 warnings**, coordinator-run.
+- **design/53 has no further blocks.** Every checklist row is ticked. What is
+  recorded and owed to nobody: the exposure discrepancy under "Out of scope"
+  (three different numbers for one exposure, unmeasured relationship), the
+  twelve undecorated tools, and `ChannelPlanError`'s docstring, which still
+  describes the per-write world and is inlined verbatim into every exported
+  script.
+- **Step 2's standalone-execution limb passed on empty-stderr evidence.** The
+  console line was not captured and is gone; operator ruling 2026-08-15 was to
+  merge on that basis. Recorded as what it is rather than upgraded.
 - **53a branches from `c10256e`**, the merge of `design53/checklist`, so the
   runner's tree carries this document *and* this checklist. The ledger's earlier
   `3f5601e` is superseded, not wrong — the doc grew. The row recording that start
@@ -406,10 +414,10 @@ Files: `microclaw/authorization.py` (`execute_channel_plan`, `_verify_property`)
       the user. Never simulated.
 - [x] Findings fixed on the same branch, sized to the finding, and re-gated until
       the limbs pass.
-- [ ] Merged to `main`, `main` pushed, branch deleted locally and on `origin`;
+- [x] Merged to `main`, `main` pushed, branch deleted locally and on `origin`;
       `git log --oneline origin/main..main` empty.
-- [ ] Ledger rows closed and coordination notes added to `design/prompts.md`.
-- [ ] **Step-10 design gate:** `design/33-authorization-map.md` records that
+- [x] Ledger rows closed and coordination notes added to `design/prompts.md`.
+- [x] **Step-10 design gate:** `design/33-authorization-map.md` records that
       read-back verification is a plan-level check, not a per-write one, and why —
       a preset's values are simultaneously true and only at the end. Merge that
       before anything else is assigned.
