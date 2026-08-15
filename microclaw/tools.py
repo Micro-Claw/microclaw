@@ -2050,6 +2050,24 @@ def get_stage_position(
     }
 
 
+def _emit_move_named_stage(params: RecordedParams) -> str:
+    """Emit the absolute move that actually ran, never the argument given.
+
+    `requested_um` is the *resolved* target: a relative call resolves against
+    the live position before writing, so emitting the raw `um` would resolve it
+    a second time against wherever the standalone script's stage happens to sit
+    and land somewhere else entirely.
+    """
+    result = params.result
+    if "device" not in result or "requested_um" not in result:
+        raise CannotEmit("the named-stage move recorded no resolved target")
+    return "\n".join([
+        f"core.set_position({result['device']!r}, {result['requested_um']!r})",
+        f"core.wait_for_device({result['device']!r})",
+    ])
+
+
+@emits(_emit_move_named_stage)
 def move_named_stage(
     ctrl: MicroscopeController,
     guard: SafetyGuard,

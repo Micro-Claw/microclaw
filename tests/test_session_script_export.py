@@ -2209,3 +2209,20 @@ def test_offline_analysis_does_not_kill_the_script_it_follows(tmp_path):
     assert "raise RuntimeError('NOT EMITTED" not in source
     assert result["emitted_calls"] == 1
     compile(source, "routine.py", "exec")
+
+
+def test_move_named_stage_emits_its_resolved_absolute_target(tmp_path):
+    # A relative call resolves against the live position before writing, so the
+    # emitted script must carry the resolved target rather than the raw `um` --
+    # re-resolving in the standalone script would land somewhere else.
+    _, _, source = export(tmp_path, completed_call(
+        "move_named_stage",
+        {"device": "TIRF Stage", "um": -40.0, "absolute": False},
+        {"device": "TIRF Stage", "requested_um": 1460.0,
+         "achieved_um": 1461.2, "error_um": 1.2},
+    ))
+    assert "core.set_position('TIRF Stage', 1460.0)" in source
+    assert "core.wait_for_device('TIRF Stage')" in source
+    assert "-40.0" not in source
+    assert "# NOT EMITTED" not in source
+    assert "raise RuntimeError" not in source
