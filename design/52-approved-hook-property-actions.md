@@ -1093,7 +1093,7 @@ measured, and close the `design/35` register row.
 |---|---|---|---|---|---|---|
 | coordination | `design52/reconcile-decision` | `bdffb14` | coordinator | n/a | merged `d97d256` | n/a |
 | coordination | ~~`design52/checklist`~~ | `d97d256` | coordinator | n/a | merged `f872a0c` | n/a |
-| 52a | `design52/block-52a` | `413caec` | codex, 5 rounds + coordinator fixes | M2 r4 **PASS** — restore timing rig-proven; `restore:"entry"` limb not run | | |
+| 52a | ~~`design52/block-52a`~~ | `413caec` | codex, 5 rounds + coordinator fixes | **M2 PASS 2026-08-17**, 5 trips; all limbs incl. `restore:"entry"` | merged `00c1763` | design gate below |
 | 52b | `design52/block-52b` | | | | | |
 | 52c | `design52/block-52c` | | | | | |
 
@@ -1221,7 +1221,19 @@ skipped / 3 warnings**, coordinator-measured rather than carried over.
   mechanism, wrote its own 18-frame dataset, produced a 36-entry hook log with
   `hook_event_index` 0..17 and errors -0.94 to +0.83 um, and printed its dataset
   location.
-- **One limb was not run: `restore: "entry"`.** All three runs used `"leave"`.
+- **CLOSED 2026-08-17.** The `restore: "entry"` limb ran and passed on the fifth
+  trip: 19 `hook_action` records, indices 0..17 with `restoration: false`, then
+  the restoration **last in the whole 37-entry log** with `restoration: true`,
+  requested -26.5 (the entry) and achieved -26.6, and
+  `named_stage_restoration` reading `policy: "entry"`, `restored: true`. The
+  restoring write lands last, which is the ordering the limb existed to prove.
+  Suite on `main` after the merge: **1850 passed / 99 skipped / 3 warnings**,
+  1949 collected, coordinator-run.
+
+  The paragraph below is the pre-close record and is superseded: the limb is no
+  longer owed.
+
+- **~~One limb was not run: `restore: "entry"`.~~** All three runs used `"leave"`.
   What that leaves unproven on a rig is narrow — `restore_named_stage()` has one
   call site, and the `"leave"` reports could only read `last_known_um` = 473.7
   *after* all 18 callbacks, so the timing that mattered is demonstrated and any
