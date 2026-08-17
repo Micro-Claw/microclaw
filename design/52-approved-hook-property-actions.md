@@ -1112,29 +1112,73 @@ config is schema-valid and `reviewed: true` at
   same rig, the same clause, one pair admitted and the rest refused, which is
   exactly design/49's distinction. **It engages the focus lock on the focus
   drive** — prove the admission without writing it, or do not use it.
-- **The limb must still name a property ELL17/ELL20 actually has.** The map
-  refuses on the *device*, so a nonexistent property would also refuse and the
-  step would pass **vacuously** — it could not distinguish the map's refusal from
-  MMCore's *"Invalid property name encountered"*, which is precisely the trap M2's
-  `TIRF Stage.Position` fell into. `inventory.json` answers this and is the one
-  thing this precheck did not return.
+- **`Thorlabs ELL17/ELL20` exposes `Position (um)`, so the limb targets exactly
+  what §"Runtime checks" originally named.** From `inventory.json`: a
+  **`StageDevice`** (library `ThorlabsElliptecSlider`) carrying a writable
+  `Position (um)` — `Integer`, `has_limits: true`, driver-reported **0–28000**,
+  currently 18146. It is both addressable by the MMCore stage API *and* exposes a
+  position property, which is the combination M2's `TIRF Stage` lacked and the
+  reason that rig had to retarget. The driver range also corroborates block 48e's
+  0–28000 to the digit.
+
+  This makes the limb **non-vacuous**, which was the open risk: the property
+  exists and is writable, so a refusal cannot be MMCore's *"Invalid property name
+  encountered"* and must be the authorization map's. Aim `SetDeviceProperty` at
+  `Thorlabs ELL17/ELL20`.`Position (um)` and expect design/49's message naming
+  `move_named_stage`.
+
+  `PIZStage` is the sharpest corroboration and needs no extra rig time: on one
+  device, `External sensor` is admitted and `Position` (Float, driver 0–100) is
+  refused, by the same clause. `Thorlabs ELL20`.`Position (um)` (0–60000) and
+  `SmarAct 1D`.`Frequency` (1–18500) refuse for the same reason.
 - **Categorical pairs are plentiful and need no config edit.** Eight
   `reviewed_categorical_property` entries on `generic-property`, all
   `auto:state-device`: `Thorlabs Filter Wheel`, `Thorlabs Filter Wheel-1`,
-  `Thorlabs ELL6` and `iChrome-MLE-TCP`, each with `Label` and `State`. **Use a
-  filter wheel `Label`.** Do **not** use `iChrome-MLE-TCP` — it is the laser
+  `Thorlabs ELL6` and `iChrome-MLE-TCP`, each with `Label` and `State`. **Use
+  `Thorlabs Filter Wheel`.`Label`** — a `StateDevice` whose six allowed values are
+  `Filter-1`..`Filter-6`, currently `Filter-1`, so the approved subset and the
+  device domain intersect visibly. Do **not** use `iChrome-MLE-TCP` — it is the laser
   engine, block 3b's gate already caught a laser-engine widening there, and this
   rig's camera triggers the lasers.
-- **There is no declared bounded numeric pair on this config, so that limb is not
-  available.** The map carries no `typed_continuous_actuator` and no
-  `allowed_numeric` entry; `property_writes_unrestricted: true` means the config
-  declares no `property_authorization` section at all, so nothing is allowlisted
-  *or* excluded and every non-bounded-stage property is admitted by default.
-  §Blocks writes that limb as conditional — *"a bounded numeric one **if** the
-  reviewed config has one"* — and the condition is false here. Either the
-  operator declares one before the gate, or the runbook says the limb was not
-  available and why. Do not fabricate it from the camera exposure without first
-  confirming a `camera.max_exposure_ms` exists.
+- **The numeric limb is available after all, from driver-reported limits.**
+  Recorded first as unavailable and **corrected 2026-08-17 when `inventory.json`
+  arrived**: that conclusion was drawn from the authorization map alone, which is
+  a *policy* surface. The map indeed carries no `typed_continuous_actuator` and no
+  `allowed_numeric`, and `property_writes_unrestricted: true` means the config
+  declares no `property_authorization` section, so nothing is allowlisted *or*
+  excluded. But §"Approval and bounds are different controls" already names
+  Micro-Manager's own reported limits as a bound source to intersect, and the
+  inventory is full of them. The config being silent widens what may be approved;
+  it does not remove the bound.
+
+  Shortlist, all writable, not `pre_init`, `has_limits: true`, on devices the map
+  admits:
+
+  | pair | type | driver range | now |
+  |---|---|---|---|
+  | `HamamatsuHam_DCAM`.`Exposure` | Float | 0.0177–1000.0 | 11.2130 |
+  | `HamamatsuHam_DCAM`.`ScanMode` | Integer | 1–3 | 3 |
+
+  `Exposure` is the better pick: it reaches `check_device_property`'s
+  camera/exposure branch, so it exercises the capability-aware bounds routing the
+  block claims rather than a bare numeric compare. Its one wrinkle is that the
+  acquisition sets exposure too, so the runbook must say which value wins.
+  `ScanMode` is the clean alternative — no argument on the acquisition call
+  touches it, and it is design/53's own property.
+
+  **Do not use** anything on `iChrome-MLE-TCP` or `iBeamSmartCW*` (laser engine
+  and lasers), any `Laser Trigger`.`Duration*`/`Sequence*` (on this rig the FPGA
+  pulse duration *is* the dose), `PWM`/`Servos`.`Position*` (unidentified
+  actuators), or the DCAM `BUFFER*`/`RECORD*` internals.
+- **Whether `camera.max_exposure_ms` is declared is still unread** — the live
+  `safety_config.yaml` was not copied. It decides only whether the exposure limb
+  intersects a configured bound as well as the driver's, not whether the limb can
+  run.
+- **Core assignments** (`inventory.json`): camera `HamamatsuHam_DCAM`, focus
+  `PIZStage`, XY `SmarAct 2D`, **no core shutter**, no autofocus device. So the
+  TIRF axis shadows nothing, as 52a's precondition 4 requires. There is one
+  config group, `System`, whose presets write DCAM properties including
+  `Exposure`. `enumeration_failures` is empty.
 - **What this config does not bound, so no limb may claim it**:
   `illumination_unrestricted: true`, `channels_unrestricted: true`,
   `authorized_presets: []` with `channel_source: emu-laser-map` and the 405/488
