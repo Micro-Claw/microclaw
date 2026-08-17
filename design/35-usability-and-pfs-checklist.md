@@ -8144,8 +8144,15 @@ This is an inventory, not permission to close with unresolved blank work. Block
   one acquisition, and its exported script reproduces the whole mechanism.
   **52b is MERGED 2026-08-17 (`2b9233e`) after three M5 rig trips** — a saved
   hook may now write one bounded, operator-approved device property per run, with
-  the authorization map unchanged as a hard gate over it. **52c (adaptive
-  refinement) remains open.**
+  the authorization map unchanged as a hard gate over it. **52c is MERGED
+  2026-08-17 (`a78b8df`) after two M5 rig trips, and `design/52` is CLOSED** — an
+  adaptive survey hook now chooses its next named-stage or property target from
+  `analyze_frame`, the parent applies it in the selected event's pre-hardware
+  callback inside the approved envelope, and the exported script carries the
+  decision rule rather than the targets one run happened to choose. The gate ran
+  the coarse-then-refine sweep this row describes: five hook-chosen moves in one
+  dataset, the last two computed after seeing results, and none of them present
+  in the emitted script. **This row is closed; nothing in `design/52` is owed.**
   `design/52`'s own ledger and checklist are the live record, not this row.** The
   reconciled decision folds onto `configure_illumination` /
   `_configure_hook_capabilities` rather than building a second envelope
