@@ -1257,7 +1257,7 @@ measured, and close the `design/35` register row.
 | coordination | ~~`design52/checklist`~~ | `d97d256` | coordinator | n/a | merged `f872a0c` | n/a |
 | 52a | ~~`design52/block-52a`~~ | `413caec` | codex, 5 rounds + coordinator fixes | **M2 PASS 2026-08-17**, 5 trips; all limbs incl. `restore:"entry"` | merged `00c1763` | design gate below |
 | coordination | `design52/assign-52b` | `b6f17b3` | coordinator | n/a | | n/a |
-| 52b | `design52/block-52b` | `cc47438` | | M5, one mandatory limb | | |
+| 52b | `design52/block-52b` | `cc47438` | codex, 2 rounds + 3 coordinator fixes | M5, runbook `design/52-block52b-rig-gate.md` pinned `b7b3ae4`; **pushed 2026-08-17, awaiting the rig** | | |
 | 52c | `design52/block-52c` | | | | | |
 
 ## Checklist
