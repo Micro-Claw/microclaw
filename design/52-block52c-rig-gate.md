@@ -9,6 +9,44 @@ criterion to interpret. Where a step gives a prompt in a block quote, paste it
 This is design/52 §"TIRF acceptance gate" **limb 2**, on the rig and the axis the
 design was written from.
 
+## Re-run scope, gate 2 — Steps 0, R1 and R2 only
+
+**Gate 1 passed limb 2 on 2026-08-17.** Six frames in one dataset, five moves the
+hook chose with `hook_event_index` 1..5, the last two off the coarse ladder
+(19666.67 and 19500, where the coarse ladder was 18000/18666.67/19333.33/20000),
+the metric rising to its maximum at the refined point, restoration last and
+verified, the budget stopping a run before its fourth exposure, a closed handoff
+refusing a late proposal with nothing exposed, and an export that parses, carries
+the rule, prints its envelope and does not prompt.
+
+Two defects it found are fixed on this branch, and **only they are re-tested**.
+Do not repeat Steps 1–5.
+
+- **R1** — an envelope wider than the configured bound is now refused **before
+  the confirmation**. In gate 1 the dialog offered `18000-21100 um` over an axis
+  the config caps at 20000; it was approved, and the run died mid-sweep at
+  20066.67. **Zero exposures**, so this step costs no dose.
+- **R2** — an aborted survey now reports the partial dataset path, the frames
+  exposed and the last known hardware state. In gate 1 all three aborts returned
+  only `{"error": ...}` and you had to read the axis back by hand three times.
+  Three exposures.
+
+Two things gate 1 could not settle, recorded rather than re-run:
+
+- **The ELL's serial fault is hardware and it is frequent**: two of four live
+  attempts and the standalone script all died with *"Error in device 'Thorlabs
+  ELL17/ELL20': Serial command failed ... (14)"*, always mid-run, never at the
+  same point. Every one aborted correctly. If it fires during R2, re-run R2; it
+  does not invalidate the step.
+- **Step 5's target grep proved nothing in gate 1** — it was run with the literal
+  placeholders `"<t2>", "<t3>"…` rather than the run's values. That is a defect
+  in this runbook, and the criterion has since been checked off-rig against the
+  exported script: none of `19666`, `19500`, `20006`, `19507`, `19668`, `19337`,
+  `18673`, `18678` appears anywhere in it. **Program, not trace, is proven.**
+  Step 5 below now says to substitute the numbers first.
+
+Prior evidence: `52c-m5` (gate 1).
+
 ## What this gate proves, and what it does not
 
 It proves: one approval before the run; a saved hook choosing its **next**
@@ -64,7 +102,7 @@ if ($LASTEXITCODE -eq 0) { "INSTALL OK" } else { "INSTALL FAILED - stop here" }
 Pin the implementation by ancestry, never by tip hash:
 
 ```powershell
-git merge-base --is-ancestor 1852828 HEAD
+git merge-base --is-ancestor 48ca037 HEAD
 if ($LASTEXITCODE -eq 0) { "PIN OK - gate covers the reviewed implementation" } else { "PIN FAILED - wrong branch or commit; stop" }
 ```
 
@@ -73,11 +111,12 @@ uv run python -m pytest -q 2>&1 | Out-File -Encoding utf8 $HOME\Documents\52c-m5
 Get-Content $HOME\Documents\52c-m5-suite.txt -Tail 3
 ```
 
-**Collection is 1980** — that number proves the branch, and `passed + skipped`
-must equal it. macOS runs this tree as 1881 passed / 99 skipped; Windows skips
+**Collection is 1982** — that number proves the branch, and `passed + skipped`
+must equal it. macOS runs this tree as 1883 passed / 99 skipped; Windows skips
 more, so a lower passed count with a correspondingly higher skip count is
 expected, not a failure. **`main` collects 1971**; a run reporting 1971 means the
-rig is on the wrong branch and every later step is worthless.
+rig is on the wrong branch and every later step is worthless, and **1980 means
+the branch is stale** — it is gate 1's tip. Pull.
 
 ## Step 0b — read the axis, then fix the interval
 
@@ -262,7 +301,9 @@ Expect: no `NOT EMITTED`, no `import microclaw`, no `hook_action_plan` and no
 
 **Now the criterion that is specific to this block: the script must carry the
 rule, not the trace.** Take the five requested positions you wrote down in
-Step 3 and grep for each of them:
+Step 3 and **retype the command below with those numbers substituted in** — the
+`<t2>`-style placeholders are not values, and running the line as written matches
+nothing and proves nothing. Use the whole-micron part of each, e.g. `19666`:
 
 ```powershell
 Select-String -Path $script -Pattern "<t2>", "<t3>", "<t4>", "<t5>", "<t6>" | ForEach-Object { $_.Line }
@@ -317,3 +358,82 @@ against the log's final achieved position before restoration; the accepted-move
 count against `frames − 1`; and the log's `hook_event_index` sequence against the
 frame count. A passing gate is a place to look for defects, not a reason to stop
 looking.
+
+## Step R1 — an envelope wider than the configured bound is refused
+
+Gate-2 step. **No exposures.** Read the axis first:
+
+> What is the current position of the stage labelled `Thorlabs ELL17/ELL20`?
+
+Then, verbatim:
+
+> I am testing a refusal, so build this exactly as written. Run an adaptive
+> survey with 3 positions, protocol `timelapse` with `n_frames: 1` and
+> `interval_s: 0`, no channel, 20 ms exposure, saving to
+> `D:\SSD\52c_m5_wide`. Use the `tirf_refine` hook with interval bounds
+> 18000 and 21100. Approve a `named_stage_envelope` for
+> `Thorlabs ELL17/ELL20` over **18000 to 21100** um with 4 writes and
+> `restore: "leave"`. I expect Microclaw to refuse the envelope; do not narrow
+> it for me.
+
+`21100` is above the reviewed `named_stages` maximum of 20000. Expect:
+
+- **no confirmation dialog at all** — the endpoints are checked during planning,
+  before the operator is asked. Being asked to approve `18000-21100` and only
+  then meeting a refusal is the gate-1 behaviour and means the branch is stale;
+- a refusal naming the bound, close to
+  *"Thorlabs ELL17/ELL20=21100.00 µm exceeds the maximum allowed (20000.00 µm)"*;
+- **no dataset directory created**, and the axis unmoved.
+
+```powershell
+Get-ChildItem D:\SSD -Filter "52c_m5_wide*" | Select-Object Name, LastWriteTime
+```
+
+Expect nothing. Then ask for the axis position again and expect the value you
+read at the start of this step.
+
+If the agent narrows the envelope by itself and runs successfully, that is the
+right product instinct and the wrong gate — say *"No, submit 18000 to 21100; I am
+testing the refusal"* and re-run. Record the exchange.
+
+## Step R2 — an aborted survey says where the data and the axis are
+
+Gate-2 step. **Three exposures.** Verbatim:
+
+> Run an adaptive survey with 4 positions, protocol `timelapse` with
+> `n_frames: 1` and `interval_s: 0`, no channel, 20 ms exposure, saving to
+> `D:\SSD\52c_m5_abort`. Use the `tirf_refine` hook with interval bounds 18000
+> and 20000. Approve a `named_stage_envelope` for `Thorlabs ELL17/ELL20` over
+> 18000 to 20000 um with **2** writes and `restore: "leave"`.
+
+Two writes cover frames 2 and 3; the move for frame 4 is refused for budget and
+the run aborts before that exposure. This is the same shape as gate 1's
+`52c_m5_budget2` — what is new is the report.
+
+Expect the returned result to carry **all** of:
+
+- `dataset_path` naming the real directory (with pycro-manager's `_1` suffix);
+- `frames_exposed` — and it must read **3**, not 4;
+- `last_hardware_state` naming `Thorlabs ELL17/ELL20` and the position of the
+  last move that landed;
+- `log_path`, and a hint saying the frames already acquired are saved there and
+  the run must not be treated as untouched.
+
+In gate 1 this result was `{"error": ..., "hint": ..., "confirmations": [...]}`
+and nothing else. A result with the error but missing any of the four fields
+above is a FAIL — copy it verbatim.
+
+```powershell
+Get-ChildItem D:\SSD*c_m5_abort -Recurse | Select-Object FullName, Length
+```
+
+Then, to confirm the report rather than trust it:
+
+> What is the current position of the stage labelled `Thorlabs ELL17/ELL20`?
+
+Expect it to agree with `last_hardware_state` (within the ELL's few-µm coarseness
+— gate 1 saw 1 µm between a restoration read-back and the next query).
+
+**Send back**: the two run reports verbatim, the hook log from R2, and
+`52c-m5-suite.txt` from Step 0, to
+`~\Documents\Documents - Beyonce\Projects\Micro-Claw\52c-m5-round2`.
