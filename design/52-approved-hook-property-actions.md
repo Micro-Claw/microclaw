@@ -1307,12 +1307,12 @@ onward, are 52a's round history and are kept for their findings, not as
 instructions — nothing in them is outstanding.**
 
 Checked against the repository rather than assumed: working tree clean,
-`git log --oneline origin/main..main` empty, `main` at `b6f17b3`, and on `origin`
+`git log --oneline origin/main..main` empty, `main` at `b4d04a3`, and on `origin`
 besides `main` only `design34/focus-system-authorization` (6a),
-`florian/setup-claude-workflow` and `port-to-jpype-acqj` — **no open block
-branch** before 52b's. One worktree, this one. Suite on `main`, macOS:
-**1850 passed / 99 skipped / 3 warnings**, 1949 collected, coordinator-run at
-`b6f17b3`. That is 52b's baseline.
+`florian/setup-claude-workflow`, `ollama` and `port-to-jpype-acqj` — **no open
+block branch.** One worktree. Suite on `main`, macOS: **1872 passed / 99
+skipped / 3 warnings**, 1971 collected, coordinator-run after the design gate.
+**That is 52c's baseline.**
 
 - **52a is CLOSED, 2026-08-17.** Merged `00c1763`, `main` pushed, branch deleted
   locally and on `origin`, worktree removed, notes in `design/prompts.md`, design
@@ -1349,9 +1349,9 @@ branch** before 52b's. One worktree, this one. Suite on `main`, macOS:
   §"How the hook names its target", settled 2026-08-15. If a real two-property
   workflow turns up, it is a new design and it brings both limbs back with it.
 - **The undecorated-tool count is eleven**, coordinator-measured over
-  `TOOL_REGISTRY` on 2026-08-17 and now agreeing with `CLAUDE.md`; the
-  carried-forward row names all eleven. 52b adds no tool, but if it adds one it
-  is decorated in this block.
+  `TOOL_REGISTRY` on 2026-08-17 and agreeing with `CLAUDE.md`; the carried-forward
+  row names all eleven. 52c adds no tool, but if it adds one it is decorated in
+  that block.
 - **The gate rig changes to M5 for 52b and 52c** (operator, 2026-08-17: M2
   access ended with 52a). This is a return to the rig design/52 was written from,
   which helps more than it costs: 52c's limb 2 can reproduce the original
@@ -1362,26 +1362,23 @@ branch** before 52b's. One worktree, this one. Suite on `main`, macOS:
   section is history, not instruction** — `TIRF Stage`, its −10497.8..6256.8
   bounds, the ELL9 categorical trap, the 1 s sequencing interval, the 124-skip
   count. None of them transfer.
-- **52a's runbook is M2-shaped and must not be copied to M5 unchanged.** Its
-  Step 0 uses bare `python -m pytest` and `pip install -e .`, which worked in
-  M2's conda env; **M5 runs microclaw under `uv`**, where bare `python` is a
-  miniconda interpreter carrying neither microclaw nor pytest. Block 7b's
-  preflight lost its whole pytest step to exactly that. Convert to `uv run
-  python ...` and re-measure the expected counts on M5 — its skip count is its
-  own, and the 1948/1949 collection figures in 52a's section are M2's.
-- **Run an M5 precheck before writing 52b's runbook**, the same shape as the M2
-  one that saved a trip: `microclaw check-config`, `microclaw inspect-rig --out
-  <dir>`, `microclaw authorization-map`. The specific question it must answer is
-  **whether `Thorlabs ELL17/ELL20` exposes a position property**. Block 48e
-  recorded its 0–28000 bound as a *driver range* while noting `SmarAct 1D` has no
-  position property at all (`design/35:4269`), so this is genuinely unknown and it
-  decides whether 52b's design/49 refusal limb can target the TIRF axis directly
-  — as §"Runtime checks" originally assumed — or must retarget as it did on M2.
-  It owes two more answers now that the retired limb is not supplying them:
-  **which writable categorical pair** and **which bounded numeric pair** the gate
-  will use, both from the reviewed config rather than chosen at the console. The
-  precheck is operator-owned and independent of the implementation; it gates
-  step 4's runbook, not step 2's assignment.
+- **Copy 52b's runbook, not 52a's, for 52c.** `design/52-block52b-rig-gate.md` is
+  already M5-shaped: `uv pip install -e .`, `uv run python -m pytest`, and a
+  Step 0 whose collected total is the branch check. 52a's is M2-shaped and its
+  Step 0 uses bare `python`, which on M5 is a miniconda interpreter carrying
+  neither microclaw nor pytest — block 7b lost a whole preflight step to that.
+  Re-measure the expected counts on M5 either way; its skip count is its own.
+- **The M5 precheck is done and its facts are recorded** in §Blocks under 52b —
+  `52b-m5-precheck`, captured 2026-08-17. 52c should not need a fresh one unless
+  the rig config changed; read that table instead. The headline for 52c:
+  `Thorlabs ELL17/ELL20` is a `StageDevice` that **also** exposes a writable
+  `Position (um)` (driver 0–28000), its reviewed `named_stages` bound is
+  **0–20000**, and it sat at 18146. There is no `camera` section, so no configured
+  exposure bound. `property_writes_unrestricted` is true.
+- **A non-`leave` restoration reserves a write**, so an N-frame plan needs
+  `max_writes` N+1. 52b's runbook said N and would have been refused during
+  planning; it was caught off-rig only because the arithmetic was checked before
+  the runbook shipped. Check 52c's the same way.
 - **Read `CLAUDE.md` §"The pycro-manager acquisition engine" before writing any
   hook or acquisition code here.** Its three contracts cost 52a three rig trips
   and are the block's most reusable output. The scratchpad runner prompts from
