@@ -161,6 +161,15 @@ because a block looks small.
    yourself rather than accepting the reported count. Return findings to the
    implementer and repeat 2–3 until the code is right. Rejecting an
    otherwise-green implementation is normal and has caught real defects.
+
+   **A test written after the code is not evidence until you have watched it
+   fail.** Check out the pre-fix tree (`git checkout <before> -- microclaw/`),
+   run the new test, confirm it fails *for the stated reason*, and restore.
+   Block 52a spent three rig trips on a mechanism that had never once worked
+   while its suite stayed green, because every test hand-built the input the
+   engine actually strips and every fake ran callbacks the way we assumed. **A
+   fake that encodes your assumption is not a test of it** — when a defect comes
+   back from a rig, fix the fake before the code.
 4. **Push the branch — code and runbook together.** The rig-gate runbook lives
    **on the block's branch**, not on `main`, because the user checks that branch
    out on the rig and the runbook must be in front of them for the whole run.
@@ -170,7 +179,16 @@ because a block looks small.
 5. **The user runs the gates** on M5, the demo machine, M2, or the Nikon. This
    is theirs. Never simulate rig evidence, and never treat a self-confirming
    probe as proof of a human boundary.
-6. **The user returns the results.**
+6. **The user returns the results. Score them from the artifacts, not from the
+   verdict.** Read the hook log, the history JSONL, the dataset and the emitted
+   script; compare numbers that should agree with each other. Block 52a's third
+   gate passed every stated limb while carrying a defect that would have moved
+   the stage mid-sweep — the only tell was a reported `last_known_um` that
+   disagreed with the log's final achieved position. **A passing gate is a place
+   to look for defects, not a reason to stop looking.** A step written as a
+   criterion rather than a literal command is also a step that does not get run:
+   52a's required restore limb was skipped on the very trip booked for it, while
+   every lettered step around it ran.
 7. **Fix, sized to the finding.** Small corrections: do them yourself on the
    branch. Larger ones: back to a runner in a worktree, then validate its output
    as in step 3. Either way the fix is pushed to the same branch.
