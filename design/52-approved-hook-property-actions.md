@@ -293,6 +293,26 @@ a failed action per §Failure semantics.
 Design/53's distinction carries over verbatim: *the device rejected this write*
 is knowable per write, *this value is not consistent yet* only at the end.
 
+**Corrected 2026-08-17, at 52b's assignment: the hazard is real but unreachable
+at one pair, and the rule ships anyway.** `property_envelope` names exactly one
+`(device, property)` — §"How the hook names its target", settled 2026-08-15 — so
+a frame's pre-exposure action set can hold at most **one** property. `SetExposure`
+is refused on every path (`hook_decisions.py:784`, `:700`) and
+`SetIlluminationPower` dispatches post-hardware from `image_process_fn`, not
+before the exposure. Two interdependent properties therefore cannot both be
+written by a hook in one frame, and "verify the whole set in one pass" verifies a
+set of size one. The paragraphs above describe the shape a multi-pair envelope
+would need; they do not describe a defect 52b can produce.
+
+What 52b builds is the rule, not the reproducer: apply in order, wait per write,
+stop immediately on a raise, then verify in a separate pass over the set. It is a
+few lines in that shape rather than interleaved, it is the shape design/53
+measured, and it is what a multi-pair envelope would extend without rewriting.
+What 52b does **not** owe is evidence of the interdependence itself — see
+§"Evidence and gates", whose two-property row is retired for this reason, and
+§Blocks 52b, whose M5 `Normal Mode` limb goes with it. If a multi-pair envelope
+is ever designed, both come back with it.
+
 #### The envelope bounds the request, not the achievement
 
 The session's first move requested 21294 µm — the top of the interval this
@@ -831,11 +851,14 @@ and a saved hook cannot produce a one-dataset named-stage sweep.
   at `authorize_property_write`, with design/49's message naming
   `move_named_stage`. This is a pass, not a gap — it is the test that the
   envelope did not become a route around the map.
-- **Two actions in one frame whose validity is interdependent both apply, then
-  verify.** Build the design/53 shape: a fake whose representable set for one
-  property depends on another, ordered mode-second so per-write verification
-  would fail. Verify the reverse order too — the failure and its rollback are
-  both order-sensitive and design/53's amendment exists because of it.
+- ~~**Two actions in one frame whose validity is interdependent both apply, then
+  verify.**~~ **Retired 2026-08-17** — unreachable at one pair per envelope, for
+  the reason §"Verify the frame's actions as a set" now gives. What replaces it:
+  a frame's action set applies in order and **stops immediately on a write that
+  raises**, with verification in a separate pass afterwards; assert the ordering
+  by observing the call sequence against a fake, not by building an
+  interdependence a single-pair envelope cannot express. A test written for the
+  unreachable case cannot fail, which block 46 established is worth zero.
 - **An achieved position outside the approved interval, from a requested one
   inside it,** is recorded and reported and does **not** refuse. Use the rig's
   real numbers: request 21294 against a ceiling of 21294, achieve 21299.
@@ -1047,11 +1070,18 @@ Files: `microclaw/safety.py` (`check_device_property:1002`, `check_property:974`
 **Rig gate 52b — M5** (operator decision 2026-08-17; M2 access ended with 52a).
 A property the operator names on the day: a categorical one, and a bounded
 numeric one if the reviewed config has one. The runbook records which pair was
-used; the pair never enters `microclaw/`. Two limbs are mandatory whichever pair
-is chosen — a `SetDeviceProperty` aimed at a **bounded stage device** refuses at
-`authorize_property_write` with design/49's message naming `move_named_stage`
-(a pass, not a gap), and an interdependent pair applied in one frame verifies as
-a set rather than per write.
+used; the pair never enters `microclaw/`. **One limb is mandatory** whichever
+pair is chosen: a `SetDeviceProperty` aimed at a **bounded stage device** refuses
+at `authorize_property_write` with design/49's message naming `move_named_stage`
+— a pass, not a gap, and the test that the envelope did not become a route around
+the map.
+
+> **The set-verification limb is retired, 2026-08-17.** It required an
+> interdependent pair applied in one frame, which one pair per envelope cannot
+> express; §"Verify the frame's actions as a set" gives the full reason. M5's
+> `System/Normal Mode` — whose `Exposure` is only representable after a later
+> `ScanMode` write (design/53) — was its reproducer and is recorded here as the
+> case a multi-pair envelope would return to, not as a step to run.
 
 > **M5 is the rig this design came from, so the original text may be literally
 > right here where it was wrong on M2.** Block 48e's gate authored M5's three
@@ -1062,11 +1092,6 @@ a set rather than per write.
 > property, the refusal limb targets it directly, as §"Runtime checks" originally
 > specified. **Verify before writing the runbook** — that exact assumption cost
 > M2 a retarget.
->
-> M5 also has an interdependent preset pair for the set-verification limb:
-> `System/Normal Mode`, whose `Exposure` is only representable after a later
-> `ScanMode` write (design/53). That limb has a known reproducer here and had
-> none on M2.
 
 > **The refusal limb cannot target `TIRF Stage`'s position, and the M2 precheck
 > is why.** That device exposes **no position property at all** — its properties
@@ -1128,7 +1153,8 @@ measured, and close the `design/35` register row.
 | coordination | `design52/reconcile-decision` | `bdffb14` | coordinator | n/a | merged `d97d256` | n/a |
 | coordination | ~~`design52/checklist`~~ | `d97d256` | coordinator | n/a | merged `f872a0c` | n/a |
 | 52a | ~~`design52/block-52a`~~ | `413caec` | codex, 5 rounds + coordinator fixes | **M2 PASS 2026-08-17**, 5 trips; all limbs incl. `restore:"entry"` | merged `00c1763` | design gate below |
-| 52b | `design52/block-52b` | | | | | |
+| coordination | `design52/assign-52b` | `b6f17b3` | coordinator | n/a | | n/a |
+| 52b | `design52/block-52b` | (the merge of `design52/assign-52b`) | | M5, one mandatory limb | | |
 | 52c | `design52/block-52c` | | | | | |
 
 ## Checklist
@@ -1150,34 +1176,55 @@ about process, `CLAUDE.md` wins and this section gets corrected.
   `_dispatch` and the same acquisition signatures 52a creates; running them
   concurrently in two worktrees would conflict on every file that matters.
 
-### State at the 2026-08-17 close of block 52a — the live note
+### State at the 2026-08-17 assignment of block 52b — the live note
 
 **This is the live note. The bullets below it, from "The gate found a defect"
 onward, are 52a's round history and are kept for their findings, not as
 instructions — nothing in them is outstanding.**
 
 Checked against the repository rather than assumed: working tree clean,
-`git log --oneline origin/main..main` empty, `main` at `c952466`, and on `origin`
+`git log --oneline origin/main..main` empty, `main` at `b6f17b3`, and on `origin`
 besides `main` only `design34/focus-system-authorization` (6a),
 `florian/setup-claude-workflow` and `port-to-jpype-acqj` — **no open block
-branch.** One worktree, this one. Suite on `main`, macOS: **1850 passed / 99
-skipped / 3 warnings**, 1949 collected, coordinator-run after the merge.
+branch** before 52b's. One worktree, this one. Suite on `main`, macOS:
+**1850 passed / 99 skipped / 3 warnings**, 1949 collected, coordinator-run at
+`b6f17b3`. That is 52b's baseline.
 
 - **52a is CLOSED, 2026-08-17.** Merged `00c1763`, `main` pushed, branch deleted
   locally and on `origin`, worktree removed, notes in `design/prompts.md`, design
   gate merged (`CLAUDE.md` §"The pycro-manager acquisition engine", this
   document's §Timing corrections, `design/35`'s register row). Five M2 rig trips,
   five runner rounds. **Nothing from it is owed.**
-- **52b is next and is not started.** No branch, no worktree, no runner prompt.
-  Start it from `CLAUDE.md` §"The block workflow" step 1; the §Blocks entry for
-  52b above is its scope. 52c follows it — sequential, because both extend the
-  same `_dispatch` and the same acquisition signatures.
+- **52b is being assigned from the merge that carries this note**, on 52a's
+  precedent, so the runner's worktree holds the spec it is held to. Its start
+  commit lands in the ledger after that merge — do not chase the tip. 52c follows
+  it; sequential, because both extend the same `_dispatch` and the same
+  acquisition signatures.
+- **52b's set-verification limb is retired, and this was settled before
+  assignment** (operator decision, 2026-08-17). `property_envelope` names one
+  `(device, property)`, so a frame's pre-exposure set holds at most one property
+  and design/53's interdependence hazard cannot arise — `SetExposure` is refused
+  on every path and `SetIlluminationPower` dispatches post-hardware. **The rule
+  still ships** (apply in order, stop on a raise, verify in a separate pass); only
+  its evidence is retired, off-rig and on-rig alike, along with M5's
+  `System/Normal Mode` reproducer. §"Verify the frame's actions as a set" carries
+  the reason. **Rig gate 52b is therefore one mandatory limb**, the design/49
+  refusal, plus the operator's chosen categorical and numeric pairs.
+- **Do not manufacture the retired case.** A multi-pair envelope with an ordinal
+  slot on the action was the alternative and was rejected: it reopens
+  §"How the hook names its target", settled 2026-08-15. If a real two-property
+  workflow turns up, it is a new design and it brings both limbs back with it.
+- **The undecorated-tool count is eleven**, coordinator-measured over
+  `TOOL_REGISTRY` on 2026-08-17 and now agreeing with `CLAUDE.md`; the
+  carried-forward row names all eleven. 52b adds no tool, but if it adds one it
+  is decorated in this block.
 - **The gate rig changes to M5 for 52b and 52c** (operator, 2026-08-17: M2
   access ended with 52a). This is a return to the rig design/52 was written from,
   which helps more than it costs: 52c's limb 2 can reproduce the original
   2026-08-14 sweep on `Thorlabs ELL17/ELL20` (19639–21294 um, inside its reviewed
-  0–28000 bound), and 52b's set-verification limb has a **known** reproducer in
-  `System/Normal Mode` where M2 had none. **Every M2-specific fact in 52a's gate
+  0–28000 bound). (This bullet also claimed a **known** reproducer for 52b's
+  set-verification limb, `System/Normal Mode`; that limb was retired the same day,
+  above.) **Every M2-specific fact in 52a's gate
   section is history, not instruction** — `TIRF Stage`, its −10497.8..6256.8
   bounds, the ELL9 categorical trap, the 1 s sequencing interval, the 124-skip
   count. None of them transfer.
@@ -1196,6 +1243,11 @@ skipped / 3 warnings**, 1949 collected, coordinator-run after the merge.
   position property at all (`design/35:4269`), so this is genuinely unknown and it
   decides whether 52b's design/49 refusal limb can target the TIRF axis directly
   — as §"Runtime checks" originally assumed — or must retarget as it did on M2.
+  It owes two more answers now that the retired limb is not supplying them:
+  **which writable categorical pair** and **which bounded numeric pair** the gate
+  will use, both from the reviewed config rather than chosen at the console. The
+  precheck is operator-owned and independent of the implementation; it gates
+  step 4's runbook, not step 2's assignment.
 - **Read `CLAUDE.md` §"The pycro-manager acquisition engine" before writing any
   hook or acquisition code here.** Its three contracts cost 52a three rig trips
   and are the block's most reusable output. The scratchpad runner prompts from
@@ -1554,7 +1606,10 @@ skipped / 3 warnings**, 1949 collected, coordinator-run after the merge.
       pass** with `_verify_property`'s semantics (`Float` numerically for MM's
       `"10"` → `"10.0000"`, everything else exactly). Design/53's distinction is
       the rule: *the device rejected this* is knowable per write, *this is not
-      consistent yet* only at the end.
+      consistent yet* only at the end. **At one pair per envelope the verified set
+      has one member** — build the two-pass shape anyway, because it is the shape
+      a multi-pair envelope extends, and do not manufacture an interdependence to
+      test it.
 - [ ] `ctrl.refresh_gui()` after the write, as `set_device_property` does — the
       EMU repaint behaviour, not a new general claim.
 - [ ] Micro-Manager-reported limits or allowed values narrower than the reviewed
@@ -1573,10 +1628,12 @@ skipped / 3 warnings**, 1949 collected, coordinator-run after the merge.
       `move_named_stage`. This is a pass, not a gap.
 - [ ] An approved in-bounds write is not refused merely because the hook
       provenance is `saved_untrusted` or because the action is hardware motion.
-- [ ] **Two interdependent actions in one frame both apply, then verify**: a fake
-      whose representable set for one property depends on another, ordered
-      mode-second so per-write verification would fail — **and the reverse order
-      too**, because design/53's amendment exists for the mirrored case.
+- [ ] ~~**Two interdependent actions in one frame both apply, then verify.**~~
+      **Retired 2026-08-17**, unreachable at one pair. Replaced by: a frame's
+      action set applies in order and a write that **raises** stops the set before
+      the next write, with verification running afterwards rather than between
+      writes. Assert the observed call sequence against a fake; do not build an
+      interdependence the envelope cannot express.
 - [ ] A configured categorical set and a run-approved subset combine by
       intersection; a historical categorical exclusion does not veto the exact
       approved action.
@@ -1661,6 +1718,13 @@ on M5, and the step-10 design gate merged before 52c is assigned.
   depends on it.
 - **Illumination export stays refused** (`tools.py:836`). §Export explains why it
   is not an inconsistency.
-- **Twelve tools remain undecorated for script export** (`CLAUDE.md`, measured
-  2026-08-12). These blocks add no tools; if one appears, it is decorated in the
-  block that adds it.
+- **Eleven tools remain undecorated for script export**, measured over
+  `TOOL_REGISTRY` by the coordinator on 2026-08-17 and agreeing with `CLAUDE.md`:
+  `calibrate_snr_threshold`, `calibrate_stage_to_camera`, `center_feature`,
+  `export_dataset_as_tiff`, `find_features`, `run_mda`,
+  `run_multiposition_with_autofocus`, `set_emu_laser_power_percentage`,
+  `shutter_declared_illumination`, `snap_to_album`,
+  `verify_emu_laser_power_calibration`. (This row read "twelve, measured
+  2026-08-12" until 52a decorated `move_named_stage`; corrected here rather than
+  left to disagree with `CLAUDE.md`.) These blocks add no tools; if one appears,
+  it is decorated in the block that adds it.
