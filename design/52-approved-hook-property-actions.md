@@ -1278,7 +1278,7 @@ measured, and close the `design/35` register row.
 | coordination | ~~`design52/checklist`~~ | `d97d256` | coordinator | n/a | merged `f872a0c` | n/a |
 | 52a | ~~`design52/block-52a`~~ | `413caec` | codex, 5 rounds + coordinator fixes | **M2 PASS 2026-08-17**, 5 trips; all limbs incl. `restore:"entry"` | merged `00c1763` | design gate below |
 | coordination | `design52/assign-52b` | `b6f17b3` | coordinator | n/a | | n/a |
-| 52b | `design52/block-52b` | `cc47438` | codex, 2 rounds + coordinator fixes | **M5 PASS 2026-08-17**, 3 trips; all limbs incl. the design/49 refusal and the standalone export | merged below | design gate below |
+| 52b | `design52/block-52b` | `cc47438` | codex, 2 rounds + coordinator fixes | **M5 PASS 2026-08-17**, 3 trips; all limbs incl. the design/49 refusal and the standalone export | merged `2b9233e` | design gate below |
 | 52c | `design52/block-52c` | | | | | |
 
 ## Checklist
