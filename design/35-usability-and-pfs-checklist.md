@@ -8109,10 +8109,13 @@ This is an inventory, not permission to close with unresolved blank work. Block
   **Its export then emitted the trace**, the improvised targets including two
   fill-in points chosen after seeing results, and the agent fell back to
   hand-writing a script through `write_text_file`. **Written up as `design/52`,
-  reviewed and reconciled 2026-08-15, and now SCHEDULED there — three blocks
-  (52a, 52b, 52c) with their own run ledger and checklist at the bottom of that
-  document. It is no longer parked and this row is no longer the live record;
-  `design/52` is.** The
+  reviewed and reconciled 2026-08-15, scheduled as three blocks, and **52a is
+  MERGED 2026-08-17 (`00c1763`) after five M2 rig trips** — a saved hook's
+  timelapse or z-stack now carries a declarative `hook_action_plan` and a
+  `named_stage_envelope`, so the TIRF sweep this row describes is expressible as
+  one acquisition, and its exported script reproduces the whole mechanism.
+  **52b (bounded device properties) and 52c (adaptive refinement) remain open.**
+  `design/52`'s own ledger and checklist are the live record, not this row.** The
   reconciled decision folds onto `configure_illumination` /
   `_configure_hook_capabilities` rather than building a second envelope
   mechanism, leaves `authorize_property_write` standing (design/49), and verifies
