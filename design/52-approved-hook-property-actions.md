@@ -1083,6 +1083,109 @@ the map.
 > `ScanMode` write (design/53) — was its reproducer and is recorded here as the
 > case a multi-pair envelope would return to, not as a step to run.
 
+**M5 precheck, 2026-08-17.** Evidence:
+`~/Documents/Documents - Beyonce/Projects/Micro-Claw/52b-m5-precheck`
+(`52b-m5-authmap.txt`, `52b-m5-checkconfig.txt`, `52b-m5-inspect.txt`). The
+config is schema-valid and `reviewed: true` at
+`%APPDATA%\microclaw\safety_config.yaml`, with one review warning: the two
+`acquisition.confirm_above_*` limits still equal the packaged example values.
+
+- **The refusal limb can target `Thorlabs ELL17/ELL20` directly — no retarget,
+  unlike M2 — and it does not depend on that device exposing a position
+  property.** `property_writes_unrestricted` is **true**, so
+  `authorize_property_write`'s first clause decides: every property on a device in
+  `bounded_stage_devices` refuses unless the exact pair is a
+  `built_in_typed_capability` on a path in `_RAW_WRITE_PATHS`. ELL17/ELL20's only
+  entry is `stage-position` on `dedicated-stage`, which is not such a path, so
+  **every** raw property write to it refuses with design/49's message naming
+  `move_named_stage`. Computed over the map, not assumed:
+
+  | bounded stage device | raw property write |
+  |---|---|
+  | `PIZStage` | **admits** `External sensor` (focus-lock, `generic-property`) |
+  | `SmarAct 1D` | refuses every property |
+  | `SmarAct 2D` | refuses every property |
+  | `Thorlabs ELL17/ELL20` | refuses every property |
+  | `Thorlabs ELL20` | refuses every property |
+
+  `PIZStage.External sensor` is the matched pair that makes the limb sharp: the
+  same rig, the same clause, one pair admitted and the rest refused, which is
+  exactly design/49's distinction. **It engages the focus lock on the focus
+  drive** — prove the admission without writing it, or do not use it.
+- **`Thorlabs ELL17/ELL20` exposes `Position (um)`, so the limb targets exactly
+  what §"Runtime checks" originally named.** From `inventory.json`: a
+  **`StageDevice`** (library `ThorlabsElliptecSlider`) carrying a writable
+  `Position (um)` — `Integer`, `has_limits: true`, driver-reported **0–28000**,
+  currently 18146. It is both addressable by the MMCore stage API *and* exposes a
+  position property, which is the combination M2's `TIRF Stage` lacked and the
+  reason that rig had to retarget. The driver range also corroborates block 48e's
+  0–28000 to the digit.
+
+  This makes the limb **non-vacuous**, which was the open risk: the property
+  exists and is writable, so a refusal cannot be MMCore's *"Invalid property name
+  encountered"* and must be the authorization map's. Aim `SetDeviceProperty` at
+  `Thorlabs ELL17/ELL20`.`Position (um)` and expect design/49's message naming
+  `move_named_stage`.
+
+  `PIZStage` is the sharpest corroboration and needs no extra rig time: on one
+  device, `External sensor` is admitted and `Position` (Float, driver 0–100) is
+  refused, by the same clause. `Thorlabs ELL20`.`Position (um)` (0–60000) and
+  `SmarAct 1D`.`Frequency` (1–18500) refuse for the same reason.
+- **Categorical pairs are plentiful and need no config edit.** Eight
+  `reviewed_categorical_property` entries on `generic-property`, all
+  `auto:state-device`: `Thorlabs Filter Wheel`, `Thorlabs Filter Wheel-1`,
+  `Thorlabs ELL6` and `iChrome-MLE-TCP`, each with `Label` and `State`. **Use
+  `Thorlabs Filter Wheel`.`Label`** — a `StateDevice` whose six allowed values are
+  `Filter-1`..`Filter-6`, currently `Filter-1`, so the approved subset and the
+  device domain intersect visibly. Do **not** use `iChrome-MLE-TCP` — it is the laser
+  engine, block 3b's gate already caught a laser-engine widening there, and this
+  rig's camera triggers the lasers.
+- **The numeric limb is available after all, from driver-reported limits.**
+  Recorded first as unavailable and **corrected 2026-08-17 when `inventory.json`
+  arrived**: that conclusion was drawn from the authorization map alone, which is
+  a *policy* surface. The map indeed carries no `typed_continuous_actuator` and no
+  `allowed_numeric`, and `property_writes_unrestricted: true` means the config
+  declares no `property_authorization` section, so nothing is allowlisted *or*
+  excluded. But §"Approval and bounds are different controls" already names
+  Micro-Manager's own reported limits as a bound source to intersect, and the
+  inventory is full of them. The config being silent widens what may be approved;
+  it does not remove the bound.
+
+  Shortlist, all writable, not `pre_init`, `has_limits: true`, on devices the map
+  admits:
+
+  | pair | type | driver range | now |
+  |---|---|---|---|
+  | `HamamatsuHam_DCAM`.`Exposure` | Float | 0.0177–1000.0 | 11.2130 |
+  | `HamamatsuHam_DCAM`.`ScanMode` | Integer | 1–3 | 3 |
+
+  `Exposure` is the better pick: it reaches `check_device_property`'s
+  camera/exposure branch, so it exercises the capability-aware bounds routing the
+  block claims rather than a bare numeric compare. Its one wrinkle is that the
+  acquisition sets exposure too, so the runbook must say which value wins.
+  `ScanMode` is the clean alternative — no argument on the acquisition call
+  touches it, and it is design/53's own property.
+
+  **Do not use** anything on `iChrome-MLE-TCP` or `iBeamSmartCW*` (laser engine
+  and lasers), any `Laser Trigger`.`Duration*`/`Sequence*` (on this rig the FPGA
+  pulse duration *is* the dose), `PWM`/`Servos`.`Position*` (unidentified
+  actuators), or the DCAM `BUFFER*`/`RECORD*` internals.
+- **Whether `camera.max_exposure_ms` is declared is still unread** — the live
+  `safety_config.yaml` was not copied. It decides only whether the exposure limb
+  intersects a configured bound as well as the driver's, not whether the limb can
+  run.
+- **Core assignments** (`inventory.json`): camera `HamamatsuHam_DCAM`, focus
+  `PIZStage`, XY `SmarAct 2D`, **no core shutter**, no autofocus device. So the
+  TIRF axis shadows nothing, as 52a's precondition 4 requires. There is one
+  config group, `System`, whose presets write DCAM properties including
+  `Exposure`. `enumeration_failures` is empty.
+- **What this config does not bound, so no limb may claim it**:
+  `illumination_unrestricted: true`, `channels_unrestricted: true`,
+  `authorized_presets: []` with `channel_source: emu-laser-map` and the 405/488
+  EMU enables undeclared, `mode: degraded_trusted_plugins`, `complete: null`, and
+  a permitted hardware-motion plugin. As on M2, the gate runs
+  `run_timelapse(channel=None, exposure_ms=...)`.
+
 > **M5 is the rig this design came from, so the original text may be literally
 > right here where it was wrong on M2.** Block 48e's gate authored M5's three
 > non-core named stages: `Thorlabs ELL17/ELL20` **0–28000 um** and
@@ -1154,7 +1257,7 @@ measured, and close the `design/35` register row.
 | coordination | ~~`design52/checklist`~~ | `d97d256` | coordinator | n/a | merged `f872a0c` | n/a |
 | 52a | ~~`design52/block-52a`~~ | `413caec` | codex, 5 rounds + coordinator fixes | **M2 PASS 2026-08-17**, 5 trips; all limbs incl. `restore:"entry"` | merged `00c1763` | design gate below |
 | coordination | `design52/assign-52b` | `b6f17b3` | coordinator | n/a | | n/a |
-| 52b | `design52/block-52b` | (the merge of `design52/assign-52b`) | | M5, one mandatory limb | | |
+| 52b | `design52/block-52b` | `cc47438` | codex, 2 rounds + coordinator fixes | **M5 gate 1, 2026-08-17: Steps 0/2/3/4 PASS; Step 5 never ran; Step 6 FAIL.** Two defects fixed (`75e5d97`), runbook re-pinned `52fac1a`; re-gate owed on Steps 0, 2, 5, 6 | | |
 | 52c | `design52/block-52c` | | | | | |
 
 ## Checklist
@@ -1253,6 +1356,48 @@ branch** before 52b's. One worktree, this one. Suite on `main`, macOS:
   and are the block's most reusable output. The scratchpad runner prompts from
   that block were never committed, by design; nothing in a scratchpad is needed
   to continue.
+
+#### 52b gate 1 — M5, 2026-08-17
+
+- **Steps 0, 2, 3 and 4 passed.** Suite 1841 + 124 = 1965 exact. One confirmation
+  per run, naming the values or the interval; the numeric dialog read
+  *"approved interval 5-50 (reviewed and Micro-Manager intersection)"*, so the
+  MM-limit intersection is rig-proven. Six filter writes with `requested` equal to
+  `achieved` on all six, four exposure writes, restoration last in each log, and
+  the out-of-envelope 80 ms attempt refused during planning with **no dataset
+  directory created at all**.
+- **A multi-line recorded error made the whole session unexportable, and it is
+  pre-existing on `main`.** A bridge exception carries a Java stack trace; the
+  `# SKIPPED` comment took only its first line and every frame after it was
+  emitted as bare Python, so `ast.parse` refused the export — for the entire
+  session, not just the failed step. The agent then hand-wrote a script, which is
+  §Finding's failure verbatim. **Its behaviour on that path was correct** and is
+  block 45's `3fc5e34` holding on a rig: it said loudly that the file was not the
+  export, named the defect, and warned it was unvalidated. Fixed on this branch
+  because it sits on the gate path; replaying the session's own history through
+  the fixed exporter gives 7 emitted calls, no `# NOT EMITTED`, no `microclaw`
+  imports.
+- **Accepted property records carried no `hook_event_index`.** The accept record
+  is written after the set verifies and the index was not travelling that far, so
+  every property row logged `null` while the named-stage twin logged 0..N *in the
+  same session*. Same shape as 52a's round-1 defect in the twin, and the log is
+  the block's evidence, so this mattered.
+- **Step 5, the mandatory limb, never ran — and the runbook is why.** It asked the
+  agent to "set `Thorlabs ELL17/ELL20` `Position (um)`". The agent correctly
+  answered that the ELL is a *stage*, built the run with `MoveNamedStage` and a
+  `named_stage_envelope`, and so never reached `authorize_property_write`:
+  design/49's message appears **zero** times in the history. Right product
+  behaviour, wrong gate. It cost four attempts, ~371 um of TIRF-axis motion and
+  the dose. **A step must name the mechanism under test, not the outcome** — the
+  same lesson as 52a's skipped restore limb, in a new form: an outcome-shaped step
+  gets satisfied by the better route.
+- **The ELL serial failure is real hardware, not code.** *"Error in device
+  'Thorlabs ELL17/ELL20': Serial command failed. Is the device connected to the
+  serial port? (14)"* hit the live run **and** the hand-written script. The
+  failure was recorded as `named_stage_write_failure` and aborted correctly.
+- **The Step 6 greps were run against the hand-written file** and "passed" it —
+  2 markers, `SCRIPT PARSES` — proving nothing about the exporter. The runbook now
+  says a refused export is a FAIL and must not be grepped by proxy.
 
 #### 52a round history — findings, not outstanding work
 - **The gate found a defect no off-rig test could have.** `pre_hardware_hook_fn`

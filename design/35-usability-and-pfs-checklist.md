@@ -8067,6 +8067,28 @@ schedule them or record a reason at block 12.
 This is an inventory, not permission to close with unresolved blank work. Block
 12 assigns every row one of the explicit dispositions above.
 
+- **Four of the five connect sites write an actionable refusal that the common
+  failure never reaches.** Found 2026-08-17 on M5, while capturing block 52b's
+  precheck with Micro-Manager not running. `MicroscopeController.__init__`
+  constructs `Core(port=...)` eagerly (`controller.py:288`), which **raises** when
+  the bridge is absent, and `is_connected()` swallows exceptions
+  (`controller.py:314`) so it can only report false on a connection that was built
+  and then lost. Every site that constructs bare and then checks `is_connected()`
+  therefore prints a traceback instead of its own sentence:
+  `__main__.py:148` (the interactive CLI), `__main__.py:302`
+  (`authorization-map`), `webserve.py:309` (`serve`) and `webserve.py:476`
+  (setup mode). **Only `inspect_rig` (`__main__.py:331`) wraps the constructor**,
+  and it is the only one that produced the intended one-line refusal on the same
+  machine in the same minute — the two commands ran back to back, one printing
+  *"Could not connect to Micro-Manager. Is the ZMQ server enabled in Tools ->
+  Options?"* and the other ~60 lines of two interleaved thread tracebacks with
+  the actionable sentence last. The bridge socket thread's own
+  `RuntimeError: cannot join current thread` is pyjavaz noise on the same stderr,
+  not microclaw's, and is not worth chasing. The fix is one construct-or-exit
+  helper replacing five copies of the same four lines, which is smaller than what
+  is there now; it is unscheduled because nothing depends on it, and it is
+  **not** design/52's — recorded here so a failed precheck does not lose it.
+
 - **An exported script writes its dataset beside the script, and says nothing
   about where.** Found 2026-08-15 on M2 during block 52a's gate; **pre-existing
   and not that block's**, since `directory=str(_HERE)` is how every emitted
