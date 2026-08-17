@@ -1681,3 +1681,35 @@ def test_property_envelope_still_meets_the_configured_exposure_bound():
     with pytest.raises(RuntimeError, match="exceeds the maximum allowed"):
         adapter.pre_hardware_hook_fn({"axes": {}})
     core.set_property.assert_not_called()
+
+
+def test_accepted_property_records_carry_their_frame_index():
+    """The audit row must say which frame it belongs to.
+
+    Measured on M5, 2026-08-17: every accepted property write logged
+    `hook_event_index: null` while its named-stage twin in the same session
+    logged 0..N, so the property audit carried no frame identity at all. The
+    accept record is written after the set verifies, and the index was not
+    travelling that far. Same shape as 52a's round-1 defect in the twin.
+    """
+    core = MagicMock()
+    core.get_property.side_effect = lambda *_a: core.set_property.call_args[0][2] \
+        if core.set_property.called else "A"
+    core.get_property_type.return_value = "String"
+    ctrl = MagicMock(core=core, authorization_map=None)
+    adapter = UntrustedHookAdapter(object())
+    adapter.configure_property(
+        ctrl=ctrl, guard=MagicMock(), device="Wheel", property="State",
+        allowed_values=("A", "B", "C"), min_value=None, max_value=None,
+        max_writes=3, initial_value="A", restore="leave",
+        action_plan=_axes_plan(({"time": 0}, (SetDeviceProperty("B"),)),
+                               ({"time": 1}, (SetDeviceProperty("C"),))),
+    )
+
+    adapter.pre_hardware_hook_fn({"axes": {"time": 0}})
+    adapter.pre_hardware_hook_fn({"axes": {"time": 1}})
+
+    accepted = [r for r in adapter._log
+                if r.get("event") == "hook_action" and r.get("decision") == "accepted"]
+    assert [r["hook_event_index"] for r in accepted] == [0, 1]
+    assert [r["requested"] for r in accepted] == ["B", "C"]

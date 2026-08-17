@@ -4,6 +4,26 @@ Run this on **M5**, on branch `design52/block-52b`. Every command below is
 literal. Where a step says "expect", that is the value to compare against, not a
 criterion to interpret.
 
+## Re-run scope, 2026-08-17 — read this before repeating the whole thing
+
+The first run passed Steps 0, 2, 3 and 4 outright. Two defects were fixed on this
+branch afterwards, and **Step 5 never actually ran** — see its own note.
+
+- **Step 0** — cheap, and it proves the rig is on the fixed branch. Run it.
+- **Step 5** — rewritten. This is the block's mandatory limb and it is still owed.
+- **Step 6** — the export refused with an emitter defect (a multi-line Java stack
+  trace in a recorded error broke out of its comment and made the whole session
+  unparseable). Fixed; the 2026-08-17 session's own history now exports clean —
+  7 calls, no `# NOT EMITTED`, no `microclaw` imports — replayed off-rig. Re-run
+  it here to close it on the rig.
+- **Steps 2, 3 and 4** — re-run **Step 2 only**, because the second fix changed
+  what its log contains: accepted property records now carry `hook_event_index`,
+  which every one of them was missing. Step 4 is unaffected in mechanism; skip it
+  unless Step 2 behaves differently.
+
+Prior evidence is in
+`~\Documents\Documents - Beyonce\Projects\Micro-Claw\52b-m5`.
+
 ## What this gate proves, and what it does not
 
 It proves: one approval before the run; a hook-proposed **device property** write
@@ -60,7 +80,7 @@ if ($LASTEXITCODE -eq 0) { "INSTALL OK" } else { "INSTALL FAILED - stop here" }
 Pin the implementation by ancestry, never by tip hash:
 
 ```powershell
-git merge-base --is-ancestor b7b3ae4 HEAD
+git merge-base --is-ancestor PLACEHOLDER HEAD
 if ($LASTEXITCODE -eq 0) { "PIN OK - gate covers the reviewed implementation" } else { "PIN FAILED - wrong branch or commit; stop" }
 ```
 
@@ -69,12 +89,13 @@ uv run python -m pytest -q 2>&1 | Out-File -Encoding utf8 $HOME\Documents\52b-m5
 Get-Content $HOME\Documents\52b-m5-suite.txt -Tail 3
 ```
 
-**Collection is 1965** — that is the number that proves the branch, and
-`passed + skipped` must equal it. macOS runs this tree as 1866 passed / 99
+**Collection is 1968** — that is the number that proves the branch, and
+`passed + skipped` must equal it. macOS runs this tree as 1869 passed / 99
 skipped; Windows skips more, so a lower passed count with a correspondingly
 higher skip count is the expected result, not a failure. **`main` collects 1949**,
 so a run reporting 1949 means the rig is on the wrong branch and every later step
-is worthless.
+is worthless. The 2026-08-17 run read 1841 + 124 = 1965, which was correct for
+that tip; 1965 now means the branch is stale — pull.
 
 ## Step 1 — register a scoring hook
 
@@ -144,6 +165,11 @@ Expect **7 accepted records** — six frame writes plus the restoration — and
 
 - six records with `"event": "hook_action"`, `"decision": "accepted"`, each
   carrying `device`, `property`, `requested` **and** `achieved`;
+- **`hook_event_index` 0..5 on those six records.** On 2026-08-17 every one read
+  `null` while the named-stage twin in the same session logged 0..N, so the
+  property audit had no frame identity; that is fixed and this row is how you see
+  it. The restoration record legitimately carries `null` — it belongs to no
+  frame;
 - `requested` equal to `achieved` on all six (a filter wheel is discrete; if any
   pair disagrees, record both — that is a finding worth keeping);
 - six analysis observations from the hook, one per frame;
@@ -208,15 +234,40 @@ refused attempt.
 
 ## Step 5 — the design/49 refusal. **Mandatory. This is the block's point.**
 
-Verbatim:
+> **Rewritten after the 2026-08-17 run, where this step did not run at all.**
+> The old wording asked the agent to "set `Thorlabs ELL17/ELL20` `Position (um)`",
+> and it correctly answered that the ELL is a *stage*, so it built the run with
+> `MoveNamedStage` and a `named_stage_envelope` instead. That is the right
+> product behaviour and the wrong gate: `authorize_property_write` was never
+> reached, design/49's refusal never fired, and the session moved the TIRF axis
+> ~371 um and spent four attempts' dose for no evidence. **Name the mechanism,
+> not the outcome.**
 
-> Run a 2-frame timelapse with the `property_frame_metric` hook that sets
-> `Thorlabs ELL17/ELL20` `Position (um)` to 18500 and 19000, one per frame, using
-> a declarative hook action plan and a property envelope over 18000 to 19500.
+Verbatim, and do not let it be reworded:
+
+> I am testing a refusal, so build this exactly as written even though there is a
+> better route. Run a 2-frame timelapse with the `property_frame_metric` hook.
+> Use a **`property_envelope`** — not a `named_stage_envelope` — with device
+> `Thorlabs ELL17/ELL20`, property `Position (um)`, min 18000, max 19500,
+> max_writes 3, restore `leave`. The `hook_action_plan` must propose
+> **`SetDeviceProperty`** actions with values "18500" and "19000", not
+> `MoveNamedStage`. I expect Microclaw to refuse this; do not substitute
+> `move_named_stage`.
+
+**If the agent offers the named-stage route anyway, say: "No — use the property
+envelope with SetDeviceProperty. I am testing that the refusal fires."** Then let
+it run. If it still will not build the property-envelope form, that is itself the
+finding: record the exchange verbatim and stop, because the limb cannot be
+measured through an agent that will not express it.
 
 Both values are inside the reviewed `named_stages` bound of 0–20000 **and**
 inside the requested envelope, so nothing here is out of bounds. The refusal must
 come from the **authorization map** instead.
+
+Check the shape before you approve anything: the run report or the error must
+mention `property_envelope` / `SetDeviceProperty`. If it mentions
+`named_stage_envelope` or `MoveNamedStage`, the step was substituted and its
+result proves nothing — that is exactly what happened on 2026-08-17.
 
 Expect **no confirmation prompt at all**. `authorize_property_write` runs during
 plan validation, before the dialog is rendered, so a correct refusal never asks
@@ -282,6 +333,14 @@ uv run python $script 2>&1 | Out-File -Encoding utf8 $HOME\Documents\52b-m5-stan
 if ($LASTEXITCODE -eq 0) { "STANDALONE EXIT OK" } else { "STANDALONE EXIT NONZERO" }
 Get-Content $HOME\Documents\52b-m5-standalone.txt -Tail 25
 ```
+
+> **If `export_session_script` refuses, Step 6 is a FAIL — stop and report the
+> refusal.** Do not run the greps above against a hand-written substitute. On
+> 2026-08-17 the export refused with an emitter defect, Microclaw correctly said
+> so and hand-wrote a file instead, and the greps were then run on *that* file:
+> it "passed" with 2 markers and `SCRIPT PARSES` while proving nothing about the
+> exporter. Microclaw flagging the substitution loudly is correct behaviour and a
+> pass for block 45; the greps landing on it is not.
 
 Expect the script to print its property envelope, ask `Type YES to continue:`,
 run the acquisitions, restore, and print a dataset location.

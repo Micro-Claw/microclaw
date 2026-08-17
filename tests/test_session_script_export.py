@@ -33,6 +33,14 @@ class Guard:
         return str(self.root / path)
 
 
+_MULTILINE_BRIDGE_ERROR = (
+    'java.lang.Exception: Error in device "Thorlabs ELL17/ELL20": '
+    "Serial command failed.  Is the device connected to the serial port? (14)\n"
+    "mmcorej.MMCoreJJNI.CMMCore_setPosition__SWIG_0(Native Method)\n"
+    "org.micromanager.pyjavaz.ZMQServer.runMethod(ZMQServer.java:431)"
+)
+
+
 def call(name, params):
     return {"role": "assistant", "content": [
         {"type": "tool_use", "id": name, "name": name, "input": params}
@@ -2295,3 +2303,32 @@ def test_move_named_stage_emits_its_resolved_absolute_target(tmp_path):
     assert "-40.0" not in source
     assert "# NOT EMITTED" not in source
     assert "raise RuntimeError" not in source
+
+
+@pytest.mark.parametrize(("label", "result"), [
+    # "nothing" -> the SKIPPED comment; "partial" -> refuse()'s NOT EMITTED
+    # comment. Both interpolate the recorded reason, and both used to break.
+    ("nothing", {"error": _MULTILINE_BRIDGE_ERROR}),
+    ("partial", {"results": [{"error": _MULTILINE_BRIDGE_ERROR}]}),
+])
+def test_a_multiline_recorded_error_stays_inside_its_comment(tmp_path, label, result):
+    """A Java bridge exception must not make the whole session unexportable.
+
+    Measured on M5, 2026-08-17, during block 52b's gate: a serial timeout on
+    `Thorlabs ELL17/ELL20` recorded a multi-line Java stack trace, and the
+    `# SKIPPED` comment carried only its first line -- so every frame after it
+    was emitted as bare Python and `ast.parse` refused the entire export. The
+    agent then hand-wrote a script, which is the failure design/52 exists to
+    remove. Pre-existing on `main`, found by this gate.
+    """
+    _, _, source = export(
+        tmp_path,
+        completed_call("run_multiposition_acquisition", {"positions": [0]}, result),
+    )
+
+    compile(source, str(tmp_path / "routine.py"), "exec")
+    for line in source.splitlines():
+        if "ZMQServer.runMethod" in line:
+            stripped = line.lstrip()
+            assert stripped.startswith("#") or stripped.startswith("raise "), line
+    assert "Serial command failed" in source

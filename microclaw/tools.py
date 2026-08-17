@@ -1295,9 +1295,23 @@ def export_session_script(
     emitted = 0
     emitted_ids: list[str] = []
 
+    def one_line(reason: object) -> str:
+        """Fold a recorded message onto one line so it stays inside its comment.
+
+        A Micro-Manager bridge exception carries a multi-line Java stack trace.
+        Interpolated raw, only its first line got the `#` and every frame after
+        it was emitted as bare Python -- a SyntaxError that refused the *whole*
+        session's export, not just the failed step. Measured on M5 2026-08-17,
+        where a serial timeout on `Thorlabs ELL17/ELL20` made the session
+        unexportable and the agent hand-wrote a script instead, which is the
+        exact failure design/52 exists to remove. The paired `raise` below was
+        never affected: it interpolates with `!r`, which escapes the newlines.
+        """
+        return " ".join(str(reason).split())
+
     def refuse(tool: str, reason: str) -> None:
         """One shape for every refusal: a comment, then a step that cannot run."""
-        body_lines.append(f"# NOT EMITTED: {tool} — {reason}")
+        body_lines.append(f"# NOT EMITTED: {tool} — {one_line(reason)}")
         body_lines.append(f"raise RuntimeError({('NOT EMITTED: ' + tool + ' — ' + reason)!r})")
 
     for name, params in recorded:
@@ -1334,7 +1348,7 @@ def export_session_script(
             if completed == "partial":
                 refuse(name, reason)
             else:
-                body_lines.append(f"# SKIPPED: {name} — {reason}")
+                body_lines.append(f"# SKIPPED: {name} — {one_line(reason)}")
                 body_lines.append(
                     "# The session completed nothing here, so neither does this script."
                 )

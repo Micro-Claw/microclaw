@@ -417,7 +417,7 @@ class UntrustedHookAdapter:
 
     def _apply_property(self, action: SetDeviceProperty, event: dict,
                         *, restoration: bool = False,
-                        hook_event_index: int | None = None) -> tuple[SetDeviceProperty, dict]:
+                        hook_event_index: int | None = None) -> tuple[SetDeviceProperty, dict, int | None]:
         from microclaw.authorization import authorize_property_write
         from microclaw.safety import _finite_number_text
         ctx = self._property_context
@@ -466,23 +466,32 @@ class UntrustedHookAdapter:
                                reason=f"parent device write failed: {exc}",
                                last_known=ctx["last_known"], restoration=restoration)
             raise RuntimeError(f"property write failed: {exc}") from exc
-        return action, event
+        return action, event, hook_event_index
 
-    def _verify_property_actions(self, applied: list[tuple[SetDeviceProperty, dict]],
-                                 *, restoration: bool = False) -> None:
+    def _verify_property_actions(
+        self, applied: list[tuple[SetDeviceProperty, dict, int | None]],
+        *, restoration: bool = False,
+    ) -> None:
+        # The index travels with each applied action because the accept record is
+        # written HERE, after the whole set verifies -- not in _apply_property.
+        # Without it every accepted property write logged hook_event_index null
+        # while its named-stage twin logged 0..N, so the property audit carried
+        # no frame identity at all. Measured on M5, 2026-08-17.
         from microclaw.authorization import _verify_property
         ctx = self._property_context
         assert ctx is not None
-        for action, event in applied:
+        for action, event, hook_event_index in applied:
             try:
                 _verify_property(ctx["core"], ctx["device"], ctx["property"], action.value)
             except Exception as exc:
                 self._record_event(event, event="property_verification_failure",
+                                   hook_event_index=hook_event_index,
                                    action=self._action_record(action), decision="failed",
                                    reason=str(exc), restoration=restoration)
                 raise RuntimeError(f"property verification failed: {exc}") from exc
             ctx["last_known"] = str(ctx["core"].get_property(ctx["device"], ctx["property"]))
             self._accept_event(event, action, "property write passed envelope, authorization, SafetyGuard, and read-back",
+                               hook_event_index=hook_event_index,
                                device=ctx["device"], property=ctx["property"],
                                requested=action.value, achieved=ctx["last_known"],
                                restoration=restoration)
