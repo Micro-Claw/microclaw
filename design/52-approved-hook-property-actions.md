@@ -1083,6 +1083,65 @@ the map.
 > `ScanMode` write (design/53) — was its reproducer and is recorded here as the
 > case a multi-pair envelope would return to, not as a step to run.
 
+**M5 precheck, 2026-08-17.** Evidence:
+`~/Documents/Documents - Beyonce/Projects/Micro-Claw/52b-m5-precheck`
+(`52b-m5-authmap.txt`, `52b-m5-checkconfig.txt`, `52b-m5-inspect.txt`). The
+config is schema-valid and `reviewed: true` at
+`%APPDATA%\microclaw\safety_config.yaml`, with one review warning: the two
+`acquisition.confirm_above_*` limits still equal the packaged example values.
+
+- **The refusal limb can target `Thorlabs ELL17/ELL20` directly — no retarget,
+  unlike M2 — and it does not depend on that device exposing a position
+  property.** `property_writes_unrestricted` is **true**, so
+  `authorize_property_write`'s first clause decides: every property on a device in
+  `bounded_stage_devices` refuses unless the exact pair is a
+  `built_in_typed_capability` on a path in `_RAW_WRITE_PATHS`. ELL17/ELL20's only
+  entry is `stage-position` on `dedicated-stage`, which is not such a path, so
+  **every** raw property write to it refuses with design/49's message naming
+  `move_named_stage`. Computed over the map, not assumed:
+
+  | bounded stage device | raw property write |
+  |---|---|
+  | `PIZStage` | **admits** `External sensor` (focus-lock, `generic-property`) |
+  | `SmarAct 1D` | refuses every property |
+  | `SmarAct 2D` | refuses every property |
+  | `Thorlabs ELL17/ELL20` | refuses every property |
+  | `Thorlabs ELL20` | refuses every property |
+
+  `PIZStage.External sensor` is the matched pair that makes the limb sharp: the
+  same rig, the same clause, one pair admitted and the rest refused, which is
+  exactly design/49's distinction. **It engages the focus lock on the focus
+  drive** — prove the admission without writing it, or do not use it.
+- **The limb must still name a property ELL17/ELL20 actually has.** The map
+  refuses on the *device*, so a nonexistent property would also refuse and the
+  step would pass **vacuously** — it could not distinguish the map's refusal from
+  MMCore's *"Invalid property name encountered"*, which is precisely the trap M2's
+  `TIRF Stage.Position` fell into. `inventory.json` answers this and is the one
+  thing this precheck did not return.
+- **Categorical pairs are plentiful and need no config edit.** Eight
+  `reviewed_categorical_property` entries on `generic-property`, all
+  `auto:state-device`: `Thorlabs Filter Wheel`, `Thorlabs Filter Wheel-1`,
+  `Thorlabs ELL6` and `iChrome-MLE-TCP`, each with `Label` and `State`. **Use a
+  filter wheel `Label`.** Do **not** use `iChrome-MLE-TCP` — it is the laser
+  engine, block 3b's gate already caught a laser-engine widening there, and this
+  rig's camera triggers the lasers.
+- **There is no declared bounded numeric pair on this config, so that limb is not
+  available.** The map carries no `typed_continuous_actuator` and no
+  `allowed_numeric` entry; `property_writes_unrestricted: true` means the config
+  declares no `property_authorization` section at all, so nothing is allowlisted
+  *or* excluded and every non-bounded-stage property is admitted by default.
+  §Blocks writes that limb as conditional — *"a bounded numeric one **if** the
+  reviewed config has one"* — and the condition is false here. Either the
+  operator declares one before the gate, or the runbook says the limb was not
+  available and why. Do not fabricate it from the camera exposure without first
+  confirming a `camera.max_exposure_ms` exists.
+- **What this config does not bound, so no limb may claim it**:
+  `illumination_unrestricted: true`, `channels_unrestricted: true`,
+  `authorized_presets: []` with `channel_source: emu-laser-map` and the 405/488
+  EMU enables undeclared, `mode: degraded_trusted_plugins`, `complete: null`, and
+  a permitted hardware-motion plugin. As on M2, the gate runs
+  `run_timelapse(channel=None, exposure_ms=...)`.
+
 > **M5 is the rig this design came from, so the original text may be literally
 > right here where it was wrong on M2.** Block 48e's gate authored M5's three
 > non-core named stages: `Thorlabs ELL17/ELL20` **0–28000 um** and
