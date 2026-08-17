@@ -1081,7 +1081,7 @@ measured, and close the `design/35` register row.
 |---|---|---|---|---|---|---|
 | coordination | `design52/reconcile-decision` | `bdffb14` | coordinator | n/a | merged `d97d256` | n/a |
 | coordination | ~~`design52/checklist`~~ | `d97d256` | coordinator | n/a | merged `f872a0c` | n/a |
-| 52a | `design52/block-52a` | `413caec` | codex, 5 rounds + coordinator fixes | M2 r3 **limbs PASS**; restore-timing fixed, focused re-run owed (Steps 0/3/7) | | |
+| 52a | `design52/block-52a` | `413caec` | codex, 5 rounds + coordinator fixes | M2 r4 **PASS** — restore timing rig-proven; `restore:"entry"` limb not run | | |
 | 52b | `design52/block-52b` | | | | | |
 | 52c | `design52/block-52c` | | | | | |
 
@@ -1200,6 +1200,27 @@ skipped / 3 warnings**, coordinator-measured rather than carried over.
   with `restore: "entry"` now **required** — that is the path the fix changed and
   the one that would previously have moved the stage mid-sweep. Steps 1, 2, 4, 5
   and 6 passed at `25dfb5e` and are unaffected.
+- **The focused re-run passed on M2, 2026-08-17.** Step 0 exact (1825/124/1949).
+  Two 18-frame sweeps, one confirmation each. **The restore-timing fix is
+  rig-proven**: `named_stage_restoration` reported `last_known_um` **473.7** and
+  **474.2** — the last *achieved* positions — where the defect reported the entry
+  value. The bounds refusal re-ran with the same guard sentence. **Export is now
+  proven end to end**: the standalone script ran the whole envelope+plan
+  mechanism, wrote its own 18-frame dataset, produced a 36-entry hook log with
+  `hook_event_index` 0..17 and errors -0.94 to +0.83 um, and printed its dataset
+  location.
+- **One limb was not run: `restore: "entry"`.** All three runs used `"leave"`.
+  What that leaves unproven on a rig is narrow — `restore_named_stage()` has one
+  call site, and the `"leave"` reports could only read `last_known_um` = 473.7
+  *after* all 18 callbacks, so the timing that mattered is demonstrated and any
+  write it makes inherits it. What is **not** rig-proven is the restoring write's
+  ordering, the reserved-write budget accounting, and the axis actually returning
+  to P; those are covered off-rig by the parametrized ordering test only.
+  **`restore: "entry"` therefore ships having never moved a real stage** — recorded
+  here rather than implied.
+- **Rig corroboration for 52b**: `get_device_property_info("TIRF Stage",
+  "Position")` returned *"Invalid property name encountered: Position"*,
+  independently confirming why 52b's design/49 refusal limb had to retarget.
 - **Two runbook checks misreported that passing run** and are corrected on the
   branch: the export grep matched `raise RuntimeError` in inlined library source,
   and Step 4 demanded position/XY identity a single-position timelapse does not
