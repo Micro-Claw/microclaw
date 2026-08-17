@@ -857,6 +857,46 @@ def _adaptive_hook_export(params: RecordedParams) -> tuple[str, str, bool]:
     return source, constructor, True
 
 
+def _emitted_acquisition_with_restoration(
+    acquisition_lines: list[str], *, restore_hardware: bool
+) -> list[str]:
+    """Wrap emitted acquisition source with the live runner's restoration rules."""
+    if not restore_hardware:
+        return acquisition_lines
+    return [
+        "# Restoration runs once, after the acquisition context exits, on both",
+        "# the success and the failure path -- acquire() only submits, and M5",
+        "# proved the failure path matters: a serial fault mid-run left the axis",
+        "# parked where an emitted 'entry' policy had promised to return it.",
+        "_restoration_attempted = {'named-stage': False, 'property': False}",
+        "def _restore_hardware():",
+        "    failures = []",
+        "    for label, method_name, result_name in (",
+        "        ('named-stage', 'restore_named_stage', '_named_stage_restoration'),",
+        "        ('property', 'restore_property', '_property_restoration'),",
+        "    ):",
+        "        method = getattr(hook, method_name, None)",
+        "        if _restoration_attempted[label] or not callable(method):",
+        "            continue",
+        "        _restoration_attempted[label] = True",
+        "        try:",
+        "            setattr(hook, result_name, method())",
+        "        except Exception as restore_exc:",
+        "            failures.append(f'{label} restoration failed: {restore_exc}')",
+        "    return failures",
+        "try:",
+        *["    " + line for line in acquisition_lines],
+        "except Exception as acquisition_exc:",
+        "    _restoration_failures = _restore_hardware()",
+        "    if _restoration_failures:",
+        "        raise RuntimeError(f\"{acquisition_exc}; {'; '.join(_restoration_failures)}\") from acquisition_exc",
+        "    raise",
+        "_restoration_failures = _restore_hardware()",
+        "if _restoration_failures:",
+        "    raise RuntimeError('; '.join(_restoration_failures))",
+    ]
+
+
 def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adaptive") -> str:
     # default_name is the emitting TOOL's own default, not a constant. It was
     # "adaptive" for both twins, so a hardcoded fallback agreed with them by
@@ -1061,12 +1101,11 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
             "'pre_hardware_hook_fn': getattr(hook, 'pre_hardware_hook_fn', None), "
             "'post_hardware_hook_fn': getattr(hook, 'post_hardware_hook_fn', None)"
             "}.items() if callback is not None}",
-            f"with Acquisition(directory=str(_HERE), name={params.get('name', 'survey')!r}, show_display=True, **_hook_callbacks) as acq:",
-            "    acq.acquire(event_source(acq))",
-            *( ["hook._named_stage_restoration = hook.restore_named_stage()"]
-               if named_stage_envelope is not None else [] ),
-            *( ["hook._property_restoration = hook.restore_property()"]
-               if property_envelope is not None else [] ),
+            *_emitted_acquisition_with_restoration([
+                f"with Acquisition(directory=str(_HERE), name={params.get('name', 'survey')!r}, show_display=True, **_hook_callbacks) as acq:",
+                "    acq.acquire(event_source(acq))",
+            ], restore_hardware=(named_stage_envelope is not None or
+                                 property_envelope is not None)),
         ])
         if acquire_on_hit is not None:
             ap = dict(acquire_on_hit["protocol_params"])
@@ -1154,12 +1193,11 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
         "'pre_hardware_hook_fn': getattr(hook, 'pre_hardware_hook_fn', None), "
         "'post_hardware_hook_fn': getattr(hook, 'post_hardware_hook_fn', None)"
         "}.items() if callback is not None}",
-        f"with Acquisition(directory=str(_HERE), name={params.get('name', default_name)!r}, show_display=True, **_hook_callbacks) as acq:",
-        "    acq.acquire(events)",
-        *( ["hook._named_stage_restoration = hook.restore_named_stage()"]
-           if named_stage_envelope is not None else [] ),
-        *( ["hook._property_restoration = hook.restore_property()"]
-           if property_envelope is not None else [] ),
+        *_emitted_acquisition_with_restoration([
+            f"with Acquisition(directory=str(_HERE), name={params.get('name', default_name)!r}, show_display=True, **_hook_callbacks) as acq:",
+            "    acq.acquire(events)",
+        ], restore_hardware=(named_stage_envelope is not None or
+                             property_envelope is not None)),
         # Print what the acquisition reports, or say it is unknown. The obvious
         # fallback -- _HERE / name -- is a path that usually does NOT exist,
         # because pycro-manager resolves collisions by appending _1, _2. Sending
