@@ -1257,7 +1257,7 @@ measured, and close the `design/35` register row.
 | coordination | ~~`design52/checklist`~~ | `d97d256` | coordinator | n/a | merged `f872a0c` | n/a |
 | 52a | ~~`design52/block-52a`~~ | `413caec` | codex, 5 rounds + coordinator fixes | **M2 PASS 2026-08-17**, 5 trips; all limbs incl. `restore:"entry"` | merged `00c1763` | design gate below |
 | coordination | `design52/assign-52b` | `b6f17b3` | coordinator | n/a | | n/a |
-| 52b | `design52/block-52b` | `cc47438` | codex, 2 rounds + 3 coordinator fixes | M5, runbook `design/52-block52b-rig-gate.md` pinned `b7b3ae4`; **pushed 2026-08-17, awaiting the rig** | | |
+| 52b | `design52/block-52b` | `cc47438` | codex, 2 rounds + coordinator fixes | **M5 gate 1, 2026-08-17: Steps 0/2/3/4 PASS; Step 5 never ran; Step 6 FAIL.** Two defects fixed (`75e5d97`), runbook re-pinned `52fac1a`; re-gate owed on Steps 0, 2, 5, 6 | | |
 | 52c | `design52/block-52c` | | | | | |
 
 ## Checklist
@@ -1356,6 +1356,48 @@ branch** before 52b's. One worktree, this one. Suite on `main`, macOS:
   and are the block's most reusable output. The scratchpad runner prompts from
   that block were never committed, by design; nothing in a scratchpad is needed
   to continue.
+
+#### 52b gate 1 — M5, 2026-08-17
+
+- **Steps 0, 2, 3 and 4 passed.** Suite 1841 + 124 = 1965 exact. One confirmation
+  per run, naming the values or the interval; the numeric dialog read
+  *"approved interval 5-50 (reviewed and Micro-Manager intersection)"*, so the
+  MM-limit intersection is rig-proven. Six filter writes with `requested` equal to
+  `achieved` on all six, four exposure writes, restoration last in each log, and
+  the out-of-envelope 80 ms attempt refused during planning with **no dataset
+  directory created at all**.
+- **A multi-line recorded error made the whole session unexportable, and it is
+  pre-existing on `main`.** A bridge exception carries a Java stack trace; the
+  `# SKIPPED` comment took only its first line and every frame after it was
+  emitted as bare Python, so `ast.parse` refused the export — for the entire
+  session, not just the failed step. The agent then hand-wrote a script, which is
+  §Finding's failure verbatim. **Its behaviour on that path was correct** and is
+  block 45's `3fc5e34` holding on a rig: it said loudly that the file was not the
+  export, named the defect, and warned it was unvalidated. Fixed on this branch
+  because it sits on the gate path; replaying the session's own history through
+  the fixed exporter gives 7 emitted calls, no `# NOT EMITTED`, no `microclaw`
+  imports.
+- **Accepted property records carried no `hook_event_index`.** The accept record
+  is written after the set verifies and the index was not travelling that far, so
+  every property row logged `null` while the named-stage twin logged 0..N *in the
+  same session*. Same shape as 52a's round-1 defect in the twin, and the log is
+  the block's evidence, so this mattered.
+- **Step 5, the mandatory limb, never ran — and the runbook is why.** It asked the
+  agent to "set `Thorlabs ELL17/ELL20` `Position (um)`". The agent correctly
+  answered that the ELL is a *stage*, built the run with `MoveNamedStage` and a
+  `named_stage_envelope`, and so never reached `authorize_property_write`:
+  design/49's message appears **zero** times in the history. Right product
+  behaviour, wrong gate. It cost four attempts, ~371 um of TIRF-axis motion and
+  the dose. **A step must name the mechanism under test, not the outcome** — the
+  same lesson as 52a's skipped restore limb, in a new form: an outcome-shaped step
+  gets satisfied by the better route.
+- **The ELL serial failure is real hardware, not code.** *"Error in device
+  'Thorlabs ELL17/ELL20': Serial command failed. Is the device connected to the
+  serial port? (14)"* hit the live run **and** the hand-written script. The
+  failure was recorded as `named_stage_write_failure` and aborted correctly.
+- **The Step 6 greps were run against the hand-written file** and "passed" it —
+  2 markers, `SCRIPT PARSES` — proving nothing about the exporter. The runbook now
+  says a refused export is a FAIL and must not be grepped by proxy.
 
 #### 52a round history — findings, not outstanding work
 - **The gate found a defect no off-rig test could have.** `pre_hardware_hook_fn`
