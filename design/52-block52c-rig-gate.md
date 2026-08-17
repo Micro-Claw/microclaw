@@ -31,6 +31,14 @@ Do not repeat Steps 1–5.
   only `{"error": ...}` and you had to read the axis back by hand three times.
   Three exposures.
 
+A third gate-1 defect is fixed and **is not re-tested on the rig**: the emitted
+script restored only on its success path, so the standalone left the axis parked
+after its serial fault where the live run would have returned it to entry. The
+fault cannot be provoked on demand, so the evidence is off-rig — four executing
+export tests that fault a move mid-acquisition and assert the restoring write
+still lands, for the adaptive and fixed emitters, with the restoration itself
+both succeeding and failing.
+
 Two things gate 1 could not settle, recorded rather than re-run:
 
 - **The ELL's serial fault is hardware and it is frequent**: two of four live
@@ -102,7 +110,7 @@ if ($LASTEXITCODE -eq 0) { "INSTALL OK" } else { "INSTALL FAILED - stop here" }
 Pin the implementation by ancestry, never by tip hash:
 
 ```powershell
-git merge-base --is-ancestor 48ca037 HEAD
+git merge-base --is-ancestor 251b525 HEAD
 if ($LASTEXITCODE -eq 0) { "PIN OK - gate covers the reviewed implementation" } else { "PIN FAILED - wrong branch or commit; stop" }
 ```
 
@@ -111,12 +119,13 @@ uv run python -m pytest -q 2>&1 | Out-File -Encoding utf8 $HOME\Documents\52c-m5
 Get-Content $HOME\Documents\52c-m5-suite.txt -Tail 3
 ```
 
-**Collection is 1982** — that number proves the branch, and `passed + skipped`
-must equal it. macOS runs this tree as 1883 passed / 99 skipped; Windows skips
+**Collection is 1986** — that number proves the branch, and `passed + skipped`
+must equal it. macOS runs this tree as 1887 passed / 99 skipped; Windows skips
 more, so a lower passed count with a correspondingly higher skip count is
 expected, not a failure. **`main` collects 1971**; a run reporting 1971 means the
-rig is on the wrong branch and every later step is worthless, and **1980 means
-the branch is stale** — it is gate 1's tip. Pull.
+rig is on the wrong branch and every later step is worthless, and **1980 or 1982
+means the branch is stale** — those are gate 1's tip and an intermediate fix.
+Pull.
 
 ## Step 0b — read the axis, then fix the interval
 
