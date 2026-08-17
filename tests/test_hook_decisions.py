@@ -1576,6 +1576,13 @@ def test_property_action_cannot_self_approve_illumination_enable():
     core.get_focus_device.return_value = "Z"
     core.get_camera_device.return_value = "Camera"
     core.get_xy_stage_device.return_value = "XY"
+    # Let the read-back succeed if the write is ever reached, so the only way
+    # this test can fail is the missing illumination refusal. With a bare
+    # MagicMock here it failed on the unfixed tree inside _verify_property,
+    # comparing '1' against a mock repr -- a real failure for the wrong reason,
+    # which is not evidence that this gate is closed.
+    core.get_property.return_value = "1"
+    core.get_property_type.return_value = "String"
     ctrl = MagicMock(core=core, authorization_map=None)
     guard = SafetyGuard(SafetyConstraints(illumination=IlluminationConstraints(
         shutters=[IlluminationProperty("Laser", "Enable", "1", "0")],
