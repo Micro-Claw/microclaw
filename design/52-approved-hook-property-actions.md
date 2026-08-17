@@ -1279,6 +1279,7 @@ measured, and close the `design/35` register row.
 | 52a | ~~`design52/block-52a`~~ | `413caec` | codex, 5 rounds + coordinator fixes | **M2 PASS 2026-08-17**, 5 trips; all limbs incl. `restore:"entry"` | merged `00c1763` | design gate below |
 | coordination | `design52/assign-52b` | `b6f17b3` | coordinator | n/a | | n/a |
 | 52b | `design52/block-52b` | `cc47438` | codex, 2 rounds + coordinator fixes | **M5 PASS 2026-08-17**, 3 trips; all limbs incl. the design/49 refusal and the standalone export | merged `2b9233e` | design gate below |
+| coordination | `design52/assign-52c` | `8f75ce0` | coordinator | n/a | | n/a |
 | 52c | `design52/block-52c` | | | | | |
 
 ## Checklist
@@ -1300,19 +1301,38 @@ about process, `CLAUDE.md` wins and this section gets corrected.
   `_dispatch` and the same acquisition signatures 52a creates; running them
   concurrently in two worktrees would conflict on every file that matters.
 
-### State at the 2026-08-17 close of block 52b — the live note
+### State at the 2026-08-17 assignment of block 52c — the live note
 
 **This is the live note. The bullets below it, from "The gate found a defect"
 onward, are 52a's round history and are kept for their findings, not as
 instructions — nothing in them is outstanding.**
 
 Checked against the repository rather than assumed: working tree clean,
-`git log --oneline origin/main..main` empty, `main` at `b4d04a3`, and on `origin`
+`git log --oneline origin/main..main` empty, `main` at `8f75ce0`, and on `origin`
 besides `main` only `design34/focus-system-authorization` (6a),
 `florian/setup-claude-workflow`, `ollama` and `port-to-jpype-acqj` — **no open
 block branch.** One worktree. Suite on `main`, macOS: **1872 passed / 99
-skipped / 3 warnings**, 1971 collected, coordinator-run after the design gate.
+skipped / 3 warnings**, 1971 collected, coordinator-re-run at `8f75ce0` on
+assignment day and agreeing with the count measured after 52b's design gate.
 **That is 52c's baseline.**
+
+- **52c is assigned from this commit.** Branch `design52/block-52c`, worktree
+  `../microclaw-52c`, its start commit recorded in the ledger above.
+- **The handoff cannot be a key on the candidate event, and §Timing point 3
+  reads as though it can.** "The trusted adapter attaches the index and the
+  next-frame hardware action set to that candidate event" is the one sentence in
+  that section 52a's engine finding has not yet been applied to: an injected key
+  is silently dropped by `event_to_json`, exactly as `hook_event_index` was.
+  What survives the engine is the **axes signature**, which is what
+  `configure_named_stage`/`configure_property` already key their plan by
+  (`_fixed_plan_context`, `axes_signature`). So the adaptive handoff registers
+  `signature -> (index, actions)` in the adapter *before* `candidates.put(event)`
+  and `pre_hardware_hook_fn` resolves it the same way it resolves a fixed plan —
+  no second queue and no second resolution mechanism, which is the checklist row
+  as written. **A revisited tile repeats its axes**, so one entry per signature
+  must be enforced where the fixed plan enforces it, and a repeat is a refusal,
+  not an overwrite. §Timing's prose is reconciled to what the rig measures at
+  52c's step-10 design gate; this note is the instruction until then.
 
 - **52a is CLOSED, 2026-08-17.** Merged `00c1763`, `main` pushed, branch deleted
   locally and on `origin`, worktree removed, notes in `design/prompts.md`, design
