@@ -322,6 +322,76 @@ def test_fixed_plan_survives_queued_engine_closed_key_round_trip(
     }
 
 
+def test_adaptive_tool_restores_named_stage_exactly_once_after_engine_exit(
+    monkeypatch, tmp_path
+):
+    """Drive the live tool through deferred callbacks and an entry restore."""
+    import queue
+    import numpy as np
+    from microclaw.hook_decisions import (
+        ContinueSurvey, HookResult, MoveNamedStage, StopSurvey,
+    )
+
+    class Hook:
+        def analyze_frame(self, _image, metadata):
+            if metadata["PositionName"] == "p0":
+                return HookResult({}, (MoveNamedStage(110), ContinueSurvey()))
+            return HookResult({}, (StopSurvey(),))
+
+    position = {"value": 100.0}
+    writes = []
+    ctrl = MagicMock()
+    ctrl.core.get_position.side_effect = lambda device=None: position["value"]
+    ctrl.core.set_position.side_effect = lambda device, value: (
+        writes.append((device, float(value))), position.__setitem__("value", float(value))
+    )[-1]
+    hook = UntrustedHookAdapter(Hook())
+    monkeypatch.setattr(tools, "_resolve_hook", lambda *args: hook)
+    monkeypatch.setattr(tools, "CONFIRM_FN", lambda *args, **kwargs: True)
+
+    class EngineOrderedAcquisition:
+        _keys = {"axes", "x", "y", "z", "exposure", "config_group",
+                 "min_start_time", "timeout_ms", "camera", "tags",
+                 "properties", "slm_pattern", "special", "stage_positions"}
+        def __init__(self, **callbacks):
+            self.callbacks = callbacks
+            self._event_queue = queue.Queue()
+            self._acq = type("State", (), {"is_finished": lambda self: False})()
+            self._dataset_disk_location = str(tmp_path / "dataset")
+        def __enter__(self): return self
+        def acquire(self, events): self.events = events
+        def __exit__(self, *_exc):
+            for original in self.events:
+                event = {k: v for k, v in original.items() if k in self._keys}
+                self.callbacks["pre_hardware_hook_fn"](event)
+                label = event["axes"]["position"]
+                self.callbacks["image_process_fn"](
+                    np.zeros((1, 1)),
+                    {"PositionName": label, "Axes": {},
+                     "XPosition_um_Intended": event.get("x"),
+                     "YPosition_um_Intended": event.get("y")}, None)
+            return False
+
+    monkeypatch.setattr(tools, "Acquisition", EngineOrderedAcquisition)
+    monkeypatch.setattr(tools, "_authorize_acquisition", lambda *args, **kwargs: None)
+    guard = SafetyGuard(SafetyConstraints(
+        named_stages=[NamedStageLimits("Axis", 90, 120)],
+    ))
+    monkeypatch.setattr(guard, "resolve_in_workspace", lambda path: path)
+    result = tools.run_adaptive_survey(
+        ctrl, guard, protocol="timelapse", save_dir=str(tmp_path),
+        hook_strategy="saved", positions=[
+            {"name": "p0", "x_um": 0.0, "y_um": 0.0},
+            {"name": "p1", "x_um": 1.0, "y_um": 0.0},
+        ], protocol_params={"n_frames": 1, "interval_s": 0},
+        named_stage_envelope={"device": "Axis", "min_um": 90, "max_um": 120,
+                              "max_writes": 3, "restore": "entry"},
+    )
+    assert "error" not in result
+    assert writes == [("Axis", 110.0), ("Axis", 100.0)]
+    assert result["named_stage_restoration"]["restored"] is True
+
+
 def test_property_plan_survives_engine_key_stripping_and_deferred_callbacks(
     monkeypatch, tmp_path
 ):
@@ -656,3 +726,97 @@ def test_wind_down_fixture_survives_an_exhausted_budget(tmp_path):
     assert adapter._illumination_context["remaining"] == 0
     reasons = [r.get("reason") for r in adapter._log if r.get("decision") == "refused"]
     assert reasons == ["authorized illumination write budget exhausted"]
+
+
+def test_envelope_wider_than_configured_bounds_refuses_before_any_exposure(
+    monkeypatch, tmp_path
+):
+    """M5, 2026-08-17: the dialog offered an interval the rig would refuse.
+
+    The approved envelope read `18000-21100 um` while `named_stages` capped the
+    axis at 20000, so the operator approved a reach the guard could not honour
+    and the run died mid-sweep on the target that crossed the bound. Approval
+    cannot widen a configured bound (design/52 §"Approval and bounds are
+    different controls"), so the envelope's own endpoints are checked at
+    validation, before the confirmation and before any exposure.
+    """
+    ctrl = MagicMock()
+    ctrl.core.get_position.return_value = 18673
+    hook = UntrustedHookAdapter(object())
+    acquire = MagicMock()
+    confirmed = []
+    monkeypatch.setattr(tools, "_resolve_hook", lambda *args: hook)
+    monkeypatch.setattr(tools, "_build_acquisition_events", lambda **kwargs: [{"axes": {}}])
+    monkeypatch.setattr(tools, "CONFIRM_FN",
+                        lambda *args, **kwargs: confirmed.append(args) or True)
+    monkeypatch.setattr(tools, "_acquire_with_hooks", acquire)
+    guard = SafetyGuard(SafetyConstraints(
+        named_stages=[NamedStageLimits("fixture-stage", 0, 20000)]
+    ))
+    with pytest.raises(SafetyViolation, match="exceeds the maximum allowed"):
+        tools.run_timelapse(
+            ctrl, guard, 1, 0, str(tmp_path), hook_strategy="saved",
+            named_stage_envelope={
+                "device": "fixture-stage", "min_um": 18000, "max_um": 21100,
+                "max_writes": 2, "restore": "leave",
+            },
+            hook_action_plan=[{
+                "hook_event_index": 0,
+                "actions": [{"kind": "MoveNamedStage", "position_um": 18500}],
+            }],
+        )
+    assert confirmed == [], "the operator must not be asked to approve an unreachable interval"
+    acquire.assert_not_called()
+    ctrl.core.set_position.assert_not_called()
+
+
+def test_adaptive_hardware_failure_reports_dataset_frames_and_last_state(
+    monkeypatch, tmp_path
+):
+    """M5, 2026-08-17: three aborted survey runs reported only an error string.
+
+    `_acquire_with_hooks` raises `_HookedAcquisitionFailure` carrying the
+    dataset path, the frames exposed and the last known hardware state, and the
+    two fixed runners translate it. The survey runner did not, so every adaptive
+    abort lost all three and the operator had to read the axis by hand.
+    """
+    class Scoring:
+        def analyze_frame(self, image, metadata):
+            return None
+
+    hook = UntrustedHookAdapter(Scoring())
+    hook.log_path = str(tmp_path / "hook.json")
+    monkeypatch.setattr(tools, "_resolve_hook", lambda *args: hook)
+    monkeypatch.setattr(tools, "CONFIRM_FN", lambda *args, **kwargs: True)
+    monkeypatch.setattr(tools, "_authorize_acquisition", lambda *args, **kwargs: None)
+
+    def explode(*_args, **_kwargs):
+        # The real failure path builds this payload in _acquire_with_hooks from
+        # the live envelope context; what is under test here is whether the
+        # survey runner passes it on rather than stringifying it away.
+        raise tools._HookedAcquisitionFailure(
+            RuntimeError("named-stage move failed: serial command failed"),
+            str(tmp_path / "survey_1"), frames_exposed=3,
+            last_hardware_state={"device": "Axis", "position_um": 42.0},
+        )
+
+    monkeypatch.setattr(tools, "_acquire_with_hooks", explode)
+    ctrl = MagicMock()
+    guard = SafetyGuard(SafetyConstraints(
+        named_stages=[NamedStageLimits("Axis", 0, 100)]
+    ))
+    monkeypatch.setattr(guard, "resolve_in_workspace", lambda path: path)
+    result = tools.run_adaptive_survey(
+        ctrl, guard, protocol="timelapse", save_dir=str(tmp_path),
+        hook_strategy="saved",
+        positions=[{"name": "p0", "x_um": 0.0, "y_um": 0.0},
+                   {"name": "p1", "x_um": 1.0, "y_um": 0.0}],
+        protocol_params={"n_frames": 1, "interval_s": 0},
+        named_stage_envelope={"device": "Axis", "min_um": 0, "max_um": 100,
+                              "max_writes": 2, "restore": "leave"},
+    )
+    assert result["dataset_path"] == str(tmp_path / "survey_1")
+    assert result["frames_exposed"] == 3
+    assert result["last_hardware_state"] == {"device": "Axis", "position_um": 42.0}
+    assert result["log_path"] == hook.log_path
+    assert "do not treat the run as untouched" in result["hint"]

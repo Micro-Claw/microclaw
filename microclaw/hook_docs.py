@@ -164,12 +164,19 @@ The action carries only ``position_um``. The envelope names the device, interval
 attempted-write budget, and explicit restoration policy, and the trusted parent
 checks, moves, waits, reads back, and audits requested and achieved positions.
 
-``SetDeviceProperty(value)`` is likewise available only in predetermined
+``SetDeviceProperty(value)`` is likewise available in predetermined
 ``run_timelapse`` and ``run_zstack`` plans. The acquisition call supplies one
 exact ``property_envelope`` (device/property, categorical values or numeric
 bounds, attempted-write budget, and restoration policy); the action supplies
 only the string value. The live authorization map and property bounds still
-apply, and multiposition, tile, and adaptive-survey runs accept no such envelope.
+apply, and multiposition and tile runs accept no such envelope.
+
+Adaptive ``run_adaptive_survey`` hooks may propose ``MoveNamedStage`` or
+``SetDeviceProperty`` beside the one action selecting the next event. The
+trusted parent registers that ordered set by the selected event's axes and
+applies it from ``pre_hardware_hook_fn`` within the approved envelope. The seed
+has an explicit empty action set. ``hook_action_plan`` is rejected because later
+events are selected at runtime.
 
 AcquireAt(position) normally requests an immediate guarded revisit of that planned
 tile. When run_adaptive_survey has acquire_on_hit, it instead records the planned
@@ -236,10 +243,11 @@ without widening or retrying it.
 
 The second look is still an adaptive survey decision point: it must return
 ``ContinueSurvey`` or ``StopSurvey`` (or another supported routing action).
-Returning measurements with no routing action leaves no next event to dispatch,
-so the survey eventually reports a watchdog stall. Actions placed after the
-initial ``RequestAutofocus`` are refused and logged because focused pixels must
-be judged before another survey event is submitted.
+Without a hardware proposal, a routing action beside ``RequestAutofocus`` keeps
+the survey alive if autofocus refuses or does not converge. If autofocus queues
+a focused re-exposure, later actions are refused until those pixels are judged.
+Named-stage/property actions paired with ``RequestAutofocus`` are always refused
+with ``not dispatched until the refocused tile is judged``, regardless of order.
 
 **A hook must never rely on ``RequestAutofocus`` to keep the survey moving.** It
 is the only action that can be *granted* and still queue nothing: it is refused
@@ -252,14 +260,10 @@ survey by omission: it idles out ``max_idle_s`` and reports a stall. On M5,
 2026-08-11, a budget sized below a single sweep did exactly that and cost a
 three-tile run after two tiles.
 
-So decide routing on this frame regardless. Ask for the refocus *and* say where
-to go if it does not happen. The two branches both work: if the refocus is
-refused or does not converge, the ``ContinueSurvey`` behind it is dispatched
-normally and the scan advances; if it is granted, that ``ContinueSurvey`` is
-refused with ``not dispatched until the refocused tile is judged`` and you are
-called again on the focused frame, where you route it then::
+Ask for refocus and also provide the fallback route. If refocus is granted, the
+fallback is deferred and the hook chooses again on the focused frame; if it is
+refused, the fallback advances the scan::
 
-    # returns the tile to us focused if it can, and keeps the scan alive if not
     return HookResult(stats, actions=(RequestAutofocus(), ContinueSurvey()))
 
 On convergence the survey deliberately adopts the new focus plane. Timelapse
@@ -319,8 +323,9 @@ but before the camera fires.
 ### pre_hardware_hook_fn(event_or_events: dict | list[dict]) -> same shape
 
 Called before hardware moves. Microclaw wires this only through its trusted
-adapter for a declarative ``hook_action_plan``; generated hook source does not
-implement or receive this callback.
+adapter: from a declarative ``hook_action_plan`` for predetermined runs, or from
+the action set registered with an adaptively selected event. Generated hook
+source does not implement or receive this callback.
 
   - Return the (optionally modified) event dict or event list in the same shape,
     ALWAYS. NEVER return None:

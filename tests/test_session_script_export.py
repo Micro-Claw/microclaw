@@ -1,5 +1,6 @@
 import inspect
 import json
+import queue
 import re
 from itertools import count
 from pathlib import Path
@@ -970,6 +971,14 @@ def _undefined_emitted_names(source):
         for statement in statements for n in ast.walk(statement)
         if isinstance(n, (ast.Import, ast.ImportFrom)) for a in n.names
     }
+    # `except E as name` binds through a plain string attribute, not a Name
+    # node, so this checker used to report emitted handler variables as
+    # undefined -- which pushed the emitter into writing
+    # `__import__('sys').exc_info()[1]` to dodge it.
+    defined |= {
+        n.name for statement in statements for n in ast.walk(statement)
+        if isinstance(n, ast.ExceptHandler) and n.name
+    }
 
     annotated: set[int] = set()
     for node in ast.walk(tree):
@@ -1660,7 +1669,7 @@ def test_saved_fixed_run_exports_property_envelope_and_plan(
     assert "_PROPERTY_ENVELOPE" in source
     assert repr(plan) in source
     assert "hook.configure_property" in source
-    assert "hook.restore_property()" in source
+    assert "('property', 'restore_property', '_property_restoration')" in source
     assert "# NOT EMITTED" not in source
     assert "import microclaw" not in source
     assert not _undefined_emitted_names(source)
@@ -2407,6 +2416,198 @@ def test_emitted_property_run_actually_dispatches_its_writes(tmp_path, monkeypat
 
     assert writes == [("Wheel", "State", "A"), ("Wheel", "State", "B")]
     assert repaints, "the emitted script never repainted; an EMU rig needs this"
+
+
+def test_emitted_adaptive_run_executes_decision_loop_and_pre_hardware_move(tmp_path, monkeypatch):
+    """The export carries the rule, not a trace, and runs in engine order."""
+    from microclaw.hook_manager import save_hook
+    import microclaw.hook_manager as manager
+
+    hooks_dir = tmp_path / "hooks"
+    monkeypatch.setattr(manager, "HOOKS_DIR", hooks_dir)
+    monkeypatch.setattr(manager, "MANIFEST", hooks_dir / "manifest.json")
+    save_hook(
+        "adaptive_stage",
+        "from microclaw.hook_decisions import (ContinueSurvey, HookResult, MoveNamedStage, StopSurvey)\n"
+        "class AdaptiveStage:\n"
+        "    def analyze_frame(self, image, metadata):\n"
+        "        if metadata['PositionName'] == 'p0':\n"
+        "            target = float(image[0, 0]) + 5.0\n"
+        "            return HookResult({'target': target}, (MoveNamedStage(target), ContinueSurvey()))\n"
+        "        return HookResult({}, (StopSurvey(),))\n",
+        "adaptive_stage", source="user_provided",
+    )
+    _, result, source = export(tmp_path, [call("run_adaptive_survey", {
+        "protocol": "timelapse", "protocol_params": {"n_frames": 1, "interval_s": 0},
+        "positions": [{"name": "p0", "x_um": 0.0, "y_um": 0.0},
+                      {"name": "p1", "x_um": 1.0, "y_um": 0.0}],
+        "save_dir": "session", "name": "adaptive", "hook_strategy": "adaptive_stage",
+        "named_stage_envelope": {"device": "Axis", "min_um": 0.0, "max_um": 10.0,
+                                 "max_writes": 1, "restore": "leave"},
+    })])
+    assert result["emitted_calls"] == 1, (result, source)
+    assert "class AdaptiveStage" in source and "_survey_event_stream" in source
+    assert "_axes_plan =" not in source and "input(" not in source
+
+    writes = []
+    class DemoCore:
+        def set_position(self, device, value): writes.append((device, value))
+        def get_position(self, device=None): return writes[-1][1] if writes else 0.0
+        def wait_for_device(self, device): pass
+        def set_exposure(self, value): pass
+
+    class FakeAcquisition:
+        def __init__(self, **kwargs):
+            self._hooks, self._events = kwargs, None
+            self._event_queue = queue.Queue()
+            self._acq = type("State", (), {"is_finished": lambda self: False})()
+        def __enter__(self): return self
+        def acquire(self, events): self._events = events
+        def __exit__(self, *_args):
+            for original in self._events:
+                event = {key: original[key] for key in ("axes", "x", "y") if key in original}
+                self._hooks["pre_hardware_hook_fn"](event)
+                label = event["axes"]["position"]
+                value = 2 if label == "p0" else 9
+                self._hooks["image_process_fn"](
+                    np.array([[value]], dtype=np.uint16),
+                    {"PositionName": label, "Axes": {},
+                     "XPosition_um_Intended": event.get("x"),
+                     "YPosition_um_Intended": event.get("y")}, None)
+            return False
+
+    def fake_events(**kwargs):
+        return [{"axes": {"position": label}, "x": xy[0], "y": xy[1]}
+                for label, xy in zip(kwargs["position_labels"], kwargs["xy_positions"])]
+
+    runnable = re.sub(r"^from pycromanager import .*$", "", source, flags=re.M)
+    exec(compile(runnable, "routine.py", "exec"), {
+        "__file__": str(tmp_path / "routine.py"), "Core": DemoCore,
+        "Acquisition": FakeAcquisition, "multi_d_acquisition_events": fake_events,
+    })
+    assert writes == [("Axis", 7.0)]
+
+
+@pytest.mark.parametrize("emitter", ["adaptive", "fixed"])
+@pytest.mark.parametrize("restoration_fails", [False, True])
+def test_emitted_hardware_restoration_preserves_acquisition_failure(
+    tmp_path, monkeypatch, emitter, restoration_fails
+):
+    """A standalone run restores after an acquisition fault without hiding it."""
+    from microclaw.hook_manager import save_hook
+    import microclaw.hook_manager as manager
+
+    hooks_dir = tmp_path / "hooks"
+    monkeypatch.setattr(manager, "HOOKS_DIR", hooks_dir)
+    monkeypatch.setattr(manager, "MANIFEST", hooks_dir / "manifest.json")
+    save_hook(
+        "faulting_stage",
+        "from microclaw.hook_decisions import (ContinueSurvey, HookResult, MoveNamedStage)\n"
+        "class FaultingStage:\n"
+        "    def analyze_frame(self, image, metadata):\n"
+        "        if metadata['PositionName'] == 'p0':\n"
+        "            return HookResult({}, (MoveNamedStage(7.0), ContinueSurvey()))\n"
+        "        return HookResult({}, (ContinueSurvey(),))\n",
+        "faulting_stage", source="user_provided",
+    )
+    envelope = {"device": "Axis", "min_um": 0.0, "max_um": 10.0,
+                "max_writes": 2, "restore": "entry"}
+    if emitter == "adaptive":
+        tool_name = "run_adaptive_survey"
+        params = {
+            "protocol": "timelapse",
+            "protocol_params": {"n_frames": 1, "interval_s": 0},
+            "positions": [{"name": "p0", "x_um": 0.0, "y_um": 0.0},
+                          {"name": "p1", "x_um": 1.0, "y_um": 0.0}],
+            "save_dir": "session", "name": "adaptive",
+            "hook_strategy": "faulting_stage", "named_stage_envelope": envelope,
+        }
+    else:
+        tool_name = "run_timelapse"
+        params = {
+            "n_frames": 2, "interval_s": 0, "save_dir": "session",
+            "name": "fixed", "hook_strategy": "faulting_stage",
+            "named_stage_envelope": envelope,
+            "hook_action_plan": [
+                {"hook_event_index": 0, "actions": [
+                    {"kind": "MoveNamedStage", "position_um": 7.0}]},
+                {"hook_event_index": 1, "actions": []},
+            ],
+        }
+    _, result, source = export(tmp_path, [call(tool_name, params)])
+    assert result["emitted_calls"] == 1, (result, source)
+
+    attempts = []
+    position = 3.0
+
+    class DemoCore:
+        def set_position(self, device, value):
+            nonlocal position
+            attempts.append((device, value))
+            if value == 7.0:
+                raise RuntimeError("acquisition serial fault")
+            if restoration_fails:
+                raise RuntimeError("restoration serial fault")
+            position = value
+        def get_position(self, device=None): return position
+        def wait_for_device(self, device): pass
+        def set_exposure(self, value): pass
+
+    class FakeAcquisition:
+        def __init__(self, **kwargs):
+            self._hooks = kwargs
+            self._deferred_events = None
+            self._event_queue = queue.Queue()
+            self._acq = type("State", (), {"is_finished": lambda self: False})()
+        def __enter__(self): return self
+        def acquire(self, events):
+            if isinstance(events, list):
+                self._drive(events)
+            else:
+                self._deferred_events = events
+        def __exit__(self, *_args):
+            if self._deferred_events is not None:
+                self._drive(self._deferred_events, analyze=True)
+            return False
+        def _drive(self, events, analyze=False):
+            for original in events:
+                event = {key: original[key] for key in ("axes", "x", "y")
+                         if key in original}
+                self._hooks["pre_hardware_hook_fn"](event)
+                if analyze:
+                    self._hooks["image_process_fn"](
+                        np.array([[1]], dtype=np.uint16),
+                        {"PositionName": "p0", "Axes": {},
+                         "XPosition_um_Intended": event.get("x"),
+                         "YPosition_um_Intended": event.get("y")}, None)
+
+    def fake_events(**kwargs):
+        if "position_labels" in kwargs:
+            return [{"axes": {"position": label}, "x": xy[0], "y": xy[1]}
+                    for label, xy in zip(kwargs["position_labels"],
+                                         kwargs["xy_positions"])]
+        return [{"axes": {"time": i}}
+                for i in range(kwargs.get("num_time_points", 1))]
+
+    runnable = re.sub(r"^from pycromanager import .*$", "", source, flags=re.M)
+    namespace = {
+        "__file__": str(tmp_path / "routine.py"), "Core": DemoCore,
+        "Acquisition": FakeAcquisition, "multi_d_acquisition_events": fake_events,
+    }
+    with pytest.raises(RuntimeError, match="acquisition serial fault") as caught:
+        exec(compile(runnable, "routine.py", "exec"), namespace)
+
+    assert attempts == [("Axis", 7.0), ("Axis", 3.0)]
+    if restoration_fails:
+        assert "restoration serial fault" in str(caught.value)
+        assert not hasattr(namespace["hook"], "_named_stage_restoration")
+        assert namespace["hook"]._log[-1]["restoration"] is True
+        assert namespace["hook"]._log[-1]["decision"] == "failed"
+    else:
+        assert namespace["hook"]._named_stage_restoration == {
+            "policy": "entry", "entry_um": 3.0,
+            "last_known_um": 3.0, "restored": True,
+        }
 
 
 @pytest.mark.parametrize(("envelope_key", "envelope", "expected"), [
