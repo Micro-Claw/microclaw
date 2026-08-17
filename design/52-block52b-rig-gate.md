@@ -4,11 +4,20 @@ Run this on **M5**, on branch `design52/block-52b`. Every command below is
 literal. Where a step says "expect", that is the value to compare against, not a
 criterion to interpret.
 
-## Re-run scope, gate 3 — Steps 0 and 6 only
+## Re-run scope, gate 3 — Steps 0, 6a and 6
 
-Gates 1 and 2 closed everything else. **Do not repeat Steps 1-5.**
+Gates 1 and 2 closed everything else. **Do not repeat Steps 2-5.**
+
+**`export_session_script` compiles the calls recorded in *this* session, so a
+fresh session has nothing to export** — measured: it emits a 13-line stub with
+zero calls and no property machinery at all. Step 6 therefore needs one property
+run in front of it, which is what Step 6a is. It is deliberately smaller than
+Step 2: two frames instead of six, because the export does not care how many
+writes it reproduces, and every frame on this rig is a dose.
 
 - **Step 0** — proves the rig is on the fixed branch. Collection is now **1971**.
+- **Step 6a** — a 2-frame property run, to give Step 6 something to export.
+- **Step 6** — the export, and running it.
 - **Step 6** — the export. It has failed twice, differently each time, and both
   causes are fixed:
   - gate 1: a multi-line Java stack trace in a recorded error broke out of its
@@ -24,6 +33,10 @@ What gates 1 and 2 already proved, for the record: one confirmation per run;
 `entry_value` agreeing with `last_known_value`; the out-of-envelope 80 ms attempt
 refused during planning with no dataset created; and **the design/49 refusal
 firing through an approved property envelope** with the axis unmoved.
+
+Step 1 (registering the hook) is a prerequisite of Step 6a, not a repeat: the
+hook has to be resolvable in this session. `list_hooks` will tell you whether it
+already is.
 
 Prior evidence: `52b-m5` (gate 1) and `52b-m5-round2` (gate 2).
 
@@ -304,11 +317,36 @@ Record the refusal and move on.
 > On M2 the equivalent device had no position property at all and this limb had
 > to be retargeted; here it does not.
 
+## Step 6a — a minimal property run for the export to compile
+
+Step 1's hook must exist in this session first; if `list_hooks` already shows
+`property_frame_metric` from an earlier gate, reuse it and skip Step 1.
+
+Verbatim:
+
+> Run a 2-frame timelapse with no channel at 20 ms and a 1 second interval,
+> saving to `D:\SSD\52b_m5_export`. Use the `property_frame_metric` hook. Set
+> `Thorlabs Filter Wheel` `Label` to Filter-1 then Filter-2, one per frame, using
+> a declarative hook action plan. Approve a property envelope over exactly those
+> two values with 3 writes and `restore: "entry"`.
+
+**3 writes for 2 frames**, for the reason Step 2 gives: a non-`leave` restoration
+reserves one. `restore: "entry"` rather than `"leave"` on purpose — it is what
+makes the emitted script exercise `restore_property()` after its `with` block,
+which is part of what Step 6 is proving.
+
+Expect one confirmation, 2 frames, and a log with 2 accepted records carrying
+`hook_event_index` 0 and 1 plus the restoration last.
+
 ## Step 6 — export, and run the script standalone
 
 Verbatim:
 
 > Export this session as a standalone script called `property_runs.py`.
+
+The export must contain the Step 6a run. If `emitted_calls` is 0, the session
+recorded nothing to compile and Step 6a did not happen — go back and run it
+rather than grepping an empty stub.
 
 Use the absolute path the tool prints; it may land under
 `C:\Users\<you>\AppData\Local\microclaw\` rather than the checkout.
