@@ -4,25 +4,28 @@ Run this on **M5**, on branch `design52/block-52b`. Every command below is
 literal. Where a step says "expect", that is the value to compare against, not a
 criterion to interpret.
 
-## Re-run scope, 2026-08-17 — read this before repeating the whole thing
+## Re-run scope, gate 3 — Steps 0 and 6 only
 
-The first run passed Steps 0, 2, 3 and 4 outright. Two defects were fixed on this
-branch afterwards, and **Step 5 never actually ran** — see its own note.
+Gates 1 and 2 closed everything else. **Do not repeat Steps 1-5.**
 
-- **Step 0** — cheap, and it proves the rig is on the fixed branch. Run it.
-- **Step 5** — rewritten. This is the block's mandatory limb and it is still owed.
-- **Step 6** — the export refused with an emitter defect (a multi-line Java stack
-  trace in a recorded error broke out of its comment and made the whole session
-  unparseable). Fixed; the 2026-08-17 session's own history now exports clean —
-  7 calls, no `# NOT EMITTED`, no `microclaw` imports — replayed off-rig. Re-run
-  it here to close it on the rig.
-- **Steps 2, 3 and 4** — re-run **Step 2 only**, because the second fix changed
-  what its log contains: accepted property records now carry `hook_event_index`,
-  which every one of them was missing. Step 4 is unaffected in mechanism; skip it
-  unless Step 2 behaves differently.
+- **Step 0** — proves the rig is on the fixed branch. Collection is now **1971**.
+- **Step 6** — the export. It has failed twice, differently each time, and both
+  causes are fixed:
+  - gate 1: a multi-line Java stack trace in a recorded error broke out of its
+    `#` comment and made the whole session unparseable, so nothing was written;
+  - gate 2: the script compiled and passed every grep here, then died on its
+    first property write — `AttributeError: 'types.SimpleNamespace' object has no
+    attribute 'refresh_gui'`. The emitted stand-in now reproduces the live
+    repaint. **This is why Step 6 is not finished by a clean grep: run it.**
 
-Prior evidence is in
-`~\Documents\Documents - Beyonce\Projects\Micro-Claw\52b-m5`.
+What gates 1 and 2 already proved, for the record: one confirmation per run;
+6 filter writes and 4 exposure writes with `requested` equal to `achieved`;
+`hook_event_index` 0..5 on the accepted records; restoration last and
+`entry_value` agreeing with `last_known_value`; the out-of-envelope 80 ms attempt
+refused during planning with no dataset created; and **the design/49 refusal
+firing through an approved property envelope** with the axis unmoved.
+
+Prior evidence: `52b-m5` (gate 1) and `52b-m5-round2` (gate 2).
 
 ## What this gate proves, and what it does not
 
@@ -89,13 +92,13 @@ uv run python -m pytest -q 2>&1 | Out-File -Encoding utf8 $HOME\Documents\52b-m5
 Get-Content $HOME\Documents\52b-m5-suite.txt -Tail 3
 ```
 
-**Collection is 1968** — that is the number that proves the branch, and
-`passed + skipped` must equal it. macOS runs this tree as 1869 passed / 99
+**Collection is 1971** — that is the number that proves the branch, and
+`passed + skipped` must equal it. macOS runs this tree as 1872 passed / 99
 skipped; Windows skips more, so a lower passed count with a correspondingly
 higher skip count is the expected result, not a failure. **`main` collects 1949**,
 so a run reporting 1949 means the rig is on the wrong branch and every later step
-is worthless. The 2026-08-17 run read 1841 + 124 = 1965, which was correct for
-that tip; 1965 now means the branch is stale — pull.
+is worthless. Gate 1 read 1965 and gate 2 read 1968; both were correct for their
+tip, and either number now means the branch is stale — pull.
 
 ## Step 1 — register a scoring hook
 
@@ -342,8 +345,12 @@ Get-Content $HOME\Documents\52b-m5-standalone.txt -Tail 25
 > exporter. Microclaw flagging the substitution loudly is correct behaviour and a
 > pass for block 45; the greps landing on it is not.
 
-Expect the script to print its property envelope, ask `Type YES to continue:`,
-run the acquisitions, restore, and print a dataset location.
+Expect the script to print its property envelope — device, property, **approved
+values or interval**, write budget and restoration policy — then run the
+acquisitions, restore, and print a dataset location. **It does not prompt**
+(operator decision 2026-08-17): `Type YES to continue:` was invisible under
+`Out-File` and made the script look hung. If you are prompted, the branch is
+stale.
 
 **The refused attempts from Steps 4 and 5 must not appear as executed writes.**
 They never succeeded, so there is nothing to reproduce; a script that sets

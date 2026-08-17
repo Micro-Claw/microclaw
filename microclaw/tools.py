@@ -1111,9 +1111,8 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
             "    _signature = hook.axes_signature(events[_index])",
             "    if _signature in _axes_plan: raise ValueError(f'generated events have duplicate axes signature {dict(_signature)!r}')",
             "    _axes_plan[_signature] = (_index, tuple(parse_action(action) for action in _entry['actions']))",
-            "print('ALLOW HOOK HARDWARE CONTROL FOR THIS RUN')",
+            "print('HOOK HARDWARE CONTROL FOR THIS RUN -- bounds enforced below')",
             "print(f\"Named stage: {_NAMED_STAGE_ENVELOPE['device']}; approved interval {_NAMED_STAGE_ENVELOPE['min_um']}-{_NAMED_STAGE_ENVELOPE['max_um']} um; maximum writes {_NAMED_STAGE_ENVELOPE['max_writes']}; restore {_NAMED_STAGE_ENVELOPE['restore']!r}\")",
-            "if input('Type YES to continue: ').strip() != 'YES': raise SafetyViolation('Hook hardware envelope declined before acquisition')",
             f"hook.configure_named_stage(core=core, guard=guard, device={named_stage_envelope['device']!r}, min_um={float(named_stage_envelope['min_um'])!r}, max_um={float(named_stage_envelope['max_um'])!r}, max_writes={named_stage_envelope['max_writes']!r}, initial_value=float(core.get_position({named_stage_envelope['device']!r})), restore={named_stage_envelope['restore']!r}, action_plan=_axes_plan)"]
            if named_stage_envelope is not None else [] ),
         *( [f"_PROPERTY_ENVELOPE = {property_envelope!r}",
@@ -1125,9 +1124,9 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
                 "    if _signature in _axes_plan: raise ValueError(f'generated events have duplicate axes signature {dict(_signature)!r}')",
                 "    _axes_plan[_signature] = (_index, tuple(parse_action(action) for action in _entry['actions']))"]
                if named_stage_envelope is None else [] ),
-            "print('ALLOW HOOK HARDWARE CONTROL FOR THIS RUN')",
-            "print(f\"Property: {_PROPERTY_ENVELOPE['device']}.{_PROPERTY_ENVELOPE['property']}; maximum writes {_PROPERTY_ENVELOPE['max_writes']}; restore {_PROPERTY_ENVELOPE['restore']!r}\")",
-            "if input('Type YES to continue: ').strip() != 'YES': raise SafetyViolation('Hook hardware envelope declined before acquisition')",
+            "print('HOOK HARDWARE CONTROL FOR THIS RUN -- bounds enforced below')",
+            "_property_bound = (repr(_PROPERTY_ENVELOPE['allowed_values']) if 'allowed_values' in _PROPERTY_ENVELOPE else f\"{_PROPERTY_ENVELOPE['min']}-{_PROPERTY_ENVELOPE['max']}\")",
+            "print(f\"Property: {_PROPERTY_ENVELOPE['device']}.{_PROPERTY_ENVELOPE['property']}; approved {_property_bound}; maximum writes {_PROPERTY_ENVELOPE['max_writes']}; restore {_PROPERTY_ENVELOPE['restore']!r}\")",
             "_property_values = tuple(_PROPERTY_ENVELOPE['allowed_values']) if 'allowed_values' in _PROPERTY_ENVELOPE else None",
             "hook.configure_property(ctrl=mm, guard=guard, device=_PROPERTY_ENVELOPE['device'], property=_PROPERTY_ENVELOPE['property'], allowed_values=_property_values, min_value=_PROPERTY_ENVELOPE.get('min'), max_value=_PROPERTY_ENVELOPE.get('max'), max_writes=_PROPERTY_ENVELOPE['max_writes'], initial_value=str(core.get_property(_PROPERTY_ENVELOPE['device'], _PROPERTY_ENVELOPE['property'])), restore=_PROPERTY_ENVELOPE['restore'], action_plan=_axes_plan)"]
            if property_envelope is not None else [] ),

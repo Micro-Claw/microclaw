@@ -729,10 +729,31 @@ parser, envelope validator, guards, write budgets, verification, audit, and
 restoration logic and event-indexed coordinator used live — with
 `inspect.getsource`, never re-written in the emitter, for the reason CLAUDE.md
 gives about the adaptive loop: a hand-copied copy that drifts reintroduces the
-refusals silently. The exported script prints the approved envelope and requires
-confirmation before connecting/starting unless the user explicitly requests a
-non-interactive artifact and accepts that fact in the export dialog. The pinned
+refusals silently. The exported script **prints** the approved envelope, its
+bound, its write budget and its restoration policy before starting. The pinned
 hook hash and envelope are embedded in the script.
+
+**It does not prompt. Operator decision, 2026-08-17, after 52b's second M5
+gate**, replacing this section's original rule that the script "requires
+confirmation before connecting/starting unless the user explicitly requests a
+non-interactive artifact". Three reasons, and the first was measured:
+
+- **The prompt is invisible under redirection.** 52b's own runbook pipes the run
+  through `Out-File`, which swallowed `Type YES to continue:` — the operator saw
+  an apparently hung script, and the prompt surfaced only at the tail of the
+  captured file, after the traceback.
+- **A run carrying both envelopes prompted twice**, once per emitted block.
+- **The prompt is not what makes the script safe.** The envelope interval or
+  value set, the write budget, `check_named_stage` / `check_device_property`, and
+  the read-back all still run; a value outside the envelope is refused whether or
+  not anyone typed YES. Running the script is the consent.
+
+The print stays, and design/38 F9 is why: nothing silent. It is now the only
+place the script states what it will move and within what limits, so it must
+carry the **bound**, not just the device — the property print omitted it until
+this change. The heading is declarative (`HOOK HARDWARE CONTROL FOR THIS RUN`)
+rather than a request. What is given up, stated rather than implied: someone who
+runs the script later, on a different sample, is *informed* but not *stopped*.
 
 The actions themselves do **not** get `@emits` decorators. They are dataclasses
 parsed and dispatched inside the acquisition, not independently recorded tools.

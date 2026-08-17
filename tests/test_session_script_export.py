@@ -2403,8 +2403,62 @@ def test_emitted_property_run_actually_dispatches_its_writes(tmp_path, monkeypat
         "__file__": str(tmp_path / "routine.py"),
         "Core": DemoCore, "Acquisition": FakeAcquisition,
         "multi_d_acquisition_events": fake_events,
-        "input": lambda _prompt="": "YES",
     })
 
     assert writes == [("Wheel", "State", "A"), ("Wheel", "State", "B")]
     assert repaints, "the emitted script never repainted; an EMU rig needs this"
+
+
+@pytest.mark.parametrize(("envelope_key", "envelope", "expected"), [
+    ("property_envelope",
+     {"device": "Wheel", "property": "State", "allowed_values": ["A", "B"],
+      "max_writes": 2, "restore": "leave"},
+     "_PROPERTY_ENVELOPE"),
+    ("named_stage_envelope",
+     {"device": "Axis", "min_um": 0.0, "max_um": 10.0, "max_writes": 2,
+      "restore": "leave"},
+     "_NAMED_STAGE_ENVELOPE"),
+])
+def test_emitted_script_states_its_envelope_and_never_blocks_on_stdin(
+    tmp_path, monkeypatch, envelope_key, envelope, expected
+):
+    """Print the envelope; do not prompt.
+
+    Operator decision, 2026-08-17, after the M5 gate: `Type YES to continue:` is
+    invisible under output redirection -- the runbook's own `| Out-File` swallowed
+    it and the script looked hung -- and a run carrying both envelopes prompted
+    twice. Running the script is the consent; the bounds, budget, guard and
+    read-back are what make it safe, and they are unchanged. The *print* stays,
+    because it is now the only place the script says what it will move and within
+    what limits (design/38 F9: nothing silent).
+    """
+    from microclaw.hook_manager import save_hook
+    import microclaw.hook_manager as manager
+
+    hooks_dir = tmp_path / "hooks"
+    monkeypatch.setattr(manager, "HOOKS_DIR", hooks_dir)
+    monkeypatch.setattr(manager, "MANIFEST", hooks_dir / "manifest.json")
+    save_hook(
+        "planned", "class Planned:\n"
+        "    def analyze_frame(self, image, metadata):\n"
+        "        return None\n",
+        "planned", source="user_provided",
+    )
+    action = ({"kind": "SetDeviceProperty", "value": "A"}
+              if envelope_key == "property_envelope"
+              else {"kind": "MoveNamedStage", "position_um": 1.0})
+    _, _, source = export(tmp_path, [call("run_timelapse", {
+        "n_frames": 1, "interval_s": 1, "save_dir": "s", "name": "r",
+        "hook_strategy": "planned", envelope_key: envelope,
+        "hook_action_plan": [{"hook_event_index": 0, "actions": [action]}],
+    })])
+
+    assert "input(" not in source
+    assert "HOOK HARDWARE CONTROL FOR THIS RUN" in source
+    # Declarative, not a request: nothing is being asked any more.
+    assert "ALLOW HOOK HARDWARE" not in source
+    assert expected in source
+    # The bound itself must survive, not just the device name: the print is the
+    # whole disclosure now.
+    assert ("approved {_property_bound}" in source
+            or "approved interval" in source)
