@@ -1137,25 +1137,37 @@ about process, `CLAUDE.md` wins and this section gets corrected.
   `_dispatch` and the same acquisition signatures 52a creates; running them
   concurrently in two worktrees would conflict on every file that matters.
 
-### State at 2026-08-15 — the live note
+### State at the 2026-08-17 close of block 52a — the live note
+
+**This is the live note. The bullets below it, from "The gate found a defect"
+onward, are 52a's round history and are kept for their findings, not as
+instructions — nothing in them is outstanding.**
 
 Checked against the repository rather than assumed: working tree clean,
-`git log --oneline origin/main..main` empty, `main` at `d97d256`, and on `origin`
+`git log --oneline origin/main..main` empty, `main` at `c952466`, and on `origin`
 besides `main` only `design34/focus-system-authorization` (6a),
 `florian/setup-claude-workflow` and `port-to-jpype-acqj` — **no open block
-branch.** One worktree, this one. Suite at `d97d256`, macOS: **1812 passed / 99
-skipped / 3 warnings**, coordinator-measured rather than carried over.
+branch.** One worktree, this one. Suite on `main`, macOS: **1850 passed / 99
+skipped / 3 warnings**, 1949 collected, coordinator-run after the merge.
 
-- **design/52 is scheduled and no longer parked.** Three blocks. **52a's branch
-  `design52/block-52a` exists at `413caec` and is pushed, with a worktree at
-  `../microclaw-52a`, and it is ASSIGNED — codex is implementing it, 2026-08-15.**
-  52b and 52c are not started. `413caec` is the **substantive** start: the commit
-  that carries the M2 gate wording.
-- **52a failed its first M2 gate on 2026-08-15 and is fixed and pushed for a
-  second run.** Tip `51be906`, runbook pinned by
-  `git merge-base --is-ancestor 514c523 HEAD`. Suite on the branch, macOS:
-  **1847 passed / 99 skipped / 3 warnings**, 1946 collected; the rig should see
-  1822/124/1946. Three rounds returned to the runner.
+- **52a is CLOSED, 2026-08-17.** Merged `00c1763`, `main` pushed, branch deleted
+  locally and on `origin`, worktree removed, notes in `design/prompts.md`, design
+  gate merged (`CLAUDE.md` §"The pycro-manager acquisition engine", this
+  document's §Timing corrections, `design/35`'s register row). Five M2 rig trips,
+  five runner rounds. **Nothing from it is owed.**
+- **52b is next and is not started.** No branch, no worktree, no runner prompt.
+  Start it from `CLAUDE.md` §"The block workflow" step 1 — the §Blocks entry for
+  52b above is its scope, and its rig-gate limbs are already retargeted to
+  `TIRF Stage.Frequency` / `PIZStage.Position` because M2 confirmed the TIRF axis
+  exposes no `Position` property at all. 52c follows 52b; they are sequential
+  because both extend the same `_dispatch` and the same acquisition signatures.
+- **Read `CLAUDE.md` §"The pycro-manager acquisition engine" before writing any
+  hook or acquisition code here.** Its three contracts cost 52a three rig trips
+  and are the block's most reusable output. The scratchpad runner prompts from
+  that block were never committed, by design; nothing in a scratchpad is needed
+  to continue.
+
+#### 52a round history — findings, not outstanding work
 - **The gate found a defect no off-rig test could have.** `pre_hardware_hook_fn`
   assumed one event per callback, but pycro-manager hands a **list** when the
   engine hardware-sequences — an 18-frame timelapse at `interval_s=0` is exactly
@@ -1286,10 +1298,7 @@ skipped / 3 warnings**, coordinator-measured rather than carried over.
   still undecorated and sits on this gate's own export path — the third time that
   shape would have killed a gate. **Undecorated tools 12 → 11**; `CLAUDE.md`'s
   count is corrected at the step-10 design gate.
-- **Do not fast-forward `design52/block-52a` any more.** It was kept level with
-  `main` while it held no work of its own; a runner is now committing there, so
-  coordinator doc commits stay on `main` and reach the block only at its merge.
-  Nothing in flight needs them.
+
 - **52a branches from the merge that carries this checklist**, so the runner's
   tree holds the spec it is being held to. Both the 50b and 51a runners reported
   their design file absent from the start commit they were given; this removes
