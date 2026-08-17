@@ -1290,7 +1290,7 @@ measured, and close the `design/35` register row.
 | coordination | `design52/assign-52b` | `b6f17b3` | coordinator | n/a | | n/a |
 | 52b | `design52/block-52b` | `cc47438` | codex, 2 rounds + coordinator fixes | **M5 PASS 2026-08-17**, 3 trips; all limbs incl. the design/49 refusal and the standalone export | merged `2b9233e` | design gate below |
 | coordination | `design52/assign-52c` | `8f75ce0` | coordinator | n/a | | n/a |
-| 52c | `design52/block-52c` | `453a274` | | | | |
+| 52c | `design52/block-52c` | `453a274` | codex, 2 rounds | runbook pushed 2026-08-17, awaiting M5 | | |
 
 ## Checklist
 
