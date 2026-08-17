@@ -1010,7 +1010,6 @@ def test_adaptive_hardware_is_registered_with_candidate_then_applied_pre_exposur
         (EmitArtifact("frame.bin", b"frame-n"), MoveNamedStage(5), ContinueSurvey()),
         tmp_path,
     )
-    adapter.pre_hardware_hook_fn(events[0])
     adapter.image_process_fn(np.zeros((1, 1)), {"PositionName": "p0", "Axes": {}}, None)
     candidate = candidates.get_nowait()
     assert writes == []
@@ -1029,7 +1028,6 @@ def test_malformed_adaptive_partition_finishes_without_queue_abort_or_stall(tmp_
     order = []
     progress.done_early = lambda: order.append("done_early")
     progress.image_done = lambda: order.append("image_done")
-    adapter.pre_hardware_hook_fn(events[0])
     adapter.image_process_fn(np.zeros((1, 1)), {"PositionName": "p0", "Axes": {}}, None)
     assert order == ["done_early", "image_done"]
     assert candidates.empty() and writes == []
@@ -1043,7 +1041,6 @@ def test_proposal_after_adaptive_handoff_closes_aborts_without_exposure(tmp_path
 
     adapter, events, candidates, _progress, writes = _adaptive_hardware_adapter(
         (MoveNamedStage(5), ContinueSurvey()), tmp_path)
-    adapter.pre_hardware_hook_fn(events[0])
     adapter.close_adaptive_handoff()
     adapter.image_process_fn(np.zeros((1, 1)), {"PositionName": "p0", "Axes": {}}, None)
     assert candidates.empty() and writes == []
@@ -1060,7 +1057,6 @@ def test_refused_selector_also_refuses_attached_hardware(tmp_path, refusal):
     selector = AcquireAt(1) if refusal == "guard" else ContinueSurvey()
     adapter, events, candidates, _progress, writes = _adaptive_hardware_adapter(
         (MoveNamedStage(5), selector), tmp_path)
-    adapter.pre_hardware_hook_fn(events[0])
     if refusal == "guard":
         adapter._context["guard"].check_xy = lambda x, y: (_ for _ in ()).throw(
             ValueError("blocked xy"))
@@ -1097,7 +1093,6 @@ def test_autofocus_refuses_paired_hardware_independent_of_order(tmp_path, monkey
     )
     monkeypatch.setattr(tools, "_run_autofocus_passes", lambda *a, **k: SimpleNamespace(
         converged=True, moved=True, reason="ok", entry_z_um=0, final_z_um=0))
-    adapter.pre_hardware_hook_fn(events[0])
     adapter.image_process_fn(np.zeros((1, 1)), {"PositionName": "p0", "Axes": {}}, None)
     assert candidates.get_nowait()["axes"]["refocus"] == 1
     assert writes == []
