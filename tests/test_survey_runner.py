@@ -967,6 +967,111 @@ class TestAcquireSurveyWithDetectorAdaptive:
 
 # ── design/27: run_adaptive_survey — the tool that drives the adaptive runner ─
 
+def _adaptive_hardware_adapter(actions, tmp_path):
+    from types import SimpleNamespace
+    from microclaw.hook_decisions import HookResult, UntrustedHookAdapter
+
+    class Hook:
+        def analyze_frame(self, image, metadata):
+            return HookResult({}, actions)
+
+    writes = []
+    core = SimpleNamespace(
+        set_position=lambda device, value: writes.append((device, value)),
+        wait_for_device=lambda device: None,
+        get_position=lambda device=None: writes[-1][1] if writes else 0.0,
+    )
+    guard = SimpleNamespace(check_xy=lambda x, y: None,
+                            check_z=lambda z: None,
+                            check_named_stage=lambda device, value: None)
+    progress = SurveyProgress(2)
+    candidates = queue.Queue()
+    events = [
+        {"axes": {"position": "p0"}, "x": 0.0, "y": 0.0},
+        {"axes": {"position": "p1"}, "x": 1.0, "y": 0.0},
+    ]
+    adapter = UntrustedHookAdapter(Hook(), str(tmp_path / "hook.json"))
+    adapter.configure_named_stage(core=core, guard=guard, device="Axis",
+                                  min_um=0, max_um=10, max_writes=2,
+                                  initial_value=0, restore="leave", action_plan=None)
+    adapter.configure_adaptive(events=events, candidates=candidates,
+                               progress=progress, guard=guard, max_events=2)
+    return adapter, events, candidates, progress, writes
+
+
+def test_adaptive_hardware_is_registered_with_candidate_then_applied_pre_exposure(tmp_path):
+    import numpy as np
+    from microclaw.hook_decisions import ContinueSurvey, MoveNamedStage
+
+    adapter, events, candidates, _progress, writes = _adaptive_hardware_adapter(
+        (MoveNamedStage(5), ContinueSurvey()), tmp_path)
+    adapter.pre_hardware_hook_fn(events[0])
+    adapter.image_process_fn(np.zeros((1, 1)), {"PositionName": "p0", "Axes": {}}, None)
+    candidate = candidates.get_nowait()
+    assert writes == []
+    assert "hook_event_index" not in candidate and "hook_event_index" not in candidate["axes"]
+    adapter.pre_hardware_hook_fn({"axes": dict(candidate["axes"]), "x": 1.0, "y": 0.0})
+    assert writes == [("Axis", 5.0)]
+
+
+def test_malformed_adaptive_partition_finishes_without_queue_abort_or_stall(tmp_path):
+    import numpy as np
+    from microclaw.hook_decisions import AcquireAt, ContinueSurvey, MoveNamedStage
+
+    adapter, events, candidates, progress, writes = _adaptive_hardware_adapter(
+        (ContinueSurvey(), MoveNamedStage(5), AcquireAt(1)), tmp_path)
+    order = []
+    progress.done_early = lambda: order.append("done_early")
+    progress.image_done = lambda: order.append("image_done")
+    adapter.pre_hardware_hook_fn(events[0])
+    adapter.image_process_fn(np.zeros((1, 1)), {"PositionName": "p0", "Axes": {}}, None)
+    assert order == ["done_early", "image_done"]
+    assert candidates.empty() and writes == []
+    assert not any(r.get("event") in {"aborted", "stalled"} for r in adapter._log)
+    assert any("malformed adaptive action partition" in r.get("reason", "") for r in adapter._log)
+
+
+def test_proposal_after_adaptive_handoff_closes_aborts_without_exposure(tmp_path):
+    import numpy as np
+    from microclaw.hook_decisions import ContinueSurvey, MoveNamedStage
+
+    adapter, events, candidates, _progress, writes = _adaptive_hardware_adapter(
+        (MoveNamedStage(5), ContinueSurvey()), tmp_path)
+    adapter.pre_hardware_hook_fn(events[0])
+    adapter.close_adaptive_handoff()
+    adapter.image_process_fn(np.zeros((1, 1)), {"PositionName": "p0", "Axes": {}}, None)
+    assert candidates.empty() and writes == []
+    assert any(r.get("event") == "aborted" for r in adapter._log)
+    assert any(r.get("action", {}).get("kind") == "MoveNamedStage" and
+               r.get("decision") == "refused" for r in adapter._log)
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_autofocus_refuses_paired_hardware_independent_of_order(tmp_path, monkeypatch, reverse):
+    import numpy as np
+    from types import SimpleNamespace
+    from microclaw import tools
+    from microclaw.hook_decisions import MoveNamedStage, RequestAutofocus
+
+    actions = (RequestAutofocus(), MoveNamedStage(5))
+    if reverse:
+        actions = tuple(reversed(actions))
+    adapter, events, candidates, _progress, writes = _adaptive_hardware_adapter(actions, tmp_path)
+    adapter.configure_autofocus(
+        ctrl=SimpleNamespace(core=SimpleNamespace(get_position=lambda: 0.0)),
+        guard=SimpleNamespace(check_z=lambda z: None), max_exposures=2,
+        z_range_um=1, z_step_um=1, method="single_sweep", settle_ms=0,
+        sweep_exposures=1,
+    )
+    monkeypatch.setattr(tools, "_run_autofocus_passes", lambda *a, **k: SimpleNamespace(
+        converged=True, moved=True, reason="ok", entry_z_um=0, final_z_um=0))
+    adapter.pre_hardware_hook_fn(events[0])
+    adapter.image_process_fn(np.zeros((1, 1)), {"PositionName": "p0", "Axes": {}}, None)
+    assert candidates.get_nowait()["axes"]["refocus"] == 1
+    assert writes == []
+    assert any(r.get("reason") == "not dispatched until the refocused tile is judged"
+               for r in adapter._log)
+
 class _ProbeHook(HookBase):
     """Stands in for a hook_strategy-loaded adaptive hook: records nothing,
     exists so the tests can inspect what the runner handed the instance."""

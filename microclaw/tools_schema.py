@@ -1500,6 +1500,8 @@ TOOLS: list[dict[str, Any]] = [
                     "default": False,
                 },
                 "illumination_envelope": _HOOK_ILLUMINATION_ENVELOPE_SCHEMA,
+                "named_stage_envelope": _HOOK_NAMED_STAGE_ENVELOPE_SCHEMA,
+                "property_envelope": _HOOK_PROPERTY_ENVELOPE_SCHEMA,
                 "artifact_limits": _HOOK_ARTIFACT_LIMITS_SCHEMA,
                 "autofocus_budget": _ADAPTIVE_AUTOFOCUS_BUDGET_SCHEMA,
                 "acquire_on_hit": {

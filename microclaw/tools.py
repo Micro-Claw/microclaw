@@ -880,6 +880,8 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
     named_stage_envelope = params.get("named_stage_envelope")
     property_envelope = params.get("property_envelope")
     hook_action_plan = params.get("hook_action_plan")
+    if kind == "survey" and hook_action_plan is not None:
+        raise CannotEmit("run_adaptive_survey rejects hook_action_plan; decisions select events at runtime")
     if (named_stage_envelope is not None or property_envelope is not None or
             hook_action_plan is not None) and not saved:
         raise CannotEmit("hardware envelopes and hook_action_plan apply only to saved hooks")
@@ -1037,6 +1039,18 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
             common.append("hits = []")
         common.extend([
             f"events = multi_d_acquisition_events(**{{k: v for k, v in {shape!r}.items() if v is not None}})",
+            *( [f"_NAMED_STAGE_ENVELOPE = {named_stage_envelope!r}",
+                "print('HOOK HARDWARE CONTROL FOR THIS RUN -- bounds enforced below')",
+                "print(f\"Named stage: {_NAMED_STAGE_ENVELOPE['device']}; approved interval {_NAMED_STAGE_ENVELOPE['min_um']}-{_NAMED_STAGE_ENVELOPE['max_um']} um; maximum writes {_NAMED_STAGE_ENVELOPE['max_writes']}; restore {_NAMED_STAGE_ENVELOPE['restore']!r}\")",
+                "hook.configure_named_stage(core=core, guard=guard, device=_NAMED_STAGE_ENVELOPE['device'], min_um=float(_NAMED_STAGE_ENVELOPE['min_um']), max_um=float(_NAMED_STAGE_ENVELOPE['max_um']), max_writes=_NAMED_STAGE_ENVELOPE['max_writes'], initial_value=float(core.get_position(_NAMED_STAGE_ENVELOPE['device'])), restore=_NAMED_STAGE_ENVELOPE['restore'], action_plan=None)"]
+               if named_stage_envelope is not None else [] ),
+            *( [f"_PROPERTY_ENVELOPE = {property_envelope!r}",
+                "print('HOOK HARDWARE CONTROL FOR THIS RUN -- bounds enforced below')",
+                "_property_bound = (repr(_PROPERTY_ENVELOPE['allowed_values']) if 'allowed_values' in _PROPERTY_ENVELOPE else f\"{_PROPERTY_ENVELOPE['min']}-{_PROPERTY_ENVELOPE['max']}\")",
+                "print(f\"Property: {_PROPERTY_ENVELOPE['device']}.{_PROPERTY_ENVELOPE['property']}; approved {_property_bound}; maximum writes {_PROPERTY_ENVELOPE['max_writes']}; restore {_PROPERTY_ENVELOPE['restore']!r}\")",
+                "_property_values = tuple(_PROPERTY_ENVELOPE['allowed_values']) if 'allowed_values' in _PROPERTY_ENVELOPE else None",
+                "hook.configure_property(ctrl=mm, guard=guard, device=_PROPERTY_ENVELOPE['device'], property=_PROPERTY_ENVELOPE['property'], allowed_values=_property_values, min_value=_PROPERTY_ENVELOPE.get('min'), max_value=_PROPERTY_ENVELOPE.get('max'), max_writes=_PROPERTY_ENVELOPE['max_writes'], initial_value=str(core.get_property(_PROPERTY_ENVELOPE['device'], _PROPERTY_ENVELOPE['property'])), restore=_PROPERTY_ENVELOPE['restore'], action_plan=None)"]
+               if property_envelope is not None else [] ),
             "candidates = queue.Queue()",
             "progress = SurveyProgress(len(events))",
             *( (["# Standalone scripts cannot query focus-lock state; disengage the lock before running.", f"hook.configure_autofocus(ctrl=mm, guard=guard, focus_lock_check=None, **{autofocus_budget!r}, sweep_exposures={autofocus_sweep_exposures!r})"] if autofocus_budget is not None else []) if saved else [] ),
@@ -1044,10 +1058,15 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
             f"event_source = _survey_event_stream(events, candidates, progress, {params.get('max_idle_s', 60.0)!r}, hook, adaptive=True, max_events=len(events){_plus_reexposures})",
             "_hook_callbacks = {name: callback for name, callback in {"
             "'image_process_fn': getattr(hook, 'image_process_fn', None), "
+            "'pre_hardware_hook_fn': getattr(hook, 'pre_hardware_hook_fn', None), "
             "'post_hardware_hook_fn': getattr(hook, 'post_hardware_hook_fn', None)"
             "}.items() if callback is not None}",
             f"with Acquisition(directory=str(_HERE), name={params.get('name', 'survey')!r}, show_display=True, **_hook_callbacks) as acq:",
             "    acq.acquire(event_source(acq))",
+            *( ["hook._named_stage_restoration = hook.restore_named_stage()"]
+               if named_stage_envelope is not None else [] ),
+            *( ["hook._property_restoration = hook.restore_property()"]
+               if property_envelope is not None else [] ),
         ])
         if acquire_on_hit is not None:
             ap = dict(acquire_on_hit["protocol_params"])
@@ -5140,9 +5159,12 @@ def _configure_hook_capabilities(hook: Any, ctrl: MicroscopeController,
                                  named_stage_envelope: dict | None = None,
                                  hook_action_plan: list[dict] | None = None,
                                  events: list[dict] | None = None,
-                                 property_envelope: dict | None = None) -> None:
+                                 property_envelope: dict | None = None,
+                                 adaptive: bool = False) -> None:
     """Validate and authorize independent parent-side hook capabilities."""
     from microclaw.hook_decisions import CompositeHook, UntrustedHookAdapter
+    if adaptive and hook_action_plan is not None:
+        raise ValueError("run_adaptive_survey rejects hook_action_plan; its events are selected at runtime.")
     if isinstance(hook, CompositeHook):
         emitters = hook.artifact_emitting_hook_names
     elif bool(getattr(hook, "can_emit_artifacts", False)):
@@ -5346,10 +5368,11 @@ def _configure_hook_capabilities(hook: Any, ctrl: MicroscopeController,
             f"{writes} attempted writes maximum; restore {restore!r}."
         )
     from microclaw.hook_decisions import MoveNamedStage, SetDeviceProperty, parse_action
-    if hook_action_plan is None or events is None or not isinstance(hook_action_plan, list):
+    if not adaptive and (hook_action_plan is None or events is None or
+                         not isinstance(hook_action_plan, list)):
         raise ValueError("a hardware envelope requires a hook_action_plan for the generated events.")
     parsed_plan = {}
-    for entry in hook_action_plan:
+    for entry in hook_action_plan or []:
         if not isinstance(entry, dict) or set(entry) != {"hook_event_index", "actions"}:
             raise ValueError("each hook_action_plan entry must contain exactly actions and hook_event_index.")
         index = entry["hook_event_index"]
@@ -5364,17 +5387,18 @@ def _configure_hook_capabilities(hook: Any, ctrl: MicroscopeController,
         if any(not isinstance(action, permitted) for action in actions):
             raise ValueError("fixed hook_action_plan actions require their matching named-stage or property envelope.")
         parsed_plan[index] = actions
-    if set(parsed_plan) != set(range(len(events))):
+    if not adaptive and set(parsed_plan) != set(range(len(events))):
         raise ValueError(f"hook_action_plan indices must be exactly 0..{len(events) - 1}.")
     axes_plan = {}
-    for index, event in enumerate(events):
+    for index, event in enumerate(events or []):
         try:
             signature = hook.axes_signature(event)
         except (TypeError, RuntimeError) as exc:
             raise ValueError(f"generated event {index} has invalid axes: {exc}") from exc
-        if signature in axes_plan:
+        if signature in axes_plan and not adaptive:
             raise ValueError(f"generated events have duplicate axes signature {dict(signature)!r}.")
-        axes_plan[signature] = (index, parsed_plan[index])
+        if not adaptive:
+            axes_plan[signature] = (index, parsed_plan[index])
     if named_config is not None:
         device, low, high, writes, initial, restore = named_config
         reserved = 0 if restore == "leave" else 1
@@ -5444,7 +5468,7 @@ def _configure_hook_capabilities(hook: Any, ctrl: MicroscopeController,
         hook.configure_named_stage(
             core=ctrl.core, guard=guard, device=device, min_um=low, max_um=high,
             max_writes=writes, initial_value=initial, restore=restore,
-            action_plan=axes_plan,
+            action_plan=None if adaptive else axes_plan,
         )
     if property_config is not None:
         device, prop, values, low, high, writes, initial, restore = property_config
@@ -5452,7 +5476,7 @@ def _configure_hook_capabilities(hook: Any, ctrl: MicroscopeController,
             ctrl=ctrl, guard=guard, device=device, property=prop,
             allowed_values=values, min_value=low, max_value=high,
             max_writes=writes, initial_value=initial, restore=restore,
-            action_plan=axes_plan,
+            action_plan=None if adaptive else axes_plan,
         )
 
 
@@ -5725,6 +5749,8 @@ def _survey_event_stream(
                 if adaptive:
                     if survey_events and (max_events is None or emitted < max_events):
                         emitted += 1
+                        if max_events is not None and emitted >= max_events and hasattr(hook, "close_adaptive_handoff"):
+                            hook.close_adaptive_handoff()
                         yield survey_events[0]  # the ONLY pre-dispatched event
                 else:
                     yield from survey_events      # dispatched in microseconds...
@@ -5743,6 +5769,8 @@ def _survey_event_stream(
                             return
                         last_activity = time.monotonic()
                         emitted += 1
+                        if max_events is not None and emitted >= max_events and hasattr(hook, "close_adaptive_handoff"):
+                            hook.close_adaptive_handoff()
                         yield event
                         continue
 
@@ -5797,6 +5825,9 @@ def _acquire_survey_with_detector(
     illumination_envelope: dict | None = None,
     artifact_limits: dict | None = None,
     autofocus_budget: dict | None = None,
+    named_stage_envelope: dict | None = None,
+    property_envelope: dict | None = None,
+    hook_action_plan: list[dict] | None = None,
     acquire_plan: AcquisitionPlan | None = None,
     acquire_hits: list[dict] | None = None,
     acquire_max_hits: int | None = None,
@@ -5878,8 +5909,12 @@ def _acquire_survey_with_detector(
         xy_positions=[(p["x_um"], p["y_um"]) for p in positions],
         **shape_kwargs,
     )
-    _configure_hook_capabilities(hook, ctrl, guard, save_dir, name,
-                                 illumination_envelope, artifact_limits)
+    _configure_hook_capabilities(
+        hook, ctrl, guard, save_dir, name, illumination_envelope, artifact_limits,
+        named_stage_envelope=named_stage_envelope,
+        property_envelope=property_envelope, hook_action_plan=hook_action_plan,
+        events=survey_events, adaptive=adaptive,
+    )
 
     autofocus_reexposures = 0
     if autofocus_budget is not None:
@@ -5956,6 +5991,8 @@ def _acquire_survey_with_detector(
     acquire_reservation = None
     search_channel_effects = None
     planned_acquire_effects = None
+    stage_restoration = None
+    property_restoration = None
     try:
         if acquire_plan is not None:
             acquire_reservation = _authorize_acquisition(ctrl, guard, acquire_plan)
@@ -5976,6 +6013,13 @@ def _acquire_survey_with_detector(
         if reservation is not None:
             reservation.close()
         raise
+    finally:
+        # _acquire_with_hooks returns (or raises) only after Acquisition.__exit__
+        # has awaited completion.  Restoration must never follow acquire(),
+        # which only submits work to pycro-manager.
+        if isinstance(hook, UntrustedHookAdapter):
+            stage_restoration = hook.restore_named_stage()
+            property_restoration = hook.restore_property()
     return _adaptive_result(
         dataset_path, hook.log_path,
         status=f"Survey acquisition complete across {len(positions)} position(s).",
@@ -5987,6 +6031,10 @@ def _acquire_survey_with_detector(
            if search_channel_effects is not None else {}),
         **({"_planned_acquire_effects": planned_acquire_effects}
            if planned_acquire_effects is not None else {}),
+        **({"named_stage_restoration": stage_restoration}
+           if stage_restoration is not None else {}),
+        **({"property_restoration": property_restoration}
+           if property_restoration is not None else {}),
     )
 
 
@@ -6010,6 +6058,9 @@ def run_adaptive_survey(
     artifact_limits: dict | None = None,
     autofocus_budget: dict | None = None,
     acquire_on_hit: dict | None = None,
+    named_stage_envelope: dict | None = None,
+    property_envelope: dict | None = None,
+    hook_action_plan: list[dict] | None = None,
 ) -> dict:
     """Acquire positions one at a time; the hook decides whether the next
     position is acquired at all.
@@ -6156,6 +6207,8 @@ def run_adaptive_survey(
         exposure_ms=params.get("exposure_ms"),
         adaptive=True, illumination_envelope=illumination_envelope,
         artifact_limits=artifact_limits, autofocus_budget=autofocus_budget,
+        named_stage_envelope=named_stage_envelope,
+        property_envelope=property_envelope, hook_action_plan=hook_action_plan,
         acquire_plan=acquire_plan,
         acquire_hits=hits if acquire_on_hit is not None else None,
         acquire_max_hits=max_hits,

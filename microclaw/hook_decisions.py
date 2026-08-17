@@ -340,6 +340,19 @@ class UntrustedHookAdapter:
             "events": list(events), "candidates": candidates, "progress": progress,
             "guard": guard, "max_events": max_events, "emitted": 1, "cursor": 1,
         }
+        # The seed has no preceding analysis, but missing action sets must still
+        # abort before exposure.  Install its explicit empty set here.
+        if not events:
+            raise ValueError("an adaptive survey requires a seed event")
+        if self._fixed_plan_context is None:
+            self._fixed_plan_context = {
+                "plan": {}, "consumed": set(), "adaptive": True, "closed": False,
+            }
+        coordinator = self._fixed_plan_context
+        if not coordinator.get("adaptive"):
+            raise ValueError("adaptive and fixed hardware coordinators cannot be combined")
+        signature = self.axes_signature(events[0])
+        coordinator["plan"][signature] = (0, ())
         if acquire_hits is not None:
             self._context.update(
                 acquire_hits=acquire_hits, max_hits=max_hits, read_z=read_z,
@@ -383,10 +396,11 @@ class UntrustedHookAdapter:
     def configure_named_stage(self, *, core, guard, device: str, min_um: float,
                               max_um: float, max_writes: int, initial_value: float,
                               restore: str | dict[str, float],
-                              action_plan: dict[tuple, tuple[int, tuple[HookAction, ...]]]) -> None:
-        plan = dict(action_plan)
+                              action_plan: dict[tuple, tuple[int, tuple[HookAction, ...]]] | None) -> None:
+        plan = dict(action_plan or {})
         if self._fixed_plan_context is None:
-            self._fixed_plan_context = {"plan": plan, "consumed": set()}
+            self._fixed_plan_context = {"plan": plan, "consumed": set(),
+                                        "adaptive": action_plan is None, "closed": False}
         elif self._fixed_plan_context["plan"] != plan:
             raise ValueError("fixed hardware capabilities received different action plans")
         self._named_stage_context = {
@@ -401,10 +415,11 @@ class UntrustedHookAdapter:
                            min_value: float | None, max_value: float | None,
                            max_writes: int, initial_value: str,
                            restore: str | dict[str, str],
-                           action_plan: dict[tuple, tuple[int, tuple[HookAction, ...]]]) -> None:
-        plan = dict(action_plan)
+                           action_plan: dict[tuple, tuple[int, tuple[HookAction, ...]]] | None) -> None:
+        plan = dict(action_plan or {})
         if self._fixed_plan_context is None:
-            self._fixed_plan_context = {"plan": plan, "consumed": set()}
+            self._fixed_plan_context = {"plan": plan, "consumed": set(),
+                                        "adaptive": action_plan is None, "closed": False}
         elif self._fixed_plan_context["plan"] != plan:
             raise ValueError("fixed hardware capabilities received different action plans")
         self._property_context = {
@@ -595,6 +610,36 @@ class UntrustedHookAdapter:
         if property_actions:
             self._verify_property_actions(property_actions)
         return event
+
+    def close_adaptive_handoff(self) -> None:
+        """Prevent decisions made after the final authorized yield becoming writes."""
+        if self._fixed_plan_context is not None and self._fixed_plan_context.get("adaptive"):
+            self._fixed_plan_context["closed"] = True
+
+    def _queue_adaptive_candidate(self, event: dict, metadata: dict,
+                                  actions: tuple[HookAction, ...]) -> bool:
+        """Register the engine-preserved identity before publishing the event."""
+        ctx = self._context
+        coordinator = self._fixed_plan_context
+        assert ctx is not None and coordinator is not None
+        signature = self.axes_signature(event)
+        if coordinator.get("closed"):
+            reason = "adaptive handoff is closed after the final authorized event"
+            for action in actions:
+                self._refuse(metadata, action, reason)
+            self.note_aborted()
+            return False
+        if signature in coordinator["plan"]:
+            reason = f"adaptive event repeats axes signature {dict(signature)!r}"
+            for action in actions:
+                self._refuse(metadata, action, reason)
+            self._record(metadata, event="hook_action", decision="refused", reason=reason)
+            return False
+        index = ctx["emitted"]
+        coordinator["plan"][signature] = (index, actions)
+        ctx["candidates"].put(event)
+        ctx["emitted"] += 1
+        return True
 
     def restore_named_stage(self) -> dict[str, Any] | None:
         ctx = self._named_stage_context
@@ -906,8 +951,8 @@ class UntrustedHookAdapter:
             refocused_event["axes"]["refocus"] = 1
             if refocused_event.get("z") is not None:
                 refocused_event["z"] = result.final_z_um
-            ctx["candidates"].put(refocused_event)
-            ctx["emitted"] += 1
+            if not self._queue_adaptive_candidate(refocused_event, metadata, ()):
+                return
             # The survey will now receive one frame more than its plan. Raised
             # here rather than sized from the budget up front, so a survey that
             # never spends its refocuses still completes instead of idling out.
@@ -926,6 +971,15 @@ class UntrustedHookAdapter:
             self._accept(metadata, action, "survey stopped before another tile was dispatched")
             return
         events = ctx["events"]
+        coordinator = self._fixed_plan_context
+        if coordinator is not None and coordinator.get("adaptive") and coordinator.get("closed"):
+            reason = "adaptive handoff is closed after the final authorized event"
+            self._refuse(metadata, action, reason)
+            for pending in ctx.pop("pending_hardware_actions", ()):
+                self._action_counts[pending.kind] = self._action_counts.get(pending.kind, 0) + 1
+                self._refuse(metadata, pending, reason)
+            self.note_aborted()
+            return
         # A finished plan is reported as a finished plan. Checked before the
         # reservation because an authorized refocus widens max_events by exactly
         # the re-exposures it may take, so on M5 2026-08-11 a three-tile survey
@@ -1006,9 +1060,54 @@ class UntrustedHookAdapter:
             })
             self._accept(metadata, action, "planned tile recorded for acquire phase")
             return
-        ctx["candidates"].put(event)
-        ctx["emitted"] += 1
+        pending = tuple(ctx.pop("pending_hardware_actions", ()))
+        if not self._queue_adaptive_candidate(event, metadata, pending):
+            return
         self._accept(metadata, action, "planned event passed guard and committed reservation")
+
+    def _dispatch_adaptive_partition(self, actions: tuple[HookAction, ...],
+                                     metadata: dict) -> tuple[bool, bool]:
+        current = tuple(a for a in actions if isinstance(a, (EmitArtifact, DiscardFrame)))
+        hardware = tuple(a for a in actions if isinstance(a, (MoveNamedStage, SetDeviceProperty)))
+        selectors = tuple(a for a in actions if isinstance(
+            a, (ContinueSurvey, AcquireAt, RequestAutofocus, StopSurvey)
+        ))
+        known = current + hardware + selectors
+        other = tuple(a for a in actions if a not in known)
+        discard = False
+        for action in current:
+            self._dispatch(action, metadata)
+            discard = discard or isinstance(action, DiscardFrame)
+        autofocus = tuple(a for a in selectors if isinstance(a, RequestAutofocus))
+        malformed = len(selectors) > 1 or bool(hardware) and (
+            len(selectors) != 1 or isinstance(selectors[0], StopSurvey)
+        )
+        if malformed:
+            reason = ("malformed adaptive action partition: next-frame hardware "
+                      "actions require exactly one compatible next-event selector")
+            for action in selectors + hardware + other:
+                self._action_counts[action.kind] = self._action_counts.get(action.kind, 0) + 1
+                self._refuse(metadata, action, reason)
+            assert self._context is not None
+            self._context["progress"].done_early()
+            return discard, True
+        if autofocus:
+            self._dispatch(autofocus[0], metadata)
+            for action in hardware:
+                self._action_counts[action.kind] = self._action_counts.get(action.kind, 0) + 1
+                self._refuse(metadata, action,
+                             "not dispatched until the refocused tile is judged")
+            for action in other:
+                self._dispatch(action, metadata)
+            return discard, False
+        if hardware:
+            assert self._context is not None
+            self._context["pending_hardware_actions"] = hardware
+        for action in selectors + other:
+            self._dispatch(action, metadata)
+        if self._context is not None:
+            self._context.pop("pending_hardware_actions", None)
+        return discard, False
 
     def image_process_fn(self, image, metadata, _hardware_event_queue):
         try:
@@ -1061,31 +1160,16 @@ class UntrustedHookAdapter:
                 # decisions remain separate parent-owned records below.
                 self._record(metadata, **observation)
                 observation_index = len(self._log) - 1
-                discard = False
                 if self._context is not None:
-                    self._context["refocus_requeued"] = False
-                for index, action in enumerate(actions):
-                    artifact_hash = self._dispatch(action, metadata)
-                    if artifact_hash:
-                        self._log[observation_index]["artifact_sha256"] = artifact_hash
-                        self._write_log()
-                    discard = discard or isinstance(action, DiscardFrame)
-                    if (self._context is not None and
-                            self._context.get("refocus_requeued")):
-                        # The hook must judge the focused pixels before it can
-                        # submit another survey event. Every deferred proposal
-                        # still crosses the audit boundary: silently dropping it
-                        # would under-report hook_actions and hide why a tile was
-                        # not acquired.
-                        for deferred in actions[index + 1:]:
-                            self._action_counts[deferred.kind] = (
-                                self._action_counts.get(deferred.kind, 0) + 1
-                            )
-                            self._refuse(
-                                metadata, deferred,
-                                "not dispatched until the refocused tile is judged",
-                            )
-                        break
+                    discard, _malformed = self._dispatch_adaptive_partition(actions, metadata)
+                else:
+                    discard = False
+                    for action in actions:
+                        artifact_hash = self._dispatch(action, metadata)
+                        if artifact_hash:
+                            self._log[observation_index]["artifact_sha256"] = artifact_hash
+                            self._write_log()
+                        discard = discard or isinstance(action, DiscardFrame)
                 returned = None if discard else (image, metadata)
                 if discard:
                     self._record(metadata, event="legacy_hook_frame", outcome="discarded")

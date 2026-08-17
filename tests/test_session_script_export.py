@@ -1,5 +1,6 @@
 import inspect
 import json
+import queue
 import re
 from itertools import count
 from pathlib import Path
@@ -2407,6 +2408,76 @@ def test_emitted_property_run_actually_dispatches_its_writes(tmp_path, monkeypat
 
     assert writes == [("Wheel", "State", "A"), ("Wheel", "State", "B")]
     assert repaints, "the emitted script never repainted; an EMU rig needs this"
+
+
+def test_emitted_adaptive_run_executes_decision_loop_and_pre_hardware_move(tmp_path, monkeypatch):
+    """The export carries the rule, not a trace, and runs in engine order."""
+    from microclaw.hook_manager import save_hook
+    import microclaw.hook_manager as manager
+
+    hooks_dir = tmp_path / "hooks"
+    monkeypatch.setattr(manager, "HOOKS_DIR", hooks_dir)
+    monkeypatch.setattr(manager, "MANIFEST", hooks_dir / "manifest.json")
+    save_hook(
+        "adaptive_stage",
+        "from microclaw.hook_decisions import (ContinueSurvey, HookResult, MoveNamedStage, StopSurvey)\n"
+        "class AdaptiveStage:\n"
+        "    def analyze_frame(self, image, metadata):\n"
+        "        if metadata['PositionName'] == 'p0':\n"
+        "            target = float(image[0, 0]) + 5.0\n"
+        "            return HookResult({'target': target}, (MoveNamedStage(target), ContinueSurvey()))\n"
+        "        return HookResult({}, (StopSurvey(),))\n",
+        "adaptive_stage", source="user_provided",
+    )
+    _, result, source = export(tmp_path, [call("run_adaptive_survey", {
+        "protocol": "timelapse", "protocol_params": {"n_frames": 1, "interval_s": 0},
+        "positions": [{"name": "p0", "x_um": 0.0, "y_um": 0.0},
+                      {"name": "p1", "x_um": 1.0, "y_um": 0.0}],
+        "save_dir": "session", "name": "adaptive", "hook_strategy": "adaptive_stage",
+        "named_stage_envelope": {"device": "Axis", "min_um": 0.0, "max_um": 10.0,
+                                 "max_writes": 1, "restore": "leave"},
+    })])
+    assert result["emitted_calls"] == 1, (result, source)
+    assert "class AdaptiveStage" in source and "_survey_event_stream" in source
+    assert "_axes_plan =" not in source and "input(" not in source
+
+    writes = []
+    class DemoCore:
+        def set_position(self, device, value): writes.append((device, value))
+        def get_position(self, device=None): return writes[-1][1] if writes else 0.0
+        def wait_for_device(self, device): pass
+        def set_exposure(self, value): pass
+
+    class FakeAcquisition:
+        def __init__(self, **kwargs):
+            self._hooks, self._events = kwargs, None
+            self._event_queue = queue.Queue()
+            self._acq = type("State", (), {"is_finished": lambda self: False})()
+        def __enter__(self): return self
+        def acquire(self, events): self._events = events
+        def __exit__(self, *_args):
+            for original in self._events:
+                event = {key: original[key] for key in ("axes", "x", "y") if key in original}
+                self._hooks["pre_hardware_hook_fn"](event)
+                label = event["axes"]["position"]
+                value = 2 if label == "p0" else 9
+                self._hooks["image_process_fn"](
+                    np.array([[value]], dtype=np.uint16),
+                    {"PositionName": label, "Axes": {},
+                     "XPosition_um_Intended": event.get("x"),
+                     "YPosition_um_Intended": event.get("y")}, None)
+            return False
+
+    def fake_events(**kwargs):
+        return [{"axes": {"position": label}, "x": xy[0], "y": xy[1]}
+                for label, xy in zip(kwargs["position_labels"], kwargs["xy_positions"])]
+
+    runnable = re.sub(r"^from pycromanager import .*$", "", source, flags=re.M)
+    exec(compile(runnable, "routine.py", "exec"), {
+        "__file__": str(tmp_path / "routine.py"), "Core": DemoCore,
+        "Acquisition": FakeAcquisition, "multi_d_acquisition_events": fake_events,
+    })
+    assert writes == [("Axis", 7.0)]
 
 
 @pytest.mark.parametrize(("envelope_key", "envelope", "expected"), [
