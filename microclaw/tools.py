@@ -7254,7 +7254,13 @@ def describe_hook(
             },
         }
     if name in list_saved_hooks():
-        return describe_saved_hook(name)
+        description = describe_saved_hook(name)
+        description["adaptive_hardware_actions"] = (
+            "run_adaptive_survey may apply MoveNamedStage or SetDeviceProperty "
+            "to the event selected by the same HookResult, within acquisition-call "
+            "envelopes; predetermined runs require hook_action_plan instead."
+        )
+        return description
     return {
         "error": f"Unknown hook strategy '{name}'. Run list_hooks() to see available strategies."
     }

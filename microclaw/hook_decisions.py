@@ -1066,7 +1066,8 @@ class UntrustedHookAdapter:
         self._accept(metadata, action, "planned event passed guard and committed reservation")
 
     def _dispatch_adaptive_partition(self, actions: tuple[HookAction, ...],
-                                     metadata: dict) -> tuple[bool, bool]:
+                                     metadata: dict,
+                                     observation_index: int) -> tuple[bool, bool]:
         current = tuple(a for a in actions if isinstance(a, (EmitArtifact, DiscardFrame)))
         hardware = tuple(a for a in actions if isinstance(a, (MoveNamedStage, SetDeviceProperty)))
         selectors = tuple(a for a in actions if isinstance(
@@ -1076,7 +1077,10 @@ class UntrustedHookAdapter:
         other = tuple(a for a in actions if a not in known)
         discard = False
         for action in current:
-            self._dispatch(action, metadata)
+            artifact_hash = self._dispatch(action, metadata)
+            if artifact_hash:
+                self._log[observation_index]["artifact_sha256"] = artifact_hash
+                self._write_log()
             discard = discard or isinstance(action, DiscardFrame)
         autofocus = tuple(a for a in selectors if isinstance(a, RequestAutofocus))
         malformed = len(selectors) > 1 or bool(hardware) and (
@@ -1161,7 +1165,9 @@ class UntrustedHookAdapter:
                 self._record(metadata, **observation)
                 observation_index = len(self._log) - 1
                 if self._context is not None:
-                    discard, _malformed = self._dispatch_adaptive_partition(actions, metadata)
+                    discard, _malformed = self._dispatch_adaptive_partition(
+                        actions, metadata, observation_index
+                    )
                 else:
                     discard = False
                     for action in actions:

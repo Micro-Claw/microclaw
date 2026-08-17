@@ -322,8 +322,9 @@ but before the camera fires.
 ### pre_hardware_hook_fn(event_or_events: dict | list[dict]) -> same shape
 
 Called before hardware moves. Microclaw wires this only through its trusted
-adapter for a declarative ``hook_action_plan``; generated hook source does not
-implement or receive this callback.
+adapter: from a declarative ``hook_action_plan`` for predetermined runs, or from
+the action set registered with an adaptively selected event. Generated hook
+source does not implement or receive this callback.
 
   - Return the (optionally modified) event dict or event list in the same shape,
     ALWAYS. NEVER return None:
