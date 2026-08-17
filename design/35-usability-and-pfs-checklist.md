@@ -8067,6 +8067,12 @@ schedule them or record a reason at block 12.
 This is an inventory, not permission to close with unresolved blank work. Block
 12 assigns every row one of the explicit dispositions above.
 
+- ~~**An exported script is refused whenever a recorded error contains a
+  newline.**~~ **FIXED in block 52b, `2b9233e`.** Found on M5 2026-08-17: a Java
+  bridge stack trace broke out of its `# SKIPPED` comment and `ast.parse` refused
+  the whole session's export. Pre-existing on `main` and unrelated to design/52,
+  but fixed there because it sat on that gate's path and no re-gate could pass
+  without it.
 - **Four of the five connect sites write an actionable refusal that the common
   failure never reaches.** Found 2026-08-17 on M5, while capturing block 52b's
   precheck with Micro-Manager not running. `MicroscopeController.__init__`
@@ -8136,7 +8142,10 @@ This is an inventory, not permission to close with unresolved blank work. Block
   timelapse or z-stack now carries a declarative `hook_action_plan` and a
   `named_stage_envelope`, so the TIRF sweep this row describes is expressible as
   one acquisition, and its exported script reproduces the whole mechanism.
-  **52b (bounded device properties) and 52c (adaptive refinement) remain open.**
+  **52b is MERGED 2026-08-17 (`2b9233e`) after three M5 rig trips** — a saved
+  hook may now write one bounded, operator-approved device property per run, with
+  the authorization map unchanged as a hard gate over it. **52c (adaptive
+  refinement) remains open.**
   `design/52`'s own ledger and checklist are the live record, not this row.** The
   reconciled decision folds onto `configure_illumination` /
   `_configure_hook_capabilities` rather than building a second envelope

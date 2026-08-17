@@ -72,6 +72,28 @@ replacement for it.
   tool accepts must reach the emitted script, because `_emit_adaptive`'s
   non-survey branches carried no exposure at all until a folded tool brought one.
 
+  **An exported script that compiles is not an exported script that works.**
+  Block 52b (merged 2026-08-17) spent **three M5 rig trips on the export alone**,
+  each dying for a different reason, and two of those survived compilation *and*
+  every grep in the runbook. One: a recorded error containing a newline — every
+  Micro-Manager bridge exception carries a Java stack trace — broke out of its
+  `# SKIPPED` comment, so `ast.parse` refused the **whole session's** export;
+  pre-existing, and it meant no session could be exported on a rig where a serial
+  timeout is ordinary. Two: the emitted `SimpleNamespace(core=core)` had no
+  `refresh_gui`, so the script died on its first property write. Every property
+  export test compiled the script and none ran it. **Write the test that execs
+  the emitted source against fakes and drives `pre_hardware_hook_fn` per event**
+  (`test_emitted_property_run_actually_dispatches_its_writes`); it reproduces the
+  second defect exactly. And `export_session_script` compiles *this session's*
+  recorded calls, so an export gate step needs a run in front of it — a fresh
+  session emits a 13-line stub.
+
+  **Exported scripts print their envelope and do not prompt** (operator decision,
+  2026-08-17). `Type YES to continue:` was invisible under output redirection and
+  a run carrying two envelopes asked twice; the bounds, budget, guard and
+  read-back are what make the script safe, and running it is the consent. The
+  print stays and carries the **bound**, because it is now the only disclosure.
+
   **If you add a helper to `image_analysis`, the exporter must inline it.**
   `test_emitted_inline_defines_every_name_it_uses`
   (`tests/test_session_script_export.py`) enforces this. It exists
@@ -188,7 +210,12 @@ because a block looks small.
    to look for defects, not a reason to stop looking.** A step written as a
    criterion rather than a literal command is also a step that does not get run:
    52a's required restore limb was skipped on the very trip booked for it, while
-   every lettered step around it ran.
+   every lettered step around it ran. **A step must also name the *mechanism*
+   under test, not the outcome** — 52b's mandatory limb asked an agent to "set
+   `<stage>` `Position (um)`", it correctly used the named-stage route instead,
+   and the refusal being gated never fired at all; the axis moved and the dose
+   was spent for no evidence. An outcome-shaped step gets satisfied by the better
+   route.
 7. **Fix, sized to the finding.** Small corrections: do them yourself on the
    branch. Larger ones: back to a runner in a worktree, then validate its output
    as in step 3. Either way the fix is pushed to the same branch.

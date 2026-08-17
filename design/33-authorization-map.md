@@ -364,6 +364,37 @@ numeric actuators, and acquisition paths remain independent capabilities and
 must be added to the map separately; the property allowlist does not constrain
 them by implication.
 
+### An approved hook envelope replaces the safety-config allow/deny decision, and not this map
+
+Added by block 52b's design gate, 2026-08-17, after it shipped on M5.
+
+A saved hook may now be granted a `property_envelope` naming one exact
+`(device, property)` with a value set or numeric interval, a write budget and a
+restoration policy (design/52). When the parent dispatches that write it takes
+**two** authorization decisions, and only one of them yields:
+
+- **`check_device_property`'s categorical allow/deny policy yields.** The exact,
+  operator-approved, audited envelope *is* the safety-config authorization for
+  that pair, so the write takes the branch typed and illumination pairs already
+  take: it bypasses the `allowed_properties` allowlist while an explicit
+  `forbidden_properties` entry still wins. Without this, a historical categorical
+  exclusion would veto the exact action the operator just approved, which is the
+  defect design/52 was written about wearing a different hat. The
+  bounds/type validator stays mandatory — envelope approval never substitutes for
+  a range, a unit or a device's allowed values.
+- **`authorize_property_write` does not yield.** It runs unchanged, and an
+  excluded or unclassified pair refuses regardless of approval, for the reason
+  design/49 gave: the map's exclusions encode hardware semantics nobody has
+  established yet, and an approval dialog is not where those get settled. The
+  envelope is not a route around this map.
+
+The two are different objects and conflating them was the first draft's error.
+**Measured on M5, 2026-08-17**: with `property_writes_unrestricted: true`, an
+approved envelope aimed at `Thorlabs ELL17/ELL20`.`Position (um)` — a real,
+writable property, inside both its reviewed `named_stages` bound and the approved
+interval — was refused by this map with the message naming `move_named_stage`,
+and the axis did not move. That is a pass, not a gap.
+
 For the new schema's normal guaranteed mode, completeness is mandatory, not an
 optional rig preference. The explicitly selected degraded/trusted-plugin mode
 above is outside that guarantee and must never be reported as complete.
