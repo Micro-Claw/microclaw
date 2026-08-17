@@ -5354,6 +5354,15 @@ def _configure_hook_capabilities(hook: Any, ctrl: MicroscopeController,
         if not (restore in {"leave", "entry"} if isinstance(restore, str) else
                 isinstance(restore, dict) and set(restore) == {"value"}):
             raise ValueError("named_stage_envelope restore must be 'leave', 'entry', or {'value': number}.")
+        # Approval cannot widen a configured bound, so the envelope's own
+        # endpoints face the guard before the operator is shown them. M5,
+        # 2026-08-17: an approved `18000-21100 um` interval over an axis capped
+        # at 20000 was displayed as reachable and the run died mid-sweep on the
+        # first target that crossed it. A fixed plan checks only its targets,
+        # which says nothing about the reach being offered -- and an adaptive
+        # run has no targets to check at approval at all.
+        guard.check_named_stage(device, low)
+        guard.check_named_stage(device, high)
         initial = float(ctrl.core.get_position(device))
         if not math.isfinite(initial):
             raise ValueError("initial named-stage position must be finite.")
@@ -6005,6 +6014,18 @@ def _acquire_survey_with_detector(
         dataset_path = _acquire_with_hooks(
             guard, save_dir, name, events, hook, reservation=reservation
         )
+    except _HookedAcquisitionFailure as exc:
+        # The two fixed runners already translate this; the survey runner did
+        # not, so every adaptive abort reported an error string and dropped the
+        # partial dataset path, the frames exposed and the last known hardware
+        # state. Measured on M5, 2026-08-17, across three aborted runs -- the
+        # operator read the axis back by hand each time. design/52
+        # §"Failure semantics and audit" owes all three on this path too.
+        if acquire_reservation is not None:
+            acquire_reservation.close()
+        if reservation is not None:
+            reservation.close()
+        return _hooked_failure_result(exc, getattr(hook, "log_path", None))
     except Exception:
         if acquire_reservation is not None:
             acquire_reservation.close()
@@ -6266,6 +6287,12 @@ def run_adaptive_survey(
     # (20260716_140329). Say what actually ran, from the counter the hook
     # itself drove — and attach the planned coordinates so the hook log
     # joins on `position` without re-imaging (design/23 Episode A).
+    if "error" in result:
+        # An aborted run keeps its failure report verbatim — dataset path,
+        # frames exposed, last known hardware state, and design/38 F7's "do not
+        # treat the run as untouched" hint. The rewrites below would dress it as
+        # a completed survey and replace exactly that warning.
+        return result
     stopped = progress.stopped_early
     result.pop("positions", None)   # "positions: 9" is the ambiguity this tool retires
     # "acquired of N planned tile(s)" read as coverage, and a hook may revisit a

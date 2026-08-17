@@ -726,3 +726,97 @@ def test_wind_down_fixture_survives_an_exhausted_budget(tmp_path):
     assert adapter._illumination_context["remaining"] == 0
     reasons = [r.get("reason") for r in adapter._log if r.get("decision") == "refused"]
     assert reasons == ["authorized illumination write budget exhausted"]
+
+
+def test_envelope_wider_than_configured_bounds_refuses_before_any_exposure(
+    monkeypatch, tmp_path
+):
+    """M5, 2026-08-17: the dialog offered an interval the rig would refuse.
+
+    The approved envelope read `18000-21100 um` while `named_stages` capped the
+    axis at 20000, so the operator approved a reach the guard could not honour
+    and the run died mid-sweep on the target that crossed the bound. Approval
+    cannot widen a configured bound (design/52 §"Approval and bounds are
+    different controls"), so the envelope's own endpoints are checked at
+    validation, before the confirmation and before any exposure.
+    """
+    ctrl = MagicMock()
+    ctrl.core.get_position.return_value = 18673
+    hook = UntrustedHookAdapter(object())
+    acquire = MagicMock()
+    confirmed = []
+    monkeypatch.setattr(tools, "_resolve_hook", lambda *args: hook)
+    monkeypatch.setattr(tools, "_build_acquisition_events", lambda **kwargs: [{"axes": {}}])
+    monkeypatch.setattr(tools, "CONFIRM_FN",
+                        lambda *args, **kwargs: confirmed.append(args) or True)
+    monkeypatch.setattr(tools, "_acquire_with_hooks", acquire)
+    guard = SafetyGuard(SafetyConstraints(
+        named_stages=[NamedStageLimits("fixture-stage", 0, 20000)]
+    ))
+    with pytest.raises(SafetyViolation, match="exceeds the maximum allowed"):
+        tools.run_timelapse(
+            ctrl, guard, 1, 0, str(tmp_path), hook_strategy="saved",
+            named_stage_envelope={
+                "device": "fixture-stage", "min_um": 18000, "max_um": 21100,
+                "max_writes": 2, "restore": "leave",
+            },
+            hook_action_plan=[{
+                "hook_event_index": 0,
+                "actions": [{"kind": "MoveNamedStage", "position_um": 18500}],
+            }],
+        )
+    assert confirmed == [], "the operator must not be asked to approve an unreachable interval"
+    acquire.assert_not_called()
+    ctrl.core.set_position.assert_not_called()
+
+
+def test_adaptive_hardware_failure_reports_dataset_frames_and_last_state(
+    monkeypatch, tmp_path
+):
+    """M5, 2026-08-17: three aborted survey runs reported only an error string.
+
+    `_acquire_with_hooks` raises `_HookedAcquisitionFailure` carrying the
+    dataset path, the frames exposed and the last known hardware state, and the
+    two fixed runners translate it. The survey runner did not, so every adaptive
+    abort lost all three and the operator had to read the axis by hand.
+    """
+    class Scoring:
+        def analyze_frame(self, image, metadata):
+            return None
+
+    hook = UntrustedHookAdapter(Scoring())
+    hook.log_path = str(tmp_path / "hook.json")
+    monkeypatch.setattr(tools, "_resolve_hook", lambda *args: hook)
+    monkeypatch.setattr(tools, "CONFIRM_FN", lambda *args, **kwargs: True)
+    monkeypatch.setattr(tools, "_authorize_acquisition", lambda *args, **kwargs: None)
+
+    def explode(*_args, **_kwargs):
+        # The real failure path builds this payload in _acquire_with_hooks from
+        # the live envelope context; what is under test here is whether the
+        # survey runner passes it on rather than stringifying it away.
+        raise tools._HookedAcquisitionFailure(
+            RuntimeError("named-stage move failed: serial command failed"),
+            str(tmp_path / "survey_1"), frames_exposed=3,
+            last_hardware_state={"device": "Axis", "position_um": 42.0},
+        )
+
+    monkeypatch.setattr(tools, "_acquire_with_hooks", explode)
+    ctrl = MagicMock()
+    guard = SafetyGuard(SafetyConstraints(
+        named_stages=[NamedStageLimits("Axis", 0, 100)]
+    ))
+    monkeypatch.setattr(guard, "resolve_in_workspace", lambda path: path)
+    result = tools.run_adaptive_survey(
+        ctrl, guard, protocol="timelapse", save_dir=str(tmp_path),
+        hook_strategy="saved",
+        positions=[{"name": "p0", "x_um": 0.0, "y_um": 0.0},
+                   {"name": "p1", "x_um": 1.0, "y_um": 0.0}],
+        protocol_params={"n_frames": 1, "interval_s": 0},
+        named_stage_envelope={"device": "Axis", "min_um": 0, "max_um": 100,
+                              "max_writes": 2, "restore": "leave"},
+    )
+    assert result["dataset_path"] == str(tmp_path / "survey_1")
+    assert result["frames_exposed"] == 3
+    assert result["last_hardware_state"] == {"device": "Axis", "position_um": 42.0}
+    assert result["log_path"] == hook.log_path
+    assert "do not treat the run as untouched" in result["hint"]
