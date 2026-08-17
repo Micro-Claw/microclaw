@@ -1386,7 +1386,27 @@ def export_session_script(
         *(["", _channel_verification_source().rstrip()] if channel_writes else []),
         "",
         "core = Core()",
-        "mm = SimpleNamespace(core=core)",
+        # A property write calls ctrl.refresh_gui(); the stand-in used to be a
+        # bare SimpleNamespace, so the emitted script died on its FIRST property
+        # write with AttributeError -- measured on M5, 2026-08-17, after the
+        # script had compiled and been grepped clean. Reproduce the live
+        # behaviour rather than stubbing it: an EMU rig genuinely needs the
+        # repaint (design/43b), and it is best-effort and never raises, exactly
+        # as MicroscopeController.refresh_gui.
+        *(["def _refresh_gui():",
+           "    # Best-effort repaint, as MicroscopeController.refresh_gui does:",
+           "    # an EMU rig genuinely needs it (design/43b), and a GUI failure",
+           "    # must never turn a successful hardware write into a failed one.",
+           "    # Imported here rather than at the top so a headless run, or a",
+           "    # Micro-Manager without Studio, degrades to a no-op.",
+           "    try:",
+           "        from pycromanager import Studio",
+           "        Studio().app().refresh_gui_from_cache()",
+           "    except Exception:",
+           "        pass",
+           "",
+           "mm = SimpleNamespace(core=core, refresh_gui=_refresh_gui)"]
+          if adaptive_used else ["mm = SimpleNamespace(core=core)"]),
         *(["logger = logging.getLogger(__name__)"] if adaptive_used else []),
         *body_lines,
     ]

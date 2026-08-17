@@ -1,5 +1,6 @@
 import inspect
 import json
+import re
 from itertools import count
 from pathlib import Path
 from types import SimpleNamespace
@@ -2332,3 +2333,78 @@ def test_a_multiline_recorded_error_stays_inside_its_comment(tmp_path, label, re
             stripped = line.lstrip()
             assert stripped.startswith("#") or stripped.startswith("raise "), line
     assert "Serial command failed" in source
+
+
+def test_emitted_property_run_actually_dispatches_its_writes(tmp_path, monkeypatch):
+    """Run the emitted script, do not just compile it.
+
+    M5, 2026-08-17: the exported script compiled, passed every grep in the
+    runbook, and then died on its FIRST property write with
+    `AttributeError: 'types.SimpleNamespace' object has no attribute
+    'refresh_gui'`. `_apply_property` calls `ctrl.refresh_gui()`, which the live
+    controller has and the emitted stand-in did not. Compilation could never
+    have caught it; executing the dispatch does.
+    """
+    from microclaw.hook_manager import save_hook
+    import microclaw.hook_manager as manager
+
+    hooks_dir = tmp_path / "hooks"
+    monkeypatch.setattr(manager, "HOOKS_DIR", hooks_dir)
+    monkeypatch.setattr(manager, "MANIFEST", hooks_dir / "manifest.json")
+    save_hook(
+        "planned_property", "class PlannedProperty:\n"
+        "    def analyze_frame(self, image, metadata):\n"
+        "        return None\n",
+        "planned_property", source="user_provided",
+    )
+    _, _, source = export(tmp_path, [call("run_timelapse", {
+        "n_frames": 2, "interval_s": 1, "save_dir": "session", "name": "props",
+        "hook_strategy": "planned_property",
+        "property_envelope": {"device": "Wheel", "property": "State",
+                              "allowed_values": ["A", "B"], "max_writes": 2,
+                              "restore": "leave"},
+        "hook_action_plan": [
+            {"hook_event_index": 0, "actions": [{"kind": "SetDeviceProperty", "value": "A"}]},
+            {"hook_event_index": 1, "actions": [{"kind": "SetDeviceProperty", "value": "B"}]},
+        ],
+    })])
+
+    writes, repaints = [], []
+
+    class DemoCore:
+        def set_property(self, d, p, v): writes.append((d, p, v))
+        def get_property(self, d, p): return writes[-1][2] if writes else "A"
+        def get_property_type(self, _d, _p): return "String"
+        def wait_for_device(self, _d): pass
+
+    class DemoStudio:
+        def app(self): return self
+        def refresh_gui_from_cache(self): repaints.append(True)
+
+    # The emitted helper imports Studio lazily, so patch it where it is looked up.
+    monkeypatch.setattr("pycromanager.Studio", DemoStudio)
+
+    class FakeAcquisition:
+        """Drives pre_hardware_hook_fn per event, as the engine does."""
+        def __init__(self, **kwargs): self._hooks = kwargs
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def acquire(self, events):
+            for event in events:
+                self._hooks["pre_hardware_hook_fn"](event)
+
+    def fake_events(**kwargs):
+        return [{"axes": {"time": i}} for i in range(kwargs.get("num_time_points", 2))]
+
+    # Strip the real pycromanager import so the fakes above are what runs, the
+    # same way the rejected-then-successful test does.
+    runnable = re.sub(r"^from pycromanager import .*$", "", source, flags=re.M)
+    exec(compile(runnable, "routine.py", "exec"), {
+        "__file__": str(tmp_path / "routine.py"),
+        "Core": DemoCore, "Acquisition": FakeAcquisition,
+        "multi_d_acquisition_events": fake_events,
+        "input": lambda _prompt="": "YES",
+    })
+
+    assert writes == [("Wheel", "State", "A"), ("Wheel", "State", "B")]
+    assert repaints, "the emitted script never repainted; an EMU rig needs this"
