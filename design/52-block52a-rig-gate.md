@@ -285,14 +285,47 @@ capture the whole report and stop.
 
 **Then repeat Step 3 with `restore: "entry"`. This limb is required, not
 optional** — it is the path the fix changed, and the one that would previously
-have driven the stage back *during* the sweep. Expect:
+have driven the stage back *during* the sweep.
+
+> Written as prose in the first draft, and duly skipped on 2026-08-17 while every
+> lettered step around it ran. A gate step without a literal command is a gate
+> step that does not happen. The command block and verbatim prompt are below.
+
+Read the axis and recompute the envelope around wherever it now sits:
+
+```powershell
+$P = <the position Microclaw reports for TIRF Stage right now>
+$min = [math]::Max($P - 500, -10497.8)
+$max = [math]::Min($P + 500, 6256.8)
+"envelope: {0} to {1} um" -f $min, $max
+```
+
+Then, in Microclaw, verbatim — substituting the two numbers:
+
+> Run an 18-frame timelapse with no channel at 10 ms and a 1 second interval,
+> saving to `F:\DataSSD\52a_m2_entry`, named `52a_m2_entry`. Use the
+> `tirf_sweep_metric` hook. Move `TIRF Stage` across <min> to <max> um, one
+> position per frame, using a declarative hook action plan. Approve a named-stage
+> envelope over exactly that interval with **19** writes and
+> `restore: "entry"`.
+
+19, not 18: a non-`leave` restoration reserves one write, and asking for 18 is
+refused during validation for consuming the reservation. That refusal is correct
+behaviour — if you see it, raise the number rather than lowering the policy.
+
+Expect:
 
 - the 18 planned moves to complete first, then **one** further write returning
   the axis to P, through the same guard/move/read-back path;
-- `named_stage_restoration` reading `policy: "entry"`, `restored: true`;
-- `get_stage_position` afterwards to report P, not `<max>`;
-- the hook log's last record to be the restoration, with `restoration: true`,
-  **after** all 18 planned records — not before them, and not interleaved.
+- `named_stage_restoration` reading `policy: "entry"`, `restored: true`,
+  `entry_um` = P;
+- `get_stage_position` afterwards to report P, not `<max>` — ask for it verbatim:
+
+  > What is the current position of `TIRF Stage`?
+
+- the hook log to hold **19** `hook_action` records: 18 with
+  `hook_event_index` 0..17 and `restoration: false`, then the restoration record
+  **last**, with `restoration: true`. Not before them, and not interleaved.
 
 The ordering is the whole point of this limb. A restoration write that appears
 anywhere except last is the defect returning.
