@@ -1300,7 +1300,7 @@ about process, `CLAUDE.md` wins and this section gets corrected.
   `_dispatch` and the same acquisition signatures 52a creates; running them
   concurrently in two worktrees would conflict on every file that matters.
 
-### State at the 2026-08-17 assignment of block 52b — the live note
+### State at the 2026-08-17 close of block 52b — the live note
 
 **This is the live note. The bullets below it, from "The gate found a defect"
 onward, are 52a's round history and are kept for their findings, not as
@@ -1319,11 +1319,21 @@ branch** before 52b's. One worktree, this one. Suite on `main`, macOS:
   gate merged (`CLAUDE.md` §"The pycro-manager acquisition engine", this
   document's §Timing corrections, `design/35`'s register row). Five M2 rig trips,
   five runner rounds. **Nothing from it is owed.**
-- **52b is being assigned from the merge that carries this note**, on 52a's
-  precedent, so the runner's worktree holds the spec it is held to. Its start
-  commit lands in the ledger after that merge — do not chase the tip. 52c follows
-  it; sequential, because both extend the same `_dispatch` and the same
-  acquisition signatures.
+- **52b is CLOSED, 2026-08-17.** Three M5 rig trips, two runner rounds and six
+  coordinator fixes. Every checklist row above is ticked and verified by the
+  coordinator, not accepted from a report. **Nothing from it is owed.**
+- **52c is next and is not started.** No branch, no worktree, no runner prompt.
+  Start it from `CLAUDE.md` §"The block workflow" step 1; the §Blocks entry for
+  52c is its scope, and its gate returns to `Thorlabs ELL17/ELL20` on M5 — the
+  axis and the rig design/52 was written from.
+- **Four things 52b learned that 52c inherits.** (1) For the exporter, *compiles*
+  and *greps clean* are not evidence — three gate trips found three different
+  export defects, two of which survived compilation; a test must **run** the
+  emitted script. (2) A gate step must name the **mechanism** under test, not the
+  outcome, or a capable agent satisfies it by the better route and the limb never
+  runs. (3) `export_session_script` compiles *this session's* calls, so any
+  export step needs a run in front of it in the same session. (4) Exported
+  scripts print their envelope and **do not prompt**.
 - **52b's set-verification limb is retired, and this was settled before
   assignment** (operator decision, 2026-08-17). `property_envelope` names one
   `(device, property)`, so a frame's pre-exposure set holds at most one property
@@ -1803,27 +1813,27 @@ Steps 0, 6a and 6. Suite 1847 + 124 = **1971** exact.
 
 **Implementation**
 
-- [ ] `SetDeviceProperty(value)` joins `_ACTION_TYPES` with the same parse
+- [x] `SetDeviceProperty(value)` joins `_ACTION_TYPES` with the same parse
       refusals as 52a's action. No `device`, no `property` — the envelope names
       both.
-- [ ] `property_envelope` validates by exact key set in
+- [x] `property_envelope` validates by exact key set in
       `_configure_hook_capabilities`, with the categorical and numeric key sets
       **mutually exclusive** so `set(envelope) != allowed` still decides validity
       in one line. No wildcard device, property or value. `restore` required, as
       in 52a.
-- [ ] `authorize_property_write` runs **unchanged**. The envelope is not a route
+- [x] `authorize_property_write` runs **unchanged**. The envelope is not a route
       around the map: an excluded or unclassified pair refuses regardless of
       approval, for design/49's reason.
-- [ ] The write reuses the public property tool's capability-aware bounds
+- [x] The write reuses the public property tool's capability-aware bounds
       checks — typed actuator range/unit, stage, exposure, illumination,
       categorical domain. Do not reproduce them in the adapter.
-- [ ] `check_device_property` (`safety.py:1002`) is split so the bounds/type
+- [x] `check_device_property` (`safety.py:1002`) is split so the bounds/type
       validator stays mandatory while the approved envelope replaces the
       allow/deny **policy** decision. Follow the distinction the function already
       draws for typed and illumination pairs rather than inventing one, and state
       in the report exactly which branch was cut. **The ordinary
       `set_device_property` path is unchanged.**
-- [ ] A frame's actions are applied in order, waiting per write, stopping
+- [x] A frame's actions are applied in order, waiting per write, stopping
       immediately if a write **raises**; the whole set is then verified in **one
       pass** with `_verify_property`'s semantics (`Float` numerically for MM's
       `"10"` → `"10.0000"`, everything else exactly). Design/53's distinction is
@@ -1832,40 +1842,40 @@ Steps 0, 6a and 6. Suite 1847 + 124 = **1971** exact.
       has one member** — build the two-pass shape anyway, because it is the shape
       a multi-pair envelope extends, and do not manufacture an interdependence to
       test it.
-- [ ] `ctrl.refresh_gui()` after the write, as `set_device_property` does — the
+- [x] `ctrl.refresh_gui()` after the write, as `set_device_property` does — the
       EMU repaint behaviour, not a new general claim.
-- [ ] Micro-Manager-reported limits or allowed values narrower than the reviewed
+- [x] Micro-Manager-reported limits or allowed values narrower than the reviewed
       config are intersected and shown before approval. An unbounded numeric
       property may be approved only as an exact finite value set, and the dialog
       says Microclaw has no independent range to verify.
-- [ ] `run_timelapse`, `run_zstack` and their emitter carry `property_envelope`;
+- [x] `run_timelapse`, `run_zstack` and their emitter carry `property_envelope`;
       multiposition and tile still accept nothing new.
 
 **Evidence — written before the fix, failing first**
 
-- [ ] Categorical, bounded numeric, exposure, illumination, and an approved pair
+- [x] Categorical, bounded numeric, exposure, illumination, and an approved pair
       that the ordinary raw property path excludes.
-- [ ] **`SetDeviceProperty` on a bounded stage device's position property refuses
+- [x] **`SetDeviceProperty` on a bounded stage device's position property refuses
       at `authorize_property_write`** with design/49's message naming
       `move_named_stage`. This is a pass, not a gap.
-- [ ] An approved in-bounds write is not refused merely because the hook
+- [x] An approved in-bounds write is not refused merely because the hook
       provenance is `saved_untrusted` or because the action is hardware motion.
-- [ ] ~~**Two interdependent actions in one frame both apply, then verify.**~~
+- [x] ~~**Two interdependent actions in one frame both apply, then verify.**~~
       **Retired 2026-08-17**, unreachable at one pair. Replaced by: a frame's
       action set applies in order and a write that **raises** stops the set before
       the next write, with verification running afterwards rather than between
       writes. Assert the observed call sequence against a fake; do not build an
       interdependence the envelope cannot express.
-- [ ] A configured categorical set and a run-approved subset combine by
+- [x] A configured categorical set and a run-approved subset combine by
       intersection; a historical categorical exclusion does not veto the exact
       approved action.
-- [ ] Approval audit includes hook hash, exact envelope, write budget,
+- [x] Approval audit includes hook hash, exact envelope, write budget,
       acquisition plan, decision and operator identity; one changed byte or
       envelope field invalidates a session grant.
-- [ ] An exported session that dispatched a property action contains no
+- [x] An exported session that dispatched a property action contains no
       `# NOT EMITTED` and no `raise RuntimeError`, compiles, and reproduces the
       envelope and its checks.
-- [ ] Full suite green at or above the 52a baseline, coordinator-re-run.
+- [x] Full suite green at or above the 52a baseline, coordinator-re-run.
 
 **Process** — as 52a, with runbook `design/52-block52b-rig-gate.md`, rig gate 52b
 on M5, and the step-10 design gate merged before 52c is assigned.
