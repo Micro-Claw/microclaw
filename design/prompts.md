@@ -6651,3 +6651,84 @@ checkout. Runbooks must take the absolute path out of the tool's own result.
 skipped = 1911 collected; the branch collects 1911 and `main` 1907. That is a
 pin check the operator does not have to perform, available in every gate that
 returns a suite tail.
+
+## Block 52a — the declarative named-stage sweep (merged 2026-08-17, `00c1763`)
+
+Design/52's first block, and the first work on that document. Five runner rounds
+(codex) and **five rig trips on M2**. Every one of the three blocking defects came
+from the rig, and each was an assumption about pycro-manager's contract that the
+whole suite agreed with.
+
+**The rig corrected three things no off-rig test reached, and the pattern is the
+same each time: our fakes encoded the assumption we were testing.**
+
+1. **A hook callback receives an event *or a list of events*.** An 18-frame
+   timelapse at `interval_s=0` is hardware-sequenced, and `event.get(...)` died on
+   a list. Pycro-manager's own tests assert the list shape
+   (`test_acquisition.py:421`, `:446`). The crash was the *good* outcome: had
+   `.get` worked we would have applied one action set and burst 18 frames at a
+   single stage position while labelling each with its own intended target.
+2. **The acquisition engine strips any key you add to an event.**
+   `event_to_json`/`event_from_json` serialise a closed key set, so an injected
+   `hook_event_index` never came back. This made design/52 §Timing's contract
+   *unsatisfiable as written* — it demanded an index on the event and forbade one
+   in `axes`, and `axes` is the only per-event identity the engine must preserve.
+   Plans are now keyed by the event's axes signature and nothing is injected.
+   `tags` round-trips in `acq_eng_py` and was deliberately **not** used: the rig
+   runs Java AcqEngJ and that was unproven there.
+3. **`Acquisition.acquire()` only submits.** Completion is awaited in `__exit__`,
+   so restoration ran while frames were still being taken. Harmless under
+   `restore: "leave"` — but it reported the *entry* position as the last known
+   one, and that single wrong number in a **passing** gate is what exposed it.
+   Under `restore: "entry"` it would have driven the stage back mid-sweep.
+
+**Three rounds of green tests sat on top of a mechanism that had never once
+worked.** Every test hand-built an event carrying the key the engine strips, and
+every fake ran callbacks synchronously inside `acquire()`. The fix that mattered
+was not the code but the fake: a `KeyStrippingAcquisition` that queues events and
+runs callbacks in `__exit__`. Both later rounds' tests were verified by the
+coordinator to fail against the pre-fix tree before being accepted — worth doing
+every time a test is written after the fact.
+
+**Score gates from artifacts, not from "it worked".** The third gate passed every
+stated limb and carried defect 3. It was found by comparing `last_known_um`
+(650.1) against the hook log's final achieved position (1149.4).
+
+**A gate step without a literal command does not happen.** Step 7's
+`restore: "entry"` limb was written as prose and was skipped on the very run that
+was scheduled for it, while every lettered step around it ran. Rewritten as a
+PowerShell block plus a verbatim prompt, it ran and passed next time.
+
+**Two runbook checks misreported a passing run.** The export grep matched
+`raise RuntimeError` inside *inlined library source*; and Step 4 demanded
+position/XY frame identity that a single-position timelapse does not have. The
+second has a consequence worth keeping: the round-1 `where()`→`where_event()` fix
+is **not distinguishable on this acquisition shape** and remains proven off-rig
+only.
+
+**Coordinator fixes that were the coordinator's own fault.** Round 2's instruction
+to drop a defensive `getattr(reservation, "completed_frames", 0)` was right about
+the attribute and wrong about the object — `run_adaptive_survey` passes a hook
+with `reservation=None` whenever `adaptive` is false, so a mid-run failure
+crashed its own failure path with `AttributeError`, destroying the dataset path
+and last known state. Reports `None` now, because a count nothing measured is not
+zero.
+
+**The schema is part of usability, and it cost three rig attempts.**
+`hook_action_plan` was typed as loose objects, so the agent guessed
+`{"type": …}` and `{"kind": …, "params": {…}}` before finding the right shape,
+burning three runs. A discriminated schema with a `kind` enum and
+`additionalProperties: false` would have refused all three at the model layer.
+
+**`move_named_stage` was undecorated for export** and sits on this block's own
+gate path — the third time that shape would have killed a gate. Undecorated tools
+12 → 11.
+
+**What the rig measured that is worth keeping.** M2's SmarAct 1D TIRF axis is a
+`StageDevice` with **no `Position` property at all** (`get_device_property_info`
+returns *"Invalid property name encountered"*), which is why 52b's design/49
+refusal limb had to retarget to `TIRF Stage.Frequency` / `PIZStage.Position`.
+Achieved-vs-requested error ran **-0.98 to +0.83 um** across 54 moves, so
+§"The envelope bounds the request, not the achievement" applies here as on M5, at
+sub-micron scale rather than 5 um. And a 1 s interval defeats time-axis
+sequencing on M2 — no sequenced-batch refusal ever appeared at that interval.
