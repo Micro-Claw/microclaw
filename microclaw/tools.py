@@ -5991,8 +5991,6 @@ def _acquire_survey_with_detector(
     acquire_reservation = None
     search_channel_effects = None
     planned_acquire_effects = None
-    stage_restoration = None
-    property_restoration = None
     try:
         if acquire_plan is not None:
             acquire_reservation = _authorize_acquisition(ctrl, guard, acquire_plan)
@@ -6013,13 +6011,8 @@ def _acquire_survey_with_detector(
         if reservation is not None:
             reservation.close()
         raise
-    finally:
-        # _acquire_with_hooks returns (or raises) only after Acquisition.__exit__
-        # has awaited completion.  Restoration must never follow acquire(),
-        # which only submits work to pycro-manager.
-        if isinstance(hook, UntrustedHookAdapter):
-            stage_restoration = hook.restore_named_stage()
-            property_restoration = hook.restore_property()
+    stage_restoration = getattr(hook, "_named_stage_restoration", None)
+    property_restoration = getattr(hook, "_property_restoration", None)
     return _adaptive_result(
         dataset_path, hook.log_path,
         status=f"Survey acquisition complete across {len(positions)} position(s).",

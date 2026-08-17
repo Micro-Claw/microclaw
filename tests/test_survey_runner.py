@@ -996,7 +996,7 @@ def _adaptive_hardware_adapter(actions, tmp_path):
                                 max_total_bytes=200)
     adapter.configure_named_stage(core=core, guard=guard, device="Axis",
                                   min_um=0, max_um=10, max_writes=2,
-                                  initial_value=0, restore="leave", action_plan=None)
+                                  initial_value=0, restore="leave", action_plan={})
     adapter.configure_adaptive(events=events, candidates=candidates,
                                progress=progress, guard=guard, max_events=2)
     return adapter, events, candidates, progress, writes
@@ -1050,6 +1050,32 @@ def test_proposal_after_adaptive_handoff_closes_aborts_without_exposure(tmp_path
     assert any(r.get("event") == "aborted" for r in adapter._log)
     assert any(r.get("action", {}).get("kind") == "MoveNamedStage" and
                r.get("decision") == "refused" for r in adapter._log)
+
+
+@pytest.mark.parametrize("refusal", ["guard", "cursor"])
+def test_refused_selector_also_refuses_attached_hardware(tmp_path, refusal):
+    import numpy as np
+    from microclaw.hook_decisions import AcquireAt, ContinueSurvey, MoveNamedStage
+
+    selector = AcquireAt(1) if refusal == "guard" else ContinueSurvey()
+    adapter, events, candidates, _progress, writes = _adaptive_hardware_adapter(
+        (MoveNamedStage(5), selector), tmp_path)
+    adapter.pre_hardware_hook_fn(events[0])
+    if refusal == "guard":
+        adapter._context["guard"].check_xy = lambda x, y: (_ for _ in ()).throw(
+            ValueError("blocked xy"))
+    else:
+        adapter._context["cursor"] = len(events)
+    adapter.image_process_fn(np.zeros((1, 1)), {"PositionName": "p0", "Axes": {}}, None)
+    assert candidates.empty() and writes == []
+    refused = [r for r in adapter._log
+               if r.get("action", {}).get("kind") == "MoveNamedStage"]
+    assert len(refused) == 1
+    assert refused[0]["decision"] == "refused"
+    assert "next-event selector was refused" in refused[0]["reason"]
+    assert ("SafetyGuard refused planned event" if refusal == "guard"
+            else "planned survey cursor is already at the end") in refused[0]["reason"]
+    assert adapter.action_counts["MoveNamedStage"] == 1
 
 
 @pytest.mark.parametrize("reverse", [False, True])

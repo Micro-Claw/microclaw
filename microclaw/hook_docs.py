@@ -241,12 +241,13 @@ trusted parent carries this flag rather than assuming Micro-Manager copies a
 custom event key into image metadata. A failed sweep is logged and carried past
 without widening or retrying it.
 
-The second look is still an adaptive survey decision point: it may return one
-ordinary selector such as ``ContinueSurvey`` or ``StopSurvey``. On the first
-look, ``RequestAutofocus`` is itself the sole selector: pairing it with another
-selector is malformed and queues neither branch. Named-stage/property actions
-paired with it are refused with ``not dispatched until the refocused tile is
-judged``, regardless of action order.
+The second look is still an adaptive survey decision point: it must return
+``ContinueSurvey`` or ``StopSurvey`` (or another supported routing action).
+Without a hardware proposal, a routing action beside ``RequestAutofocus`` keeps
+the survey alive if autofocus refuses or does not converge. If autofocus queues
+a focused re-exposure, later actions are refused until those pixels are judged.
+Named-stage/property actions paired with ``RequestAutofocus`` are always refused
+with ``not dispatched until the refocused tile is judged``, regardless of order.
 
 **A hook must never rely on ``RequestAutofocus`` to keep the survey moving.** It
 is the only action that can be *granted* and still queue nothing: it is refused
@@ -259,11 +260,11 @@ survey by omission: it idles out ``max_idle_s`` and reports a stall. On M5,
 2026-08-11, a budget sized below a single sweep did exactly that and cost a
 three-tile run after two tiles.
 
-Return ``RequestAutofocus`` alone when the focused re-exposure is the intended
-next event. If it is granted, the hook is called again on that focused frame and
-chooses the subsequent route then::
+Ask for refocus and also provide the fallback route. If refocus is granted, the
+fallback is deferred and the hook chooses again on the focused frame; if it is
+refused, the fallback advances the scan::
 
-    return HookResult(stats, actions=(RequestAutofocus(),))
+    return HookResult(stats, actions=(RequestAutofocus(), ContinueSurvey()))
 
 On convergence the survey deliberately adopts the new focus plane. Timelapse
 survey events carry no Z, so the refocused exposure and later tiles remain at

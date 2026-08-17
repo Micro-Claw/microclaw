@@ -322,6 +322,76 @@ def test_fixed_plan_survives_queued_engine_closed_key_round_trip(
     }
 
 
+def test_adaptive_tool_restores_named_stage_exactly_once_after_engine_exit(
+    monkeypatch, tmp_path
+):
+    """Drive the live tool through deferred callbacks and an entry restore."""
+    import queue
+    import numpy as np
+    from microclaw.hook_decisions import (
+        ContinueSurvey, HookResult, MoveNamedStage, StopSurvey,
+    )
+
+    class Hook:
+        def analyze_frame(self, _image, metadata):
+            if metadata["PositionName"] == "p0":
+                return HookResult({}, (MoveNamedStage(110), ContinueSurvey()))
+            return HookResult({}, (StopSurvey(),))
+
+    position = {"value": 100.0}
+    writes = []
+    ctrl = MagicMock()
+    ctrl.core.get_position.side_effect = lambda device=None: position["value"]
+    ctrl.core.set_position.side_effect = lambda device, value: (
+        writes.append((device, float(value))), position.__setitem__("value", float(value))
+    )[-1]
+    hook = UntrustedHookAdapter(Hook())
+    monkeypatch.setattr(tools, "_resolve_hook", lambda *args: hook)
+    monkeypatch.setattr(tools, "CONFIRM_FN", lambda *args, **kwargs: True)
+
+    class EngineOrderedAcquisition:
+        _keys = {"axes", "x", "y", "z", "exposure", "config_group",
+                 "min_start_time", "timeout_ms", "camera", "tags",
+                 "properties", "slm_pattern", "special", "stage_positions"}
+        def __init__(self, **callbacks):
+            self.callbacks = callbacks
+            self._event_queue = queue.Queue()
+            self._acq = type("State", (), {"is_finished": lambda self: False})()
+            self._dataset_disk_location = str(tmp_path / "dataset")
+        def __enter__(self): return self
+        def acquire(self, events): self.events = events
+        def __exit__(self, *_exc):
+            for original in self.events:
+                event = {k: v for k, v in original.items() if k in self._keys}
+                self.callbacks["pre_hardware_hook_fn"](event)
+                label = event["axes"]["position"]
+                self.callbacks["image_process_fn"](
+                    np.zeros((1, 1)),
+                    {"PositionName": label, "Axes": {},
+                     "XPosition_um_Intended": event.get("x"),
+                     "YPosition_um_Intended": event.get("y")}, None)
+            return False
+
+    monkeypatch.setattr(tools, "Acquisition", EngineOrderedAcquisition)
+    monkeypatch.setattr(tools, "_authorize_acquisition", lambda *args, **kwargs: None)
+    guard = SafetyGuard(SafetyConstraints(
+        named_stages=[NamedStageLimits("Axis", 90, 120)],
+    ))
+    monkeypatch.setattr(guard, "resolve_in_workspace", lambda path: path)
+    result = tools.run_adaptive_survey(
+        ctrl, guard, protocol="timelapse", save_dir=str(tmp_path),
+        hook_strategy="saved", positions=[
+            {"name": "p0", "x_um": 0.0, "y_um": 0.0},
+            {"name": "p1", "x_um": 1.0, "y_um": 0.0},
+        ], protocol_params={"n_frames": 1, "interval_s": 0},
+        named_stage_envelope={"device": "Axis", "min_um": 90, "max_um": 120,
+                              "max_writes": 3, "restore": "entry"},
+    )
+    assert "error" not in result
+    assert writes == [("Axis", 110.0), ("Axis", 100.0)]
+    assert result["named_stage_restoration"]["restored"] is True
+
+
 def test_property_plan_survives_engine_key_stripping_and_deferred_callbacks(
     monkeypatch, tmp_path
 ):

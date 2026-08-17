@@ -532,7 +532,7 @@ def test_refocus_requeues_one_second_look_and_then_refuses_same_tile(tmp_path, m
     assert adapter._log[-1]["reason"] == "this tile has already been refocused"
 
 
-def test_refocus_with_a_second_selector_is_malformed_before_dispatch(tmp_path, monkeypatch):
+def test_actions_after_refocus_are_counted_and_refused_not_dropped(tmp_path, monkeypatch):
     from microclaw.autofocus import AutofocusResult, SweepResult
     import microclaw.tools as tools
 
@@ -559,13 +559,12 @@ def test_refocus_with_a_second_selector_is_malformed_before_dispatch(tmp_path, m
         {"PositionName": "p0", "XPosition_um_Intended": 0.0,
          "YPosition_um_Intended": 0.0}, object(),
     )
-    assert candidates.empty()
+    assert [candidates.get_nowait()["axes"]["position"]] == ["p0"]
     assert adapter.action_counts == {"RequestAutofocus": 1, "ContinueSurvey": 1}
-    refused = [r for r in adapter._log if r.get("decision") == "refused"][-2:]
-    assert {r["action"]["kind"] for r in refused} == {
-        "RequestAutofocus", "ContinueSurvey"
-    }
-    assert all("malformed adaptive action partition" in r["reason"] for r in refused)
+    refused = adapter._log[-1]
+    assert refused["action"]["kind"] == "ContinueSurvey"
+    assert refused["decision"] == "refused"
+    assert refused["reason"] == "not dispatched until the refocused tile is judged"
 
 
 def test_converged_refocus_plane_is_adopted_by_later_timelapse_tiles(
@@ -726,8 +725,8 @@ def test_continue_walked_to_end_matches_planned_frame_count(tmp_path):
 def test_acquire_at_dispatches_only_named_planned_tile(tmp_path):
     adapter, candidates, _ = _adapter(AcquireAt("p0"), tmp_path)
     adapter.image_process_fn(np.zeros((2, 2)), {"PositionName": "p1"}, object())
-    assert candidates.empty()
-    assert "repeats axes signature" in adapter._log[-1]["reason"]
+    assert candidates.get_nowait()["axes"]["position"] == "p0"
+    assert adapter._log[-1]["decision"] == "accepted"
 
 
 def test_deferred_acquire_at_records_current_z_deduplicates_and_caps(tmp_path):
@@ -1438,7 +1437,7 @@ def test_a_finished_plan_is_reported_as_finished_not_as_a_dose_cap(tmp_path, mon
     assert adapter._log[-1]["reason"] == "planned survey cursor is already at the end"
 
 
-def test_refocus_and_continue_is_malformed_even_when_refocus_would_refuse(tmp_path):
+def test_a_refused_refocus_still_lets_the_survey_advance(tmp_path):
     """The stall trap from M5 round 3, and the pattern hook_docs now prescribes.
 
     A budget below one sweep refuses the refocus. A hook that also proposed a
@@ -1464,10 +1463,12 @@ def test_refocus_and_continue_is_malformed_even_when_refocus_would_refuse(tmp_pa
         {"PositionName": "p0", "XPosition_um_Intended": 0.0,
          "YPosition_um_Intended": 0.0}, object())
 
-    assert candidates.empty()
+    assert candidates.get_nowait()["axes"]["position"] == "p1", (
+        "a refused refocus must not swallow the routing action behind it"
+    )
     kinds = [(r["action"]["kind"], r["decision"]) for r in adapter._log
              if r.get("event") == "hook_action"]
-    assert kinds == [("RequestAutofocus", "refused"), ("ContinueSurvey", "refused")]
+    assert kinds == [("RequestAutofocus", "refused"), ("ContinueSurvey", "accepted")]
 
 
 def test_composite_batch_threads_child_results_and_keeps_the_none_guard():
