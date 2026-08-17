@@ -991,6 +991,9 @@ def _adaptive_hardware_adapter(actions, tmp_path):
         {"axes": {"position": "p1"}, "x": 1.0, "y": 0.0},
     ]
     adapter = UntrustedHookAdapter(Hook(), str(tmp_path / "hook.json"))
+    adapter.configure_artifacts(target_dir=tmp_path / "artifacts",
+                                max_artifact_bytes=100, max_count=2,
+                                max_total_bytes=200)
     adapter.configure_named_stage(core=core, guard=guard, device="Axis",
                                   min_um=0, max_um=10, max_writes=2,
                                   initial_value=0, restore="leave", action_plan=None)
@@ -1001,14 +1004,17 @@ def _adaptive_hardware_adapter(actions, tmp_path):
 
 def test_adaptive_hardware_is_registered_with_candidate_then_applied_pre_exposure(tmp_path):
     import numpy as np
-    from microclaw.hook_decisions import ContinueSurvey, MoveNamedStage
+    from microclaw.hook_decisions import ContinueSurvey, EmitArtifact, MoveNamedStage
 
     adapter, events, candidates, _progress, writes = _adaptive_hardware_adapter(
-        (MoveNamedStage(5), ContinueSurvey()), tmp_path)
+        (EmitArtifact("frame.bin", b"frame-n"), MoveNamedStage(5), ContinueSurvey()),
+        tmp_path,
+    )
     adapter.pre_hardware_hook_fn(events[0])
     adapter.image_process_fn(np.zeros((1, 1)), {"PositionName": "p0", "Axes": {}}, None)
     candidate = candidates.get_nowait()
     assert writes == []
+    assert (tmp_path / "artifacts" / "frame.bin").read_bytes() == b"frame-n"
     assert "hook_event_index" not in candidate and "hook_event_index" not in candidate["axes"]
     adapter.pre_hardware_hook_fn({"axes": dict(candidate["axes"]), "x": 1.0, "y": 0.0})
     assert writes == [("Axis", 5.0)]
