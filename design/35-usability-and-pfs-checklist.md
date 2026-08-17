@@ -8580,17 +8580,22 @@ This is an inventory, not permission to close with unresolved blank work. Block
   `ast.parse` before writing catches the whole class rather than the one emitter
   that happened to break. Recorded because the *absence* of that guard was the
   real defect: three rounds of emitter work had shipped without it.
-- **Fourteen registry tools still have no export decoration, and each one halts
+- **Eleven registry tools still have no export decoration, and each one halts
   any script that recorded it.** Found by sweeping `TOOL_REGISTRY` after block
   43h's demo round 2, 2026-08-10, where the sixteenth — `generate_and_save_hook`
   — killed the emitted artifact three lines before the adaptive program it was
   written to run. The default refusal is *correct* as a mechanism (CLAUDE.md:
   a plausible fabrication is the defect being fixed), but the undecorated set
   was never triaged and is not exotic: `find_features`, `center_feature`,
-  `set_roi`, `clear_roi`, `move_named_stage`, `set_emu_laser_power_percentage`,
-  `run_mda`, `run_multiposition_with_autofocus`, `export_dataset_as_tiff`,
-  `snap_to_album`, `shutter_declared_illumination`, `calibrate_snr_threshold`,
+  `set_emu_laser_power_percentage`, `run_mda`,
+  `run_multiposition_with_autofocus`, `export_dataset_as_tiff`, `snap_to_album`,
+  `shutter_declared_illumination`, `calibrate_snr_threshold`,
   `calibrate_stage_to_camera`, `verify_emu_laser_power_calibration`.
+  **Re-measured over `TOOL_REGISTRY` 2026-08-17, at design/52's close: eleven.**
+  `set_roi` and `clear_roi` were decorated by block 47 and `move_named_stage` by
+  52a, each after an undecorated tool killed that block's own gate script; all
+  three were still listed here. `design/52`'s carried-forward register names the
+  same eleven, and `CLAUDE.md` agrees.
   **Re-measured 2026-08-11 at 43k's assignment: fifteen became fourteen** —
   `run_analysis_on_saved_dataset` carries `@emits_nothing` since 43i, which its
   round-2 gate forced when the standalone script died on that tool's default
