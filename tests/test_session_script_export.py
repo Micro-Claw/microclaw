@@ -502,6 +502,13 @@ def test_script_runs_past_a_call_that_did_nothing_to_the_one_that_ran(tmp_path):
     """
     _, _, source = export(tmp_path, _rejected_then_successful_session())
 
+    # This session inlines no adaptive adapter, so no library `raise
+    # RuntimeError` is legitimately present and the only way one appears is a
+    # `# NOT EMITTED` refusal -- the failure that killed 43h's and 47's gates.
+    # Block 52b briefly deleted this line while correctly observing that the
+    # assertion is untenable for an *adaptive* export; measured here, it still
+    # holds for this one.
+    assert "raise RuntimeError" not in source
     assert "# SKIPPED: run_multiposition_acquisition" in source
 
     visited, acquisitions, writes = [], [], []
