@@ -968,7 +968,8 @@ coordinator), `microclaw/tools.py` (`_configure_hook_capabilities:4905`,
 `_acquire_with_hooks:2636`), `microclaw/hook_docs.py`,
 `tests/test_hook_decisions.py`, `tests/test_session_script_export.py`.
 
-**Rig gate 52a — any rig with a named single-axis stage; M2 is the one booked.**
+**Rig gate 52a — any rig with a named single-axis stage. RUN AND PASSED ON M2,
+2026-08-17**, over five trips; kept below as the record of what was measured.
 §"TIRF acceptance gate" limb 1 in full: all seven pass criteria, including the
 out-of-bounds second run and the exported script.
 
@@ -1043,13 +1044,29 @@ Files: `microclaw/safety.py` (`check_device_property:1002`, `check_property:974`
 `microclaw/hook_decisions.py`, `microclaw/tools.py`,
 `tests/test_hook_decisions.py`, `tests/test_safety_*.py`.
 
-**Rig gate 52b — same rig as 52a.** A property the operator names on the day: a
-categorical one, and a bounded numeric one if the reviewed config has one. The
-runbook records which pair was used; the pair never enters `microclaw/`. Two
-limbs are mandatory whichever pair is chosen — a `SetDeviceProperty` aimed at a
-**bounded stage device** refuses at `authorize_property_write` with design/49's
-message naming `move_named_stage` (a pass, not a gap), and an interdependent pair
-applied in one frame verifies as a set rather than per write.
+**Rig gate 52b — M5** (operator decision 2026-08-17; M2 access ended with 52a).
+A property the operator names on the day: a categorical one, and a bounded
+numeric one if the reviewed config has one. The runbook records which pair was
+used; the pair never enters `microclaw/`. Two limbs are mandatory whichever pair
+is chosen — a `SetDeviceProperty` aimed at a **bounded stage device** refuses at
+`authorize_property_write` with design/49's message naming `move_named_stage`
+(a pass, not a gap), and an interdependent pair applied in one frame verifies as
+a set rather than per write.
+
+> **M5 is the rig this design came from, so the original text may be literally
+> right here where it was wrong on M2.** Block 48e's gate authored M5's three
+> non-core named stages: `Thorlabs ELL17/ELL20` **0–28000 um** and
+> `Thorlabs ELL20` **0–60000 um**, both from *driver ranges*, and `SmarAct 1D`
+> **0–2000 um** where **"MM reports no position property"** so typed bounds were
+> required instead (`design/35:4269`). If ELL17/ELL20 does expose a position
+> property, the refusal limb targets it directly, as §"Runtime checks" originally
+> specified. **Verify before writing the runbook** — that exact assumption cost
+> M2 a retarget.
+>
+> M5 also has an interdependent preset pair for the set-verification limb:
+> `System/Normal Mode`, whose `Exposure` is only representable after a later
+> `ScanMode` write (design/53). That limb has a known reproducer here and had
+> none on M2.
 
 > **The refusal limb cannot target `TIRF Stage`'s position, and the M2 precheck
 > is why.** That device exposes **no position property at all** — its properties
@@ -1076,13 +1093,6 @@ applied in one frame verifies as a set rather than per write.
 > (`design/29-offline-dataset-analysis.md:303`), and `PIZStage` is the focus
 > drive.
 
-> Picking the categorical pair on M2 has a known trap. Its only StateDevices are
-> `Thorlabs ELL9` and `ELL9-1`, and block 3b auto-classifies a StateDevice's own
-> `Label`/`State` **only into a vacuum** — declaring one of them in
-> `categorical_properties` takes auto-classification away from the other
-> (`design/29-block9-m2-safety-config.yaml:24`). Choose the pair with that in
-> front of you.
-
 Step-10 design gate: record in `design/33-authorization-map.md` that an approved
 hook envelope replaces the safety-config allow/deny decision and **not** the
 authorization map, with the reason design/49 gave.
@@ -1098,8 +1108,11 @@ Files: `microclaw/hook_decisions.py` (`image_process_fn:703`, `_dispatch`),
 `_emit_adaptive`), `tests/test_adaptive_survey.py`,
 `tests/test_session_script_export.py`.
 
-**Rig gate 52c — same rig and same declared stage as 52a.** §"TIRF acceptance
-gate" limb 2 in full — coarse pass then hook-chosen refinement, one envelope, one
+**Rig gate 52c — M5, on `Thorlabs ELL17/ELL20`.** This returns the gate to the
+rig and the axis the design was written from, so limb 2 reproduces the 2026-08-14
+session directly: its recorded sweep was **19639–21294 um**, inside the reviewed
+0–28000 bound, and its optimum lay at one of two points the agent chose *after*
+seeing results (history lines 68–76). §"TIRF acceptance gate" limb 2 in full — coarse pass then hook-chosen refinement, one envelope, one
 dataset — including the export limb, where a script reproducing this run's exact
 target list is a **fail**. The refinement targets must be chosen by the hook and
 absent from the seed plan; that is a property of the decision loop, not of the
@@ -1156,11 +1169,26 @@ skipped / 3 warnings**, 1949 collected, coordinator-run after the merge.
   document's §Timing corrections, `design/35`'s register row). Five M2 rig trips,
   five runner rounds. **Nothing from it is owed.**
 - **52b is next and is not started.** No branch, no worktree, no runner prompt.
-  Start it from `CLAUDE.md` §"The block workflow" step 1 — the §Blocks entry for
-  52b above is its scope, and its rig-gate limbs are already retargeted to
-  `TIRF Stage.Frequency` / `PIZStage.Position` because M2 confirmed the TIRF axis
-  exposes no `Position` property at all. 52c follows 52b; they are sequential
-  because both extend the same `_dispatch` and the same acquisition signatures.
+  Start it from `CLAUDE.md` §"The block workflow" step 1; the §Blocks entry for
+  52b above is its scope. 52c follows it — sequential, because both extend the
+  same `_dispatch` and the same acquisition signatures.
+- **The gate rig changes to M5 for 52b and 52c** (operator, 2026-08-17: M2
+  access ended with 52a). This is a return to the rig design/52 was written from,
+  which helps more than it costs: 52c's limb 2 can reproduce the original
+  2026-08-14 sweep on `Thorlabs ELL17/ELL20` (19639–21294 um, inside its reviewed
+  0–28000 bound), and 52b's set-verification limb has a **known** reproducer in
+  `System/Normal Mode` where M2 had none. **Every M2-specific fact in 52a's gate
+  section is history, not instruction** — `TIRF Stage`, its −10497.8..6256.8
+  bounds, the ELL9 categorical trap, the 1 s sequencing interval, the 124-skip
+  count. None of them transfer.
+- **Run an M5 precheck before writing 52b's runbook**, the same shape as the M2
+  one that saved a trip: `microclaw check-config`, `microclaw inspect-rig --out
+  <dir>`, `microclaw authorization-map`. The specific question it must answer is
+  **whether `Thorlabs ELL17/ELL20` exposes a position property**. Block 48e
+  recorded its 0–28000 bound as a *driver range* while noting `SmarAct 1D` has no
+  position property at all (`design/35:4269`), so this is genuinely unknown and it
+  decides whether 52b's design/49 refusal limb can target the TIRF axis directly
+  — as §"Runtime checks" originally assumed — or must retarget as it did on M2.
 - **Read `CLAUDE.md` §"The pycro-manager acquisition engine" before writing any
   hook or acquisition code here.** Its three contracts cost 52a three rig trips
   and are the block's most reusable output. The scratchpad runner prompts from
