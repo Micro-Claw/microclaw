@@ -381,6 +381,18 @@ if a concrete two-device workflow turns up, and treat it as a new design.
 
 ### Timing: use the pre-hardware callback for a per-frame target
 
+**Rig correction, 2026-08-15:** pycro-manager may call pre- and post-hardware
+callbacks with either one event dict or a hardware-sequenced list of event
+dicts. A one-element list is processed normally and callbacks preserve the
+input shape. A fixed plan refuses every multi-event batch before its first
+write or exposure, including batches whose planned action sets are empty:
+per-event action and labeling guarantees cannot be honored while hardware runs
+the burst without software in the loop. This remains a runtime check because
+the batch decision depends on live device sequencing capabilities as well as
+the generated axes; argument validation cannot determine it reliably. The
+refusal directs timelapse callers to use a nonzero ``interval_s``, which defeats
+time-axis sequencing.
+
 `analyze_frame` runs after the image exists, so an action returned for frame N
 can affect only frame N+1. That is useful for feedback but awkward for a planned
 angle stack and easy to index incorrectly. Use one parent-owned, event-indexed

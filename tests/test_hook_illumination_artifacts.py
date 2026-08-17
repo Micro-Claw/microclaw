@@ -10,8 +10,8 @@ from microclaw import tools
 from microclaw.hook_decisions import EmitArtifact, HookResult, UntrustedHookAdapter
 from microclaw.hook_manager import saved_hook_source_refusal, validate_hook_contract
 from microclaw.safety import (
-    ForbiddenProperty, IlluminationConstraints, SafetyConstraints, SafetyGuard,
-    SafetyViolation,
+    ForbiddenProperty, IlluminationConstraints, NamedStageLimits,
+    SafetyConstraints, SafetyGuard, SafetyViolation,
 )
 
 
@@ -95,6 +95,199 @@ def test_declined_envelope_stops_before_reservation(monkeypatch, tmp_path):
                                    "max_power_percent": 10, "max_writes": 2},
         )
     reserve.assert_not_called()
+
+
+def test_illumination_only_confirmation_contract_is_unchanged(monkeypatch, tmp_path):
+    ctrl = MagicMock()
+    ctrl.core.get_property.return_value = "1"
+    hook = UntrustedHookAdapter(object())
+    seen = []
+    monkeypatch.setattr(
+        tools, "CONFIRM_FN",
+        lambda text, kind: seen.append((text, kind)) or False,
+    )
+    with pytest.raises(
+        SafetyViolation,
+        match=r"User declined hook illumination envelope for Laser\.Power; acquisition was not started",
+    ):
+        tools._configure_hook_capabilities(
+            hook, ctrl, _guard(), str(tmp_path), "run",
+            {"device": "Laser", "property": "Power",
+             "max_power_percent": 10, "max_writes": 2}, None,
+        )
+    assert seen == [(
+        "AUTHORIZE UNATTENDED HOOK ILLUMINATION: Laser.Power\n"
+        "Ceiling: 10% (2 accepted writes maximum).\n"
+        "Generated hook code will drive this power unattended, per frame, "
+        "for the duration of the run. It cannot enable a shutter or turn light on.",
+        "illumination",
+    )]
+
+
+def test_declined_named_stage_confirmation_means_no_acquisition_or_write(
+    monkeypatch, tmp_path
+):
+    ctrl = MagicMock()
+    ctrl.core.get_position.return_value = 15
+    hook = UntrustedHookAdapter(object())
+    acquire = MagicMock()
+    monkeypatch.setattr(tools, "_resolve_hook", lambda *args: hook)
+    monkeypatch.setattr(tools, "_build_acquisition_events", lambda **kwargs: [{"axes": {}}])
+    monkeypatch.setattr(tools, "CONFIRM_FN", lambda *args, **kwargs: False)
+    monkeypatch.setattr(tools, "_acquire_with_hooks", acquire)
+    guard = SafetyGuard(SafetyConstraints(
+        named_stages=[NamedStageLimits("fixture-stage", 10, 20)]
+    ))
+    with pytest.raises(SafetyViolation, match="declined.*not started"):
+        tools.run_timelapse(
+            ctrl, guard, 1, 0, str(tmp_path), hook_strategy="saved",
+            named_stage_envelope={
+                "device": "fixture-stage", "min_um": 10, "max_um": 20,
+                "max_writes": 1, "restore": "leave",
+            },
+            hook_action_plan=[{
+                "hook_event_index": 0,
+                "actions": [{"kind": "MoveNamedStage", "position_um": 15}],
+            }],
+        )
+    acquire.assert_not_called()
+    ctrl.core.set_position.assert_not_called()
+
+
+def test_fixed_named_stage_plan_over_budget_refuses_during_validation(
+    monkeypatch, tmp_path
+):
+    ctrl = MagicMock()
+    ctrl.core.get_position.return_value = 15
+    confirm = MagicMock(return_value=True)
+    monkeypatch.setattr(tools, "CONFIRM_FN", confirm)
+    guard = SafetyGuard(SafetyConstraints(
+        named_stages=[NamedStageLimits("fixture-stage", 10, 20)]
+    ))
+    with pytest.raises(ValueError, match="reserved for restoration"):
+        tools._configure_hook_capabilities(
+            UntrustedHookAdapter(object()), ctrl, guard, str(tmp_path), "run",
+            None, None,
+            {"device": "fixture-stage", "min_um": 10, "max_um": 20,
+             "max_writes": 2, "restore": "entry"},
+            [
+                {"hook_event_index": 0, "actions": [
+                    {"kind": "MoveNamedStage", "position_um": 11}
+                ]},
+                {"hook_event_index": 1, "actions": [
+                    {"kind": "MoveNamedStage", "position_um": 12}
+                ]},
+            ],
+            [{"axes": {"time": 0}}, {"axes": {"time": 1}}],
+        )
+    confirm.assert_not_called()
+    ctrl.core.set_position.assert_not_called()
+
+
+def test_fixed_plan_duplicate_generated_axes_refuses_during_validation(
+    monkeypatch, tmp_path
+):
+    ctrl = MagicMock()
+    ctrl.core.get_position.return_value = 15
+    confirm = MagicMock(return_value=True)
+    monkeypatch.setattr(tools, "CONFIRM_FN", confirm)
+    guard = SafetyGuard(SafetyConstraints(
+        named_stages=[NamedStageLimits("fixture-stage", 10, 20)]
+    ))
+
+    with pytest.raises(ValueError, match=r"duplicate axes signature \{\}"):
+        tools._configure_hook_capabilities(
+            UntrustedHookAdapter(object()), ctrl, guard, str(tmp_path), "run",
+            None, None,
+            {"device": "fixture-stage", "min_um": 10, "max_um": 20,
+             "max_writes": 2, "restore": "leave"},
+            [
+                {"hook_event_index": 0, "actions": []},
+                {"hook_event_index": 1, "actions": []},
+            ],
+            [{"axes": {}}, {"axes": {}}],
+        )
+
+    confirm.assert_not_called()
+    ctrl.core.set_position.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("restore", "positions", "expected_calls"),
+    [
+        ("leave", [15, 11, 12], [11.0, 12.0]),
+        ("entry", [15, 11, 12, 15], [11.0, 12.0, 15.0]),
+    ],
+)
+def test_fixed_plan_survives_queued_engine_closed_key_round_trip(
+    monkeypatch, tmp_path, restore, positions, expected_calls
+):
+    """Exercise the same closed event-key boundary as AcqEng before callbacks."""
+    ctrl = MagicMock()
+    ctrl.core.get_position.side_effect = positions
+    hook = UntrustedHookAdapter(object())
+    monkeypatch.setattr(tools, "_resolve_hook", lambda *args: hook)
+    monkeypatch.setattr(tools, "CONFIRM_FN", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        tools, "_build_acquisition_events",
+        lambda **kwargs: [{"axes": {"time": 0}}, {"axes": {"time": 1}}],
+    )
+
+    class KeyStrippingAcquisition:
+        _keys = {
+            "special", "min_start_time", "config_group", "exposure",
+            "slm_pattern", "timeout_ms", "axes", "stage_positions", "z",
+            "x", "y", "camera", "tags", "properties",
+        }
+
+        def __init__(self, **kwargs):
+            self.callbacks = kwargs
+            self._dataset_disk_location = str(tmp_path / "dataset")
+            self.queued_events = None
+
+        def __enter__(self): return self
+        def __exit__(self, *_exc):
+            for event in self.queued_events:
+                round_tripped = {key: value for key, value in event.items()
+                                 if key in self._keys}
+                self.callbacks["pre_hardware_hook_fn"](round_tripped)
+            return False
+
+        def acquire(self, events):
+            self.queued_events = events
+
+    monkeypatch.setattr(tools, "Acquisition", KeyStrippingAcquisition)
+    guard = SafetyGuard(SafetyConstraints(
+        named_stages=[NamedStageLimits("fixture-stage", 10, 20)],
+    ))
+    monkeypatch.setattr(guard, "resolve_in_workspace", lambda path: path)
+
+    result = tools.run_timelapse(
+        ctrl, guard, 2, 1, str(tmp_path), hook_strategy="saved",
+        named_stage_envelope={
+            "device": "fixture-stage", "min_um": 10, "max_um": 20,
+            "max_writes": 2 if restore == "leave" else 3, "restore": restore,
+        },
+        hook_action_plan=[
+            {"hook_event_index": 0, "actions": [
+                {"kind": "MoveNamedStage", "position_um": 11},
+            ]},
+            {"hook_event_index": 1, "actions": [
+                {"kind": "MoveNamedStage", "position_um": 12},
+            ]},
+        ],
+    )
+
+    assert "error" not in result
+    assert [call.args for call in ctrl.core.set_position.call_args_list] == [
+        *(('fixture-stage', position) for position in expected_calls),
+    ]
+    assert result["named_stage_restoration"] == {
+        "policy": restore,
+        "entry_um": 15.0,
+        "last_known_um": 12.0 if restore == "leave" else 15.0,
+        "restored": restore == "entry",
+    }
 
 
 def test_config_ceiling_refuses_wrongly_wide_envelope(tmp_path):

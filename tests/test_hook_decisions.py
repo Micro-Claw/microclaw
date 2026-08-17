@@ -8,7 +8,8 @@ import numpy as np
 import pytest
 
 from microclaw.hook_decisions import (
-    AcquireAt, ContinueSurvey, DiscardFrame, EmitArtifact, HookResult, MoveStage,
+    AcquireAt, ContinueSurvey, DiscardFrame, EmitArtifact, HookResult,
+    MoveNamedStage, MoveStage,
     RequestAutofocus, SetExposure, SetIlluminationPower, StopSurvey,
     CompositeHook, UntrustedHookAdapter,
 )
@@ -18,6 +19,272 @@ from microclaw.safety import (
     ForbiddenProperty, IlluminationConstraints, SafetyConstraints, SafetyGuard,
 )
 from microclaw.tools import SurveyProgress
+
+
+def _axes_plan(*entries):
+    return {
+        tuple(sorted(axes.items())): (index, actions)
+        for index, (axes, actions) in enumerate(entries)
+    }
+
+
+@pytest.mark.parametrize("value", [True, float("nan"), float("inf"), -float("inf")])
+def test_move_named_stage_refuses_non_finite_and_boolean_positions(value):
+    from microclaw.hook_decisions import parse_action
+    with pytest.raises(ValueError, match="finite number"):
+        parse_action({"kind": "MoveNamedStage", "position_um": value})
+
+
+def test_move_named_stage_parses_typed_and_exact_dict_forms():
+    from microclaw.hook_decisions import parse_action
+    assert parse_action(MoveNamedStage(12.5)) == MoveNamedStage(12.5)
+    assert parse_action({"kind": "MoveNamedStage", "position_um": 12.5}) == MoveNamedStage(12.5)
+    with pytest.raises(ValueError, match="unexpected fields"):
+        parse_action({"kind": "MoveNamedStage", "position_um": 12.5, "device": "stage"})
+
+
+def test_named_stage_plan_dispatch_records_overshoot_and_keeps_index_out_of_axes():
+    core = MagicMock()
+    core.get_position.return_value = 21299
+    guard = MagicMock()
+    adapter = UntrustedHookAdapter(object())
+    adapter.configure_named_stage(
+        core=core, guard=guard, device="fixture-stage", min_um=20000,
+        max_um=21294, max_writes=1, initial_value=21000, restore="leave",
+        action_plan=_axes_plan(({"time": 0, "position": "p7"},
+                                (MoveNamedStage(21294),))),
+    )
+    event = {
+        "axes": {"time": 0, "position": "p7"}, "x": 1.25, "y": -2.5,
+    }
+    returned = adapter.pre_hardware_hook_fn(event)
+    guard.check_named_stage.assert_called_once_with("fixture-stage", 21294.0)
+    core.set_position.assert_called_once_with("fixture-stage", 21294.0)
+    core.wait_for_device.assert_called_once_with("fixture-stage")
+    assert returned["named_stage_achieved_um"] == 21299
+    assert "hook_event_index" not in returned["axes"]
+    assert adapter._log[-1]["achieved_um"] == 21299
+    assert {key: adapter._log[-1][key] for key in ("position", "x_um", "y_um")} == {
+        "position": "p7", "x_um": 1.25, "y_um": -2.5,
+    }
+
+
+@pytest.mark.parametrize("as_batch", [False, True])
+def test_named_stage_plan_accepts_one_event_in_either_callback_shape(as_batch):
+    core, guard = MagicMock(), MagicMock()
+    core.get_position.return_value = 12
+    adapter = UntrustedHookAdapter(object())
+    adapter.configure_named_stage(
+        core=core, guard=guard, device="fixture-stage", min_um=0, max_um=20,
+        max_writes=1, initial_value=5, restore="leave",
+        action_plan=_axes_plan(({"time": 0}, (MoveNamedStage(12),))),
+    )
+    event = {"axes": {"time": 0}}
+    supplied = [event] if as_batch else event
+    returned = adapter.pre_hardware_hook_fn(supplied)
+    assert returned is supplied
+    assert returned[0] is event if as_batch else returned is event
+    core.set_position.assert_called_once_with("fixture-stage", 12.0)
+
+
+@pytest.mark.parametrize("actions", [
+    ((MoveNamedStage(10),), (MoveNamedStage(20),)),
+    ((), ()),
+])
+def test_named_stage_plan_refuses_sequenced_batch_before_any_write(actions):
+    core, guard = MagicMock(), MagicMock()
+    adapter = UntrustedHookAdapter(object())
+    adapter.configure_named_stage(
+        core=core, guard=guard, device="fixture-stage", min_um=0, max_um=20,
+        max_writes=2, initial_value=5, restore="leave",
+        action_plan={0: actions[0], 1: actions[1]},
+    )
+    events = [
+        {"axes": {"time": 0}},
+        {"axes": {"time": 1}},
+    ]
+    with pytest.raises(RuntimeError, match="nonzero interval_s"):
+        adapter.pre_hardware_hook_fn(events)
+    core.set_position.assert_not_called()
+    assert adapter._log[-1]["decision"] == "refused"
+    assert "hardware-sequenced burst" in adapter._log[-1]["reason"]
+
+
+@pytest.mark.parametrize("target", [10, 20])
+def test_named_stage_envelope_boundaries_are_inclusive(target):
+    core, guard = MagicMock(), MagicMock()
+    core.get_position.return_value = target
+    adapter = UntrustedHookAdapter(object())
+    adapter.configure_named_stage(
+        core=core, guard=guard, device="fixture-stage", min_um=10, max_um=20,
+        max_writes=1, initial_value=15, restore="leave",
+        action_plan=_axes_plan(({}, (MoveNamedStage(target),))),
+    )
+    adapter.pre_hardware_hook_fn({"axes": {}})
+    core.set_position.assert_called_once_with("fixture-stage", float(target))
+
+
+@pytest.mark.parametrize("target", [9.999999999, 20.000000001])
+def test_named_stage_envelope_outside_boundary_refuses_without_write(target):
+    core, guard = MagicMock(), MagicMock()
+    adapter = UntrustedHookAdapter(object())
+    adapter.configure_named_stage(
+        core=core, guard=guard, device="fixture-stage", min_um=10, max_um=20,
+        max_writes=1, initial_value=15, restore="leave",
+        action_plan=_axes_plan(({}, (MoveNamedStage(target),))),
+    )
+    with pytest.raises(RuntimeError, match="outside authorized interval"):
+        adapter.pre_hardware_hook_fn({"axes": {}})
+    core.set_position.assert_not_called()
+
+
+def test_analysis_returned_named_stage_action_is_refused_without_write():
+    class Hook:
+        def analyze_frame(self, image, metadata):
+            return HookResult({}, (MoveNamedStage(17),))
+    adapter = UntrustedHookAdapter(Hook())
+    adapter.image_process_fn(np.zeros((1, 1)), {}, object())
+    assert "hook_action_plan" in adapter._log[-1]["reason"]
+
+
+def test_analysis_move_cannot_replace_next_frames_preinstalled_move():
+    class Hook:
+        def analyze_frame(self, image, metadata):
+            return HookResult({}, (MoveNamedStage(99),))
+
+    core, guard = MagicMock(), MagicMock()
+    core.get_position.side_effect = [10, 20]
+    adapter = UntrustedHookAdapter(Hook())
+    adapter.configure_named_stage(
+        core=core, guard=guard, device="fixture-stage", min_um=0, max_um=100,
+        max_writes=2, initial_value=5, restore="leave",
+        action_plan=_axes_plan(
+            ({"time": 0}, (MoveNamedStage(10),)),
+            ({"time": 1}, (MoveNamedStage(20),)),
+        ),
+    )
+    adapter.pre_hardware_hook_fn({"axes": {"time": 0}})
+    adapter.image_process_fn(np.zeros((1, 1)), {"Axes": {"time": 0}}, object())
+    adapter.pre_hardware_hook_fn({"axes": {"time": 1}})
+    assert [call.args[1] for call in core.set_position.call_args_list] == [10.0, 20.0]
+    assert any("hook_action_plan" in record.get("reason", "") for record in adapter._log)
+
+
+@pytest.mark.parametrize("as_batch", [False, True])
+@pytest.mark.parametrize("bad_event, consume_first", [
+    ({"axes": {"time": 1}}, False),
+    ({"axes": {"time": 0}}, True),
+])
+def test_missing_or_consumed_plan_axes_aborts_before_move_or_exposure(
+    bad_event, consume_first, as_batch
+):
+    core, guard = MagicMock(), MagicMock()
+    adapter = UntrustedHookAdapter(object())
+    # Index 0 carries a real move, so the consumed-index limb proves the plan is
+    # not replayed rather than merely that an empty entry writes nothing.
+    adapter.configure_named_stage(
+        core=core, guard=guard, device="fixture-stage", min_um=0, max_um=100,
+        max_writes=4, initial_value=5, restore="leave",
+        action_plan=_axes_plan(({"time": 0}, (MoveNamedStage(42),))),
+    )
+    first_pass_writes = 0
+    if consume_first:
+        adapter.pre_hardware_hook_fn({"axes": {"time": 0}})
+        first_pass_writes = core.set_position.call_count
+        assert first_pass_writes == 1
+    with pytest.raises(RuntimeError, match=r"unconsumed axes.*time"):
+        adapter.pre_hardware_hook_fn([bad_event] if as_batch else bad_event)
+    # The refused callback returns before any write, so the count is unchanged.
+    assert core.set_position.call_count == first_pass_writes
+
+
+def test_named_stage_entry_restoration_uses_same_guard_move_wait_readback():
+    core, guard = MagicMock(), MagicMock()
+    core.get_position.side_effect = [12, 15]
+    adapter = UntrustedHookAdapter(object())
+    adapter.configure_named_stage(
+        core=core, guard=guard, device="fixture-stage", min_um=10, max_um=20,
+        max_writes=1, initial_value=12, restore="entry", action_plan={0: ()},
+    )
+    report = adapter.restore_named_stage()
+    guard.check_named_stage.assert_called_once_with("fixture-stage", 12.0)
+    core.set_position.assert_called_once_with("fixture-stage", 12.0)
+    core.wait_for_device.assert_called_once_with("fixture-stage")
+    assert report == {"policy": "entry", "entry_um": 12,
+                      "last_known_um": 12.0, "restored": True}
+
+
+def test_named_stage_failed_restoration_is_loud_and_not_success():
+    core, guard = MagicMock(), MagicMock()
+    core.set_position.side_effect = RuntimeError("bridge down")
+    adapter = UntrustedHookAdapter(object())
+    adapter.configure_named_stage(
+        core=core, guard=guard, device="fixture-stage", min_um=10, max_um=20,
+        max_writes=1, initial_value=12, restore="entry", action_plan={0: ()},
+    )
+    with pytest.raises(RuntimeError, match="bridge down"):
+        adapter.restore_named_stage()
+    assert adapter._log[-1]["decision"] == "failed"
+    assert adapter._log[-1]["restoration"] is True
+
+
+def test_preexposure_failure_reports_partial_path_frames_and_last_state(
+    monkeypatch, tmp_path
+):
+    from microclaw import tools
+
+    core, stage_guard = MagicMock(), MagicMock()
+    adapter = UntrustedHookAdapter(object(), str(tmp_path / "hook.json"))
+    adapter.configure_named_stage(
+        core=core, guard=stage_guard, device="fixture-stage",
+        min_um=10, max_um=20, max_writes=1, initial_value=15,
+        restore="leave", action_plan={0: (MoveNamedStage(21),)},
+    )
+
+    class FakeAcquisition:
+        def __init__(self, **kwargs):
+            self.pre_hardware = kwargs["pre_hardware_hook_fn"]
+            self._dataset_disk_location = str(tmp_path / "data_1")
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def acquire(self, events):
+            self.pre_hardware(events[0])
+
+    monkeypatch.setattr(tools, "Acquisition", FakeAcquisition)
+    guard = MagicMock()
+    guard.resolve_in_workspace.side_effect = lambda path: path
+    reservation = MagicMock(completed_frames=2)
+    with pytest.raises(tools._HookedAcquisitionFailure) as caught:
+        tools._acquire_with_hooks(
+            guard, str(tmp_path), "data",
+            [{"axes": {"time": 0}, "hook_event_index": 0}], adapter,
+            reservation=reservation,
+        )
+    result = tools._hooked_failure_result(caught.value, str(tmp_path / "hook.json"))
+    assert result["dataset_path"] == str(tmp_path / "data_1")
+    assert result["frames_exposed"] == 2
+    assert result["last_hardware_state"] == {
+        "device": "fixture-stage", "position_um": 15,
+    }
+    core.set_position.assert_not_called()
+
+    # Same failure with no reservation: the survey runner passes a hook with
+    # reservation=None whenever `adaptive` is false, so this path is real. It
+    # must still report the dataset and the last known position, and must not
+    # invent a frame count it never measured.
+    adapter._named_stage_context["consumed"] = set()
+    with pytest.raises(tools._HookedAcquisitionFailure) as unreserved:
+        tools._acquire_with_hooks(
+            guard, str(tmp_path), "data",
+            [{"axes": {"time": 0}, "hook_event_index": 0}], adapter,
+            reservation=None,
+        )
+    unreserved_result = tools._hooked_failure_result(unreserved.value, None)
+    assert unreserved_result["dataset_path"] == str(tmp_path / "data_1")
+    assert "frames_exposed" not in unreserved_result
+    assert unreserved_result["last_hardware_state"] == {
+        "device": "fixture-stage", "position_um": 15,
+    }
 
 
 def _events(n=3):
@@ -107,6 +374,18 @@ def test_composite_post_hardware_chains_and_rejects_none():
 
     with pytest.raises(RuntimeError, match="must return the event"):
         CompositeHook([("broken", Broken())], None).post_hardware_hook_fn({})
+
+
+def test_composite_post_hardware_preserves_sequenced_list_shape():
+    class Add:
+        def post_hardware_hook_fn(self, event):
+            event["value"] = event.get("value", 0) + 1
+            return event
+
+    events = [{"value": 1}, {"value": 4}]
+    returned = CompositeHook([("add", Add())], None).post_hardware_hook_fn(events)
+    assert returned is events
+    assert [event["value"] for event in events] == [2, 5]
 
 
 class _Guard:
@@ -665,6 +944,20 @@ def test_shutter_enable_is_not_in_closed_union():
         parse_action({"kind": "SetIlluminationShutter", "value": "On"})
 
 
+@pytest.mark.parametrize("payload, expected", [
+    ({"type": "MoveNamedStage", "position_um": 12}, "kind"),
+    ({"kind": "MoveNamedStage", "params": {"position_um": 12}}, "position_um"),
+])
+def test_move_named_stage_wrong_shapes_name_the_accepted_shape(payload, expected):
+    from microclaw.hook_decisions import parse_action
+    with pytest.raises(ValueError) as caught:
+        parse_action(payload)
+    message = str(caught.value)
+    assert "MoveNamedStage" in message
+    assert "kind" in message
+    assert expected in message
+
+
 def test_discard_records_observation_and_discards_pixels(tmp_path):
     class Hook:
         def analyze_frame(self, image, metadata):
@@ -1112,3 +1405,30 @@ def test_a_refused_refocus_still_lets_the_survey_advance(tmp_path):
     kinds = [(r["action"]["kind"], r["decision"]) for r in adapter._log
              if r.get("event") == "hook_action"]
     assert kinds == [("RequestAutofocus", "refused"), ("ContinueSurvey", "accepted")]
+
+
+def test_composite_batch_threads_child_results_and_keeps_the_none_guard():
+    """A sequenced batch must behave exactly as the same events would one by one.
+
+    Both halves regressed together when the list branch discarded what the
+    recursive call returned: a child's replacement event was dropped, and the
+    None guard -- which exists because None becomes an empty event that STILL
+    FIRES THE CAMERA -- stopped firing for batches only.
+    """
+    class Replacer:
+        def post_hardware_hook_fn(self, event):
+            return {**event, "z": 42.0}
+
+    composite = CompositeHook([("replacer", Replacer())], None)
+    batch = [{"axes": {"time": 0}}, {"axes": {"time": 1}}]
+    returned = composite.post_hardware_hook_fn(batch)
+    assert returned is batch
+    assert [item["z"] for item in returned] == [42.0, 42.0]
+
+    class Nuller:
+        def post_hardware_hook_fn(self, event):
+            return None
+
+    nulling = CompositeHook([("nuller", Nuller())], None)
+    with pytest.raises(RuntimeError, match="returned None"):
+        nulling.post_hardware_hook_fn([{"axes": {"time": 0}}])

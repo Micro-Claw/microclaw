@@ -1563,6 +1563,53 @@ def test_stripping_a_block_sole_package_import_still_emits_valid_python(
     assert not _undefined_emitted_names(source)
 
 
+@pytest.mark.parametrize(("tool", "shape"), [
+    ("run_timelapse", {"n_frames": 2, "interval_s": 0}),
+    ("run_zstack", {"z_start_um": 0, "z_end_um": 1, "z_step_um": 1}),
+])
+def test_saved_fixed_run_exports_named_stage_envelope_and_indexed_plan(
+    tmp_path, monkeypatch, tool, shape
+):
+    from microclaw.hook_manager import save_hook
+    import microclaw.hook_manager as manager
+
+    hooks_dir = tmp_path / "hooks"
+    monkeypatch.setattr(manager, "HOOKS_DIR", hooks_dir)
+    monkeypatch.setattr(manager, "MANIFEST", hooks_dir / "manifest.json")
+    save_hook(
+        "planned_stage", "class PlannedStage:\n"
+        "    def analyze_frame(self, image, metadata):\n"
+        "        from microclaw.hook_decisions import HookResult\n"
+        "        return HookResult({'score': 1})\n",
+        "planned_stage", source="user_provided",
+    )
+    plan = [
+        {"hook_event_index": 0, "actions": [
+            {"kind": "MoveNamedStage", "position_um": 10}
+        ]},
+        {"hook_event_index": 1, "actions": []},
+    ]
+    _, result, source = export(tmp_path, [call(tool, {
+        **shape, "save_dir": "session", "hook_strategy": "planned_stage",
+        "named_stage_envelope": {
+            "device": "fixture-stage", "min_um": 10, "max_um": 20,
+            "max_writes": 2, "restore": "leave",
+        },
+        "hook_action_plan": plan,
+    })])
+    assert result["emitted_calls"] == 1, result
+    assert "_NAMED_STAGE_ENVELOPE" in source
+    assert repr(plan) in source
+    assert "_event['hook_event_index']" not in source
+    assert "_axes_plan" in source
+    assert "pre_hardware_hook_fn" in source
+    assert "print('Dataset:', getattr(acq, '_dataset_disk_location'" in source
+    assert "# NOT EMITTED" not in source
+    assert "import microclaw" not in source
+    assert not _undefined_emitted_names(source)
+    compile(source, str(tmp_path / "routine.py"), "exec")
+
+
 def test_unresolvable_survey_names_fall_back_to_the_recorded_tiles(tmp_path):
     """M5 gate, 2026-08-11. The whole export came back `emitted_calls: 0`.
 
@@ -2165,3 +2212,20 @@ def test_offline_analysis_does_not_kill_the_script_it_follows(tmp_path):
     assert "raise RuntimeError('NOT EMITTED" not in source
     assert result["emitted_calls"] == 1
     compile(source, "routine.py", "exec")
+
+
+def test_move_named_stage_emits_its_resolved_absolute_target(tmp_path):
+    # A relative call resolves against the live position before writing, so the
+    # emitted script must carry the resolved target rather than the raw `um` --
+    # re-resolving in the standalone script would land somewhere else.
+    _, _, source = export(tmp_path, completed_call(
+        "move_named_stage",
+        {"device": "TIRF Stage", "um": -40.0, "absolute": False},
+        {"device": "TIRF Stage", "requested_um": 1460.0,
+         "achieved_um": 1461.2, "error_um": 1.2},
+    ))
+    assert "core.set_position('TIRF Stage', 1460.0)" in source
+    assert "core.wait_for_device('TIRF Stage')" in source
+    assert "-40.0" not in source
+    assert "# NOT EMITTED" not in source
+    assert "raise RuntimeError" not in source

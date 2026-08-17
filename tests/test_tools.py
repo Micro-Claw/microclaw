@@ -2631,6 +2631,45 @@ class TestExportDatasetAllAxes:
         assert result["axes"] == ["z", "channel"]
         assert result["artifact"] == {"kind": "tiff", "path": str(tmp_path / "o.tif")}
 
+    def test_axes_keyed_hook_events_export_only_the_acquired_frame_count(
+        self, mock_ctrl, unconstrained_guard, monkeypatch, tmp_path
+    ):
+        from microclaw import tools
+        from microclaw.hook_decisions import UntrustedHookAdapter
+
+        events = [{"axes": {"time": index}} for index in range(3)]
+        adapter = UntrustedHookAdapter(object())
+        adapter.configure_named_stage(
+            core=MagicMock(), guard=MagicMock(), device="fixture-stage",
+            min_um=0, max_um=1, max_writes=1, initial_value=0,
+            restore="leave", action_plan={
+                (("time", index),): (index, ()) for index in range(3)
+            },
+        )
+        for event in events:
+            adapter.pre_hardware_hook_fn(event)
+            assert set(event["axes"]) == {"time"}
+
+        class FakeDataset:
+            axes = {"time": [event["axes"]["time"] for event in events]}
+            def __init__(self, path): pass
+            def has_image(self, **kwargs): return True
+            def read_image(self, **kwargs):
+                return np.full((2, 2), kwargs["time"], dtype=np.uint16)
+
+        captured = {}
+        monkeypatch.setattr(tools, "Dataset", FakeDataset)
+        monkeypatch.setattr(
+            tools.tifffile, "imwrite",
+            lambda path, stack, **kwargs: captured.update(stack=stack),
+        )
+        result = tools.export_dataset_as_tiff(
+            mock_ctrl, unconstrained_guard, "indexed-dataset",
+            str(tmp_path / "indexed.tif"),
+        )
+        assert "error" not in result
+        assert captured["stack"].shape == (3, 2, 2)
+
     def test_sparse_multiposition_uses_real_coords(
         self, mock_ctrl, unconstrained_guard, monkeypatch, tmp_path
     ):

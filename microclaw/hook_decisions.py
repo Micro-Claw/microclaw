@@ -63,6 +63,13 @@ class SetIlluminationPower:
 
 
 @dataclass(frozen=True)
+class MoveNamedStage:
+    """Propose a position for the single named-stage envelope on this run."""
+    position_um: float
+    kind: str = "MoveNamedStage"
+
+
+@dataclass(frozen=True)
 class EmitArtifact:
     """Propose an in-memory artifact with a parent-confined bare filename."""
     filename: str
@@ -78,7 +85,8 @@ class DiscardFrame:
 
 HookAction = (
     MoveStage | AcquireAt | SetExposure | ContinueSurvey | StopSurvey |
-    RequestAutofocus | SetIlluminationPower | EmitArtifact | DiscardFrame
+    RequestAutofocus | SetIlluminationPower | MoveNamedStage | EmitArtifact |
+    DiscardFrame
 )
 
 
@@ -120,7 +128,8 @@ class HookResult:
 _ACTION_TYPES = {
     cls.__dataclass_fields__["kind"].default: cls
     for cls in (MoveStage, AcquireAt, SetExposure, ContinueSurvey, StopSurvey,
-                RequestAutofocus, SetIlluminationPower, EmitArtifact, DiscardFrame)
+                RequestAutofocus, SetIlluminationPower, MoveNamedStage,
+                EmitArtifact, DiscardFrame)
 }
 
 
@@ -135,15 +144,31 @@ def parse_action(value: HookAction | dict[str, Any]) -> HookAction:
     kind = payload.get("kind")
     cls = _ACTION_TYPES.get(kind)
     if cls is None:
-        raise ValueError(f"Unknown hook action kind {kind!r}.")
+        accepted = ", ".join(sorted(_ACTION_TYPES))
+        raise ValueError(
+            "Unknown hook action. Actions require a 'kind' discriminator with one of: "
+            f"{accepted}. MoveNamedStage has exactly "
+            "{'kind': 'MoveNamedStage', 'position_um': <finite number>}."
+        )
     allowed = set(cls.__dataclass_fields__)
     extra = set(payload) - allowed
     if extra:
-        raise ValueError(f"Malformed {kind} action: unexpected fields {sorted(extra)}.")
+        raise ValueError(
+            f"Malformed {kind} action: unexpected fields {sorted(extra)}; "
+            f"expected exactly {sorted(allowed)}."
+        )
     try:
         action = cls(**payload)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"Malformed {kind} action: {exc}") from exc
+    if isinstance(action, MoveNamedStage) and (
+        isinstance(action.position_um, bool)
+        or not isinstance(action.position_um, (int, float))
+        or not math.isfinite(action.position_um)
+    ):
+        raise ValueError(
+            "Malformed MoveNamedStage action: position_um must be a finite number."
+        )
     # JSON validation rejects NaN/infinity and non-portable scalar objects.
     try:
         if not isinstance(action, EmitArtifact):
@@ -165,6 +190,8 @@ def parse_action(value: HookAction | dict[str, Any]) -> HookAction:
         numeric = (("exposure_ms", action.exposure_ms),)
     elif isinstance(action, SetIlluminationPower):
         numeric = (("value_percent", action.value_percent),)
+    elif isinstance(action, MoveNamedStage):
+        numeric = (("position_um", action.position_um),)
     for name, number in numeric:
         if number is None:
             continue
@@ -257,6 +284,7 @@ class UntrustedHookAdapter:
         self._log: list[dict[str, Any]] = []
         self._context: dict[str, Any] | None = None
         self._illumination_context: dict[str, Any] | None = None
+        self._named_stage_context: dict[str, Any] | None = None
         self._artifact_context: dict[str, Any] | None = None
         self._autofocus_context: dict[str, Any] | None = None
         self._action_counts: dict[str, int] = {}
@@ -340,6 +368,126 @@ class UntrustedHookAdapter:
             "last_written": initial_value, "baseline_stale": False,
         }
 
+    def configure_named_stage(self, *, core, guard, device: str, min_um: float,
+                              max_um: float, max_writes: int, initial_value: float,
+                              restore: str | dict[str, float],
+                              action_plan: dict[tuple, tuple[int, tuple[HookAction, ...]]]) -> None:
+        self._named_stage_context = {
+            "core": core, "guard": guard, "device": device,
+            "min_um": min_um, "max_um": max_um, "remaining": max_writes,
+            "initial_value": initial_value, "last_known": initial_value,
+            "restore": restore, "plan": dict(action_plan), "consumed": set(),
+        }
+
+    @staticmethod
+    def axes_signature(event: dict) -> tuple:
+        """Return the engine-preserved identity of an acquisition event."""
+        axes = event.get("axes", {})
+        if not isinstance(axes, dict):
+            raise RuntimeError(f"planned hook event has invalid axes {axes!r}")
+        return tuple(sorted(axes.items()))
+
+    def _apply_named_stage(self, action: MoveNamedStage, event: dict,
+                           *, restoration: bool = False,
+                           hook_event_index: int | None = None) -> None:
+        ctx = self._named_stage_context
+        index = hook_event_index
+        if ctx is None:
+            self._refuse_event(event, action, "no named-stage envelope was authorized for this run")
+            raise RuntimeError("named-stage action refused: no authorized envelope")
+        target = float(action.position_um)
+        if target < ctx["min_um"] or target > ctx["max_um"]:
+            self._refuse_event(event, action, "proposal is outside the authorized named-stage interval")
+            raise RuntimeError("named-stage action refused: outside authorized interval")
+        if ctx["remaining"] <= 0:
+            self._refuse_event(event, action, "authorized named-stage write budget exhausted")
+            raise RuntimeError("named-stage action refused: write budget exhausted")
+        try:
+            ctx["guard"].check_named_stage(ctx["device"], target)
+        except Exception as exc:
+            self._refuse_event(event, action, f"SafetyGuard refused named-stage motion: {exc}")
+            raise RuntimeError(f"named-stage action refused: {exc}") from exc
+        # The budget counts attempted dispatches, including writes that raise.
+        ctx["remaining"] -= 1
+        try:
+            ctx["core"].set_position(ctx["device"], target)
+            ctx["core"].wait_for_device(ctx["device"])
+            achieved = float(ctx["core"].get_position(ctx["device"]))
+            if not math.isfinite(achieved):
+                raise ValueError(f"non-finite achieved position {achieved!r}")
+        except Exception as exc:
+            self._record_event(
+                event, event="named_stage_write_failure",
+                hook_event_index=index, action=self._action_record(action),
+                decision="failed", reason=f"parent stage move failed: {exc}",
+                last_known_um=ctx["last_known"], restoration=restoration,
+            )
+            raise RuntimeError(f"named-stage move failed: {exc}") from exc
+        ctx["last_known"] = achieved
+        event["named_stage_device"] = ctx["device"]
+        event["named_stage_requested_um"] = target
+        event["named_stage_achieved_um"] = achieved
+        event["named_stage_error_um"] = achieved - target
+        self._accept_event(
+            event, action, "named-stage move passed envelope and SafetyGuard",
+            hook_event_index=index, device=ctx["device"], requested_um=target,
+            achieved_um=achieved, error_um=achieved - target,
+            restoration=restoration,
+        )
+
+    def pre_hardware_hook_fn(self, event: dict | list[dict]) -> dict | list[dict]:
+        """Consume the immutable planned action set for this event's axes."""
+        ctx = self._named_stage_context
+        if ctx is None:
+            return event
+        if isinstance(event, list):
+            if len(event) == 1:
+                self.pre_hardware_hook_fn(event[0])
+                return event
+            reason = (
+                "a planned per-frame hardware action cannot be honoured inside a "
+                "hardware-sequenced burst because the burst runs with no software "
+                "callback between exposures; use a nonzero interval_s to disable "
+                "time-axis sequencing"
+            )
+            record_event = event[0] if event and isinstance(event[0], dict) else {}
+            self._record_event(
+                record_event, event="hook_action", decision="refused", reason=reason,
+                hook_event_axes=[item.get("axes") for item in event
+                                 if isinstance(item, dict)],
+            )
+            raise RuntimeError(reason)
+        signature = self.axes_signature(event)
+        if signature not in ctx["plan"] or signature in ctx["consumed"]:
+            raise RuntimeError(
+                f"planned hook actions could not resolve unconsumed axes {dict(signature)!r}"
+            )
+        ctx["consumed"].add(signature)
+        index, actions = ctx["plan"][signature]
+        for action in actions:
+            if isinstance(action, MoveNamedStage):
+                self._apply_named_stage(action, event, hook_event_index=index)
+            else:
+                # Empty lists are explicit; every nonempty fixed-plan entry must
+                # contain an action this coordinator owns.
+                self._refuse_event(event, action, "unsupported hardware action in fixed hook_action_plan")
+                raise RuntimeError(f"unsupported planned hook action {action.kind}")
+        return event
+
+    def restore_named_stage(self) -> dict[str, Any] | None:
+        ctx = self._named_stage_context
+        if ctx is None:
+            return None
+        restore = ctx["restore"]
+        if restore == "leave":
+            return {"policy": "leave", "entry_um": ctx["initial_value"],
+                    "last_known_um": ctx["last_known"], "restored": False}
+        target = ctx["initial_value"] if restore == "entry" else float(restore["value"])
+        event = {"axes": {}}
+        self._apply_named_stage(MoveNamedStage(target), event, restoration=True)
+        return {"policy": restore, "entry_um": ctx["initial_value"],
+                "last_known_um": ctx["last_known"], "restored": True}
+
     def configure_artifacts(self, *, target_dir: str | Path,
                             max_artifact_bytes: int, max_count: int,
                             max_total_bytes: int) -> None:
@@ -371,6 +519,25 @@ class UntrustedHookAdapter:
         from microclaw.hooks import HookBase
         self._log.append({**HookBase.where(metadata), **fields})
         self._write_log()
+
+    def _record_event(self, hardware_event: dict, **fields: Any) -> None:
+        """Record a pre-hardware decision using event-shaped frame identity."""
+        from microclaw.hooks import HookBase
+        self._log.append({**HookBase.where_event(hardware_event), **fields})
+        self._write_log()
+
+    def _refuse_event(self, event: dict, action: HookAction, reason: str) -> None:
+        self._record_event(
+            event, event="hook_action", action=self._action_record(action),
+            decision="refused", reason=reason,
+        )
+
+    def _accept_event(self, event: dict, action: HookAction, reason: str,
+                      **fields: Any) -> None:
+        self._record_event(
+            event, event="hook_action", action=self._action_record(action),
+            decision="accepted", reason=reason, **fields,
+        )
 
     def note_stalled(self, max_idle_s: float) -> None:
         self._record({}, event="stalled", max_idle_s=max_idle_s)
@@ -515,6 +682,12 @@ class UntrustedHookAdapter:
             if increasing:
                 ctx["remaining"] -= 1
             self._accept(metadata, action, "power write passed envelope and SafetyGuard")
+            return None
+        if isinstance(action, MoveNamedStage):
+            self._refuse(
+                metadata, action,
+                "fixed-plan hardware actions must come from hook_action_plan, not analyze_frame",
+            )
             return None
         ctx = self._context
         if ctx is None:
@@ -828,7 +1001,16 @@ class CompositeHook:
                 json.dumps(self._log, indent=2, allow_nan=False), encoding="utf-8"
             )
 
-    def post_hardware_hook_fn(self, event: dict) -> dict:
+    def post_hardware_hook_fn(self, event: dict | list[dict]) -> dict | list[dict]:
+        if isinstance(event, list):
+            # Thread each item's RESULT back, exactly as the dict path threads
+            # `current`, but in place so the very list we were handed is the one
+            # returned. Discarding the result would drop a child's replacement
+            # event in sequenced batches only, and would also skip the None check
+            # below -- so a hook bug that raises loudly on one event would pass
+            # silently on a burst of them.
+            event[:] = [self.post_hardware_hook_fn(item) for item in event]
+            return event
         current = event
         for index, (_name, hook) in enumerate(self.named_hooks):
             callback = getattr(hook, "post_hardware_hook_fn", None)
