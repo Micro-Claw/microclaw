@@ -44,17 +44,33 @@ def synthetic_puncta(shape=(128, 128), spots=((40, 50), (80, 90), (20, 100)),
     return np.clip(img, 0, None).astype(np.uint16)
 
 
-def simulated_scmos_frame(
+def simulated_camera_frame(
     photons, *, seed=0, ad_offset=100.0, read_noise_e=1.5,
     electrons_per_count=0.5, qe=0.8, background_photons=1.0,
 ):
-    """Photon image through the non-EM noise model used by PYME fakeCam."""
+    """Generate a simple digital camera frame.
+
+    The model applies photon shot noise, Gaussian sensor read noise, and a
+    linear analogue-to-digital conversion.  It is intentionally only as
+    detailed as these image-analysis tests require.
+    """
+    if not 0 <= qe <= 1:
+        raise ValueError("qe must be between 0 and 1")
+    if electrons_per_count <= 0:
+        raise ValueError("electrons_per_count must be positive")
+    if read_noise_e < 0 or background_photons < 0:
+        raise ValueError("noise and background values must be non-negative")
+
     rng = np.random.default_rng(seed)
     photons = np.asarray(photons, dtype=np.float64)
-    read_noise_adu = read_noise_e / electrons_per_count
-    frame = ad_offset + read_noise_adu * rng.standard_normal(photons.shape)
-    frame += rng.poisson(qe * (photons + background_photons)) / electrons_per_count
-    return np.clip(frame, 0, np.iinfo(np.uint16).max).astype(np.uint16)
+    if np.any(photons < 0):
+        raise ValueError("photons must be non-negative")
+
+    mean_electrons = qe * (photons + background_photons)
+    measured_electrons = rng.poisson(mean_electrons).astype(np.float64)
+    measured_electrons += rng.normal(0.0, read_noise_e, photons.shape)
+    counts = ad_offset + measured_electrons / electrons_per_count
+    return np.clip(np.rint(counts), 0, np.iinfo(np.uint16).max).astype(np.uint16)
 
 
 def _tagged_ctrl(pix: bytes, w: int, h: int, bpp: int, n_comp: int):
@@ -629,8 +645,8 @@ class TestCoverageStats:
         structured_photons = photons.copy()
         structured_photons[64:192, 88:168] = 30
         structured_photons[80:96, 100:116] = 1000
-        empty = compute_stats(simulated_scmos_frame(photons, seed=10))
-        structured = compute_stats(simulated_scmos_frame(structured_photons, seed=10))
+        empty = compute_stats(simulated_camera_frame(photons, seed=10))
+        structured = compute_stats(simulated_camera_frame(structured_photons, seed=10))
 
         assert empty.signal_coverage < 0.01
         assert empty.structure_coverage < 0.005
@@ -642,8 +658,8 @@ class TestCoverageStats:
         """F5: diffuse material below the pixel gate separates from glass."""
         diffuse_photons = np.zeros((256, 256))
         diffuse_photons[64:192, 88:168] = 3
-        out_of_focus = simulated_scmos_frame(diffuse_photons, seed=12)
-        empty = simulated_scmos_frame(np.zeros_like(diffuse_photons), seed=12)
+        out_of_focus = simulated_camera_frame(diffuse_photons, seed=12)
+        empty = simulated_camera_frame(np.zeros_like(diffuse_photons), seed=12)
 
         field_stats = compute_stats(out_of_focus)
         empty_stats = compute_stats(empty)
@@ -669,8 +685,8 @@ class TestCoverageStats:
         spread_photons = np.zeros((256, 256))
         spread_photons[::4, ::4] = total_photons / (64 * 64)  # same total photons
 
-        corner_stats = compute_stats(simulated_scmos_frame(corner_photons, seed=4))
-        spread_stats = compute_stats(simulated_scmos_frame(spread_photons, seed=4))
+        corner_stats = compute_stats(simulated_camera_frame(corner_photons, seed=4))
+        spread_stats = compute_stats(simulated_camera_frame(spread_photons, seed=4))
         # F6: snr ranks one bright corner above a field that is full of sample.
         assert corner_stats.snr > spread_stats.snr
         assert corner_stats.signal_coverage < spread_stats.signal_coverage
@@ -679,7 +695,7 @@ class TestCoverageStats:
         assert spread_stats.signal_concentration < 0.2
 
     def test_empty_camera_frame_has_near_zero_coverage(self):
-        stats = compute_stats(simulated_scmos_frame(np.zeros((64, 64)), seed=20))
+        stats = compute_stats(simulated_camera_frame(np.zeros((64, 64)), seed=20))
         assert stats.signal_coverage < 0.01
         assert stats.structure_coverage < 0.005
 

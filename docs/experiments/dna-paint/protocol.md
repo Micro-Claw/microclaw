@@ -2,17 +2,17 @@
 
 ## Sources
 
-Compiled from two reference papers in `papers/`, cited throughout as:
+Compiled from two reference papers, cited throughout as:
 
 - **[Schnitzbauer2017]** — Schnitzbauer J, Strauss MT, Schlichthaerle T, Schueder F, Jungmann R.
   "Super-resolution microscopy with DNA-PAINT." *Nat Protoc.* 2017;12(6):1198–1228.
-  doi:10.1038/nprot.2017.024. (`papers/nprot.2017.024.pdf`) — the detailed, step-by-step
+  [doi:10.1038/nprot.2017.024](https://doi.org/10.1038/nprot.2017.024) — the detailed, step-by-step
   DNA-PAINT/Picasso wet-lab protocol; `Step N` below refers to this paper. This is also the
   primary reference setup this document is modeled on — see [§0](#0-this-experiments-scope).
 - **[Lelek2021]** — Lelek M, Gyparaki MT, Beliu G, Schueder F, Griffié J, Manley S, Jungmann R,
   Sauer M, Lakadamyali M, Zimmer C. "Single-molecule localization microscopy."
-  *Nat Rev Methods Primers.* 2021;1:39. doi:10.1038/s43586-021-00038-x.
-  (`papers/s43586-021-00038-x.pdf`) — broader SMLM primer covering kinetics and general
+  *Nat Rev Methods Primers.* 2021;1:39.
+  [doi:10.1038/s43586-021-00038-x](https://doi.org/10.1038/s43586-021-00038-x) — broader SMLM primer covering kinetics and general
   experimental considerations.
 
 ## A note on repo conventions
