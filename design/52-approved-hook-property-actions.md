@@ -729,10 +729,31 @@ parser, envelope validator, guards, write budgets, verification, audit, and
 restoration logic and event-indexed coordinator used live — with
 `inspect.getsource`, never re-written in the emitter, for the reason CLAUDE.md
 gives about the adaptive loop: a hand-copied copy that drifts reintroduces the
-refusals silently. The exported script prints the approved envelope and requires
-confirmation before connecting/starting unless the user explicitly requests a
-non-interactive artifact and accepts that fact in the export dialog. The pinned
+refusals silently. The exported script **prints** the approved envelope, its
+bound, its write budget and its restoration policy before starting. The pinned
 hook hash and envelope are embedded in the script.
+
+**It does not prompt. Operator decision, 2026-08-17, after 52b's second M5
+gate**, replacing this section's original rule that the script "requires
+confirmation before connecting/starting unless the user explicitly requests a
+non-interactive artifact". Three reasons, and the first was measured:
+
+- **The prompt is invisible under redirection.** 52b's own runbook pipes the run
+  through `Out-File`, which swallowed `Type YES to continue:` — the operator saw
+  an apparently hung script, and the prompt surfaced only at the tail of the
+  captured file, after the traceback.
+- **A run carrying both envelopes prompted twice**, once per emitted block.
+- **The prompt is not what makes the script safe.** The envelope interval or
+  value set, the write budget, `check_named_stage` / `check_device_property`, and
+  the read-back all still run; a value outside the envelope is refused whether or
+  not anyone typed YES. Running the script is the consent.
+
+The print stays, and design/38 F9 is why: nothing silent. It is now the only
+place the script states what it will move and within what limits, so it must
+carry the **bound**, not just the device — the property print omitted it until
+this change. The heading is declarative (`HOOK HARDWARE CONTROL FOR THIS RUN`)
+rather than a request. What is given up, stated rather than implied: someone who
+runs the script later, on a different sample, is *informed* but not *stopped*.
 
 The actions themselves do **not** get `@emits` decorators. They are dataclasses
 parsed and dispatched inside the acquisition, not independently recorded tools.
@@ -1257,7 +1278,7 @@ measured, and close the `design/35` register row.
 | coordination | ~~`design52/checklist`~~ | `d97d256` | coordinator | n/a | merged `f872a0c` | n/a |
 | 52a | ~~`design52/block-52a`~~ | `413caec` | codex, 5 rounds + coordinator fixes | **M2 PASS 2026-08-17**, 5 trips; all limbs incl. `restore:"entry"` | merged `00c1763` | design gate below |
 | coordination | `design52/assign-52b` | `b6f17b3` | coordinator | n/a | | n/a |
-| 52b | `design52/block-52b` | `cc47438` | codex, 2 rounds + coordinator fixes | **M5 gate 1: 0/2/3/4 PASS. Gate 2: 0/2/5 PASS, Step 6 FAIL.** Three defects fixed, runbook re-pinned `80fa80c`; **gate 3 owed on Steps 0 and 6 only** | | |
+| 52b | `design52/block-52b` | `cc47438` | codex, 2 rounds + coordinator fixes | **M5 PASS 2026-08-17**, 3 trips; all limbs incl. the design/49 refusal and the standalone export | merged below | design gate below |
 | 52c | `design52/block-52c` | | | | | |
 
 ## Checklist
@@ -1279,7 +1300,7 @@ about process, `CLAUDE.md` wins and this section gets corrected.
   `_dispatch` and the same acquisition signatures 52a creates; running them
   concurrently in two worktrees would conflict on every file that matters.
 
-### State at the 2026-08-17 assignment of block 52b — the live note
+### State at the 2026-08-17 close of block 52b — the live note
 
 **This is the live note. The bullets below it, from "The gate found a defect"
 onward, are 52a's round history and are kept for their findings, not as
@@ -1298,11 +1319,21 @@ branch** before 52b's. One worktree, this one. Suite on `main`, macOS:
   gate merged (`CLAUDE.md` §"The pycro-manager acquisition engine", this
   document's §Timing corrections, `design/35`'s register row). Five M2 rig trips,
   five runner rounds. **Nothing from it is owed.**
-- **52b is being assigned from the merge that carries this note**, on 52a's
-  precedent, so the runner's worktree holds the spec it is held to. Its start
-  commit lands in the ledger after that merge — do not chase the tip. 52c follows
-  it; sequential, because both extend the same `_dispatch` and the same
-  acquisition signatures.
+- **52b is CLOSED, 2026-08-17.** Three M5 rig trips, two runner rounds and six
+  coordinator fixes. Every checklist row above is ticked and verified by the
+  coordinator, not accepted from a report. **Nothing from it is owed.**
+- **52c is next and is not started.** No branch, no worktree, no runner prompt.
+  Start it from `CLAUDE.md` §"The block workflow" step 1; the §Blocks entry for
+  52c is its scope, and its gate returns to `Thorlabs ELL17/ELL20` on M5 — the
+  axis and the rig design/52 was written from.
+- **Four things 52b learned that 52c inherits.** (1) For the exporter, *compiles*
+  and *greps clean* are not evidence — three gate trips found three different
+  export defects, two of which survived compilation; a test must **run** the
+  emitted script. (2) A gate step must name the **mechanism** under test, not the
+  outcome, or a capable agent satisfies it by the better route and the limb never
+  runs. (3) `export_session_script` compiles *this session's* calls, so any
+  export step needs a run in front of it in the same session. (4) Exported
+  scripts print their envelope and **do not prompt**.
 - **52b's set-verification limb is retired, and this was settled before
   assignment** (operator decision, 2026-08-17). `property_envelope` names one
   `(device, property)`, so a frame's pre-exposure set holds at most one property
@@ -1428,6 +1459,32 @@ branch** before 52b's. One worktree, this one. Suite on `main`, macOS:
   prompt was found by the same run: piped through `Out-File` it was invisible and
   the script looked hung, with `Type YES to continue:` surfacing at the tail of
   the log after the traceback.
+
+#### 52b gate 3 — M5, 2026-08-17: **PASS, and the block is closed**
+
+Steps 0, 6a and 6. Suite 1847 + 124 = **1971** exact.
+
+- **The standalone script ran and reproduced the run's mechanism exactly.** Two
+  accepted property writes carrying `hook_event_index` 0 and 1, `requested`
+  equal to `achieved` on both, and the restoration **last** with
+  `restoration: true` and `requested: "Filter-1"` — the entry value — in *both*
+  the live log and the emitted script's own log. Two observations each. It wrote
+  its own dataset (`timelapse_2` beside the live `timelapse_1`, the emitter's
+  fallback being the tool's own default, per 43j) and printed its location.
+- **The Tenengrad values differ** — live 46.115/48.138, standalone 48.221/48.214.
+  That is the specimen, not the code, and it is the right outcome: the export
+  emits the program, not the trace, exactly as 43h's M5 round 3 established for
+  hits. Identical decisions, different measurements.
+- **The exported script is clean on every criterion**: 2265 lines, zero
+  `# NOT EMITTED`, zero `microclaw` imports, parses, and carries
+  `_PROPERTY_ENVELOPE`, `hook.configure_property` and `hook.restore_property()`.
+- **The print-not-prompt change is rig-proven**: zero `input(`, zero
+  `Type YES`, zero `ALLOW HOOK HARDWARE`. The script printed
+  *"HOOK HARDWARE CONTROL FOR THIS RUN -- bounds enforced below"* and
+  *"Property: Thorlabs Filter Wheel.Label; approved ['Filter-1', 'Filter-2'];
+  maximum writes 3; restore 'entry'"*, then ran. The bound is in the disclosure,
+  which is what the print had to earn when it became the only one.
+- **One confirmation** for the live run, none from the standalone.
 
 #### 52a round history — findings, not outstanding work
 - **The gate found a defect no off-rig test could have.** `pre_hardware_hook_fn`
@@ -1756,27 +1813,27 @@ branch** before 52b's. One worktree, this one. Suite on `main`, macOS:
 
 **Implementation**
 
-- [ ] `SetDeviceProperty(value)` joins `_ACTION_TYPES` with the same parse
+- [x] `SetDeviceProperty(value)` joins `_ACTION_TYPES` with the same parse
       refusals as 52a's action. No `device`, no `property` — the envelope names
       both.
-- [ ] `property_envelope` validates by exact key set in
+- [x] `property_envelope` validates by exact key set in
       `_configure_hook_capabilities`, with the categorical and numeric key sets
       **mutually exclusive** so `set(envelope) != allowed` still decides validity
       in one line. No wildcard device, property or value. `restore` required, as
       in 52a.
-- [ ] `authorize_property_write` runs **unchanged**. The envelope is not a route
+- [x] `authorize_property_write` runs **unchanged**. The envelope is not a route
       around the map: an excluded or unclassified pair refuses regardless of
       approval, for design/49's reason.
-- [ ] The write reuses the public property tool's capability-aware bounds
+- [x] The write reuses the public property tool's capability-aware bounds
       checks — typed actuator range/unit, stage, exposure, illumination,
       categorical domain. Do not reproduce them in the adapter.
-- [ ] `check_device_property` (`safety.py:1002`) is split so the bounds/type
+- [x] `check_device_property` (`safety.py:1002`) is split so the bounds/type
       validator stays mandatory while the approved envelope replaces the
       allow/deny **policy** decision. Follow the distinction the function already
       draws for typed and illumination pairs rather than inventing one, and state
       in the report exactly which branch was cut. **The ordinary
       `set_device_property` path is unchanged.**
-- [ ] A frame's actions are applied in order, waiting per write, stopping
+- [x] A frame's actions are applied in order, waiting per write, stopping
       immediately if a write **raises**; the whole set is then verified in **one
       pass** with `_verify_property`'s semantics (`Float` numerically for MM's
       `"10"` → `"10.0000"`, everything else exactly). Design/53's distinction is
@@ -1785,40 +1842,40 @@ branch** before 52b's. One worktree, this one. Suite on `main`, macOS:
       has one member** — build the two-pass shape anyway, because it is the shape
       a multi-pair envelope extends, and do not manufacture an interdependence to
       test it.
-- [ ] `ctrl.refresh_gui()` after the write, as `set_device_property` does — the
+- [x] `ctrl.refresh_gui()` after the write, as `set_device_property` does — the
       EMU repaint behaviour, not a new general claim.
-- [ ] Micro-Manager-reported limits or allowed values narrower than the reviewed
+- [x] Micro-Manager-reported limits or allowed values narrower than the reviewed
       config are intersected and shown before approval. An unbounded numeric
       property may be approved only as an exact finite value set, and the dialog
       says Microclaw has no independent range to verify.
-- [ ] `run_timelapse`, `run_zstack` and their emitter carry `property_envelope`;
+- [x] `run_timelapse`, `run_zstack` and their emitter carry `property_envelope`;
       multiposition and tile still accept nothing new.
 
 **Evidence — written before the fix, failing first**
 
-- [ ] Categorical, bounded numeric, exposure, illumination, and an approved pair
+- [x] Categorical, bounded numeric, exposure, illumination, and an approved pair
       that the ordinary raw property path excludes.
-- [ ] **`SetDeviceProperty` on a bounded stage device's position property refuses
+- [x] **`SetDeviceProperty` on a bounded stage device's position property refuses
       at `authorize_property_write`** with design/49's message naming
       `move_named_stage`. This is a pass, not a gap.
-- [ ] An approved in-bounds write is not refused merely because the hook
+- [x] An approved in-bounds write is not refused merely because the hook
       provenance is `saved_untrusted` or because the action is hardware motion.
-- [ ] ~~**Two interdependent actions in one frame both apply, then verify.**~~
+- [x] ~~**Two interdependent actions in one frame both apply, then verify.**~~
       **Retired 2026-08-17**, unreachable at one pair. Replaced by: a frame's
       action set applies in order and a write that **raises** stops the set before
       the next write, with verification running afterwards rather than between
       writes. Assert the observed call sequence against a fake; do not build an
       interdependence the envelope cannot express.
-- [ ] A configured categorical set and a run-approved subset combine by
+- [x] A configured categorical set and a run-approved subset combine by
       intersection; a historical categorical exclusion does not veto the exact
       approved action.
-- [ ] Approval audit includes hook hash, exact envelope, write budget,
+- [x] Approval audit includes hook hash, exact envelope, write budget,
       acquisition plan, decision and operator identity; one changed byte or
       envelope field invalidates a session grant.
-- [ ] An exported session that dispatched a property action contains no
+- [x] An exported session that dispatched a property action contains no
       `# NOT EMITTED` and no `raise RuntimeError`, compiles, and reproduces the
       envelope and its checks.
-- [ ] Full suite green at or above the 52a baseline, coordinator-re-run.
+- [x] Full suite green at or above the 52a baseline, coordinator-re-run.
 
 **Process** — as 52a, with runbook `design/52-block52b-rig-gate.md`, rig gate 52b
 on M5, and the step-10 design gate merged before 52c is assigned.

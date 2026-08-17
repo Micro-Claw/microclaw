@@ -138,7 +138,7 @@ only the methods actually implemented by the hook are passed to `Acquisition(...
 ### analyze_frame(image: np.ndarray, metadata: dict) -> HookResult | None
 
 The saved-hook contract. `HookResult` contains JSON-safe measurements and a list
-or tuple of typed action proposals: MoveStage, MoveNamedStage, AcquireAt, SetExposure,
+or tuple of typed action proposals: MoveStage, MoveNamedStage, SetDeviceProperty, AcquireAt, SetExposure,
 ContinueSurvey, StopSurvey, RequestAutofocus, SetIlluminationPower, EmitArtifact,
 or DiscardFrame.
 Runner support for control-flow proposals is:
@@ -163,6 +163,13 @@ refused as unsupported; the hook scores frames and the plan moves hardware.
 The action carries only ``position_um``. The envelope names the device, interval,
 attempted-write budget, and explicit restoration policy, and the trusted parent
 checks, moves, waits, reads back, and audits requested and achieved positions.
+
+``SetDeviceProperty(value)`` is likewise available only in predetermined
+``run_timelapse`` and ``run_zstack`` plans. The acquisition call supplies one
+exact ``property_envelope`` (device/property, categorical values or numeric
+bounds, attempted-write budget, and restoration policy); the action supplies
+only the string value. The live authorization map and property bounds still
+apply, and multiposition, tile, and adaptive-survey runs accept no such envelope.
 
 AcquireAt(position) normally requests an immediate guarded revisit of that planned
 tile. When run_adaptive_survey has acquire_on_hit, it instead records the planned

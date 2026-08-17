@@ -36,24 +36,48 @@ _HOOK_NAMED_STAGE_ENVELOPE_SCHEMA = {
     "additionalProperties": False,
 }
 
+_HOOK_PROPERTY_ENVELOPE_SCHEMA = {
+    "type": "object",
+    "description": "One exact device/property, categorical values or numeric interval, attempted-write budget, and explicit restoration policy.",
+    "properties": {
+        "device": {"type": "string", "minLength": 1},
+        "property": {"type": "string", "minLength": 1},
+        "allowed_values": {"type": "array", "items": {"type": "string"}, "minItems": 1, "uniqueItems": True},
+        "min": {"type": "number"}, "max": {"type": "number"},
+        "max_writes": {"type": "integer", "minimum": 1},
+        "restore": {"oneOf": [
+            {"type": "string", "enum": ["leave", "entry"]},
+            {"type": "object", "properties": {"value": {"type": "string"}},
+             "required": ["value"], "additionalProperties": False},
+        ]},
+    },
+    "oneOf": [
+        {"required": ["device", "property", "allowed_values", "max_writes", "restore"]},
+        {"required": ["device", "property", "min", "max", "max_writes", "restore"]},
+    ],
+    "additionalProperties": False,
+}
+
 _HOOK_ACTION_PLAN_SCHEMA = {
     "type": "array",
     "description": (
         "Exactly one indexed action list for every generated fixed-run event; "
         "empty action lists are explicit. Each action is a discriminated object, "
-        "for example {'kind': 'MoveNamedStage', 'position_um': 12.5}."
+        "using exactly {'kind': 'MoveNamedStage', 'position_um': 12.5} or "
+        "{'kind': 'SetDeviceProperty', 'value': 'On'}."
     ),
     "items": {"type": "object", "properties": {
         "hook_event_index": {"type": "integer", "minimum": 0},
-        "actions": {"type": "array", "items": {
-            "type": "object",
-            "properties": {
+        "actions": {"type": "array", "items": {"oneOf": [
+            {"type": "object", "properties": {
                 "kind": {"type": "string", "enum": ["MoveNamedStage"]},
-                "position_um": {"type": "number"},
-            },
-            "required": ["kind", "position_um"],
-            "additionalProperties": False,
-        }},
+                "position_um": {"type": "number"}},
+             "required": ["kind", "position_um"], "additionalProperties": False},
+            {"type": "object", "properties": {
+                "kind": {"type": "string", "enum": ["SetDeviceProperty"]},
+                "value": {"type": "string"}},
+             "required": ["kind", "value"], "additionalProperties": False},
+        ]}},
     }, "required": ["hook_event_index", "actions"], "additionalProperties": False},
 }
 
@@ -567,6 +591,7 @@ TOOLS: list[dict[str, Any]] = [
                 "log_path": {"type": "string", "description": "Hook output log path."},
                 "illumination_envelope": _HOOK_ILLUMINATION_ENVELOPE_SCHEMA,
                 "named_stage_envelope": _HOOK_NAMED_STAGE_ENVELOPE_SCHEMA,
+                "property_envelope": _HOOK_PROPERTY_ENVELOPE_SCHEMA,
                 "hook_action_plan": _HOOK_ACTION_PLAN_SCHEMA,
                 "artifact_limits": _HOOK_ARTIFACT_LIMITS_SCHEMA,
             },
@@ -611,6 +636,7 @@ TOOLS: list[dict[str, Any]] = [
                 "log_path": {"type": "string", "description": "Hook output log path."},
                 "illumination_envelope": _HOOK_ILLUMINATION_ENVELOPE_SCHEMA,
                 "named_stage_envelope": _HOOK_NAMED_STAGE_ENVELOPE_SCHEMA,
+                "property_envelope": _HOOK_PROPERTY_ENVELOPE_SCHEMA,
                 "hook_action_plan": _HOOK_ACTION_PLAN_SCHEMA,
                 "artifact_limits": _HOOK_ARTIFACT_LIMITS_SCHEMA,
             },

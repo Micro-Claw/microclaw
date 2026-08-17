@@ -39,6 +39,13 @@ hook only has to compute, log, and select.
 **Dose.** 18 frames, and M2's camera triggers the lasers, so every frame is a
 dose. Keep the exposure at whatever you would use for a throwaway epi field.
 
+> **Superseded 2026-08-17: the emitted script no longer prompts.** It prints the
+> envelope and proceeds. `Type YES to continue:` was removed after 52b's second
+> M5 gate — it was invisible under output redirection and a run carrying two
+> envelopes asked twice. See design/52 §Export. This runbook is kept as the
+> record of what M2 measured; that step's expectation is the one thing in it that
+> no longer holds.
+
 ## Step 0 — check out, install, and pin
 
 ```powershell
@@ -264,7 +271,7 @@ if ($LASTEXITCODE -eq 0) { "STANDALONE EXIT OK" } else { "STANDALONE EXIT NONZER
 Get-Content $HOME\Documents\52a-m2-standalone.txt -Tail 20
 ```
 
-Expect the script to print the envelope, ask `Type YES to continue:`, and — on
+Expect the script to print the envelope and — on
 YES — repeat the 18-position sweep writing its own dataset. A successful run
 prints little else. Capture the exit line either way; 53a's gate lost that line
 and had to lean on empty stderr.

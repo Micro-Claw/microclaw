@@ -9,14 +9,15 @@ import pytest
 
 from microclaw.hook_decisions import (
     AcquireAt, ContinueSurvey, DiscardFrame, EmitArtifact, HookResult,
-    MoveNamedStage, MoveStage,
+    MoveNamedStage, MoveStage, SetDeviceProperty,
     RequestAutofocus, SetExposure, SetIlluminationPower, StopSurvey,
-    CompositeHook, UntrustedHookAdapter,
+    CompositeHook, UntrustedHookAdapter, parse_action,
 )
 from microclaw.hooks import HookBase
 from microclaw.safety import SafetyViolation
 from microclaw.safety import (
-    ForbiddenProperty, IlluminationConstraints, SafetyConstraints, SafetyGuard,
+    CameraConstraints, ForbiddenProperty, IlluminationConstraints,
+    IlluminationProperty, SafetyConstraints, SafetyGuard,
 )
 from microclaw.tools import SurveyProgress
 
@@ -272,7 +273,7 @@ def test_preexposure_failure_reports_partial_path_frames_and_last_state(
     # reservation=None whenever `adaptive` is false, so this path is real. It
     # must still report the dataset and the last known position, and must not
     # invent a frame count it never measured.
-    adapter._named_stage_context["consumed"] = set()
+    adapter._fixed_plan_context["consumed"] = set()
     with pytest.raises(tools._HookedAcquisitionFailure) as unreserved:
         tools._acquire_with_hooks(
             guard, str(tmp_path), "data",
@@ -285,6 +286,69 @@ def test_preexposure_failure_reports_partial_path_frames_and_last_state(
     assert unreserved_result["last_hardware_state"] == {
         "device": "fixture-stage", "position_um": 15,
     }
+
+
+def test_restorations_are_independent_and_mixed_failure_reports_both_states(
+    monkeypatch, tmp_path
+):
+    from microclaw import tools
+
+    class Hook:
+        _named_stage_context = {"device": "Stage", "last_known": 12.5}
+        _property_context = {
+            "device": "Wheel", "property": "State", "last_known": "B",
+        }
+        def restore_named_stage(self):
+            raise RuntimeError("stage stuck")
+        def restore_property(self):
+            self.property_restored = True
+            return {"restored": True}
+
+    class Acquisition:
+        def __init__(self, **_kwargs):
+            self._dataset_disk_location = str(tmp_path / "data_1")
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def acquire(self, _events): pass
+
+    monkeypatch.setattr(tools, "Acquisition", Acquisition)
+    hook = Hook()
+    with pytest.raises(tools._HookedAcquisitionFailure) as caught:
+        tools._acquire_with_hooks(
+            MagicMock(), str(tmp_path), "data", [], hook, reservation=None,
+        )
+    assert hook.property_restored is True
+    assert "named-stage restoration failed: stage stuck" in str(caught.value)
+    assert caught.value.last_hardware_state == {
+        "named_stage": {"device": "Stage", "position_um": 12.5},
+        "property": {"device": "Wheel", "property": "State", "value": "B"},
+    }
+
+
+def test_property_only_restoration_failure_is_named_as_property(monkeypatch, tmp_path):
+    from microclaw import tools
+
+    class Hook:
+        _named_stage_context = None
+        _property_context = {
+            "device": "Wheel", "property": "State", "last_known": "B",
+        }
+        def restore_property(self): raise RuntimeError("wheel stuck")
+
+    class Acquisition:
+        def __init__(self, **_kwargs):
+            self._dataset_disk_location = str(tmp_path / "data_1")
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def acquire(self, _events): pass
+
+    monkeypatch.setattr(tools, "Acquisition", Acquisition)
+    with pytest.raises(tools._HookedAcquisitionFailure) as caught:
+        tools._acquire_with_hooks(
+            MagicMock(), str(tmp_path), "data", [], Hook(), reservation=None,
+        )
+    assert "property restoration failed: wheel stuck" in str(caught.value)
+    assert "named-stage" not in str(caught.value)
 
 
 def _events(n=3):
@@ -1432,3 +1496,220 @@ def test_composite_batch_threads_child_results_and_keeps_the_none_guard():
     nulling = CompositeHook([("nuller", Nuller())], None)
     with pytest.raises(RuntimeError, match="returned None"):
         nulling.post_hardware_hook_fn([{"axes": {"time": 0}}])
+
+
+def test_set_device_property_parse_requires_string_value_and_exact_shape():
+    assert parse_action({"kind": "SetDeviceProperty", "value": "10.0000"}) == SetDeviceProperty("10.0000")
+    for malformed in (
+        {"kind": "SetDeviceProperty", "value": 10},
+        {"kind": "SetDeviceProperty", "value": "10", "device": "Stage"},
+        {"kind": "SetDeviceProperty", "value": "10", "property": "Position"},
+    ):
+        with pytest.raises(ValueError, match="Malformed SetDeviceProperty"):
+            parse_action(malformed)
+
+
+def test_property_actions_apply_and_wait_before_the_separate_verify_pass():
+    calls = []
+
+    class Core:
+        value = "0"
+        def set_property(self, device, prop, value):
+            calls.append(("set", value)); self.value = value
+        def wait_for_device(self, device): calls.append(("wait", self.value))
+        def get_property(self, device, prop): calls.append(("get", self.value)); return self.value
+        def get_property_type(self, device, prop): return "Float"
+        def set_position(self, device, value): calls.append(("stage-set", value))
+        def get_position(self, device): calls.append(("stage-get", device)); return 5
+
+    class Ctrl:
+        core = Core()
+        authorization_map = None
+        def refresh_gui(self): calls.append(("refresh", self.core.value))
+
+    guard = MagicMock()
+    adapter = UntrustedHookAdapter(object())
+    plan = _axes_plan(({}, (SetDeviceProperty("1"), MoveNamedStage(5))))
+    adapter.configure_property(
+        ctrl=Ctrl(), guard=guard, device="Camera", property="Gain",
+        allowed_values=None, min_value=0, max_value=10, max_writes=1,
+        initial_value="0", restore="leave", action_plan=plan,
+    )
+    adapter.configure_named_stage(
+        core=adapter._property_context["core"], guard=guard, device="Stage",
+        min_um=0, max_um=10, max_writes=1, initial_value=0,
+        restore="leave", action_plan=plan,
+    )
+    adapter.pre_hardware_hook_fn({"axes": {}})
+    assert calls[:3] == [
+        ("set", "1"), ("wait", "1"), ("refresh", "1"),
+    ]
+    assert calls.index(("get", "1")) > calls.index(("stage-get", "Stage"))
+
+
+def test_property_write_exception_stops_before_next_write_and_before_verify():
+    calls = []
+    core = MagicMock()
+    core.set_property.side_effect = RuntimeError("bridge down")
+    core.get_property_type.return_value = "String"
+    ctrl = MagicMock(core=core, authorization_map=None)
+    adapter = UntrustedHookAdapter(object())
+    plan = _axes_plan(({}, (SetDeviceProperty("B"), MoveNamedStage(1))))
+    adapter.configure_property(
+        ctrl=ctrl, guard=MagicMock(), device="Wheel", property="State",
+        allowed_values=("A", "B"), min_value=None, max_value=None,
+        max_writes=2, initial_value="A", restore="leave", action_plan=plan,
+    )
+    adapter.configure_named_stage(
+        core=core, guard=MagicMock(), device="Stage", min_um=0, max_um=2,
+        max_writes=1, initial_value=0, restore="leave", action_plan=plan,
+    )
+    with pytest.raises(RuntimeError, match="bridge down"):
+        adapter.pre_hardware_hook_fn({"axes": {}})
+    assert core.set_property.call_count == 1
+    core.set_position.assert_not_called()
+    core.get_property.assert_not_called()
+
+
+def test_property_action_cannot_self_approve_illumination_enable():
+    core = MagicMock()
+    core.get_focus_device.return_value = "Z"
+    core.get_camera_device.return_value = "Camera"
+    core.get_xy_stage_device.return_value = "XY"
+    # Let the read-back succeed if the write is ever reached, so the only way
+    # this test can fail is the missing illumination refusal. With a bare
+    # MagicMock here it failed on the unfixed tree inside _verify_property,
+    # comparing '1' against a mock repr -- a real failure for the wrong reason,
+    # which is not evidence that this gate is closed.
+    core.get_property.return_value = "1"
+    core.get_property_type.return_value = "String"
+    ctrl = MagicMock(core=core, authorization_map=None)
+    guard = SafetyGuard(SafetyConstraints(illumination=IlluminationConstraints(
+        shutters=[IlluminationProperty("Laser", "Enable", "1", "0")],
+    )))
+    plan = _axes_plan(({}, (SetDeviceProperty("1"),)))
+    adapter = UntrustedHookAdapter(object())
+    adapter.configure_property(
+        ctrl=ctrl, guard=guard, device="Laser", property="Enable",
+        allowed_values=("0", "1"), min_value=None, max_value=None,
+        max_writes=1, initial_value="0", restore="leave", action_plan=plan,
+    )
+
+    with pytest.raises(RuntimeError, match="declined to enable illumination"):
+        adapter.pre_hardware_hook_fn({"axes": {}})
+    core.set_property.assert_not_called()
+
+
+def _bounded_stage_map(device):
+    """The shape M5's live authorization map has, measured 2026-08-17.
+
+    `property_writes_unrestricted` is true there and the TIRF axis carries only a
+    `stage-position` entry on `dedicated-stage`, which is not in
+    `_RAW_WRITE_PATHS` -- so every raw property write to it refuses.
+    """
+    from types import SimpleNamespace
+    return SimpleNamespace(
+        entries=[SimpleNamespace(
+            device=device, property=None, path="dedicated-stage",
+            classification="built_in_typed_capability",
+        )],
+        property_writes_unrestricted=True,
+        bounded_stage_devices={device},
+    )
+
+
+def test_property_action_on_a_bounded_stage_position_refuses_at_the_map():
+    """design/49's refusal, reached through an *approved* hook envelope.
+
+    This is a pass, not a gap: it is the test that the envelope did not become a
+    route around the authorization map. Block 52b's mandatory M5 limb aims at
+    `Thorlabs ELL17/ELL20`.`Position (um)`, which that rig really exposes
+    (driver range 0-28000), so the refusal cannot come from MMCore rejecting an
+    absent property -- it has to come from the map.
+    """
+    # The fake reflects what was written, so a write that lands also verifies.
+    # That leaves the missing refusal as the ONLY thing that can fail this test:
+    # with a constant read-back it failed instead inside _verify_property, which
+    # is a real failure for the wrong reason and evidences nothing about the map.
+    core = MagicMock()
+    core.get_property.side_effect = lambda *_a: core.set_property.call_args[0][2] \
+        if core.set_property.called else "18146"
+    core.get_property_type.return_value = "Integer"
+    ctrl = MagicMock(core=core,
+                     authorization_map=_bounded_stage_map("Thorlabs ELL17/ELL20"))
+    adapter = UntrustedHookAdapter(object())
+    adapter.configure_property(
+        ctrl=ctrl, guard=SafetyGuard(SafetyConstraints()),
+        device="Thorlabs ELL17/ELL20", property="Position (um)",
+        allowed_values=None, min_value=0, max_value=28000, max_writes=1,
+        initial_value="18146", restore="leave",
+        action_plan=_axes_plan(({}, (SetDeviceProperty("20000"),))),
+    )
+
+    with pytest.raises(RuntimeError, match="move_named_stage"):
+        adapter.pre_hardware_hook_fn({"axes": {}})
+    core.set_property.assert_not_called()
+
+
+def test_property_envelope_still_meets_the_configured_exposure_bound():
+    """The envelope replaces the allow/deny policy, never the bounds.
+
+    Exposure is 52b's M5 numeric pair, and `check_device_property` routes a write
+    to the *current camera's* exposure property through `check_exposure`. An
+    approved envelope wider than the reviewed camera bound must still refuse at
+    that bound rather than at the allowlist.
+    """
+    core = MagicMock()
+    core.get_camera_device.return_value = "Camera"
+    core.get_focus_device.return_value = "Z"
+    core.get_xy_stage_device.return_value = "XY"
+    # Reflect writes, as above: a landed write must verify cleanly so that the
+    # missing bound is the only thing that can fail this test.
+    core.get_property.side_effect = lambda *_a: core.set_property.call_args[0][2] \
+        if core.set_property.called else "50"
+    core.get_property_type.return_value = "Float"
+    ctrl = MagicMock(core=core, authorization_map=None)
+    guard = SafetyGuard(SafetyConstraints(camera=CameraConstraints(max_exposure_ms=100)))
+    adapter = UntrustedHookAdapter(object())
+    adapter.configure_property(
+        ctrl=ctrl, guard=guard, device="Camera", property="Exposure",
+        allowed_values=None, min_value=0, max_value=1000, max_writes=2,
+        initial_value="50", restore="leave",
+        action_plan=_axes_plan(({}, (SetDeviceProperty("500"),))),
+    )
+
+    with pytest.raises(RuntimeError, match="exceeds the maximum allowed"):
+        adapter.pre_hardware_hook_fn({"axes": {}})
+    core.set_property.assert_not_called()
+
+
+def test_accepted_property_records_carry_their_frame_index():
+    """The audit row must say which frame it belongs to.
+
+    Measured on M5, 2026-08-17: every accepted property write logged
+    `hook_event_index: null` while its named-stage twin in the same session
+    logged 0..N, so the property audit carried no frame identity at all. The
+    accept record is written after the set verifies, and the index was not
+    travelling that far. Same shape as 52a's round-1 defect in the twin.
+    """
+    core = MagicMock()
+    core.get_property.side_effect = lambda *_a: core.set_property.call_args[0][2] \
+        if core.set_property.called else "A"
+    core.get_property_type.return_value = "String"
+    ctrl = MagicMock(core=core, authorization_map=None)
+    adapter = UntrustedHookAdapter(object())
+    adapter.configure_property(
+        ctrl=ctrl, guard=MagicMock(), device="Wheel", property="State",
+        allowed_values=("A", "B", "C"), min_value=None, max_value=None,
+        max_writes=3, initial_value="A", restore="leave",
+        action_plan=_axes_plan(({"time": 0}, (SetDeviceProperty("B"),)),
+                               ({"time": 1}, (SetDeviceProperty("C"),))),
+    )
+
+    adapter.pre_hardware_hook_fn({"axes": {"time": 0}})
+    adapter.pre_hardware_hook_fn({"axes": {"time": 1}})
+
+    accepted = [r for r in adapter._log
+                if r.get("event") == "hook_action" and r.get("decision") == "accepted"]
+    assert [r["hook_event_index"] for r in accepted] == [0, 1]
+    assert [r["requested"] for r in accepted] == ["B", "C"]

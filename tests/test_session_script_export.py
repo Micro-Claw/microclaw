@@ -1,5 +1,6 @@
 import inspect
 import json
+import re
 from itertools import count
 from pathlib import Path
 from types import SimpleNamespace
@@ -31,6 +32,14 @@ class Guard:
     def resolve_in_workspace(self, path):
         self.seen.append(path)
         return str(self.root / path)
+
+
+_MULTILINE_BRIDGE_ERROR = (
+    'java.lang.Exception: Error in device "Thorlabs ELL17/ELL20": '
+    "Serial command failed.  Is the device connected to the serial port? (14)\n"
+    "mmcorej.MMCoreJJNI.CMMCore_setPosition__SWIG_0(Native Method)\n"
+    "org.micromanager.pyjavaz.ZMQServer.runMethod(ZMQServer.java:431)"
+)
 
 
 def call(name, params):
@@ -502,6 +511,12 @@ def test_script_runs_past_a_call_that_did_nothing_to_the_one_that_ran(tmp_path):
     """
     _, _, source = export(tmp_path, _rejected_then_successful_session())
 
+    # This session inlines no adaptive adapter, so no library `raise
+    # RuntimeError` is legitimately present and the only way one appears is a
+    # `# NOT EMITTED` refusal -- the failure that killed 43h's and 47's gates.
+    # Block 52b briefly deleted this line while correctly observing that the
+    # assertion is untenable for an *adaptive* export; measured here, it still
+    # holds for this one.
     assert "raise RuntimeError" not in source
     assert "# SKIPPED: run_multiposition_acquisition" in source
 
@@ -1610,6 +1625,66 @@ def test_saved_fixed_run_exports_named_stage_envelope_and_indexed_plan(
     compile(source, str(tmp_path / "routine.py"), "exec")
 
 
+@pytest.mark.parametrize(("tool", "shape"), [
+    ("run_timelapse", {"n_frames": 2, "interval_s": 1}),
+    ("run_zstack", {"z_start_um": 0, "z_end_um": 1, "z_step_um": 1}),
+])
+def test_saved_fixed_run_exports_property_envelope_and_plan(
+    tmp_path, monkeypatch, tool, shape
+):
+    from microclaw.hook_manager import save_hook
+    import microclaw.hook_manager as manager
+
+    hooks_dir = tmp_path / "hooks"
+    monkeypatch.setattr(manager, "HOOKS_DIR", hooks_dir)
+    monkeypatch.setattr(manager, "MANIFEST", hooks_dir / "manifest.json")
+    save_hook(
+        "planned_property", "class PlannedProperty:\n"
+        "    def analyze_frame(self, image, metadata):\n"
+        "        return None\n",
+        "planned_property", source="user_provided",
+    )
+    plan = [
+        {"hook_event_index": 0, "actions": [
+            {"kind": "SetDeviceProperty", "value": "B"}]},
+        {"hook_event_index": 1, "actions": []},
+    ]
+    _, result, source = export(tmp_path, [call(tool, {
+        **shape, "save_dir": "session", "hook_strategy": "planned_property",
+        "property_envelope": {"device": "Wheel", "property": "State",
+                              "allowed_values": ["B"], "max_writes": 1,
+                              "restore": "leave"},
+        "hook_action_plan": plan,
+    })])
+    assert result["emitted_calls"] == 1, result
+    assert "_PROPERTY_ENVELOPE" in source
+    assert repr(plan) in source
+    assert "hook.configure_property" in source
+    assert "hook.restore_property()" in source
+    assert "# NOT EMITTED" not in source
+    assert "import microclaw" not in source
+    assert not _undefined_emitted_names(source)
+    compile(source, str(tmp_path / "routine.py"), "exec")
+
+
+def test_emitted_property_guard_pins_the_exact_approved_pair():
+    namespace = {"math": __import__("math")}
+    exec(tools._export_guard_source({
+        "x_um": (None, None), "y_um": (None, None),
+        "z_um": (None, None), "exposure_ms": (None, None),
+        "analysis_min_snr": None,
+    }), namespace)
+    namespace["_PROPERTY_ENVELOPE"] = {
+        "device": "Wheel", "property": "State", "allowed_values": ["B"],
+    }
+    guard = namespace["guard"]
+    guard.check_device_property(None, "Wheel", "State", "B", approved_envelope=True)
+    with pytest.raises(namespace["SafetyViolation"], match="no recorded envelope"):
+        guard.check_device_property(
+            None, "OtherWheel", "State", "B", approved_envelope=True,
+        )
+
+
 def test_unresolvable_survey_names_fall_back_to_the_recorded_tiles(tmp_path):
     """M5 gate, 2026-08-11. The whole export came back `emitted_calls: 0`.
 
@@ -2229,3 +2304,161 @@ def test_move_named_stage_emits_its_resolved_absolute_target(tmp_path):
     assert "-40.0" not in source
     assert "# NOT EMITTED" not in source
     assert "raise RuntimeError" not in source
+
+
+@pytest.mark.parametrize(("label", "result"), [
+    # "nothing" -> the SKIPPED comment; "partial" -> refuse()'s NOT EMITTED
+    # comment. Both interpolate the recorded reason, and both used to break.
+    ("nothing", {"error": _MULTILINE_BRIDGE_ERROR}),
+    ("partial", {"results": [{"error": _MULTILINE_BRIDGE_ERROR}]}),
+])
+def test_a_multiline_recorded_error_stays_inside_its_comment(tmp_path, label, result):
+    """A Java bridge exception must not make the whole session unexportable.
+
+    Measured on M5, 2026-08-17, during block 52b's gate: a serial timeout on
+    `Thorlabs ELL17/ELL20` recorded a multi-line Java stack trace, and the
+    `# SKIPPED` comment carried only its first line -- so every frame after it
+    was emitted as bare Python and `ast.parse` refused the entire export. The
+    agent then hand-wrote a script, which is the failure design/52 exists to
+    remove. Pre-existing on `main`, found by this gate.
+    """
+    _, _, source = export(
+        tmp_path,
+        completed_call("run_multiposition_acquisition", {"positions": [0]}, result),
+    )
+
+    compile(source, str(tmp_path / "routine.py"), "exec")
+    for line in source.splitlines():
+        if "ZMQServer.runMethod" in line:
+            stripped = line.lstrip()
+            assert stripped.startswith("#") or stripped.startswith("raise "), line
+    assert "Serial command failed" in source
+
+
+def test_emitted_property_run_actually_dispatches_its_writes(tmp_path, monkeypatch):
+    """Run the emitted script, do not just compile it.
+
+    M5, 2026-08-17: the exported script compiled, passed every grep in the
+    runbook, and then died on its FIRST property write with
+    `AttributeError: 'types.SimpleNamespace' object has no attribute
+    'refresh_gui'`. `_apply_property` calls `ctrl.refresh_gui()`, which the live
+    controller has and the emitted stand-in did not. Compilation could never
+    have caught it; executing the dispatch does.
+    """
+    from microclaw.hook_manager import save_hook
+    import microclaw.hook_manager as manager
+
+    hooks_dir = tmp_path / "hooks"
+    monkeypatch.setattr(manager, "HOOKS_DIR", hooks_dir)
+    monkeypatch.setattr(manager, "MANIFEST", hooks_dir / "manifest.json")
+    save_hook(
+        "planned_property", "class PlannedProperty:\n"
+        "    def analyze_frame(self, image, metadata):\n"
+        "        return None\n",
+        "planned_property", source="user_provided",
+    )
+    _, _, source = export(tmp_path, [call("run_timelapse", {
+        "n_frames": 2, "interval_s": 1, "save_dir": "session", "name": "props",
+        "hook_strategy": "planned_property",
+        "property_envelope": {"device": "Wheel", "property": "State",
+                              "allowed_values": ["A", "B"], "max_writes": 2,
+                              "restore": "leave"},
+        "hook_action_plan": [
+            {"hook_event_index": 0, "actions": [{"kind": "SetDeviceProperty", "value": "A"}]},
+            {"hook_event_index": 1, "actions": [{"kind": "SetDeviceProperty", "value": "B"}]},
+        ],
+    })])
+
+    writes, repaints = [], []
+
+    class DemoCore:
+        def set_property(self, d, p, v): writes.append((d, p, v))
+        def get_property(self, d, p): return writes[-1][2] if writes else "A"
+        def get_property_type(self, _d, _p): return "String"
+        def wait_for_device(self, _d): pass
+
+    class DemoStudio:
+        def app(self): return self
+        def refresh_gui_from_cache(self): repaints.append(True)
+
+    # The emitted helper imports Studio lazily, so patch it where it is looked up.
+    monkeypatch.setattr("pycromanager.Studio", DemoStudio)
+
+    class FakeAcquisition:
+        """Drives pre_hardware_hook_fn per event, as the engine does."""
+        def __init__(self, **kwargs): self._hooks = kwargs
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def acquire(self, events):
+            for event in events:
+                self._hooks["pre_hardware_hook_fn"](event)
+
+    def fake_events(**kwargs):
+        return [{"axes": {"time": i}} for i in range(kwargs.get("num_time_points", 2))]
+
+    # Strip the real pycromanager import so the fakes above are what runs, the
+    # same way the rejected-then-successful test does.
+    runnable = re.sub(r"^from pycromanager import .*$", "", source, flags=re.M)
+    exec(compile(runnable, "routine.py", "exec"), {
+        "__file__": str(tmp_path / "routine.py"),
+        "Core": DemoCore, "Acquisition": FakeAcquisition,
+        "multi_d_acquisition_events": fake_events,
+    })
+
+    assert writes == [("Wheel", "State", "A"), ("Wheel", "State", "B")]
+    assert repaints, "the emitted script never repainted; an EMU rig needs this"
+
+
+@pytest.mark.parametrize(("envelope_key", "envelope", "expected"), [
+    ("property_envelope",
+     {"device": "Wheel", "property": "State", "allowed_values": ["A", "B"],
+      "max_writes": 2, "restore": "leave"},
+     "_PROPERTY_ENVELOPE"),
+    ("named_stage_envelope",
+     {"device": "Axis", "min_um": 0.0, "max_um": 10.0, "max_writes": 2,
+      "restore": "leave"},
+     "_NAMED_STAGE_ENVELOPE"),
+])
+def test_emitted_script_states_its_envelope_and_never_blocks_on_stdin(
+    tmp_path, monkeypatch, envelope_key, envelope, expected
+):
+    """Print the envelope; do not prompt.
+
+    Operator decision, 2026-08-17, after the M5 gate: `Type YES to continue:` is
+    invisible under output redirection -- the runbook's own `| Out-File` swallowed
+    it and the script looked hung -- and a run carrying both envelopes prompted
+    twice. Running the script is the consent; the bounds, budget, guard and
+    read-back are what make it safe, and they are unchanged. The *print* stays,
+    because it is now the only place the script says what it will move and within
+    what limits (design/38 F9: nothing silent).
+    """
+    from microclaw.hook_manager import save_hook
+    import microclaw.hook_manager as manager
+
+    hooks_dir = tmp_path / "hooks"
+    monkeypatch.setattr(manager, "HOOKS_DIR", hooks_dir)
+    monkeypatch.setattr(manager, "MANIFEST", hooks_dir / "manifest.json")
+    save_hook(
+        "planned", "class Planned:\n"
+        "    def analyze_frame(self, image, metadata):\n"
+        "        return None\n",
+        "planned", source="user_provided",
+    )
+    action = ({"kind": "SetDeviceProperty", "value": "A"}
+              if envelope_key == "property_envelope"
+              else {"kind": "MoveNamedStage", "position_um": 1.0})
+    _, _, source = export(tmp_path, [call("run_timelapse", {
+        "n_frames": 1, "interval_s": 1, "save_dir": "s", "name": "r",
+        "hook_strategy": "planned", envelope_key: envelope,
+        "hook_action_plan": [{"hook_event_index": 0, "actions": [action]}],
+    })])
+
+    assert "input(" not in source
+    assert "HOOK HARDWARE CONTROL FOR THIS RUN" in source
+    # Declarative, not a request: nothing is being asked any more.
+    assert "ALLOW HOOK HARDWARE" not in source
+    assert expected in source
+    # The bound itself must survive, not just the device name: the print is the
+    # whole disclosure now.
+    assert ("approved {_property_bound}" in source
+            or "approved interval" in source)

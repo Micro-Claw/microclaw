@@ -632,6 +632,27 @@ class TestCheckDeviceProperty:
 
 
 class TestAllowlistMode:
+    def test_approved_envelope_bypasses_only_allowlist_and_explicit_deny_still_wins(self):
+        core = _core()
+        guard = SafetyGuard(SafetyConstraints(
+            allowed_properties=[ForbiddenProperty("Camera", "Binning")],
+            forbidden_properties=[ForbiddenProperty("Wheel", "ForbiddenState")],
+        ))
+        guard.check_device_property(
+            core, "Wheel", "State", "B", approved_envelope=True,
+        )
+        with pytest.raises(SafetyViolation, match="forbidden"):
+            guard.check_device_property(
+                core, "Wheel", "ForbiddenState", "B", approved_envelope=True,
+            )
+
+    def test_ordinary_device_property_path_still_requires_allowlist(self):
+        guard = SafetyGuard(SafetyConstraints(
+            allowed_properties=[ForbiddenProperty("Camera", "Binning")],
+        ))
+        with pytest.raises(SafetyViolation, match="not in the allowed_properties"):
+            guard.check_device_property(_core(), "Wheel", "State", "B")
+
     def test_allowlisted_pair_passes(self):
         guard = SafetyGuard(
             SafetyConstraints(
