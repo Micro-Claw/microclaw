@@ -1257,7 +1257,7 @@ measured, and close the `design/35` register row.
 | coordination | ~~`design52/checklist`~~ | `d97d256` | coordinator | n/a | merged `f872a0c` | n/a |
 | 52a | ~~`design52/block-52a`~~ | `413caec` | codex, 5 rounds + coordinator fixes | **M2 PASS 2026-08-17**, 5 trips; all limbs incl. `restore:"entry"` | merged `00c1763` | design gate below |
 | coordination | `design52/assign-52b` | `b6f17b3` | coordinator | n/a | | n/a |
-| 52b | `design52/block-52b` | `cc47438` | codex, 2 rounds + coordinator fixes | **M5 gate 1, 2026-08-17: Steps 0/2/3/4 PASS; Step 5 never ran; Step 6 FAIL.** Two defects fixed (`75e5d97`), runbook re-pinned `52fac1a`; re-gate owed on Steps 0, 2, 5, 6 | | |
+| 52b | `design52/block-52b` | `cc47438` | codex, 2 rounds + coordinator fixes | **M5 gate 1: 0/2/3/4 PASS. Gate 2: 0/2/5 PASS, Step 6 FAIL.** Three defects fixed, runbook re-pinned `80fa80c`; **gate 3 owed on Steps 0 and 6 only** | | |
 | 52c | `design52/block-52c` | | | | | |
 
 ## Checklist
@@ -1398,6 +1398,36 @@ branch** before 52b's. One worktree, this one. Suite on `main`, macOS:
 - **The Step 6 greps were run against the hand-written file** and "passed" it —
   2 markers, `SCRIPT PARSES` — proving nothing about the exporter. The runbook now
   says a refused export is a FAIL and must not be grepped by proxy.
+
+#### 52b gate 2 — M5, 2026-08-17
+
+- **Steps 0, 2 and 5 passed, and Step 5 is the block's point.** Suite
+  1844 + 124 = 1968 exact. `hook_event_index` 0..5 on the six accepted property
+  records — the gate-1 fix proven on the rig — with the restoration record last
+  and carrying `null`, which is right because it belongs to no frame.
+  `property_restoration` read `entry_value` and `last_known_value` both
+  `Filter-6`, agreeing, and the wheel really did start there.
+  **`authorize_property_write` refused a `SetDeviceProperty` at
+  `Thorlabs ELL17/ELL20`.`Position (um)` with design/49's message**, the axis
+  unmoved, and no hand-written script anywhere in the session. Rewriting that
+  step to name the *mechanism* rather than the outcome is what made it run.
+- **The export succeeded and the script still failed — on its first write.**
+  `AttributeError: 'types.SimpleNamespace' object has no attribute 'refresh_gui'`.
+  `_apply_property` calls `ctrl.refresh_gui()`; the live controller has it and
+  the emitted stand-in did not. It compiled, and it passed every grep in the
+  runbook. **The gap was the test**: every property export test compiled the
+  script and none ran it. The new one execs the emitted source against fakes and
+  drives `pre_hardware_hook_fn` per event, and reproduces the rig's exact error
+  on the pre-fix tree. The emitted helper now reproduces the live repaint rather
+  than stubbing it, since M5 is an EMU rig and design/43b is why it exists.
+- **Three gate trips, three different export defects, all invisible to a green
+  suite and two of them invisible to compilation.** The standing lesson is now
+  concrete: for the exporter, *compiles* and *greps clean* are not evidence —
+  only running it is.
+- **Exported scripts no longer prompt** (operator decision; see §Export). The
+  prompt was found by the same run: piped through `Out-File` it was invisible and
+  the script looked hung, with `Type YES to continue:` surfacing at the tail of
+  the log after the traceback.
 
 #### 52a round history — findings, not outstanding work
 - **The gate found a defect no off-rig test could have.** `pre_hardware_hook_fn`
