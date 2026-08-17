@@ -16,8 +16,8 @@ from microclaw.hook_decisions import (
 from microclaw.hooks import HookBase
 from microclaw.safety import SafetyViolation
 from microclaw.safety import (
-    ForbiddenProperty, IlluminationConstraints, IlluminationProperty,
-    SafetyConstraints, SafetyGuard,
+    CameraConstraints, ForbiddenProperty, IlluminationConstraints,
+    IlluminationProperty, SafetyConstraints, SafetyGuard,
 )
 from microclaw.tools import SurveyProgress
 
@@ -1596,5 +1596,88 @@ def test_property_action_cannot_self_approve_illumination_enable():
     )
 
     with pytest.raises(RuntimeError, match="declined to enable illumination"):
+        adapter.pre_hardware_hook_fn({"axes": {}})
+    core.set_property.assert_not_called()
+
+
+def _bounded_stage_map(device):
+    """The shape M5's live authorization map has, measured 2026-08-17.
+
+    `property_writes_unrestricted` is true there and the TIRF axis carries only a
+    `stage-position` entry on `dedicated-stage`, which is not in
+    `_RAW_WRITE_PATHS` -- so every raw property write to it refuses.
+    """
+    from types import SimpleNamespace
+    return SimpleNamespace(
+        entries=[SimpleNamespace(
+            device=device, property=None, path="dedicated-stage",
+            classification="built_in_typed_capability",
+        )],
+        property_writes_unrestricted=True,
+        bounded_stage_devices={device},
+    )
+
+
+def test_property_action_on_a_bounded_stage_position_refuses_at_the_map():
+    """design/49's refusal, reached through an *approved* hook envelope.
+
+    This is a pass, not a gap: it is the test that the envelope did not become a
+    route around the authorization map. Block 52b's mandatory M5 limb aims at
+    `Thorlabs ELL17/ELL20`.`Position (um)`, which that rig really exposes
+    (driver range 0-28000), so the refusal cannot come from MMCore rejecting an
+    absent property -- it has to come from the map.
+    """
+    # The fake reflects what was written, so a write that lands also verifies.
+    # That leaves the missing refusal as the ONLY thing that can fail this test:
+    # with a constant read-back it failed instead inside _verify_property, which
+    # is a real failure for the wrong reason and evidences nothing about the map.
+    core = MagicMock()
+    core.get_property.side_effect = lambda *_a: core.set_property.call_args[0][2] \
+        if core.set_property.called else "18146"
+    core.get_property_type.return_value = "Integer"
+    ctrl = MagicMock(core=core,
+                     authorization_map=_bounded_stage_map("Thorlabs ELL17/ELL20"))
+    adapter = UntrustedHookAdapter(object())
+    adapter.configure_property(
+        ctrl=ctrl, guard=SafetyGuard(SafetyConstraints()),
+        device="Thorlabs ELL17/ELL20", property="Position (um)",
+        allowed_values=None, min_value=0, max_value=28000, max_writes=1,
+        initial_value="18146", restore="leave",
+        action_plan=_axes_plan(({}, (SetDeviceProperty("20000"),))),
+    )
+
+    with pytest.raises(RuntimeError, match="move_named_stage"):
+        adapter.pre_hardware_hook_fn({"axes": {}})
+    core.set_property.assert_not_called()
+
+
+def test_property_envelope_still_meets_the_configured_exposure_bound():
+    """The envelope replaces the allow/deny policy, never the bounds.
+
+    Exposure is 52b's M5 numeric pair, and `check_device_property` routes a write
+    to the *current camera's* exposure property through `check_exposure`. An
+    approved envelope wider than the reviewed camera bound must still refuse at
+    that bound rather than at the allowlist.
+    """
+    core = MagicMock()
+    core.get_camera_device.return_value = "Camera"
+    core.get_focus_device.return_value = "Z"
+    core.get_xy_stage_device.return_value = "XY"
+    # Reflect writes, as above: a landed write must verify cleanly so that the
+    # missing bound is the only thing that can fail this test.
+    core.get_property.side_effect = lambda *_a: core.set_property.call_args[0][2] \
+        if core.set_property.called else "50"
+    core.get_property_type.return_value = "Float"
+    ctrl = MagicMock(core=core, authorization_map=None)
+    guard = SafetyGuard(SafetyConstraints(camera=CameraConstraints(max_exposure_ms=100)))
+    adapter = UntrustedHookAdapter(object())
+    adapter.configure_property(
+        ctrl=ctrl, guard=guard, device="Camera", property="Exposure",
+        allowed_values=None, min_value=0, max_value=1000, max_writes=2,
+        initial_value="50", restore="leave",
+        action_plan=_axes_plan(({}, (SetDeviceProperty("500"),))),
+    )
+
+    with pytest.raises(RuntimeError, match="exceeds the maximum allowed"):
         adapter.pre_hardware_hook_fn({"axes": {}})
     core.set_property.assert_not_called()
