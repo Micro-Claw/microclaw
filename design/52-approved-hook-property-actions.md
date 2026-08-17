@@ -1521,6 +1521,63 @@ Steps 0, 6a and 6. Suite 1847 + 124 = **1971** exact.
   which is what the print had to earn when it became the only one.
 - **One confirmation** for the live run, none from the standalone.
 
+#### 52c gate 1 — M5, 2026-08-17: limb 2 passed, two defects found
+
+Evidence: `52c-m5`. Suite 1856 + 124 = **1980** exact. Six confirmations, one per
+run, none from a hook thread.
+
+- **The refinement is real, and it is the thing this design was written for.**
+  One 6-frame dataset; five accepted moves carrying `hook_event_index` 1..5 with
+  requested, achieved and error; the coarse ladder 18000/18666.67/19333.33/20000
+  and then **19666.67 and 19500, both computed by the hook after seeing the
+  results**, neither present in any plan. The Tenengrad metric rose 380 → 470 →
+  455 → 473 → **492** at the refined point. Restoration ran **last**, `policy:
+  "entry"`, `restored: true`, requested 18673 achieved 18678, and a fresh
+  `get_stage_position` read 18679.
+- **The two abort limbs both fired.** A 3-tile run with 2 writes refused the
+  fourth proposal with *"adaptive handoff is closed after the final authorized
+  event"* and exposed nothing beyond its plan; a 4-tile run with 2 writes refused
+  the fourth move for **budget** in the pre-hardware callback and wrote **3**
+  frames, not 4. Frames equalled accepted moves + 1 in every run, including the
+  standalone.
+- **`achieved` outside the reviewed bound, from a `requested` inside it, was
+  recorded and not refused**: requested 20000.0, achieved **20006**, against a
+  configured maximum of 20000. §"The envelope bounds the request, not the
+  achievement" measured on M5, as it was on M2 at sub-micron scale.
+- **Export carries the program.** The script parses, has no `# NOT EMITTED` and
+  no `microclaw` imports, holds `class TirfRefine` and `_survey_event_stream`,
+  emits `action_plan=None`, prints its envelope and **does not prompt**. The
+  strict criterion was checked by the coordinator off-rig, because the runbook's
+  grep step ran with its `<t2>` placeholders unsubstituted: **none of the run's
+  eight recorded target or achieved values appears anywhere in the 132 KB
+  script.** The standalone reproduced the coarse ladder from the rule and died at
+  its fourth move on the ELL's serial fault.
+- **Defect 1: the envelope was never checked against the configured bound.** The
+  dialog offered `approved interval 18000-21100 um` over an axis `named_stages`
+  caps at 20000; it was approved, and the run died mid-sweep when the hook
+  proposed 20066.67. A fixed plan checks its *targets*, which says nothing about
+  the reach being offered, and an adaptive run has no targets to check at
+  approval at all. Fixed on the branch: the envelope's endpoints face
+  `check_named_stage` before the confirmation renders.
+- **Defect 2: every adaptive abort reported an error string and nothing else.**
+  `_acquire_with_hooks` raises `_HookedAcquisitionFailure` carrying the dataset
+  path, the frames exposed and the last known hardware state, and both fixed
+  runners translate it; the survey runner did not. Three aborted runs lost all
+  three, and the operator read the axis back by hand each time. Fixed on the
+  branch, including not letting `run_adaptive_survey`'s status/hint rewrite dress
+  an abort as a completed survey.
+- **The ELL's serial fault is hardware, not code** — two of four live attempts
+  and the standalone all died with *"Serial command failed ... (14)"*, at
+  different points, each aborting correctly. Same fault 52b recorded.
+- **Carried, not fixed here.** The emitted script restores only on its success
+  path, while the live tool restores on both, so the standalone left the axis
+  parked after its serial fault where the live run would have returned it to
+  entry — pre-existing in 52a/52b's emitters and shared with them. And a hook
+  cannot see where the seed frame sat: this gate's hook scored frame 1 as
+  `18000.0` when the axis was at 18673, which cost nothing here because its
+  ladder comes from the envelope, but would bias any hook fitting a curve over
+  (position, metric) pairs.
+
 #### 52a round history — findings, not outstanding work
 - **The gate found a defect no off-rig test could have.** `pre_hardware_hook_fn`
   assumed one event per callback, but pycro-manager hands a **list** when the
