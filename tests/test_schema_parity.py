@@ -75,8 +75,14 @@ def test_fixed_hook_action_plan_schema_teaches_the_discriminated_action_shape():
         entry = plan["items"]
         assert set(entry["required"]) == {"hook_event_index", "actions"}
         action = entry["properties"]["actions"]["items"]
-        assert action["properties"]["kind"]["enum"] == ["MoveNamedStage"]
-        assert set(action["required"]) == {"kind", "position_um"}
+        variants = action["oneOf"]
+        assert [variant["properties"]["kind"]["enum"] for variant in variants] == [
+            ["MoveNamedStage"], ["SetDeviceProperty"],
+        ]
+        assert [set(variant["required"]) for variant in variants] == [
+            {"kind", "position_um"}, {"kind", "value"},
+        ]
+        assert all(variant["additionalProperties"] is False for variant in variants)
 
 
 def test_run_autofocus_description_says_sweep_is_headless():

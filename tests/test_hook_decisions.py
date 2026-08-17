@@ -9,9 +9,9 @@ import pytest
 
 from microclaw.hook_decisions import (
     AcquireAt, ContinueSurvey, DiscardFrame, EmitArtifact, HookResult,
-    MoveNamedStage, MoveStage,
+    MoveNamedStage, MoveStage, SetDeviceProperty,
     RequestAutofocus, SetExposure, SetIlluminationPower, StopSurvey,
-    CompositeHook, UntrustedHookAdapter,
+    CompositeHook, UntrustedHookAdapter, parse_action,
 )
 from microclaw.hooks import HookBase
 from microclaw.safety import SafetyViolation
@@ -1432,3 +1432,78 @@ def test_composite_batch_threads_child_results_and_keeps_the_none_guard():
     nulling = CompositeHook([("nuller", Nuller())], None)
     with pytest.raises(RuntimeError, match="returned None"):
         nulling.post_hardware_hook_fn([{"axes": {"time": 0}}])
+
+
+def test_set_device_property_parse_requires_string_value_and_exact_shape():
+    assert parse_action({"kind": "SetDeviceProperty", "value": "10.0000"}) == SetDeviceProperty("10.0000")
+    for malformed in (
+        {"kind": "SetDeviceProperty", "value": 10},
+        {"kind": "SetDeviceProperty", "value": "10", "device": "Stage"},
+        {"kind": "SetDeviceProperty", "value": "10", "property": "Position"},
+    ):
+        with pytest.raises(ValueError, match="Malformed SetDeviceProperty"):
+            parse_action(malformed)
+
+
+def test_property_actions_apply_and_wait_before_the_separate_verify_pass():
+    calls = []
+
+    class Core:
+        value = "0"
+        def set_property(self, device, prop, value):
+            calls.append(("set", value)); self.value = value
+        def wait_for_device(self, device): calls.append(("wait", self.value))
+        def get_property(self, device, prop): calls.append(("get", self.value)); return self.value
+        def get_property_type(self, device, prop): return "Float"
+        def set_position(self, device, value): calls.append(("stage-set", value))
+        def get_position(self, device): calls.append(("stage-get", device)); return 5
+
+    class Ctrl:
+        core = Core()
+        authorization_map = None
+        def refresh_gui(self): calls.append(("refresh", self.core.value))
+
+    guard = MagicMock()
+    adapter = UntrustedHookAdapter(object())
+    adapter.configure_property(
+        ctrl=Ctrl(), guard=guard, device="Camera", property="Gain",
+        allowed_values=None, min_value=0, max_value=10, max_writes=1,
+        initial_value="0", restore="leave", action_plan={},
+    )
+    plan = _axes_plan(({}, (SetDeviceProperty("1"), MoveNamedStage(5))))
+    adapter.configure_named_stage(
+        core=adapter._property_context["core"], guard=guard, device="Stage",
+        min_um=0, max_um=10, max_writes=1, initial_value=0,
+        restore="leave", action_plan=plan,
+    )
+    adapter._property_context["plan"] = plan
+    adapter.pre_hardware_hook_fn({"axes": {}})
+    assert calls[:3] == [
+        ("set", "1"), ("wait", "1"), ("refresh", "1"),
+    ]
+    assert calls.index(("get", "1")) > calls.index(("stage-get", "Stage"))
+
+
+def test_property_write_exception_stops_before_next_write_and_before_verify():
+    calls = []
+    core = MagicMock()
+    core.set_property.side_effect = RuntimeError("bridge down")
+    core.get_property_type.return_value = "String"
+    ctrl = MagicMock(core=core, authorization_map=None)
+    adapter = UntrustedHookAdapter(object())
+    adapter.configure_property(
+        ctrl=ctrl, guard=MagicMock(), device="Wheel", property="State",
+        allowed_values=("A", "B"), min_value=None, max_value=None,
+        max_writes=2, initial_value="A", restore="leave", action_plan={},
+    )
+    plan = _axes_plan(({}, (SetDeviceProperty("B"), MoveNamedStage(1))))
+    adapter.configure_named_stage(
+        core=core, guard=MagicMock(), device="Stage", min_um=0, max_um=2,
+        max_writes=1, initial_value=0, restore="leave", action_plan=plan,
+    )
+    adapter._property_context["plan"] = plan
+    with pytest.raises(RuntimeError, match="bridge down"):
+        adapter.pre_hardware_hook_fn({"axes": {}})
+    assert core.set_property.call_count == 1
+    core.set_position.assert_not_called()
+    core.get_property.assert_not_called()

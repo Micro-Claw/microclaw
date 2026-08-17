@@ -1,6 +1,6 @@
 import importlib.util
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import numpy as np
 import pytest
@@ -288,6 +288,63 @@ def test_fixed_plan_survives_queued_engine_closed_key_round_trip(
         "last_known_um": 12.0 if restore == "leave" else 15.0,
         "restored": restore == "entry",
     }
+
+
+def test_property_plan_survives_engine_key_stripping_and_deferred_callbacks(
+    monkeypatch, tmp_path
+):
+    ctrl = MagicMock()
+    state = {"value": "A"}
+    ctrl.core.get_allowed_property_values.return_value = MagicMock(
+        size=lambda: 2, get=lambda index: ("A", "B")[index]
+    )
+    ctrl.core.get_property.side_effect = lambda *_args: state["value"]
+    ctrl.core.get_property_type.return_value = "String"
+    ctrl.core.has_property_limits.return_value = False
+    ctrl.core.get_focus_device.return_value = "Z"
+    ctrl.core.get_camera_device.return_value = "Camera"
+    ctrl.core.get_xy_stage_device.return_value = "XY"
+    ctrl.core.set_property.side_effect = lambda _d, _p, value: state.update(value=value)
+    hook = UntrustedHookAdapter(object())
+    monkeypatch.setattr(tools, "_resolve_hook", lambda *args: hook)
+    monkeypatch.setattr(tools, "CONFIRM_FN", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        tools, "_build_acquisition_events",
+        lambda **kwargs: [{"axes": {"time": 0}}, {"axes": {"time": 1}}],
+    )
+
+    class KeyStrippingAcquisition:
+        _keys = {"axes", "stage_positions", "x", "y", "z", "exposure",
+                 "config_group", "min_start_time", "timeout_ms", "camera",
+                 "tags", "properties", "slm_pattern", "special"}
+        def __init__(self, **kwargs):
+            self.callbacks = kwargs
+            self._dataset_disk_location = str(tmp_path / "dataset")
+        def __enter__(self): return self
+        def acquire(self, events): self.events = events
+        def __exit__(self, *_exc):
+            for event in self.events:
+                self.callbacks["pre_hardware_hook_fn"](
+                    {key: value for key, value in event.items() if key in self._keys}
+                )
+
+    monkeypatch.setattr(tools, "Acquisition", KeyStrippingAcquisition)
+    guard = SafetyGuard(SafetyConstraints())
+    monkeypatch.setattr(guard, "resolve_in_workspace", lambda path: path)
+    result = tools.run_timelapse(
+        ctrl, guard, 2, 1, str(tmp_path), hook_strategy="saved",
+        property_envelope={"device": "Wheel", "property": "State",
+                           "allowed_values": ["B"], "max_writes": 2,
+                           "restore": "leave"},
+        hook_action_plan=[
+            {"hook_event_index": 0, "actions": [
+                {"kind": "SetDeviceProperty", "value": "B"}]},
+            {"hook_event_index": 1, "actions": []},
+        ],
+    )
+    assert "error" not in result
+    assert ctrl.core.set_property.call_args_list == [call("Wheel", "State", "B")]
+    assert result["property_restoration"]["last_known_value"] == "B"
 
 
 def test_config_ceiling_refuses_wrongly_wide_envelope(tmp_path):

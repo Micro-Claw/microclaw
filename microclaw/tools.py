@@ -682,6 +682,7 @@ def _adaptive_runner_source() -> str:
         hook_decisions.SetExposure, hook_decisions.ContinueSurvey,
         hook_decisions.StopSurvey, hook_decisions.RequestAutofocus,
         hook_decisions.SetIlluminationPower, hook_decisions.MoveNamedStage,
+        hook_decisions.SetDeviceProperty,
         hook_decisions.EmitArtifact,
         hook_decisions.DiscardFrame, hook_decisions.HookResult,
     )
@@ -689,11 +690,11 @@ def _adaptive_runner_source() -> str:
     parts.extend(inspect.getsource(item) for item in decision_items)
     parts.extend([
         "HookAction = (MoveStage | AcquireAt | SetExposure | ContinueSurvey | "
-        "StopSurvey | RequestAutofocus | SetIlluminationPower | MoveNamedStage | EmitArtifact | "
+        "StopSurvey | RequestAutofocus | SetIlluminationPower | MoveNamedStage | SetDeviceProperty | EmitArtifact | "
         "DiscardFrame)\n",
         "_ACTION_TYPES = {cls.__dataclass_fields__['kind'].default: cls for cls in "
         "(MoveStage, AcquireAt, SetExposure, ContinueSurvey, StopSurvey, "
-        "RequestAutofocus, SetIlluminationPower, MoveNamedStage, EmitArtifact, DiscardFrame)}\n",
+        "RequestAutofocus, SetIlluminationPower, MoveNamedStage, SetDeviceProperty, EmitArtifact, DiscardFrame)}\n",
     ])
     parts.extend([
         inspect.getsource(hook_decisions.parse_action),
@@ -712,6 +713,7 @@ def _adaptive_runner_source() -> str:
     source = "\n".join(parts)
     available = _source_bound_names(source)
     available.update(_source_bound_names(_analysis_source(include_autofocus=True)))
+    available.update({"_finite_number_text", "_verify_property", "authorize_property_write"})
     # inspect.getsource supplies the logic. Only package-import lines are
     # deleted because their names are already inlined into this module.
     return _without_microclaw_imports(source, available)
@@ -725,6 +727,16 @@ def _export_guard_source(limits: dict[str, Any]) -> str:
 _LIMITS = {limits!r}
 class SafetyViolation(Exception):
     pass
+
+def _finite_number_text(value, label):
+    try: number = float(value)
+    except (TypeError, ValueError): raise SafetyViolation(f"{{label}} must be numeric")
+    if not math.isfinite(number): raise SafetyViolation(f"{{label}} must be finite")
+    return number
+
+def authorize_property_write(ctrl, device, prop):
+    # The exact recorded envelope is this standalone run's authorization map.
+    return None
 
 class _RecordedSafetyGuard:
     def _bounded(self, value, low, high, label):
@@ -748,6 +760,18 @@ class _RecordedSafetyGuard:
             raise SafetyViolation(f"Named stage {{device!r}} has no recorded envelope")
         self._bounded(position_um, envelope["min_um"], envelope["max_um"],
                       f"Named stage {{device}}")
+    def check_device_property(self, core, device, prop, value, *, approved_envelope=False):
+        envelope = globals().get("_PROPERTY_ENVELOPE")
+        if envelope is None or device != envelope["device"] or prop != envelope["property"]:
+            raise SafetyViolation(f"Property {{device}}.{{prop}} has no recorded envelope")
+        if "allowed_values" in envelope:
+            if value not in envelope["allowed_values"]:
+                raise SafetyViolation("Property value is outside the recorded values")
+        else:
+            self._bounded(value, envelope["min"], envelope["max"],
+                          f"Property {{device}}.{{prop}}")
+    def check_illumination(self, core, device, prop, value, **kwargs):
+        return None
     @property
     def analysis_min_snr(self):
         return _LIMITS.get("analysis_min_snr")
@@ -852,9 +876,11 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
         )
     hook_source, constructor, saved = _adaptive_hook_export(params)
     named_stage_envelope = params.get("named_stage_envelope")
+    property_envelope = params.get("property_envelope")
     hook_action_plan = params.get("hook_action_plan")
-    if (named_stage_envelope is not None or hook_action_plan is not None) and not saved:
-        raise CannotEmit("named-stage envelopes and hook_action_plan apply only to saved hooks")
+    if (named_stage_envelope is not None or property_envelope is not None or
+            hook_action_plan is not None) and not saved:
+        raise CannotEmit("hardware envelopes and hook_action_plan apply only to saved hooks")
     autofocus_budget = params.get("autofocus_budget")
     autofocus_sweep_exposures = 0
     autofocus_reexposures = 0
@@ -1088,6 +1114,21 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
             "if input('Type YES to continue: ').strip() != 'YES': raise SafetyViolation('Hook hardware envelope declined before acquisition')",
             f"hook.configure_named_stage(core=core, guard=guard, device={named_stage_envelope['device']!r}, min_um={float(named_stage_envelope['min_um'])!r}, max_um={float(named_stage_envelope['max_um'])!r}, max_writes={named_stage_envelope['max_writes']!r}, initial_value=float(core.get_position({named_stage_envelope['device']!r})), restore={named_stage_envelope['restore']!r}, action_plan=_axes_plan)"]
            if named_stage_envelope is not None else [] ),
+        *( [f"_PROPERTY_ENVELOPE = {property_envelope!r}",
+            *( [f"hook_action_plan = {hook_action_plan!r}",
+                "_axes_plan = {}",
+                "for _entry in hook_action_plan:",
+                "    _index = _entry['hook_event_index']",
+                "    _signature = hook.axes_signature(events[_index])",
+                "    if _signature in _axes_plan: raise ValueError(f'generated events have duplicate axes signature {dict(_signature)!r}')",
+                "    _axes_plan[_signature] = (_index, tuple(parse_action(action) for action in _entry['actions']))"]
+               if named_stage_envelope is None else [] ),
+            "print('ALLOW HOOK HARDWARE CONTROL FOR THIS RUN')",
+            "print(f\"Property: {_PROPERTY_ENVELOPE['device']}.{_PROPERTY_ENVELOPE['property']}; maximum writes {_PROPERTY_ENVELOPE['max_writes']}; restore {_PROPERTY_ENVELOPE['restore']!r}\")",
+            "if input('Type YES to continue: ').strip() != 'YES': raise SafetyViolation('Hook hardware envelope declined before acquisition')",
+            "_property_values = tuple(_PROPERTY_ENVELOPE['allowed_values']) if 'allowed_values' in _PROPERTY_ENVELOPE else None",
+            "hook.configure_property(ctrl=mm, guard=guard, device=_PROPERTY_ENVELOPE['device'], property=_PROPERTY_ENVELOPE['property'], allowed_values=_property_values, min_value=_PROPERTY_ENVELOPE.get('min'), max_value=_PROPERTY_ENVELOPE.get('max'), max_writes=_PROPERTY_ENVELOPE['max_writes'], initial_value=str(core.get_property(_PROPERTY_ENVELOPE['device'], _PROPERTY_ENVELOPE['property'])), restore=_PROPERTY_ENVELOPE['restore'], action_plan=_axes_plan)"]
+           if property_envelope is not None else [] ),
         "_hook_callbacks = {name: callback for name, callback in {"
         "'image_process_fn': getattr(hook, 'image_process_fn', None), "
         "'pre_hardware_hook_fn': getattr(hook, 'pre_hardware_hook_fn', None), "
@@ -1097,6 +1138,8 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
         "    acq.acquire(events)",
         *( ["hook._named_stage_restoration = hook.restore_named_stage()"]
            if named_stage_envelope is not None else [] ),
+        *( ["hook._property_restoration = hook.restore_property()"]
+           if property_envelope is not None else [] ),
         # Print what the acquisition reports, or say it is unknown. The obvious
         # fallback -- _HERE / name -- is a path that usually does NOT exist,
         # because pycro-manager resolves collisions by appending _1, _2. Sending
@@ -1306,7 +1349,7 @@ def export_session_script(
     # Inline helpers based on the program the emitters actually produced. This
     # keeps nested/composite emitters from having to duplicate a tool-name or
     # recorded-result predicate here when they start using a shared helper.
-    channel_writes = "_verify_property(" in body_text
+    channel_writes = adaptive_used or "_verify_property(" in body_text
     lines = [
         "from __future__ import annotations",
         *([f"# WARNING: {selection_warning}"] if selected_ids is not None else []),
@@ -2784,19 +2827,25 @@ def _acquire_with_hooks(
         if hook is not None and hasattr(hook, "restore_named_stage"):
             restoration_attempted = True
             hook._named_stage_restoration = hook.restore_named_stage()
+            hook._property_restoration = hook.restore_property()
     except Exception as exc:
         if (not restoration_attempted and hook is not None and
                 hasattr(hook, "restore_named_stage")):
             try:
                 restoration_attempted = True
                 hook._named_stage_restoration = hook.restore_named_stage()
+                hook._property_restoration = hook.restore_property()
             except Exception as restore_exc:
                 exc = RuntimeError(f"{exc}; named-stage restoration failed: {restore_exc}")
         if hook is not None and dataset_path is not None:
             stage_ctx = getattr(hook, "_named_stage_context", None)
-            last_state = None if stage_ctx is None else {
+            property_ctx = getattr(hook, "_property_context", None)
+            last_state = ({"device": property_ctx["device"],
+                           "property": property_ctx["property"],
+                           "value": property_ctx["last_known"]}
+                          if property_ctx is not None else None if stage_ctx is None else {
                 "device": stage_ctx["device"], "position_um": stage_ctx["last_known"]
-            }
+            })
             raise _HookedAcquisitionFailure(
                 exc, dataset_path,
                 # A hooked run with no reservation is real, not hypothetical:
@@ -2845,6 +2894,7 @@ def run_zstack(
     log_path: str | None = None,
     illumination_envelope: dict | None = None,
     named_stage_envelope: dict | None = None,
+    property_envelope: dict | None = None,
     hook_action_plan: list[dict] | None = None,
     artifact_limits: dict | None = None,
     _reservation: Reservation | None = None,
@@ -2882,6 +2932,7 @@ def run_zstack(
             _configure_hook_capabilities(
                 hook, ctrl, guard, save_dir, name, illumination_envelope,
                 artifact_limits, named_stage_envelope, hook_action_plan, events,
+                property_envelope=property_envelope,
             )
         except _HookArtifactBudgetError as exc:
             return {"error": str(exc)}
@@ -2914,6 +2965,9 @@ def run_zstack(
         restoration = getattr(hook, "_named_stage_restoration", None)
         if restoration is not None:
             result["named_stage_restoration"] = restoration
+        property_restoration = getattr(hook, "_property_restoration", None)
+        if property_restoration is not None:
+            result["property_restoration"] = property_restoration
     return result
 
 
@@ -3000,6 +3054,7 @@ def run_timelapse(
     log_path: str | None = None,
     illumination_envelope: dict | None = None,
     named_stage_envelope: dict | None = None,
+    property_envelope: dict | None = None,
     hook_action_plan: list[dict] | None = None,
     artifact_limits: dict | None = None,
     _reservation: Reservation | None = None,
@@ -3039,6 +3094,7 @@ def run_timelapse(
             _configure_hook_capabilities(
                 hook, ctrl, guard, save_dir, name, illumination_envelope,
                 artifact_limits, named_stage_envelope, hook_action_plan, events,
+                property_envelope=property_envelope,
             )
         except _HookArtifactBudgetError as exc:
             return {"error": str(exc)}
@@ -3076,6 +3132,9 @@ def run_timelapse(
         restoration = getattr(hook, "_named_stage_restoration", None)
         if restoration is not None:
             result["named_stage_restoration"] = restoration
+        property_restoration = getattr(hook, "_property_restoration", None)
+        if property_restoration is not None:
+            result["property_restoration"] = property_restoration
     return result
 
 
@@ -5013,7 +5072,8 @@ def _configure_hook_capabilities(hook: Any, ctrl: MicroscopeController,
                                  artifact_limits: dict | None,
                                  named_stage_envelope: dict | None = None,
                                  hook_action_plan: list[dict] | None = None,
-                                 events: list[dict] | None = None) -> None:
+                                 events: list[dict] | None = None,
+                                 property_envelope: dict | None = None) -> None:
     """Validate and authorize independent parent-side hook capabilities."""
     from microclaw.hook_decisions import CompositeHook, UntrustedHookAdapter
     if isinstance(hook, CompositeHook):
@@ -5037,9 +5097,10 @@ def _configure_hook_capabilities(hook: Any, ctrl: MicroscopeController,
             raise ValueError(
                 "illumination_envelope is not supported for composed hooks."
             )
-        if named_stage_envelope is not None or hook_action_plan is not None:
+        if (named_stage_envelope is not None or property_envelope is not None or
+                hook_action_plan is not None):
             raise ValueError(
-                "named_stage_envelope and hook_action_plan are not supported for composed hooks."
+                "hardware envelopes and hook_action_plan are not supported for composed hooks."
             )
         if artifact_limits is not None:
             if not untrusted:
@@ -5057,7 +5118,8 @@ def _configure_hook_capabilities(hook: Any, ctrl: MicroscopeController,
         return
     if not isinstance(hook, UntrustedHookAdapter):
         if (illumination_envelope or artifact_limits or
-                named_stage_envelope is not None or hook_action_plan is not None):
+                named_stage_envelope is not None or property_envelope is not None or
+                hook_action_plan is not None):
             raise ValueError("Hook envelopes apply only to saved generated hooks.")
         return
     if artifact_limits is not None:
@@ -5108,9 +5170,9 @@ def _configure_hook_capabilities(hook: Any, ctrl: MicroscopeController,
 
     # Preserve the block-7b illumination-only contract byte-for-byte. The
     # combined dialog below is used only when named-stage authority is present.
-    if named_stage_envelope is None:
+    if named_stage_envelope is None and property_envelope is None:
         if hook_action_plan is not None:
-            raise ValueError("hook_action_plan requires named_stage_envelope.")
+            raise ValueError("hook_action_plan requires named_stage_envelope or property_envelope.")
         if illumination_config is not None:
             device, prop, ceiling, writes, initial = illumination_config
             summary = (
@@ -5131,6 +5193,61 @@ def _configure_hook_capabilities(hook: Any, ctrl: MicroscopeController,
         return
 
     named_config = None
+    property_config = None
+    if property_envelope is not None:
+        categorical = {"device", "property", "allowed_values", "max_writes", "restore"}
+        numeric = {"device", "property", "min", "max", "max_writes", "restore"}
+        keys = set(property_envelope)
+        if keys not in (categorical, numeric):
+            raise ValueError(
+                "property_envelope must contain exactly the categorical keys "
+                f"{sorted(categorical)} or numeric keys {sorted(numeric)}."
+            )
+        device, prop = property_envelope["device"], property_envelope["property"]
+        writes, restore = property_envelope["max_writes"], property_envelope["restore"]
+        if not isinstance(device, str) or not device or not isinstance(prop, str) or not prop:
+            raise ValueError("property_envelope device and property must be non-empty strings.")
+        if isinstance(writes, bool) or not isinstance(writes, int) or writes <= 0:
+            raise ValueError("property_envelope max_writes must be a positive integer.")
+        if not (restore in {"leave", "entry"} if isinstance(restore, str) else
+                isinstance(restore, dict) and set(restore) == {"value"} and
+                isinstance(restore["value"], str)):
+            raise ValueError("property_envelope restore must be 'leave', 'entry', or {'value': string}.")
+        driver_allowed = _str_vector(ctrl.core.get_allowed_property_values(device, prop))
+        if keys == categorical:
+            requested = property_envelope["allowed_values"]
+            if (not isinstance(requested, list) or not requested or
+                    any(not isinstance(value, str) for value in requested) or
+                    len(set(requested)) != len(requested)):
+                raise ValueError("property_envelope allowed_values must be unique strings and non-empty.")
+            effective = tuple(value for value in requested
+                              if not driver_allowed or value in driver_allowed)
+            if not effective:
+                raise ValueError("property_envelope has no values allowed by Micro-Manager.")
+            allowed_values, low, high = effective, None, None
+            bound_summary = f"approved values {list(effective)!r}"
+        else:
+            low, high = property_envelope["min"], property_envelope["max"]
+            if any(isinstance(v, bool) or not isinstance(v, (int, float)) or
+                   not math.isfinite(v) for v in (low, high)) or low > high:
+                raise ValueError("property_envelope min/max must be finite with min <= max.")
+            if bool(ctrl.core.has_property_limits(device, prop)):
+                low = max(float(low), float(ctrl.core.get_property_lower_limit(device, prop)))
+                high = min(float(high), float(ctrl.core.get_property_upper_limit(device, prop)))
+                if low > high:
+                    raise ValueError("property_envelope does not intersect Micro-Manager limits.")
+                bound_summary = f"approved interval {low:g}-{high:g} (reviewed and Micro-Manager intersection)"
+            else:
+                if low != high:
+                    raise ValueError("an unbounded numeric property may be approved only at one exact finite value.")
+                bound_summary = f"exact value {low:g}; Microclaw has no independent range to verify"
+            allowed_values = None
+        initial = str(ctrl.core.get_property(device, prop))
+        property_config = (device, prop, allowed_values, low, high, writes, initial, restore)
+        summaries.append(
+            f"Property: {device}.{prop}; {bound_summary}; {writes} attempted writes maximum; "
+            f"restore {restore!r}."
+        )
     if named_stage_envelope is not None:
         allowed = {"device", "min_um", "max_um", "max_writes", "restore"}
         if set(named_stage_envelope) != allowed:
@@ -5151,7 +5268,7 @@ def _configure_hook_capabilities(hook: Any, ctrl: MicroscopeController,
         initial = float(ctrl.core.get_position(device))
         if not math.isfinite(initial):
             raise ValueError("initial named-stage position must be finite.")
-        from microclaw.hook_decisions import MoveNamedStage, parse_action
+        from microclaw.hook_decisions import MoveNamedStage, SetDeviceProperty, parse_action
         if hook_action_plan is None or events is None or not isinstance(hook_action_plan, list):
             raise ValueError("named_stage_envelope requires a hook_action_plan for the generated events.")
         parsed_plan = {}
@@ -5164,8 +5281,9 @@ def _configure_hook_capabilities(hook: Any, ctrl: MicroscopeController,
             if not isinstance(entry["actions"], list):
                 raise ValueError("hook_action_plan actions must be a list (empty is explicit).")
             actions = tuple(parse_action(action) for action in entry["actions"])
-            if any(not isinstance(action, MoveNamedStage) for action in actions):
-                raise ValueError("52a fixed hook_action_plan supports only MoveNamedStage actions.")
+            permitted = (MoveNamedStage,) + ((SetDeviceProperty,) if property_envelope is not None else ())
+            if any(not isinstance(action, permitted) for action in actions):
+                raise ValueError("fixed hook_action_plan actions require their matching hardware envelope.")
             parsed_plan[index] = actions
         expected = set(range(len(events)))
         if set(parsed_plan) != expected:
@@ -5183,13 +5301,15 @@ def _configure_hook_capabilities(hook: Any, ctrl: MicroscopeController,
                 )
             axes_plan[signature] = (index, parsed_plan[index])
         reserved = 0 if restore == "leave" else 1
-        planned_writes = sum(len(actions) for actions in parsed_plan.values())
+        planned_writes = sum(isinstance(action, MoveNamedStage)
+                             for actions in parsed_plan.values() for action in actions)
         if planned_writes + reserved > writes:
             raise ValueError("hook_action_plan would consume the write reserved for restoration.")
         restore_target = initial if restore == "entry" else (
             restore.get("value") if isinstance(restore, dict) else None
         )
-        for target in [a.position_um for actions in parsed_plan.values() for a in actions] + (
+        for target in [a.position_um for actions in parsed_plan.values() for a in actions
+                       if isinstance(a, MoveNamedStage)] + (
             [restore_target] if restore_target is not None else []
         ):
             if isinstance(target, bool) or not isinstance(target, (int, float)) or not math.isfinite(target):
@@ -5207,6 +5327,64 @@ def _configure_hook_capabilities(hook: Any, ctrl: MicroscopeController,
             f"Named stage: {device}; approved interval {float(low):g}-{float(high):g} um; "
             f"{writes} attempted writes maximum; restore {restore!r}."
         )
+    from microclaw.hook_decisions import MoveNamedStage, SetDeviceProperty, parse_action
+    if hook_action_plan is None or events is None or not isinstance(hook_action_plan, list):
+        raise ValueError("a hardware envelope requires a hook_action_plan for the generated events.")
+    parsed_plan = {}
+    for entry in hook_action_plan:
+        if not isinstance(entry, dict) or set(entry) != {"hook_event_index", "actions"}:
+            raise ValueError("each hook_action_plan entry must contain exactly actions and hook_event_index.")
+        index = entry["hook_event_index"]
+        if isinstance(index, bool) or not isinstance(index, int) or index in parsed_plan:
+            raise ValueError("hook_action_plan indices must be unique integers.")
+        if not isinstance(entry["actions"], list):
+            raise ValueError("hook_action_plan actions must be a list (empty is explicit).")
+        actions = tuple(parse_action(action) for action in entry["actions"])
+        permitted = tuple(cls for cls, envelope in (
+            (MoveNamedStage, named_stage_envelope), (SetDeviceProperty, property_envelope)
+        ) if envelope is not None)
+        if any(not isinstance(action, permitted) for action in actions):
+            raise ValueError("fixed hook_action_plan actions require their matching named-stage or property envelope.")
+        parsed_plan[index] = actions
+    if set(parsed_plan) != set(range(len(events))):
+        raise ValueError(f"hook_action_plan indices must be exactly 0..{len(events) - 1}.")
+    axes_plan = {}
+    for index, event in enumerate(events):
+        signature = hook.axes_signature(event)
+        if signature in axes_plan:
+            raise ValueError(f"generated events have duplicate axes signature {dict(signature)!r}.")
+        axes_plan[signature] = (index, parsed_plan[index])
+    property_reserved = 0 if property_config is None or property_config[-1] == "leave" else 1
+    property_planned = sum(isinstance(a, SetDeviceProperty) for actions in parsed_plan.values() for a in actions)
+    if property_config is not None and property_planned + property_reserved > property_config[5]:
+        raise ValueError("hook_action_plan would consume the property write reserved for restoration.")
+    if property_config is not None:
+        from microclaw.authorization import authorize_property_write
+        from microclaw.safety import _finite_number_text
+        device, prop, values, low, high, _writes, initial, restore = property_config
+        authorize_property_write(ctrl, device, prop)
+        restore_value = initial if restore == "entry" else (
+            restore["value"] if isinstance(restore, dict) else None
+        )
+        planned_values = [
+            action.value for actions in parsed_plan.values() for action in actions
+            if isinstance(action, SetDeviceProperty)
+        ] + ([restore_value] if restore_value is not None else [])
+        for value in planned_values:
+            if values is not None:
+                if value not in values:
+                    raise ValueError("planned or restoration property value is outside the envelope.")
+            else:
+                number = _finite_number_text(value, "SetDeviceProperty.value")
+                if number < low or number > high:
+                    raise ValueError("planned or restoration property value is outside the envelope.")
+            guard.check_device_property(
+                ctrl.core, device, prop, value, approved_envelope=True,
+            )
+            guard.check_illumination(
+                ctrl.core, device, prop, value,
+                confirm_fn=lambda *_args, **_kwargs: True,
+            )
     if summaries and not CONFIRM_FN(
         "ALLOW HOOK HARDWARE CONTROL FOR THIS RUN\n" + "\n".join(summaries) +
         f"\nAcquisition: {len(events or [])} frames, {Path(save_dir) / name}",
@@ -5223,6 +5401,14 @@ def _configure_hook_capabilities(hook: Any, ctrl: MicroscopeController,
         device, low, high, writes, initial, restore, parsed_plan = named_config
         hook.configure_named_stage(
             core=ctrl.core, guard=guard, device=device, min_um=low, max_um=high,
+            max_writes=writes, initial_value=initial, restore=restore,
+            action_plan=axes_plan,
+        )
+    if property_config is not None:
+        device, prop, values, low, high, writes, initial, restore = property_config
+        hook.configure_property(
+            ctrl=ctrl, guard=guard, device=device, property=prop,
+            allowed_values=values, min_value=low, max_value=high,
             max_writes=writes, initial_value=initial, restore=restore,
             action_plan=axes_plan,
         )

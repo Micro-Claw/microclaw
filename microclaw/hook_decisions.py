@@ -70,6 +70,13 @@ class MoveNamedStage:
 
 
 @dataclass(frozen=True)
+class SetDeviceProperty:
+    """Propose a value for the single property envelope on this run."""
+    value: str
+    kind: str = "SetDeviceProperty"
+
+
+@dataclass(frozen=True)
 class EmitArtifact:
     """Propose an in-memory artifact with a parent-confined bare filename."""
     filename: str
@@ -85,7 +92,7 @@ class DiscardFrame:
 
 HookAction = (
     MoveStage | AcquireAt | SetExposure | ContinueSurvey | StopSurvey |
-    RequestAutofocus | SetIlluminationPower | MoveNamedStage | EmitArtifact |
+    RequestAutofocus | SetIlluminationPower | MoveNamedStage | SetDeviceProperty | EmitArtifact |
     DiscardFrame
 )
 
@@ -128,7 +135,7 @@ class HookResult:
 _ACTION_TYPES = {
     cls.__dataclass_fields__["kind"].default: cls
     for cls in (MoveStage, AcquireAt, SetExposure, ContinueSurvey, StopSurvey,
-                RequestAutofocus, SetIlluminationPower, MoveNamedStage,
+                RequestAutofocus, SetIlluminationPower, MoveNamedStage, SetDeviceProperty,
                 EmitArtifact, DiscardFrame)
 }
 
@@ -147,8 +154,9 @@ def parse_action(value: HookAction | dict[str, Any]) -> HookAction:
         accepted = ", ".join(sorted(_ACTION_TYPES))
         raise ValueError(
             "Unknown hook action. Actions require a 'kind' discriminator with one of: "
-            f"{accepted}. MoveNamedStage has exactly "
-            "{'kind': 'MoveNamedStage', 'position_um': <finite number>}."
+            f"{accepted}. Hardware actions have exactly "
+            "{'kind': 'MoveNamedStage', 'position_um': <finite number>} or "
+            "{'kind': 'SetDeviceProperty', 'value': <string>}."
         )
     allowed = set(cls.__dataclass_fields__)
     extra = set(payload) - allowed
@@ -169,6 +177,8 @@ def parse_action(value: HookAction | dict[str, Any]) -> HookAction:
         raise ValueError(
             "Malformed MoveNamedStage action: position_um must be a finite number."
         )
+    if isinstance(action, SetDeviceProperty) and not isinstance(action.value, str):
+        raise ValueError("Malformed SetDeviceProperty action: value must be a string.")
     # JSON validation rejects NaN/infinity and non-portable scalar objects.
     try:
         if not isinstance(action, EmitArtifact):
@@ -285,6 +295,7 @@ class UntrustedHookAdapter:
         self._context: dict[str, Any] | None = None
         self._illumination_context: dict[str, Any] | None = None
         self._named_stage_context: dict[str, Any] | None = None
+        self._property_context: dict[str, Any] | None = None
         self._artifact_context: dict[str, Any] | None = None
         self._autofocus_context: dict[str, Any] | None = None
         self._action_counts: dict[str, int] = {}
@@ -379,6 +390,94 @@ class UntrustedHookAdapter:
             "restore": restore, "plan": dict(action_plan), "consumed": set(),
         }
 
+    def configure_property(self, *, ctrl, guard, device: str, property: str,
+                           allowed_values: tuple[str, ...] | None,
+                           min_value: float | None, max_value: float | None,
+                           max_writes: int, initial_value: str,
+                           restore: str | dict[str, str],
+                           action_plan: dict[tuple, tuple[int, tuple[HookAction, ...]]]) -> None:
+        self._property_context = {
+            "ctrl": ctrl, "core": ctrl.core, "guard": guard, "device": device,
+            "property": property, "allowed_values": allowed_values,
+            "min": min_value, "max": max_value, "remaining": max_writes,
+            "initial_value": initial_value, "last_known": initial_value,
+            "restore": restore, "plan": dict(action_plan), "consumed": set(),
+        }
+
+    def _apply_property(self, action: SetDeviceProperty, event: dict,
+                        *, restoration: bool = False,
+                        hook_event_index: int | None = None) -> tuple[SetDeviceProperty, dict]:
+        from microclaw.authorization import authorize_property_write
+        from microclaw.safety import _finite_number_text
+        ctx = self._property_context
+        if ctx is None:
+            self._refuse_event(event, action, "no property envelope was authorized for this run")
+            raise RuntimeError("property action refused: no authorized envelope")
+        value = action.value
+        if ctx["allowed_values"] is not None:
+            if value not in ctx["allowed_values"]:
+                self._refuse_event(event, action, "proposal is outside the authorized property values")
+                raise RuntimeError("property action refused: outside authorized values")
+        else:
+            try:
+                number = _finite_number_text(value, "SetDeviceProperty.value")
+            except Exception as exc:
+                self._refuse_event(event, action, f"malformed numeric property value: {exc}")
+                raise RuntimeError(f"property action refused: {exc}") from exc
+            if number < ctx["min"] or number > ctx["max"]:
+                self._refuse_event(event, action, "proposal is outside the authorized property interval")
+                raise RuntimeError("property action refused: outside authorized interval")
+        if ctx["remaining"] <= 0:
+            self._refuse_event(event, action, "authorized property write budget exhausted")
+            raise RuntimeError("property action refused: write budget exhausted")
+        try:
+            authorize_property_write(ctx["ctrl"], ctx["device"], ctx["property"])
+            ctx["guard"].check_device_property(
+                ctx["core"], ctx["device"], ctx["property"], value,
+                approved_envelope=True,
+            )
+            ctx["guard"].check_illumination(
+                ctx["core"], ctx["device"], ctx["property"], value,
+                # The exact value was included in the one parent-thread
+                # property-envelope confirmation before acquisition.
+                confirm_fn=lambda *_args, **_kwargs: True,
+            )
+        except Exception as exc:
+            self._refuse_event(event, action, f"property write refused: {exc}")
+            raise RuntimeError(f"property action refused: {exc}") from exc
+        ctx["remaining"] -= 1
+        try:
+            ctx["core"].set_property(ctx["device"], ctx["property"], value)
+            ctx["core"].wait_for_device(ctx["device"])
+            ctx["ctrl"].refresh_gui()
+        except Exception as exc:
+            self._record_event(event, event="property_write_failure",
+                               hook_event_index=hook_event_index,
+                               action=self._action_record(action), decision="failed",
+                               reason=f"parent device write failed: {exc}",
+                               last_known=ctx["last_known"], restoration=restoration)
+            raise RuntimeError(f"property write failed: {exc}") from exc
+        return action, event
+
+    def _verify_property_actions(self, applied: list[tuple[SetDeviceProperty, dict]],
+                                 *, restoration: bool = False) -> None:
+        from microclaw.authorization import _verify_property
+        ctx = self._property_context
+        assert ctx is not None
+        for action, event in applied:
+            try:
+                _verify_property(ctx["core"], ctx["device"], ctx["property"], action.value)
+            except Exception as exc:
+                self._record_event(event, event="property_verification_failure",
+                                   action=self._action_record(action), decision="failed",
+                                   reason=str(exc), restoration=restoration)
+                raise RuntimeError(f"property verification failed: {exc}") from exc
+            ctx["last_known"] = str(ctx["core"].get_property(ctx["device"], ctx["property"]))
+            self._accept_event(event, action, "property write passed envelope, authorization, SafetyGuard, and read-back",
+                               device=ctx["device"], property=ctx["property"],
+                               requested=action.value, achieved=ctx["last_known"],
+                               restoration=restoration)
+
     @staticmethod
     def axes_signature(event: dict) -> tuple:
         """Return the engine-preserved identity of an acquisition event."""
@@ -437,7 +536,7 @@ class UntrustedHookAdapter:
 
     def pre_hardware_hook_fn(self, event: dict | list[dict]) -> dict | list[dict]:
         """Consume the immutable planned action set for this event's axes."""
-        ctx = self._named_stage_context
+        ctx = self._named_stage_context or self._property_context
         if ctx is None:
             return event
         if isinstance(event, list):
@@ -464,14 +563,19 @@ class UntrustedHookAdapter:
             )
         ctx["consumed"].add(signature)
         index, actions = ctx["plan"][signature]
+        property_actions = []
         for action in actions:
             if isinstance(action, MoveNamedStage):
                 self._apply_named_stage(action, event, hook_event_index=index)
+            elif isinstance(action, SetDeviceProperty):
+                property_actions.append(self._apply_property(action, event, hook_event_index=index))
             else:
                 # Empty lists are explicit; every nonempty fixed-plan entry must
                 # contain an action this coordinator owns.
                 self._refuse_event(event, action, "unsupported hardware action in fixed hook_action_plan")
                 raise RuntimeError(f"unsupported planned hook action {action.kind}")
+        if property_actions:
+            self._verify_property_actions(property_actions)
         return event
 
     def restore_named_stage(self) -> dict[str, Any] | None:
@@ -487,6 +591,21 @@ class UntrustedHookAdapter:
         self._apply_named_stage(MoveNamedStage(target), event, restoration=True)
         return {"policy": restore, "entry_um": ctx["initial_value"],
                 "last_known_um": ctx["last_known"], "restored": True}
+
+    def restore_property(self) -> dict[str, Any] | None:
+        ctx = self._property_context
+        if ctx is None:
+            return None
+        restore = ctx["restore"]
+        if restore == "leave":
+            return {"policy": "leave", "entry_value": ctx["initial_value"],
+                    "last_known_value": ctx["last_known"], "restored": False}
+        target = ctx["initial_value"] if restore == "entry" else restore["value"]
+        event = {"axes": {}}
+        applied = [self._apply_property(SetDeviceProperty(target), event, restoration=True)]
+        self._verify_property_actions(applied, restoration=True)
+        return {"policy": restore, "entry_value": ctx["initial_value"],
+                "last_known_value": ctx["last_known"], "restored": True}
 
     def configure_artifacts(self, *, target_dir: str | Path,
                             max_artifact_bytes: int, max_count: int,
@@ -683,7 +802,7 @@ class UntrustedHookAdapter:
                 ctx["remaining"] -= 1
             self._accept(metadata, action, "power write passed envelope and SafetyGuard")
             return None
-        if isinstance(action, MoveNamedStage):
+        if isinstance(action, (MoveNamedStage, SetDeviceProperty)):
             self._refuse(
                 metadata, action,
                 "fixed-plan hardware actions must come from hook_action_plan, not analyze_frame",

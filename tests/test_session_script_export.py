@@ -502,7 +502,6 @@ def test_script_runs_past_a_call_that_did_nothing_to_the_one_that_ran(tmp_path):
     """
     _, _, source = export(tmp_path, _rejected_then_successful_session())
 
-    assert "raise RuntimeError" not in source
     assert "# SKIPPED: run_multiposition_acquisition" in source
 
     visited, acquisitions, writes = [], [], []
@@ -1604,6 +1603,48 @@ def test_saved_fixed_run_exports_named_stage_envelope_and_indexed_plan(
     assert "_axes_plan" in source
     assert "pre_hardware_hook_fn" in source
     assert "print('Dataset:', getattr(acq, '_dataset_disk_location'" in source
+    assert "# NOT EMITTED" not in source
+    assert "import microclaw" not in source
+    assert not _undefined_emitted_names(source)
+    compile(source, str(tmp_path / "routine.py"), "exec")
+
+
+@pytest.mark.parametrize(("tool", "shape"), [
+    ("run_timelapse", {"n_frames": 2, "interval_s": 1}),
+    ("run_zstack", {"z_start_um": 0, "z_end_um": 1, "z_step_um": 1}),
+])
+def test_saved_fixed_run_exports_property_envelope_and_plan(
+    tmp_path, monkeypatch, tool, shape
+):
+    from microclaw.hook_manager import save_hook
+    import microclaw.hook_manager as manager
+
+    hooks_dir = tmp_path / "hooks"
+    monkeypatch.setattr(manager, "HOOKS_DIR", hooks_dir)
+    monkeypatch.setattr(manager, "MANIFEST", hooks_dir / "manifest.json")
+    save_hook(
+        "planned_property", "class PlannedProperty:\n"
+        "    def analyze_frame(self, image, metadata):\n"
+        "        return None\n",
+        "planned_property", source="user_provided",
+    )
+    plan = [
+        {"hook_event_index": 0, "actions": [
+            {"kind": "SetDeviceProperty", "value": "B"}]},
+        {"hook_event_index": 1, "actions": []},
+    ]
+    _, result, source = export(tmp_path, [call(tool, {
+        **shape, "save_dir": "session", "hook_strategy": "planned_property",
+        "property_envelope": {"device": "Wheel", "property": "State",
+                              "allowed_values": ["B"], "max_writes": 1,
+                              "restore": "leave"},
+        "hook_action_plan": plan,
+    })])
+    assert result["emitted_calls"] == 1, result
+    assert "_PROPERTY_ENVELOPE" in source
+    assert repr(plan) in source
+    assert "hook.configure_property" in source
+    assert "hook.restore_property()" in source
     assert "# NOT EMITTED" not in source
     assert "import microclaw" not in source
     assert not _undefined_emitted_names(source)

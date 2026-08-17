@@ -999,7 +999,8 @@ class SafetyGuard:
                     f"Property '{device}.{prop}' is forbidden by safety config."
                 )
 
-    def check_device_property(self, core, device: str, prop: str, value: str) -> None:
+    def check_device_property(self, core, device: str, prop: str, value: str,
+                              *, approved_envelope: bool = False) -> None:
         """Guard a raw `set_property` write on a guarded axis, then apply the
         denylist/allowlist from check_property.
 
@@ -1020,9 +1021,9 @@ class SafetyGuard:
         # Illumination pairs are code-owned typed capabilities. Startup's live
         # map authorizes the exact pair; check_illumination below owns its
         # confirmation/cap/ratchet rather than the categorical allowlist.
-        if not illumination_pair and not typed_pair:
+        if not illumination_pair and not typed_pair and not approved_envelope:
             self.check_property(device, prop)      # denylist/allowlist first
-        elif typed_pair:
+        elif typed_pair or approved_envelope:
             # Typed declarations carry their own authorization and therefore
             # bypass the categorical allowlist, but explicit exclusions still win.
             for fp in self._c.forbidden_properties:
