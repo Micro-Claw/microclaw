@@ -1181,6 +1181,13 @@ skipped / 3 warnings**, 1949 collected, coordinator-run after the merge.
   section is history, not instruction** — `TIRF Stage`, its −10497.8..6256.8
   bounds, the ELL9 categorical trap, the 1 s sequencing interval, the 124-skip
   count. None of them transfer.
+- **52a's runbook is M2-shaped and must not be copied to M5 unchanged.** Its
+  Step 0 uses bare `python -m pytest` and `pip install -e .`, which worked in
+  M2's conda env; **M5 runs microclaw under `uv`**, where bare `python` is a
+  miniconda interpreter carrying neither microclaw nor pytest. Block 7b's
+  preflight lost its whole pytest step to exactly that. Convert to `uv run
+  python ...` and re-measure the expected counts on M5 — its skip count is its
+  own, and the 1948/1949 collection figures in 52a's section are M2's.
 - **Run an M5 precheck before writing 52b's runbook**, the same shape as the M2
   one that saved a trip: `microclaw check-config`, `microclaw inspect-rig --out
   <dir>`, `microclaw authorization-map`. The specific question it must answer is
