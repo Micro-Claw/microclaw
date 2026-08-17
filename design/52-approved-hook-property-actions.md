@@ -381,6 +381,27 @@ if a concrete two-device workflow turns up, and treat it as a new design.
 
 ### Timing: use the pre-hardware callback for a per-frame target
 
+**Rig corrections, 2026-08-15 to 2026-08-17. This section as originally written
+is not implementable; what shipped is below.** Three of its assumptions were
+wrong and each was found on M2 (block 52a, five trips). `CLAUDE.md`
+§"The pycro-manager acquisition engine" now carries the general form.
+
+1. **`hook_event_index` is never carried on the event.** Point 1 below asks for a
+   monotonic index on each event and forbids it in `event["axes"]`. Both cannot
+   hold: the engine serialises a closed key set, so an injected key is silently
+   dropped, and `axes` is the only per-event identity it must preserve. **Plans
+   are keyed by the event's axes signature** — `tuple(sorted(axes.items()))` —
+   and nothing is injected. `hook_action_plan` keeps `hook_event_index` as its
+   caller-facing key, an index into the generated event list, and validation
+   binds each entry to that event's signature. Duplicate signatures refuse.
+   The forbidding half of point 1 stands and is satisfied more strictly than it
+   asked: no axis is added at all.
+2. **A callback may receive a list.** See the paragraph below.
+3. **Restoration runs after the acquisition, not after `acquire()`.**
+   `acquire()` only submits; completion is awaited in `__exit__`. §"Failure
+   semantics and audit"'s restoration rules are correct, but they must execute
+   outside the `with` block or they fire mid-sweep.
+
 **Rig correction, 2026-08-15:** pycro-manager may call pre- and post-hardware
 callbacks with either one event dict or a hardware-sequenced list of event
 dicts. A one-element list is processed normally and callbacks preserve the
