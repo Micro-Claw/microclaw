@@ -1278,7 +1278,7 @@ measured, and close the `design/35` register row.
 | coordination | ~~`design52/checklist`~~ | `d97d256` | coordinator | n/a | merged `f872a0c` | n/a |
 | 52a | ~~`design52/block-52a`~~ | `413caec` | codex, 5 rounds + coordinator fixes | **M2 PASS 2026-08-17**, 5 trips; all limbs incl. `restore:"entry"` | merged `00c1763` | design gate below |
 | coordination | `design52/assign-52b` | `b6f17b3` | coordinator | n/a | | n/a |
-| 52b | `design52/block-52b` | `cc47438` | codex, 2 rounds + coordinator fixes | **M5 gate 1: 0/2/3/4 PASS. Gate 2: 0/2/5 PASS, Step 6 FAIL.** Three defects fixed, runbook re-pinned `80fa80c`; **gate 3 owed on Steps 0 and 6 only** | | |
+| 52b | `design52/block-52b` | `cc47438` | codex, 2 rounds + coordinator fixes | **M5 PASS 2026-08-17**, 3 trips; all limbs incl. the design/49 refusal and the standalone export | merged below | design gate below |
 | 52c | `design52/block-52c` | | | | | |
 
 ## Checklist
@@ -1449,6 +1449,32 @@ branch** before 52b's. One worktree, this one. Suite on `main`, macOS:
   prompt was found by the same run: piped through `Out-File` it was invisible and
   the script looked hung, with `Type YES to continue:` surfacing at the tail of
   the log after the traceback.
+
+#### 52b gate 3 — M5, 2026-08-17: **PASS, and the block is closed**
+
+Steps 0, 6a and 6. Suite 1847 + 124 = **1971** exact.
+
+- **The standalone script ran and reproduced the run's mechanism exactly.** Two
+  accepted property writes carrying `hook_event_index` 0 and 1, `requested`
+  equal to `achieved` on both, and the restoration **last** with
+  `restoration: true` and `requested: "Filter-1"` — the entry value — in *both*
+  the live log and the emitted script's own log. Two observations each. It wrote
+  its own dataset (`timelapse_2` beside the live `timelapse_1`, the emitter's
+  fallback being the tool's own default, per 43j) and printed its location.
+- **The Tenengrad values differ** — live 46.115/48.138, standalone 48.221/48.214.
+  That is the specimen, not the code, and it is the right outcome: the export
+  emits the program, not the trace, exactly as 43h's M5 round 3 established for
+  hits. Identical decisions, different measurements.
+- **The exported script is clean on every criterion**: 2265 lines, zero
+  `# NOT EMITTED`, zero `microclaw` imports, parses, and carries
+  `_PROPERTY_ENVELOPE`, `hook.configure_property` and `hook.restore_property()`.
+- **The print-not-prompt change is rig-proven**: zero `input(`, zero
+  `Type YES`, zero `ALLOW HOOK HARDWARE`. The script printed
+  *"HOOK HARDWARE CONTROL FOR THIS RUN -- bounds enforced below"* and
+  *"Property: Thorlabs Filter Wheel.Label; approved ['Filter-1', 'Filter-2'];
+  maximum writes 3; restore 'entry'"*, then ran. The bound is in the disclosure,
+  which is what the print had to earn when it became the only one.
+- **One confirmation** for the live run, none from the standalone.
 
 #### 52a round history — findings, not outstanding work
 - **The gate found a defect no off-rig test could have.** `pre_hardware_hook_fn`
