@@ -924,8 +924,18 @@ and a saved hook cannot produce a one-dataset named-stage sweep.
   accept. This is the §Fixed-run scope boundary, and it is a pass.
 - Test both `RequestAutofocus, MoveNamedStage` and the reverse action order. Each
   queues the refocused tile and refuses the move with the existing deferral
-  reason; neither performs the move. Pairing `RequestAutofocus` with
-  `ContinueSurvey` is malformed and queues neither event.
+  reason; neither performs the move. ~~Pairing `RequestAutofocus` with
+  `ContinueSurvey` is malformed and queues neither event.~~ **Corrected
+  2026-08-17, coordinator ruling during 52c's round 2: the selector-cardinality
+  rule applies to a result that carries a hardware action.** A result with no
+  hardware action keeps the behaviour `main` already had, including
+  `RequestAutofocus, ContinueSurvey` — that pairing is what `hook_docs`
+  prescribes and what `test_a_refused_refocus_still_lets_the_survey_advance`
+  encodes, and its reason is a stall measured on M5 on 2026-08-11: a refocus can
+  be *granted* and still queue nothing, so a hook that offers no fallback route
+  idles out `max_idle_s`. Making the pairing malformed deletes that guard and
+  leaves the docs prescribing the pattern that stalls. §Timing's unconditional
+  wording is reconciled at 52c's step-10 design gate.
 - **`hook_event_index` is absent from `event["axes"]` on every yielded event**,
   and a dataset written by an indexed run exports through `export_dataset_as_tiff`
   with the frame count it acquired. Cheap, and it pins the failure mode measured
@@ -1963,9 +1973,11 @@ on M5, and the step-10 design gate merged before 52c is assigned.
       a refusal record; `done_early()` precedes `image_done()`; the run is neither
       aborted nor allowed to age into `note_stalled`.
 - [ ] Both `RequestAutofocus, MoveNamedStage` **and the reverse order** queue the
-      refocused tile and refuse the move; neither performs it. Pairing
-      `RequestAutofocus` with `ContinueSurvey` is malformed and queues neither
-      event.
+      refocused tile and refuse the move; neither performs it. **Cardinality is a
+      hardware-association rule** (corrected 2026-08-17, see §"Evidence and
+      gates"): a result carrying no hardware action keeps `main`'s sequential
+      behaviour, so `RequestAutofocus, ContinueSurvey` still defers the
+      `ContinueSurvey` and still routes the scan when the refocus is refused.
 - [ ] A proposal for the frame after the last authorized one aborts rather than
       exposing.
 - [ ] Let `max_idle_s` expire and prove the stream ends with `note_stalled`
