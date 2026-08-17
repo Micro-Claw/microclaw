@@ -88,6 +88,17 @@ replacement for it.
   recorded calls, so an export gate step needs a run in front of it — a fresh
   session emits a 13-line stub.
 
+  **An exported script must also restore on its failure path** (block 52c, merged
+  2026-08-17). The live runner restores after the `with` block on both the
+  success and the exception path; the emitted script restored only on success, so
+  a standalone run that hit a bridge fault mid-sweep left the axis parked while
+  its own printed envelope had promised `restore: "entry"`. Both emitters now
+  share one restoration block that runs once, after the context exits, and
+  reports a restoration failure without masking the acquisition error. The same
+  block closed design/52 by exporting adaptive envelopes: a survey hook's
+  hook-chosen targets are *not* in the emitted script — the rule is, and on M5
+  none of the run's eight recorded target values appeared anywhere in it.
+
   **Exported scripts print their envelope and do not prompt** (operator decision,
   2026-08-17). `Type YES to continue:` was invisible under output redirection and
   a run carrying two envelopes asked twice; the bounds, budget, guard and
@@ -215,7 +226,12 @@ because a block looks small.
    `<stage>` `Position (um)`", it correctly used the named-stage route instead,
    and the refusal being gated never fired at all; the axis moved and the dose
    was spent for no evidence. An outcome-shaped step gets satisfied by the better
-   route.
+   route. And **a placeholder left in a literal command is a step that does not
+   run**: 52c's export grep shipped as `Select-String -Pattern "<t2>", "<t3>"`
+   with an instruction to substitute the run's values, was run verbatim, matched
+   nothing, and "passed" — the block's strictest criterion produced no rig
+   evidence at all and had to be checked off-rig afterwards. Write the command so
+   that running it unedited either works or fails loudly.
 7. **Fix, sized to the finding.** Small corrections: do them yourself on the
    branch. Larger ones: back to a runner in a worktree, then validate its output
    as in step 3. Either way the fix is pushed to the same branch.

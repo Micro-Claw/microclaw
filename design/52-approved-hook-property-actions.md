@@ -473,10 +473,26 @@ The coordinator's contract is:
    `_survey_event_stream` (`tools.py:5215`) already has this shape for
    design/24's reason: only `survey_events[0]` is pre-dispatched and every later
    event exists because the hook submitted it after scoring the frame that just
-   arrived. The trusted adapter attaches the index and the next-frame hardware
-   action set to that candidate event, and the draining side enforces one
-   candidate per index. A second queue feeding the same generator is a layer,
-   not a mechanism.
+   arrived.
+
+   **Corrected 2026-08-17 at 52c's assignment, and this is what shipped: the
+   action set is registered against the event's axes signature, never attached
+   to the event.** The first draft said the adapter "attaches the index and the
+   next-frame hardware action set to that candidate event", which the engine's
+   closed key set makes impossible — the same finding that cost 52a three rig
+   trips, in the one place §Timing had not been reconciled to it. So the adapter
+   records `axes_signature(event) -> (index, actions)` *before*
+   `candidates.put(event)`, and `pre_hardware_hook_fn` resolves it exactly as it
+   resolves a fixed plan: one map, one `consumed` set, one mechanism. Two
+   consequences shipped with it. A revisited tile repeats its axes, so a second
+   registration for one signature is refused and recorded, never an overwrite;
+   and the seed event, which has no analysis behind it, is registered with an
+   explicit empty set so that a missing registration still aborts before
+   exposure. **The coordinator is installed only when an envelope exists**, so an
+   ordinary adaptive survey keeps `main`'s queueing behaviour, including
+   `AcquireAt` revisiting a planned tile.
+
+   A second queue feeding the same generator is a layer, not a mechanism.
 
    A `HookResult` may also contain actions whose subject is the frame that just
    completed. Parse the complete result first, then partition it exactly once:
