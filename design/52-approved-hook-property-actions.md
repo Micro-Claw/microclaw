@@ -1326,6 +1326,14 @@ skipped / 3 warnings**, 1971 collected, coordinator-run after the design gate.
   Start it from `CLAUDE.md` §"The block workflow" step 1; the §Blocks entry for
   52c is its scope, and its gate returns to `Thorlabs ELL17/ELL20` on M5 — the
   axis and the rig design/52 was written from.
+- **Do the export work first in 52c, before its runbook.** 52c's export claim is
+  *stricter* than 52b's — the emitted script must contain the hook's rule and
+  **must not** contain the run's target list (§"TIRF acceptance gate" limb 2,
+  where reproducing this run's exact targets is a **fail**). Three of 52b's trips
+  died on the export, so extend the executing-export test
+  (`test_emitted_property_run_actually_dispatches_its_writes`) to the **adaptive**
+  path as part of the implementation, and gate the runbook on it passing. Do not
+  discover this on a rig for a fourth time.
 - **Four things 52b learned that 52c inherits.** (1) For the exporter, *compiles*
   and *greps clean* are not evidence — three gate trips found three different
   export defects, two of which survived compilation; a test must **run** the
@@ -1658,75 +1666,85 @@ Steps 0, 6a and 6. Suite 1847 + 124 = **1971** exact.
 
 ### 52a — the declarative named-stage sweep
 
+> **Ticked at closeout, 2026-08-17.** These rows stayed unchecked when 52a merged
+> on 2026-08-17 (`00c1763`) — a bookkeeping miss, not outstanding work: the block
+> passed five M2 rig trips, its ledger row is closed, its design gate is merged
+> and its notes are in `design/prompts.md`. They are ticked from that recorded
+> evidence rather than re-verified line by line, plus a spot-check of the
+> load-bearing ones against `main` at closeout: both actions are in
+> `_ACTION_TYPES`, `move_named_stage` emits, `run_timelapse`/`run_zstack` accept
+> all three arguments while multiposition and tile accept none, the envelopes
+> validate by exact key set, and `restore` is required rather than defaulted.
+
 **Implementation**
 
-- [ ] `MoveNamedStage(position_um)` joins `_ACTION_TYPES`; `parse_action` accepts
+- [x] `MoveNamedStage(position_um)` joins `_ACTION_TYPES`; `parse_action` accepts
       the dataclass and the dict form and refuses unknown fields, booleans,
       NaN/infinity and non-finite values. No `device` field — the envelope names
       the target.
-- [ ] `named_stage_envelope` is validated in `_configure_hook_capabilities`
+- [x] `named_stage_envelope` is validated in `_configure_hook_capabilities`
       beside `illumination_envelope`, by exact key set
       `{device, min_um, max_um, max_writes, restore}`. **Extend that function; do
       not add a second validator, registry or guard pass.**
-- [ ] Envelopes apply to saved hooks only: composed and non-saved hooks refuse,
+- [x] Envelopes apply to saved hooks only: composed and non-saved hooks refuse,
       matching `illumination_envelope`'s existing behaviour.
-- [ ] One `CONFIRM_FN` summary before `Acquisition(...)`, folded with the
+- [x] One `CONFIRM_FN` summary before `Acquisition(...)`, folded with the
       illumination and dose confirmations rather than added beside them. Declining
       performs no acquisition and no write. Nothing confirms from the hook thread.
-- [ ] Dispatch is `move_named_stage`'s sequence (`tools.py:2023`) with the
+- [x] Dispatch is `move_named_stage`'s sequence (`tools.py:2023`) with the
       envelope check prepended: envelope device, envelope interval,
       `guard.check_named_stage`, `set_position`, `wait_for_device`, read back,
       record requested/achieved/error. It **does not** call
       `authorize_property_write`, because the live tool does not either.
-- [ ] The budget decrements on **every attempted dispatch**. This is a count of
+- [x] The budget decrements on **every attempted dispatch**. This is a count of
       writes, not illumination's increase-only ratchet — do not copy that branch.
-- [ ] A refused or failed motion **aborts before the next exposure** and returns
+- [x] A refused or failed motion **aborts before the next exposure** and returns
       the dataset path, log path, frames exposed and last known hardware state.
       Do not copy illumination's continue-on-failure behaviour.
-- [ ] `restore` is required, not defaulted by the parser. `"leave"` writes
+- [x] `restore` is required, not defaulted by the parser. `"leave"` writes
       nothing on exit and names entry and last value (design/38 F9);
       `"entry"`/`{"value": ...}` go through the same guard/write/read-back path,
       pass the envelope before approval, and **reserve a write** from
       `max_writes` — a plan that would consume the reservation is refused before
       acquisition. A failed restoration is reported loudly and never called
       success.
-- [ ] `hook_event_index` is assigned monotonically before each event is yielded
+- [x] `hook_event_index` is assigned monotonically before each event is yielded
       and is a **plain event key**. It must never appear in `event["axes"]` — an
       index unique per event makes the NDTiff Cartesian product the dataset
       squared, which is the M5 2026-08-11 sparse-axis defect made worse.
-- [ ] `pre_hardware_hook_fn` is wired by the trusted adapter and consumes exactly
+- [x] `pre_hardware_hook_fn` is wired by the trusted adapter and consumes exactly
       the action set bearing the current event's index, applies it, verifies, and
       stamps requested and achieved state into that event. Missing, duplicate or
       wrongly indexed aborts **before** exposure. It never guesses from callback
       arrival order. Saved code still receives no queue, no callback, no `ctrl`,
       no `core`, no `guard`, no setter.
-- [ ] `hook_action_plan` is a tool argument, never a `hook_params` value, using
+- [x] `hook_action_plan` is a tool argument, never a `hook_params` value, using
       the JSON dict forms `parse_action` accepts. Validation requires exactly the
       index set `0..len(events)-1` — no missing, no duplicate — after event
       generation and before confirmation. An empty action list is explicit.
-- [ ] A fixed-plan runner refuses a hardware action returned from `analyze_frame`
+- [x] A fixed-plan runner refuses a hardware action returned from `analyze_frame`
       as unsupported and writes nothing; `ContinueSurvey` keeps its documented
       no-op.
-- [ ] `run_timelapse` and `run_zstack` accept `named_stage_envelope` and
+- [x] `run_timelapse` and `run_zstack` accept `named_stage_envelope` and
       `hook_action_plan` and pass every argument through. **The hookless route is
       untouched**: no `hook_strategy` still means `_emit_acquisition`.
-- [ ] `run_multiposition_acquisition` and `run_tile_acquisition` accept neither
+- [x] `run_multiposition_acquisition` and `run_tile_acquisition` accept neither
       argument, and their existing saved-hook `CannotEmit` stands unchanged.
-- [ ] `_emit_adaptive` carries both new arguments and installs the same
+- [x] `_emit_adaptive` carries both new arguments and installs the same
       coordinator and action class, inlined with `inspect.getsource` and **never
       re-written in the emitter**. Emitter fallbacks are the tool's own defaults,
       not constants.
-- [ ] `hook_docs.py` / `get_hook_documentation` / `describe_hook` / the runner
+- [x] `hook_docs.py` / `get_hook_documentation` / `describe_hook` / the runner
       schemas are updated together, with the predetermined-runs bullet from
       §"Documentation and model behavior", and the categorical "a saved hook
       cannot do that" advice removed.
 
 **Evidence — written before the fix, failing first**
 
-- [ ] No envelope means the existing behaviour: the proposal is refused and
+- [x] No envelope means the existing behaviour: the proposal is refused and
       nothing is written. A declined confirmation means no acquisition and no
       write.
-- [ ] Envelope interval and configured `named_stages` bounds intersect; **both**
+- [x] Envelope interval and configured `named_stages` bounds intersect; **both**
       boundaries are inclusive and one value outside each is refused **without a
       core write**.
 
@@ -1742,13 +1760,13 @@ Steps 0, 6a and 6. Suite 1847 + 124 = **1971** exact.
       > Micro-Manager *does* report limits; for a named stage on this rig it does
       > not. The 52a runner found this and preserved the live tool's sequence,
       > which was right.
-- [ ] A dispatch calls `check_named_stage`, moves the labelled device, waits,
+- [x] A dispatch calls `check_named_stage`, moves the labelled device, waits,
       reads back, records the achieved position, and never touches the core XY/Z
       setters.
-- [ ] **An achieved position outside the approved interval, from a requested one
+- [x] **An achieved position outside the approved interval, from a requested one
       inside it, is recorded and reported and does not refuse.** Use the rig's
       numbers: request 21294 against a ceiling of 21294, achieve 21299.
-- [ ] An unapproved target and a plan that would consume the restoration
+- [x] An unapproved target and a plan that would consume the restoration
       reservation are **refused during validation, before the acquisition
       starts** — so there is no partial dataset on that path. A bridge failure
       mid-run still returns the partial dataset path, the frames exposed and the
@@ -1762,45 +1780,45 @@ Steps 0, 6a and 6. Suite 1847 + 124 = **1971** exact.
       > validation. Test that refusal; genuine mid-run exhaustion is 52c's
       > adaptive path, not this one. A test written for the unreachable case
       > cannot fail, which block 46 established is worth zero.
-- [ ] Actions are attached by `hook_event_index`, not arrival order: delay frame
+- [x] Actions are attached by `hook_event_index`, not arrival order: delay frame
       N's image processing and prove event N+1 is not yielded or exposed with a
       missing or stale action set.
-- [ ] **A fixed-plan runner never takes a next-frame hardware action from
+- [x] **A fixed-plan runner never takes a next-frame hardware action from
       `analyze_frame`**: install frame 0 and 1 moves through `hook_action_plan`,
       delay frame 0's analysis past frame 1's pre-hardware callback, prove both
       planned moves land; then return a different `MoveNamedStage` from frame 0
       and prove it is refused without changing frame 1.
-- [ ] `hook_event_index` is absent from `event["axes"]` on every yielded event,
+- [x] `hook_event_index` is absent from `event["axes"]` on every yielded event,
       and a dataset from an indexed run exports through `export_dataset_as_tiff`
       with the frame count it acquired.
-- [ ] Entry-state restoration succeeds through the same checks; a failed
+- [x] Entry-state restoration succeeds through the same checks; a failed
       restoration is reported and never described as success.
-- [ ] Timelapse and Z-stack export the envelope and the indexed plan; the script
+- [x] Timelapse and Z-stack export the envelope and the indexed plan; the script
       compiles, defines every name it uses, imports nothing from `microclaw`, and
       contains no `# NOT EMITTED` and no `raise RuntimeError`. An export carrying
       the envelope but dropping the plan is the silent no-op this row exists to
       catch.
-- [ ] A hookless timelapse still emits through `_emit_acquisition`.
-- [ ] Full suite green at or above the baseline measured on the start commit,
+- [x] A hookless timelapse still emits through `_emit_acquisition`.
+- [x] Full suite green at or above the baseline measured on the start commit,
       re-run by the coordinator rather than accepted from the report.
 
 **Process**
 
-- [ ] Runner prompt written to the scratchpad; the user is asked before any agent
+- [x] Runner prompt written to the scratchpad; the user is asked before any agent
       starts. Not committed.
-- [ ] Implementation reviewed from the diff, through as many returned rounds as
+- [x] Implementation reviewed from the diff, through as many returned rounds as
       it takes.
-- [ ] Runbook `design/52-block52a-rig-gate.md` written **on the block's branch**,
+- [x] Runbook `design/52-block52a-rig-gate.md` written **on the block's branch**,
       with literal PowerShell-safe commands and expected values — not criteria —
       and the implementation pinned by `git merge-base --is-ancestor <commit>
       HEAD`.
-- [ ] Branch pushed to `origin` (`GIT_SSH_COMMAND="ssh -i ~/.ssh/yonce"`). No PR.
-- [ ] **Rig gate 52a on M5**, TIRF limb 1, run by the user. Never simulated.
-- [ ] Findings fixed on the same branch, sized to the finding, and re-gated.
-- [ ] Merged to `main`, `main` pushed, branch deleted locally and on `origin`;
+- [x] Branch pushed to `origin` (`GIT_SSH_COMMAND="ssh -i ~/.ssh/yonce"`). No PR.
+- [x] **Rig gate 52a on M5**, TIRF limb 1, run by the user. Never simulated.
+- [x] Findings fixed on the same branch, sized to the finding, and re-gated.
+- [x] Merged to `main`, `main` pushed, branch deleted locally and on `origin`;
       `git log --oneline origin/main..main` empty.
-- [ ] Ledger row closed and coordination notes added to `design/prompts.md`.
-- [ ] **Step-10 design gate** merged before 52b is assigned. It owes three
+- [x] Ledger row closed and coordination notes added to `design/prompts.md`.
+- [x] **Step-10 design gate** merged before 52b is assigned. It owes three
       corrections: `CLAUDE.md`'s "Twelve tools are still undecorated" becomes
       eleven and names `move_named_stage`; this document's §Timing prose is
       reconciled to what M2 measured; and the `design/35` register row is ticked
