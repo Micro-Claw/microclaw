@@ -87,11 +87,13 @@ replacement for it.
   adaptive program it had correctly emitted. **Block 47's demo gate produced the
   same failure a second time** — `set_roi`/`clear_roi` were undecorated, so
   restoring ROI as a typed capability produced sessions whose exported script
-  died on line 17; both now emit their bare `core` call. **Twelve tools are still
-  undecorated** (measured over `TOOL_REGISTRY`, 2026-08-12) and are tracked in
-  the checklist's carried-forward register. **A new capability is not finished
-  until it can appear in an exported script** — that is the lesson both gates
-  taught.
+  died on line 17; both now emit their bare `core` call. **Block 52a caught the
+  same shape a third time, before the gate rather than during it** —
+  `move_named_stage` was undecorated while sitting on the gate path of the block
+  about named-stage motion. **Eleven tools are still undecorated** (measured over
+  `TOOL_REGISTRY`, 2026-08-17) and are tracked in the checklist's carried-forward
+  register. **A new capability is not finished until it can appear in an exported
+  script** — that is the lesson all three gates taught.
 
 ## Engineering principles
 
@@ -188,6 +190,35 @@ Standing rules that support the above: one worktree per concurrent agent, never
 non-default SSH key (`GIT_SSH_COMMAND="ssh -i ~/.ssh/yonce"`). Rig-facing
 commands must be PowerShell/cmd-safe. Rig facts belong in gate docs, design
 notes, and rig profiles — never in `microclaw/`.
+
+## The pycro-manager acquisition engine — three contracts we got wrong
+
+All three were found on a rig by block 52a, each after a full green suite, and
+each because a test fake encoded our assumption instead of the engine's
+behaviour. Check code against these before writing the fake.
+
+- **A hook callback receives an event *or a list of events*.** When the engine
+  hardware-sequences (an `interval_s=0` timelapse is exactly that shape), it
+  passes the whole batch; pycro-manager's own tests assert it
+  (`test_acquisition.py:421`, `:446`). Handle both, return the same shape, and
+  treat a one-element list as ordinary. A **per-frame** hardware action cannot be
+  honoured inside a multi-event batch — the burst runs with no software between
+  exposures — so refuse it before the first exposure and tell the caller a
+  nonzero `interval_s` defeats time-axis sequencing.
+- **You cannot add a key to an event.** `event_to_json` / `event_from_json`
+  serialise a **closed** key set (`axes`, `stage_positions`, `x`/`y`/`z`,
+  `exposure`, `config_group`, `min_start_time`, `timeout_ms`, `camera`, `tags`,
+  `properties`, `slm_pattern`, `special`); anything else is silently dropped on
+  the way through. Identify an event by the `axes` it already carries — the one
+  identity the engine must preserve, because the dataset is indexed by it — and
+  never by a value you injected. Do not put a unique-per-event value *in* `axes`
+  either: NDTiff readers enumerate the Cartesian product of axis values.
+- **`acquire()` only submits.** It returns an `AcquisitionFuture`; completion is
+  awaited in `Acquisition.__exit__` (`mark_finished()` then `await_completion()`).
+  Anything that must happen after the last frame — restoration, a final
+  read-back, an exit report — belongs **after the `with` block**, not after the
+  `acquire()` call. Getting this wrong moves hardware while frames are still
+  being taken.
 
 ## Debugging checklist
 
