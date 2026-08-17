@@ -6732,3 +6732,73 @@ Achieved-vs-requested error ran **-0.98 to +0.83 um** across 54 moves, so
 §"The envelope bounds the request, not the achievement" applies here as on M5, at
 sub-micron scale rather than 5 um. And a 1 s interval defeats time-axis
 sequencing on M2 — no sequenced-batch refusal ever appeared at that interval.
+
+## Block 52b — the general bounded property (merged 2026-08-17, `2b9233e`)
+
+Design/52's second block. Two runner rounds (codex), **three M5 rig trips**, and
+six coordinator fixes. The implementation was largely right by round 2; **every
+one of the three rig trips died on the export**, each for a different reason, and
+none of them was visible in a green suite.
+
+**Three export defects, and two of them survived compilation.**
+
+1. **A multi-line recorded error made the whole session unexportable** — and this
+   one was **pre-existing on `main`**, not 52b's. A Micro-Manager bridge
+   exception carries a Java stack trace; the `# SKIPPED` comment interpolated
+   only its first line, so every frame after it was emitted as bare Python and
+   `ast.parse` refused the *entire* export. On a rig where a serial timeout is
+   ordinary, that means no session can ever be exported. The agent then
+   hand-wrote a script — design/52 §Finding's failure, verbatim.
+2. **The emitted script had no `refresh_gui`.** `_apply_property` calls
+   `ctrl.refresh_gui()`; the live controller has it, the emitted
+   `SimpleNamespace(core=core)` did not. It compiled, it passed every grep in
+   the runbook, and it died on the first property write.
+3. Round 1's own defects (the illumination self-approval, the duplicated plan
+   validation) were caught in review rather than on the rig.
+
+**The lesson is now concrete: for the exporter, *compiles* and *greps clean* are
+not evidence.** Every property export test compiled the script; none ran it. The
+fix that mattered was the test — exec the emitted source against fakes and drive
+`pre_hardware_hook_fn` per event, as the engine does. It reproduces defect 2's
+exact `AttributeError` on the pre-fix tree.
+
+**A gate step must name the mechanism, not the outcome.** Step 5 — the block's
+whole point, the design/49 refusal — asked the agent to "set
+`Thorlabs ELL17/ELL20` `Position (um)`". It correctly answered that the ELL is a
+*stage*, built the run with `MoveNamedStage` and a `named_stage_envelope`, and so
+never reached `authorize_property_write`: the refusal appeared **zero** times in
+the history. Right product behaviour, wrong gate, and it cost ~371 um of
+TIRF-axis motion and the dose for no evidence. Rewritten to name
+`property_envelope` + `SetDeviceProperty` and to say "do not substitute", it
+passed on the next trip. This is 52a's skipped-restore-limb lesson in a new form:
+**an outcome-shaped step gets satisfied by the better route.**
+
+**`export_session_script` compiles *this session's* calls**, so an export step
+cannot stand alone — a fresh session emits a 13-line stub with zero calls.
+Gate 3 added a deliberately minimal 2-frame run in front of it rather than
+repeating the 6-frame one, because the export does not care how many writes it
+reproduces and every frame on that rig is a dose.
+
+**Exported scripts now print their envelope and do not prompt** (operator
+decision, after the gate). `Type YES to continue:` was invisible under the
+runbook's own `Out-File` redirection — the script looked hung and the prompt
+surfaced at the tail of the log after the traceback — and a run carrying both
+envelopes asked twice. It was never what made the script safe. The print stays
+(design/38 F9) and had to earn it: the property print omitted its bound until
+this change, and the heading now states rather than asks.
+
+**A fake with a constant read-back fails for the wrong reason.** The coordinator
+wrote a design/49 refusal test whose fake core returned a fixed position, so on
+the unprotected tree it died inside `_verify_property` rather than at the missing
+refusal — the same defect it had just returned to the runner one round earlier.
+Fakes that reflect what was written make the gate under test the only thing that
+can fail.
+
+**What the rig measured that is worth keeping.** M5 runs
+`property_writes_unrestricted: true`, so `authorize_property_write`'s *first*
+clause decides: every property on a bounded stage device refuses unless the exact
+pair is a `built_in_typed_capability` on a raw-write path. `PIZStage` is the
+sharpest case on that rig — `External sensor` admitted, `Position` refused, one
+device, one clause. And a non-`leave` restoration **reserves** a write, so an
+N-frame plan needs `max_writes` N+1; the runbook said N and would have been
+refused during planning had it not been checked off-rig first.
