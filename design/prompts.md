@@ -6802,3 +6802,74 @@ sharpest case on that rig — `External sensor` admitted, `Position` refused, on
 device, one clause. And a non-`leave` restoration **reserves** a write, so an
 N-frame plan needs `max_writes` N+1; the runbook said N and would have been
 refused during planning had it not been checked off-rig first.
+
+## Block 52c — the adaptive refinement (merged 2026-08-17, `a78b8df`)
+
+Design/52's third and last block. Three runner rounds (codex), **two M5 rig
+trips**, and three coordinator fixes. Closes design/52.
+
+**Round 1 was green and wrong, and the tell was in the test diff, not the code.**
+The suite passed at 1878 while three existing tests had been rewritten to match
+new behaviour: `test_acquire_at_dispatches_only_named_planned_tile` inverted to
+assert a refusal, and two `RequestAutofocus` tests — one of them carrying the M5
+2026-08-11 stall story in its docstring — turned into malformed-partition
+assertions. Reading the diff rather than the summary is what caught it. Three
+defects sat underneath:
+
+1. **Restoration ran twice**, because `_acquire_with_hooks` has restored since
+   52a and a second call was added in the survey runner's `finally`. Under
+   `restore: "entry"` that is two physical writes, and since a full run reserves
+   exactly one restoration write, the second refuses and raises **from a
+   `finally`** — turning a good run into an exception. Every new test used
+   `restore: "leave"`, where both calls are no-ops.
+2. **A normally-completed survey logged `aborted`**, because the handoff-closure
+   check was placed ahead of the benign "planned survey cursor is already at the
+   end" refusal.
+3. **`AcquireAt` could no longer revisit a planned tile**, because the
+   axes-keyed coordinator was installed for every adaptive survey rather than
+   only for envelope-carrying ones.
+
+**The evidence was not evidence.** All five new tests failed on the pre-fix tree
+with the same `TypeError: 'NoneType' object is not iterable` — a setup failure
+from the fixture's own new calling convention, not the mechanism. Returned with
+"pass `action_plan={}` so the pre-fix tree reaches the assertion"; round 2's
+failures then named their own mechanisms, one per test.
+
+**A coordinator ruling was needed and is recorded in the design.** Design/52 says
+pairing `RequestAutofocus` with another selector is malformed; `hook_docs`
+prescribes exactly that pairing as the anti-stall fallback, from a measured M5
+failure. Ruling: **selector cardinality is a hardware-association rule** — it
+applies to a result carrying a hardware action, and a result without one keeps
+the behaviour `main` already had. The checklist's evidence row was corrected
+before the gate rather than after, so the gate was scored against what the code
+was actually being held to.
+
+**Gate 1 passed limb 2 and still found three defects.** Six frames, five
+hook-chosen moves indexed 1..5, the last two off the coarse ladder, the metric
+peaking at the refined point, both abort limbs, and an export carrying the rule.
+Underneath: an envelope was never checked against the configured `named_stages`
+bound (the dialog offered `18000-21100 um` over an axis capped at 20000, and the
+run died mid-sweep at 20066.67); every adaptive abort returned a bare error
+string because the survey runner never translated `_HookedAcquisitionFailure`,
+so three aborts lost the dataset path, the frames exposed and the last hardware
+state — visible in the history as the operator reading the axis back by hand
+three times; and the emitted script restored only on its success path, so the
+standalone left the axis parked after a serial fault where the live run would
+have returned it to entry.
+
+**Two runbook lessons, both mine.** Step 5's grep shipped with `<t2>`-style
+placeholders and was run verbatim, so the block's strictest criterion —
+program-not-trace — produced no rig evidence at all and had to be checked
+off-rig against the exported script. **A placeholder in a literal command is a
+step that does not run.** And the runbook's sweep interval was written as P±600
+inside a bound copied from a precheck; the operator's config had changed between
+gates, which they handled by adapting the numbers — a runbook that states the
+*bound to test against* rather than the numbers would not have needed adapting.
+
+**What the gate could not settle, recorded rather than re-run.** The ELL's serial
+fault is real hardware and frequent: two of four live attempts and the standalone
+all died with *"Serial command failed ... (14)"*, at different points, each
+aborting correctly. The emitter fix therefore has no rig evidence — the fault
+cannot be provoked on demand — and rests on four executing export tests that
+fault a move mid-acquisition, for both emitters, with the restoration itself both
+succeeding and failing.

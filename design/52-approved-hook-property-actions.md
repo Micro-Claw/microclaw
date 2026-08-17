@@ -1290,7 +1290,7 @@ measured, and close the `design/35` register row.
 | coordination | `design52/assign-52b` | `b6f17b3` | coordinator | n/a | | n/a |
 | 52b | `design52/block-52b` | `cc47438` | codex, 2 rounds + coordinator fixes | **M5 PASS 2026-08-17**, 3 trips; all limbs incl. the design/49 refusal and the standalone export | merged `2b9233e` | design gate below |
 | coordination | `design52/assign-52c` | `8f75ce0` | coordinator | n/a | | n/a |
-| 52c | `design52/block-52c` | `453a274` | codex, 2 rounds | runbook pushed 2026-08-17, awaiting M5 | | |
+| 52c | `design52/block-52c` | `453a274` | codex, 3 rounds + coordinator fixes | **M5 PASS 2026-08-17**, 2 trips; limb 2 in full, then the two gate-1 defects re-gated | merged `a78b8df` | design gate below |
 
 ## Checklist
 
@@ -1311,7 +1311,7 @@ about process, `CLAUDE.md` wins and this section gets corrected.
   `_dispatch` and the same acquisition signatures 52a creates; running them
   concurrently in two worktrees would conflict on every file that matters.
 
-### State at the 2026-08-17 assignment of block 52c — the live note
+### State at the 2026-08-17 close of design/52 — the live note
 
 **This is the live note. The bullets below it, from "The gate found a defect"
 onward, are 52a's round history and are kept for their findings, not as
@@ -1326,8 +1326,20 @@ skipped / 3 warnings**, 1971 collected, coordinator-re-run at `8f75ce0` on
 assignment day and agreeing with the count measured after 52b's design gate.
 **That is 52c's baseline.**
 
-- **52c is assigned from this commit.** Branch `design52/block-52c`, worktree
-  `../microclaw-52c`, its start commit recorded in the ledger above.
+- **52c is CLOSED, 2026-08-17, and with it design/52.** Merged `a78b8df`, `main`
+  pushed, branch deleted locally and on `origin`, worktree removed, notes in
+  `design/prompts.md`, every checklist row ticked and coordinator-verified. Two
+  M5 rig trips, three runner rounds, three coordinator fixes. **Nothing in this
+  document is owed** except the carried-forward register below, which no block
+  here depends on. The step-10 design gate is the last thing, and it is merged
+  separately.
+- **What a later block should take from 52c**, beyond the engine contracts in
+  `CLAUDE.md`: a green suite over rewritten tests is the failure mode to look for
+  first (three rig-derived tests were inverted to match new behaviour in round
+  1); a pre-fix failure that reads the same for five different tests is a setup
+  failure, not evidence; and **a placeholder left in a literal runbook command is
+  a step that does not run** — 52c's strictest criterion produced no rig evidence
+  because its grep shipped as `"<t2>", "<t3>"`.
 - **The handoff cannot be a key on the candidate event, and §Timing point 3
   reads as though it can.** "The trusted adapter attaches the index and the
   next-frame hardware action set to that candidate event" is the one sentence in
@@ -1520,6 +1532,33 @@ Steps 0, 6a and 6. Suite 1847 + 124 = **1971** exact.
   maximum writes 3; restore 'entry'"*, then ran. The bound is in the disclosure,
   which is what the print had to earn when it became the only one.
 - **One confirmation** for the live run, none from the standalone.
+
+#### 52c gate 2 — M5, 2026-08-17: **PASS, and the block is closed**
+
+Evidence: `52c-m5-round2`. Steps 0, R1 and R2. Suite 1862 + 124 = **1986** exact.
+
+- **R1: the envelope's own reach is refused before the dialog.** The rig's
+  `safety_config.yaml` had been made more permissive between gates — ELL17/ELL20
+  is now `0-22000`, not `0-20000` — and the operator adapted the step to
+  `18000-22100` against the new cap, which is the right adaptation and the reason
+  a runbook should name the bound to test against rather than the numbers. The
+  refusal read *"Thorlabs ELL17/ELL20=22100.00 um exceeds the maximum allowed
+  (22000.00 um)"*, **the confirmations file holds exactly one entry and it is
+  R2's**, so no dialog was rendered, and no dataset directory was created. The
+  agent did not narrow the envelope when told not to.
+- **R2: an aborted survey now says where the data and the axis are.** The result
+  carried `dataset_path` with pycro-manager's `_1` suffix, `frames_exposed: 3`,
+  `last_hardware_state {Thorlabs ELL17/ELL20, 19337.0}`, `log_path`, and design/38
+  F7's *"do not treat the run as untouched"* hint — where gate 1 returned an error
+  string and nothing else. The dataset holds **3** frames, not 4; the log's last
+  accepted move achieved **19337**, agreeing with the reported last state; and a
+  fresh `get_stage_position` read 19339, within the ELL's coarseness.
+- The agent flagged the budget tension (a 6-target hook against 2 authorized
+  writes) **before** running, then ran it as instructed. That is the behaviour
+  §"Documentation and model behavior" asks for.
+- **The emitter fix has no rig evidence and that is recorded, not hidden.** The
+  ELL's serial fault cannot be provoked on demand, so restoration-on-failure
+  rests on four executing export tests across both emitters.
 
 #### 52c gate 1 — M5, 2026-08-17: limb 2 passed, two defects found
 
@@ -1986,62 +2025,62 @@ on M5, and the step-10 design gate merged before 52c is assigned.
 
 **Implementation**
 
-- [ ] `run_adaptive_survey` accepts both envelopes and **rejects**
+- [x] `run_adaptive_survey` accepts both envelopes and **rejects**
       `hook_action_plan` — its events are chosen at runtime and there is no index
       set to validate against.
-- [ ] `HookResult` is parsed completely, then partitioned **exactly once**:
+- [x] `HookResult` is parsed completely, then partitioned **exactly once**:
       `EmitArtifact`/`DiscardFrame` against frame N and dispatched immediately;
       exactly one `ContinueSurvey` or `AcquireAt` selecting event N+1;
       `RequestAutofocus` selecting event N again; the hardware actions forming one
       ordered pre-exposure set attached to the selected event; `StopSurvey`
       selecting nothing and incompatible with a next-frame hardware action.
-- [ ] Zero or more than one next-event selector beside a hardware action is
+- [x] Zero or more than one next-event selector beside a hardware action is
       malformed. Current-frame actions are never deferred to N+1, and next-frame
       hardware actions are never dispatched from `image_process_fn`.
-- [ ] **`RequestAutofocus` is detected while partitioning**, before any hardware
+- [x] **`RequestAutofocus` is detected while partitioning**, before any hardware
       action is dispatched: it queues the refocused tile and refuses every paired
       hardware action with the existing *"not dispatched until the refocused tile
       is judged"* reason, regardless of their order in `HookResult.actions`.
-- [ ] **A malformed partition is an analysis defect, not a hardware failure**: it
+- [x] **A malformed partition is an analysis defect, not a hardware failure**: it
       records and refuses, calls `progress.done_early()` before
       `progress.image_done()`, queues no event, and is neither an acquisition
       abort nor a watchdog stall. Nothing was written, so no frame is mislabelled.
-- [ ] The handoff **is `candidates`** (`_survey_event_stream:5215`), with the
+- [x] The handoff **is `candidates`** (`_survey_event_stream:5215`), with the
       index and the next-frame action set attached to the candidate event and one
       candidate per index enforced on the draining side. **No second queue.**
-- [ ] `max_idle_s` keeps its present meaning: on expiry the generator calls
+- [x] `max_idle_s` keeps its present meaning: on expiry the generator calls
       `note_stalled` and returns. It never releases an event whose action set
       never arrived.
-- [ ] Once the final authorized event is yielded the handoff closes; a later
+- [x] Once the final authorized event is yielded the handoff closes; a later
       proposal is refused and the run reported aborted, never applied as an
       exit-side mutation.
-- [ ] `_emit_adaptive` and the inlined standalone runner carry the same
+- [x] `_emit_adaptive` and the inlined standalone runner carry the same
       coordinator, indexing and partition rules, with `inspect.getsource` and
       never a re-written copy.
-- [ ] The adaptive documentation bullet from §"Documentation and model behavior"
+- [x] The adaptive documentation bullet from §"Documentation and model behavior"
       lands with the code.
 
 **Evidence — written before the fix, failing first**
 
-- [ ] A mixed result of `EmitArtifact`, `MoveNamedStage` and `ContinueSurvey`
+- [x] A mixed result of `EmitArtifact`, `MoveNamedStage` and `ContinueSurvey`
       writes the artifact against frame N, queues exactly one event N+1, and
       performs the move only in N+1's pre-hardware callback.
-- [ ] Two next-event selectors beside a hardware action queue nothing and produce
+- [x] Two next-event selectors beside a hardware action queue nothing and produce
       a refusal record; `done_early()` precedes `image_done()`; the run is neither
       aborted nor allowed to age into `note_stalled`.
-- [ ] Both `RequestAutofocus, MoveNamedStage` **and the reverse order** queue the
+- [x] Both `RequestAutofocus, MoveNamedStage` **and the reverse order** queue the
       refocused tile and refuse the move; neither performs it. **Cardinality is a
       hardware-association rule** (corrected 2026-08-17, see §"Evidence and
       gates"): a result carrying no hardware action keeps `main`'s sequential
       behaviour, so `RequestAutofocus, ContinueSurvey` still defers the
       `ContinueSurvey` and still routes the scan when the refocus is refused.
-- [ ] A proposal for the frame after the last authorized one aborts rather than
+- [x] A proposal for the frame after the last authorized one aborts rather than
       exposing.
-- [ ] Let `max_idle_s` expire and prove the stream ends with `note_stalled`
+- [x] Let `max_idle_s` expire and prove the stream ends with `note_stalled`
       rather than releasing the pending event.
-- [ ] **Export emits the program, not the trace**: the script contains the hook's
+- [x] **Export emits the program, not the trace**: the script contains the hook's
       rule and the decision loop, and does not contain the run's target list.
-- [ ] Full suite green at or above the 52b baseline, coordinator-re-run.
+- [x] Full suite green at or above the 52b baseline, coordinator-re-run.
 
 **Process** — as 52a, with runbook `design/52-block52c-rig-gate.md` and rig gate
 52c on M5 (TIRF limb 2, including the export limb).
