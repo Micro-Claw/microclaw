@@ -1651,6 +1651,24 @@ def test_saved_fixed_run_exports_property_envelope_and_plan(
     compile(source, str(tmp_path / "routine.py"), "exec")
 
 
+def test_emitted_property_guard_pins_the_exact_approved_pair():
+    namespace = {"math": __import__("math")}
+    exec(tools._export_guard_source({
+        "x_um": (None, None), "y_um": (None, None),
+        "z_um": (None, None), "exposure_ms": (None, None),
+        "analysis_min_snr": None,
+    }), namespace)
+    namespace["_PROPERTY_ENVELOPE"] = {
+        "device": "Wheel", "property": "State", "allowed_values": ["B"],
+    }
+    guard = namespace["guard"]
+    guard.check_device_property(None, "Wheel", "State", "B", approved_envelope=True)
+    with pytest.raises(namespace["SafetyViolation"], match="no recorded envelope"):
+        guard.check_device_property(
+            None, "OtherWheel", "State", "B", approved_envelope=True,
+        )
+
+
 def test_unresolvable_survey_names_fall_back_to_the_recorded_tiles(tmp_path):
     """M5 gate, 2026-08-11. The whole export came back `emitted_calls: 0`.
 

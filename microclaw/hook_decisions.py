@@ -296,6 +296,7 @@ class UntrustedHookAdapter:
         self._illumination_context: dict[str, Any] | None = None
         self._named_stage_context: dict[str, Any] | None = None
         self._property_context: dict[str, Any] | None = None
+        self._fixed_plan_context: dict[str, Any] | None = None
         self._artifact_context: dict[str, Any] | None = None
         self._autofocus_context: dict[str, Any] | None = None
         self._action_counts: dict[str, int] = {}
@@ -383,11 +384,16 @@ class UntrustedHookAdapter:
                               max_um: float, max_writes: int, initial_value: float,
                               restore: str | dict[str, float],
                               action_plan: dict[tuple, tuple[int, tuple[HookAction, ...]]]) -> None:
+        plan = dict(action_plan)
+        if self._fixed_plan_context is None:
+            self._fixed_plan_context = {"plan": plan, "consumed": set()}
+        elif self._fixed_plan_context["plan"] != plan:
+            raise ValueError("fixed hardware capabilities received different action plans")
         self._named_stage_context = {
             "core": core, "guard": guard, "device": device,
             "min_um": min_um, "max_um": max_um, "remaining": max_writes,
             "initial_value": initial_value, "last_known": initial_value,
-            "restore": restore, "plan": dict(action_plan), "consumed": set(),
+            "restore": restore,
         }
 
     def configure_property(self, *, ctrl, guard, device: str, property: str,
@@ -396,12 +402,17 @@ class UntrustedHookAdapter:
                            max_writes: int, initial_value: str,
                            restore: str | dict[str, str],
                            action_plan: dict[tuple, tuple[int, tuple[HookAction, ...]]]) -> None:
+        plan = dict(action_plan)
+        if self._fixed_plan_context is None:
+            self._fixed_plan_context = {"plan": plan, "consumed": set()}
+        elif self._fixed_plan_context["plan"] != plan:
+            raise ValueError("fixed hardware capabilities received different action plans")
         self._property_context = {
             "ctrl": ctrl, "core": ctrl.core, "guard": guard, "device": device,
             "property": property, "allowed_values": allowed_values,
             "min": min_value, "max": max_value, "remaining": max_writes,
             "initial_value": initial_value, "last_known": initial_value,
-            "restore": restore, "plan": dict(action_plan), "consumed": set(),
+            "restore": restore,
         }
 
     def _apply_property(self, action: SetDeviceProperty, event: dict,
@@ -438,9 +449,7 @@ class UntrustedHookAdapter:
             )
             ctx["guard"].check_illumination(
                 ctx["core"], ctx["device"], ctx["property"], value,
-                # The exact value was included in the one parent-thread
-                # property-envelope confirmation before acquisition.
-                confirm_fn=lambda *_args, **_kwargs: True,
+                confirm_fn=None,
             )
         except Exception as exc:
             self._refuse_event(event, action, f"property write refused: {exc}")
@@ -536,7 +545,7 @@ class UntrustedHookAdapter:
 
     def pre_hardware_hook_fn(self, event: dict | list[dict]) -> dict | list[dict]:
         """Consume the immutable planned action set for this event's axes."""
-        ctx = self._named_stage_context or self._property_context
+        ctx = self._fixed_plan_context
         if ctx is None:
             return event
         if isinstance(event, list):

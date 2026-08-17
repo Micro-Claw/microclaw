@@ -735,7 +735,9 @@ def _finite_number_text(value, label):
     return number
 
 def authorize_property_write(ctrl, device, prop):
-    # The exact recorded envelope is this standalone run's authorization map.
+    # The recorded live run already passed its authorization map, and the
+    # emitted guard below pins the exact approved device/property pair so no
+    # other pair is reachable through this standalone action path.
     return None
 
 class _RecordedSafetyGuard:
@@ -2801,7 +2803,26 @@ def _acquire_with_hooks(
         hook_fn_kwargs["image_saved_fn"] = account_saved_frame
 
     dataset_path = None
-    restoration_attempted = False
+    restoration_attempted = {"named-stage": False, "property": False}
+
+    def restore_hardware() -> list[str]:
+        failures = []
+        if hook is None:
+            return failures
+        for label, method_name, result_name in (
+            ("named-stage", "restore_named_stage", "_named_stage_restoration"),
+            ("property", "restore_property", "_property_restoration"),
+        ):
+            method = getattr(hook, method_name, None)
+            if restoration_attempted[label] or not callable(method):
+                continue
+            restoration_attempted[label] = True
+            try:
+                setattr(hook, result_name, method())
+            except Exception as restore_exc:
+                failures.append(f"{label} restoration failed: {restore_exc}")
+        return failures
+
     try:
         with Acquisition(directory=save_dir, name=name, show_display=True, **hook_fn_kwargs) as acq:
             # Resolve collision suffixes before dispatching the first event: a
@@ -2824,28 +2845,41 @@ def _acquire_with_hooks(
         # Acquisition.acquire() only submits work. __exit__ marks the stream
         # finished and awaits completion, so named-stage restoration is safe
         # only after the context has exited and all callbacks have run.
-        if hook is not None and hasattr(hook, "restore_named_stage"):
-            restoration_attempted = True
-            hook._named_stage_restoration = hook.restore_named_stage()
-            hook._property_restoration = hook.restore_property()
+        restoration_failures = restore_hardware()
+        if restoration_failures:
+            raise RuntimeError("; ".join(restoration_failures))
     except Exception as exc:
-        if (not restoration_attempted and hook is not None and
-                hasattr(hook, "restore_named_stage")):
-            try:
-                restoration_attempted = True
-                hook._named_stage_restoration = hook.restore_named_stage()
-                hook._property_restoration = hook.restore_property()
-            except Exception as restore_exc:
-                exc = RuntimeError(f"{exc}; named-stage restoration failed: {restore_exc}")
+        restoration_failures = restore_hardware()
+        if restoration_failures:
+            exc = RuntimeError(f"{exc}; {'; '.join(restoration_failures)}")
         if hook is not None and dataset_path is not None:
             stage_ctx = getattr(hook, "_named_stage_context", None)
             property_ctx = getattr(hook, "_property_context", None)
-            last_state = ({"device": property_ctx["device"],
-                           "property": property_ctx["property"],
-                           "value": property_ctx["last_known"]}
-                          if property_ctx is not None else None if stage_ctx is None else {
-                "device": stage_ctx["device"], "position_um": stage_ctx["last_known"]
-            })
+            if stage_ctx is not None and property_ctx is not None:
+                last_state = {
+                    "named_stage": {
+                        "device": stage_ctx["device"],
+                        "position_um": stage_ctx["last_known"],
+                    },
+                    "property": {
+                        "device": property_ctx["device"],
+                        "property": property_ctx["property"],
+                        "value": property_ctx["last_known"],
+                    },
+                }
+            elif stage_ctx is not None:
+                last_state = {
+                    "device": stage_ctx["device"],
+                    "position_um": stage_ctx["last_known"],
+                }
+            elif property_ctx is not None:
+                last_state = {
+                    "device": property_ctx["device"],
+                    "property": property_ctx["property"],
+                    "value": property_ctx["last_known"],
+                }
+            else:
+                last_state = None
             raise _HookedAcquisitionFailure(
                 exc, dataset_path,
                 # A hooked run with no reservation is real, not hypothetical:
@@ -5268,56 +5302,7 @@ def _configure_hook_capabilities(hook: Any, ctrl: MicroscopeController,
         initial = float(ctrl.core.get_position(device))
         if not math.isfinite(initial):
             raise ValueError("initial named-stage position must be finite.")
-        from microclaw.hook_decisions import MoveNamedStage, SetDeviceProperty, parse_action
-        if hook_action_plan is None or events is None or not isinstance(hook_action_plan, list):
-            raise ValueError("named_stage_envelope requires a hook_action_plan for the generated events.")
-        parsed_plan = {}
-        for entry in hook_action_plan:
-            if not isinstance(entry, dict) or set(entry) != {"hook_event_index", "actions"}:
-                raise ValueError("each hook_action_plan entry must contain exactly actions and hook_event_index.")
-            index = entry["hook_event_index"]
-            if isinstance(index, bool) or not isinstance(index, int) or index in parsed_plan:
-                raise ValueError("hook_action_plan indices must be unique integers.")
-            if not isinstance(entry["actions"], list):
-                raise ValueError("hook_action_plan actions must be a list (empty is explicit).")
-            actions = tuple(parse_action(action) for action in entry["actions"])
-            permitted = (MoveNamedStage,) + ((SetDeviceProperty,) if property_envelope is not None else ())
-            if any(not isinstance(action, permitted) for action in actions):
-                raise ValueError("fixed hook_action_plan actions require their matching hardware envelope.")
-            parsed_plan[index] = actions
-        expected = set(range(len(events)))
-        if set(parsed_plan) != expected:
-            raise ValueError(f"hook_action_plan indices must be exactly 0..{len(events) - 1}.")
-        axes_plan = {}
-        for index, event in enumerate(events):
-            try:
-                signature = hook.axes_signature(event)
-                duplicate = signature in axes_plan
-            except (TypeError, RuntimeError) as exc:
-                raise ValueError(f"generated event {index} has invalid axes: {exc}") from exc
-            if duplicate:
-                raise ValueError(
-                    f"generated events have duplicate axes signature {dict(signature)!r}."
-                )
-            axes_plan[signature] = (index, parsed_plan[index])
-        reserved = 0 if restore == "leave" else 1
-        planned_writes = sum(isinstance(action, MoveNamedStage)
-                             for actions in parsed_plan.values() for action in actions)
-        if planned_writes + reserved > writes:
-            raise ValueError("hook_action_plan would consume the write reserved for restoration.")
-        restore_target = initial if restore == "entry" else (
-            restore.get("value") if isinstance(restore, dict) else None
-        )
-        for target in [a.position_um for actions in parsed_plan.values() for a in actions
-                       if isinstance(a, MoveNamedStage)] + (
-            [restore_target] if restore_target is not None else []
-        ):
-            if isinstance(target, bool) or not isinstance(target, (int, float)) or not math.isfinite(target):
-                raise ValueError("named-stage planned and restoration positions must be finite numbers.")
-            if target < low or target > high:
-                raise ValueError("named-stage planned or restoration position is outside the envelope.")
-            guard.check_named_stage(device, target)
-        named_config = (device, float(low), float(high), writes, initial, restore, parsed_plan)
+        named_config = (device, float(low), float(high), writes, initial, restore)
         summaries.append(
             # ASCII on purpose: every CONFIRM_FN implementation print()s this
             # summary to the rig's console, and an en dash is absent from some
@@ -5350,10 +5335,34 @@ def _configure_hook_capabilities(hook: Any, ctrl: MicroscopeController,
         raise ValueError(f"hook_action_plan indices must be exactly 0..{len(events) - 1}.")
     axes_plan = {}
     for index, event in enumerate(events):
-        signature = hook.axes_signature(event)
+        try:
+            signature = hook.axes_signature(event)
+        except (TypeError, RuntimeError) as exc:
+            raise ValueError(f"generated event {index} has invalid axes: {exc}") from exc
         if signature in axes_plan:
             raise ValueError(f"generated events have duplicate axes signature {dict(signature)!r}.")
         axes_plan[signature] = (index, parsed_plan[index])
+    if named_config is not None:
+        device, low, high, writes, initial, restore = named_config
+        reserved = 0 if restore == "leave" else 1
+        planned_writes = sum(isinstance(action, MoveNamedStage)
+                             for actions in parsed_plan.values() for action in actions)
+        if planned_writes + reserved > writes:
+            raise ValueError("hook_action_plan would consume the write reserved for restoration.")
+        restore_target = initial if restore == "entry" else (
+            restore.get("value") if isinstance(restore, dict) else None
+        )
+        targets = [a.position_um for actions in parsed_plan.values() for a in actions
+                   if isinstance(a, MoveNamedStage)]
+        if restore_target is not None:
+            targets.append(restore_target)
+        for target in targets:
+            if (isinstance(target, bool) or not isinstance(target, (int, float)) or
+                    not math.isfinite(target)):
+                raise ValueError("named-stage planned and restoration positions must be finite numbers.")
+            if target < low or target > high:
+                raise ValueError("named-stage planned or restoration position is outside the envelope.")
+            guard.check_named_stage(device, target)
     property_reserved = 0 if property_config is None or property_config[-1] == "leave" else 1
     property_planned = sum(isinstance(a, SetDeviceProperty) for actions in parsed_plan.values() for a in actions)
     if property_config is not None and property_planned + property_reserved > property_config[5]:
@@ -5383,7 +5392,7 @@ def _configure_hook_capabilities(hook: Any, ctrl: MicroscopeController,
             )
             guard.check_illumination(
                 ctrl.core, device, prop, value,
-                confirm_fn=lambda *_args, **_kwargs: True,
+                confirm_fn=None,
             )
     if summaries and not CONFIRM_FN(
         "ALLOW HOOK HARDWARE CONTROL FOR THIS RUN\n" + "\n".join(summaries) +
@@ -5398,7 +5407,7 @@ def _configure_hook_capabilities(hook: Any, ctrl: MicroscopeController,
             max_power_percent=ceiling, max_writes=writes, initial_value=initial,
         )
     if named_config is not None:
-        device, low, high, writes, initial, restore, parsed_plan = named_config
+        device, low, high, writes, initial, restore = named_config
         hook.configure_named_stage(
             core=ctrl.core, guard=guard, device=device, min_um=low, max_um=high,
             max_writes=writes, initial_value=initial, restore=restore,

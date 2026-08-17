@@ -16,7 +16,8 @@ from microclaw.hook_decisions import (
 from microclaw.hooks import HookBase
 from microclaw.safety import SafetyViolation
 from microclaw.safety import (
-    ForbiddenProperty, IlluminationConstraints, SafetyConstraints, SafetyGuard,
+    ForbiddenProperty, IlluminationConstraints, IlluminationProperty,
+    SafetyConstraints, SafetyGuard,
 )
 from microclaw.tools import SurveyProgress
 
@@ -272,7 +273,7 @@ def test_preexposure_failure_reports_partial_path_frames_and_last_state(
     # reservation=None whenever `adaptive` is false, so this path is real. It
     # must still report the dataset and the last known position, and must not
     # invent a frame count it never measured.
-    adapter._named_stage_context["consumed"] = set()
+    adapter._fixed_plan_context["consumed"] = set()
     with pytest.raises(tools._HookedAcquisitionFailure) as unreserved:
         tools._acquire_with_hooks(
             guard, str(tmp_path), "data",
@@ -285,6 +286,69 @@ def test_preexposure_failure_reports_partial_path_frames_and_last_state(
     assert unreserved_result["last_hardware_state"] == {
         "device": "fixture-stage", "position_um": 15,
     }
+
+
+def test_restorations_are_independent_and_mixed_failure_reports_both_states(
+    monkeypatch, tmp_path
+):
+    from microclaw import tools
+
+    class Hook:
+        _named_stage_context = {"device": "Stage", "last_known": 12.5}
+        _property_context = {
+            "device": "Wheel", "property": "State", "last_known": "B",
+        }
+        def restore_named_stage(self):
+            raise RuntimeError("stage stuck")
+        def restore_property(self):
+            self.property_restored = True
+            return {"restored": True}
+
+    class Acquisition:
+        def __init__(self, **_kwargs):
+            self._dataset_disk_location = str(tmp_path / "data_1")
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def acquire(self, _events): pass
+
+    monkeypatch.setattr(tools, "Acquisition", Acquisition)
+    hook = Hook()
+    with pytest.raises(tools._HookedAcquisitionFailure) as caught:
+        tools._acquire_with_hooks(
+            MagicMock(), str(tmp_path), "data", [], hook, reservation=None,
+        )
+    assert hook.property_restored is True
+    assert "named-stage restoration failed: stage stuck" in str(caught.value)
+    assert caught.value.last_hardware_state == {
+        "named_stage": {"device": "Stage", "position_um": 12.5},
+        "property": {"device": "Wheel", "property": "State", "value": "B"},
+    }
+
+
+def test_property_only_restoration_failure_is_named_as_property(monkeypatch, tmp_path):
+    from microclaw import tools
+
+    class Hook:
+        _named_stage_context = None
+        _property_context = {
+            "device": "Wheel", "property": "State", "last_known": "B",
+        }
+        def restore_property(self): raise RuntimeError("wheel stuck")
+
+    class Acquisition:
+        def __init__(self, **_kwargs):
+            self._dataset_disk_location = str(tmp_path / "data_1")
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def acquire(self, _events): pass
+
+    monkeypatch.setattr(tools, "Acquisition", Acquisition)
+    with pytest.raises(tools._HookedAcquisitionFailure) as caught:
+        tools._acquire_with_hooks(
+            MagicMock(), str(tmp_path), "data", [], Hook(), reservation=None,
+        )
+    assert "property restoration failed: wheel stuck" in str(caught.value)
+    assert "named-stage" not in str(caught.value)
 
 
 def _events(n=3):
@@ -1465,18 +1529,17 @@ def test_property_actions_apply_and_wait_before_the_separate_verify_pass():
 
     guard = MagicMock()
     adapter = UntrustedHookAdapter(object())
+    plan = _axes_plan(({}, (SetDeviceProperty("1"), MoveNamedStage(5))))
     adapter.configure_property(
         ctrl=Ctrl(), guard=guard, device="Camera", property="Gain",
         allowed_values=None, min_value=0, max_value=10, max_writes=1,
-        initial_value="0", restore="leave", action_plan={},
+        initial_value="0", restore="leave", action_plan=plan,
     )
-    plan = _axes_plan(({}, (SetDeviceProperty("1"), MoveNamedStage(5))))
     adapter.configure_named_stage(
         core=adapter._property_context["core"], guard=guard, device="Stage",
         min_um=0, max_um=10, max_writes=1, initial_value=0,
         restore="leave", action_plan=plan,
     )
-    adapter._property_context["plan"] = plan
     adapter.pre_hardware_hook_fn({"axes": {}})
     assert calls[:3] == [
         ("set", "1"), ("wait", "1"), ("refresh", "1"),
@@ -1491,19 +1554,40 @@ def test_property_write_exception_stops_before_next_write_and_before_verify():
     core.get_property_type.return_value = "String"
     ctrl = MagicMock(core=core, authorization_map=None)
     adapter = UntrustedHookAdapter(object())
+    plan = _axes_plan(({}, (SetDeviceProperty("B"), MoveNamedStage(1))))
     adapter.configure_property(
         ctrl=ctrl, guard=MagicMock(), device="Wheel", property="State",
         allowed_values=("A", "B"), min_value=None, max_value=None,
-        max_writes=2, initial_value="A", restore="leave", action_plan={},
+        max_writes=2, initial_value="A", restore="leave", action_plan=plan,
     )
-    plan = _axes_plan(({}, (SetDeviceProperty("B"), MoveNamedStage(1))))
     adapter.configure_named_stage(
         core=core, guard=MagicMock(), device="Stage", min_um=0, max_um=2,
         max_writes=1, initial_value=0, restore="leave", action_plan=plan,
     )
-    adapter._property_context["plan"] = plan
     with pytest.raises(RuntimeError, match="bridge down"):
         adapter.pre_hardware_hook_fn({"axes": {}})
     assert core.set_property.call_count == 1
     core.set_position.assert_not_called()
     core.get_property.assert_not_called()
+
+
+def test_property_action_cannot_self_approve_illumination_enable():
+    core = MagicMock()
+    core.get_focus_device.return_value = "Z"
+    core.get_camera_device.return_value = "Camera"
+    core.get_xy_stage_device.return_value = "XY"
+    ctrl = MagicMock(core=core, authorization_map=None)
+    guard = SafetyGuard(SafetyConstraints(illumination=IlluminationConstraints(
+        shutters=[IlluminationProperty("Laser", "Enable", "1", "0")],
+    )))
+    plan = _axes_plan(({}, (SetDeviceProperty("1"),)))
+    adapter = UntrustedHookAdapter(object())
+    adapter.configure_property(
+        ctrl=ctrl, guard=guard, device="Laser", property="Enable",
+        allowed_values=("0", "1"), min_value=None, max_value=None,
+        max_writes=1, initial_value="0", restore="leave", action_plan=plan,
+    )
+
+    with pytest.raises(RuntimeError, match="declined to enable illumination"):
+        adapter.pre_hardware_hook_fn({"axes": {}})
+    core.set_property.assert_not_called()

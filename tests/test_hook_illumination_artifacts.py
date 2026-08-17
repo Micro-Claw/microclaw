@@ -213,6 +213,38 @@ def test_fixed_plan_duplicate_generated_axes_refuses_during_validation(
 
 
 @pytest.mark.parametrize(
+    ("events", "message"),
+    [
+        ([{"axes": {}}, {"axes": {}}], r"duplicate axes signature \{\}"),
+        ([{"axes": []}], r"generated event 0 has invalid axes"),
+    ],
+)
+def test_property_only_plan_reports_indexed_invalid_or_duplicate_axes(
+    monkeypatch, tmp_path, events, message
+):
+    ctrl = MagicMock()
+    ctrl.core.get_allowed_property_values.return_value = MagicMock(size=lambda: 0)
+    ctrl.core.get_property.return_value = "A"
+    confirm = MagicMock(return_value=True)
+    monkeypatch.setattr(tools, "CONFIRM_FN", confirm)
+    plan = [
+        {"hook_event_index": index, "actions": []}
+        for index in range(len(events))
+    ]
+    with pytest.raises(ValueError, match=message):
+        tools._configure_hook_capabilities(
+            UntrustedHookAdapter(object()), ctrl, SafetyGuard(SafetyConstraints()),
+            str(tmp_path), "run", None, None, None, plan, events,
+            property_envelope={
+                "device": "Wheel", "property": "State",
+                "allowed_values": ["B"], "max_writes": 1,
+                "restore": "leave",
+            },
+        )
+    confirm.assert_not_called()
+
+
+@pytest.mark.parametrize(
     ("restore", "positions", "expected_calls"),
     [
         ("leave", [15, 11, 12], [11.0, 12.0]),
