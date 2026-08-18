@@ -1318,6 +1318,10 @@ def test_realistic_emitted_routine_runs_to_completion_against_fake_core(tmp_path
         def snap_image(self): self.snaps += 1
         def get_bytes_per_pixel(self): return 2
         def get_number_of_components(self): return 1
+        # The emitted script scales the flat-curve guard by the live frame's
+        # pixel count, so a fake Core must answer these the way a real one does.
+        def get_image_width(self): return 2
+        def get_image_height(self): return 2
         def get_tagged_image(self):
             image = np.array([[0, 10], [10, 0]], dtype=np.uint16)
             return SimpleNamespace(pix=image, tags={"Width": 2, "Height": 2})
@@ -2847,3 +2851,56 @@ def test_emitted_snap_crop_refuses_a_frame_the_region_does_not_fit(
         exec(compile(runnable, "routine.py", "exec"), namespace)
     assert "[4, 4, 16, 16]" in str(excinfo.value)
     assert "[8, 8]" in str(excinfo.value)
+
+
+def test_emitted_regionless_run_scales_its_guard_to_the_live_frame(
+    tmp_path, monkeypatch
+):
+    """The standalone script must refuse noise on a cropped sensor too.
+
+    A regionless sweep on a small camera ROI averages the metric over as few
+    pixels as a small software region does. The threshold is derived at runtime
+    from the frame the script actually finds, not baked in at export, so the
+    same script is correct on a rig whose ROI differs from the session's.
+    """
+    _, _, source = export(tmp_path, [call("run_autofocus", {
+        "z_range_um": 4, "z_step_um": 1, "method": "sweep", "settle_ms": 0,
+    })])
+    size = 20
+    rng = np.random.default_rng(73)
+    frames = [
+        np.clip(rng.normal(1000, 25, (size, size)), 0, 65535).astype(np.uint16)
+        for _ in range(5)
+    ]
+    # The fixture must be noise that WOULD have converged, or this proves nothing.
+    metrics = [image_analysis.tenengrad(f) for f in frames]
+    assert autofocus.curve_contrast(metrics) > autofocus.MIN_CONTRAST
+
+    class FakeCore:
+        def __init__(self): self.z, self._i = 50.0, 0
+        def get_position(self): return self.z
+        def get_focus_device(self): return "Z"
+        def set_position(self, z): self.z = float(z)
+        def wait_for_device(self, _device): pass
+        def snap_image(self): pass
+        def get_bytes_per_pixel(self): return 2
+        def get_number_of_components(self): return 1
+        def get_image_width(self): return size
+        def get_image_height(self): return size
+        def get_tagged_image(self):
+            frame = frames[min(self._i, len(frames) - 1)]
+            self._i += 1
+            return SimpleNamespace(pix=frame, tags={"Width": size, "Height": size})
+
+    core = FakeCore()
+    monkeypatch.setattr("pycromanager.Core", lambda *a, **k: core)
+    runnable = re.sub(r"^from pycromanager import .*$", "", source, flags=re.M)
+    namespace = {
+        "__file__": str(tmp_path / "routine.py"), "Core": lambda *a, **k: core,
+        "Acquisition": object, "multi_d_acquisition_events": lambda **kwargs: [],
+    }
+    exec(compile(runnable, "routine.py", "exec"), namespace)
+
+    assert namespace["autofocus_result"].converged is False
+    assert namespace["autofocus_result"].moved is False
+    assert core.z == 50.0

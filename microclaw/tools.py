@@ -25,7 +25,7 @@ from pycromanager import Acquisition, multi_d_acquisition_events
 from ndstorage import Dataset
 
 from microclaw.autofocus import (
-    N_REF,
+    MIN_CONTRAST,
     AutofocusResult,
     coarse_then_fine_plane_count,
     coarse_then_fine_autofocus,
@@ -575,6 +575,7 @@ def _analysis_source(*, include_autofocus: bool = False) -> str:
             autofocus.single_sweep_autofocus,
         ):
             parts.append(inspect.getsource(fn))
+        parts.append(inspect.getsource(_metric_pixel_count))
         parts.append(inspect.getsource(_run_autofocus_passes))
     return "\n".join(parts)
 
@@ -4124,6 +4125,20 @@ def center_feature(
 
 # --- Autofocus (Form A — standalone) ---
 
+def _metric_pixel_count(ctrl, region: list[int] | None) -> int:
+    """Pixels the focus metric is averaged over — the region, or the live frame.
+
+    The flat-curve guard scales with this, and it must not care HOW the frame
+    got small. A camera ROI cropped to 32x32 in Micro-Manager averages the
+    metric over exactly as few pixels as a 32x32 software region, and reaches
+    the same noise floor; reading the live frame rather than assuming a
+    reference size is what makes both routes refuse.
+    """
+    if region is not None:
+        return int(region[2]) * int(region[3])
+    return int(ctrl.core.get_image_width()) * int(ctrl.core.get_image_height())
+
+
 def _run_autofocus_passes(
     ctrl: MicroscopeController,
     z_range_um: float,
@@ -4133,9 +4148,7 @@ def _run_autofocus_passes(
     region: list[int] | None = None,
 ) -> AutofocusResult:
     metric_fn = tenengrad
-    min_contrast = contrast_threshold(
-        region[2] * region[3] if region is not None else N_REF
-    )
+    min_contrast = contrast_threshold(_metric_pixel_count(ctrl, region))
     if region is not None:
         x, y, width, height = region
 
@@ -4251,10 +4264,15 @@ def run_autofocus(
             ctrl, z_range_um, z_step_um, method, settle_ms, validated
         )
 
-    applied_min_contrast = (
-        contrast_threshold(validated[2] * validated[3])
-        if validated is not None else None
+    # The same number the sweep compared against, from the same helper — the
+    # payload and the refusal must not be able to disagree. Reported only when
+    # it is not the default, so an ordinary full-frame payload keeps its shape;
+    # absent means MIN_CONTRAST, the same convention `region` uses.
+    applied_min_contrast = contrast_threshold(
+        _metric_pixel_count(ctrl, validated)
     )
+    if applied_min_contrast == MIN_CONTRAST:
+        applied_min_contrast = None
 
     payload: dict[str, Any] = {
         "converged": result.converged,

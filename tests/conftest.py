@@ -38,6 +38,13 @@ def mock_ctrl(mock_core, mock_studio):
     # auto-create this method and let host discovery inspect a real MM install.
     ctrl.get_mm_app_dir = None
     ctrl.inspect_current_position_list.return_value = PositionProjection([], [], [])
+    # A bare MagicMock answers int() with 1, so an unconfigured controller would
+    # report a 1x1 sensor — and the flat-curve guard now scales with the frame's
+    # pixel count, so that silently becomes a 153.6 threshold that refuses
+    # everything. Default to an ordinary full frame; tests about small frames
+    # set their own.
+    ctrl.core.get_image_width.return_value = 1024
+    ctrl.core.get_image_height.return_value = 1024
     return ctrl
 
 

@@ -1227,6 +1227,49 @@ class TestRunAutofocus:
         assert result["final_z_um"] == 50.0
         assert result["coarse"]["min_contrast"] > result["coarse"]["contrast"]
 
+    def test_small_camera_roi_pure_noise_does_not_converge_or_move(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        """The guard must not care HOW the metric frame got small.
+
+        A cropped camera ROI averages the metric over just as few pixels as a
+        software region does, so it reaches the same noise floor. Passing N_REF
+        for the regionless case kept the threshold at 0.15 however small the
+        sensor frame was, and a 32x32 crop converged on pure noise 43% of the
+        time — the same defect as a small region, reached by MM's own ROI
+        button instead.
+        """
+        size = 20
+        rng = np.random.default_rng(73)
+        frames = [
+            np.clip(rng.normal(1000, 25, (size, size)), 0, 65535).astype(np.uint16)
+            for _ in range(5)
+        ]
+        metrics = [tools.tenengrad(frame) for frame in frames]
+        assert curve_contrast(metrics) > 0.15
+        assert 0 < int(np.argmax(metrics)) < len(metrics) - 1
+
+        mock_ctrl.core.get_image_width.return_value = size
+        mock_ctrl.core.get_image_height.return_value = size
+        current_z = [50.0]
+        mock_ctrl.core.get_position.side_effect = lambda: current_z[0]
+        mock_ctrl.core.set_position.side_effect = lambda z: current_z.__setitem__(0, z)
+        frame_iter = iter(frames)
+        monkeypatch.setattr(
+            "microclaw.autofocus.snap_to_numpy", lambda _ctrl: next(frame_iter)
+        )
+
+        result = run_autofocus(
+            mock_ctrl, unconstrained_guard, z_range_um=4.0, z_step_um=1.0,
+            method="sweep", settle_ms=0, return_thumbnail=False,
+        )                                          # NO region — the crop is the camera's
+
+        assert current_z[0] == 50.0
+        assert result["converged"] is False
+        assert result["moved"] is False
+        assert result["final_z_um"] == 50.0
+        assert result["coarse"]["min_contrast"] > result["coarse"]["contrast"]
+
     def test_region_curve_has_more_contrast_than_diluted_full_frame(
         self, mock_ctrl, unconstrained_guard, monkeypatch
     ):
