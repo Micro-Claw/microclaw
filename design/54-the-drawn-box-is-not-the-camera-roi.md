@@ -184,6 +184,82 @@ The probe proved the *method is present*, not that it returns a live `ImagePlus`
 whose `getRoi()` reads. 54c's first step is one call confirming that; if it
 returns null, the ImageJ static is already known to work and the order flips.
 
+## 54b gate results — Nikon, 2026-08-18 (`block54b-nikon/`)
+
+Every limb passed. **The plumbing is proven and the central claim is not.**
+
+Proven, from the artifacts: the control was flat on this field (contrast
+**0.015**, no `region` key, so the regionless payload kept its shape); the
+region echoed back exactly `[119, 639, 160, 244]`; the camera ROI read
+`1024×1024` before and after, so nothing cropped the sensor; the out-of-frame
+refusal fired verbatim and took no exposure; the export carried two
+`_run_autofocus_passes` calls — one ending `50, None)`, one carrying the four
+numbers — with **zero** `set_roi` and a `# SKIPPED` comment holding the refused
+call's error. The standalone script ran clean, and after the camera was cropped
+to 160×244 it died exactly as intended:
+
+```
+RuntimeError: Region [119, 639, 160, 244] does not fit frame [160, 244].
+```
+
+That is the review defect (§1, emitted crop) confirmed fixed on hardware.
+
+### The criterion was wrong: `contrast` is not comparable across region sizes
+
+Step 3 asked for the region's `contrast` to exceed the full frame's. It did —
+0.015 → **0.037**, and `peak_interior` flipped false → true. **That is not
+evidence of anything.**
+
+`curve_contrast` is span-over-median of a metric which is itself a *mean over
+pixels*. Its noise floor therefore scales as 1/√N. The drawn box holds 39,040
+px against the frame's 1,048,576, so shrinking to it inflates contrast by
+√(1048576/39040) ≈ **5.2×** on noise alone. Measured on synthetic frames with
+**no structure anywhere** (Gaussian, σ=25 counts, five planes, 40 trials):
+
+| region | px | median contrast on pure noise |
+|---|---|---|
+| 1024×1024 | 1,048,576 | 0.0043 |
+| 160×244 (the drawn box) | 39,040 | 0.0229 |
+
+A ratio of **5.66×**, matching the 1/√N prediction. The rig measured 2.47×.
+**A criterion satisfied more strongly by pure noise than by the real field
+tests nothing**, so Step 3 is NOT TESTED on the question it was written for, and
+the dilution hypothesis is still unmeasured on this rig. (The rig's ratio
+falling *below* the noise prediction is suggestive rather than conclusive — the
+sim's noise model is not this camera's.)
+
+### And it is worse than a bad criterion: small regions defeat the guard
+
+`MIN_CONTRAST` is a **constant 0.15** compared against a statistic whose noise
+floor grows as the region shrinks. Above that line `run_autofocus` converges and
+**moves the focus drive**. On pure noise, no structure at all:
+
+| region | px | median contrast | P(contrast > 0.15) |
+|---|---|---|---|
+| 1024×1024 | 1,048,576 | 0.0043 | 0% |
+| 160×244 | 39,040 | 0.0229 | 0% |
+| 100×100 | 10,000 | 0.0459 | 0% |
+| 48×48 | 2,304 | 0.0923 | 7% |
+| 32×32 | 1,024 | 0.1218 | 22% |
+| 20×20 | 400 | 0.2254 | **92%** |
+
+**A 20×20 region converges on noise 92% of the time and moves the stage.** The
+structureless-curve refusal — the guard that exists precisely to stop that — is
+defeated by making the region small enough, and 54b is what made the region
+size a user-facing knob. Worse, `_flat_reason` now *invites* it: "restrict the
+metric region around structure" is the advice this block added, and a biologist
+drawing a tight box around one cell is the expected use.
+
+The Nikon's box is safely inside the flat zone, so nothing unsafe happened on
+this gate. The defect is structural, not incidental.
+
+**Decision owed before merge.** Three candidates, cheapest first: refuse regions
+below a pixel floor; scale the threshold as `MIN_CONTRAST × √(N_ref/N)`;
+or estimate the noise floor per sweep and compare against that instead of a
+constant. The second is principled and the sim above already measures the
+constant it needs. This is block **54d**, and 54b should not merge until it is
+settled — merging ships a tool that can move a focus drive on noise.
+
 ## Refusals this must keep
 
 - **Stale box.** A box drawn before a camera-ROI or binning change lands
@@ -295,5 +371,6 @@ against the current frame, refuses rather than clamps. Per §3a: MM's
 | Block | Depends on | Branch | Start commit | Implementation commit | Rig evidence | Merge | Design reconciliation |
 |---|---|---|---|---|---|---|---|
 | 54a | — | `design54/display-roi` | `3db1b88` | probe **is** the deliverable | **PASS** Nikon 2026-08-18 — R1–R4, R5 skipped; F1 (sign-extended ID, untested fallback) and F2 (prefer MM's DisplayWindow route) folded into §3a | n/a — design-only | **done** — §3a |
-| 54b | — | | | | | | |
+| 54b | — | `design54/display-roi` | `9505d01` | `f2ffd26` + review `e144759` | **PASS on every limb, Nikon 2026-08-18** — plumbing proven; Step 3's criterion measured invalid (contrast not comparable across region sizes) and a guard-defeat found | **held** — blocked on 54d | |
 | 54c | 54a | | | | | | |
+| 54d | 54b gate | | | | | | | *(contrast threshold vs region size — opened by 54b's gate)*
