@@ -408,6 +408,40 @@ against the current frame, refuses rather than clamps. Per §3a: MM's
 | Block | Depends on | Branch | Start commit | Implementation commit | Rig evidence | Merge | Design reconciliation |
 |---|---|---|---|---|---|---|---|
 | 54a | — | `design54/display-roi` | `3db1b88` | probe **is** the deliverable | **PASS** Nikon 2026-08-18 — R1–R4, R5 skipped; F1 (sign-extended ID, untested fallback) and F2 (prefer MM's DisplayWindow route) folded into §3a | n/a — design-only | **done** — §3a |
-| 54b | — | `design54/display-roi` | `9505d01` | `f2ffd26` + review `e144759` | **PASS on every limb, Nikon 2026-08-18** — plumbing proven; Step 3's criterion measured invalid (contrast not comparable across region sizes) and a guard-defeat found | **held** — blocked on 54d | |
-| 54c | 54a | | | | | | |
-| 54d | 54b gate | | | | | | | *(contrast threshold vs region size — opened by 54b's gate)*
+| 54b | — | `design54/display-roi` | `9505d01` | `f2ffd26` + review `e144759` | **round 1 PASS on every limb, Nikon 2026-08-18** — plumbing proven; Step 3's criterion measured invalid and a guard-defeat found. **Re-gated with 54d** under `design/54-block54bd-rig-gate.md` | **held** — merges with 54d | |
+| 54c | 54a | | | | | | | *(`region="drawn"` — unblocked by 54a, not started, deliberately after 54b/54d)*
+| 54d | 54b gate | `design54/display-roi` | `9d1becf` | `cd72548`+`381589e`, review `c0f6323`+`5ed5fef` | **awaiting** — `design/54-block54bd-rig-gate.md`, pinned `5ed5fef` | **held** — merges with 54b | |
+
+## Resuming this block cold
+
+Everything needed is on `origin/design54/display-roi`; `main` is untouched at
+`3db1b88`. **This block is not in `design/35`** — it owns its checklist above.
+
+State as of 2026-08-18, tip `32b4204`:
+
+- **54a** closed. **54b and 54d implemented, reviewed, and held from merge** —
+  they merge together so nothing reaches a rig with the flat-curve guard
+  weakened. **54c not started.**
+- The rig gate is `design/54-block54bd-rig-gate.md`, pinned `5ed5fef`, awaiting
+  a Nikon run. The 54b-only runbook was deleted; if a copy surfaces, it is
+  stale and its Step 3 criterion is invalid.
+- Suite at the tip: **1905 passed, 99 skipped, 2004 collected** (macOS).
+
+When the gate results arrive, score them from the artifacts per `CLAUDE.md`
+step 6 — the numbers that must agree with each other are:
+
+1. `coarse.min_contrast` against `0.15 × √(1048576 / (w × h))` for the box in
+   `region`. A disagreement means the payload and the sweep used different
+   thresholds.
+2. The two `contrast / min_contrast` scores. **The raw contrasts are not
+   comparable across region sizes** — that mistake is what invalidated the
+   first gate, and it is the one thing most likely to be repeated.
+3. Step 5's `entry_z_um` against `final_z_um`. 54b's third gate passed every
+   stated limb while carrying a defect whose only tell was two positions that
+   should have agreed and did not.
+4. The export's `_metric_pixel_count` count. Zero means 54d's fix never reached
+   the standalone script, whatever else passed.
+
+If the gate passes, merge 54b+54d together, push `main`, delete the branch both
+places, write the coordination notes into `design/prompts.md`, and close the
+three ledger rows. Then 54c is next and is unblocked.
