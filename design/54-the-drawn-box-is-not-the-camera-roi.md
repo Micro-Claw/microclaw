@@ -124,6 +124,44 @@ If the probe says the display is unreachable from `WindowManager`, §1 still
 ships — a literal `region` is independently useful and is most of the value —
 and `"drawn"` refuses by name with the reason.
 
+### 3a. Answered — Nikon, 2026-08-18 (`54a-nikon/out54.txt`)
+
+**It is reachable, and §2 stands.** R1–R4 PASS, R5 skipped (no `--snap`).
+
+- `WindowManager.getCurrentImage()` returns MM's Preview as an `ImagePlus`
+  (`Preview-0`, 1024×1024, matching the camera ROI), so the ID list is not
+  needed for the common case.
+- `getRoi()` returned a `Rectangle` Roi; bounds `(60, 189, 151, 251)`, **3.6% of
+  the frame**. Fields and methods agreed exactly, so the naming split does not
+  bite on `java.awt.Rectangle`.
+- ImagePlus frame == camera ROI frame, box inside it: `image[y:y+h, x:x+w]`
+  indexes the drawn region with no offset arithmetic, as claimed.
+
+Two findings the gate did not fail on, and both change what 54c builds.
+
+**F1. `getIDList()` comes back sign-extended, and the fallback that uses it was
+never exercised.** ImageJ assigns *negative* image IDs (`ImagePlus.ID` counts
+down from −1). The probe reported `4294967294` — that is `0xFFFFFFFE`, i.e. −2
+read as unsigned 32-bit. `getCurrentImage()` was non-null on this run, so the
+`getImage(id)` fallback never ran; had it run, it would have passed a value
+outside Java's `int` range. **54c must reinterpret the ID as signed int32
+before passing it back**, and must not treat a passing 54a as evidence that the
+fallback works — it has never executed. The probe's own R2 also counts the same
+window twice (once via `getCurrentImage`, once via `getImage`) because it does
+not dedupe by ID; anything reporting "which window did you mean?" must.
+
+**F2. MM's own route exists and is the better one.** The `DisplayWindow` shadow
+carries `getImagePlus` (as `.get_image_plus`). `studio.live().get_display()
+.get_image_plus()` is preferable to the ImageJ static for three reasons: it
+names the Preview specifically rather than following window focus, it touches no
+static `JavaClass` and so cannot meet the pyjavaz cache collision at all, and it
+needs no ID. **Make it the primary route and `WindowManager.getCurrentImage()`
+the fallback.**
+
+The probe proved the *method is present*, not that it returns a live `ImagePlus`
+whose `getRoi()` reads. 54c's first step is one call confirming that; if it
+returns null, the ImageJ static is already known to work and the order flips.
+
 ## Refusals this must keep
 
 - **Stale box.** A box drawn before a camera-ROI or binning change lands
@@ -218,9 +256,12 @@ matches nothing, and "passes".
 
 ## 54c — `region="drawn"`
 
-§2, gated on 54a. Reads the box through `ij.WindowManager` via
-`controller._new_static_java_class`, resolved at call time, validated against
-the current frame, refusing rather than clamping.
+§2, **unblocked by 54a's PASS**. Reads the box at call time, validates it
+against the current frame, refuses rather than clamps. Per §3a: MM's
+`studio.live().get_display().get_image_plus()` is the primary route and
+`ij.WindowManager.getCurrentImage()` (through
+`controller._new_static_java_class`) the fallback; any ID read from
+`getIDList()` is reinterpreted as signed int32 before use.
 
 - **Gate (Nikon).** Operator draws a box, calls `run_autofocus(region="drawn")`,
   and the numbers agree with 54b's literal-region run over the same box. Then
@@ -231,6 +272,6 @@ the current frame, refusing rather than clamping.
 
 | Block | Depends on | Branch | Start commit | Implementation commit | Rig evidence | Merge | Design reconciliation |
 |---|---|---|---|---|---|---|---|
-| 54a | — | `design54/display-roi` | `3db1b88` | probe **is** the deliverable | | | |
+| 54a | — | `design54/display-roi` | `3db1b88` | probe **is** the deliverable | **PASS** Nikon 2026-08-18 — R1–R4, R5 skipped; F1 (sign-extended ID, untested fallback) and F2 (prefer MM's DisplayWindow route) folded into §3a | n/a — design-only | **done** — §3a |
 | 54b | — | | | | | | |
 | 54c | 54a | | | | | | |
