@@ -212,6 +212,59 @@ def test_emitted_autofocus_actually_crops_the_metric_frames(tmp_path, monkeypatc
     assert curve[1] == pytest.approx(cropped_metric)
 
 
+def test_emitted_autofocus_applies_same_small_region_threshold_as_live_run(
+    tmp_path, monkeypatch
+):
+    size = 20
+    rng = np.random.default_rng(3)
+    frames = [
+        np.clip(rng.normal(1000, 25, (size, size)), 0, 65535).astype(np.uint16)
+        for _ in range(5)
+    ]
+    assert autofocus.curve_contrast(
+        [image_analysis.tenengrad(frame) for frame in frames]
+    ) > autofocus.MIN_CONTRAST
+
+    class FakeCore:
+        def __init__(self):
+            self._index = 0
+            self.position = 50.0
+        def get_position(self): return self.position
+        def get_focus_device(self): return "Z"
+        def set_position(self, z): self.position = float(z)
+        def wait_for_device(self, _device): pass
+        def snap_image(self): pass
+        def get_bytes_per_pixel(self): return 2
+        def get_number_of_components(self): return 1
+        def get_tagged_image(self):
+            frame = frames[self._index]
+            self._index += 1
+            return SimpleNamespace(pix=frame, tags={"Width": size, "Height": size})
+
+    live_core = FakeCore()
+    live = tools._run_autofocus_passes(
+        SimpleNamespace(core=live_core), 4, 1, "sweep", 0,
+        [0, 0, size, size],
+    )
+    _, _, source = export(tmp_path, [call("run_autofocus", {
+        "z_range_um": 4, "z_step_um": 1, "method": "sweep", "settle_ms": 0,
+        "region": [0, 0, size, size],
+    })])
+    monkeypatch.setattr("pycromanager.Core", FakeCore)
+    runnable = re.sub(r"^from pycromanager import .*$", "", source, flags=re.M)
+    namespace = {
+        "__file__": str(tmp_path / "routine.py"), "Core": FakeCore,
+        "Acquisition": object, "multi_d_acquisition_events": lambda **kwargs: [],
+    }
+    exec(compile(runnable, "routine.py", "exec"), namespace)
+    emitted = namespace["autofocus_result"]
+
+    assert live.converged is False
+    assert emitted.converged is False
+    assert live.moved == emitted.moved == False
+    assert live.reason == emitted.reason
+
+
 def test_emitted_snap_analysis_actually_crops_every_statistic(tmp_path, monkeypatch):
     _, _, source = export(tmp_path, [call(
         "snap_and_analyze", {"region": [2, 1, 3, 4]}

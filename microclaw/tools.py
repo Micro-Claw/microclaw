@@ -25,10 +25,12 @@ from pycromanager import Acquisition, multi_d_acquisition_events
 from ndstorage import Dataset
 
 from microclaw.autofocus import (
+    N_REF,
     AutofocusResult,
     coarse_then_fine_plane_count,
     coarse_then_fine_autofocus,
     curve_contrast,
+    contrast_threshold,
     single_sweep_autofocus,
     sweep_plane_count,
 )
@@ -562,10 +564,11 @@ def _analysis_source(*, include_autofocus: bool = False) -> str:
             inspect.getsource(autofocus.SweepResult),
             inspect.getsource(autofocus.AutofocusResult),
             f"MIN_CONTRAST = {autofocus.MIN_CONTRAST!r}\n",
+            f"N_REF = {autofocus.N_REF!r}\n",
         ])
         for fn in (
             autofocus.sweep_plane_count, autofocus.coarse_then_fine_plane_count,
-            autofocus.curve_contrast,
+            autofocus.curve_contrast, autofocus.contrast_threshold,
             autofocus.sweep_autofocus, autofocus._restore,
             autofocus._flat_reason, autofocus._edge_reason,
             autofocus.coarse_then_fine_autofocus,
@@ -4130,6 +4133,9 @@ def _run_autofocus_passes(
     region: list[int] | None = None,
 ) -> AutofocusResult:
     metric_fn = tenengrad
+    min_contrast = contrast_threshold(
+        region[2] * region[3] if region is not None else N_REF
+    )
     if region is not None:
         x, y, width, height = region
 
@@ -4150,10 +4156,11 @@ def _run_autofocus_passes(
     if method == "coarse_then_fine":
         return coarse_then_fine_autofocus(
             ctrl, z_range_um, max(z_step_um * 5, 1.0), z_step_um, settle_ms,
-            metric_fn=metric_fn,
+            metric_fn=metric_fn, min_contrast=min_contrast,
         )
     return single_sweep_autofocus(
-        ctrl, z_range_um, z_step_um, settle_ms, metric_fn=metric_fn
+        ctrl, z_range_um, z_step_um, settle_ms, metric_fn=metric_fn,
+        min_contrast=min_contrast,
     )
 
 
@@ -4171,16 +4178,19 @@ def _round_sig(value: float, sig: int = 4) -> float:
     return float(f"%.{sig}g" % value)
 
 
-def _sweep_payload(sweep) -> dict | None:
+def _sweep_payload(sweep, min_contrast: float | None = None) -> dict | None:
     if sweep is None:
         return None
-    return {
+    payload = {
         "z_positions": [round(z, 3) for z in sweep.z_positions],
         "metric_curve": [_round_sig(v) for v in sweep.metric_values],
         "best_z_um": round(sweep.best_z_um, 3),
         "peak_interior": sweep.peak_interior,
         "contrast": round(curve_contrast(sweep.metric_values), 3),
     }
+    if min_contrast is not None:
+        payload["min_contrast"] = round(min_contrast, 3)
+    return payload
 
 
 @emits(_emit_autofocus)
@@ -4241,6 +4251,11 @@ def run_autofocus(
             ctrl, z_range_um, z_step_um, method, settle_ms, validated
         )
 
+    applied_min_contrast = (
+        contrast_threshold(validated[2] * validated[3])
+        if validated is not None else None
+    )
+
     payload: dict[str, Any] = {
         "converged": result.converged,
         "moved": result.moved,
@@ -4249,8 +4264,8 @@ def run_autofocus(
         "final_z_um": round(result.final_z_um, 3),
         "z_range_um": z_range_um,
         # BOTH passes — the caller can see which one chose the plane.
-        "coarse": _sweep_payload(result.coarse),
-        "fine": _sweep_payload(result.fine),
+        "coarse": _sweep_payload(result.coarse, applied_min_contrast),
+        "fine": _sweep_payload(result.fine, applied_min_contrast),
         "warning": (
             "Peak focus was at the edge of the sweep range; consider widening z_range_um."
             if result.converged and not result.coarse.peak_interior

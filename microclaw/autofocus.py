@@ -44,6 +44,12 @@ class AutofocusResult:
 # noise and the stage is NOT moved. The amr_test regression scores ~0.06;
 # tune upward only against real curves.
 MIN_CONTRAST = 0.15
+N_REF = 1024 * 1024
+
+
+def contrast_threshold(n_pixels: int) -> float:
+    """Scale the flat-curve guard for a metric averaged over ``n_pixels``."""
+    return max(MIN_CONTRAST, MIN_CONTRAST * np.sqrt(N_REF / n_pixels))
 
 
 def sweep_plane_count(z_start_um: float, z_end_um: float, z_step_um: float) -> int:
@@ -135,10 +141,12 @@ def _restore(ctrl, z: float) -> None:
     ctrl.core.wait_for_device(ctrl.core.get_focus_device())
 
 
-def _flat_reason(which: str, contrast: float, entry_z: float) -> str:
+def _flat_reason(
+    which: str, contrast: float, min_contrast: float, entry_z: float
+) -> str:
     return (
         f"{which} focus metric is flat (contrast {contrast:.2f} < "
-        f"{MIN_CONTRAST}) — the sweep saw noise, not a focus peak. Z was NOT "
+        f"{min_contrast}) — the sweep saw noise, not a focus peak. Z was NOT "
         f"moved (restored to {entry_z:.3f} µm). Increase signal (laser power / "
         f"exposure), restrict the metric region around structure when the field "
         f"is mostly background, or focus manually."
@@ -206,7 +214,7 @@ def coarse_then_fine_autofocus(
         return AutofocusResult(
             coarse=coarse, fine=None, entry_z_um=entry_z, final_z_um=entry_z,
             converged=False, moved=False,
-            reason=_flat_reason("Coarse", coarse_contrast, entry_z),
+            reason=_flat_reason("Coarse", coarse_contrast, min_contrast, entry_z),
         )
 
     lo = max(coarse.best_z_um - coarse_step_um, lo_bound)
@@ -221,7 +229,7 @@ def coarse_then_fine_autofocus(
         return AutofocusResult(
             coarse=coarse, fine=fine, entry_z_um=entry_z, final_z_um=entry_z,
             converged=False, moved=False,
-            reason=_flat_reason("Fine", fine_contrast, entry_z),
+            reason=_flat_reason("Fine", fine_contrast, min_contrast, entry_z),
         )
 
     if not fine.peak_interior:
@@ -264,7 +272,7 @@ def single_sweep_autofocus(
         return AutofocusResult(
             coarse=sweep, fine=None, entry_z_um=entry_z, final_z_um=entry_z,
             converged=False, moved=False,
-            reason=_flat_reason("Sweep", contrast, entry_z),
+            reason=_flat_reason("Sweep", contrast, min_contrast, entry_z),
         )
     if not sweep.peak_interior:
         _restore(ctrl, entry_z)

@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from microclaw import tools
-from microclaw.autofocus import AutofocusResult, SweepResult
+from microclaw.autofocus import AutofocusResult, SweepResult, curve_contrast
 from microclaw.safety import (
     AnalysisConstraints, IlluminationConstraints, IlluminationProperty,
     NamedStageLimits, SafetyConstraints, SafetyGuard, SafetyViolation,
@@ -1192,6 +1192,41 @@ def _patch_autofocus(monkeypatch):
 
 
 class TestRunAutofocus:
+    def test_small_region_pure_noise_does_not_converge_or_move(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        size = 20
+        rng = np.random.default_rng(3)
+        frames = [
+            np.clip(rng.normal(1000, 25, (size, size)), 0, 65535).astype(np.uint16)
+            for _ in range(5)
+        ]
+        metrics = [tools.tenengrad(frame) for frame in frames]
+        assert curve_contrast(metrics) > 0.15
+        assert 0 < int(np.argmax(metrics)) < len(metrics) - 1
+
+        mock_ctrl.core.get_image_width.return_value = size
+        mock_ctrl.core.get_image_height.return_value = size
+        current_z = [50.0]
+        mock_ctrl.core.get_position.side_effect = lambda: current_z[0]
+        mock_ctrl.core.set_position.side_effect = lambda z: current_z.__setitem__(0, z)
+        frame_iter = iter(frames)
+        monkeypatch.setattr(
+            "microclaw.autofocus.snap_to_numpy", lambda _ctrl: next(frame_iter)
+        )
+
+        result = run_autofocus(
+            mock_ctrl, unconstrained_guard, z_range_um=4.0, z_step_um=1.0,
+            method="sweep", settle_ms=0, return_thumbnail=False,
+            region=[0, 0, size, size],
+        )
+
+        assert result["converged"] is False
+        assert result["moved"] is False
+        assert result["final_z_um"] == 50.0
+        assert current_z[0] == 50.0
+        assert result["coarse"]["min_contrast"] > result["coarse"]["contrast"]
+
     def test_region_curve_has_more_contrast_than_diluted_full_frame(
         self, mock_ctrl, unconstrained_guard, monkeypatch
     ):
@@ -1314,6 +1349,10 @@ class TestRunAutofocus:
         assert result["entry_z_um"] == 50.0
         assert result["coarse"]["metric_curve"] == [0.1, 0.9, 0.1]
         assert result["fine"]["peak_interior"] is True
+        assert set(result["coarse"]) == {
+            "z_positions", "metric_curve", "best_z_um", "peak_interior", "contrast"
+        }
+        assert "region" not in result
 
     def test_live_paused_across_the_sweep_and_left_off(
         self, mock_ctrl, unconstrained_guard, monkeypatch

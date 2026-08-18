@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
 from unittest.mock import MagicMock
+import microclaw.autofocus as autofocus
 
 from microclaw.autofocus import (
     MIN_CONTRAST,
@@ -115,6 +116,21 @@ class TestCurveContrast:
     def test_empty_and_constant_curves_are_zero(self):
         assert curve_contrast([]) == 0.0
         assert curve_contrast([5.0, 5.0, 5.0]) == 0.0
+
+    def test_full_frame_threshold_and_flat_reason_are_unchanged(self):
+        threshold = autofocus.contrast_threshold(autofocus.N_REF)
+        assert threshold == MIN_CONTRAST
+        reason = autofocus._flat_reason("Sweep", 0.12, threshold, 50.0)
+        assert "contrast 0.12 < 0.15" in reason
+
+    def test_regions_larger_than_reference_never_loosen_threshold(self):
+        assert autofocus.contrast_threshold(2048 * 2048) == MIN_CONTRAST
+
+    def test_flat_reason_reports_the_threshold_that_was_compared(self):
+        threshold = autofocus.contrast_threshold(32 * 32)
+        reason = autofocus._flat_reason("Sweep", 0.12, threshold, 50.0)
+        reported = float(reason.split(" < ", 1)[1].split(")", 1)[0])
+        assert reported == threshold
 
 
 class TestCoarseThenFine:
