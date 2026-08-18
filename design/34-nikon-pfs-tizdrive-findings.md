@@ -9,6 +9,12 @@
 > signature did not reproduce; the live defect is a missed target reported as
 > success). Still open exactly as written: probe 0's question at §194 — no
 > session has moved Z with PFS armed. It now gates nothing.
+>
+> **CLOSED 2026-08-18 with Track B.** PFS works from a microclaw session under a
+> hand-declared safety config; no further Nikon evidence is being sought and
+> probes 0–4 are retired unrun. The generic, non-Nikon defects this line of work
+> found are tracked in `design/35-usability-and-pfs-checklist.md` under "The five
+> that outlived Track B". This document is history.
 
 ## Scope
 

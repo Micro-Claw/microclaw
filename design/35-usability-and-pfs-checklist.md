@@ -365,18 +365,68 @@ and the only branches on `origin` besides `main` are
   second merges `main` first**. Eight blocks remain after them: 43c, 43e, 43f,
   43g, 43h, 43i, 43j, 43k.
 
-### State at the 2026-08-12 close of blocks 46 and 47 — read this before assigning anything
+### State at the 2026-08-18 close of Track B — read this before assigning anything
 
 **This is the live note. It supersedes every other State-at note in this
 section**, all of which are kept only for their round history. Position is not
 recency — read the heading, not the order.
+
+**Track B is closed. The Nikon is done.** The coordinator got on the system on
+2026-08-18 and **PFS engages, disengages and takes an offset move from inside a
+microclaw session**, under the operator's hand-declared `safety_config.yml`. That
+is the whole of the evidence and it is enough: the track existed because a remote
+operator could not work, and they can. Blocks 6, 7a, 7b and 8 are **closed
+unbuilt**; block 6a is **dropped unmerged**, its branch deleted locally and on
+`origin`, and **no code from it is on `main`**.
+
+Four things a session picking this up must not get wrong:
+
+- **Do not re-propose the track.** The ruling is the operator's and it is
+  recorded. If a PFS question returns, it starts from the register rows, not from
+  Track B's block structure.
+- **Setup-generation was never gated and is not claimed.** 6a's acceptance was
+  that setup could *produce* an equivalent config without hand editing. Nobody
+  demonstrated that. A PFS operator still hand-writes the declaration — which is
+  precisely what made 2026-08-18 work.
+- **Five generic defects outlived the track and are live on `main`.** Two are
+  position-reporting defects that affect **every rig**: `move_stage_z` reports the
+  requested Z, never the reached one (`tools.py:2137`), and `move_named_stage`
+  reports a missed target as a success (`tools.py:2233`). The other three are the
+  EMU-only `get_focus_lock_state`, the swallowed unassigned `Core.Focus`, and the
+  `absolute-position` declaration hole. All five are register rows under **"The
+  five that outlived Track B"**, with their evidence inline because the branch
+  that held it is gone. **None is scheduled.**
+- **6a was unmergeable, which is why it was dropped rather than landed.** It sat
+  808 commits behind `main`, and `microclaw/first_launch.py` — 140 of its 506
+  changed lines — was deleted from `main` by `7edd76a` and replaced by
+  `setup_tools.py`. Any future work on those findings is a re-implementation
+  against today's surface, not a rescue of that branch.
+
+**Branch hygiene, same day.** `design34/focus-system-authorization` is deleted
+locally and on `origin`. Deliberately **kept**: `port-to-jpype-acqj` (18 commits
+ahead — the reverted jPype/AcqJ port exists nowhere else), `florian/setup-claude-workflow`
+(one docs commit, 1472 behind, judged not worth deleting), and `origin/ollama`
+(0 ahead of `main`, fully merged — dead but harmless). `design54/display-roi` is
+**active, unmerged, and awaiting a Nikon gate of its own** — that gate is *not*
+Track B and did not close with it.
+
+**What is next is a choice, not a continuation.** Track C is still parked on an
+`.ilp` that does not exist; design/54 is awaiting its gate; design/55 is written
+and not started. Otherwise the open register is where new blocks come from.
+
+---
+
+The rest of this note is the 2026-08-12 record of blocks 46 and 47, kept because
+its measurements and process lessons are still live. **Its two "Track B stays
+parked" bullets are superseded by the paragraphs above.**
 
 **Read this first, added 2026-08-15: work has continued outside this file.**
 Blocks 48a–e, 49a, 50a, 50b, 51a and 53a were run after this note was written,
 each with its own design document, checklist and run ledger — `design/48`,
 `design/49`, `design/50`, `design/51`, `design/53`. They are all closed. This
 note remains accurate about *this file's* tracks (B parked on the Nikon, C parked
-on an `.ilp`), but it is not a picture of the repository. **`design/53` is the
+on an `.ilp`) — **B is no longer parked, it is closed, 2026-08-18** — but it is
+not a picture of the repository. **`design/53` is the
 most recently closed block and its checklist is the current template for a
 single-block design doc.**
 
@@ -392,8 +442,9 @@ branch.** One worktree besides this one: `../microclaw-6a`, idle at `4994f3e`.
 what the session was picked up to do, and Track C is still where it was left.
 
 **Nothing is awaiting a rig and no block is in flight.** The next thing to do is
-a choice, not a continuation: Track C when the `.ilp` exists, Track B when the
-Nikon answers, or a new block from the open register. **Two carried items are
+a choice, not a continuation: Track C when the `.ilp` exists, ~~Track B when the
+Nikon answers~~ (**Track B closed 2026-08-18**), or a new block from the open
+register. **Two carried items are
 owed but block nothing**: M5's four `_v2` hooks from block 45 Step 4 are still
 unresolvable and are operator-owned, and the open register stood at 52 items
 before blocks 46 and 47 closed two of them.
@@ -504,10 +555,12 @@ before blocks 46 and 47 closed two of them.
   the second time an undecorated tool killed a gate's own script, after 43h.
   Emitters were folded in before merge; **undecorated tools are now 12, measured
   2026-08-12**, and the old count of fourteen in `CLAUDE.md` was corrected.
-- **Nothing is awaiting a rig.** Track B's 6a is parked on the Nikon and Track C
-  is parked on an `.ilp` that does not exist; there is no open block branch.
-- **Track B stays parked**: 6a has been pushed and awaiting the Nikon since
-  2026-08-05.
+- **Nothing is awaiting a rig.** ~~Track B's 6a is parked on the Nikon and~~
+  Track C is parked on an `.ilp` that does not exist; there is no open block
+  branch. **Track B closed 2026-08-18 and 6a was dropped unmerged.**
+- ~~**Track B stays parked**: 6a has been pushed and awaiting the Nikon since
+  2026-08-05.~~ **Superseded — see the 2026-08-18 paragraphs at the head of this
+  note.**
 - **With Track C parked on a human artifact, block 46 is assigned from the
   register: the GUI-refresh sweep.** Branch `design46/gui-refresh-sweep` from
   `d938098`, ledger row opened. It is design/43 F4's class, carried out of 43i by
@@ -1632,12 +1685,12 @@ assistant's narration when judging whether a guard fired.
 | 4d | Usability | 4c merged | `design33/property-authorization-rename` (deleted) | `052179d` | `fd4c5b6` + `c063f16` + `029b5f4` | demo G0/G1/G2 + M5 G4 **PASS** 2026-08-03; G3 closed by offline replay | `5f56679` | **done** — design/33 §"Block 4d landed" |
 | 5 | Usability | 4b, 4e, 4f, 4h, 4c, 4d | `design33/deployed-config-hygiene` | `a27997f` | `6262acb` + `577acc4` + `c0344f2` + `8028145` + `c48edc1` (round 1 returned) | demo G0–G3 + M5 G0/G4 all **PASS** 2026-08-04 | `d14c147` | **done** — design/33 §"Block 5 landed", design/17 §"Block 5: the first-run path moved" |
 | 5b | Usability | 5 merged | `design17/guided-install` (deleted) | `3d63a6c` | `c2ee97c` + `11000bd` + `eb94b2e` + runbook `644e592`/`c1cdc62`/`d585549` (round 1 returned) | demo G0/G1/G3 + M5 G0/G2 **PASS** 2026-08-04; operator confirmed full `install.bat` on M5 | `ab5e97c` | **done** — design/17 §"Block 5b: the installer guides the whole first run" |
-| 6a | Nikon | — **assign first** | `design34/focus-system-authorization` | `f41c89a` | `eb93067` + `49b2487` + `2a5ca10`; runbook `21e708e`/`8db66cc`/`4994f3e` (rounds 1 and 2 returned) | **pushed 2026-08-05, awaiting the Nikon + any non-EMU rig** | | |
-| 6 | Nikon | 6a | `design34/measured-position-readback` | | | **required** — 11:40 session is the pre-fix baseline; probe S not owed | | |
-| 7a | Nikon | 6a | `design34/continuous-focus-capability` | | | **required** | | |
-| 7b | Nikon | 7a | `design34/continuous-focus-policy` | | | **required** | | |
+| 6a | Nikon | — **assign first** | `design34/focus-system-authorization` — **branch deleted, local and `origin`** | `f41c89a` | `eb93067` + `49b2487` + `2a5ca10`; runbook `21e708e`/`8db66cc`/`4994f3e` (rounds 1 and 2 returned) | **never gated** — pushed 2026-08-05, parked on the Nikon for 13 days | **DROPPED unmerged 2026-08-18** — 808 commits behind and unmergeable (`first_launch.py` deleted from `main` by `7edd76a`); three generic findings carried to the register | n/a — nothing merged |
+| 6 | Nikon | 6a | `design34/measured-position-readback` — never created | — | — | — | **CLOSED unbuilt 2026-08-18** with Track B | both defects carried to the register; still live on `main` |
+| 7a | Nikon | 6a | `design34/continuous-focus-capability` — never created | — | — | — | **CLOSED unbuilt 2026-08-18** with Track B | carried to the register; design/49 typed the EMU lock, not this |
+| 7b | Nikon | 7a | `design34/continuous-focus-policy` — never created | — | — | — | **CLOSED unbuilt 2026-08-18** with Track B | headline item already on `main` (`tools.py:4134`); unattended paths carried |
 | 7c | Nikon | — | — | — | — | — | **SKIPPED 2026-08-05** — merged into 7a | design/40 D3 |
-| 8 | Nikon | 6, 7a, 7b | `design33/phase5-continuous-focus` | | | required | | |
+| 8 | Nikon | 6, 7a, 7b | `design33/phase5-continuous-focus` — never created | — | — | — | **CLOSED unbuilt 2026-08-18** with Track B | setup emits no continuous-focus declaration; carried |
 | 13 | Platform | 41a merged | `design40/platform-defects` (deleted) | `03dcea0` | `0c83268` + `c2fc7ab` (round 1 returned); runbook `9d2a934`; post-gate `f4e98c6` **ungated** | M5 2026-08-06 **G1/G2/G4/G5 PASS**; **G3 not runnable — no transmitted light on M5, carried forward** | `d24e721` | **done** — design/25 §"SNR validity, stated once", design/32 §"One hook contract", design/40 §"What block 13 shipped", design/41 F4/F5 |
 | 41a | Platform | none — **assign first in Track D** | `design41/session-survival` (deleted) | `b0ee300` | `501287f` + `bb58551` (round 1 returned) | n/a — no rig surface | `1fb284d` | **done** — design/16 §5 "The invariant is not about Stop"; design/41 F2/F3/F7 ticked |
 | 41b | Platform | 41a merged | `design41/script-export` (deleted) | `03dcea0` | 4 review rounds through `5ead7cc`; README `4b08f30`; runbook `bc9aea1`; post-gate `b6cc7a2` + `5af0fc6`, both **ungated** | M5 **G1/G2/G3 all PASS** rounds 4–5 2026-08-06 | `b1aa55e` | **done** — `CLAUDE.md` compile-to-script pointer, design/41 F1 |
@@ -5049,7 +5102,36 @@ Post-merge design gate:
 
 ---
 
-# Track B — Nikon PFS and position reporting (blocks 6a, 6, 7a, 7b, 8)
+# Track B — [~] Nikon PFS and position reporting — **CLOSED 2026-08-18**
+
+**The whole track is closed by operator ruling, 2026-08-18. Do not assign 6a, 6,
+7a, 7b or 8.** The coordinator — first-hand, not the remote operator reporting —
+got on the Nikon and **PFS engages, disengages and
+takes an offset move from inside a microclaw session**, under the operator's
+hand-declared `safety_config.yml`. The blocker this track existed to remove —
+a remote operator who could not work at all — is gone, and it was removed by a
+hand-authored config rather than by any code here.
+
+What that ruling does and does not settle:
+
+- **Settled: the capability works and the track's premise is spent.** No further
+  Nikon evidence is being sought, and the round-trip-to-a-remote-human constraint
+  that shaped every block above no longer applies.
+- **Not settled: setup-generation was never gated.** 6a's acceptance was that
+  `first_launch` could *produce* an equivalent config without hand editing. That
+  was never demonstrated and is not claimed. A future operator on a PFS rig still
+  hand-writes the declaration.
+- **Not settled: five defects in these blocks are generic and still live on
+  `main`.** They are not Nikon work and do not close with the track; each is now
+  a row in the carried-forward register, with the evidence inline so it does not
+  depend on a deleted branch. See "Still open, not yet scheduled".
+
+**Block 6a is DROPPED unmerged and its branch is deleted locally and on
+`origin`; no code from it is on `main`.** Blocks 6, 7a, 7b and 8 were never
+started and are closed unbuilt. Details in each block's heading below.
+
+The sections below are kept unedited beneath their headings, for the reasoning
+and the measured session evidence they carry. **They are a record, not a plan.**
 
 Source: `design/40-pfs-five-sessions.md`, which supersedes
 `design/34-nikon-pfs-tizdrive-findings.md` wherever the two disagree about the
@@ -5102,9 +5184,29 @@ What is still genuinely wanted — capture range, safe step, timeouts, adapter a
 firmware versions — is now collected *by* block 7a's search as it runs, not
 before it is written.
 
-## 6a. Authorize the focus system, and say what is unassigned
+## 6a. [~] Authorize the focus system — **DROPPED unmerged 2026-08-18**
 
-Branch: `design34/focus-system-authorization`
+Branch: `design34/focus-system-authorization` — **deleted locally and on
+`origin`.** Implemented `eb93067`+`49b2487`+`2a5ca10`, runbook
+`21e708e`/`8db66cc`/`4994f3e`, pushed 2026-08-05, never gated. Diffstat at
+deletion: `authorization.py` +7, `autofocus.py` 6, `controller.py` +31,
+`first_launch.py` 140, `tools.py` 64, plus 177 test lines and the 169-line
+runbook — 506 insertions, 88 deletions across 10 files.
+
+**Why dropped rather than merged.** It was 808 commits behind `main` and no
+longer mergeable: `microclaw/first_launch.py` was **deleted** from `main` by
+`7edd76a` ("Complete in-app first-run setup flow") and replaced by
+`setup_tools.py`, so the 140-line setup half of this block edits a module that
+does not exist, and `tools.py` conflicts on top of that. Merging would have meant
+re-implementing it, which is a new block and not what the ruling asked for.
+
+**Its three generic findings are carried, not dropped** — all three verified
+still live on `main` at `afe3cad` before the branch was deleted, and each is now
+a register row with its evidence inline. Do not go looking for them on the
+branch; it is gone.
+
+**The rest of this section is the record of what was planned. It is not a plan.**
+The original text follows unedited.
 
 **Assign this first.** It is the only block that changes whether the remote
 operator can work at all, and it replaces block 8's blanket-exclusion lift for
@@ -5182,7 +5284,20 @@ Post-merge design gate:
       for a continuous-focus enable, and strike the "PFS-offset workflows
       unsupported" marker with the evidence that lifted it.
 
-## 6. Measured position read-back and the move failure contract
+## 6. [~] Measured position read-back — **CLOSED unbuilt 2026-08-18**
+
+Branch: `design34/measured-position-readback` — **never created.** Closed with
+Track B; no code was written.
+
+**Both of its defects are generic, are not Nikon work, and are still live on
+`main`** (verified at `afe3cad`): `move_stage_z` returns the requested target as
+`z_um` with `"status": "Moved."` and performs no read at all
+(`tools.py:2137`), and `move_named_stage` reports a missed target as a success
+carrying `error_um` (`tools.py:2233`). Both are now register rows. The result
+contract this section drafts is the best statement of what a fix owes and is
+worth reading before writing one.
+
+**The rest of this section is the record. It is not a plan.**
 
 Branch: `design34/measured-position-readback`
 
@@ -5239,7 +5354,16 @@ Post-merge design gate:
       target, and correct design/34 `:246`–`:250`, whose table describes a
       signature that did not reproduce.
 
-## 7a. Typed continuous focus and the bounded engage search
+## 7a. [~] Typed continuous focus and the bounded engage search — **CLOSED unbuilt 2026-08-18**
+
+Branch: `design34/continuous-focus-capability` — **never created.** Closed with
+Track B; no code was written. Microclaw still has no typed continuous-focus
+capability: `enableContinuousFocus`, `isContinuousFocusEnabled` and
+`isContinuousFocusLocked` remain unused by production code. design/49 typed the
+**EMU** focus lock, which is a different device role and does not cover this.
+Carried as a register row.
+
+**The rest of this section is the record. It is not a plan.**
 
 Branch: `design34/continuous-focus-capability`
 
@@ -5300,7 +5424,16 @@ Post-merge design gate:
       timeouts the search observed — the parts of design/34 `:223`–`:234` this
       block actually collects.
 
-## 7b. Autofocus must not fight an armed servo
+## 7b. [~] Autofocus must not fight an armed servo — **CLOSED unbuilt 2026-08-18**
+
+Branch: `design34/continuous-focus-policy` — **never created.** Closed with
+Track B. Partly overtaken: `run_autofocus` already refuses to sweep against an
+engaged lock (`tools.py:4134`), which is this block's headline item. What is
+**not** covered is the unattended paths it lists — `autofocus.py`, the
+`hooks.py` focus-recovery jog, and per-position Z in the tile path — and that
+gap is carried as a register row.
+
+**The rest of this section is the record. It is not a plan.**
 
 Branch: `design34/continuous-focus-policy`
 
@@ -5336,7 +5469,14 @@ Post-merge design gate:
 - [ ] Record which Z-writing paths are lock-aware and what each does. Do not
       claim `preserve`. State plainly that probes 1–4 remain unrun.
 
-## 8. Phase 5 continuous-focus addendum
+## 8. [~] Phase 5 continuous-focus addendum — **CLOSED unbuilt 2026-08-18**
+
+Branch: `design33/phase5-continuous-focus` — **never created.** Closed with
+Track B, and it depended on 6, 7a and 7b, none of which exist. Setup does not
+generate a continuous-focus declaration; a PFS operator hand-writes it, which is
+exactly what happened on the Nikon on 2026-08-18.
+
+**The rest of this section is the record. It is not a plan.**
 
 Branch: `design33/phase5-continuous-focus`
 
@@ -8045,15 +8185,15 @@ schedule them or record a reason at block 12.
 | Phase 3's human confirmation gate was never validated | design/33 `:796` | **Block 4** rig gate requires an operator transcript |
 | Probe 0, the null control that decides whether the move was ever implicated | design/34 `:184`–`:200` | **Block 0a** (authored), never run — **unanswered, gates nothing**; design/40 §"Still owed" |
 | Probes 1–4, the motion cases | design/34 `:201`–`:217` | **Block 0a** (shipped, never run) — **retired 2026-08-05**, no block depends on them |
-| Rig-profile values PFS needs (capture range, safe step, timeouts, versions) | design/34 `:223`–`:234` | **Block 7a** collects them as the bounded search runs; the "approach position" it asked for is refuted (design/40) |
+| Rig-profile values PFS needs (capture range, safe step, timeouts, versions) | design/34 `:223`–`:234` | **(no block)** — Block 7a would have collected them as the bounded search ran; **Track B closed 2026-08-18** and 7a was never built. The "approach position" it asked for stays refuted (design/40). Uncollected |
 | Whether MM Studio / NikonTI exposes a PFS-preserving jog | design/34 `:219`–`:221` | **Moot** — microclaw engaged PFS in software four times on 2026-08-05; the KB claim that only the GUI can was wrong |
-| Continuous-focus / PFS coordination not modelled | design/34, design/40 | **Blocks 6a, 7a, 7b** (7c merged into 7a) |
-| `move_stage_z` never measures the position it reports | design/34 `:110`–`:120` | **Block 6** |
-| `move_named_stage` reports a missed target as success | design/40; design/34 `:236`–`:274` describes a signature that did **not** reproduce | **Block 6** |
+| Continuous-focus / PFS coordination not modelled | design/34, design/40 | **(no block)** — Blocks 6a/7a/7b **closed 2026-08-18** with Track B, 6a dropped unmerged and the others unbuilt. Still unmodelled; see the three PFS rows under "Still open" |
+| `move_stage_z` never measures the position it reports | design/34 `:110`–`:120` | **(no block)** — Block 6 **closed unbuilt 2026-08-18**; defect still live on `main` (`tools.py:2137`). See "Still open" |
+| `move_named_stage` reports a missed target as success | design/40; design/34 `:236`–`:274` describes a signature that did **not** reproduce | **(no block)** — Block 6 **closed unbuilt 2026-08-18**; defect still live on `main` (`tools.py:2233`). See "Still open" |
 | Nikon operator's install may no longer start after the tightening blocks | this session | **Block 0b** |
-| Exclusions made PFS unusable; setup over-excludes stage-position properties | design/40 | **Block 6a** |
-| Unassigned `Core.Focus` surfaces as a raw Java exception | design/40 | **Block 6a** |
-| `get_focus_lock_state` is EMU-only | design/40 | **Block 6a** |
+| Exclusions made PFS unusable; setup over-excludes stage-position properties | design/40 | **(no block)** — Block 6a **dropped unmerged 2026-08-18**; must be re-scoped against `setup_tools.py`, since `first_launch.py` no longer exists. See "Still open" |
+| Unassigned `Core.Focus` surfaces as a raw Java exception | design/40 | **(no block)** — Block 6a **dropped unmerged 2026-08-18**; still live on `main`. See "Still open" |
+| `get_focus_lock_state` is EMU-only | design/40 | **(no block)** — Block 6a **dropped unmerged 2026-08-18**; still live on `main` (`tools.py:7623`). design/49 typed the EMU lock and did not touch this. See "Still open" |
 | Hooked-survey defects: position-list poisoning, `rank_hook_log`, hook-contract preflight, SNR gate, calibration zero-shift | design/40 | **Block 13** |
 | Saved knowledge does not separate measurement from inference | design/40 D6 | **(no block)** — owed, shape not yet clear |
 | Block 11 Run B | old §11 | **Block 9** |
@@ -8066,6 +8206,98 @@ schedule them or record a reason at block 12.
 
 This is an inventory, not permission to close with unresolved blank work. Block
 12 assigns every row one of the explicit dispositions above.
+
+### The five that outlived Track B — added 2026-08-18
+
+Track B closed on the operator ruling that PFS works. **These five are not Nikon
+work.** Every one of them was verified still live on `main` at `afe3cad` on the
+day the track closed, and each carries its evidence inline **because the branch
+that held it is deleted** — do not go looking for `design34/focus-system-authorization`.
+They are listed together only by provenance; they are five independent items and
+none blocks another.
+
+- **`move_stage_z` reports the position it asked for, not the one it reached.**
+  `tools.py:2137` returns `{"z_um": round(target_z, 3), "status": "Moved."}` after
+  `_wait`, with no read of the device. Measured on the Nikon 2026-08-05: commanded
+  2490, the servo settled at 2532; commanded 2900, settled at 2912. **Every rig is
+  affected**, and the same rule applies to `MicroscopeController.set_z`
+  (`controller.py:812`). Block 6's section above drafts the result contract a fix
+  owes — success reports `requested_um`, `measured_um`, `tolerance_um` and
+  `within_tolerance`, a miss or timeout is a **typed failure** carrying the same
+  measured fields — and states the trap: **a stability-only check passes
+  immediately at the old position**, so the gate has to be tolerance-of-target.
+  Read that section before writing the fix.
+- **`move_named_stage` reports a missed target as a success.** `tools.py:2233`
+  reads back and returns `error_um`, then returns it as an ordinary result. At
+  11:40 on 2026-08-05 it returned `{"requested_um": 5, "achieved_um": 27.85,
+  "error_um": 22.85}` as a success and the agent came within one tool call of
+  sweeping a focus curve against an axis that had not moved. This is worse than
+  the staleness signature design/34 predicted, which **did not reproduce**. Same
+  contract as the row above; settle the two together.
+- **`get_focus_lock_state` answers a false negative on any non-EMU rig.**
+  `tools.py:7623` returns `{"engaged": None, "reason": "No EMU configuration —
+  cannot read a focus lock."}` whenever no EMU map is present — on a rig with a
+  working hardware focus lock, that answer is false, and `agent.py:159` sends the
+  model straight to this tool for the checklist's focus-lock item. `get_auto_focus_device()` is the fallback. **design/49
+  did not close this**: it made the *EMU* focus-lock property a typed capability
+  so a bounded-stage device stops refusing it, which is a different problem.
+  Additive fix only — the EMU branch stays first and unchanged so M5's payload,
+  `qpd` block included, stays byte-identical.
+- **An unassigned `Core.Focus` is swallowed, then thrown raw.** `get_system_state`
+  turns `No device with label ""` into `z_stage: "unavailable"`, while
+  `get_z_position`, `move_stage_z` and autofocus raise the bare Java exception.
+  **Two Nikon sessions were lost to it.** Microclaw cannot fix the role — it is a
+  device-assignment property it correctly excludes — so the whole fix is naming
+  the cause and the remedy. Generic: any MM config with several single-axis
+  stages and no role line.
+- **Setup cannot declare a stage-position property, and the kind it would use has
+  a hole under it.** Two halves, and **the second must land with the first or it
+  opens what it closes**. (a) Setup excludes stage-position properties outright
+  instead of offering `absolute-position`; the kind exists, `safety.py:1039`–`1052`
+  routes it through `check_named_stage`, and `authorization.py:1012` already
+  refuses a typed axis entry whose bounds widen the named-stage entry rather than
+  narrowing it. (b) That routing reaches a travel bound **only** when the device
+  is the core focus device, the core XY device, or already in `named_stages` — on
+  any other stage every branch falls through and the write is gated by nothing but
+  its own declared min/max in `check_typed_actuator`, while `check_named_stage`
+  (`safety.py:1234`) fails closed on that same device. **M2 is the shape that
+  breaks**: its `named_stages: []` is a deliberate refusal
+  (`design/29-block9-m2-safety-config.yaml:116`–`123`), and a typed entry would
+  quietly reinstate motion on a stage the operator declared unreachable. Net
+  effect of doing both: stricter than today everywhere, except the PFS offset it
+  unblocks. **Re-scope required**: 6a wrote this against `first_launch.py`, which
+  `7edd76a` deleted; the surface is now `setup_tools.py`, and the exclusion above
+  is described as 6a measured it in 2026-08-05's setup code — **confirm it against
+  `setup_tools.py` before believing it.** 6a also recorded a third half, that the
+  runtime refusal naming `allowed_numeric` as a legal home for a stage-position
+  pair contradicted what setup's own generated comment said; the refusal was
+  judged right and setup wrong. **That one is unverified here** — it was a claim
+  about a deleted module, and nobody has re-checked what `setup_tools.py` writes.
+
+Two smaller Track B remnants, recorded so they are not re-discovered:
+
+- **No typed continuous-focus capability exists.** `enableContinuousFocus`,
+  `isContinuousFocusEnabled` and `isContinuousFocusLocked` are in the mmcorej
+  2.0.3 API (`tests/fixtures/mmcorej-cmmcore-2.0.3-methods.txt`) and are still
+  unused by production code, so engaging PFS from microclaw is raw property
+  writes under a hand-written declaration — which is exactly what the 2026-08-18
+  Nikon session did. Block 7a's section carries the measured shape if this is
+  ever picked up: the loop is `Off → step Z → On → poll status`, lock is
+  **binary** (`Focus lock failed` / `Locked in focus`, no gradient, do not
+  hill-climb), there is **no stable engage height** (four locks spanned
+  2450–2912 µm, so search, do not aim), and the servo moves the offset axis by
+  itself (a lock at 2500 pulled `TIPFSOffset` from 27.85 to 183.55), so a result
+  reporting only the focus axis describes half the machine.
+- **The unattended Z paths are not lock-aware.** `run_autofocus` itself already
+  refuses to sweep against an engaged lock (`tools.py:4134`) — 7b's headline item
+  landed elsewhere — but the sweep, the move-to-best and the `_restore` in
+  `autofocus.py` (`:102`, `:121`, `:142`/`:159`), the focus-recovery jog in
+  `hooks.py` (`:384`) and the per-position Z of the tile path are not. **Those
+  five line numbers are 6a-era pointers re-located by symbol, not re-audited** —
+  find the call sites by name. All are already inside a
+  `check_z`-guarded range; the gap is lock awareness, not bounds. **Do not offer
+  a `preserve` mode** — no evidence supports a movement path that keeps the servo
+  searching, and offering it would be a claim the rig has not made.
 
 - ~~**An exported script is refused whenever a recorded error contains a
   newline.**~~ **FIXED in block 52b, `2b9233e`.** Found on M5 2026-08-17: a Java
