@@ -124,9 +124,15 @@ def _emit_snap_and_analyze(params: RecordedParams) -> str:
             "UNCALIBRATED_MIN_SNR_FALLBACK"
         ]).UNCALIBRATED_MIN_SNR_FALLBACK,
     )
+    region = params.get("region")
+    crop = ""
+    if region is not None:
+        x, y, w, h = region
+        crop = f"image = image[{y}:{y + h}, {x}:{x + w}]\n"
     return (
         "image = snap_to_numpy(mm)\n"
-        f"stats = compute_stats(image, min_snr={min_snr!r})"
+        + crop
+        + f"stats = compute_stats(image, min_snr={min_snr!r})"
     )
 
 
@@ -134,10 +140,11 @@ def _emit_autofocus(params: RecordedParams) -> str:
     signature = inspect.signature(run_autofocus)
     method = params.get("method", signature.parameters["method"].default)
     settle = params.get("settle_ms", signature.parameters["settle_ms"].default)
+    region = params.get("region", signature.parameters["region"].default)
     return (
         "autofocus_result = _run_autofocus_passes("
         f"mm, {params['z_range_um']!r}, {params['z_step_um']!r}, "
-        f"{method!r}, {settle!r})"
+        f"{method!r}, {settle!r}, {region!r})"
     )
 
 
@@ -3616,12 +3623,46 @@ def run_analysis_on_saved_dataset(
 
 # --- Image capture with analysis ---
 
-def _metric_stamp(ctrl: MicroscopeController) -> dict:
+def _validate_metric_region(
+    region: list[int] | None, frame_width: int, frame_height: int
+) -> tuple[list[int] | None, str | None]:
+    """Validate a software metric crop without changing or clamping it."""
+    if region is None:
+        return None, None
+    if not isinstance(region, list) or len(region) != 4:
+        return None, (
+            f"Malformed region {region!r}: expected four integer values "
+            "[x, y, w, h]."
+        )
+    if any(type(value) is not int for value in region):
+        return None, (
+            f"Malformed region {region!r}: expected four integer values "
+            "[x, y, w, h]."
+        )
+    x, y, width, height = region
+    if x < 0 or y < 0 or width < 0 or height < 0:
+        return None, f"Malformed region {region!r}: values must not be negative."
+    if width <= 1 or height <= 1:
+        return None, (
+            f"Degenerate region {region!r}: width and height must both be greater "
+            "than 1 pixel."
+        )
+    if x + width > frame_width or y + height > frame_height:
+        return None, (
+            f"Region {region!r} does not fit frame "
+            f"[{frame_width}, {frame_height}]."
+        )
+    return list(region), None
+
+
+def _metric_stamp(
+    ctrl: MicroscopeController, region: list[int] | None = None
+) -> dict:
     """The settings a focus metric is only comparable within (design/14 §10).
 
     Split from _focus_metric_payload so a multi-tile result can carry one stamp
-    over many metrics: every tile of a grid shares the ROI, exposure and binning,
-    so repeating the block per tile would be N copies of one fact.
+    over many metrics: every tile of a grid shares the ROI, exposure, binning and
+    software region, so repeating the block per tile would be N copies of one fact.
     """
     try:
         roi = ctrl.core.get_roi()
@@ -3647,6 +3688,7 @@ def _metric_stamp(ctrl: MicroscopeController) -> dict:
             "roi": roi_list,
             "exposure_ms": exposure_ms,
             "binning": binning,
+            "region": region,
         },
     }
 
@@ -3661,6 +3703,7 @@ def _focus_metric_payload(
     stats: ImageStats,
     min_snr: float,
     min_snr_source: str,
+    region: list[int] | None = None,
 ) -> dict:
     """Focus metric stamped with the settings it is only comparable within, and
     with the SNR gate that says whether it is a measurement at all (design/25).
@@ -3687,7 +3730,7 @@ def _focus_metric_payload(
         "snr_invalid_reason": stats.snr_invalid_reason,
         "min_snr": min_snr,
         "min_snr_source": min_snr_source,
-        **_metric_stamp(ctrl),
+        **_metric_stamp(ctrl, region),
     }
     if not stats.snr_valid:
         payload["warning"] = stats.snr_invalid_reason
@@ -3703,6 +3746,7 @@ def snap_and_analyze(
     return_thumbnail: bool = False,
     thumbnail_size: int = 512,
     display: bool = True,
+    region: list[int] | None = None,
 ) -> list | dict:
     """Snap an image, display it in the MM viewer, and return numerical stats.
 
@@ -3714,6 +3758,12 @@ def snap_and_analyze(
     """
     with _pause_live(ctrl) as live_state:
         image = snap_to_numpy_displayed(ctrl) if display else snap_to_numpy(ctrl)
+    validated, error = _validate_metric_region(region, image.shape[1], image.shape[0])
+    if error:
+        return {"error": error}
+    if validated is not None:
+        x, y, w, h = validated
+        image = image[y:y + h, x:x + w]
     min_snr, min_snr_source = _analysis_gate(guard)
     stats = compute_stats(image, min_snr=min_snr)
     text_payload: dict[str, Any] = {
@@ -3724,7 +3774,9 @@ def snap_and_analyze(
         # their image was on screen. Now it reports whether MM actually has a
         # Preview window open (which snap_to_numpy_displayed has just repainted).
         "displayed_in_mm_viewer": bool(display) and preview_window_open(ctrl),
-        **_focus_metric_payload(ctrl, stats, min_snr, min_snr_source),
+        **_focus_metric_payload(
+            ctrl, stats, min_snr, min_snr_source, validated
+        ),
         "mean_intensity": round(stats.mean_intensity, 1),
         "min_intensity": round(stats.min_intensity, 1),
         "max_intensity": round(stats.max_intensity, 1),
@@ -4065,12 +4117,22 @@ def _run_autofocus_passes(
     z_step_um: float,
     method: str,
     settle_ms: int,
+    region: list[int] | None = None,
 ) -> AutofocusResult:
+    metric_fn = tenengrad
+    if region is not None:
+        x, y, width, height = region
+
+        def metric_fn(image):
+            return tenengrad(image[y:y + height, x:x + width])
     if method == "coarse_then_fine":
         return coarse_then_fine_autofocus(
             ctrl, z_range_um, max(z_step_um * 5, 1.0), z_step_um, settle_ms,
+            metric_fn=metric_fn,
         )
-    return single_sweep_autofocus(ctrl, z_range_um, z_step_um, settle_ms)
+    return single_sweep_autofocus(
+        ctrl, z_range_um, z_step_um, settle_ms, metric_fn=metric_fn
+    )
 
 
 def _round_sig(value: float, sig: int = 4) -> float:
@@ -4108,6 +4170,7 @@ def run_autofocus(
     method: str = "coarse_then_fine",
     settle_ms: int = 50,
     return_thumbnail: bool = True,
+    region: list[int] | None = None,
 ) -> list | dict:
     """Sweep Z to find the sharpest focal plane.
 
@@ -4125,6 +4188,14 @@ def run_autofocus(
     The sweep is headless: live view is paused for its duration and left off
     afterwards, and the viewer does not show the sweep as it happens.
     """
+    validated, error = _validate_metric_region(
+        region,
+        int(ctrl.core.get_image_width()),
+        int(ctrl.core.get_image_height()),
+    )
+    if error:
+        return {"error": error}
+
     entry_z = ctrl.core.get_position()
     guard.check_z(entry_z - z_range_um / 2)
     guard.check_z(entry_z + z_range_um / 2)
@@ -4144,7 +4215,9 @@ def run_autofocus(
         }
 
     with _pause_live(ctrl, restore=False) as live_state:
-        result = _run_autofocus_passes(ctrl, z_range_um, z_step_um, method, settle_ms)
+        result = _run_autofocus_passes(
+            ctrl, z_range_um, z_step_um, method, settle_ms, validated
+        )
 
     payload: dict[str, Any] = {
         "converged": result.converged,
@@ -4178,7 +4251,11 @@ def run_autofocus(
 
     with _pause_live(ctrl, restore=False):
         image = snap_to_numpy(ctrl)
-    payload["focus_metric_at_final"] = _round_sig(tenengrad(image))
+    metric_image = image
+    if validated is not None:
+        x, y, w, h = validated
+        metric_image = image[y:y + h, x:x + w]
+    payload["focus_metric_at_final"] = _round_sig(tenengrad(metric_image))
     return image_content(payload, image)
 
 

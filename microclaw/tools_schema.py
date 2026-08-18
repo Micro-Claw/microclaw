@@ -764,6 +764,16 @@ TOOLS: list[dict[str, Any]] = [
                     ),
                     "default": True,
                 },
+                "region": {
+                    "type": "array",
+                    "description": (
+                        "Optional software analysis region [x, y, w, h] in "
+                        "current frame pixels. All statistics use this region."
+                    ),
+                    "items": {"type": "integer"},
+                    "minItems": 4,
+                    "maxItems": 4,
+                },
             },
             "required": [],
         },
@@ -836,7 +846,9 @@ TOOLS: list[dict[str, Any]] = [
             "in z_step_um steps. Returns BOTH passes (coarse chooses the plane, fine "
             "refines it) with their metric curves and contrast, plus converged/moved/"
             "entry_z_um/final_z_um. If the metric curve is structureless (low "
-            "contrast — e.g. faint signal or a too-small ROI), the stage is NOT "
+            "contrast — e.g. faint signal or structure diluted by a mostly "
+            "background field), restrict the metric region around structure. "
+            "The stage is NOT "
             "moved: Z is restored to entry_z_um and converged=false explains why. "
             "A peak pinned at the sweep boundary is also NOT convergence — it "
             "may mean focus is outside the window or that the curve is invalid, "
@@ -876,6 +888,16 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "boolean",
                     "description": "Include a thumbnail of the focused image (default false). Only set to True if absolutely necessary.",
                     "default": False,
+                },
+                "region": {
+                    "type": "array",
+                    "description": (
+                        "Optional software focus-metric region [x, y, w, h] "
+                        "in current frame pixels."
+                    ),
+                    "items": {"type": "integer"},
+                    "minItems": 4,
+                    "maxItems": 4,
                 },
             },
             "required": ["z_range_um", "z_step_um"],

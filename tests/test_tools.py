@@ -1057,10 +1057,31 @@ class TestSnapAndAnalyze:
         result = snap_and_analyze(mock_ctrl, unconstrained_guard)
         # "_gated": focus_metric now travels with focus_metric_valid + snr (design/25).
         assert result["focus_metric_kind"] == "tenengrad_gated"
-        assert set(result["metric_valid_for"]) == {"roi", "exposure_ms", "binning"}
+        assert set(result["metric_valid_for"]) == {
+            "roi", "exposure_ms", "binning", "region"
+        }
+        assert result["metric_valid_for"]["region"] is None
         for metric in ("signal_coverage", "structure_coverage",
                        "signal_concentration"):
             assert result[metric] == round(result[metric], 6)
+
+    def test_region_applies_to_every_statistic_and_metric_stamp(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        image = np.full((16, 16), 10, dtype=np.uint16)
+        image[4:8, 2:6] = np.arange(16, dtype=np.uint16).reshape(4, 4) + 100
+        monkeypatch.setattr(
+            "microclaw.tools.snap_to_numpy_displayed", lambda ctrl: image
+        )
+
+        result = snap_and_analyze(
+            mock_ctrl, unconstrained_guard, region=[2, 4, 4, 4]
+        )
+
+        assert result["mean_intensity"] == pytest.approx(107.5)
+        assert result["min_intensity"] == 100.0
+        assert result["max_intensity"] == 115.0
+        assert result["metric_valid_for"]["region"] == [2, 4, 4, 4]
 
     def test_metric_gate_comes_from_rig_config(self, mock_ctrl):
         guard = SafetyGuard(SafetyConstraints(
@@ -1171,6 +1192,62 @@ def _patch_autofocus(monkeypatch):
 
 
 class TestRunAutofocus:
+    def test_region_curve_has_more_contrast_than_diluted_full_frame(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        mock_ctrl.core.get_image_width.return_value = 64
+        mock_ctrl.core.get_image_height.return_value = 64
+        current_z = [50.0]
+
+        def set_position(z):
+            current_z[0] = float(z)
+
+        mock_ctrl.core.set_position.side_effect = set_position
+        checker = (np.indices((16, 16)).sum(axis=0) % 2).astype(np.float64)
+        background = np.tile(np.arange(64) % 2, (64, 1)).astype(np.float64) * 30
+
+        def frame(_ctrl):
+            image = background.copy()
+            amplitude = {49.0: 10, 50.0: 100, 51.0: 10}[current_z[0]]
+            image[:16, :16] = checker * amplitude
+            return image
+
+        monkeypatch.setattr("microclaw.autofocus.snap_to_numpy", frame)
+        common = dict(
+            z_range_um=2.0, z_step_um=1.0, method="sweep", settle_ms=0,
+            return_thumbnail=False,
+        )
+        full = run_autofocus(mock_ctrl, unconstrained_guard, **common)
+        region = run_autofocus(
+            mock_ctrl, unconstrained_guard, region=[0, 0, 16, 16], **common
+        )
+
+        assert region["coarse"]["contrast"] > full["coarse"]["contrast"]
+
+    @pytest.mark.parametrize("region, expected", [
+        ([1, 2, 3], "[1, 2, 3]"),
+        ([1, 2, 3.5, 4], "3.5"),
+        ([-1, 2, 3, 4], "-1"),
+        ([1, 2, 1, 4], "[1, 2, 1, 4]"),
+        ([60, 2, 8, 4], "[64, 32]"),
+    ])
+    def test_invalid_region_refuses_before_the_sweep(
+        self, mock_ctrl, unconstrained_guard, monkeypatch, region, expected
+    ):
+        mock_ctrl.core.get_image_width.return_value = 64
+        mock_ctrl.core.get_image_height.return_value = 32
+        sweep = MagicMock()
+        monkeypatch.setattr("microclaw.tools.single_sweep_autofocus", sweep)
+
+        result = run_autofocus(
+            mock_ctrl, unconstrained_guard, 2.0, 1.0, method="sweep",
+            region=region,
+        )
+
+        assert "error" in result
+        assert repr(region) in result["error"] or expected in result["error"]
+        assert expected in result["error"]
+        sweep.assert_not_called()
     def test_z_boundary_check_below(self, mock_ctrl, default_guard):
         # current Z=5, range=20 → sweep goes to -5 which is below z_min=0
         mock_ctrl.core.get_position.return_value = 5.0

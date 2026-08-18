@@ -169,10 +169,73 @@ def test_autofocus_emitter_passes_recorded_inputs_without_rederiving(tmp_path):
     emitted_call = source.split("# RECORDED TOOL: run_autofocus", 1)[1]
     assert (
         "autofocus_result = _run_autofocus_passes("
-        "mm, 20, 0.5, 'coarse_then_fine', 50)"
+        "mm, 20, 0.5, 'coarse_then_fine', 50, None)"
     ) in emitted_call
     assert "max(" not in emitted_call
     assert inspect.getsource(tools._run_autofocus_passes) in source
+
+
+def test_emitted_autofocus_actually_crops_the_metric_frames(tmp_path, monkeypatch):
+    _, _, source = export(tmp_path, [call("run_autofocus", {
+        "z_range_um": 2, "z_step_um": 1, "method": "sweep", "settle_ms": 0,
+        "region": [0, 0, 4, 4],
+    })])
+    frames = [np.zeros((8, 8), dtype=np.uint16) for _ in range(3)]
+    frames[1][:4, :4] = np.indices((4, 4)).sum(axis=0) % 2 * 100
+
+    class FakeCore:
+        def __init__(self): self._index = 0
+        def get_position(self): return 50.0
+        def get_focus_device(self): return "Z"
+        def set_position(self, _z): pass
+        def wait_for_device(self, _device): pass
+        def snap_image(self): pass
+        def get_bytes_per_pixel(self): return 2
+        def get_number_of_components(self): return 1
+        def get_tagged_image(self):
+            frame = frames[min(self._index, 2)]
+            self._index += 1
+            return SimpleNamespace(pix=frame, tags={"Width": 8, "Height": 8})
+
+    monkeypatch.setattr("pycromanager.Core", FakeCore)
+    runnable = re.sub(r"^from pycromanager import .*$", "", source, flags=re.M)
+    namespace = {
+        "__file__": str(tmp_path / "routine.py"), "Core": FakeCore,
+        "Acquisition": object, "multi_d_acquisition_events": lambda **kwargs: [],
+    }
+    exec(compile(runnable, "routine.py", "exec"), namespace)
+
+    curve = namespace["autofocus_result"].coarse.metric_values
+    cropped_metric = image_analysis.tenengrad(frames[1][:4, :4])
+    full_metric = image_analysis.tenengrad(frames[1])
+    assert cropped_metric != full_metric
+    assert curve[1] == pytest.approx(cropped_metric)
+
+
+def test_emitted_snap_analysis_actually_crops_every_statistic(tmp_path, monkeypatch):
+    _, _, source = export(tmp_path, [call(
+        "snap_and_analyze", {"region": [2, 1, 3, 4]}
+    )])
+    frame = np.zeros((8, 8), dtype=np.uint16)
+    frame[1:5, 2:5] = 40
+
+    class FakeCore:
+        def snap_image(self): pass
+        def get_bytes_per_pixel(self): return 2
+        def get_number_of_components(self): return 1
+        def get_tagged_image(self):
+            return SimpleNamespace(pix=frame, tags={"Width": 8, "Height": 8})
+
+    monkeypatch.setattr("pycromanager.Core", FakeCore)
+    runnable = re.sub(r"^from pycromanager import .*$", "", source, flags=re.M)
+    namespace = {
+        "__file__": str(tmp_path / "routine.py"), "Core": FakeCore,
+        "Acquisition": object, "multi_d_acquisition_events": lambda **kwargs: [],
+    }
+    exec(compile(runnable, "routine.py", "exec"), namespace)
+
+    assert namespace["stats"].mean_intensity == 40.0
+    assert namespace["stats"].min_intensity == 40.0
 
 
 def test_inlined_analysis_constant_comes_from_module(tmp_path):
