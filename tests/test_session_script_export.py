@@ -216,7 +216,7 @@ def test_emitted_autofocus_applies_same_small_region_threshold_as_live_run(
     tmp_path, monkeypatch
 ):
     size = 20
-    rng = np.random.default_rng(3)
+    rng = np.random.default_rng(73)
     frames = [
         np.clip(rng.normal(1000, 25, (size, size)), 0, 65535).astype(np.uint16)
         for _ in range(5)

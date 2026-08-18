@@ -1196,7 +1196,7 @@ class TestRunAutofocus:
         self, mock_ctrl, unconstrained_guard, monkeypatch
     ):
         size = 20
-        rng = np.random.default_rng(3)
+        rng = np.random.default_rng(73)
         frames = [
             np.clip(rng.normal(1000, 25, (size, size)), 0, 65535).astype(np.uint16)
             for _ in range(5)
@@ -1221,10 +1221,10 @@ class TestRunAutofocus:
             region=[0, 0, size, size],
         )
 
+        assert current_z[0] == 50.0
         assert result["converged"] is False
         assert result["moved"] is False
         assert result["final_z_um"] == 50.0
-        assert current_z[0] == 50.0
         assert result["coarse"]["min_contrast"] > result["coarse"]["contrast"]
 
     def test_region_curve_has_more_contrast_than_diluted_full_frame(
