@@ -253,12 +253,49 @@ drawing a tight box around one cell is the expected use.
 The Nikon's box is safely inside the flat zone, so nothing unsafe happened on
 this gate. The defect is structural, not incidental.
 
-**Decision owed before merge.** Three candidates, cheapest first: refuse regions
-below a pixel floor; scale the threshold as `MIN_CONTRAST × √(N_ref/N)`;
-or estimate the noise floor per sweep and compare against that instead of a
-constant. The second is principled and the sim above already measures the
-constant it needs. This is block **54d**, and 54b should not merge until it is
-settled — merging ships a tool that can move a focus drive on noise.
+### Decision (operator, 2026-08-18): scale the threshold, and hold 54b
+
+Block **54d**. **54b does not merge on its own** — the two land together, so
+nothing reaches a rig with the guard weakened.
+
+The noise floor is `k/√N` with `k` constant. From the table above, `contrast ×
+√N` is 4.40, 4.52, 4.59, 4.43, 3.90, 4.51 across four decades of N — flat, so
+the law holds and `k ≈ 4.5`.
+
+The threshold becomes
+
+```python
+max(MIN_CONTRAST, MIN_CONTRAST * sqrt(N_REF / n_pixels))    # N_REF = 1024*1024
+```
+
+which preserves today's margin over the noise floor at every region size:
+
+| region | N | threshold | noise floor |
+|---|---|---|---|
+| 2048×2048 | 4,194,304 | 0.150 | 0.0022 |
+| 1024×1024 | 1,048,576 | 0.150 | 0.0043 |
+| 160×244 | 39,040 | 0.777 | 0.0229 |
+| 32×32 | 1,024 | 4.800 | 0.1218 |
+
+Three things that decide whether this is right or subtly wrong:
+
+- **`N_REF` is a fixed constant, never the live camera's frame.** The noise
+  floor depends on the region's own pixel count and nothing else. Deriving
+  `N_REF` from the current sensor would hand the same region a 2× different
+  threshold on a 2048² camera than on a 1024² one, for no physical reason.
+- **The `max()` is what keeps every existing rig calibrated.** Without it a
+  2048² full frame would drop to 0.075 — defensible on noise grounds, but it
+  loosens a guard on rigs that have already been gated at 0.15. Only *smaller*
+  regions tighten; nothing gets looser than today.
+- **`_flat_reason` must print the threshold actually applied**, not the
+  `MIN_CONTRAST` constant it prints now (`autofocus.py:141`). A refusal that
+  says `contrast 0.12 < 0.15` while the code compared against 4.80 is the 43j
+  defect shape — an emitter's constant standing in for the value that ran.
+
+`coarse_then_fine_autofocus` already takes `min_contrast`
+(`autofocus.py:172`), so this threads through what exists rather than adding a
+layer.
+
 
 ## Refusals this must keep
 
