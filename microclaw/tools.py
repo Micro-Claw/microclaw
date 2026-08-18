@@ -128,7 +128,17 @@ def _emit_snap_and_analyze(params: RecordedParams) -> str:
     crop = ""
     if region is not None:
         x, y, w, h = region
-        crop = f"image = image[{y}:{y + h}, {x}:{x + w}]\n"
+        # The guard travels with the crop for the same reason the autofocus
+        # closure carries one: a bare slice truncates silently on a frame the
+        # region does not fit, and the standalone script has no validator.
+        crop = (
+            f"if image.shape[0] < {y + h} or image.shape[1] < {x + w}:\n"
+            f"    raise RuntimeError(\n"
+            f"        f\"Region {region} does not fit frame \"\n"
+            f"        f\"[{{image.shape[1]}}, {{image.shape[0]}}].\"\n"
+            f"    )\n"
+            f"image = image[{y}:{y + h}, {x}:{x + w}]\n"
+        )
     return (
         "image = snap_to_numpy(mm)\n"
         + crop
@@ -4124,6 +4134,18 @@ def _run_autofocus_passes(
         x, y, width, height = region
 
         def metric_fn(image):
+            # Re-checked per frame rather than once before the sweep, because
+            # numpy slicing TRUNCATES instead of raising: a frame smaller than
+            # the region would score the metric over whatever pixels exist and
+            # report it as if nothing were wrong. This function is inlined into
+            # the exported script, which carries no other check —
+            # _validate_metric_region lives in run_autofocus, and run_autofocus
+            # is not emitted.
+            if image.shape[0] < y + height or image.shape[1] < x + width:
+                raise RuntimeError(
+                    f"Region {[x, y, width, height]} does not fit frame "
+                    f"[{image.shape[1]}, {image.shape[0]}]."
+                )
             return tenengrad(image[y:y + height, x:x + width])
     if method == "coarse_then_fine":
         return coarse_then_fine_autofocus(
@@ -4235,6 +4257,12 @@ def run_autofocus(
             else None
         ),
     }
+    # Present only when a region was used, so a regionless payload keeps its
+    # shape. Every number above — both metric curves, contrast, and
+    # focus_metric_at_final below — is measured over these pixels, and
+    # run_autofocus carries no metric_valid_for block to say so otherwise.
+    if validated is not None:
+        payload["region"] = validated
     live_report = _live_restore_report(live_state)
     if live_report:
         payload["live_view_restore"] = live_report

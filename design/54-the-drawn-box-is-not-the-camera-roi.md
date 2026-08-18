@@ -76,9 +76,31 @@ Three things move with it, and none are optional:
   the emitted program.
 - **`_metric_stamp` (`tools.py:3619`) must carry the region.** It stamps
   `metric_valid_for` with the camera `roi`, which is now insufficient: two
-  sweeps at one camera ROI and different regions produce incomparable numbers
-  with an identical stamp. A region metric is comparable only among frames
+  analyses at one camera ROI over different regions produce incomparable numbers
+  under an identical stamp. A region metric is comparable only among frames
   sharing the region.
+
+  **As first written this bullet also claimed the problem for `run_autofocus`,
+  and that was wrong** — 54b's implementer caught it. `run_autofocus` returns no
+  `metric_valid_for` block at all, so there was no false claim of comparability
+  to fix, and adding a stamp would have changed the regionless payload shape.
+  The stamp was extended where it already exists, on analysis results;
+  `run_autofocus` instead echoes `region` in its payload, present only when one
+  was used, because every number it returns — both metric curves, `contrast`,
+  and `focus_metric_at_final` — is measured over those pixels and nothing else
+  in the payload says so.
+
+- **The emitted crop carries its own bounds check.** `_validate_metric_region`
+  lives in `run_autofocus` and `snap_and_analyze`, neither of which is emitted,
+  so the standalone script had the crop without the refusal. **numpy slicing
+  truncates rather than raising**, so an exported script run on a rig whose
+  camera ROI is smaller than it was during the session scored the metric over
+  whatever pixels existed and reported it as if nothing were wrong — the
+  silently-clamped region this document exists to remove, reintroduced on the
+  export path. The check now sits inside the `metric_fn` closure in
+  `_run_autofocus_passes` (which *is* inlined) and is emitted beside the snap
+  crop. Found in review, not by the suite: the block's own export tests exec the
+  emitted source, but every one of them used a region that fit.
 - **`_flat_reason` and the schema description must stop recommending the full
   frame.** Both should name region-restriction as the first remedy when
   `structure_coverage` is small, because that is what the evidence says.

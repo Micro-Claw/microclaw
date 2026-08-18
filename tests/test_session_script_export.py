@@ -2726,3 +2726,71 @@ def test_emitted_script_states_its_envelope_and_never_blocks_on_stdin(
     # whole disclosure now.
     assert ("approved {_property_bound}" in source
             or "approved interval" in source)
+
+
+def test_emitted_crop_refuses_a_frame_the_region_does_not_fit(tmp_path, monkeypatch):
+    """The live tools refuse an out-of-frame region; the exported script must too.
+
+    numpy slicing TRUNCATES rather than raising, so an emitted crop with no
+    bounds check measures the metric over whatever pixels happen to exist and
+    reports the number as if nothing were wrong. `_validate_metric_region` lives
+    in `run_autofocus`/`snap_and_analyze`, neither of which is emitted, so the
+    standalone script carries no check of its own unless the inlined code has
+    one. A rig whose camera ROI is smaller than it was when the session ran is
+    exactly the case design/54 refuses.
+    """
+    _, _, source = export(tmp_path, [call("run_autofocus", {
+        "z_range_um": 2, "z_step_um": 1, "method": "sweep", "settle_ms": 0,
+        "region": [0, 0, 16, 16],
+    })])
+    frame = np.zeros((8, 8), dtype=np.uint16)          # smaller than the region
+
+    class FakeCore:
+        def get_position(self): return 50.0
+        def get_focus_device(self): return "Z"
+        def set_position(self, _z): pass
+        def wait_for_device(self, _device): pass
+        def snap_image(self): pass
+        def get_bytes_per_pixel(self): return 2
+        def get_number_of_components(self): return 1
+        def get_tagged_image(self):
+            return SimpleNamespace(pix=frame, tags={"Width": 8, "Height": 8})
+
+    monkeypatch.setattr("pycromanager.Core", FakeCore)
+    runnable = re.sub(r"^from pycromanager import .*$", "", source, flags=re.M)
+    namespace = {
+        "__file__": str(tmp_path / "routine.py"), "Core": FakeCore,
+        "Acquisition": object, "multi_d_acquisition_events": lambda **kwargs: [],
+    }
+    with pytest.raises(RuntimeError) as excinfo:
+        exec(compile(runnable, "routine.py", "exec"), namespace)
+    assert "[0, 0, 16, 16]" in str(excinfo.value)
+    assert "[8, 8]" in str(excinfo.value)
+
+
+def test_emitted_snap_crop_refuses_a_frame_the_region_does_not_fit(
+    tmp_path, monkeypatch
+):
+    """Same guarantee on the snap path, whose emitted crop is a bare slice."""
+    _, _, source = export(tmp_path, [call(
+        "snap_and_analyze", {"region": [4, 4, 16, 16]}
+    )])
+    frame = np.zeros((8, 8), dtype=np.uint16)
+
+    class FakeCore:
+        def snap_image(self): pass
+        def get_bytes_per_pixel(self): return 2
+        def get_number_of_components(self): return 1
+        def get_tagged_image(self):
+            return SimpleNamespace(pix=frame, tags={"Width": 8, "Height": 8})
+
+    monkeypatch.setattr("pycromanager.Core", FakeCore)
+    runnable = re.sub(r"^from pycromanager import .*$", "", source, flags=re.M)
+    namespace = {
+        "__file__": str(tmp_path / "routine.py"), "Core": FakeCore,
+        "Acquisition": object, "multi_d_acquisition_events": lambda **kwargs: [],
+    }
+    with pytest.raises(RuntimeError) as excinfo:
+        exec(compile(runnable, "routine.py", "exec"), namespace)
+    assert "[4, 4, 16, 16]" in str(excinfo.value)
+    assert "[8, 8]" in str(excinfo.value)
